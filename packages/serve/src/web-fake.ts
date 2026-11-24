@@ -1,29 +1,35 @@
 // A template eval's fake of the web tools for one case (template-eval.ts, `web:` in a case's case.yaml): its runs'
 // web_search and web_fetch answer from the case, never from the network, in the shapes and through the tool names the
-// model sees live. `unavailable`: every search fails as keyless search past its free limit does (exa-keyless.ts
+// model sees live. `unavailable`: every search fails as keyless search past its free limit does (keyless-mcp.ts
 // RATE_LIMITED), and every page fails as a fetch whose connection is refused does (the guarded direct fetch's own words,
 // web-fetch-direct.ts readDirect). A fixture: each search answered by the first answer whose `query` (a regular
 // expression, case-insensitive) matches the query, else its default; each page by the answer for exactly its URL, else
-// its default, read through the guarded direct fetch's own path (its URL, port and status checks, its parts).
+// its default, read through the guarded direct fetch's own path (its URL, port and status checks, its parts). web_save's
+// files (web-save.ts) answer from the fixture's optional `save`: each file by the answer for exactly its URL, else its
+// default, else a refused connection, downloaded through web_save's own guarded path (every hop checked, the cap, the type
+// checked against the bytes); `unavailable` refuses every connection.
 //
-// Only the eval's own in-process runner binds it (runner/beside.ts `webFakes`, by the agent the eval made for the run):
+// Only the eval's own in-process runner binds it (runner/beside.ts `evalFakes`, by the agent the eval made for the run):
 // no package field, API field, setting or environment variable reaches it, so no other server's runs ever see a fake.
-import { RATE_LIMITED } from "./exa-keyless.js";
+import { RATE_LIMITED } from "./keyless-mcp.js";
 import { clip, type Page, type Part, partProblem, TITLE_CAP, URL_MAX } from "./web-fetch-direct.js";
 import { webFetch, type WebPage } from "./web-fetch.js";
 import { type Hit, type Search, searchArgs, snippetOf } from "./web-search.js";
 import type { Plane } from "./tool-plane.js";
+import type { PublicFetchOptions } from "@parcha/pi-browser";
 
 export type SearchAnswer = { query: string; results: Hit[] } | { query: string; error: string };
 export type FetchAnswer = { url: string; status?: number; title?: string; text: string } | { url: string; error: string };
+/** A saved file's answer: its body as text or as base64, its declared type and status. */
+export type FileBody = { status?: number; content_type?: string } & ({ text: string } | { base64: string });
+export type SaveAnswer = ({ url: string } & FileBody) | { url: string; error: string };
 export type WebFixture = {
   search: { answers: SearchAnswer[]; default: { results: Hit[] } | { error: string } };
   fetch: { answers: FetchAnswer[]; default: { status?: number; title?: string; text: string } | { error: string } };
+  save?: { answers: SaveAnswer[]; default?: FileBody | { error: string } };
 };
 /** A case's web fake: every web call failing, or a fixture. */
 export type WebFake = "unavailable" | WebFixture;
-/** Which fake, if any, a run's web tools answer from, by the agent the run is of: the eval's own runner's alone. */
-export type WebFakes = (agentId: string) => WebFake | undefined;
 
 /** A public address the fake's lookup answers: the guard checks it is public, and no connection is ever made to it. */
 const PUBLIC_ADDRESS = "203.0.114.1";
@@ -61,6 +67,19 @@ export function webFixtureOf(value: unknown, at: string, bad: (message: string) 
     if (!pageOk(answer, true)) say(`fetch.answers.${i} is {url, status?, title?, text} or {url, error}, its url absolute and its status 200 to 599`);
   });
   if (!pageOk(fetch.default, false)) say("fetch.default is {status?, title?, text} or {error}");
+  const statusOk = (status: unknown) => status === undefined || (Number.isInteger(status) && (status as number) >= 200 && (status as number) <= 599);
+  const fileOk = (answer: unknown, keyed: boolean) => isObject(answer) && (!keyed || (isText(answer.url) && URL.canParse(answer.url)))
+    && (isText(answer.error) ? answer.text === undefined && answer.base64 === undefined : (isText(answer.text) !== isText(answer.base64)) && (answer.text === undefined || isText(answer.text)) && (answer.base64 === undefined || isText(answer.base64)) && statusOk(answer.status) && (answer.content_type === undefined || isText(answer.content_type)));
+  if (value.save !== undefined) {
+    const save = value.save;
+    if (!isObject(save) || !Array.isArray(save.answers)) say("save is {answers, default?}, answers a list of {url, content_type?, status?, text | base64} or {url, error}");
+    else {
+      save.answers.forEach((answer, i) => {
+        if (!fileOk(answer, true)) say(`save.answers.${i} is {url, content_type?, status?, text | base64} or {url, error}, its url absolute and its status 200 to 599`);
+      });
+      if (save.default !== undefined && !fileOk(save.default, false)) say("save.default is {content_type?, status?, text | base64} or {error}");
+    }
+  }
   for (const problem of problems) bad(problem);
   return problems.length ? undefined : (value as unknown as WebFixture);
 }
@@ -97,8 +116,25 @@ export async function fakeFetch(fake: WebFake, url: unknown, part: Part & { sign
   return page.ok && answer && !("error" in answer) && answer.title ? { ...page, title: clip(answer.title, TITLE_CAP) } : page;
 }
 
+/** The guard's resolver and fetch for web_save in `fake`: every name a public address, each file answered from the
+ *  fixture's `save` (by exact URL, else its default), every other URL a refused connection, as a host that is down. */
+export function fakeSaveOptions(fake: WebFake): Pick<PublicFetchOptions, "lookup" | "fetchImpl"> {
+  return {
+    lookup: async () => [PUBLIC_ADDRESS],
+    fetchImpl: async (url) => {
+      const save = fake === "unavailable" ? undefined : fake.save;
+      const answer = save?.answers.find((one) => one.url === String(url)) ?? save?.default;
+      if (answer === undefined) throw new TypeError("fetch failed", { cause: Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" }) });
+      if ("error" in answer) throw new TypeError(answer.error);
+      const status = answer.status ?? 200;
+      const body = "base64" in answer ? Buffer.from(answer.base64, "base64") : answer.text;
+      return new Response(NULL_BODY.has(status) ? null : body, { status, headers: answer.content_type ? { "content-type": answer.content_type } : {} });
+    },
+  };
+}
+
 /** A faked run's plane: web_search never a harness's own search (Claude's or Codex's, which would answer in its stead), so
  *  the run's own web_search tool, the one the fake answers through, is the one its harness offers. */
 export function fakedPlane(plane: Plane | undefined): Plane | undefined {
-  return plane?.web_search === "native" ? { ...plane, web_search: "exa-keyless" } : plane;
+  return plane?.web_search === "native" ? { ...plane, web_search: "firecrawl-keyless" } : plane;
 }

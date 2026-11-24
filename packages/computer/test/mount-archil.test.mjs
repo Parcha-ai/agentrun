@@ -11,19 +11,23 @@ import * as computer from "../dist/index.js";
 
 const {
 	ARCHIL_HELPER,
-	ARCHIL_MOUNT_LABEL,
+	MOUNT_LABEL,
 	archilEgressOf,
 	archilLabels,
 	archilMount,
 	archilReadBack,
 	archilRefusals,
 	archilRelease,
+	archilSync,
 	helperSha256,
 	recordedMount,
 	syncingClient,
 	EPOCH_LABEL,
 	RUN_LABEL,
 } = computer;
+
+/** The client an Archil computer's connection is: each change synced through the resident serve (mount.sync). */
+const archilSyncing = (client) => syncingClient(client, archilSync(client));
 
 const TOKEN = "tok-archil-shared-0123456789abcdef";
 const RUN = "r1";
@@ -55,11 +59,10 @@ function fakeRoot(answers = {}) {
 
 const released = (refs = []) => async () => ok({ released: refs, kept: [], unproven: [] });
 
-test("archilRefusals: an Archil spec takes network none, the run and epoch labels, the helper's shapes and a disk token, in words that never hold the token", () => {
+test("archilRefusals: an Archil spec takes the run and epoch labels, the helper's shapes and a disk token, in words that never hold the token; the network is the provider's to take", () => {
 	assert.deepEqual(archilRefusals(SPEC), []);
+	for (const network of ["open", { allow: ["example.com"] }]) assert.deepEqual(archilRefusals({ ...SPEC, network }), [], `${JSON.stringify(network)}: the descriptor's forms decide, not the mount`);
 	const cases = [
-		[{ network: "open" }, /network/, "network open"],
-		[{ network: { allow: ["1.1.1.1/32"] } }, /network/, "an allowlist"],
 		[{ labels: { [EPOCH_LABEL]: "3" } }, /agentrun\.run/, "no run label"],
 		[{ labels: { [RUN_LABEL]: RUN } }, /agentrun\.epoch/, "no epoch label"],
 		[{ labels: { ...LABELS, [EPOCH_LABEL]: "03" } }, /agentrun\.epoch/, "an epoch that is not one"],
@@ -124,16 +127,16 @@ test("archilMount: preflight, the takeover, mount, then serve, each as root thro
 
 test("archilMount with an egress gateway hands the helper's mount egress=<gateway>:<mount lane>:<data lane>, last, and serve nothing new", async () => {
 	const root = fakeRoot();
-	const egress = { gateway: "10.60.0.40", mountLane: 18100, dataLane: 42050 };
+	const egress = { gateway: "192.0.2.40", mountLane: 18100, dataLane: 42050 };
 	const done = await archilMount({ root, mount: MOUNT, releaseOlder: released(), timeoutMs: 1000, egress });
 	assert.deepEqual(done, ok(undefined));
-	assert.deepEqual(root.calls[1].argv, [ARCHIL_HELPER, "mount", MOUNT.disk, MOUNT.region, MOUNT.folder, "egress=10.60.0.40:18100:42050"]);
+	assert.deepEqual(root.calls[1].argv, [ARCHIL_HELPER, "mount", MOUNT.disk, MOUNT.region, MOUNT.folder, "egress=192.0.2.40:18100:42050"]);
 	assert.deepEqual(root.calls[2].argv, [ARCHIL_HELPER, "serve"]);
 });
 
 test("archilEgressOf reads <IPv4 gateway>:<mount lane>:<data lane> as the helper does, and refuses every other shape in words", () => {
-	assert.deepEqual(archilEgressOf("10.60.0.40:18100:42050"), { gateway: "10.60.0.40", mountLane: 18100, dataLane: 42050 });
-	for (const text of ["", "10.60.0.40", "10.60.0.40:18100", "10.60.0.40:18100:18100", "10.60.0.40:8100:42050", "10.60.0.40:18100:32050", "10.60.0.40:0:42050", "10.60.0.40:65536:42050", "10.60.0.400:18100:42050", "proxy.internal:18100:42050", "10.60.0.40:18100:42050:1", "10.60.0.40:018100:42050", " 10.60.0.40:18100:42050"]) {
+	assert.deepEqual(archilEgressOf("192.0.2.40:18100:42050"), { gateway: "192.0.2.40", mountLane: 18100, dataLane: 42050 });
+	for (const text of ["", "192.0.2.40", "192.0.2.40:18100", "192.0.2.40:18100:18100", "192.0.2.40:8100:42050", "192.0.2.40:18100:32050", "192.0.2.40:0:42050", "192.0.2.40:65536:42050", "192.0.2.400:18100:42050", "proxy.internal:18100:42050", "192.0.2.40:18100:42050:1", "192.0.2.40:018100:42050", " 192.0.2.40:18100:42050"]) {
 		assert.throws(() => archilEgressOf(text), /the Archil egress is <IPv4 gateway>:<mount lane>:<data lane>/, JSON.stringify(text));
 	}
 });
@@ -301,26 +304,26 @@ test("syncingClient: every call that may change the folder syncs before it answe
 	];
 	for (const [method, params] of mutating) {
 		const client = fakeClient();
-		const result = await syncingClient(client).call(method, params);
+		const result = await archilSyncing(client).call(method, params);
 		assert.equal(result.ok, true, method);
 		assert.deepEqual(client.methods(), [method, "mount.sync"], method);
 	}
 	for (const [method, params] of [["files.read", { path: "/workspace/a" }], ["files.stat", { path: "/" }], ["files.list", { path: "/" }], ["process.list", {}], ["tar.push.write", { id: "t", data: "" }], ["hello", { client: "x" }]]) {
 		const client = fakeClient();
-		await syncingClient(client).call(method, params);
+		await archilSyncing(client).call(method, params);
 		assert.deepEqual(client.methods(), [method], `${method} does not sync`);
 	}
 	// Review (#1994, P1): a push that wrote files, then hit an entry the daemon refuses, ends at that tar.push.write (the
 	// daemon drops it once its extraction stops), so no tar.push.end comes: the failed write syncs, and answers its own error.
 	const refusedEntry = fakeClient({ answer: (method) => (method === "tar.push.write" ? fail("invalid", "push-1: entry ../x leaves the folder") : ok({})) });
-	const failed = await syncingClient(refusedEntry).call("tar.push.write", { id: "push-1", data: "" });
+	const failed = await archilSyncing(refusedEntry).call("tar.push.write", { id: "push-1", data: "" });
 	assert.equal(failed.ok, false);
 	assert.match(failed.error.message, /leaves the folder/);
 	assert.deepEqual(refusedEntry.methods(), ["tar.push.write", "mount.sync"], "a failed push write syncs what the push wrote before it");
 	// A process seen ended syncs; a read of one still running does not.
 	for (const [exited, expected] of [[true, ["process.read", "mount.sync"]], [false, ["process.read"]]]) {
 		const client = fakeClient({ answer: () => ok({ data: "", nextOffset: 0, dropped: 0, exited, size: 0 }) });
-		await syncingClient(client).call("process.read", { id: "p" });
+		await archilSyncing(client).call("process.read", { id: "p" });
 		assert.deepEqual(client.methods(), expected, `process.read, exited ${exited}`);
 	}
 });
@@ -329,11 +332,11 @@ test("syncingClient: tar.push.begin syncs the folders it made, so a push begun a
 	// Review (#1994, PRRT_kwDOUmdVMs61I7Wj): begin makes the destination folder and every missing one above it in
 	// /workspace. A push that then sends nothing and never ends had no call left to sync them.
 	const begun = fakeClient({ answer: () => ok({ id: "push-1" }) });
-	const result = await syncingClient(begun).call("tar.push.begin", { path: "/workspace/new/deep" });
+	const result = await archilSyncing(begun).call("tar.push.begin", { path: "/workspace/new/deep" });
 	assert.equal(result.ok, true);
 	assert.deepEqual(begun.methods(), ["tar.push.begin", "mount.sync"], "begin then nothing: its folders are synced");
 	const whole = fakeClient({ answer: () => ok({ id: "push-1" }) });
-	const syncing = syncingClient(whole);
+	const syncing = archilSyncing(whole);
 	await syncing.call("tar.push.begin", { path: "/workspace/new" });
 	await syncing.call("tar.push.write", { id: "push-1", data: "" });
 	await syncing.call("tar.push.write", { id: "push-1", data: "" });
@@ -369,7 +372,7 @@ test("syncingClient: a push whose begin's sync fails or is not waited for is end
 	// Review (#1994, PRRT_kwDOUmdVMs61KJcB): the sync's error replaced begin's result, so its caller never had the id
 	// to end the push, and each failure held one of the connection's eight push slots for good.
 	const failing = pushDaemon(() => ok({ exitCode: 1 }));
-	const syncing = syncingClient(failing);
+	const syncing = archilSyncing(failing);
 	for (let n = 1; n <= 9; n++) {
 		const result = await syncing.call("tar.push.begin", { path: "/workspace/new" });
 		assert.equal(result.ok, false, `begin ${n}`);
@@ -384,7 +387,7 @@ test("syncingClient: a push whose begin's sync fails or is not waited for is end
 	// held until the test lets it go; no clock is involved.
 	const releases = [];
 	const held = pushDaemon(() => new Promise((resolve) => releases.push(() => resolve(ok({ exitCode: 0 })))));
-	const heldSyncing = syncingClient(held);
+	const heldSyncing = archilSyncing(held);
 	const already = new AbortController();
 	already.abort();
 	const early = await heldSyncing.call("tar.push.begin", { path: "/workspace/a" }, { signal: already.signal });
@@ -405,12 +408,12 @@ test("syncingClient: a push whose begin's sync fails or is not waited for is end
 test("syncingClient: a sync that fails fails the call in words; a call that failed still syncs, and answers its own error", async () => {
 	for (const sync of [ok({ exitCode: 1 }), fail("not_found", "no Archil sync server at /run/agentrun-archil/archil.sock")]) {
 		const client = fakeClient({ syncs: [sync] });
-		const result = await syncingClient(client).call("files.write", { path: "/workspace/a", data: "" });
+		const result = await archilSyncing(client).call("files.write", { path: "/workspace/a", data: "" });
 		assert.equal(result.ok, false, JSON.stringify(sync));
 		assert.match(result.error.message, /files\.write .*durable/);
 	}
 	const client = fakeClient({ answer: () => fail("denied", "permission denied") });
-	const result = await syncingClient(client).call("files.write", { path: "/workspace/a", data: "" });
+	const result = await archilSyncing(client).call("files.write", { path: "/workspace/a", data: "" });
 	assert.deepEqual(result, fail("denied", "permission denied"));
 	assert.deepEqual(client.methods(), ["files.write", "mount.sync"]);
 });
@@ -426,7 +429,7 @@ test("syncingClient: a call the client gave up on at its own timeoutMs (no answe
 	toDaemon.on("data", (chunk) => written.push(...chunk.toString("utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line).method)));
 	const client = new computer.DaemonClient({ readable: fromDaemon, writable: toDaemon });
 	let answered;
-	syncingClient(client)
+	archilSyncing(client)
 		.call("exec.run", { argv: ["sleep", "120"], timeoutMs: 2_000 })
 		.then((result) => (answered = result));
 	t.mock.timers.tick(7_000);
@@ -454,7 +457,7 @@ test("syncingClient: a timeout the daemon answered (the call ran, in part) still
 		close() {},
 	};
 	let answered;
-	syncingClient(client)
+	archilSyncing(client)
 		.call("process.write", { id: "p", data: "0123456789" })
 		.then((result) => (answered = result));
 	for (let i = 0; i < 20; i++) await Promise.resolve();
@@ -466,7 +469,7 @@ test("syncingClient: a timeout the daemon answered (the call ran, in part) still
 
 test("syncingClient: coalesced: calls during a sync in flight wait for it, then share one more", async () => {
 	const client = fakeClient({ syncDelay: 30 });
-	const syncing = syncingClient(client);
+	const syncing = archilSyncing(client);
 	const first = syncing.call("files.write", { path: "/workspace/1", data: "" });
 	await new Promise((resolve) => setTimeout(resolve, 5));
 	const rest = await Promise.all([2, 3, 4].map((n) => syncing.call("files.write", { path: `/workspace/${n}`, data: "" })));
@@ -496,7 +499,7 @@ test("syncingClient: never two syncs in flight, whichever microtask a call lands
 		},
 		close() {},
 	};
-	const syncing = syncingClient(client);
+	const syncing = archilSyncing(client);
 	const calls = [];
 	const write = (n) => calls.push(syncing.call("files.write", { path: `/workspace/${n}`, data: "" }));
 	const turns = async (n) => {
@@ -536,7 +539,7 @@ test("syncingClient: a caller whose signal fires stops waiting for the sync, in 
 		},
 		close() {},
 	};
-	const syncing = syncingClient(client);
+	const syncing = archilSyncing(client);
 	const stopping = new AbortController();
 	const cancelled = syncing.call("files.write", { path: "/workspace/a", data: "" }, { signal: stopping.signal });
 	const patient = syncing.call("files.write", { path: "/workspace/b", data: "" });
@@ -575,15 +578,15 @@ test("archilReadBack: fuse.archil at /workspace with the asked source, under the
 
 test("archilLabels and recordedMount: the mount's kind, disk, region and the folder's agent as one label, never the token; read back whole with the run's label", () => {
 	const labels = archilLabels(MOUNT);
-	assert.deepEqual(Object.keys(labels), [ARCHIL_MOUNT_LABEL]);
-	assert.equal(labels[ARCHIL_MOUNT_LABEL], JSON.stringify({ kind: "archil", disk: MOUNT.disk, region: MOUNT.region, agent: "a1" }));
+	assert.deepEqual(Object.keys(labels), [MOUNT_LABEL]);
+	assert.equal(labels[MOUNT_LABEL], JSON.stringify({ kind: "archil", disk: MOUNT.disk, region: MOUNT.region, agent: "a1" }));
 	noToken(labels, "the label");
 	assert.deepEqual(recordedMount({ ...LABELS, ...labels }), { kind: "archil", disk: MOUNT.disk, region: MOUNT.region, folder: MOUNT.folder });
 	assert.equal(recordedMount(labels), undefined, "no run label: no folder");
-	assert.equal(recordedMount({ ...LABELS, [ARCHIL_MOUNT_LABEL]: JSON.stringify({ kind: "archil", disk: MOUNT.disk, region: MOUNT.region, folder: MOUNT.folder }) }), undefined, "the folder whole is not a label this provider writes");
-	assert.equal(recordedMount({ ...LABELS, [ARCHIL_MOUNT_LABEL]: JSON.stringify({ kind: "archil", disk: MOUNT.disk, region: MOUNT.region, agent: "a/1" }) }), undefined, "an agent of no folder's shape");
+	assert.equal(recordedMount({ ...LABELS, [MOUNT_LABEL]: JSON.stringify({ kind: "archil", disk: MOUNT.disk, region: MOUNT.region, folder: MOUNT.folder }) }), undefined, "the folder whole is not a label this provider writes");
+	assert.equal(recordedMount({ ...LABELS, [MOUNT_LABEL]: JSON.stringify({ kind: "archil", disk: MOUNT.disk, region: MOUNT.region, agent: "a/1" }) }), undefined, "an agent of no folder's shape");
 	assert.equal(recordedMount({}), undefined);
-	assert.equal(recordedMount({ ...LABELS, [ARCHIL_MOUNT_LABEL]: "{not json" }), undefined);
+	assert.equal(recordedMount({ ...LABELS, [MOUNT_LABEL]: "{not json" }), undefined);
 });
 
 test("archilRelease: a final sync through computerd, then checkin as root; nothing mounted is let go already; a failed sync is said, and checkin still runs", async () => {

@@ -1,0 +1,21 @@
+{
+	"name": "agentrun-relay",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-11-01",
+	"observability": { "enabled": false },
+	"vars": { "BOX_IMAGE": "ghcr.io/parcha-ai/agentrun-box:ed5aee54d3ea" },
+	"containers": [
+		{
+			"class_name": "Computer",
+			"scheduling_policy": "durable_object",
+			"images": { "box": { "dockerfile": "./Dockerfile", "build_vars": { "BOX_IMAGE": "ghcr.io/parcha-ai/agentrun-box:ed5aee54d3ea" } } }
+		}
+	],
+	"durable_objects": {
+		"bindings": [
+			{ "name": "COMPUTER", "class_name": "Computer" },
+			{ "name": "INDEX", "class_name": "Index" }
+		]
+	},
+	"migrations": [{ "tag": "v1", "new_sqlite_classes": ["Computer", "Index"] }]
+}

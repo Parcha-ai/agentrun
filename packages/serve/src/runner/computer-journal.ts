@@ -8,13 +8,16 @@
 //
 // onComputerHold is the change signal for whoever else in the runner's process shows the hold (tl-browser's run-side
 // viewer and its bar): it fires after each computer.hold change entry is committed, with that change's Timeline words.
-import type { Context } from "@earendil-works/chord/context";
+// A run in a process of its own commits there and its viewer is its runner's: the change crosses to the runner first.
+import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context";
+import { type Harness, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { HOST_PHASE } from "../timeline/index.js";
 import {
-  COMPUTER_HAND_BACK, COMPUTER_HANDOVER_KIND, COMPUTER_HOLD_KIND, COMPUTER_TAKE_OVER, holdIn, holdWords, takeEndedWords,
+  COMPUTER_HAND_BACK, COMPUTER_HANDOVER_KIND, COMPUTER_HOLD_KIND, COMPUTER_TAKE_OVER, ENDS, holdIn, holdWords, STATES, takeEndedWords,
 } from "../computer-commands.js";
 import type { JournalReads } from "../store/store.js";
 import type { HeldComputer, HoldEnd, HoldEvent, HoldState } from "../workspace/computer-hold.js";
+import { held } from "./held.js";
 import { KINDS } from "./journal-kinds.js";
 import { journalEntries } from "./journal-reader.js";
 import type { Command, CommandOutcome } from "./loop-contract.js";
@@ -24,6 +27,21 @@ import type { Command, CommandOutcome } from "./loop-contract.js";
  *  says it replaces one even when nothing of the earlier claim's is left to let go (a server's stop, a park). */
 export async function hadComputer(journal: JournalReads, context: Context): Promise<boolean> {
   return (await journalEntries(journal, context)).some((entry) => entry.kind === KINDS.computerMade);
+}
+
+/** The kind of the run's computer when an earlier claim's deny turned it off for the rest of the run (KINDS.computerOff,
+ *  recordComputerOff): a claim that finds it starts no computer, and its gate refuses each call of that computer's tools
+ *  short (RunGate.turnOff). Undefined while the run's computer is on. */
+export async function computerTurnedOff(journal: JournalReads, context: Context): Promise<string | undefined> {
+  const off = (await journalEntries(journal, context)).find((entry) => entry.kind === KINDS.computerOff);
+  const kind = (off?.data as { computer?: unknown } | undefined)?.computer;
+  return typeof kind === "string" ? kind : undefined;
+}
+
+/** Writes on the run's root, through the claim's Harness, that the run's `kind` computer is off for the rest of the run:
+ *  what computerTurnedOff reads back at a later claim. */
+export async function recordComputerOff(harness: Pick<Harness, "commit">, kind: string): Promise<void> {
+  await harness.commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: KINDS.computerOff, data: { computer: kind } })), BACKGROUND_CONTEXT);
 }
 
 /** One root entry, as the run's journal takes it. */
@@ -55,6 +73,23 @@ const signal = (runId: string, change: ComputerHoldChange): void => {
     try { listener(change); } catch { /* a listener's error is not the hold's */ }
   }
 };
+
+/** A committed change, signalled where the run's viewer listens: in this process, or, in a run's own process
+ *  (run-child.ts), in its runner's, which holds the run's computer and its view (Held.computerHold). */
+const committed = (runId: string, change: ComputerHoldChange): void => {
+  const runner = held();
+  if (runner) void runner.computerHold(change).catch(() => undefined);
+  else signal(runId, change);
+};
+
+/** A change run `runId`'s own process committed (Held.computerHold), signalled in its runner's process: its state, end and
+ *  words as data, the words cut by the runner's redactor (`cut`); anything else is no change and is dropped. */
+export function heardComputerHold(runId: string, change: unknown, cut: (text: string) => string): void {
+  if (!change || typeof change !== "object") return;
+  const { state, ended, message } = change as Record<string, unknown>;
+  if (!STATES.includes(state as string) || (ended !== undefined && !ENDS.includes(ended as string)) || (message !== undefined && typeof message !== "string")) return;
+  signal(runId, { state: state as HoldState, ...(ended !== undefined ? { ended: ended as HoldEnd } : {}), ...(typeof message === "string" ? { message: cut(message) } : {}) });
+}
 
 /** Whether a command row is the person's turn with the run's computer. */
 export const isComputerCommand = (command: Pick<Command, "kind">): boolean => command.kind === COMPUTER_TAKE_OVER || command.kind === COMPUTER_HAND_BACK;
@@ -106,7 +141,7 @@ export function journalHold(runId: string, computer: RunComputerHold, commit: (e
   const off = hold.on((event) => {
     const entries = entriesOf(event);
     const change = changeOf(event, entries);
-    void write(entries).then(() => change && signal(runId, change), () => undefined);
+    void write(entries).then(() => change && committed(runId, change), () => undefined);
   });
   return {
     /** The run's computer is up for this pass: the server shows it live, the agent driving. `prior`, the run's root

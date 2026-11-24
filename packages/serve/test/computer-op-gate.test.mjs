@@ -24,7 +24,7 @@ test("on a desktop that mounts no folder (shell none or local), a script's shell
   const { runners } = await stores({ runners: 1 });
   for (const shell of ["none", "local"]) {
     for (const approvals of ["ask", "never"]) {
-      const gate = await adapterRunGate(runners[0], { runId: "run-1" }, { kind: "agentic", body: { approvals } }, root(), shell);
+      const gate = await adapterRunGate(runners[0], { runId: "run-1" }, { kind: "agentic", body: { approvals } }, root(), shell, { facts: undefined });
       assert.equal(await gate(op("shell.run", { command: "id" })), "allow", `${shell}, approvals ${approvals}: shell.run`);
       assert.equal(await gate(op("processes.start", { command: "sleep 2" })), "allow", `${shell}, approvals ${approvals}: processes.start`);
       // The run's own tools: no computer's shell, the kernel's ruled defaults.
@@ -35,14 +35,14 @@ test("on a desktop that mounts no folder (shell none or local), a script's shell
 
 test("a script on a desktop that mounts no folder: bash's setting holds shell.run and processes.start, in words that name bash, and an ask is asked about as bash", async () => {
   const { runners } = await stores({ runners: 1 });
-  const denied = await adapterRunGate(runners[0], { runId: "run-1" }, { kind: "agentic", body: { approvals: "never", toolSettings: { bash: { permission: "deny" } } } }, root(), "none");
+  const denied = await adapterRunGate(runners[0], { runId: "run-1" }, { kind: "agentic", body: { approvals: "never", toolSettings: { bash: { permission: "deny" } } } }, root(), "none", { facts: undefined });
   for (const name of ["shell.run", "processes.start"]) {
     const decision = await denied(op(name, { command: "id" }));
     assert.equal(typeof decision, "object", `${name}: refused`);
     assert.match(decision.deny, /bash/, `${name}: the words name bash's setting`);
     assert.doesNotMatch(decision.deny, /by default/, `${name}: refused by the agent's setting, not a default`);
   }
-  const asks = await adapterRunGate(runners[0], { runId: "run-2" }, { kind: "agentic", body: { approvals: "ask", toolSettings: { bash: { permission: "ask" } } } }, root(), "none");
+  const asks = await adapterRunGate(runners[0], { runId: "run-2" }, { kind: "agentic", body: { approvals: "ask", toolSettings: { bash: { permission: "ask" } } } }, root(), "none", { facts: undefined });
   assert.deepEqual([await asks(op("shell.run", { command: "id" })), await asks(op("processes.start", { command: "sleep 2" }))], ["ask", "ask"]);
   assert.equal(asks.askedAs("computer_op", { op: "shell.run", args: { command: "id" } }), "bash", "the person is asked about a shell command as bash");
   assert.equal(asks.askedAs("computer_op", { op: "processes.start", args: { command: "sleep 2" } }), "bash_background");
@@ -50,19 +50,38 @@ test("a script on a desktop that mounts no folder: bash's setting holds shell.ru
 
 test("a script's files.write is held to write's setting and files.read, list and stat to read's; apps and input to the computer kind's, whose deny refuses every op first", async () => {
   const { runners } = await stores({ runners: 1 });
-  const gate = await adapterRunGate(runners[0], { runId: "run-1" }, { kind: "agentic", body: { approvals: "ask", toolSettings: { write: { permission: "deny" }, read: { permission: "ask" } } } }, root(), "none");
+  const gate = await adapterRunGate(runners[0], { runId: "run-1" }, { kind: "agentic", body: { approvals: "ask", toolSettings: { write: { permission: "deny" }, read: { permission: "ask" } } } }, root(), "none", { facts: undefined });
   const wrote = await gate(op("files.write", { path: "/tmp/a", data: "x" }));
   assert.equal(typeof wrote, "object", "files.write: refused by write's deny");
   assert.match(wrote.deny, /write is set to deny/, wrote.deny);
   for (const name of ["files.read", "files.list", "files.stat"]) assert.equal(await gate(op(name, { path: "/tmp/a" })), "ask", `${name}: read's ask`);
   assert.equal(gate.askedAs("computer_op", { op: "files.read", args: { path: "/tmp/a" } }), "read");
   // The desktop set to deny: apps and input are the kind's, and the kind's deny comes before any op's own tool.
-  const kindDenied = await adapterRunGate(runners[0], { runId: "run-2" }, { kind: "agentic", body: { approvals: "ask", toolSettings: { write: { permission: "allow" }, desktop: { permission: "deny" } } } }, root(), "none");
+  const kindDenied = await adapterRunGate(runners[0], { runId: "run-2" }, { kind: "agentic", body: { approvals: "ask", toolSettings: { write: { permission: "allow" }, desktop: { permission: "deny" } } } }, root(), "none", { facts: undefined });
   for (const name of ["apps.list", "apps.open", "input.act", "files.write"]) {
     const decision = await kindDenied(op(name, { path: "/tmp/a", data: "x" }));
     assert.equal(typeof decision, "object", `${name}: held to desktop's deny`);
     assert.match(decision.deny, /desktop is set to deny/, decision.deny);
   }
+});
+
+test("a deny that turns the phone off, its journal write failing (a fenced claim), still refuses the call; the claim's next refusal of the phone writes the off again, and once written it is not written again", async () => {
+  const { runners } = await stores({ runners: 1 });
+  const written = [];
+  let fails = 1;
+  const onComputerOff = async (kind) => {
+    written.push(kind);
+    if (fails-- > 0) throw new Error("the claim is fenced");
+  };
+  const revision = { kind: "agentic", body: { approvals: "never", computer: { kind: "phone", provider: "phone-harness" }, toolSettings: { phone: { permission: "deny" } } } };
+  const gate = await adapterRunGate(runners[0], { runId: "run-1" }, revision, root(), "none", { facts: undefined, onComputerOff });
+  const act = (n) => gate({ callId: `p${n}`, tool: "computer_act", args: { actions: [{ type: "click", x: 1, y: 1 }] } });
+  const first = await act(1);
+  assert.match(first.deny, /phone is off for the rest of this run/, first.deny);
+  assert.equal(typeof (await act(2)).deny, "string", "the next call refused short");
+  assert.deepEqual(written, ["phone", "phone"], "the off written again at the next refusal");
+  await act(3);
+  assert.deepEqual(written, ["phone", "phone"], "written once it held");
 });
 
 test("computer_op runs only the computer's ops that no step tool runs: observe, act and screenshot are their own tools, so each is held and recorded as that tool", async () => {
@@ -83,7 +102,7 @@ test("computer_op runs only the computer's ops that no step tool runs: observe, 
 
 test("a desktop whose agent has exec off (no exec group: a bench exec-deny agent) refuses computer_op's shell.run and processes.start though the gate allows both, and nothing reaches the computer's exec", async () => {
   const { runners } = await stores({ runners: 1 });
-  const gate = await adapterRunGate(runners[0], { runId: "run-1" }, { kind: "agentic", body: { approvals: "never" } }, root(), "none");
+  const gate = await adapterRunGate(runners[0], { runId: "run-1" }, { kind: "agentic", body: { approvals: "never" } }, root(), "none", { facts: undefined });
   assert.deepEqual([await gate(op("shell.run", { command: "id" })), await gate(op("processes.start", { command: "xterm" }))], ["allow", "allow"], "the gate alone would let both run");
   const folder = root();
   const computer = fakeComputer(folder);

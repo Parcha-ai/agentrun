@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { capOf, createBody, DECISION, decisionProvider, defaultTools, editBody, harnessOptions, reachesWeb, same, sandboxReason, saveError, toolOffers, toolsFor, WORKFLOW } from "./agentForm";
+import { capOf, createBody, DECISION, decisionProvider, defaultTools, editBody, harnessOptions, learningOn, reachesWeb, same, sandboxReason, saveError, toolOffers, toolsFor, WORKFLOW } from "./agentForm";
 import { DECISION_STARTER } from "./decisionStarter";
 import { WORKFLOW_STARTER } from "./workflowStarter";
 import { ClientError } from "./client";
@@ -13,6 +13,16 @@ const a = agent.body as never;
 const w = workflow.body as never;
 
 describe("editBody", () => {
+  it("retains a template's agreement fields and explicit learning settings through unrelated edits", () => {
+    for (const learning of [{ agree_on: ["next_step.action"], compile_after: 10 }, true, false] as const) {
+      const saved = { ...agent.body, definition: { ...agent.body.definition, learning } } as never;
+      expect(learningOn(learning)).toBe(learning !== false);
+      const edited = editBody(saved, { instructions: "Keep the brief concise." }, "");
+      expect(edited.definition.learning).toEqual(learning);
+      expect(edited.unchanged).toBe(false);
+    }
+  });
+
   it("is the current definition with the edited fields, as the next revision, keeping every field the form does not show", () => {
     const body = editBody(a, { instructions: "Check it twice.", harness: "codex" }, "Twice");
     expect(body.definition).toEqual({ ...agent.body.definition, instructions: "Check it twice.", harness: "codex", version: agent.body.revisions + 1 });
@@ -20,12 +30,18 @@ describe("editBody", () => {
     expect(body).not.toHaveProperty("skills");
   });
 
-  it("never changes the name or description: the agent store keeps them from the agent's creation", () => {
-    const body = editBody(a, { name: "Renamed", description: "", instructions: "Check it twice." }, "");
+  it("never changes the name, which the agent store keeps from the agent's creation; a changed description is sent as the next revision", () => {
+    const body = editBody(a, { name: "Renamed", instructions: "Check it twice." }, "");
     expect(body.definition.name).toBe(agent.body.definition.name);
     expect(body.definition.description).toBe(agent.body.definition.description);
+    const described = editBody(a, { name: "Renamed", description: "Checks invoices against the ledger." }, "");
+    expect(described).toMatchObject({ unchanged: false, definition: { name: agent.body.definition.name, description: "Checks invoices against the ledger.", version: agent.body.revisions + 1 } });
+    // Cleared, it is sent empty: an edit that left it out would keep it.
+    expect(editBody(a, { description: "" }, "")).toMatchObject({ unchanged: false, definition: { description: "" } });
+    // An agent with none, its field left blank, still has none: no change.
     const bare = editBody({ ...(agent.body as object), definition: { ...agent.body.definition, description: undefined } } as never, { description: "" }, "");
     expect(bare.definition).not.toHaveProperty("description");
+    expect(bare.unchanged).toBe(true);
   });
 
   it("numbers a changed definition as the next revision, even when the current one is an earlier revision", () => {
@@ -59,6 +75,21 @@ describe("editBody", () => {
     expect(body.definition).not.toHaveProperty("instructions");
     expect(body.definition).not.toHaveProperty("model");
     expect(body.definition).not.toHaveProperty("thinking");
+  });
+
+  it("converts a workflow to agentic using the requested instructions, model and thinking, not the saved kind", () => {
+    const result = editBody(w, { workflow: undefined, instructions: "Investigate the ticket.", model: "anthropic/example-model", thinking: "high" }, "Convert");
+    expect(result.definition).toMatchObject({ instructions: "Investigate the ticket.", model: "anthropic/example-model", thinking: "high", version: workflow.body.revisions + 1 });
+    expect(result.definition).not.toHaveProperty("workflow");
+    expect(result.unchanged).toBe(false);
+  });
+
+  it("converts agentic to workflow by trimming agentic prompt fields from the requested workflow, keeping common settings", () => {
+    const saved = { ...agent.body, definition: { ...agent.body.definition, thinking: "high", harness: "codex", computer: { kind: "desktop", provider: "e2b" } } } as never;
+    const result = editBody(saved, { workflow: WORKFLOW_STARTER }, "Convert");
+    expect(result.definition).toMatchObject({ workflow: WORKFLOW_STARTER, harness: "codex", computer: { kind: "desktop", provider: "e2b" }, tools: agent.body.definition.tools, version: agent.body.revisions + 1 });
+    for (const key of ["instructions", "model", "thinking"]) expect(result.definition).not.toHaveProperty(key);
+    expect(result.unchanged).toBe(false);
   });
 
   it("sends no empty model: empty means the server's default", () => {
@@ -158,6 +189,20 @@ describe("harnessOptions", () => {
   it("offers nothing the server does not list", () => {
     expect(harnessOptions([{ id: "pi", available: true }]).map((h) => h.id)).toEqual(["pi"]);
   });
+  it("offers a harness the server adds (one entry of its table) after the built-in ones, by the label the server gives it, else its id", () => {
+    const listed = [{ id: "acme", label: "Acme", available: false, reason: "Acme stands in here." }, { id: "pi", available: true }, { id: "zed", available: true }];
+    expect(harnessOptions(listed)).toEqual([
+      { id: "pi", label: "Pi", available: true, reason: undefined },
+      { id: "acme", label: "Acme", available: false, reason: "Acme stands in here." },
+      { id: "zed", label: "zed", available: true, reason: undefined },
+    ]);
+  });
+  it.each(["workflow", "decision"])("keeps a harness the server adds with the id %s a harness, never a starter: one choice of it, and its create names it", (id) => {
+    const options = harnessOptions([{ id: "pi", available: true }, { id, label: "Module", available: true }], { available: true });
+    expect(options.filter((h) => h.id === id)).toEqual([{ id, label: "Module", available: true, reason: undefined }]);
+    expect(new Set(options.map((h) => h.id)).size).toBe(options.length);
+    expect(createBody({ name: "M", description: "", instructions: "Answer.", harness: id, tools: [] })).toEqual({ definition: { version: 1, name: "M", instructions: "Answer.", harness: id, skills: [], tools: [] } });
+  });
   it("offers OpenCode last of the harnesses, when the server lists it", () => {
     const listed = [{ id: "opencode", available: false, reason: "opencode is not installed here" }, { id: "pi", available: true }, { id: "codex", available: true }];
     expect(harnessOptions(listed)).toEqual([
@@ -170,13 +215,14 @@ describe("harnessOptions", () => {
 
 describe("a decision agent", () => {
   it("is offered on create after the harnesses, as a choice and never a harness id: available when the server runs decision workflows, else disabled with why", () => {
-    expect(DECISION).toBe("decision");
-    expect(harnessOptions(caps.body.harnesses, { available: true }).map((h) => h.id)).toEqual(["pi", "claude-agent", "codex", "decision", "workflow"]);
-    expect(harnessOptions(caps.body.harnesses, { available: true }).find((h) => h.id === "decision")).toEqual({ id: "decision", label: "Decision", available: true, reason: undefined });
-    const off = harnessOptions([{ id: "pi", available: true }], { available: false }).find((h) => h.id === "decision")!;
-    expect([off.id, off.available]).toEqual(["decision", false]);
+    // No harness id can be the choice's value (the API's harness id pattern).
+    expect(DECISION).not.toMatch(/^[a-z][a-z0-9-]{0,39}$/);
+    expect(harnessOptions(caps.body.harnesses, { available: true }).map((h) => h.id)).toEqual(["pi", "claude-agent", "codex", DECISION, WORKFLOW]);
+    expect(harnessOptions(caps.body.harnesses, { available: true }).find((h) => h.id === DECISION)).toEqual({ id: DECISION, label: "Decision", available: true, reason: undefined });
+    const off = harnessOptions([{ id: "pi", available: true }], { available: false }).find((h) => h.id === DECISION)!;
+    expect([off.id, off.available]).toEqual([DECISION, false]);
     expect(off.reason).toMatch(/decision workflows/);
-    expect(harnessOptions(caps.body.harnesses).map((h) => h.id)).not.toContain("decision");
+    expect(harnessOptions(caps.body.harnesses).map((h) => h.id)).not.toContain(DECISION);
   });
 
   it("is created as a workflow revision from the starter decision workflow: no instructions, harness, thinking or model, and no tools", () => {
@@ -241,11 +287,11 @@ describe("a decision agent", () => {
 
 describe("a general workflow agent", () => {
   it("is offered on create after Decision, available on every server, a server with no decision provider included; never when editing", () => {
-    expect(WORKFLOW).toBe("workflow");
+    expect(WORKFLOW).not.toMatch(/^[a-z][a-z0-9-]{0,39}$/);
     for (const available of [true, false]) {
-      expect(harnessOptions(caps.body.harnesses, { available }).at(-1)).toEqual({ id: "workflow", label: "Workflow", available: true, reason: undefined });
+      expect(harnessOptions(caps.body.harnesses, { available }).at(-1)).toEqual({ id: WORKFLOW, label: "Workflow", available: true, reason: undefined });
     }
-    expect(harnessOptions(caps.body.harnesses).map((h) => h.id)).not.toContain("workflow");
+    expect(harnessOptions(caps.body.harnesses).map((h) => h.id)).not.toContain(WORKFLOW);
   });
 
   it("is created as a workflow revision from the general starter: no instructions, harness, thinking, model or tools, and no decision provider", () => {

@@ -1,7 +1,7 @@
 {
   "$schema": "../../../schema/task.schema.json",
   "id": "android.files.delete-file",
-  "version": 1,
+  "version": 3,
   "title": "Delete one file of three in the Files app",
   "split": "heldout",
   "tags": ["files", "delete"],
@@ -29,6 +29,7 @@
     }
   ],
   "instruction": "In the Files app, delete {{f.del}}-{{nonce}}.txt from Download/computer-bench-{{nonce}}. Keep the other files.",
+  "exec": "deny",
   "budget": { "steps": 25, "usd": 1, "wall_s": 300 },
   "checks": [
     {
@@ -47,9 +48,11 @@
     }
   ],
   "oracle": [
-    {
-      "method": "exec.run",
-      "params": { "argv": ["rm", "/sdcard/Download/computer-bench-{{nonce}}/{{f.del}}-{{nonce}}.txt"], "timeoutMs": 20000 }
-    }
+    { "method": "ui.act", "why": "Wait for the Files window: am start -W can return before it reaches the accessibility tree.", "params": { "target": { "app": "com.android.documentsui" }, "steps": [], "expect": { "window": { "role": "window" }, "timeoutMs": 10000 } } },
+    { "method": "ui.act", "why": "Wait for the folder's listing. {{f.k1}} sorts first or second, so its tile is on screen in the grid too.", "params": { "target": { "app": "com.android.documentsui" }, "steps": [], "expect": { "text": "{{f.k1}}-{{nonce}}.txt", "timeoutMs": 10000 } } },
+    { "method": "ui.act", "why": "In the grid the third file's tall tile sits partly under the navigation bar, so a click on it may land there; the list shows all three rows whole.", "params": { "target": { "app": "com.android.documentsui" }, "steps": [{ "press": { "find": { "role": "button", "name": { "equals": "List view" } } } }], "expect": { "text": "Grid view", "timeoutMs": 8000 } } },
+    { "method": "ui.act", "why": "A right click selects the file, as in delete-pdfs.", "params": { "target": { "app": "com.android.documentsui" }, "steps": [{ "click": { "find": { "role": "button", "name": { "equals": "{{f.del}}-{{nonce}}.txt" } } }, "button": "right" }], "expect": { "text": "1 selected", "timeoutMs": 8000 } } },
+    { "method": "ui.act", "why": "The selection bar's Delete asks to confirm.", "params": { "target": { "app": "com.android.documentsui" }, "steps": [{ "press": { "find": { "role": "button", "name": { "equals": "Delete" } } } }], "expect": { "text": "OK", "timeoutMs": 8000 } } },
+    { "method": "ui.act", "params": { "steps": [{ "press": { "find": { "role": "button", "name": { "equals": "OK" } } } }], "expect": { "text": "{{f.del}}-{{nonce}}.txt", "gone": true, "timeoutMs": 8000 } } }
   ]
 }

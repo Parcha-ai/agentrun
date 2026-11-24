@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { AgentEditor } from "./AgentEditor";
 import { ToolsPage } from "./ToolsPage";
 import type { Agent } from "@/lib/agentForm";
+import { SERVED_AGENT } from "@/test/agent";
 import { pinLine } from "@/lib/toolSettings";
 import type { ToolSettings } from "@/lib/v2";
 
@@ -74,7 +75,7 @@ describe("pins in the agent editor", () => {
     tools: [{ name: "pull_request_review_write", input_schema: {}, permission: "ask", default_permission: "ask", permissions: ALL }] };
   const caps = { harnesses: [{ id: "pi", available: true }], tools: [], thinking: [], mcp: true, mcpHarnesses: ["pi"] };
   const agentWith = (toolSettings: Record<string, unknown>): Agent => ({
-    agent_id: "reviewer", kind: "agentic", revision: "r1", revisions: 1, archived_at: null,
+    ...SERVED_AGENT, agent_id: "reviewer", kind: "agentic", revision: "r1", revisions: 1, archived_at: null,
     definition: { version: 1, name: "Reviewer", instructions: "Review it.", harness: "pi", skills: [], tools: [REVIEW], tool_settings: toolSettings as never },
   });
   async function open(agent: Agent, serverToolSettings?: ToolSettings) {

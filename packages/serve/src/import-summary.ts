@@ -1,7 +1,7 @@
 // The lines an import ends with: how many sessions it found and from where, how many agents they make, and what they
 // used, from every session found, those imported before included. A number with no data behind it reads unknown.
 import type { RunMetrics } from "./timeline/index.js";
-import { SOURCES, type Source } from "./import-sources.js";
+import { SOURCE_NAMES, SOURCES, type Source } from "@parcha/agentrun-import";
 
 /** A session an import found: its source and agent; what it used (undefined: unknown), with its time at work; and its
  *  model requests by local hour of the day (undefined: their times are unknown). `untied`: a subagent's session whose
@@ -14,8 +14,6 @@ export type Found = {
   untied?: boolean;
 };
 
-const NAMES: Record<Source, string> = { "claude-code": "Claude Code", codex: "Codex", pi: "pi" };
-
 /** Requests by local hour of the day, from their times (ms). */
 export function hoursOf(times: Iterable<number>): number[] {
   const hours = new Array<number>(24).fill(0);
@@ -27,9 +25,32 @@ const count = (n: number) => n.toLocaleString("en-US");
 const compact = new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 });
 const plural = (n: number, one: string) => `${count(n)} ${one}${n === 1 ? "" : "s"}`;
 
-/** The summary's lines for `found`, ending with where to open the server (`open`, its address). `dryRun`: what an import
- *  would take, nothing taken yet. */
-export function summaryLines(everything: readonly Found[], open: string, { dryRun = false }: { dryRun?: boolean } = {}): string[] {
+/** What this import itself wrote: `sessions` imported into `agents`, and whether it was stopped before the end (Ctrl+C). */
+export type Imported = { sessions: number; agents: number; stopped?: boolean };
+
+/** Where the console is once the server runs: `url`, and whether it is `known` (a public URL, or a port the person
+ *  named), or only the default port, which the server passes over when another process has it. */
+export type OpenAt = { url?: string; known: boolean };
+
+/** The line saying what an import wrote: what it took now, out of every agent `found` makes; nothing new said as such,
+ *  never as an import into agents that took nothing. */
+function importedLine({ sessions, agents, stopped }: Imported, all: number, found: number): string {
+  const into = `${plural(sessions, "session")} into ${agents === all || agents === 0 ? plural(agents, "agent") : `${count(agents)} of ${plural(all, "agent")}`}`;
+  if (stopped) return `Stopped: imported ${into} before Ctrl+C; run the import again for the rest`;
+  if (sessions > 0) return `Imported ${into} (one per project)`;
+  return found > 0 ? `Nothing new to import: ${found === 1 ? "this session is" : `all ${plural(found, "session")} are`} in ${plural(all, "agent")} already` : "Nothing to import";
+}
+
+/** The last line: where to open the console. A guessed address says it is the default, which the server's start may
+ *  pass over for the next free port. */
+function openLine({ url, known }: OpenAt): string {
+  if (known && url) return `Open ${url}/`;
+  return `Start the server, then open the address it prints${url ? ` (${url}/ unless that port is taken)` : ""}`;
+}
+
+/** The summary's lines for `found`, ending with where to open the server (`open`). `imported`: what the import wrote;
+ *  absent, a dry run's summary: what an import would take, nothing taken yet. */
+export function summaryLines(everything: readonly Found[], open: OpenAt, imported?: Imported): string[] {
   // Sessions, agents, time and hours are the sessions'; tokens and tool calls take in the untied subagents' too.
   const found = everything.filter((f) => !f.untied);
   const by = SOURCES.map((source) => [source, found.filter((f) => f.source === source).length] as const).filter(([, n]) => n > 0);
@@ -55,10 +76,10 @@ export function summaryLines(everything: readonly Found[], open: string, { dryRu
   const [top, topCalls] = [...calls].sort(([a, x], [b, y]) => y - x || a.localeCompare(b))[0] ?? [];
   const tool = !measured.length ? "unknown" : top === undefined || !total ? "none" : `${top} (${Math.round((100 * topCalls!) / total)}%)`;
   return [
-    `Found ${plural(found.length, "session")}${by.length ? `  ${by.map(([source, n]) => `${NAMES[source]} ${count(n)}`).join(" · ")}` : ""}`,
-    `${dryRun ? "Would import into" : "Imported into"} ${plural(agents, "agent")} (one per project)`,
+    `Found ${plural(found.length, "session")}${by.length ? `  ${by.map(([source, n]) => `${SOURCE_NAMES[source]} ${count(n)}`).join(" · ")}` : ""}`,
+    imported ? importedLine(imported, agents, found.length) : `Would import into ${plural(agents, "agent")} (one per project)`,
     `+ ${used.join(" · ")}`,
     `+ Busiest hour: ${busiest === undefined ? "unknown" : `${String(busiest).padStart(2, "0")}:00`} · top tool: ${tool}`,
-    `Open ${open}/`,
+    openLine(open),
   ];
 }

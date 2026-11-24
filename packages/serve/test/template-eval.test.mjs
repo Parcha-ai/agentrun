@@ -3,7 +3,6 @@
 // case per behaviour, its agent and its grader played by fixtures/faux-template-eval.mjs: no key, no network. Every
 // shipped package's cases are read and their fakes served here too, so a broken case fails CI, never the paid run.
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
 import { createServer } from "node:http";
 import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, watch, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
@@ -14,6 +13,7 @@ import { CaseError, callsOf, evalTemplate, exitCodeOf, fakeAnswer, gradeDetermin
 import { lastJsonBlock, structuredAnswer } from "../dist/answer-json.js";
 import { MAX_EVAL_FILE_BYTES, MAX_FILE_BYTES, MAX_PACKAGE_BYTES, PackageError, readPackage, readPackages, TEMPLATES_DIR } from "../dist/templates.js";
 import { scratch, serve, withEnv } from "./support.mjs";
+import { ran, started, within } from "./fixtures/started.mjs";
 import { calls as fauxMonidCalls, KEY as FAUX_MONID_KEY } from "./fixtures/faux-monid.mjs";
 
 const FIXTURES = new URL("./fixtures/templates-eval/", import.meta.url).pathname;
@@ -25,7 +25,9 @@ const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
 // The faux's state, in this file's process (each test file runs in a process of its own), which the runs' processes
 // inherit: the flaky case's count, and every input a grader run was given.
 const STATE = await scratch();
-process.env.AGENTRUN_TEST_EVAL_COUNTER = join(STATE, "counter");
+// The server's zone: a run's day is told in it (environment.ts), so the clock tests name a zone west of UTC.
+process.env.TZ = "America/Los_Angeles";
+process.env.AGENTRUN_TEST_EVAL_COUNTER =join(STATE, "counter");
 process.env.AGENTRUN_TEST_EVAL_GRADER_LOG = join(STATE, "graders.jsonl");
 /** Resolves once `path` exists, or `ended` settles (the process that would make it is gone): told by its folder's
  *  watch, never polled. The watch is set before the first look, so a file made in between is not missed. */
@@ -45,7 +47,7 @@ const graderOf = (run, file) => run.graders.find((g) => g.grader === file);
 
 test("every shipped package's cases load, and each case's fake MCP servers serve their fixtures", { timeout: 120_000 }, async () => {
   const packages = readPackages(TEMPLATES_DIR);
-  assert.deepEqual(packages.map((p) => p.name), ["code-review", "inbound-lead", "kyb", "market-monitor", "release-notes"]);
+  assert.deepEqual(packages.map((p) => p.name), ["agent-scout", "code-review", "inbound-lead", "kyb", "market-monitor", "release-notes"]);
   for (const p of packages) {
     const { cases } = readCases(join(TEMPLATES_DIR, p.name));
     assert.deepEqual(cases.map((c) => c.name), p.evals, `${p.name}: every case reads`);
@@ -102,7 +104,7 @@ test("a case that does not check fails before anything runs, each problem named"
     /all-pass\/prompt\.md: no field max_cost/, /all-pass\/prompt\.md: runs is a whole number/,
     /graders\/regex\.md: its pattern does not compile/, /graders\/file\.md: a file_exists grader names a path in the run's work folder/,
     /graders\/wrote\.md: mcp:nowhere\/thing is neither a tool this server binds, an MCP tool the package lists \(mcp:<toolkit>\/<tool>\) nor a monid endpoint it grants by name/, /graders\/wrote\.md: args is a mapping of the arguments a call must carry/,
-    /learned\/case\.yaml: parameters\.colour: parameters keeps no field colour/, /learned\/case\.yaml: learning names "fixtures\/missing\/", not a folder in the case/,
+    /learned\/case\.yaml: parameters\.colour: parameters keeps no field colour/, /learned\/case\.yaml: learning names "fixtures\/missing\/", not a file in the case/,
     /mcp-match\/fixtures\/crm\.json: tools\.get_contact is \{description, input/, /mcp-mismatch\/case\.yaml: grants\.0: grants\.0 is not a tool of the package evalpkg/,
   ]) assert.match(said, expected);
   assert.throws(() => readCases(dir, ["nope"]), (e) => e instanceof CaseError && /evals\/nope: no such case/.test(e.message));
@@ -136,7 +138,9 @@ test("a case whose answer meets a grader of every type passes, each llm grader a
   assert.match(targeted, /<target field="summary" untrusted>\nSUMMARY-MARKER all fine\n<\/target>/);
   for (const input of [plain, targeted]) {
     assert.doesNotMatch(input, /BAD-MARKER|summary-marker"|answer\.schema\.json|passes a grader of every type/);
-    assert.match(input, /<tool-calls untrusted>\n1\. write \{"path":"notes\/out\.md","content":"the team's notes\\n"\} -> success: Successfully wrote to notes\/out\.md\n/);
+    // The file the run wrote, whole ahead of its calls, and the call that wrote it pointing there.
+    assert.match(input, /<files untrusted>\n[^]*<file path="notes\/out\.md" bytes="17">\nthe team's notes\n\n<\/file>\n[^]*<\/files>\n\n<tool-calls untrusted>\n/);
+    assert.match(input, /<tool-calls untrusted>\n1\. write \{"path":"notes\/out\.md","content":"the team's notes\\n"\} -> success \[the file notes\/out\.md is in <files>, whole unless marked cut\]: Successfully wrote to notes\/out\.md\n/);
   }
   assert.ok(!plain.includes("SUMMARY-MARKER\".") && !targeted.includes("GOOD-MARKER\"."), "one rubric each");
 });
@@ -410,7 +414,7 @@ test("a web: fixture answers a matching query and a fetched URL from the case, a
   assert.equal(run.status, "completed", JSON.stringify(run, null, 1));
   const [robot, outage, weather] = run.calls.filter((call) => call.tool === "web_search").map(resultOf);
   assert.deepEqual({ ...robot, provider: undefined }, { provider: undefined, query: "Robot funding rounds", results: [hit] });
-  assert.ok(["native", "exa-keyless", "parallel"].includes(robot.provider), robot.provider);
+  assert.ok(["native", "firecrawl-keyless", "parallel"].includes(robot.provider), robot.provider);
   assert.deepEqual(outage, { error: "Parallel's search answered 503" });
   assert.deepEqual({ ...weather, provider: undefined }, { provider: undefined, query: "weather in Lisbon", results: [] });
   const [page, gone, elsewhere] = run.calls.filter((call) => call.tool === "web_fetch").map(resultOf);
@@ -444,10 +448,23 @@ test("a web: case checks: unavailable or a fixture file of the case whose answer
     const manifest = readFileSync(join(bare, "agent.md"), "utf8");
     writeFileSync(join(bare, "agent.md"), manifest.replace("tools: [read, write, ask_person, web_search, web_fetch]\n", tools));
     assert.notEqual(readFileSync(join(bare, "agent.md"), "utf8"), manifest);
-    assert.throws(() => readCases(bare, ["web-bare"]), (e) => e instanceof CaseError && /web-bare\/case\.yaml: web fakes web_search and web_fetch, and the package's tools name neither/.test(e.message), JSON.stringify(tools));
+    assert.throws(() => readCases(bare, ["web-bare"]), (e) => e instanceof CaseError && /web-bare\/case\.yaml: web fakes web_search, web_fetch and web_save, and the package's tools name none of them/.test(e.message), JSON.stringify(tools));
   }
+  // A package that names web_save alone gets the fake too: its files answer from the case.
+  const saver = await webPackage(t, "web-save-only", "unavailable", []);
+  const saverManifest = readFileSync(join(saver, "agent.md"), "utf8");
+  writeFileSync(join(saver, "agent.md"), saverManifest.replace("tools: [read, write, ask_person, web_search, web_fetch]\n", "tools: [read, write, web_save]\n"));
+  assert.notEqual(readFileSync(join(saver, "agent.md"), "utf8"), saverManifest);
+  assert.doesNotThrow(() => readCases(saver, ["web-save-only"]));
   const named = await webPackage(t, "search-failed", "unavailable", [["web_search", { query: "x" }]]);
   await assert.rejects(evalTemplate({ dir: named, cases: ["search-failed"], server: { baseUrl: "http://127.0.0.1:9/v2", token: "unused" } }), (e) => e instanceof CaseError && /evals\/search-failed: web fakes the web tools on the eval's own server alone: run it without --server/.test(e.message));
+});
+
+test("a web: fixture with no search is refused when the package is read, in the words the eval's case read uses", async (t) => {
+  const files = { "fixtures/web.json": JSON.stringify({ fetch: { answers: [], default: { error: "no" } } }) };
+  const dir = await webPackage(t, "web-nosearch", "fixtures/web.json", [["web_fetch", { url: "https://example.test/" }]], files);
+  assert.throws(() => readCases(dir, ["web-nosearch"]), (e) => e instanceof CaseError && /web-nosearch\/fixtures\/web\.json: a web fixture is \{search: \{answers, default\}, fetch: \{answers, default\}\}/.test(e.message));
+  assert.throws(() => readPackage(dir), (e) => e instanceof PackageError && /evals\/web-nosearch\/fixtures\/web\.json: a web fixture is \{search: \{answers, default\}, fetch: \{answers, default\}\}/.test(e.message), "validate-template reads it as eval-template does");
 });
 
 test("a grader's prompt stays under its cap: the longest results lose their middle first, then the middle calls, and the list says so", () => {
@@ -528,23 +545,24 @@ async function clockPackage(t, now, today, mark = "CLOCK-CASE") {
 }
 
 test("a case's now is its runs' clock: the environment line names its day, and its llm graders are told it", { timeout: 300_000 }, async (t) => {
-  const report = await evalTemplate({ dir: await clockPackage(t, "2026-11-14T09:00:00Z", "2026-11-14"), cases: ["clock"], serve: { faux: FAUX } });
+  const report = await evalTemplate({ dir: await clockPackage(t, "2026-11-14T09:00:00Z", "Saturday 14 November 2026"), cases: ["clock"], serve: { faux: FAUX } });
   const [run] = report.cases[0].runs;
   assert.equal(run.status, "completed", JSON.stringify(run, null, 1));
-  assert.match(run.answer, /^Today: 2026-11-14 \(CLOCK-CASE\)/, "the environment line says the case's day");
+  assert.match(run.answer, /^Today: Saturday 14 November 2026 \(CLOCK-CASE\)/, "the environment line says the case's day");
   assert.equal(report.cases[0].pass, true, JSON.stringify(run.graders));
   const graded = graderInputs().filter((input) => input.includes("CLOCK-CASE"));
   assert.equal(graded.length, 1);
-  assert.match(graded[0], /^The run ran on a clock set to 2026-11-14T09:00:00Z: its date was 2026-11-14 \(UTC\), whatever today's date is where you are\.$/m);
+  assert.match(graded[0], /^The run ran on a clock set to 2026-11-14T09:00:00Z: its date was Saturday 14 November 2026 \(America\/Los_Angeles\), whatever today's date is where you are\.$/m);
 });
 
 test("a case without now runs on the real clock, and its graders are told no clock", { timeout: 300_000 }, async (t) => {
-  const today = new Date().toISOString().slice(0, 10);
+  const dayNow = () => new Intl.DateTimeFormat("en-GB", { timeZone: "America/Los_Angeles", weekday: "long", day: "numeric", month: "long", year: "numeric" }).format(new Date()).replace(",", "");
+  const today = dayNow();
   const report = await evalTemplate({ dir: await clockPackage(t, undefined, today, "REAL-CLOCK"), cases: ["clock"], serve: { faux: FAUX } });
   const [run] = report.cases[0].runs;
   assert.equal(run.status, "completed", JSON.stringify(run, null, 1));
-  // A run that crossed midnight UTC says the next day.
-  assert.ok([today, new Date().toISOString().slice(0, 10)].some((day) => run.answer.startsWith(`Today: ${day} `)), run.answer);
+  // A run that crossed midnight in the zone says the next day.
+  assert.ok([today, dayNow()].some((day) => run.answer.startsWith(`Today: ${day} `)), run.answer);
   const graded = graderInputs().filter((input) => input.includes("REAL-CLOCK"));
   assert.equal(graded.length, 1);
   assert.doesNotMatch(graded[0], /clock set to/);
@@ -561,7 +579,7 @@ test("readCases refuses a now that is not a date and time with its offset, and a
   await assert.rejects(evalTemplate({ dir, cases: ["clock"], server: { baseUrl: "http://127.0.0.1:9", token: "x" } }), (thrown) => thrown instanceof CaseError && thrown.problems.includes("evals/clock: now sets its runs' clock on the eval's own server alone: run it without --server"));
 });
 
-test("a learned note seeded through the learning API reaches the run", { timeout: 600_000 }, async () => {
+test("a correction seeded through the learning API reaches the run", { timeout: 600_000 }, async () => {
   const one = await caseOf("learned");
   assert.equal(one.pass, true, JSON.stringify(one, null, 1));
 });
@@ -668,20 +686,46 @@ test("a stopped eval cancels the run in progress and cleans up what it made, as 
 });
 
 /** A proxy on port 0 to the server at `baseUrl` (ending /v2) that answers 500 to each request `refuses(req)` says so,
- *  and passes the rest on. Its /v2 address. */
-async function refusing(t, baseUrl, refuses) {
+ *  and passes the rest on, each answer as `edit(req, body)` makes it when given one (the body a Buffer, or a promise of
+ *  one: one that never settles is a server that stalls). Its /v2 address. A pass-on that fails (the server closed first: its hook was added before
+ *  this proxy's, so it runs first at the test's end) is answered 502, never left as an unhandled rejection that fails
+ *  the test after its assertions passed. */
+async function refusing(t, baseUrl, refuses, edit = (_req, body) => body) {
   const proxy = createServer(async (req, res) => {
     if (refuses(req)) return void res.writeHead(500, { "content-type": "application/json" }).end('{"error":{"code":"internal","message":"refused by the test proxy"}}');
-    const chunks = [];
-    for await (const chunk of req) chunks.push(chunk);
-    const body = Buffer.concat(chunks);
-    const answer = await fetch(`${baseUrl.replace(/\/v2$/, "")}${req.url}`, { method: req.method, headers: Object.fromEntries(Object.entries(req.headers).filter(([name]) => name !== "host" && name !== "content-length")), ...(body.length ? { body } : {}) });
-    res.writeHead(answer.status, { "content-type": answer.headers.get("content-type") ?? "application/json" }).end(Buffer.from(await answer.arrayBuffer()));
+    try {
+      const chunks = [];
+      for await (const chunk of req) chunks.push(chunk);
+      const body = Buffer.concat(chunks);
+      const answer = await fetch(`${baseUrl.replace(/\/v2$/, "")}${req.url}`, { method: req.method, headers: Object.fromEntries(Object.entries(req.headers).filter(([name]) => name !== "host" && name !== "content-length")), ...(body.length ? { body } : {}) });
+      const passed = Buffer.from(await answer.arrayBuffer());
+      res.writeHead(answer.status, { "content-type": answer.headers.get("content-type") ?? "application/json" }).end(await edit(req, passed));
+    } catch (error) {
+      if (res.headersSent) return void res.destroy();
+      res.writeHead(502, { "content-type": "application/json" }).end(JSON.stringify({ error: { code: "bad_gateway", message: `the test proxy's pass-on failed: ${error.message}` } }));
+    }
   });
   await new Promise((resolve) => proxy.listen(0, "127.0.0.1", resolve));
   t.after(() => new Promise((resolve) => (proxy.closeAllConnections(), proxy.close(resolve))));
   return `http://127.0.0.1:${proxy.address().port}/v2`; // key-gate: loopback-rule the test's proxy listens on loopback
 }
+
+test("the test proxy answers 502 when the server it passes on to is gone, never an unhandled rejection", { timeout: 30_000 }, async (t) => {
+  // A server that listened and closed: its port answers nothing, as the eval's server does once its hook has run.
+  const gone = createServer();
+  await new Promise((resolve) => gone.listen(0, "127.0.0.1", resolve));
+  const { port } = gone.address();
+  await new Promise((resolve) => gone.close(resolve));
+  const closed = new URL("http://127.0.0.1/v2"); // key-gate: loopback-rule a closed loopback port the proxy cannot reach
+  closed.port = String(port);
+  const proxy = await refusing(t, closed.href, () => false);
+  // A bound on the request, so a proxy that never answers fails here, not at the test's timeout.
+  const answer = await fetch(`${proxy}/agents`, { signal: AbortSignal.timeout(10_000) });
+  assert.equal(answer.status, 502);
+  const { error } = await answer.json();
+  assert.equal(error.code, "bad_gateway");
+  assert.match(error.message, /^the test proxy's pass-on failed: /);
+});
 
 test("a run whose wait fails keeps its result and is cancelled before the eval goes on, never left going", { timeout: 300_000 }, async (t) => {
   // The held case's run never answers on its own: only a cancel ends it.
@@ -709,10 +753,51 @@ test("a run no runner takes fails by name once it has stayed queued past its bou
   const [one] = report.cases[0].runs;
   assert.ok(one, JSON.stringify(report.cases[0]));
   assert.deepEqual([one.status, one.pass], ["timed_out", false]);
-  assert.match(one.error, /^the run stayed queued for 3 s: no runner took it \(state \w+\), and it was cancelled$/);
+  assert.match(one.error, /^the run stayed queued for 3 s with no runner holding it, and it was cancelled$/);
   // The eval asked to cancel it and cleaned up what it made (the agent archived); no runner ever claimed the run.
   const left = (await api("GET", `/runs/${one.run_id}`)).body;
   assert.equal(left.claim, null, "never claimed");
+});
+
+test("a run a runner holds is waited for while its view still reads queued (its first rows not shown): the queued bound is for a run no runner holds", { timeout: 180_000 }, async (t) => {
+  // The held case's run is claimed and holds in its turn until it is cancelled. Once it is there (the file its faux writes
+  // says so), the proxy serves each of its timeline pages as a held run's view reads before its first rows show: queued.
+  const holding = join(await scratch(t), "holding");
+  process.env.AGENTRUN_TEST_EVAL_HOLD = holding;
+  t.after(() => delete process.env.AGENTRUN_TEST_EVAL_HOLD);
+  const { api, baseUrl, token } = await serve(t, { faux: FAUX, templates: FIXTURES });
+  const queued = (req, body) => {
+    if (!/\/runs\/[^/]+\/timeline/.test(req.url) || !existsSync(holding)) return body;
+    const page = JSON.parse(String(body));
+    return page.final ? body : Buffer.from(JSON.stringify({ ...page, status: "queued", state: "working" }));
+  };
+  const proxy = await refusing(t, baseUrl, () => false, queued);
+  const report = await evalTemplate({ dir: PKG, cases: ["held"], server: { baseUrl: proxy, token }, queueTimeoutMs: 10_000, runTimeoutMs: 30_000 });
+  const [one] = report.cases[0].runs;
+  assert.ok(one, JSON.stringify(report.cases[0]));
+  assert.ok(existsSync(holding), "the run reached its turn: a runner held it");
+  // Waited to the run's own bound, never given up on as queued after 10 s. The queued bound is well over the runner's
+  // 1 s fallback poll for a claim (runner.ts), which a disk-bound machine can run past.
+  assert.deepEqual([one.status, one.pass], ["timed_out", false]);
+  assert.match(one.error, /^the run took longer than 30 s \(state working when the wait gave up\) and was cancelled$/);
+  assert.equal((await api("GET", `/runs/${one.run_id}`)).body.status, "cancelled", "the run the eval started is cancelled");
+});
+
+test("a claim read that stalls doesn't hold the run's deadline: the read is given up on at its own bound, and the deadline ends the wait", { timeout: 120_000 }, async (t) => {
+  // No runner: the run stays queued. Until the eval cancels it, the proxy never answers the run read the queued bound
+  // asks, as a server that took the request and stalled would.
+  const { api, baseUrl, token } = await serve(t, { faux: FAUX, templates: FIXTURES, runner: false });
+  let cancelled = false;
+  const stalled = (req, body) => {
+    if (req.method === "POST" && /\/runs\/[^/]+\/cancel$/.test(req.url)) cancelled = true;
+    return req.method === "GET" && /^\/v2\/runs\/[^/?]+$/.test(req.url) && !cancelled ? new Promise(() => {}) : body;
+  };
+  const report = await evalTemplate({ dir: PKG, cases: ["learned"], server: { baseUrl: await refusing(t, baseUrl, () => false, stalled), token }, queueTimeoutMs: 1_000, runTimeoutMs: 5_000 });
+  const [one] = report.cases[0].runs;
+  assert.ok(one, JSON.stringify(report.cases[0]));
+  assert.deepEqual([one.status, one.pass], ["timed_out", false]);
+  assert.match(one.error, /^the run took longer than 5 s \(state \w+ when the wait gave up\) and was cancelled$/);
+  assert.equal((await api("GET", `/runs/${one.run_id}`)).body.status, "cancelled", "the run the eval started is cancelled");
 });
 
 test("a listing of the server's templates that fails once fails that case alone: the next case asks again", { timeout: 300_000 }, async (t) => {
@@ -733,6 +818,19 @@ test("an eval runs its agents with approvals never, whatever the package's defau
   assert.equal(agent.definition?.approvals, "never", JSON.stringify(agent.definition));
   assert.equal((await api("GET", "/templates")).body.templates.find((x) => x.name === "evalpkg").approvals_default, "ask", "the package's own setting is unchanged");
   assert.match(markdownReport(report), /Measured with approvals never \(the package's own default is ask\)\./);
+});
+
+test("an eval of a package with a composio trigger runs its case: the eval's own server can't set the trigger up (no public URL), so its apply skips it, as a github trigger's, and the fake stands in for the need", { timeout: 300_000 }, async (t) => {
+  const dir = join(await scratch(t), "evalpkg");
+  cpSync(PKG, dir, { recursive: true });
+  const manifest = join(dir, "agent.md");
+  writeFileSync(manifest, readFileSync(manifest, "utf8")
+    .replace("  - source: url\n    toolkit: crm\n", "  - source: composio\n    toolkit: crm\n    required: true\n")
+    .replace("learning: true", "learning: true\nbudget: { per_run_usd: 0.5 }\ntriggers:\n  - name: contact-updated\n    source: { kind: composio, server: crm, event: CRM_CONTACT_UPDATED, config: {} }\n    target: { kind: start_run, input: { content: \"Answer for the contact.\" } }"));
+  const report = await evalTemplate({ dir, cases: ["mcp-match"], runs: 1, serve: { faux: FAUX } });
+  assert.equal(report.cases[0].error, undefined, JSON.stringify(report.cases[0]));
+  assert.equal(report.cases[0].runs.length, 1, JSON.stringify(report.cases[0]));
+  assert.equal(report.cases[0].pass, true, JSON.stringify(report.cases[0].runs[0]?.graders));
 });
 
 test("an eval's agent has none of the package's triggers: market-monitor's weekly schedule is deleted at its apply", { timeout: 300_000 }, async (t) => {
@@ -797,6 +895,25 @@ test("graders read the answer as written: the last fenced json block, a target f
   assert.equal(fakeAnswer(fixture, "nope", {}).isError, true);
 });
 
+test("an answer that is one JSON object and nothing else is its json block: for the output, a target and a grader's verdict", () => {
+  const schema = { type: "object", required: ["verdict"], properties: { verdict: { type: "string" } } };
+  assert.deepEqual(structuredAnswer('{"verdict": "good"}', schema), { value: { verdict: "good" } });
+  assert.deepEqual(structuredAnswer('\n  {"verdict": "good"}\n', schema), { value: { verdict: "good" } }, "trimmed");
+  // Not one JSON object alone: prose around it, an array, two objects, or no JSON. Each is still no block.
+  for (const answer of ['Here it is: {"verdict": "good"}', '[{"verdict": "good"}]', '{"verdict": "good"}\n{"verdict": "bad"}', "good"]) {
+    assert.deepEqual(structuredAnswer(answer, schema), { why: "the answer has no fenced json block" }, answer);
+  }
+  // A fenced block is read as before, and an answer with one is never read whole.
+  assert.deepEqual(structuredAnswer('Done.\n```json\n{"verdict": "fenced"}\n```', schema), { value: { verdict: "fenced" } });
+  const record = (answer) => ({ answer, calls: [], mcpCalls: [], files: [] });
+  const regex = { file: "r.md", type: "regex", pattern: "^## Upgrading", flags: "m", expect: "match", target: "draft.text" };
+  assert.equal(gradeDeterministic(regex, record('{"draft": {"text": "x\\n## Upgrading\\n"}}'), []).pass, true, "a target in a bare object");
+  assert.match(gradeDeterministic(regex, record('So {"draft": {"text": "## Upgrading"}}'), []).reason, /has no fenced json block/);
+  // A grader's verdict as one object whose reason holds braces: read whole, as the run's answer is.
+  assert.deepEqual(verdictOf('{"pass": false, "reason": "the {date} field is empty"}'), { pass: false, reason: "the {date} field is empty" });
+  assert.equal(verdictOf('{"pass": "no", "reason": "a {b}"}'), undefined, "an object that is no verdict");
+});
+
 test("the output check agrees with ajv on the shipped packages' output schemas", () => {
   const ajv = new Ajv2020({ strict: false, allErrors: true, validateFormats: false });
   for (const p of readPackages(TEMPLATES_DIR)) {
@@ -822,7 +939,7 @@ test("no case carries a schema grader: a package's output schema is held by the 
   const dir = join(await scratch(t), "evalpkg");
   cpSync(PKG, dir, { recursive: true });
   writeFileSync(join(dir, "evals/all-pass/graders/schema.md"), "---\ntype: schema\nschema: answer.schema.json\n---\n");
-  assert.throws(() => readCases(dir), (e) => e instanceof PackageError && /evals\/all-pass\/graders\/schema\.md: type is one of llm, regex, tool_used, file_exists$/m.test(e.message));
+  assert.throws(() => readCases(dir), (e) => e instanceof PackageError && /evals\/all-pass\/graders\/schema\.md: type is one of llm, regex, tool_used, file_exists, mailbox, handed$/m.test(e.message));
 });
 
 test("code-review's cases hold the answer's head_sha to the head the prompt names: an answer naming another sha fails", () => {
@@ -841,14 +958,12 @@ test("code-review's cases hold the answer's head_sha to the head the prompt name
 
 test("agentrun-serve eval-template: exit 0 when every case passes, 1 when one fails, 2 when nothing ran; the report as JSON", { timeout: 300_000 }, async (t) => {
   const dir = await scratch(t);
-  const run = (args) => new Promise((resolve) => {
-    const child = spawn(process.execPath, [CLI, "eval-template", ...args], { stdio: ["ignore", "pipe", "pipe"], env: { ...Object.fromEntries(Object.entries(process.env).filter(([name]) => name !== "AGENTRUN_API_KEY" && name !== "AGENTRUN_TOKEN")), AGENTRUN_BOXES: "none" } });
-    let out = "";
-    let err = "";
-    child.stdout.on("data", (chunk) => (out += chunk));
-    child.stderr.on("data", (chunk) => (err += chunk));
-    child.on("close", (code) => resolve({ code, out, err }));
-  });
+  // Each command in a process group of its own, its wait bounded (fixtures/started.mjs).
+  const env = { ...Object.fromEntries(Object.entries(process.env).filter(([name]) => name !== "AGENTRUN_API_KEY" && name !== "AGENTRUN_TOKEN")), AGENTRUN_BOXES: "none" };
+  const run = async (args) => {
+    const { status, out, err } = await ran(t, CLI, ["eval-template", ...args], env, 120_000);
+    return { code: status, out, err };
+  };
   const passed = await run([PKG, "--case", "learned", "--faux", FAUX, "--report", join(dir, "pass.json")]);
   assert.equal(passed.code, 0, passed.err);
   assert.match(passed.out, /^# Evals: evalpkg 0\.1\.0\n\n1 of 1 case passed\./);
@@ -869,17 +984,13 @@ test("agentrun-serve eval-template: exit 0 when every case passes, 1 when one fa
   // A Ctrl-C while the held run is in its turn (the file its faux writes says so) cancels it, cleans up and exits 130
   // with no report.
   const holding = join(dir, "holding");
-  const held = spawn(process.execPath, [CLI, "eval-template", PKG, "--case", "held", "--faux", FAUX, "--report", join(dir, "stopped.json")], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, AGENTRUN_BOXES: "none", AGENTRUN_TEST_EVAL_HOLD: holding } });
-  let heldErr = "";
-  held.stderr.on("data", (chunk) => (heldErr += chunk));
-  held.stdout.resume();
-  const closed = new Promise((resolve) => held.on("close", resolve));
-  await untilFile(holding, closed);
-  assert.ok(existsSync(holding), `the held run reached its turn: ${heldErr}`);
+  const { child: held, seen, closed } = started(t, CLI, ["eval-template", PKG, "--case", "held", "--faux", FAUX, "--report", join(dir, "stopped.json")], { ...process.env, AGENTRUN_BOXES: "none", AGENTRUN_TEST_EVAL_HOLD: holding });
+  await within(untilFile(holding, closed), 120_000, "the held run reaching its turn", seen);
+  assert.ok(existsSync(holding), `the held run reached its turn: ${seen.err}`);
   held.kill("SIGINT");
-  const code = await closed;
-  assert.equal(code, 130, heldErr);
-  assert.match(heldErr, /stopping: cancelling the run in progress[\s\S]*stopped; no report\./);
+  const code = await within(closed, 60_000, "eval-template after its SIGINT", seen);
+  assert.equal(code, 130, seen.err);
+  assert.match(seen.err, /stopping: cancelling the run in progress[\s\S]*stopped; no report\./);
   assert.throws(() => readFileSync(join(dir, "stopped.json")), { code: "ENOENT" });
 
   // A report path that exists and can't be written: refused before anything runs.
@@ -887,7 +998,7 @@ test("agentrun-serve eval-template: exit 0 when every case passes, 1 when one fa
   writeFileSync(readOnly, "{}");
   chmodSync(readOnly, 0o444);
   for (const [args, said] of [
-    [[PKG, "--case", "nope", "--faux", FAUX], /evals\/nope: no such case/],
+    [[PKG, "--case", "nope", "--faux", FAUX], /evals\/nope: no such case \(the package's are all-fail, all-pass, asks, flaky, held, learned, mcp-filed, mcp-match, mcp-mismatch\)/],
     [[PKG, "--runs", "0"], /--runs takes a whole number/],
     [[PKG, "--server", "https://agentrun.invalid", "--faux", FAUX], /--faux is the model of the server it starts itself/],
     [[PKG, "--server", "https://agentrun.invalid"], /--server needs that server's token in AGENTRUN_API_KEY/],

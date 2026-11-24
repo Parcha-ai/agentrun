@@ -1,65 +1,88 @@
+import { cliRunOf, cliRunLabel } from "@/lib/cliLearning";
 import { Archive, ArchiveRestore, ArrowLeft, Ban, CircleDollarSign, Square } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { agentHash } from "@/components/AgentPage";
 import { LearningChips } from "@/components/LearningChips";
+import { RunKind } from "@/components/RunKind";
 import { capWords, leastCap, RaiseCap, suggestedCap } from "@/components/NeedsYou";
 import { ScheduleChip } from "@/components/ScheduleChip";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
+import { pageToolbarClass } from "@/components/ui/toolbar";
+import { cn } from "@/lib/utils";
 import { goBack } from "@/lib/back";
 import { ManageUsage } from "@/components/ChatGPTSignIn";
-import { PLAN_NO_DOLLARS } from "@/lib/chatgpt";
-import { costOfCap, isEstimate, planOf, runEnded, runLabel, soFar, soFarNote, when, runTitle } from "@/lib/format";
+import { basisNote, costOfCap, planNoDollars, planOf, runEnded, runLabel, soFar, soFarNote, tokensWords, when, runTitle } from "@/lib/format";
 import { NO_MESSAGES, runState } from "@/lib/runState";
-import type { RaiseAnswer, Run } from "@/lib/v2";
+import type { RaiseAnswer, Run, RunUsage } from "@/lib/v2";
+import { modelLabel, runModel } from "@/lib/models";
 import { runPlaceWords } from "@/lib/place";
+import { backendSdkLabel, backendSdkOf } from "@/lib/backendSdk";
 
 /** `onRaiseCap`: raises the run's spend cap (PATCH /v2/runs/{id}) and reads the run again; offered on a capped agentic
  *  run that has not ended, here and beside a budget pause's banner. */
 export type RunActions = { onStop?: () => void; onCancel?: () => void; onArchive?: () => void; onRaiseCap?: (usd: number) => Promise<RaiseAnswer>; busy?: "stop" | "cancel" | "archive" | null };
 
-/** The cost's hover note: a known estimate is not a bill; a cost known so far is not the whole cost. */
+/** The cost's hover note: how a known cost was reached (a local estimate is not a bill; a reported one is the provider's
+ *  or gateway's own figure; nothing priced says so); a cost known so far is not the whole cost. */
 const costTitle = (c: Run["cost"], ended: boolean): string | undefined => {
   const known = soFar(c);
-  const plan = planOf(c) ? PLAN_NO_DOLLARS : undefined;
+  const used = planOf(c);
+  const plan = used ? planNoDollars(used) : undefined;
   if (known) return plan ? `${soFarNote(known, { ended })} ${plan}` : soFarNote(known, { ended });
-  if (c && c.usd !== null && isEstimate(c)) return plan ? `A local estimate, not a bill. ${plan}` : "A local estimate, not a bill";
+  const basis = c && c.usd !== null ? basisNote(c) : undefined;
+  if (basis) return plan ? `${basis}. ${plan}` : basis;
   return plan;
 };
+
+/** The tokens' hover note: what each count is. */
+const TOKENS_TITLE = "The run's model requests' tokens, as the provider or gateway reported them: input (cached input apart), output, and the prompt cache's reads and writes. An unmetered request reported none.";
 
 /** The run's title bar: back to its agent, the title, its status, what it cost so far, stop versus cancel, and archive.
  *  Stop ends the turn and keeps the run open (it waits for a message); cancel ends the run for good, after a confirm.
  *  Archive hides the run from the runs list and keeps it; the server takes it in any state, as serve's own page offers it. */
-export function RunHeader({ run, agentName, actions = {}, costText }: { run: Run; agentName: string; actions?: RunActions; costText?: string }) {
+/** `raiseBelow`: the page already shows a raise form for this run (a run paused at its cap, under its banner). The header's
+ *  Raise the cap button then takes the person to that form instead of opening a second one above it. */
+/** `readUsage`: reads the run's cost line by line (GET /v2/runs/{id}/usage), where the header finds the model an agentic run
+ *  ran on (runModel): read again as its requests grow, so a run on the host's default model names it too. */
+export function RunHeader({ run, agentName, actions = {}, costText, raiseBelow, readUsage }: { run: Run; agentName: string; actions?: RunActions; costText?: string; raiseBelow?: () => void; readUsage?: () => Promise<RunUsage> }) {
   // Where it ran, as its start resolved it.
-  const ranIn = runPlaceWords(run.place);
-  const view = runState(run.status, run.state, run.kind, NO_MESSAGES, true, run.error, run.review, run.computer);
+  const sdk = backendSdkOf(run);
+  const cli = cliRunOf(run);
+  const ranIn = cli ? "your CLI" : sdk ? "your backend" : runPlaceWords(run.place);
+  const state = runState(run.status, run.state, run.kind, NO_MESSAGES, true, run.error, run.review, run.computer);
+  const view = sdk || cli ? { ...state, canStop: false, canCancel: false } : state;
   const [confirming, setConfirming] = useState(false);
   const archived = !!run.archived_at;
   // A capped run that has not ended, agentic or workflow, takes a raise here too, so a working one is raised before it pauses.
   const cap = run.cost?.cap_usd;
   // A run that waits on the person for something other than its cap (its served `pending`: an approval, a question, its
   // browser or computer) is not held by its cap: a raise changes nothing it waits on, so none is offered there.
-  const waitsOnOther = !!run.pending && run.pending.kind !== "budget";
-  const raisable = !!actions.onRaiseCap && !view.final && typeof cap === "number" && !waitsOnOther;
+  const waitsOnOther = !!run.pending && run.pending.kind !== "budget" && run.pending.kind !== "stopped";
+  const model = useRunModel(run, readUsage, !sdk && !cli && run.kind !== "workflow", view.final);
+  const raisable = !sdk && !cli && !!actions.onRaiseCap && !view.final && typeof cap === "number" && !waitsOnOther;
   const [raising, setRaising] = useState(false);
   const budget = run.pending?.kind === "budget" ? run.pending : null;
   const onPlan = !!planOf(run.cost);
+  // ChatGPT's usage page is for a ChatGPT plan's run only.
+  const chatGPTPlan = onPlan && planOf(run.cost)?.on !== "claude_code";
   return (
-    <header className="border-b px-5 py-4 max-sm:py-3 md:px-8">
-      <nav className="caps flex min-w-0 items-center gap-2 text-label text-muted-foreground" aria-label="Breadcrumb">
+    <header>
+      {/* The breadcrumb is the page's top bar, so its edge is level with the one under the navigation's logo. */}
+      <nav className={cn(pageToolbarClass, "caps min-w-0 gap-2 px-5 text-label text-muted-foreground md:px-8")} aria-label="Breadcrumb">
         {/* Back where the person came from in the console (the runs list, the agent's page), else to the run's agent. */}
-        <button type="button" aria-label="Back" title="Back" onClick={() => goBack(agentHash(run.agent_id))} className="-m-1 shrink-0 p-1 hover:text-foreground">
+        <button type="button" aria-label="Back" title="Back" onClick={() => goBack(agentHash(run.agent_id))} className="-m-1.5 shrink-0 p-1.5 hover:text-foreground">
           <ArrowLeft className="size-3.5" aria-hidden />
         </button>
-        <a href={agentHash(run.agent_id)} className="truncate hover:text-foreground hover:underline">{agentName}</a>
+        <a href={agentHash(run.agent_id)} className="-my-1 truncate py-1 hover:text-foreground hover:underline">{agentName}</a>
         <span aria-hidden>/</span>
         <span className="truncate">Run {runLabel(run.run_id)}</span>
       </nav>
+      <div data-title-block className="border-b px-5 py-4 max-sm:py-3 md:px-8">
       {/* On a phone the title's column and the facts' box step aside (display: contents), so the facts and the actions
           share one wrapping row under a two-line title. 640 px and up keep the column and the actions beside it. */}
-      <div data-phone-row className="mt-3 flex flex-col items-start gap-x-6 gap-y-3 max-sm:mt-2 max-sm:flex-row max-sm:flex-wrap max-sm:items-center max-sm:gap-x-3 max-sm:gap-y-2 sm:flex-row sm:flex-wrap">
+      <div data-phone-row className="flex flex-col items-start gap-x-6 gap-y-3 max-sm:mt-2 max-sm:flex-row max-sm:flex-wrap max-sm:items-center max-sm:gap-x-3 max-sm:gap-y-2 sm:flex-row sm:flex-wrap">
         {/* The title's column keeps 16rem to itself (sm:basis-64): when the actions would squeeze it below that, they wrap onto
             their own row (a Playground's half page at 1500 px, four actions while the run works). */}
         <div className="min-w-0 flex-1 self-stretch max-sm:contents sm:basis-64">
@@ -69,14 +92,19 @@ export function RunHeader({ run, agentName, actions = {}, costText }: { run: Run
             <StatusBadge run={run} />
             {archived && <Chip tone="muted">Archived</Chip>}
             {run.approvals === "never" && <Chip tone="warning" title="This run's agent never asks: no call of it waits for you.">Unattended</Chip>}
-            <span className="font-mono">{run.kind} · rev {run.agent_version}{ranIn && ` · ${ranIn}`}</span>
+            <span className="font-mono"><RunKind run={run} named /> · rev {run.agent_version}{ranIn && ` · ${ranIn}`}</span>
+            {model && <span className="font-mono" data-run-model title={modelLabel(model, null).title}>{modelLabel(model, null).text}</span>}
+            {cli && <span className="font-mono">{cliRunLabel(cli.runtime)} · {cli.model ?? "Model not reported"}</span>}
+            {sdk && <span className="font-mono">{backendSdkLabel(sdk)} · {run.sdk?.model ?? "Model not reported"}</span>}
             <span className="font-mono">{when(run.created_at)}</span>
             {/* A workflow run's cost is its graph's totals (`costText`), the same the totals bar shows. Beside it, the run's
                 spend cap when it has one, as the run is read now (a raise reads the run again, so the new cap shows). */}
             {/* A run on the ChatGPT plan says so, with where its usage is managed: ChatGPT's settings, in a new tab. The
                 graph's totals are dollars alone, so a workflow on the plan reads its run's cost (tokens, the plan). */}
             {costText !== undefined && !onPlan ? <span className="font-mono" title="The run's decisions and model calls, as the providers priced them">{costOfCap(run.cost, cap, { text: costText })}</span>
-              : <span className="font-mono" title={costTitle(run.cost, runEnded(run.status))}>{costOfCap(run.cost, cap, { ended: runEnded(run.status) })}{onPlan && <> · <ManageUsage /></>}</span>}
+              : <span className="font-mono" title={costTitle(run.cost, runEnded(run.status))}>{costOfCap(run.cost, cap, { ended: runEnded(run.status) })}{chatGPTPlan && <> · <ManageUsage /></>}</span>}
+            {/* Its model requests' tokens (costbasis/1 `cost.tokens`), beside what they cost. */}
+            {tokensWords(run.cost) && <span className="font-mono" data-run-tokens title={TOKENS_TITLE}>{tokensWords(run.cost)}</span>}
             <LearningChips run={run} link />
             <ScheduleChip run={run} />
           </div>
@@ -85,12 +113,12 @@ export function RunHeader({ run, agentName, actions = {}, costText }: { run: Run
         {(view.canStop || view.canCancel || actions.onArchive || raisable) && (
           <div className="flex shrink-0 flex-wrap items-center gap-2">
             {raisable && (
-              <Button size="sm" onClick={() => setRaising((r) => !r)} aria-expanded={raising} title={`Raise its ${capWords(cap!)} spend cap.`}>
+              <Button size="sm" onClick={raiseBelow ?? (() => setRaising((r) => !r))} aria-expanded={raiseBelow ? undefined : raising} title={`Raise its ${capWords(cap!)} spend cap.`}>
                 <CircleDollarSign aria-hidden /> Raise the cap
               </Button>
             )}
             {view.canStop && (
-              <Button size="sm" onClick={actions.onStop} disabled={!actions.onStop || !!actions.busy} title="End this turn. The run stays open and waits for your next message.">
+              <Button size="sm" onClick={actions.onStop} disabled={!actions.onStop || !!actions.busy} title={run.native ? "Stop this native turn. Start a new run for another task." : "End this turn. The run stays open and waits for your next message."}>
                 <Square aria-hidden /> {actions.busy === "stop" ? "Stopping" : "Stop"}
               </Button>
             )}
@@ -114,12 +142,32 @@ export function RunHeader({ run, agentName, actions = {}, costText }: { run: Run
           </div>
         )}
       </div>
-      {raisable && raising && (
+      {raisable && raising && !raiseBelow && (
         <div className="mt-3 max-w-xl">
           {/* Keyed on the pause, as the banner's form is: a new pause (or the first, on a working run) brings its suggestion. */}
           <RaiseCap key={budget ? `${run.run_id}:${budget.at}` : `${run.run_id}:working`} cap={cap!} suggested={suggestedCap(budget)} least={leastCap(budget)} paused={!!budget} onRaise={actions.onRaiseCap!} />
         </div>
       )}
+      </div>
     </header>
   );
+}
+
+/** The model `run` ran on (runModel), read with `read` once it has made a request, again each time its count grows and once
+ *  more when it ends (`final`); undefined before that, where `on` is false (a workflow's, a CLI's or an SDK's run, which
+ *  say theirs elsewhere), and where the read fails. */
+function useRunModel(run: Run, read: (() => Promise<RunUsage>) | undefined, on: boolean, final: boolean): string | undefined {
+  const [model, setModel] = useState<string>();
+  const requests = run.cost?.tokens?.requests ?? 0;
+  // The page makes a new `read` at each render: the latest is kept, and only a new run or request count reads again, or
+  // the run's end (`final`): a read while it works can find no lines yet, and the end brings no new request.
+  const reader = useRef(read);
+  reader.current = read;
+  useEffect(() => {
+    if (!on || !reader.current || requests === 0) return;
+    let live = true;
+    reader.current().then((usage) => { if (live) setModel(runModel(usage)); }, () => {});
+    return () => { live = false; };
+  }, [run.run_id, requests, on, final]);
+  return on ? model : undefined;
 }

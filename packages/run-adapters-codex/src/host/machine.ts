@@ -22,6 +22,7 @@ import { FileTail } from "@parcha/agentrun-kernel/process";
 import type { AcquireMachine, CacheDir, CacheFile, KillSignal, MachineSpawn, MachineTail, SessionMachine, SessionProcess } from "./process.js";
 import { brandMachine } from "./process.js";
 import { parentWatched, startModelProxy, type ModelProxyHooks, type ModelProxyOptions, type ParentWatch } from "@parcha/agentrun-kernel/host";
+import type { CapCut } from "@parcha/agentrun-kernel";
 import { codexPolicy, withWebSearches } from "./policy.js";
 import type { TomlValue } from "../config.js";
 import { UNWATCHED } from "../scripts.js";
@@ -252,9 +253,11 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
     const route = model.options;
     // The code-mode `exec` the model proxy's latest answer carried: set while the answer passes, before Codex has it.
     let announced: string | undefined;
+    // The script of the last `exec` announced, by its call id: what the host's record of that exec shows.
+    let script: { callId: string; input: string } | undefined;
     let open = 0;
     const rolloutListeners: ((line: string) => void)[] = [];
-    const cutListeners: ((stop: { outputTokens?: number }) => void)[] = [];
+    const cutListeners: ((stop: { outputTokens?: number; capCut?: CapCut }) => void)[] = [];
     const search = options.webSearch === "live";
     const price = options.proxy.price && search ? withWebSearches(options.proxy.price) : options.proxy.price;
     const proxy = await startModelProxy({
@@ -273,7 +276,10 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
             open += 1;
             announced = open > 1 ? UNWATCHED : undefined;
           },
-          exec: (callId) => void (announced = open > 1 || announced === UNWATCHED ? UNWATCHED : callId),
+          exec: (callId, input) => {
+            script = { callId, input: input ?? "" };
+            announced = open > 1 || announced === UNWATCHED ? UNWATCHED : callId;
+          },
           failed: () => void (announced = UNWATCHED),
           end: () => void (open = Math.max(0, open - 1)),
         },
@@ -308,6 +314,7 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
       modelUrl: proxy.url,
       modelKey: key,
       announcedExec: () => announced,
+      announcedInput: (callId) => (script?.callId === callId ? script.input : undefined),
       onRolloutLine: (listener) => void rolloutListeners.push(listener),
       onCut: (listener) => void cutListeners.push(listener),
       openTurn: () => proxy.openTurn(),

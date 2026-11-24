@@ -206,8 +206,8 @@ export function egressShaped(inspected: DockerInspect | null | undefined): boole
 
 /**
  * The network a computer is on, read back from inspect: `none` is network mode none on no network but Docker's own
- * `none`, `open` is the default bridge alone. An allowlist is network mode none with the computer's egress volume
- * mounted read-only at EGRESS_MOUNT and init relaying to its socket, and the list read back from `proxy`, the
+ * `none`. Open and an allowlist are network mode none with the computer's egress volume mounted read-only at
+ * EGRESS_MOUNT and init relaying to its socket, and the form (`--open public` or the list) read back from `proxy`, the
  * computer's proxy container's inspect (egressOf: none when it is gone), which must refuse each of `local`, the Docker
  * host's own addresses. Anything else is reported in words, never as a policy it might widen to.
  */
@@ -218,8 +218,8 @@ export function networkOf(inspected: DockerInspect | null | undefined, proxy?: D
 	const where = `network mode ${mode ?? "unknown"} on networks ${networks.join(", ") || "none"}`;
 	if (!egressShaped(inspected)) {
 		if (none) return "none";
-		if (mode === "bridge" && sameList(networks, ["bridge"])) return "open";
-		return { other: where };
+		// Open goes through the egress proxy: a computer on a network of Docker's is one this provider never makes.
+		return { other: `${where}, which this provider never makes` };
 	}
 	if (!none) return { other: `${where}, with an egress volume or relay, which this provider never makes` };
 	const name = (inspected?.Name ?? "").replace(/^\//, "");
@@ -281,7 +281,8 @@ export function inspectDrift(spec: ComputerSpec, inspected: DockerInspect | null
 
 	const network = networkOf(inspected, expected.proxy, expected.egressCode, expected.hostAddresses);
 	if (!samePolicy(spec.network, network)) found.push(`network: declared ${policyWords(spec.network)}, read back ${policyWords(network)}`);
-	const allowed = typeof spec.network === "object" && spec.network !== null && "allow" in spec.network;
+	// Open and an allowlist each go through the egress proxy: its volume mounted, init relaying to its socket.
+	const allowed = spec.network === "open" || (typeof spec.network === "object" && spec.network !== null && "allow" in spec.network);
 	const volume = egressNameOf((inspected?.Name ?? "").replace(/^\//, ""));
 	if (!sameList(host.CapDrop, ["ALL"])) mismatch("CapDrop", ["ALL"], host.CapDrop);
 	if ((host.CapAdd ?? []).length > 0) mismatch("CapAdd", [], host.CapAdd);

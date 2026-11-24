@@ -4,6 +4,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it } from "vitest";
 import { AgentEditor, type EditorCaps } from "./AgentEditor";
 import { type Agent, type AgentFields, createBody, editBody } from "@/lib/agentForm";
+import { SERVED_AGENT } from "@/test/agent";
 
 // The editor's Settings step: "Learns from its runs", the definition's `learning` switch, on an agentic agent of a server
 // that has learning.
@@ -12,7 +13,7 @@ import { type Agent, type AgentFields, createBody, editBody } from "@/lib/agentF
 const tools = [{ name: "read", available: true, harnesses: ["pi", "claude-agent", "codex", "opencode"] }, { name: "write", available: true, harnesses: ["pi", "claude-agent", "codex", "opencode"] }];
 const caps = (learning?: "on" | "off"): EditorCaps => ({ harnesses: [{ id: "pi", available: true }], tools, thinking: ["low"], ...(learning ? { learning } : {}) });
 const agentOf = (definition: Partial<Agent["definition"]> = {}, kind: Agent["kind"] = "agentic"): Agent => ({
-  agent_id: "refunds", kind, revision: "r1", revisions: 1, archived_at: null,
+  ...SERVED_AGENT, agent_id: "refunds", kind, revision: "r1", revisions: 1, archived_at: null,
   definition: { version: 1, name: "Refunds", instructions: "Find it.", harness: "pi", skills: [], tools: ["read", "write"], ...definition },
 });
 
@@ -33,7 +34,7 @@ describe("AgentEditor, the learning switch", () => {
   it("shows on an agentic agent's Settings step, named and explained in a line, off when the definition says nothing", () => {
     const e = mount(agentOf(), caps("on"));
     expect(e.text()).toContain("Learns from its runs");
-    expect(e.text()).toContain("After each run, it looks back and keeps a short note when something will help next time; later runs read them first.");
+    expect(e.text()).toContain("Every later run is given your corrections first, and a job it does again compiles into a workflow it can run as one step.");
     expect(e.sw()!.getAttribute("aria-checked")).toBe("false");
     expect(e.sw()!.getAttribute("aria-labelledby")).toBe("learning-switch");
   });
@@ -82,45 +83,19 @@ describe("AgentEditor, the learning switch", () => {
   });
 });
 
-describe("AgentEditor, what the agent learns: notes and skills, or workflows too", () => {
-  const choice = (host: HTMLElement, label: RegExp) => [...host.querySelectorAll('input[type="radio"][name="learning-kind"]')].find((r) => label.test(r.closest("label")?.textContent ?? "")) as HTMLInputElement | undefined;
-  it("with learning on, offers two choices in plain words, everything checked for learning: true", () => {
-    const e = mount(agentOf({ learning: true }), caps("on"));
-    expect(choice(e.host, /^Notes, skills and workflows/)?.checked).toBe(true);
-    expect(choice(e.host, /^Notes and skills only/)?.checked).toBe(false);
-    expect(e.text()).toContain("It never runs a learned workflow, and is never asked to draft one.");
-  });
-  it("is hidden while learning is off", () => {
-    const e = mount(agentOf(), caps("on"));
-    expect(choice(e.host, /^Notes and skills only/)).toBeUndefined();
-  });
-  it("a definition that says learning: \"notes\" shows the switch on and Notes and skills only checked; choosing everything saves learning: true", async () => {
-    const e = mount(agentOf({ learning: "notes" }), caps("on"));
+describe("AgentEditor, a definition that sets the loop's numbers", () => {
+  it("learning: {compile_after: 5} is on, offers no kind to choose, and off then on again keeps its numbers", async () => {
+    const loop = { compile_after: 5 };
+    const e = mount(agentOf({ learning: loop }), caps("on"));
     expect(e.sw()!.getAttribute("aria-checked")).toBe("true");
-    expect(choice(e.host, /^Notes and skills only/)?.checked).toBe(true);
-    await e.click(choice(e.host, /^Notes, skills and workflows/)!);
+    expect(e.host.querySelector('input[type="radio"][name="learning-kind"]')).toBeNull();
+    await e.click(e.sw()!);
+    await e.click(e.sw()!);
+    // Back on what was saved there is nothing to save: no Save button, and were one pressed the edit is no change.
+    expect([...e.host.querySelectorAll("button")].some((b) => /^(Save revision|Create)$/.test(b.textContent ?? ""))).toBe(false);
+    expect(editBody(agentOf({ learning: loop }), { learning: loop }, "").unchanged).toBe(true);
+    await e.click(e.sw()!);
     await e.save();
-    expect(e.saves[0].learning).toBe(true);
-  });
-  it("choosing Notes and skills only saves learning: \"notes\", and a new agent created so says it", async () => {
-    const e = mount(agentOf({ learning: true }), caps("on"));
-    await e.click(choice(e.host, /^Notes and skills only/)!);
-    await e.save();
-    expect(e.saves[0].learning).toBe("notes");
-    expect(editBody(agentOf({ learning: true }), e.saves[0], "").definition.learning).toBe("notes");
-    expect(createBody({ name: "N", description: "", instructions: "I", harness: "pi", tools: [], learning: "notes" }).definition.learning).toBe("notes");
-  });
-  it("choosing another kind and then the saved one again saves learning as it was, not a removed field", async () => {
-    for (const saved of [true, "notes"] as const) {
-      const e = mount(agentOf({ learning: saved }), caps("on"));
-      const other = saved === true ? /^Notes and skills only/ : /^Notes, skills and workflows/;
-      const same = saved === true ? /^Notes, skills and workflows/ : /^Notes and skills only/;
-      await e.click(choice(e.host, other)!);
-      await e.click(choice(e.host, same)!);
-      // Back on what was saved there is nothing to save: no Save button, and were one pressed the edit is no change.
-      expect([...e.host.querySelectorAll("button")].some((b) => /^(Save revision|Create)$/.test(b.textContent ?? ""))).toBe(false);
-      expect(editBody(agentOf({ learning: saved }), { learning: saved }, "").unchanged).toBe(true);
-      act(() => root?.unmount()); document.body.innerHTML = "";
-    }
+    expect(e.saves[0].learning).toBe(false);
   });
 });

@@ -49,8 +49,8 @@ harness adapter the way they run on Pi, durable in AgentRun's own store.
   `parkOf`, `checkRaise` and `followUpOf` decide what a refusal and a raise do to the run.
 - `./host` is the session's model proxy, provider-neutral: on the loopback interface, it admits only the session's key,
   only the routes a `ProviderPolicy` lists (by exact path text, with no query or one the route lists exactly; a route
-  may also be answered by the proxy, or be free, like a token count), and strict JSON, has the policy shape or refuse the
-  body, asks the runner's `beforeRequest` before each paid request, adds the provider's credential (which never reaches
+  may also be answered by the proxy, or be free, like a token count), and strict JSON that has the policy shape (it refuses any
+  other body), asks the runner's `beforeRequest` before each paid request, adds the provider's credential (which never reaches
   the harness), and reports each response's usage to `afterRequest`. Model spend is accounted only there, by the runner.
 
 The runner's own bounds (a turn limit, no progress, an unknown tool, a refused fork, the host's refusal) fail a node

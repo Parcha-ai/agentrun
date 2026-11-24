@@ -2,7 +2,7 @@
 
 Composio runs actions in apps like GitHub, Slack and Gmail, and sends an event when something happens in one of them.
 AgentRun takes both: a Composio toolkit becomes an MCP server your agents call, and a Composio event starts a run
-through a webhook trigger. You need a Composio API key (from Composio's dashboard) and an AgentRun server where you can
+through an app trigger. You need a Composio API key (from Composio's dashboard) and an AgentRun server where you can
 sign in to the console.
 
 This walk-through gives an agent the `hackernews` toolkit, which needs no account, so you see it work before you
@@ -13,8 +13,8 @@ Each step is a click path in the console. The same step as an API call is in the
 <details>
 <summary>Before the API calls</summary>
 
-The calls below use your server's address and token. The ones that send your Composio key or a webhook secret take
-your signed-in session instead, since the token can't write a secret. Sign in once and keep the cookie in `jar.txt`.
+The calls below use your server's address and token. The ones that send your Composio key take your signed-in
+session instead, since the token can't write a secret. Sign in once and keep the cookie in `jar.txt`.
 
 ```sh
 BASE=http://127.0.0.1:7340
@@ -69,7 +69,10 @@ curl -sS -b jar.txt -X PUT "$BASE/v2/settings/mcp-servers/github/composio" -H "o
 ```
 
 When the account isn't connected yet, the answer's `connect_url` is Composio's page to connect it. Composio keeps the
-account under the user `agentrun`; send `user_id` to use another one.
+account under the user `agentrun`; send `user_id` to use another one. Send `"user_id": "per_run"` for a server
+that acts as each run's own person: it keeps no account, and each run names one in `mcp_auth`
+(`{"github": {"composio_user_id": "...", "connected_account_id": "ca_..."}}`); see
+[the serve README](../../packages/serve/README.md#one-composio-server-an-account-per-run).
 
 </details>
 
@@ -121,78 +124,63 @@ The run's Timeline shows each call as `hackernews · HACKERNEWS_SEARCH_POSTS`.
 
 ## 4. Add a trigger
 
-In **Triggers → New webhook**, pick **Composio's** signature, the agent, what each run is asked and a cost cap, then
-press **Create webhook**.
+An app trigger needs your server's public address, since Composio sends each event to it
+([Deploy it](../../README.md#deploy-it), or `AGENTRUN_PUBLIC_URL` behind your own proxy). Without one, **New app
+trigger** is off, with the line "App triggers need this server's public address: set AGENTRUN_PUBLIC_URL and restart."
 
-<p align="center">
-  <img alt="The New webhook form: the name new github issue, Composio's signature picked, and the agent HN scout" src="../assets/tutorials/composio-4-webhook.png" width="80%">
-</p>
+In **Triggers → New app trigger**, pick the saved `github` server and its event `GITHUB_ISSUE_CREATED_TRIGGER`, fill in
+the event's config (your repository's `owner` and `repo`), then the agent, what each run is asked and a cost cap, and
+press **Create app trigger**. This event polls GitHub, so it needs no webhook on the repository.
 
-The trigger's page shows its URL. Composio has to reach it, so your server needs a public address
-([Deploy it](../../README.md#deploy-it), or `AGENTRUN_PUBLIC_URL` behind your own proxy). Then, on Composio's side:
+The server does the Composio side with the saved server's key:
 
-1. Make a webhook subscription that points at the trigger's URL (its `hook_url`). Composio answers with a `secret`:
+- The project's webhook subscription, at this server's address, the first time a trigger needs one. Composio's secret
+  for it is sealed here and never shown.
+- The event's trigger instance, for the GitHub account you connected in step 2.
 
-   ```sh
-   curl -sS -X POST https://backend.composio.dev/api/v3.1/webhook_subscriptions \
-     -H "x-api-key: $COMPOSIO_API_KEY" -H "content-type: application/json" \
-     -d '{"webhook_url": "<hook_url>", "enabled_events": ["composio.trigger.message"], "version": "V3"}'
-   ```
+A Composio project has one webhook subscription. If it already sends its events somewhere else, the console asks
+before it moves it: "Composio sends this project's events to <url> now. Moving them here stops them arriving there:
+anything listening at <url> (another AgentRun server, or a tool of yours) gets no more events." **Move it here** moves
+it; **Keep it there** leaves it and makes nothing.
 
-2. Find your GitHub connection's id (`ca_...`) for the `user_id` you saved the github server with (`agentrun`
-   unless you sent another):
-
-   ```sh
-   curl -sS "https://backend.composio.dev/api/v3/connected_accounts?toolkit_slugs=github&user_ids=<user_id>" \
-     -H "x-api-key: $COMPOSIO_API_KEY" | jq -r '.items[] | select(.status == "ACTIVE") | .id'
-   ```
-
-3. Turn on the event for your repository. This trigger polls GitHub, so it needs no webhook on the repository:
-
-   ```sh
-   curl -sS -X POST https://backend.composio.dev/api/v3/trigger_instances/GITHUB_ISSUE_CREATED_TRIGGER/upsert \
-     -H "x-api-key: $COMPOSIO_API_KEY" -H "content-type: application/json" \
-     -d '{"connected_account_id": "<ca_...>", "trigger_config": {"owner": "<owner>", "repo": "<repo>"}}'
-   ```
-
-Back on the trigger's page, press **Set secret** and paste Composio's `secret`. Until you do, the trigger refuses every
-request.
-
-<p align="center">
-  <img alt="The trigger's page: Run now, Pause, Set secret and Delete; its agent, cost cap, URL, Composio's signature, and Accepts GITHUB_ISSUE_CREATED_TRIGGER; one firing, started" src="../assets/tutorials/composio-4-trigger.png" width="100%">
-</p>
+The trigger's page shows whether its instance is on at Composio. Pausing, resuming and deleting the trigger do the same
+to the instance on Composio.
 
 <details>
 <summary>The same with the API</summary>
 
-`accept` takes only the events it names: the event is the delivery's `metadata.trigger_slug`. The console's form has
-no field for it yet, so a trigger made there takes every event its subscription sends.
+The events a saved server's toolkit offers, each with its config's schema:
+
+```sh
+curl -sS "$BASE/v2/settings/mcp-servers/github/composio/events" -H "authorization: Bearer $TOKEN"
+```
+
+Then make the trigger:
 
 ```sh
 curl -sS -X POST "$BASE/v2/triggers" -H "authorization: Bearer $TOKEN" -H "content-type: application/json" -d '{
   "name": "new github issue",
-  "source": {"kind": "webhook", "signature": "composio", "accept": [{"event": "GITHUB_ISSUE_CREATED_TRIGGER"}]},
+  "source": {"kind": "composio", "server": "github", "event": "GITHUB_ISSUE_CREATED_TRIGGER",
+             "config": {"owner": "<owner>", "repo": "<repo>"}},
   "target": {"kind": "start_run", "agent_id": "hn-scout", "max_cost_usd": 0.5,
              "input": {"content": "A GitHub issue was just opened. Find Hacker News posts about the problem it describes."}}}'
 ```
 
-The answer's `id` is the trigger, and its `hook_url` is the URL for Composio. Then give it Composio's secret, whole and
-as Composio shows it:
+The answer's `source` names what the server made: `instance_id`, Composio's id for the instance, and `hook`, the
+project's route here. `TRIGGER=trg_...` (the answer's `id`) is used in step 5.
 
-```sh
-TRIGGER=trg_...                          # the id above
-SECRET=...                               # Composio's secret
-curl -sS -b jar.txt -X POST "$BASE/v2/triggers/$TRIGGER/secret" -H "origin: $BASE" -H "content-type: application/json" \
-  -d "{\"secret\": \"$SECRET\"}"
-```
-
-The same call replaces it when you rotate the secret in Composio.
+- `409 composio_no_public_url`: the server has no public address.
+- `409 composio_subscription_elsewhere`: the project's subscription is at `details.webhook_url`. Send the same body
+  with `"move_subscription": true` in `source` to move it here.
+- `409 composio_not_connected`: the server's Composio user has no connected account; `details.connect_url` is Composio's
+  page to connect it.
+- `409 composio_account_ambiguous`: it has several, listed in `details.accounts`. Disconnect the others in Composio.
 
 </details>
 
 ## 5. Watch a run start from an event
 
-Open an issue in the repository. Composio sends the event, the trigger checks its signature and starts a run, and the
+Open an issue in the repository. Composio sends the event, the server checks its signature and starts a run, and the
 run's **Timeline** opens with the trigger's row. In our test, the run started 37 seconds after the issue was opened.
 
 <p align="center">
@@ -205,11 +193,11 @@ instructions:
 ```text
 A GitHub issue was just opened. Find Hacker News posts about the problem it describes.
 
-<trigger-payload source="webhook" scheme="composio" event="GITHUB_ISSUE_CREATED_TRIGGER" trigger_id="ti_..." user_id="..." untrusted>
+<trigger-payload source="composio" scheme="composio" event="GITHUB_ISSUE_CREATED_TRIGGER" trigger_id="ti_..." user_id="..." untrusted>
 {"id":"msg_...","type":"composio.trigger.message","metadata":{"trigger_slug":"GITHUB_ISSUE_CREATED_TRIGGER","toolkit_slug":"github",...},"data":{"number":9,"title":"...","html_url":"https://github.com/<owner>/<repo>/issues/9",...}}
 </trigger-payload>
 
-(From the webhook trigger "new github issue", received at <time>.)
+(From the Composio trigger "new github issue", received at <time>.)
 ```
 
 <details>
@@ -228,7 +216,9 @@ curl -sS "$BASE/v2/runs/$RUN/timeline" -H "authorization: Bearer $TOKEN"
 - A saved Composio server is an MCP server like any other: each call passes the agent's approvals, shows on the
   Timeline, and reads "not metered" until you give it a price.
 - Composio's meta tools, which run other actions by name, can't be granted. Grant the toolkit's own actions instead.
-- One Composio project's webhook subscription posts every event to one URL, so it starts one trigger and its agent.
+- One Composio project's webhook subscription posts every event to one address. Two AgentRun servers can't both take
+  the same project's events: the one that moves the subscription to itself gets them.
+- A webhook trigger takes no Composio signature: an app trigger is the one way Composio's events start runs.
 
 The server's reference has the rest: [Composio MCP servers](../../packages/serve/README.md#composio) and
-[Composio triggers](../../packages/serve/README.md#webhook-triggers).
+[Composio triggers](../../packages/serve/README.md#composio-triggers).

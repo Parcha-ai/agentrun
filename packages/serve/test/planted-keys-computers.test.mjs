@@ -87,7 +87,7 @@ async function planted(t) {
   assert.equal(setup.status, 201, setup.text);
   const cookie = cookieOf(setup);
   const owner = async (method, path, body) => {
-    const res = await call(server.port, { method, path, headers: { ...json, cookie, origin }, body: body ?? {} });
+    const res = await call(server.port, { method, path, headers: { ...json, cookie, origin }, body });
     let parsed;
     try { parsed = JSON.parse(res.text); } catch {}
     return { status: res.status, text: res.text, json: parsed };
@@ -148,12 +148,15 @@ test("Rule 5: with every key planted, a Mode 1 sandbox's computer, a faux deskto
   const claim = await archilClaim({
     settings: PLANTED_ARCHIL_SETTINGS, keys: store.sealedKeys, sealKey, signal: new AbortController().signal, makeDisk: () => disk,
     run: { agentId: "a", launch: { diskId: PLANTED_ARCHIL_DISK, kind: "agent" }, store: agentDiskStore("a", PLANTED_ARCHIL_DISK) },
-    mount: { runId: "run-3", epoch: 1, ttlMs: 86_400_000, baseUrl: control.baseUrl, fetch: control.fetch },
+    mount: { runId: "run-3", epoch: 1, ttlMs: 86_400_000 }, control: { baseUrl: control.baseUrl, fetch: control.fetch },
   });
   const workspace = archilWorkspace(disk, "agents/a/runs/run-3/work", { region: PLANTED_ARCHIL_SETTINGS.region, mountToken: () => claim.token() });
   const mounted = { created: [], options: [] };
-  const archilKinds = { ...faux.kinds, PROVIDERS: faux.kinds.PROVIDERS.map((one) => (one.id === "faux-sandbox" ? { ...one, mounts: ["archil"] } : one)) };
-  const remote = await computerForClaim({ runId: "run-3", epoch: 1, computer: { kind: "sandbox", provider: "faux-sandbox" } }, store, {
+  // An Archil mount needs Archil's image in the computer: here the operator names it.
+  const archilKinds = { ...faux.kinds, PROVIDERS: faux.kinds.PROVIDERS.map((one) => (one.id === "faux-sandbox" ? { ...one, mounts: ["archil"], imageNamed: true } : one)) };
+  // The run's row as the claim's own (epoch 1, its runner), which fences the claim's writes of the run's folder.
+  const claimStore = { agents: store.agents, sealedKeys: store.sealedKeys, computerLedger: store.computerLedger, settings: store.settings, runs: { get: async () => ({ epoch: 1, runner: "runner-1" }) } };
+  const remote = await computerForClaim({ runId: "run-3", epoch: 1, computer: { kind: "sandbox", provider: "faux-sandbox" } }, claimStore, {
     mode: 2, kinds: archilKinds, keyTable: faux.keyTable, sealKey, spec: SPEC,
     providers: { "faux-sandbox": (options) => (mounted.options.push(options), recordingProvider(join(scratch, "work"), mounted)) },
     workspace, check: { readBackOf: archilReadBackOf, epoch: 1 }, revokeMount: () => claim.revoke(),

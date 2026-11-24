@@ -9,11 +9,13 @@
 // next look parked meanwhile; input reaches the desktop's watch; Hand back gives it back, the parked look runs, and the
 // run ends, which closes the view. The token is in the owner's GET alone.
 import assert from "node:assert/strict";
+import { mkdir, writeFile } from "node:fs/promises";
+import { delimiter, join } from "node:path";
 import { test } from "node:test";
 import { fakeDesktopProvider } from "./computer-live-support.mjs";
 import { onComputerHold } from "../dist/runner/computer-journal.js";
 import { connect } from "./fixtures/ws-client.mjs";
-import { agent, call, clientOwnerSession, follow, serve, withEnv } from "./support.mjs";
+import { agent, call, clientOwnerSession, follow, scratch, serve, withEnv } from "./support.mjs";
 
 const FAUX = new URL("./fixtures/faux-desktop-look.mjs", import.meta.url).pathname;
 /** Until `check()` holds, bounded; each try after the next turn of the timers. */
@@ -33,6 +35,52 @@ const LINUX_ONLY = process.platform === "linux" ? false : "127.0.0.2 answers as 
 test("a runner run's desktop registers its live view: GET /computer is live with kind desktop for the owner alone, the viewer's page and socket reach the runner's endpoint, and Take over, input and Hand back go through the run's hold", { timeout: 120_000 }, (t) => desktopRun(t));
 
 test("the same on a runner on another host than its server: the viewer's row names the runner's host, and the server reaches it there", { timeout: 120_000, skip: LINUX_ONLY }, (t) => desktopRun(t, REMOTE));
+
+// The run page's header takes and hands back through the routes (POST .../computer/take-over and .../hand-back, as the
+// console's Screen tab does with hands=page), never through the viewer's socket, with the run a process of its own as
+// the CLI's runner runs it (run-child-host.ts childLoops): its hold's changes are committed in the run's process, and
+// the viewer is the runner's. The viewer already open on that page hears each change, drives once the person holds the
+// desktop, and is held again once it is handed back, with no reopen.
+test("a take and a hand-back through the routes reach the viewer already open, the run a process of its own: it hears the person's hold, its input goes through, and it hears the hand-back", { timeout: 120_000 }, async (t) => {
+  withEnv(t, { E2B_API_KEY: "fake-test-key" }, ["E2B_API_KEY", "AGENTRUN_RUNNER_LIVE_HOST", "AGENTRUN_RUNNER_HOSTS"]);
+  const desktop = fakeDesktopProvider({ holdShot: 2 });
+  t.after(() => desktop.letGo());
+  const server = await serve(t, { accounts: true, openSetup: true, faux: FAUX, computers: { load: desktop.load }, childRuns: {} });
+  const owner = await clientOwnerSession(server);
+  const asOwner = (method, p, body) => call(server.port, { method, path: p, headers: { cookie: owner.cookie, origin: owner.origin, ...(body ? { "content-type": "application/json" } : {}) }, body });
+  assert.equal((await server.api("POST", "/agents", agent("desk", { computer: { kind: "desktop", provider: "e2b" } }))).status, 201);
+  const runId = (await server.api("POST", "/agents/desk/runs", { input: { content: "Look at the desktop." } })).body.run_id;
+  const path = `/v2/runs/${runId}/computer`;
+  await until(async () => (await asOwner("GET", path)).json?.state === "live", "the run's desktop went live");
+  const [, id, token] = /^\/v2\/runs\/[^/]+\/computer\/live\/v\/([A-Za-z0-9_-]{22})#t=([A-Za-z0-9_-]{43})$/.exec((await asOwner("GET", path)).json.viewer ?? "") ?? [];
+  const c = await connect(`ws://127.0.0.1:${server.port}/v2/runs/${runId}/computer/live/v/${id}/ws`, { origin: owner.origin, headers: { cookie: owner.cookie } });
+  assert.equal(c.status, 101);
+  const ws = c.ws;
+  t.after(() => ws.destroy());
+  ws.sendJson({ type: "hello", token });
+  assert.deepEqual(await next(ws, "ready"), { type: "ready", drive: "agent", takeOver: true, held: false, kind: "desktop", input: "desktop" });
+  await ws.until((m) => m.type === "binary", 10_000);
+  ws.sendJson({ type: "ack" });
+
+  // Take over from the page's header while the agent's second look is in flight: pending, then the person's.
+  await desktop.inShot;
+  await until(async () => (await server.api("GET", `/runs/${runId}`)).body.computer?.state === "ready", "the run's journal says its desktop is up");
+  const taken = await asOwner("POST", `${path}/take-over`, {});
+  assert.equal(taken.status, 200, taken.text);
+  assert.deepEqual(await next(ws, "status"), { type: "status", drive: "pending" });
+  desktop.letGo();
+  assert.deepEqual(await next(ws, "hold"), { type: "hold", held: true });
+  const typed = desktop.nextInput();
+  ws.sendJson({ type: "key", action: "char", key: "q", code: "KeyQ", text: "q", modifiers: 0 });
+  assert.deepEqual(await typed, [{ type: "type", text: "q" }]);
+
+  // Hand back from the page's header: the same viewer is told, and its input is held again.
+  const given = await asOwner("POST", `${path}/hand-back`, {});
+  assert.equal(given.status, 200, given.text);
+  const back = await next(ws, "hold");
+  assert.deepEqual([back.held, back.reason], [false, "given"]);
+  await follow(server.api, runId, ["completed"]);
+});
 
 test("a runner on another host that is not one of the server's runners: its viewer is never dialled, and GET /computer is not live", { timeout: 120_000, skip: LINUX_ONLY }, async (t) => {
   withEnv(t, { E2B_API_KEY: "fake-test-key", AGENTRUN_RUNNER_LIVE_HOST: "127.0.0.2" }, ["E2B_API_KEY", "AGENTRUN_RUNNER_LIVE_HOST", "AGENTRUN_RUNNER_HOSTS"]);
@@ -145,6 +193,44 @@ async function desktopRun(t, env = {}) {
   assert.match(said, /You handed the desktop back/);
 }
 
+// A run parked on its question with its desktop up keeps the desktop (computer-kept.ts): GET /computer says its screen
+// is closed, no take-over, never ended or opening, and adds no field (the run's timeline has the park's row, whose time
+// the console says until when from); the run's computer is not ended; once the keep's time passed, GET /computer says it
+// wasn't kept, in the timeout's words.
+const LOOK_ASK = new URL("./fixtures/faux-desktop-look-ask.mjs", import.meta.url).pathname;
+test("a desktop run parked on its question: GET /computer is none and closed, the park's row on the timeline, the run's computer not ended; past the keep's time, ended in the timeout's words", { timeout: 120_000 }, async (t) => {
+  withEnv(t, { E2B_API_KEY: "fake-test-key" }, ["E2B_API_KEY"]);
+  const desktop = fakeDesktopProvider();
+  const server = await serve(t, { accounts: true, openSetup: true, faux: LOOK_ASK, computers: { load: desktop.load } });
+  const owner = await clientOwnerSession(server);
+  const made = await server.api("POST", "/agents", agent("desk", { computer: { kind: "desktop", provider: "e2b" }, tools: ["ask_person"] }));
+  assert.equal(made.status, 201, JSON.stringify(made.body));
+  const runId = (await server.api("POST", "/agents/desk/runs", { input: { content: "Look at the desktop." } })).body.run_id;
+  const parkedAt = Date.now();
+  await until(async () => (await server.store.runs.get(runId))?.state === "parked", "the run parked on its question");
+  const get = async () => (await call(server.port, { path: `/v2/runs/${runId}/computer`, headers: { cookie: owner.cookie } })).json;
+  assert.deepEqual(await get(), { state: "none", kind: "desktop", hold: "agent", session: "closed" });
+  const rows = (await server.api("GET", `/runs/${runId}/timeline`)).body.rows ?? [];
+  const parkRow = rows.find((row) => row.kind === "phase" && row.summary === "The desktop is kept for 10 minutes while you decide.");
+  assert.ok(parkRow, `the park's row: ${JSON.stringify(rows.map((row) => row.summary))}`);
+  const at = Date.parse(parkRow.timestamp);
+  assert.ok(at >= parkedAt - 1000 && at <= Date.now(), `the park's row at the park: ${parkRow.timestamp}`);
+  const run = (await server.api("GET", `/runs/${runId}`)).body;
+  assert.equal(run.status, "input_required", JSON.stringify(run));
+  assert.notEqual(run.computer?.state, "ended", `the run's computer while parked: ${JSON.stringify(run.computer)}`);
+  assert.equal((await server.store.liveViewers.of(runId)).length, 0, "no viewer while parked: nothing to take over");
+
+  // The keep's time passed (its row read as the janitor would, past it).
+  const row = await server.store.settings.get(`computer_kept:${runId}`);
+  assert.ok(row, "the keep's row");
+  await server.store.settings.put(`computer_kept:${runId}`, { ...row, until: Date.now() - 1 });
+  const lapsed = await get();
+  assert.deepEqual({ ...lapsed, ended: { ...lapsed.ended, at: undefined } }, { state: "none", kind: "desktop", hold: "agent", session: "closed", ended: { at: undefined, why: "The desktop wasn't kept: 10 minutes passed. A new one starts when the run goes on." } }, JSON.stringify(lapsed));
+  assert.ok(Date.parse(lapsed.ended.at) <= Date.now(), "ended at the keep's time");
+  assert.equal((await server.api("POST", `/runs/${runId}/cancel`, {})).status < 300, true);
+  await until(async () => ["stopped", "ended", "failed"].includes((await server.store.runs.get(runId))?.state), "the run stopped");
+});
+
 // #2170: a desktop or phone run whose screen is not open (no runner has it, or its viewer does not answer) has a computer
 // all the same: GET /computer reads none with its kind, never off with "this run's agent has no computer".
 test("a desktop or phone run whose screen is not open reads none with its kind; only an agent with no computer reads off (#2170)", { timeout: 120_000 }, async (t) => {
@@ -159,4 +245,25 @@ test("a desktop or phone run whose screen is not open reads none with its kind; 
   };
   assert.deepEqual(await read("desk", { computer: { kind: "desktop", provider: "e2b" } }), { state: "none", kind: "desktop", hold: "agent", session: "opening" }, "queued: its claim opens it");
   assert.deepEqual(await read("plain", {}), { state: "off", hold: "agent", why: "this run's agent has no computer" });
+});
+
+// A sandbox run has a computer with no screen: GET /computer reads off saying so, never that its agent has none. (A
+// sandbox agent takes no browser tool here, 422: a browser's own off words never meet a sandbox's.)
+test("a sandbox run's GET /computer says a sandbox has no screen, never that its agent has no computer", { timeout: 120_000 }, async (t) => {
+  // A Docker sandbox (Mode 1 runs a sandbox only on Docker), on a fake `docker` first on PATH that answers the server's
+  // start-time probe: no Docker command runs.
+  const bin = join(await scratch(t), "bin");
+  await mkdir(bin);
+  await writeFile(join(bin, "docker"), "#!/bin/sh\nif [ \"$1\" = version ]; then echo 27.0.0-fake; fi\nexit 0\n", { mode: 0o755 });
+  withEnv(t, { PATH: [bin, process.env.PATH ?? ""].join(delimiter) }, ["AGENTRUN_BOXES"]);
+  const server = await serve(t, { runner: false, accounts: true, openSetup: true, faux: FAUX });
+  const owner = await clientOwnerSession(server);
+  const read = async (id, definition) => {
+    const made = await server.api("POST", "/agents", agent(id, definition));
+    assert.equal(made.status, 201, JSON.stringify(made.body));
+    const started = await server.api("POST", `/agents/${id}/runs`, { input: { content: "Look." } });
+    assert.ok(started.body.run_id, JSON.stringify(started.body));
+    return (await call(server.port, { path: `/v2/runs/${started.body.run_id}/computer`, headers: { cookie: owner.cookie } })).json;
+  };
+  assert.deepEqual(await read("box", { computer: { kind: "sandbox", provider: "docker" } }), { state: "off", hold: "agent", why: "A sandbox has no screen: what the agent runs in it is on the timeline." });
 });

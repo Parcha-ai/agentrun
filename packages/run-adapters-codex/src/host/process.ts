@@ -2,7 +2,7 @@
 // and, written for AgentRun, the session machine's types (a local machine, machine.ts), its brand, the model route the
 // harness describes for its model proxy (the policy), and model-step tracking (nothing to track locally).
 import { toolBridge as kernelToolBridge, type ToolBridge, type ToolBridgeOptions } from "@parcha/agentrun-kernel/process";
-import type { JsonValue, ToolImage } from "@parcha/agentrun-kernel";
+import type { CapCut, JsonValue, ToolImage } from "@parcha/agentrun-kernel";
 import type { TomlValue } from "../config.js";
 import type { DriveContext } from "./kernel.js";
 
@@ -104,11 +104,13 @@ export interface SessionMachine {
    *  The code-mode `exec` call the model proxy's latest answer carried, read before Codex could act on it (none when that
    *  answer held none): what a nested call of a script is tied to, even before the `exec`'s line is in the rollout. */
   announcedExec?(): string | undefined;
+  /** The script of the `exec` the proxy announced last, by its call id: none for any other id. */
+  announcedInput?(callId: string): string | undefined;
   /** Told each line the rollout's tail reads, as it reads it: the harness's view of code mode follows the log from here. */
   onRolloutLine?(listener: (line: string) => void): void;
   /** Told when the model proxy reads that the provider cut the turn's answer at its output limit, before Codex has the
    *  piece that carries the stop (its output tokens, when the answer said them): the harness ends the turn there. */
-  onCut?(listener: (stop: { outputTokens?: number }) => void): void;
+  onCut?(listener: (stop: { outputTokens?: number; capCut?: CapCut }) => void): void;
   /** The harness opens a turn: the model proxy, which refuses answer requests once it has told the harness a turn's answer
    *  stopped, admits them again (ModelProxy.openTurn). */
   openTurn?(): void;

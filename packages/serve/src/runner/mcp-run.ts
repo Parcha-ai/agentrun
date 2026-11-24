@@ -18,6 +18,11 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Harness } from "@earendil-works/pi-durable";
 import { wireName } from "../catalog.js";
 import { mcpGateway, type McpGatewayOptions } from "../mcp-gateway.js";
+import { meterFor, publicMedia } from "../fal-price.js";
+import { FAUX_ENV } from "../model.js";
+import { fetchOptions } from "../web-fetch-direct.js";
+import { fakeSaveOptions, type WebFake } from "../web-fake.js";
+import type { SaveSlots } from "../web-save.js";
 import { dialAt, mcpServerAt, type OAuthNetwork, systemNetwork } from "../mcp-oauth.js";
 import { privateOAuthHosts } from "../mcp-private-hosts.js";
 import type { Store, TriggerSettings } from "../store/index.js";
@@ -27,6 +32,8 @@ import type { Claim } from "./loop-contract.js";
 import { mcpClaim, type McpClaimStep } from "./mcp-claim.js";
 import { registryListing } from "../mcp-pin-first.js";
 import type { GithubAppAccess, GithubTimer } from "./mcp-github.js";
+import { type HeldMcp, type HeldMcpTool, heldOrThrow } from "./held.js";
+import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 
 /** The GitHub App access for a claim (runner/github-app.ts githubAppAccess, tl-triggers'): the server's App, read from
  *  the store with the runner's seal key, bound to the repository the run's launch input names. */
@@ -56,9 +63,16 @@ export interface McpForClaimOptions {
   /** A test's fake GitHub MCP origin, handed to the claim step (mcpClaim's githubMcpOrigin): for tests only: no environment variable, flag or setting maps onto it; absent, GitHub's hosted MCP
    *  (github.ts GITHUB_MCP_ORIGIN). */
   readonly githubMcpOrigin?: string;
-  /** Whether this runner may reach an MCP server whose URL is on loopback (AdapterSpecDeps.mcpLoopback): only a runner
-   *  beside a local-install server is. Absent, never. */
+  /** A test's fake Composio MCP origin, handed to the claim step and the pin's listing (mcpClaim's composioMcpOrigin): for
+   *  tests only: no environment variable, flag or setting maps onto it; absent, Composio's (composio-made.ts COMPOSIO_ORIGIN). */
+  readonly composioMcpOrigin?: string;
+  /** Whether this runner may reach an MCP server whose URL is on loopback (AdapterSpecDeps.mcpLoopback): the runner
+   *  beside a local-install server, or a runner in its own process whose own environment opts in. Absent, never. */
   readonly loopback?: boolean;
+  /** The own addresses of the local-install server beside this runner (AdapterSpecDeps.mcpOwn, Serve.own): a loopback
+   *  URL on one of their ports is refused, as the server refuses it, so a run never reaches that server through an MCP
+   *  server's address, its authorization server's or a pin's listing. */
+  readonly own?: readonly string[];
   /** For tests: the authorization servers' network, a refresh's bound, the gateway's upstream fetch and bounds, and the
    *  timer a github_app token's refresh is armed on. */
   readonly network?: OAuthNetwork;
@@ -66,6 +80,12 @@ export interface McpForClaimOptions {
   readonly fetch?: typeof fetch;
   readonly callBounds?: { callMs?: number; connectMs?: number };
   readonly githubTimer?: GithubTimer;
+  /** Whether the run has a spend cap (its launch's max_cost_usd): under one, a metered job that can't be priced is refused
+   *  unsent. None: it has. */
+  readonly capped?: boolean;
+  /** Where a metered job's input media are read from, through the guard web_save downloads by: an eval's web fake `web`,
+   *  else the faux module or the public network by `env`, in web_save's `slots`. None: such a job can't be priced. */
+  readonly media?: { readonly env: NodeJS.ProcessEnv; readonly web?: WebFake; readonly slots?: SaveSlots };
   /** Each credential value the claim opens, refreshes or mints, for the run's redactors (mcp-claim.ts `hold`). */
   readonly hold?: (values: string[]) => void;
 }
@@ -119,12 +139,14 @@ export async function mcpForClaim(options: McpForClaimOptions): Promise<ClaimMcp
       sealKey: options.sealKey,
       signal: held.signal,
       // A run whose revision has no pin (one made before the upgrade) pins it here, listing as a save does.
-      pinListing: registryListing(options.store, options.sealKey, { loopback: options.loopback === true, ...(options.network ? { network: options.network } : {}), ...(githubApp ? { githubApp } : {}), ...(options.githubMcpOrigin ? { appOrigin: options.githubMcpOrigin } : {}) }),
+      pinListing: registryListing(options.store, options.sealKey, { loopback: options.loopback === true, own: options.own ?? [], ...(options.network ? { network: options.network } : {}), ...(githubApp ? { githubApp } : {}), ...(options.githubMcpOrigin ? { appOrigin: options.githubMcpOrigin } : {}), ...(options.composioMcpOrigin ? { composioOrigin: options.composioMcpOrigin } : {}) }),
       ...(options.bounds ? { bounds: options.bounds } : {}),
       ...(options.network ? { network: options.network } : {}),
       ...(options.loopback ? { loopback: true } : {}),
+      ...(options.own ? { own: options.own } : {}),
       ...(githubApp ? { githubApp } : {}),
       ...(options.githubMcpOrigin ? { githubMcpOrigin: options.githubMcpOrigin } : {}),
+      ...(options.composioMcpOrigin ? { composioMcpOrigin: options.composioMcpOrigin } : {}),
       ...(options.githubTimer ? { githubTimer: options.githubTimer } : {}),
       ...(options.hold ? { hold: options.hold } : {}),
     });
@@ -138,6 +160,7 @@ export async function mcpForClaim(options: McpForClaimOptions): Promise<ClaimMcp
     return undefined;
   }
   const network = options.network ?? systemNetwork;
+  const media = options.media;
   const gateway = mcpGateway({
     pin,
     credentials: step.credentials,
@@ -145,16 +168,22 @@ export async function mcpForClaim(options: McpForClaimOptions): Promise<ClaimMcp
     // private-network hosts read now, and dialled at the address checked: a name that resolves somewhere private since the
     // save, or a host the owner no longer allows, is refused unsent. A URL on loopback is reached only by a runner told
     // so by the local-install server beside it, in its own process (options.loopback): never by what a store says, so
-    // one host's local install never opens loopback for another host's runner on a shared store.
+    // one host's local install never opens loopback for another host's runner on a shared store; and never at that
+    // server's own ports (options.own).
     reach: async (url, signal) => {
-      const at = await mcpServerAt(new URL(url), signal, network, { allowed: await privateOAuthHosts(options.store), loopback: options.loopback === true });
+      const at = await mcpServerAt(new URL(url), signal, network, { allowed: await privateOAuthHosts(options.store), loopback: options.loopback === true, own: options.own ?? [] });
       return "refused" in at ? { refused: at.refused } : { send: dialAt(network, at.address, options.fetch ?? fetch) as typeof fetch };
     },
     beforeCall: step.beforeCall,
     work: options.work,
+    // fal's submission keys are scoped to the run (fal-price.ts falKeys): the same on every claim of it, so a retry after
+    // a resume still dedupes.
+    run: options.claim.runId,
     commit: () => <T>(change: (tx: unknown) => Promise<T>) => options.harness.commit(change as never, BACKGROUND_CONTEXT) as Promise<T>,
     ...(options.fetch ? { fetch: options.fetch } : {}),
     ...(options.callBounds ? { bounds: options.callBounds } : {}),
+    capped: () => options.capped !== false,
+    ...(media ? { media: publicMedia(async () => (media.web ? fakeSaveOptions(media.web) : fetchOptions(media.env, FAUX_ENV)), media.slots) } : {}),
   });
   const catalog = new Map<string, string>();
   const declared = new Map<string, ReadonlySet<string>>();
@@ -187,10 +216,78 @@ export async function mcpForClaim(options: McpForClaimOptions): Promise<ClaimMcp
       const parsed = mcpNameOf(name);
       const pinned = parsed && Object.hasOwn(pin, parsed.server) ? pin[parsed.server] : undefined;
       if (!pinned?.tools.some((tool) => tool.name === parsed!.tool)) return undefined;
-      return pinned.prices && Object.hasOwn(pinned.prices, parsed!.tool) ? pinned.prices[parsed!.tool]! : "not metered";
+      if (pinned.prices && Object.hasOwn(pinned.prices, parsed!.tool)) return pinned.prices[parsed!.tool]!;
+      // A metered server's job is priced from its input, when the call runs: no price to show before it.
+      return meterFor(pinned)?.bills(parsed!.tool) ? undefined : "not metered";
     },
     effectOf: (name) => pinnedEffect(pin, name),
     fresh: () => step.fresh(),
     release: () => held.abort(),
   };
+}
+
+/** A claim's MCP as the runner hands it to the run's own process (held.ts HeldMcp): what the gate reads of each tool,
+ *  read now, and each call made here, its answer and its error cut by `cut` (the runner's redactor) before they cross. */
+export function heldMcpOf(mcp: ClaimMcp, cut: (text: string) => string): HeldMcp {
+  return {
+    tools: mcp.tools.map((tool): HeldMcpTool => {
+      const catalog = mcp.catalogOf(tool.name) ?? tool.name;
+      const declared = mcp.argumentsOf(catalog);
+      const price = mcp.priceOf(catalog);
+      const effect = mcp.effectOf(catalog);
+      return {
+        name: tool.name,
+        description: tool.description,
+        inputSchema: tool.inputSchema,
+        catalog,
+        ...(declared ? { arguments: [...declared] } : {}),
+        ...(price !== undefined ? { price } : {}),
+        ...(effect !== undefined ? { effect } : {}),
+        call: async (args, context) => {
+          try {
+            const answer = await tool.call(args, { ...(context.signal ? { signal: context.signal } : {}), ...(context.callId ? { callId: context.callId } : {}) } as never);
+            return { text: cut(answer.text), ...(answer.isError ? { isError: true as const } : {}) };
+          } catch (error) {
+            throw Object.assign(new Error(cut(error instanceof Error ? error.message : String(error))), { name: error instanceof Error ? error.name : "Error" });
+          }
+        },
+      };
+    }),
+    fresh: () => mcp.fresh(),
+    release: async () => mcp.release(),
+  };
+}
+
+/** The claim's MCP in the run's own process (run-child.ts), from what its runner holds (heldMcpOf). */
+export function claimMcpOfHeld(held: HeldMcp): ClaimMcp {
+  const byWire = new Map(held.tools.map((tool) => [tool.name, tool]));
+  const byCatalog = new Map(held.tools.map((tool) => [tool.catalog, tool]));
+  return {
+    tools: held.tools.map((tool): HostTool => ({
+      name: tool.name,
+      description: tool.description,
+      inputSchema: tool.inputSchema as HostTool["inputSchema"],
+      replay: "never",
+      call: (args, context) => tool.call(args, { ...(context.signal ? { signal: context.signal } : {}), ...(context.callId ? { callId: context.callId } : {}) }),
+    })),
+    catalogOf: (tool) => byWire.get(tool)?.catalog,
+    argumentsOf: (name) => {
+      const declared = byCatalog.get(name)?.arguments;
+      return declared ? new Set(declared) : undefined;
+    },
+    priceOf: (name) => byCatalog.get(name)?.price,
+    effectOf: (name) => byCatalog.get(name)?.effect,
+    fresh: () => held.fresh(),
+    release: () => void held.release().catch(() => undefined),
+  };
+}
+
+/** The claim's MCP where the run is: mcpForClaim with the runner's seal key, else its runner's (held.ts), the gateway's
+ *  record of each call appended to the run's root through this process's own harness. */
+export async function mcpWhereHeld(options: Omit<McpForClaimOptions, "sealKey"> & { readonly sealKey: Buffer | undefined }): Promise<ClaimMcp | undefined> {
+  if (options.sealKey) return mcpForClaim({ ...options, sealKey: options.sealKey });
+  const at = heldOrThrow("a run's MCP");
+  const appendRoot = (entry: unknown) => options.harness.commit((async (tx: { appendEntry(conversation: number, entry: unknown): Promise<unknown> }) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, entry))) as never, BACKGROUND_CONTEXT) as Promise<void>;
+  const given = await at.mcp({ appendRoot });
+  return given ? claimMcpOfHeld(given) : undefined;
 }

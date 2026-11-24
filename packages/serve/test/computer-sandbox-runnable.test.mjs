@@ -18,6 +18,7 @@ import { chmod, mkdir, writeFile } from "node:fs/promises";
 import { delimiter, join } from "node:path";
 import { test } from "node:test";
 import { asOwner, scratch, SECRET_WRITE_PATHS, serve, withEnv } from "./support.mjs";
+import { DOCKER_NO_SOCKET } from "../dist/place-offers.js";
 
 const { blockersOf } = await import("../dist/runnable.js");
 const { computerDepsFrom, resolveComputer } = await import("../dist/workspace/index.js");
@@ -30,7 +31,7 @@ const ARCHIL = { region: "aws-us-east-1", s3Url: "https://s3.archil.example", ke
 /** The words runnable.ts says of a place this server can't run as a box. */
 const PLACE_WORDS = /This agent's place is sandbox on [a-z0-9-]+, and this server cannot run it there/;
 /** No provider key comes from this process's environment: each is the one saved here, or none. */
-const UNSET = ["AGENTRUN_SEAL_KEY", "AGENTRUN_BOXES", "E2B_API_KEY", "DAYTONA_API_KEY", "ARCHIL_API_KEY"];
+const UNSET = ["AGENTRUN_SEAL_KEY", "AGENTRUN_BOXES", "DOCKER_HOST", "DOCKER_CONTEXT", "E2B_API_KEY", "DAYTONA_API_KEY", "DAYTONA_ARCHIL_EGRESS", "AGENTRUN_DAYTONA_SNAPSHOT", "ARCHIL_API_KEY"];
 
 /** A fake `docker` first on PATH, so the server's start-time probe of the Docker box (boxes.ts: `docker version`) never
  *  reaches a real one: it names a daemon's version when `answers`, else fails as a CLI with no daemon does. Every other
@@ -50,9 +51,9 @@ async function fakeDocker(t, answers, adb = true) {
 /** A server alone, with the default boxes (docker alone, on a fake that `docker` answers or not), and an `adb` on PATH
  *  unless `adb` is false; on the real models (no --faux) unless `faux`; in Mode 2 when `archil`; with the template
  *  packages in `templates`, when given; its client sends every request from the owner's session when `owner`. */
-async function server(t, { archil, docker = false, faux = false, adb = true, templates, owner = false }) {
-  withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), PATH: await fakeDocker(t, docker, adb) }, UNSET);
-  const started = await serve(t, { ...(faux ? {} : { faux: undefined }), runner: false, accounts: true, openSetup: true, ...(templates ? { templates } : {}) });
+async function server(t, { archil, docker = false, faux = false, adb = true, templates, owner = false, env = {}, probeContainer }) {
+  withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), PATH: await fakeDocker(t, docker, adb), ...env }, UNSET);
+  const started = await serve(t, { ...(faux ? {} : { faux: undefined }), runner: false, accounts: true, openSetup: true, ...(templates ? { templates } : {}), ...(probeContainer ? { probeContainer } : {}) });
   const api = owner ? asOwner(started) : started.api;
   if (archil) {
     const saved = await api("PUT", "/workspace/archil", ARCHIL);
@@ -113,26 +114,57 @@ test("an agent whose computer is an e2b sandbox with no key saved is refused in 
   assert.doesNotMatch(said.started[2], PLACE_WORDS);
 });
 
-test("Mode 2: a Daytona sandbox, with GPUs or without, is refused at the save and the run's start (409), saying Archil's client hangs on its sandboxes", async (t) => {
+/** A Daytona sandbox ready in Mode 2: warned of nothing at its save, never refused for its computer at its run's start. */
+const ready = (said) => {
+  assert.deepEqual([said.saved, said.refused], [[], []], JSON.stringify(said));
+  assert.doesNotMatch(said.started[2] ?? "", /Daytona sandbox can't/, JSON.stringify(said));
+};
+
+test("Mode 2: a Daytona sandbox on hosted Daytona (no DAYTONA_ARCHIL_EGRESS), with GPUs or without, holds a synced folder: ready, warned of nothing at its save and never refused for its computer at its run's start", async (t) => {
   const api = await server(t, { archil: true });
   assert.equal((await api("PUT", "/computers/daytona/keys", { DAYTONA_API_KEY: "fake-test-key" })).status, 200);
-  // Mode 2's folder is an Archil mount, which Daytona doesn't take: the reason comes before any GPU's.
-  const words = /^A Daytona sandbox can't mount the run's folder from Archil \(Archil mounts don't work on Daytona yet: Archil's client hangs on its sandboxes\): pick another sandbox for this agent's computer in Settings → Computers\.$/;
-  for (const [name, gpu] of [["no-gpu", undefined], ["gpu", { type: "H100", count: 1 }]]) {
-    const said = await saveAndStart(api, name, { computer: { kind: "sandbox", provider: "daytona", ...(gpu ? { gpu } : {}) } });
-    assert.deepEqual(said.saved.map((one) => one.slice(0, 2)), [["definition.computer", "not_set_up_here"]], JSON.stringify(said));
-    assert.match(said.saved[0][2], words);
-    assert.deepEqual(said.refused.map((one) => one.slice(0, 2)), [["definition.computer", "not_set_up_here"]], JSON.stringify(said));
-    assert.match(said.refused[0][2], words);
-    assert.equal(said.started[1], "agent_not_runnable", JSON.stringify(said));
-  }
+  for (const [name, gpu] of [["no-gpu", undefined], ["gpu", { type: "H100", count: 1 }]]) ready(await saveAndStart(api, name, { computer: { kind: "sandbox", provider: "daytona", ...(gpu ? { gpu } : {}) } }));
+});
+
+// A self-hosted Daytona target with an Archil egress relay mounts Archil (a run on one completed in Mode 2, 11-14). With
+// DAYTONA_ARCHIL_EGRESS saved, a Daytona sandbox mounts the run's folder where it starts from the operator's snapshot of
+// box/Dockerfile, which AGENTRUN_DAYTONA_SNAPSHOT names; without the snapshot, or on a GPU (no /dev/fuse), it holds a
+// synced folder instead. Ready either way.
+const DAYTONA_KEY = "daytona-fake-key-must-never-be-echoed";
+const EGRESS = "192.0.2.40:18100:42050";
+const SNAPSHOT = "agentrun-archil-0123456789ab";
+
+for (const snapshot of [SNAPSHOT, undefined]) {
+  test(`Mode 2: with DAYTONA_ARCHIL_EGRESS saved and ${snapshot ? "AGENTRUN_DAYTONA_SNAPSHOT named" : "no AGENTRUN_DAYTONA_SNAPSHOT"}, a Daytona sandbox, with GPUs or without, is ready, warned of nothing at its save and never refused for its computer at its run's start`, async (t) => {
+    const api = await server(t, { archil: true, env: snapshot ? { AGENTRUN_DAYTONA_SNAPSHOT: snapshot } : {} });
+    const saved = await api("PUT", "/computers/daytona/keys", { DAYTONA_API_KEY: DAYTONA_KEY, DAYTONA_ARCHIL_EGRESS: EGRESS });
+    assert.equal(saved.status, 200, JSON.stringify(saved.body));
+    assert.deepEqual([saved.body.ready, saved.body.why], [true, undefined], JSON.stringify(saved.body));
+    const said = await saveAndStart(api, "daytona-egress", { computer: { kind: "sandbox", provider: "daytona" } });
+    ready(said);
+    const gpu = await saveAndStart(api, "daytona-egress-gpu", { computer: { kind: "sandbox", provider: "daytona", gpu: { type: "H100", count: 1 } } });
+    ready(gpu);
+    for (const text of [JSON.stringify(said), JSON.stringify(gpu), JSON.stringify(saved.body)]) assert.ok(!text.includes(DAYTONA_KEY), "no key in a save's, a start's or the view's words");
+  });
+}
+
+test("Mode 2: a DAYTONA_ARCHIL_EGRESS of whitespace alone is refused at its save; Settings and the run's start agree the sandbox is ready, on a synced folder", async (t) => {
+  const api = await server(t, { archil: true, env: { AGENTRUN_DAYTONA_SNAPSHOT: SNAPSHOT } });
+  assert.equal((await api("PUT", "/computers/daytona/keys", { DAYTONA_API_KEY: DAYTONA_KEY })).status, 200);
+  const blank = await api("PUT", "/computers/daytona/keys", { DAYTONA_ARCHIL_EGRESS: "   " });
+  assert.equal(blank.status, 422, JSON.stringify(blank.body));
+  assert.match(JSON.stringify(blank.body), /DAYTONA_ARCHIL_EGRESS is a non-empty string/);
+  const view = await api("GET", "/computers");
+  const daytona = view.body.kinds.find((one) => one.kind === "sandbox").providers.find((one) => one.id === "daytona");
+  assert.deepEqual([daytona.ready, daytona.why], [true, undefined], JSON.stringify(daytona));
+  ready(await saveAndStart(api, "daytona-blank-egress", { computer: { kind: "sandbox", provider: "daytona" } }));
 });
 
 // A computer that runs only on the vendor's own network (the cloud phone's provider declares network "open" alone): on a
 // server whose AGENTRUN_BOX_ALLOW is none, the operator's word for no network at all, its run is refused at the start in
 // words naming the setting, as the claim refuses it; under the default list (the setting unset) or the operator's own
 // list it is not, and runs open (the claim's networkOf).
-const noNetwork = (what) => `This agent's computer is a ${what}, which needs a network (the vendor's own, or public addresses from this machine), and this server's AGENTRUN_BOX_ALLOW is none (no network): pick a computer that runs with no network in Settings → Computers, or set AGENTRUN_BOX_ALLOW to a host list.`;
+const noNetwork = (what) => `This agent's computer is a ${what}, which needs a network (the vendor's own, or public addresses from this machine), and this server's AGENTRUN_BOX_ALLOW is none (no network): pick a computer that runs with no network in Settings → Computers, or restart the server with AGENTRUN_BOX_ALLOW set to a host list.`;
 const NO_NETWORK_PHONE = noNetwork("Phone harness phone");
 for (const boxAllow of ["none", undefined, "pypi.org"]) {
   const refused = boxAllow === "none";
@@ -167,6 +199,37 @@ test("a cloud phone on a server with no adb on its PATH is not ready in Settings
   assert.deepEqual(said.refused.map((one) => one.slice(0, 2)), [["definition.computer", "not_set_up_here"]], JSON.stringify(said));
   assert.equal(said.refused[0][2], `This agent's computer is a Phone harness phone, and this server cannot run it: ${NO_ADB}.`);
   assert.equal(said.started[1], "agent_not_runnable", JSON.stringify(said));
+});
+
+// A computer every tool of which is set to deny is never started (computer-all-denied.test.mjs): its save warns in words,
+// on definition.computer, and its run's start asks nothing of it, so a phone with no adb or no key saved starts the run.
+// With its tools allowed, nothing is said of it at the save. The agent's own deny and the server's alike.
+const ALL_DENIED_PHONE = "Every tool for this agent's phone is set to deny, so a run never starts it: allow one, or set the computer to none.";
+for (const [where, setUp] of [["for this agent", async () => ({ tool_settings: { phone: { permission: "deny" } } })], ["on this server", async (api) => {
+  assert.equal((await api("PUT", "/settings/tools", { phone: { permission: "deny" } })).status, 200);
+  return {};
+}]]) {
+  test(`a phone set to deny ${where} saves with a warning that a run never starts it, and its run is not refused for it, with no adb and no key saved`, async (t) => {
+    const api = await server(t, { adb: false });
+    const said = await saveAndStart(api, `phone-denied-${where.replace(/ /g, "-")}`, { computer: { kind: "phone", provider: "phone-harness" }, ...(await setUp(api)) });
+    assert.deepEqual(said.saved, [["definition.computer", "not_allowed", ALL_DENIED_PHONE]], JSON.stringify(said));
+    assert.deepEqual(said.refused, [], `the run is not refused for its phone: ${JSON.stringify(said)}`);
+  });
+}
+
+test("a phone allowed, its key saved, saves with no warning on its computer", async (t) => {
+  const api = await server(t, {});
+  assert.equal((await api("PUT", "/computers/phone-harness/keys", { PHONE_HARNESS_API_KEY: "fake-test-key" })).status, 200);
+  const said = await saveAndStart(api, "phone-allowed", { computer: { kind: "phone", provider: "phone-harness" }, tool_settings: { phone: { permission: "allow" } } });
+  assert.deepEqual([said.saved, said.refused], [[], []], JSON.stringify(said));
+});
+
+test("under --faux, a desktop set to deny saves with the warning, and one allowed with none", async (t) => {
+  const api = await server(t, { faux: true });
+  const denied = await saveAndStart(api, "faux-desk-denied", { computer: { kind: "desktop", provider: "faux-desktop" }, tool_settings: { desktop: { permission: "deny" } } });
+  assert.deepEqual(denied.saved, [["definition.computer", "not_allowed", ALL_DENIED_PHONE.replace("phone", "desktop")]], JSON.stringify(denied));
+  const allowed = await saveAndStart(api, "faux-desk-allowed", { computer: { kind: "desktop", provider: "faux-desktop" } });
+  assert.deepEqual(allowed.saved, [], JSON.stringify(allowed));
 });
 
 // Local Chrome declares "open" and "allow", never "none" (public addresses from this machine, through its egress proxy):
@@ -210,7 +273,7 @@ test("Mode 1: an agent whose computer is a Docker sandbox still runs where Docke
   assert.deepEqual(said.refused, [], JSON.stringify(said));
   // What is left is the model key this test saves none of: nothing of its computer keeps it from running.
   assert.deepEqual(said.started.slice(0, 2), [409, "agent_not_runnable"], JSON.stringify(said));
-  assert.match(said.started[2], /^No model yet: add a model key in Settings → Model keys[^.]*\.$/, JSON.stringify(said));
+  assert.match(said.started[2], /^No model yet: start Ollama and pull a model with tools, or add a model key in Settings → Model keys[^.]*\.$/, JSON.stringify(said));
 });
 
 test("Mode 1: an agent saved with place {sandbox, docker} on a host where Docker does not answer is refused at its run's start (409), in the words Settings → Computers says, and its view says Docker is not ready", async (t) => {
@@ -236,17 +299,21 @@ test("Mode 1: where Docker answers, GET /v2/computers shows Docker ready for a s
   }
 });
 
-test("Mode 1: a daemon that answers only after the server started is not taken: Docker stays not ready, in the start probe's words, until a restart", async (t) => {
+test("Mode 1: a daemon that answers only after the server started is not taken: Docker stays not ready, in the start probe's words (a host's, or a container's with no socket), until a restart", async (t) => {
   // The start made no Docker box, so its checks of Docker (a daemon elsewhere, this server's paths, host addresses, the
-  // box network) never ran; a daemon that answers now can't stand in for them.
-  const api = await server(t, { archil: false, docker: false });
-  const bin = process.env.PATH.split(":")[0];
-  await writeFile(join(bin, "docker"), "#!/bin/sh\nif [ \"$1\" = version ]; then echo 27.0.0-fake; exit 0; fi\nexit 0\n", { mode: 0o755 });
-  const view = await api("GET", "/computers");
-  for (const kind of ["sandbox", "desktop"]) {
-    const docker = view.body.kinds.find((one) => one.kind === kind).providers.find((one) => one.id === "docker");
-    assert.equal(docker.ready, false, `${kind}: ${JSON.stringify(docker)}`);
-    assert.match(docker.why, /^Docker isn't running on this machine.*then restart AgentRun$/, `${kind}: ${JSON.stringify(docker)}`);
+  // box network) never ran; a daemon that answers now can't stand in for them. The probe's facts are pinned, so the words
+  // do not depend on where the suite runs (place-offers.ts containerReason).
+  const HOST_WORDS = "Docker isn't running on this machine, or this user may not use it (docker version failed: exit 1): start Docker, or add this user to the docker group, then restart AgentRun";
+  for (const [probeContainer, words] of [[{ inside: false }, HOST_WORDS], [{ inside: true, image: true, exists: () => false }, DOCKER_NO_SOCKET]]) {
+    const api = await server(t, { archil: false, docker: false, probeContainer });
+    const bin = process.env.PATH.split(":")[0];
+    await writeFile(join(bin, "docker"), "#!/bin/sh\nif [ \"$1\" = version ]; then echo 27.0.0-fake; exit 0; fi\nexit 0\n", { mode: 0o755 });
+    const view = await api("GET", "/computers");
+    for (const kind of ["sandbox", "desktop"]) {
+      const docker = view.body.kinds.find((one) => one.kind === kind).providers.find((one) => one.id === "docker");
+      assert.equal(docker.ready, false, `${kind}: ${JSON.stringify(docker)}`);
+      assert.equal(docker.why, words, `${kind}, inside ${probeContainer.inside}: ${JSON.stringify(docker)}`);
+    }
   }
 });
 

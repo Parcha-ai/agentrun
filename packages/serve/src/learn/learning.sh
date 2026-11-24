@@ -8,11 +8,17 @@
 # The host computes everything it can (the tree, the front matter, the history, the log, the snapshot) and hands it in;
 # this script does the git plumbing, the file writes and the atomic swap, in this order, and nothing else:
 #   1. the commit: `git fast-import` writes the blobs and ONE commit on a temporary ref, then
-#      `update-ref refs/heads/main <new> <old>`, the compare and swap. A lost race exits 3 and writes nothing;
-#   2. the working tree brought in line with the new main (read-tree -u --reset);
-#   3. for a run's merge, `.agentrun/diffs/<run>.json`: each path's patch, parent against merge, as git diffs it;
+#      `update-ref refs/heads/main <new> <old>`, the compare and swap. A lost race exits 3 and writes nothing. A run's
+#      merge also creates `refs/agentrun/runs/<run>` in the same ref transaction, so a run (and round) merges once: a
+#      second merge of it, however it raced the first, exits 6 and writes nothing but the first one's diff file when a
+#      stop left it none. The host's scrub of a purged run's merge creates `refs/agentrun/purged/<run>` (its
+#      round's key, as its diff file is named) the same way, so it lands once too (a second exits 6 with the first's
+#      commit);
+#   2. for a run's merge, `.agentrun/diffs/<run>.json`: each path's patch, parent against merge, as git diffs it;
+#   3. the working tree brought in line with the new main (read-tree -u --reset);
 #   4. `.agentrun/snapshot.json`, written to a temporary name and moved into place, LAST.
-# So a reader that finds snapshot.json finds every file it names at its main, or a newer one (a write in flight).
+# So a reader that finds snapshot.json finds every file it names at its main, or a newer one (a write in flight). A stop
+# between 1 and 2 leaves a run's ref with no diff file: `merged` (and a second merge's exit 6) writes it from the ref.
 #
 # Ops:
 #   init                 make the folder a repository when it is not one, then commit as `commit` does with no parent;
@@ -21,15 +27,22 @@
 #   snapshot <main>      the working tree and snapshot.json written again at <main>, which must be main (else 3)
 #   read [commit]        main's (or <commit>'s) tree, its first-parent log and its blobs, for the host to build a
 #                        snapshot from; 1 when <commit> is not in the repository
-#   has <main> <path>    whether <main> holds anything at <path>, any mode, any type (0 yes, 1 no)
+#   merged <run>         run <run>'s merge (its ref) on stdout, its diff file written from it when there is none; 1
+#                        when the run never merged here
 # stdin, for init, commit and snapshot: header lines, a blank line, then (init and commit) a fast-import stream:
 #   ref <name>           the temporary ref the stream commits on (refs/agentrun/import-<hex>)
 #   snapshot <json>      snapshot.json, one line, where a \001M\001 stands for the new main
 #   path <path>          (a merge) a path its diff covers
 #   absent <path>        <path> must not be on <old>, any mode, any type (else 4: "absent <path>" on stdout)
-#   same <commit> <path> <path> must be the same on <commit> as on <old> (else 4: "same <path>" on stdout)
+#   same <commit> <path> <path> must be the same on <commit> as on <old> (else 4: "same <path>" on stdout); a
+#                        <commit> the repository does not hold fails it (the folder was reset since it was read)
+#   seed <commit>        (a run's merge) the commit the run was seeded from, which the repository held as its end began
+#                        and must hold still (else 4: "seed <commit>" on stdout): a reset since merges nothing, a
+#                        correction alone included
+#   purged <run>         (the host's scrub of a purged run's merge, <run> its round's key) that scrub, which lands once
 # Exit: 0 done (the new main on stdout), 3 stale (main as it is on stdout), 4 a precondition failed, 5 main moved but
-# the files could not be brought in line (the new main on stdout; no snapshot written), else git's error on stderr.
+# the files could not be brought in line (the new main on stdout; no snapshot written), 6 the run merged already, or
+# the purged run's scrub landed already (that commit on stdout), else git's error on stderr.
 set -u
 set -f
 
@@ -181,10 +194,19 @@ preconditions() {
   done < "$tmp/absent"
   sed -n 's/^same //p' "$tmp/head" > "$tmp/same"
   while read -r c p; do
+    # A commit this repository does not hold (the agent's learning reset after the run read it) is no ground to merge on.
+    if ! g cat-file -e "$c^{commit}" 2>/dev/null; then
+      printf 'same %s\n' "$p" >> "$tmp/failed"
+      continue
+    fi
     a=$(g rev-parse -q --verify "$c:$p" 2>/dev/null || true)
     b=$(g rev-parse -q --verify "$old:$p" 2>/dev/null || true)
     [ "$a" = "$b" ] || printf 'same %s\n' "$p" >> "$tmp/failed"
   done < "$tmp/same"
+  sed -n 's/^seed //p' "$tmp/head" > "$tmp/seed"
+  while read -r c; do
+    g cat-file -e "$c^{commit}" 2>/dev/null || printf 'seed %s\n' "$c" >> "$tmp/failed"
+  done < "$tmp/seed"
   if [ -s "$tmp/failed" ]; then
     cat "$tmp/failed"
     exit 4
@@ -226,6 +248,16 @@ write_diff() {
   mv -f "$out" ".agentrun/diffs/$1.json" || die "the diff could not be moved into place"
 }
 
+# Run $1's diff file, written from its merge $2 (its ref) when a stop between the merge and the diff left none: every
+# path the merge changed against its parent (a run's merge has one). Ends the op: $old, $new and the header are reused.
+diff_of_ref() {
+  [ -f ".agentrun/diffs/$1.json" ] && return 0
+  new=$2
+  old=$(g rev-parse -q --verify "$2^1^{commit}") || die "run $1's merge has no parent"
+  g diff-tree -r --no-renames --no-commit-id --name-only "$old" "$new" | sed 's/^/path /' > "$tmp/head" || die "git diff-tree failed"
+  write_diff "$1"
+}
+
 commit() {
   take_stdin
   ref=$(sed -n 's/^ref //p' "$tmp/head")
@@ -235,6 +267,10 @@ commit() {
   esac
   case $ref in
     *[!0-9a-z/-]*) die "the import ref is not one this script takes" ;;
+  esac
+  purged=$(sed -n 's/^purged //p' "$tmp/head")
+  case $purged in
+    *[!A-Za-z0-9._-]*) die "a purged run's key is letters, digits, dots, dashes and underscores" ;;
   esac
   cur=$(main_now)
   if [ "$cur" != "$old" ]; then
@@ -251,7 +287,21 @@ commit() {
     paths_of "$new"
   fi
   no_links
-  if ! g update-ref -m learning refs/heads/main "$new" "${old:-$ZERO}" 2> "$tmp/cas"; then
+  # One ref transaction: main's compare and swap and, for a run's merge, its run's ref made new (git refuses one that is
+  # there), both or neither.
+  printf 'update refs/heads/main %s %s\n' "$new" "${old:-$ZERO}" > "$tmp/refs"
+  [ -n "$run" ] && printf 'create refs/agentrun/runs/%s %s\n' "$run" "$new" >> "$tmp/refs"
+  [ -n "$purged" ] && printf 'create refs/agentrun/purged/%s %s\n' "$purged" "$new" >> "$tmp/refs"
+  if ! g update-ref -m learning --stdin < "$tmp/refs" 2> "$tmp/cas"; then
+    if [ -n "$run" ] && merged=$(g rev-parse -q --verify "refs/agentrun/runs/$run^{commit}" 2> /dev/null); then
+      diff_of_ref "$run" "$merged"
+      printf '%s\n' "$merged"
+      exit 6
+    fi
+    if [ -n "$purged" ] && scrubbed=$(g rev-parse -q --verify "refs/agentrun/purged/$purged^{commit}" 2> /dev/null); then
+      printf '%s\n' "$scrubbed"
+      exit 6
+    fi
     cur=$(main_now)
     if [ "$cur" != "$old" ]; then
       printf '%s\n' "$cur"
@@ -260,12 +310,14 @@ commit() {
     cat "$tmp/cas" >&2
     exit 2
   fi
+  [ "${AGENTRUN_LEARNING_FAIL:-}" = before-diff ] && die "failed before the diff, as the test asked"
+  # The diff before the working tree: a merge whose files could not be brought in line (exit 5) keeps its diff.
+  [ -n "$run" ] && write_diff "$run"
   if ! check_out "$new"; then
     cat "$tmp/checkout" >&2
     printf '%s\n' "$new"
     exit 5
   fi
-  [ -n "$run" ] && write_diff "$run"
   stage_snapshot "$new"
   place_snapshot
   printf '%s\n' "$new"
@@ -351,14 +403,17 @@ case $op in
     for path in "$@"; do printf '%s:%s\n' "$commit" "$path" >> "$tmp/want"; done
     g cat-file --batch < "$tmp/want" || die "cat-file failed"
     ;;
-  has)
-    main=${2:-}
-    path=${3:-}
-    hex40 "$main" || die "has takes a main"
-    [ -n "$path" ] || die "has takes a path"
-    g cat-file -e "$main:$path" 2> /dev/null || exit 1
+  merged)
+    run=${2:-}
+    case $run in
+      '' | *[!A-Za-z0-9._-]*) die "merged takes a run id" ;;
+    esac
+    [ -d "$GIT_DIR" ] || exit 1
+    merge=$(g rev-parse -q --verify "refs/agentrun/runs/$run^{commit}" 2> /dev/null) || exit 1
+    diff_of_ref "$run" "$merge"
+    printf '%s\n' "$merge"
     ;;
   *)
-    die "no op $op: init, commit, snapshot, read, show or has"
+    die "no op $op: init, commit, snapshot, read, show or merged"
     ;;
 esac

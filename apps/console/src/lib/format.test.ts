@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { capDollars, clock, cost, costOfCap, markdown, runLabel, when } from "./format";
+import { capDollars, chargeWords, clock, cost, costOfCap, markdown, runLabel, when } from "./format";
 import type { Cost } from "./v2";
 import unpriced from "../fixtures/run.working.working.1.json";
 
@@ -11,6 +11,9 @@ describe("costOfCap", () => {
     expect(costOfCap(est(0.0059), 1)).toBe("$0.0059 est. of $1.00");
     expect(costOfCap(est(0.0059), 2.5)).toBe("$0.0059 est. of $2.50");
     expect(costOfCap({ usd: 0.42, basis: "charge", charge_state: null, cap_usd: null }, 1)).toBe("$0.42 of $1.00");
+  });
+  it("a reported cost is one figure too: of the cap", () => {
+    expect(costOfCap({ usd: 0.0042, basis: "reported", charge_state: null, cap_usd: null }, 1)).toBe("$0.0042 reported of $1.00");
   });
   it("with no cap, the cost alone", () => {
     expect(costOfCap(est(0.0059), null)).toBe("$0.0059 est.");
@@ -41,6 +44,12 @@ describe("cost", () => {
     expect(cost(undefined)).toBe("Unknown");
     expect(cost({ usd: null, basis: "estimate", charge_state: null, cap_usd: null })).toBe("Unknown");
     expect(cost({ usd: null, basis: "estimate", charge_state: null, cap_usd: null })).not.toMatch(/\$0/);
+  });
+
+  it("says why an ended run's cost is unknown when the server could not read it, never a zero", () => {
+    const unread = { usd: null, basis: "unpriced", charge_state: null, cap_usd: null, unknown: "booking_unread" } as Cost;
+    expect(cost(unread, { ended: true })).toBe("Unknown · cost not read");
+    expect(costOfCap(unread, 1, { ended: true })).toBe("Unknown · cost not read · cap $1.00");
   });
 
   it("reads the recorded run whose cost is not known as Unknown", () => {
@@ -86,6 +95,22 @@ describe("a free model's cost", () => {
     expect(cost({ usd: null, basis: "estimate", charge_state: null, cap_usd: null, free: true } as Cost)).toBe("Unknown");
     expect(cost({ usd: 0.25, basis: "estimate", charge_state: null, cap_usd: null, free: true } as Cost)).toBe("$0.25 est.");
     expect(cost({ usd: null, basis: "estimate", charge_state: null, cap_usd: null, so_far_usd: 0, unpriced: 9 })).toBe("so far $0.00 est. · 9 not priced");
+  });
+});
+
+// A run whose process ended mid-request, before any answer or usage, has that request booked at what its cap held for it
+// (the server's `upper_bound`): the most the run can have cost, said "at most", never as the exact figure.
+describe("a cost that is an upper bound", () => {
+  const bound: Cost = { usd: 0.25, basis: "estimate", charge_state: null, cap_usd: null, upper_bound: true };
+  it("says at most, on the run and on its usage row", () => {
+    expect(cost(bound)).toBe("at most $0.25 est.");
+    expect(cost(bound, { ended: true })).toBe("at most $0.25 est.");
+    expect(costOfCap(bound, 1)).toBe("at most $0.25 est. of $1.00");
+    expect(chargeWords({ usd: 0.25, upper_bound: true }, { ended: true })).toBe("at most $0.25");
+  });
+  it("a guard: a cost the server does not mark reads as before", () => {
+    expect(cost({ ...bound, upper_bound: undefined })).toBe("$0.25 est.");
+    expect(chargeWords({ usd: 0.25 })).toBe("$0.25");
   });
 });
 

@@ -10,14 +10,14 @@
 // (./hosted/provider.ts). Every vendor fact here is cited in the README's Agent37 section.
 import { createHash } from "node:crypto";
 import { Duplex } from "node:stream";
-import { pemOf, type Ssh2Module, SshExec, SshTunnelError, type SshTunnel } from "./agent37-ssh.js";
 import { boxImageRef, boxRecipeHash } from "./box-image.js";
 import { AGENT37, AGENT37_BASE_TEMPLATE } from "./descriptors/agent37.js";
 import { DEADLINE_LABEL, show } from "./drift.js";
 import { type HostCall, HostError, type HostFacts, type Machine, type MachineHost, type MachineProcess, type MachineRequest } from "./host.js";
 import { orThrow } from "./hosted/process.js";
-import { jsonOf, type Rest, rest } from "./hosted/rest.js";
+import { httpsBase, jsonOf, type Rest, rest } from "./hosted/rest.js";
 import { HostedProvider, type HostedOptions, type HostedTimeouts } from "./hosted/provider.js";
+import { pemOf, type Ssh2Module, SshExec, SshTunnelError, type SshTunnel } from "./hosted/ssh-exec.js";
 import { dateOf, DOMAIN, isWhole } from "./hosted/values.js";
 import type { CallContext, ComputerSpec, Refusal } from "./provider.js";
 import { type ComputerErrorCode, failFor, ok, type Result } from "./result.js";
@@ -288,7 +288,7 @@ class Agent37Host implements MachineHost {
 
 	constructor(options: { apiKey: string; sshKey: string; ssh2: Ssh2Module; fetch: typeof fetch; WebSocket: WebSocketClass; apiUrl: string; proxyDomain: string; type: Agent37Type; region: Agent37Region }) {
 		this.#apiKey = options.apiKey;
-		this.#ssh = new SshExec({ ssh2: options.ssh2, privateKey: options.sshKey, tunnelOf: (id) => this.#tunnel(id) });
+		this.#ssh = new SshExec({ ssh2: options.ssh2, loginOf: () => ({ username: "root", privateKey: options.sshKey }), tunnelOf: (id) => this.#tunnel(id) });
 		this.#client = rest({
 			base: options.apiUrl,
 			headers: () => ({ Authorization: `Bearer ${options.apiKey}`, Accept: "application/json" }),
@@ -330,7 +330,7 @@ class Agent37Host implements MachineHost {
 		return { ...tunnelOf(ws, host), host };
 	}
 
-	/** argv as root over SSH (agent37-ssh.ts): one connection per instance through its tunnel, shared by its execs. */
+	/** argv as root over SSH (hosted/ssh-exec.ts): one connection per instance through its tunnel, shared by its execs. */
 	async exec(id: string, argv: readonly string[], ctx: HostCall): Promise<MachineProcess> {
 		return this.#ssh.exec(instanceId(id), argv, ctx);
 	}
@@ -360,8 +360,10 @@ class Agent37Host implements MachineHost {
 
 	/**
 	 * POST /v1/instances: the template, the type and region, the size when the spec asks one, the request's name as the
-	 * instance's name, the labels as metadata, deny-all (or allow-all for an Archil computer's root), auto-sleep off and
-	 * no public port. It answers once the instance runs (docs: instances/create, Defaults).
+	 * instance's name, the labels as metadata, deny-all (or allow-all where the adapter asks egress: an Archil computer's root, or the
+	 * egress proxy of a network open or a list), auto-sleep off and
+	 * no public port. It answers once the instance runs (docs: instances/create, Defaults). req.backstopAt is left:
+	 * Agent37 has no delete or stop timer to set it on, so the janitor alone ends an instance.
 	 */
 	async create(req: MachineRequest, ctx: HostCall): Promise<{ id: string }> {
 		const bytes = Buffer.byteLength(JSON.stringify(req.labels));
@@ -540,13 +542,8 @@ export class Agent37Provider extends HostedProvider {
 		if (typeof (ssh2 as { Client?: unknown } | null)?.Client !== "function") throw new Error("options.ssh2 must be the ssh2 package (its Client class): the host installs it, as it does e2b");
 		if (typeof fetcher !== "function") throw new Error("options.fetch must be a function, as the global fetch is");
 		if (typeof WebSocket !== "function") throw new Error("options.WebSocket must be a WebSocket class that takes headers, as Node's global one does");
-		let api: URL;
-		try {
-			api = new URL(apiUrl);
-		} catch {
-			throw new Error(`apiUrl must be an https URL such as ${DEFAULT_API_URL}, not ${JSON.stringify(apiUrl)}`);
-		}
-		if (api.protocol !== "https:" || api.search !== "" || api.hash !== "") throw new Error(`apiUrl must be an https URL such as ${DEFAULT_API_URL}, not ${JSON.stringify(apiUrl)}`);
+		const api = new URL(httpsBase(apiUrl, "the Agent37 API URL"));
+		if (api.search !== "" || api.hash !== "") throw new Error(`the Agent37 API URL takes no query or fragment, as ${DEFAULT_API_URL} has none: ${JSON.stringify(apiUrl)}`);
 		if (typeof proxyDomain !== "string" || !DOMAIN.test(proxyDomain)) throw new Error(`proxyDomain must be a host name such as ${DEFAULT_PROXY_DOMAIN}, not ${JSON.stringify(proxyDomain)}`);
 		if (type !== "vm" && type !== "default") throw new Error(`type is vm or default, not ${JSON.stringify(type)}`);
 		if (region !== "us" && region !== "eu" && region !== "ap-south") throw new Error(`region is us, eu or ap-south, not ${JSON.stringify(region)}`);

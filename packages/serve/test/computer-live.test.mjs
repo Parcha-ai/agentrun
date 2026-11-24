@@ -193,6 +193,27 @@ test("close ends the viewer and drops the row; a computer that goes ends the vie
   await assert.rejects(new Promise((resolve, reject) => tcp(b.row.port, "127.0.0.1").once("connect", resolve).once("error", reject)), "nothing listens after close");
 });
 
+test("a park's close tells the viewer what the run waits for and that the computer is kept, how long, and what to say after: never that it ended", async (t) => {
+  for (const [kind, input, cause, waits] of [
+    ["desktop", "desktop", "approval", "Waiting for your approval. The desktop is kept for 10 minutes."],
+    ["desktop", "desktop", "answer", "Waiting for your answer. The desktop is kept for 10 minutes."],
+    ["phone", "android", "cap", "Waiting for you to raise the spend cap. The phone is kept for 10 minutes."],
+    ["desktop", "desktop", "refusal", "Paused: the next step doesn't fit the spend cap. Waiting for you to raise it. The desktop is kept for 10 minutes."],
+    ["desktop", "desktop", "workflow", "Waiting for your approval of the workflow's step. The desktop is kept for 10 minutes."],
+  ]) {
+    const store = fakeLiveViewersStore();
+    const one = await opened(t, { store, kind, input, tag: `cmp-${cause}` });
+    const ws = await viewerOf(one.row);
+    const until = Date.now() + 600_000;
+    await one.view.close({ parked: cause, until });
+    const said = await next(ws, "ended");
+    assert.deepEqual({ ...said, keptMs: undefined }, { type: "ended", reason: "parked", message: waits, keptMs: undefined, lapsed: `The ${kind} wasn't kept: 10 minutes passed. A new one starts when the run goes on.` });
+    assert.ok(said.keptMs > 590_000 && said.keptMs <= 600_000, `kept for the rest of the 10 minutes: ${said.keptMs}`);
+    assert.doesNotMatch(said.message, /ended/);
+    assert.deepEqual(await readLiveViewers(store, KEY, RUN), [], "the row is dropped: no take-over while parked");
+  }
+});
+
 /** Resolves once the run has no viewer row (the view closed): each look waits a turn of the event loop, never a clock. */
 async function rowGone(store) {
   for (let turn = 0; turn < 1_000; turn += 1) {
@@ -412,10 +433,15 @@ test("two opens of one computer at once run one after the other: one endpoint le
   t.after(() => b.view.close("ended"));
   const rows = await readLiveViewers(store, KEY, RUN);
   assert.equal(rows.length, 1);
-  const ports = store.received.map(({ v }) => v.port);
-  assert.equal(ports.length, 2);
-  await assert.rejects(new Promise((resolve, reject) => tcp(ports[0], "127.0.0.1").once("connect", resolve).once("error", reject)), "the first open's endpoint is closed, not orphaned");
-  assert.equal(rows[0].port, ports[1]);
+  const [first, second, ...more] = store.received.map(({ v }) => v);
+  assert.deepEqual(more, []);
+  // The first open's endpoint is closed, not orphaned: its own page no longer answers 200 (an orphan's still would). Its
+  // port is asked for that page, not whether anything listens on it: a freed port can be handed out again at once, to
+  // the second open's listen or another process's, so something may listen there. Bounded: another process's server
+  // may never answer, and an orphan of ours answers at once.
+  const page = await fetch(`http://127.0.0.1:${first.port}/v/${first.id}`, { signal: AbortSignal.timeout(5_000) }).then((res) => res.status, () => "refused or no answer");
+  assert.notEqual(page, 200, "the first open's endpoint is closed, not orphaned");
+  assert.equal(rows[0].port, second.port);
   await a.view.close("ended");
   assert.deepEqual((await readLiveViewers(store, KEY, RUN)).map((v) => v.id), [rows[0].id], "the stale view's close leaves the live row");
   // Another process's relaunch put a newer row under the same kind and tag: this view's close leaves it.

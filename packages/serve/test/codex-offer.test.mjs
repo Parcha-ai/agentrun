@@ -18,7 +18,11 @@ import { linkHarnesses, scratch } from "./support.mjs";
 
 const pinned = verifyCodexBinary(findCodex());
 const skip = pinned instanceof Error && env.AGENTRUN_CODEX_REQUIRE_BINARY !== "1" ? pinned.message : false;
-const codexOf = async (given) => (await harnessOffers(given)).find((h) => h.id === "codex");
+// Its label and promises are harness-one-table.test.mjs's: each case here reads what the offer says of its run.
+const codexOf = async (given) => {
+  const { label: _label, promises: _promises, ...offer } = (await harnessOffers(given)).find((h) => h.id === "codex");
+  return offer;
+};
 
 test("codex is offered on the pinned build: available with a model key, unavailable for the key it names without one", { skip }, async (t) => {
   const data = await scratch(t);

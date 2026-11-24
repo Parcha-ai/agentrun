@@ -199,6 +199,18 @@ test("a run's clock (a template eval case's now) reaches claude-agent's adapter,
   assert.equal("now" in given[1], false, "the real clock: the adapter's own default");
 });
 
+test("a run's time zone reaches claude-agent's adapter, whose turn date reads it; a run with none hands no zone", async () => {
+  const real = await import("@parcha/agentrun-harness-claude");
+  const given = [];
+  const load = async () => ({ ...real, claudeAgentAdapter: (options) => (given.push(options), { id: "claude-agent" }) });
+  const needs = { model: { provider: "anthropic", modelId: "claude-haiku-5-5" }, models: { getModel: () => undefined } };
+  const env = { ANTHROPIC_API_KEY: `not-a-secret-${"k"}` };
+  await claudeOf(env, { ...needs, zone: "America/Los_Angeles" }, load, loadedSdk);
+  await claudeOf(env, needs, load, loadedSdk);
+  assert.equal(given[0].zone, "America/Los_Angeles");
+  assert.equal("zone" in given[1], false, "no zone: the adapter's own default");
+});
+
 test("each adapter harness's check of skills is its own package's skillProblems, by its table entry (packageSkillCheck); none where a package has no check of its own (each package is a dependency of serve, so it is never missing)", async () => {
   const [{ packageSkillCheck }, { builtinHarness }, claude, codex, opencode] = await Promise.all([import("../dist/adapters.js"), import("../dist/harness-table.js"), import("@parcha/agentrun-harness-claude"), import("@parcha/agentrun-harness-codex"), import("../dist/harness-opencode/index.js")]);
   for (const [id, pkg] of [["claude-agent", claude], ["codex", codex], ["opencode", opencode]]) assert.equal(typeof pkg.skillProblems, "function", `${id}'s package has a check of its own`);
@@ -325,7 +337,7 @@ test("npx is told by where serve's files are: under npm's _npx cache, not a proj
 });
 
 test("OpenCode's skills are checked as it is handed them: a skill set at its 1 MiB limit as written, which servedSkill's quotes put past it, is refused by the check, so systemOf never hands it on to grow past the limit in opencodeOf", async () => {
-  const [{ builtinHarness }, { servedSkill }, { SKILL_BYTES }] = await Promise.all([import("../dist/harness-table.js"), import("../dist/learn/skills.js"), import("@parcha/agentrun-kernel")]);
+  const [{ builtinHarness }, { servedSkill }, { SKILL_BYTES }] = await Promise.all([import("../dist/harness-table.js"), import("../dist/learn/workflow-draft.js"), import("@parcha/agentrun-kernel")]);
   const check = await builtinHarness("opencode").skillCheck();
   const head = "---\nname: big\ndescription: A large reference\n---\n";
   const at = [{ name: "big", files: { "SKILL.md": head + "x".repeat(SKILL_BYTES - Buffer.byteLength(head)) } }];

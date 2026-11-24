@@ -5,6 +5,7 @@
 // alone (harness-install.ts); opencode's pinned CLI that is missing says so with the one line that installs it: an npm
 // install beside serve, or, when serve runs from npx, the npx line that runs it with the missing package.
 import { accessSync, constants, existsSync, readFileSync, statSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AdapterFacts, AgentAdapter, SessionSpec } from "@parcha/agentrun-kernel";
@@ -17,7 +18,7 @@ import { type HarnessEntry, harnessOf, onAdapter } from "./harness-table.js";
 import type { ModelRef } from "./model.js";
 import { HarnessUnavailable, type InstallFix, providerFor } from "./provider.js";
 import { keyShaped } from "./secret-cut.js";
-import { servedSkills } from "./learn/skills.js";
+import { servedSkills } from "./learn/workflow-draft.js";
 import { runKeyOf } from "./key-refusal.js";
 import type { SkillCheck, SkillFiles } from "./skills.js";
 import { planeOf } from "./tool-plane.js";
@@ -80,6 +81,54 @@ export function npxLine(spec: string, env: NodeJS.ProcessEnv = {}, installed: (n
   const port = env[STARTED_PORT_ENV];
   const flags = [...(port && /^\d{1,5}$/.test(port) ? [`--port ${port}`] : []), ...(command && env[STARTED_OPEN_ENV] === "0" ? ["--no-open"] : []), ...(!command && env[STARTED_OPEN_ENV] === "1" ? ["--open"] : [])];
   return `npx ${yes}${packages.map((name) => `-p ${name}`).join(" ")} ${command ? "agentrun" : "agentrun-serve"}${named}${flags.map((flag) => ` ${flag}`).join("")}`;
+}
+
+/** The first of `base`, `base-2`, `base-3`… that is not there. */
+const freeName = (base: string, exists: (path: string) => boolean): string => {
+  let name = base;
+  for (let n = 2; exists(name); n++) name = `${base}-${n}`;
+  return name;
+};
+
+/**
+ * A start the agentrun launcher made (NPX_PACKAGE_ENV: by npx, or by the installer's bin/agentrun and its service, the
+ * same launcher) that a data directory refused because an earlier version wrote it (store.ts StoreFromEarlierVersion,
+ * or SchemaVersionUnknown on an earlier release's store): the refusal's own first line,
+ * then the two ways on as commands to paste. That command keeps its data in ~/.agentrun wherever it is run, so a new
+ * folder alone is not a new AgentRun. First, the old folder moved aside whole, so the same command starts this version
+ * where it was, and the earlier version still opens what it holds; then this version on a new, empty folder: the same
+ * command with --data. Nothing is deleted either way. Any other error, or a start the launcher did not
+ * make, is undefined: the refusal's own words stand.
+ */
+export function earlierDataRefusal(error: unknown, data: string, env: NodeJS.ProcessEnv = {}, exists: (path: string) => boolean = existsSync): string | undefined {
+  const refused = error as { name?: unknown; message?: unknown; found?: unknown; known?: unknown } | undefined;
+  const earlier = refused?.name === "StoreFromEarlierVersion" || (refused?.name === "SchemaVersionUnknown" && typeof refused.found === "number" && typeof refused.known === "number" && refused.found < refused.known);
+  const door = env[NPX_PACKAGE_ENV];
+  if (!earlier || typeof refused?.message !== "string" || door === undefined || !/^@parcha\/agentrun@\d[\w.+-]*$/.test(door)) return undefined;
+  const dir = resolve(data);
+  const yes = env.npm_config_yes === "true" ? "-y " : "";
+  const port = env[STARTED_PORT_ENV];
+  const flags = `${port && /^\d{1,5}$/.test(port) ? ` --port ${port}` : ""}${env[STARTED_OPEN_ENV] === "0" ? " --no-open" : ""}`;
+  const command = `npx ${yes}${door}`;
+  // The launcher's own folder when --data names none (agentrun start.mjs): this same command opens `dir` again with no
+  // --data only when `dir` is it.
+  const launcherData = resolve(env.HOME || homedir(), ".agentrun");
+  const again = `${command}${dir === launcherData ? "" : ` --data ${shellWord(dir)}`}${flags}`;
+  const fresh = freeName(`${dir}-new`, exists);
+  const aside = freeName(`${dir}-earlier`, exists);
+  // install.sh keeps its Node, its packages and the command in the folder beside the data (node/, lib/, bin/agentrun):
+  // that command, or the service that runs it, may be what started this. Moved, they go too, whichever version they are.
+  const installed = exists(join(dir, "bin", "agentrun")) ? " That takes the agentrun the installer put there with it (its Node in node/, lib/ and bin/agentrun): run the installer again to put this version's back." : "";
+  return [
+    refused.message.split("\n")[0],
+    // Moved aside first: every later command (doctor, the harness commands, the service) then finds this version where it
+    // looks with nothing more to remember; a new folder means the same --data on each of them.
+    `To keep all of it where the earlier version still opens it and start this version in ${dir}: mv ${shellWord(dir)} ${shellWord(aside)}, then ${again}. The earlier version opens the old data with --data ${shellWord(aside)}.${installed}`,
+    `Or start this version on a new, empty folder: ${command} --data ${shellWord(fresh)}${flags}`,
+    `  (every later agentrun command then takes the same --data: without it, they open ${launcherData})`,
+    // The store's own refusal already says to add them again; an earlier release's schema says it only in the lines cut here.
+    `Either way, nothing is deleted.${refused.name === "SchemaVersionUnknown" ? " Add your agents, MCP servers, keys and sign-ins again in this version." : ""}`,
+  ].join("\n");
 }
 
 /** The port the server was started on when `--port` named one, and whether `--open` was given (1 or 0): set by its CLI
@@ -150,7 +199,7 @@ export function harnessLog(harness: string, env: NodeJS.ProcessEnv, write: (line
 }
 
 /** What an adapter's own setup error says installing fixes, by the code its facts name for each: none for any other error. */
-function fixOf(facts: AdapterFacts, error: unknown): InstallFix | undefined {
+export function fixOf(facts: AdapterFacts, error: unknown): InstallFix | undefined {
   const code = (error as { code?: unknown } | null)?.code;
   return code === facts.install.codes.install ? "install" : code === facts.install.codes.pins ? "pins" : undefined;
 }
@@ -184,7 +233,7 @@ export type ConfineChild = (child: Readonly<{ command: string; args: string[] }>
  *  confinement for the harness's own process, and the skills it loads itself (claude-agent's, codex's and opencode's,
  *  which its own check took: skills.ts), and the run's clock when a template eval case sets one (claude-agent's turn date
  *  reads it; absent, the real clock). */
-export type AdapterNeeds = { model: ModelRef; models: { getModel(provider: string, id: string): { cost?: Partial<ModelCost> } | undefined }; confine?: ConfineChild; skills?: readonly SkillFiles[]; unpriced?: ReadonlySet<string>; now?: () => Date };
+export type AdapterNeeds = { model: ModelRef; models: { getModel(provider: string, id: string): { cost?: Partial<ModelCost> } | undefined }; confine?: ConfineChild; skills?: readonly SkillFiles[]; unpriced?: ReadonlySet<string>; now?: () => Date; zone?: string };
 
 /** The ConfineChild that starts a child under `prefix` (the argv pi's commands start under, ending in "--"); none when
  *  the run confines nothing (macOS), since an adapter refuses a confinement that adds nothing. */
@@ -322,14 +371,20 @@ export async function claudeOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds, load
     // The CLI runs Anthropic's own id, which it knows the limits and betas of, and sends it as it is, OpenRouter too
     // (providerFor's modelId); the key goes as the endpoint takes it, and the run is priced by the catalog entry of
     // whoever bills it (its priceModel).
-    const endpoint = provider ? { origin: provider.origin, credential: provider.credential, auth: provider.auth } : { origin: "", credential: () => "" };
+    const endpoint = provider ? { origin: provider.origin, credential: provider.credential, auth: provider.auth, ...(provider.headers ? { headers: provider.headers } : {}) } : { origin: "", credential: () => "" };
+    // A model the route translates onto the wire (an Ollama model): its proxy forwards with the route's own fetch, and the
+    // provider's own web search (nativeOptions), which the translation cannot run, is not offered.
+    const forward = provider?.fetch ? { fetch: provider.fetch } : {};
     const priced = provider ? { ...needs, model: provider.priceModel } : native;
     // Its CLI checked off the event loop first (hashed and run as a child), so the server goes on answering: a pass is
     // kept, and the adapter's own check answers from it. A CLI that fails its pins is the adapter's to report, in its
     // order (the SDK before the CLI).
     await claude.verifyClaudeAgentCliAsync(sdk.cliPath);
     // The skills only when there are some: with none, the adapter keeps its Skill tool off.
-    adapter = claude.claudeAgentAdapter({ model: { default: provider?.modelId ?? native.model.modelId }, provider: endpoint, price: priceOf(priced), log: harnessLog(claudeFacts.id, env), sdk: sdk.sdk, sdkVersion: sdk.sdkVersion, cliPath: sdk.cliPath, mcp: sdk.mcp, ...(needs.confine ? { confine: needs.confine } : {}), ...(needs.skills?.length ? { skills: needs.skills } : {}), ...(needs.now ? { now: needs.now } : {}), ...nativeOptions(claudeFacts, env) });
+    // On Claude Code's login on this machine: the login's directories in place of a provider, billed to the plan, never
+    // priced here.
+    const source = provider?.login ? { login: provider.login, price: () => null } : { provider: endpoint, price: priceOf(priced) };
+    adapter = claude.claudeAgentAdapter({ model: { default: provider?.modelId ?? native.model.modelId }, ...source, log: harnessLog(claudeFacts.id, env), sdk: sdk.sdk, sdkVersion: sdk.sdkVersion, cliPath: sdk.cliPath, mcp: sdk.mcp, ...(needs.confine ? { confine: needs.confine } : {}), ...(needs.skills?.length ? { skills: needs.skills } : {}), ...(needs.now ? { now: needs.now } : {}), ...(needs.zone ? { zone: needs.zone } : {}), ...(provider?.fetch ? forward : nativeOptions(claudeFacts, env)) });
   } catch (error) {
     // The adapter's own install line is a project's; here Claude Code is installed into the data's harnesses directory.
     const message = (error as Error).message.split(claude.CLAUDE_AGENT_SDK_INSTALL).join(line);
@@ -398,7 +453,7 @@ export async function opencodeOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds, lo
   const provider = providerFor(openCodeFacts.wire, env, needs.model, openCodeFacts.id);
   // Its instructions list each skill by the description its SKILL.md's front matter gives on one LF line, which is all the
   // adapter reads: each SKILL.md goes as servedSkill writes it (its name and description, as a prompt reads them, on one
-  // line each), as a learned skill already does, so a CRLF file or a folded description is listed by its own words.
+  // line each), so a CRLF file or a folded description is listed by its own words.
   const skills = needs.skills && servedSkills(needs.skills);
   return opencode.openCodeAdapter({ model: provider.modelId, provider: { origin: provider.origin, credential: provider.credential }, price: priceOf({ ...needs, model: provider.priceModel }), log: harnessLog(openCodeFacts.id, env), ...(needs.confine ? { confine: needs.confine } : {}), ...(skills?.length ? { skills } : {}), ...(standIn ? { standIn } : {}) });
 }

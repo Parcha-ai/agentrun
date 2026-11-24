@@ -4,7 +4,7 @@
 // provider is a scripted fetch.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { imageInputOf, imageTokens, LOCAL_COUNT_MARGIN, o200kModel, o200kTokens, responsesLocalInputTokens, startModelProxy } from '@parcha/agentrun-kernel/host';
+import { imageInputOf, imageTokens, LOCAL_COUNT_MARGIN, messagesLocalInputTokens, o200kModel, o200kTokens, responsesLocalInputTokens, startModelProxy } from '@parcha/agentrun-kernel/host';
 
 const MODEL = 'gpt-6.1-sol';
 const bytes = (value) => Buffer.byteLength(value, 'utf8');
@@ -78,6 +78,20 @@ test("an image by file id or with no URL counts at the most an image of unknown 
   assert.ok((await responsesLocalInputTokens(item)) > most);
   const output = { model: MODEL, input: [{ type: 'function_call_output', call_id: 'c1', output: [{ type: 'input_image', file_id: 'file-abc123' }] }] };
   assert.ok((await responsesLocalInputTokens(output)) > most);
+  // In a custom tool call's output (Codex code mode's exec), the same: the API reads its parts as a function call's.
+  const custom = { model: MODEL, input: [{ type: 'custom_tool_call_output', call_id: 'c1', output: [{ type: 'input_image', file_id: 'file-abc123' }] }] };
+  const customCounted = await responsesLocalInputTokens(custom);
+  assert.ok(customCounted > most, `a custom tool call's image counted at its billed most: ${customCounted}`);
+});
+
+test("each part of a function call's output is an item: three text parts add three items' margin over one string output", async () => {
+  const parts = [words(10), words(20), words(30)];
+  const output = (value) => ({ model: MODEL, input: [{ type: 'function_call', call_id: 'c1', name: 'read', arguments: '{}' }, { type: 'function_call_output', call_id: 'c1', output: value }] });
+  const split = output(parts.map((text) => ({ type: 'input_text', text })));
+  const joined = output(parts.join(''));
+  // The call, its output, and each of the output's three parts; a string output is the call and the output alone.
+  assert.equal(await responsesLocalInputTokens(split), withMargin(await o200kTokens(JSON.stringify(split)), 2 + 3));
+  assert.equal(await responsesLocalInputTokens(joined), withMargin(await o200kTokens(JSON.stringify(joined)), 2));
 });
 
 test("only a model on o200k_base is counted; any other, and a body with a file input, keeps its byte bound", async () => {
@@ -168,4 +182,83 @@ test("the provider's count is preferred where it comes: the local count is never
   // Through a gateway the provider is never asked: the local count.
   const gateway = await heldThrough(t, counted(), PROMPT, 'https://gateway.example/openai', async () => { throw new Error('never asked'); });
   assert.deepEqual([gateway.held, gateway.counts.length, localAsked], [local, 0, 2]);
+});
+
+// A Messages body to a model on o200k_base (pi on gpt-6.1-sol through OpenRouter, by serve's translation): the same rule.
+const SOL = 'openai/gpt-6.1-sol';
+/** A Messages body asking `model` with one system block and one user message of `text`. */
+const messages = (text, model = SOL) => ({ model, max_tokens: 32_000, system: [{ type: 'text', text: 'Follow the script.' }], messages: [{ role: 'user', content: text }] });
+
+test("a Messages body's local count is its JSON's tokens with the margin: 47 tokens, a message and a system block make 340", async () => {
+  const body = messages('hello world');
+  assert.equal(await o200kTokens(JSON.stringify(body)), 47);
+  // ceil(47 x 1.1) = 52, two items at 16 (the message, the system block), and 256 for the request.
+  assert.equal(await messagesLocalInputTokens(body), 52 + 32 + 256);
+  // Each block of a message is an item (a call and its result are framed apart), a message of none is one, each tool one.
+  const turns = {
+    ...messages('Read the page.'),
+    tools: [{ name: 'read', description: 'Read a file.', input_schema: { type: 'object' } }],
+    messages: [
+      { role: 'user', content: 'Read the page.' },
+      { role: 'assistant', content: [{ type: 'text', text: 'Reading it.' }, { type: 'tool_use', id: 't1', name: 'read', input: {} }] },
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: words(500) }] },
+    ],
+  };
+  assert.equal(await messagesLocalInputTokens(turns), withMargin(await o200kTokens(JSON.stringify(turns)), 1 + 2 + 1 + 1 + 1));
+});
+
+test("each block inside a tool_result is an item: three text blocks add three items' margin over one string result", async () => {
+  const parts = [words(10), words(20), words(30)];
+  const result = (content) => ({ ...messages('Read the page.'), messages: [{ role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content }] }] });
+  const split = result(parts.map((text) => ({ type: 'text', text })));
+  const joined = result(parts.join(''));
+  // The system block, the tool_result, and each of its three blocks; a string result is the system block and the result alone.
+  assert.equal(await messagesLocalInputTokens(split), withMargin(await o200kTokens(JSON.stringify(split)), 1 + 1 + 3));
+  assert.equal(await messagesLocalInputTokens(joined), withMargin(await o200kTokens(JSON.stringify(joined)), 1 + 1));
+  // A message of no blocks is still one item.
+  const empty = { ...messages(''), messages: [{ role: 'user', content: [] }] };
+  assert.equal(await messagesLocalInputTokens(empty), withMargin(await o200kTokens(JSON.stringify(empty)), 1 + 1));
+});
+
+test("a long page in a Messages body counts near a quarter of its bytes, and never under its own tokens", async () => {
+  const body = { ...messages('Summarize it.'), messages: [{ role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: [{ type: 'text', text: words(70_000) }] }] }] };
+  const local = await messagesLocalInputTokens(body);
+  assert.ok(local >= 70_000 * 1.1, `${local}: the page's tokens and their tenth`);
+  // Past 272,000 bytes (Sol's long-context tier, on a byte bound) at some 77,000 tokens.
+  assert.ok(bytes(JSON.stringify(body)) > 272_000 && local * 3 < bytes(JSON.stringify(body)), `${local} of ${bytes(JSON.stringify(body))} bytes`);
+});
+
+test("a thinking signature counts at its bytes and an image at what the routed model bills it as, never as their text", async () => {
+  const signature = 'EqQBCkYIBxgCKkA'.repeat(200);
+  const thought = { ...messages('Go on.'), messages: [{ role: 'user', content: 'Go on.' }, { role: 'assistant', content: [{ type: 'thinking', thinking: 'Plan.', signature }, { type: 'text', text: 'Done.' }] }, { role: 'user', content: 'More.' }] };
+  const blank = { ...thought, messages: [thought.messages[0], { ...thought.messages[1], content: [{ ...thought.messages[1].content[0], signature: '' }, thought.messages[1].content[1]] }, thought.messages[2]] };
+  assert.equal(await messagesLocalInputTokens(thought), withMargin(await o200kTokens(JSON.stringify(blank)), 1 + 2 + 1 + 1) + bytes(signature));
+  const redacted = { ...messages('Go on.'), messages: [{ role: 'assistant', content: [{ type: 'redacted_thinking', data: signature }] }] };
+  const redactedBlank = { ...redacted, messages: [{ role: 'assistant', content: [{ type: 'redacted_thinking', data: '' }] }] };
+  assert.equal(await messagesLocalInputTokens(redacted), withMargin(await o200kTokens(JSON.stringify(redactedBlank)), 1 + 1) + bytes(signature));
+  // A 640 x 480 PNG's header, in a tool's result: billed by its size on Sol, never by its base64's tokens.
+  const png = Buffer.alloc(33);
+  png.writeUInt32BE(0x89504e47, 0);
+  png.write('IHDR', 12, 'latin1');
+  png.writeUInt32BE(640, 16);
+  png.writeUInt32BE(480, 20);
+  const data = png.toString('base64');
+  const shot = (source) => ({ ...messages('What is this?'), messages: [{ role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: [{ type: 'image', source }] }] }] });
+  const billed = imageTokens(SOL, imageInputOf(data));
+  assert.ok(billed > 0);
+  // The system block, the tool_result and the image inside it are three items.
+  assert.equal(await messagesLocalInputTokens(shot({ type: 'base64', media_type: 'image/png', data })), withMargin(await o200kTokens(JSON.stringify(shot({ type: 'base64', media_type: 'image/png', data: '' }))), 1 + 1 + 1) + billed);
+  // An image by URL: at the most an image of unknown size is billed as.
+  const url = shot({ type: 'url', url: 'https://example.com/a.png' });
+  assert.equal(await messagesLocalInputTokens(url), withMargin(await o200kTokens(JSON.stringify(url)), 1 + 1 + 1) + imageTokens(SOL, { bytes: 0 }));
+});
+
+test("a Messages body to a model not on o200k_base, one with a document, or one that is not an object keeps its byte bound", async () => {
+  for (const model of ['claude-sonnet-5-5', 'anthropic/claude-sonnet-5.5', 'claude-opus-5-5', 'google/gemini-3-pro', null]) assert.equal(await messagesLocalInputTokens(messages('hello world', model)), undefined, String(model));
+  for (const model of [SOL, 'gpt-6.1-terra', 'openai/gpt-6-luna']) assert.equal(typeof await messagesLocalInputTokens(messages('hello world', model)), 'number', model);
+  const document = { ...messages('Read it.'), messages: [{ role: 'user', content: [{ type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: 'JVBERi0=' } }] }] };
+  assert.equal(await messagesLocalInputTokens(document), undefined);
+  const inResult = { ...messages('Read it.'), messages: [{ role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: [{ type: 'document', source: { type: 'text', media_type: 'text/plain', data: 'x' } }] }] }] };
+  assert.equal(await messagesLocalInputTokens(inResult), undefined);
+  assert.equal(await messagesLocalInputTokens(null), undefined);
 });

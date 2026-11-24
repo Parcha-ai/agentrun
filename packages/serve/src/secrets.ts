@@ -11,6 +11,7 @@ import { closeSync, existsSync, readFileSync, readSync } from "node:fs";
 import { homedir } from "node:os";
 import { keyShaped } from "./secret-cut.js";
 import { MIN_SECRET } from "./learn/secrets.js";
+import { secretValues } from "./api-token.js";
 
 /** The pipe and how many bytes of it are the secrets: the launcher's, or serve's to a run's process. */
 export const SECRETS_FD_ENV = "AGENTRUN_SECRETS_FD";
@@ -43,8 +44,9 @@ let handed: { fd: number; closed: boolean } | undefined;
 const SIGN_IN_PAIR = "AGENTRUN_SIGN_IN";
 let signIn: string | undefined;
 
-/** NAME=VALUE pairs, each ended by a NUL. */
-const encode = (pairs: Iterable<readonly [string, string]>): Buffer => Buffer.concat([...pairs].map(([name, value]) => Buffer.from(`${name}=${value}\0`)));
+/** NAME=VALUE pairs, each ended by a NUL: what a pipe of secrets carries. A runner writes a run's own process its pairs
+ *  with it (run-child-host.ts), as a launcher writes its server's. */
+export const encode = (pairs: Iterable<readonly [string, string]>): Buffer => Buffer.concat([...pairs].map(([name, value]) => Buffer.from(`${name}=${value}\0`)));
 function decode(bytes: Buffer): void {
   for (const pair of bytes.toString("utf8").split("\0")) {
     const at = pair.indexOf("=");
@@ -53,12 +55,22 @@ function decode(bytes: Buffer): void {
   }
 }
 
-/** Exactly `length` bytes of `fd`: the writer keeps its end open (the launcher's FIFO is open read-write), so there is
- *  no end of file to wait for. */
+/** Exactly `length` bytes of `fd`, read as the launcher's writer writes them: the end of file before then is a writer
+ *  gone short, and refused. */
 function readExactly(fd: number, length: number): Buffer {
   const bytes = Buffer.alloc(length);
+  // A run's process gets its pipe from Node's spawn as a socket that does not block: a read before the runner's write
+  // lands is EAGAIN, waited out here for as long as a slow start may take, never past it.
+  const until = Date.now() + 60_000;
   for (let read = 0; read < length; ) {
-    const got = readSync(fd, bytes, read, length - read, null);
+    let got: number;
+    try {
+      got = readSync(fd, bytes, read, length - read, null);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EAGAIN" || Date.now() > until) throw error;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
+      continue;
+    }
     if (got === 0) throw new Error(`the secrets' pipe ended after ${read} of ${length} bytes`);
     read += got;
   }
@@ -103,7 +115,8 @@ const SECRET_NAME = /(?:^|_)(?:KEY|TOKEN|SECRET|PASSWORD)$/i;
  *  every other key, token, secret or password `env` names. One shorter than the checker's MIN_SECRET,
  *  whitespace aside, matches too much text by chance to be refused, and is left out. */
 export const hostSecrets = (env: NodeJS.ProcessEnv, stored?: StoredKeys): string[] => {
-  const held = [...SECRET_NAMES.flatMap((name) => [secret(name) ?? "", stored?.(name) ?? ""]), ...mcpSecretValues(mcpCredentials()), ...sealKeys.keys(), ...heldTokens];
+  // AGENTRUN_TOKENS's each secret too, not only the list whole (api-token.ts secretValues).
+  const held = [...SECRET_NAMES.flatMap((name) => [...secretValues(name, secret(name) ?? ""), stored?.(name) ?? ""]), ...mcpSecretValues(mcpCredentials()), ...sealKeys.keys(), ...heldTokens];
   const named = Object.entries(env).filter(([name]) => SECRET_NAME.test(name) && !SECRET_NAMES.includes(name)).map(([, value]) => value ?? "");
   return [...new Set([...held, ...named])].filter((value) => value.replace(/\s+/g, "").length >= MIN_SECRET);
 };

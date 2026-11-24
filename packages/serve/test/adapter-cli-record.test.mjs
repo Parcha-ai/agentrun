@@ -431,7 +431,6 @@ test("an output retry written on the record but never sent is sent by the next c
   await queue(opened.server, "run-1");
   const sent = [];
   let lost = 0;
-  const SHORT = { leaseMs: 600, renewEveryMs: 150, stopMarginMs: 200, pollMs: 20, commandPollMs: 30 };
   const adapter = {
     id: "stand-in-cli",
     capabilities: () => ({}),
@@ -470,13 +469,18 @@ test("an output retry written on the record but never sent is sent by the next c
     gate: () => "allow",
     outputSchema: { type: "object", required: ["ok"], properties: { ok: { type: "boolean" } } },
   }));
-  const first = startRunner({ store: observed(opened.runners[0], recorder()), createLoop, name: "runner-a", ...SHORT });
+  // One claim each: a lease no stall of a loaded machine outlasts, so the first runner never loses its claim before the
+  // test kills it (a stall past a short lease retook it, and the retry was never written); the test moves the store's
+  // clock past it instead.
+  const first = startRunner({ store: observed(opened.runners[0], recorder()), createLoop, name: "runner-a", ...STEADY });
   const journalOf = async (row) => journalRecords(opened.server.journal({ runId: "run-1", runner: "reader", epoch: row.epoch, until: 0, from: row.state }), BACKGROUND_CONTEXT);
   await until(async () => {
     const now = await opened.server.runs.get("run-1");
     return lost === 1 && messagesOf(await journalOf(now)).length === 3;
   }, "the retry on the record, its send never done", 10_000);
   first.kill();
+  // The killed claim's lease runs out for the next runner at once.
+  opened.clock.skewMs += STEADY.leaseMs * 2;
   const next = startRunner({ store: observed(opened.runners[1], recorder()), createLoop, name: "runner-b", ...STEADY });
   // Its three stores' connections go when the case ends, never held to the file's end beside the other files' on Postgres.
   t.after(async () => {
@@ -496,4 +500,107 @@ test("an output retry written on the record but never sent is sent by the next c
     ["person", retry],
     ["model", 'Fixed.\n\n```json\n{"ok": true}\n```'],
   ], "written once, answered once");
+});
+
+/** A CLI stand-in whose first turn's call is still running when a person stops the run: the call never answers, so its
+ *  end never lands before the run's (Codex's code-mode write the stop cut mid-flight), and the turn ends interrupted. Its
+ *  resume log keeps that the turn was sent: a session opened again finds it open. `log` counts what the loop did with
+ *  that turn (recovered or settled) and each text the session was sent. */
+function stoppedMidCallCli(tool, log) {
+  return {
+    id: "stand-in-cli",
+    check: () => [],
+    async open(spec, io) {
+      let state = (await io.writer.read()).some((record) => record.kind === "stand-in.sent") ? "open_turn" : "new";
+      let turn;
+      const cut = new AbortController();
+      const answered = (text) => {
+        io.onEvent({ type: "text", delta: text });
+        io.onEvent({ type: "turn_end", status: "completed" });
+        return { status: "completed" };
+      };
+      return {
+        get state() { return state; },
+        async send(text) {
+          log.sent.push(text);
+          await io.writer.append([{ kind: "stand-in.sent", data: null }]);
+          state = "idle";
+          if (log.sent.length > 1) {
+            // As a CLI answers: after its model's request, never inside send().
+            turn = new Promise((resolve) => setTimeout(resolve, 20)).then(() => answered(`Went on: ${text}`));
+            return;
+          }
+          turn = (async () => {
+            const call = { callId: "call-1", tool, args: { path: "s1.txt" } };
+            if (io.gate && (await io.gate(call)) !== "allow") throw new Error("not allowed");
+            io.onEvent({ type: "tool_start", callId: call.callId, name: tool, args: call.args });
+            void spec.tools.find((each) => each.name === tool).call(call.args, { callId: call.callId, signal: io.signal });
+            await new Promise((resolve) => cut.signal.addEventListener("abort", resolve, { once: true }));
+            return { status: "interrupted" };
+          })();
+        },
+        async recover() {
+          log.recovered += 1;
+          state = "idle";
+          turn = Promise.resolve(answered("Carried on with the cut turn."));
+        },
+        async settleOpenTurn() {
+          log.settled += 1;
+          state = "idle";
+        },
+        turnEnd: () => turn,
+        async interrupt() { cut.abort(); },
+        async close() { cut.abort(); },
+      };
+    },
+  };
+}
+
+test("a follow-up to a CLI run stopped while its call ran is the reopened run's turn: the run's end ends the cut call, and the cut turn is settled, never carried on", async (t) => {
+  const opened = await stores({ runners: 1 });
+  await queue(opened.server, "run-1");
+  const log = { sent: [], recovered: 0, settled: 0 };
+  let calledNow;
+  const called = new Promise((resolve) => (calledNow = resolve));
+  // A write the stop cuts while it runs: it never answers, so nothing of this claim ends it.
+  const write = { name: "write", description: "Write a file.", inputSchema: { type: "object" }, replay: "never", call: () => { calledNow(); return new Promise(() => {}); } };
+  const createLoop = createAdapterLoop(() => ({
+    adapter: stoppedMidCallCli("write", log),
+    session: { key: "root", label: "root", system: [], tools: [write], context: "fresh" },
+    input: "Write s1.txt.",
+    runCap: { capUsd: () => undefined, modelOf: () => undefined },
+    record: "loop",
+    hooks: quiet,
+    gate: () => "allow",
+  }));
+  const first = startRunner({ store: observed(opened.runners[0], recorder()), createLoop, name: "runner-a", ...STEADY });
+  t.after(async () => {
+    try {
+      await first.close();
+    } finally { await release(opened); }
+  });
+  const rested = (want, after) => until(async () => {
+    const now = await opened.server.runs.get("run-1");
+    return now.state === want && now.runner === null && (after === undefined || (now.endedAt ?? 0) > after) && now;
+  }, `the run ${want} and released`, 10_000);
+  await called;
+  await sendCommand(opened.server, "run-1", { kind: "stop" });
+  const stopped = await rested("stopped");
+  const cutRecord = await recordAt(opened.server, stopped);
+  const cutEnds = cutRecord.entries.filter((entry) => entry.kind === KINDS.callEnd);
+  assert.deepEqual(cutEnds.map((entry) => [entry.data.callId, entry.data.status, entry.data.withRun]), [["call-1", "interrupted", true]], "the run's end ended the cut call interrupted");
+  assert.ok(cutRecord.entries.indexOf(cutEnds[0]) < cutRecord.entries.findLastIndex((entry) => entry.kind === KINDS.end), "before the run's end, nothing of the stopped turn after it");
+
+  await opened.server.runs.reopen("run-1", { kind: "steer", body: { text: "go on" } });
+  await opened.server.flush?.();
+  const row = await rested("ended", stopped.endedAt ?? 0);
+  assert.deepEqual({ recovered: log.recovered, settled: log.settled }, { recovered: 0, settled: 1 }, "the turn the stop cut is settled, never carried on");
+  assert.deepEqual(log.sent, ["Write s1.txt.", "go on"], "the follow-up is the session's next turn");
+  const records = await recordAt(opened.server, row);
+  assert.deepEqual(messagesOf(records).map((message) => [message.role, message.text]), [
+    ["person", "Write s1.txt."],
+    ["person", "go on"],
+    ["model", "Went on: go on"],
+  ], "the follow-up's turn answers it, with nothing of the cut turn before it");
+  assert.deepEqual(callsOf(records).map((call) => [call.callId, call.status]), [["call-1", "interrupted"]], "the cut call ends interrupted, once");
 });

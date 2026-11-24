@@ -9,20 +9,20 @@
 // servedTriggerRow): its name read by its id from the store at each read, never one the run's launch froze, cut as the
 // row's words are; a trigger gone keeps the id the journal wrote.
 import type { Context } from "@earendil-works/chord/context";
-import { CALL_RESULT_CHARS, TRIGGER_LABELS, type TimelineEvent } from "./timeline/index.js";
+import { CALL_RESULT_CHARS, scrubUrls, TRIGGER_LABELS, type TimelineEvent } from "./timeline/index.js";
 import { withDecisions } from "./decision-rows.js";
 import { currentLearning, holdsForOk, type ItemStatus, type Learning, secretsShown } from "./learning.js";
 import { withLearning } from "./learning-run.js";
 import { runLearningEnd } from "./store-reads/learning.js";
-import { heldNumber, redacted } from "./key-refusal.js";
+import { heldNumber, redacted, redactedCall, withheldWhole } from "./key-refusal.js";
 import { runCutValues, runErrorWordsOf, underCut } from "./run-cut.js";
-import { answersOf, asksOf, type SignInReader, shownOf, withApprovalRows, withAsks, withBudgetRows, withOverCap } from "./run-view.js";
+import { answersOf, asksOf, type SignInReader, shownOf, stopAsked, withApprovalRows, withAsks, withBudgetRows, withOverCap } from "./run-view.js";
 import { launchOf } from "./handed-values.js";
 import { capNowOf } from "./runner/journal-kinds.js";
 import { journalRecords } from "./runner/journal-reader.js";
 import { decisionsOverStore } from "./store-reads/decisions.js";
 import { readRun } from "./store-reads/runs.js";
-import { runTimeline, wholeAnswerFor, wholeAnswers } from "./store-reads/journal.js";
+import { runTimeline, servedSince, wholeAnswerFor, wholeAnswers } from "./store-reads/journal.js";
 import { FINAL_STATES, type Store } from "./store/store.js";
 
 export type ServedTimelineDeps = {
@@ -36,13 +36,15 @@ export type ServedTimelineDeps = {
 };
 
 /** Run `runId`'s Timeline rows as served: cut by its one cut set, its decision rows among them, its error rows in the
- *  run's error's words; none for a run withheld. `calls`: each call's arguments whole and its output's head to
+ *  run's error's words; none for a run withheld. `calls`: each call's arguments whole and its output whole to
  *  CALL_RESULT_CHARS too (TimelineOptions.calls), through the same cut, for a reader that grades the run. */
 export async function servedTimelineRows(deps: ServedTimelineDeps, store: Store, runId: string, context: Context, calls = false): Promise<TimelineEvent[]> {
   // The run's rows, its decisions, its learning end and the triggers' names, all read in one snapshot of the store (one
   // moment, whatever the run's runner writes meanwhile): a row from before an answer never sits beside one from after it.
   // They are rendered under the run's cut, which is read before the snapshot and again after it (underCut): the cut only
-  // grows, so a cut that is the same after holds every value saved before the rows were read.
+  // grows, so a cut that is the same after holds every value saved before the rows were read. Its whole answers are kept
+  // only while no run's text was forgotten since it began (servedSince: a purge it overtook).
+  const since = servedSince(store);
   const read = await underCut(() => runCutValues(deps, store, runId), async (cut) => {
     if (cut === "unreadable") return undefined;
     const { values } = cut;
@@ -55,7 +57,6 @@ export async function servedTimelineRows(deps: ServedTimelineDeps, store: Store,
       const run = await snapshot.runs.get(runId);
       const ended = run ? FINAL_STATES.includes(run.state) : false;
       const records = await journalRecords(snapshot.readJournal(runId), context);
-      const final = run?.state === "stopped" || run?.state === "failed" ? run.state : undefined;
       // A question the agent asked (ask_person) and waits on: its waiting row after the call's result (run-view.ts withAsks), as
       // the run's view carries it and main's served Timeline did, so the console's "The agent asks" box reads that question,
       // never an earlier wait's words.
@@ -65,8 +66,11 @@ export async function servedTimelineRows(deps: ServedTimelineDeps, store: Store,
       // Over is not final: an agentic run a person stopped is final in the store but reads running in its view (readRun: its
       // turn is over, the run can go on), and its usage row says what it has cost so far there, so here too.
       const view = await readRun(snapshot, runId, context);
-      const options = { redact, settled: ended, ended: view ? view.state !== "running" : false, ...(calls ? { calls: { result: CALL_RESULT_CHARS, redact: (text: string) => redacted(text, values, CALL_RESULT_CHARS), held: (value: number | bigint) => heldNumber(value, values) } } : {}) };
-      const timeline = await wholeAnswers(snapshot, runId, context, await runTimeline(snapshot, runId, context, options), options, wholeAnswerFor(values));
+      // And every call still waiting once a stop is asked and not yet taken, as the run's view reads it (stopAsked).
+      const final = run?.state === "stopped" || run?.state === "failed" ? run.state
+        : stopAsked(view, run, await snapshot.commands(runId, 0)) ? "stopped" as const : undefined;
+      const options = { redact, holds: (text: string) => withheldWhole(text, values), settled: ended, ended: view ? view.state !== "running" : false, ...(calls ? { calls: { result: CALL_RESULT_CHARS, redact: (text: string) => redactedCall(text, values, CALL_RESULT_CHARS, scrubUrls), held: (value: number | bigint) => heldNumber(value, values) } } : {}) };
+      const timeline = await wholeAnswers(snapshot, runId, context, await runTimeline(snapshot, runId, context, options), options, wholeAnswerFor(values), since);
       // A run whose booked spend passed its cap says so, by how much, after its usage row (run-view.ts withOverCap, as main's
       // served Timeline did): at the cap as it stands (a raise taken counts, capNowOf).
       const capNow = capNowOf((await launchOf(snapshot, runId))?.maxCostUsd, records.entries);
@@ -79,7 +83,7 @@ export async function servedTimelineRows(deps: ServedTimelineDeps, store: Store,
       const receipts = await decisionsOverStore(snapshot, runId, context).catch(() => null);
       const decisionShown = { redact: (text: string) => redacted(text, values), hold: 6 * values.reduce((most, value) => Math.max(most, value.length), 0) + 16 };
       const own = receipts === null || receipts.length ? withDecisions(rows, receipts, decisionShown, { ended }) : rows;
-      // The run's learning end, once its learning was proposed, merged or dropped (runLearningEnd).
+      // The run's learning end, once its learning merged or dropped (runLearningEnd).
       const end = await runLearningEnd(snapshot, runId);
       // Each trigger the rows name, read once for this read: its name now, or none for one gone.
       const names = new Map<string, string | undefined>();

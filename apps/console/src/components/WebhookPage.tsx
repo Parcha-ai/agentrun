@@ -1,8 +1,10 @@
+import { SettingsSection, settingsBodyClass, settingsIntroClass, settingsPageClass } from "@/components/Settings";
 import { TriangleAlert, Webhook as WebhookIcon } from "lucide-react";
 import { type FormEvent, useEffect, useRef, useState } from "react";
 import { RunError } from "@/components/RunError";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
+import { CopyButton } from "@/components/ui/copy-button";
 import { Banner } from "@/components/ui/banner";
 import { Input } from "@/components/ui/field";
 import { type Client, ClientError } from "@/lib/client";
@@ -11,13 +13,14 @@ import type { ApiError, Webhook, WebhookAttempt } from "@/lib/v2";
 
 const apiError = (e: unknown): ApiError => (e instanceof ClientError ? e.toApiError() : { code: "network", message: e instanceof Error ? e.message : String(e), retryable: false });
 const SIGNING: Record<Exclude<Extract<Webhook, { configured: true }>["signing"], "sealed">, string> = {
-  unreadable: "Its secret can't sign here: it was sealed under another key, or is damaged. Nothing is sent until the webhook is removed and set again.",
+  unreadable: "Its secret can't sign here: it was sealed under another key, or is damaged. Nothing is sent until its secret is rotated, or the webhook is removed and set again.",
 };
 
 /** Settings → Webhook (GET, PUT and DELETE /v2/settings/webhook, a serve extension): the URL run notices are POSTed to,
  *  signed by the Standard Webhooks spec; whether its secret signs here; why it is off; the secret, shown only on the
- *  save that made it and never kept in the page after; a test send; and the last attempts (GET .../deliveries), newest
- *  first, with the receiver's answer or why each failed, and a redelivery of any (POST .../redeliver). */
+ *  save or the rotation (POST .../secret, asked first) that made it, copied with one press, and never kept in the page
+ *  after; a test send; and the last attempts (GET .../deliveries), newest first, with the receiver's answer or why each
+ *  failed, and a redelivery of any (POST .../redeliver). */
 export function WebhookPage({ v2 }: { v2: Client }) {
   const [webhook, setWebhook] = useState<Webhook | null>(null);
   const [attempts, setAttempts] = useState<WebhookAttempt[]>([]);
@@ -26,6 +29,12 @@ export function WebhookPage({ v2 }: { v2: Client }) {
   const [problem, setProblem] = useState<{ title: string; error: ApiError } | null>(null);
   const [tested, setTested] = useState<WebhookAttempt | null>(null);
   const [removing, setRemoving] = useState(false);
+  // Rotate secret, asked first: the old secret stops signing at once. Cancel puts the focus back on its button; a rotation
+  // puts it on the new secret, or back on the button when it fails, once the page has drawn it (the effect below).
+  const [rotating, setRotating] = useState(false);
+  const rotateButton = useRef<HTMLButtonElement>(null);
+  const secretBox = useRef<HTMLElement>(null);
+  const [focusAfter, setFocusAfter] = useState<"secret" | "rotate" | null>(null);
   const [busy, setBusy] = useState(false);
   // What the person types to save. The server shows a saved URL shortened (its origin and last four characters), so the
   // field never takes it: a save sends only a URL typed here, never the shortened one, which would move the receiver.
@@ -43,6 +52,26 @@ export function WebhookPage({ v2 }: { v2: Client }) {
     try { await work(); } catch (e) { setProblem({ title, error: apiError(e) }); } finally { setBusy(false); }
     load();
   };
+  const closeRotate = () => { setRotating(false); requestAnimationFrame(() => rotateButton.current?.focus()); };
+  const rotate = async () => {
+    setRotating(false);
+    let shown = false;
+    await act("The secret was not rotated", async () => {
+      // As a first save's: shown this once, from the answer that made it.
+      const { signing_secret: fresh, ...view } = await v2.rotateWebhookSecret();
+      setSecret(fresh);
+      setWebhook(view);
+      shown = true;
+    });
+    setFocusAfter(shown ? "secret" : "rotate");
+  };
+  // The focus a rotation leaves: its question, which held it, is gone. Moved once the target is drawn and, for the
+  // button, enabled again (not busy).
+  useEffect(() => {
+    if (!focusAfter || busy) return;
+    (focusAfter === "secret" ? secretBox.current : rotateButton.current)?.focus();
+    setFocusAfter(null);
+  }, [focusAfter, busy]);
   const save = (e: FormEvent) => {
     e.preventDefault();
     void act("The webhook was not saved", async () => {
@@ -60,76 +89,84 @@ export function WebhookPage({ v2 }: { v2: Client }) {
     : <p className="p-8 text-center font-mono text-body text-muted-foreground">Loading...</p>;
   return (
     <div className="h-full overflow-auto">
-      <div className="mx-auto max-w-[1100px] space-y-6 px-6 py-8">
-        <div>
+      <div className={settingsPageClass}>
+        <div className={settingsIntroClass}>
           <p className="caps text-label text-muted-foreground">Settings</p>
           <h1 className="mt-1 text-2xl font-semibold">Webhook</h1>
           <p className="mt-2 text-lead text-muted-foreground">One URL this server POSTs to when a run needs its person (`run.needs_input`) and when it ends (`run.ended`), signed by the Standard Webhooks spec, so a receiver checks each message with any of that spec's libraries.</p>
         </div>
-        {problem && <RunError error={problem.error} title={problem.title} />}
-        {loadError && (
-          <Banner tone="error" actions={<Button type="button" size="xs" onClick={load}>Try again</Button>}>
-            <p className="font-mono">The webhook could not be read: {loadError.code}: {loadError.message}. What is shown may be out of date.</p>
-          </Banner>
-        )}
-        {secret && (
-          <section className="border border-warning/50 bg-warning/5 p-4" aria-label="Webhook secret">
-            <p className="caps text-small font-semibold text-warning-text">The signing secret, shown this once</p>
-            <p className="mt-2 break-all font-mono text-body">{secret}</p>
-            <p className="mt-2 text-body text-muted-foreground">Keep it where the receiver checks <span className="font-mono">webhook-signature</span>. This server never shows it again.</p>
-            <Button type="button" variant="outline" className="mt-3" onClick={() => setSecret(null)}>Done</Button>
-          </section>
-        )}
-        <section className="border bg-card p-4" aria-label="Webhook URL">
-          <div className="flex items-center gap-2">
-            <WebhookIcon className="size-4 text-muted-foreground" aria-hidden />
-            {webhook.configured
-              ? <span className="min-w-0 break-all font-mono text-body">{webhook.url}</span>
-              : <span className="text-body text-muted-foreground">No webhook is set.</span>}
-            {webhook.configured && (webhook.disabled ? <Chip tone="error">off</Chip> : webhook.signing === "sealed" ? <Chip tone="success">on</Chip> : <Chip tone="warning">not signing</Chip>)}
-          </div>
-          {webhook.configured && webhook.disabled && <p className="mt-2 text-body text-destructive-text">Off: {webhook.disabled.reason}, {when(webhook.disabled.at)}. Nothing is sent until the URL is saved again: enter it below.</p>}
-          {webhook.configured && webhook.signing !== "sealed" && (
-            <p className="mt-2 flex gap-2 text-body text-warning-text"><TriangleAlert className="mt-0.5 size-4 shrink-0" aria-hidden />{SIGNING[webhook.signing]}</p>
+        <div className={settingsBodyClass}>
+          {problem && <RunError error={problem.error} title={problem.title} />}
+          {loadError && (
+            <Banner tone="error" actions={<Button type="button" size="xs" onClick={load}>Try again</Button>}>
+              <p className="font-mono">The webhook could not be read: {loadError.code}: {loadError.message}. What is shown may be out of date.</p>
+            </Banner>
           )}
-          <form className="mt-4 flex flex-wrap gap-2" onSubmit={save}>
-            <Input name="url" type="url" required maxLength={2048} placeholder={webhook.configured ? "The whole URL, to change it or save it again" : "https://..."} value={url} onChange={(e) => setUrl(e.target.value)}
-              className="h-9 min-w-[280px] flex-1" aria-label="Webhook URL" />
-            <Button type="submit" variant="solid" disabled={busy || !url.trim()}>Save</Button>
-            {webhook.configured && <Button type="button" variant="outline" disabled={busy} onClick={() => act("The test was not sent", async () => setTested(await v2.testWebhook()))}>Send a test</Button>}
-            {webhook.configured && !removing && <Button type="button" variant="outline" disabled={busy} onClick={() => setRemoving(true)}>Remove</Button>}
-          </form>
-          {removing && (
-            <div className="mt-3 flex flex-wrap items-center gap-2 text-body">
-              <span>Its pending messages are dropped; the log of attempts stays.</span>
-              <Button type="button" variant="destructive" disabled={busy} onClick={() => { setRemoving(false); setUrl(""); setTested(null); void act("The webhook was not removed", async () => { await v2.removeWebhook(); setWebhook({ configured: false, secret: { name: "webhook:outbound", set: false, source: null, changed_at: null } }); setSecret(null); }); }}>Remove the webhook</Button>
-              <Button type="button" variant="ghost" onClick={() => setRemoving(false)}>Cancel</Button>
+          {secret && (
+            <section ref={secretBox} tabIndex={-1} className="border border-warning/50 bg-warning/5 p-4 outline-none" aria-label="Webhook secret">
+              <p className="caps text-small font-semibold text-warning-text">The signing secret, shown this once</p>
+              <div className="mt-2 flex min-w-0 flex-wrap items-center gap-2"><code className="min-w-0 break-all font-mono text-body">{secret}</code><CopyButton text={secret} label="Copy secret" /></div>
+              <p className="mt-2 text-body text-muted-foreground">Keep it where the receiver checks <span className="font-mono">webhook-signature</span>. This server never shows it again.</p>
+              <Button type="button" variant="outline" className="mt-3" onClick={() => setSecret(null)}>Done</Button>
+            </section>
+          )}
+          <SettingsSection title="Endpoint">
+          <section className="border bg-card p-4" aria-label="Webhook URL">
+            <div className="flex items-center gap-2">
+              <WebhookIcon className="size-4 text-muted-foreground" aria-hidden />
+              {webhook.configured
+                ? <span className="min-w-0 break-all font-mono text-body">{webhook.url}</span>
+                : <span className="text-body text-muted-foreground">No webhook is set.</span>}
+              {webhook.configured && (webhook.disabled ? <Chip tone="error">off</Chip> : webhook.signing === "sealed" ? <Chip tone="success">on</Chip> : <Chip tone="warning">not signing</Chip>)}
             </div>
-          )}
-          {tested && <p className="mt-3 font-mono text-body" aria-label="Test send">Test send: {outcome(tested)}</p>}
-        </section>
-        <section aria-label="Deliveries">
-          <div className="flex items-center justify-between">
-            <h2 className="caps text-small font-semibold text-muted-foreground">Last deliveries</h2>
-            <Button type="button" variant="ghost" onClick={load}>Refresh</Button>
-          </div>
-          {attempts.length === 0
-            ? <p className="mt-2 border p-4 text-body text-muted-foreground">No message has been tried yet.</p>
-            : (
-              <ul className="mt-2 border">
-                {attempts.map((a, i) => (
-                  <li key={`${a.webhook_id}:${a.at}:${i}`} className="flex flex-wrap items-center gap-x-4 gap-y-1 border-b px-4 py-3 text-body last:border-b-0">
-                    <span className="w-[170px] shrink-0 text-muted-foreground">{when(a.at)}</span>
-                    <span className="w-[130px] shrink-0 font-mono">{a.type}</span>
-                    <span className={a.error ? "min-w-0 flex-1 font-mono text-destructive-text" : "min-w-0 flex-1 font-mono"}>{outcome(a)}</span>
-                    {a.redelivery && <Chip>redelivery</Chip>}
-                    <span className="font-mono text-small text-muted-foreground" title={a.webhook_id}>{a.webhook_id.slice(0, 12)}…</span>
-                    <Button type="button" variant="outline" size="sm" disabled={busy} onClick={() => act("The message was not sent again", () => v2.redeliverWebhook(a.webhook_id))}>Redeliver</Button>
-                  </li>
-                ))}
-              </ul>
+            {webhook.configured && webhook.disabled && <p className="mt-2 text-body text-destructive-text">Off: {webhook.disabled.reason}, {when(webhook.disabled.at)}. Nothing is sent until the URL is saved again: enter it below.</p>}
+            {webhook.configured && webhook.signing !== "sealed" && (
+              <p className="mt-2 flex gap-2 text-body text-warning-text"><TriangleAlert className="mt-0.5 size-4 shrink-0" aria-hidden />{SIGNING[webhook.signing]}</p>
             )}
-        </section>
+            <form className="mt-4 flex flex-wrap gap-2" onSubmit={save}>
+              <Input name="url" type="url" required maxLength={2048} placeholder={webhook.configured ? "The whole URL, to change it or save it again" : "https://..."} value={url} onChange={(e) => setUrl(e.target.value)}
+                className="h-9 min-w-[280px] flex-1" aria-label="Webhook URL" />
+              <Button type="submit" variant="solid" disabled={busy || !url.trim()}>Save</Button>
+              {webhook.configured && <Button type="button" variant="outline" disabled={busy} onClick={() => act("The test was not sent", async () => setTested(await v2.testWebhook()))}>Send a test</Button>}
+              {webhook.configured && !rotating && <Button ref={rotateButton} type="button" variant="outline" disabled={busy} onClick={() => { setRemoving(false); setRotating(true); }}>Rotate secret</Button>}
+              {webhook.configured && !removing && <Button type="button" variant="outline" disabled={busy} onClick={() => { setRotating(false); setRemoving(true); }}>Remove</Button>}
+            </form>
+            {rotating && (
+              <div className="mt-3 flex flex-wrap items-center gap-2 text-body" role="alertdialog" aria-label="Rotate the signing secret?" onKeyDown={(e) => { if (e.key === "Escape") closeRotate(); }}>
+                <span>The old secret stops signing at once; your receiver needs the new one.</span>
+                <Button type="button" variant="solid" disabled={busy} onClick={() => void rotate()}>Rotate the secret</Button>
+                <Button type="button" variant="ghost" autoFocus onClick={closeRotate}>Cancel</Button>
+              </div>
+            )}
+            {removing && (
+              <div className="mt-3 flex flex-wrap items-center gap-2 text-body">
+                <span>Its pending messages are dropped; the log of attempts stays.</span>
+                <Button type="button" variant="destructive" disabled={busy} onClick={() => { setRemoving(false); setUrl(""); setTested(null); void act("The webhook was not removed", async () => { await v2.removeWebhook(); setWebhook({ configured: false, secret: { name: "webhook:outbound", set: false, source: null, changed_at: null } }); setSecret(null); }); }}>Remove the webhook</Button>
+                <Button type="button" variant="ghost" onClick={() => setRemoving(false)}>Cancel</Button>
+              </div>
+            )}
+            {tested && <p className="mt-3 font-mono text-body" aria-label="Test send">Test send: {outcome(tested)}</p>}
+          </section>
+          </SettingsSection>
+          <SettingsSection label="Deliveries" title="Last deliveries" aside={<Button type="button" size="sm" onClick={load}>Refresh</Button>}>
+            {attempts.length === 0
+              ? <p className="border p-4 text-body text-muted-foreground">No message has been tried yet.</p>
+              : (
+                <ul className="border">
+                  {attempts.map((a, i) => (
+                    <li key={`${a.webhook_id}:${a.at}:${i}`} className="flex flex-wrap items-center gap-x-4 gap-y-1 border-b px-4 py-3 text-body last:border-b-0">
+                      <span className="w-[170px] shrink-0 text-muted-foreground">{when(a.at)}</span>
+                      <span className="w-[130px] shrink-0 font-mono">{a.type}</span>
+                      <span className={a.error ? "min-w-0 flex-1 font-mono text-destructive-text" : "min-w-0 flex-1 font-mono"}>{outcome(a)}</span>
+                      {a.redelivery && <Chip>redelivery</Chip>}
+                      <span className="font-mono text-small text-muted-foreground" title={a.webhook_id}>{a.webhook_id.slice(0, 12)}…</span>
+                      <Button type="button" variant="outline" size="sm" disabled={busy} onClick={() => act("The message was not sent again", () => v2.redeliverWebhook(a.webhook_id))}>Redeliver</Button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+          </SettingsSection>
+        </div>
       </div>
     </div>
   );

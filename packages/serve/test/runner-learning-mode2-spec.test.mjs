@@ -1,16 +1,17 @@
 // The runner's own spec builder supplies a run's end-of-run step (adapter-run-spec.ts adapterRunSpecFromLaunch endOfRun),
 // moved off the dispatch (harness-loops.ts) so a Mode 2 run's learning folder is the one on the run's own Workspace — the
 // claim's Archil disk — never this machine's local data directory. A Mode 2 learning run through the real adapter loop and
-// this spec builder is checked against the seed in that folder: the Archil folder stands in for the disk as a local
+// this spec builder compiles from and merges into that folder: the Archil folder stands in for the disk as a local
 // directory of its own (folderTestHooks.workspace, every place it is asked for recorded), so the test sees the run asked
-// for the folder as { mode: "archil" } and the proposal is the disk's seed's; the local learning path holds a decoy, and a
-// read of it would make the proposal hold a change it does not.
+// for the folder as { mode: "archil" } and the merge is on the disk's main; the local learning path holds a decoy (a learned
+// workflow), and a read of it would make the compile not due.
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import { closeOpenSessions, MODEL, scriptedOrigin } from "./conformance-pi-adapter.mjs";
+import { readmeOf } from "./learned-workflow-seed-support.mjs";
 
 const { openSqliteStore } = await import("../dist/store/index.js");
 const { startRunner } = await import("../dist/runner/runner.js");
@@ -34,21 +35,14 @@ const ARCHIL_SETTINGS = { diskId: "dsk-0000000000000001", region: "aws-us-east-1
 const TIMING = { leaseMs: 60_000, renewEveryMs: 20_000, stopMarginMs: 5_000, pollMs: 20, commandPollMs: 30 };
 const WAIT_MS = 30_000;
 const scratch = (name) => mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), name));
-const note = (name, description, body) => `---\nname: ${name}\ndescription: ${description}\ntype: reference\n---\n${body}\n`;
-const RETRY = note("Retry slowly", "Back off between retries", "Wait a little longer after each failed call.");
-const RETRY_DECOY = note("Retry slowly", "Retry at once", "Call again straight away after a failure.");
-const CHECK = note("Check first", "Read the input before acting", "Read the whole input once before the first call.");
-
-/** A note on `data`'s learning folder main, through a real (not hooked) learning Workspace. */
-async function landNote(data, agentId, file, text) {
-  const folder = learningWorkspace({ mode: "local", data, agentId });
-  try {
-    const made = await learningCommit(folder.workspace, { kind: "person", action: "created", file, text, ifMatch: null });
-    assert.equal(made.ok, true, JSON.stringify(made));
-  } finally {
-    await folder.end();
-  }
-}
+/** Workflow `name` (one model step answering the question as a number). */
+const flow = (name) => ({
+  v: 2, name,
+  schemas: { In: { type: "object", properties: { content: { type: "string" } }, required: ["content"] }, Answer: { type: "object", properties: { answer: { type: "number" }, confidence: { type: "number" } }, required: ["answer", "confidence"] } },
+  input: { schemaId: "In" }, output: { schemaId: "Answer", path: "answer" },
+  root: { node: "chain", steps: [{ node: "extract", label: "answer", instructions: "Answer the question.", out: "Answer", as: "answer" }] },
+});
+const DRAFT = `\`\`\`\`workflow answer\n---\ndescription: Answers a question as a number; use when asked\nexample: {"content":"What is six times seven?"}\n---\n${JSON.stringify(flow("answer"))}\n\`\`\`\``;
 
 test("a Mode 2 learning run through the pi spec builder checks its proposal against the learning folder on the run's Archil disk, never the local data directory", async (t) => {
   const local = scratch("agentrun-learning-local-");
@@ -65,17 +59,21 @@ test("a Mode 2 learning run through the pi spec builder checks its proposal agai
     for (const dir of [local, diskFolder]) rmSync(dir, { recursive: true, force: true });
   });
 
-  // The disk's learning folder holds retry-slowly.md at the seed; the local data directory a decoy with other content.
-  await landNote(diskFolder, "agent-1", "retry-slowly.md", RETRY);
-  await landNote(local, "agent-1", "retry-slowly.md", RETRY_DECOY);
+  // The disk's learning folder is the run's seed, with no workflow yet; the local data directory a decoy with one.
   const seed = await seedOf(diskFolder, "agent-1");
+  const decoyFolder = learningWorkspace({ mode: "local", data: local, agentId: "agent-1" });
+  try {
+    const made = await learningCommit(decoyFolder.workspace, { runId: "person-decoy", reason: "A decoy", files: [{ path: "workflows/decoy/workflow.json", text: JSON.stringify(flow("decoy")) }, { path: "workflows/decoy/README.md", text: readmeOf("decoy", "A decoy; use never") }] });
+    assert.equal(made.ok, true, JSON.stringify(made));
+  } finally {
+    await decoyFolder.end();
+  }
   const decoy = await seedOf(local, "agent-1");
-  const held = seed.notes["retry-slowly.md"];
-  assert.ok(held?.includes("Wait a little longer"), "the disk's main holds its note");
-  assert.notEqual(decoy.sha, seed.sha, "the decoy is another commit, with other content");
+  assert.notEqual(decoy.sha, seed.sha, "the decoy is another commit, with a learned workflow");
 
-  await server.agents.create({ id: "agent-1", name: "Learns" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", tools: ["read"], learning: true } });
-  const launch = { input: { content: "Follow the script." }, title: "t", place: { mode: "runner" }, model: { provider: "anthropic", modelId: "claude-sonnet-5.5" }, learning: { given: [], seed: seed.sha, section: "", seedNotes: 1 } };
+  // A job due to compile at every run.
+  await server.agents.create({ id: "agent-1", name: "Learns" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", tools: ["read"], learning: { compile_after: 1 } } });
+  const launch = { input: { content: "What is six times seven?" }, title: "t", place: { mode: "runner" }, model: { provider: "anthropic", modelId: "claude-sonnet-5.5" }, learning: { seed: seed.sha, section: "" } };
   await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: launch });
   await saveArchilSettings(server, ARCHIL_SETTINGS);
   // The agent's own disk, made by an earlier run (run-disk.ts): this run keeps its folder there.
@@ -84,18 +82,17 @@ test("a Mode 2 learning run through the pi spec builder checks its proposal agai
   await server.flush?.();
 
   // The run's Archil learning folder stands in for the disk as a real local Workspace on diskFolder: every place it is
-  // asked for is recorded, so the test sees the spec builder asked for it as { mode: "archil" }. Set after the seed is read,
-  // so the seed read above is the real one.
+  // asked for is recorded, so the test sees the spec builder asked for it as { mode: "archil" }. Set after the seed and the
+  // decoy are written, so those are the real ones.
   const places = [];
   folderTestHooks.workspace = (place) => {
     places.push(place);
     return learningWorkspace({ mode: "local", data: place.mode === "archil" ? diskFolder : place.data, agentId: place.agentId });
   };
 
-  // The run answers the job, then its end-of-run reflect turn re-proposes the seed's note (no change) and a new one.
-  const reflected = `\`\`\`note retry-slowly.md\n${held}\`\`\`\n\n\`\`\`note check-first.md\n${CHECK}\`\`\`\n\nReflected.`;
+  // The run answers the job, then its compile turn drafts the job as workflow `answer`.
   const provider = { api: "anthropic-messages", origin: "https://route.invalid", credential: () => `not-a-secret-${"x"}` };
-  const routeOf = async () => ({ model: MODEL, provider, price: () => 0, fetch: scriptedOrigin([{ say: "The job's answer." }, { say: reflected }]) });
+  const routeOf = async () => ({ model: MODEL, provider, price: () => 0, fetch: scriptedOrigin([{ say: "42" }, { say: DRAFT }]) });
   const deps = {
     env: {}, data: local, journal: (c) => store.journal(c), store, sealKey: SEAL_KEY, routeOf,
     computerForClaim: async () => ({ release: async () => {} }),
@@ -115,15 +112,16 @@ test("a Mode 2 learning run through the pi spec builder checks its proposal agai
   // The spec builder asked for the run's learning folder as the Archil disk's, for this agent (Mode 2).
   assert.ok(places.some((place) => place.mode === "archil" && place.agentId === "agent-1"), `the learning folder was asked for as the run's Archil disk: ${JSON.stringify(places)}`);
   assert.ok(!places.some((place) => place.mode === "local"), `and never as the local data directory: ${JSON.stringify(places)}`);
-  // The proposal is the disk's seed's: retry-slowly.md with the disk's very text is no change (a read of the local decoy,
-  // whose retry-slowly.md is another text, would make it a change too), and check-first.md is the one new note.
+  // The compile was due on the disk's folder (the local decoy's workflow would make it not due) and merged there.
   const kept = await server.learning.proposal("run-1");
-  assert.equal(kept?.proposal?.state, "proposed", JSON.stringify(kept?.proposal));
-  assert.deepEqual(kept.proposal.proposal?.notes, [{ file: "check-first.md", text: CHECK }], "checked against the disk's seed, not the local decoy");
+  assert.equal(kept?.proposal?.state, "merged", JSON.stringify(kept?.proposal));
+  assert.deepEqual(kept.proposal.workflows, [{ file: "workflows/answer/workflow.json", name: "answer" }]);
+  assert.equal(kept.proposal.merged, (await seedOf(diskFolder, "agent-1")).sha, "the merge is the disk's main");
+  assert.equal((await seedOf(local, "agent-1")).sha, decoy.sha, "the local folder is the decoy still");
 });
 
 test("a Mode 1 run supplies its end-of-run step from the spec builder only when it learns", async (t) => {
-  const learns = await specFor(t, { body: { learning: true }, launch: { learning: { given: [], seed: "0".repeat(40), section: "", seedNotes: 1 } } });
+  const learns = await specFor(t, { body: { learning: true }, launch: { learning: { seed: "0".repeat(40), section: "" } } });
   assert.equal(typeof learns.spec.endOfRun, "function", "a run that learns gets the end-of-run step from its spec");
   const plain = await specFor(t, {});
   assert.equal(plain.spec.endOfRun, undefined, "a run that does not learn gets none");

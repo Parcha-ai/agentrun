@@ -74,11 +74,14 @@ phoned's real core over a scripted phone (`src/fake`, `test/phoned/`).
   point, a key, a drag, or an element without the action (a canvas). Injected input reaches the focused display
   directly, so phoned reports it as `foreground`, and a call without `foreground: true` gets it refused `denied`. A
   step is `verified` only when the window, read back, differs from before it: an event or a frame alone verifies
-  nothing. The `expect` is checked after the last step.
+  nothing. A step after which another app is in front (Settings' search opens Settings Intelligence's page) is read
+  against that app's window once it shows. The `expect` is checked after the last step.
 - `input.actions`: taps, long presses, swipes and paths, a two-finger pinch, buttons (back, home, app switch), keys and
   combos, holds, and text: typed by the key map when every character has a key, else pasted through the clipboard,
   which is put back after.
-- `screen.shot`, `screen.read`, `screen.watch`: the display read on the phone, scaled there to `maxWidth`.
+- `screen.shot`, `screen.read`, `screen.watch`: the display read on the phone, scaled there to `maxWidth`. A watch
+  reads the screen at most every 200 ms and only while a `screen.watch` call waits, so a phone with no viewer is not
+  read; a read whose pixels are the last one's (`Bitmap.sameAs`) is neither scaled nor encoded.
 - `apps.list`, `apps.launch` (an app id, a deep link, or both), `apps.terminate`.
 - `exec.run`: a program as the shell user, with a minimal environment, killed with its whole process tree at its
   timeout or cancel.

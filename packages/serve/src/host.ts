@@ -7,7 +7,12 @@ import { totalmem } from "node:os";
 import { REQUEST_BUSY_MS, whenFree } from "./agents.js";
 import type { Store } from "./store/index.js";
 import { DEFAULT_HARNESS, HARNESSES } from "./harness.js";
-import { builtinHarness } from "./harness-table.js";
+import { builtinHarness, ownerHarness, ownerTable } from "./harness-table.js";
+
+/** The port a server listens on unless --port says otherwise (cli.ts), and the one a standalone runner's loopback reads
+ *  never go to (runner/main.ts runnerLoopback); and the free disk under the data directory below which health fails,
+ *  unless the server says otherwise. Both live in listen-first.ts, which the CLI loads before the rest of the server. */
+export { DEFAULT_PORT, MIN_FREE_MIB } from "./listen-first.js";
 
 const MiB = 2 ** 20;
 /** Memory the server keeps for itself, before any run, in MiB. Measured with the runs' (harness-table.ts): the server's anon
@@ -16,8 +21,6 @@ const MiB = 2 ** 20;
  *  with the pinned binaries' sha256 checked a chunk at a time: a start that reads the codex binary (294 MB) and the
  *  claude-agent CLI (230 MB) whole sat at 341 to 348 MB on a host of 1 GB or less. */
 export const SERVER_MIB = 128;
-/** Free disk under the data directory below which health fails, unless the server says otherwise. */
-export const MIN_FREE_MIB = 64;
 
 /** The memory this server may use: its container's limit when it has one (cgroup), else the machine's. */
 export function hostMemory(): number {
@@ -29,15 +32,17 @@ export function hostMemory(): number {
 /** The memory runs may hold on a host of `memory` bytes, in MiB: all of it less the server's own. */
 export const runsMemoryMib = (memory: number): number => Math.floor(memory / MiB) - SERVER_MIB;
 
-/** What a run of `harness` reserves, in MiB. A harness outside the table (no saved revision names one) reserves the most. */
-export const runMibOf = (harness: string | undefined): number => builtinHarness(harness)?.runMib ?? Math.max(...HARNESSES.map((id) => builtinHarness(id)!.runMib));
+/** What a run of `harness` reserves, in MiB: its entry's on the owner's table of `env` (harness-table.ts ownerHarness: a
+ *  built-in's, or what a harness module declares; a test's stand-in reserves as the built-in it stands in for). A harness
+ *  outside that table (no saved revision names one) reserves the most a built-in one does. */
+export const runMibOf = (harness: string | undefined, env: NodeJS.ProcessEnv = {}): number => ownerHarness(env, harness)?.runMib ?? Math.max(...HARNESSES.map((id) => builtinHarness(id)!.runMib));
 
 /** How many runs of `harness` alone fit on a host of `memory` bytes. One whose entry says one always fits (pi, the
  *  default) always has one place, as before runs were admitted by memory: a server too small for even that still runs
- *  one at a time. */
-export function runsThatFit(harness: string, memory: number): number {
-  const fit = Math.max(0, Math.floor(runsMemoryMib(memory) / runMibOf(harness)));
-  return builtinHarness(harness)?.oneAlwaysFits ? Math.max(1, fit) : fit;
+ *  one at a time. `env`: whose owner's table says what a run weighs (runMibOf). */
+export function runsThatFit(harness: string, memory: number, env: NodeJS.ProcessEnv = {}): number {
+  const fit = Math.max(0, Math.floor(runsMemoryMib(memory) / runMibOf(harness, env)));
+  return ownerHarness(env, harness)?.oneAlwaysFits ? Math.max(1, fit) : fit;
 }
 
 /** The default cap on how many runs at once: as many pi runs, the smallest, as fit. */
@@ -49,11 +54,13 @@ const aRun = (harness: string): string => `${/^[aeiou]/i.test(harness) ? "an" : 
 /** "pi", "pi and codex", "pi, claude-agent and codex". */
 const listed = (names: string[]): string => (names.length > 1 ? `${names.slice(0, -1).join(", ")} and ${names.at(-1)}` : names.join(""));
 
-/** Why no run of `harness` can ever start on a host of `memory` bytes, in words; undefined when one fits. */
-export function neverFits(harness: string, memory: number): string | undefined {
-  if (runsThatFit(harness, memory) > 0) return undefined;
-  const fit = HARNESSES.filter((id) => runsThatFit(id, memory) > 0);
-  return `This server has ${sizeOf(memory / MiB)} of memory and keeps ${sizeOf(SERVER_MIB)} for itself; ${aRun(harness)} needs about ${sizeOf(runMibOf(harness))} more, so it can't start here. ${listed(fit)} runs fit.`;
+/** Why no run of `harness` can ever start on a host of `memory` bytes, in words; undefined when one fits. `env`: whose
+ *  owner's table says what each run weighs (runMibOf), and which harnesses the words list. */
+export function neverFits(harness: string, memory: number, env: NodeJS.ProcessEnv = {}): string | undefined {
+  if (runsThatFit(harness, memory, env) > 0) return undefined;
+  // Those the server lists (an entry it hides, Goose before it is installed, is never named: harness-table.ts hidden).
+  const fit = Object.entries(ownerTable(env)).filter(([id, entry]) => entry.hidden?.(env) === undefined && runsThatFit(id, memory, env) > 0).map(([id]) => id);
+  return `This server has ${sizeOf(memory / MiB)} of memory and keeps ${sizeOf(SERVER_MIB)} for itself; ${aRun(harness)} needs about ${sizeOf(runMibOf(harness, env))} more, so it can't start here. ${listed(fit)} runs fit.`;
 }
 
 /** The cap on how many runs at once: `given`, else `AGENTRUN_MAX_RUNS`, else the default for this host's memory. A runner
@@ -64,7 +71,11 @@ export function maxRunsOf(env: NodeJS.ProcessEnv, given?: number): number {
   return value;
 }
 
-export type Health = { status: "ok" | "failing"; checks: { store: "ok" | "does_not_open"; disk: "ok" | "below_floor" | "cannot_check" } };
+/** The server's health. `degraded`: it serves, and every runner here refused to claim any run (`checks.runner` refused,
+ *  `runner_refused` their words, runner/presence.ts); answered 200 like ok, since a platform whose health check restarts a
+ *  service it reads as down would restart it in a loop, and a restart changes no runner's setting. `failing` (503) is the
+ *  store or the disk. */
+export type Health = { status: "ok" | "degraded" | "failing"; checks: { store: "ok" | "does_not_open"; disk: "ok" | "below_floor" | "cannot_check"; runner?: "refused" }; runner_refused?: string };
 
 /** How long health waits for the store's one read before it reads as failing (ms). */
 export const HEALTH_STORE_MS = 2_000;
@@ -72,10 +83,12 @@ export const HEALTH_STORE_MS = 2_000;
 /** Whether the server's store (`store`, the one it opened: SQLite in the data directory, or Postgres when
  *  AGENTRUN_STORE_URL names one) answers one read within HEALTH_STORE_MS, and the data directory's disk has
  *  `minFreeBytes` free; a disk it cannot measure fails. Says no path and no number. `fsStat` is node's statfs unless a
- *  test gives another. */
-export async function healthOf(store: Pick<Store, "agents">, data: string, minFreeBytes: number, fsStat: typeof statfs = statfs): Promise<Health> {
+ *  test gives another. `refused`: why no runner here can take a run (runner/presence.ts runnersRefused), read only when
+ *  the store answered; health is then degraded, with a runner check that says so and their words. */
+export async function healthOf(store: Pick<Store, "agents">, data: string, minFreeBytes: number, fsStat: typeof statfs = statfs, refused?: () => Promise<string | undefined>): Promise<Health> {
   let answered: Health["checks"]["store"] = "ok";
   let timer: NodeJS.Timeout | undefined;
+  const deadline = Date.now() + HEALTH_STORE_MS;
   try {
     // One indexed read of an id no agent has: the store's own connection, never a second open of a file.
     const read = whenFree(() => store.agents.get("health-check"), REQUEST_BUSY_MS);
@@ -90,7 +103,18 @@ export async function healthOf(store: Pick<Store, "agents">, data: string, minFr
   }
   const free = await fsStat(data).then((fs) => fs.bavail * fs.bsize, () => undefined);
   const disk = free === undefined ? "cannot_check" : free >= minFreeBytes ? "ok" : "below_floor";
-  return { status: answered === "ok" && disk === "ok" ? "ok" : "failing", checks: { store: answered, disk } };
+  if (answered !== "ok" || disk !== "ok") return { status: "failing", checks: { store: answered, disk } };
+  // The runners' read within what is left of the same HEALTH_STORE_MS: one that does not answer in time is not read (ok),
+  // so health never waits on a store that answered once and is now slow (a pool filled between the two reads).
+  let words: string | undefined;
+  if (refused) {
+    const read = refused();
+    read.catch(() => undefined);
+    words = await Promise.race([read, new Promise<undefined>((resolve) => {
+      timer = setTimeout(resolve, Math.max(0, deadline - Date.now()), undefined);
+    })]).catch(() => undefined).finally(() => clearTimeout(timer));
+  }
+  return words === undefined ? { status: "ok", checks: { store: answered, disk } } : { status: "degraded", checks: { store: answered, disk, runner: "refused" }, runner_refused: words };
 }
 
 /** Whether `--open` opens a browser here: not in CI, and on Linux or FreeBSD only with a display. */

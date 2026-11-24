@@ -7,6 +7,8 @@ export * from "./mount.js";
 export { type CallOptions, DaemonClient, type DaemonStream, findNodes, refusedStep, type UiActOptions, type UiQuery, UiSession } from "./client.js";
 export { type ActionFailure, type CheckActionsOptions, checkActions, isKey } from "./actions.js";
 export { pullTar, pullTarStream, pushTar, readFile, writeFile, type PulledTar } from "./files.js";
+export { type FolderMeta, FolderSync, folderPathProblem, SYNC_MAX_BYTES, SYNC_MAX_ENTRIES, type SyncCounts, type SyncSink } from "./sync-folder.js";
+export { type TarEntry, TarReader, tarEntry, tarOf, tarStream, untar, untarStream } from "./tar.js";
 export { listProcesses, readAll, type ReadAllResult } from "./processes.js";
 export {
 	type ActionMapper,
@@ -27,10 +29,10 @@ export {
 } from "./screen-watch.js";
 // The shared machine-host adapter: a vendor writes a MachineHost (src/host.ts), and HostedProvider makes it a provider.
 export type { HostCall, HostFacts, Machine, MachineHost, MachineProcess, MachineRequest } from "./host.js";
-export { HostedProvider, type HostedOptions, type HostedTimeouts } from "./hosted/provider.js";
+export { HostedProvider, type HostedDial, type HostedOptions, type HostedTimeouts, hostedDaemonPath } from "./hosted/provider.js";
 // The provider classes and their option types are not here: each provider loads by its id through the registry
-// (providerFor), or from its own subpath (@parcha/agentrun-computer/docker, /daytona, /modal, /e2b, /agent37, /orgo,
-// /phone-harness, /browserbase, /kernel, /local: each the provider file's name).
+// (providerFor), or from its own subpath (@parcha/agentrun-computer/docker, /daytona, /modal, /e2b, /agent37, /morph, /orgo,
+// /phone-harness, /browserbase, /kernel, /local, /smolcloud, /groundbox: each the provider file's name).
 export { type DockerVolume, VOLUME_SUBPATH_ENGINE } from "./docker/volume.js";
 export {
 	DEFAULT_DOCKER_IMAGE,
@@ -51,7 +53,6 @@ export {
 export { EGRESS_IMAGE, EGRESS_LABEL, EGRESS_MOUNT, EGRESS_SOCKET } from "./docker/egress.js";
 export {
 	ARCHIL_HELPER,
-	ARCHIL_MOUNT_LABEL,
 	ARCHIL_SYNC_SOCKET,
 	ARCHIL_TOOL_UID,
 	ARCHIL_TOOL_USER,
@@ -67,14 +68,18 @@ export {
 	archilReadBack,
 	archilRefusals,
 	archilRelease,
+	archilSync,
 	claimEpoch,
 	helperSha256,
+	MOUNT_LABEL,
 	mountDrift,
 	mountWords,
-	type RecordedArchil,
-	readArchilMount,
-	recordedArchil,
+	type RecordedFolder,
+	type RecordedSource,
+	readMount,
+	recordedFolder,
 	recordedMount,
+	SYNC_LABELS,
 	syncingClient,
 } from "./mount-archil.js";
 export {
@@ -82,6 +87,7 @@ export {
 	type BrowserDownloads,
 	type BrowserFile,
 	type BrowserProfiles,
+	type BrowserSessionUsage,
 	browserSpecRefusals,
 	type BrowserStream,
 	isBrowserProvider,
@@ -116,10 +122,12 @@ export {
 	type ProviderOptions,
 	providers,
 } from "./providers.js";
-export { type DescriptorKey, type DescriptorSetting, defineProvider, descriptorProblems, type HostCommand, type ParkedConfiguration, type ProviderDescriptor } from "./descriptor.js";
+export { connectOf, type DescriptorKey, type DescriptorSetting, defineProvider, descriptorProblems, type HostCommand, mountsOf, type ParkedConfiguration, type ProviderDescriptor } from "./descriptor.js";
 export {
 	AGENT37,
 	AGENT37_BASE_TEMPLATE,
+	BOXD,
+	BOXD_DEFAULT_IMAGE,
 	BROWSER_IMAGE,
 	BROWSERBASE,
 	DAYTONA,
@@ -131,19 +139,22 @@ export {
 	daytonaGpuSnapshot,
 	DOCKER,
 	E2B,
+	GROUNDBOX,
+	GROUNDBOX_OWN_IMAGE,
 	KERNEL,
 	LOCAL,
 	MODAL,
+	MORPH,
 	ORGO,
 	ORGO_BASE_IMAGE,
 	PHONE_GROUPS,
 	PHONE_HARNESS,
 	PHONE_IMAGE,
+	SMOLCLOUD,
 } from "./descriptors/index.js";
 // Types only: the phone ledger serve backs with its store. The provider itself loads through the registry.
 export type { PhoneLedger, PhoneLedgerEntry } from "./phone-harness.js";
 export {
-	type ComputerSettingKind,
 	configurationOf,
 	entryOf,
 	imagesOf,
@@ -152,12 +163,10 @@ export {
 	kindServed,
 	type ProviderEntry,
 	PROVIDERS,
-	SETTING_KIND_NAMES,
-	SETTING_KINDS,
-	type SettingKindSpec,
 	serves,
 	servingRefusals,
 	type TestConnection,
 	type TestConnectionOptions,
 } from "./kinds.js";
+export { type ComputerSettingKind, SETTING_KIND_NAMES, SETTING_KINDS, type SettingKindSpec } from "./setting-kinds.js";
 export * from "./conformance/index.js";

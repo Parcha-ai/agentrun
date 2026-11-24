@@ -35,10 +35,10 @@ tool_policy: { bash: read-only }
 mcp:
   - source: github
     toolkit: github
-    tools: [pull_request_read, get_file_contents, get_repository_tree, pull_request_review_write, add_comment_to_pending_review]
+    tools: [pull_request_read, get_file_contents, pull_request_review_write, add_comment_to_pending_review]
     required: false
     reason: "Reads the pull request and the repo through GitHub, and posts one COMMENT review with the findings. Every call is held to this one repository. It never approves, requests changes or resolves a thread."
-    allow: [pull_request_read, get_file_contents, get_repository_tree]
+    allow: [pull_request_read, get_file_contents]
     # A pull request is text anyone can write: every tool, reads too, is pinned to the one repository, so a hostile
     # one can't have a read reach another repository the token reaches and the review quote it. No free-text search
     # (search_code reaches every repository the token does). The review write posts COMMENT reviews only: never
@@ -46,7 +46,6 @@ mcp:
     pin:
       pull_request_read: { owner: "${parameters.owner}", repo: "${parameters.repo}" }
       get_file_contents: { owner: "${parameters.owner}", repo: "${parameters.repo}" }
-      get_repository_tree: { owner: "${parameters.owner}", repo: "${parameters.repo}" }
       pull_request_review_write: { owner: "${parameters.owner}", repo: "${parameters.repo}", method: [create, submit_pending, delete_pending], event: [null, COMMENT] }
       add_comment_to_pending_review: { owner: "${parameters.owner}", repo: "${parameters.repo}" }
 parameters:
@@ -83,7 +82,9 @@ For a pull request, read its facts with the GitHub tools (`pull_request_read` `g
 have `bash`, it runs read-only in a sandbox from your work folder, and the pull request is already checked out in
 `repo/`, as the skill's "Checkout" says. Then start eight reviewers on it in one turn with `subagent` and merge what
 they find as the skill says. Post the review through the GitHub tools. A diff pasted in the message with no pull
-request behind it is the whole change: run no command and read no repository path, only your review skill's own files.
+request behind it is the whole change: AgentRun saved the run's first message as `inputs/message.md`, and for a diff
+there each reviewer's prompt names that file instead of carrying the diff (a diff in a later message goes whole).
+Run no command and read no repository path, only that file and your review skill's own files.
 
 Every command is read-only: never build, install, run tests or run the repository's code, never commit or push. Each
 reviewer stays within the tool calls its call gives it (30 quick, 90 deep). The skill's own `CODEREVIEW.md` is the

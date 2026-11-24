@@ -42,6 +42,8 @@ class Capabilities(Envelope):
     max_payload_bytes: int = Field(ge=65536)
     privacy: dict
     token_usage: dict | None = None
+    session_labels: bool = False
+    cli_learning: dict | None = None
 
 
 class Connector(Envelope):

@@ -1,10 +1,12 @@
+import { SettingsSection, settingsBodyClass, settingsIntroClass, settingsPageClass } from "@/components/Settings";
 import { Github } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Banner } from "@/components/ui/banner";
-import { Input } from "@/components/ui/field";
+import { Checkbox, Input } from "@/components/ui/field";
 import { type Client, ClientError } from "@/lib/client";
 import { githubFormAction, type GitHubReturn, githubReturnWords } from "@/lib/github";
+import { takeReturn } from "@/lib/suggestions";
 import { httpHref } from "@/lib/safeUrl";
 import { cn } from "@/lib/utils";
 import type { GitHubConnection, GitHubDisconnected } from "@/lib/v2";
@@ -29,6 +31,8 @@ export function GitHubPage({ v2, returned }: { v2: Client; returned?: GitHubRetu
   const [connection, setConnection] = useState<GitHubConnection | null | undefined>(undefined);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [org, setOrg] = useState("");
+  // Contents write, for suggested agents' pull requests: asked for only when ticked.
+  const [write, setWrite] = useState(false);
   const [busy, setBusy] = useState(false);
   // The form to GitHub, once the start is in: the browser leaves with it.
   const [opening, setOpening] = useState<{ action: string; manifest: string } | null>(null);
@@ -47,8 +51,14 @@ export function GitHubPage({ v2, returned }: { v2: Client; returned?: GitHubRetu
     catch (e) { setLoadError(e instanceof Error ? e.message : String(e)); }
   }, [v2]);
   useEffect(() => { void read(); }, [read]);
-  // The way back from GitHub is said here once; the address keeps no query.
-  useEffect(() => { if (returned) history.replaceState(null, "", `${location.pathname}${location.search}#/settings/github`); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  // The way back from GitHub is said here once; the address keeps no query. Connected from another page (Suggested
+  // agents), the browser goes on there.
+  useEffect(() => {
+    if (!returned) return;
+    const next = returned.ok ? takeReturn() : undefined;
+    if (next) location.hash = next;
+    else history.replaceState(null, "", `${location.pathname}${location.search}#/settings/github`);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { if (opening) form.current?.submit(); }, [opening]);
 
   const connect = async () => {
@@ -56,7 +66,7 @@ export function GitHubPage({ v2, returned }: { v2: Client; returned?: GitHubRetu
     starting.current = true;
     setBusy(true); setSaid(null); setOpenAt(null); setDisconnected(null);
     try {
-      const start = await v2.connectGitHub(org.trim() || undefined);
+      const start = await v2.connectGitHub(org.trim() || undefined, write ? "write" : undefined);
       const action = githubFormAction(start.action, httpHref);
       if (!action) { setSaid("GitHub's address didn't look right, so nothing was sent."); starting.current = false; setBusy(false); return; }
       // The manifest alone: `action` carries the state.
@@ -87,71 +97,78 @@ export function GitHubPage({ v2, returned }: { v2: Client; returned?: GitHubRetu
   const appHref = connection ? httpHref(`https://github.com/apps/${encodeURIComponent(connection.slug)}`) : undefined;
   return (
     <div className="h-full overflow-auto">
-      <div className="mx-auto max-w-[1100px] space-y-6 px-6 py-8">
-        <div>
+      <div className={settingsPageClass}>
+        <div className={settingsIntroClass}>
           <p className="caps text-label text-muted-foreground">Settings</p>
           <h1 className="mt-1 text-2xl font-semibold">GitHub</h1>
           <p className="mt-2 text-lead text-muted-foreground">One GitHub App for this server: its templates and triggers reach GitHub through it.</p>
         </div>
-        {returned && (
-          <p aria-label="From GitHub" role="status" className={cn("border p-4 text-lead", returned.ok ? "border-success/50 bg-success/5" : "border-warning/50 bg-warning/5 text-warning-text")}>{githubReturnWords(returned)}</p>
-        )}
-        {(said || openAt) && (
-          <div role="alert" className="border border-destructive/50 px-4 py-3 text-lead text-destructive-text">
-            {/* A wrong-origin refusal is one line, the linked one: the server's words say the same thing unlinked. */}
-            {openAt ? <p>Open this server at <a href={openAt} className="break-all underline underline-offset-2">{openAt}</a> to connect GitHub.</p> : <p>{said}</p>}
-          </div>
-        )}
-        {disconnected && (
-          <section aria-label="Disconnected" className="border p-4 text-lead">
-            <p><Note note={disconnected.note} /></p>
-            <p className="mt-1 text-muted-foreground">{disconnected.triggers_off ? `${disconnected.triggers_off} GitHub ${disconnected.triggers_off === 1 ? "trigger" : "triggers"} turned off.` : "No GitHub trigger was on."}</p>
-          </section>
-        )}
-        {loadError && (
-          <Banner tone="error" actions={<Button type="button" size="xs" onClick={() => void read()}>Try again</Button>}>
-            <p className="font-mono">GitHub's connection could not be read: {loadError}</p>
-          </Banner>
-        )}
-        {connection === undefined && !loadError && <p className="font-mono text-body text-muted-foreground">Loading...</p>}
-        {connection === null && (
-          <section aria-label="Connect GitHub" className="border bg-card p-4">
-            <div className="flex flex-wrap items-end gap-3">
-              <label className="flex min-w-[240px] flex-1 flex-col gap-1 text-body">
-                <span className="text-muted-foreground">Organization (optional): the App is made under it</span>
-                <Input name="org" value={org} onChange={(e) => setOrg(e.target.value)} disabled={busy} placeholder="your-org" className="h-9 w-auto" />
-              </label>
-              <Button type="button" variant="solid" onClick={() => void connect()} disabled={busy}><Github aria-hidden />{opening ? "Opening GitHub…" : "Connect GitHub"}</Button>
+        <div className={settingsBodyClass}>
+          {returned && (
+            <p aria-label="From GitHub" role="status" className={cn("border p-4 text-lead", returned.ok ? "border-success/50 bg-success/5" : "border-warning/50 bg-warning/5 text-warning-text")}>{githubReturnWords(returned)}</p>
+          )}
+          {(said || openAt) && (
+            <div role="alert" className="border border-destructive/50 px-4 py-3 text-lead text-destructive-text">
+              {/* A wrong-origin refusal is one line, the linked one: the server's words say the same thing unlinked. */}
+              {openAt ? <p>Open this server at <a href={openAt} className="break-all underline underline-offset-2">{openAt}</a> to connect GitHub.</p> : <p>{said}</p>}
             </div>
-            <p className="mt-3 text-body text-muted-foreground">GitHub asks you to create the App, then to install it on the accounts it may use. You come back here after.</p>
-          </section>
-        )}
-        {connection && (
-          <section aria-label="GitHub App" className="border bg-card p-4">
-            <div className="flex flex-wrap items-center gap-2 text-lead">
-              <Github className="size-4 text-muted-foreground" aria-hidden />
-              {appHref ? <a href={appHref} target="_blank" rel="noopener noreferrer" className="font-mono underline underline-offset-2">{connection.slug}</a> : <span className="font-mono">{connection.slug}</span>}
-              <span className="font-mono text-small text-muted-foreground">App {connection.app_id}</span>
-            </div>
-            {connection.installations.length
-              ? <ul aria-label="Installations" className="mt-3 space-y-1 font-mono text-body">{connection.installations.map((i) => <li key={i.id}>{i.account}</li>)}</ul>
-              : <p className="mt-3 text-body text-muted-foreground">Not installed on any account yet.</p>}
-            {!confirming
-              ? <Button type="button" variant="outline" className="mt-4" disabled={busy} onClick={() => setConfirming(true)}>Disconnect</Button>
-              : (
-                <div className="mt-4 flex flex-wrap items-center gap-2 text-body" role="alertdialog" aria-label="Disconnect GitHub?">
-                  <span>Disconnect GitHub? Every GitHub trigger turns off.</span>
-                  <Button type="button" variant="destructive" disabled={busy} onClick={() => void disconnect()}>Disconnect GitHub</Button>
-                  <Button type="button" variant="ghost" onClick={() => setConfirming(false)}>Cancel</Button>
-                </div>
-              )}
-          </section>
-        )}
-        {opening && (
-          <form data-github-manifest ref={form} method="post" action={opening.action} hidden>
-            <input type="hidden" name="manifest" defaultValue={opening.manifest} />
-          </form>
-        )}
+          )}
+          {disconnected && (
+            <section aria-label="Disconnected" className="border p-4 text-lead">
+              <p><Note note={disconnected.note} /></p>
+              <p className="mt-1 text-muted-foreground">{disconnected.triggers_off ? `${disconnected.triggers_off} GitHub ${disconnected.triggers_off === 1 ? "trigger" : "triggers"} turned off.` : "No GitHub trigger was on."}</p>
+            </section>
+          )}
+          {loadError && (
+            <Banner tone="error" actions={<Button type="button" size="xs" onClick={() => void read()}>Try again</Button>}>
+              <p className="font-mono">GitHub's connection could not be read: {loadError}</p>
+            </Banner>
+          )}
+          <SettingsSection title="Connection">
+          {connection === undefined && !loadError && <p className="font-mono text-body text-muted-foreground">Loading...</p>}
+          {connection === null && (
+            <section aria-label="Connect GitHub" className="border bg-card p-4">
+              <div className="flex flex-wrap items-end gap-3">
+                <label className="flex min-w-[240px] flex-1 flex-col gap-1 text-body">
+                  <span className="text-muted-foreground">Organization (optional): the App is made under it</span>
+                  <Input name="org" value={org} onChange={(e) => setOrg(e.target.value)} disabled={busy} placeholder="your-org" className="h-9 w-auto" />
+                </label>
+                <Button type="button" variant="solid" onClick={() => void connect()} disabled={busy}><Github aria-hidden />{opening ? "Opening GitHub…" : "Connect GitHub"}</Button>
+              </div>
+              <Checkbox className="mt-3" checked={write} onChange={(e) => setWrite(e.target.checked)} disabled={busy}
+                label="Let AgentRun open pull requests for suggested agents"
+                note="Asks GitHub for Contents: Read and write as well. Leave it off if you only use triggers and templates." />
+              <p className="mt-3 text-body text-muted-foreground">GitHub asks you to create the App, then to install it on the accounts it may use. You come back here after.</p>
+            </section>
+          )}
+          {connection && (
+            <section aria-label="GitHub App" className="border bg-card p-4">
+              <div className="flex flex-wrap items-center gap-2 text-lead">
+                <Github className="size-4 text-muted-foreground" aria-hidden />
+                {appHref ? <a href={appHref} target="_blank" rel="noopener noreferrer" className="font-mono underline underline-offset-2">{connection.slug}</a> : <span className="font-mono">{connection.slug}</span>}
+                <span className="font-mono text-small text-muted-foreground">App {connection.app_id}</span>
+              </div>
+              {connection.installations.length
+                ? <ul aria-label="Installations" className="mt-3 space-y-1 font-mono text-body">{connection.installations.map((i) => <li key={i.id}>{i.account}</li>)}</ul>
+                : <p className="mt-3 text-body text-muted-foreground">Not installed on any account yet.</p>}
+              {!confirming
+                ? <Button type="button" variant="outline" className="mt-4" disabled={busy} onClick={() => setConfirming(true)}>Disconnect</Button>
+                : (
+                  <div className="mt-4 flex flex-wrap items-center gap-2 text-body" role="alertdialog" aria-label="Disconnect GitHub?">
+                    <span>Disconnect GitHub? Every GitHub trigger turns off.</span>
+                    <Button type="button" variant="destructive" disabled={busy} onClick={() => void disconnect()}>Disconnect GitHub</Button>
+                    <Button type="button" variant="ghost" onClick={() => setConfirming(false)}>Cancel</Button>
+                  </div>
+                )}
+            </section>
+          )}
+          </SettingsSection>
+          {opening && (
+            <form data-github-manifest ref={form} method="post" action={opening.action} hidden>
+              <input type="hidden" name="manifest" defaultValue={opening.manifest} />
+            </form>
+          )}
+        </div>
       </div>
     </div>
   );

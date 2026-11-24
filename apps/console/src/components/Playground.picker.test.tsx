@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { Playground } from "./Playground";
 import { agentFixture } from "@/fixtures";
+import { wordsOf } from "@/test/picker";
 
 // The Playground's Agent and Revision fields are the console's picker, not native <select>s, which a phone opens
 // detached from the field: each opens its list right under itself (anchored "bottom start"; the walk measures the real
@@ -34,8 +35,19 @@ describe("Playground's Agent and Revision pickers", () => {
   it("are listbox pickers, not native selects", () => {
     const t = open();
     expect(t.host.querySelector("select")).toBeNull();
-    expect(t.field("Agent")?.textContent).toContain(base.definition.name);
+    expect(wordsOf(t.field("Agent"))).toBe(base.definition.name);
     expect(t.field("Revision")?.textContent).toContain("The current revision");
+  });
+
+  // A width of its own (14rem) cut a long agent's name short beside an empty row. The field is sized by its words
+  // instead: it holds every agent's name, hidden, so it is as wide as the longest and keeps that width whichever is
+  // picked. jsdom lays nothing out, so this holds what the width comes from; the browser's measure is the e2e flow
+  // playground-agent-width.
+  it("the Agent picker is as wide as its longest agent's name, with no width of its own", () => {
+    const field = open().field("Agent")!;
+    expect([...field.querySelectorAll("[data-picker-sizer]")].map((n) => n.textContent)).toEqual([base.definition.name, "Second agent"]);
+    expect(field.className.split(/\s+/).filter((c) => c.startsWith("w-"))).toEqual([]);
+    expect(wordsOf(field)).toBe(base.definition.name);
   });
 
   it("the Agent picker opens its list under the field, and the keyboard picks: ArrowDown, Enter", async () => {
@@ -51,7 +63,7 @@ describe("Playground's Agent and Revision pickers", () => {
     await key(list, "Enter");
     expect(picked).toEqual(["second"]);
     expect(document.querySelector('[role="listbox"]')).toBeNull();
-    expect(t.field("Agent")?.textContent).toContain("Second agent");
+    expect(wordsOf(t.field("Agent"))).toBe("Second agent");
     expect(t.host.textContent).toContain("/v2/agents/second/runs");
   });
 
@@ -78,7 +90,7 @@ describe("Playground's Agent and Revision pickers", () => {
     await key(document.querySelector('[role="listbox"]')!, "Escape");
     expect(document.querySelector('[role="listbox"]')).toBeNull();
     expect(picked).toEqual([]);
-    expect(t.field("Agent")?.textContent).toContain(base.definition.name);
+    expect(wordsOf(t.field("Agent"))).toBe(base.definition.name);
   });
 
   it("with no agents, shows the way to create one in place of the picker and the form", () => {
@@ -98,5 +110,31 @@ describe("Playground's Agent and Revision pickers", () => {
     // The sample names the placeholder, never a path with an empty segment.
     expect(host.textContent).toContain("/v2/agents/{agent_id}/runs");
     expect(host.textContent).not.toContain("/agents//runs");
+  });
+});
+
+describe("Playground's fields and switches, to a screen reader", () => {
+  it("names each field by its label, and leaves the page's one heading to the page around it", () => {
+    const t = open();
+    expect(t.host.querySelector("h1")).toBeNull();
+    for (const [id, name] of [["playground-input", "input.content"], ["playground-repo", "repo"], ["playground-cap", "max_cost_usd"]]) {
+      const field = t.host.querySelector(`#${id}`) as HTMLInputElement | null;
+      expect(field, id).not.toBeNull();
+      expect([...(field!.labels ?? [])].map((l) => l.textContent), id).toEqual([name]);
+    }
+    // A field of several controls is a group named by the same words.
+    const effort = [...t.host.querySelectorAll('[role="group"][aria-labelledby]')].map((g) => document.getElementById(g.getAttribute("aria-labelledby")!)?.textContent);
+    expect(effort).toEqual(expect.arrayContaining(["file_ids", "revision", "effort"]));
+  });
+
+  it("says which view is on, and moves it", () => {
+    const t = open();
+    const pressed = (name: string) => [...t.host.querySelectorAll("button")].find((b) => b.textContent === name)!;
+    expect(pressed("Form").getAttribute("aria-pressed")).toBe("true");
+    expect(pressed("JSON").getAttribute("aria-pressed")).toBe("false");
+    expect(pressed("cURL").getAttribute("aria-pressed")).toBe("true");
+    act(() => pressed("JSON").click());
+    expect(pressed("JSON").getAttribute("aria-pressed")).toBe("true");
+    expect(pressed("Form").getAttribute("aria-pressed")).toBe("false");
   });
 });

@@ -19,12 +19,13 @@
 
 <p align="center">
   <a href="https://console.agentrun.ai/"><b>AgentRun Cloud</b></a> ·
-  <a href="#run-locally-in-three-steps">Run locally</a> ·
+  <a href="#set-it-up-with-one-prompt">Run locally</a> ·
   <a href="#deploy-it">Self-host</a>
 </p>
 
 <p align="center">
   <a href="#get-started">Quickstart</a> ·
+  <a href="#connect-your-existing-agent">Connect your agent</a> ·
   <a href="#case-studies">Case studies</a> ·
   <a href="#take-the-tour">Tour</a> ·
   <a href="#templates">Templates</a> ·
@@ -80,14 +81,35 @@ laptop, in one container, or as a server with runners. Apache-2.0.
 create an account or sign in. For help setting up your team's workflows,
 [talk to us](https://calendly.com/d/dtwn-dsp-nx5/agentrun).
 
-Prefer your own machine or infrastructure? Start locally below, or [self-host on Render or Docker](#deploy-it).
-The [getting-started guide](docs/getting-started.md) explains the three options.
+Prefer your own machine or infrastructure? Have your coding agent set it up below, or
+[self-host on Railway, Render, a VPS, Kubernetes, Coolify, Dokploy or Docker](#deploy-it) yourself. The
+[getting-started guide](docs/getting-started.md) explains the three options. Wherever it runs, AgentRun counts itself
+anonymously; `AGENTRUN_TELEMETRY=0` or `DO_NOT_TRACK=1` turns that off ([anonymous usage counts](docs/telemetry.md)).
 
 <a id="start-in-three-steps"></a>
+<a id="run-locally-in-three-steps"></a>
 
-### Run locally in three steps
+### Set it up with one prompt
+
+Paste this into Claude Code, Codex or another coding agent:
+
+```text
+Read https://agentrun.ai/SKILL.md and follow it to set up AgentRun for me. Ask me where AgentRun should run before you install or deploy anything.
+```
+
+Your agent first asks where AgentRun should run: this computer (macOS or Linux), your own always-on machine, Railway,
+Render or AgentRun Cloud. It installs nothing before you answer. It can bring in a Claude Code or Codex job you
+already schedule as the first run, or create and run a first agent with you. You save keys and passwords in the
+AgentRun console, never in the chat. The link is [the setup skill](docs/SKILL.md) in this repository.
+
+<details>
+<summary>Or run it locally yourself, in three steps</summary>
 
 You need Node 24.22.3 or newer, on macOS or Linux.
+
+Already use Claude Code or Codex? [Connect your existing agent](#connect-your-existing-agent) with its current
+configuration and sign-in. You do not need to add a model key to AgentRun for that connection. The steps below
+start a new agent from a template.
 
 1. **Start it.**
 
@@ -95,8 +117,9 @@ You need Node 24.22.3 or newer, on macOS or Linux.
    npx @parcha/agentrun
    ```
 
-   It starts the server and one runner on port 7340 (or the next free one), keeps everything in `~/.agentrun`, and
-   opens the console in your browser.
+   It starts the server and one runner on port 7340 (or the next free one), keeps everything in `~/.agentrun` (not the
+   folder you run it in: `--data DIR` names another, and a new folder alone is not a new install), and
+   opens the console in your browser. It runs in that terminal until you press Ctrl-C there, which stops it.
 
 2. **Continue with ChatGPT, or add a model key.** In the console, set a password, then press **Continue with ChatGPT**
    (on the first screen, or under **Settings → Model keys**) and sign in on OpenAI's page: Codex and pi agents run on
@@ -108,7 +131,7 @@ You need Node 24.22.3 or newer, on macOS or Linux.
    a due diligence report with a verdict and every claim cited. Then open the agent's **Learning** tab to see what it
    kept for next time.
 
-Rather have your coding agent do the local setup? Tell it: `Read agentrun.ai/SKILL.md and set up AgentRun locally for me`.
+</details>
 
 <details>
 <summary>Docker, sandboxes and running it on a server</summary>
@@ -117,9 +140,62 @@ If Docker is running on your machine, new agents get a Docker sandbox with a she
 which takes a few minutes, and the console says when it's ready. Without Docker, agents still read and write files,
 but get no shell.
 
-Want your own server with a URL? [Self-host on Render](#deploy-it).
+Want your own server with a URL? [Self-host on Railway or Render](#deploy-it).
 
 </details>
+
+## Connect your existing agent
+
+Already have agents running in a backend, Docker deployment or terminal? **Connect agent** can observe them
+through the same CLI and OpenTelemetry Collector used by hosted AgentRun. The OSS console shows their reported
+activity and token usage while your application keeps starting the work. Follow
+[Observe agents that already run elsewhere](connector/README.md#observe-agents-that-already-run-elsewhere).
+Observation needs no model key and does not automatically enable learning or import transcripts.
+
+Keep the project, instructions, skills, MCP tools and sign-in you already use in Claude Code or Codex. AgentRun can
+start new jobs with that setup and show their activity and results in the console.
+
+**Development build:** remote connections currently require the server and the Python connector from the same
+reviewed checkout. The published observation-only CLI does not include this remote execution mode. Follow the
+[source connector setup](connector/README.md) for installation and the matching Node bridge.
+
+1. **Choose your coding agent.** In Mission Control or Connected agents, open the **Connect agent** dropdown and
+   select your coding agent. The button remembers your choice and provides a prompt that reads the skill from
+   this server's build.
+2. **Choose what to bring.** The skill first distinguishes **observing existing sessions** from letting AgentRun
+   **start future jobs**. For future jobs, choose **a live connection**, **past history**, or **both**,
+   then confirms the source machine, project and runtime. For a laptop, VM or container separate from the server,
+   use **Connection setup → Another machine** and create a code with the chosen scope. Enter it directly in the
+   source CLI's secure prompt. Your native credentials stay on that machine; the worker connects outbound.
+3. **See the result.** For **History only**, open Runs and check the imported conversations and counts; no worker
+   or model job is started. For a **live connection** or **Both**, open the connected agent, verify its setup, and
+   start a job. Keep a remote source worker online. Turn **Self-improving** On to give future native runs your
+   standing corrections, which you can inspect and edit in Learning. Native connections do not compile or run
+   learned workflows; those require managed execution or a compatible backend workflow bridge.
+
+History import brings selected completed conversations into Runs without executing them or automatically training
+the agent. A live connection starts new CLI sessions; it does not attach to a desktop conversation already in
+progress. You can connect first and import history later with an explicitly approved history scope.
+
+[Connection and history guide](docs/native-agents.md) · [Remote CLI installation and commands](connector/README.md)
+
+Already use Codex CLI or Claude Code directly? [Connect its existing sessions for learning](docs/tutorials/existing-cli-learning.md)
+with project-scoped hooks that capture completed prompts and deliver explicit owner corrections. Keep starting
+the agent normally; no SDK wrapper or AgentRun task launcher is needed.
+
+Already run an agent inside your backend with an SDK? The development build can add checked learning around its
+existing call site. Your backend keeps its job queue, tools, model credentials and cancellation; AgentRun records
+the run and supplies accepted learning to the next fresh task. Use the matching client and server from this checkout.
+
+| Backend SDK | Integration |
+| --- | --- |
+| Claude Agent SDK | [Wrap your existing query and custom tools](docs/tutorials/claude-sdk-learning.md) |
+| Codex SDK | [Wrap your existing Codex client and fresh threads](docs/tutorials/codex-sdk-learning.md) |
+| External platforms, including OpenClaw and Capy | [Report agents, scheduled jobs and threads from their platform](docs/tutorials/platform-sdk-runs.md) |
+
+The [live examples](examples/sdk-learning/README.md) verify native tool execution, owner-correction delivery in a fresh
+session, and a learning-Off control. Separate workflow examples verify compilation, an independent check, and reuse
+through the backend's tool bridge. Workflow compilation adds server model usage.
 
 ## Take the tour
 
@@ -151,41 +227,37 @@ cost, by day, by harness and by tool.
 
 ## Agents that learn the work
 
-Turn it on with `"learning": true` in an agent's definition. At the end of every run, the agent gets one more turn to
-say what it would keep. AgentRun checks it, grades it, and commits the keepers to the agent's own git folder. The next
-run starts from there.
+Turn it on with `"learning": true` in an agent's definition. An agent learns two things, both kept in its own git
+folder, and every run starts from that folder's `main`.
 
 ```mermaid
 flowchart LR
     start["Run starts from<br/>the agent's main"] --> work["Run does the job"]
-    work --> propose["Last turn proposes<br/>notes, a skill, a workflow"]
-    propose --> check["Code checks,<br/>then one grader"]
+    work --> fin["Run's end: your words to corrections.md,<br/>a workflow draft when one is due"]
+    fin --> check["Code checks,<br/>then one replay check"]
     check -->|kept| commit["Commit to main"]
     commit --> start
 ```
 
-- **Notes** are short markdown files, one fact each, in Claude Code's memory format.
-- **Skills** are how to do a job again, and only a run that finished the job can write one.
-- **Learned workflows** run as one tool call on any harness, under the run's own cap and tool permissions. Once a
-  learned skill has served 3 runs, the next run is asked for that job as a workflow draft, and a draft is dry-run
-  before it's kept: no model is asked and no tool runs.
+- **Corrections** are your words. A grade's words, or a message you send after a run's first answer, become one line
+  of the agent's `corrections.md` at that run's end. Every later run is given the file whole, under `# Learned`.
+- **Learned workflows** run as one tool call on any harness, under the run's own cap and tool permissions. Once the
+  agent has 20 completed runs (`learning: { "compile_after": 20 }` is the default), one run's end compiles the job into
+  a workflow draft. Code checks the draft and dry-runs it (no model is asked and no tool runs), then it is replayed
+  once on those runs' inputs and serves only when it answers enough of them alone and agrees with the agent's answers.
 
-The agent's **Learning** tab shows every note, skill and workflow and the log of changes, and each run shows which
-notes it was given and opened. Retire anything there, or with `npx @parcha/agentrun learning retire` and the note's
-ETag. Git keeps the history, so a retired note can come back.
+The agent's **Learning** tab shows its corrections, its workflows and the log of changes. Edit the corrections there,
+or with `PUT /v2/agents/{id}/learning/corrections`. Git keeps the history. `DELETE /v2/agents/{id}/learning` resets
+it: everything the agent learned is deleted, history included, and the agent and its runs stay. Learning starts over
+from the runs after it: `compile_after` counts from the reset.
 
 <details>
-<summary>What gets kept, and what gets dropped</summary>
+<summary>What gets kept, and what gets refused</summary>
 
-Each agent has a learning folder: plain git with one branch, `main`. A run reads the index of active notes in its
-instructions and gets the learned skills beside its own. Code checks every proposal first. An item that breaks a rule of
-its own (a size or count limit, its name, its shape) is left out and the rest goes on. A secret or a hidden character
-anywhere in the answer, a file outside the folder, a deletion or a full index drops the whole answer, since no item of
-it can be trusted. Then one grader judges what it says, and AgentRun commits what passes. A risky rule waits for your
-OK. A rule the run found in a page or a pasted email, or a note that holds an account number, is dropped.
-
-Once an agent's notes outgrow the learning budget, each run gets the ones that bear on its first message, whole, and a
-line for each of the rest. A run that only ran a learned workflow isn't asked what to keep.
+Each agent has a learning folder: plain git with one branch, `main`. Over a cap a write is refused whole, never cut:
+2048 bytes for `corrections.md`, 16384 for a draft's `workflow.json`, 1024 for its README. A secret or a secret's
+shape in a correction or a draft refuses it too. A held draft gets one revision, shown the inputs it disagreed on;
+held again, it stops, and nothing compiles again until you act.
 
 </details>
 
@@ -252,12 +324,13 @@ step is never run again; a write a crash cut off mid-call is marked interrupted 
 
 ## Templates
 
-Five ready-made agents. Apply one in one screen, make it yours, and measure it with its own eval cases. Each template is
+Six ready-made agents. Apply one in one screen, make it yours, and measure it with its own eval cases. Each template is
 one folder: the agent's instructions, its skills, its rules and its eval cases. **Templates → Apply** grants nothing
 until you tick each MCP tool yourself.
 
 | Template | What it does |
 | --- | --- |
+| `agent-scout` | Reads a GitHub repository on a read-only checkout and suggests up to five agents its app could call, each with the lines of code that show why. The **Suggested agents** page shows them: Create opens a pull request that adds the agent and a client to your repository; Discard hides it for good |
 | `code-review` | Reviews a pull request with eight independent reviewers on a read-only checkout (or a pasted diff), merges and verifies their findings, quotes the line behind each, and returns them as JSON. It sets up its own GitHub trigger |
 | `kyb` | Due diligence on one company: registries, owners, sanctions lists, dated adverse media, and a verdict with every claim cited |
 | `market-monitor` | Every Monday, a digest of what changed at the companies you watch, each item dated and linked |
@@ -266,6 +339,10 @@ until you tick each MCP tool yourself.
 
 `npx @parcha/agentrun template eval DIR` runs a template's eval cases as real runs on a throwaway server and grades
 them. [Template packages](packages/serve/templates/README.md) has the folder format.
+
+**Agents → Suggested** connects a repository and runs `agent-scout` for you. A scan reads with a token for that one
+repository, contents read-only. Opening a pull request needs the GitHub App's Contents write, asked for only when you
+tick it at Connect GitHub ([Suggested agents](packages/serve/README.md#suggested-agents)).
 
 Want a template to know your code? [Tune a template on your own code](docs/tutorials/tune-a-template.md) walks
 through the loop we ran on `code-review`.
@@ -297,12 +374,9 @@ you from a toolkit to a run that a Composio event starts:
      <img alt="The hackernews toolkit's six actions, two of them ticked, saved as the server hackernews" src="docs/assets/tutorials/composio-3-actions.png" width="100%">
    </p>
 
-4. In **Triggers → New webhook**, pick **Composio's** signature and the agent, subscribe its URL on Composio, then
-   paste Composio's secret with **Set secret**.
-
-   <p align="center">
-     <img alt="The trigger's page: its agent, URL, Composio's signature, Accepts GITHUB_ISSUE_CREATED_TRIGGER, and one firing that started a run" src="docs/assets/tutorials/composio-4-trigger.png" width="100%">
-   </p>
+4. In **Triggers → New app trigger**, pick the saved `github` server, an event such as a new issue and its repository,
+   and the agent. The server makes the trigger on Composio and its webhook subscription at this server's public
+   address (`AGENTRUN_PUBLIC_URL`).
 
 5. Open an issue in your repository and watch the run it starts on the **Timeline**.
 
@@ -340,8 +414,8 @@ computer:
 | Kind | What the agent can do | Providers |
 | --- | --- | --- |
 | `none` | Read and write files in its run folder; no shell (with Archil, commands run on Archil's exec) | none needed |
-| `sandbox` | Run code, install packages, keep processes in the background, on Linux | Docker, Daytona, Modal, E2B |
-| `desktop` | See a Linux screen, move the mouse, type | Orgo, E2B, Docker (your own image with an X server) |
+| `sandbox` | Run code, install packages, keep processes in the background, on Linux | Docker, Daytona, Modal, E2B, Cloudflare (through a relay Worker you deploy) |
+| `desktop` | See a Linux screen, move the mouse, type | Orgo, E2B, Docker (your own image with an X server), and on dial Daytona, Modal, Cloudflare and Fly Machines (the box image's desktop) |
 | `phone` | Tap, swipe, type, open apps and read the screen on Android | phone harness (a rented cloud Android) |
 | `browser` | Browse the web, and hand the controls to you at any point | Browserbase, Kernel |
 
@@ -461,17 +535,60 @@ or let others run agents on it. Eligible usage in this app uses your ChatGPT pla
 settings. On a server that isn't this computer, the sign-in tab ends on a page that won't load: copy its whole address
 into the console.
 
+**Self-host on Railway.**
+
+[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/agentrun-1)
+
+The button deploys the published template: the image, a volume at `/data`, a domain, and the token and seal key made
+for you. About $5 a month on Railway's Hobby plan, which includes $5 of usage; agents get no shell. When it's live, open
+its domain and paste `AGENTRUN_TOKEN` from the service's Variables tab as the setup code. Then Continue with ChatGPT or
+add a model key, and run your first agent. Walked from click to a finished first run in 46 seconds. Details:
+[deploy/README.md](deploy/README.md).
+
 **Self-host on Render.**
 
 <a href="https://render.com/deploy?repo=https://github.com/Parcha-ai/agentrun"><img alt="Deploy to Render" src="docs/assets/readme/pill-render.png" height="44"></a>
 
 The button deploys [`render.yaml`](render.yaml): one 1 CPU / 2 GB instance with a 10 GB disk, the published image (no
-build), and the token and seal key generated for you. It needs a card on your Render workspace: about $25 a month for
-the instance and $2.50 for the disk, at Render's prices when this was written. Leave the model keys in Render's form
+build), and the token and seal key generated for you. Render gives the service no Docker, so its agents get file tools
+and `web_fetch` but no shell. It needs a card on your Render workspace: about $25 a month for the instance and $2.50
+for the disk, at Render's prices when this was written. Leave the model keys in Render's form
 blank. When it's live, open its URL and paste `AGENTRUN_TOKEN` from the service's Environment tab to set your password.
 Then Continue with ChatGPT (Settings → Model keys, or the first screen), then run your first agent. Or paste a key in
 Render's form, or add it in the console: we recommend an `OPENROUTER_API_KEY` with a dollar cap and an expiration
-date. Do not share it with anyone.
+date. Do not share it with anyone. Walked from the service's creation through Render's API to a finished first run
+in 85 seconds.
+
+**Self-host on a $5 VPS.**
+
+On a fresh Linux server you rent (Ubuntu or Debian), as root:
+
+```sh
+curl -fsSL https://agentrun.ai/install | sh -s -- --vps
+```
+
+It installs Docker if the server has none, runs the published image with Docker Compose in `/opt/agentrun`, and makes
+the token and seal key once, in `/opt/agentrun/.env` (mode 600). Its agents get a shell in Docker sandboxes. It stays
+private. With [Tailscale](https://tailscale.com) logged in, only your own tailnet reaches it. Without Tailscale,
+AgentRun listens on the server's loopback and the installer prints the steps to add it. `--public` opens port 7340 to
+the internet over plain HTTP instead, and warns you first. It prints the address and the setup code. Run it again to
+upgrade.
+A Hetzner Cloud CPX02 (1 GB) is from €5.49 a month before VAT and a DigitalOcean Basic Droplet (1 GiB) is $6, at their
+prices when this was written. The server gets the VPS's Docker socket, which is root on it, so keep the VPS for
+AgentRun alone. Details: [deploy/README.md](deploy/README.md#one-command-on-a-server-you-rent).
+
+**Self-host on Kubernetes.**
+
+```sh
+helm install agentrun oci://ghcr.io/parcha-ai/charts/agentrun --devel --namespace agentrun --create-namespace
+```
+
+One pod on a 10 GiB volume, from the release's image; agents get file tools and `web_fetch`, no shell. Details:
+[the chart's README](deploy/helm/agentrun/README.md).
+
+**Self-host on Coolify or Dokploy.** One service from the release's image on a volume, with the token, the seal key and
+the domain made by the platform; agents get file tools and `web_fetch`, no shell. The templates and their steps:
+[deploy/README.md](deploy/README.md#on-coolify-or-dokploy).
 
 <details>
 <summary>Docker Compose: a server and two runners</summary>
@@ -491,8 +608,10 @@ your first agent. Or add a model key in the console, or in `.env` before `docker
 
 The port is published on this machine's loopback only; put a TLS proxy in front before you open it to anyone else.
 This compose file has no Docker socket, so its agents get file tools and `web_fetch` but no shell. For a Docker
-sandbox, use the single-server `compose.yaml` at the repository's root (Docker Engine 26 or later), run the server on
-the host.
+sandbox, use the single-server `compose.yaml` at the repository's root (Docker Engine 26 or later), which gives the
+server the host's Docker socket (that socket is root on the host: give it only where you would give AgentRun root), or
+run the server on the host with `npx @parcha/agentrun`. The start's `Boxes:` line
+and the agent editor's place say which one a container lacks: the socket, or its group (`DOCKER_GID`).
 
 </details>
 
@@ -514,8 +633,13 @@ Every saved secret (model and tool keys, MCP credentials, sign-ins, webhook sign
 `AGENTRUN_SEAL_KEY`; keep it, because losing it loses what it sealed. Secrets are write-only: the console shows each
 one as set or missing, and only the console can paste, replace or remove one (your signed-in session, or the
 launcher's console on loopback when accounts are off). A key set where the server starts wins over a pasted one. The
-API token can't write a secret or approve a tool call. A run gets only the keys its own model and tools need, and
+API token can't write a secret or approve a tool call: its secret write is refused with a console link
+(`error.details.console_url`) to the form, filled in except for the secret. A run gets only the keys its own model and tools need, and
 nothing a run learns can keep a secret it was handed. [SECURITY.md](SECURITY.md) says how to report a vulnerability.
+
+The server counts itself anonymously (a random id, its version, its platform): never prompts, files or keys.
+`AGENTRUN_TELEMETRY=0` or `DO_NOT_TRACK=1` turns that off, and the first start only prints a notice.
+[Anonymous usage counts](docs/telemetry.md) lists every field.
 
 ## Docs
 
@@ -524,7 +648,9 @@ nothing a run learns can keep a secret it was handed. [SECURITY.md](SECURITY.md)
 - [Get started](docs/getting-started.md): AgentRun Cloud, local setup or self-hosting
 - [Quickstart on agentrun.ai](https://agentrun.ai/docs/quickstart) and the [docs](https://agentrun.ai/docs)
 - [The CLI's skill](packages/agentrun/skills/agentrun-cli/SKILL.md) and [every command](packages/agentrun/skills/agentrun-cli/references/commands.md)
+- [Connect existing agents and import history](docs/native-agents.md), locally or from another machine
 - [Deploying](deploy/README.md), [computers](packages/computer/README.md), [templates](packages/serve/templates/README.md)
+- [Give an agent tools](docs/connect-tools.md): Sentry, GitHub, Slack and other services as MCP servers, with no token in the box
 - [Connect Composio tools and triggers](docs/tutorials/composio.md)
 - [The workflow language](packages/dsl/README.md), [authoring](docs/authoring.md), [the guide](docs/guide.md)
 - [Changelog](CHANGELOG.md) and [contributing](CONTRIBUTING.md)

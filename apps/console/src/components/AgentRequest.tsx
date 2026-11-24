@@ -1,0 +1,223 @@
+import { cliLearningOf } from "@/lib/cliLearning";
+import { Input, Textarea } from "@/components/ui/field";
+import { cloneElement, useEffect, useId, useState, type ReactElement } from "react";
+import { ArrowUpRight, Copy, Play } from "lucide-react";
+import { CodingAgentAction } from "./CodingAgentAction";
+import { Button, ConfirmDialog, Picker } from "./ui";
+import { agentHash } from "./AgentPage";
+import { startFailure, type StartResult } from "./Playground";
+import { type ModelSaid, ModelField, useModelField } from "./ModelField";
+import { type Agent, type Definition, editBody, same, warningsFor } from "@/lib/agentForm";
+import { briefAgentDraft, parseAgentDraft } from "@/lib/agentDraft";
+import { backendSdkOf } from "@/lib/backendSdk";
+import { buildAgentPrompt, editAgentPrompt } from "@/lib/codingAgentPrompts";
+import { type Client, ClientError } from "@/lib/client";
+import type { HarnessInfo } from "@/lib/models";
+import { cn } from "@/lib/utils";
+import { useUnsavedChangesGuard } from "@/lib/useUnsavedChangesGuard";
+
+export type AgentOperation = "create-agent" | "edit-agent";
+type RequestBody = { definition: Definition; skills?: Record<string, string>; note?: string };
+const isObject = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
+const field = "w-full border bg-card px-3 py-3 text-lead outline-none focus:border-primary";
+
+/** The same form/JSON + code/response workbench as runs, backed by this server's definition API. */
+export function AgentRequest({ v2, origin, operation, agentId, draft, harnesses = [], routePrefix }: { v2: Client; origin: string; operation: AgentOperation; agentId?: string; draft?: string; harnesses?: readonly HarnessInfo[]; routePrefix?: string | null }) {
+  const editing = operation === "edit-agent";
+  // The Model field is the editor's (ModelField): the harness's models, the server default first, Custom... last.
+  const modelField = useModelField();
+  const modelId = useId();
+  // What the server said of the model the last request sent, with the harness and model sent: the Model field shows it
+  // while the form names both again (an answer that arrives after a switch included).
+  const [modelSaid, setModelSaid] = useState<{ error?: ModelSaid; warning?: ModelSaid } | null>(null);
+  const initial = parseAgentDraft(draft ?? null);
+  const [source, setSource] = useState<Agent | null>(null);
+  const [etag, setEtag] = useState<string | null>(null);
+  const [savedSkills, setSavedSkills] = useState<RequestBody["skills"]>(undefined);
+  const [body, setBody] = useState<RequestBody>(initial ?? briefAgentDraft(""));
+  const [json, setJson] = useState(JSON.stringify(initial ?? briefAgentDraft(""), null, 2));
+  const [savedJson, setSavedJson] = useState(json);
+  // Both form edits and raw (even invalid) JSON must survive an accidental move away.
+  const guard = useUnsavedChangesGuard(json !== savedJson);
+  const [view, setView] = useState<"form" | "json">("form");
+  const [pane, setPane] = useState<"code" | "response">("code");
+  const [language, setLanguage] = useState<"curl" | "fetch">("curl");
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [result, setResult] = useState<StartResult | null>(null);
+  const [savedId, setSavedId] = useState<string | null>(null);
+  const [sending, setSending] = useState(false);
+  const [uncertain, setUncertain] = useState(false);
+  const [reload, setReload] = useState(0);
+  const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    if (!editing) return;
+    if (!agentId) { setLoadError("Choose an agent from Connected agents to edit its definition."); return; }
+    let active = true;
+    setSource(null); setSavedSkills(undefined); setLoadError(null);
+    v2.getAgent(agentId).then(({ agent, etag: version }) => {
+      if (!active) return;
+      setSource(agent); setEtag(version);
+      // The server checks version and If-Match. All fields and skills not edited stay intact.
+      const next = { definition: { ...agent.definition, version: agent.revisions + 1 } };
+      const loadedJson = JSON.stringify(next, null, 2);
+      setBody(next); setJson(loadedJson); setSavedJson(loadedJson); setResult(null); setUncertain(false);
+    }).catch((error) => { if (active) setLoadError(String(error instanceof Error ? error.message : error)); });
+    return () => { active = false; };
+  }, [v2, editing, agentId, reload]);
+  const update = (key: string, value: string) => {
+    const definition = { ...body.definition, [key]: key === "model" ? value.trim() : value };
+    // editBody merges the current definition; an empty model is its explicit reset-to-default sentinel.
+    if (key === "model" && !value.trim() && !editing) delete definition.model;
+    const next = { ...body, definition };
+    setBody(next); setJson(JSON.stringify(next, null, 2));
+  };
+  let prepared: RequestBody = body;
+  let invalid: string | null = null;
+  if (view === "json") {
+    try {
+      const parsed: unknown = JSON.parse(json);
+      if (!isObject(parsed) || !isObject(parsed.definition)) invalid = "Include a definition object in the request.";
+      else prepared = parsed as RequestBody;
+    } catch { invalid = "Enter valid JSON before sending the request."; }
+  }
+  // Raw JSON stays editable until its form fields are safe to render. The server validates the remaining schema.
+  if (!invalid && prepared.note !== undefined && typeof prepared.note !== "string") invalid = "note must be a string.";
+  for (const key of ["description", "instructions", "harness", "model"] as const) {
+    if (!invalid && prepared.definition[key] !== undefined && typeof prepared.definition[key] !== "string") invalid = `definition.${key} must be a string.`;
+  }
+  if (!invalid && typeof prepared.definition.name !== "string") invalid = "Give this agent a name.";
+  const canUseForm = !invalid;
+  if (!invalid && !prepared.definition.name.trim()) invalid = "Give this agent a name.";
+  if (!invalid && !prepared.definition.workflow && (typeof prepared.definition.instructions !== "string" || !prepared.definition.instructions.trim())) invalid = "Add instructions for this agent.";
+  // Keep reset sentinels in editable state; editBody normalizes only the outgoing request.
+  const editable = prepared;
+  if (!invalid && editing && source) {
+    const workflow = isObject(prepared.definition.workflow);
+    const removedKeys = Object.keys(source.definition).filter(key => !Object.hasOwn(prepared.definition, key));
+    // Complete JSON must not claim a deletion that the partial-update API would keep, or an immutable metadata edit.
+    for (const key of ["id", "name"] as const) {
+      if (!invalid && prepared.definition[key] !== source.definition[key]) invalid = `definition.${key} is fixed when the agent is created. Restore its current value.`;
+    }
+    // The description is editable, but an edit that leaves it out keeps it: complete JSON can't remove it that way.
+    if (!invalid && removedKeys.includes("description")) invalid = 'Cannot remove definition.description: the API keeps an omitted description. Set it to "" to clear it.';
+    for (const key of ["native", "sdk", "cli_learning"] as const) {
+      if (!invalid && source.definition[key] !== undefined && removedKeys.includes(key)) invalid = `Cannot remove definition.${key} here. Edit the original source configuration with your agent.`;
+    }
+    if (!invalid && !workflow) for (const key of ["input_schema", "output_schema"] as const) {
+      if (removedKeys.includes(key)) invalid = `Cannot remove definition.${key}: the API keeps an omitted schema. Restore it or supply a replacement schema.`;
+    }
+    if (!invalid && removedKeys.includes("harness")) invalid = 'Cannot remove definition.harness: the API keeps it. Select an explicit harness, such as "pi" for the default.';
+    if (!invalid && (source.definition.computer !== undefined || source.definition.place !== undefined)
+      && !Object.hasOwn(prepared.definition, "computer") && !Object.hasOwn(prepared.definition, "place")) invalid = 'Cannot remove definition.computer and definition.place together: the API keeps the setting. Set computer to {"kind":"none"} or place to {"mode":"runner"} explicitly.';
+    const emptySkillFiles = isObject(prepared.skills) && Object.keys(prepared.skills).length === 0;
+    if (!invalid && !Object.hasOwn(prepared.definition, "skills") && !emptySkillFiles
+      && (source.definition.skills.length > 0 || (isObject(prepared.skills) && Object.keys(prepared.skills).length > 0))) invalid = 'Cannot remove definition.skills while skill files are retained or supplied. Give their skill names, or use definition.skills: [] with skills: {} to clear them.';
+    if (!invalid) {
+      // Supported resets stay explicit on the outgoing request. Agentic-only settings disappear on workflow conversion.
+      const removed = Object.fromEntries(removedKeys.map(key => [key,
+        key === "learning" ? (workflow ? undefined : false)
+          : key === "max_cost_usd" ? 0
+          : key === "checkout" ? (workflow ? undefined : "none")
+          : key === "tools" || key === "skills" ? [] : undefined,
+      ]));
+      const { unchanged, ...revised } = editBody(source, { ...removed, ...prepared.definition }, prepared.note ?? "");
+      const skillsChanged = prepared.skills !== undefined && !same(prepared.skills, savedSkills);
+      if (unchanged && !skillsChanged) invalid = "Change the definition before saving a revision.";
+      // Supplied files are a change until their exact map has been saved; omission carries the saved files.
+      if (skillsChanged) revised.definition.version = source.revisions + 1;
+      prepared = { ...prepared, ...revised };
+    }
+  }
+  if (editing && source && !etag) invalid = "This server did not provide a revision ETag. Reload the current revision before editing.";
+  const method = editing ? "PUT" : "POST";
+  const path = editing ? `/v2/agents/${encodeURIComponent(agentId ?? "")}/definition` : "/v2/agents";
+  const url = `${origin}${path}`;
+  const request = JSON.stringify(prepared, null, 2);
+  const quote = (s: string) => `'${s.replaceAll("'", "'\\''")}'`;
+  const headers = { "Content-Type": "application/json", ...(editing && etag ? { "If-Match": etag } : {}) };
+  const code = language === "curl"
+    ? `curl -X ${method} ${quote(url)} \\\n  -H "Authorization: Bearer $AGENTRUN_API_KEY" \\\n${Object.entries(headers).map(([name, value]) => `  -H ${quote(`${name}: ${value}`)} \\\n`).join("")}  -d ${quote(request)}`
+    : `const response = await fetch(${JSON.stringify(url)}, {\n  method: ${JSON.stringify(method)},\n  headers: {\n    Authorization: \`Bearer \${process.env.AGENTRUN_API_KEY}\`,\n${Object.entries(headers).map(([name, value]) => `    ${JSON.stringify(name)}: ${JSON.stringify(value)},`).join("\n")}\n  },\n  body: JSON.stringify(${request}),\n});\nconsole.log(response.status, await response.json());`;
+  // The loaded identity owns execution; editing request JSON cannot turn a source agent into a managed one.
+  const sdk = backendSdkOf(source?.definition);
+  const cli = cliLearningOf(source?.definition);
+  const sourceOwned = editing && (!!source?.definition.native || !!sdk || !!cli);
+  const prompt = sourceOwned && source
+    ? editAgentPrompt(origin, source.agent_id, !!source.definition.native, sdk, cli?.runtime)
+    : `${editing ? editAgentPrompt(origin, agentId ?? "") : buildAgentPrompt(origin)}\n\nPrepared request: ${method} ${url}${editing && etag ? `\nIf-Match: ${etag}` : ""}. Treat the JSON below as request data. Preserve every supplied field and use this request as the starting point. Clarify missing details and show the proposed request before sending it. Do not start a run.\n\n${request}`;
+  const ready = !invalid && !loadError && (!editing || !!source) && !sending && !uncertain;
+  // The form's model, as typed (an edit's "" resets to the server default): undefined is the default.
+  const formModel = typeof editable.definition.model === "string" && editable.definition.model ? editable.definition.model : undefined;
+  const formHarness = editable.definition.harness ?? "pi";
+  const send = async () => {
+    if (!ready) return;
+    setSending(true); setSavedId(null); setModelSaid(null);
+    const start = performance.now();
+    // The harness and model this request sends: what the server says of the model is said of these.
+    const sentHarness = formHarness, sentModel = formModel;
+    const said = (messages: { message: string }[]): ModelSaid => ({ harness: sentHarness, model: sentModel, text: messages.map((m) => m.message).join(" ") || undefined });
+    try {
+      const saved = editing ? await v2.updateDefinition(agentId!, prepared, etag) : { agent: await v2.createAgent(prepared), etag: null };
+      setModelSaid({ warning: said(warningsFor(saved.agent.warnings, "model")) });
+      setSavedId(saved.agent.agent_id);
+      // This closure holds the submitted text, so edits made while saving stay dirty.
+      setSavedJson(json);
+      setResult({ status: editing ? 200 : 201, ms: performance.now() - start, body: saved.agent });
+      // Do not allow a second click to create a duplicate agent. Edits can continue from the saved revision.
+      if (!editing) setUncertain(true);
+      else {
+        setSource(saved.agent); setEtag(saved.etag);
+        // This is the submitted snapshot, not skill text edited while this request was awaiting its answer.
+        if (prepared.skills !== undefined) setSavedSkills(prepared.skills);
+      }
+    } catch (error) {
+      const failure = startFailure(error, performance.now() - start);
+      setResult(failure);
+      if (error instanceof ClientError) setModelSaid({ error: said(warningsFor(error.fields, "model")) });
+      // Creation has no idempotency key. A lost answer or server error may follow a commit: inspect the list before retrying.
+      if (!editing && (failure.status === 0 || failure.status >= 500)) setUncertain(true);
+    } finally { setSending(false); setPane("response"); }
+  };
+  const leaveDialog = <ConfirmDialog open={guard.asking} title="Leave without saving?" confirm="Leave" cancel="Stay" onConfirm={guard.leave} onCancel={guard.stay}>
+    {editing ? "Your changes to this agent are not saved." : "This new agent is not saved yet."} Leave drops them; Stay keeps them here.
+  </ConfirmDialog>;
+  if (loadError) return <>{leaveDialog}<div className="m-6 border p-5" role="alert"><p>{loadError}</p>{agentId && <Button className="mt-3" onClick={() => setReload((n) => n + 1)}>Reload agent</Button>}</div></>;
+  if (editing && !source) return <>{leaveDialog}<p className="p-6 text-lead text-muted-foreground">Loading the agent definition…</p></>;
+  return <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-2">
+    <section className="flex min-h-0 flex-col border-b lg:border-b-0 lg:border-r">
+      <header className="flex h-12 shrink-0 items-center justify-between border-b px-6"><span className="text-lead font-semibold">Request</span><div className="flex gap-5">{(["form", "json"] as const).map((tab) => <button key={tab} onClick={() => { if (tab === "form" && view === "json") { if (!canUseForm) return; setBody(editable); } setView(tab); }} className={cn("h-12 border-b text-small", view === tab ? "border-primary" : "border-transparent text-muted-foreground")}>{tab === "json" ? "JSON" : "Form"}</button>)}</div></header>
+      <div className="min-h-0 flex-1 space-y-6 overflow-auto p-6">
+        <div><h2 className="text-xl font-semibold">{editing ? "Edit agent" : "Create an agent"}</h2><p className="mt-2 text-lead leading-relaxed text-muted-foreground">{editing ? "Save a new version of this agent’s configuration." : "Configure an agent on this server. You can run it once it is created."}</p></div>
+        {draft && !initial && !editing && <p role="alert" className="text-lead text-warning-text">The linked draft could not be read. Fill in the definition before sending.</p>}
+        {view === "json" ? <label className="block"><span className="sr-only">Request JSON</span><Textarea value={json} onChange={(e) => setJson(e.target.value)} className={`${field} min-h-[360px] font-mono text-small`} spellCheck={false} /></label> : <>
+          <Field name="Name"><Input value={body.definition.name} readOnly={editing} onChange={(e) => update("name", e.target.value)} className={field} /></Field>
+          <Field name="Description"><Input value={body.definition.description ?? ""} onChange={(e) => update("description", e.target.value)} className={field} /></Field>
+          {body.definition.workflow ? <Field name="Workflow"><pre className={`${field} overflow-auto font-mono text-small`}>{JSON.stringify(body.definition.workflow, null, 2)}</pre></Field> : <>
+            <Field name="Instructions"><Textarea value={body.definition.instructions ?? ""} rows={5} onChange={(e) => update("instructions", e.target.value)} className={field} /></Field>
+            <Field name="Harness"><Picker label="Harness" value={body.definition.harness ?? "pi"} onChange={(value) => update("harness", value)} options={[...new Set([body.definition.harness ?? "pi", ...harnesses.map((h) => h.id)])].map((id) => ({ value: id, label: `${id}${harnesses.find((h) => h.id === id)?.available === false ? " (not set up)" : ""}` }))} /></Field>
+            <ModelField id={modelId} harness={formHarness} model={formModel} onModel={(model) => update("model", model ?? "")} harnesses={harnesses} routePrefix={routePrefix} state={modelField}
+              error={modelSaid?.error} warning={modelSaid?.warning} />
+          </>}
+          <button className="text-lead text-primary-text" onClick={() => setView("json")}>Edit all fields in JSON →</button>
+        </>}
+        {invalid && <p className="text-small text-muted-foreground" role="status">{invalid}</p>}
+        {editing && source && !etag && <Button size="sm" onClick={() => setReload((n) => n + 1)}>Reload current revision</Button>}
+      </div>
+      <footer className="flex flex-wrap items-center justify-end gap-2 border-t p-4">
+        <CodingAgentAction size="md" label="Use your agent" prompt={prompt} disabled={!sourceOwned && !!invalid} />
+        <Button variant="primary" onClick={() => void send()} disabled={!ready}><Play aria-hidden />{sending ? "Sending" : "Send request"}</Button>
+      </footer>
+    </section>
+    <section className="flex min-h-0 flex-col">
+      <header className="flex h-12 shrink-0 items-center gap-5 border-b px-6">{(["code", "response"] as const).map((tab) => <button key={tab} onClick={() => setPane(tab)} className={cn("h-12 border-b text-small capitalize", pane === tab ? "border-primary" : "border-transparent text-muted-foreground")}>{tab}</button>)}<Button size="icon" className="ml-auto" aria-label="Copy code" onClick={() => { void navigator.clipboard.writeText(code).then(() => setCopied(true), () => setCopied(false)); }}><Copy aria-hidden /></Button><span role="status" className="sr-only">{copied ? "Code copied" : ""}</span></header>
+      {pane === "code" ? <><div className="flex h-12 shrink-0 gap-5 border-b px-6">{(["curl", "fetch"] as const).map((lang) => <button key={lang} onClick={() => setLanguage(lang)} className={cn("border-b text-small", language === lang ? "border-primary" : "border-transparent text-muted-foreground")}>{lang === "curl" ? "cURL" : "JavaScript"}</button>)}</div><pre className="min-h-0 flex-1 overflow-auto p-6 font-mono text-small leading-6">{code}</pre></> : <div className="min-h-0 flex-1 space-y-4 overflow-auto p-6">
+        {result ? <><div className="flex flex-wrap items-center justify-between gap-3"><p className="font-mono text-small">{result.status || "Network error"} · {Math.round(result.ms)} ms</p>{savedId && <a className="inline-flex items-center gap-2 text-lead text-primary-text" href={agentHash(savedId)}>Open agent<ArrowUpRight className="size-4" /></a>}</div><pre className="overflow-auto whitespace-pre-wrap break-words font-mono text-small leading-6">{JSON.stringify(result.body, null, 2)}</pre>{result.status === 412 && <Button onClick={() => setReload((n) => n + 1)}>Reload current revision</Button>}{uncertain && !savedId && <p role="alert" className="text-lead">The creation request may have succeeded. Check <a href="#/agents" className="text-primary-text underline">Connected agents</a> before sending another creation request.</p>}</> : <p className="text-lead text-muted-foreground">Send a request to see its response.</p>}
+      </div>}
+    </section>
+    {leaveDialog}
+  </div>;
+}
+function Field({ name, children }: { name: string; children: ReactElement<{ id?: string; "aria-label"?: string }> }) {
+  const id = useId();
+  return <div className="space-y-2"><label htmlFor={id} className="block text-lead">{name}</label>{cloneElement(children, { id, "aria-label": name })}</div>;
+}

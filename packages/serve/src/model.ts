@@ -11,24 +11,33 @@ import type { ModelCost, Provider, ProviderStreams } from "@earendil-works/pi-ai
 import type { Wire } from "@parcha/agentrun-kernel";
 import type { ThinkingLevelMap } from "./port-models.js";
 import { DEFAULT_HARNESS, PLAN_HARNESSES } from "./harness.js";
-import { HARNESS_TABLE_ENV, type HarnessEntry, harnessOf } from "./harness-table.js";
+import { builtinHarness, factsOf, HARNESS_MODULES_ENV, HARNESS_RECIPES_ENV, HARNESS_TABLE_ENV, type HarnessEntry, harnessIds, harnessOf } from "./harness-table.js";
 import type { Revision } from "./agent-rows.js";
-import { gatewayBase } from "./provider.js";
+import { gatewayBase, modelGatewayBase } from "./provider.js";
 import { modelFormWhy } from "./model-form.js";
 // Leaves, which the key rows below read as this module loads, in any import order (wires.ts, adapter-facts.ts).
 import { ADAPTER_FACTS } from "./adapter-facts.js";
-import { WIRES } from "./wires.js";
+import { modelWire, WIRES, wireOf } from "./wires.js";
 import { authContextOf } from "./secrets.js";
 import { EXPIRED, PLAN_DEFAULT_MODEL, PLAN_ORIGIN, PLAN_PROVIDER, planOf, signedIn, SIGNED_OUT } from "./chatgpt-plan.js";
+import { LOGIN_DEFAULT_MODEL, onClaudeLogin } from "./claude-login.js";
+import { OLLAMA_PROVIDER, ollamaBase, ollamaHostRefused, ollamaModels, ollamaProvider, ollamaRelisted, ollamaShown, ollamaToolsModel } from "./ollama-provider.js";
 
 /** The child's environment names the faux module by absolute path. */
 export const FAUX_ENV = "AGENTRUN_SERVE_FAUX";
+/** The Ollama tags among a run's models (`ollama/<tag>`): what providerModels resolves for it, one /api/show each. */
+export const ollamaTagsOf = (refs: Iterable<ModelRef | undefined>): string[] => [...new Set([...refs].flatMap((ref) => (ref?.provider === OLLAMA_PROVIDER ? [ref.modelId] : [])))];
+/** Whether the Ollama here is asked for its models under `env`: not under the faux model or a model gateway, which take
+ *  every model. The one rule for listing (withOllamaModels), the host default (localDefault) and the server's refresh. */
+export const asksOllama = (env: NodeJS.ProcessEnv): boolean => !env[FAUX_ENV] && !env.AGENT_MODEL_BASE_URL;
 /** Every test hook's name starts so (AGENTRUN_SERVE_FAUX, AGENTRUN_SERVE_FAUX_WEB, ...), but the harness table's
- *  (harness-table.ts HARNESS_TABLE_ENV), which withoutFaux drops by name. */
+ *  (harness-table.ts HARNESS_TABLE_ENV), which withoutFaux drops by name, as it drops the resolved harness modules list
+ *  (HARNESS_MODULES_ENV) and recipes list (HARNESS_RECIPES_ENV). */
 export const FAUX_PREFIX = "AGENTRUN_SERVE_FAUX";
-/** `env` without a test hook's name: serve sets those from startServe's options alone, so a name the server's own
- *  environment holds (an operator's export, a leftover) never gives its runs fake answers or loads a module. */
-export const withoutFaux = (env: NodeJS.ProcessEnv): NodeJS.ProcessEnv => Object.fromEntries(Object.entries(env).filter(([name]) => !name.startsWith(FAUX_PREFIX) && name !== HARNESS_TABLE_ENV));
+/** `env` without a test hook's name or the resolved harness modules or recipes list: serve sets those from startServe's
+ *  options alone, so a name the server's own environment holds (an operator's export, a leftover) never gives its runs
+ *  fake answers, loads a module or runs a recipe. */
+export const withoutFaux = (env: NodeJS.ProcessEnv): NodeJS.ProcessEnv => Object.fromEntries(Object.entries(env).filter(([name]) => !name.startsWith(FAUX_PREFIX) && name !== HARNESS_TABLE_ENV && name !== HARNESS_MODULES_ENV && name !== HARNESS_RECIPES_ENV));
 /** Under `--faux` only: a module whose default export is the fetch the Anthropic and OpenAI providers send through (the
  *  tests' fake upstream), in place of their APIs. With it they are registered beside the faux model, for a tool's own
  *  request to the provider the revision's model names (web_search's, hosted-search.ts); the run's turns stay faux. */
@@ -66,19 +75,39 @@ export const MODEL_NODES = ["agent", "decide", "extract", "report"] as const;
 export const MODEL_KEYS: readonly { id: string; label: string; field: string; model: string; harnesses: readonly string[]; byVendor?: Readonly<Record<string, string>> }[] = Object.freeze([
   { id: "anthropic", label: "Anthropic", field: "ANTHROPIC_API_KEY", model: "anthropic/claude-sonnet-5-5", harnesses: onVendor("anthropic") },
   { id: "openai", label: "OpenAI", field: "OPENAI_API_KEY", model: "openai/gpt-6.1-sol", harnesses: onVendor("openai") },
+  // Particle's direct API is Chat Completions; the adapter harnesses need Messages or HTTP Responses.
+  { id: "particle", label: "Particle", field: "PARTICLE_API_KEY", model: "particle/particle-1", harnesses: [DEFAULT_HARNESS] },
   // OpenRouter serves both wires: every harness runs on its key, an adapter harness on its wire's vendor's model there.
   { id: "openrouter", label: "OpenRouter", field: "OPENROUTER_API_KEY", model: "openrouter/openai/gpt-6.1-sol", harnesses: [DEFAULT_HARNESS, ...ADAPTER_FACTS.map((facts) => facts.id)], byVendor: { anthropic: "anthropic/claude-sonnet-5.5", openai: "openai/gpt-6.1-sol" } },
 ]);
 
-/** pi, and the adapter harnesses whose wire (their facts') runs `vendor`'s models: those that talk to its own API. */
+/** pi, and the built-in adapter harnesses whose wire (their facts') runs `vendor`'s models: those that talk to its own API. */
 function onVendor(vendor: string): readonly string[] {
-  return [DEFAULT_HARNESS, ...ADAPTER_FACTS.filter((facts) => WIRES[facts.wire].vendor === vendor).map((facts) => facts.id)];
+  return [DEFAULT_HARNESS, ...ADAPTER_FACTS.filter((facts) => wireOf(facts.wire)?.vendor === vendor).map((facts) => facts.id)];
 }
 
-/** `row`'s default for `harness`: the one for its wire's vendor (`byVendor`, OpenRouter's), else the row's. */
-const rowModel = (row: (typeof MODEL_KEYS)[number], harness: string): string => {
-  const facts = ADAPTER_FACTS.find((f) => f.id === harness);
-  return (facts && row.byVendor?.[WIRES[facts.wire].vendor]) ?? row.model;
+/** The harnesses `row`'s key runs on `env`'s server: its own (`harnesses`), then each harness this server lists beyond the
+ *  built-in ones a row names (one its owner installs, Goose: harness-table.ts hidden, listed by harnessIds; one an owner's
+ *  harness module adds) whose wire (its facts, factsOf) runs the row's vendor's models, or any, on OpenRouter's. One not
+ *  installed here is never named, nor a module's harness that gives no facts, nor one billed to its own plan (Cursor: no
+ *  model key of ours runs it). */
+export function keyHarnesses(row: (typeof MODEL_KEYS)[number], env: NodeJS.ProcessEnv): readonly string[] {
+  const added = harnessIds(env).filter((id) => {
+    if (row.harnesses.includes(id)) return false;
+    const builtin = builtinHarness(id);
+    return builtin === undefined || builtin.hidden !== undefined;
+  });
+  return [...row.harnesses, ...added.filter((id) => {
+    const facts = factsOf(env, id);
+    return facts !== undefined && modelWire(facts.wire) && (row.id === "openrouter" || WIRES[facts.wire].vendor === row.id);
+  })];
+}
+
+/** `row`'s default for `harness` on `env`: the one for its wire's vendor (`byVendor`, OpenRouter's), else the row's. */
+const rowModel = (row: (typeof MODEL_KEYS)[number], harness: string, env: NodeJS.ProcessEnv): string => {
+  const facts = factsOf(env, harness);
+  const vendor = facts && wireOf(facts.wire)?.vendor;
+  return (vendor ? row.byVendor?.[vendor] : undefined) ?? row.model;
 };
 
 /** What a person does when no model runs here: add a model provider's key in the console, or set one where AgentRun
@@ -107,6 +136,15 @@ export function withPlanWords(env: NodeJS.ProcessEnv, harness: string, reason: s
   return `${reason.replace(/\.$/, "")}; ${words}.`;
 }
 
+/** What a person does for a model on the Ollama here, ahead of ADD_A_KEY where one would run `harness` (ollamaWouldRun). */
+export const START_OLLAMA = "start Ollama and pull a model with tools, or ";
+/** Whether a model of the Ollama here would give `harness` its model: this server asks one (asksOllama, at an OLLAMA_HOST
+ *  it takes: its operator's, or the default address server.ts hands its own env and its runner's on one owner's own machine
+ *  alone, ollamaHostOf), and `harness` runs its models (pi; an adapter runs its wire's vendor's alone). A shared server with
+ *  no OLLAMA_HOST never asks the default, so an Ollama started there gives no run: its words name a key alone. */
+export const ollamaWouldRun = (env: NodeJS.ProcessEnv, harness: string): boolean =>
+  asksOllama(env) && Boolean(env.OLLAMA_HOST?.trim()) && !ollamaHostRefused(env) && harnessRuns(env, `${OLLAMA_PROVIDER}/any`, harness);
+
 /** Whether `harness` runs the model `id` (its entry in the harness table: harness-table.ts): pi any; one on an adapter, its
  *  wire's vendor's model (or that vendor's on OpenRouter), or behind serve's gateway, on the wire it serves, any id. */
 export const harnessRuns = (env: NodeJS.ProcessEnv, id: string, harness: string): boolean => harnessOf(env, harness)?.runs(env, id) ?? true;
@@ -114,14 +152,34 @@ export const harnessRuns = (env: NodeJS.ProcessEnv, id: string, harness: string)
 /** The model a revision that names none runs on with `harness`, for `tier`: the tier's own variable, else AGENT_MODEL,
  *  each only when `harness` runs it (harnessRuns; one it can't is skipped, never an error), else that of the first of
  *  MODEL_KEYS whose key is here (a placeholder behind a base URL counts) and that `harness` runs on, else, in a run's
- *  process that holds none of those keys, the one the server's keys gave it (DEFAULT_MODEL_ENV). Undefined when none is:
- *  the harness has no default here. */
+ *  process that holds none of those keys, the one the server's keys gave it (DEFAULT_MODEL_ENV), else, where `harness`
+ *  runs it (pi, a harness on a wire the route translates it onto), the first model of the Ollama here that calls tools
+ *  (localDefault). Undefined when none is: the harness has no default here. */
 export function hostModel(env: NodeJS.ProcessEnv, tier: Tier = "default", harness: string = DEFAULT_HARNESS): string | undefined {
+  return settingsModel(env, tier, harness) ?? localDefault(env, harness);
+}
+
+/** hostModel's choice from this host's own settings (a tier variable, AGENT_MODEL, the plan, Claude Code's login, a key,
+ *  the server's default): undefined where none names one, and only then is the Ollama here asked (localDefault). */
+function settingsModel(env: NodeJS.ProcessEnv, tier: Tier, harness: string): string | undefined {
   for (const id of [env[TIER_ENV[tier]], env.AGENT_MODEL]) if (id && harnessRuns(env, id, harness)) return id;
   // Signed in to a ChatGPT plan, codex and pi run on it by default: a key's model is then named (`openai/<id>`).
   if (PLAN_HARNESSES.includes(harness) && signedIn(env) && !env.AGENT_MODEL_BASE_URL) return `${PLAN_PROVIDER}/${planModel(env)}`;
-  const row = MODEL_KEYS.find((row) => env[row.field] && (row.harnesses as readonly string[]).includes(harness));
-  return row ? rowModel(row, harness) : env[DEFAULT_MODEL_ENV] || undefined;
+  // On Claude Code's login on this machine, claude-agent runs Anthropic's model on it by default (provider.ts).
+  if (onClaudeLogin(env, harness)) return LOGIN_DEFAULT_MODEL;
+  const row = MODEL_KEYS.find((row) => env[row.field] && (row.harnesses.includes(harness) || keyHarnesses(row, env).includes(harness)));
+  return row ? rowModel(row, harness, env) : env[DEFAULT_MODEL_ENV] || undefined;
+}
+
+/** The default with no key held: the first model of the Ollama here that calls tools (ollama-provider.ts
+ *  ollamaToolsModel, from its last listing, which chooseModel asks for first), where `harness` runs it (harnessRuns, its
+ *  entry's: pi any model, an adapter its wire's vendor's and the models the route translates onto its wire); none behind a gateway or under the faux model. A
+ *  model that takes no tools is never a default: a run on it gets its tools as text, and text tools are unreliable on
+ *  small models. */
+function localDefault(env: NodeJS.ProcessEnv, harness: string): string | undefined {
+  if (!asksOllama(env)) return undefined;
+  const model = ollamaToolsModel(env);
+  return model && harnessRuns(env, model, harness) ? model : undefined;
 }
 /** The plan's model a run that names none takes: GPT-6.1 Sol where the plan lists it, else the plan's first. */
 const planModel = (env: NodeJS.ProcessEnv): string => {
@@ -201,8 +259,18 @@ type Choice = { model: ModelRef; namedProvider?: string } | { why: string; host:
  * when `ref` is absent (hostModel). A PinnedModel is the pin itself, never chosen again (pinnedChoice).
  */
 export async function chooseModel(env: NodeJS.ProcessEnv, ref: string | PinnedModel | undefined, tier: Tier = "default", harness: string = DEFAULT_HARNESS): Promise<Choice> {
+  return choose(env, ref, tier, harness, false);
+}
+
+/** chooseModel, `relisted` once the Ollama here was listed again for the host's default (below): never a second time. */
+async function choose(env: NodeJS.ProcessEnv, ref: string | PinnedModel | undefined, tier: Tier, harness: string, relisted: boolean): Promise<Choice> {
   if (typeof ref === "object") return pinnedChoice(env, ref, tier, harness);
   if (env[FAUX_ENV]) return { model: { provider: "faux", modelId: fauxModel(env, tier) } };
+  // A host whose own settings name no model reads its default from the Ollama here (hostModel's localDefault): its
+  // listing first (ollamaModels: kept while fresh, asked now where none is, and a stale one asked again behind this
+  // choice), so a tag it took is never the last listing's for good. A ref, a key, a default or a plan never waits on it.
+  const local = ref === undefined && settingsModel(env, tier, harness) === undefined && asksOllama(env);
+  if (local && !relisted) await ollamaModels(env);
   const named = ref ?? hostModel(env, tier, harness);
   // In a person's words (a first run from npx sees them): what to add and where. Operator detail is the README's.
   const none = tier === "default" ? "No model yet" : `No model yet for this workflow's ${tier} tier`;
@@ -211,11 +279,11 @@ export async function chooseModel(env: NodeJS.ProcessEnv, ref: string | PinnedMo
     // A gateway its key may not go to (the one base rule, gatewayBase) runs no model, in its words: capabilities read it
     // not ready, a save warns, and a run is refused before its process starts, so the key is never handed to one.
     try {
-      gatewayBase("AGENT_MODEL_BASE_URL", env.AGENT_MODEL_BASE_URL);
+      modelGatewayBase(env.AGENT_MODEL_BASE_URL);
     } catch (error) {
       return { why: (error as Error).message, host: true, needs: "key" };
     }
-    if (!named) return { why: `${none}: name the gateway's model in AGENT_MODEL where AgentRun starts, or add a model key in Settings → Model keys.`, host: true, needs: "key" };
+    if (!named) return { why: `${none}: name the gateway's model in AGENT_MODEL where AgentRun starts, or pick its models in Settings → Model keys → Use a model gateway.`, host: true, needs: "key" };
     // A revision's model, and a key's default (MODEL_KEYS: "provider/model"), go as the gateway takes its ids (bare: the
     // part after the provider), that provider pricing them; the host's own AGENT_MODEL or tier id goes as configured.
     // A name equal to one of the host's configured ids (the picker lists them: model-form.ts pickerCandidates) is that
@@ -226,12 +294,19 @@ export async function chooseModel(env: NodeJS.ProcessEnv, ref: string | PinnedMo
     const sent = id && !configured && env.AGENT_MODEL_GATEWAY_IDS === "bare" ? id.slice(slash + 1) : named;
     return { model: { provider: MODEL_PROVIDER, modelId: sent }, ...(id && slash > 0 ? { namedProvider: id.slice(0, slash) } : {}) };
   }
-  if (!named) return { why: withPlanWords(env, harness, `${none}: ${ADD_A_KEY}`), host: true, needs: "key" };
+  if (!named) return { why: withPlanWords(env, harness, `${none}: ${ollamaWouldRun(env, harness) ? START_OLLAMA : ""}${ADD_A_KEY}`), host: true, needs: "key" };
   const slash = named.indexOf("/");
   if (slash < 1) return { why: modelFormWhy(env, harness, named, ref === undefined), host: ref === undefined, needs: "model" };
   const [provider, modelId] = [named.slice(0, slash), named.slice(slash + 1)];
-  const models = await providerModels(env);
+  const models = await providerModels(env, { ollama: provider === OLLAMA_PROVIDER ? [modelId] : [] });
   const model = models.getModel(provider, modelId);
+  // The host's Ollama default no longer answers (removed, or that Ollama restarted without it) past its listing's TTL:
+  // that listing is dropped and asked again now, and the default chosen once more from it (the next model that calls
+  // tools, else the no-model words). Once: a tag the fresh listing still names and /api/show refuses is said as it is.
+  if (!model && local && !relisted) {
+    await ollamaRelisted(env);
+    return choose(env, ref, tier, harness, true);
+  }
   if (!model) return { why: modelFormWhy(env, harness, named, ref === undefined), host: ref === undefined, needs: "model" };
   // A gateway ANTHROPIC_BASE_URL names that a key may not go to (gatewayBase): no Anthropic model runs, by its words.
   const refused = provider === "anthropic" ? anthropicRefusal(models) : undefined;
@@ -263,7 +338,7 @@ async function pinnedChoice(env: NodeJS.ProcessEnv, { pinned, ref }: PinnedModel
   if (!env.AGENT_MODEL_BASE_URL) return { why: "This run started on the model gateway, and AGENT_MODEL_BASE_URL names none here.", host: true, needs: "key" };
   // The one base rule (gatewayBase) holds for a pinned run as for any: its key never goes to a gateway it may not.
   try {
-    gatewayBase("AGENT_MODEL_BASE_URL", env.AGENT_MODEL_BASE_URL);
+    modelGatewayBase(env.AGENT_MODEL_BASE_URL);
   } catch (error) {
     return { why: (error as Error).message, host: true, needs: "key" };
   }
@@ -307,6 +382,7 @@ export const PROVIDER_KEYS: Readonly<Record<string, readonly string[]>> = {
   opencode: ["OPENCODE_API_KEY"],
   "opencode-go": ["OPENCODE_API_KEY"],
   openrouter: ["OPENROUTER_API_KEY"],
+  particle: ["PARTICLE_API_KEY"],
   "qwen-token-plan": ["QWEN_TOKEN_PLAN_API_KEY"],
   "qwen-token-plan-cn": ["QWEN_TOKEN_PLAN_CN_API_KEY"],
   "qwen-token-plan-individual": ["QWEN_TOKEN_PLAN_API_KEY"],
@@ -383,7 +459,7 @@ export async function runModels(env: NodeJS.ProcessEnv, ref: string | PinnedMode
     // Each provider's key from `env`, which holds this process's secrets, never from process.env (secrets.ts); Anthropic's
     // at ANTHROPIC_BASE_URL when set (providerModels). pi-ai's providers price their own models, but for OpenRouter's
     // routers, whose catalog zeros are no price (routersOf).
-    return { models: withRequestKeys(await providerModels(env), env), model, byTier, unpriced: routersOf(byTier.values()) };
+    return { models: withRequestKeys(await providerModels(env, { ollama: ollamaTagsOf(byTier.values()) }), env), model, byTier, unpriced: routersOf(byTier.values()) };
   }
   const ids = [...new Set([...byTier.values()].map((m) => m.modelId))];
   const models = createModels({ authContext: authContextOf(env) });
@@ -451,7 +527,7 @@ export async function runModels(env: NodeJS.ProcessEnv, ref: string | PinnedMode
   // One base rule for every harness (provider.ts' gatewayBase): one trailing /v1 off, then the API under <base>/v1, so
   // <gw>/api and <gw>/api/v1 both reach <gw>/api/v1/responses and <gw>/api/v1/messages, as OpenRouter serves them. pi-ai's
   // Responses client takes the base with its /v1, its Messages client adds /v1/messages itself.
-  const base = gatewayBase("AGENT_MODEL_BASE_URL", env.AGENT_MODEL_BASE_URL!);
+  const base = modelGatewayBase(env.AGENT_MODEL_BASE_URL!);
   const baseUrl = `${base}/v1`;
   const [{ openAIResponsesApi }, { anthropicMessagesApi }] = await Promise.all([import("@earendil-works/pi-ai/api/openai-responses.lazy"), import("@earendil-works/pi-ai/api/anthropic-messages.lazy")]);
   const catalog = await catalogPrices();
@@ -469,7 +545,8 @@ export async function runModels(env: NodeJS.ProcessEnv, ref: string | PinnedMode
   // the provider's client per wire, which pi-ai picks by the model's `api`.
   const gatewayModels = ids.map((id) => {
     const cost = priceOf(id);
-    // The effort each thinking level asks for, as the catalog says of the model (catalogThinking): sol's off sends none.
+    // The effort each thinking level asks for, as the catalog says of the model (catalogThinking): sol's off sends none,
+    // and so does a model the catalog does not list.
     const thinking = catalogThinking(catalog, id, namedOf.get(id));
     const shared = { id, name: id, provider: MODEL_PROVIDER, reasoning: true, input: ["text", "image"] as ("text" | "image")[], cost, contextWindow: 128_000, maxTokens: 32_000, ...(thinking ? { thinkingLevelMap: thinking } : {}) };
     return wireOf(id) === "anthropic-messages" ? { ...shared, api: "anthropic-messages", baseUrl: base } : { ...shared, api: "openai-responses", baseUrl, compat: { supportsDeveloperRole: false } };
@@ -541,7 +618,7 @@ export async function wireModels(entry: HarnessEntry, env: NodeJS.ProcessEnv, re
   const choice = await entry.model(env, ref, true);
   if (!choice) throw new Error(`${entry.id} does not run here.`);
   if ("why" in choice) throw new Error(choice.why);
-  return { models: await providerModels(env), model: choice.model as ModelRef | undefined, byTier: new Map([["default", choice.model]]), unpriced: routersOf([choice.model as ModelRef]) };
+  return { models: await providerModels(env, { ollama: ollamaTagsOf([choice.model as ModelRef]) }), model: choice.model as ModelRef | undefined, byTier: new Map([["default", choice.model]]), unpriced: routersOf([choice.model as ModelRef]) };
 }
 
 /** The ids of `models` that are OpenRouter's routers (local-models.ts isRouter): pi-ai's catalog lists each at $0, the
@@ -585,7 +662,7 @@ export async function unpricedModels(env: NodeJS.ProcessEnv, ref: string | undef
   }
   // OpenRouter's routers on any wire: their catalog zeros are no price (routersOf).
   const routers = [...routersOf(byTier.values())];
-  if (!env.AGENT_MODEL_BASE_URL || (facts && !WIRES[facts.wire].gateway)) return routers;
+  if (!env.AGENT_MODEL_BASE_URL || (facts && !wireOf(facts.wire)?.gateway)) return routers;
   const priced = await gatewayPrices(env, byTier, namedBy);
   return [...new Set([...routers, ...[...byTier.values()].map((model) => model.modelId).filter((id) => !priced.has(id))])];
 }
@@ -609,11 +686,13 @@ export const anthropicRefusal = (models: { getProvider(id: string): object | und
  *  requests (a hosted search, a learned node) and a grade, and the readiness chooseModel reports. A base gatewayBase
  *  refuses (one a key may not go to) refuses Anthropic's route alone: its provider keeps its models, with no key, so
  *  none of their requests is sent anywhere, and carries the refusal's words (anthropicRefusal), which chooseModel gives
- *  for an Anthropic model; every other provider runs as it does without the setting. Never throws. */
-export async function providerModels(env: NodeJS.ProcessEnv) {
+ *  for an Anthropic model; every other provider runs as it does without the setting. Never throws.
+ *  `ollama`: the Ollama tags a run names (ollamaTagsOf), each resolved alone (withOllamaModels), for a run that never waits
+ *  on a whole listing; without it, the Ollama here's whole listing (a picker's, capabilities'). */
+export async function providerModels(env: NodeJS.ProcessEnv, { ollama }: { ollama?: readonly string[] } = {}) {
   const { builtinModels } = await import("@earendil-works/pi-ai/providers/all");
   // With the prices serve sets over pi-ai's catalog (local-models.ts): OpenRouter's particle-1 at its list price.
-  const models = await withPlanModels(withLocalModels(builtinModels({ authContext: authContextOf(env) })), env);
+  const models = await withOllamaModels(await withPlanModels(withLocalModels(builtinModels({ authContext: authContextOf(env) })), env), env, ollama);
   if (!env.ANTHROPIC_BASE_URL) return models;
   const [{ createProvider }, { anthropicMessagesApi }] = await Promise.all([import("@earendil-works/pi-ai/models"), import("@earendil-works/pi-ai/api/anthropic-messages.lazy")]);
   const own = models.getProvider("anthropic")!;
@@ -659,6 +738,17 @@ async function withPlanModels<M extends Awaited<ReturnType<typeof withLocalModel
     models: listed,
     api: unpricedApi(openAIResponsesApi(), new Set(plan.models), ai),
   } as never));
+  return models;
+}
+
+/** `models` with the Ollama `env` names (OLLAMA_HOST, read from `env` itself, never through the auth context: it is no
+ *  secret), its chat models listed live (ollama-provider.ts ollamaModels): provider `ollama`, keyless, at $0. None where
+ *  it is down, hung or refused, and nothing thrown. None asked under the faux model or a gateway (asksOllama). `tags`:
+ *  those models alone, each from the kept listing or its own /api/show (ollamaShown), never /api/tags; none, nothing asked. */
+async function withOllamaModels<M extends Awaited<ReturnType<typeof withLocalModels>>>(models: M, env: NodeJS.ProcessEnv, tags?: readonly string[]): Promise<M> {
+  if (!asksOllama(env)) return models;
+  const listed = tags === undefined ? await ollamaModels(env) : (await Promise.all(tags.map((tag) => ollamaShown(env, tag)))).filter((model) => model !== undefined);
+  if (listed.length) models.setProvider(ollamaProvider(ollamaBase(env), listed, env) as never);
   return models;
 }
 
@@ -729,12 +819,16 @@ export async function catalogPrices(): Promise<Map<string, Listed[]>> {
  *  version form: the vendor's entry (the id's segment before it, else `named`); else each level every entry that says
  *  agrees on (gpt-6.1-sol's entries differ on `minimal` alone: openai-codex's asks low), a level they differ on left to
  *  pi-ai's default. None: undefined, pi-ai's defaults. So pi through a gateway at thinking off asks gpt-6.1-sol for no
- *  effort, as its catalog entries say (off: null), not the "none" it refuses. */
+ *  effort, as its catalog entries say (off: null), not the "none" it refuses. A model the catalog does not list (a local
+ *  model, a gateway's own alias) is never asked to stop reasoning either (off: null): pi then thinks at its lowest level,
+ *  so a model that reasons anyway has its reasoning split out of the answer, never written into it. */
 export function catalogThinking(catalog: ReadonlyMap<string, readonly Listed[]>, id: string, named: string | undefined): ThinkingLevelMap | undefined {
   const segments = id.split("/");
   const own = segments.at(-1)!;
   const vendor = segments.length > 1 ? segments.at(-2) : named;
-  const saying = [own, ...flippedForms(own)].flatMap((form) => catalog.get(form) ?? []).flatMap((entry) => (entry.thinkingLevelMap ? [{ provider: entry.provider, map: entry.thinkingLevelMap as Readonly<Record<string, string | null | undefined>> }] : []));
+  const listed = [own, ...flippedForms(own)].flatMap((form) => catalog.get(form) ?? []);
+  if (!listed.length) return { off: null } as ThinkingLevelMap;
+  const saying = listed.flatMap((entry) => (entry.thinkingLevelMap ? [{ provider: entry.provider, map: entry.thinkingLevelMap as Readonly<Record<string, string | null | undefined>> }] : []));
   const vendors = saying.find((entry) => entry.provider === vendor);
   if (vendors) return vendors.map as ThinkingLevelMap;
   const agreed: Record<string, string | null> = {};

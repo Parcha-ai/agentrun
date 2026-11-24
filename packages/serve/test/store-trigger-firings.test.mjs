@@ -24,7 +24,7 @@ test("a trigger made, read, changed and removed: its fields as the API keeps the
   const { store, trigger } = await withTrigger(t, { maxActiveRuns: 2 });
   assert.deepEqual(
     { ...trigger },
-    { id: "trg-1", agentId: "agent-1", name: "nightly", enabled: true, source: { kind: "schedule" }, target, nextAt: T0 + 60_000, lastRunId: null, catchupWindowS: 3600, failuresInARow: 0, disabled: null, maxActiveRuns: 2, createdAt: T0, updatedAt: T0 },
+    { id: "trg-1", agentId: "agent-1", name: "nightly", enabled: true, source: { kind: "schedule" }, target, nextAt: T0 + 60_000, lastRunId: null, catchupWindowS: 3600, failuresInARow: 0, disabled: null, maxActiveRuns: 2, createdAt: T0, updatedAt: T0, templateId: null },
   );
   const changed = await store.triggers.update("trg-1", { name: "daily", enabled: false, nextAt: null, disabled: { at: "x", reason: "auto_paused" } });
   assert.deepEqual([changed.name, changed.enabled, changed.nextAt, changed.disabled], ["daily", false, null, { at: "x", reason: "auto_paused" }]);
@@ -99,10 +99,11 @@ test("active runs: the trigger's started firings whose run has not ended", async
     await store.triggers.record("trg-1", [due(`fir-${n}`)]);
     await store.triggers.fire({ triggerId: "trg-1", key: `fir-${n}` }, { id: `run-${n}`, agentId: "agent-1", revisionId: "rev-1" });
   }
-  assert.equal(await store.triggers.activeRuns("trg-1"), 3);
+  assert.equal((await store.triggers.activeKeys("trg-1", Date.now())).length, 3);
   const claim = await store.claim("run-2", "runner-a", { leaseMs: 60_000 });
   await store.runs.update(claim, { state: "ended" });
-  assert.equal(await store.triggers.activeRuns("trg-1"), 2, "an ended run is not active");
+  assert.equal((await store.triggers.activeKeys("trg-1", Date.now())).length, 2, "an ended run is not active");
+  assert.deepEqual((await store.triggers.activeKeys("trg-1", Date.now())).sort(), ["fir-1", "fir-3"], "the keys of the firings counted");
   assert.equal((await store.triggers.firing("trg-1", "fir-1")).status, "started", "fire moved the due firing to started");
 });
 
@@ -118,12 +119,83 @@ test("prune: the history kept to its size, a sender's keys kept for their day, n
   await store.triggers.record("trg-1", [{ key: "fir-manual", by: "manual", nominalAt: T0, status: "skipped" }, { key: "fir-clock", by: "schedule", nominalAt: T0, status: "skipped" }]);
   clock.now += 1;
   await store.triggers.record("trg-1", [{ key: "fir-new", by: "schedule", nominalAt: T0, status: "skipped" }]);
-  await store.triggers.prune("trg-1", { history: 1, dayMs: DAY, keepByKey });
+  await store.triggers.prune("trg-1", { history: 1, dayMs: DAY, keepByKey, now: clock.now });
   const shown = (await store.triggers.firings("trg-1")).map((f) => f.key).sort();
   assert.deepEqual(shown, ["fir-act", "fir-due", "fir-new", "fir-untold"], "past the history: only what must stay");
   assert.equal((await store.triggers.firing("trg-1", "fir-manual")).shown, false, "a run now's key kept for its day");
   assert.equal(await store.triggers.firing("trg-1", "fir-clock"), undefined, "a clock's firing past the history is gone");
   clock.now += DAY + 1;
-  await store.triggers.prune("trg-1", { history: 1, dayMs: DAY, keepByKey });
+  await store.triggers.prune("trg-1", { history: 1, dayMs: DAY, keepByKey, now: clock.now });
   assert.equal(await store.triggers.firing("trg-1", "fir-manual"), undefined, "gone past its day");
+});
+
+test("a firing its launch hook's host took with no run keeps its start_by (never a retry), is never pending, and stays in the history, attrs and all, until its start_by has passed", async (t) => {
+  const { store, clock } = await withTrigger(t);
+  const keepByKey = (by) => by === "manual" || by === "webhook";
+  const startBy = T0 + 600_000;
+  await store.triggers.record("trg-1", [due("fir-pushed", "webhook", { attrs: { event: "push" } }), due("fir-clock")]);
+  for (const key of ["fir-pushed", "fir-clock"]) {
+    const sent = await store.triggers.settle("trg-1", key, { status: "sent", reason: "handed", keepAttrs: true, startBy }, { reset: true });
+    // Its reason and its attrs both kept in one write: on Postgres, an update that names a column twice is refused.
+    assert.deepEqual([sent.firing.status, sent.firing.reason, sent.firing.startBy, sent.firing.retryAt, sent.firing.attempts], ["sent", "handed", startBy, null, 0], `${key}: its reason and start_by kept, never read as a retry`);
+  }
+  assert.deepEqual((await store.triggers.pending()).map((f) => f.key), [], "neither is pending: never driven, never handed again");
+  assert.equal(await store.triggers.soonest(), T0 + 60_000, "the soonest time is the trigger's next one, never a start_by");
+  clock.now += 1;
+  await store.triggers.record("trg-1", [{ key: "fir-new", by: "schedule", nominalAt: T0, status: "skipped" }]);
+
+  await store.triggers.prune("trg-1", { history: 1, dayMs: DAY, keepByKey, now: startBy });
+  assert.deepEqual((await store.triggers.firings("trg-1")).map((f) => f.key).sort(), ["fir-clock", "fir-new", "fir-pushed"], "past the history, within their start_by: both stay");
+  assert.deepEqual((await store.triggers.firing("trg-1", "fir-pushed")).attrs, { event: "push" }, "its attrs kept for the run its host starts late");
+
+  await store.triggers.prune("trg-1", { history: 1, dayMs: DAY, keepByKey, now: startBy + 1 });
+  const pushed = await store.triggers.firing("trg-1", "fir-pushed");
+  assert.deepEqual([pushed.shown, pushed.attrs], [false, null], "past its start_by, a pushed one's key is kept for its day as any");
+  assert.equal(await store.triggers.firing("trg-1", "fir-clock"), undefined, "and a clock's goes");
+
+  // A start_by is the hook's alone: no other settle out of due keeps a time.
+  await store.triggers.record("trg-1", [due("fir-skip")]);
+  const skipped = await store.triggers.settle("trg-1", "fir-skip", { status: "skipped", reason: "x", startBy });
+  assert.deepEqual([skipped.firing.startBy, skipped.firing.retryAt], [null, null]);
+});
+
+test("a settle with noRun is written only while the firing has no run, beside `from`: one a release failed meanwhile, or another run started, is left as it is", async (t) => {
+  const { store } = await withTrigger(t);
+  await store.triggers.record("trg-1", [due("fir-sent", "webhook"), due("fir-released", "webhook"), due("fir-ran", "webhook")]);
+  for (const key of ["fir-sent", "fir-released", "fir-ran"]) await store.triggers.settle("trg-1", key, { status: "sent", reason: "handed", keepAttrs: true, startBy: T0 + 600_000 }, { reset: true });
+  await store.triggers.settle("trg-1", "fir-released", { status: "failed", error: { code: "host_released", message: "Failed at launch." }, from: "sent" });
+  for (const id of ["run-1", "run-2", "run-3"]) await store.runs.create({ id, agentId: "agent-1", revisionId: "rev-1" });
+  await store.triggers.settle("trg-1", "fir-ran", { status: "started", runId: "run-3" });
+  const start = (key, from, runId) => store.triggers.settle("trg-1", key, { status: "started", runId, from, noRun: true }, { reset: true });
+
+  assert.equal(await start("fir-released", "sent", "run-1"), undefined, "released meanwhile: not written");
+  const released = await store.triggers.firing("trg-1", "fir-released");
+  assert.deepEqual([released.status, released.runId, released.error?.code], ["failed", null, "host_released"]);
+  assert.equal(await start("fir-ran", "started", "run-2"), undefined, "a firing with a run keeps it");
+  assert.equal((await store.triggers.firing("trg-1", "fir-ran")).runId, "run-3");
+  const started = await start("fir-sent", "sent", "run-1");
+  assert.deepEqual([started?.firing.status, started?.firing.runId], ["started", "run-1"], "sent with no run: written");
+});
+
+test("a settle with holdsAt is written only while the firing holds its trigger's room at that time: sent with no run and its start_by not passed; else nothing is written", async (t) => {
+  const { store } = await withTrigger(t);
+  const startBy = T0 + 600_000;
+  await store.triggers.record("trg-1", [due("fir-held", "webhook", { attrs: { event: "push" } }), due("fir-due")]);
+  await store.triggers.settle("trg-1", "fir-held", { status: "sent", reason: "handed", keepAttrs: true, startBy }, { reset: true });
+  const pushOut = (key, at) => store.triggers.settle("trg-1", key, { status: "sent", reason: "handed", keepAttrs: true, startBy: at + 60_000, from: "sent", holdsAt: at });
+
+  assert.equal(await pushOut("fir-held", startBy + 1), undefined, "past its start_by it holds nothing: not written");
+  assert.equal((await store.triggers.firing("trg-1", "fir-held")).startBy, startBy, "its start_by as it was");
+  assert.equal(await pushOut("fir-due", startBy), undefined, "a due firing holds no room");
+  assert.equal((await store.triggers.firing("trg-1", "fir-due")).status, "due");
+
+  const pushed = await pushOut("fir-held", startBy);
+  assert.deepEqual([pushed?.firing.status, pushed?.firing.startBy, pushed?.firing.reason, pushed?.firing.attrs], ["sent", startBy + 60_000, "handed", { event: "push" }], "at its start_by it still holds: its start_by pushed out, its reason and attrs kept");
+  assert.equal((await store.triggers.activeKeys("trg-1", startBy + 30_000)).length, 1, "it holds the room through the new start_by");
+  assert.deepEqual(await store.triggers.activeKeys("trg-1", startBy + 30_000), ["fir-held"], "a held firing's key is among them");
+
+  await store.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1", origin: { key: "fir-held" } });
+  await store.triggers.settle("trg-1", "fir-held", { status: "started", runId: "run-1" });
+  assert.equal(await pushOut("fir-held", startBy), undefined, "a started firing holds by its run, never by a start_by");
+  assert.deepEqual([(await store.triggers.firing("trg-1", "fir-held")).status, (await store.triggers.firing("trg-1", "fir-held")).runId], ["started", "run-1"]);
 });

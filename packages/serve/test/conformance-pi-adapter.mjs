@@ -27,14 +27,15 @@ export const offeredTools = (body) => (body?.tools ?? []).map((tool) => tool.nam
 /** A fetch that answers Anthropic's Messages API as `script` says, one step per request. Records every request body.
  *  As a model does, it calls only a tool the request offers (the faux model's rule): a scripted call of a tool the request
  *  does not offer is answered as text naming it unoffered, so a request that lost its tools on the way (a proxy policy
- *  dropping them) shows as the run going wrong, never as the call it could not have made. */
-export function scriptedOrigin(script, requests = []) {
+ *  dropping them) shows as the run going wrong, never as the call it could not have made. Each answer reports 100 input
+ *  tokens, or `inputOf(body)` when given (what a case's provider bills the request's whole input at). */
+export function scriptedOrigin(script, requests = [], { inputOf } = {}) {
   return async (_url, init = {}) => {
     const body = JSON.parse(String(init.body ?? "{}"));
     requests.push(body);
     const step = (body.messages ?? []).filter((message) => message.role === "assistant").length;
     const next = script[step];
-    const usage = { input_tokens: 100, output_tokens: 10 };
+    const usage = { input_tokens: inputOf ? inputOf(body) : 100, output_tokens: 10 };
     const start = { type: "message_start", message: { id: `msg_${step}`, type: "message", role: "assistant", model: body.model, content: [], stop_reason: null, usage: { input_tokens: usage.input_tokens, output_tokens: 1 } } };
     // A call, or several in one round ({ calls: [{ call, args }, …] }, which pi runs in parallel).
     const scripted = next && "calls" in next ? next.calls : next && "call" in next ? [next] : undefined;
@@ -118,7 +119,8 @@ function tracked(adapter) {
 
 /** The adapter loop for the suite's setup: pi through the adapter, its model through the session proxy to the script. */
 export function piAdapterSpec(setup, options = {}) {
-  strictOptions("piAdapterSpec's setup", setup, ["script", "tools", "hooks", "agentId"]);
+  // `received` (a case's diagnostic) is taken and left unsaid: the scripted origin reports no priority.
+  strictOptions("piAdapterSpec's setup", setup, ["script", "tools", "hooks", "agentId", "received"]);
   // `native`: pi-native tools beside the session's (PiAdapterOptions.tools, as the subagent tool is).
   strictOptions("piAdapterSpec", options, ["fetch", "requests", "price", "system", "native"]);
   const { script, tools, hooks, agentId } = setup;

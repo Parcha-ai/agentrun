@@ -1,7 +1,9 @@
+import { cliRunOf, cliRunLabel } from "@/lib/cliLearning";
 import { useEffect, useState } from "react";
 import { ApprovalCard } from "@/components/ApprovalCard";
 import { Button } from "@/components/ui/button";
 import { cost, planOf, soFar, runTitle } from "@/lib/format";
+import { backendSdkLabel, backendSdkOf } from "@/lib/backendSdk";
 import { waitingWords } from "@/lib/learning";
 import { ago, choicesOf, failureCount, failureGroups } from "@/lib/needs";
 import { elapsed } from "@/lib/runGraph";
@@ -22,7 +24,7 @@ export type NeedsYouProps = {
   failedAll?: number;
   /** Runs at work now. */
   live: readonly Run[];
-  /** The active agents whose learned items wait for the owner's OK (GET /v2/agents, each one's `learning.pending` above
+  /** The active agents whose learned workflows wait for the owner's OK (GET /v2/agents, each one's `learning.pending` above
    *  0), each with how many: approved on its Learning tab. */
   learning?: readonly { agent_id: string; name: string; pending: number }[];
   agentName: (id: string) => string;
@@ -48,7 +50,8 @@ const runHref = (id: string) => `#/runs/${encodeURIComponent(id)}`;
 /** Mission Control's first section: what needs a person now (each question answered in place, each failure said once
  *  with a way to run it again) and the runs at work, each with its clock. Nothing at all when nothing waits or works. */
 export function NeedsYouStrip({ asking, failed, failedAll, live, learning = [], agentName, onAnswer, onApprove, onHandBack, onRunAgain, onStop, problem, now = Date.now }: NeedsYouProps) {
-  const groups = failureGroups(failed);
+  const groups = failureGroups(failed.filter((run) => !backendSdkOf(run) && !cliRunOf(run)));
+  const backendFailures = failed.filter((run) => !run.imported_from && (backendSdkOf(run) || cliRunOf(run)));
   // The live runs' clocks move on their own, once a second.
   const [, tick] = useState(0);
   useEffect(() => {
@@ -96,20 +99,20 @@ export function NeedsYouStrip({ asking, failed, failedAll, live, learning = [], 
       ))}
       {asking.length > 0 && (
         <ul className="grid grid-cols-1 gap-3 xl:grid-cols-2">
-          {asking.map((r) => r.pending?.kind === "approval"
+          {asking.map((r) => r.native ? <li key={r.run_id} className="space-y-2 border p-4"><a href={runHref(r.run_id)} className="text-body underline underline-offset-2">{runTitle(r)}</a><p className="text-small text-muted-foreground">Native sessions cannot receive another message. <a href={`#/playground?agent=${encodeURIComponent(r.agent_id)}`} className="underline underline-offset-2">Start a new native run</a> to continue.</p></li> : r.pending?.kind === "approval"
             ? <Approval key={`${r.run_id}:${r.pending.id}`} run={r} pending={r.pending} agentName={agentName(r.agent_id)} at={at} onApprove={approve} />
             : askOf(r)
             ? <Asking key={`${r.run_id}:${askOf(r)!.asked_at}`} run={r} ask={askOf(r)!} agentName={agentName(r.agent_id)} at={at} onHandBack={handBack} />
             : <Question key={`${r.run_id}:${r.pending?.kind === "question" ? r.pending.asked_at : r.pending?.kind === "budget" ? (r.pending.at ?? "") : ""}`} run={r} agentName={agentName(r.agent_id)} at={at} onAnswer={onAnswer} />)}
         </ul>
       )}
-      {groups.length > 0 && (
+      {(groups.length > 0 || backendFailures.length > 0) && (
         <div className="border">
-          <p className="caps flex items-center justify-between border-b px-4 py-2.5 text-label text-muted-foreground">
+          <p className="caps flex items-center justify-between gap-3 border-b px-4 py-2.5 text-label text-muted-foreground">
             <span>Failed in the last 24 h · {failures}</span>
-            <a href="#/runs?status=failed" className="normal-case tracking-normal hover:text-foreground">{failedAll === undefined ? "All failed runs →" : `All ${failedAll} failed ${failedAll === 1 ? "run" : "runs"} →`}</a>
+            <a href="#/runs?status=failed" className="-my-1 py-1 normal-case tracking-normal hover:text-foreground">{failedAll === undefined ? "All failed runs →" : `All ${failedAll} failed ${failedAll === 1 ? "run" : "runs"} →`}</a>
           </p>
-          <ul>{groups.map((g) => <Failure key={g.message} message={g.message} runs={g.runs} agentName={agentName} at={at} onRunAgain={onRunAgain} />)}</ul>
+          <ul>{groups.map((g) => <Failure key={g.message} message={g.message} runs={g.runs} agentName={agentName} at={at} onRunAgain={onRunAgain} />)}{backendFailures.map((run) => <BackendRun key={run.run_id} run={run} agentName={agentName(run.agent_id)} />)}</ul>
         </div>
       )}
       {waiting.length > 0 && (
@@ -128,7 +131,7 @@ export function NeedsYouStrip({ asking, failed, failedAll, live, learning = [], 
       {live.length > 0 && (
         <div className="border">
           <p className="caps border-b px-4 py-2.5 text-label text-muted-foreground">Running now · {live.length}</p>
-          <ul>{live.map((r) => <Live key={r.run_id} run={r} agentName={agentName(r.agent_id)} at={at} onStop={onStop} />)}</ul>
+          <ul>{live.map((r) => backendSdkOf(r) || cliRunOf(r) ? <BackendRun key={r.run_id} run={r} agentName={agentName(r.agent_id)} /> : <Live key={r.run_id} run={r} agentName={agentName(r.agent_id)} at={at} onStop={onStop} />)}</ul>
         </div>
       )}
     </section>
@@ -171,7 +174,7 @@ function Paused({ run, pending, agentName }: { run: Run; pending: BudgetPending;
       <p className="flex min-w-0 items-center gap-2 text-body">
         <span className="size-2 shrink-0 bg-warning" aria-hidden />
         <span className="shrink-0 font-mono text-small">{agentName}</span>
-        <a href={runHref(run.run_id)} className="min-w-0 truncate text-muted-foreground hover:text-foreground">{runTitle(run)}</a>
+        <a href={runHref(run.run_id)} className="-my-1 min-w-0 truncate py-1 text-muted-foreground hover:text-foreground">{runTitle(run)}</a>
       </p>
       <p className="caps mt-2 text-label text-warning-text">{pausedWords(pending)}</p>
       {typeof pending.said === "string" && <p className="mt-1 text-prose leading-snug">{pending.said}</p>}
@@ -186,7 +189,7 @@ function Head({ run, agentName, since }: { run: Run; agentName: string; since?: 
     <p className="flex min-w-0 items-center gap-2 text-body">
       <span className="size-2 shrink-0 bg-warning" aria-hidden />
       <span className="shrink-0 font-mono text-small">{agentName}</span>
-      <a href={runHref(run.run_id)} className="min-w-0 truncate text-muted-foreground hover:text-foreground">{runTitle(run)}</a>
+      <a href={runHref(run.run_id)} className="-my-1 min-w-0 truncate py-1 text-muted-foreground hover:text-foreground">{runTitle(run)}</a>
       {since && <span className="ml-auto shrink-0 font-mono text-small text-muted-foreground">{since}</span>}
     </p>
   );
@@ -276,6 +279,18 @@ function Failure({ message, runs: all, agentName, at, onRunAgain }: { message: s
   );
 }
 
+/** Backend SDK calls are observed here; their application owns cancellation and fresh-task retries. */
+function BackendRun({ run, agentName }: { run: Run; agentName: string }) {
+  const cli = cliRunOf(run);
+  return <li className="flex flex-wrap items-center gap-3 border-b px-4 py-3 last:border-b-0">
+    <div className="min-w-0 flex-1"><p className="text-small text-muted-foreground">{agentName} · {cli ? cliRunLabel(cli.runtime) : backendSdkLabel(backendSdkOf(run)!)}</p><a href={runHref(run.run_id)} className="text-lead hover:underline">{runTitle(run)}</a>
+      {run.status === "failed" && <p className="mt-1 break-words text-small text-destructive-text">{run.error?.message || "The run failed."}</p>}
+      <p className="mt-1 text-small text-muted-foreground">Control and retries stay in {cli ? "your CLI" : "your backend"}. {run.status === "failed" ? "Start another task in the original application." : "Stop or cancel this task in the original application."}</p>
+    </div>
+    <a href={runHref(run.run_id)} className="caps shrink-0 text-small text-muted-foreground hover:text-foreground">Open</a>
+  </li>;
+}
+
 function Live({ run, agentName, at, onStop }: { run: Run; agentName: string; at: number; onStop: NeedsYouProps["onStop"] }) {
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
@@ -290,7 +305,7 @@ function Live({ run, agentName, at, onStop }: { run: Run; agentName: string; at:
       <a href={runHref(run.run_id)} className="min-w-0 flex-1 truncate text-lead hover:underline">{runTitle(run)}</a>
       <span className="font-mono text-body text-run-active">working · {elapsed(at - Date.parse(run.created_at))}</span>
       <span className="font-mono text-small text-muted-foreground">{spent}</span>
-      <a href={runHref(run.run_id)} className="caps inline-flex h-8 items-center border px-3 text-small hover:bg-accent">Steer</a>
+      {!run.native && <a href={runHref(run.run_id)} className="caps inline-flex h-8 items-center border px-3 text-small hover:bg-accent">Steer</a>}
       {/* Stop ends an agentic run's turn (runState's rule, as the run page offers it). A workflow run, or one not in a
           turn, doesn't stop: its page has Cancel. */}
       {runState(run.status, run.state, run.kind, NO_MESSAGES, true, run.error, run.review).canStop

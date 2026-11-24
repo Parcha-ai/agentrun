@@ -22,6 +22,7 @@ import { CLAUDE_AGENT_PACKAGE, ClaudeAgentNotInstalled, ClaudeAgentPinMismatch, 
 import { type ClaudeAgentSdk, claudeCodeHarness, claudeToolSearch, lostPrompts } from "./harness.js";
 import { JournalSessionStore } from "./store.js";
 import { type ConfineChild, localMachine } from "./host/machine.js";
+import type { ClaudeAgentLogin } from "./login.js";
 import { serialWriter } from "./serial.js";
 import type { ToolServerModules } from "./host/tool-server.js";
 import { CLAUDE_AGENT_SDK_INSTALL, CLAUDE_AGENT_SDK_VERSION, CLAUDE_CODE_VERSION, installedVersion } from "./versions.js";
@@ -87,7 +88,12 @@ export interface ClaudeAgentAdapterOptions {
   model: string | { default: string; fast?: string; strong?: string };
   /** The model of the CLI's small background calls. Default: the session's model. */
   smallModel?: string;
-  provider: ClaudeAgentProvider;
+  /** Where the model's requests go, through the session's model proxy. Exactly one of `provider` and `login`. */
+  provider?: ClaudeAgentProvider;
+  /** A person's own login on this machine (login.ts), which the CLI runs on in place of a provider: it calls Anthropic
+   *  itself, with no proxy, no model URL and no key of the host's; each response is booked from its stream, billed to the
+   *  person's plan (`price` is not read), and the session has no host port. The host only says where the login is. */
+  login?: ClaudeAgentLogin;
   /** Start the CLI under the host's confinement (its own `confine()`, a `setpriv --no-new-privs` prefix, say). It may
    *  only add in front of the pinned binary and its arguments, and never touches its environment. */
   confine?: ConfineChild;
@@ -135,10 +141,13 @@ export interface ClaudeAgentAdapterOptions {
   /** How hard the model thinks when a node names no level (its `thinking`, else its `effort`). Default medium; it is
    *  never off. */
   thinking?: ClaudeAgentThinking;
-  /** For tests: the fetch the model proxy forwards with. */
+  /** The fetch the model proxy forwards with: the host's route for a model it translates onto this wire (a test's
+   *  recorder, too); absent, the network. Forwarding it is the harness contract (HARNESS.md, the facts' `wire`). */
   fetch?: typeof fetch;
   /** For tests: the clock a user turn's day is read from (harness.ts dateLine). Default the system's. */
   now?: () => Date;
+  /** The IANA zone a user turn's day is read in (harness.ts dateLine), the one the host's environment line names. Default UTC. */
+  zone?: string;
 }
 
 /** The thinking levels a session runs at: the SDK's effort levels, with adaptive thinking. There is no off. */
@@ -339,7 +348,9 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
   const webSearch = options.webSearch === true;
   const skillsWrong = skillProblems(skills);
   if (skillsWrong.length) throw new Error(`agentrun-harness-claude: ${skillsWrong.join("; ")}`);
-  const headersWrong = hostHeaderProblems(options.provider.headers);
+  const { provider, login } = options;
+  if (!provider === !login) throw new Error("agentrun-harness-claude: give the adapter a provider or a login, not both and not neither");
+  const headersWrong = hostHeaderProblems(provider?.headers);
   if (headersWrong.length) throw new Error(`agentrun-harness-claude: provider.headers: ${headersWrong.join("; ")}`);
   // The SDK and its CLI are checked once, here: a mismatch is the host's to report, before any run starts.
   let executable: string;
@@ -388,7 +399,8 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
         // The host's workspace, when it names one: the CLI works where the host's file tools write (io.cwd).
         ...(io.cwd ? { cwd: io.cwd } : {}),
         ...(options.confine ? { confine: options.confine } : {}),
-        proxy: {
+        // On a login, no proxy: the CLI calls Anthropic itself.
+        ...(provider ? { proxy: {
           hooks: io.models,
           tools: tools.map((t) => t.name),
           ...(builtins.length ? { builtins } : {}),
@@ -397,11 +409,11 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
           ...(claudeToolSearch(tools.map((t) => t.name), spec.deferCatalog) === "true" ? { toolSearch: true } : {}),
           ...(options.price ? { price: options.price } : {}),
           ...(options.maxOutputTokens ? { maxOutputTokens: options.maxOutputTokens } : {}),
-          ...(options.provider.auth ? { auth: options.provider.auth } : {}),
-          ...(options.provider.headers ? { headers: options.provider.headers } : {}),
+          ...(provider.auth ? { auth: provider.auth } : {}),
+          ...(provider.headers ? { headers: provider.headers } : {}),
           ...(options.log ? { log: options.log } : {}),
           ...(options.fetch ? { fetch: options.fetch } : {}),
-        },
+        } } : {}),
       });
       // The SDK this session runs on (the host's, or the one installed beside this package, checked above), thinking at
       // the session's level.
@@ -425,22 +437,26 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
         ...(skills.length ? { skills: { plugin: join(dir, "plugin"), names: writeSkillsPlugin(join(dir, "plugin"), skills) } } : {}),
         ...(options.smallModel ? { smallModel: options.smallModel } : {}),
         ...(spec.system.length ? { instructions: spec.system.join("\n\n") } : {}),
-        credential: async () => options.provider.credential(),
-        gatewayUrl: options.provider.origin,
+        ...(provider ? { credential: async () => provider.credential(), gatewayUrl: provider.origin } : { login: { at: login!, models: io.models } }),
         executable,
         sdk,
         ...(options.mcp ? { toolServerModules: options.mcp } : {}),
         ...(options.log ? { log: options.log } : {}),
         ...(options.now ? { now: options.now } : {}),
+        ...(options.zone ? { zone: options.zone } : {}),
         // The host's gate, asked about each host-tool call and each WebSearch before it is written or run.
         ...(io.gate ? { gate: (call: GateCall) => io.gate!(call) } : {}),
       });
 
       const live = (event: unknown) => {
-        const e = event as { type?: string; delta?: unknown; callId?: unknown; name?: unknown; isError?: unknown; result?: unknown; truncated?: unknown; args?: unknown; reason?: unknown };
+        const e = event as { type?: string; delta?: unknown; callId?: unknown; name?: unknown; isError?: unknown; result?: unknown; truncated?: unknown; args?: unknown; reason?: unknown; ids?: unknown };
         if (e?.type === "text" && typeof e.delta === "string") io.onEvent({ type: "text", delta: e.delta });
         // The model's message ended inside the turn (the CLI resumes a cut answer itself): what it said so far is one message.
         if (e?.type === "text_end") io.onEvent({ type: "text_end" });
+        // The CLI took these submissions (its transcript holds the message that carried them): a steer reached the model.
+        if (e?.type === "message_taken" && Array.isArray(e.ids)) io.onEvent({ type: "message_taken", ids: e.ids.filter((id): id is string => typeof id === "string") });
+        // The harness handed these submissions to the CLI: a steer() waiting on one returns. Not the host's to hear.
+        if (e?.type === "message_sent" && Array.isArray(e.ids)) for (const id of e.ids) if (typeof id === "string") sentWaiters.get(id)?.();
         // The tool bridge's `tool_end` comes once the call's outcome is in the session's records: only then does the host
         // hear the call ended, with the text recorded.
         if (e?.type === "tool_end" && typeof e.callId === "string" && typeof e.name === "string") {
@@ -469,9 +485,19 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
 
       let running: Promise<{ status: TurnStatus; error?: string }> | undefined;
       let closed = false;
+      // A turn is in flight: set as run() starts it, cleared only right after the drive's last look at the inbox (below),
+      // with nothing awaited between, so a submission written meanwhile is either sent by this turn or starts the next.
+      let turning = false;
+      /** steer() calls waiting for the harness to hand their message to the CLI, by submission id. */
+      const sentWaiters = new Map<string, () => void>();
+      /** A submission written while no turn was in flight, still unsent: it starts one. */
+      const kick = () => {
+        if (!turning && !closed && pendingSubmissions(drive.state()).length > 0) void run();
+      };
       const run = () => {
         const before = turnsIn(drive).length;
         state = "idle";
+        turning = true;
         running = (async () => {
           let outcome: { status: TurnStatus; error?: string } | undefined;
           // A turn whose final answer the model cut at its output limit, the CLI's recovery of it spent, says so on its
@@ -481,6 +507,9 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
             const current = drive;
             try {
               await harness.drive(current);
+              // A steer written as the drive's inbox closed (the turn was ending) is pending, and no turn of the drive
+              // sends it: the turn goes on with it, as the harness's own steer placed while a turn ends does.
+              while (!current.signal.aborted && pendingSubmissions(current.state()).length > 0) await harness.drive(current);
               const ended = turnsIn(current).slice(before).at(-1)?.data as { status?: TurnStatus; error?: string; stopReason?: string; outputTokens?: unknown } | undefined;
               if (ended?.stopReason === "length") stop = { stopReason: "length", ...(typeof ended.outputTokens === "number" ? { outputTokens: ended.outputTokens } : {}) };
               outcome = ended?.status ? { status: ended.status, ...(ended.error ? { error: ended.error } : {}) } : { status: "failed", error: "the turn ended with no outcome in the session's records" };
@@ -498,16 +527,21 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
               else outcome = { status: "failed", error: String((error as Error)?.message ?? error).slice(0, 500) };
             }
           }
+          turning = false;
           io.onEvent({ type: "turn_end", status: outcome.status, ...stop });
           return outcome;
-        })();
+        })().catch((error: unknown) => {
+          turning = false;
+          throw error;
+        });
         return running;
       };
       // A drive that was halted (an interrupt) holds the session no more: the next turn opens a fresh one, on the same
       // writer (the adapter never opens the session itself).
       const ready = async () => {
         if (closed) throw new Error("agentrun-harness-claude: the session is closed");
-        if (running) await running;
+        // A turn a steer started meanwhile is waited for too.
+        while (turning && running) await running;
         if (drive.signal.aborted && !io.signal.aborted) drive = await open();
       };
 
@@ -518,21 +552,22 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
       // the CLI never holds its key. Its policy object is its own: anything a policy keeps per instance stays apart from the
       // drive's, as a side call's should. Closed with the session, or when the host lets the session go (io.signal).
       // Started once the session's drive is open, the last step that can fail: an open that fails leaves no listener.
-      const hostPort = await startModelProxy({
+      // A session on a person's login has none: no request of the host's ever goes on that login.
+      const hostPort = !provider ? undefined : await startModelProxy({
         policy: anthropicPolicy({
           model: modelFor(spec),
           ...(options.smallModel ? { smallModel: options.smallModel } : {}),
           tools: [],
           ...(webSearch ? { webSearch: true, ...(options.webSearchAllowance !== undefined ? { webSearchAllowance: options.webSearchAllowance } : {}) } : {}),
           ...(options.maxOutputTokens ? { maxOutputTokens: options.maxOutputTokens } : {}),
-          ...(options.provider.auth ? { auth: options.provider.auth } : {}),
+          ...(provider.auth ? { auth: provider.auth } : {}),
         }),
         hooks: io.models,
         model: modelFor(spec),
-        origin: options.provider.origin,
-        credential: async () => (await options.provider.credential()) ?? "",
+        origin: provider.origin,
+        credential: async () => (await provider.credential()) ?? "",
         ...(options.price ? { price: withWebSearches(options.price) } : {}),
-        ...(options.provider.headers ? { headers: options.provider.headers } : {}),
+        ...(provider.headers ? { headers: provider.headers } : {}),
         ...(options.log ? { log: options.log } : {}),
         ...(options.fetch ? { fetch: options.fetch } : {}),
       }, randomBytes(32).toString("base64url"));
@@ -540,7 +575,7 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
       const closeHost = async () => {
         if (hostClosed) return;
         hostClosed = true;
-        await hostPort.close().catch(() => {});
+        await hostPort?.close().catch(() => {});
       };
       io.signal.addEventListener("abort", () => void closeHost(), { once: true });
       if (io.signal.aborted) await closeHost();
@@ -550,7 +585,42 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
           if (calls.draining) throw new Error("agentrun-harness-claude: the session is pausing; no new turn");
           await ready();
           await drive.submit({ id: randomUUID(), kind: "prompt", text });
-          void run();
+          // Sent by the turn a steer started meanwhile, if one did; else a turn of its own.
+          kick();
+        },
+        // A person's message: mid-turn, sent by the harness's steering loop at priority `next`, so the CLI hands it to the
+        // model at its next step (after the tool calls in flight finish), in the same turn; with no turn in flight, a turn of
+        // its own. Placed under the host's id once: the same id again (a runner lost after the placement hands the row on
+        // again) places nothing, and says the model has it when the transcript already does.
+        async steer(text, id, mode = "steer", _options) {
+          if (closed) throw new Error("agentrun-harness-claude: the session is closed");
+          if (calls.draining) throw new Error("agentrun-harness-claude: the session is pausing; no new message");
+          const submissionId = id ?? randomUUID();
+          if (drive.state().submissions.some((s) => s.id === submissionId)) {
+            const folded = drive.state();
+            const placed = folded.effectOrder.some((e) => e.name === "place" && e.placed.includes(submissionId));
+            if (placed) {
+              const transcript = new JournalSessionStore(new NativeJournal(drive), { records: await new NativeJournal(drive).read() });
+              if (lostPrompts(folded, [submissionId], transcript).length === 0) io.onEvent({ type: "message_taken", ids: [submissionId] });
+            }
+            kick();
+            return;
+          }
+          // A drive an interrupt halted is opened again before anything is written through it.
+          if (!turning) await ready();
+          // steer() returns once the CLI has the message (the turn in flight then takes it at its next step), or once the
+          // turn that would have sent it is over: a host that lets the work go on after steer() returns has not raced it.
+          let wake!: () => void;
+          const sent = new Promise<void>((resolve) => (wake = resolve));
+          sentWaiters.set(submissionId, wake);
+          try {
+            await drive.submit({ id: submissionId, kind: mode === "followUp" ? "followUp" : "steer", text });
+            kick();
+            const turn = running;
+            await Promise.race([sent, ...(turn ? [turn.then(() => undefined, () => undefined)] : [])]);
+          } finally {
+            sentWaiters.delete(submissionId);
+          }
         },
         async recover() {
           if (state !== "open_turn") throw new Error("agentrun-harness-claude: there is no turn to recover");
@@ -573,8 +643,12 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
           state = "idle";
         },
         async turnEnd() {
-          if (!running) throw new Error("agentrun-harness-claude: no turn is in flight");
-          return running;
+          if (running) return running;
+          // No turn ran in this session: the last turn the session's records hold, ended before it opened (a lost runner's
+          // steer the model already answered, placed again here, starts no turn). None at all: there is no turn to wait for.
+          const last = turnsIn(drive).at(-1)?.data as { status?: TurnStatus; error?: string } | undefined;
+          if (last?.status && !holdsTurn(drive.state())) return { status: last.status, ...(last.error ? { error: last.error } : {}) };
+          throw new Error("agentrun-harness-claude: no turn is in flight");
         },
         async interrupt(interruptOptions = {}) {
           const drainMs = interruptOptions.drainMs ?? 0;
@@ -604,7 +678,7 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
         },
         // The session's one model route, for the host's own request beside the CLI's: the session's host port, which
         // never restarts once closed.
-        port: (label: string) => (closed || hostClosed ? undefined : { url: hostPort.url, key: hostPort.sideKey(label), model: modelFor(spec), api: "anthropic-messages" as const }),
+        port: (label: string) => (closed || hostClosed || !hostPort ? undefined : { url: hostPort.url, key: hostPort.sideKey(label), model: modelFor(spec), api: "anthropic-messages" as const }),
       };
     },
   };

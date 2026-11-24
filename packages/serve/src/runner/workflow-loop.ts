@@ -26,8 +26,9 @@ import { createWorkflowExtension, type WorkflowTaskHost } from "../workflow/task
 import { readWorkflowRun, startWorkflowRevision, workflowCarry } from "../workflow-run.js";
 import { type BudgetData, type EndData, type EndReview, KINDS, type RaiseData } from "./journal-kinds.js";
 import { type Claim, type Command, type CommandOutcome, type Journal, type Loop, type LoopDeps, type LoopEnd, type LoopFactory, stopEnd, type StopReason } from "./loop-contract.js";
+import type { HeldRedact } from "./redact.js";
 import type { RunOutcome, RunPatch } from "../store/store.js";
-import { END_PATCH_MS, END_PATCH_UNKNOWN } from "./loop.js";
+import { END_PATCH_MS, END_PATCH_UNKNOWN, readAgain } from "./loop.js";
 
 
 /** A cap refusal, as the kernel cap hands one to parkOf/checkRaise (the loop never imports the cap; its rule is handed in
@@ -75,7 +76,7 @@ export interface WorkflowRunSpec {
   readonly cap?: WorkflowCapRule;
   /** The end's cost and metrics beside its state, read when the end is written (the pi loop's endPatch, bounded the same).
    *  The outcome (completed or escalated) is the workflow's own, read from the journal, not this. */
-  readonly endPatch?: (end: EndData) => Promise<Pick<EndData, "costUsd" | "metrics">>;
+  readonly endPatch?: (end: EndData) => Promise<Pick<EndData, "costUsd" | "costUpperBound" | "metrics">>;
   /** pi-durable's restart limit for the run's Harness. Absent: pi's own default. */
   readonly restartLimit?: number;
   /** Called once the run's Harness is open, before the workflow runs: the spec wires anything that needs the Harness here
@@ -121,7 +122,7 @@ export const isWorkflowRevision = (revision: { readonly kind: string }): boolean
 /** What a claim's spec is built from beside the claim: the runner's one redactor (LoopDeps.redact), which holds the keys
  *  the claim opens from the store (redact.ts holdClaimed). */
 export interface WorkflowSpecRun {
-  readonly redact?: (text: string) => string;
+  readonly redact: HeldRedact;
   /** A fresh journal of the claim, for what the spec reads from the run's records at its end (its decisions' booked
    *  cost): a fresh one, since the Harness closes its own before the end is written. */
   readonly journal?: () => Journal;
@@ -277,22 +278,26 @@ function workflowLoop(specOf: (claim: Claim, run: WorkflowSpecRun) => WorkflowRu
 
   /** The end's cost and metrics from the spec, bounded as the adapter loop's (END_PATCH_MS): late or failing, the end
    *  says both are unknown (END_PATCH_UNKNOWN). */
-  const endPatchOf = async (spec: WorkflowRunSpec, data: EndData): Promise<Pick<EndData, "costUsd" | "metrics">> => {
+  const endPatchOf = async (spec: WorkflowRunSpec, data: EndData): Promise<Pick<EndData, "costUsd" | "costUpperBound" | "metrics">> => {
     if (!spec.endPatch) return {};
+    const endPatch = spec.endPatch;
     let timer: NodeJS.Timeout | undefined;
     const late = new Promise<"late">((resolve) => (timer = setTimeout(() => resolve("late"), END_PATCH_MS)));
     try {
-      const patch = await Promise.race([spec.endPatch(data), late]);
+      // A read that fails is read again within the same bound (loop.ts readAgain), as the adapter loop's cost: the stored
+      // cost is every reader's answer for the ended run, so a null there stays only when no read could be made.
+      const patch = await readAgain(() => endPatch(data), late, (error, tries, last) => {
+        // Cut of every secret the runner holds (LoopDeps.redact): an error's text may echo one.
+        const text = (error as Error)?.message ?? String(error);
+        const cut = deps.redact ? deps.redact(text) : text;
+        console.warn(last ? `[runner] ${runId}: its end's patch failed ${tries} times, last: ${cut}; the end is written with its cost and metrics unknown` : `[runner] ${runId}: its end's patch failed: ${cut}; read again`);
+      });
       if (patch === "late") {
         console.warn(`[runner] ${runId}: its end's patch gave no answer within ${END_PATCH_MS / 1000} s; the end is written with its cost and metrics unknown`);
         return END_PATCH_UNKNOWN;
       }
+      if (patch === "failed") return END_PATCH_UNKNOWN;
       return patch ?? {};
-    } catch (error) {
-      // Cut of every secret the runner holds (LoopDeps.redact): an error's text may echo one.
-      const text = (error as Error)?.message ?? String(error);
-      console.warn(`[runner] ${runId}: its end's patch failed: ${deps.redact ? deps.redact(text) : text}; the end is written with its cost and metrics unknown`);
-      return END_PATCH_UNKNOWN;
     } finally {
       clearTimeout(timer);
     }
@@ -307,7 +312,7 @@ function workflowLoop(specOf: (claim: Claim, run: WorkflowSpecRun) => WorkflowRu
     const parkController = new AbortController();
     let heldRefusal: CapRefusal | undefined;
     const context = withAbortSignal(AbortSignal.any([deps.signal, parkController.signal]), BACKGROUND_CONTEXT);
-    spec = await specOf(claim, { ...(deps.redact ? { redact: deps.redact } : {}), journal: () => deps.journal(claim) });
+    spec = await specOf(claim, { redact: deps.redact, journal: () => deps.journal(claim) });
     claimNow = claim;
     specReady();
     const revision = { id: spec.revisionId, kind: "workflow" as const, body: { workflow: spec.workflow, tools: [...spec.tools] } };
@@ -416,11 +421,11 @@ function workflowLoop(specOf: (claim: Claim, run: WorkflowSpecRun) => WorkflowRu
     // stop before it is: the run ends stopped whatever the workflow's own outcome, never completed with the stop taken.
     const carry: Carry = stopReason?.kind === "command" && ended.state !== "stopped" ? stopEnd(stopReason.cancel) : ended;
     const { state, outcome, base } = endOf(carry);
-    const data: EndData = { ...base, ...(patch.costUsd !== undefined ? { costUsd: patch.costUsd } : {}), ...(patch.metrics !== undefined ? { metrics: patch.metrics } : {}) };
+    const data: EndData = { ...base, ...(patch.costUsd !== undefined ? { costUsd: patch.costUsd, ...(patch.costUpperBound ? { costUpperBound: true } : {}) } : {}), ...(patch.metrics !== undefined ? { metrics: patch.metrics } : {}) };
     const runPatch: RunPatch = {
       state, summary: carry.summary,
       ...(outcome !== undefined ? { outcome } : {}),
-      ...(data.costUsd !== undefined ? { costUsd: data.costUsd } : {}),
+      ...(data.costUsd !== undefined ? { costUsd: data.costUsd, costUpperBound: data.costUpperBound === true } : {}),
       ...(data.metrics !== undefined ? { metrics: data.metrics } : {}),
     };
     // The stop row, and any pause or resume rows the run ended before applying (a pause after its last step): taken here.

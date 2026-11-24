@@ -11,7 +11,9 @@
 // With --url URL --setup-code-file F --password-file P, it starts nothing and checks a server already running (a hosted
 // one, at its public address): the plain address shows the Setup code field and its note; the setup code (or the
 // server's API token) in F, with the owner's password in P, sets the password and signs in; over https the page carries
-// Strict-Transport-Security. Neither file's content is printed.
+// Strict-Transport-Security. Neither file's content is printed. --run ID then opens that run's page and checks the console
+// reads it completed, --screenshot FILE keeps that page as a PNG, and --proxy URL sends the browser's requests through
+// that HTTP proxy (a platform's proxy on this machine: deploy/selfhost/walk.sh).
 // No fixed sleeps: every wait is for a condition, with a bound. Exits 0 when every check holds, else 1.
 // Needs the repository built (npm run build). Chrome: CHROME_BIN, else playwright's own; playwright-core: PLAYWRIGHT_CORE
 // (its index.mjs or its index.js: either loads), else the package `playwright-core`.
@@ -27,7 +29,14 @@ const CLI = join(ROOT, "packages/serve/dist/cli.js");
 const playwright = await import(process.env.PLAYWRIGHT_CORE ?? "playwright-core");
 const chromium = playwright.chromium ?? playwright.default?.chromium;
 if (!chromium) throw new Error(`no chromium in ${process.env.PLAYWRIGHT_CORE ?? "playwright-core"}`);
-const NOTE = "On Render: paste the server's AGENTRUN_TOKEN from the service's Environment tab. Elsewhere: paste the setup code the server printed in its log, or open the link it prints.";
+const NOTE = "The server printed it in its log: find the newest line that starts “Set up this server:”. Open that line's link, or paste what follows code= here.";
+// At Render's or Railway's own address the field leads with the token's place instead (src/lib/auth.ts setupCodePlaces).
+const RENDER_NOTE = "This server is on Render. In the Render dashboard, open this service's Environment tab and paste the value of AGENTRUN_TOKEN here.";
+const RAILWAY_NOTE = "This server is on Railway. In the Railway dashboard, open this service's Variables tab and paste the value of AGENTRUN_TOKEN here.";
+const noteAt = (address) => {
+  const host = new URL(address).hostname;
+  return /\.onrender\.com$/i.test(host) ? RENDER_NOTE : /\.up\.railway\.app$/i.test(host) ? RAILWAY_NOTE : NOTE;
+};
 const PASSWORD = ["not", "a", "secret", "e2e", "setup"].join("-");
 const HSTS = "max-age=31536000";
 const SETUP_LINE = /^Set up this server: \S+\/setup#code=([A-Za-z0-9_-]{22}) \(or paste AGENTRUN_TOKEN\)$/gm;
@@ -83,7 +92,15 @@ async function start(env) {
   };
 }
 
-const browser = await chromium.launch(process.env.CHROME_BIN ? { executablePath: process.env.CHROME_BIN } : {});
+const arg = (name) => { const at = process.argv.indexOf(name); return at > 1 ? process.argv[at + 1] : undefined; };
+// --proxy URL: the browser reaches every address through that HTTP proxy (a platform's own proxy on this machine, which
+// routes by the request's host: no DNS, and no public name at a loopback address, which Chrome 157 refuses).
+const proxy = arg("--proxy");
+const browser = await chromium.launch({
+  ...(process.env.CHROME_BIN ? { executablePath: process.env.CHROME_BIN } : {}),
+  ...(proxy ? { proxy: { server: proxy } } : {}),
+});
+if (arg("--url")) console.log(`--   Chrome ${browser.version()}`);
 /** A fresh browser page on `url`: the page, and the first document's response headers. */
 async function open(url) {
   const page = await (await browser.newContext()).newPage();
@@ -94,16 +111,18 @@ async function open(url) {
   await page.waitForSelector('input[aria-label="New password"]', { timeout: 30_000 });
   return { page, errors, headers: response?.headers() ?? {} };
 }
-const codeField = (page) => page.locator("label", { has: page.locator("span", { hasText: /^Setup code$/ }) });
+// The Setup code input, by its label, and its note, by the input's aria-describedby: what a screen reader reads, the same
+// in every console the walk meets (a release's, main's), whatever wraps them.
+const codeInput = (page) => page.getByLabel("Setup code", { exact: true });
+const codeNote = (page) => codeInput(page).evaluate((el) => (el.getAttribute("aria-describedby") ?? "").split(/\s+/).filter(Boolean).map((id) => document.getElementById(id)?.textContent ?? "").join(" "));
 const fill = async (page, code, password = PASSWORD) => {
-  if (code !== undefined) await codeField(page).locator("input").fill(code);
+  if (code !== undefined) await codeInput(page).fill(code);
   await page.fill('input[aria-label="New password"]', password);
   await page.fill('input[aria-label="Password again"]', password);
 };
 /** Whether the server says this browser is signed in, within 30 s: settles, rejecting at the bound. */
 const signedIn = (page) => page.waitForFunction(async () => (await (await fetch("/v2/auth/session")).json()).signed_in === true, null, { timeout: 30_000 });
 
-const arg = (name) => { const at = process.argv.indexOf(name); return at > 1 ? process.argv[at + 1] : undefined; };
 const hosted = arg("--url");
 // A --url given empty (an unset variable) never falls back to the local servers: that would pass without checking it.
 if (process.argv.includes("--url") && !hosted) { console.error("--url needs the server's address"); process.exit(2); }
@@ -117,12 +136,26 @@ if (hosted) {
     const { page, errors, headers } = await open(`${url}/`);
     if (url.startsWith("https://")) check("the page carries HSTS over https", headers["strict-transport-security"] === HSTS, headers["strict-transport-security"] ?? "none");
     else console.log("--   HSTS not checked: the --url is not https");
-    const field = codeField(page);
+    const field = codeInput(page);
     check("the plain address shows the Setup code field", (await field.count()) === 1);
-    check("with its note", ((await field.textContent()) ?? "").includes(NOTE));
+    check("with its note", (await codeNote(page)).includes(noteAt(url)));
     await fill(page, code, password);
     await page.click('button[type="submit"]');
     check("the setup code (or token) sets the password and signs in", await signedIn(page).then(() => true, () => false));
+    // --run ID --screenshot FILE: that run's page, once the console has read it completed, saved as a PNG.
+    const runId = arg("--run");
+    if (runId) {
+      const runPath = `/v2/runs/${encodeURIComponent(runId)}`;
+      const completed = page.waitForResponse(async (r) => r.request().method() === "GET" && new URL(r.url()).pathname === runPath && r.ok() && (await r.json().catch(() => null))?.status === "completed", { timeout: 30_000 });
+      await page.goto(`${url}/#/runs/${encodeURIComponent(runId)}`);
+      check("the run's page reads it completed", await completed.then(() => true, () => false));
+      await page.getByText(/completed/i).first().waitFor({ timeout: 15_000 });
+      const shot = arg("--screenshot");
+      if (shot) {
+        await page.screenshot({ path: shot, fullPage: true });
+        console.log(`--   the run's page: ${shot}`);
+      }
+    }
     check("no console errors", errors.length === 0, errors.join(" | "));
   } catch (error) {
     check("the walk ran to its end", false, error instanceof Error ? error.message.split("\n")[0] : String(error));
@@ -142,9 +175,9 @@ try {
     check("server 1 printed one setup code", a.codes().length === 1, `${a.codes().length} printed`);
     const { page, errors, headers } = await open(`${a.base}/`);
     check("server 1 page has no HSTS (http public address)", headers["strict-transport-security"] === undefined, headers["strict-transport-security"] ?? "");
-    const field = codeField(page);
+    const field = codeInput(page);
     check("the plain address shows the Setup code field", (await field.count()) === 1);
-    check("with its note", ((await field.textContent()) ?? "").includes(NOTE));
+    check("with its note", (await codeNote(page)).includes(NOTE));
     await fill(page);
     check("Set password waits for a code", await page.locator('button[type="submit"]').isDisabled());
     // Setups with no code, as a page that hid the field sent them: refused, and the printed code stands.
@@ -174,7 +207,7 @@ try {
     const code = await b.firstCode();
     const { page, errors, headers } = await open(`${b.base}/setup#code=${code}`);
     check("server 2 page carries HSTS (https public address)", headers["strict-transport-security"] === HSTS, headers["strict-transport-security"] ?? "none");
-    check("the setup link fills the Setup code field", (await codeField(page).locator("input").inputValue()) === code);
+    check("the setup link fills the Setup code field", (await codeInput(page).inputValue()) === code);
     check("and leaves the address without the code", !page.url().includes(code));
     await fill(page);
     await page.click('button[type="submit"]');
@@ -187,7 +220,7 @@ try {
   try {
     const { page, headers } = await open(`${c.base}/`);
     check("server 3 page has no HSTS (loopback, no public address)", headers["strict-transport-security"] === undefined, headers["strict-transport-security"] ?? "");
-    check("open setup shows no Setup code field", (await codeField(page).count()) === 0);
+    check("open setup shows no Setup code field", (await codeInput(page).count()) === 0);
   } finally { await c.stop(); }
 
   // 4. The server's API token in the Setup code field.

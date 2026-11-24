@@ -1,14 +1,17 @@
 // An agent's computer, its one setting for where its tools run (Settings → Computers): `computer: { kind, provider?,
-// image?, gpu?, persistent?, surface?, exec? }` on its revision. kind is none, sandbox, desktop, phone or browser;
+// image?, gpu?, persistent?, surface?, exec?, record?, needs? }` on its revision. kind is none, sandbox, desktop, phone or browser;
 // provider names one of the computer providers (the computer package's kind registry), and is absent for none; image
 // names one the provider offers for the kind, and absent is the kind's default; a sandbox's gpu is { type, count };
 // persistent: true keeps the agent's own computer between its runs, where the configuration declares persistence. A
 // desktop's or a phone's surface ("code" or "tools") is how the agent drives it, and exec: false gives the agent no
-// shell and no program start on it (run-tools.ts); the owner's own computer calls keep everything. The v2 API's `place` is this
+// shell and no program start on it (run-tools.ts); the owner's own computer calls keep everything. record: true makes
+// each run a video of a desktop's, a phone's or a browser's screen (computer-record.ts). The v2 API's `place` is this
 // setting's view, one to one where it can say it: {mode: "runner"} is {kind: "none"}, and {mode: "sandbox", box: X} is
 // {kind: "sandbox", provider: X}. Writing either sets both. A desktop, phone or browser computer leaves the run's folder
 // on the runner, so its place reads runner.
 import { configurationOf, PROVIDERS, serves } from "@parcha/agentrun-computer";
+import { needsIssues } from "./computer-needs.js";
+import { recorderMissing } from "./computer-record.js";
 import type { InputIssue } from "./errors.js";
 
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
@@ -31,9 +34,9 @@ export type ComputerSurface = (typeof COMPUTER_SURFACES)[number];
  *  desktop or a phone may say its surface, and `exec: false`: the agent gets no shell and starts no program on it. */
 export type ComputerSetting =
   | { readonly kind: "none" }
-  | { readonly kind: "sandbox"; readonly provider: string; readonly image?: string; readonly gpu?: GpuSetting; readonly persistent?: boolean }
-  | { readonly kind: "desktop" | "phone"; readonly provider: string; readonly image?: string; readonly persistent?: boolean; readonly surface?: ComputerSurface; readonly exec?: boolean }
-  | { readonly kind: "browser"; readonly provider: string; readonly image?: string; readonly persistent?: boolean };
+  | { readonly kind: "sandbox"; readonly provider: string; readonly image?: string; readonly gpu?: GpuSetting; readonly persistent?: boolean; readonly needs?: readonly string[] }
+  | { readonly kind: "desktop" | "phone"; readonly provider: string; readonly image?: string; readonly persistent?: boolean; readonly surface?: ComputerSurface; readonly exec?: boolean; readonly record?: boolean }
+  | { readonly kind: "browser"; readonly provider: string; readonly image?: string; readonly persistent?: boolean; readonly record?: boolean };
 
 /** A GPU type's name as a setting keeps it: the vendor's own ("T4", "A100-80GB", "RTX-PRO-6000"); store/agent-body.ts
  *  keeps the same. */
@@ -67,6 +70,16 @@ const OPTIONAL: Readonly<Record<string, { readonly kinds?: readonly ComputerKind
     kinds: ["desktop", "phone"],
     check: (value, field) => (typeof value === "boolean" ? [] : [{ field, reason: "wrong_type", message: `${field} is false (the agent gets no shell and starts no program on its computer) or true (as absent)` }]),
   },
+  // true: each run's video of the screen (computer-record.ts), made with this server's ffmpeg, so a server without one
+  // refuses it here.
+  record: {
+    kinds: ["desktop", "phone", "browser"],
+    check: (value, field) => {
+      if (typeof value !== "boolean") return [{ field, reason: "wrong_type", message: `${field} is true (each run records a video of the computer's screen) or false (as absent)` }];
+      const missing = value ? recorderMissing() : undefined;
+      return missing ? [{ field, reason: "not_allowed", message: `${field} needs ffmpeg, which records the video: ${missing}`, fix: `Install ffmpeg on this server's PATH (Debian: apt install ffmpeg), or remove ${field}.` }] : [];
+    },
+  },
   gpu: {
     kinds: ["sandbox"],
     check: (gpu, field) => {
@@ -77,7 +90,32 @@ const OPTIONAL: Readonly<Record<string, { readonly kinds?: readonly ComputerKind
       return [];
     },
   },
+  // The programs the sandbox must have on its PATH (computer-needs.ts): checked in the box at each claim, before the
+  // run's first model request; a box that lacks one ends the run in words. It says what the box holds, never its image.
+  needs: {
+    kinds: ["sandbox"],
+    check: needsIssues,
+  },
 };
+
+/** The fields a computer of `kind` may set beside its kind and provider, in OPTIONAL's order: none for kind none. */
+export const kindSettings = (kind: ComputerKind): string[] =>
+  kind === "none" ? [] : Object.entries(OPTIONAL).filter(([, { kinds }]) => kinds === undefined || kinds.includes(kind)).map(([key]) => key);
+
+/** Whether a run of a kind can record its screen on this server (GET /v2/computers' `record`), and why not, in words. */
+export type RecordView = { available: true } | { available: false; why: string };
+
+/** Whether a run of `kind` can record its screen here: the kind takes record (OPTIONAL's record.kinds) and ffmpeg is on
+ *  `path` (recorderMissing, the server's PATH now when absent), as a save of record: true is checked. */
+export function recordOf(kind: ComputerKind, path: string | undefined = process.env.PATH): RecordView {
+  const kinds = OPTIONAL.record!.kinds!;
+  if (!kinds.includes(kind)) {
+    const recorders = kinds.map((one) => `a ${one}`);
+    return { available: false, why: kind === "none" ? "with no computer, there is no screen to record" : `a ${kind} has no screen to record (${recorders.slice(0, -1).join(", ")} or ${recorders.at(-1)} does)` };
+  }
+  const missing = recorderMissing(path);
+  return missing ? { available: false, why: missing } : { available: true };
+}
 
 /** A place as the v2 API names it. */
 export type PlaceView = { mode: "runner" } | { mode: "sandbox"; box: string };
@@ -140,7 +178,9 @@ function persistenceIssues(kind: Exclude<ComputerKind, "none">, provider: string
 
 /** The setting and its place a definition says, from `computer` or `place` (both: they must agree), or undefined when
  *  it says neither. Each is checked already (computerIssues, placeIssues). */
-export function settingOfDefinition(definition: { computer?: unknown; place?: unknown }): { computer: ComputerSetting; place: PlaceView } | undefined {
+/** What settingOfDefinition reads of a definition or a stored revision body. */
+export type Definition = { computer?: unknown; place?: unknown };
+export function settingOfDefinition(definition: Definition): { computer: ComputerSetting; place: PlaceView } | undefined {
   if (isObject(definition.computer)) {
     const computer = definition.computer as ComputerSetting;
     return { computer, place: placeOfComputer(computer) };

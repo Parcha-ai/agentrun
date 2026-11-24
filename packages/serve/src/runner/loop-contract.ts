@@ -2,9 +2,11 @@
 // claims, renews, delivers command rows and releases; the loop runs the harness on the run's journal. B2's loop.ts
 // implements `Loop` for pi and the CLI adapters; the runner knows nothing about harnesses.
 
+import { money } from "@parcha/agentrun-kernel/kernel/cap";
 import { refusedText } from "../refusal-words.js";
 import type { AlsoRow, Claim, Command, Journal } from "../store/store.js";
-import type { Redact } from "./redact.js";
+import type { HeldRedact } from "./redact.js";
+import type { Compared, GraderReply } from "../learn/promote.js";
 
 // The store's own: a claim (its epoch fences every write made under it; `until` in epoch ms) and a command row (taken_at
 // set once, by the loop's journal commit that applies it or by the runner's refusal, with `refused` its reason).
@@ -14,6 +16,11 @@ export type { AlsoRow, Claim, Command, Journal };
  *  answer is unfinished, so the run never reads ended. `tokens`: what the cut answer used, when its harness says. */
 export const cutAtLimit = (tokens?: number): string =>
   `the model stopped at its output limit${tokens !== undefined && Number.isSafeInteger(tokens) && tokens > 0 ? ` (${tokens} tokens)` : ""} before finishing its answer`;
+
+/** Why a run ends failed when the answer it would end on was cut at the output its cap limited it to (a CLI's turn_end
+ *  capCut): the cap stopped it, not the model, so the words name the cap and the least cap that lets it finish. */
+export const cutByCap = (cut: { capUsd: number; raiseToUsd: number }, tokens?: number): string =>
+  `the run's ${money(cut.capUsd)} cap stopped the model${tokens !== undefined && Number.isSafeInteger(tokens) && tokens > 0 ? ` at ${tokens} tokens` : ""} before it finished its answer: raise the cap to at least $${cut.raiseToUsd.toFixed(2)} to let it finish`;
 
 /** What the step keeps with its end-of-run turn as the turn is first asked (EndOfRunTurn ask's `keep`): written with the
  *  turn's prompt, durable before the turn's first request leaves. */
@@ -25,9 +32,8 @@ export type EndOfRunAnswer = ({ readonly ended: true; readonly answer: string } 
 
 /**
  * The end-of-run step (the learning lane's end-of-run turn): asked once, after the job's last turn ended and before the
- * loop writes the run's end. `ask` sends one more turn through the run's own session, its origin `reflect`: while it
- * runs the loop refuses its writes and edits under work/.learning/ (REFLECT_NOTE_ONLY), and it is aborted at
- * `deadlineMs`. The rows it returns are staged into the end commit, so they land in that commit's one transaction or not
+ * loop writes the run's end. `ask` sends one more turn through the run's own session (the compile turn's attempts),
+ * its origin `reflect`, aborted at `deadlineMs`. The rows it returns are staged into the end commit, so they land in that commit's one transaction or not
  * at all. A stop or a lost claim aborts `signal`: no end is written, and the next claim asks again (the turn's request
  * id is one per run, so its model is asked once).
  */
@@ -37,6 +43,9 @@ export type EndOfRunTurn = (input: {
   readonly claim: Claim;
   /** How the job ended. */
   readonly outcome: "completed" | "failed";
+  /** When the job's end was kept (the run's `ended_at`, kept before the step looks back), in epoch milliseconds: the
+   *  time the job answered. Absent from a loop that keeps none. */
+  readonly endedAt?: number;
   /** The run was cut before it could look back: by a person's stop (`stopped`), by one during the end-of-run turn
    *  (`stopped-looking`), or by a fault (`faulted`). The step must not call `ask`: it returns only what a cut run keeps. */
   readonly cut?: "stopped" | "stopped-looking" | "faulted";
@@ -53,8 +62,13 @@ export type EndOfRunTurn = (input: {
    *  earlier claim (or this one) started, readable before `ask`, so a step that skips or is cut never asks, and still
    *  closes that look-back with its first ask's figures. Undefined when none asked it, or the loop keeps no record (pi's). */
   keptOf?(round: number): EndOfRunKept | undefined;
+  /** A replay run's or an audit shadow's grader (learn/promote.ts): its fast model's name (`grader`), and one request to
+   *  it (`grade`), sent through the run's own session on its one cap, booked as the run's spend; a refusal of that cap
+   *  never parks the run (`refused`). Absent when the run has no grader route (no fast model, or agree_on named). */
+  readonly grader?: string;
+  grade?(request: { readonly system: string; readonly user: string }): Promise<GraderReply>;
   readonly signal: AbortSignal;
-}) => Promise<{ readonly also: readonly AlsoRow[] } | undefined>;
+}) => Promise<{ readonly also: readonly AlsoRow[]; readonly compared?: Compared } | undefined>;
 
 /** How a loop's start() ended. The run's own outcome (state, cost) is already in the journal's last commit. */
 export type LoopEnd =
@@ -149,9 +163,14 @@ export interface LoopDeps {
    *  The ticker writes it to the run's run_live row, one store transaction per tick for all its loops, never into the
    *  journal. Absent: not reported. */
   live?: (read: () => HeldState | undefined) => void;
-  /** The runner's one redactor (redact.ts): an error's text the loop writes to its run's end goes through it, so no
-   *  secret the runner holds is stored, and its values cut the run's live view (live-ticker.ts). Absent: none cut. */
-  redact?: Redact;
+  /** The runner's one redactor (redact.ts), the same instance for every loop: an error's text the loop writes to its run's
+   *  end goes through it, so no secret the runner holds is stored, its values cut the run's live view (live-ticker.ts),
+   *  and a claim carries the run's own tool keys into it (claim-secrets.ts). */
+  redact: HeldRedact;
+  /** The incarnation of the runner's word in the store (runner/presence.ts), the claim's runner being the claim's own
+   *  `runner`: a park that keeps a computer only this runner can reach again pins it to both (workspace/computer-kept.ts
+   *  pinnedOf), so the claim rule gives the run back to this runner while it is there. Absent: nothing is pinned. */
+  incarnation?: string;
 }
 
 /** A run's held state: what pi shows before it stores it. The live view (live/stream.ts) streams it beside the stored

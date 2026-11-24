@@ -1,3 +1,4 @@
+import {cliLearningOf} from "./store/agent-body.js";
 // A revision saved with no MCP pin (before pins were made at save, or an inline agent's version stored then) is pinned
 // once, at its first run, as a save would pin it: each granted server still saved here listed once
 // (McpServersOverStore.pinListing, the save's own listing), the pin made of those listings (mcp-gateway.ts mcpPinOf), and
@@ -37,7 +38,7 @@ export interface PinFirstDeps {
 export async function pinFirst(revision: { readonly id: string; readonly kind: string; readonly body: unknown; readonly mcpPin?: unknown }, deps: PinFirstDeps): Promise<McpPin | undefined> {
   // Native source MCP names and SDK callback tools belong to their source, never this server's managed registry.
   // Their runnable guards must refuse managed execution without listing or pinning those names first.
-  if (nativeOf(revision.body) || sdkOf(revision.body)) return undefined;
+  if (nativeOf(revision.body) || sdkOf(revision.body) || cliLearningOf(revision.body)) return undefined;
   if (revision.mcpPin !== undefined && revision.mcpPin !== null) return revision.mcpPin as McpPin;
   if (revision.kind !== "agentic") return undefined;
   const granted: string[] = [];
@@ -60,7 +61,7 @@ export async function pinFirst(revision: { readonly id: string; readonly kind: s
   }
   let pin: McpPin;
   try {
-    pin = mcpPinOf(granted, { server: (name) => { const listing = listings.get(name); return listing && { url: listing.url, tools: listing.tools.map(boundTool), prices: listing.prices }; } });
+    pin = mcpPinOf(granted, { server: (name) => { const listing = listings.get(name); return listing && { url: listing.url, tools: listing.tools.map(boundTool), prices: listing.prices, toolkit: listing.toolkit }; } });
   } catch {
     return undefined;
   }
@@ -69,11 +70,13 @@ export async function pinFirst(revision: { readonly id: string; readonly kind: s
 }
 
 /** A runner's pinListing (PinFirstDeps): the owner's registry over the one store, opened with the runner's seal key (the
- *  server's) on the first listing it is asked for, loopback allowed only for a runner beside a local install. `githubApp`:
+ *  server's) on the first listing it is asked for, loopback allowed only for a runner beside a local install, never to
+ *  that server's own ports (`own`, Serve.own). `githubApp`:
  *  the run's GitHub App access (runner/mcp-github.ts), which lists a `github_app` server with a token of the run's
  *  repository, metadata read alone, as a save lists it with one (github-connection.ts tokenForListing); without it such a
- *  server can't be listed. `appOrigin`: a test's fake GitHub MCP (McpServersOverStore.appOrigin). */
-export function registryListing(store: Parameters<typeof mcpServersOverStore>[0], sealKey: Buffer, { loopback = false, network, githubApp, appOrigin }: { loopback?: boolean; network?: OAuthNetwork; githubApp?: GithubAppAccess; appOrigin?: string } = {}): (server: string, stop?: AbortSignal) => Promise<PinListing> {
+ *  server can't be listed. `appOrigin`: a test's fake GitHub MCP (McpServersOverStore.appOrigin). `composioOrigin`: a
+ *  test's fake Composio MCP (McpServersOverStore.composioOrigin). */
+export function registryListing(store: Parameters<typeof mcpServersOverStore>[0], sealKey: Buffer, { loopback = false, own = [], network, githubApp, appOrigin, composioOrigin }: { loopback?: boolean; own?: readonly string[]; network?: OAuthNetwork; githubApp?: GithubAppAccess; appOrigin?: string; composioOrigin?: string } = {}): (server: string, stop?: AbortSignal) => Promise<PinListing> {
   let registry: Promise<McpServersOverStore> | undefined;
   // The listing tokens minted and not yet revoked, and how many listings are under way: no one holds a listing token
   // after its listing (the claim's cleanup reaches only githubTokens' tokens), so once no listing is under way, each is
@@ -83,8 +86,9 @@ export function registryListing(store: Parameters<typeof mcpServersOverStore>[0]
   const open = async () => {
     const { version } = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")) as { version: string };
     const opened = mcpServersOverStore(store, { [SEAL_KEY_ENV]: sealKey.toString("base64") }, version, network);
-    opened.attach("", "", loopback);
+    opened.attach("", "", loopback, own);
     if (appOrigin) opened.appOrigin = appOrigin;
+    if (composioOrigin) opened.composioOrigin = composioOrigin;
     if (githubApp) opened.appToken = async () => {
       const got = await listingToken(githubApp);
       if ("token" in got) minted.push(got.token);

@@ -6,6 +6,8 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
+import dnsPromises from "node:dns/promises";
+import { syncBuiltinESMExports } from "node:module";
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { after } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -18,12 +20,13 @@ import { hostAddressesOnce } from "../dist/docker-host-addresses.js";
 import { fauxEnvOf } from "../dist/server.js";
 import { FAUX_VENDOR_API_ENV } from "../dist/tools.js";
 import { resolve } from "node:path";
-import { openSqliteStore } from "../dist/store/index.js";
+import { openSqliteStore, openStore } from "../dist/store/index.js";
 import { startRunner } from "../dist/runner/runner.js";
 import { maxRunsOf } from "../dist/host.js";
 import { claimInstallsStopped } from "../dist/harness-install.js";
 import { runnerMemory } from "../dist/runner/memory-claim.js";
 import { dispatchRunner } from "../dist/runner/harness-loops.js";
+import { childLoops } from "../dist/runner/run-child-host.js";
 import { runnerComputers } from "../dist/runner/main.js";
 import { routeOf } from "../dist/runner/model-route.js";
 import { withoutFaux } from "../dist/model.js";
@@ -38,6 +41,11 @@ import { stranger } from "./fixtures/stranger.mjs";
   process.env.XDG_CONFIG_HOME = config;
   process.on("exit", () => rmSync(config, { recursive: true, force: true }));
 }
+
+// No test asks an Ollama this machine may run (ollama-provider.ts lists its models, and with no key one is the default),
+// whatever env it passes: the process's own switch (OLLAMA_OFF_ENV) turns every Ollama off. A test of Ollama clears it
+// and names its own fake (fixtures/fake-ollama.mjs).
+process.env.AGENTRUN_SERVE_FAUX_NO_OLLAMA = "1";
 
 /** The secret writes (secret-writes.ts registers them on the server) the client sends from the owner's session, as the
  *  console does: the token can't make one. A plane's tests add theirs with secretWritePath, and need no client of their
@@ -59,6 +67,15 @@ export const SECRET_WRITE_PATHS = [
   // The server's ChatGPT sign-in (chatgpt-plan.ts): its state, its start and finish, and its sign-out.
   { methods: ["GET", "DELETE"], path: /^\/settings\/chatgpt$/ },
   { methods: ["POST"], path: /^\/settings\/chatgpt\/sign-in(?:\/finish)?$/ },
+  // The server's email account (email/routes.ts): its read, its save and removal, and its connection test.
+  { methods: ["GET", "PUT", "DELETE"], path: /^\/settings\/email$/ },
+  { methods: ["POST"], path: /^\/settings\/email\/test$/ },
+  // The server's calendar (calendar/routes.ts): its read, its save and removal, and its test.
+  { methods: ["GET", "PUT", "DELETE"], path: /^\/settings\/calendar$/ },
+  { methods: ["POST"], path: /^\/settings\/calendar\/test$/ },
+  // The model gateway saved in the console (model-gateway.ts): its save, removal and test.
+  { methods: ["PUT", "DELETE"], path: /^\/settings\/model-gateway$/ },
+  { methods: ["POST"], path: /^\/settings\/model-gateway\/test$/ },
 ];
 /** Adds a secret write the client sends from the owner's session (`methods` on `path`, a RegExp over the /v2 path). */
 export const secretWritePath = (methods, path) => void SECRET_WRITE_PATHS.push({ methods, path });
@@ -74,9 +91,41 @@ const launchCodes = new Map();
 export const launchFor = (server) => (server?.launchCode ? launchCodes.set(server.baseUrl, server.launchCode) : undefined, server);
 /** The server's startServe, its launch code registered for the test client (launchFor): every test starts a server
  *  through this one, so the client's secret writes open that server's launch link with accounts off. */
-export const startServe = async (options) => launchFor(await startServeBuilt(options));
+// No test asks the system resolver for an example webhook host: a test's server answers those names from its own
+// resolver (webhookLookup below), so what a CI runner's resolver says of them (NXDOMAIN, late or at once) never reaches
+// a test. A lookup of one on the system resolver from this process fails the file, naming the host.
+const EXAMPLE_HOOK = /(^|\.)hooks\.example(\.com)?$/i;
+const systemLookup = dnsPromises.lookup;
+const systemAsked = [];
+dnsPromises.lookup = function lookup(host, ...rest) {
+  if (EXAMPLE_HOOK.test(String(host))) systemAsked.push(String(host));
+  return systemLookup.call(this, host, ...rest);
+};
+syncBuiltinESMExports();
+after(() => assert.deepEqual(systemAsked, [], `the system resolver was asked for ${[...new Set(systemAsked)].join(", ")}: a test's server answers example webhook hosts from its webhookLookup (support.mjs startServe)`));
+
+/** A test server's outbound webhook resolver (ServeOptions.webhookLookup): an example name (example, *.example,
+ *  example.com and its subdomains) does not resolve, answered at once as the reserved names are; any other name is the
+ *  system's. */
+export const webhookLookup = async (host) => {
+  if (/(^|\.)example(\.com)?$/i.test(host)) throw Object.assign(new Error(`getaddrinfo ENOTFOUND ${host}`), { code: "ENOTFOUND", hostname: host });
+  return (await systemLookup(host, { all: true })).map((one) => one.address);
+};
+
+/** Where a test server posts Slack's messages unless its test runs a fake Slack (ServeOptions.slackTarget): a closed
+ *  port on this machine, so no test ever reaches Slack. */
+export const NO_SLACK = "http://127.0.0.1:9";
+/** The window a test reads /usage over (its `from` and `to`): every run a test starts. */
+export const WINDOW = "from=2026-01-01T00:00:00Z&to=2030-01-01T00:00:00Z";
+export const startServe = async (options) => launchFor(await startServeBuilt({ webhookLookup, slackTarget: NO_SLACK, ...options }));
 
 export const FAUX = new URL("./fixtures/faux-model.mjs", import.meta.url).pathname;
+
+/** For a test that sets every launcher secret: the launch hook's secret as a server takes it (`whsec_` and a 32-byte key)
+ *  that still holds `canary` as text (base64url, which the key's decoding reads), and the hook's URL a start needs beside
+ *  it (a port nothing answers; a test that fires no trigger never reaches it). */
+export const launchHookCanary = (canary) => (assert.ok(canary.length <= 43, canary), `whsec_${canary.padEnd(43, "k")}`);
+export const LAUNCH_HOOK_URL = { AGENTRUN_LAUNCH_HOOK_URL: `${NO_SLACK}/firings` };
 
 // No test reaches a box provider: the boxes the environment running the suite lists are not the tests'. A server here,
 // or one a test starts in a process of its own, probes none, Docker included (on by default when AGENTRUN_BOXES is not
@@ -282,10 +331,10 @@ after(async () => {
 });
 /** A store for a server a test starts with startServe (`{ ...options, store: await triggerStore() }`), as serve() gives its
  *  own: the triggers' rows, a trigger's agent put there first. `of`: the same store again for a restart on the same data. */
-export async function triggerStore(of) {
+export async function triggerStore(of, { now } = {}) {
   if (of) return of;
   const dir = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "agentrun-store-"));
-  const store = await openSqliteStore({ file: join(dir, "store.sqlite"), role: "server" });
+  const store = await openSqliteStore({ file: join(dir, "store.sqlite"), role: "server", ...(now ? { now } : {}) });
   loose.push({ store, dir });
   return withAgents(store);
 }
@@ -310,9 +359,13 @@ const FAST_MODEL_RETRY = { retry: { enabled: true, maxRetries: 8, baseDelayMs: 1
  *  either waits queued. Returns a close() that
  *  stops the runner and closes its store handle, and whose `beats()` counts the runner's polls and renewal passes
  *  (RunnerOptions.onBeat), so a test can wait for polls to pass without a clock. `computers`: a test's kind registry and
- *  provider loader for the run's claim-time computer. */
-export async function startInProcessRunner(data, { faux, githubApi, githubWeb, githubMcpOrigin, gradeTimeoutMs, computerForClaim, computers: own, harnessLocks, runnerTiming, modelRetry = FAST_MODEL_RETRY, log, failRunsUpdate, fauxVendorApi, ...switches } = {}) {
-  const opened = await openSqliteStore({ dataDir: data, role: "runner" });
+ *  provider loader for the run's claim-time computer. Its store is the one the server opens (store/open.ts openStore):
+ *  SQLite in `data`, or the Postgres AGENTRUN_STORE_URL names. `archil`: a test's Archil fakes for a Mode 2 claim, the
+ *  disk's file API (`makeDisk`, AdapterSpecDeps.makeArchilDisk) and the control plane (`control`,
+ *  AdapterSpecDeps.mountControl). `ownData`: a data directory of the runner's own, apart from the server's, for its
+ *  scratch and everything a run's claim reads or writes on this machine (the store and the seal key stay the server's). */
+export async function startInProcessRunner(data, { faux, githubApi, githubWeb, githubMcpOrigin, composioMcpOrigin, gradeTimeoutMs, computerForClaim, computers: own, mcpOwn, harnessLocks, runnerTiming, modelRetry = FAST_MODEL_RETRY, log, failRunsUpdate, fauxVendorApi, evalFakes, childRuns, archil, ownData, ...switches } = {}) {
+  const opened = await openStore({ dataDir: data, role: "runner" });
   // The runner's store, as a crash would leave its writes: once kill() has run, a journal commit of its loops never
   // lands while the test runs (a dead process writes nothing more), and fails when the runner's handle is closed.
   let dead = false;
@@ -374,19 +427,25 @@ export async function startInProcessRunner(data, { faux, githubApi, githubWeb, g
   let runner;
   let beats = 0;
   try {
-    const createLoop = dispatchRunner({ env, data, journal: (claim) => store.journal(claim), store, sealKey, routeOf, computerForClaim: computerForClaim ?? computers.computerForClaim, computerDeps: computers.computerDeps, mcpLoopback: true, ...(githubApi ? { githubApi } : {}), ...(githubWeb ? { githubWeb } : {}), ...(githubMcpOrigin ? { githubMcpOrigin } : {}), ...(harnessLocks ? { harnessLocks } : {}), modelRetry, ...(gradeTimeoutMs ? { gradeBound: () => AbortSignal.timeout(gradeTimeoutMs) } : {}) });
+    const deps = { env, data: ownData ?? data, journal: (claim) => store.journal(claim), store, sealKey, routeOf, computerForClaim: computerForClaim ?? computers.computerForClaim, computerDeps: computers.computerDeps, mcpLoopback: true, ...(mcpOwn ? { mcpOwn } : {}), ...(githubApi ? { githubApi } : {}), ...(githubWeb ? { githubWeb } : {}), ...(githubMcpOrigin ? { githubMcpOrigin } : {}), ...(composioMcpOrigin ? { composioMcpOrigin } : {}), ...(harnessLocks ? { harnessLocks } : {}), ...(evalFakes ? { evalFakes } : {}), ...(archil ? { makeArchilDisk: archil.makeDisk, mountControl: archil.control } : {}), modelRetry, ...(gradeTimeoutMs ? { gradeBound: () => AbortSignal.timeout(gradeTimeoutMs) } : {}) };
+    // `childRuns` (a test's): each run a process of its own (run-child-host.ts childLoops), as the CLI's start runs them,
+    // its keys and calls the runner's across the channel; the same user unless `childRuns.isolation` says otherwise (a
+    // stand-in helper's), its lines on `childRuns.log`.
+    const childLog = childRuns?.log ?? (() => {});
+    const createLoop = childRuns ? childLoops({ deps: { ...deps, log: childLog }, isolation: childRuns.isolation ?? { kind: "process", why: "a test's runner" }, log: childLog }) : dispatchRunner(deps);
     runner = startRunner({
       ...(runnerTiming ?? {}),
       store,
       loops: maxRunsOf(process.env, switches.maxRuns),
       // And by memory, as the CLI's runners claim (memory-claim.ts): each waiting run weighed by its harness against this
       // host's memory, read now (a test's process.constrainedMemory stand-in, set before serve(), is its container limit).
-      memory: runnerMemory(store),
+      memory: runnerMemory(store, undefined, env),
       onBeat: () => void beats++,
       // The run start and end lines go to the server's log, as the CLI's runner beside it prints them (print.ts runLine).
       ...(log ? { onEvent: (event) => { const line = runLine(event); if (line) log(line); } } : {}),
       // A test's fake GitHub, the server's githubApi seam: the runner mints the App's tokens there (never from the env). Its
-      // fake GitHub MCP, the server's githubMcpOrigin seam: a github_app server there is the runner's GitHub MCP too. Its
+      // fake GitHub MCP, the server's githubMcpOrigin seam: a github_app server there is the runner's GitHub MCP too. A
+      // fake Composio's MCP origin, the server's composioMcpOrigin seam: the one a key read from the environment goes to. Its
       // GitHub site (githubWeb, the runner's alone): where a run's pull request is checked out from (pr-checkout.ts). The
       // locks of a test's fake registry, the server's harnessLocks seam: a claim's first-use install takes the same.
       createLoop: (deps) => {
@@ -424,7 +483,7 @@ export async function startInProcessRunner(data, { faux, githubApi, githubWeb, g
   );
 }
 
-export async function serve(t, { harnesses: asked, runner: wantRunner = true, computerForClaim, ...options } = {}) {
+export async function serve(t, { harnesses: asked, runner: wantRunner = true, computerForClaim, evalFakes, childRuns, ...options } = {}) {
   const harnesses = asked ?? (Object.hasOwn(options, "faux") && options.faux === undefined);
   const dir = options.data ? undefined : await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "agentrun-serve-"));
   const data = options.data ?? join(dir, "agents");
@@ -435,12 +494,18 @@ export async function serve(t, { harnesses: asked, runner: wantRunner = true, co
   // A runner beside the server on the same data (the CLI start's server-and-runner): it claims and runs what the server
   // starts, so a test reads a run that runs, not one that queues forever. `runner: false` leaves it off for a test that
   // wants the server alone. Its loop is the switch's dispatch (learning wired; pi/workflow the server's own, E2r).
-  const runnerOptions = { ...options, faux: Object.hasOwn(options, "faux") ? options.faux : FAUX, ...(computerForClaim ? { computerForClaim } : {}) };
+  // `evalFakes`: a template eval's fakes by agent id (runner/beside.ts evalFakes), for the runner alone.
+  // `mcpOwn`: the server's own addresses (Serve.own), as the CLI's runner beside it is told them (runner/beside.ts).
+  // A --faux-github server's fake GitHub (Serve.fauxGitHub), its API and its repository's site, given to this test's runner
+  // through the runner's one way in, a test runner's option: no run of a test reaches GitHub. A test's own githubApi or
+  // githubWeb wins.
+  const runnerOptions = { ...(server.fauxGitHub ? { githubApi: server.fauxGitHub.api, ...(server.fauxGitHub.web ? { githubWeb: server.fauxGitHub.web } : {}) } : {}), ...options, faux: Object.hasOwn(options, "faux") ? options.faux : FAUX, mcpOwn: server.own, ...(computerForClaim ? { computerForClaim } : {}), ...(evalFakes ? { evalFakes } : {}), ...(childRuns ? { childRuns } : {}) };
   let closeRunner = wantRunner === false ? undefined : await startInProcessRunner(data, runnerOptions);
   // Runners a test crashed (crashRunner), closed with the rest at the stop.
   const crashed = [];
-  // A handle of the test's own on the server's store (as a runner's), for what a test reads of its rows: server.store.
-  const store = await openSqliteStore({ dataDir: data, role: "runner" });
+  // A handle of the test's own on the server's store (as a runner's), for what a test reads of its rows: server.store. The
+  // store the server opened: SQLite in its data, or the Postgres AGENTRUN_STORE_URL names (openStore).
+  const store = await openStore({ dataDir: data, role: "runner" });
   // A server on another's data (a restart's): its owner's hook closes it before the directory goes.
   if (dir) sharing.set(data, new Set());
   else sharing.get(data)?.add(server);
@@ -846,6 +911,12 @@ export function call(port, { method = "GET", path = "/", headers = {}, body } = 
 
 /** The Cookie header for the cookies an answer set. */
 export const cookieOf = (res) => (res.headers["set-cookie"] ?? []).map((line) => line.split(";")[0]).join("; ");
+/** The cookies a browser holds at `host` (`name:port`): the same sessions, each http per-port cookie (`agentrun-<port>…`)
+ *  named for the port it opened there, as a sign-in through that port (a tunnel) sets them (page.ts). */
+export const cookieAt = (cookie, host) => {
+  const port = /:(\d+)$/.exec(host)?.[1];
+  return port ? cookie.replace(/(^|; )agentrun-\d+(-session)?=/g, `$1agentrun-${port}$2=`) : cookie;
+};
 
 /** Whether the server took run `runId` back: its row's claim is the server's, and its WAL is checkpointed. */
 function takenBack(data, runId) {

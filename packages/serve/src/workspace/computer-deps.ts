@@ -16,7 +16,7 @@
 // with names no key, no account key and no database or Redis credential, and carries no environment at all.
 import { isIP } from "node:net";
 import { posix } from "node:path";
-import { type AttachHub, type ComputerSpec, DEFAULT_DOCKER_IMAGE, DOCKER_RECIPE, DOCKER_RECIPE_HAS, type DockerVolume, PROVIDERS, providerFor, readBackOf, servingRefusals, SETTING_KINDS } from "@parcha/agentrun-computer";
+import { type AttachHub, type ComputerSpec, DEFAULT_DOCKER_IMAGE, DOCKER_RECIPE, DOCKER_RECIPE_HAS, type DockerVolume, type HostedDial, PROVIDERS, providerFor, readBackOf, servingRefusals, SETTING_KINDS } from "@parcha/agentrun-computer";
 // The local container engine's provider, for its check() of the operator's size settings at the start (dockerLimitsOf).
 import { DockerProvider } from "@parcha/agentrun-computer/docker";
 import { DOCKER_IMAGE_ENV } from "../box-image.js";
@@ -27,10 +27,12 @@ import { KEY_TABLE, type ProviderFactories } from "../computer-keys.js";
 import type { FauxComputers } from "../faux-computers.js";
 import { envValue, type KeyEnv, keyReader } from "../key-meta.js";
 import { boxAllowOf, boxAllowSetIn } from "../box-settings.js";
+import { BOX_CPUS_ENV, BOX_MEMORY_ENV, BOX_PIDS_ENV } from "../start-switches.js";
 import { readLaunchBody } from "../run-launch.js";
 import type { Store } from "../store/index.js";
 import { SERVER_NOTE_LABEL } from "@parcha/agentrun-kernel/kernel/cap";
-import { type ClaimComputer, type ClaimLaunch, computerForClaim, type ComputerForClaimDeps, type ComputerRun, type ComputerSaid, type OpenComputerView, type Replaced } from "./computer-for-claim.js";
+import { type ClaimComputer, type ClaimLaunch, computerForClaim, type ComputerForClaimDeps, type ComputerRun, type ComputerSaid, type KeptKind, type OpenComputerView, type Replaced } from "./computer-for-claim.js";
+import { computerLapsedWords, computerLostWords, KEEP_WORDS } from "./computer-kept.js";
 import { storeLedger } from "./computer-ledger.js";
 import { computerProviderFactories, computerProviderMakers, type ProviderLoad } from "./computer-providers.js";
 import { aLabel, type ComputerSettingKind, type KindRegistry, needsNetwork, noNetworkRefusal, type ProviderEntry, vendorNetworkOnly } from "./resolve-computer.js";
@@ -47,9 +49,7 @@ const refused = (words: string): Error => Object.assign(new Error(words), { code
 /** The settings that size a Docker computer (a sandbox or a desktop): its CPUs, its memory (swap included) and how many
  *  processes and threads it may hold at once. Unset, the Docker provider's own defaults hold. A vendor's computer sizes
  *  itself and is never given them. */
-export const BOX_CPUS_ENV = "AGENTRUN_BOX_CPUS";
-export const BOX_MEMORY_ENV = "AGENTRUN_BOX_MEMORY";
-export const BOX_PIDS_ENV = "AGENTRUN_BOX_PIDS";
+export { BOX_CPUS_ENV, BOX_MEMORY_ENV, BOX_PIDS_ENV };
 
 /** A Docker computer's size, as the Docker provider takes it on its spec. */
 export type DockerLimits = Pick<ComputerSpec, "cpus" | "memoryMb" | "pids">;
@@ -141,6 +141,10 @@ export interface ComputerDepsOptions {
   /** The server's AttachHub, where this runner shares the server's process (runner/beside.ts): a paired computer's
    *  socket is there. Absent: a runner of its own process, which refuses a paired computer in words. */
   readonly hub?: AttachHub;
+  /** The server's dial (Serve.dial), where this runner shares the server's process: every remote provider's create
+   *  takes it, and one whose host dials the server (facts.connect "dial") mints its machine's token there. Absent: a
+   *  runner of its own process, where such a provider's create refuses in words. */
+  readonly dial?: HostedDial;
   /** The server's seal key: absent, no saved key is opened (a key from the environment still is). */
   readonly sealKey: Buffer | undefined;
   /** The kind registry: the computer package's unless given (a test's fixture). */
@@ -219,23 +223,28 @@ export function computerSpecOf(env: KeyEnv): ComputerForClaimDeps["spec"] {
 
 /** The network a computer of `kind` on `entry` asks for: what the run allows (its box_allow), narrowed to "none" when its
  *  provider makes "none" but not what the run allows. A launch that names no box_allow (a row from before every launch
- *  was stamped with it) allows what this server allows now (`current`), never "open"; a sandbox with none still has no
- *  network, as it always had. A remote computer (Daytona's or E2B's, each one whose capabilities' network is ["none"])
- *  runs its programs in a network of their own, so an open or listed network is one it refuses at create; "none" reaches
- *  less than the run allows, never more. Under "none", the operator's word for no network at all, a computer whose
+ *  was stamped with it) allows what this server allows now (`current`); a sandbox with none still has no
+ *  network, as it always had. A hosted computer (Agent37's, E2B's, Modal's, Daytona's) takes the list as Docker's does,
+ *  through the egress proxy its init starts; one whose capabilities' network is ["none"] alone (Orgo's) runs its
+ *  programs in a network of their own with no way out, so it gets "none", which reaches less than the run allows, never
+ *  more, and Settings says so (computers.ts NO_NETWORK_WORDS). Under "none", the operator's word for no network at all, a computer whose
  *  provider makes no "none" (a cloud phone, a hosted browser, Local Chrome) is refused in words (noNetworkRefusal), as
  *  the run's start refuses it (resolve-computer.ts computerReadiness). A vendor-hosted computer that runs only on the
  *  vendor's own network (its capabilities' network is ["open"]) is "open" under a list, the default or the operator's,
  *  since this server's list can't reach it, and Settings says so (computers.ts networkWords). A browser whose provider
  *  makes both "open" and "allow" (Local Chrome, behind its own egress proxy) is held to the operator's list
  *  (`boxAllowSet`, the launch's, or this server's now for a launch that names no box_allow) and is "open" under the
- *  default list, which is a sandbox's package-install list and no browsing policy. */
+ *  default list, which is a sandbox's package-install list and no browsing policy. A desktop, whose browser is one, is
+ *  "open" under the default list too, where its provider makes "open" (Docker's, Agent37's, E2B's, Modal's, Daytona's). */
 function networkOf(entry: ProviderEntry, kind: ComputerKindOf, run: ComputerRun, current: () => readonly string[] | "none", currentSet: () => boolean): ComputerSpec["network"] {
   const boxAllow = run.boxAllow ?? (kind === "sandbox" ? "none" : current());
   const set = run.boxAllow !== undefined ? run.boxAllowSet === true : currentSet();
   if (boxAllow === "none" && needsNetwork(run.networks)) throw refused(noNetworkRefusal(entry.label, kind));
   if (vendorNetworkOnly(run.networks)) return "open";
   if (kind === "browser" && boxAllow !== "none" && run.networks?.includes("open") && run.networks.includes("allow")) return set ? { allow: [...boxAllow] } : "open";
+  // A desktop's browser is a browser: under the default list it is "open" where its provider makes open (public internet
+  // only, through the egress proxy). The operator's or the launch's list and none apply to it as they are, below.
+  if (kind === "desktop" && !set && boxAllow !== "none" && run.networks?.includes("open")) return "open";
   const allowed: ComputerSpec["network"] = boxAllow === "none" ? "none" : { allow: [...boxAllow] };
   const form = allowed === "none" ? "none" : "allow";
   return run.networks && !run.networks.includes(form) && run.networks.includes("none") ? "none" : allowed;
@@ -257,12 +266,27 @@ export const computerStartingWords = ({ provider, kind }: Pick<ComputerSaid, "pr
  *  is, in its hello's own facts, such as "The phone is ready: Android 15 (arm64), from Phone harness." A computer that
  *  replaced an earlier claim's (`replaced`) says it is a new one, never why the old one went (a lost runner, a crash, a
  *  server's stop, a park: the words fit each), and, where the run's folder is on Archil and mounted in it
- *  (`folderKept`), that the folder is kept. */
-export const computerReadyWords = ({ provider, kind, hello, replaced }: ComputerSaid): string => {
+ *  (`folderKept`), that the folder is kept. The one kept through the run's park (`kept`) says it is the same; a new one
+ *  after a kept one's time passed (`replaced.lapsed`) says why first, as does one after a kept one pinned to a runner
+ *  that was gone by the resume (`replaced.lost`, computerLostWords), and one after the kept one's provider refused to
+ *  attach it again (`replaced.refused`, in the provider's words). */
+export const computerReadyWords = ({ provider, kind, hello, replaced, kept }: ComputerSaid): string => {
   const ready = `The ${kind} is ready: ${[OS_NAMES[hello.os] ?? hello.os, hello.osVersion].filter(Boolean).join(" ")} (${hello.arch}), from ${provider}.`;
+  if (kept) return `${ready} It's the same ${kind}, as the wait left it.`;
   if (!replaced) return ready;
-  return `${ready} It's a new ${kind}: the one before is gone, with what was on it.${replaced.folderKept ? " The run folder is kept." : ""}`;
+  const why = replaced.refused
+    ? ` The ${kind} kept before could not be taken back: ${replaced.refused.replace(/[.!?]+$/, "")}.`
+    : replaced.lost
+      ? ` ${computerLostWords(kind)}`
+      : replaced.lapsed
+        ? ` ${computerLapsedWords(kind)}`
+        : "";
+  return `${ready}${why} It's a new ${kind}: the one before is gone, with what was on it.${replaced.folderKept ? " The run folder is kept." : ""}`;
 };
+
+/** The run's timeline phase as its run parks with its computer kept (ClaimComputer.keeps), such as "The desktop is kept
+ *  for 10 minutes while you decide." */
+export const computerKeptWords = (kind: KeptKind): string => `The ${kind} is kept for ${KEEP_WORDS} while you decide.`;
 
 /** What the run's model is told, once, on its next request after its claim gave it a computer that replaced an earlier
  *  claim's (the adapter loop's computer note), labelled as the server's (SERVER_NOTE_LABEL): a desktop's or a phone's
@@ -292,11 +316,9 @@ export const claimComputer = async (
  *  provider a test loads still gets it). The one choice: computerDepsFrom makes it, and the server's start check
  *  (server.ts computerReady) asks it with what the runner composes with, so a run's start and its claim answer alike. */
 export function claimKinds(options: Pick<ComputerDepsOptions, "faux" | "kinds">): KindRegistry {
-  const base = options.kinds ?? ({ SETTING_KINDS, PROVIDERS, servingRefusals } as unknown as KindRegistry);
+  const base = options.kinds ?? { SETTING_KINDS, PROVIDERS, servingRefusals };
   if (!options.faux) return base;
-  // The faux registry is Settings' shape (computers.ts); the claim reads the same data as resolve-computer.ts's.
-  const faux = options.faux.kinds as unknown as KindRegistry;
-  return { ...base, PROVIDERS: [...base.PROVIDERS, ...faux.PROVIDERS] } as KindRegistry;
+  return { ...base, PROVIDERS: [...base.PROVIDERS, ...options.faux.kinds.PROVIDERS] };
 }
 
 /** This machine's Docker daemon as the claim asks it once a Docker launch fails: one check per process (its answer
@@ -343,11 +365,11 @@ export function computerDepsFrom(options: ComputerDepsOptions): { computerForCla
    *  Chrome's, where it finds Chrome), and no other variable of the server's. */
   const hostEnvOf = (names: readonly string[]): Record<string, string> => Object.fromEntries(names.flatMap((name) => (env[name] === undefined ? [] : [[name, String(env[name])]])));
   /** The options a provider takes beside its keys, by what its descriptor declares, never by its id: for a local one,
-   *  its image source and its host options; the host environment it reads. */
+   *  its image source and its host options; for a remote one, the server's dial; the host environment it reads. */
   const declaredOptions = async (id: string, boxAllow: readonly string[] | "none" | undefined): Promise<Record<string, unknown>> => {
     const entry = kinds.PROVIDERS.find((one) => one.id === id);
     return {
-      ...(entry?.local ? { image: preparedImage, ...(await localHostOptions(boxAllow)) } : {}),
+      ...(entry?.local ? { image: preparedImage, ...(await localHostOptions(boxAllow)) } : options.dial ? { dial: options.dial } : {}),
       ...(entry?.hostEnv ? { env: hostEnvOf(entry.hostEnv) } : {}),
     };
   };
@@ -364,7 +386,7 @@ export function computerDepsFrom(options: ComputerDepsOptions): { computerForCla
     // made as without it.
     ...(faux ? {
       keyTable: { keys: { ...KEY_TABLE.keys, ...faux.keyTable.keys }, labels: { ...KEY_TABLE.labels, ...faux.keyTable.labels } },
-      launch: (entry, spec) => faux.launch(entry as never, spec),
+      launch: (entry, spec) => faux.launch(entry as never, spec, options.dial ? { dial: options.dial } : {}),
       launches: (provider) => faux.owns(provider),
     } satisfies Pick<ComputerDeps, "keyTable" | "launch" | "launches"> : {}),
     ...(options.answers ? { answers: options.answers } : {}),

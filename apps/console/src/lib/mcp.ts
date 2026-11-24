@@ -25,22 +25,67 @@ export const GITHUB_MCP_URL = "https://api.githubcopilot.com/mcp/";
 export type McpSource = "composio" | "github" | "url";
 export const SOURCE_LABEL: Record<McpSource, string> = { composio: "Composio", github: "GitHub", url: "URL" };
 const TOOLKIT = /^[a-z][a-z0-9-]{0,31}$/;
+/** A Composio toolkit's slug as the preset takes it (the server's composio-preset.ts): "_" and up to 64 characters. */
+const COMPOSIO_TOOLKIT = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+
+/** A URL preset of the add form: a remote MCP server the free templates use, filled in one click. `name` is both the
+ *  server's name (the first free one) and its toolkit, the name a template gives its tools; `note`, one line about it;
+ *  `readOnly`, an address that offers only its read tools. Preview and Save are the form's own: the server checks a
+ *  preset's address as it checks any. */
+export type McpPreset = { id: string; label: string; name: string; url: string; auth: "none" | "bearer" | "oauth"; note: string; readOnly?: string };
+/** The one list of URL presets, in the add form's order. */
+export const MCP_URL_PRESETS = [
+  { id: "parallel", label: "Parallel Search", name: "parallel", url: "https://mcp.parallel.ai/mcp", auth: "none", note: "Web search, free for light use: no key, no account." },
+  { id: "firecrawl", label: "Firecrawl", name: "firecrawl", url: "https://mcp.firecrawl.dev/v2/mcp", auth: "none", note: "Search, scrape and parse, free without a key and rate limited: add your Firecrawl key later as a bearer token for more." },
+  { id: "github-token", label: "GitHub (token)", name: "github", url: GITHUB_MCP_URL, readOnly: `${GITHUB_MCP_URL}readonly`, auth: "bearer", note: "A fine-grained personal access token for the repositories it may use, with Contents, Issues and Pull requests (read-only, or read and write)." },
+  { id: "linear", label: "Linear", name: "linear", url: "https://mcp.linear.app/mcp", auth: "oauth", note: "Sign in with your Linear account: this server keeps the tokens." },
+  { id: "notion", label: "Notion", name: "notion", url: "https://mcp.notion.com/mcp", auth: "oauth", note: "Sign in with your Notion workspace: this server keeps the tokens." },
+  // fal's image, video and audio models: the key first, so a template that needs fal links to it (setUpHref).
+  { id: "fal", label: "fal (key)", name: "fal", url: "https://mcp.fal.ai/mcp", auth: "bearer", note: "Image, video and audio models. Your fal key, from fal.ai's API keys page: generations bill your fal account, and a run counts each one at fal's price, under its spend cap. This server keeps the key; the agent never sees it." },
+  { id: "fal-sign-in", label: "fal (sign in)", name: "fal", url: "https://mcp.fal.ai/mcp-relay", auth: "oauth", note: "Image, video and audio models. Sign in with your fal account: generations bill it, and a run counts each one at fal's price, under its spend cap. This server keeps the tokens." },
+] as const satisfies readonly McpPreset[];
+export type McpPresetId = (typeof MCP_URL_PRESETS)[number]["id"];
+/** The URL preset of `id`, or undefined for any other. */
+export const urlPresetOf = (id: string | undefined): McpPreset | undefined => MCP_URL_PRESETS.find((p) => p.id === id);
+
 /** What `#/settings/mcp?add=` opens, for a server a template needs: the add form with its name (for GitHub's own, its
- *  address and credential; for a url server, its toolkit) filled, or, with `preset=composio`, the Composio form with its
- *  toolkit and the actions to tick. */
-export type McpAdd = { name: string; auth?: "github_app"; preset?: "composio"; toolkit?: string; tools?: string[] };
-/** `#/settings/mcp?add=<name>[&auth=github_app | &preset=composio&toolkit=<toolkit>&tools=<A,B>]`. Undefined when the query
- *  asks for none. */
+ *  address and credential; for a url server, its toolkit; for a URL preset, its address, credential and note) filled,
+ *  or, with `preset=composio`, the Composio form with its toolkit and the actions to tick. A secret write the server
+ *  refused the API token links here too (its refusal's `details.console_url`): the form filled with what the request held
+ *  that is no secret, its `url`, the kind of credential (`auth`) and `toolkit`, so the person pastes the credential alone;
+ *  `change` (from `?change=<name>`) opens that saved server's Change form instead of a new one, or, with
+ *  `preset=composio`, the Composio form saving under that name (it replaces the saved server, never a `<name>-2`). */
+export type McpAdd = { name: string; auth?: McpAuthType; preset?: "composio" | McpPresetId; toolkit?: string; tools?: string[]; url?: string; change?: true };
+const LINK_AUTH: readonly McpAuthType[] = ["none", "bearer", "headers", "oauth", "github_app"];
+/** An address a link may fill: an http or https URL, never one with a user or password in it. */
+const linkUrl = (value: string | null): string | undefined => {
+  try {
+    const url = new URL(value ?? "");
+    return (url.protocol === "https:" || url.protocol === "http:") && !url.username && !url.password ? value! : undefined;
+  } catch {
+    return undefined;
+  }
+};
+/** `#/settings/mcp?add=<name>[&auth=github_app | &preset=<URL preset id> | &preset=composio&toolkit=<toolkit>&tools=<A,B>]`,
+ *  or `?add=<name>|change=<name>[&url=<URL>][&auth=<type>][&toolkit=<toolkit>]`, or `?change=<name>&preset=composio&...`. Undefined when the query asks for none;
+ *  a preset id that is none of them opens the plain form. */
 export function addOf(query: string | undefined): McpAdd | undefined {
   const q = new URLSearchParams(query ?? "");
-  const name = q.get("add");
+  const added = q.get("add");
+  const name = added ?? q.get("change");
   if (!name || !TOOLKIT.test(name)) return undefined;
   const toolkit = q.get("toolkit") ?? "";
-  if (q.get("preset") === "composio" && TOOLKIT.test(toolkit)) {
+  const preset = q.get("preset") ?? undefined;
+  if (preset === "composio" && COMPOSIO_TOOLKIT.test(toolkit)) {
     const tools = (q.get("tools") ?? "").split(",").filter((t) => /^[A-Za-z0-9_-]{1,128}$/.test(t)).slice(0, 64);
-    return { name, preset: "composio", toolkit, ...(tools.length ? { tools } : {}) };
+    return { name, preset: "composio", toolkit, ...(tools.length ? { tools } : {}), ...(added === null ? { change: true as const } : {}) };
   }
-  return { name, ...(q.get("auth") === "github_app" ? { auth: "github_app" as const } : {}) };
+  const url = urlPresetOf(preset);
+  if (added !== null && url) return { name, preset: url.id as McpPresetId };
+  const auth = LINK_AUTH.find((a) => a === q.get("auth"));
+  const address = linkUrl(q.get("url"));
+  const linked = { ...(auth ? { auth } : {}), ...(address ? { url: address } : {}), ...(TOOLKIT.test(toolkit) ? { toolkit } : {}) };
+  return added === null ? { name, change: true, ...linked } : { name, ...linked };
 }
 /** A saved MCP server as GET /v2/settings/mcp-servers shows it: never a credential, only its state (`credential`: null
  *  for one that takes none). `prices`, per tool in USD, only when the server meters them. */
@@ -62,8 +107,6 @@ export type McpRefresh = { added: string[]; removed: string[]; changed: string[]
 export type McpAuth = { type: McpAuthType; token?: string; headers?: Record<string, string> };
 /** A Composio toolkit's actions (POST /settings/mcp-servers/composio/tools), `no_auth` when it needs no account. */
 export type ComposioTools = { toolkit: string; no_auth: boolean; tools: { slug: string; name: string; description: string }[] };
-/** Capabilities' `features.mcp_client`. */
-export type McpClientFeature = { auth?: string[]; harnesses?: string[] };
 
 /** The grant `definition.tools` holds for a server's tool, and the server and tool a grant names (null: not one). */
 /** What a preview's tool list is: the tools the server offers, listed with this credential, not what it lets this
@@ -121,7 +164,8 @@ export function mcpProblem(e: unknown): { text: string; detail?: string; signIn?
   if (e.status === 424) return { text: `The server failed: ${e.message}` };
   // A sign-in finishes only in a browser that started it at the address the authorization server sends it back to.
   if (e.code === "wrong_origin") return { text: "Sign in from this server's own address: the sign-in comes back there.", ...(typeof e.details?.open === "string" ? { detail: `Open ${e.details.open} and sign in from it.` } : {}) };
-  if (e.fields?.length) return { text: e.fields.map((f) => f.message).join(" ") };
+  // A Composio preset save refused on a field says what it left at Composio in `details.composio` (its message's end).
+  if (e.fields?.length) return { text: e.fields.map((f) => f.message).join(" "), ...(typeof e.details?.composio === "string" ? { detail: e.details.composio } : {}) };
   return { text: `${e.code}: ${e.message}` };
 }
 

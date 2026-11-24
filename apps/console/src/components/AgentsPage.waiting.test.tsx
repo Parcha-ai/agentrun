@@ -3,12 +3,13 @@ import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
 import { AgentsPage } from "./AgentsPage";
 import type { Agent } from "@/lib/agentForm";
+import { SERVED_AGENT } from "@/test/agent";
 
 // An agent's card in the Agents list carries the same count as its page's Learning tab, from the list's own read
 // (GET /v2/agents, each agent's `learning.pending`), and takes you to that tab. Absent or 0: nothing.
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-const agent = (id: string, name: string, learning?: { pending: number }): Agent => ({ agent_id: id, kind: "agentic", revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name, instructions: "Answer.", harness: "pi", skills: [], tools: [], learning: true }, ...(learning ? { learning } : {}) } as Agent);
+const agent = (id: string, name: string, learning?: { pending: number }): Agent => ({ ...SERVED_AGENT, agent_id: id, kind: "agentic", revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name, instructions: "Answer.", harness: "pi", skills: [], tools: [], learning: true }, ...(learning ? { learning } : {}) } as Agent);
 
 let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
@@ -26,13 +27,13 @@ async function open(agents: Agent[]) {
   return { went, asked, card, count };
 }
 
-describe("AgentsList, learned items waiting for the owner's OK", () => {
+describe("AgentsList, learned workflows waiting for the owner's OK", () => {
   it("counts them on the agent's card, in the list's own read, and the count opens its Learning tab", async () => {
     const p = await open([agent("qa-learn", "QA learn", { pending: 2 }), agent("calc", "Calc", { pending: 1 })]);
     expect(p.asked).toEqual(["agents"]);
-    expect(p.count("QA learn")?.getAttribute("aria-label")).toBe("2 learned items wait for your OK");
+    expect(p.count("QA learn")?.getAttribute("aria-label")).toBe("2 learned workflows wait for your OK");
     expect(p.count("QA learn")?.textContent).toContain("2");
-    expect(p.count("Calc")?.getAttribute("aria-label")).toBe("1 learned item waits for your OK");
+    expect(p.count("Calc")?.getAttribute("aria-label")).toBe("1 learned workflow waits for your OK");
     await act(async () => { p.count("QA learn")!.click(); });
     expect(p.went).toEqual(["#/agents/qa-learn/learning"]);
   });

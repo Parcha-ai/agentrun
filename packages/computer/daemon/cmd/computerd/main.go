@@ -1,10 +1,14 @@
 // computerd is the open platform's computer daemon: one static program in every computer.
 //
-//	computerd init --deadline <RFC 3339 time> [--max-deadline <RFC 3339 time>] [--user <uid:gid>] [--own-network] [--egress <socket>]
+//	computerd init --deadline <RFC 3339 time> [--max-deadline <RFC 3339 time>] [--user <uid:gid>] [--own-network [--network open|allow:<list>]] [--egress <socket>] [--window-manager]
 //	                    run as the computer's first process: hold every process and serve the protocol on a unix socket
 //	                    (AGENTRUN_COMPUTERD_SOCKET, default /run/agentrun/computerd.sock) until SIGTERM or the deadline;
 //	                    deadline.extend moves the deadline up to --max-deadline, and not at all without it. With DISPLAY
 //	                    set, the screen and input methods drive that X display.
+//	                    With --window-manager (and DISPLAY), for a desktop whose host runs one, init, still root, forks
+//	                    the window manager's start as the user its programs run as, in a network namespace it makes, and
+//	                    starts xfwm4 there once the display answers (internal/windowmanager); hello says how it goes
+//	                    (windowManager: starting, running, or ended with why)
 //	                    With --user, init starts as root, gives HOME and the socket's directory to uid:gid and becomes
 //	                    it: for a vendor that runs every computer as root (Modal), or whose images' privilege tools
 //	                    cannot be relied on (Daytona). As any user, root included, init first leaves every thread no
@@ -19,9 +23,37 @@
 //	                    does all of the above but make the namespace, and this one keeps no capability, passes SIGTERM
 //	                    and SIGINT on, and ends with it (daemon.InitInUserNamespace). If neither can be made, init
 //	                    refuses to start, in words that name both. hello says which fence holds: "netns" or "userns-netns"
+//	                    With --network (and --own-network), for a remote computer whose network is open or a host list,
+//	                    init, still root and in the machine's network, first starts the egress proxy (internal/egress):
+//	                    it listens on /opt/agentrun/egress/egress.sock (root's and the user's group's), writes the form
+//	                    to /opt/agentrun/egress/policy and serves as `computerd egress-proxy`, nobody, in a session of
+//	                    its own, to the public internet only (and with a list, its hosts alone), until the latest
+//	                    deadline or init is gone. Init then relays as --egress does, to that socket
 //	                    With --egress, for a computer whose network is an allowlist, init relays its loopback port 3128
 //	                    to the egress proxy's unix socket and tells every program it starts that port is its proxy
 //	computerd stdio     bridge stdin and stdout to init's socket (stdout carries protocol lines only; stderr is the log)
+//	computerd pair <server URL> [--name <name>]
+//	                    pair this machine with a server (spec/computer/attach.md): read the pairing code from stdin, send
+//	                    it with the name (the hostname by default) and init's own hello to POST /v2/computers/pair, and
+//	                    keep the token in a file only this user can read (attach.TokenPath: ~/.config/agentrun/
+//	                    computer.token, root's /etc/agentrun/computer.token); print the computer's id, the attach URL and
+//	                    the file, never the token. Refused when the file is there already; a refused code or hello is the
+//	                    server's words, and nothing is written. Exits 0 paired, 2 for other arguments or no code, 1 failed
+//	computerd unpair    delete the token file, and say how the owner removes the computer on the server
+//	computerd attach    for a machine the server cannot reach: dial the server's attach socket (AGENTRUN_ATTACH_URL,
+//	                    wss:// or ws://) with the machine's token (AGENTRUN_ATTACH_TOKEN, art_ and 43 base64url; when it
+//	                    is empty, pair's token file, refused when it is a link, another user's, or
+//	                    readable by group or others) as a bearer
+//	                    and the subprotocol agentrun.computer.<protocol>, and bridge each socket to a connection of
+//	                    init's as stdio does, a text message a line (spec/computer/attach.md). It pings every 20 s,
+//	                    closes with 4408 after 60 s with nothing heard, and dials again as attach.md's close codes say
+//	                    (1 s doubling to 60 s, less up to a fifth at random). It exits 0 on SIGTERM or SIGINT, 1 when
+//	                    init's socket is gone, 2 with no URL or token or a malformed one, 3 when the server refuses the
+//	                    token (401 at the upgrade, or 4401), 4 when its hello is not what the token was minted for
+//	                    (4400), 5 for another protocol version or a hello its kind does not serve (426, or 4426). No
+//	                    line it logs holds the token. With AGENTRUN_ATTACH_EGRESS (<IPv4>:<port>, the operator's relay),
+//	                    each dial opens TCP to the relay and speaks TLS and HTTP to the URL's host over it as it would
+//	                    directly; a malformed one exits 2
 //	computerd probe [--sockets] [--connect <host:port>[/udp]]...
 //	                    print one JSON line: this process's uid and gid, the kernel's release, the network interfaces
 //	                    it sees (interfaces, live; quiet; raised), with --sockets the unix sockets it can connect to
@@ -58,13 +90,17 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"io/fs"
 	"log"
 	"net"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -73,22 +109,28 @@ import (
 
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/archilrelay"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/archilsync"
+	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/attach"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/daemon"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/egress"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/execrun"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/isolate"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/lifetime"
+	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/methods"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/probe"
+	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/rpc"
+	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/windowmanager"
 )
 
 var version = "0.0.0-dev"
 
 func main() {
 	logger := log.New(os.Stderr, "computerd: ", log.LstdFlags)
-	if len(os.Args) < 2 || (os.Args[1] != "init" && os.Args[1] != daemon.UserNamespaceInitArg && os.Args[1] != "probe" && os.Args[1] != "sync-serve" && os.Args[1] != syncServeRun && os.Args[1] != "archil-relay" && os.Args[1] != archilRelayRun && len(os.Args) != 2) {
+	if len(os.Args) < 2 || (os.Args[1] != "init" && os.Args[1] != daemon.UserNamespaceInitArg && os.Args[1] != "probe" && os.Args[1] != "pair" && os.Args[1] != "sync-serve" && os.Args[1] != syncServeRun && os.Args[1] != "archil-relay" && os.Args[1] != archilRelayRun && os.Args[1] != egress.ProxyRun && len(os.Args) != 2) {
 		usage()
 	}
 	switch os.Args[1] {
+	case egress.ProxyRun:
+		os.Exit(egressProxy(logger, os.Args[2:]))
 	case "sync-serve":
 		os.Exit(syncServe(logger, os.Args[2:]))
 	case syncServeRun:
@@ -101,6 +143,20 @@ func main() {
 		fmt.Println(version)
 	case "stdio":
 		os.Exit(daemon.Bridge(daemon.SocketPath(), os.Stdin, os.Stdout, os.Stderr))
+	case "pair":
+		os.Exit(pair(logger, os.Args[2:], os.Stdin))
+	case "unpair":
+		os.Exit(unpair(logger))
+	case "attach":
+		cfg, err := attach.FromEnv(daemon.SocketPath(), "agentrun.computer."+methods.ProtocolVersion, rpc.MaxLine)
+		if err != nil {
+			logger.Printf("attach: %v", err)
+			os.Exit(attach.ExitUsage)
+		}
+		ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+		code := attach.Run(ctx, cfg, logger)
+		stop()
+		os.Exit(code)
 	case "init":
 		opts, ok := initOptionsOf(logger, os.Args[2:])
 		if !ok {
@@ -144,7 +200,7 @@ func main() {
 		}
 		result := probe.Run(targets, probe.ConnectBounds)
 		if sockets {
-			search := probe.ConnectableSockets(probe.SocketRoots, "/proc/net/unix", probe.DefaultSocketBounds, 2*time.Second)
+			search := probe.ConnectableSockets(probe.SocketRoots, "/proc/net/unix", "/proc/self/mountinfo", probe.DefaultSocketBounds, 2*time.Second)
 			result.Sockets = &search
 			listeners := probe.Listeners("/proc")
 			result.Listeners = &listeners
@@ -155,6 +211,8 @@ func main() {
 		}
 	case execrun.GuardCommand:
 		os.Exit(execrun.Guard())
+	case windowmanager.ChildArg:
+		os.Exit(windowmanager.Child())
 	default:
 		usage()
 	}
@@ -174,10 +232,41 @@ func runInit(opts initOptions, isolation daemon.Isolation, args []string, logger
 			return 1
 		}
 	}
+	// A computer with a network of its own whose form is open or a host list gets its egress proxy now, from root in the
+	// machine's own network, before init leaves it; an init started again in a user namespace finds the one its first
+	// start left, which is that init's child and not this one's. An init that is not root starts none: Become refuses it.
+	var relay daemon.Egress
+	if opts.network != nil {
+		relay = daemon.Egress{Listen: egress.Address, Socket: egress.ProxySocket}
+		if isolation.StartedIn == "" && os.Geteuid() == 0 {
+			self, err := os.Executable()
+			if err == nil {
+				relay.Proxy, err = egress.StartProxy(self, *opts.network, opts.latest, opts.user.gid)
+			}
+			if err != nil {
+				logger.Printf("init refuses to start: its egress proxy (the network %s): %v", opts.network, err)
+				return 1
+			}
+			logger.Printf("init: the egress proxy (the network %s) listens on %s as uid %d, pid %d", opts.network, egress.ProxySocket, egress.ProxyUser, relay.Proxy)
+		}
+	} else if opts.egress != "" {
+		relay = daemon.Egress{Listen: egress.Address, Socket: opts.egress}
+	}
+	// The desktop's window manager, forked while init is still root (the drop below), as the user its programs run as.
+	if opts.windowManager {
+		uid, gid := 0, 0
+		if opts.user != nil {
+			uid, gid = opts.user.uid, opts.user.gid
+		}
+		isolation.WindowManager = windowmanager.New(os.Getenv("DISPLAY"), os.Getenv("HOME"), opts.user != nil, uid, gid)
+	}
 	if opts.user != nil {
 		dropped = daemon.Become(opts.user.uid, opts.user.gid, os.Getenv("HOME"), daemon.SocketPath(), isolation)
 	} else {
-		dropped = daemon.Unprivileged()
+		dropped = daemon.Unprivileged(isolation.WindowManager)
+	}
+	if dropped != nil && !errors.Is(dropped, isolate.ErrNoNetworkNamespace) && relay.Proxy != 0 {
+		_ = syscall.Kill(relay.Proxy, syscall.SIGKILL)
 	}
 	if errors.Is(dropped, isolate.ErrNoNetworkNamespace) && isolation.StartedIn == "" {
 		self, err := os.Executable()
@@ -192,11 +281,7 @@ func runInit(opts initOptions, isolation daemon.Isolation, args []string, logger
 		logger.Printf("init refuses to start: %v", dropped)
 		return 1
 	}
-	var relay daemon.Egress
-	if opts.egress != "" {
-		relay = daemon.Egress{Listen: egress.Address, Socket: opts.egress}
-	}
-	return daemon.Init(version, daemon.SocketPath(), opts.deadline, relay, fenceOf(isolation), logger)
+	return daemon.Init(version, daemon.SocketPath(), opts.deadline, relay, fenceOf(isolation), isolation.WindowManager, logger)
 }
 
 // fenceOf is how init fences its programs off the computer's network, as hello says it: "netns", a network namespace of
@@ -363,8 +448,96 @@ func archilRelayRunning(logger *log.Logger, args []string) int {
 	return 0
 }
 
+// egressProxy is the egress proxy init starts (egress.StartProxy): the listener on fd 3, as nobody, until the
+// computer's latest end or init is gone.
+func egressProxy(logger *log.Logger, args []string) int {
+	config, err := egress.ProxyConfigOf(args)
+	if err != nil {
+		logger.Printf("%v", err)
+		return 2
+	}
+	if os.Geteuid() == 0 {
+		logger.Printf("egress-proxy: refuses to run as root; init starts it as uid %d", egress.ProxyUser)
+		return 2
+	}
+	l, err := net.FileListener(os.NewFile(3, egress.ProxySocket))
+	if err != nil {
+		logger.Printf("egress-proxy: %v", err)
+		return 4
+	}
+	logger.Printf("egress-proxy: serving the network %s until %s", config.Network, config.Until.UTC().Format(time.RFC3339))
+	if err := egress.RunProxy(l, config, func(line string) { logger.Print(line) }); err != nil {
+		logger.Printf("egress-proxy: %v", err)
+		return 1
+	}
+	return 0
+}
+
+const pairWords = "pair takes the server's URL and, once, --name <name> (the hostname by default), such as computerd pair https://agentrun.example.com --name build-box; the pairing code is read from stdin, never an argument"
+
+// pair reads the pairing code from in (a prompt on stderr when in is a terminal), pairs this machine with the server
+// as attach.Pair does at attach.TokenPath, and prints the computer's id, the attach URL and the token file, never the
+// token. Exits 0 once paired, 2 for other arguments or no code, 1 when the pairing fails.
+func pair(logger *log.Logger, args []string, in *os.File) int {
+	if len(args) != 1 && (len(args) != 3 || args[1] != "--name") {
+		logger.Printf("%s", pairWords)
+		return 2
+	}
+	name, err := os.Hostname()
+	if len(args) == 3 {
+		name, err = args[2], nil
+	}
+	if err != nil {
+		logger.Printf("pair: this machine's hostname: %v; give --name <name>", err)
+		return 2
+	}
+	path, err := attach.TokenPath()
+	if err != nil {
+		logger.Printf("pair: %v", err)
+		return 1
+	}
+	if info, err := in.Stat(); err == nil && info.Mode()&os.ModeCharDevice != 0 {
+		fmt.Fprint(os.Stderr, "the pairing code the console's Computers page shows (such as K7PD-W3QX): ")
+	}
+	line, err := bufio.NewReader(io.LimitReader(in, 256)).ReadString('\n')
+	code := strings.TrimSpace(line)
+	if code == "" || (err != nil && !errors.Is(err, io.EOF)) {
+		logger.Printf("pair: no pairing code on stdin: make one on the console's Computers page (Pair a computer) and type it, or pipe it in")
+		return 2
+	}
+	paired, err := attach.Pair(context.Background(), args[0], code, name, daemon.SocketPath(), path, rpc.MaxLine)
+	if err != nil {
+		logger.Printf("pair: %v", err)
+		return 1
+	}
+	fmt.Printf("computer: %s\nattach url: %s\ntoken file: %s\n", paired.Computer, paired.AttachURL, paired.TokenFile)
+	if paired.RunsRefused != "" {
+		logger.Printf("pair: %s", paired.RunsRefused)
+	}
+	return 0
+}
+
+// unpair deletes this machine's token file. Removing the computer on the server takes its owner's session (the
+// console's Computers page, or DELETE /v2/computers/{id}): the machine's own token cannot, so unpair says so.
+func unpair(logger *log.Logger) int {
+	path, err := attach.TokenPath()
+	if err != nil {
+		logger.Printf("unpair: %v", err)
+		return 1
+	}
+	if err := os.Remove(path); errors.Is(err, fs.ErrNotExist) {
+		logger.Printf("unpair: no token file at %s: this machine is not paired as this user", path)
+		return 1
+	} else if err != nil {
+		logger.Printf("unpair: cannot delete %s: %v", path, err)
+		return 1
+	}
+	fmt.Printf("deleted %s. The computer stays on the server, offline, until its owner removes it: Remove on the console's Computers page (DELETE /v2/computers/{id}); its token is good there until then. Stop computerd attach if it runs.\n", path)
+	return 0
+}
+
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: computerd init --deadline <RFC 3339 time> [--max-deadline <RFC 3339 time>] [--user <uid:gid>] [--own-network] [--egress <socket>] | stdio | probe [--sockets] [--connect <host:port>[/udp]]... | probe --diagnose | sync-serve --socket <path> --mountpoint <path> --mounts <path> --archil <path> --gid <gid> | archil-relay --gateway <IPv4 address> --mount-lane <port> --data-lane <port> | version")
+	fmt.Fprintln(os.Stderr, "usage: computerd init --deadline <RFC 3339 time> [--max-deadline <RFC 3339 time>] [--user <uid:gid>] [--own-network [--network open|allow:<list>]] [--egress <socket>] [--window-manager] | stdio | pair <server URL> [--name <name>] | unpair | attach | probe [--sockets] [--connect <host:port>[/udp]]... | probe --diagnose | sync-serve --socket <path> --mountpoint <path> --mounts <path> --archil <path> --gid <gid> | archil-relay --gateway <IPv4 address> --mount-lane <port> --data-lane <port> | version")
 	os.Exit(2)
 }
 
@@ -374,21 +547,30 @@ type initOptions struct {
 	// deadline is the computer's end, which deadline.extend moves up to --max-deadline, and not at all without it.
 	deadline *lifetime.Deadline
 	user     *account
+	// latest is the computer's latest end: the maximum, else the deadline.
+	latest time.Time
 	// egress is the egress proxy's socket init relays to; empty is none.
 	egress string
 	// ownNetwork: init, as root, gives itself and its programs a network of their own (daemon.Isolation), made inside a
 	// user namespace where root may not make it directly.
 	ownNetwork bool
+	// network is the form the egress proxy init starts serves (with ownNetwork); nil is none: no proxy, no way out.
+	network *egress.Network
+	// windowManager: init starts the desktop's window manager on DISPLAY once it answers (internal/windowmanager).
+	windowManager bool
 }
 
-const deadlineWords = "--deadline <time> is required, in RFC 3339 such as 2026-01-02T15:04:05Z: the computer ends then; --max-deadline <time> (the most deadline.extend may move it to), --user <uid:gid> and --egress <socket> may follow, each once"
+const deadlineWords = "--deadline <time> is required, in RFC 3339 such as 2026-01-02T15:04:05Z: the computer ends then; --max-deadline <time> (the most deadline.extend may move it to), --user <uid:gid>, --egress <socket> and --network <form> may follow, each once"
 const userWords = "--user takes uid:gid in numbers, such as 1000:1000"
 const egressWords = "--egress takes the egress proxy's socket, one absolute path, given once"
-const ownNetworkWords = "--own-network takes no value, given once, with --user (init starts as root to give itself and its programs a network of their own, their loopback alone) and with no --egress (such a computer's network is none)"
+const ownNetworkWords = "--own-network takes no value, given once, with --user (init starts as root to give itself and its programs a network of their own, their loopback alone) and with no --egress (their way out, if any, is the proxy --network has init start)"
+const networkWords = "--network is given once, with --own-network: init, still root, starts the egress proxy that form names, and relays its programs' loopback port 3128 to it"
+const windowManagerWords = "--window-manager takes no value, given once, with DISPLAY set: init, as root, starts the desktop's window manager on that display once it answers"
 
-// initOptionsOf reads init's `--deadline <time>`, `--max-deadline <time>`, `--user <uid:gid>` and `--egress <socket>`,
-// in any order, each at most once. With no deadline, a time that is not RFC 3339, or a maximum before the deadline, it
-// says why and init refuses to start, so no computer lives forever or past what its provider allows.
+// initOptionsOf reads init's `--deadline <time>`, `--max-deadline <time>`, `--user <uid:gid>`, `--egress <socket>` and
+// `--network <form>`, in any order, each at most once. With no deadline, a time that is not RFC 3339, or a maximum
+// before the deadline, it says why and init refuses to start, so no computer lives forever or past what its provider
+// allows.
 func initOptionsOf(logger *log.Logger, args []string) (initOptions, bool) {
 	var opts initOptions
 	var deadline, most time.Time
@@ -404,12 +586,23 @@ func initOptionsOf(logger *log.Logger, args []string) (initOptions, bool) {
 			i-- // a flag with no value
 			continue
 		}
+		if flag == "--window-manager" {
+			if opts.windowManager || os.Getenv("DISPLAY") == "" {
+				logger.Printf("init: %s", windowManagerWords)
+				return opts, false
+			}
+			opts.windowManager = true
+			i-- // a flag with no value
+			continue
+		}
 		if i+1 >= len(args) {
 			switch flag {
 			case "--user":
 				logger.Printf("init: %s", userWords)
 			case "--egress":
 				logger.Printf("init: %s", egressWords)
+			case "--network":
+				logger.Printf("init: %s", egress.NetworkWords)
 			default:
 				logger.Printf("init: %s", deadlineWords)
 			}
@@ -454,6 +647,16 @@ func initOptionsOf(logger *log.Logger, args []string) (initOptions, bool) {
 		case flag == "--egress":
 			logger.Printf("init: %s", egressWords)
 			return opts, false
+		case flag == "--network" && opts.network == nil:
+			network, err := egress.NetworkOf(value)
+			if err != nil {
+				logger.Printf("init: %v, not %q", err, value)
+				return opts, false
+			}
+			opts.network = &network
+		case flag == "--network":
+			logger.Printf("init: %s", networkWords)
+			return opts, false
 		default:
 			logger.Printf("init: %s; %q is none of them", deadlineWords, flag)
 			return opts, false
@@ -467,11 +670,24 @@ func initOptionsOf(logger *log.Logger, args []string) (initOptions, bool) {
 		logger.Printf("init: %s", ownNetworkWords)
 		return opts, false
 	}
+	if opts.network != nil && !opts.ownNetwork {
+		logger.Printf("init: %s", networkWords)
+		return opts, false
+	}
+	// The proxy runs as ProxyUser so its programs' user can't signal it: a user who is that uid, or in that group, could.
+	if opts.network != nil && (opts.user.uid == egress.ProxyUser || opts.user.gid == egress.ProxyUser) {
+		logger.Printf("init: --network starts its egress proxy as uid and gid %d, so --user may be neither", egress.ProxyUser)
+		return opts, false
+	}
 	if sawMost && most.Before(deadline) {
 		logger.Printf("init: --max-deadline %s is before --deadline %s", most.Format(time.RFC3339Nano), deadline.Format(time.RFC3339Nano))
 		return opts, false
 	}
 	opts.deadline = lifetime.New(deadline, most)
+	opts.latest = deadline
+	if sawMost {
+		opts.latest = most
+	}
 	return opts, true
 }
 

@@ -12,9 +12,9 @@
 // estimate). It is refused unsent when its hold does not fit the cap, sent with that hold as monid's maxCost (so monid
 // refuses it unrun if it estimates it higher), and settled at what monid says it charged. maxCost checks only monid's
 // estimate: a charge above the hold (a call priced by usage that used more, or one monid re-priced by usage since the
-// save or between the read and the run) is booked as charged,
-// logged, and stops the run at once in words naming both (stopRun). With no run's ledger to book it on, it is never
-// sent. Its key is the claim's (claim-secrets.ts: a run that grants a monid endpoint, and no other, is handed
+// save or between the read and the run) is booked as charged and logged; the run's cap is the one rule for it, as for
+// any paid call's (adapter-loop.ts paidUnder): the run goes on while its charges stay within the cap, and stops at once
+// in the cap's words when they pass it. With no run's ledger to book it on, it is never sent. Its key is the claim's (claim-secrets.ts: a run that grants a monid endpoint, and no other, is handed
 // MONID_API_KEY), read at the call and sent to monid alone: never in the tool's input, its answer, or the run's computer.
 import type { HostTool } from "@parcha/agentrun-kernel";
 import { wireName } from "../catalog.js";
@@ -32,8 +32,6 @@ import type { ClaimMcp } from "./mcp-run.js";
 export type ClaimMonid = Pick<ClaimMcp, "tools" | "catalogOf" | "priceOf">;
 /** A template eval case's monid fake (template-eval.ts, `monid:` in its case.yaml): `unavailable`, monid unreachable. */
 export type MonidFake = "unavailable";
-/** Which monid fake, if any, a run's endpoints answer from, by the agent the run is of: the eval's own runner's alone. */
-export type MonidFakes = (agentId: string) => MonidFake | undefined;
 
 /** The fetch of a monid that can't be reached: it fails as undici's fetch does when the host refuses the connection, so
  *  monidClient says it in its own words (monid.ts failure). Nothing is sent. */
@@ -44,7 +42,7 @@ const UNREACHABLE: typeof fetch = async () => {
 /** One host tool per endpoint of `pin`, on the claim's environment `env` (its key, and the tests' fake under faux), an
  *  answer too long for the model filed in `work()`; undefined when the pin holds none. `runId` names the run in the log;
  *  `capped`, whether the run has a spend cap now (its launch's, read at each call). `fake`: a template eval case's monid
- *  fake (AdapterSpecDeps.monidFakes), `unavailable`: each call goes as it does with monid unreachable, its price read
+ *  fake (AdapterSpecDeps.evalFakes), `unavailable`: each call goes as it does with monid unreachable, its price read
  *  first and failing, so it is never sent, and nothing is held or booked. */
 export function monidForClaim(pin: MonidPinBody | undefined, env: NodeJS.ProcessEnv, work: () => Workspace, runId?: string, capped: () => boolean = () => false, fake?: MonidFake): ClaimMonid | undefined {
   const names = Object.keys(pin ?? {});
@@ -55,25 +53,23 @@ export function monidForClaim(pin: MonidPinBody | undefined, env: NodeJS.Process
     const faux = await fauxFetch(env, FAUX_MONID_ENV);
     return monidClient({ key: env[MONID_KEY_ENV] ?? "", ...(faux ? { fetch: faux } : {}) });
   };
-  /** Stops the run when monid charged `name`'s call more than the `heldUsd` it was held at: maxCost checks only monid's
-   *  estimate, so such a charge is booked as charged (by its paid step), logged, and stops the run at once in words naming
-   *  both (stopRun). */
-  const overHold = async (name: string, charged: number | null | undefined, heldUsd: number): Promise<void> => {
+  /** Logs a charge monid made for `name`'s call above the `heldUsd` it was held at: maxCost checks only monid's estimate,
+   *  so such a charge is booked as charged (by its paid step), and the run's cap decides whether the run goes on
+   *  (adapter-loop.ts paidUnder: it stops once its charges pass the cap). */
+  const overHold = (name: string, charged: number | null | undefined, heldUsd: number): void => {
     if (typeof charged !== "number" || Math.round(charged * 1e6) <= Math.round(heldUsd * 1e6)) return;
-    const words = `monid charged ${money(charged)}, more than the ${money(heldUsd)} held; the run stopped`;
-    console.error(`[runner] run ${runId ?? "(unnamed)"}: ${name}: ${words}`);
-    await stopRun(words);
+    console.error(`[runner] run ${runId ?? "(unnamed)"}: ${name}: monid charged ${money(charged)}, more than the ${money(heldUsd)} held`);
   };
   // monid's estimate for the call `callId` priced by usage, read once the call may run, on the run's ledger `ledger`:
   // the call sent with maxCost 0, which monid refuses unrun and uncharged, naming the estimate, or runs when it estimates
   // the call at $0 (a free run). So the read is a paid step of the call, marked at $0 before it is sent (a crash while
   // monid holds it leaves its possible charge on record, unknown), given back when monid refused it unrun, else settled
-  // at what monid charged, a charge above $0 stopping the run. One whose charge is unknown (no answer, FAILED with no
+  // at what monid charged, a charge above $0 left to the run's cap as any charge above its hold is. One whose charge is unknown (no answer, FAILED with no
   // cost) stops a capped run too: its $0 hold bounds nothing, so the cap can't be kept. One its call's signal cut off is
   // left as a crash leaves it: the run is stopping or its claim is going.
   const estimated = async (ledger: PaidBooking, callId: string, name: string, at: Endpoint, input: Json, signal: AbortSignal): Promise<Estimated> => {
     const client = await clientOf();
-    const step = await paidStep<MonidAnswer>(ledger, callId, { name, holdUsd: 0, basis: READ_BASIS, by: "monid" }, () => client.run({ provider: at.provider, endpoint: `/${at.endpoint}`, input, maxCost: 0 }, signal), (outcome) => {
+    const step = await paidStep<MonidAnswer>(ledger, callId, { name, holdUsd: 0, basis: READ_BASIS, by: "monid", reported: true }, () => client.run({ provider: at.provider, endpoint: `/${at.endpoint}`, input, maxCost: 0 }, signal), (outcome) => {
       if (!("result" in outcome)) return null;
       const usd = chargeOf(outcome.result);
       return usd === undefined ? GIVEN_BACK : usd;
@@ -87,7 +83,7 @@ export function monidForClaim(pin: MonidPinBody | undefined, env: NodeJS.Process
       console.error(`[runner] run ${runId ?? "(unnamed)"}: ${name}: ${words}`);
       await stopRun(words);
     }
-    await overHold(name, charged, 0);
+    overHold(name, charged, 0);
     return { answer: step.result };
   };
   /** A call of the fixed-price endpoint `at` (`name`) with `input`, held at its pinned `usd`: its price read again first
@@ -110,15 +106,15 @@ export function monidForClaim(pin: MonidPinBody | undefined, env: NodeJS.Process
     return { answer: read.answer };
   };
   /** One paid step for the call `callId` of `name` on the run's ledger `ledger`: held at `held.usd`, `send` run, settled at
-   *  what monid says it charged; a charge above the hold stops the run (overHold). */
+   *  what monid says it charged; a charge above the hold is logged (overHold) and left to the run's cap. */
   const paidCall = async (ledger: PaidBooking, callId: string, name: string, held: Held, send: () => Promise<MonidAnswer>) => {
-    const paid = await paidStep<MonidAnswer>(ledger, callId, { name, holdUsd: held.usd, basis: held.basis, by: "monid" }, send, (outcome) => {
+    const paid = await paidStep<MonidAnswer>(ledger, callId, { name, holdUsd: held.usd, basis: held.basis, by: "monid", reported: true }, send, (outcome) => {
       if (!("result" in outcome)) return null;
       const usd = chargeOf(outcome.result);
       return usd === undefined ? 0 : usd;
     });
     if ("refused" in paid) return paid;
-    await overHold(name, chargeOf(paid.result), held.usd);
+    overHold(name, chargeOf(paid.result), held.usd);
     return paid;
   };
   const tools: HostTool[] = names.flatMap((name) => {

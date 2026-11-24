@@ -1,150 +1,115 @@
 import { describe, expect, it } from "vitest";
-import { approval, bodyOf, change, changeWords, dropKind, dropWords, fileFor, impactWords, isPending, learnedBy, learningHash, learningLabel, learningSteps, type LearningDiff, lookedBack, money, noteChanges, noteParts, noteText, pendingBy, provenance, type RunLearning, shownImpact, took, typeLabel, underWay, givenBy, readBy, supersedesOf, waitsForOk, waitWords } from "./learning";
+import { approval, bytesOf, change, changeWords, correctionLines, corrections, dropKind, dropWords, fileChanges, fileWords, impactWords, learningHash, learningLabel, learningSteps, type LearningDiff, lookedBack, type RunLearning, shownImpact, took, tookChange, underWay, waitingWords, workflowsBy } from "./learning";
 import { recorded } from "@/fixtures";
 import type { LastChange } from "./learning";
 import type { TimelineRow } from "./v2";
 
 // What the console reads of a run's and an agent's learning, and the words it says it in.
-const NOTE = "---\nname: Try /policies/refund-policy first\ndescription: Open it before any other page\ntype: feedback\nsupersedes: [shopify-refund-policy-path.md]\n---\nOpen `/policies/refund-policy` first.\n";
 
-describe("a note's parts", () => {
-  it("reads the name, description and type as fields and keeps every other front-matter line as it was", () => {
-    const p = noteParts(NOTE);
-    expect(p).toEqual({ name: "Try /policies/refund-policy first", description: "Open it before any other page", type: "feedback", body: "Open `/policies/refund-policy` first.\n", rest: ["supersedes: [shopify-refund-policy-path.md]"] });
-    expect(noteText(p)).toBe(NOTE.replace("---\nOpen", "---\n\nOpen"));
-    expect(noteParts(noteText(p))).toEqual({ ...p, body: `\n${p.body}` });
+describe("corrections.md", () => {
+  it("counts the lines that say something: a heading or a blank line is none", () => {
+    expect(correctionLines("# Learned\n\n- Open the policies page first.\n  - Keep it short.  \n\n")).toEqual(["- Open the policies page first.", "- Keep it short."]);
+    expect(correctionLines("")).toEqual([]);
+    expect([corrections(1), corrections(2)]).toEqual(["1 correction", "2 corrections"]);
   });
-  it("an edit changes only what it edits: a new body, the front matter's other lines kept", () => {
-    const text = noteText({ ...noteParts(NOTE), body: "Always open /policies/refund-policy.\n" });
-    expect(text).toContain("supersedes: [shopify-refund-policy-path.md]\n---\n");
-    expect(bodyOf(text)).toBe("Always open /policies/refund-policy.\n");
-  });
-  it("a value never spans two lines, and one wrapped in quotes keeps them", () => {
-    const text = noteText({ name: 'Say "refund"', description: "two\nlines", type: "project", body: "x", rest: [] });
-    expect(text).toContain('name: Say "refund"\n');
-    expect(text).toContain("description: two lines\n");
-    expect(noteParts(noteText({ name: '"quoted"', description: "d", type: "user", body: "", rest: [] })).name).toBe('"quoted"');
-  });
-  it("a text with no front matter is all body, for the server to refuse, never lost", () => {
-    expect(noteParts("just words")).toMatchObject({ name: "", body: "just words" });
-  });
-  it("a new note's file comes from its name, never one already taken", () => {
-    expect(fileFor("Try /policies/refund-policy first!")).toBe("try-policies-refund-policy-first.md");
-    expect(fileFor("Café prices", ["cafe-prices.md"])).toBe("cafe-prices-2.md");
-    expect(fileFor("!!!")).toBe("note.md");
+  it("counts its bytes as the server does, in UTF-8", () => {
+    expect([bytesOf("abc"), bytesOf("café"), bytesOf("€")]).toEqual([3, 5, 3]);
   });
 });
 
 describe("a run's learning, read tolerantly", () => {
-  it("what it started with, read and kept: none when the run names none", () => {
-    expect(readBy({ state: "merged", reason: null, detail: null })).toEqual([]);
-    expect(learnedBy({ state: "merged", reason: null, detail: null })).toEqual([]);
-    expect(readBy(null)).toEqual([]);
-    expect(readBy(undefined)).toEqual([]);
-    const l = { state: "merged" as const, reason: null, detail: null, given: [{ file: "a.md", name: "A" }], read: [{ file: "a.md", name: "A" }, { file: 3 } as never], learned: [{ file: "b.md", name: "B", supersedes: ["a.md"] }] };
-    expect(readBy(l)).toEqual([{ file: "a.md", name: "A" }]);
-    expect(givenBy(l)).toEqual([{ file: "a.md", name: "A" }]);
-    expect(givenBy({ state: "merged", reason: null, detail: null })).toEqual([]);
-    expect(learnedBy(l)).toEqual([{ file: "b.md", name: "B", supersedes: ["a.md"] }]);
-  });
-  it("only a run whose learning was kept has learned anything", () => {
-    expect(learnedBy({ state: "dropped", reason: "grader", detail: null, learned: [{ file: "b.md", name: "B" }] })).toEqual([]);
+  it("the workflows a run kept: none when it names none, or did not merge, or names one out of shape", () => {
+    expect(workflowsBy({ state: "merged", reason: null, detail: null })).toEqual([]);
+    expect(workflowsBy(null)).toEqual([]);
+    expect(workflowsBy(undefined)).toEqual([]);
+    const l = { state: "merged" as const, reason: null, detail: null, workflows: [{ file: "workflows/a/workflow.json", name: "a" }, { file: 3 } as never, { file: "workflows/b/workflow.json", name: "b", pending: true as const }] };
+    expect(workflowsBy(l)).toEqual([{ file: "workflows/a/workflow.json", name: "a" }, { file: "workflows/b/workflow.json", name: "b", pending: true }]);
+    expect(workflowsBy({ ...l, state: "dropped" })).toEqual([]);
   });
   it("is under way until it is kept or not", () => {
-    expect(["seeded", "reflecting", "proposed"].map((state) => underWay({ state: state as never, reason: null, detail: null }))).toEqual([true, true, true]);
+    expect(["seeded", "reflecting"].map((state) => underWay({ state: state as never, reason: null, detail: null }))).toEqual([true, true]);
     expect(underWay({ state: "merged", reason: null, detail: null })).toBe(false);
     expect(underWay(null)).toBe(false);
   });
   it("why it kept nothing: the server's own sentence when it sends one, else plain words for the reason", () => {
-    expect(dropWords({ state: "dropped", reason: "grader", detail: "Not kept: too specific to one shop." })).toBe("Not kept: too specific to one shop.");
-    expect(dropWords({ state: "dropped", reason: "empty", detail: null })).toBe("Nothing new to remember from this run.");
-    expect(dropWords({ state: "dropped", reason: "no_budget", detail: null })).toBe("Skipped: no budget left in this run to look back.");
+    expect(dropWords({ state: "dropped", reason: "checker", detail: "Not kept: the draft did not pass the checks." })).toBe("Not kept: the draft did not pass the checks.");
+    // The server's own words for each (learning-words.ts), so a row with no detail reads as one that has it.
+    expect(dropWords({ state: "dropped", reason: "empty", detail: null })).toBe("Nothing new to keep from this run.");
+    expect(dropWords({ state: "dropped", reason: "no_budget", detail: null })).toBe("Skipped: no budget left in this run to write what it learned.");
+    expect(dropWords({ state: "dropped", reason: "unknown_cost", detail: null })).toBe("Skipped: this run's spend is unknown, so its budget can't cover writing what it learned.");
     expect(dropWords({ state: "dropped", reason: "a_new_reason", detail: null })).toBe("Not kept: learning stopped.");
-    expect(["grader", "checker", "empty", "no_budget", "crashed", null].map(dropKind)).toEqual(["refused", "refused", "nothing", "skipped", "stopped", "stopped"]);
-  });
-  it("notes given out of format were turned away, in plain words", () => {
-    expect(dropWords({ state: "dropped", reason: "unparsed", detail: null })).toBe("Not kept: its notes weren't in the expected format.");
-    expect(dropKind("unparsed")).toBe("refused");
+    expect(["checker", "empty", "use", "no_budget", "unknown_cost", "crashed", null].map(dropKind)).toEqual(["refused", "nothing", "nothing", "skipped", "skipped", "stopped", "stopped"]);
   });
   it("no reason's words use git's or the loop's own names", () => {
-    const words = ["empty", "unparsed", "grader", "checker", "screen", "screen_down", "no_write_tool", "tool_denied", "no_budget", "unknown_cost", "seed_failed", "cancelled", "crashed", "reflect_timeout", "reflect_failed", "propose_failed", "grade_failed"].map((reason) => dropWords({ state: "dropped", reason, detail: null })).join(" ");
+    const words = ["empty", "use", "checker", "no_budget", "unknown_cost", "seed_failed", "cancelled", "crashed", "reflect_failed"].map((reason) => dropWords({ state: "dropped", reason, detail: null })).join(" ");
     expect(words).not.toMatch(/\b(main|merge|merged|commit|grader|verdict|proposal|end-of-run|reflect|seed|checker)\b/i);
   });
 });
 
 describe("the before and after", () => {
-  const impact = { before: { runs: 2, median_duration_s: 18.4, median_cost_usd: 0.1146, cost_runs: 2, median_learning_usd: null }, after: { runs: 4, median_duration_s: 12, median_cost_usd: 0.0311, cost_runs: 4, median_learning_usd: null } };
-  it("says it in a line: the time to the answer and a run's cost, each side's median, on the after side's runs", () => {
-    expect(impactWords(impact)).toBe("Since it learned (on 4 runs): answers in 12s instead of 18s · $0.03 est. instead of $0.11 est. a run");
-    expect(impactWords({ ...impact, after: { ...impact.after, median_cost_usd: null } })).toBe("Since it learned (on 4 runs): answers in 12s instead of 18s");
-    expect(impactWords({ ...impact, after: { ...impact.after, median_learning_usd: 0.008 } })).toBe("Since it learned (on 4 runs): answers in 12s instead of 18s · $0.03 est. instead of $0.11 est. a run · learning itself $0.0080 est. a run");
+  const impact = { before: { runs: 2, median_duration_s: 18.4 }, after: { runs: 4, median_duration_s: 12 } };
+  it("says it in a line: the time to the answer, each side's median, on the after side's runs, and what learning booked a run", () => {
+    expect(impactWords(impact)).toBe("Since it learned (medians of 4 runs started from what it learned): answers in 12s instead of 18s");
+    expect(impactWords(impact, 0.0193)).toBe("Since it learned (medians of 4 runs started from what it learned): answers in 12s instead of 18s · learning itself $0.0193 a run, booked");
   });
-  it("says a slower or costlier after as it is", () => {
-    expect(impactWords({ before: { runs: 2, median_duration_s: 14, median_cost_usd: 0.0214, cost_runs: 2, median_learning_usd: null }, after: { runs: 4, median_duration_s: 21, median_cost_usd: 0.0377, cost_runs: 4, median_learning_usd: null } })).toBe("Since it learned (on 4 runs): answers in 21s instead of 14s · $0.04 est. instead of $0.02 est. a run");
+  it("says no cost of a run of its own: the tab's one is the cost card's all-in before and after, learning included", () => {
+    // A median of the job's own cost left learning out and read -86% beside the cost card's 2.0x cheaper.
+    expect(impactWords(impact, 0.0193)).not.toMatch(/est\.|instead of \$/);
+  });
+  it("learning itself is the bill's (compile turns, audit shadows, replays over its runs), never a median of mostly-zero rows", () => {
+    // The impact carries no learning figure of its own (a median of mostly-zero rows read $0): only the bill's is said.
+    expect(impact.after).not.toHaveProperty("median_learning_usd");
+    expect(impactWords(impact, null)).not.toMatch(/learning itself/);
+    expect(impactWords(impact, 0.0193)).toMatch(/learning itself \$0\.0193 a run, booked$/);
+  });
+  it("a short time to the answer to a tenth of a second, the change from the times shown: never 2s instead of 1s at +7%", () => {
+    const quick = { before: { ...impact.before, median_duration_s: 1.38 }, after: { ...impact.after, median_duration_s: 1.46 } };
+    expect(impactWords(quick, null)).toMatch(/^Since it learned \(medians of 4 runs started from what it learned\): answers in 1\.5s instead of 1\.4s/);
+    expect(tookChange(1.38, 1.46)).toBe(7);
+    expect(tookChange(1.44, 1.46)).toBe(7);
+    expect(tookChange(18.4, 12)).toBe(-33);
+  });
+  it("says a slower after as it is", () => {
+    expect(impactWords({ before: { runs: 2, median_duration_s: 14 }, after: { runs: 4, median_duration_s: 21 } })).toBe("Since it learned (medians of 4 runs started from what it learned): answers in 21s instead of 14s");
   });
   it("is shown only when the server sends both sides with two runs each", () => {
     expect(shownImpact(impact)).toBe(true);
     expect(shownImpact(null)).toBe(false);
     expect(shownImpact({ ...impact, before: { ...impact.before, runs: 1 } })).toBe(false);
   });
-  it("formats with the console's own: a run's time as elapsed() writes it, a cost as cost() writes an estimate, the change as a whole percent", () => {
-    expect([took(65), took(12.4), took(3.8), took(0)]).toEqual(["1m 05s", "12s", "4s", "0s"]);
-    expect([money(1.234), money(0.1146), money(0.000814)]).toEqual(["$1.23 est.", "$0.11 est.", "$0.0008 est."]);
+  it("formats with the console's own: a run's time as elapsed() writes it, the change as a whole percent", () => {
+    expect([took(65), took(12.4), took(9.96), took(3.8), took(0)]).toEqual(["1m 05s", "12s", "10s", "3.8s", "0.0s"]);
     expect([change(18, 12), change(0.11, 0.03), change(0, 1)]).toEqual([-33, -73, null]);
   });
 });
 
-describe("where a note came from", () => {
-  it("the run that first kept it, from the changes newest first; a person's change names no one (the server's last_change does)", () => {
-    const log = [
-      { by: { user: true as const }, commit: "c3", at: "2026-11-03T16:55:00Z", reason: "edited by a person", files: ["b.md", "MEMORY.md"] },
-      { by: { run: "r2" }, commit: "c2", at: "2026-11-03T16:52:30Z", reason: "General and new.", files: ["a.md", "b.md", "MEMORY.md"] },
-      { by: { run: "r1" }, commit: "c1", at: "2026-11-03T16:52:00Z", reason: "Holds for other shops.", files: ["a.md", "MEMORY.md"] },
-    ];
-    const from = provenance(log);
-    expect(from.get("a.md")).toEqual({ run: { id: "r1", at: "2026-11-03T16:52:00Z", reason: "Holds for other shops." } });
-    expect(from.get("b.md")).toEqual({ run: { id: "r2", at: "2026-11-03T16:52:30Z", reason: "General and new." } });
-  });
-  it("a link names the agent's Learning tab and each note to point at", () => {
-    expect(learningHash("refund finder", ["a.md", "b.md"])).toBe("#/agents/refund%20finder/learning?note=a.md&note=b.md");
-    expect(learningHash("x")).toBe("#/agents/x/learning");
-  });
-});
-
 describe("plain words for the machine's", () => {
-  it("each type of note reads as what it is for; one the console does not know reads as sent", () => {
-    expect(["user", "feedback", "project", "reference", "other"].map(typeLabel)).toEqual(["About you", "How to work", "About the work", "Where to look", "other"]);
+  it("a link names the agent's Learning tab", () => {
+    expect(learningHash("refund finder")).toBe("#/agents/refund%20finder/learning");
   });
   it("the timeline's learning rows: the end and the server's look-back message both read Learning, each without its chip", () => {
     const row = { id: "1", seq: 1, summary: "", text: null, timestamp: "2026-11-03T16:00:00Z", tool_name: null, created_at: "2026-10-28T19:33:16.118Z", agent_label: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null };
-    expect(learningLabel({ ...row, kind: "learning", agent_label: "learning", summary: "Learned: Try it first" })).toMatchObject({ kind: "learning", agent_label: null, summary: "Learned: Try it first" });
+    expect(learningLabel({ ...row, kind: "learning", agent_label: "learning", summary: "Learned 1 workflow: sort-invoice" })).toMatchObject({ kind: "learning", agent_label: null, summary: "Learned 1 workflow: sort-invoice" });
     expect(learningLabel({ ...row, kind: "user_message", agent_label: "learning", summary: "Looking back on this run." })).toMatchObject({ kind: "learning", agent_label: null, summary: "Looking back on this run." });
-    const other = { ...row, kind: "tool_use" as const, agent_label: "learning", summary: "Wrote .learning/a.md" };
+    const other = { ...row, kind: "tool_use" as const, agent_label: "learning", summary: "Wrote workflows/sort-invoice/workflow.json" };
     expect(learningLabel(other)).toBe(other);
   });
 });
 
-describe("notes that wait for the owner's OK", () => {
-  it("a run's waiting notes come from its `pending`", () => {
-    expect(pendingBy({ state: "merged", reason: null, detail: null, pending: [{ file: "trust-acme.md", name: "Trust acme.com" }, { nope: 1 } as never] })).toEqual([{ file: "trust-acme.md", name: "Trust acme.com" }]);
-    expect(waitsForOk({ state: "merged", reason: null, detail: null, pending: [{ file: "trust-acme.md", name: "Trust acme.com" }] })).toBe(true);
-    expect(waitsForOk({ state: "merged", reason: null, detail: null })).toBe(false);
-    expect(waitsForOk(null)).toBe(false);
-    expect([waitWords(1), waitWords(2), waitWords(0)]).toEqual(["1 note waits for your OK", "2 notes wait for your OK", "A note waits for your OK"]);
+describe("workflows that wait for the owner's OK", () => {
+  it("a run that kept one and holds one for the OK looks back on both; one that only holds one says it waits", () => {
+    const both: RunLearning = { state: "merged", reason: null, detail: null, workflows: [{ file: "workflows/sort-invoice/workflow.json", name: "sort-invoice" }, { file: "workflows/pay-vendor/workflow.json", name: "pay-vendor", pending: true }] };
+    expect(lookedBack(both)).toBe("Looked back: kept 1 workflow (sort-invoice); 1 workflow waits for your OK (pay-vendor)");
+    expect(lookedBack({ ...both, workflows: [both.workflows![1]!] })).toBe("Looked back: 1 workflow waits for your OK (pay-vendor)");
+    expect([waitingWords(1), waitingWords(2)]).toEqual(["1 learned workflow waits for your OK", "2 learned workflows wait for your OK"]);
   });
-  it("a run that kept a note and holds one for the OK looks back on both; one that only holds one says it waits", () => {
-    const both = { state: "merged" as const, reason: null, detail: "Learned: Answer in tables. Waiting for your OK: Buy from PaperDepot24 first.", learned: [{ file: "answer-in-tables.md", name: "Answer in tables", supersedes: [] }], pending: [{ file: "paperdepot24-first.md", name: "Buy from PaperDepot24 first" }] };
-    expect(waitsForOk(both)).toBe(true);
-    expect(lookedBack(both)).toBe("Looked back: kept 1 note (Answer in tables); 1 note waits for your OK (Buy from PaperDepot24 first)");
-    expect(lookedBack({ ...both, learned: undefined, detail: "Waiting for your OK: Buy from PaperDepot24 first." })).toBe("Looked back: 1 note waits for your OK (Buy from PaperDepot24 first)");
+  it("a run that merged only a correction says the server's words", () => {
+    expect(lookedBack({ state: "merged", reason: null, detail: "Added 1 correction to corrections.md." })).toBe("Looked back. Added 1 correction to corrections.md.");
   });
   it("the console approves only where the capabilities say this caller does; anywhere else approving needs the password sign-in", () => {
     expect(approval({ learning: { approve: true } })).toBe("yes");
     expect(approval({ learning: { pending: true, approve: false, approve_needs: "password" } })).toBe("password");
     expect([approval({ learning: { approve: false } }), approval({}), approval(null), approval({ learning: "on" })]).toEqual(["password", "password", "password", "password"]);
-  });
-  it("a note waits when its status says so", () => {
-    expect([isPending({ status: "pending" }), isPending({ status: "active" })]).toEqual([true, false]);
   });
 });
 
@@ -153,70 +118,58 @@ describe("notes that wait for the owner's OK", () => {
 // behind it.
 describe("the look-back on a run's timeline", () => {
   const row = (id: string, seq: number, over: Partial<TimelineRow> & { learning?: unknown }): TimelineRow => ({ id, seq, kind: "text_block", summary: "", text: null, timestamp: `2026-11-03T18:50:0${seq}Z`, tool_name: null, ...over }) as TimelineRow;
-  const ASKED = row("u1", 1, { kind: "user_message", summary: "You: Find this shop's refund policy page" });
-  const ANSWER = row("a1", 2, { kind: "final_answer", summary: "https://www.brooklinen.com/policies/refund-policy" });
+  const ASKED = row("u1", 1, { kind: "user_message", summary: "You: Sort this invoice" });
+  const ANSWER = row("a1", 2, { kind: "final_answer", summary: "Sorted: office supplies." });
   const LOOK = row("l1", 3, { kind: "user_message", agent_label: "learning", summary: "Looking back on this run.", text: "Looking back on this run." });
   const WRITES = [
-    row("l2", 4, { kind: "tool_use", tool_name: "write", agent_label: "learning", summary: "Wrote .learning/refund-limit.md", tool_input_preview: ".learning/refund-limit.md" }),
-    row("l3", 5, { kind: "tool_result", tool_name: "write", agent_label: "learning", summary: "Wrote .learning/refund-limit.md: ok" }),
-    row("l4", 6, { kind: "phase", agent_label: "learning", summary: "Saved .learning/refund-limit.md" }),
-    row("l5", 7, { kind: "text_block", agent_label: "learning", summary: "Reflected.", text: "Reflected." }),
+    row("l2", 4, { kind: "tool_use", tool_name: "write", agent_label: "learning", summary: "Wrote workflows/sort-invoice/workflow.json", tool_input_preview: "workflows/sort-invoice/workflow.json" }),
+    row("l3", 5, { kind: "tool_result", tool_name: "write", agent_label: "learning", summary: "Wrote workflows/sort-invoice/workflow.json: ok" }),
+    row("l4", 6, { kind: "text_block", agent_label: "learning", summary: "Compiled.", text: "Compiled." }),
   ];
   const USAGE = row("us", 8, { kind: "usage", summary: "Cost so far: $0.0136 over 4 model requests" });
   const ended = (learning: NonNullable<TimelineRow["learning"]> & { detail: string }) => row("learning", 9, { kind: "learning", agent_label: "learning", summary: learning.detail, text: learning.detail, learning });
-  const MERGED: RunLearning = { state: "merged", reason: null, detail: null, learned: [{ file: "refund-limit.md", name: "Refund limit", supersedes: [] }, { file: "answer-shape.md", name: "Answer shape", supersedes: ["old.md"] }] };
-  const KEPT = ended({ state: "merged", reason: null, detail: "Learned 2 notes: Refund limit; Answer shape (replaces 1 older note)" });
+  const MERGED: RunLearning = { state: "merged", reason: null, detail: null, workflows: [{ file: "workflows/sort-invoice/workflow.json", name: "sort-invoice" }] };
+  const KEPT = ended({ state: "merged", reason: null, detail: "Learned 1 workflow: sort-invoice" });
 
   it("folds into one row where it began, saying what it kept by name, with no file path; the rows are behind it", () => {
     const out = learningSteps([ASKED, ANSWER, LOOK, ...WRITES, USAGE, KEPT], MERGED);
     expect(out.map((r) => r.id)).toEqual(["u1", "a1", "l1", "us"]);
     const one = out[2]!;
-    expect(one).toMatchObject({ kind: "learning", agent_label: null, tool_name: null, summary: "Looked back: kept 2 notes (Refund limit, Answer shape)", timestamp: LOOK.timestamp });
-    expect(one.summary).not.toContain(".learning/");
-    expect(one.text!.split("\n")).toEqual(["Looking back on this run.", "Wrote .learning/refund-limit.md", "  .learning/refund-limit.md", "Wrote .learning/refund-limit.md: ok", "Saved .learning/refund-limit.md", "Reflected.", "Learned 2 notes: Refund limit; Answer shape (replaces 1 older note)"]);
-    // Every other row is as it was.
+    expect(one).toMatchObject({ kind: "learning", agent_label: null, tool_name: null, summary: "Looked back: kept 1 workflow (sort-invoice)", timestamp: LOOK.timestamp });
+    expect(one.summary).not.toContain("workflows/");
+    expect(one.text!.split("\n")).toEqual(["Looking back on this run.", "Wrote workflows/sort-invoice/workflow.json", "  workflows/sort-invoice/workflow.json", "Wrote workflows/sort-invoice/workflow.json: ok", "Compiled.", "Learned 1 workflow: sort-invoice"]);
     expect(out[0]).toBe(ASKED);
     expect(out[3]).toBe(USAGE);
   });
   it("keeps each folded row's own detail under its line: a whole answer, a call's input, and a failed result, marked failed", () => {
-    const said = row("t1", 4, { kind: "text_block", agent_label: "learning", summary: "Two things are worth keeping.", text: "Two things are worth keeping.\n1. A refund over the limit needs a manager.\n2. Answer with the page's URL alone." });
-    const call = row("c1", 5, { kind: "tool_use", tool_name: "write", agent_label: "learning", summary: "Wrote .learning/refund-limit.md", tool_input_preview: "{\"path\":\".learning/refund-limit.md\",\"content\":\"Ask first.\"}" });
-    const refused = row("c2", 6, { kind: "tool_result", tool_name: "write", agent_label: "learning", summary: "write: not written", tool_status: "failed", tool_result_preview: "EACCES: permission denied\nopen '.learning/refund-limit.md'" });
-    const text = learningSteps([ASKED, LOOK, said, call, refused, KEPT], MERGED)[1]!.text!;
+    const said = row("t1", 4, { kind: "text_block", agent_label: "learning", summary: "One job repeats.", text: "One job repeats.\n1. Read the vendor.\n2. Pick the code." });
+    const refused = row("c2", 6, { kind: "tool_result", tool_name: "write", agent_label: "learning", summary: "write: not written", tool_status: "failed", tool_result_preview: "EACCES: permission denied\nopen 'workflows/sort-invoice/workflow.json'" });
+    const text = learningSteps([ASKED, LOOK, said, refused, KEPT], MERGED)[1]!.text!;
     expect(text.split("\n")).toEqual([
       "Looking back on this run.",
-      "Two things are worth keeping.",
-      "  Two things are worth keeping.",
-      "  1. A refund over the limit needs a manager.",
-      "  2. Answer with the page's URL alone.",
-      "Wrote .learning/refund-limit.md",
-      "  {\"path\":\".learning/refund-limit.md\",\"content\":\"Ask first.\"}",
+      "One job repeats.",
+      "  One job repeats.",
+      "  1. Read the vendor.",
+      "  2. Pick the code.",
       "write: not written (failed)",
       "  EACCES: permission denied",
-      "  open '.learning/refund-limit.md'",
-      "Learned 2 notes: Refund limit; Answer shape (replaces 1 older note)",
+      "  open 'workflows/sort-invoice/workflow.json'",
+      "Learned 1 workflow: sort-invoice",
     ]);
   });
-  it("is keyed on the learning label, not on writes: a look-back that answers with its notes in text folds the same", () => {
-    const blocks = row("n1", 4, { kind: "text_block", agent_label: "learning", summary: "<note file=\"refund-limit.md\">…", text: "<note file=\"refund-limit.md\">\n---\nname: Refund limit\n---\nAsk first.\n</note>" });
-    const out = learningSteps([ASKED, LOOK, blocks, ended({ state: "merged", reason: null, detail: "Learned: Refund limit" })], { state: "merged", reason: null, detail: null, learned: [MERGED!.learned![0]!] });
-    expect(out.map((r) => [r.id, r.summary])).toEqual([["u1", ASKED.summary], ["l1", "Looked back: kept 1 note (Refund limit)"]]);
-  });
-  it("says when there was nothing new to keep, and why a note was not kept", () => {
+  it("says when there was nothing new to keep, and why a draft was not kept", () => {
     expect(learningSteps([LOOK, ...WRITES, ended({ state: "dropped", reason: "empty", detail: "Nothing new to remember from this run." })], { state: "dropped", reason: "empty", detail: null })[0]!.summary).toBe("Looked back: nothing new to keep");
-    const graded = { state: "dropped" as const, reason: "grader" as const, detail: "Not kept: It's about one shop's returns portal, not a rule other shops share." };
-    expect(learningSteps([LOOK, ...WRITES, ended(graded)], graded)[0]!.summary).toBe("Looked back: Not kept: It's about one shop's returns portal, not a rule other shops share.");
+    const refused = { state: "dropped" as const, reason: "checker" as const, detail: "Not kept: the draft did not pass the checks." };
+    expect(learningSteps([LOOK, ...WRITES, ended(refused)], refused)[0]!.summary).toBe("Looked back: Not kept: the draft did not pass the checks.");
   });
-  it("while it looks back or checks its notes, says so, in one row that grows", () => {
+  it("while it looks back, says so, in one row that grows", () => {
     const going = learningSteps([ASKED, LOOK, WRITES[0]!], { state: "reflecting", reason: null, detail: null });
     expect(going.map((r) => [r.id, r.summary])).toEqual([["u1", ASKED.summary], ["l1", "Looking back on this run…"]]);
-    expect(going[1]!.text).toContain("Wrote .learning/refund-limit.md");
-    const checking = ended({ state: "proposed", reason: null, detail: "Checking 2 new notes…" });
-    expect(learningSteps([LOOK, ...WRITES, checking], { state: "proposed", reason: null, detail: "Checking 2 new notes…" })[0]!.summary).toBe("Looking back: checking 2 new notes…");
+    expect(going[1]!.text).toContain("Wrote workflows/sort-invoice/workflow.json");
   });
   it("a timeline read after the run says how it ended, though the run read before it does not yet", () => {
-    const out = learningSteps([LOOK, ...WRITES, KEPT], { state: "proposed", reason: null, detail: null });
-    expect(out[0]!.summary).toBe("Looked back. Learned 2 notes: Refund limit; Answer shape (replaces 1 older note)");
+    const out = learningSteps([LOOK, ...WRITES, KEPT], { state: "reflecting", reason: null, detail: null });
+    expect(out[0]!.summary).toBe("Looked back. Learned 1 workflow: sort-invoice");
   });
   it("with no look-back (a skip), the row that says how learning ended stays alone, labelled Learning", () => {
     const skipped = ended({ state: "dropped", reason: "no_budget", detail: "Skipped: no budget left in this run to look back." });
@@ -230,99 +183,71 @@ describe("the look-back on a run's timeline", () => {
   });
 });
 
-// What a run's learning changed, note by note, from GET /v2/runs/{id}/learning/diff as a faux server answered it
-// (src/fixtures learning.diff and learning.diff-run: Brooklinen's run added a note that replaces an older one).
+// What a run's learning changed, file by file, from GET /v2/runs/{id}/learning/diff (src/fixtures learning.diff and
+// learning.diff-run: Brooklinen's run added a line to corrections.md and compiled a workflow).
 describe("what a run's learning changed", () => {
   const diff = recorded<LearningDiff>("learning.diff").body;
-  const learning = recorded<{ learning: RunLearning }>("learning.diff-run").body.learning;
   const lines = (side: { text: string; mark: string }[] | null) => side?.map((l) => (l.mark === "gap" ? "…" : `${l.mark === "added" ? "+" : l.mark === "removed" ? "-" : " "}${l.text}`)) ?? null;
-  it("says each note by its name: what it added, and what it replaced with what; the index is not a note", () => {
-    const changes = noteChanges(diff, learning);
-    expect(changes.map((c) => [c.said, c.file])).toEqual([
-      ["Added: Try /policies/refund-policy first", "try-policies-refund-policy-first.md"],
-      ["Replaced: Shopify refund policy path → Try /policies/refund-policy first", "shopify-refund-policy-path.md"],
+  it("says each file by what it is, added first", () => {
+    expect(fileChanges(diff).map((c) => [c.said, c.file])).toEqual([
+      ["Added: workflow find-refund-policy", "workflows/find-refund-policy/workflow.json"],
+      ["Changed: corrections", "corrections.md"],
     ]);
   });
-  it("an added note has no before, and all of it after; a replaced one shows the lines around what changed, the change marked", () => {
-    const [added, replaced] = noteChanges(diff, learning);
+  it("an added file has no before, and all of it after; a changed one shows the lines around what changed, the change marked", () => {
+    const [added, changed] = fileChanges(diff);
     expect(added!.before).toBeNull();
-    expect(lines(added!.after)!.slice(0, 3)).toEqual(["+---", "+name: Try /policies/refund-policy first", "+description: Open /policies/refund-policy before any other page; fall back to /pages/returns"]);
     expect(added!.after!.every((l) => l.mark === "added")).toBe(true);
-    expect(lines(replaced!.before)).toEqual(["…", " name: Shopify refund policy path", " description: On a Shopify store the refund policy is at /policies/refund-policy", " type: reference", " ---", " Shopify stores serve their refund policy at `/policies/refund-policy`.", " "]);
-    expect(lines(replaced!.after)).toEqual(["…", " name: Shopify refund policy path", " description: On a Shopify store the refund policy is at /policies/refund-policy", " type: reference", "+status: superseded", "+superseded_by: try-policies-refund-policy-first.md", " ---", " Shopify stores serve their refund policy at `/policies/refund-policy`.", " "]);
+    expect(lines(changed!.before)).toEqual([" # Learned", " ", " - Keep the summary to three lines."]);
+    expect(lines(changed!.after)).toEqual([" # Learned", " ", " - Keep the summary to three lines.", "+- Open /policies/refund-policy before any other page; fall back to /pages/returns."]);
   });
-  it("a retired note, a removed one, and one whose text is not shown say so; a note with no name in view goes by its file", () => {
-    const changes = noteChanges({ base: "a", head: "b", files: [
-      { path: "old-rule.md", status: "modified", patch: "@@ -3,3 +3,4 @@\n description: d\n type: feedback\n+status: retired\n ---\n" },
-      { path: "gone.md", status: "deleted", patch: "@@ -1,3 +0,0 @@\n----\n-name: Gone rule\n----\n" },
-      { path: "big-one.md", status: "added", withheld: "too_large" },
-      { path: "holds-a-key.md", status: "added", withheld: "secret" },
-    ] }, null);
+  it("a removed file and one whose text is not shown say so", () => {
+    const changes = fileChanges({ base: "a", head: "b", files: [
+      { path: "workflows/old/README.md", status: "deleted", patch: "@@ -1,2 +0,0 @@\n----\n-name: old\n" },
+      { path: "workflows/big/workflow.json", status: "added", withheld: "too_large" },
+      { path: "corrections.md", status: "modified", withheld: "secret" },
+    ] });
     expect(changes.map((c) => [c.said, c.withheld ?? null])).toEqual([
-      ["Added: big-one", "It's too large to show here."],
-      ["Added: holds-a-key", "Not shown: it holds one of this server's secrets."],
-      ["Retired: old-rule", null],
-      ["Removed: Gone rule", null],
+      ["Added: workflow big", "It's too large to show here."],
+      ["Changed: corrections", "Not shown: it holds one of this server's secrets."],
+      ["Removed: workflow old (README)", null],
     ]);
     expect(changes[0]!.before).toBeNull();
     expect(changes[0]!.after).toBeNull();
   });
-  it("says none of the machine's words", () => {
-    for (const c of noteChanges(diff, learning)) expect(c.said).not.toMatch(/\b(main|merge|merged|commit|diff|patch|proposal|end-of-run)\b/i);
+  it("names a file it does not know by its path, and says none of the machine's words", () => {
+    expect(fileWords("notes/x.md")).toBe("notes/x.md");
+    for (const c of fileChanges(diff)) expect(c.said).not.toMatch(/\b(main|merge|merged|commit|diff|patch|proposal|end-of-run)\b/i);
   });
 });
 
-
 // A drop's sentence is the server's, shown as it is: "Looked back: " before it, nothing taken out of it, so a sentence
-// that starts "Not kept, with the skill …" or "Not kept, the skill …" says "Not kept" once, as "Not kept: …" does.
+// that starts "Not kept, the workflow …" says "Not kept" once, as "Not kept: …" does.
 describe("lookedBack, a run that kept nothing for a reason", () => {
   const SHAPES = [
-    "Not kept: It's about one shop's returns portal, not a rule other shops share.",
-    "Not kept, with the skill weekly-summary: it's about one shop's returns portal.",
-    "Not kept, the skill find-policies: it named a value the server keeps secret.",
+    "Not kept: the draft did not pass the checks.",
+    "Not kept, the workflow sort-invoice: it named a value the server keeps secret.",
   ];
   for (const detail of SHAPES) {
     it(`says the server's sentence as it is: ${detail.slice(0, 40)}…`, () => {
-      const said = lookedBack({ state: "dropped", reason: "grader", detail });
+      const said = lookedBack({ state: "dropped", reason: "checker", detail });
       expect(said).toBe(`Looked back: ${detail}`);
       expect(said.match(/Not kept/g)).toHaveLength(1);
     });
   }
 });
 
-// Every kind the server serves in an item's last_change (packages/serve/src/openapi.ts, the learning view's
-// `last_change.kind` enum, with "superseded" since #1762) has words of its own: a card never says "undefined by you".
+// Every kind the server serves in a draft's last_change (packages/serve/src/openapi.ts, the learning view's
+// `last_change.kind` enum) has words of its own: a card never says "undefined by you".
 describe("changeWords, for every served last_change kind", () => {
-  const SERVED: string[] = ["approved", "edited", "created", "retired", "restored", "learned", "superseded"];
+  const SERVED: LastChange["kind"][] = ["approved", "edited", "created", "retired", "restored", "learned"];
   for (const kind of SERVED) {
     it(`${kind} has words, by you and by a run`, () => {
       for (const by of ["person", "run"] as const) {
-        const said = changeWords(kind as LastChange["kind"], by);
+        const said = changeWords(kind, by);
         expect(said).not.toContain("undefined");
         expect(said).toMatch(by === "person" ? /^[A-Z][a-z]+ by you$/ : /^[A-Z][a-z]+ by a run$/);
       }
     });
   }
-  it("a superseded one reads as replaced", () => {
-    expect(changeWords("superseded" as LastChange["kind"], "person")).toBe("Replaced by you");
-  });
-});
-
-// Review on #2351: a note's `supersedes` read as the server reads it (serve's learn/notes.ts: the whole value unquoted,
-// then a `[a, b]` list split, each item unquoted), so a quoted list is never one file named "[old.md]".
-describe("supersedesOf", () => {
-  const note = (line: string) => `---\nname: New\ndescription: d\ntype: feedback\n${line}\n---\nBody.\n`;
-  it("reads a list, a quoted list, one name and a quoted name as the server does", () => {
-    expect(supersedesOf(note("supersedes: [old.md, other.md]"))).toEqual(["old.md", "other.md"]);
-    expect(supersedesOf(note('supersedes: "[old.md, other.md]"'))).toEqual(["old.md", "other.md"]);
-    expect(supersedesOf(note("supersedes: '[old.md]'"))).toEqual(["old.md"]);
-    expect(supersedesOf(note('supersedes: ["old.md", \'other.md\']'))).toEqual(["old.md", "other.md"]);
-    expect(supersedesOf(note("supersedes: old.md"))).toEqual(["old.md"]);
-    expect(supersedesOf(note('supersedes: "old.md"'))).toEqual(["old.md"]);
-  });
-  it("names none when the note has no supersedes, or an empty one", () => {
-    expect(supersedesOf(note("origin: you"))).toEqual([]);
-    expect(supersedesOf(note("supersedes: []"))).toEqual([]);
-    expect(supersedesOf(note('supersedes: ""'))).toEqual([]);
-  });
 });

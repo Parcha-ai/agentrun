@@ -11,6 +11,7 @@
 // here answers that its test is not available. No key is ever in an answer: each value is scrubbed from the provider's
 // words, and the words this module adds name keys only by their names.
 import { PROVIDERS, type ProviderEntry } from "@parcha/agentrun-computer";
+import { keyShaped } from "./secret-name.js";
 
 /** One key a provider takes: its name in its descriptor, the create() option it fills, and whether it is needed. */
 export interface ProviderKey {
@@ -69,6 +70,11 @@ export function keyTableOf(entries: readonly Pick<ProviderEntry, "id" | "label" 
 /** Serve's table: every provider the computer package declares. */
 export const KEY_TABLE: KeyTable = keyTableOf(PROVIDERS);
 
+/** The computer providers' keys that are secrets: each name a descriptor declares that is named like a key (keyShaped:
+ *  DAYTONA_API_KEY, MODAL_TOKEN_ID, AGENT37_SSH_KEY; not DAYTONA_API_URL or ORGO_WORKSPACE_ID). Each is on the launcher's
+ *  list, so a key set where the server starts is held in memory (secrets.ts), never left in its environment. */
+export const COMPUTER_KEY_NAMES: readonly string[] = [...new Set(PROVIDERS.flatMap((entry) => entry.keys.map((key) => key.name)).filter(keyShaped))];
+
 const has = (record: object, key: string): boolean => Object.prototype.hasOwnProperty.call(record, key);
 const labelOf = (providerId: string, table: KeyTable): string => (has(table.labels, providerId) ? table.labels[providerId]! : providerId);
 const refused = (code: string, message: string): { ok: false; error: { code: string; message: string } } => ({ ok: false, error: { code, message } });
@@ -92,12 +98,19 @@ export function providerOptions(providerId: string, keys: Readonly<Record<string
   if (missing.length > 0) {
     return refused("missing_key", `${label} needs ${missing.join(" and ")} saved: save ${missing.length > 1 ? "them" : "it"} in Settings → Computers (PUT /v2/computers/${providerId}/keys)`);
   }
+  return { ok: true, options: { ...options, ...settingOptions(providerId, settings, table) } };
+}
+
+/** The create() options provider `providerId`'s settings fill from the server's settings (each of its descriptor's
+ *  settings, by name, else its default), with no key: what a provider is made with that is no secret (its connect). */
+export function settingOptions(providerId: string, settings: ProviderSettings = {}, table: KeyTable = KEY_TABLE): Record<string, string> {
+  const options: Record<string, string> = {};
   for (const setting of table.settings && has(table.settings, providerId) ? table.settings[providerId]! : []) {
     const given = has(settings, setting.name) ? settings[setting.name]?.trim() : undefined;
     const value = given || setting.default;
     if (value !== undefined && value !== "") options[setting.option] = value;
   }
-  return { ok: true, options };
+  return options;
 }
 
 /** `text` with every key value in `values` replaced by "[the key]". */

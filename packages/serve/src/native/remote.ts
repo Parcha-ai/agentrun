@@ -1,11 +1,15 @@
 /** Outbound connector transport. Credentials are scoped to one source; commands use source-approved opaque targets.
  * The ordinary runner owns runs, journals and learning. A leased command is NEVER dispatched again after uncertainty.
  * CAS settings rows keep this contract across API/runner processes and restarts without a second run registry. */
+import type { AdoptionResolver } from "../source-sync/adoption.js";
+import { sourceKey, type SourceAuthority, type SourceRecord } from "../source-sync/registry.js";
+import { sourceSyncOf } from "../source-sync/types.js";
+import { cliCaptureOf } from "../source-sync/capture.js";
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { ApiError } from '../errors.js';
 import { createAgent, getAgent, type AgentEntry } from '../agents-store.js';
-import type { Store } from '../store/store.js';
+import type { Store, SettingsGuard } from '../store/store.js';
 import { nativeBindingOf, nativeOf } from './binding.js';
 import { updateNative } from './connection.js';
 import type { NativeBinding, NativeEvent, NativeResult, NativeSession } from './types.js';
@@ -27,17 +31,20 @@ const text = (v: unknown, max = 160): v is string => typeof v === 'string' && v.
 const validId = (v: unknown): v is string => text(v) && /^[\w.-]+$/.test(v);
 const bounded = (v: unknown, max = MAX_COMMAND_BYTES) => { if (Buffer.byteLength(JSON.stringify(v) ?? '') > max) throw new ApiError('payload_too_large', 'The connector payload is too large.'); };
 
-type Connector = { id: string; installation_id: string; label: string; created_at: string; last_seen: number; credential_hash: string; expires: number; revoked: boolean; native_execution: boolean; history_import?: boolean };
-type Enrollment = { expires: number; label: string; capabilities?: {native_execution:boolean;history_import:boolean}; connector_id?: string; request_hash?: string };
-type Target = { target_id: string; agent_id: string; name: string; target: NativeBinding; history_only?: boolean; owner_disconnected?: boolean };
-export type RemoteCommandType = 'prepare' | 'open' | 'send' | 'close' | 'grade';
+type Connector = { id: string; installation_id: string; label: string; created_at: string; last_seen: number; credential_hash: string; expires: number; revoked: boolean; native_execution: boolean; history_import?: boolean; config_sync?: boolean };
+type Enrollment = { expires: number; label: string; capabilities?: {native_execution:boolean;history_import:boolean;config_sync?:boolean}; replace_id?:string; replace_credential_hash?:string; replace_revoked?:boolean; connector_id?: string; request_hash?: string };
+type Target = { target_id: string; agent_id: string; name: string; target: NativeBinding; history_only?: boolean; sync_only?:boolean; cli_connection_id?:string; owner_disconnected?: boolean };
+export type RemoteCommandType = 'prepare' | 'open' | 'send' | 'close';
 type EventBatch = { sequence: number; events: NativeEvent[]; hash: string };
 type Command = { command_id: string; connector_id: string; target_id: string; type: RemoteCommandType; session_key?: string; payload: unknown; deadline_at: number; created_at: number; state: 'queued'|'leased'|'complete'|'cancelled'|'unknown'; lease_token?: string; lease_expires_at?: number; worker_id?: string; result?: unknown; error?: string; completion_hash?: string; batches: EventBatch[] };
 
 export class RemoteConnectors {
+  /** One HTTP request's authenticated epoch. Reading its body can await a concurrent owner rotation. */
+  private authenticated?: { id: string; credentialHash: string };
   constructor(readonly store: Store, readonly now: () => number = Date.now) {}
   private async connector(id: string): Promise<Connector> {
     const row = await this.store.settings.get(keyOf('connector', id)) as Connector | undefined;
+    if (this.authenticated && (!row || this.authenticated.id !== id || this.authenticated.credentialHash !== row.credential_hash || row.revoked || row.expires <= this.now())) throw new ApiError('unauthenticated', 'This request belongs to an expired or replaced connector credential.');
     if (!row) throw new ApiError('not_found', 'This connector does not exist.');
     return row;
   }
@@ -58,11 +65,11 @@ export class RemoteConnectors {
     const targets = await this.targets(row.id);
     return { id: row.id, connector_id: row.id, label: row.label, created_at: row.created_at, last_seen_at: row.last_seen ? new Date(row.last_seen).toISOString() : null,
       status: row.revoked || row.expires <= this.now() ? 'revoked' : row.last_seen + ONLINE_MS >= this.now() ? 'online' : 'offline',
-      capabilities: { observe: true, native_execution: row.native_execution, history_import: row.history_import===true },
+      capabilities: { observe: true, native_execution: row.native_execution, history_import: row.history_import===true, config_sync: row.config_sync===true },
       targets: targets.map(t => {
-        const disconnected=t.owner_disconnected || t.target.connected===false;
-        const issue=t.owner_disconnected?'Disconnected by the owner. Reconnect this target before starting a run.':t.target.connected===false && !t.history_only?'This source target is disconnected. Reconnect it before starting a run.':null;
-        return { target_id: t.target_id, agent_id: t.agent_id, name: t.name, history_only:t.history_only===true, runtime: t.target.runtime, machine_id: t.target.machine_id, state:disconnected?'needs_attention':t.target.state, issues:issue?[...t.target.issues,issue]:t.target.issues, capabilities:disconnected?{...t.target.capabilities,launch:false}:t.target.capabilities };
+        const disconnected=t.owner_disconnected || t.target.connected===false&&!t.sync_only;
+        const issue=t.owner_disconnected?'Disconnected by the owner. Reconnect this target before starting a run.':t.target.connected===false && !t.history_only&&!t.sync_only?'This source target is disconnected. Reconnect it before starting a run.':null;
+        return { target_id: t.target_id, agent_id: t.agent_id, name: t.name, history_only:t.history_only===true, sync_only:t.sync_only===true, runtime: t.target.runtime, machine_id: t.target.machine_id, state:disconnected?'needs_attention':t.target.state, issues:issue?[...t.target.issues,issue]:t.target.issues, capabilities:disconnected?{...t.target.capabilities,launch:false}:t.target.capabilities };
       }) };
   }
   async list() {
@@ -73,12 +80,14 @@ export class RemoteConnectors {
     for(const row of await this.store.settings.all({prefix:keyOf('enrollment','')}))if((row.value as Enrollment).expires<=this.now())await this.store.settings.removeIf(row.key,row.value);
     const b = object(input); if (b.label !== undefined && !text(b.label)) throw new ApiError('input_invalid', 'Choose a short name for this source machine.');
     const requested=object(b.capabilities);
-    if(b.capabilities!==undefined && (Object.keys(requested).some(key=>!['native_execution','history_import'].includes(key)) || Object.values(requested).some(value=>typeof value!=='boolean')))throw new ApiError('input_invalid','Choose live execution, history import, or both.');
-    const capabilities={native_execution:requested.native_execution??true,history_import:requested.history_import??false};
-    if(!capabilities.native_execution&&!capabilities.history_import)throw new ApiError('input_invalid','Choose live execution, history import, or both.');
+    if(b.capabilities!==undefined && (Object.keys(requested).some(key=>!['native_execution','history_import','config_sync'].includes(key)) || Object.values(requested).some(value=>typeof value!=='boolean')))throw new ApiError('input_invalid','Choose live execution, history import, or both.');
+    const capabilities={native_execution:requested.native_execution??true,history_import:requested.history_import??false,config_sync:requested.config_sync??true};
+    if(!capabilities.native_execution&&!capabilities.history_import&&!capabilities.config_sync)throw new ApiError('input_invalid','Choose live execution, history import, or both.');
+    const replacing=b.connector_id===undefined?undefined:validId(b.connector_id)?await this.connector(b.connector_id):undefined;
+    if(b.connector_id!==undefined&&!replacing)throw new ApiError('input_invalid','Choose the existing connector to authorize.');
     const token = `ar_enroll_${randomBytes(32).toString('base64url')}`;
     const expires = this.now() + 10 * 60_000;
-    await this.store.settings.put(keyOf('enrollment', hash(token)), { expires, label: b.label ?? 'Remote machine', capabilities } satisfies Enrollment);
+    await this.store.settings.put(keyOf('enrollment', hash(token)), { expires, label: b.label ?? 'Remote machine', capabilities, ...(replacing?{replace_id:replacing.id,replace_credential_hash:replacing.credential_hash,replace_revoked:replacing.revoked}:{}) } satisfies Enrollment);
     return { enrollment_token: token, expires_at: new Date(expires).toISOString(), workspace_id: 'local' };
   }
   async register(token: string, input: unknown) {
@@ -86,20 +95,32 @@ export class RemoteConnectors {
     const enrollment = await this.store.settings.get(key) as Enrollment | undefined;
     if (!token.startsWith('ar_enroll_') || !enrollment || enrollment.expires <= this.now()) throw new ApiError('unauthenticated', 'The connection code expired or is invalid. Create another in the console.');
     const b = object(input); bounded(b, 4096);
-    if (!validId(b.installation_id) || !validId(b.operation_id) || (b.label !== undefined && !text(b.label)) || typeof object(b.capabilities).native_execution !== 'boolean' || (object(b.capabilities).history_import!==undefined && typeof object(b.capabilities).history_import!=='boolean')) throw new ApiError('input_invalid', 'Remote native execution requires an explicit installation, operation and capability selection.');
-    const requested={native_execution:object(b.capabilities).native_execution===true,history_import:object(b.capabilities).history_import===true};
-    if(!requested.native_execution&&!requested.history_import || requested.native_execution && enrollment.capabilities?.native_execution===false || requested.history_import && enrollment.capabilities?.history_import!==true)throw new ApiError('forbidden','The source requested capabilities not approved by the owner connection code.');
+    if (!validId(b.installation_id) || !validId(b.operation_id) || (b.label !== undefined && !text(b.label)) || typeof object(b.capabilities).native_execution !== 'boolean' || (object(b.capabilities).history_import!==undefined && typeof object(b.capabilities).history_import!=='boolean') || (object(b.capabilities).config_sync!==undefined && typeof object(b.capabilities).config_sync!=='boolean')) throw new ApiError('input_invalid', 'Remote native execution requires an explicit installation, operation and capability selection.');
+    const requested={native_execution:object(b.capabilities).native_execution===true,history_import:object(b.capabilities).history_import===true,config_sync:object(b.capabilities).config_sync===true};
+    if(!requested.native_execution&&!requested.history_import&&!requested.config_sync || requested.native_execution && enrollment.capabilities?.native_execution===false || requested.history_import && enrollment.capabilities?.history_import!==true || requested.config_sync && enrollment.capabilities?.config_sync!==true)throw new ApiError('forbidden','The source requested capabilities not approved by the owner connection code.');
+    if(enrollment.replace_id&&(await this.connector(enrollment.replace_id)).installation_id!==b.installation_id)throw new ApiError("forbidden","Authorize sync from this connector’s original installation.");
     const requestHash = hash(JSON.stringify(b));
     let id = enrollment.connector_id;
     if (id && enrollment.request_hash !== requestHash) throw new ApiError('idempotency_mismatch', 'This connection code has already been used for another request.');
     if (!id) {
-      id = opaque('rc');
+      id = enrollment.replace_id ?? opaque('rc');
       if (!await this.store.settings.replaceIf(key, enrollment, { ...enrollment, connector_id: id, request_hash: requestHash })) throw new ApiError('idempotency_in_progress', 'Connection registration is in progress. Retry the same request.');
     }
     // Deterministically recover only this registration's reply after a lost HTTP response; no plaintext credential is stored.
     const credential = `ar_connector_${createHmac('sha256', token).update(id).digest('base64url')}`;
     const expires = this.now() + 30 * 24 * 60 * 60_000;
-    const row = await this.store.settings.putIfAbsent(keyOf('connector', id), { id, installation_id: b.installation_id, label: b.label ?? enrollment.label, created_at: new Date(this.now()).toISOString(), last_seen: 0, credential_hash: hash(credential), expires, revoked: false, ...requested } satisfies Connector) as Connector;
+    const candidate:Connector={ id, installation_id: b.installation_id, label: b.label ?? enrollment.label, created_at: new Date(this.now()).toISOString(), last_seen: 0, credential_hash: hash(credential), expires, revoked: false, ...requested };
+    let row:Connector;
+    if(enrollment.replace_id){
+      row=await this.connector(id);
+      if(row.installation_id!==b.installation_id)throw new ApiError('forbidden','Authorize sync from this connector’s original installation.');
+      if(row.credential_hash!==candidate.credential_hash){
+        if(row.credential_hash!==enrollment.replace_credential_hash || row.revoked!==enrollment.replace_revoked)throw new ApiError('forbidden','This connector changed after the owner issued its authorization. Request a new code.');
+        const next={...row,...candidate,created_at:row.created_at};
+        if(!await this.store.settings.replaceIf(keyOf('connector',id),row,next,undefined,[{key,fields:{connector_id:id,request_hash:requestHash,expires:enrollment.expires}}]))throw new ApiError('idempotency_in_progress','The connector changed while being authorized. Retry the same request.');
+        row=next;
+      }
+    }else row=await this.store.settings.putIfAbsent(keyOf('connector',id),candidate) as Connector;
     if (row.revoked || row.expires <= this.now()) throw new ApiError('forbidden', 'This connector is revoked. Create a new connection code.');
     return { connector: await this.view(row), credential, credential_expires_at: new Date(row.expires).toISOString() };
   }
@@ -107,19 +128,22 @@ export class RemoteConnectors {
     // Scoped callers learn nothing about absent connectors; operational store failures still propagate.
     const row = await this.store.settings.get(keyOf('connector', id)) as Connector | undefined;
     if (!row || !token.startsWith('ar_connector_') || !timingSafeEqual(Buffer.from(hash(token)), Buffer.from(row.credential_hash)) || row.revoked || row.expires <= this.now()) throw new ApiError('unauthenticated', 'The connector credential is invalid, expired or revoked.');
+    this.authenticated = { id, credentialHash: row.credential_hash };
   }
   async revoke(id: string) {
+    let revoked: Connector | undefined;
     for (let attempt = 0; attempt < 10; attempt++) {
       const row = await this.connector(id);
-      if (row.revoked || await this.store.settings.replaceIf(keyOf('connector', id), row, { ...row, revoked: true })) break;
+      if (row.revoked) { revoked = row; break; }
+      const next = { ...row, revoked: true };
+      if (await this.store.settings.replaceIf(keyOf('connector', id), row, next)) { revoked = next; break; }
     }
-    const row = await this.connector(id);
-    if (!row.revoked) throw new ApiError('home_busy', 'The connector changed while it was being revoked; retry.');
+    if (!revoked) throw new ApiError('home_busy', 'The connector changed while it was being revoked; retry.');
     for (const setting of await this.store.settings.all({prefix:keyOf('command',''),connectorId:id})) {
       const command = setting.value as Command;
       if (setting.key.startsWith(keyOf('command', '')) && command.connector_id === id && ['queued','leased'].includes(command.state)) await this.store.settings.replaceIf(setting.key, command, { ...command, state: 'cancelled', error: 'Connector revoked.' });
     }
-    return { connector: await this.view(row) };
+    return { connector: await this.view(revoked) };
   }
   async assertReady(binding: NativeBinding) {
     if (!binding.connected || !binding.remote) throw new ApiError('agent_not_runnable', 'The remote connection is disconnected.');
@@ -134,7 +158,7 @@ export class RemoteConnectors {
     try { await this.assertReady(binding); return binding; }
     catch(error) { return { ...binding, state: 'needs_attention', capabilities: { ...binding.capabilities, launch: false }, issues: [...binding.issues, error instanceof Error ? error.message : 'The remote source is unavailable.'] }; }
   }
-  async importTarget(id: string, input: unknown) {
+  async importTarget(id: string, input: unknown, resolveAdoption?: AdoptionResolver) {
     const b = object(input); bounded(b, 256_000);
     if(b.history_only!==undefined && typeof b.history_only!=='boolean')throw new ApiError('input_invalid','history_only must be a boolean.');
     if (!validId(b.target_id) || (b.name !== undefined && !text(b.name))) throw new ApiError('input_invalid', 'Choose a source-approved target and name.');
@@ -144,29 +168,72 @@ export class RemoteConnectors {
     try { native = nativeBindingOf({ ...raw, connected: true }); } catch { throw new ApiError('input_invalid', 'Invalid native target metadata.'); }
     if (native.configuration.length > 2048 || native.skills.length > 2048 || native.mcp_servers.length > 256 || native.issues.length > 64 || !['ready','needs_attention','needs_verification'].includes(native.state) || !native.configuration.every(file => text(file.path, 4096) && /^[a-f0-9]{64}$/.test(file.sha256)) || !native.skills.every(s=>text(s,256)) || !native.mcp_servers.every(s=>text(s,256)) || !native.issues.every(s=>text(s,4096))) throw new ApiError('input_invalid', 'Invalid or excessive native metadata.');
     const connector = await this.connector(id); if (connector.revoked) throw new ApiError('forbidden', 'Connector revoked.');
-    const historyOnly=b.history_only===true;
-    if(historyOnly ? !connector.history_import || connector.native_execution : !connector.native_execution)throw new ApiError('forbidden','This connection code does not authorize the requested import mode.');
+    const historyOnly=b.history_only===true, syncOnly=!connector.native_execution&&!historyOnly&&connector.config_sync===true;
+    if(historyOnly ? !connector.history_import || connector.native_execution : !connector.native_execution&&!syncOnly)throw new ApiError('forbidden','This connection code does not authorize the requested import mode.');
     if(historyOnly)native={...native,connected:false,capabilities:{...native.capabilities,launch:false},issues:[...native.issues,'History only: past sessions are imported; this source has not authorized live execution.']};
+    if(syncOnly)native={...native,connected:false,capabilities:{...native.capabilities,launch:false}};
     native = { ...native, remote: { connector_id: id, target_id: b.target_id } };
-    const agentId = `remote-${hash(`${id}:${b.target_id}`).slice(0,40)}`;
+    const adoption=b.cli_adoption===undefined?undefined:resolveAdoption?await resolveAdoption(id,b.target_id,native,b.cli_adoption):undefined;
+    if(b.cli_adoption!==undefined&&!adoption)throw new ApiError('forbidden','This server cannot verify the existing CLI association.');
+    if(syncOnly&&!adoption)throw new ApiError('input_invalid','Enable capture for this source CLI first so sync can keep its existing agent and history.');
     const targetKey = keyOf('target', `${id}.${b.target_id}`);
-    const prior = await this.store.settings.get(targetKey) as Target | undefined;
-    if (prior && (prior.target.project !== native.project || prior.target.runtime !== native.runtime || prior.target.machine_id !== native.machine_id || JSON.stringify(prior.target.selector) !== JSON.stringify(native.selector))) throw new ApiError('idempotency_mismatch', 'A target id cannot be reused for another source agent.');
+    let prior = await this.store.settings.get(targetKey) as Target | undefined;
+    const sameSource=(saved:Target)=>saved.target.project===native.project&&saved.target.runtime===native.runtime&&saved.target.machine_id===native.machine_id&&JSON.stringify(saved.target.selector)===JSON.stringify(native.selector);
+    if(prior&&!sameSource(prior))throw new ApiError('idempotency_mismatch','A target id cannot be reused for another source agent.');
+    if(prior&&adoption&&prior.agent_id!==adoption.agentId)throw new ApiError('input_invalid','This target already has its own durable agent. Its history cannot be replaced by a different profile.');
+    const agentId=prior?.agent_id??adoption?.agentId??`remote-${hash(`${id}:${b.target_id}`).slice(0,40)}`;
     const name = b.name ?? `${native.runtime} · ${native.selector.name ?? native.project.split('/').filter(Boolean).at(-1) ?? 'project'}`;
-    let entry = await getAgent(this.store, agentId);
-    if (entry) {
-      // A source credential cannot undo an owner disconnect. Re-enrollment is a new explicit owner grant.
-      if(nativeOf(entry.revision?.body)?.connected===false)native={...native,connected:false};
-      entry = await updateNative(this.store, entry, native);
+    const connectorGuard={key:keyOf('connector',id),fields:{revoked:false,credential_hash:connector.credential_hash,expires:connector.expires}};
+    // Reserve the identity before creating anything. Concurrent imports cannot create two agents, and a crash after
+    // reservation is repairable by the same target's retry. A reservation alone grants no execution or export.
+    if(!prior){
+      prior=await this.store.settings.putIfAbsent(targetKey,{target_id:b.target_id,agent_id:agentId,name,target:native,history_only:historyOnly,sync_only:syncOnly,owner_disconnected:false,...(adoption?{cli_connection_id:adoption.connectionId}:{})} satisfies Target) as Target;
+      if(prior.agent_id!==agentId||!sameSource(prior))throw new ApiError('idempotency_mismatch','Another source association reserved this target.');
     }
-    else {
-      try { entry = await createAgent(this.store, { definition: { id: agentId, name, instructions: '', harness: native.runtime === 'claude-code' ? 'claude-agent' : 'codex', place: { mode: 'runner' }, tools: [], learning: false, native }, skills: {} }); }
-      catch (error) { if (!(error instanceof ApiError && error.code === 'agent_exists')) throw error; entry = await getAgent(this.store, agentId); if (!entry) throw error; }
+    let entry=await getAgent(this.store,agentId);
+    if(prior.owner_disconnected)native={...native,connected:false};
+    if(entry){
+      const moved=sourceSyncOf(entry.revision?.body);
+      const captured=await cliCaptureOf(this.store,entry);
+      if(moved){
+        const source=await this.store.settings.get(sourceKey(agentId)) as SourceRecord|undefined;
+        if(!source||source.id!==moved.id||source.connection?.connector_id!==id||source.connection.target_id!==b.target_id)throw new ApiError('forbidden','The managed agent no longer has this source association.');
+        // Metadata refresh is allowed after Move; execution never becomes native again.
+      }else if(prior.cli_connection_id){
+        if(captured?.binding.connection_id!==prior.cli_connection_id)throw new ApiError('forbidden','The retained CLI profile no longer matches this target.');
+      }else{
+        if(nativeOf(entry.revision?.body)?.connected===false)native={...native,connected:false};
+        entry=await updateNative(this.store,entry,native,[connectorGuard,{key:targetKey,fields:{agent_id:agentId,owner_disconnected:prior.owner_disconnected}}]);
+      }
+    }else{
+      if(adoption||prior.cli_connection_id)throw new ApiError('not_found','The existing CLI agent is no longer available.');
+      try{entry=await createAgent(this.store,{definition:{id:agentId,name,instructions:'',harness:native.runtime==='claude-code'?'claude-agent':'codex',place:{mode:'runner'},tools:[],learning:false,native},skills:{}});}
+      catch(error){if(!(error instanceof ApiError&&error.code==='agent_exists'))throw error;entry=await getAgent(this.store,agentId);if(!entry)throw error;}
     }
-    const savedTarget={ target_id: b.target_id, agent_id: agentId, name, target: native, history_only:historyOnly, owner_disconnected:prior?.owner_disconnected??false } satisfies Target;
-    if(prior){if(!await this.store.settings.replaceIf(targetKey,prior,savedTarget))throw new ApiError('home_busy','The owner changed this target while it was being imported. Retry after reviewing its connection.');}
-    else await this.store.settings.putIfAbsent(targetKey,savedTarget);
+    const savedTarget:Target={...prior,name,target:native,history_only:historyOnly,sync_only:syncOnly};
+    if(!await this.store.settings.replaceIf(targetKey,prior,savedTarget,undefined,[connectorGuard,...(adoption?.guards??[])]))throw new ApiError('home_busy','The owner changed this target while it was being imported. Retry after reviewing its connection.');
     return { agent_id: agentId, native };
+  }
+  async syncAuthority(id:string,targetId:string):Promise<{agentId:string;authority:SourceAuthority}>{
+    const connector=await this.connector(id), targetKey=keyOf('target',`${id}.${targetId}`);
+    if(connector.revoked||connector.expires<=this.now()||connector.config_sync!==true)throw new ApiError('forbidden','Authorize configuration sync on the source machine with a new owner connection code.');
+    const target=await this.store.settings.get(targetKey) as Target|undefined;
+    if(!target||target.owner_disconnected)throw new ApiError('forbidden','This source target is unavailable or disconnected by its owner.');
+    const entry=await getAgent(this.store,target.agent_id);
+    if(!entry?.revision||entry.agent.archivedAt||entry.agent.purgedAt)throw new ApiError('not_found','The connected agent is unavailable.');
+    const native=nativeOf(entry.revision.body), moved=sourceSyncOf(entry.revision.body), capture=await cliCaptureOf(this.store,entry);
+    const record=await this.store.settings.get(sourceKey(entry.agent.id)) as SourceRecord|undefined;
+    if(moved?record?.id!==moved.id||record?.connection?.connector_id!==id||record?.connection?.target_id!==targetId:target.cli_connection_id?capture?.binding.connection_id!==target.cli_connection_id:native?.remote?.connector_id!==id||native.remote.target_id!==targetId)
+      throw new ApiError('forbidden','This connector no longer owns the agent’s source association.');
+    const guards:SettingsGuard[]=[{key:keyOf('connector',id),fields:{revoked:false,config_sync:true,credential_hash:connector.credential_hash,expires:connector.expires}},
+      {key:targetKey,fields:{agent_id:target.agent_id,owner_disconnected:target.owner_disconnected,cli_connection_id:target.cli_connection_id}}];
+    if(target.cli_connection_id){
+      const row=await this.store.settings.get(`cli-learning-connection:${target.cli_connection_id}`) as {active?:boolean;generation?:string;agent_id?:string}|undefined;
+      if(!row?.active||row.agent_id!==target.agent_id)throw new ApiError('forbidden','The source CLI capture connection was revoked.');
+      guards.push({key:`cli-learning-connection:${target.cli_connection_id}`,fields:{active:true,generation:row.generation,agent_id:target.agent_id}});
+    }
+    const {runtime,machine_id,project,selector}=target.target;
+    return {agentId:target.agent_id,authority:{source:{runtime,machine_id,project,selector},connection:{connector_id:id,target_id:targetId},captureRevision:record?.capture_revision??entry.revision.id,guards}};
   }
   async disconnectTarget(binding:NativeBinding){
     if(!binding.remote)return;
@@ -319,7 +386,7 @@ export function checkedPrepared(before: NativeBinding, result: unknown): { targe
         ? 'This source bridge did not check imported or additional Claude policy files.'
         : undefined;
   if (unchecked && !instructions.incomplete) instructions = { ...instructions, incomplete: unchecked };
-  if (instructions.incomplete || instructions.truncated) target = { ...target, capabilities: { ...target.capabilities, notes: false, skills: false }, issues: [...target.issues, `Self-improvement is unavailable: ${instructions.incomplete ?? 'the source instruction snapshot exceeds the grading evidence limit.'} Native jobs remain available; no incomplete policy is automatically graded.`] };
+  if (instructions.incomplete || instructions.truncated) target = { ...target, capabilities: { ...target.capabilities, learning: false }, issues: [...target.issues, `Self-improvement is unavailable: ${instructions.incomplete ?? 'the source instruction snapshot exceeds the grading evidence limit.'} Native jobs remain available; no incomplete policy is automatically graded.`] };
   return { target, instructions };
 }
 
@@ -348,10 +415,10 @@ export async function verifyRemote(store: Store, entry: AgentEntry): Promise<Age
   return updateNative(store, entry, {...prepared.target,connected:binding.connected});
 }
 
-/** A session transport only. Task/reflection/grading policy remains in the native loop and source runtime. */
-export async function openRemoteSession(broker: RemoteConnectors, target: NativeBinding, options: { signal?: AbortSignal; context?: string; skills?: readonly {name:string;files?:Record<string,string>}[]; runId: string; onEvent?: (event:NativeEvent)=>Promise<void>|void }): Promise<NativeSession> {
+/** A session transport only. Task and end-of-run policy remains in the native loop and source runtime. */
+export async function openRemoteSession(broker: RemoteConnectors, target: NativeBinding, options: { signal?: AbortSignal; context?: string; runId: string; onEvent?: (event:NativeEvent)=>Promise<void>|void }): Promise<NativeSession> {
   const sessionKey = opaque('session');
-  await broker.request(target, 'open', { context: options.context ?? '', skills: options.skills ?? [], run_id: options.runId, expected_fingerprint: target.fingerprint }, { signal: options.signal, sessionKey, timeoutMs: 30_000 });
+  await broker.request(target, 'open', { context: options.context ?? '', run_id: options.runId, expected_fingerprint: target.fingerprint },{ signal: options.signal, sessionKey, timeoutMs: 30_000 });
   return {
     send: async (prompt, sendOptions = {}) => remoteResult(await broker.request(target, 'send', { prompt, reflection: sendOptions.reflection ?? false, timeout_ms: sendOptions.timeoutMs ?? 180_000 }, { signal: sendOptions.signal ?? options.signal, sessionKey, timeoutMs: (sendOptions.timeoutMs ?? 180_000) + 5000, onEvent: options.onEvent })),
     close: async () => { try { await broker.request(target, 'close', {}, { sessionKey, timeoutMs: 5000 }); } catch { /* lease loss already requires the worker to close its session */ } },

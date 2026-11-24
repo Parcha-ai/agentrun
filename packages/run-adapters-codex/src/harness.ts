@@ -3,7 +3,7 @@
 // Changed by Parcha, and AgentRun's own since the port from upstream froze on 2026-11-07.
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { dirname } from 'node:path';
-import type { GateAnswer, GateCall } from '@parcha/agentrun-kernel';
+import type { CapCut, GateAnswer, GateCall, OwnCalls } from '@parcha/agentrun-kernel';
 import { type DriveContext, type EffectRecord, type Harness, type HostTool, type ReplayPolicy, type SessionState, type Submission, Unavailable, UNAVAILABLE_STEP } from './host/kernel.js';
 import {
   type AcquireMachine,
@@ -35,7 +35,7 @@ import {
 import { acknowledgeInDrive, attachInDrive, cliPath, CODEX_CLI, DriveFiles, SANDBOX_DOC } from './host/sandbox.js';
 import { AppServer, type RpcNotification, type RpcServerRequest } from './app-server.js';
 import { codeMode } from './code-mode.js';
-import { danglingCalls, settleCall } from './transcript.js';
+import { danglingCalls, nextRolloutOrdinal, settleCall } from './transcript.js';
 import { BUILTINS_ON, checkConfig, codexConfig, type TomlValue, toToml } from './config.js';
 import {
   callIdOf,
@@ -129,6 +129,12 @@ export interface CodexHarnessOptions {
    * words, nothing written and nothing run; a park holds it. Default none.
    */
   gate?: (call: GateCall) => Promise<GateAnswer>;
+  /**
+   * The host's record of a code-mode `exec` (SessionIO.ownCalls): its row
+   * from its rollout lines, and each host tool call its script makes named
+   * under it. Default none.
+   */
+  ownCalls?: OwnCalls;
   /**
    * Codex's own shell and `apply_patch` (and `view_image`), on `/workspace`
    * in the session's VM. Default false (tool-less: `tools` are its only
@@ -248,12 +254,14 @@ interface TurnOutcome {
   stopReason?: 'length';
   /** The cut answer's output tokens, when the provider said them. */
   outputTokens?: number;
+  /** The limit it was cut at was the run's cap's: the cap, and the least cap that finishes it (ModelTicket.capCut). */
+  capCut?: CapCut;
 }
 
 interface ActiveTurn {
   id?: string;
   /** The provider cut the turn's answer at its output limit (the model proxy read it before Codex had it). */
-  cut?: { outputTokens?: number };
+  cut?: { outputTokens?: number; capCut?: CapCut };
   /** Completed agent messages since the last transcript entry. */
   said: string[];
   /** Agent messages still streaming (item id to text so far). */
@@ -440,6 +448,9 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
     const clamps = new Map<string, ReturnType<typeof setTimeout>>();
     try {
       if (resume) {
+        // Validate before the bridge can approve or dispatch another effect. Earlier versions could retain a synthetic
+        // result without a native ordinal; preserve that history and refuse rather than repair it or replay its effect.
+        nextRolloutOrdinal(lines);
         // A resumed thread's host calls with no output, before Codex starts on it: one that never started (no intent in
         // the session's records) runs now through the bridge under its own id (gate, intent, run, result); one the log
         // finished is answered with its recorded result; one with an intent and no outcome is left to the recovery below,
@@ -578,7 +589,7 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
         }
         mirror();
       };
-      const code = codeMode({ ctx, machine, journal, logged, synced, bridge, log, lines, rpc: () => rpc, guard: (p) => guard(p), threadId: () => threadId, tries: BARRIER_TRIES, declined: LAGGING_RESULT });
+      const code = codeMode({ ctx, machine, journal, logged, synced, bridge, log, lines, rpc: () => rpc, guard: (p) => guard(p), threadId: () => threadId, tries: BARRIER_TRIES, declined: LAGGING_RESULT, ...(options.ownCalls ? { ownCalls: options.ownCalls } : {}) });
       /**
        * The hard barrier before a `never` call (§5.6): its `function_call`
        * line in the log, flushed, before its intent. Codex's rollout writer is
@@ -954,7 +965,7 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
         if (said) journal.message({ type: 'message', role: 'assistant', text: said });
         active = undefined;
         // Its answer cut at the output limit: the turn was interrupted for it, and ended there, its answer unfinished.
-        if (t.cut) return { status: 'completed', stopReason: 'length', ...(t.cut.outputTokens !== undefined ? { outputTokens: t.cut.outputTokens } : {}) };
+        if (t.cut) return { status: 'completed', stopReason: 'length', ...(t.cut.outputTokens !== undefined ? { outputTokens: t.cut.outputTokens } : {}), ...(t.cut.capCut ? { capCut: t.cut.capCut } : {}) };
         const status = result.status === 'completed' ? 'completed' : result.status === 'interrupted' ? 'interrupted' : 'failed';
         const error = status === 'completed' ? undefined : (t.error ?? result.error?.message ?? undefined);
         return { status, ...(error ? { error } : {}) };

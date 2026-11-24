@@ -54,8 +54,11 @@ After `npm ci --ignore-scripts` and `npm run build`:
 | --- | --- | --- |
 | [Support answers](support-quickstart.md) | `npm run demo:support` | Connect your search tool and agent; check an answer before returning it. |
 | [Typed research](authoring.md) | `npm run demo` | Reuse one research component across questions and stop when evidence is missing. |
+| [Read a public page with Browser Use](tutorials/monid-browser-use.md) | Start a run in the AgentRun console | Grant Browser Use through Monid and extract a heading from a public page. |
 | [Rank a list](../examples/rank-candidates.mjs) | `npm run demo:rank` | Score candidates against your brief, drop duplicates, cap each bucket, keep the top k; call it from another workflow. |
 | [Standalone TypeScript app](../examples/starter/README.md) | Follow the app's install steps, then `npm test` and `npm start` | Build outside this checkout with public package imports. |
+| [Harness module](../examples/harness-module/README.md) | `npm run test:harness-module-example` | Add a harness to a server without changing it: your agent's facts, how it starts, and what no key fixes ([HARNESS.md](../HARNESS.md)). |
+| [Harness recipe: Google Antigravity](../examples/harness-recipe/README.md) | `agentrun harness install --recipe examples/harness-recipe/antigravity.json` | An outside ACP agent from its vendor's own release: Google's agy CLI pinned by sha512, the owner's own sign-in made by the agent, or a key handed under the name the agent reads ([HARNESS.md](../HARNESS.md#a-recipe)). |
 
 The ranking example is a reusable workflow built from existing nodes, not a node of its own. A `sift` scores every candidate with a leveled question, and the continuous score in `<as>.answers[i].answers.<question>.score` orders them. Sorting, the minimum score, per-bucket quotas and the cut-off are a `code` step. A second `sift` over pairs finds near-duplicates among the best `consider` candidates, the only ones that can make the list. That costs `consider × (consider − 1) / 2` questions, so the caller chooses it. A long list needs no batching in the workflow: a `sift` over the host's per-request limits splits itself. `npm run demo:rank -- --live --input request.json` ranks your own list with Jev.
 
@@ -72,5 +75,6 @@ Keep an existing backend agent's native SDK and tools while AgentRun checks lear
 | [Claude Agent SDK](tutorials/claude-sdk-learning.md) | [Release reporter](../examples/sdk-learning/claude.mjs) | The existing in-process MCP tool still executes; an accepted note or skill affects a fresh session. |
 | [Codex SDK](tutorials/codex-sdk-learning.md) | [Release reporter](../examples/sdk-learning/codex.mjs) | The existing native shell still reads a status file; an accepted revision is supplied to a fresh thread. |
 | [SDK workflow learning via MCP](tutorials/sdk-workflow-learning.md) | [Claude](../examples/sdk-learning/workflow-claude.mjs) / [Codex](../examples/sdk-learning/workflow-codex.mjs) | A generated and checked workflow invokes the original tool callbacks on a fresh request with changed data; an Off control gets the same task. |
+| [Vercel eve extension](tutorials/eve-learning.md) | [Existing eve release reporter](../examples/eve-learning/README.md) | Keep the original eve app and tools; compare owner corrections or compiled workflow reuse with a fresh Off control on the same agent. |
 
 Follow the [setup and execution instructions](../examples/sdk-learning/README.md). These examples use real models only with `--live`, compare learning On with an Off control, and preserve the result for inspection in the console. They require this development checkout's client and server, plus the backend's existing SDK credentials and a configured server grading model.

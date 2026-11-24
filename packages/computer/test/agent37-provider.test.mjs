@@ -4,7 +4,7 @@
 // codes, check()'s shapes and cap, and an exec's stdin, stdout, stderr, exit code and kill. The adapter's lifecycle is
 // tested once, against its fake host (hosted-provider.test.mjs); Agent37's own is proven live.
 import assert from "node:assert/strict";
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import { codeOfError } from "../dist/hosted/process.js";
 import * as registry from "../dist/providers.js";
@@ -79,7 +79,7 @@ async function until(check, ms = 5_000) {
 
 // --- what it declares ---
 
-test("an Agent37 computer is kind linux with daemon child, network none read from inside, the sshd's and the web terminal's ports, and a 24 h janitor", () => {
+test("an Agent37 computer is kind linux with daemon child, network none, open and a list read from inside, the sshd's and the web terminal's ports, and a 24 h janitor", () => {
 	const { provider } = restOnly();
 	const caps = provider.capabilities();
 	assert.equal(caps.kind, "linux");
@@ -87,10 +87,12 @@ test("an Agent37 computer is kind linux with daemon child, network none read fro
 	assert.equal(caps.daemon, "child");
 	assert.equal(caps.lifetime, "janitor");
 	assert.equal(caps.maxLifetimeMs, 24 * 3_600_000);
-	assert.deepEqual(caps.network, ["none"]);
+	assert.deepEqual(caps.network, ["none", "open", "allow"], "open and a list through init's egress proxy, which the adapter starts on allow-all");
+	assert.deepEqual(caps.allow?.domains?.ports, [80, 443]);
+	for (const network of ["none", "open", { allow: ["example.com"] }]) assert.deepEqual(provider.check({ image: "agent37-base", lifetimeMs: 600_000, network }), [], JSON.stringify(network));
 	assert.equal(caps.networkReadBack, false);
 	assert.deepEqual(caps.vendorAgentPorts, [22022, 7681]);
-	assert.deepEqual(caps.mount, ["archil"]);
+	assert.deepEqual(caps.mount, ["archil", "sync"]);
 	assert.equal(caps.isolation, "vm");
 	assert.equal(restOnly({ type: "default" }).provider.capabilities().isolation, "gvisor");
 });
@@ -101,7 +103,7 @@ test("kind desktop declares the screen and input besides the shell, as its descr
 	assert.equal(desktop.kind, "desktop");
 	assert.deepEqual(desktop.groups, ["exec", "files", "processes", "screen", "input.pointer", "input.keys", "apps"]);
 	assert.equal(desktop.daemon, "child");
-	assert.deepEqual(desktop.mount, ["archil"]);
+	assert.deepEqual(desktop.mount, ["archil", "sync"]);
 	const entry = PROVIDERS.find((one) => one.id === "agent37");
 	const configuration = entry.capabilities.find((one) => one.kind === "desktop");
 	assert.deepEqual(configuration.options, { kind: "desktop" }, "serve builds the desktop with kind desktop");
@@ -120,7 +122,14 @@ test("the provider takes the key and the SSH key as options, a key's contents ne
 		return true;
 	});
 	assert.throws(() => new Agent37Provider({ apiKey: KEY, sshKey: SSH_KEY, ssh2: {} }), /ssh2 package/);
-	assert.throws(() => new Agent37Provider({ apiKey: KEY, sshKey: SSH_KEY, ssh2, apiUrl: "http://api.agent37.com" }), /https URL/);
+	for (const apiUrl of ["http://api.agent37.com", "http://127.0.0.1:8080", "http://localhost:8080"]) {
+		assert.throws(
+			() => new Agent37Provider({ apiKey: KEY, sshKey: SSH_KEY, ssh2, apiUrl }),
+			(error) => /^the Agent37 API URL must be https, so the key never crosses in the clear/.test(error.message) && !error.message.includes(KEY),
+			apiUrl,
+		);
+	}
+	assert.throws(() => new Agent37Provider({ apiKey: KEY, sshKey: SSH_KEY, ssh2, apiUrl: "https://api.agent37.com/v1?x=1" }), /the Agent37 API URL takes no query or fragment/);
 	assert.throws(() => new Agent37Provider({ apiKey: KEY, sshKey: SSH_KEY, ssh2, type: "gpu" }), /vm or default/);
 	assert.throws(() => new Agent37Provider({ apiKey: KEY, sshKey: SSH_KEY, ssh2, region: "mars" }), /us, eu or ap-south/);
 	assert.throws(() => new Agent37Provider({ apiKey: KEY, sshKey: SSH_KEY, ssh2, region: "eu", type: "default" }), /takes type vm/);
@@ -164,7 +173,7 @@ test("create posts the template, type, region, name, labels as metadata, deny-al
 		public_ports: [],
 	});
 	await host.create({ ...request(), egress: true }, CTX);
-	assert.equal(rest.calls[1].body.network, "allow-all", "an Archil computer's root is open");
+	assert.equal(rest.calls[1].body.network, "allow-all", "egress (an Archil computer's root, or open's or a list's proxy) is allow-all");
 	assert.equal(rest.calls[1].body.resources, undefined, "no size asked, none sent");
 });
 
@@ -314,12 +323,13 @@ test("exec's stdin: written in order, then ended; a write after the end is refus
 	assert.equal(Buffer.concat(out).toString(), "one two");
 });
 
-test("kill ends the whole process group, with stdin ended or held open, and wait answers -1", async (t) => {
+test("kill ends the process and every process under it, one that left its process group too, with stdin ended or held open, and wait answers -1", async (t) => {
 	const { host } = await setup(t);
 	const value = await host.create(request(), CTX);
 	for (const [stdin, script] of [
 		[false, "sleep 300 & echo $!; sleep 301 & echo $!; wait"],
 		[true, "sleep 302 & echo $!; cat; wait"],
+		[false, "setsid sleep 303 & echo $!; wait"],
 	]) {
 		const proc = await host.exec(value.id, ["sh", "-c", script], CTX);
 		// stdin ended at once, as the adapter does where it gives none, or held open.
@@ -331,7 +341,7 @@ test("kill ends the whole process group, with stdin ended or held open, and wait
 		(async () => {
 			for await (const _ of proc.stderr);
 		})();
-		const want = stdin ? 1 : 2;
+		const want = script.split("echo $!").length - 1;
 		assert.ok(await until(() => text.trim().split("\n").filter(Boolean).length === want), "the sleeps started");
 		const pids = text.trim().split("\n").map(Number);
 		assert.ok(pids.every(alive));
@@ -352,12 +362,12 @@ test("kill ends the whole process group, with stdin ended or held open, and wait
 	await done.kill();
 });
 
-test("the pid file each command writes is gone once it ends, killed or not", async (t) => {
+test("each command starts under the shared pid wrapper, whose line never reaches the command's stderr", async (t) => {
 	const { fake, host } = await setup(t);
+	const { PID_WRAPPER, shellLine } = await import("../dist/hosted/scripts.js");
 	const value = await host.create(request(), CTX);
-	await run(host, value.id, ["true"]);
-	const file = /\/tmp\/\.agentrun-exec-[0-9a-f]{16}/.exec(fake.sshd.commands[0])[0];
-	assert.equal(existsSync(file), false);
+	assert.deepEqual(await run(host, value.id, ["sh", "-c", "echo said >&2"]), { code: 0, stdout: "", stderr: "said\n" });
+	assert.equal(fake.sshd.commands[0], shellLine([...PID_WRAPPER, "sh", "-c", "echo said >&2"]));
 });
 
 test("an SSH key pasted onto one line (a password field drops line breaks) is wrapped again and still taken", async (t) => {

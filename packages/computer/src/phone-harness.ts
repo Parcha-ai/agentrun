@@ -14,11 +14,12 @@ import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { createConnection } from "node:net";
 import type { Duplex } from "node:stream";
-import { basename } from "node:path";
+import { basename, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DaemonClient } from "./client.js";
 import { CreateRequests, endedWords, labelsDiffer, otherSpecWords } from "./create-requests.js";
 import { PHONE_GROUPS, PHONE_HARNESS } from "./descriptors/phone-harness.js";
+import { httpsBase } from "./hosted/rest.js";
 import { type ComputerClient, type DaemonMethod, type DaemonMethods, type HelloResult, PROTOCOL_VERSION } from "./protocol.js";
 import {
 	type AttachedComputer,
@@ -52,6 +53,12 @@ export const PHONE_HARNESS_URL = "https://api.phone-harness.com";
 export const DEFAULT_MAX_LIFETIME_MS = 30 * 60_000;
 /** How long create waits for a phone to be ready by default: the service's own CLI waits 240 s. */
 export const DEFAULT_READY_MS = 240_000;
+/**
+ * The live view's frame width when its caller asks none: phoned's own default (1280) is wider than a phone, so each
+ * frame went at the screen's full size, about 2.2 times the pixels of a 1080-wide phone's at this width, over a link
+ * to a cloud phone. The viewer fits the whole phone in its Screen tab, so 720 × 1600 still fills it.
+ */
+const PHONE_FRAME_WIDTH = 720;
 /** How long one API request may take by default: a stalled request is cut off, and create's own calls stay bounded. */
 const DEFAULT_REQUEST_MS = 30_000;
 /** How long one adb call may take. */
@@ -395,7 +402,7 @@ export interface PhoneProviderOptions {
 	apiKey: string;
 	/** Which phone: "android", a temporary cloud emulator (the default). "ios" is refused until it is built. */
 	platform?: "android" | "ios";
-	/** The API's base URL; default PHONE_HARNESS_URL. */
+	/** The API's base URL, https alone; default PHONE_HARNESS_URL. */
 	baseUrl?: string;
 	/** fetch; default the global one. Tests give a fake. */
 	fetch?: typeof globalThis.fetch;
@@ -422,9 +429,30 @@ export interface PhoneProviderOptions {
 	phoned?: string;
 	/**
 	 * APK files installed on each phone before phoned starts there (`pm install -r`), as the conformance run installs the
-	 * ui fixture (npm run build:ui-fixture). Default none. A connect that cannot install one fails in words.
+	 * ui fixture (npm run build:ui-fixture): each one's absolute path on this machine and the sha256 its bytes must have.
+	 * One not there, or whose bytes are not its pin, refuses create before a phone is rented, and connect. Default env's
+	 * PHONE_HARNESS_APKS, else none. A connect that cannot install one fails in words.
 	 */
-	apks?: string[];
+	apks?: readonly PinnedApk[];
+	/** The host's own variables its descriptor declares (hostEnv): PHONE_HARNESS_APKS alone, the server's apks. */
+	env?: Readonly<Record<string, string | undefined>>;
+}
+
+/** An APK the provider installs: its file's absolute path, and the sha256 of its bytes (64 lowercase hex digits). */
+export type PinnedApk = { readonly path: string; readonly sha256: string };
+
+const SHA256 = /^[0-9a-f]{64}$/;
+const pinned = (apk: unknown): apk is PinnedApk =>
+	typeof apk === "object" && apk !== null && typeof (apk as PinnedApk).path === "string" && isAbsolute((apk as PinnedApk).path) && typeof (apk as PinnedApk).sha256 === "string" && SHA256.test((apk as PinnedApk).sha256);
+
+/** PHONE_HARNESS_APKS as the apks option: a comma list of <absolute path>@sha256:<hex>; unset or blank, none. */
+function apksOf(value: string | undefined): PinnedApk[] {
+	return (value ?? "").split(",").map((one) => one.trim()).filter((one) => one !== "").map((one) => {
+		const at = one.lastIndexOf("@sha256:");
+		const apk = { path: one.slice(0, Math.max(at, 0)), sha256: one.slice(at + "@sha256:".length) };
+		if (at < 0 || !pinned(apk)) throw new Error(`PHONE_HARNESS_APKS is a comma list of <absolute path>@sha256:<64 hex digits>, the APKs every phone installs: ${show(one)} is not one`);
+		return apk;
+	});
 }
 
 /** The phone-harness provider from its options alone; throws in words when one is missing or wrong. */
@@ -493,7 +521,7 @@ export class PhoneHarnessProvider implements ComputerProvider {
 	 */
 	readonly #lastPhoned = new Map<string, PhonedProcess>();
 	readonly #phonedPath: string;
-	readonly #apks: readonly string[];
+	readonly #apks: readonly PinnedApk[];
 	/** Each file the provider puts on its phones (phoned's jar, the APKs), read once: its bytes' sha256 names it there. */
 	readonly #files = new Map<string, Promise<Result<PhoneFile>>>();
 
@@ -503,16 +531,16 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		if (platform === "ios") throw new Error('platform "ios" is not offered yet: the phone-harness provider rents a cloud Android; an iPhone is a later change');
 		if (platform !== "android") throw new Error(`platform ${show(platform)} is not one of android, ios`);
 		this.#apiKey = apiKey;
-		this.#baseUrl = (options.baseUrl ?? PHONE_HARNESS_URL).replace(/\/+$/, "");
+		this.#baseUrl = httpsBase(options.baseUrl ?? PHONE_HARNESS_URL, "the phone harness URL");
 		this.#fetch = options.fetch ?? globalThis.fetch;
 		const adb = options.adb;
 		if (adb !== undefined && typeof adb !== "string" && !(typeof adb?.run === "function" && typeof adb?.server === "function" && typeof adb?.open === "function")) {
 			throw new Error("options.adb is the adb CLI's path, or a transport with run(), server() and open()");
 		}
 		this.#phonedPath = options.phoned ?? DEFAULT_PHONED_PATH;
-		const apks = options.apks ?? [];
-		if (!Array.isArray(apks) || !apks.every((path) => typeof path === "string" && path !== "")) throw new Error(`options.apks ${show(options.apks)} is not a list of APK paths`);
-		this.#apks = [...apks];
+		const apks = options.apks ?? apksOf(options.env?.PHONE_HARNESS_APKS);
+		if (!Array.isArray(apks) || !apks.every(pinned)) throw new Error(`options.apks ${show(options.apks)} is not a list of { path, sha256 }: an APK file's absolute path and its sha256, 64 lowercase hex digits`);
+		this.#apks = apks.map(({ path, sha256 }) => ({ path, sha256 }));
 		this.#adb = adb === undefined || typeof adb === "string" ? adbCli(adb ?? "adb") : adb;
 		this.#ledger = guardedLedger(options.ledger ?? memoryLedger());
 		this.#maxLifetimeMs = options.maxLifetimeMs ?? DEFAULT_MAX_LIFETIME_MS;
@@ -584,6 +612,8 @@ export class PhoneHarnessProvider implements ComputerProvider {
 				method,
 				headers: { Authorization: `Bearer ${this.#apiKey}`, Accept: "application/json", ...(body === undefined ? {} : { "Content-Type": "application/json" }), ...headers },
 				...(body === undefined ? {} : { body: JSON.stringify(body) }),
+				// Never followed: the key's header would go on to wherever a redirect points, as rest.ts's client refuses too.
+				redirect: "error",
 				signal: either,
 			});
 		} catch (error) {
@@ -758,16 +788,22 @@ export class PhoneHarnessProvider implements ComputerProvider {
 	}
 
 	/**
-	 * The live view: the phone client's screen.watch on a connection of the watch's own (daemonWatch), PNG frames from
-	 * screencap. Upright with no rotation of ours: screencap gives the display in its current orientation, and input tap
-	 * and swipe take that same space, so each frame's width and height come from its own screencap, never from wm size.
+	 * The live view: phoned's screen.watch on a connection of the watch's own (daemonWatch), JPEG frames at most
+	 * PHONE_FRAME_WIDTH wide unless the caller asks a width, from the phone's screenshot. Upright with no rotation of
+	 * ours: the screenshot gives the display in its current orientation, and input taps and swipes take that same space,
+	 * so each frame's width and height come from its own screenshot, never from wm size.
 	 */
 	watch(ref: ComputerRef, handlers: ScreenWatchHandlers, options?: WatchOptions): Promise<Result<ScreenWatch>> {
-		return daemonWatch(this, ref, handlers, options);
+		return daemonWatch(this, ref, handlers, { ...options, maxWidth: options?.maxWidth ?? PHONE_FRAME_WIDTH });
 	}
 
 	async #create(spec: ComputerSpec, name: string, requestKey: string, signal?: AbortSignal): Promise<Result<CreatedComputer>> {
 		if (signal?.aborted) return fail("aborted", "create was aborted before the phone harness was asked");
+		// An APK not there, or not its pin, would fail the connect of a phone billed by the minute: none is rented for it.
+		for (const pin of this.#apks) {
+			const apk = await this.#apk(pin);
+			if (!apk.ok) return fail(apk.error.code, `${apk.error.message}: no phone was rented`);
+		}
 		const looked = this.#now();
 		const body = { platform: "android", kind: "emulator", timeout_seconds: Math.ceil(runLifetimeMs(spec) / 1000) };
 		// The key goes into the ledger before the POST: whatever answers are lost, list() can find the phone by it. It is
@@ -1166,15 +1202,25 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		return ok(undefined);
 	}
 
+	/** An APK of the apks option, read once it matches, held to its pin: not_found when it is not there, refused when its
+	 *  bytes' sha256 is not the pinned one, and then read again next time, so the right file put there since is taken. */
+	async #apk({ path, sha256 }: PinnedApk): Promise<Result<PhoneFile>> {
+		const what = `the APK ${basename(path)}`;
+		const file = await this.#fileAt(path, (why) => `${what} is not at ${path} (${why})`);
+		if (!file.ok || file.value.sha256 === sha256) return file;
+		this.#files.delete(path);
+		return fail("refused", `${what} at ${path} is not the one pinned: its sha256 is ${file.value.sha256}, not ${sha256}`);
+	}
+
 	/**
-	 * The apks option's APKs, each put on the phone like phoned's jar and installed there with `pm install -r`, once per
-	 * phone: a marker beside it on the phone (<apk>.installed) says that phone installed those bytes, so a later connect,
-	 * which starts phoned afresh, installs nothing again.
+	 * The apks option's APKs, each held to its pin, put on the phone like phoned's jar and installed there with
+	 * `pm install -r`, once per phone: a marker beside it on the phone (<apk>.installed) says that phone installed those
+	 * bytes, so a later connect, which starts phoned afresh, installs nothing again.
 	 */
 	async #install(transport: string, adb: AdbRun, onPhone: OnPhone): Promise<Result<void>> {
-		for (const path of this.#apks) {
-			const what = `the APK ${basename(path)}`;
-			const apk = await this.#fileAt(path, (why) => `${what}, which the provider's apks option names, is not at ${path} (${why})`);
+		for (const pin of this.#apks) {
+			const what = `the APK ${basename(pin.path)}`;
+			const apk = await this.#apk(pin);
 			if (!apk.ok) return apk;
 			const remote = `${PHONE_TMP}/apk-${apk.value.sha256.slice(0, 16)}.apk`;
 			const done = await onPhone(`shell:test -e ${remote}.installed && echo installed`, transport);

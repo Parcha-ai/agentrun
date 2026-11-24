@@ -42,8 +42,8 @@ test("a person grades an ended run; the agent's promotions read empty until a le
 
 // The console's Grade control reads a run's grade back from GET /runs/{id}/learning (`graded`): absent before one, then
 // the newest, a later grade replacing it, in the PUT's answer's shape without `expected`. A wrong grade with words on a
-// run the agent finished opens a look-back, and the read keeps which (`feedback`), so a page read again still says it,
-// and how that round stands (`feedback_status`).
+// run the agent finished opens a correction round, and the read keeps which (`feedback`), so a page read again still says
+// it, and how that round stands (`feedback_status`).
 test("a run's learning read says its grade and the round it opened: none before one, then the newest, never its expected", async (t) => {
   const { api, baseUrl } = await serve(t, { learning: "on", faux: LEARN });
   const doc = await (await fetch(`${baseUrl}/openapi.json`)).json();
@@ -65,54 +65,54 @@ test("a run's learning read says its grade and the round it opened: none before 
   meets(read);
 
   const wrong = await api("PUT", `/runs/${run}/grade`, { correct: false, label: "Review: the answer is 42, said as a number." });
-  assert.deepEqual([wrong.status, wrong.body.feedback], [200, "look_back"], JSON.stringify(wrong.body));
+  assert.deepEqual([wrong.status, wrong.body.feedback], [200, "correction"], JSON.stringify(wrong.body));
   await ended(api, run);
   const again = (await api("GET", `/runs/${run}/learning`)).body;
   assert.deepEqual(again.graded, { ...wrong.body, feedback_status: "ended" }, "the newer grade replaces the older, its round read ended");
-  assert.equal(again.graded.feedback, "look_back", "after the round ended, the read still says the grade opened a look-back");
-  assert.ok(again.learned?.some((note) => note.file === "reviewed.md"), `the look-back kept the reviewer's words: ${JSON.stringify(again)}`);
+  assert.equal(again.graded.feedback, "correction", "after the round ended, the read still says the grade opened a correction round");
+  assert.deepEqual([again.state, again.corrections], ["merged", 1], `the round kept the reviewer's words as a correction: ${JSON.stringify(again)}`);
   meets(again);
 });
 
 // Review on #2644 (round 4, security): every text of a promotion record the route returns is cut of the host's secrets as
-// the other learning reads cut them, its reason and each refit guard's label as well as its workflow's name.
-test("the promotions list cuts a known secret from every text of a record: its workflow, its reason, a refit guard's label", async (t) => {
+// the other learning reads cut them, its reason and a check's disagreement text as well as its workflow's name.
+test("the promotions list cuts a known secret from every text of a record: its workflow, its reason, a check's disagreement", async (t) => {
   const value = ["promo", "pass", process.pid, Date.now().toString(36)].join("-");
   withEnv(t, { PROMO_TEST_TOKEN: value });
   const { api, store } = await serve(t);
   assert.equal((await api("POST", "/agents", agent("promoted"))).status, 201);
-  const record = { workflow: `answer-${value}`, digest: "d2", at: "2026-11-14T00:00:00.000Z", decided: "promote", source: "refit", reason: `refit of answer-${value}: lowered guard check-${value}`, refit: { from: "d1", guards: [{ node: `check-${value}`, was: 0.5, threshold: 0.3 }] } };
+  const record = { workflow: `answer-${value}`, digest: "d2", at: "2026-11-14T00:00:00.000Z", decided: "hold", reason: `check of answer-${value}: held, it disagreed on check-${value}`, check: { compile_after: 20, agree_min: 0.9, alone_min: 0.5, attempt: 1, n: 4, agreed: 1, alone: 2, of: ["g-0"], disagreements: [{ run: "g-0", input: `ask ${value}`, agent: "no" }] } };
   await store.settings.put("learning.promotions.promoted", { v: 1, items: [record] });
   const read = await api("GET", "/agents/promoted/learning/promotions");
   assert.equal(read.status, 200, JSON.stringify(read.body));
   assert.equal(read.body.promotions.length, 1);
   assert.ok(!JSON.stringify(read.body).includes(value), `the secret shows: ${JSON.stringify(read.body)}`);
   assert.deepEqual([read.body.promotions[0].workflow, read.body.serving[0].workflow], ["[redacted]", "[redacted]"]);
-  assert.equal(read.body.promotions[0].refit.guards[0].threshold, 0.3, "numbers are kept");
+  assert.equal(read.body.promotions[0].check.alone, 2, "numbers are kept");
 });
 
-// A refit that switched an escalate and a guard off, and a hold for never answering alone, as the route answers them: the
-// closed schema takes a refit guard with no threshold, and an escalate's. A replay keeps no `alone` (a reader counts it,
-// n - handed_back), so a record stored before any replay said one reads through the route as it was kept, in the schema.
-test("the promotions list answers a refit's switched-off escalate and guard, and a record kept before `alone`, in its closed schema", async (t) => {
+// A hold for never answering alone, a promote on its dry run and a replaying record, as the route answers them, in the
+// closed schema of the check-only record.
+test("the promotions list answers a hold, a promote on its dry run and a replaying record in its closed schema, and refuses a field it does not name", async (t) => {
   const { api, store, baseUrl } = await serve(t);
   const doc = await (await fetch(`${baseUrl}/openapi.json`)).json();
   const schema = doc.paths["/agents/{agent_id}/learning/promotions"].get.responses["200"].content["application/json"].schema;
   assert.equal((await api("POST", "/agents", agent("switched"))).status, 201);
-  const replay = { n: 6, agree: 0, agent_acc: 1, wf_acc: 1, delta: 0, handed_back: 6, of: ["g-0"] };
-  const held = { workflow: "answer", digest: "d1", at: "2026-11-14T00:00:00.000Z", decided: "hold", source: "replay", reason: "it handed back every one of its 6 replayed inputs: it would never answer alone", replay };
-  const refit = { workflow: "answer", digest: "d2", at: "2026-11-14T00:00:01.000Z", decided: "promote", source: "refit", reason: "refit answer's guards: unsupported escalate off, read guard off", replay: { ...replay, handed_back: 0 }, refit: { from: "d1", guards: [{ node: "read", was: 0.7, threshold: null }, { node: "unsupported", was: null, threshold: null, escalate: true }] } };
-  // Kept before #2815, as `learning.promotions.<agent>` holds it today: a replay of {n, agree, accuracies, delta, handed_back, of}.
-  const old = { workflow: "answer", digest: "d0", at: "2026-11-13T00:00:00.000Z", decided: "promote", source: "replay", reason: "replayed on 18 graded inputs: within 2 pts", replay: { n: 18, agree: 14, agent_acc: 0.9, wf_acc: 0.9, delta: 0, handed_back: 3, of: Array.from({ length: 20 }, (_, i) => `g-${i}`) } };
-  await store.settings.put("learning.promotions.switched", { v: 1, items: [old, held, refit] });
+  const bar = { compile_after: 20, agree_min: 0.9, alone_min: 0.5, attempt: 1 };
+  const dry = { workflow: "answer", digest: "d0", at: "2026-11-13T00:00:00.000Z", decided: "promote", reason: "nothing to replay on: promoted on its passing dry run", check: { ...bar, n: 0, agreed: 0, alone: 0, of: [] } };
+  const held = { workflow: "answer", digest: "d1", at: "2026-11-14T00:00:00.000Z", decided: "hold", reason: "it handed back every one of its 6 replayed inputs: it would never answer alone", check: { ...bar, n: 6, agreed: 0, alone: 0, of: ["g-0"], stopped: true } };
+  const replaying = { workflow: "answer", digest: "d2", at: "2026-11-14T00:00:01.000Z", decided: "replaying", reason: "its check is replaying", check: bar, runs: ["r-1"], inputs: ["g-0"], replay_id: "rp-1" };
+  await store.settings.put("learning.promotions.switched", { v: 1, items: [dry, held, replaying] });
   const read = await api("GET", "/agents/switched/learning/promotions");
   assert.equal(read.status, 200, JSON.stringify(read.body));
   assert.deepEqual(schemaProblems(doc, schema, read.body), [], JSON.stringify(read.body));
-  assert.deepEqual(read.body.promotions[0].replay, old.replay, "the old record reads as it was kept");
-  assert.ok(read.body.promotions.every((one) => !("alone" in one.replay)), JSON.stringify(read.body.promotions));
-  assert.deepEqual(read.body.promotions[2].refit.guards, refit.refit.guards);
-  // The schema still closes a replay: a field it does not name is refused.
+  assert.deepEqual(read.body.promotions.map((one) => one.decided), ["promote", "hold", "replaying"]);
+  assert.deepEqual(read.body.promotions[1].check, held.check);
+  // Beside what serves, its state, its newest decided check's numbers and its audit line (#3061), and the champion still
+  // serving while d2 is checked: its own check, its nodes null (no learning commit holds its text here).
+  assert.deepEqual(read.body.serving, [{ workflow: "answer", digest: "d0", replaying: "d2", state: "checking", check: { n: 6, agreed: 0, alone: 0, attempt: 1 }, audit: { window: 10, disagree: 3, rows: 0, disagreed: 0 }, audits_off: null, not_auditable: 0, champion: { digest: "d0", commit: null, nodes: null, check: dry.check } }]);
+  // The schema closes a record: a field it does not name is refused.
   const extra = structuredClone(read.body);
-  extra.promotions[0].replay.alone = 15;
+  extra.promotions[0].source = "replay";
   assert.notDeepEqual(schemaProblems(doc, schema, extra), []);
 });

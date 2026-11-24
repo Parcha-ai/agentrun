@@ -10,7 +10,8 @@
 #     the computer's, which reaches Archil;
 #   - nftables, for the helper's mount with an egress gateway alone: it redirects root's TCP to Archil's 8100 and 32050
 #     to computerd's archil relay on the computer's loopback;
-#   - /workspace, empty and root's, where the helper mounts the run's folder;
+#   - /workspace, empty and root's, where the helper mounts the run's folder; a synced folder's computer has it made the
+#     computer user's, 0700, before init (by the provider's install, or by agentrun-dial on a machine that dials);
 #   - a desktop, with nothing started: Xvfb and xfwm4 (with dbus-run-session, which xfconf's packages bring) and
 #     xsetroot (x11-xserver-utils, the desktop's background), which the provider starts through computerd as the tool
 #     user on :0 (src/desktop.ts), and the apps E2B Desktop has that are cheap to carry: Xfce's terminal and text editor,
@@ -19,70 +20,23 @@
 #
 # No sudo and no sudoers file: the image's user is root, so the provider's own exec (Daytona's toolbox, Modal's exec,
 # E2B's commands as root) runs the helper as root, and the tool user has no way to root. The build fails if the base
-# brings either. computerd is not part of the image: the provider uploads and installs it, root's alone, at create, and
-# the helper's serve runs that one.
+# brings either. computerd is not part of the image: the provider uploads and installs it, root's alone, at create (or,
+# on a machine that dials the server, agentrun-dial fetches it from the server, checked by sha256), and the helper's
+# serve runs that one.
 #
 # /proc with hidepid=2 is not part of an image: the helper remounts /proc so before each mount, as root, and refuses the
 # mount in a computer where that fails.
 #
-# An archil package whose sha256 reads `unpinned` stops the build, saying so: pin both sums before any build.
+# Every step is install.sh's, so a vendor that builds images in its own account from a running machine runs the same
+# build: this file only puts it and the helper in one folder, runs it as root, and removes the folder.
 FROM python:3.12-slim@sha256:b18b261e1b4974b4f321451ad5251ded85abb22c2b8b262da527dda1d031ab30
 
-ARG ARCHIL_VERSION=0.10.1-1793222256
-ARG ARCHIL_SHA256_AMD64=f219e70287e8152f3f0c7222e1c3319f4665897235af7c33a8846e56a5a5786a
-ARG ARCHIL_SHA256_ARM64=10ed430e51c268af095dd9e6c7aa6cdbb951d2430d62a76458719db168f40c0e
-
-RUN set -eu; \
-    arch="$(dpkg --print-architecture)"; \
-    case "$arch" in \
-      amd64) sum="$ARCHIL_SHA256_AMD64" ;; \
-      arm64) sum="$ARCHIL_SHA256_ARM64" ;; \
-      *) echo "no archil client for $arch" >&2; exit 1 ;; \
-    esac; \
-    case "$sum" in unpinned) echo "archil ${ARCHIL_VERSION} for $arch has no pinned sha256 yet: set ARCHIL_SHA256_$(echo "$arch" | tr a-z A-Z) to the package's sum" >&2; exit 1 ;; esac; \
-    apt-get update -qq; \
-    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
-      git curl ca-certificates nodejs npm ripgrep fuse3 nftables >/dev/null; \
-    curl -fsSL -o /tmp/archil.deb "https://s3.amazonaws.com/archil-client/pkg/archil_${ARCHIL_VERSION}_${arch}.deb"; \
-    echo "$sum  /tmp/archil.deb" | sha256sum -c -; \
-    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends /tmp/archil.deb >/dev/null; \
-    rm -rf /var/lib/apt/lists/* /tmp/archil.deb; \
-    groupadd --gid 2510 agentrun-tool; \
-    useradd --uid 2510 --gid 2510 --no-create-home --home-dir /tmp --shell /bin/sh agentrun-tool; \
-    install -d -o root -g root -m 0755 /workspace
-
-# The desktop: Xvfb and xfwm4, which the provider starts through computerd as the tool user on :0, and the apps an agent
-# opens. Each program and each app's desktop file is checked here. It comes before the sudo guard below, so a package
-# that brought sudo would be taken away and checked gone there (a check here would refuse E2B's build, whose builder adds
-# sudo before these steps).
-RUN set -eu; \
-    apt-get update -qq; \
-    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
-      xvfb xfwm4 x11-xserver-utils xfce4-terminal mousepad firefox-esr xdotool fonts-dejavu-core adwaita-icon-theme >/dev/null; \
-    rm -rf /var/lib/apt/lists/*; \
-    for x in Xvfb xfwm4 dbus-run-session xsetroot xfce4-terminal mousepad firefox-esr xdotool; do command -v "$x" >/dev/null || { echo "the image has no $x" >&2; exit 1; }; done; \
-    for app in org.xfce.mousepad xfce4-terminal firefox-esr; do [ -f "/usr/share/applications/$app.desktop" ] || { echo "the image has no desktop file $app.desktop" >&2; exit 1; }; done
-
-COPY agentrun-archil /usr/local/sbin/agentrun-archil
-
-# What the helper runs, where it runs it from: an image that lacks one fails here, not at a run's first mount. And no
-# way to root for the tool user: no sudo, no sudoers. A provider's builder may add sudo to the base before these steps
-# (E2B's does): it is taken away first, the package where it is installed and every sudoers file, then checked gone.
-RUN set -eu; \
-    if dpkg -s sudo >/dev/null 2>&1; then SUDO_FORCE_REMOVE=yes DEBIAN_FRONTEND=noninteractive apt-get purge -y -qq sudo >/dev/null; fi; \
-    rm -rf /etc/sudoers /etc/sudoers.d; \
-    chown root:root /usr/local/sbin/agentrun-archil; \
-    chmod 0755 /usr/local/sbin/agentrun-archil; \
-    for x in /usr/bin/archil /usr/bin/awk /usr/bin/realpath /usr/bin/mount /usr/bin/chown /usr/bin/find /usr/bin/id /usr/bin/ls; do \
-      [ -x "$x" ] || { echo "the image has no $x" >&2; exit 1; }; \
-    done; \
-    ! command -v sudo >/dev/null 2>&1 || { echo "the image has sudo" >&2; exit 1; }; \
-    [ ! -e /etc/sudoers ] && [ ! -e /etc/sudoers.d ] || { echo "the image has a sudoers file" >&2; exit 1; }; \
-    ids="$(id -u agentrun-tool):$(id -g agentrun-tool)"; \
-    [ "$ids" = "2510:2510" ] || { echo "agentrun-tool is $ids" >&2; exit 1; }; \
-    archil --version | head -1
+COPY install.sh /tmp/agentrun-box/install.sh
+COPY agentrun-archil /tmp/agentrun-box/agentrun-archil
+RUN sh /tmp/agentrun-box/install.sh && rm -rf /tmp/agentrun-box
 
 USER root
-# A computer's first process is its provider's own (Daytona's runs this when a snapshot names no entrypoint; Modal's and
-# E2B's are their own): never the base image's python.
-CMD ["sleep", "infinity"]
+# A computer's first process is its provider's own (Daytona's toolbox, Modal's and E2B's own), never the base image's
+# python. Daytona never runs an image's CMD, only a snapshot's entrypoint, so box/build-daytona.py names this CMD as
+# the snapshot's. A machine whose create set AGENTRUN_ATTACH_URL dials the server instead (install.sh's agentrun-dial).
+CMD ["sh", "-c", "[ -z \"${AGENTRUN_ATTACH_URL-}\" ] || exec agentrun-dial; exec sleep infinity"]

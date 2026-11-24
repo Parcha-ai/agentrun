@@ -2,16 +2,43 @@
 // what they say, the network reads back as asked, a change to a network the provider does not declare is refused
 // (Core) and one it does declare is refused or applied truthfully (Full), a computer does not run past its deadline,
 // the janitor ends only the expired, stopped or running, and a takeover releases the run's lower epochs by label (Full).
-// A create retried with its request id answers the computer the first made, and after release is refused (Full).
+// A create retried with its request id answers the computer the first made, and after release is refused (Full). A
+// deleted computer stays gone: no call to it brings it back. A provider's prepareImage() and its descriptor's flag agree, and
+// prepareImage called twice answers one image and makes it once.
+// A dial host's machine token is its machine's alone, and ends at delete and at backstopAt (Core).
 import { randomBytes } from "node:crypto";
+import { ATTACH_CLOSE } from "../../attach.js";
+import type { ProviderDescriptor } from "../../descriptor.js";
+import { BACKSTOP_MARGIN_MS, type MachineHost } from "../../host.js";
+import type { HelloResult } from "../../protocol.js";
+import { descriptorOf } from "../../providers.js";
 import { releaseOlder, sweep } from "../../janitor.js";
 import { EPOCH_LABEL, OWNER_LABEL, RUN_LABEL, runLabels } from "../../labels.js";
-import { type ComputerRef, type ComputerSpec, computerNameFor, type NetworkSpec, runLifetimeMs } from "../../provider.js";
+import { type ComputerConnection, type ComputerRef, type ComputerSpec, computerNameFor, type NetworkSpec, runLifetimeMs } from "../../provider.js";
 import type { Case, CaseContext } from "../types.js";
 import { b64, CASE_LABEL, decode } from "./util.js";
 
 /** Labels for one case's computers: the run's, and the case's own. */
 const own = (t: CaseContext, name: string) => ({ ...t.runLabels, [CASE_LABEL]: name });
+
+/** Gets url with curl as the computer's user, through the proxy its programs are told of (no host bypasses it): curl's exit,
+ *  the HTTP code and the CONNECT code. Undefined, observed, on a computer that is not Linux with exec, or where the image
+ *  has no curl or no proxy is set. */
+const CURL = `command -v curl >/dev/null 2>&1 || { echo nocurl; exit 0; }; [ -n "\${HTTPS_PROXY:-\${https_proxy:-}}" ] || { echo noproxy; exit 0; }; c=$(curl -sS -o /dev/null --noproxy '' --max-time 30 -w '%{http_code} %{http_connect}' "$1" 2>/dev/null); echo "$? $c"`;
+async function curled(t: CaseContext, { client, hello }: ComputerConnection, url: string): Promise<{ exit: number; code: string; connect: string } | undefined> {
+	if (hello.os !== "linux" || !hello.groups.includes("exec")) {
+		t.observe(`the computer runs ${hello.os}${hello.groups.includes("exec") ? "" : " with no exec"}, so the egress proxy's answers were not read with curl`);
+		return undefined;
+	}
+	const ran = t.ok(await client.call("exec.run", { argv: ["sh", "-c", CURL, "sh", url], timeoutMs: 60_000 }), `curl ${url}`);
+	const out = decode(ran.stdout).trim();
+	if (out === "nocurl" || out === "noproxy") {
+		t.observe(out === "nocurl" ? "the image has no curl, so the egress proxy's answers were not read" : "no proxy is set for the computer's programs: its open network is the vendor's own, with no egress proxy to read");
+		return undefined;
+	}
+	const [exit, code, connect] = out.split(" ");
+	return { exit: Number(exit), code: code ?? "", connect: connect ?? "" };
+}
 const names = async (t: CaseContext, labels: Record<string, string>) =>
 	t
 		.ok(await t.provider.list(labels), `list ${JSON.stringify(labels)}`)
@@ -171,6 +198,11 @@ export const providerCases: Case[] = [
 		t.ok(await t.provider.release(ref, "delete"), "a second delete of the same computer");
 		t.deepEqual(await names(t, labels), [], "listed after delete");
 		t.refused(await t.provider.connect(ref), "connect to a deleted computer", ["gone", "not_found"]);
+		// A vendor that wakes a machine on the next call (a session resumed on request, a cold start) brings a deleted
+		// computer back: after the refused connect it stays gone, to attach, a second connect, and list.
+		t.refused(await t.provider.attach({ id: ref.id }), "attach to the deleted computer, after a connect to it", ["not_found"]);
+		t.refused(await t.provider.connect(ref), "a second connect to the deleted computer", ["gone", "not_found"]);
+		t.deepEqual(await names(t, labels), [], "listed after the calls to the deleted computer: nothing came back");
 	}),
 	provider(
 		"create-retried",
@@ -250,6 +282,42 @@ export const providerCases: Case[] = [
 		t.assert(deadline >= before + lifetimeMs - 1000 && deadline <= after + lifetimeMs + 1000, `its deadline, ${String(info.deadline)}, is lifetimeMs after create`);
 		t.deepEqual(await names(t, { ...labels, role: "other" }), [], "list by a label no computer has");
 	}),
+	// prepareImage is declared by the provider's method; its descriptor's flag says the same to Settings, which reads it
+	// without loading the provider's module. The two agree: a server never skips a provider's image, nor asks one it has
+	// not got. A provider on the machine-host adapter has its host's descriptor; another, the registry's for its id.
+	// Then prepareImage twice in one run (spec/computer/provider.md, "prepareImage"): both answer the same image, and the
+	// second finds the one the first made by its name, so it is told no onWait. A server calls it before its first create,
+	// so one that builds every time costs every server minutes. A provider with none passes, observed. Core: the first
+	// call costs at most a build per account and recipe, which the account's first create pays anyway.
+	provider(
+		"prepare-image",
+		async (t) => {
+			const descriptor = (t.provider as { host?: { descriptor?: ProviderDescriptor } }).host?.descriptor ?? descriptorOf(t.provider.id);
+			const prepare = t.provider.prepareImage?.bind(t.provider);
+			if (descriptor !== undefined)
+				t.assert(
+					(prepare !== undefined) === (descriptor.prepareImage === true),
+					prepare !== undefined
+						? `${descriptor.label}'s provider has prepareImage() but its descriptor does not declare prepareImage: Settings never calls it`
+						: `${descriptor.label}'s descriptor declares prepareImage, but its provider has no prepareImage(): give the provider class one`,
+				);
+			if (prepare === undefined) return t.observe("the provider has no prepareImage(): its computers start from an image a spec names");
+			const call = async (which: string) => {
+				const told: string[] = [];
+				const image = t.ok(await prepare({ signal: t.signal, onWait: (making, tag) => told.push(`${making} ${tag}`) }), `the ${which} prepareImage`);
+				return { image, told: told.length === 0 ? "" : `onWait(${told.join("; ")})` };
+			};
+			const first = await call("first");
+			t.observe(first.told === "" ? `the first prepareImage found ${first.image} and was told no onWait` : `the first prepareImage was told ${first.told} and answered ${first.image}`);
+			const second = await call("second");
+			t.equal(second.image, first.image, "the second prepareImage's image");
+			t.assert(
+				second.told === "",
+				`the second prepareImage was told ${second.told}: it must find the image the first made by its name (one that carries the box recipe's hash) and answer it with no build and no pull`,
+			);
+		},
+		{ timeoutMs: 20 * 60_000 },
+	),
 	// Stop is declared or refused: a provider that declares it lists the computer stopped; one that does not refuses it
 	// in words and leaves the computer running, never stopped or deleted behind the caller's back.
 	provider("stop", async (t) => {
@@ -374,6 +442,31 @@ export const providerCases: Case[] = [
 		},
 		{ level: "full", needs: ["persistence", "files"] },
 	),
+	// A machine that dials holds a token of its own (spec/computer/attach.md, Hosted machines that dial): good for that
+	// machine's hello alone, refused past its backstop and after its delete; and a server no machine can reach makes none.
+	provider("dial-token", async (t) => {
+		if ((t.provider as { host?: MachineHost }).host?.facts?.connect !== "dial") return t.observe("the provider's machines do not dial the server, so they hold no machine token");
+		const kit = await t.dial();
+		const bare = kit.unreachable();
+		const refused = t.refused(await t.attempt(t.spec({ labels: own(t, "dial-token") }), bare.provider), "create on a server with no public address", ["refused"]);
+		t.match(refused.message, /public https address/, "create on a server with no public address: the refusal");
+		t.equal(bare.creates(), 0, "the vendor's creates asked for by a create on a server with no public address");
+		const ref = await t.create({ labels: own(t, "dial-token") });
+		const { hello } = await t.connect(ref);
+		const token = t.present(kit.token(ref), `the token ${ref.name}'s machine was given`);
+		t.equal(await kit.check(token, new Date()), ref.name, "the machine's token, now");
+		// Past the machine's backstop: create's time, the most it may live and the margin, and a minute.
+		const past = new Date(Date.now() + t.provider.capabilities().maxLifetimeMs + BACKSTOP_MARGIN_MS + 60_000);
+		t.equal(await kit.check(token, past), undefined, "the machine's token past its backstop");
+		// A desktop's token takes a linux hello, its own before its display answers (attach.ts helloMismatch): it is held to
+		// another kind instead.
+		const others = [{ kind: hello.kind === "linux" ? "desktop" : hello.kind === "desktop" ? "android" : "linux" }, { os: hello.os === "linux" ? "windows" : "linux" }, { arch: hello.arch === "amd64" ? "arm64" : "amd64" }] as const;
+		for (const other of others) {
+			t.equal(await kit.dialAs(token, { ...hello, ...other } as HelloResult), ATTACH_CLOSE.mismatch, `the machine's token with a hello of ${JSON.stringify(other)}: the close code`);
+		}
+		t.ok(await t.provider.release(ref, "delete"), "release delete");
+		t.equal(await kit.check(token, new Date()), undefined, "the machine's token after its delete");
+	}),
 	provider("network-change", async (t) => {
 		const spec = t.spec({ labels: own(t, "network") });
 		const ref = await t.create(spec);
@@ -403,6 +496,21 @@ export const providerCases: Case[] = [
 			);
 			const connected = await t.connect(ref);
 			t.deepEqual(t.ok(await connected.client.call("ping", {}), "ping"), {}, "ping in an open computer");
+			// Where open goes through an egress proxy (the programs are told of one), it reaches the public internet alone:
+			// a name, with no resolver of the programs' own, and never metadata, a private address or the vendor's agent.
+			const web = await curled(t, connected, "https://example.com/");
+			if (web === undefined) return;
+			t.equal(`${web.exit} ${web.code}`, "0 200", "curl by name to https://example.com/ through the egress proxy");
+			const refusedTargets: [string, string][] = [
+				["http://169.254.169.254/latest/meta-data/", "metadata (169.254.169.254), plain HTTP"],
+				["https://169.254.169.254/", "metadata (169.254.169.254), CONNECT"],
+				["https://10.0.0.1/", "a private address"],
+				...(t.provider.capabilities().vendorAgentPorts ?? []).map((port): [string, string] => [`http://127.0.0.1:${port}/`, `the vendor's agent's port ${port} on the loopback`]),
+			];
+			for (const [url, what] of refusedTargets) {
+				const refused = await curled(t, connected, url);
+				t.assert(refused !== undefined && (refused.code === "403" || refused.connect === "403"), `${what}: the egress proxy refuses ${url} with 403, not ${JSON.stringify(refused)}`);
+			}
 		},
 		{ level: "full", needs: ["network:open"] },
 	),
@@ -412,6 +520,12 @@ export const providerCases: Case[] = [
 			const policy = { allow: ["example.com"] };
 			const ref = await t.create({ labels: own(t, "allow"), network: policy });
 			t.deepEqual(t.ok(await t.provider.network(ref), "network read-back"), policy, "the allowlist read back");
+			const connected = await t.connect(ref);
+			const listed = await curled(t, connected, "https://example.com/");
+			if (listed === undefined) return;
+			t.equal(`${listed.exit} ${listed.code}`, "0 200", "curl by name to https://example.com/, on the list, through the egress proxy");
+			const off = await curled(t, connected, "https://example.org/");
+			t.equal(off?.connect, "403", "https://example.org/, off the list: the egress proxy refuses its CONNECT with 403");
 		},
 		{ level: "full", needs: ["network:allow"] },
 	),

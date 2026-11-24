@@ -76,23 +76,22 @@ test("factory rejects malformed cursors and filters before querying", async () =
 });
 
 test("active factory includes independently stored internal workers while ordinary history and terminal review keep their boundary", async t => {
+  // The internal worker a store still makes beside a person's run is an audit's shadow run (learn/audit.ts): its id is
+  // the served run's after "audit.". A learning run of its own is no longer queued at a run's end.
   const { store } = await storeOn(t);
   await agentWithRevision(store);
-  await make(store, "parent");
-  const claim = await store.claim("parent", "runner-test", { leaseMs: 60_000 });
-  await store.runs.update(claim, { state: "ended", outcome: "completed" }, { also: [
-    { table: "learning_proposals", row: { turn: { prompt: "Learn", answer: "Learned" }, proposal: { notes: [] } } },
-    { table: "learning_run", row: { id: "learning-worker" } },
-  ] });
-  assert.deepEqual((await factoryRunsPage(store, url(), {}, brief)).runs.map(r => r.run_id), ["learning-worker"]);
-  const summary = await summaryOverStore(store, "learning-worker", { origin: "https://run.test", serverSecrets: () => [], factory: true });
-  assert.equal(summary.factory.runtime, "learning");
+  await make(store, "parent", { state: "ended", outcome: "completed" });
+  await make(store, "audit.parent");
+  assert.deepEqual((await factoryRunsPage(store, url(), {}, brief)).runs.map(r => r.run_id), ["audit.parent"]);
+  const summary = await summaryOverStore(store, "audit.parent", { origin: "https://run.test", serverSecrets: () => [], factory: true });
+  assert.equal(summary.factory.source, "managed");
   assert.equal(summary.factory.control, "managed");
   assert.equal(summary.factory.controls.cancel, true);
-  assert.deepEqual((await store.runs.list({})).map(r => r.id), ["parent"]);
-  const worker = await store.claim("learning-worker", "runner-test", { leaseMs: 60_000 });
-  await store.runs.update(worker, { state: "failed" });
+  assert.deepEqual((await store.runs.listed({ limit: 50 })).rows.map(({ row }) => row.id), ["parent"]);
+  const worker = await store.claim("audit.parent", "runner-test", { leaseMs: 60_000 });
+  await store.runs.update(worker, { state: "failed", endedAt: T0 + 2000 });
   assert.deepEqual((await factoryRunsPage(store, url("scope=review"), {}, brief)).runs, []);
+  assert.deepEqual((await factoryRunsPage(store, url(), {}, brief)).runs, []);
 });
 
 test("HTTP factory scope carries metadata and cursor; ordinary history keeps its prior response", async (t) => {

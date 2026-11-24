@@ -3,6 +3,7 @@ import { useState } from "react";
 import { ToolCard } from "@/components/ToolCard";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/field";
+import { matchesFilter } from "@/lib/filter";
 import { isMonidName, monidGrantOf, monidGrantText, monidNameProblem } from "@/lib/monid";
 
 /** What a grant's card says it is: one endpoint, or every endpoint of its provider that monid prices per call. */
@@ -14,6 +15,11 @@ const cardLine = (grant: string): string => {
     : `${g.provider}'s /${g.endpoint}, priced and pinned when the agent is saved.`;
 };
 
+/** The monid grants the Tools step shows: each `listed` or granted, that `filter` keeps by its name or its card's line.
+ *  MonidGrants draws them and the step's count adds them. */
+export const monidCards = (tools: readonly string[], listed: readonly string[], filter: string): string[] =>
+  [...new Set([...listed, ...tools].filter(isMonidName))].filter((g) => matchesFilter(filter, g, cardLine(g)));
+
 /** The Tools step's monid row: the agent's monid grants, a card each (untick one to take it away; it stays listed, to tick
  *  again), and a field that grants another by its name, `monid:<provider>/<endpoint>` or `monid:<provider>/*`. The
  *  field checks the name's shape only; the save reads monid's listing and is the judge of the rest. `listed`: the grants
@@ -21,14 +27,14 @@ const cardLine = (grant: string): string => {
  *  change. `notes`: what the last save's
  *  answer said of a grant (each endpoint monid prices by usage), in the server's words; `refused`: why the last save was
  *  refused at a grant, in the server's words. */
-export function MonidGrants({ tools, listed = [], notes = [], refused = [], onChange }: {
-  tools: readonly string[]; listed?: readonly string[];
+export function MonidGrants({ tools, listed = [], filter, notes = [], refused = [], onChange }: {
+  tools: readonly string[]; listed?: readonly string[]; filter: string;
   notes?: readonly { grant: string; message: string }[]; refused?: readonly { grant: string; message: string }[];
   onChange: (tools: string[]) => void;
 }) {
   const [text, setText] = useState("");
   const [problem, setProblem] = useState<string | undefined>(undefined);
-  const grants = [...new Set([...listed, ...tools].filter(isMonidName))];
+  const grants = monidCards(tools, listed, filter);
   const toggle = (grant: string) => onChange(tools.includes(grant) ? tools.filter((t) => t !== grant) : [...tools, grant]);
   const grant = () => {
     const name = monidGrantText(text);
@@ -50,13 +56,13 @@ export function MonidGrants({ tools, listed = [], notes = [], refused = [], onCh
           })}
         </ul>
       )}
-      <form className="flex flex-wrap items-start gap-2" onSubmit={(e) => { e.preventDefault(); grant(); }}>
+      <form className="flex max-w-3xl flex-wrap items-start gap-2" onSubmit={(e) => { e.preventDefault(); grant(); }}>
         <Input aria-label="monid grant" value={text} onChange={(e) => { setText(e.target.value); setProblem(undefined); }} aria-invalid={problem ? true : undefined}
           placeholder="monid:<provider>/<endpoint> or monid:<provider>/*" className="min-w-0 flex-[1_1_18rem]" spellCheck={false} autoCapitalize="off" autoComplete="off" />
         <Button type="submit" size="sm" className="h-control-md" disabled={!text.trim()}><Plus aria-hidden /> Grant</Button>
       </form>
       {problem && <p className="font-mono text-small text-destructive-text" role="alert">{problem}</p>}
-      <p className="text-small text-muted-foreground">A grant is priced and pinned when the agent is saved, from what monid lists then. monid's key is set in Settings → Tool keys.</p>
+      <p className="text-small text-muted-foreground">A grant is priced and pinned when the agent is saved, from what monid lists then. monid's key is set in Settings → API Keys.</p>
       {refused.length > 0 && (
         <ul className="space-y-1 font-mono text-small text-destructive-text" role="alert" aria-label="monid grants refused">
           {refused.map((r, i) => <li key={`${r.grant}:${i}`}>{r.message}</li>)}

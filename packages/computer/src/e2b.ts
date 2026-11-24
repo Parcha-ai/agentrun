@@ -1,22 +1,29 @@
 // The E2B host: sandboxes from an E2B template, a desktop (kind desktop) or a plain Linux (kind linux), both from our box
 // template by default (prepareImage, box-image.ts boxE2bTemplate), every call through the host's own E2B JS SDK (the `e2b` package), whose types it imports as types only (erased at build: nothing loads at
-// import). E2B's envd is the sandbox's first process (under systemd), so computerd is a child: its
+// import). E2B's envd starts every process the adapter runs, so computerd is a child: its
 // upload goes through envd's file API and every command (install, init's start, the stdio bridge) is a background
-// command as root. The rest of the computer is the shared machine-host adapter's (./hosted/provider.ts). Every SDK fact
+// command as root. With connect "dial", create starts the box template's agentrun-dial once instead, and the machine
+// dials the server: no upload, no bridge. The rest of the computer is the shared machine-host adapter's (./hosted/provider.ts). Every SDK fact
 // used here is cited in the README's E2B section, from e2b@2.63.0 (dist/index.mjs) and e2b-dev/infra@ff3922213 (envd).
 import type { Sandbox, SandboxInfo, SandboxOpts } from "e2b";
 import { boxE2bTemplate } from "./box-image.js";
 import { E2B } from "./descriptors/e2b.js";
 import { DEADLINE_LABEL, show } from "./drift.js";
+import { installedProxy, type ProxyEnv, proxyForDomain } from "./env-proxy.js";
 import { type HostCall, HostError, type HostFacts, type Machine, type MachineHost, type MachineProcess, type MachineRequest } from "./host.js";
 import { deadlineOf, HostedProvider, type HostedOptions, type HostedTimeouts, isoOf, MAX_LABEL, timeoutsOf } from "./hosted/provider.js";
+import { dialLaunch } from "./hosted/scripts.js";
+import { connectOf } from "./descriptor.js";
 import { dateOf, DOMAIN, isWhole, sizeRefusals } from "./hosted/values.js";
 import { PassThrough } from "node:stream";
 import type { ComputerSpec, Refusal } from "./provider.js";
 import { type ComputerErrorCode, ok, type Result } from "./result.js";
 
 /**
- * What every SDK call is given: the key, the domain and the API URL explicitly, and debug false (index.mjs:1126-1152).
+ * What every SDK call is given: the key, the domain and the API URL explicitly, and debug false (index.mjs:1126-1152);
+ * and the proxy the process installed into Node (env-proxy.ts): the SDK's fetch is its own undici Agent, which the
+ * process-wide proxy doesn't reach, and it sends every call, the API's and each sandbox's envd's, through the one `proxy`
+ * it is given. So it is given that one unless its NO_PROXY exempts the whole domain (proxyForDomain).
  * The SDK's types below are `import type`: erased at build, so nothing loads the SDK from here and the published types
  * name none of it (the package declares no dependency on e2b).
  */
@@ -25,6 +32,7 @@ export interface E2BConnectionOptions {
 	domain: string;
 	apiUrl: string;
 	debug: false;
+	proxy?: string;
 	requestTimeoutMs?: number;
 	signal?: AbortSignal;
 }
@@ -65,6 +73,12 @@ export interface E2BProviderOptions extends Omit<HostedOptions, "maxLifetimeMs">
 	/** The longest lifetime check takes: E2B Hobby's 1 h by default, Pro's 24 h at most. */
 	maxLifetimeMs?: number;
 	timeouts?: Partial<HostedTimeouts>;
+	/**
+	 * exec (default): the daemon goes in through envd's file API and each connection is a bridge through envd's process
+	 * stream. dial: create starts the box template's agentrun-dial once, and the machine dials the server (options.dial),
+	 * which every connection goes over.
+	 */
+	connect?: "exec" | "dial";
 }
 
 /**
@@ -81,8 +95,9 @@ const E2B_PACKAGE: string = "e2b";
 const DEFAULT_DOMAIN = "e2b.app";
 
 /** The connection options every SDK call is given. Exported for the test that hands them to the real SDK. */
-export function connectionOptions({ apiKey, domain }: { apiKey: string; domain: string }): E2BConnectionOptions {
-	return { apiKey, domain, apiUrl: `https://api.${domain}`, debug: false };
+export function connectionOptions({ apiKey, domain }: { apiKey: string; domain: string }, env: ProxyEnv = installedProxy()): E2BConnectionOptions {
+	const proxy = proxyForDomain(domain, env);
+	return { apiKey, domain, apiUrl: `https://api.${domain}`, debug: false, ...(proxy ? { proxy: proxy.href } : {}) };
 }
 
 /**
@@ -142,6 +157,14 @@ const ROOT_SHELL = "/bin/sh";
 const ROOT_SHELL_ARGS = ["-c", 'exec "$@"', "sh"];
 /** The PATH root's command runs with: the system's directories alone, none of /usr/local. */
 const ROOT_PATH = "/usr/sbin:/usr/bin:/sbin:/bin";
+/** Where a dial machine's launch leaves what it and agentrun-dial write, root's alone: no exec reads it back. */
+const DIAL_LOG = "/run/agentrun-dial.log";
+/**
+ * A dial machine's launch, root's command with boot env: E2B runs a template's start command once, at the template's
+ * build, and snapshots it running, so it never sees a create's env (docs.e2b.dev/template/start-ready-command). So
+ * create starts agentrun-dial itself (dialLaunch), the URL in the boot env.
+ */
+const DIAL_LAUNCH = ["-c", [`umask 077; exec >>${DIAL_LOG} 2>&1 </dev/null`, dialLaunch({ rootOnly: ROOT_ONLY })].join("\n")];
 
 
 /** The SDK names its errors (index.mjs:86-360); Connect's carry a code. */
@@ -183,8 +206,14 @@ function machineOf(info: SandboxInfo): Machine {
 	}
 	const started = dateOf(info.startedAt);
 	const state = info.state === "running" ? "running" : info.state === "paused" ? "stopped" : "gone";
-	return { id: info.sandboxId, labels, state, ...(started ? { createdAt: started } : {}), ...(end ? { endsAt: end } : {}) };
+	// What E2B says the sandbox was given (SandboxInfo's cpuCount and memoryMB), where it says it; E2B's answer has no disk.
+	const [cpus, memoryMb] = [positive(info.cpuCount), positive(info.memoryMB)];
+	const resources = { ...(cpus === undefined ? {} : { cpus }), ...(memoryMb === undefined ? {} : { memoryMb }) };
+	return { id: info.sandboxId, labels, state, ...(started ? { createdAt: started } : {}), ...(end ? { endsAt: end } : {}), ...(Object.keys(resources).length > 0 ? { resources } : {}) };
 }
+
+/** A positive finite figure of a vendor's answer, else undefined: never guessed. */
+const positive = (value: unknown): number | undefined => (typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined);
 
 /** One chunk of the SDK's output into a stream, unless the stream has ended. */
 const push = (stream: PassThrough, data: Uint8Array) => void (stream.writableEnded || stream.write(data));
@@ -192,28 +221,38 @@ const push = (stream: PassThrough, data: Uint8Array) => void (stream.writableEnd
 /** E2B's sandboxes as a MachineHost (../host.ts). */
 class E2BHost implements MachineHost {
 	readonly descriptor = E2B;
-	readonly facts: HostFacts = {
-		daemon: "child",
-		isolation: "microvm",
-		lifetime: "vendor",
-		maxLifetimeMs: PRO_MAX_MS,
-		arch: "amd64",
-		vendorAgentPorts: [ENVD_PORT],
-		// The box template has xfwm4 (box/Dockerfile), as E2B Desktop's has: the apps an agent opens are framed and focused.
-		windowManager: true,
-		// System paths whose permissions E2B's template build sets wider than root's, on its templates and ours alike.
-		rootOnly: ROOT_ONLY,
-	};
+	readonly facts: HostFacts;
+	/** connect exec alone: a dial host has neither (HostFacts.connect). */
+	readonly exec?: MachineHost["exec"];
+	readonly upload?: MachineHost["upload"];
 	readonly #Sandbox: SdkSandboxClass;
 	readonly #connection: E2BConnectionOptions;
 	readonly #requestMs: number;
 	/** Each sandbox create or connect gave, by id, for envd's commands and files: let go of at its delete. */
 	readonly #sandboxes = new Map<string, Sandbox>();
 
-	constructor(Sandbox: E2BSandboxClass, connection: E2BConnectionOptions, requestMs: number) {
+	constructor(Sandbox: E2BSandboxClass, connection: E2BConnectionOptions, requestMs: number, connect: "exec" | "dial") {
 		this.#Sandbox = Sandbox as SdkSandboxClass;
 		this.#connection = connection;
 		this.#requestMs = requestMs;
+		this.facts = {
+			daemon: "child",
+			isolation: "microvm",
+			lifetime: "vendor",
+			maxLifetimeMs: PRO_MAX_MS,
+			arch: "amd64",
+			vendorAgentPorts: [ENVD_PORT],
+			// The box template has xfwm4 (box/install.sh's desktop step), as E2B Desktop's has: the apps an agent opens are framed and focused.
+			windowManager: true,
+			// System paths whose permissions E2B's template build sets wider than root's, on its templates and ours alike: the
+			// adapter's step on exec, the launch's on dial (DIAL_LAUNCH).
+			rootOnly: ROOT_ONLY,
+			...(connect === "dial" ? { connect } : {}),
+		};
+		if (connect === "exec") {
+			this.exec = (id, argv, ctx) => this.#exec(id, argv, ctx);
+			this.upload = (id, path, bytes, ctx) => this.#upload(id, path, bytes, ctx);
+		}
 	}
 
 	errorCode(error: unknown): ComputerErrorCode {
@@ -236,7 +275,8 @@ class E2BHost implements MachineHost {
 
 	/**
 	 * Sandbox.create with the lifetime as its timeout in the whole seconds E2B takes (index.mjs:502-504), recorded in a
-	 * label for its end's arithmetic; no internet access unless the adapter asks egress (an Archil computer's root), no
+	 * label for its end's arithmetic; no internet access unless the adapter asks egress (an Archil computer's root, or the
+	 * egress proxy of a network open or a list), no
 	 * public traffic (a project's default may let it in: E2B docs, network/restrict-public-access), and kill at the
 	 * timeout, never a pause that keeps the computer (index.mjs:5674-5699).
 	 */
@@ -253,6 +293,10 @@ class E2BHost implements MachineHost {
 		};
 		const sandbox = await this.#Sandbox.create(req.image, options);
 		this.#sandboxes.set(sandbox.sandboxId, sandbox);
+		// A dial machine's launch: the boot env goes to agentrun-dial's process alone, never to the sandbox's envs, which
+		// envd gives every process it starts. The stream is let go of once envd started it: the process runs on
+		// (docs.e2b.dev/commands/background; the SDK's CommandHandle.disconnect, index.mjs:2760-2774).
+		if (req.boot !== undefined) (await this.#process(sandbox, DIAL_LAUNCH, req.boot.env, false, ctx)).stream.abort();
 		return { id: sandbox.sandboxId };
 	}
 
@@ -301,8 +345,8 @@ class E2BHost implements MachineHost {
 		return sandbox;
 	}
 
-	/** files.write as root (index.mjs:2332-2435). */
-	async upload(id: string, path: string, bytes: Uint8Array, ctx: HostCall): Promise<void> {
+	/** files.write as root (index.mjs:2332-2435); connect exec alone. */
+	async #upload(id: string, path: string, bytes: Uint8Array, ctx: HostCall): Promise<void> {
 		const sandbox = await this.#sandbox(id, ctx);
 		const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
 		await sandbox.files.write(path, buffer, { user: "root", requestTimeoutMs: ctx.timeoutMs, ...(ctx.signal ? { signal: ctx.signal } : {}) });
@@ -316,35 +360,12 @@ class E2BHost implements MachineHost {
 	 * connect-web connect-transport.js:145-150), so envd never ends it (start.go:39-44); the start alone is bounded by
 	 * ctx. Writes go one sendStdin at a time, in order; end is closeStdin; kill SIGKILLs it and lets go of its stream.
 	 */
-	async exec(id: string, argv: readonly string[], ctx: HostCall): Promise<MachineProcess> {
+	async #exec(id: string, argv: readonly string[], ctx: HostCall): Promise<MachineProcess> {
 		const sandbox = await this.#sandbox(id, ctx);
 		const out = new PassThrough();
 		const err = new PassThrough();
 		const requestTimeoutMs = this.#requestMs;
-		const stream = new AbortController();
-		const events = (sandbox.commands as unknown as { rpc: ProcessRpc }).rpc.start(
-			{ process: { cmd: ROOT_SHELL, args: [...ROOT_SHELL_ARGS, ...argv], envs: { PATH: ROOT_PATH } }, stdin: true },
-			{ headers: { Authorization: ROOT, [KEEPALIVE_HEADER]: KEEPALIVE_S }, signal: stream.signal, timeoutMs: 0 },
-		)[Symbol.asyncIterator]();
-		// The start, within ctx: a stream that gives no start event in time, or the caller's abort, is let go of.
-		const startAbort = () => stream.abort(ctx.signal?.reason);
-		ctx.signal?.addEventListener("abort", startAbort, { once: true });
-		const startTimer = setTimeout(() => stream.abort(), ctx.timeoutMs);
-		let pid: number;
-		try {
-			const first = await events.next();
-			const event = first.done ? undefined : first.value.event?.event;
-			if (event?.case !== "start") throw new Error(`envd's process stream began with ${event?.case ?? "nothing"}, not its start`);
-			pid = event.value.pid;
-		} catch (error) {
-			const why = stream.signal.aborted ? (ctx.signal?.aborted ? "AbortError" : "TimeoutError") : undefined;
-			stream.abort();
-			if (why === undefined) throw error;
-			throw Object.assign(new Error(why === "AbortError" ? "the exec was aborted before envd started it" : `envd did not start the process within ${ctx.timeoutMs / 1000} s`), { name: why });
-		} finally {
-			clearTimeout(startTimer);
-			ctx.signal?.removeEventListener("abort", startAbort);
-		}
+		const { pid, events, stream } = await this.#process(sandbox, [...ROOT_SHELL_ARGS, ...argv], {}, true, ctx);
 		const exited = (async () => {
 			let code = -1;
 			try {
@@ -382,6 +403,38 @@ class E2BHost implements MachineHost {
 				err.end();
 			},
 		};
+	}
+
+	/**
+	 * Root's /bin/sh with args, started through envd's Process.Start stream, with PATH the system's directories and env
+	 * over it: its pid once envd started it within ctx, its events after the start, and the stream's abort.
+	 */
+	async #process(sandbox: Sandbox, args: readonly string[], env: Record<string, string>, stdin: boolean, ctx: HostCall): Promise<{ pid: number; events: AsyncIterator<{ event?: ProcessEvent }>; stream: AbortController }> {
+		const stream = new AbortController();
+		const events = (sandbox.commands as unknown as { rpc: ProcessRpc }).rpc.start(
+			{ process: { cmd: ROOT_SHELL, args: [...args], envs: { PATH: ROOT_PATH, ...env } }, stdin },
+			{ headers: { Authorization: ROOT, [KEEPALIVE_HEADER]: KEEPALIVE_S }, signal: stream.signal, timeoutMs: 0 },
+		)[Symbol.asyncIterator]();
+		// The start, within ctx: a stream that gives no start event in time, or the caller's abort, is let go of.
+		const startAbort = () => stream.abort(ctx.signal?.reason);
+		ctx.signal?.addEventListener("abort", startAbort, { once: true });
+		const startTimer = setTimeout(() => stream.abort(), ctx.timeoutMs);
+		let pid: number;
+		try {
+			const first = await events.next();
+			const event = first.done ? undefined : first.value.event?.event;
+			if (event?.case !== "start") throw new Error(`envd's process stream began with ${event?.case ?? "nothing"}, not its start`);
+			pid = event.value.pid;
+		} catch (error) {
+			const why = stream.signal.aborted ? (ctx.signal?.aborted ? "AbortError" : "TimeoutError") : undefined;
+			stream.abort();
+			if (why === undefined) throw error;
+			throw Object.assign(new Error(why === "AbortError" ? "the exec was aborted before envd started it" : `envd did not start the process within ${ctx.timeoutMs / 1000} s`), { name: why });
+		} finally {
+			clearTimeout(startTimer);
+			ctx.signal?.removeEventListener("abort", startAbort);
+		}
+		return { pid, events, stream };
 	}
 
 	/**
@@ -434,13 +487,14 @@ export class E2BProvider extends HostedProvider {
 	constructor(options: E2BProviderOptions) {
 		// A caller who still names the option is told it is gone, whatever its value: it once let public traffic in.
 		if (typeof options === "object" && options !== null && Object.hasOwn(options, "publicStream")) throw new Error(PUBLIC);
-		const { apiKey, Sandbox, domain = DEFAULT_DOMAIN, kind = "desktop", maxLifetimeMs = HOBBY_MAX_MS, ...rest } = options;
+		const { apiKey, Sandbox, domain = DEFAULT_DOMAIN, kind = "desktop", maxLifetimeMs = HOBBY_MAX_MS, connect, ...rest } = options;
+		const via = connectOf(E2B, { connect });
 		if (typeof apiKey !== "string" || apiKey === "") throw new Error("options.apiKey, the E2B API key, is required: the provider reads no environment, so the caller passes it");
 		const lacks = ["create", "connect", "getInfo", "setTimeout", "kill", "list"].filter((name) => typeof (Sandbox as unknown as Record<string, unknown>)?.[name] !== "function");
 		if (lacks.length > 0) throw new Error(`options.Sandbox must be the e2b SDK's Sandbox class; it lacks ${lacks.join(", ")}`);
 		const ambient = ambientProblem();
 		if (ambient) throw new Error(ambient);
 		if (typeof domain !== "string" || !DOMAIN.test(domain)) throw new Error(`the E2B domain must be a host name such as ${DEFAULT_DOMAIN}, not ${JSON.stringify(domain)}`);
-		super(new E2BHost(Sandbox, connectionOptions({ apiKey, domain }), timeoutsOf(rest.timeouts).requestMs), { ...rest, kind, maxLifetimeMs });
+		super(new E2BHost(Sandbox, connectionOptions({ apiKey, domain }), timeoutsOf(rest.timeouts).requestMs, via), { ...rest, kind, maxLifetimeMs });
 	}
 }

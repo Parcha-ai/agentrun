@@ -1,7 +1,7 @@
 """One error class per way a call can fail, the outcome kinds every client of the server maps to its own idiom (the CLI to
-an exit code, the TypeScript client and this one to a class). No message holds the API key, a secret a body carried, or
-the server's own message text, which could quote either: a message names the route, the status and the server's error
-code."""
+an exit code, the TypeScript client and this one to a class). No message holds the API key or a secret a body carried: a
+message names the route, the status, the server's error code and its reason, read from the error object the client keeps
+(the key cut from it; after a secret body, no reason)."""
 
 from __future__ import annotations
 
@@ -14,6 +14,19 @@ ServerError = Dict[str, Any]
 """The server's error object ({"code", "message", ...}), with every copy of the API key cut from its values and keys."""
 
 Kind = Literal["refused", "auth", "unsupported", "unreachable", "usage", "late"]
+
+REASON_CHARS = 300
+"""The most of the server's reason a message carries."""
+
+
+def said(error: Optional[ServerError]) -> str:
+    """The server's reason as a message's end: ": <its message>", on one line, at most REASON_CHARS characters; empty
+    when the error object holds no message. `error` is the one the client keeps, the key already cut from it."""
+    message = error.get("message") if error else None
+    if not isinstance(message, str) or not message.strip():
+        return ""
+    line = " ".join(message.split())
+    return f": {line if len(line) <= REASON_CHARS else line[: REASON_CHARS - 1] + '…'}"
 
 
 class AgentRunError(Exception):
@@ -43,7 +56,7 @@ class AgentRunRefused(AgentRunError):
     kind: ClassVar[Kind] = "refused"
 
     def __init__(self, route: str, status: int, code: Optional[str], error: Optional[ServerError], why: Optional[str] = None, retry_after: Optional[float] = None) -> None:
-        super().__init__(why or f"The server refused {route}: {status}{f' {code}' if code else ''}.")
+        super().__init__(why or f"The server refused {route}: {status}{f' {code}' if code else ''}{said(error) or '.'}")
         self.status = status
         self.code = code
         self.error = error

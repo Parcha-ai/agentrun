@@ -14,6 +14,8 @@ from websockets.sync.client import unix_connect
 from websockets.exceptions import WebSocketException
 
 from . import __version__
+from .session_labels import native_labels
+from .learning_association import session_role
 
 class Candidate(BaseModel):
     id: str
@@ -23,9 +25,15 @@ class Candidate(BaseModel):
     label: str
     activity: str = "unknown"
     native_id: str
+    usage_path: str | None = None
+    model: str | None = None
+    display_name: str | None = None
+    project_name: str | None = None
+    project_path: str | None = None
+    session_role: Literal["root", "delegated", "unknown"] = "unknown"
 
     def public(self):
-        return self.model_dump(exclude={"native_id"})
+        return self.model_dump(exclude={"native_id", "usage_path", "model", "display_name", "project_name", "project_path", "session_role"})
 
 
 def command_json(command):
@@ -59,8 +67,9 @@ def command_json(command):
             process.stdout.close()
 
 
-def codex_rows(native_ids=None, diagnostic=None, stopping=None):
+def codex_rows(native_ids=None, diagnostic=None, stopping=None, loaded_only=False, poll_state=None):
     diagnostic = diagnostic if diagnostic is not None else {}
+    poll_state = poll_state if poll_state is not None else {}
     diagnostic.update(status="unavailable", reason="interface_unavailable")
     rows = []
     # Reserve one second for WebSocket cleanup inside the overall fifteen-second pass budget.
@@ -103,12 +112,70 @@ def codex_rows(native_ids=None, diagnostic=None, stopping=None):
 
             call("initialize", {"clientInfo": {"name": "agentrun_observer", "version": __version__}})
             socket.send(json.dumps({"method": "initialized"}))
-            if native_ids is not None:
-                for native in native_ids:
-                    try:
-                        rows.append(call("thread/read", {"threadId": native, "includeTurns": False})["thread"])
-                    except (ValueError, KeyError, TypeError):
-                        continue
+            seen = set()
+            # Discover before reading individual threads: a slow explicit selection must not
+            # hide newly loaded agents. Leave part of the same deadline for selected reads.
+            loaded_available = False
+            loaded_ids = []
+            if native_ids is None or loaded_only:
+                try:
+                    loaded = call("thread/loaded/list", {"limit": 100}, timeout=min(5, check() / 2))
+                    if not isinstance(loaded, dict) or not isinstance(loaded.get('data'), list) or not all(isinstance(item, str) for item in loaded['data']):
+                        raise ValueError("codex_invalid_response")
+                    loaded_available = True
+                    loaded_ids = loaded['data'][:100]
+                    if loaded.get("nextCursor"):
+                        diagnostic.update(status="partial", reason="discovery_limit")
+                except (ValueError, KeyError, TypeError):
+                    pass  # Older native daemons may not expose the loaded-list method.
+                except TimeoutError:
+                    diagnostic.update(status="partial", reason="time_budget")
+
+            # Alternate queues and advance on every attempted read, including a timeout.
+            # Persistent cursors let later IDs progress even when a poll ends mid-queue.
+            pending = {}
+            sizes = {}
+            for kind, identifiers in (("explicit", native_ids or []), ("loaded", loaded_ids)):
+                identifiers = sorted(set(identifiers))
+                sizes[kind] = len(identifiers)
+                cursor = poll_state.get(kind, 0)
+                cursor = cursor % max(1, len(identifiers)) if type(cursor) is int else 0
+                indexed = list(enumerate(identifiers))
+                pending[kind] = indexed[cursor:] + indexed[:cursor]
+            attempted = set()
+            while pending['explicit'] or pending['loaded']:
+                check()
+                kind = poll_state.get('next', 'loaded')
+                if kind not in pending or not pending[kind]:
+                    kind = 'explicit' if pending['explicit'] else 'loaded'
+                index, native = pending[kind].pop(0)
+                poll_state[kind] = (index + 1) % sizes[kind]
+                if native in attempted:
+                    continue
+                attempted.add(native)
+                poll_state['next'] = 'explicit' if kind == 'loaded' else 'loaded'
+                retrying_short_read = poll_state.pop('retry', None) == kind
+                read_budget = min(5, check())
+                try:
+                    row = call("thread/read", {"threadId": native, "includeTurns": False}, timeout=read_budget)["thread"]
+                    if isinstance(row, dict) and row.get("id") not in seen:
+                        rows.append(row); seen.add(row.get("id"))
+                        if diagnostic.get('reason') is not None:
+                            diagnostic['status'] = 'partial'
+                except (ValueError, KeyError, TypeError):
+                    continue
+                except TimeoutError:
+                    if read_budget < 5 and not retrying_short_read:
+                        # Retry a read cut short by this pass first next time. Advancing
+                        # past it can strand the same tail ID on every complete rotation.
+                        # Only retry once: setup can leave too little time on every poll.
+                        poll_state[kind] = index
+                        poll_state['next'] = kind
+                        poll_state['retry'] = kind
+                    diagnostic.update(status="partial" if rows else "unavailable", reason="time_budget")
+            if native_ids is not None and not loaded_only:
+                return rows
+            if loaded_only and loaded_available:
                 return rows
             cursor = None
             for page in range(50):
@@ -117,10 +184,12 @@ def codex_rows(native_ids=None, diagnostic=None, stopping=None):
                     diagnostic.update(status="partial" if rows else "unavailable", reason="time_budget")
                     break
                 result = call("thread/list", {"limit": 20, "cursor": cursor, "useStateDbOnly": True,
-                                               "sourceKinds": ["cli", "vscode", "appServer"]}, timeout=min(5, remaining))
+                                               "sourceKinds": ["cli", "vscode", "exec", "appServer", "subAgent", "subAgentReview", "subAgentCompact", "subAgentThreadSpawn", "subAgentOther", "unknown"]}, timeout=min(5, remaining))
                 if not isinstance(result, dict) or not isinstance(result.get("data"), list):
                     raise ValueError("codex_invalid_response")
-                rows.extend(result["data"][:1000 - len(rows)])
+                for row in result["data"]:
+                    if isinstance(row, dict) and row.get("id") not in seen and len(rows) < 1000:
+                        rows.append(row); seen.add(row.get("id"))
                 cursor = result.get("nextCursor")
                 if not cursor:
                     break
@@ -141,6 +210,7 @@ def candidates(state, harness, rows, *, selections=None, diagnostic=None):
     candidates = []
     if not isinstance(rows, list):
         return candidates
+    selected = []
     for row in rows:
         if not isinstance(row, dict):
             continue
@@ -156,18 +226,17 @@ def candidates(state, harness, rows, *, selections=None, diagnostic=None):
                   (source["mode"] == "project" and project is not None and source["source_id"] == project))))
                 for source in selections):
             continue
-        try:
-            identity = state.identity(harness, native)
-            # Observation never needs to allocate a project choice: a selected session
-            # or harness still reports activity when its directory is new or that map
-            # is full. Only discovery returns project IDs offered for enrollment.
-            project = state.project(harness, cwd) if selections is None else project or "unknown"
-        except ValueError as error:
-            if str(error) != "candidate_limit":
-                raise
+        selected.append((row, native, cwd))
+    # Resolve the pass together: reparsing/copying the whole map for each known
+    # session made discovery and repeated observation quadratic in session count.
+    # Observation still allocates no project choices, even for a new directory.
+    identifiers = state.candidate_ids(harness, [(native, cwd) for _, native, cwd in selected], projects=selections is None)
+    for (row, native, cwd), resolved in zip(selected, identifiers):
+        if resolved is None:
             if diagnostic is not None:
                 diagnostic.update(status="partial", reason="candidate_limit")
             continue
+        identity, project = resolved
         if harness == "claude":
             status = row.get("status")
             status = status if isinstance(status, str) else None
@@ -189,10 +258,14 @@ def candidates(state, harness, rows, *, selections=None, diagnostic=None):
                     activity = "unknown"
                 elif any(flag in {"waitingOnApproval", "waitingOnUserInput"} for flag in flags):
                     activity = "waiting_input"
+        display_name, project_name = native_labels(row, harness, identity, cwd)
         candidates.append(Candidate(id=identity, harness=harness, project_id=project,
                                     project_label=re.sub(r"[^\w .-]", "", Path(cwd).name)[:80] or "Project",
                                     label=harness.title() + " " + re.sub(r"[^A-Za-z0-9_-]", "", native)[:8],
-                                    native_id=native, activity=activity))
+                                    native_id=native, activity=activity, display_name=display_name, project_name=project_name,
+                                    project_path=cwd, session_role=session_role(harness, row),
+                                    usage_path=row.get("path") if harness == "codex" and isinstance(row.get("path"), str) else None,
+                                    model=row.get("model") if harness == "codex" and isinstance(row.get("model"), str) else None))
     return candidates
 
 
@@ -231,12 +304,16 @@ def observe(state, stopping=None):
         return rows
     codex = [source for source in selections if source["harness"] == "codex"]
     if codex:
-        identifiers = {source["external_session_id"] for source in codex}
+        identifiers = {source["external_session_id"] for source in codex if source["mode"] == "session"}
         native_ids = [key.split(":", 1)[1] for key, value in state.data["identities"].items()
                       if key.startswith("codex:") and value in identifiers]
         diagnostic = {"harness": "codex"}
-        observed = candidates(state, "codex", codex_rows(None if any(source["mode"] != "session" for source in codex) else native_ids,
-                              diagnostic=diagnostic, stopping=stopping), selections=selections, diagnostic=diagnostic)
+        saved_poll = state.data.get('codex_poll', {})
+        poll_state = {key: saved_poll[key] for key in ('explicit', 'loaded', 'next', 'retry') if key in saved_poll} if isinstance(saved_poll, dict) else {}
+        observed = candidates(state, "codex", codex_rows(native_ids,
+                              diagnostic=diagnostic, stopping=stopping, loaded_only=any(source["mode"] != "session" for source in codex),
+                              poll_state=poll_state), selections=selections, diagnostic=diagnostic)
+        state.data['codex_poll'] = poll_state
         diagnostic["sessions"] = len(observed)
         diagnostics.append(diagnostic)
         rows.extend(observed)

@@ -9,6 +9,7 @@
 //  - answers, after a recovery, a `never` call the log already holds a completed outcome for from the log, one re-issue for each;
 //  - answers a cut-off `exec` with a custom tool call output built from the nested calls the log holds for it, and runs nothing;
 //  - gives the model the harness's note about an interrupted turn as a developer message, once per interrupted turn.
+import type { OwnCalls } from "@parcha/agentrun-kernel";
 import type { DriveContext, SessionState } from "./host/kernel.js";
 import type { SessionMachine } from "./host/process.js";
 import { boundResult, failureText, openTurn, recoveryNote, recoverySystemNote, recoveryUserTurn, toolKey, transcriptOf } from "./host/process.js";
@@ -16,7 +17,7 @@ import { boundResult, failureText, openTurn, recoveryNote, recoverySystemNote, r
 // load in either order and the repair reads repairOutput"). A host loads harness.js first, so at that point none of its const bindings is set.
 import { repairOutput } from "./harness.js";
 import { type RolloutSummary, summarizeRollout } from "./rollout.js";
-import { callKey, completedNested, execRecovery, NESTED_CALL, type NestedFact, outputTextOf, parkedKey, recoveryFacts, Scripts, settle, UNWATCHED, waitResumed } from "./scripts.js";
+import { callKey, completedNested, execRecovery, NESTED_CALL, type NestedFact, outputTextOf, parkedKey, recoveredFailed, recoveredRowText, recoveryFacts, Scripts, settle, UNWATCHED, waitResumed } from "./scripts.js";
 
 /** The stream that ties each nested call to the `exec` it ran under: `{ callId, exec, since }` (`since`: the turn it ran in), written before the call runs. */
 export const NESTED_STREAM = "codex.nested";
@@ -28,6 +29,10 @@ export const RESUMED_STREAM = "codex.nested-resumed";
 /** The nested calls whose outcome a resume's recovered script output tells (recoverItems): `{ since, callIds }`, written before
  *  that output is injected, so the turn's recovery note says the outcome is there, after a crash between the two as well. */
 export const SHOWN_STREAM = "codex.nested-shown";
+/** Each `exec` a recovery answered (recoverItems), directly or through the `wait` on its cell, and whether that answer tells a
+ *  script that failed (recoveredFailed): `{ exec, failed }`, written before the answer is injected. That answer carries no status
+ *  header for its rollout line to be read by, so the exec's end on the host's record, live or replayed after a later crash, reads this. */
+export const RECOVERED_END_STREAM = "codex.exec-recovered-end";
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
@@ -61,6 +66,9 @@ export interface CodeModeDeps {
   /** How often the barrier looks again for a script's line, and what a declined call is told. */
   tries: number;
   declined: string;
+  /** The host's record of each `exec` (SessionIO.ownCalls): its row from its rollout lines, and each nested call it makes
+   *  named under it before the call reaches the gate. */
+  ownCalls?: OwnCalls;
 }
 
 interface Dangling {
@@ -182,8 +190,47 @@ export function codeMode(deps: CodeModeDeps) {
   const execOf = new Map<string, string>();
   /** After a recovery: the `never` calls the log holds a completed outcome for, by tool and arguments, until the turn ends. Each answers one re-issue. */
   const recovered = new Map<string, { tool: string; text: string; sent?: string }[]>();
-  for (const line of deps.lines) scripts.note(line);
-  machine.onRolloutLine?.((line) => scripts.note(line));
+  /** Each `exec` whose row this drive opened on the host's record (SessionIO.ownCalls): its end waits for that write. */
+  const rows = new Map<string, Promise<void>>();
+  /** The host's record of `exec`'s end, once its row is written: `output`, failed as a recovery recorded it (RECOVERED_END_STREAM)
+   *  or else as its status header says (`failed`). A crash leaves an exec open on the record (its start is marked as one its
+   *  harness answers), so its end is always one of these. A recovered exec that ended ok shows its calls' outcomes without
+   *  the words telling the model its script was cut short (recoveredRowText): on the record, those are a failed exec's. */
+  const endRow = (exec: string, output: string, failed: boolean): void => {
+    const own = deps.ownCalls;
+    if (!own) return;
+    void (rows.get(exec) ?? Promise.resolve())
+      .then(() => journal.read<{ exec: string; failed: boolean }>(RECOVERED_END_STREAM))
+      .then((kept) => {
+        const recovered = kept.findLast((r) => r.data.exec === exec)?.data;
+        return recovered ? own.ended(exec, recoveredRowText(output, recovered.failed), recovered.failed) : own.ended(exec, output, failed);
+      })
+      .catch((error) => deps.log("codex: an exec's end was not written", { exec, error: String(error) }));
+  };
+  // An `exec` of the log restored that Codex finished before the session stopped: its end, which a crash may have kept off
+  // the host's record (a call ended there already says nothing).
+  for (const line of deps.lines) {
+    const said = scripts.note(line);
+    if (said?.kind === "finished") endRow(said.exec, said.output, said.failed);
+  }
+  /** The host's row of the `exec` `exec`, opened once with its script (`{ script }`, as codemode's own input is held), from
+   *  its rollout line or, before that line is in the rollout, from the proxy's announcement. */
+  const openRow = (exec: string, input: string | undefined): Promise<void> => {
+    const own = deps.ownCalls;
+    if (!own) return Promise.resolve();
+    let row = rows.get(exec);
+    if (!row) rows.set(exec, (row = own.opened(exec, "exec", input === undefined ? {} : { script: input })));
+    return row;
+  };
+  // The lines read live open an `exec`'s row and end it. An `exec` of the log restored is on the host's record already; a
+  // cut-off one ends here too, when its recovered output (recoverItems) reaches the rollout: after the rows of the calls the
+  // recovery ran or found cut off, failed as the recovery recorded (RECOVERED_END_STREAM).
+  machine.onRolloutLine?.((line) => {
+    const said = scripts.note(line);
+    if (!said || !deps.ownCalls) return;
+    if (said.kind === "opened") void openRow(said.exec, said.input).catch((error) => deps.log("codex: an exec's row was not written", { exec: said.exec, error: String(error) }));
+    else endRow(said.exec, said.output, said.failed);
+  });
 
   /** The script a nested call is tied to now, as the log and the proxy's latest answer have it. */
   const tieNow = () => scripts.tie(machine.announcedExec?.(), (id) => logged.has(id));
@@ -273,6 +320,13 @@ export function codeMode(deps: CodeModeDeps) {
             const tie = tieNow();
             const exec = execOf.get(callId) ?? (tie.kind === "tied" || tie.kind === "held" ? tie.exec : undefined);
             if (exec) execOf.set(callId, exec);
+            // On the host's record the call sits under its exec's row, written first (from the proxy's announcement when the
+            // exec's line is not in the rollout yet), as a codemode script's calls sit under its call on every other harness.
+            // A call tied to no known exec names none: no parent is made up.
+            if (exec && exec !== UNWATCHED && deps.ownCalls) {
+              await openRow(exec, scripts.inputOf(exec) ?? machine.announcedInput?.(exec)).catch((error) => deps.log("codex: an exec's row was not written", { exec, error: String(error) }));
+              deps.ownCalls.nestedIn(callId, exec);
+            }
             // Never the unwatched-answer marker: a call tied to no known exec is journaled with none.
             journal.append(NESTED_STREAM, { callId, exec: exec === undefined || exec === UNWATCHED ? null : exec, since: openTurn(ctx.state())?.since ?? -1, tool: String(p.tool), args: p.arguments ?? {} } satisfies Tie);
           }
@@ -344,7 +398,11 @@ export function codeMode(deps: CodeModeDeps) {
       // Each cut-off exec lists its own calls. A call whose script could not be told when it ran (an answer the proxy did not see to its end)
       // is listed once, apart, in the LAST cut-off exec's output, if it ran in this interrupted turn.
       const told = new Map((recoveryNote(state)?.calls ?? []).map((c) => [c.callId, c.status] as const));
-      const listed = recoveryFacts(execs, ties, since, (tie) => ({ ...factOf(state, rolled, tie, told), ...(resumed.has(tie.callId) ? { resumed: resumed.get(tie.callId)! } : {}) }));
+      const fact = (tie: Tie): NestedFact => ({ ...factOf(state, rolled, tie, told), ...(resumed.has(tie.callId) ? { resumed: resumed.get(tie.callId)! } : {}) });
+      const listed = recoveryFacts(execs, ties, since, fact);
+      // The exec each dangling `wait`'s cell belongs to, as the rollout has it.
+      const yielders = new Scripts();
+      for (const line of lines) yielders.note(line);
       // The outputs built here hold their quoted results to their own bound (scripts.ts EXEC_RECOVERY_MAX_CHARS): every other is
       // held to the host's below. The calls whose outcome they tell, for the turn's recovery note.
       const built = new Set<number>();
@@ -365,6 +423,9 @@ export function codeMode(deps: CodeModeDeps) {
             built.add(i);
             shown.push(...recovered.shown);
           }
+          // This output finishes the cell's exec, and it carries no status header: that exec ends as its last call says.
+          const exec = cell === undefined ? undefined : yielders.execOn(cell);
+          if (exec !== undefined) journal.append(RECOVERED_END_STREAM, { exec, failed: recoveredFailed(ties.filter((tie) => tie.exec === exec).map(fact)) });
           items[i] = withOutputKind(waited !== undefined ? { ...item, output: waited } : pictured !== undefined ? { ...item, output: pictured } : item, c);
           return;
         }
@@ -372,16 +433,16 @@ export function codeMode(deps: CodeModeDeps) {
         // Only the calls the output still tells after its bound: a call cut from it is not said to be above.
         const recovered = execRecovery(own, loose);
         items[i] = { type: "custom_tool_call_output", call_id: c.callId, output: recovered.output };
+        journal.append(RECOVERED_END_STREAM, { exec: c.callId, failed: recoveredFailed(own) });
         built.add(i);
         shown.push(...recovered.shown);
       });
       items.forEach((item, i) => {
         if (!built.has(i) && typeof item.output === "string") item.output = boundResult(item.output).text;
       });
-      if (resume && shown.length > 0) {
-        journal.append(SHOWN_STREAM, { since, callIds: shown });
-        await journal.flush();
-      }
+      if (resume && shown.length > 0) journal.append(SHOWN_STREAM, { since, callIds: shown });
+      // Every record above is in the log before the outputs are injected.
+      await journal.flush();
     },
 
     /** With no recovery note, the calls the rollout has no output for get theirs from the log before any turn is sent: a turn that ended without

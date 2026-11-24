@@ -11,6 +11,18 @@ export function hostName(header: string | undefined): string | undefined {
   return match && (match[2] === undefined || Number(match[2]) <= 65535) ? match[1] : undefined;
 }
 
+/** Whether a Host name (as hostName gives it) is this machine's own: localhost, an IPv4 loopback address or [::1]. Not a name
+ *  an operator allowed (--allow-host, AGENTRUN_PUBLIC_URL): those pass the server's Host check, and a route that reads this
+ *  machine's files asks for more. */
+export const isLoopbackName = (name: string | undefined): boolean => name === "localhost" || name === "[::1]" || (name !== undefined && /^127(\.\d{1,3}){3}$/.test(name));
+
+/** The port a Host header names (1 to 65535), or undefined for none, or for a header that is not `name` or `name:port`. */
+export function hostPort(header: string | undefined): number | undefined {
+  const match = /^(?:\[[0-9a-f:.]+\]|[a-z0-9._-]+):(\d{1,5})$/.exec(String(header ?? "").trim().toLowerCase());
+  const port = match ? Number(match[1]) : 0;
+  return port >= 1 && port <= 65535 ? port : undefined;
+}
+
 /** The names a server listening on loopback `host` answers to: this machine's (localhost, 127.0.0.1, [::1], and `host`
  *  itself), each --allow-host name, and the name of the address people open (AGENTRUN_PUBLIC_URL), which a proxy in
  *  front of it sends. */
@@ -35,5 +47,22 @@ export const hostRefusedPage = (port: number) => `<!doctype html>
 <p>This AgentRun server answers only at a name on its own machine, so it refused the address this page was opened at.</p>
 <p>Open it at <code>localhost:&lt;port&gt;</code> or <code>127.0.0.1:&lt;port&gt;</code>, with the port you reached it on. From another computer, a tunnel works at any local port: <code>ssh -L ${port}:localhost:${port} &lt;server&gt;</code>, then open <code>localhost:${port}</code> in the browser.</p>
 <p>To serve it at a name of its own (behind HTTPS, for example), start it with <code>AGENTRUN_PUBLIC_URL=https://&lt;name&gt;</code>, or add the name with <code>--allow-host &lt;name&gt;</code>.</p>
+</body></html>
+`;
+
+/** What a script that sends a request under the server's earlier public address is told (public-address.ts): where it is
+ *  now, `to`, the address its operator set. */
+export const movedFix = (to: string) => `this server's public address changed to ${to} (AGENTRUN_PUBLIC_URL); send requests there`;
+
+const escaped = (text: string) => text.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+
+/** The page a browser gets for a page other than the console's, under the server's earlier public address: fixed text and
+ *  the new address `to`, under the console's CSP. */
+export const movedPage = (to: string) => `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>AgentRun moved</title></head>
+<body>
+<h1>AgentRun moved</h1>
+<p>This AgentRun server's public address changed. Open it at <a href="${escaped(to)}/">${escaped(to)}</a>.</p>
+<p>Sign in again there: a sign-in at the earlier address does not carry over. Links in earlier webhook messages still name the earlier address.</p>
 </body></html>
 `;

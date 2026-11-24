@@ -4,7 +4,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { AgentEditPage, AgentsPage } from "./AgentsPage";
 import { AgentPage } from "./AgentPage";
 import { ClientError } from "@/lib/client";
-import type { Agent } from "@/lib/agentForm";
+import { type Agent, DECISION, WORKFLOW } from "@/lib/agentForm";
+import { SERVED_AGENT } from "@/test/agent";
 
 /** A fake client with no computers list unless it brings its own: the Computer step then shows where runs go. */
 const withoutComputers = (v2: object) => ({ computers: () => Promise.reject(new Error("fixture: no computers list")), ...v2 });
@@ -14,7 +15,7 @@ const withoutComputers = (v2: object) => ({ computers: () => Promise.reject(new 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const agentAt = (revision: string, instructions: string, archived = false): Agent => ({
-  agent_id: "calc", kind: "agentic", revision, revisions: revision === "r1" ? 1 : 2, archived_at: archived ? "2026-10-30T05:00:00Z" : null,
+  ...SERVED_AGENT, agent_id: "calc", kind: "agentic", revision, revisions: revision === "r1" ? 1 : 2, archived_at: archived ? "2026-10-30T05:00:00Z" : null,
   definition: { version: revision === "r1" ? 1 : 2, name: "Calc", instructions, harness: "pi", skills: [], tools: [] },
 });
 const caps = { harnesses: [{ id: "pi", available: true }], tools: [], thinking: ["low"] };
@@ -83,7 +84,7 @@ describe("AgentEditPage, a new agent from a starter", () => {
    *  provider is `provider`, or none: what was sent, where the page went, and the page and host to look at after. */
   async function createFrom(choice: string, provider?: string) {
     const { DECISION_STARTER } = await import("@/lib/decisionStarter");
-    const made: Agent = { agent_id: "gambling-check", kind: "workflow", revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "Gambling check", workflow: DECISION_STARTER, skills: [], tools: [] } };
+    const made: Agent = { ...SERVED_AGENT, agent_id: "gambling-check", kind: "workflow", revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "Gambling check", workflow: DECISION_STARTER, skills: [], tools: [] } };
     let sent: { definition: Record<string, unknown> } | undefined;
     let went: string | undefined;
     const v2 = {
@@ -112,7 +113,7 @@ describe("AgentEditPage, a new agent from a starter", () => {
     await settle();
     return { DECISION_STARTER, sent, went, host, v2, settle };
   }
-  const createDecision = (provider: string) => createFrom("decision", provider);
+  const createDecision = (provider: string) => createFrom(DECISION, provider);
 
   it("creates a workflow agent from the starter decision workflow, with no harness, and opens its page on the Workflow tab", async () => {
     const { DECISION_STARTER, sent, went, host, v2, settle } = await createDecision("jev");
@@ -131,14 +132,14 @@ describe("AgentEditPage, a new agent from a starter", () => {
 
   it("on a server with no decision provider, creates a workflow agent from the general starter and opens its Workflow tab", async () => {
     const { WORKFLOW_STARTER } = await import("@/lib/workflowStarter");
-    const { sent, went } = await createFrom("workflow");
+    const { sent, went } = await createFrom(WORKFLOW);
     expect(sent?.definition).toEqual({ version: 1, name: "Gambling check", workflow: WORKFLOW_STARTER, skills: [], tools: [] });
     expect(went).toBe("#/agents/gambling-check/workflow");
   });
 });
 
 describe("AgentsPage, where an agent's card goes", () => {
-  it("opens the agent's page from its card, its Runs tab from its History icon, and the editor from its Edit icon", async () => {
+  it("opens the agent's page and runs, while Edit offers coding agents or the definition playground", async () => {
     const went: string[] = [];
     const v2 = { listAgents: async () => ({ agents: [agentAt("r1", "Answer.")], next_cursor: null }) };
     const host = document.body.appendChild(document.createElement("div"));
@@ -148,8 +149,10 @@ describe("AgentsPage, where an agent's card goes", () => {
     const click = (el: Element | null | undefined) => act(() => { (el as HTMLElement).click(); });
     click([...host.querySelectorAll("li button")].find((b) => b.textContent?.includes("Calc") && !b.getAttribute("aria-label")));
     click(host.querySelector('[aria-label="Edit Calc"]'));
+    expect(document.querySelector('[role="menu"]')?.textContent).toContain("Claude Code CLI");
+    expect(document.querySelector('[role="menu"] a')?.getAttribute("href")).toBe("#/playground?operation=edit-agent&agent=calc");
     click(host.querySelector('[aria-label="Runs of Calc"]'));
-    expect(went).toEqual(["#/agents/calc", "#/agents/calc/edit", "#/agents/calc/runs"]);
+    expect(went).toEqual(["#/agents/calc", "#/agents/calc/runs"]);
   });
 });
 
@@ -172,19 +175,15 @@ describe("AgentEditPage, a new agent", () => {
 });
 
 describe("AgentsPage's coding-agent handoff", () => {
-  async function list(archived: boolean) {
-    const host = document.body.appendChild(document.createElement("div"));
-    root = createRoot(host);
-    const v2 = { listAgents: async () => ({ agents: [agentAt("r1", "Answer.")], next_cursor: null }) };
-    act(() => root!.render(createElement(AgentsPage, { v2: v2 as never, archived, go: () => {} })));
-    for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
-    return [...host.querySelectorAll("button")].find((b) => b.textContent?.trim() === "Build with your coding agent");
-  }
-  it("offers Build with your coding agent beside New agent, and not among the archived agents", async () => {
-    const build = await list(false);
-    expect(build).toBeDefined();
-    expect(build!.nextElementSibling?.textContent?.trim()).toBe("New agent");
-    act(() => root?.unmount());
-    expect(await list(true)).toBeUndefined();
+  it("offers Build an agent and the native connect dropdown without opening a legacy editor", async () => {
+    const host = document.body.appendChild(document.createElement("div")); root = createRoot(host);
+    const v2 = { listAgents: async () => ({ agents: [], next_cursor: null }) };
+    await act(async () => root!.render(createElement(AgentsPage, { v2: v2 as never, archived: false, go: () => {} })));
+    const button = (label: string) => [...host.querySelectorAll("button")].find((control) => control.textContent === label);
+    expect(button("Build an agent")).toBeDefined(); expect(button("Connect agent")).toBeDefined(); expect(button("New agent")).toBeUndefined();
+    await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Choose coding agent for Connect agent"]')!.click());
+    expect(document.querySelector('[role="menu"]')?.textContent).toContain("Claude Code CLI");
+    expect(document.querySelector('[role="menu"]')?.textContent).toContain("Codex app");
+    expect(document.querySelector('[role="menu"] a')?.getAttribute("href")).toBe("#/agents/connect");
   });
 });

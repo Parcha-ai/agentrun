@@ -57,7 +57,7 @@ export function ModelKeyCard({ v2, needs, model, onSaved, writable, whyNot = "si
   // The first sign-in: who, and OpenAI's words on usage, until the person is done with them.
   if (planOffered && planView.state === "signed_in") return (
     <section className="border-b bg-card px-5 py-5 md:px-8" aria-label="Model key">
-      <div className="mx-auto flex max-w-[1600px] gap-3">
+      <div className="flex gap-3">
         <KeyRound className="mt-1 size-4 shrink-0 text-success-text" aria-hidden />
         <div className="min-w-0 flex-1 space-y-3">
           <h2 className="text-prose font-semibold">Signed in with ChatGPT</h2>
@@ -71,7 +71,7 @@ export function ModelKeyCard({ v2, needs, model, onSaved, writable, whyNot = "si
 
   return (
     <section className="border-b bg-card px-5 py-5 md:px-8" aria-label="Model key">
-      <div className="mx-auto flex max-w-[1600px] gap-3">
+      <div className="flex gap-3">
         <KeyRound className="mt-1 size-4 shrink-0 text-warning-text" aria-hidden />
         <div className="min-w-0 flex-1 space-y-3">
           <h2 className="text-prose font-semibold">{needs === "model" ? "This server's default model doesn't run" : planOffered ? "Sign in with ChatGPT or add a model key to run agents" : "Add a model key to run agents"}</h2>
@@ -120,7 +120,7 @@ export function ModelKeyCard({ v2, needs, model, onSaved, writable, whyNot = "si
             : <p className="text-body text-muted-foreground">The server sets the {picked.label} key when it starts: change it there.</p>)}
           {problem && <div className="border"><RunError error={problem} title="The key was not saved" /></div>}
           {whatRuns}
-          <p className="text-small text-muted-foreground">Every key is in <a className="underline underline-offset-2 hover:text-foreground" href="#/settings/keys">Settings</a>.</p>
+          <p className="text-small text-muted-foreground">Every key is in <a className="underline underline-offset-2 hover:text-foreground" href="#/settings/keys">Settings</a>, and so is a model gateway you already run (LiteLLM or another): Use a model gateway.</p>
         </div>
       </div>
     </section>

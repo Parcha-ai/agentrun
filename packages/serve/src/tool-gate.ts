@@ -18,25 +18,26 @@
 //
 // An ask has one way to wait, every tool's alike (the owner's ruling of 11-04): it PARKS. The runner's loop holds the
 // call and the run goes needs_input with the pending approval. On an answer the loop runs the approved call once, through
-// the journal, and the session goes on with its result. One call waits at a time: another asked meanwhile is refused.
+// the journal, and the session goes on with its result. A read the runner lost mid-call (its claim lapsed before the
+// call's end was recorded) may run again on its next claim; a call with a side effect never does: that claim answers it
+// interrupted (test/adapter-approved-call-lapse.test.mjs). One call waits at a time: another asked meanwhile is refused.
 //
 // The answer: POST /v2/runs/{id}/approvals/{approval_id} { decision: "allow" | "deny", note? } -> 204. The first answer
 // wins; the same answer again is 204, a conflicting one 409. Only the owner's password session answers (server.ts), never
 // a token. A cancel marks pending approvals canceled. Where no one can approve (accounts off), an ask is refused at once
 // in words, never parked.
 
-import { COMPUTER_OP_TOOL, computerToolDefs, defaultPermissionOf, SHELL_FAMILY, SHELL_WATCHERS, shellPermission, shellToolOf } from "@parcha/agentrun-kernel/kernel";
-import { READ_SKILL_FILE } from "@parcha/agentrun-kernel";
-import { LEARNED_DIR } from "./learning.js";
-import { COMPUTER_ROOT, portPath } from "./workspace/paths.js";
+import { COMPUTER_OP_TOOL, COMPUTER_TOOLS, computerToolDefs, defaultPermissionOf, hostToolDefs, SHELL_FAMILY, SHELL_WATCHERS, type ShellPlace, shellPermission, shellToolOf } from "@parcha/agentrun-kernel/kernel";
+import { type AdapterFacts, READ_SKILL_FILE } from "@parcha/agentrun-kernel";
+import { COMPUTER_ROOT } from "./workspace/paths.js";
 import type { Workspace } from "./workspace/workspace.js";
-import { builtinHarness } from "./harness-table.js";
 import { META_TOOLS } from "./meta-tool-names.js";
 import { DEFAULT_HARNESS } from "./harness.js";
 import { DECISION_PROVIDER_KEYS, KIND_KEYS, SERVE_OWN_TOOLS, type ToolSettingsRead } from "./tool-plane.js";
-import { isTableTool, isToolRow, tableTools } from "./tool-list.js";
-import { deniedText, NOT_RUN, RAN_UNKNOWN, type SettingFrom } from "./refusal-words.js";
+import { asksByDefault, isTableTool, isToolRow, tableTools } from "./tool-list.js";
+import { CANT_BE_CALLED, computerOffText, computerOffWords, DENIED_OPENING, deniedText, NOT_RUN, RAN_UNKNOWN, type SettingFrom } from "./refusal-words.js";
 import { type Approvals, approvalsOf } from "./approvals.js";
+import { settingOfDefinition } from "./computer-setting.js";
 import { BASH_POLICIES, readOnlyReason, readOnlyText } from "./bash-read-only.js";
 import { formatToolName, isCatalogName, mcpNameOf, mcpToolName, monidNameOf } from "./tool-names.js";
 
@@ -58,7 +59,7 @@ const isBuiltin = (name: string): boolean => isToolRow(name) || SERVE_OWN_TOOLS.
  *  the kernel's ruled rule (defaultPermissionOf): bash asks first, and the background tools, which need a computer, are
  *  refused. */
 export const defaultPermission = (name: string, where: ShellWhere = {}): Permission => {
-  if (isCatalogName(name) || !isBuiltin(name)) return "ask";
+  if (isCatalogName(name) || !isBuiltin(name) || asksByDefault(name)) return "ask";
   return where.computer === false ? defaultPermissionOf(name, { computer: false }) : "allow";
 };
 
@@ -111,9 +112,9 @@ export type NameMap = ReadonlyMap<string, string>;
 /** Every name a session on `harness` gives its tools, to the settings key each is held to: the shell family (bash's),
  *  table, own and decision tools, read_skill_file (`read`), the kinds' tools (a shared one by its first kind), nativeTools,
  *  the browser's registrations. The names are the host's own: each adapter maps its CLI's names to them (its facts'
- *  hostName). The first named wins. */
-export function nameMapOf(harness: string): NameMap {
-  const facts = builtinHarness(harness)?.facts;
+ *  hostName). The first named wins. `facts`: the adapter's, as the owner's table has them (harness-table.ts factsOf: a
+ *  module's harness's too); undefined for a harness with none (pi). */
+export function nameMapOf(harness: string, facts: AdapterFacts | undefined): NameMap {
   const names = new Map<string, string>();
   const name = (own: string, key: string): void => void (names.has(own) || names.set(own, key));
   for (const [own, key] of Object.entries(SHELL_FAMILY)) name(own, key);
@@ -129,7 +130,7 @@ export function nameMapOf(harness: string): NameMap {
  *  open family no list holds (a catalog name, `mcp:<server>/<tool>` or `monid:<provider>/<endpoint>`). Undefined: nothing
  *  maps it, and the gate asks (an MCP tool's or monid endpoint's wire name is read back by the loop, ClaimMcp.catalogOf,
  *  before the gate is asked). */
-export function settingsKeyOf(harness: string, name: string, names: NameMap = nameMapOf(harness)): string | undefined {
+export function settingsKeyOf(harness: string, name: string, names: NameMap): string | undefined {
   const own = names.get(name);
   if (own !== undefined) return own;
   return isCatalogName(name) ? name : undefined;
@@ -218,12 +219,12 @@ function bothOf(own: PinValue, theirs: PinValue): PinValue | undefined {
 export function pinRefusal(name: string, args: unknown, server: PermissionSettings, agent: PermissionSettings = {}, ran: "no" | "unknown" = "no", declared?: ReadonlySet<string>): { text: string; mismatched: string[] } | undefined {
   if (!mcpNameOf(name)) return undefined;
   const what = ran === "no" ? NOT_RUN : RAN_UNKNOWN;
-  if (server[name]?.brokenPin) return { text: `${name} can't be called: its pin in this server's tool settings does not read, so no call is let through until the owner sets it again (Settings → Tools). ${what}`, mismatched: [] };
+  if (server[name]?.brokenPin) return { text: `${name}${CANT_BE_CALLED}its pin in this server's tool settings does not read, so no call is let through until the owner sets it again (Settings → Tools). ${what}`, mismatched: [] };
   const own = agent[name]?.pin ?? {};
   const theirs = server[name]?.pin ?? {};
   // Both layers hold: an argument both pin takes what holds both (bothOf), and one where nothing does refuses every call.
   const clash = Object.keys(own).filter((arg) => Object.hasOwn(theirs, arg) && bothOf(own[arg]!, theirs[arg]!) === undefined);
-  if (clash.length) return { text: `${name} can't be called: this agent's settings fix ${pinWords(Object.fromEntries(clash.map((arg) => [arg, own[arg]!])))} and this server's fix ${pinWords(Object.fromEntries(clash.map((arg) => [arg, theirs[arg]!])))}, so no call can satisfy both. ${what} Don't retry it: the owner makes the two agree.`, mismatched: clash };
+  if (clash.length) return { text: `${name}${CANT_BE_CALLED}this agent's settings fix ${pinWords(Object.fromEntries(clash.map((arg) => [arg, own[arg]!])))} and this server's fix ${pinWords(Object.fromEntries(clash.map((arg) => [arg, theirs[arg]!])))}, so no call can satisfy both. ${what} Don't retry it: the owner makes the two agree.`, mismatched: clash };
   const pin: Pin = { ...theirs, ...Object.fromEntries(Object.entries(own).map(([arg, value]) => [arg, Object.hasOwn(theirs, arg) ? bothOf(value, theirs[arg]!)! : value])) };
   const given = typeof args === "object" && args !== null && !Array.isArray(args) ? (args as Record<string, unknown>) : {};
   const undeclared = declared && Object.keys(pin).length ? Object.keys(given).filter((arg) => !declared.has(arg) && !Object.hasOwn(pin, arg)) : [];
@@ -361,6 +362,12 @@ export type PendingApproval = {
   call_id: string;
   /** The call's arguments as text, at most ARGS_PREVIEW_BYTES. */
   args_preview: string;
+  /** What the call does in words, where its tool says (email_send: "Send email to <to>, cc <cc>: <subject>" and the
+   *  text's first 300 characters), redacted as its arguments are. */
+  summary?: string;
+  /** Why the call asks though its setting allows it (its tool's own ask, ToolEntry.asks), redacted as its arguments are;
+   *  absent for a call that asks by its setting. Never among its arguments. */
+  asks_because?: string;
   requested_at: string;
   price?: ApprovalPrice;
   /** Present, true, when the run's pin marks the tool destructive (toolEffect): an allow of it needs confirm_destructive. */
@@ -372,29 +379,17 @@ export type PendingApproval = {
 // The refusal words (SettingFrom, DenyFrom, NOT_RUN, RAN_UNKNOWN, denyPlace, deniedText, refusedText) live in
 // refusal-words.ts, shared with the runner's loops.
 export { type DenyFrom, deniedText, denyPlace, NOT_RUN, RAN_UNKNOWN, refusedText, type SettingFrom } from "./refusal-words.js";
-/** The refusal of an ask where no one can approve it: a server with accounts off, whose answer route takes no token. */
-export const noApproverText = (tool: string, ran: "no" | "unknown" = "no"): string => `Permission denied: ${tool} needs the owner's approval, and this server has accounts off (AGENTRUN_ACCOUNTS=0), so no one can give it: set the tool to allow or deny in the agent's Tools. ${ran === "no" ? NOT_RUN : RAN_UNKNOWN}`;
+/** The refusal of an ask where no one can approve it: a server with accounts off, whose answer route takes no token.
+ *  `because`: the tool's own reason (ToolEntry.asks) for a call its setting allows, which no setting lifts. */
+export const noApproverText = (tool: string, ran: "no" | "unknown" = "no", because?: string): string =>
+  because === undefined
+    ? `${DENIED_OPENING}${tool} needs the owner's approval, and this server has accounts off (AGENTRUN_ACCOUNTS=0), so no one can give it: set the tool to allow or deny in the agent's Tools. ${ran === "no" ? NOT_RUN : RAN_UNKNOWN}`
+    : `${DENIED_OPENING}${tool} needs the owner's approval for this call (${because}), and this server has accounts off (AGENTRUN_ACCOUNTS=0), so no one can give it. ${ran === "no" ? NOT_RUN : RAN_UNKNOWN}`;
 
 /** The Timeline row of a call that waits for an approval. */
 export const APPROVAL_ROW = "tool_approval_requested" as const;
 /** A call's arguments shown on its approval, at most this many bytes. */
 export const ARGS_PREVIEW_BYTES = 2048;
-
-
-
-/** The refusal of the end-of-run turn's write or edit under work/.learning/: its notes are kept only from its answer's
- *  note blocks (learn/reflect.ts parseReflection), which the host merges in its own store; a file there is never kept. */
-export const NOTE_ONLY_TEXT = "A note is kept only from your answer: write it in a ```note block, not to a file.";
-
-/** Whether `args.path`, as a file tool resolves it (a leading `@` dropped, Unicode spaces made plain, then the port's
- *  path of it, portPath), names .learning/ in the run's folder or a path under it: by the folder's path here (`work`)
- *  or a computer's name for it (COMPUTER_ROOT). */
-export function underLearning(work: string, args: unknown): boolean {
-  const path = (args as { path?: unknown } | null | undefined)?.path;
-  if (typeof path !== "string") return false;
-  const plain = path.replace(/[\u00A0\u2002-\u200A\u202F\u205F\u3000]/g, " ").replace(/^@/, "");
-  return portPath(plain, [work, COMPUTER_ROOT])?.split("/")[0] === LEARNED_DIR;
-}
 
 /** One call that waits for approval, as the run's store keeps it. */
 export type ApprovalRequest = { id: string; tool: string; call_id: string; args: unknown; args_preview: string; requested_at: string; /** The message the turn that parked it took: a reopen settles that turn, answered or not. */ turn?: string; price?: ApprovalPrice; /** Parked on a replay: a crash cut an earlier attempt that may have been sent, so a refusal never says nothing was charged. Kept in the store, so a restart keeps it. */ replayed?: true };
@@ -410,8 +405,33 @@ export function previewOf(text: string): string {
  *  settings as the runner read them from the one store at the claim (tool-plane.ts loadToolSettings), read at each call as
  *  the gate reads them. `approvers`: whether anyone can answer an ask here, the store's (server-approvers.ts, read at each
  *  claim). The gate reads nothing of the run's own files: they are the agent's to write. */
-export function runGate(where: { root: string; work: string; computer?: boolean; effectOf?: (name: string) => ToolEffect | undefined; argumentsOf?: ArgumentsOf }, runId: string, revision: { kind: string; body: { toolSettings?: unknown; harness?: string; approvals?: Approvals } }, serverSettings: () => ToolSettingsRead, approvers: boolean): RunGate {
-  return new RunGate({ root: where.root, work: where.work, runId, harness: revision.body.harness ?? DEFAULT_HARNESS, ...(where.computer === undefined ? {} : { computer: where.computer }), ...(where.effectOf ? { effectOf: where.effectOf } : {}), ...(where.argumentsOf ? { argumentsOf: where.argumentsOf } : {}) }, serverSettings, (revision.body.toolSettings ?? {}) as PermissionSettings, approvers, approvalsOf(revision.body.approvals));
+export function runGate(where: { root: string; work: string; computer?: boolean; effectOf?: (name: string) => ToolEffect | undefined; argumentsOf?: ArgumentsOf; facts: AdapterFacts | undefined }, runId: string, revision: { kind: string; body: { toolSettings?: unknown; harness?: string; approvals?: Approvals; computer?: unknown; place?: unknown } }, serverSettings: () => ToolSettingsRead, approvers: boolean): RunGate {
+  // The run's computer kind, from its revision's setting (as the claim starts it): a computer tool's words name it.
+  const kind = settingOfDefinition(revision.body)?.computer.kind;
+  return new RunGate({ root: where.root, work: where.work, runId, harness: revision.body.harness ?? DEFAULT_HARNESS, ...(where.computer === undefined ? {} : { computer: where.computer }), ...(kind !== undefined ? { kind } : {}), ...(where.effectOf ? { effectOf: where.effectOf } : {}), ...(where.argumentsOf ? { argumentsOf: where.argumentsOf } : {}), facts: where.facts }, serverSettings, (revision.body.toolSettings ?? {}) as PermissionSettings, approvers, approvalsOf(revision.body.approvals));
+}
+
+/** The host tools that run on a computer that holds the run's shell (the kernel registry's, for shell "computer"). */
+const ON_COMPUTER: ReadonlySet<string> = new Set(hostToolDefs({ maxExecS: 600, shell: "computer" }).map((def) => def.name));
+
+/** The tools a run's computer of `kind` serves, by the names its gate decides them by: a desktop's or a phone's own
+ *  (COMPUTER_TOOLS, held to its kind's key), a browser's (its key), and, where the run's shell is on the computer
+ *  (`shell` "computer": a sandbox, a desktop that mounts the run's folder), each host tool the agent grants. */
+export function computerToolsOf(kind: string, granted: readonly string[], shell: ShellPlace): readonly string[] {
+  const own = kind === "desktop" || kind === "phone" ? [...COMPUTER_TOOLS] : kind === "browser" ? ["browser"] : [];
+  return [...own, ...(shell === "computer" ? granted.filter((name) => ON_COMPUTER.has(name)) : [])];
+}
+
+/** The kind of the agent's computer when every tool it serves (computerToolsOf) is set to deny for `revision` under the
+ *  server's `server` settings, as its run's gate reads them: a run of it never starts that computer. Undefined for an agent
+ *  with no computer, one whose computer serves none of its tools, or one any of them is allowed or asked of. `shell`: where
+ *  a run of it has its shell (resolve-computer.ts runShellOf). Settings that do not read deny nothing (the gate asks). */
+export function computerDenied(revision: { kind: string; body: { tools?: readonly string[]; toolSettings?: unknown; harness?: string; approvals?: Approvals; computer?: unknown; place?: unknown } }, shell: ShellPlace, server: ToolSettingsRead): string | undefined {
+  const kind = settingOfDefinition(revision.body)?.computer.kind;
+  if (kind === undefined || kind === "none") return undefined;
+  const tools = computerToolsOf(kind, revision.body.tools ?? [], shell);
+  const gate = runGate({ root: COMPUTER_ROOT, work: COMPUTER_ROOT, computer: shell === "computer", facts: undefined }, "", revision, () => server, true);
+  return tools.length > 0 && tools.every((tool) => gate.policy(tool) === "deny") ? kind : undefined;
 }
 
 /** The top-level arguments the listing of the MCP tool `name` (`mcp:<server>/<tool>`) in the run's pin declares under
@@ -431,7 +451,7 @@ export class RunGate {
    *  pinned revision's (definition.approvals): "never" runs the agent unattended, an ask allowed (permissionFrom). */
   /** `where.effectOf`: an MCP tool's effect as the run's pin marks it (ClaimMcp.effectOf), what "allow reads" reads;
    *  never a live listing, so a server can't widen a run's access mid-run. */
-  constructor(private readonly where: { root: string; work: string; runId: string; harness?: string; computer?: boolean; effectOf?: (name: string) => ToolEffect | undefined; /** The arguments each MCP tool's listing in the run's pin declares (ClaimMcp.argumentsOf), for a pinned tool's closure (pinRefusal). */ argumentsOf?: ArgumentsOf }, private readonly readServerSettings: () => ToolSettingsRead, private readonly overrides: PermissionSettings = {}, private readonly approvers = true, private readonly approvals: Approvals = "ask") {}
+  constructor(private readonly where: { root: string; work: string; runId: string; harness?: string; computer?: boolean; /** The run's computer kind (its revision's setting): the key a computer tool's refusal and ask name on a tie (kindSetting). */ kind?: string; effectOf?: (name: string) => ToolEffect | undefined; /** The arguments each MCP tool's listing in the run's pin declares (ClaimMcp.argumentsOf), for a pinned tool's closure (pinRefusal). */ argumentsOf?: ArgumentsOf; /** The harness's adapter facts on the owner's table (its native tools' names, nameMapOf); undefined for one with none. */ facts: AdapterFacts | undefined }, private readonly readServerSettings: () => ToolSettingsRead, private readonly overrides: PermissionSettings = {}, private readonly approvers = true, private readonly approvals: Approvals = "ask") {}
   private names?: NameMap;
 
   /** A tool's permission now (permissionOf): the revision's own over the server's setting, read at each call, so a change
@@ -459,13 +479,24 @@ export class RunGate {
     // call, decided as on a computer, where it runs: a desktop that mounts no folder has a computer to run a command on,
     // so shell.run and processes.start follow bash's one setting alike, as the run's own tools on a computer do. It is a
     // computer tool too: the kind's deny (desktop or phone set to deny) refuses it first, in the kind's words, below.
+    const ran = options.replayed ? "unknown" : "no";
+    // The run's computer once a call of its own tools was refused for a deny is off for the rest of the run: a later call
+    // of them is refused here, short, with no setting read and nothing sent to it (a setting changed since included).
+    const off = this.offRefusal(name, options);
+    if (off) return off;
+    const own = this.computerOwns(name);
     const held = heldAs(name, args);
     if (held && this.policy(name) !== "deny") return this.onComputer().decide(held.tool, held.args, options);
     const key = this.keyOf(name) ?? name;
     const tool = this.askedAs(name);
-    const ran = options.replayed ? "unknown" : "no";
     const verdict = this.policy(name);
-    if (verdict === "deny") return { deny: deniedText(tool, key, this.denyFrom(name), ran) };
+    if (verdict === "deny") {
+      const text = deniedText(tool, key, this.denyFrom(name), ran);
+      if (!own) return { deny: text };
+      // The first such deny says so, once, in its refusal.
+      this.off = true;
+      return { deny: `${text} ${computerOffWords(own)}` };
+    }
     const pinned = this.pinned(key, args, ran);
     if (pinned) return { deny: pinned.text };
     const policed = this.policyRefusal(key, name, args);
@@ -474,9 +505,57 @@ export class RunGate {
     return this.approvers ? "ask" : { deny: noApproverText(tool, ran) };
   }
 
+  /** The refusal of a call of the run's computer's own tools (computerOwns) once that computer is off for the rest of the
+   *  run (computerOff): short, decided with no setting read and nothing sent to it, a setting changed since included.
+   *  Undefined for any other call, or while the computer is on. */
+  offRefusal(name: string, options: { readonly replayed?: boolean } = {}): { deny: string } | undefined {
+    const own = this.off ? this.computerOwns(name) : undefined;
+    return own ? { deny: computerOffText(own, options.replayed ? "unknown" : "no") } : undefined;
+  }
+
+  /** The run's computer's kind once it is off for the rest of the run: by the first deny of a call of its own tools
+   *  (decide, whose refusal says so once), or from a claim's start (turnOff). Undefined while it is on. */
+  get computerOff(): string | undefined {
+    return this.off ? this.where.kind : undefined;
+  }
+
+  /** The run's computer off from this claim's start: an earlier claim's deny turned it off for the run
+   *  (computer-journal.ts computerTurnedOff), so each call of its tools is refused short, never said off again. */
+  turnOff(): void {
+    this.off = true;
+  }
+
+  /** Set by the first deny of a call of the run's computer's own tools (computerOwns), or by turnOff. */
+  private off = false;
+  /** The run's computer kind (where.kind) when `name` is one of that computer's own tools: a desktop's or a phone's
+   *  (KIND_TOOLS), a browser's (held to the browser key). Undefined for any other call, a shell or file tool the computer
+   *  runs included: a deny of one of those leaves the computer's own tools as they are. */
+  private computerOwns(name: string): string | undefined {
+    const kind = this.where.kind;
+    if (kind === "desktop" || kind === "phone") return KIND_TOOLS.has(name) ? kind : undefined;
+    return kind === "browser" && !KIND_TOOLS.has(name) && this.keyOf(name) === "browser" ? kind : undefined;
+  }
+
+  /** The settings key a call of `name` is held to, the one its refusal and its ask name: a computer tool's is the kind
+   *  whose setting decides it (kindSetting), any other's its session's name map. */
   private keyOf(name: string): string | undefined {
+    const kinds = this.kindKeysOf(name);
+    if (kinds) return this.kindSetting(name, kinds).key;
     const harness = this.where.harness ?? DEFAULT_HARNESS;
-    return settingsKeyOf(harness, name, (this.names ??= nameMapOf(harness)));
+    return settingsKeyOf(harness, name, (this.names ??= nameMapOf(harness, this.where.facts)));
+  }
+
+  /** A computer tool's settings keys (KIND_TOOLS), the run's own kind first (where.kind); undefined for any other tool. */
+  private kindKeysOf(tool: string): readonly string[] | undefined {
+    const keys = KIND_TOOLS.get(tool);
+    const kind = this.where.kind;
+    return keys && kind !== undefined && keys.includes(kind) ? [kind, ...keys.filter((key) => key !== kind)] : keys;
+  }
+
+  /** A computer tool's permission: the stricter of its kinds' settings (a desktop's and a phone's keys both hold it), and
+   *  the key that decided it, the run's own kind on a tie, so a phone run's refusal and ask say phone. */
+  private kindSetting(tool: string, kinds: readonly string[]): { permission: Permission; from: SettingFrom; key: string } {
+    return kinds.map((key) => ({ ...this.settingOf(tool, key), key })).reduce((strictest, one) => (STRICTNESS[one.permission] > STRICTNESS[strictest.permission] ? one : strictest));
   }
 
   /** The name a call is asked about by, as main's request names it (enter's `tool`): its settings key, a shell tool its
@@ -496,12 +575,10 @@ export class RunGate {
   readonly denyFrom = (tool: string): SettingFrom => this.setting(tool).from;
   private setting(tool: string): { permission: Permission; from: SettingFrom } {
     if (META_TOOLS.has(tool)) return this.settingOf(tool, tool);
-    // A tool the desktop and the phone both have (every computer tool): the gate knows not the run's kind, so it is held to the
-    // stricter of both keys' settings, never more permissive than the run's own kind's.
-    const shared = KIND_TOOLS.get(tool);
-    if (shared && shared.length > 1) {
-      return shared.map((key) => this.settingOf(tool, key)).reduce((strictest, one) => (STRICTNESS[one.permission] > STRICTNESS[strictest.permission] ? one : strictest));
-    }
+    // A tool the desktop and the phone both have (every computer tool) is held to the stricter of both keys' settings,
+    // never more permissive than the run's own kind's.
+    const kinds = this.kindKeysOf(tool);
+    if (kinds) return this.kindSetting(tool, kinds);
     return this.settingOf(tool, this.keyOf(tool));
   }
 
@@ -541,7 +618,7 @@ export class RunGate {
     // Its own name for a background tool (bash_background);bash for bash and
     // a CLI's own shell (codex's shell, claude-agent's Bash).
     const tool = shellToolOf(name) ?? "bash";
-    if (!(BASH_POLICIES as readonly string[]).includes(policy)) return `${tool} can't be called: this agent's bash policy ${JSON.stringify(policy).slice(0, 60)} is not one this server knows (${BASH_POLICIES.join(", ")}), so no command is let through until its tool_settings name one. ${NOT_RUN}`;
+    if (!(BASH_POLICIES as readonly string[]).includes(policy)) return `${tool}${CANT_BE_CALLED}this agent's bash policy ${JSON.stringify(policy).slice(0, 60)} is not one this server knows (${BASH_POLICIES.join(", ")}), so no command is let through until its tool_settings name one. ${NOT_RUN}`;
     const reason = readOnlyReason(tool, args, [this.where.work, COMPUTER_ROOT]);
     return reason === undefined ? undefined : readOnlyText(tool, reason, NOT_RUN);
   }

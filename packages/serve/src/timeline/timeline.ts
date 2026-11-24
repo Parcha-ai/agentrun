@@ -2,7 +2,7 @@ import { BROWSER_OPENERS, BROWSER_STEPS, callFailed, endsTurn, failedWith, input
 import { cut, firstLine, firstSentence, json, obj, saidSummary, scrubUrls, str, utf8Bytes, type Obj } from "./util.js";
 import { BESIDE_SUFFIX, NOTE_SUFFIX, originMatcher, TRIGGER_LABELS, type TriggerSource } from "./origin.js";
 import type { ComputerCallRow } from "./computer.js";
-import { webShownOf, webWithin } from "./web-calls.js";
+import { webHeld, webShownOf, webWithin } from "./web-calls.js";
 
 export type TimelineKind =
   | "thinking" | "text_block" | "tool_use" | "tool_result" | "phase"
@@ -10,12 +10,12 @@ export type TimelineKind =
   | "user_message" | "waiting" | "usage"
   /** A workflow decision: a judge's answers or a route's branch (serve's decision rows). */
   | "decision"
-  /** Where a run's learning ended: proposed, merged or dropped (serve's learning row). */
+  /** Where a run's learning ended: merged or dropped (serve's learning row). */
   | "learning"
   /** A tool call that waited for a person's approval, after its result's row (serve's tool gate). */
   | "tool_approval_requested";
 
-/** Grep's public `TimelineEvent` (its 13 fields) plus the open additions, all optional. */
+/** The public `TimelineEvent` (its 13 base fields) plus the open additions, all optional. */
 export type TimelineEvent = {
   id: string;
   timestamp: string;
@@ -61,9 +61,13 @@ export type TimelineEvent = {
    *  since its last charge, and its release's when it was the session's last call. `requests` is 0 on all but the usage
    *  row. `so_far_usd` and `unpriced` (costsofar/1): while `usd` is null, the sum of every charge whose cost is known, and how
    *  many charges have no known cost (model requests cut, stopped, still pending or with no price, and paid tool calls
-   *  charged an unknown amount or cut). Absent when `usd` is known. `free`, on the usage row: its $0 is because every
-   *  model request went to a free model (one whose known price is $0 for every token), each booked so; absent otherwise. */
-  usage?: { usd: number | null; requests: number | null; so_far_usd?: number; unpriced?: number; not_metered?: number; free?: true };
+   *  charged an unknown amount or cut). Beside `upper_bound`, the sum of the charges' own figures (never a hold) and how
+   *  many requests `usd` counts at their hold. Absent when `usd` is known and exact. `free`, on the usage row: its $0 is
+   *  because every model request went to a free model (one whose known price is $0 for every token), each booked so;
+   *  absent otherwise. `upper_bound`, on the usage row: `usd` counts a request cut with no answer at what was held for it,
+   *  the most it can have cost, so the run cost at most `usd`; absent otherwise. A reader that joins this row with more
+   *  charges takes it apart by those figures (serve's usageParts), never `usd` as spend. */
+  usage?: { usd: number | null; requests: number | null; so_far_usd?: number; unpriced?: number; not_metered?: number; free?: true; upper_bound?: true };
   /** On a learned workflow call's `tool_result` row (learned_workflow): each of the workflow's nodes that ran, as the
    *  workflow DSL ended it, in order (store-reads/journal.ts withLearnedNodes). This projector writes none. */
   learned_nodes?: { label: string; kind: string; status: string; duration_ms: number; model?: string; tier?: string }[];
@@ -77,14 +81,14 @@ export type TimelineEvent = {
   /** On a `tool_use` row of a timeline read with `calls` (TimelineOptions): the call's arguments, each string as `redact`
    *  makes it where the call is first seen, cut at CAPS.text. */
   tool_input?: Obj;
-  /** On a `tool_result` row of a timeline read with `calls`: the head of the call's output, to `calls.result` characters,
-   *  as `calls.redact` makes it, its URLs' query values elided as the preview's are; a web call's every url, its long
-   *  texts cut to fit (CALL_RESULT_CHARS). */
+  /** On a `tool_result` row of a timeline read with `calls`: the call's output whole to `calls.result` characters (its
+   *  head past that), as `calls.redact` makes it, its URLs' query values elided as the preview's are; a web call's every
+   *  url, its long texts cut to fit (CALL_RESULT_CHARS). */
   tool_result_text?: string | null;
 };
 
 /** A pi conversation entry as stored: `pi.assistant`, `pi.tool-result`, a host's own kind. */
-export type EntryLike = { kind: string; id?: number; conversationId?: number; model?: readonly Obj[]; data?: unknown; /** A call the loop's record kept, shaped as a model's answer (store-reads/journal.ts piShaped): shown as one, never a model request. */ recordedCall?: true };
+export type EntryLike = { kind: string; id?: number; conversationId?: number; model?: readonly Obj[]; data?: unknown; /** A call the loop's record kept, shaped as a model's answer (store-reads/journal.ts piShaped): shown as one, never a model request. */ recordedCall?: true; /** The call of the harness's own a recorded call ran inside (CallStartData.parent: Codex's code-mode `exec`). */ parentCall?: string };
 /** The call a nested call (the kernel's NestedCalls: a script's, tools_call's) was made in, read off its id
  *  (`<callId>/<key>`); undefined for a call the model made itself. */
 export const nestingCallOf = (callId: string): string | undefined => {
@@ -94,13 +98,19 @@ export const nestingCallOf = (callId: string): string | undefined => {
 /** A pi `AgentEvent`, as `watchEvents` yields it and `GET /events` serves it. */
 export type AgentEventLike = { type: string; [key: string]: unknown };
 
-/** Grep's caps, so a row is the same on both sides. `thinking` cuts the first sentence of a thinking summary. */
+/** The base caps, so a row is the same on both sides. `thinking` cuts the first sentence of a thinking summary. */
 export const CAPS = { summary: 500, preview: 500, text: 2000, thinking: 100 };
-/** The most of a call's output a read for a grader shows (`calls`, tool_result_text): a tool's output's head, still one
- *  redaction pass of the size an answer's pieces take (key-refusal.ts ANSWER_PIECE). A web call's is not its head: a
+/** The most of a call's output a read for a grader shows (`calls`, tool_result_text): as much as a grader's whole prompt
+ *  takes (template-eval.ts GRADER_PROMPT_MAX), so a grader judges what the run read, not a head of it; the grader's own
+ *  fit (fitCalls) shares that room among the calls. The run's redaction reads it in pieces of an answer's size
+ *  (key-refusal.ts redactedCall), so a long head costs no more a pass than a short one. Past it, a tool's output's head; a
+ *  web call's is not its head: a
  *  web_search's every result keeps its url, title and published date, and a web_fetch its url and title, their snippets
- *  and page text cut to fit (web-calls.ts), past this only when its urls alone pass it (25 results, long titles). */
-export const CALL_RESULT_CHARS = 8000;
+ *  and page text cut to fit (web-calls.ts), past this only when its urls alone pass it. */
+export const CALL_RESULT_CHARS = 120_000;
+
+/** The most rows a `calls=whole` timeline page holds, and its default: each row's result may be CALL_RESULT_CHARS long. */
+export const CALLS_PAGE_ROWS = 100;
 
 /** A host's marks of a model request: as it leaves (written before it does), and as its stream ends aborted. A request
  *  that answered or failed has a `pi.assistant` entry; one aborted before its first content has none; a start with no
@@ -121,6 +131,10 @@ export const REQUEST_REFUSED = "agentrun.request_refused";
  *  call was refused before it ran (a gate's deny, a person's): `{ [CALL_REFUSED]: true }`. Its rows read as refused, the
  *  call in plain words ("Refused: write deny.md"), never as a call that ran and failed ("Wrote deny.md failed"). */
 export const CALL_REFUSED = "agentrun.refused";
+/** The key a host sets in a tool result's `details` when nothing ended the call and the run's end closed it (a harness's
+ *  call that only nests calls, open when the run stopped: Codex's `exec`): `{ [CALL_ENDED_WITH_RUN]: true }`. It has no
+ *  outcome, so its row reads interrupted with no status (`tool_status` null), never failed. */
+export const CALL_ENDED_WITH_RUN = "agentrun.ended-with-run";
 
 /** Whether pi's error for a request is the model proxy's own refusal of it for the run's spend cap, before it was sent:
  *  the proxy's JSON body after the HTTP status pi-ai puts first, read by its fields (`type` "agentrun_proxy", `code`
@@ -183,6 +197,11 @@ export const chargedTool = (row: TimelineEvent): string | undefined =>
  *  told after the note's "AgentRun server note:" label). A row of its own, the server's ("AgentRun: …", labelled once);
  *  no request, no cost. */
 export const CAP_WRAPUP = "agentrun.cap_wrapup";
+/** A tool call the spend cap's wrap-up refused (serve's wrap-up.ts, the runner's gate): `callId` and the cap it was
+ *  refused under (`capUsd`), on the run's root. The call's own refused row is its result's; this one is data only, for the
+ *  run's view (`stopped_for`, `budget_refused_calls`): no row, no request, no cost. A call refused twice (a replay) is
+ *  one call. */
+export const CAP_REFUSED = "agentrun.cap_refused";
 /** The run's model was told once, on its first request after its claim gave it a computer in place of an earlier
  *  claim's, that the old one is gone with what was on it (`words`, what it was told after the label, as the wrap-up's).
  *  A row of its own, the server's, as the wrap-up's; no request, no cost. */
@@ -206,6 +225,18 @@ export const REQUEST_CONTINUED = "agentrun.request_continued";
 export const HOST_PHASE = "agentrun.phase";
 const COMPACTION = "compaction";
 const isCompaction = (entry: EntryLike) => obj(entry.data)?.request === COMPACTION;
+/** Whether `entry` is pi's compaction entry answering its summary request, the one rule both journal counters read (this
+ *  timeline's meter, cap.ts openFigures): a summary request that left marked as a generation is answered by pi's
+ *  pi.compaction entry, since pi stores no answer for it; one a host marked as a side request (`request: "compaction"`)
+ *  is closed by its own cost entry, never by that entry. Fed every entry in the journal's order, `sideSummaries` counting
+ *  the side summary requests since pi's last compaction entry, which are its own. */
+export function compactionAnswers(entry: EntryLike, sideSummaries: { count: number }): boolean {
+  if (entry.kind === REQUEST_STARTED && isCompaction(entry)) sideSummaries.count += 1;
+  if (entry.kind !== "pi.compaction") return false;
+  if (sideSummaries.count === 0) return true;
+  sideSummaries.count = 0;
+  return false;
+}
 /** A side request's mark: its `request` is a label (a generation's, a harness's request number, is not). */
 const isSide = (entry: EntryLike) => typeof obj(entry.data)?.request === "string";
 const unsent = (entry: EntryLike) => obj(entry.data)?.unsent === true;
@@ -226,7 +257,18 @@ export const RUN_RESUMED = "agentrun.run_resumed";
  *  when the turn's last entry was a tool's result (a stop that came after it, before the next model request). */
 export const TURN_END = "adapter.turn_end";
 
+/** Requests a run's booking holds beside its entries (a pi run's side requests, which no answer of pi's carries: a learned
+ *  workflow's nodes, a request on another model): how many, and their cost's parts as the kernel's CostParts counts them
+ *  (`known` their own figures, `bounded`/`atMost` cut ones at their hold, `unpriced` those with none). */
+export type SideSpend = { readonly requests: number; readonly known: number; readonly bounded: number; readonly atMost: number; readonly unpriced: number };
+
 export type TimelineOptions = {
+  /** Requests booked beside the entries (SideSpend), joined to the usage row's count and cost by its one rule. */
+  side?: SideSpend;
+  /** For a reader that says no "at most" (GET /usage's meters, cap.ts meterFiguresFrom): a request cut and booked at its
+   *  hold counts on the usage row as a cost no one knows, so its `usd` is null, `so_far_usd` the exact charges alone and
+   *  the hold among the `unpriced`, never an `upper_bound` figure that would read as spend. */
+  holdsUnpriced?: boolean;
   /** For entries and events that carry no conversation id. */
   conversationId?: number;
   agentLabel?: (conversationId: number) => string | null | undefined;
@@ -271,6 +313,11 @@ export type TimelineOptions = {
    *  Without `redact`, the rows' own. `held`: whether a number in the arguments shows a held value (a key that is all
    *  digits); such a number is shown as "[redacted]". */
   calls?: { result: number; redact?: (text: string) => string; held?: (value: number | bigint) => boolean };
+  /** Whether a text holds a held value no cut in place takes (key-refusal.ts withheldWhole). A web call's output is read
+   *  through it joined, its JSON's strings as they came (web-calls.ts webHeld), before any of its rows shows any of it: a
+   *  value split across two of its strings, which `redact` and `calls.redact` never read side by side, withholds the
+   *  output, so its preview, its summary and a `calls` read's text read "[redacted]". Default: none withheld. */
+  holds?: (text: string) => boolean;
 };
 
 /** A tool's calls in a run, and how many failed. */
@@ -374,12 +421,20 @@ function createMeter() {
   // end was one (its answer, an error's entry, may still come).
   let freeUnanswered = 0;
   let freeEnded = false;
+  // Marked requests cut with no answer and booked at their hold (their end mark's `atMostUsd`, runner.ts CUT_AT_HOLD):
+  // counted at that figure, the most each can have cost, never a cost unknown; and the latest end's figure while its
+  // request is still the newest (the next request's mark counts it).
+  let atMostUnanswered = 0;
+  let atMostKnown = 0;
+  let atMostEnded: number | undefined;
   // Whether the latest answer's cost was counted unknown (a cut answer's): a free end mark written after it makes it $0.
   let lastUnknown = false;
   // Side requests (compactions, a tool's own requests), apart: one may run beside a generation. Each closes with its
   // cost, or with an end when aborted.
   let compactions = 0;
   let compacting = 0;
+  // Compaction summaries a host marked as side requests since pi's last pi.compaction entry: that entry is theirs.
+  const sideSummaries = { count: 0 };
   // How many are in flight: two side requests (a turn's parallel searches) may be.
   let sidesOpen = 0;
   const tokens: Tokens = { input: 0, cacheRead: 0, cacheWrite: 0, output: 0 };
@@ -395,6 +450,7 @@ function createMeter() {
   function push(entry: EntryLike): "answer" | "call" | "continued" | "refusal" | "mark" | "charge" | "unmetered" | undefined {
     const message = entry.model?.[0];
     const data = obj(entry.data);
+    const summaryAnswered = compactionAnswers(entry, sideSummaries);
     if (entry.kind === "pi.assistant" && entry.recordedCall && message) {
       // A call the loop's record kept (a CLI's, or one a tool of pi's nested): shown as an answer's call, never a request.
       return "call";
@@ -409,6 +465,17 @@ function createMeter() {
       // The answer before it, continued: shown, never counted again.
       continued -= 1;
       return "continued";
+    } else if (entry.kind === "pi.compaction") {
+      // pi's summary of the older context. A summary request that left through the run's own model port was marked as a
+      // generation is (no `request` label) and booked at its price, and pi stores no answer for it: its cost rides on the
+      // answer pi stores beside it (what the session booked since the last one), so this entry is that request's answer,
+      // at no cost of its own here, its tokens unknown to pi's entries. One a host marked as a side request is closed by
+      // its own cost entry, never here. Shown as its phase row all the same.
+      if (summaryAnswered && marked - answered - freeUnanswered - atMostUnanswered - (freeEnded ? 1 : 0) - (atMostEnded !== undefined ? 1 : 0) > 0) {
+        (requests += 1), (answered += 1);
+        addTokens(undefined);
+      }
+      return undefined;
     } else if (entry.kind === REQUEST_STARTED && isSide(entry)) {
       compacting += 1;
       sidesOpen += 1;
@@ -459,6 +526,8 @@ function createMeter() {
       capRefusals = 0;
       if (freeEnded) freeUnanswered += 1;
       freeEnded = false;
+      if (atMostEnded !== undefined) (atMostUnanswered += 1), (atMostKnown += atMostEnded);
+      atMostEnded = undefined;
       lastUnknown = false;
       marked += 1;
       inFlight = true;
@@ -467,14 +536,18 @@ function createMeter() {
       if (unsent(entry)) marked -= 1;
       inFlight = false;
       // For a request still unanswered; one written after pi's entry for it (a cut answer's) makes that answer's cost $0.
-      freeEnded = data?.free === true && marked - answered - freeUnanswered > 0;
+      freeEnded = data?.free === true && marked - answered - freeUnanswered - atMostUnanswered > 0;
       if (data?.free === true && !freeEnded && lastUnknown) (unknown -= 1), (lastUnknown = false);
+      const atMost = data?.atMostUsd;
+      atMostEnded = typeof atMost === "number" && Number.isFinite(atMost) && atMost >= 0 && marked - answered - freeUnanswered - atMostUnanswered > 0 ? atMost : undefined;
     } else if (entry.kind === "pi.assistant" && message) {
       requests += 1;
       if (marked > 0) answered += 1;
       // Its request's free end mark came first: whatever it answered costs nothing.
       const free = freeEnded;
       freeEnded = false;
+      // An answer is no cut: its own cost counts, never the hold a cut mark before it named.
+      atMostEnded = undefined;
       const name = str(message.model);
       if (name) {
         const key = metricName(str(message.provider) ? `${str(message.provider)}/${name}` : name);
@@ -497,24 +570,40 @@ function createMeter() {
   /** The usage row's count and cost; undefined while there is nothing to count. `settled`: nothing is running. While the
    *  cost is unknown, `so_far_usd` is the sum of the charges whose cost is known and `unpriced` how many have none: each
    *  cost no one knows (an answer or summary with none, a stopped request's, a paid tool charge), each still pending, each
-   *  request cut before any answer, and each paid tool call a settled run never settled. No ceiling is claimed. */
-  function usage(settled: boolean): { usd: number | null; requests: number; charges: number; so_far_usd?: number; unpriced?: number; not_metered?: number } | undefined {
+   *  request cut before any answer, and each paid tool call a settled run never settled. A request cut and booked at its
+   *  hold (its end mark's `atMostUsd`) counts at that figure, the most it can have cost, kept apart from the exact
+   *  charges by the kernel's rule (costOfParts): with every charge counted the cost is their sum, `upper_bound`, with the
+   *  exact charges as `so_far_usd` and the holds as `unpriced` beside it; with one
+   *  of no known cost, the hold is a ceiling that bounds nothing, so it joins no `so_far_usd` and counts as `unpriced`.
+   *  `beside`: requests booked beside the entries (a pi run's side requests, TimelineOptions.side), joined by that rule. */
+  function usage(settled: boolean, beside?: SideSpend, holdsUnpriced = false): { usd: number | null; requests: number; charges: number; so_far_usd?: number; unpriced?: number; not_metered?: number; upper_bound?: true } | undefined {
     // A request marked as it left with no entry for it, other than one still in flight: counted, at a cost no one knows.
     // One in flight alone makes no row yet, so the row appears where it did before requests were marked.
     // A settled run has nothing in flight: its last request with no entry, or its open compaction, was cut by the
     // process that ended.
     const open = (flying: boolean) => (flying && !settled ? 1 : 0);
-    // Those on a free model ended at a known $0: counted, never cut.
+    // Those on a free model ended at a known $0, and those cut and booked at their hold at that figure: counted, never cut.
     const free = freeUnanswered + (freeEnded ? 1 : 0);
-    const cut = marked - open(inFlight) - free > answered || compacting - (settled ? 0 : sidesOpen) > compactions;
+    const atMost = atMostUnanswered + (atMostEnded !== undefined ? 1 : 0);
+    const cut = marked - open(inFlight) - free - atMost > answered || compacting - (settled ? 0 : sidesOpen) > compactions;
     // A paid tool call cut by a crash: its charge is unknown, so the cost is.
     const cutCalls = settled ? held.size : 0;
     const unmetered = notMetered ? { not_metered: notMetered } : {};
-    if (!requests && !free && !compactions && !cut && !paidCalls.size && !cutCalls) return refusedAny || notMetered ? { usd: 0, requests: 0, charges: 0, ...unmetered } : undefined;
-    const count = requests + Math.max(0, marked - answered) + Math.max(compactions, compacting);
-    const usd = unknown > 0 || pending.length > 0 || cut || cutCalls > 0 ? null : Math.round(known * 1e6) / 1e6;
-    const unpriced = unknown + pending.length + Math.max(0, marked - open(inFlight) - free - answered) + Math.max(0, compacting - (settled ? 0 : sidesOpen) - compactions) + cutCalls;
-    return { usd, requests: count, charges: paidCalls.size + cutCalls, ...(usd === null && unpriced > 0 ? { so_far_usd: Math.round(known * 1e6) / 1e6, unpriced } : {}), ...unmetered };
+    const sides = beside?.requests ?? 0;
+    if (!requests && !free && !atMost && !compactions && !cut && !paidCalls.size && !cutCalls && !sides) return refusedAny || notMetered ? { usd: 0, requests: 0, charges: 0, ...unmetered } : undefined;
+    const count = requests + Math.max(0, marked - answered) + Math.max(compactions, compacting) + sides;
+    // The parts: the exact charges, the holds of cut requests (and how many), and the charges of no known cost.
+    const exact = known + (beside?.known ?? 0);
+    const bounded = atMostKnown + (atMostEnded ?? 0) + (beside?.bounded ?? 0);
+    const holds = atMost + (beside?.atMost ?? 0);
+    const unpriced = unknown + pending.length + Math.max(0, marked - open(inFlight) - free - atMost - answered) + Math.max(0, compacting - (settled ? 0 : sidesOpen) - compactions) + cutCalls + (beside?.unpriced ?? 0);
+    const round = (usd: number) => Math.round(usd * 1e6) / 1e6;
+    const charges = paidCalls.size + cutCalls;
+    // A reader that says no "at most" (TimelineOptions.holdsUnpriced) reads a hold as a cost no one knows.
+    if (unpriced > 0 || (holdsUnpriced && holds > 0)) return { usd: null, requests: count, charges, so_far_usd: round(exact), unpriced: unpriced + holds, ...unmetered };
+    // A bound says its exact part and how many holds it counts beside it, so a reader that joins this row with more
+    // charges (serve's costWordsOf over usageParts) never takes the hold for spend.
+    return { usd: round(exact + bounded), requests: count, charges, ...(holds > 0 ? { so_far_usd: round(exact), unpriced: holds, upper_bound: true as const } : {}), ...unmetered };
   }
 
   // A workflow's decision requests (Jev, Parallel), from its receipts: requests of their own, beside its entries'.
@@ -718,14 +807,20 @@ function createProjector(options: TimelineOptions) {
     const verdict = /^(\w+): /.exec(text);
     return verdict ? `${verdict[1]}: ${scrubUrls(firstLine(redactText(text.slice(verdict[0].length))))}` : scrubUrls(firstLine(redactText(text)));
   };
-  /** A result as its rows show it: its whole output redacted once, which its label, summary and preview are all taken
-   *  from (resultRow); its details and error flag as they came. */
-  const shownOf = (view: ToolResultView): ToolResultView =>
-    options.redact ? { ...view, text: view.text ? options.redact(view.text) : view.text, details: redactValue(view.details) } : view;
+  /** A result as its rows show it: its whole output redacted once, or "[redacted]" when it is withheld whole (`withheld`),
+   *  which its label, summary and preview are all taken from (resultRow); its details and error flag as they came. */
+  const shownOf = (tool: string, view: ToolResultView): ToolResultView =>
+    withheld(tool, view.text) ? { ...view, text: "[redacted]", details: redactValue(view.details) }
+    : options.redact ? { ...view, text: view.text ? options.redact(view.text) : view.text, details: redactValue(view.details) } : view;
+  /** Whether a call of `tool`'s output is withheld whole before any row shows it: a web call's strings, read joined
+   *  (TimelineOptions.holds). */
+  const withheld = (tool: string, text: string): boolean => (options.holds && text ? webHeld(tool, text, options.holds) : false);
   const failure = (text: string) => scrubUrls(firstLine(str(json(text)?.message) ?? diagnosticOf(text) ?? text)) || "no detail";
   /** Whether a result is a call's refusal before it ran: an error its host marked so in its details (CALL_REFUSED),
    *  read by that field, never by its words. */
   const refused = (view: { isError: boolean; details?: unknown }) => view.isError && obj(view.details)?.[CALL_REFUSED] === true;
+  /** Whether a result is the run's end closing a call nothing ended (CALL_ENDED_WITH_RUN): no outcome, read by that field. */
+  const endedWithRun = (view: { isError: boolean; details?: unknown }) => view.isError && obj(view.details)?.[CALL_ENDED_WITH_RUN] === true;
   /** A call's name on its rows: a refused one's in plain words (refusedLabel), else its label. */
   const nameFor = (tool: string, args: Obj, view: ToolResultView, result: ToolResultView) => (refused(view) ? refusedLabel(labelled(tool), shown(args)) : label(tool, args, result));
   /** The `tool_use` row of a call; `fields` is what differs between a stored call and a nested one. */
@@ -736,12 +831,16 @@ function createProjector(options: TimelineOptions) {
     const shown = options.calls ? obj(inputShown(args, caps.text, options.redact, options.calls.held)) : undefined;
     return shown ? { tool_input: shown } : {};
   };
-  /** A call's output as a `calls` read shows it (tool_result_text): redacted by its redactor, else the rows' own, its
-   *  URLs' query values elided, cut at `calls.result`; a web call's every url whole, only its long texts cut (web-calls.ts). */
+  /** A call's output as a `calls` read shows it (tool_result_text): redacted by its redactor, else the rows' own, then its
+   *  URLs' query values elided, cut at `calls.result`; a web call's every url whole, only its long texts cut
+   *  (web-calls.ts). Every secret check reads the text as it came, never as shown: elided, a URL's query and userinfo are
+   *  cut apart, and a held value in one no longer reads as itself. The served redactor (redactedCall) elides each piece it
+   *  read after redacting it, so what it returns is already as shown and the elision here changes nothing in it. */
   const wholeRedact = options.calls?.redact ?? options.redact;
   const callShown = (text: string) => scrubUrls(wholeRedact ? wholeRedact(text) : text);
   const resultText = (tool: string, text: string): string | null => {
     if (!text) return null;
+    if (withheld(tool, text)) return "[redacted]";
     const web = webShownOf(tool, text, callShown);
     return web ? webWithin(web, options.calls!.result) : cut(callShown(text), options.calls!.result);
   };
@@ -763,9 +862,11 @@ function createProjector(options: TimelineOptions) {
     // A call refused before it ran is named refused already (refusedLabel), and a computer step's label says it could not
     // (saysFailure): its row says why, never that it failed.
     const failedSummary = refused(view) || saysFailure(tool.name) ? `${named}: ${failure(shown.text)}` : `${named} failed: ${failure(shown.text)}`;
+    // One the run's end closed has no outcome: interrupted, as a call cut off reads (interrupt), with no status.
+    const unended = endedWithRun(view);
     return make("tool_result", conv, rowId, {
-      summary: !view.isError && pageChanged(tool.name, view) ? PAGE_CHANGED_ROW : view.isError ? failedSummary : worded ? `${named}: ${saidOf(worded.text)}` : outcome?.failed ? `${named}: failed` : `${named}: ok`, tool_name: tool.name, tool_use_id: tool.callId,
-      tool_status: failedWith(view, outcome) ? "failed" : "success", tool_result_preview: shown.text ? cut(scrubUrls(shown.text), caps.preview) : null,
+      summary: unended ? `${named} interrupted` : !view.isError && pageChanged(tool.name, view) ? PAGE_CHANGED_ROW : view.isError ? failedSummary : worded ? `${named}: ${saidOf(worded.text)}` : outcome?.failed ? `${named}: failed` : `${named}: ok`, tool_name: tool.name, tool_use_id: tool.callId,
+      tool_status: unended ? null : failedWith(view, outcome) ? "failed" : "success", tool_result_preview: shown.text ? cut(scrubUrls(shown.text), caps.preview) : null,
       tool_result_size_bytes: utf8Bytes(view.text), round: tool.round, parent_tool_use_id: parent, ...(refused(view) ? { refused: true as const } : {}),
       ...(options.calls ? { tool_result_text: resultText(tool.name, view.text) } : {}),
     });
@@ -827,6 +928,8 @@ function createProjector(options: TimelineOptions) {
     const add = (row: TimelineEvent) => { rows.push(row); out.push(row); };
     const touch = (row: TimelineEvent) => { if (!out.includes(row)) out.push(row); };
 
+    // The wrap-up's refusal of a call, kept for the run's view: its result row is the call's own.
+    if (entry.kind === CAP_REFUSED) return out;
     if (entry.kind === CAP_WRAPUP || entry.kind === COMPUTER_NOTE) {
       // What the run's model was told near its cap, or after its computer was replaced: the server's row (`origin:
       // "server"`, in the words of its other rows), no request, no cost, and no message any turn took (its id ends in
@@ -911,8 +1014,10 @@ function createProjector(options: TimelineOptions) {
             browsers.add(conv);
             add(make("phase", conv, `${base}:${index}:session`, { summary: "A live browser session started" }));
           }
-          // Recorded managed calls derive their nesting from the id; SDK calls keep their validated explicit parent.
-          const nesting = (entry.recordedCall ? nestingCallOf(id) : undefined) ?? str(obj(entry.data)?.parentCallId);
+          // A call the loop's record kept for a tool that nests (a script's, tools_call's) sits under that tool's call; one
+          // made inside a call of the harness's own (Codex's `exec`) under that call, which its record names. SDK calls keep
+          // their validated explicit parent.
+          const nesting = (entry.recordedCall ? (entry.parentCall ?? nestingCallOf(id)) : undefined) ?? str(obj(entry.data)?.parentCallId);
           const use = useRow(conv, `${base}:${index}`, id, name, args, { round, ...(nesting ? { parent_tool_use_id: nesting } : {}) });
           const before = early.get(`${conv}:${id}`);
           const opened: OpenCall = { conv, name, args, round, use, done: before !== undefined };
@@ -937,7 +1042,7 @@ function createProjector(options: TimelineOptions) {
       const call = calls.get(`${conv}:${id}`);
       const name = call?.name ?? str(message.toolName) ?? "tool";
       const view = viewOf(message);
-      const shown = shownOf(view);
+      const shown = shownOf(name, view);
       // A call that failed ended nothing: the agent goes on after it, so a message then is still a steer.
       ended.set(conv, (previous.get(conv) !== "pi.tool-result" || ended.get(conv) === true) && endsTurn(name) && !view.isError);
       // One an abort cut did end the turn. A round's results come in as its calls end, so one that ended before the abort
@@ -1060,7 +1165,7 @@ function createProjector(options: TimelineOptions) {
     const text = typeof output === "string" ? output : output !== undefined ? JSON.stringify(output) : (diagnostic ?? "");
     const failed = result.isError === true;
     const view: ToolResultView = { text, details: result.details, isError: failed };
-    const shown = shownOf(view);
+    const shown = shownOf(call.name, view);
     const named = nameFor(call.name, call.args, view, shown);
     call.done = true;
     call.use.summary = clean(named, caps.summary);
@@ -1090,16 +1195,17 @@ function createProjector(options: TimelineOptions) {
   /** The usage row. `nothingInFlight`: read as a settled run is, a request marked with no answer being cut, for a host that
    *  knows its turn is over while its process lives on (a stopped turn). */
   function usage(nothingInFlight = false): TimelineEvent | undefined {
-    const counted = meter.usage(options.settled === true || nothingInFlight);
+    const counted = meter.usage(options.settled === true || nothingInFlight, options.side, options.holdsUnpriced === true);
     if (!counted || root === undefined) return undefined;
-    const { usd, requests, charges, so_far_usd, unpriced, not_metered } = counted;
+    const { usd, requests, charges, so_far_usd, unpriced, not_metered, upper_bound } = counted;
     const paid = toolCallWords(charges, not_metered);
-    const spent = usd !== null ? dollars(usd) : so_far_usd !== undefined && unpriced !== undefined ? `${dollars(so_far_usd)} known, ${unpriced} not priced,` : "unknown";
+    // A cost that counts a cut request at its hold is the most the run can have cost: said so.
+    const spent = usd !== null ? `${upper_bound ? "at most " : ""}${dollars(usd)}` : so_far_usd !== undefined && unpriced !== undefined ? `${dollars(so_far_usd)} known, ${unpriced} not priced,` : "unknown";
     return make("usage", root, `${root}:usage`, {
       // A run whose only request its cap refused sent none, and says so; otherwise what is known so far (costsofar/1).
       summary: requests === 0 && !charges ? "no model request sent" : `${costLabel(options.ended === true)}: ${spent} over ${requests} model request${requests === 1 ? "" : "s"}${paid}`,
       // The contract's TimelineUsage and its costsofar/1 fields, while the cost is unknown: no other of the meter's reaches it.
-      usage: { usd, requests, ...(so_far_usd !== undefined && unpriced !== undefined ? { so_far_usd, unpriced } : {}), ...(not_metered ? { not_metered } : {}) },
+      usage: { usd, requests, ...(so_far_usd !== undefined && unpriced !== undefined ? { so_far_usd, unpriced } : {}), ...(not_metered ? { not_metered } : {}), ...(upper_bound ? { upper_bound } : {}) },
     });
   }
 
@@ -1454,4 +1560,20 @@ export function timelineReducer(options: TimelineOptions = {}) {
      *  conversation no longer holds it. */
     isLive: (id: string) => liveIds.has(id),
   };
+}
+
+/** The run's model requests that an answer of pi's carries, in log order: each `pi.assistant` entry the usage row counts
+ *  as a request (createMeter's "answer"). A request the cap or the proxy refused before it left, a continuation of the
+ *  answer before it and a call the loop's record kept (`recordedCall`) are none. An entry seen twice counts once. */
+export function answeredRequests(entries: readonly EntryLike[]): EntryLike[] {
+  const meter = createMeter();
+  const seen = new Set<string>();
+  return entries.filter((entry) => {
+    if (entry.id !== undefined) {
+      const key = `${entry.conversationId ?? 0}:${entry.id}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+    }
+    return meter.push(entry) === "answer";
+  });
 }

@@ -1,38 +1,40 @@
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentPage } from "./AgentPage";
 import type { Agent } from "@/lib/agentForm";
+import { SERVED_AGENT } from "@/test/agent";
 import type { AgentLearning } from "@/lib/learning";
 import type { Run, TimelinePage } from "@/lib/v2";
 
 // The agent page's Learning tab: shown for an agentic agent on a server with learning, at its own address; a run row
-// says what the run read and kept.
+// says what the run kept.
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const agent = (kind: Agent["kind"] = "agentic"): Agent => ({
-  agent_id: "refunds", kind, revision: "r1", revisions: 1, archived_at: null,
+  ...SERVED_AGENT, agent_id: "refunds", kind, revision: "r1", revisions: 1, archived_at: null,
   definition: kind === "agentic" ? { version: 1, name: "Refunds", instructions: "Find it.", harness: "pi", skills: [], tools: ["read", "write"] } : { version: 1, name: "Flow", skills: [], tools: [], workflow: { version: 1, root: { kind: "agent", id: "a", task: "t" } } },
 });
 const run: Run = { sha: null, updated_at: "2026-11-04T00:00:00Z", poll_after_ms: 0, place: { mode: "runner" },
   run_id: "run-b", agent_id: "refunds", agent_version: 1, revision: "r1", kind: "agentic", status: "completed", state: "idle", title: "brooklinen.com",
   created_at: "2026-11-03T16:52:00Z", ended_at: "2026-11-03T16:52:04Z", result: null, error: null, cost: { usd: null, basis: "estimate", charge_state: null, cap_usd: null }, archived_at: null,
-  learning: { detail: null, at: "2026-11-03T16:52:09Z", state: "merged", reason: null, read: [{ file: "a.md", name: "Shopify refund policy path" }], learned: [{ file: "b.md", name: "Try it first", supersedes: ["a.md"] }] },
+  learning: { detail: null, at: "2026-11-03T16:52:09Z", state: "merged", reason: null, workflows: [{ file: "workflows/try-it-first/workflow.json", name: "try-it-first" }] },
 };
-const EMPTY: AgentLearning = { agent: "refunds", main: null, index: "", notes: { items: [], total: 0, next_cursor: null }, skills: [], workflows: [], log: { items: [], total: 0, next_cursor: null }, counts: { merged: 0, dropped: {}, in_progress: 0 }, impact: null };
+const EMPTY: AgentLearning = { agent: "refunds", main: null, corrections: "", workflows: [], log: { items: [], total: 0, next_cursor: null }, counts: { merged: 0, dropped: {}, in_progress: 0 }, impact: null };
 const ended: TimelinePage = { cost: { usd: null, basis: "estimate", charge_state: null, cap_usd: null }, run_id: "run-b", status: "completed", state: "idle", rows: [], drop: [], reset: true, unchanged: false, final: true, has_more: false, next_after: 1 };
 
 let root: ReturnType<typeof createRoot> | undefined;
-afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
+afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; vi.useRealTimers(); });
 const settle = async () => { for (let i = 0; i < 8; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
-async function open(a: Agent, props: { tab?: string; learning?: "on" | "off" | null; notes?: string[] } = {}, listed: Run = run, reread: () => Run = () => run, timeline: () => TimelinePage = () => ended) {
+async function open(a: Agent, props: { tab?: string; learning?: "on" | "off" | null } = {}, listed: Run = run, reread: () => Run = () => run, timeline: () => TimelinePage = () => ended) {
   let current = a;
   let reads = 0;
   let timelines = 0;
+  let listings = 0;
   const v2 = {
     getAgent: async () => ({ agent: current, etag: '"r1"' }),
     statsOver: async () => ({}),
-    listAgentRuns: async () => ({ runs: [listed], next_cursor: null }),
+    listAgentRuns: async () => ({ runs: [listings++ ? reread() : listed], next_cursor: null }),
     getTimeline: async () => { timelines++; return timeline(); },
     getRun: async () => { reads++; return reread(); },
     agentLearning: async () => EMPTY,
@@ -87,46 +89,25 @@ describe("AgentPage's Learning tab", () => {
     expect(p.host.querySelector('[role="switch"]')!.getAttribute("aria-checked")).toBe("true");
     expect(p.text()).toContain("Nothing learned yet");
   });
-  it("on the Runs tab, a run's row says what it read and kept", async () => {
+  it("on the Runs tab, a run's row says what it kept", async () => {
     const p = await open(agent(), { learning: "on" });
-    const row = p.host.querySelector('ul[aria-label="Runs"] a')!;
-    expect(row.textContent).toContain("Read: 1 note");
-    expect(row.textContent).toContain("Learned 1 note");
+    const row = p.host.querySelector('table[aria-label="Runs"] tbody tr')!;
+    expect(row.textContent).toContain("Learned 1 workflow");
   });
-  it("an ended latest run whose learning is still deciding is read again until it settles: its row then says what it kept", async () => {
+  it("refreshes learning status in the table after a completed run finishes reflecting", async () => {
     const deciding: Run = { ...run, learning: { detail: null, at: "2026-11-03T16:52:09Z", state: "reflecting", reason: null } };
     let n = 0;
-    // Each read is the server's answer, a new record every time, as the client parses it.
     const p = await open(agent(), { learning: "on" }, deciding, () => (++n < 2 ? { ...deciding } : { ...run }));
-    const row = () => p.host.querySelector('ul[aria-label="Runs"] a')!.textContent ?? "";
+    const row = () => p.host.querySelector('table[aria-label="Runs"] tbody tr')!.textContent ?? "";
     expect(row()).toContain("Looking back");
-    for (let i = 0; i < 400 && !row().includes("Learned 1 note"); i++) await act(async () => { await new Promise((r) => setTimeout(r, 25)); });
-    expect(row()).toContain("Learned 1 note");
-    expect(p.host.querySelector('section[aria-label="Latest run"]')!.querySelector('a[href^="#/agents/refunds/learning?note="]')).not.toBeNull();
-    const settled = p.reads();
-    await act(async () => { await new Promise((r) => setTimeout(r, 2300)); });
-    expect(p.reads()).toBe(settled);
-  }, 15_000);
-  it("the latest run's timeline is read again once its learning moves: its look-back step and its row agree", async () => {
-    const deciding: Run = { ...run, learning: { detail: null, at: "2026-11-03T16:52:09Z", state: "proposed", reason: null } };
-    let n = 0;
-    const rows = () => {
-      const detail = n >= 2 ? "Learned: Try it first (replaces 1 older note)" : "Checking 1 new note…";
-      return [
-        { id: "l1", seq: 1, kind: "user_message", agent_label: "learning", summary: "Looking back on this run.", text: "Looking back on this run.", timestamp: "2026-11-03T16:52:05Z", tool_name: null },
-        { id: "learning", seq: 2, kind: "learning", agent_label: "learning", summary: detail, text: detail, timestamp: "2026-11-03T16:52:06Z", tool_name: null },
-      ] as TimelinePage["rows"];
-    };
-    const p = await open(agent(), { learning: "on" }, deciding, () => (++n < 2 ? { ...deciding } : { ...run }), () => ({ ...ended, rows: rows() }));
-    const latest = () => p.host.querySelector('section[aria-label="Latest run"]')!;
-    expect(latest().textContent).toContain("Looking back: checking 1 new note…");
-    for (let i = 0; i < 400 && !(latest().textContent ?? "").includes("Looked back: kept 1 note (Try it first)"); i++) await act(async () => { await new Promise((r) => setTimeout(r, 25)); });
-    expect(latest().textContent).toContain("Looked back: kept 1 note (Try it first)");
-    expect(latest().textContent).toContain("Learned 1 note");
-    for (let i = 0; i < 40 && p.timelines() < 2; i++) await act(async () => { await new Promise((r) => setTimeout(r, 25)); });
-    expect(p.timelines()).toBeGreaterThan(1);
-    const step = [...latest().querySelectorAll("ol > li")].find((li) => li.textContent?.includes("Looked back"))!;
-    await act(async () => { step.querySelector("button")!.click(); });
-    expect(step.querySelector("pre")!.textContent).toContain("Learned: Try it first (replaces 1 older note)");
-  }, 15_000);
+    await act(async () => { window.dispatchEvent(new Event("focus")); });
+    await settle();
+    expect(row()).toContain("Looking back");
+    await act(async () => { window.dispatchEvent(new Event("focus")); });
+    await settle();
+    expect(row()).toContain("Learned 1 workflow");
+    expect(p.host.querySelector('section[aria-label="Latest run"]')).toBeNull();
+    expect(p.reads()).toBe(0);
+    expect(p.timelines()).toBe(0);
+  });
 });

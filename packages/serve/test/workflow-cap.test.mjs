@@ -158,6 +158,46 @@ test("a capped workflow's decision on Parallel that would cross the cap is not s
   assert.deepEqual((await lines(calls)).map((call) => call.path), ["/v1/decisions"], "sent once, after the raise");
 });
 
+test("reading an agent never reads OpenRouter's catalog: its run_blockers name a decision model's missing price only once a save or a start has read it", async (t) => {
+  withEnv(t, { OPENROUTER_API_KEY: `not-a-secret-${"openrouter"}`, AGENTRUN_FAUX_SYSTEM_ONE_DELAY_MS: "0" }, KEYS);
+  const dir = await scratch(t);
+  const sent = join(dir, "sent.jsonl");
+  const up = join(dir, "catalog-up");
+  const fauxOpenrouter = join(dir, "faux-openrouter.mjs");
+  // OpenRouter's catalog answers 503 until `up` exists (a read that failed is not kept); every other path is the faux
+  // System One's.
+  await writeFile(fauxOpenrouter, [
+    `import { appendFileSync, existsSync } from "node:fs";`,
+    `import faux from ${JSON.stringify(new URL("../../decisions/dist/testing/faux-system-one.js", import.meta.url).href)};`,
+    `export default async (url, init = {}) => {`,
+    `  const path = new URL(String(url)).pathname;`,
+    `  appendFileSync(${JSON.stringify(sent)}, JSON.stringify({ path }) + "\\n");`,
+    `  if (path.endsWith("/v1/models") && !existsSync(${JSON.stringify(up)})) return new Response(JSON.stringify({ error: { message: "faux down" } }), { status: 503, headers: { "content-type": "application/json" } });`,
+    `  return faux(url, init);`,
+    `};`,
+  ].join("\n"));
+  const { api } = await serve(t, { fauxOpenrouter });
+  // The agent's own cap, so a run with no overrides is a capped one, which prices each decision model it pins.
+  assert.equal((await api("POST", "/agents", flowAgent("unlisted", judgeFlow("ask", "openrouter", "acme/unlisted-decider"), { max_cost_usd: 1 }))).status, 201);
+  const catalogReads = async () => (await lines(sent)).filter((call) => call.path.endsWith("/v1/models")).length;
+  // No price read yet (the catalog is down): the read asks OpenRouter nothing, and names no blocker nobody has read.
+  const saved = await catalogReads();
+  const before = await api("GET", "/agents/unlisted");
+  assert.equal(before.status, 200);
+  assert.equal(await catalogReads(), saved, "an agent read made no catalog request");
+  assert.equal(before.body.run_blockers, null, JSON.stringify(before.body.run_blockers));
+  // The catalog back: a start reads it and is refused; the next read says the same, from that read alone.
+  await writeFile(up, "");
+  const started = await api("POST", "/agents/unlisted/runs", { input: { doc: "Certificate of incorporation of Acme Widgets" } });
+  assert.deepEqual([started.status, started.body.error?.code], [409, "agent_not_runnable"], JSON.stringify(started.body));
+  const reads = await catalogReads();
+  assert.ok(reads > saved, "the start read the catalog");
+  const after = await api("GET", "/agents/unlisted");
+  assert.deepEqual([after.body.run_blockers?.message, after.body.run_blockers?.fields], [started.body.error.message, started.body.error.fields], JSON.stringify(after.body.run_blockers));
+  assert.match(after.body.run_blockers.message, /acme\/unlisted-decider has no price in OpenRouter's catalog/);
+  assert.equal(await catalogReads(), reads, "the later read made no catalog request either");
+});
+
 test("a capped workflow start whose decision pins an OpenRouter model the catalog lists no price for is refused 409, with fields naming the node's model and the fix; nothing is sent", async (t) => {
   withEnv(t, { OPENROUTER_API_KEY: `not-a-secret-${"openrouter"}`, AGENTRUN_FAUX_SYSTEM_ONE_DELAY_MS: "0" }, KEYS);
   const dir = await scratch(t);

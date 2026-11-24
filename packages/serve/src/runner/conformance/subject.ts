@@ -52,6 +52,9 @@ export interface KernelHooks {
   /** A message taken mid-turn was sent as a turn of its own (the adapter loop's sendAfterTurn): the session holds it, and
    *  the commit that records it and takes its row has not run yet. */
   afterMessageSent?(): Promise<void>;
+  /** A message steered into the turn in flight was placed (the session holds it under the row's request id), and the
+   *  commit that takes its row has not run yet: a CLI's waits for its model to take it (the adapter loop's steerCli). */
+  afterSteerPlaced?(): Promise<void>;
 }
 
 export interface ConformanceSetup {
@@ -60,6 +63,9 @@ export interface ConformanceSetup {
   readonly hooks: KernelHooks;
   /** The run's agent, for the subject's spec to name (AdapterRunSpec.agentId): the end-of-run step is asked with it. */
   readonly agentId?: string;
+  /** Called with each message the subject's model is handed, when the subject can see it (a stand-in's fake reports what
+   *  it consumed and at what priority): for a case's failure message to name, never asserted on. */
+  readonly received?: (message: { readonly text: string; readonly priority?: string }) => void;
 }
 
 export type ConformanceCase =
@@ -72,6 +78,7 @@ export type ConformanceCase =
   | "steer-mid-turn"
   | "message-mid-turn-kept"
   | "message-resent-after-crash"
+  | "steer-placed-crash"
   | "cancel-ends-for-good"
   | "cancel-parked"
   | "deny-note"

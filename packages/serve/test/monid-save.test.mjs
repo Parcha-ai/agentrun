@@ -132,7 +132,7 @@ test("a monid grant saved with no monid key is refused: it cannot be pinned", as
   const { api } = await serve(t, { fauxMonid: FAUX_MONID });
   const saved = await api("POST", "/agents", agent("keyless", { tools: ["monid:apollo/people/match"] }));
   assert.equal(saved.status, 422, JSON.stringify(saved.body));
-  assert.match(JSON.stringify(saved.body), /no monid key here to read it with: save the monid key in Settings → Tool keys first/);
+  assert.match(JSON.stringify(saved.body), /no monid key here to read it with: save the monid key in Settings → API Keys first/);
 });
 
 test("monid's error that echoes the key it was sent is refused at the save with the key cut from it, on the listing and on an inspect", async (t) => {

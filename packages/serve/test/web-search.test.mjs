@@ -33,7 +33,7 @@ const capRefusal = (what, price, basis, spent, cap, raise) => `spend_cap_reached
  *  charge with its tool, call and figure. */
 const paidRecords = paidCallsOf;
 /** What the model and the timeline read when Exa's free limit holds after the one retry: our words, never Exa's. */
-const RATE_LIMITED = "Free web search is rate-limited right now. Try again in a minute, or add a Parallel key in Settings → Tool keys to search with a key.";
+const RATE_LIMITED = "Free web search is rate-limited right now. Try again in a minute; add the free Parallel Search server in Settings → MCP servers and grant the agent its web_search; or add a Parallel key in Settings → API Keys to search with a key.";
 /** Exa's own fix, in any of its words: an API key put in its MCP URL, which means nothing to a person here. */
 const EXA_FIX = /exa\.ai|Fix:|MCP URL|exaApiKey|free MCP rate limit/;
 const MODE = "AGENTRUN_TEST_FAUX_PARALLEL_SEARCH";
@@ -190,7 +190,7 @@ test("a request to Parallel with no run's ledger to book it on is never sent, no
   assert.deepEqual(await webSearch({ query: "widgets" }, client), { error: "Parallel's search was not sent: this call has no run to book its price under." });
   const page = await webFetch("http://public.example/", { ...network(), parallel: client });
   assert.deepEqual([page.via, page.title, page.parallel], ["direct", "Public page", "Parallel's extract was not sent: this call has no run to book its price under."]);
-  await assert.rejects(client.post(PARALLEL_SEARCH_URL, { search_queries: ["widgets"] }), (error) => error.name === "PaidRefused" && /no run to book its price under/.test(error.message));
+  await assert.rejects(client.post(PARALLEL_SEARCH_URL, { search_queries: ["widgets"], mode: "fast" }), (error) => error.name === "PaidRefused" && /no run to book its price under/.test(error.message));
   // Inside one, an endpoint the web tools have no price for is not sent either.
   await inCall(async () => assert.rejects(client.post("https://api.parallel.ai/v1/tasks/runs", { input: "widgets" }), (error) => error.name === "PaidRefused" && /no price here/.test(error.message)))();
   assert.deepEqual(sent, [], "nothing reached Parallel");
@@ -307,7 +307,7 @@ test("Parallel picked with no Parallel key: web_search is missing in capabilitie
   const saved = await api("POST", "/agents", { definition: { id: "searcher", name: "searcher", instructions: "Search.", tools: ["web_search"] } });
   assert.equal(saved.status, 201, JSON.stringify(saved.body));
   assert.deepEqual(saved.body.warnings.map((w) => [w.field, w.reason]), [["definition.tools[0]", "not_set_up_here"]]);
-  assert.match(saved.body.warnings[0].message, /The\ tool\ web_search\ does\ not\ run\ here\ on\ pi:\ parallel\ is\ picked,\ and\ it\ needs\ a\ Parallel\ key:\ save\ one\ in\ Settings\ →\ Tool\ keys\ \(or\ set\ PARALLEL_API_KEY\ where\ the\ server\ starts\)\./);
+  assert.match(saved.body.warnings[0].message, /The\ tool\ web_search\ does\ not\ run\ here\ on\ pi:\ parallel\ is\ picked,\ and\ it\ needs\ a\ Parallel\ key:\ save\ one\ in\ Settings\ →\ API\ Keys\ \(or\ set\ PARALLEL_API_KEY\ where\ the\ server\ starts\)\./);
   const refused = await api("POST", "/agents/searcher/runs", { input: { content: "Search the web for widgets" } });
   assert.deepEqual([refused.status, refused.body.error?.code, refused.body.error?.details?.missing], [409, "agent_not_runnable", { web_search: ["PARALLEL_API_KEY"] }]);
   assert.deepEqual(await seen(), [], "no request reached Parallel");
@@ -359,7 +359,7 @@ test("keyless Exa: one MCP exchange with no key, its text read into results; a 4
   assert.deepEqual(asked, [{ query: "widgets", numResults: 8 }], "at most 8 results asked of Exa");
   // The 429 names Retry-After 30: the limit does not lift within a search, so it is not tried again. Each refusal says
   // which limit it met (limit), for the caller's fallback; the model never reads that field (searchFor drops it).
-  for (const [mode, error, limit] of [["429", /^Free web search is rate-limited right now\. Try again in a minute, or add a Parallel key in Settings → Tool keys to search with a key\.$/, { limit: "rate_limited", retryAfterS: 30 }], ["403", /refused keyless use from this connection \(403\).*only over IPv4.*not over IPv6 or through a proxy/, { limit: "connection_refused" }], ["500", /^Exa's MCP endpoint answered 500 to the search$/, {}]]) {
+  for (const [mode, error, limit] of [["429", /^Free web search is rate-limited right now\. Try again in a minute; add the free Parallel Search server in Settings → MCP servers and grant the agent its web_search; or add a Parallel key in Settings → API Keys to search with a key\.$/, { limit: "rate_limited", retryAfterS: 30 }], ["403", /refused keyless use from this connection \(403\).*only over IPv4.*not over IPv6 or through a proxy/, { limit: "connection_refused" }], ["500", /^Exa's MCP endpoint answered 500 to the search$/, {}]]) {
     sent.length = 0;
     process.env.AGENTRUN_TEST_FAUX_EXA = mode;
     resetFauxExa();
@@ -555,7 +555,7 @@ test("a template eval's web fake: a native plane turns to the run's own web_sear
   const { fakedPlane, fakeFetch, fakeSearch } = await import("../dist/web-fake.js");
   // Claude's and Codex's own search answer in place of the run's web_search where the plane says native (adapters.ts
   // nativeOptions): a faked run's plane never does, and leaves every other tool's pick as it was.
-  assert.deepEqual(fakedPlane({ web_search: "native", web_fetch: "parallel" }), { web_search: "exa-keyless", web_fetch: "parallel" });
+  assert.deepEqual(fakedPlane({ web_search: "native", web_fetch: "parallel" }), { web_search: "firecrawl-keyless", web_fetch: "parallel" });
   assert.deepEqual(fakedPlane({ web_search: "parallel" }), { web_search: "parallel" });
   assert.equal(fakedPlane(undefined), undefined);
   assert.deepEqual(fakeSearch("unavailable", { query: "anything" }, "exa-keyless"), { error: keyless.RATE_LIMITED });
@@ -575,4 +575,12 @@ test("a template eval's web fake: a native plane turns to the run's own web_sear
   assert.equal(empty.ok, true, `a status with no body is still a page: ${JSON.stringify(empty)}`);
   const local = await fakeFetch(fixture, "http://127.0.0.1/admin");
   assert.equal(local.ok, false, "the guard's own checks run on a faked fetch too");
+});
+
+test("a template eval's faked JSON page lists the URLs its body holds, as the same body fetched live does", async () => {
+  const { fakeFetch } = await import("../dist/web-fake.js");
+  const url = "https://www.githubstatus.com/api/v2/incidents.json";
+  const fixture = { search: { answers: [], default: { results: [] } }, fetch: { answers: [{ url, text: JSON.stringify({ incidents: [{ name: "Degraded Actions", shortlink: "https://stspg.io/abc" }] }) }], default: { error: "fetch failed" } } };
+  const page = await fakeFetch(fixture, url);
+  assert.deepEqual([page.ok, page.links], [true, ["https://stspg.io/abc"]], JSON.stringify(page));
 });

@@ -9,12 +9,13 @@ import type { Analytics, Stats } from "@/lib/mission";
 import type { Run, TimelinePage } from "@/lib/v2";
 
 // The agent page's Analytics tab: one agent's GET /v2/stats analytics over a range, drawn as Mission Control draws the
-// server's (MissionAnalytics). Coverage is said, unmetered requests are named, and a cost nobody knows is never $0.
+// server's (MissionAnalytics). Input/output and coverage are said, and a cost nobody knows is never $0.
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const NOW = Date.parse("2026-10-15T12:00:00.000Z");
 let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
+const countText = (element: Element | null | undefined) => element?.querySelector('[data-token-count]')?.textContent ?? element?.textContent;
 
 /** The tab over a server that answers `answer(from)` (the analytics' own filter says the `from` it was asked for).
  *  `first`: the page's own first answer, which the tab opens on. `runs`: the agent's runs (none by default), whose
@@ -44,13 +45,117 @@ async function open(answer: (from?: string) => Analytics = () => ANALYTICS, { fi
   act(() => root!.render(createElement(AnalyticsTab, { agent: agentFixture("invoice-checker"), v2: v2 as never, now: () => NOW, ...(first ? { stats: first } : {}) })));
   await settle();
   const tile = (label: string) => [...host.querySelectorAll("li")].find((li) => li.firstElementChild?.textContent === label);
+  const tokenTotal = () => countText(tile("Tokens")?.children[1]);
+  const breakdown = () => [...(tile("Tokens")?.querySelectorAll('dl[aria-label="Token breakdown"] dt') ?? [])].map((term) => [term.textContent, countText(term.nextElementSibling)]);
   const rows = (heading: string) => [...([...host.querySelectorAll("section")].find((s) => s.querySelector("h3")?.textContent === heading)?.querySelectorAll("tbody tr") ?? [])].map((tr) => [...tr.querySelectorAll("td")].map((td) => td.textContent));
   const pick = async (range: string) => { await act(async () => { host.querySelector<HTMLInputElement>(`[aria-label="Range"] input[value="${range}"]`)!.click(); }); await settle(); };
   const days = (chart: string) => [...host.querySelectorAll(`[aria-label="${chart}"] [role="listitem"]`)].map((d) => d.getAttribute("aria-label"));
-  return { host, asked, runsAsked, followed, tile, rows, pick, days, settle };
+  return { host, asked, runsAsked, followed, tile, tokenTotal, breakdown, rows, pick, days, settle };
 }
 
 describe("AnalyticsTab", () => {
+  it.each([
+    { reason: "a source has no usable report", unknown_runs: 0, unknown_sessions: 1 },
+    { reason: "known source reports overlap without an exact window", unknown_runs: 1, unknown_sessions: 0 },
+  ])("marks combined usage incomplete when $reason while run outcomes remain run-based", async ({ unknown_runs, unknown_sessions }) => {
+    const usage = { tokens: 5400, input: 600, cache_read: 4000, cache_write: 400, output: 400,
+      known_runs: 1, unknown_runs, observed_sessions: 2, unknown_sessions, partial_days: 0, retention_limited: false,
+      by_day: [{ day: "2026-10-15", tokens: 5400 }], by_harness: [{ harness: "codex", tokens: 5400 }] };
+    const tab = await open(() => ({ ...ANALYTICS, usage }));
+    expect(tab.tokenTotal()).toBe("5,400");
+    expect(tab.breakdown()).toEqual([["Input", "5,000"], ["Output", "400"]]);
+    expect(tab.tile("Tokens")?.textContent).toContain("Usage coverage is incomplete");
+    expect(tab.tile("Tokens")?.textContent).not.toContain("Some token counts are unavailable");
+    expect(tab.tile("Tokens")?.textContent).not.toContain("tokens from 5 of 8 runs");
+    expect(tab.tile("Tokens")?.textContent).not.toMatch(/cached|requests|Reported token usage/i);
+    expect(tab.days("Tokens per day").at(-1)).toBe("2026-10-15: 5,400 tokens");
+    expect(tab.days("Runs per day").at(-1)).toContain("2 runs");
+    expect(tab.tile("Success rate")?.textContent).toContain("71%");
+    expect(tab.host.textContent).not.toContain("Observed sessions");
+  });
+
+  it("shows the full billion-scale total and input/output counts before any width constraint requires abbreviation", async () => {
+    const tab = await open(() => ({ ...ANALYTICS,
+      usage: { tokens: 3_021_458_927, input: null, cache_read: null, cache_write: null, output: 52_000_000,
+        known_runs: 0, unknown_runs: 0, observed_sessions: 1, unknown_sessions: 0, partial_days: 0, retention_limited: false,
+        by_day: [{ day: "2026-10-15", tokens: 3_021_458_927 }], by_harness: [{ harness: "codex", tokens: 3_021_458_927 }] },
+    }));
+    expect(tab.tokenTotal()).toBe("3,021,458,927");
+    expect(tab.breakdown()).toEqual([["Input", "2,969,458,927"], ["Output", "52,000,000"]]);
+    expect(tab.tile("Tokens")?.children[1]?.querySelector('[data-token-count]')?.getAttribute("title")).toBe("3,021,458,927");
+    expect(tab.days("Tokens per day").at(-1)).toBe("2026-10-15: 3B tokens");
+  });
+
+  it("keeps an unreported connected source distinct from zero usage when no daily buckets exist", async () => {
+    const tab = await open(() => ({ ...ANALYTICS,
+      totals: { ...ANALYTICS.totals, runs: 0, completed: 0, failed: 0, tokens: 0 }, by_day: [], by_harness_effort: [],
+      usage: { tokens: null, input: null, cache_read: null, cache_write: null, output: null,
+        known_runs: 0, unknown_runs: 0, observed_sessions: 0, unknown_sessions: 1, partial_days: 0, retention_limited: false,
+        by_day: [], by_harness: [] },
+    }));
+    expect(tab.tokenTotal()).toBe("Unknown");
+    expect(tab.breakdown()).toEqual([["Input", "—"], ["Output", "—"]]);
+    expect(tab.tile("Tokens")?.querySelectorAll('dd[aria-label="Not reported"]')).toHaveLength(2);
+    expect(tab.host.textContent).toContain("Token usage is unavailable for this range.");
+    expect(tab.host.textContent).not.toContain("No token usage in this range.");
+  });
+
+  it("shows native input including caches before any recorded run even when the cache split is unknown", async () => {
+    const tab = await open(() => ({ ...ANALYTICS,
+      totals: { ...ANALYTICS.totals, runs: 0, completed: 0, failed: 0, tokens: 0 },
+      by_day: [], by_harness_effort: [],
+      time: { ended_runs: 0, wall_ms: 0, active_runs: 0, active_ms: 0 },
+      usage: { tokens: 700, input: null, cache_read: null, cache_write: null, output: 100,
+        known_runs: 0, unknown_runs: 0, observed_sessions: 1, unknown_sessions: 0, partial_days: 1, retention_limited: true,
+        by_day: [{ day: "2026-10-15", tokens: 700 }], by_harness: [{ harness: "codex", tokens: 700 }] },
+    }));
+    expect(tab.tokenTotal()).toBe("700");
+    expect(tab.breakdown()).toEqual([["Input", "600"], ["Output", "100"]]);
+    expect(tab.tile("Tokens")?.textContent).toContain("1 partial day excluded");
+    expect(tab.tile("Tokens")?.textContent).toContain("Usage history may be incomplete beyond 90 days");
+    expect(tab.days("Tokens per day").at(-1)).toBe("2026-10-15: 700 tokens");
+    expect(tab.days("Runs per day").at(-1)).toContain("0 runs");
+    expect(tab.host.textContent).not.toContain("No runs or reported usage for this agent in this range");
+  });
+
+  it.each([
+    { total: 0, output: 0, inputShown: "0", outputShown: "0", missing: 0 },
+    { total: 700, output: null, inputShown: "—", outputShown: "—", missing: 2 },
+  ])("keeps a reported total of $total with output $output distinct from missing subcounts", async ({ total, output, inputShown, outputShown, missing }) => {
+    const tab = await open(() => ({ ...ANALYTICS,
+      usage: { tokens: total, input: null, cache_read: null, cache_write: null, output,
+        known_runs: 0, unknown_runs: 0, observed_sessions: 1, unknown_sessions: 0, partial_days: 0, retention_limited: false,
+        by_day: [{ day: "2026-10-15", tokens: total }], by_harness: [{ harness: "codex", tokens: total }] },
+    }));
+    expect(tab.tokenTotal()).toBe(String(total));
+    expect(tab.breakdown()).toEqual([["Input", inputShown], ["Output", outputShown]]);
+    expect(tab.tile("Tokens")?.querySelectorAll('dd[aria-label="Not reported"]')).toHaveLength(missing);
+  });
+
+  it("does not derive legacy input from a partial token total whose output covers more runs", async () => {
+    // One complete run reported 100 tokens; output from both runs totals 40. The second run has no cache-write
+    // count, so 100 - 40 would be a plausible but false input count across these different coverages.
+    const tab = await open(() => ({ ...ANALYTICS, totals: { ...ANALYTICS.totals,
+      runs: 2, completed: 2, failed: 0, runs_with_metrics: 2, runs_with_token_metrics: 1,
+      tokens: 100, input: 70, cache_read: 40, cache_write: null, output: 40,
+    } }));
+    expect(tab.tokenTotal()).toBe("100");
+    expect(tab.breakdown()).toEqual([["Input", "—"], ["Output", "40"]]);
+    expect(countText(tab.tile("Tokens")?.querySelector('dd[aria-label="Not reported"]'))).toBe("—");
+    expect(tab.tile("Tokens")?.textContent).toContain("tokens from 1 of 2 runs");
+  });
+
+  it("shows token coverage rather than metrics-object coverage for CLI runs", async () => {
+    const tab = await open(() => ({ ...ANALYTICS, totals: { ...ANALYTICS.totals, runs: 25, runs_with_metrics: 24, runs_with_token_metrics: 0, tokens: null, input: null, cache_read: null, cache_write: null, output: null, requests: null, unmetered: null } }));
+    expect(tab.tile("Tokens")?.textContent).toContain("Token counts unavailable for 25 runs");
+    expect(tab.tile("Tokens")?.textContent).not.toContain("tokens from 24");
+    expect(tab.tokenTotal()).toBe("Unknown");
+    act(() => root?.unmount());
+    const partial = await open(() => ({ ...ANALYTICS, totals: { ...ANALYTICS.totals, runs: 25, runs_with_metrics: 24, runs_with_token_metrics: 1, tokens: 135 } }));
+    expect(partial.tokenTotal()).toBe("135");
+    expect(partial.tile("Tokens")?.textContent).toContain("tokens from 1 of 25 runs");
+  });
+
   it("asks for this agent's analytics over the last 30 UTC days, and the range picker sets from: 7 days, then every run", async () => {
     const tab = await open();
     expect(tab.asked).toEqual(["invoice-checker 2026-09-16T00:00:00.000Z"]);
@@ -61,16 +166,21 @@ describe("AnalyticsTab", () => {
     expect(tab.host.querySelector<HTMLInputElement>('[aria-label="Range"] input:checked')?.value).toBe("all");
   });
 
-  it("shows tokens with the cached share, output, coverage and unmetered requests; run time; success; and the cost with the runs it leaves out", async () => {
+  it("shows total, input including caches, output and coverage beside run time, success and cost", async () => {
     const tab = await open();
-    expect(tab.tile("Tokens")?.textContent).toBe("Tokens1.3M83% of input cached · 50K outputtokens from 5 of 8 runs2 requests with no token count");
+    expect(tab.tokenTotal()).toBe("1,250,000");
+    expect(tab.breakdown()).toEqual([["Input", "1,200,000"], ["Output", "50,000"]]);
+    expect(tab.tile("Tokens")?.textContent).toContain("tokens from 5 of 8 runs");
+    expect(tab.tile("Tokens")?.textContent).not.toMatch(/cached|requests|Reported token usage/i);
     expect(tab.tile("Run time")?.textContent).toBe("Run time2.5 hwall time of 7 ended runs1.5 h active, over 4 runs");
     expect(tab.tile("Success rate")?.textContent).toBe("Success rate71%5 completed · 2 failed");
     expect(tab.tile("Cost")?.textContent).toBe("Cost$0.75 est.3 runs unknown");
     act(() => root?.unmount());
-    // Every run covered and metered: nothing is said about either.
+    // Every run covered: no incomplete-coverage note.
     const covered = await open(() => ({ ...ANALYTICS, totals: { ...ANALYTICS.totals, runs_with_metrics: 8, unmetered: 0 } }));
-    expect(covered.tile("Tokens")?.textContent).toBe("Tokens1.3M83% of input cached · 50K output");
+    expect(covered.tokenTotal()).toBe("1,250,000");
+    expect(covered.breakdown()).toEqual([["Input", "1,200,000"], ["Output", "50,000"]]);
+    expect(covered.tile("Tokens")?.textContent).not.toContain("tokens from");
   });
 
   it("never reads a cost nobody knows as $0: by effort, a group with no metrics says whose tokens it holds and its cost is Unknown", async () => {
@@ -97,6 +207,20 @@ describe("AnalyticsTab", () => {
     expect(tab.days("Runs per day").length).toBe(7);
   });
 
+  it("keeps each focused day's readout in the chart caption, outside clipped bar overlays", async () => {
+    const tab = await open();
+    const bars = [...tab.host.querySelectorAll<HTMLElement>('[aria-label="Runs per day"] [role="listitem"]')];
+    await act(async () => bars.at(-1)!.focus());
+    const readout = tab.host.querySelector('[aria-label="Runs per day readout"]');
+    expect(readout?.textContent).toContain("2026-10-15");
+    expect(readout?.textContent).toContain("2 runs");
+    expect(readout?.textContent).toContain("1 completed · 0 failed · 1 other");
+    expect(readout?.closest('[role="listitem"]')).toBeNull();
+    await act(async () => bars[0]!.focus());
+    expect(readout?.textContent).toContain("2026-09-16");
+    expect(readout?.textContent).toContain("0 runs");
+  });
+
   it("latest wins: 30 days, then 7, then 30 again before the 7-day answer comes: the late answer never replaces the 30-day one", async () => {
     let release!: (s: unknown) => void;
     const reads: (string | undefined)[] = [];
@@ -114,15 +238,15 @@ describe("AnalyticsTab", () => {
     const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
     act(() => root!.render(createElement(AnalyticsTab, { agent: agentFixture("invoice-checker"), v2: v2 as never, now: () => NOW })));
     await settle();
-    const tokens = () => [...host.querySelectorAll("li")].find((li) => li.firstElementChild?.textContent === "Tokens")?.children[1]?.textContent;
-    expect(tokens()).toBe("1.3M");
+    const tokens = () => [...host.querySelectorAll("li")].find((li) => li.firstElementChild?.textContent === "Tokens")?.children[1]?.querySelector('[data-token-count]')?.textContent;
+    expect(tokens()).toBe("1,250,000");
     const pick = async (range: string) => { await act(async () => { host.querySelector<HTMLInputElement>(`[aria-label="Range"] input[value="${range}"]`)!.click(); }); await settle(); };
     await pick("7d");
     await pick("30d");
     // The 7-day answer comes last, with other figures: it is dropped.
     await act(async () => { release(statsWith({ ...ANALYTICS, totals: { ...ANALYTICS.totals, tokens: 7_000 } })); });
     await settle();
-    expect(tokens()).toBe("1.3M");
+    expect(tokens()).toBe("1,250,000");
     expect(host.querySelector<HTMLInputElement>('[aria-label="Range"] input:checked')?.value).toBe("30d");
     expect(reads).toHaveLength(2);
     expect(host.querySelector('[aria-busy="true"]')).toBeNull();
@@ -130,7 +254,7 @@ describe("AnalyticsTab", () => {
 
   it("says when the agent has no runs in the range", async () => {
     const empty = await open(() => ({ ...ANALYTICS, totals: { ...ANALYTICS.totals, runs: 0, completed: 0, failed: 0, runs_with_metrics: 0 }, by_day: [], by_harness_effort: [], tools: [] }));
-    expect(empty.host.textContent).toContain("No runs of this agent in this range.");
+    expect(empty.host.textContent).toContain("No runs or reported usage for this agent in this range.");
   });
 });
 

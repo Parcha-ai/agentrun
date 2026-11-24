@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
 import { RunBar } from "./RunBar";
 import type { Agent } from "@/lib/agentForm";
+import { SERVED_AGENT } from "@/test/agent";
 import { ClientError } from "@/lib/client";
 
 // The run bar's Spend cap box: a cap for this run alone, on an agentic agent. A typed amount goes out as the start's
@@ -14,7 +15,7 @@ let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 
 const agent = (definition: Partial<Agent["definition"]> = {}, kind: Agent["kind"] = "agentic"): Agent => ({
-  agent_id: "capper", kind, revision: "rv1", revisions: 1, archived_at: null,
+  ...SERVED_AGENT, agent_id: "capper", kind, revision: "rv1", revisions: 1, archived_at: null,
   definition: { version: 1, name: "Capper", instructions: "Answer.", harness: "pi", skills: [], tools: ["read"], ...definition },
 });
 

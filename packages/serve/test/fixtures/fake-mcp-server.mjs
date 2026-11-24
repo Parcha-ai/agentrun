@@ -27,8 +27,11 @@ export const baseTools = () => ({
 });
 
 /** `inspect`: called with each request's headers, for a test that reads one of them (the credential a run sent, a static
- *  header beside it); the log itself never holds a header's value. */
-export async function startFakeMcp({ era = "modern", token, oauth = false, port = 0, name = "fake-mcp", path = "/mcp", inspect, hold } = {}) {
+ *  header beside it); the log itself never holds a header's value. `gate`: called with each request to its endpoint (its
+ *  URL as sent, and its JSON-RPC message), for a server that refuses some: `{ status, body }` answers it so, nothing
+ *  served; `{ toolError }` answers a tools/call with that text as an isError result, the tool never run; undefined serves
+ *  it as usual. */
+export async function startFakeMcp({ era = "modern", token, oauth = false, port = 0, name = "fake-mcp", path = "/mcp", inspect, hold, gate } = {}) {
   const tools = baseTools();
   const log = [];
   const factory = () => {
@@ -56,14 +59,25 @@ export async function startFakeMcp({ era = "modern", token, oauth = false, port 
       res.writeHead(200, { "content-type": "application/json" });
       return void res.end(JSON.stringify({ resource: `${base}/mcp`, authorization_servers: [typeof oauth === "function" ? oauth() : typeof oauth === "string" ? oauth : `${base}/auth`] }));
     }
-    // Its endpoint is `path` (/mcp unless a test names another), with any query of its own (?version=2).
-    if (new URL(req.url, base).pathname !== path) return void res.writeHead(404).end();
+    // Its endpoint is `path` (/mcp unless a test names another; a function: each path it holds), with any query of its own
+    // (?version=2).
+    const pathname = new URL(req.url, base).pathname;
+    if (typeof path === "function" ? !path(pathname) : pathname !== path) return void res.writeHead(404).end();
     inspect?.(req.headers);
     // `hold`: awaited before a request to /mcp is answered, for a test that keeps a listing waiting at a point it chooses.
     if (hold) await hold(req.headers);
     if (token !== undefined && !(typeof token === "function" ? token(req.headers.authorization) : req.headers.authorization === `Bearer ${token}`)) {
       res.writeHead(401, { "content-type": "application/json", "www-authenticate": oauth ? `Bearer resource_metadata="${base}/.well-known/oauth-protected-resource/mcp"` : 'Bearer realm="fake"' });
       return void res.end('{"error":"unauthorized"}');
+    }
+    const gated = gate?.(new URL(req.url, base), message);
+    if (gated && "status" in gated) {
+      res.writeHead(gated.status, { "content-type": "application/json" });
+      return void res.end(JSON.stringify(gated.body));
+    }
+    if (gated && "toolError" in gated && message?.method === "tools/call") {
+      res.writeHead(200, { "content-type": "application/json" });
+      return void res.end(JSON.stringify({ jsonrpc: "2.0", id: message.id, result: { resultType: "complete", content: [{ type: "text", text: gated.toolError }], isError: true } }));
     }
     const headers = new Headers();
     for (const [key, value] of Object.entries(req.headers)) if (typeof value === "string") headers.set(key, value);
@@ -73,7 +87,7 @@ export async function startFakeMcp({ era = "modern", token, oauth = false, port 
     res.end();
   });
   await new Promise((resolve) => http.listen(port, "127.0.0.1", resolve));
-  const url = `http://127.0.0.1:${http.address().port}${path}`;
+  const url = `http://127.0.0.1:${http.address().port}${typeof path === "function" ? "/mcp" : path}`;
   return { url, log, tools, close: () => new Promise((resolve) => (http.close(resolve), http.closeAllConnections())) };
 }
 

@@ -17,16 +17,19 @@ const LAG_P99_MS = 250;
 const FILL_MS = 1_000;
 const id = (i) => `run-${String(i).padStart(3, "0")}`;
 
-test("310 runs on a runner of 300 loops: at most 300 held at once, every run ends and is released, lag bounded", async (t) => {
-  const { server, runners: [store] } = await stores({ runners: 1 });
-  const record = recorder();
-  // Each turn does a little synchronous work, as a harness parsing a model's reply would. Runs of about 250 ms: the
-  // runner fills its 300 loops in one batch claim (store.runs.claimMany), long before the first run ends.
-  const faux = fauxLoops({ turns: 5, turnMs: 50, work: () => JSON.parse(JSON.stringify({ text: "x".repeat(2_000) })) });
+/** `RUNS` runs queued on `server`. */
+async function queueAll(server) {
   for (let i = 0; i < RUNS; i++) await queue(server, id(i));
+}
 
-  const lag = monitorEventLoopDelay({ resolution: 10 });
-  lag.enable();
+/** A runner of `LOOPS` loops on `store` (recorded in `record`) running the queued runs: faux loops of five 50 ms turns,
+ *  each turn a little synchronous work, as a harness parsing a model's reply would (runs of about 250 ms: the runner
+ *  fills its 300 loops in one batch claim, store.runs.claimMany, long before the first ends). Answers the runner, the
+ *  faux loops, `said` (the claims lost and the first error the runner said) and `where()`, the runs by state, the claims
+ *  and `said` in words, for a failure to name. The runner closes after the test. */
+function manyLoops(t, server, store, record) {
+  const faux = fauxLoops({ turns: 5, turnMs: 50, work: () => JSON.parse(JSON.stringify({ text: "x".repeat(2_000) })) });
+  const said = { lost: 0, firstError: undefined };
   const runner = startRunner({
     store: observed(store, record),
     createLoop: faux.createLoop,
@@ -37,8 +40,31 @@ test("310 runs on a runner of 300 loops: at most 300 held at once, every run end
     stopMarginMs: 2_000,
     pollMs: 20,
     commandPollMs: 200,
+    // What a failure names (where() below): the claims lost, and the first error the runner said.
+    onEvent: (event) => {
+      if (event.type === "claim-lost") said.lost += 1;
+      if (event.type === "error") said.firstError ??= `${event.step}: ${event.message}`;
+    },
   });
   t.after(() => runner.close());
+  const where = async () => {
+    const states = {};
+    for (const run of await server.runs.list({})) {
+      const key = `${run.state}${run.runner === null ? "" : " held"}`;
+      states[key] = (states[key] ?? 0) + 1;
+    }
+    return `runs ${JSON.stringify(states)}, ${record.claims.length} claims, ${said.lost} lost, first error ${said.firstError ?? "none"}`;
+  };
+  return { runner, faux, said, where };
+}
+
+test("310 runs on a runner of 300 loops: at most 300 held at once, every run ends and is released, lag bounded", async (t) => {
+  const { server, runners: [store] } = await stores({ runners: 1 });
+  const record = recorder();
+  await queueAll(server);
+  const lag = monitorEventLoopDelay({ resolution: 10 });
+  lag.enable();
+  const { runner, faux, where } = manyLoops(t, server, store, record);
 
   let most = 0;
   let full;
@@ -51,7 +77,10 @@ test("310 runs on a runner of 300 loops: at most 300 held at once, every run end
   await until(async () => {
     const runs = await server.runs.list({ state: "ended" });
     return runs.length === RUNS && runs.every((run) => run.runner === null);
-  }, "every run ends and is released", 60_000);
+  }, "every run ends and is released", 60_000).catch(async (error) => {
+    // Where the runs stand at the timeout, so a slow store (claims lost, runs failed) says so by itself.
+    throw new Error(`${error.message}: ${await where()}`);
+  });
   lag.disable();
   await sleep(20);
 

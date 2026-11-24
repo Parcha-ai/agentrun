@@ -18,7 +18,7 @@
 // is dropped, so the model is offered exactly the host's tools. With `webSearch`, one hosted tool passes: Anthropic's web
 // search, exactly as the pinned CLI asks for it in the request its WebSearch tool makes. Usage is read from the stream's
 // `message_start` (input and cache tokens) and its last `message_delta` (output, and the searches the provider ran).
-import { messagesImagesIn, providerInputOverhead, NATIVE_SEARCH_USD, ProxyRefusal, type InputCounter, type InputShape, type ProviderPolicy, type ProxyRequestContext, type ProxyRoute, type ProxyUsage } from "@parcha/agentrun-kernel/host";
+import { messagesImagesIn, messagesInputAfter, messagesLocalInputTokens, providerInputOverhead, NATIVE_SEARCH_USD, ProxyRefusal, type BilledRequest, type InputCounter, type InputShape, type ProviderPolicy, type ProxyRequestContext, type ProxyRoute, type ProxyUsage } from "@parcha/agentrun-kernel/host";
 
 /** The prefix of the session's own tools, as the CLI names them (its in-process MCP server, `hands`). */
 export const OWN_TOOL_PREFIX = "mcp__hands__";
@@ -219,6 +219,12 @@ export function anthropicOutputAsked(body: Record<string, unknown>): number | un
  *  budget) the provider's least budget beside them. Adaptive thinking takes no budget, so it needs none. */
 export function anthropicOutputLeast(body: Record<string, unknown>): number {
   return isPlain(body.thinking) && body.thinking.type === "enabled" ? ANSWER_TOKENS_LEAST + THINKING_BUDGET_LEAST : ANSWER_TOKENS_LEAST;
+}
+
+/** The effort a Messages body asks its model at (`output_config.effort`), when it names one. */
+export function anthropicEffort(body: Record<string, unknown>): string | undefined {
+  const config = body.output_config;
+  return isPlain(config) && typeof config.effort === "string" && config.effort.length > 0 ? config.effort : undefined;
 }
 
 /** The thinking tokens a Messages request may bill that its stream never shows: Claude 4-class models stream only a
@@ -493,7 +499,17 @@ export function anthropicPolicy(options: AnthropicPolicyOptions): ProviderPolicy
     serverInputOverhead: options.webSearchAllowance === undefined ? anthropicServerInputOverhead : (body) => anthropicServerInputOverhead(body, options.webSearchAllowance),
     outputAsked: anthropicOutputAsked,
     countInput: ANTHROPIC_INPUT_COUNTER,
+    // A request Anthropic does not count (a gateway, serve's translation to a model of another API): a model whose
+    // tokenizer is o200k_base is counted locally with its stated margin (pi on gpt-6.1-sol through OpenRouter, whose
+    // bytes would bound it at four times its tokens and, past 272,000, at the long-context price). A Claude model, a body
+    // with a document, or one offering the hosted search (its allowance is part of the byte bound) keeps the byte bound.
+    countInputLocally: (body: Record<string, unknown>) => (offersWebSearch(body) ? undefined : messagesLocalInputTokens(body)),
+    // A request that carries the session's earlier one its provider billed: that bill and the bytes it adds, on any model
+    // (Claude through OpenRouter, which counts nothing, held at its bytes four times what it bills). Not with the hosted
+    // search offered: what its searches read in has no bound.
+    inputAfter: (earlier: BilledRequest, body: Record<string, unknown>) => (offersWebSearch(body) ? undefined : messagesInputAfter(earlier, body)),
     outputLeast: anthropicOutputLeast,
+    effortOf: anthropicEffort,
     reasoningHidden: anthropicReasoningHidden,
     reasoningBytesOf: anthropicReasoningBytes,
     contentBytesOf: anthropicContentBytes,

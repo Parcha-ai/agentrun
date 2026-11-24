@@ -18,7 +18,7 @@ import { createRegistry, Harness } from "@earendil-works/pi-durable";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { anthropicPolicy } from "@parcha/agentrun-harness-claude";
 
-const { openSqliteStore } = await import("../dist/store/index.js");
+const { openSqliteStore, sealRunLaunch } = await import("../dist/store/index.js");
 const { startRunner } = await import("../dist/runner/runner.js");
 const { createWorkflowLoop } = await import("../dist/runner/workflow-loop.js");
 const { workflowSpecOf } = await import("../dist/runner/workflow-spec.js");
@@ -332,7 +332,7 @@ const askProvider = (provider, model) => ({
 /** A store with one queued judge run and a runner whose spec builds the decision providers from the run's SEALED keys
  *  (claim-secrets.ts + decisionProvidersIn), under --faux so the OpenRouter provider answers through the faux System One.
  *  `seal` are the provider keys to seal in the store; `capUsd` is omitted (uncapped) by default. */
-async function sealedWorld(t, { seal, flow = askProvider("openrouter", "liquid/d1"), capUsd }) {
+async function sealedWorld(t, { seal, flow = askProvider("openrouter", "liquid/d1"), capUsd, modelKey }) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-wf-sealed-"));
   const sealKey = randomBytes(32);
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
@@ -346,10 +346,13 @@ async function sealedWorld(t, { seal, flow = askProvider("openrouter", "liquid/d
   });
   for (const [name, value] of Object.entries(seal)) await putSealedKey(store, sealKey, name, value);
   await server.agents.create({ id: "agent-1", name: "Flow" }, { id: "rev-1", kind: "workflow", body: { workflow: flow } });
-  await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { doc: "Certificate of incorporation of Example Widgets, Inc." }, title: "t", place: { mode: "runner" }, ...(capUsd !== undefined ? { max_cost_usd: capUsd } : {}) } });
+  // `modelKey`: the run's own model key (model_key), sealed in its launch for a gateway, as the server seals one.
+  const gateway = modelKey ? { AGENT_MODEL_BASE_URL: "https://gateway.example" } : {};
+  const sealed = modelKey ? { sealed: sealRunLaunch(sealKey, "run-1", { model: { key: modelKey, origin: gateway.AGENT_MODEL_BASE_URL } }) } : {};
+  await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { doc: "Certificate of incorporation of Example Widgets, Inc." }, title: "t", place: { mode: "runner" }, ...(capUsd !== undefined ? { max_cost_usd: capUsd } : {}) }, ...sealed });
   // No decisionProvidersOf injected: the spec reads the run's keys from the store (sealKey). The decision keys are never in
   // this process's environment — only the faux-service pointers are, so a decision that runs got its key from the store.
-  const specOf = workflowSpecOf({ store, sealKey, env: { AGENTRUN_SERVE_FAUX: "1", AGENTRUN_SERVE_FAUX_OPENROUTER: FAUX_SYSTEM_ONE }, providerOf: idleModelProvider() });
+  const specOf = workflowSpecOf({ store, sealKey, env: { AGENTRUN_SERVE_FAUX: "1", AGENTRUN_SERVE_FAUX_OPENROUTER: FAUX_SYSTEM_ONE, ...gateway }, providerOf: idleModelProvider() });
   runner = startRunner({ store, createLoop: createWorkflowLoop(specOf), name: "runner-a", ...TIMING });
   return { server };
 }
@@ -360,6 +363,12 @@ test("a workflow decision on the runner runs on the run's stored provider key (c
   const { server } = await sealedWorld(t, { seal: { OPENROUTER_API_KEY: `not-a-secret-${"stored"}` } });
   const row = await waitRow(server, (r) => r.state !== "running" && r.state !== "queued" && r.runner === null);
   assert.equal(row.state, "ended", `the decision ran on the run's stored key and the run ended: ${JSON.stringify(row)}`);
+});
+
+test("a workflow run that brought its own model key still runs its decisions on the decision provider's stored key: a run's model key replaces model keys, never a decision provider's (red before: OPENROUTER_API_KEY was cleared with the model keys, and the decision failed)", async (t) => {
+  const { server } = await sealedWorld(t, { seal: { OPENROUTER_API_KEY: `not-a-secret-${"stored"}` }, modelKey: `not-a-secret-${"run-model-key"}-77` });
+  const row = await waitRow(server, (r) => r.state !== "running" && r.state !== "queued" && r.runner === null);
+  assert.equal(row.state, "ended", `the keyed run's decision ran on its stored OpenRouter key: ${JSON.stringify(row)}`);
 });
 
 /** A chain whose first decision names `provider`, the second Jev: the run's keys cover Jev but not `provider`. */
@@ -589,7 +598,10 @@ test("a decision's hold is kept only once the driver has admitted its request: a
   // answered) or it did not (runner B asks it once). Either way the run counts it once at most: a hold kept before the
   // admission would be counted cut beside runner B's own, $0.80 for one $0.40 decision.
   assert.ok(asked.length <= 1, `asked at most once: ${asked.length}`);
-  assert.ok((ended.costUsd ?? 0) <= 0.4 + 1e-9, `the decision counted once at most, never its dead runner's hold beside a second ask: ${JSON.stringify(ended)}`);
+  // What the run counts: its cost when it knows it, else the most it can have cost (a hold reads apart, costUsd null);
+  // never a dead runner's hold beside a second ask in either.
+  const counted = ended.costUsd ?? ended.costAtMostUsd ?? 0;
+  assert.ok(counted <= 0.4 + 1e-9, `the decision counted once at most, never its dead runner's hold beside a second ask: ${JSON.stringify(ended)}`);
   if (asked.length === 1) assert.deepEqual([ended.state, Math.round((ended.costUsd ?? 0) * 1e9) / 1e9], ["ended", 0.4], `asked by runner B, booked at what it charged: ${JSON.stringify(ended)}`);
   // Not asked: runner A's write admitted the request, so runner B took the run over and escalated it, asked and never
   // answered, never a takeover that simply failed.
@@ -681,7 +693,7 @@ const near = (actual, expected, what) => assert.ok(typeof actual === "number" &&
 // A decision's settle commits before its receipt (runner/workflow-spec.ts decisionJudging: `admitted` settles before the
 // driver saves the answer), so a crash never leaves a receipt that names a charge beside a booking it lost: lost at the
 // settle, the receipt is lost too, and the provider may have billed its worst case.
-test("a decision whose booking a crash lost at its settle never reached its receipt: the next claim counts it at its hold, asks it no more, and sends the run to review", async (t) => {
+test("a decision whose booking a crash lost at its settle never reached its receipt: the next claim counts it at its hold, asks it no more, and sends the run to review; the run's cost is that hold, the most it can have cost", async (t) => {
   const { row, records, requests, asked } = await lostAround(t, { at: "settle", price: feeOnly(0.4), costUsd: 0.1 });
   assert.equal(asked, 1, "asked once, by runner A; never again by runner B");
   assert.deepEqual([row.state, row.outcome, row.epoch > 1], ["ended", "escalated", true], `runner B finds the decision asked and never answered, and escalates it: ${JSON.stringify(row)}`);
@@ -691,7 +703,11 @@ test("a decision whose booking a crash lost at its settle never reached its rece
   const turns = records.filter((r) => r.kind === "runner.turn").map((r) => r.data);
   assert.deepEqual([records.filter((r) => r.kind === "runner.request").length, turns.map((d) => [d.cut === true, d.usd])], [1, [[true, null]]], `one booking, cut by the next claim: ${JSON.stringify(records)}`);
   near(sessionSpendOf(records).spentUsd, request.heldUsd, "the cap counts it at its hold, its worst case");
+  // Booked cut at its hold, an upper bound (runner.ts CUT_AT_HOLD), as a pi run's cut request is: the stored cost is the
+  // booking's (runCostOf), stored as the most it can have cost: the row reads that hold apart, never as its cost.
+  assert.deepEqual(turns.map((d) => [d.bookedUsd, d.rule, d.atMost]), [[request.heldUsd, "cut", true]], `booked at its hold, the most it can have cost: ${JSON.stringify(turns)}`);
   assert.equal(row.costUsd, null, `its cost is unknown, never its hold: ${JSON.stringify(row)}`);
+  near(row.costAtMostUsd, request.heldUsd, `at most that hold, read from the booking: ${JSON.stringify(row)}`);
 });
 
 test("a decision whose receipt a crash lost after its settle counts at what it charged on the next claim, never at its larger hold", async (t) => {

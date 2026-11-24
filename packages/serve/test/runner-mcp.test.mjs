@@ -231,7 +231,7 @@ test("R4b: an MCP call outside its server's argument pin is refused in the pin's
     script,
     grants: ["mcp:fake/add"],
     before: ({ server }) => server.settings.put("tool-settings", { "mcp:fake/add": { permission: "allow", pin: { a: 2 } } }),
-    settings: ({ store, claim, work }) => adapterRunGate(store, claim, { kind: "agentic", body: {} }, work),
+    settings: ({ store, claim, work }) => adapterRunGate(store, claim, { kind: "agentic", body: {} }, work, undefined, { facts: undefined }),
   });
   assert.equal(row.state, "ended", JSON.stringify(row));
   const said = lastResult(sent);
@@ -263,6 +263,15 @@ test("R7: a pinned tool that is a meta tool now refuses the claim in words: the 
   assert.equal(row.summary, `mcp:fake/COMPOSIO_MULTI_EXECUTE_TOOL can't be granted: ${META_REASON}`);
   assert.equal(sent.length, 0, "no model request");
   assert.equal(fake.log.length, 0, "nothing sent to the MCP server");
+});
+
+test("a forged saved resource marker refuses the claim before any model or MCP request", async t => {
+  const forged = { ...ADD, resource: "read" };
+  const { row, sent, fake } = await mcpRun(t, { script: [{ say: "must not run" }], grants: ["mcp:fake/add"], tools: [forged] });
+  assert.equal(row.state, "failed");
+  assert.match(row.summary, /invalid resource operation marker/);
+  assert.equal(sent.length, 0);
+  assert.equal(fake.log.length, 0);
 });
 
 test("R8: a server whose URL changed since the run was pinned refuses each call unsent, in words", async (t) => {

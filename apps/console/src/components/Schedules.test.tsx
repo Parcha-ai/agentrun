@@ -20,6 +20,8 @@ const NIGHTLY: Trigger = {
 const firing = (over: Partial<Firing>): Firing => ({ key: "fir_x", by: "schedule", nominal_at: "2026-11-04T09:30:00Z", status: "started", at: "2026-11-04T09:30:01Z", run_id: null, reason: null, error: null, ...over });
 const AGENTS = [
   { agent_id: "triage", kind: "agentic", definition: { name: "Triage" }, archived_at: null },
+  // An agent whose tools ask (GET /v2/agents/{id}'s `tools`, each with the permission in force): a run of it waits at them.
+  { agent_id: "mailer", kind: "agentic", definition: { name: "Mailer" }, archived_at: null, tools: [{ name: "send_email", permission: "ask" }, { name: "read_email", permission: "allow" }, { name: "create_issue_comment", permission: "ask" }] },
   { agent_id: "flow", kind: "workflow", definition: { name: "Refund flow" }, archived_at: null },
   // An agent with a default cap per run (definition.max_cost_usd): a schedule on it may leave its own cap out.
   { agent_id: "story", kind: "agentic", definition: { name: "Story", max_cost_usd: 0.5 }, archived_at: null },
@@ -158,18 +160,82 @@ describe("the schedules list", () => {
     expect(t.text()).not.toContain("not shown here");
     expect(t.text()).not.toContain("undefined");
   });
+  // A row whose agent has tools that ask says so, as the trigger's own page does (UnattendedWarning's title), naming those
+  // tools, on every kind of trigger. The page reads each agent once, however many rows start it.
+  it("says on each row of every kind whose agent has tools that ask that it waits for your approval, naming them, reading each agent once", async () => {
+    const on = (id: string, source: unknown, agent = "mailer") => ({ ...NIGHTLY, id, name: id, next_at: null, last_firing: null, source, target: { ...NIGHTLY.target, agent_id: agent } }) as unknown as Trigger;
+    const kinds = [
+      on("t_schedule", { kind: "schedule", cron: "0 9 * * *", timezone: "UTC" }),
+      on("t_webhook", { kind: "webhook" }),
+      on("t_github", { kind: "github", accept: [{ event: "pull_request", actions: ["opened"] }] }),
+      on("t_app", { kind: "composio", server: "gh", event: "GITHUB_ISSUE_ADDED_EVENT", config: { owner: "acme", repo: "web" } }),
+      on("t_feed", { kind: "feed", urls: ["https://status.example.test/feed"], every_s: 900 }),
+      on("t_email", { kind: "email", account: "default", mailbox: "INBOX", every_s: 60 }),
+    ];
+    const quiet = on("t_quiet", { kind: "webhook" }, "triage");
+    const triggers = [...kinds];
+    const s = server({ triggers });
+    // Each agent read whose answer has come back: the page's own handler of it runs right after.
+    const answered: string[] = [];
+    const read = s.v2.getAgent;
+    s.v2.getAgent = (...args: Parameters<typeof read>) => read(...args).then((r) => { answered.push(args[0]); return r; });
+    const t = await open(s.v2, {}, undefined, 30);
+    const row = (id: string) => t.host.querySelector(`[data-trigger="${id}"]`)!;
+    // A later read of the list names an agent the first did not: that one is read then, and the others not again.
+    triggers.push(quiet);
+    const triageRead = () => s.calls.some((c) => c.path === "/v2/agents/triage") && answered.includes("triage");
+    for (let i = 0; i < 50 && !(row("t_quiet") && triageRead()); i++) await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+    // The page's handler of the triage answer, queued behind the one above, has run.
+    await act(async () => {});
+    for (const k of kinds) {
+      const cue = row(k.id).querySelector("[data-asks]");
+      expect(cue?.textContent, k.id).toBe("Waits for your approval: send_email and create_issue_comment");
+    }
+    expect(row("t_quiet").querySelector("[data-asks]")).toBeNull();
+    expect(row("t_quiet").textContent).not.toContain("Waits for your approval");
+    expect(s.calls.filter((c) => c.path === "/v2/agents/mailer").length).toBe(1);
+    expect(s.calls.filter((c) => c.path === "/v2/agents/triage").length).toBe(1);
+  });
+  // The page is framed as every list page is (Connected agents, Runs): a header bar with the place's icon and its name in
+  // caps, and the actions in that bar, the one main action last.
+  it("has the list pages' header bar: the navigation's icon, the name in caps, the actions at its right", async () => {
+    const t = await open(server({ triggers: [NIGHTLY] }).v2, {});
+    const header = t.host.querySelector("header")!;
+    const h1 = header.querySelector("h1")!;
+    expect(h1.textContent).toBe("Triggers");
+    expect(h1.className.split(" ")).toContain("caps");
+    expect(h1.querySelector("svg")?.getAttribute("class")).toContain("lucide-calendar-clock");
+    for (const c of ["min-h-12", "border-b"]) expect(header.className.split(" ")).toContain(c);
+    const actions = [...header.querySelectorAll("button")];
+    expect(actions.map((b) => b.textContent?.trim())).toEqual(["New app trigger", "New GitHub trigger", "New webhook", "New feed trigger", "New email trigger", "New schedule"]);
+    // Toolbar-sized, and one main action, the last.
+    for (const b of actions) expect(b.className.split(" "), b.textContent ?? "").toContain("h-control-sm");
+    expect(actions.map((b) => /\bbg-primary\/10\b/.test(b.className))).toEqual([false, false, false, false, false, true]);
+  });
+
+  it("offers each kind as a peer, unframed, when there is none: no main action among them", async () => {
+    const t = await open(server({ triggers: [] }).v2, {});
+    const panel = t.host.querySelector('section[aria-labelledby="first-trigger"]')!;
+    // No frame around the panel: its cards are its only boxes, and it starts at the page's own left edge.
+    expect(panel.className).not.toMatch(/primary|border|\bp-\d/);
+    expect(panel.parentElement!.className.split(" ")).toContain("px-5");
+    for (const b of panel.querySelectorAll("li button")) expect(b.className, b.textContent ?? "").not.toMatch(/bg-primary/);
+    expect(t.host.querySelector("header h1")?.textContent).toBe("Triggers");
+  });
+
   it("says there are none yet, with the way to make one", async () => {
     const t = await open(server({ triggers: [] }).v2, {});
     expect(t.text()).toContain("No triggers yet");
     expect(t.button(/^New schedule$/)).toBeTruthy();
-    // The four things that can start a run, each with its own way in.
+    // The six things that can start a run, each with its own way in.
     const panel = t.host.querySelector('section[aria-labelledby="first-trigger"]')!;
     expect(panel.querySelector("h2")?.textContent).toBe("Start runs without being here");
-    expect([...panel.querySelectorAll("li button")].map((b) => b.textContent)).toEqual(["New schedule", "New webhook", "New GitHub trigger", "New app trigger"]);
+    expect([...panel.querySelectorAll("li button")].map((b) => b.textContent)).toEqual(["New schedule", "New webhook", "New GitHub trigger", "New app trigger", "New feed trigger", "New email trigger"]);
     expect(panel.textContent).toContain("At the times you set: every day or week at a time, every few minutes or hours, or once.");
+    expect(panel.textContent).toContain("Save the account in Settings → Email first.");
     expect(panel.textContent).not.toMatch(/cron/i);
-    // Each is on the page once: the header's four show when there is a trigger.
-    for (const name of ["New schedule", "New webhook", "New GitHub trigger", "New app trigger"]) expect([...t.host.querySelectorAll("button")].filter((b) => b.textContent?.trim() === name).length, name).toBe(1);
+    // Each is on the page once: the header's six show when there is a trigger.
+    for (const name of ["New schedule", "New webhook", "New GitHub trigger", "New app trigger", "New feed trigger", "New email trigger"]) expect([...t.host.querySelectorAll("button")].filter((b) => b.textContent?.trim() === name).length, name).toBe(1);
   });
 });
 
@@ -179,7 +245,8 @@ describe("a new schedule", () => {
     const named = Object.fromEntries([...t.host.querySelectorAll("label")].filter((l) => l.control).map((l) => [l.textContent, (l.control as HTMLInputElement).name || l.control!.getAttribute("aria-label")]));
     // The agent's control is the picker's field (a button; its value goes in a hidden input named "agent").
     // So are the schedule's shape and its zone (ScheduleWhen's and ZonePicker's fields).
-    expect(named).toMatchObject({ Name: "name", Runs: "Runs", "Time zone": "Time zone", Agent: "Agent", "Each run is asked": "content" });
+    // A label's text carries the * its field's save needs (Field's required).
+    expect(named).toMatchObject({ Name: "name", Runs: "Runs", "Time zone": "Time zone", "Agent *": "Agent", "Each run is asked *": "content" });
   });
   it("says the schedule and its zone in plain words, with no cron or zone-database terms", async () => {
     const t = await open(server().v2, { trigger: null });
@@ -611,6 +678,18 @@ describe("editing a schedule", () => {
 // Tester findings on the New schedule form (11-09): an empty cost cap means the agent's own default, so the field's
 // placeholder says that default as served (definition.max_cost_usd), never a made-up example; and a one time is to the
 // minute, so its field asks for no seconds.
+describe("every create form's run target", () => {
+  // The agent, what each run is asked and (with no default cap on the agent) the cap are required on every form: the
+  // email form marks them as the schedule, webhook and feed forms do.
+  for (const kind of ["schedule", "webhook", "feed", "email"] as const) {
+    it(`the ${kind} form marks its agent, what each run is asked and its cap required`, async () => {
+      const t = await open(server().v2, { trigger: null, kind });
+      const labels = [...t.host.querySelectorAll("label")].map((l) => l.textContent ?? "").filter((x) => /^(Agent|Each run is asked|Cost cap)/.test(x));
+      expect(labels).toEqual(["Agent *", "Each run is asked *", "Cost cap, US dollars a run *"]);
+    });
+  }
+});
+
 describe("the New schedule form's cost cap and one time", () => {
   const cap = (host: Element) => host.querySelector<HTMLInputElement>('input[name="maxCost"]')!;
 

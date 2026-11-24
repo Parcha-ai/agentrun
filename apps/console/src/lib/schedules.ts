@@ -1,5 +1,5 @@
 import cronstrue from "cronstrue";
-import { type Accept, acceptOf, acceptWords, type ConditionDraft, conditionDraftOf, type RuleDraft, ruleDraftOf } from "./accept";
+import { type Accept, acceptFields, acceptOf, acceptWords, type ConditionDraft, conditionDraftOf, type RuleDraft, ruleDraftOf } from "./accept";
 import { ClientError } from "./client";
 import { clock } from "./format";
 import type { Firing, Trigger, TriggerCreate, TriggerInput, TriggerSource, TriggerTarget } from "./v2";
@@ -153,6 +153,25 @@ export const capWords = (usd: number) => `${dollars(usd)} a run`;
 export const capOf = (own: number | undefined, agentDefault: number | undefined) =>
   typeof own === "number" ? capWords(own) : typeof agentDefault === "number" && agentDefault > 0 ? `Agent's default (${dollars(agentDefault)})` : "Agent's default";
 
+/** Why a trigger that starts a connected agent (one whose definition names a `native` source) has no cost cap: the
+ *  server refuses one on its target, and its effort too (serve's trigger target check). */
+export const CONNECTED_NO_CAP = "None. A connected agent runs in its own CLI, which keeps its own limits: AgentRun cannot cap its runs.";
+/** How a trigger form treats its cap for the picked agent: `none` for a connected agent (no cap is asked for or sent,
+ *  whatever was typed), else `optional` when an empty cap takes the agent's default, else `required`. */
+export type CapRule = "required" | "optional" | "none";
+/** The picked agent's default cap per run (definition.max_cost_usd) and whether it is a connected agent. */
+export function agentCapOf(agent: { definition: { native?: unknown; max_cost_usd?: unknown } } | undefined): { agentCap: number | undefined; connected: boolean } {
+  const raw = agent?.definition.max_cost_usd;
+  return { agentCap: typeof raw === "number" && raw > 0 ? raw : undefined, connected: !!agent?.definition.native };
+}
+/** A draft's cap under `rule` (a boolean is the older `capOptional`): the number to send, if any, and what is wrong. */
+function capUnder(maxCost: string, rule: boolean | CapRule, needed: string): { cap?: number; issue?: string } {
+  if (rule === "none") return {};
+  const cap = numberOf(maxCost);
+  if (!maxCost.trim()) return rule === true || rule === "optional" ? {} : { issue: needed };
+  return cap === undefined ? { issue: NEEDED } : { cap };
+}
+
 /** Where a one-time schedule stands once its time has passed (`now`) and the server gives it no next time: `ran`, the
  *  firing of its own time that started a run (from its last firing, or `history` after a Run now replaced it), or
  *  `passed`, its time, when no such firing is known (it waits, missed, failed, or the list read lacks it). Only `ran`
@@ -196,7 +215,7 @@ export const hookUrlOf = (t: Pick<Trigger, "id">): string => `${location.origin}
 /** Said beside a URL hookUrlOf built: the server's own public address may differ from the one this page was opened at. */
 export const HOOK_URL_HINT = "This server's address as this page sees it: behind a proxy, use its public address.";
 /** What a webhook's signature check takes, in words. */
-export const SIGNATURE_WORDS: Record<"standard" | "github" | "composio", string> = { standard: "Standard Webhooks (webhook-signature)", github: "GitHub's (X-Hub-Signature-256)", composio: "Composio's (webhook-signature, keyed by its secret as given)" };
+export const SIGNATURE_WORDS: Record<"standard" | "github", string> = { standard: "Standard Webhooks (webhook-signature)", github: "GitHub's (X-Hub-Signature-256)" };
 type HookSource = Extract<TriggerSource, { kind: "webhook" }>;
 type GitHubSource = Extract<TriggerSource, { kind: "github" }>;
 /** A filter's rule in words, as its editor names each part (lib/accept.ts). */
@@ -207,11 +226,39 @@ export { acceptWords };
 export const hookWhen = (source: HookSource): string =>
   source.accept?.length ? `Only signed requests for ${source.accept.map((a) => acceptWords(a, false)).join(" or ")}` : "On each signed request";
 
+/** Each kind of trigger in words: its short label (a list row's chip, an apply's result) and what starts a run of it (the
+ *  first-trigger panel's card, an apply's result). A new kind adds its row here and every place that names a kind says it. */
+export const TRIGGER_KINDS: Record<TriggerSource["kind"], { label: string; what: string }> = {
+  schedule: { label: "Schedule", what: "At the times you set: every day or week at a time, every few minutes or hours, or once." },
+  webhook: { label: "Webhook", what: "On each signed request another system sends to its URL." },
+  github: { label: "GitHub", what: "On the events you pick from this server's GitHub App." },
+  composio: { label: "App", what: "On an event in an app a saved Composio server connects, such as a new issue in a GitHub repository." },
+  feed: { label: "Feed", what: "On each new item in the feeds you name, read every few minutes: a status page's incidents, a blog, or an API's JSON list such as a repository's pull requests." },
+  email: { label: "Email", what: "On each new message in a mailbox of this server's email account." },
+};
+
 /** A firing's cause, in words: its schedule, a Run now, or a signed request to a webhook. */
-export const FIRED_BY: Record<Firing["by"], string> = { schedule: "On schedule", manual: "Run now", webhook: "On a request", github: "On a GitHub event", composio: "On an app event" };
+export const FIRED_BY: Record<Firing["by"], string> = { schedule: "On schedule", manual: "Run now", webhook: "On a request", github: "On a GitHub event", composio: "On an app event", email: "On an email", feed: "On a feed item" };
 
 /** When a trigger from an app fires, in one line: its event, from the saved Composio server it names. */
 export const composioWhen = (source: Extract<TriggerSource, { kind: "composio" }>): string => `On ${source.event} from ${source.server}`;
+
+/** When an email trigger fires, in one line: each new message in its mailbox (or, with `accept`, each its filter takes). */
+export const emailWhen = (source: Extract<TriggerSource, { kind: "email" }>): string =>
+  source.accept?.length ? `On email in ${source.mailbox} for ${source.accept.map((a) => acceptWords(a, false)).join(" or ")}` : `On each email in ${source.mailbox}`;
+
+/** When a feed trigger fires, in one line: each new or updated item in its feed (its host), or in its N feeds. */
+export const feedWhen = (source: Extract<TriggerSource, { kind: "feed" }>): string => {
+  const where = source.urls.length === 1 ? hostOf(source.urls[0]!) : `${source.urls.length} feeds`;
+  return source.accept?.length ? `On items in ${where} for ${source.accept.map((a) => acceptWords(a, false)).join(" or ")}` : `On each new item in ${where}`;
+};
+const hostOf = (url: string): string => {
+  try {
+    return new URL(url).host;
+  } catch {
+    return url;
+  }
+};
 
 /** When a github trigger fires, in one line: the GitHub events its filter takes, delivered to the server's GitHub App. */
 export const githubWhen = (source: Extract<TriggerSource, { kind: "github" }>): string => `On GitHub ${source.accept.map((a) => acceptWords(a, false)).join(" or ")}`;
@@ -279,8 +326,9 @@ const numberOf = (text: string): number | undefined => (text.trim() !== "" && Nu
 /** The body a create or an edit sends, or what is missing, by the field the server would name. Nothing else is checked
  *  here: a short interval, a cron line that does not parse and a cap of 0 are the server's to refuse. `capOptional`:
  *  the picked agent has a default cap per run (or an edited schedule already ran under it), so an empty cap is left out
- *  and each run takes the agent's; the server refuses it, under the field, if the agent has none by then. */
-export function bodyOf(d: Draft, capOptional = false): { body?: ScheduleInput; issues?: Record<string, string> } {
+ *  and each run takes the agent's; the server refuses it, under the field, if the agent has none by then. `"none"`: the
+ *  picked agent is a connected one, so no cap is asked for or sent. */
+export function bodyOf(d: Draft, capOptional: boolean | CapRule = false): { body?: ScheduleInput; issues?: Record<string, string> } {
   const issues: Record<string, string> = {};
   let source: ScheduleInput["source"];
   if (d.kind === "cron") {
@@ -299,9 +347,8 @@ export function bodyOf(d: Draft, capOptional = false): { body?: ScheduleInput; i
   }
   if (!d.agentId) issues["target.agent_id"] = "Pick an agent.";
   if (!d.content.trim()) issues["target.input"] = "Say what each run is asked.";
-  const cap = numberOf(d.maxCost);
-  if (!d.maxCost.trim()) { if (!capOptional) issues["target.max_cost_usd"] = "A cost cap is needed: every run a schedule starts is capped."; }
-  else if (cap === undefined) issues["target.max_cost_usd"] = NEEDED;
+  const { cap, issue } = capUnder(d.maxCost, capOptional, "A cost cap is needed: every run a schedule starts is capped.");
+  if (issue) issues["target.max_cost_usd"] = issue;
   if (Object.keys(issues).length) return { issues };
   return {
     body: {
@@ -315,7 +362,7 @@ export function bodyOf(d: Draft, capOptional = false): { body?: ScheduleInput; i
 
 /** A new webhook's fields as typed: how its requests are signed, its filter (none: every signed request fires), then the
  *  run each one starts (as a schedule's). */
-export type WebhookDraft = { name: string; signature: "standard" | "github" | "composio"; accept: RuleDraft[]; agentId: string; content: string; maxCost: string };
+export type WebhookDraft = { name: string; signature: "standard" | "github"; accept: RuleDraft[]; agentId: string; content: string; maxCost: string };
 export const emptyWebhook = (): WebhookDraft => ({ name: "", signature: "standard", accept: [], agentId: "", content: "", maxCost: "" });
 
 /** A webhook's source with `rules` as its filter (none: no accept), its kind and signature as `was` has them. */
@@ -326,7 +373,7 @@ export function webhookSourceOf(was: { signature?: HookSource["signature"] }, ru
 
 /** A new webhook's create body, or what is missing, by the field the server would name: its filter's shape, and bodyOf's
  *  rules for the run it starts. The URL and the signing secret are the server's, in the create's answer. */
-export function webhookBodyOf(d: WebhookDraft, capOptional = false): { body?: TriggerCreate; issues?: Record<string, string> } {
+export function webhookBodyOf(d: WebhookDraft, capOptional: boolean | CapRule = false): { body?: TriggerCreate; issues?: Record<string, string> } {
   const { source, issues } = webhookSourceOf({ signature: d.signature }, d.accept);
   return createOf(d, source, issues, capOptional, "a webhook");
 }
@@ -396,13 +443,19 @@ export type ComposioTrigger = Trigger & { source: ComposioSource; target: Trigge
 export type ComposioSource = Extract<TriggerSource, { kind: "composio" }>;
 export const isComposioTrigger = (t: Trigger): t is ComposioTrigger => t.source.kind === "composio" && t.target.kind === "start_run";
 
+/** An email trigger that starts a run (serve's trigger-email.ts): each new message in a mailbox of the server's email
+ *  account (Settings → Email), read every `every_s`, and its filter. */
+export type EmailTrigger = Trigger & { source: Extract<TriggerSource, { kind: "email" }>; target: TriggerTarget };
+export const isEmailTrigger = (t: Trigger): t is EmailTrigger => t.source.kind === "email" && t.target.kind === "start_run";
+
 /** One field of an event's config, read from its JSON schema (the events list's `config`): its name, title, description,
  *  whether it is required, and how it is typed in (`json`: an object, a list or a type the form has no input for, typed as
  *  JSON). A deprecated field is never offered. */
-export type ConfigField = { name: string; title: string; description?: string; required: boolean; type: "string" | "number" | "integer" | "boolean" | "json"; options?: string[]; initial: string };
+export type ConfigField = { name: string; title: string; description?: string; required: boolean; type: "string" | "number" | "integer" | "boolean" | "json"; options?: string[]; initial: string; sealed?: true };
 
-/** An event's config fields, in its schema's order. */
-export function configFieldsOf(schema: Record<string, unknown> | undefined): ConfigField[] {
+/** An event's config fields, in its schema's order; each the server seals at the save (the events list's `sealed`: a
+ *  credential, taken as a password) marked so. */
+export function configFieldsOf(schema: Record<string, unknown> | undefined, sealed: readonly string[] = []): ConfigField[] {
   const properties = (schema?.properties ?? {}) as Record<string, Record<string, unknown>>;
   const required = new Set(Array.isArray(schema?.required) ? (schema.required as unknown[]).filter((x): x is string => typeof x === "string") : []);
   return Object.entries(properties).filter(([, p]) => p && typeof p === "object" && p.deprecated !== true).map(([name, p]) => {
@@ -410,7 +463,7 @@ export function configFieldsOf(schema: Record<string, unknown> | undefined): Con
     const type: ConfigField["type"] = types.length === 1 && ["string", "number", "integer", "boolean"].includes(String(types[0])) ? (types[0] as ConfigField["type"]) : "json";
     const options = type === "string" && Array.isArray(p.enum) && p.enum.every((v) => typeof v === "string") ? (p.enum as string[]) : undefined;
     const initial = p.default === undefined ? (type === "boolean" ? "false" : "") : type === "json" ? JSON.stringify(p.default) : String(p.default);
-    return { name, title: typeof p.title === "string" && p.title.trim() ? p.title : name, ...(typeof p.description === "string" && p.description.trim() ? { description: p.description } : {}), required: required.has(name), type, ...(options ? { options } : {}), initial };
+    return { name, title: typeof p.title === "string" && p.title.trim() ? p.title : name, ...(typeof p.description === "string" && p.description.trim() ? { description: p.description } : {}), required: required.has(name), type, ...(options ? { options } : {}), initial, ...(sealed.includes(name) ? { sealed: true as const } : {}) };
   });
 }
 
@@ -439,9 +492,9 @@ export function configOf(fields: readonly ConfigField[], values: Record<string, 
 export type ComposioDraft = { name: string; server: string; event: string; config: Record<string, string>; where: ConditionDraft[]; agentId: string; content: string; maxCost: string };
 export const emptyComposio = (): ComposioDraft => ({ name: "", server: "", event: "", config: {}, where: [], agentId: "", content: "", maxCost: "" });
 
-/** A trigger from an app's filter: its one event's conditions, a rule of their own; none takes every delivery for its
- *  instance. */
-function composioAcceptOf(event: string, where: readonly ConditionDraft[], others: readonly RuleDraft[] = [], read?: Accept): { accept: Accept[]; issues: Record<string, string> } {
+/** A filter of one event (a trigger from an app's, a feed trigger's): its conditions, a rule of their own; none takes
+ *  every delivery. */
+function eventAcceptOf(event: string, where: readonly ConditionDraft[], others: readonly RuleDraft[] = [], read?: Accept): { accept: Accept[]; issues: Record<string, string> } {
   // The first rule as read goes back as it came while the person leaves it (one with no conditions too); emptied, it goes.
   const first = where.length || (read && !read.where?.length) ? [{ event, actions: "", where, ...(read ? { was: read } : {}) }] : [];
   return acceptOf([...first, ...others]);
@@ -452,36 +505,142 @@ function composioAcceptOf(event: string, where: readonly ConditionDraft[], other
  *  `read`: the first rule as read, so what the person left of it goes back exactly as it came (ruleOf). */
 export function composioSourceOf(was: ComposioSource, where: readonly ConditionDraft[], others: readonly RuleDraft[] = [], read?: Accept): { source: ComposioSource; issues: Record<string, string> } {
   const { accept: _was, ...rest } = was;
-  const { accept, issues } = composioAcceptOf(was.event, where, others, read);
+  const { accept, issues } = eventAcceptOf(was.event, where, others, read);
   return { source: { ...rest, ...(accept.length ? { accept } : {}) } as ComposioSource, issues };
 }
 
 /** A new trigger from an app's create body, or what is missing: a server, an event, its config by `fields`, its filter's
  *  shape, and bodyOf's rules for the run it starts. */
-export function composioBodyOf(d: ComposioDraft, fields: readonly ConfigField[], capOptional = false): { body?: TriggerCreate; issues?: Record<string, string> } {
+export function composioBodyOf(d: ComposioDraft, fields: readonly ConfigField[], capOptional: boolean | CapRule = false): { body?: TriggerCreate; issues?: Record<string, string> } {
   const issues: Record<string, string> = {};
   if (!d.server) issues["source.server"] = "Pick a Composio server.";
   if (!d.event) issues["source.event"] = "Pick an event.";
   const config = d.event ? configOf(fields, d.config, issues) : {};
-  const { accept, issues: filter } = composioAcceptOf(d.event, d.where);
+  const { accept, issues: filter } = eventAcceptOf(d.event, d.where);
   Object.assign(issues, filter);
   const source = { kind: "composio", server: d.server, event: d.event, config, ...(accept.length ? { accept } : {}) } as TriggerCreate["source"];
   return createOf(d, source, issues, capOptional, "a trigger");
 }
 
+/** A feed trigger (serve's trigger-feed.ts): the feeds it reads, how often, a JSON list's pointers, and its filter. */
+export type FeedTrigger = Trigger & { source: FeedSource; target: TriggerTarget };
+export type FeedSource = Extract<TriggerSource, { kind: "feed" }>;
+export const isFeedTrigger = (t: Trigger): t is FeedTrigger => t.source.kind === "feed" && t.target.kind === "start_run";
+/** The most feeds one trigger reads, and how often it reads them when not told (serve's MAX_FEEDS, DEFAULT_EVERY_S). */
+export const MAX_FEEDS = 20;
+export const FEED_EVERY_S = 900;
+/** The one event a feed trigger's filter names. */
+const FEED_EVENT = "item";
+
+/** A feed trigger's fields as typed: its URLs a line, its interval as a count of `everyUnit`, a JSON list's pointers
+ *  (empty: the server's own, the whole document and /id), its filter's conditions on the item, then the run each item
+ *  starts. `others`: rules after the first, made through the API, kept as they are; `read`: the source as read, so a
+ *  pointer and a first rule the person left go back as they came. */
+export type FeedDraft = { name: string; urls: string; every: string; everyUnit: EveryUnit; items: string; id: string; where: ConditionDraft[]; others: RuleDraft[]; read?: FeedSource; agentId: string; content: string; maxCost: string };
+export const emptyFeed = (): FeedDraft => ({ name: "", urls: "", every: "15", everyUnit: "minutes", items: "", id: "", where: [], others: [], agentId: "", content: "", maxCost: "" });
+
+/** A feed trigger's source as its editor holds it. A first rule that names actions (none a feed takes) is kept with the
+ *  others. */
+export function feedDraftOf(t: FeedTrigger): FeedDraft {
+  const s = t.source;
+  const every = s.every_s ?? FEED_EVERY_S;
+  const unit: EveryUnit = every % 3600 === 0 ? "hours" : every % 60 === 0 ? "minutes" : "seconds";
+  const rules = (s.accept ?? []).map(ruleDraftOf);
+  const first = rules[0] && !rules[0].actions.trim() ? rules[0] : null;
+  return { ...emptyFeed(), urls: s.urls.join("\n"), every: String(every / UNIT_S[unit]), everyUnit: unit, items: s.items ?? "", id: s.id ?? "", where: first?.where ?? [], others: rules.slice(first ? 1 : 0), read: s };
+}
+
+const urlOf = (text: string): URL | null => {
+  try {
+    return new URL(text);
+  } catch {
+    return null;
+  }
+};
+
+/** The URLs a box holds, one a line: blank lines and the spaces around a URL dropped. Each issue is under the URL's
+ *  place in the list sent (`source.urls[i]`), as the server names it; too few or too many, under `source.urls`. */
+export function feedUrlsOf(text: string): { urls: string[]; issues: Record<string, string> } {
+  const urls = text.split(/\r\n|\r|\n/).map((l) => l.trim()).filter(Boolean);
+  const issues: Record<string, string> = {};
+  if (!urls.length) issues["source.urls"] = "Add a feed's URL, one a line.";
+  else if (urls.length > MAX_FEEDS) issues["source.urls"] = `${MAX_FEEDS} feeds at most: this has ${urls.length}.`;
+  else {
+    urls.forEach((url, i) => {
+      const at = urlOf(url);
+      if (!at || (at.protocol !== "http:" && at.protocol !== "https:") || !at.hostname) issues[`source.urls[${i}]`] = `${url} isn't an http or https URL.`;
+      else if (at.username || at.password) issues[`source.urls[${i}]`] = `${at.host}'s URL holds a user or password: leave it out.`;
+      else if (urls.indexOf(url) < i) issues[`source.urls[${i}]`] = `${url} is here twice: each feed is read once.`;
+    });
+  }
+  return { urls, issues };
+}
+
+/** A checked trigger's interval in seconds (`every`, a count of `everyUnit`): a count that is no number, or one under
+ *  `minEvery` when the server says one, is put in `issues` under source.every_s. */
+function everyOf(d: { every: string; everyUnit: EveryUnit }, minEvery: number | undefined, issues: Record<string, string>): number {
+  const n = numberOf(d.every);
+  const every = Math.round((n ?? 0) * UNIT_S[d.everyUnit]);
+  if (n === undefined) issues["source.every_s"] = NEEDED;
+  else if (minEvery && every < minEvery) issues["source.every_s"] = atLeast(minEvery);
+  return every;
+}
+
+/** A feed trigger's source, or what is wrong, by the field the server would name. `minEvery`: the shortest interval the
+ *  server takes, when it says. A pointer is sent as typed, spaces and all; one left empty is left out, unless the source as read had it empty too. */
+export function feedSourceOf(d: FeedDraft, minEvery?: number): { source: FeedSource; issues: Record<string, string> } {
+  const { urls, issues } = feedUrlsOf(d.urls);
+  const every = everyOf(d, minEvery, issues);
+  const pointer = (name: "items" | "id") => {
+    // Sent as typed: a space in a JSON Pointer is part of its key ("/data " names "data ").
+    const typed = d[name];
+    return typed || d.read?.[name] === "" ? { [name]: typed } : {};
+  };
+  const { accept, issues: filter } = eventAcceptOf(FEED_EVENT, d.where, d.others, d.read?.accept?.[0] && !d.read.accept[0].actions?.length ? d.read.accept[0] : undefined);
+  Object.assign(issues, filter);
+  return { source: { kind: "feed", urls, every_s: every, ...pointer("items"), ...pointer("id"), ...(d.read?.updated !== undefined ? { updated: d.read.updated } : {}), ...(d.read?.fields ? { fields: d.read.fields } : {}), ...(accept.length ? { accept } : {}) }, issues };
+}
+
+/** A new feed trigger's create body, or what is wrong: its source (feedSourceOf), and bodyOf's rules for the run it starts. */
+export function feedBodyOf(d: FeedDraft, minEvery?: number, capOptional: boolean | CapRule = false): { body?: TriggerCreate; issues?: Record<string, string> } {
+  const { source, issues } = feedSourceOf(d, minEvery);
+  return createOf(d, source, issues, capOptional, "a feed trigger");
+}
+
+/** The fields a feed form says an issue under: its URLs (each by its place), its interval, its pointers and its filter's. */
+export function feedFields(urls: number, conditions: readonly number[]): Set<string> {
+  return new Set(["name", "source.urls", ...Array.from({ length: urls }, (_, i) => `source.urls[${i}]`), "source.every_s", "source.items", "source.id", "target.agent_id", "target.input", "target.max_cost_usd", ...acceptFields(conditions)]);
+}
+
+/** A new email trigger's fields as typed: the mailbox of the server's account it reads (INBOX unless told), how often
+ *  (as a count of `everyUnit`; the server's least, a minute, by default), on or off from now, then the run each new
+ *  message starts (as a schedule's). */
+export type EmailDraft = { name: string; mailbox: string; every: string; everyUnit: EveryUnit; enabled: boolean; agentId: string; content: string; maxCost: string };
+export const emptyEmail = (): EmailDraft => ({ name: "", mailbox: "INBOX", every: "1", everyUnit: "minutes", enabled: true, agentId: "", content: "", maxCost: "" });
+/** The fields an email form says an issue under. */
+export const EMAIL_FIELDS = new Set(["name", "enabled", "source.mailbox", "source.every_s", "target.agent_id", "target.input", "target.max_cost_usd"]);
+
+/** A new email trigger's create body, or what is wrong: its mailbox (INBOX when left empty) and interval (at least
+ *  `minEvery`, when the server says), whether it is on, and bodyOf's rules for the run it starts. */
+export function emailBodyOf(d: EmailDraft, minEvery?: number, capOptional: boolean | CapRule = false): { body?: TriggerCreate; issues?: Record<string, string> } {
+  const issues: Record<string, string> = {};
+  const every = everyOf(d, minEvery, issues);
+  const made = createOf(d, { kind: "email", mailbox: d.mailbox.trim() || "INBOX", every_s: every }, issues, capOptional, "an email trigger");
+  return made.body ? { body: { ...made.body, enabled: d.enabled } } : made;
+}
+
 /** A new GitHub trigger's create body, or what is missing: its filter's shape, and bodyOf's rules for the run it starts. */
-export function githubBodyOf(d: GitHubDraft, capOptional = false): { body?: TriggerCreate; issues?: Record<string, string> } {
+export function githubBodyOf(d: GitHubDraft, capOptional: boolean | CapRule = false): { body?: TriggerCreate; issues?: Record<string, string> } {
   const { source, issues } = githubSourceOf(d);
   return createOf(d, source, issues, capOptional, "a GitHub trigger");
 }
 
 /** A create body from its source and the run it starts (bodyOf's rules for the target), or what is missing. */
-function createOf(d: { name: string; agentId: string; content: string; maxCost: string }, source: TriggerCreate["source"], issues: Record<string, string>, capOptional: boolean, what: string): { body?: TriggerCreate; issues?: Record<string, string> } {
+function createOf(d: { name: string; agentId: string; content: string; maxCost: string }, source: TriggerCreate["source"], issues: Record<string, string>, capOptional: boolean | CapRule, what: string): { body?: TriggerCreate; issues?: Record<string, string> } {
   if (!d.agentId) issues["target.agent_id"] = "Pick an agent.";
   if (!d.content.trim()) issues["target.input"] = "Say what each run is asked.";
-  const cap = numberOf(d.maxCost);
-  if (!d.maxCost.trim()) { if (!capOptional) issues["target.max_cost_usd"] = `A cost cap is needed: every run ${what} starts is capped.`; }
-  else if (cap === undefined) issues["target.max_cost_usd"] = NEEDED;
+  const { cap, issue } = capUnder(d.maxCost, capOptional, `A cost cap is needed: every run ${what} starts is capped.`);
+  if (issue) issues["target.max_cost_usd"] = issue;
   if (Object.keys(issues).length) return { issues };
   return {
     body: {
@@ -514,12 +673,13 @@ export const same = (a: unknown, b: unknown): boolean => {
 
 /** An edit's PATCH: only the parts of `body` that differ from the schedule as read, and never `enabled` (Pause and
  *  Resume set it). The server starts a schedule again from now whenever an edit names its source, so an unchanged
- *  source is left out. */
-export function patchOf(t: Schedule, body: ScheduleInput): ScheduleInput {
+ *  source is left out. `connected`: the agent now picked is a connected one, which takes no effort, so the schedule's is
+ *  not carried over to it. */
+export function patchOf(t: Schedule, body: ScheduleInput, connected = false): ScheduleInput {
   // An interval typed with no start keeps the start the schedule has.
   const source = body.source && "every_s" in body.source && !body.source.start_at && "every_s" in t.source ? { ...body.source, start_at: t.source.start_at } : body.source;
   // What the form does not show of the target (its effort, the input's other fields) is kept as it is.
-  const target = body.target && { ...body.target, input: { ...t.target.input, ...body.target.input }, ...(t.target.effort !== undefined && body.target.effort === undefined ? { effort: t.target.effort } : {}) };
+  const target = body.target && { ...body.target, input: { ...t.target.input, ...body.target.input }, ...(!connected && t.target.effort !== undefined && body.target.effort === undefined ? { effort: t.target.effort } : {}) };
   return {
     ...(body.name !== undefined && body.name !== t.name ? { name: body.name } : {}),
     ...(source && !same(source, t.source) ? { source } : {}),
@@ -539,8 +699,9 @@ export function issuesOf(e: unknown): { fields: Record<string, string>; rest: st
   for (const f of e.fields) {
     const at = f.field.startsWith("target.input") ? "target.input" : f.field;
     // A filter's issues are kept by their field too: its editor shows each one it has a place for (acceptFields); so are a
-    // trigger from an app's server, event and config (the form shows each under its field).
-    if (((FORM_FIELDS as readonly string[]).includes(at) || at.startsWith("source.accept") || at === "source.server" || at === "source.event" || at === "source.config" || at.startsWith("source.config.")) && !fields[at]) fields[at] = f.message;
+    // trigger from an app's server, event and config, and a feed trigger's URLs (each by its place) and pointers (the
+    // form shows each under its field).
+    if (((FORM_FIELDS as readonly string[]).includes(at) || at.startsWith("source.accept") || at === "source.server" || at === "source.event" || at === "source.config" || at.startsWith("source.config.") || /^source\.urls(\[\d+\])?$/.test(at) || at === "source.items" || at === "source.id") && !fields[at]) fields[at] = f.message;
     else rest.push(f.message);
   }
   return { fields, rest };

@@ -104,9 +104,9 @@ test('the Python module is made of the projection: snake_case methods by resourc
   }
 });
 
-test('a learned item\'s `retired` keeps one TypedDict name on every response, its new `host` form among its values, never a numbered union (#2444)', () => {
+test('a learned workflow\'s `retired` is a TypedDict of its own name, its `host` form among its values, never a numbered union (#2444)', () => {
   const text = readFileSync(GENERATED, 'utf8');
-  for (const name of ['GetAgentLearningResponseNotesItemsItemRetired', 'GetAgentLearningResponseSkillsItemRetired', 'GetAgentLearningResponseWorkflowsItemRetired', 'ListLearningNotesResponseItemsItemRetired']) {
+  for (const name of ['GetAgentLearningResponseWorkflowsItemRetired']) {
     // Two optional keys, one of them a Python keyword (`from`): its required and optional keys are two functional
     // TypedDicts (`_XRequired = TypedDict(...)`, `_XOptional = TypedDict(..., total=False)`) and X a class of both.
     const line = (base) => text.split('\n').find((l) => l.startsWith(`${base} = TypedDict(`)) ?? '';

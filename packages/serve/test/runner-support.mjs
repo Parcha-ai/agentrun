@@ -73,14 +73,14 @@ after(async () => {
 });
 
 /** The store at the test's place, as `role`: the file in `dir`, or on Postgres the schema `schema`. */
-const openAt = ({ file, schema }, role, now) => (schema ? openPostgresStore({ url: PG_URL, schema, role, testClock: now }) : openSqliteStore({ file, role, now }));
+const openAt = ({ file, schema }, role, now, busyTimeoutMs) => (schema ? openPostgresStore({ url: PG_URL, schema, role, testClock: now }) : openSqliteStore({ file, role, now, ...(busyTimeoutMs === undefined ? {} : { busyTimeoutMs }) }));
 
 /**
  * A store file of its own: the server's store (schema set up), and `runners` more opened on the same file as runners.
  * Every store's clock is `time()` plus `clock.skewMs` (real time by default), so a test can move its deadlines explicitly.
  * A fixed time source keeps an intermediate backoff observable however long its assertion is scheduled after it.
  */
-export async function stores({ runners = 1, time = () => Date.now() } = {}) {
+export async function stores({ runners = 1, time = () => Date.now(), busyTimeoutMs } = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-runner-"));
   const schema = onPostgres ? await freshSchema() : undefined;
   const file = schema ? `pg:${schema}` : join(dir, "store.sqlite");
@@ -89,16 +89,16 @@ export async function stores({ runners = 1, time = () => Date.now() } = {}) {
   const entry = { stores: [], dir, schema };
   opened.push(entry);
   atTestEnd(() => closeEntry(entry));
-  const server = await openAt({ file, schema }, "server", now);
+  const server = await openAt({ file, schema }, "server", now, busyTimeoutMs);
   entry.stores.push(server);
   const forRunners = [];
   for (let i = 0; i < runners; i++) {
-    const store = await openAt({ file, schema }, "runner", now);
+    const store = await openAt({ file, schema }, "runner", now, busyTimeoutMs);
     entry.stores.unshift(store);
     forRunners.push(store);
   }
   await server.agents.create({ id: "agent-1", name: "Agent one" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer." } });
-  return { server, runners: forRunners, clock, file };
+  return { server, runners: forRunners, clock, file, now };
 }
 
 /**
@@ -147,6 +147,8 @@ export function recorder() {
     renewsHeld: 0,
     /** When set, each flush waits this long before it reaches the store (a slow disk, or a loaded machine). */
     flushDelayMs: 0,
+    /** When set (a promise), each release is recorded as asked, then waits for it before it reaches the store. */
+    holdRelease: undefined,
   };
 }
 
@@ -204,6 +206,8 @@ export function observed(store, record) {
     async release(claim, options) {
       alive();
       called("release", claim.runId);
+      // A slow store's release (a loaded Postgres): asked here, it reaches the store once record.holdRelease settles.
+      if (record.holdRelease) await record.holdRelease;
       await store.release(claim, options);
       record.ops.push(`release ${claim.runId}`);
     },

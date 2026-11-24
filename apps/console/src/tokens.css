@@ -27,6 +27,8 @@
   --primary: 30 100% 50%;
   --primary-foreground: 240 10% 3.9%;
   --primary-text: 30 100% 34%;
+  /* Action labels also sit on the stronger 20% hover/open wash. */
+  --primary-action-text: 30 100% 31%;
 
   /* Tones. The bare name is a fill, a border or a dot; `-text` is words in that tone on a page surface or on the
      tone's own 10% wash. */
@@ -63,8 +65,14 @@
   --chart-handed-back: 159 73.3% 39.6%;
   --chart-workflow: 17 82.1% 56.3%;
 
-  /* Shape. The console is square: every corner is --radius. */
+  /* A run's trace: what a span is, a model request or a tool call. Marks only (a bar, a swatch); a word names each. */
+  --trace-model: 251 55% 53%;
+  --trace-tool: 174 72% 33%;
+
+  /* Square fields and surfaces; rounded action buttons and a softer build composer. */
   --radius: 0px;
+  --radius-composer: 0.875rem;
+  --radius-action: 0.5rem;
   /* Lines are 1px. 2px marks where you are (the active nav item, the open tab) and the focus ring. */
   --border-width: 1px;
   --border-width-strong: 2px;
@@ -112,6 +120,7 @@
   --primary: 30 100% 50%;
   --primary-foreground: 240 10% 3.9%;
   --primary-text: 30 100% 50%;
+  --primary-action-text: var(--primary-text);
   --success: 142 71% 45%;
   --success-text: 142 71% 45%;
   --warning: 38 92% 55%;
@@ -134,6 +143,8 @@
   --chart-agent: 213 76.8% 56.1%;
   --chart-handed-back: 159 72.7% 35.9%;
   --chart-workflow: 17 70.2% 50%;
+  --trace-model: 253 100% 81%;
+  --trace-tool: 172 66% 50%;
   --shadow-float: 0 10px 15px -3px rgb(0 0 0 / 0.5), 0 4px 6px -4px rgb(0 0 0 / 0.5);
 }
 

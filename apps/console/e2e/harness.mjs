@@ -46,7 +46,7 @@ export async function startServer({ env = {}, faux = "faux-model.mjs", fauxBrows
   const child = spawn(process.execPath, command, {
     // No sandbox box: the flows drive the console, and a Docker sandbox needs the computer daemon built (npm run
     // build:daemon, Go) and a Docker daemon. A flow that needs a box sets AGENTRUN_BOXES in its own env.
-    env: { PATH: process.env.PATH ?? "", HOME: home, TMPDIR: tmpdir(), AGENTRUN_BOXES: "none", ...env },
+    env: { PATH: process.env.PATH ?? "", HOME: home, TMPDIR: tmpdir(), AGENTRUN_BOXES: "none", AGENTRUN_TELEMETRY: "0", ...env },
     stdio: ["ignore", "pipe", "pipe"],
   });
   const lines = [];

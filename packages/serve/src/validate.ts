@@ -7,7 +7,8 @@ import { placeIssues } from "./place.js";
 import { computerIssues, settingConflict } from "./computer-setting.js";
 import { settingsIssues } from "./tool-plane.js";
 import { APPROVALS } from "./approvals.js";
-import { schemaCheck } from "./answer-json.js";
+import { carriedProblem, schemaCheck, X_CARRIED } from "./answer-json.js";
+import { learningSettingIssue } from "./learning-setting.js";
 
 export const ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 /** An inline agent's source or kind in its external reference (POST /runs): no colon, which the reference's key splits on. */
@@ -23,11 +24,11 @@ export const IDEMPOTENCY_TTL_S = 86_400;
 export const stable = (value: unknown): string =>
   Array.isArray(value) ? `[${value.map(stable).join(",")}]` : isObject(value) ? `{${Object.keys(value).sort().map((k) => `${JSON.stringify(k)}:${stable(value[k])}`).join(",")}}` : JSON.stringify(value);
 
-export const DEFINITION_FIELDS = ["id", "version", "name", "description", "instructions", "workflow", "model", "model_tiers", "thinking", "harness", "place", "computer", "learning", "skills", "tools", "tool_settings", "approvals", "max_cost_usd", "input_schema", "output_schema", "checkout", "native", "sdk"];
+export const DEFINITION_FIELDS = ["id", "version", "name", "description", "instructions", "workflow", "model", "model_tiers", "thinking", "harness", "place", "computer", "learning", "skills", "tools", "tool_settings", "approvals", "max_cost_usd", "max_requests", "input_schema", "output_schema", "checkout", "native", "sdk", "cli_learning"];
 /** What an agentic definition may ask the server to check out in each run's folder before its first turn
  *  (runner/pr-checkout.ts): `pull_request`, the pull request the run's GitHub event names, at its head, read-only, in
  *  `repo/`; `none` clears it on an edit. */
-export const CHECKOUTS = ["pull_request", "none"] as const;
+export const CHECKOUTS = ["pull_request", "repository", "none"] as const;
 /** The most bytes an agent's output_schema takes, as JSON. */
 export const MAX_OUTPUT_SCHEMA_BYTES = 64 * 1024;
 /** The most bytes an agent's input_schema takes, as JSON. */
@@ -66,8 +67,9 @@ export const skillNames = (files: Iterable<string>): string[] => [...files].filt
 /**
  * A definition as `POST /agents` and `PUT .../definition` take it: what one revision of an agent keeps. `instructions`
  * makes an agentic revision, `workflow` (an agentrun-dsl workflow) a workflow revision. `creating` asks for a name.
+ * `harnesses`: the ids `harness` may name, the server's table's (harness-table.ts harnessIds); the built-in ones by default.
  */
-export function definitionIssues(definition: unknown, { at = "definition", creating = true } = {}): InputIssue[] {
+export function definitionIssues(definition: unknown, { at = "definition", creating = true, harnesses = HARNESSES as readonly string[] }: { at?: string; creating?: boolean; harnesses?: readonly string[] } = {}): InputIssue[] {
   if (!isObject(definition)) return [issue(at, definition === undefined ? "missing" : "wrong_type", `${at} is not an object`)];
   const out: InputIssue[] = [];
   for (const key of Object.keys(definition)) {
@@ -97,7 +99,7 @@ export function definitionIssues(definition: unknown, { at = "definition", creat
       }
     }
   }
-  if (d.harness !== undefined && !(HARNESSES as readonly unknown[]).includes(d.harness)) out.push(issue(`${at}.harness`, "not_an_option", `${at}.harness is one of ${HARNESSES.join(", ")}`));
+  if (d.harness !== undefined && !(harnesses as readonly unknown[]).includes(d.harness)) out.push(issue(`${at}.harness`, "not_an_option", `${at}.harness is one of ${harnesses.join(", ")}`));
   if (d.place !== undefined) out.push(...placeIssues(d.place, `${at}.place`));
   if (d.computer !== undefined) out.push(...computerIssues(d.computer, `${at}.computer`), ...settingConflict(d.computer, d.place, at));
   if (d.thinking !== undefined) {
@@ -106,9 +108,13 @@ export function definitionIssues(definition: unknown, { at = "definition", creat
   }
   if (d.learning !== undefined) {
     if (d.workflow !== undefined) out.push(issue(`${at}.learning`, "not_allowed", "A workflow revision does not learn: only an agentic run reflects on its work.", `Remove ${at}.learning.`));
-    else if (typeof d.learning !== "boolean" && d.learning !== "notes") out.push(issue(`${at}.learning`, "wrong_type", `${at}.learning is true, false or "notes": true learns notes, skills and workflows, "notes" notes and skills alone`));
+    else {
+      // true learns (corrections and workflows); an object is on, with the loop's numbers.
+      const wrong = learningSettingIssue(d.learning, `${at}.learning`);
+      if (wrong) out.push(issue(`${at}.learning`, "wrong_type", wrong));
+    }
   }
-  // An agentic revision's structured answer: the JSON Schema its final answer's last fenced json block meets, read into a
+  // An agentic revision's structured answer: the JSON Schema its final answer's json block (jsonBlockOf) meets, read into a
   // completed run's result.output (answer-json.ts structuredAnswer). A workflow's output is its workflow's own.
   if (d.output_schema !== undefined) {
     if (d.workflow !== undefined) out.push(issue(`${at}.output_schema`, "not_allowed", "A workflow revision keeps no output_schema: its run's output is its workflow's.", `Remove ${at}.output_schema.`));
@@ -117,6 +123,9 @@ export function definitionIssues(definition: unknown, { at = "definition", creat
     else {
       const compiled = schemaCheck(d.output_schema);
       if ("why" in compiled) out.push(issue(`${at}.output_schema`, "bad_format", `${at}.output_schema ${compiled.why}`));
+      // The fields a trigger's next run is handed when the whole answer is too large (answer-json.ts X_CARRIED).
+      const carried = carriedProblem(d.output_schema);
+      if (carried) out.push(issue(`${at}.output_schema.${X_CARRIED}`, "bad_format", `${at}.output_schema.${X_CARRIED} ${carried}`, `Make ${X_CARRIED} a list of unique names from ${at}.output_schema.properties, or remove it.`));
     }
   }
   // An agentic revision's typed input: the JSON Schema each run's input meets (inputSchemaOf, the schema in force). A
@@ -141,10 +150,12 @@ export function definitionIssues(definition: unknown, { at = "definition", creat
   if (d.max_cost_usd !== undefined) {
     if (!(typeof d.max_cost_usd === "number" && Number.isFinite(d.max_cost_usd) && d.max_cost_usd >= 0)) out.push(issue(`${at}.max_cost_usd`, "wrong_type", `${at}.max_cost_usd is a number of at least 0, in US dollars: above 0 sets the agent's default cap, 0 clears it`));
   }
+  // The agent's limit on each run's free-model requests: see DefinitionInput.max_requests (openapi.ts).
+  if (d.max_requests !== undefined && !(typeof d.max_requests === "number" && Number.isSafeInteger(d.max_requests) && d.max_requests >= 0)) out.push(issue(`${at}.max_requests`, "wrong_type", `${at}.max_requests is a whole number of at least 0: above 0 sets the most requests on free models each run makes (the server's own limit holds when it is lower), 0 clears it`));
   // The server's checkout before each run's first turn: kept by an edit that leaves it out, cleared by `none`.
   if (d.checkout !== undefined) {
     if (d.workflow !== undefined) out.push(issue(`${at}.checkout`, "not_allowed", "A workflow revision keeps no checkout: only an agentic run starts in a checkout.", `Remove ${at}.checkout.`));
-    else if (!(CHECKOUTS as readonly unknown[]).includes(d.checkout)) out.push(issue(`${at}.checkout`, "not_an_option", `${at}.checkout is one of ${CHECKOUTS.join(", ")}: pull_request checks out the pull request the run's GitHub event names, at its head, in repo/ before the first turn; none clears it`));
+    else if (!(CHECKOUTS as readonly unknown[]).includes(d.checkout)) out.push(issue(`${at}.checkout`, "not_an_option", `${at}.checkout is one of ${CHECKOUTS.join(", ")}: pull_request checks out the pull request the run's GitHub event names, at its head, in repo/ before the first turn; repository checks out the head of the default branch of the repository the run names (https://github.com/<owner>/<repo> in its first message, or its start's repo); none clears it`));
   }
   return out;
 }
@@ -172,10 +183,10 @@ export function skillIssues(named: unknown, files: Iterable<string>): InputIssue
 export type DefinitionBody = { definition: Json; skills?: Record<string, string>; note?: string };
 
 /** What is wrong with `{definition, skills?, note?}`, as checkDefinitionBody refuses it: every field issue. */
-export function definitionBodyIssues(body: Json, { creating = true } = {}): InputIssue[] {
+export function definitionBodyIssues(body: Json, { creating = true, harnesses }: { creating?: boolean; harnesses?: readonly string[] } = {}): InputIssue[] {
   const out: InputIssue[] = [];
   for (const key of Object.keys(body)) if (!["definition", "skills", "note"].includes(key)) out.push(issue(key, "not_allowed", `The body keeps no field ${key}.`, `Remove ${key}.`));
-  out.push(...definitionIssues(body.definition, { creating }));
+  out.push(...definitionIssues(body.definition, { creating, ...(harnesses ? { harnesses } : {}) }));
   if (body.skills !== undefined || creating) skillFileIssues(body.skills ?? {}, out);
   if (body.note !== undefined && !(typeof body.note === "string" && body.note.length <= 2_000)) out.push(issue("note", "wrong_type", "note is text of at most 2000 characters"));
   return out;
@@ -186,8 +197,8 @@ export function definitionBodyIssues(body: Json, { creating = true } = {}): Inpu
  * files (absent on an edit: the current revision's); `note` says what the revision changes. Throws `422 input_invalid`
  * naming every field that is wrong.
  */
-export function checkDefinitionBody(body: Json, { creating = true } = {}): DefinitionBody {
-  const out = definitionBodyIssues(body, { creating });
+export function checkDefinitionBody(body: Json, { creating = true, harnesses }: { creating?: boolean; harnesses?: readonly string[] } = {}): DefinitionBody {
+  const out = definitionBodyIssues(body, { creating, ...(harnesses ? { harnesses } : {}) });
   if (out.length) throw invalid(out);
   return { definition: body.definition as Json, ...(body.skills !== undefined || creating ? { skills: (body.skills ?? {}) as Record<string, string> } : {}), ...(typeof body.note === "string" ? { note: body.note } : {}) };
 }
@@ -210,17 +221,20 @@ export function inputSchemaIssues(schema: unknown, at = "definition.input_schema
 
 /**
  * The input schema in force for an agentic revision whose definition has `schema` (none: DEFAULT_INPUT_SCHEMA). `content`
- * is always taken, as text: a run's message, which a follow-up and a trigger's line add to. It stays required when the
- * schema requires nothing else, as an agent with no schema requires it.
+ * is always taken, as text: a run's message, which a follow-up and a trigger's line add to. It is required when the
+ * schema has no field of its own, as an agent with no schema requires it. A schema whose own fields are all optional
+ * (a template's `pr_number`, given by hand and left out of a trigger's runs) leaves `required` empty: a run gives
+ * content or one of those fields, which inputIssues checks, so an input that says nothing is still refused.
  */
 export function inputSchemaOf(schema: unknown): Json {
   if (!isObject(schema)) return DEFAULT_INPUT_SCHEMA;
   const properties = isObject(schema.properties) ? schema.properties : {};
   const required = Array.isArray(schema.required) ? schema.required.filter((key): key is string => typeof key === "string") : [];
+  const ownOptional = required.length === 0 && Object.keys(properties).some((key) => key !== "content");
   return {
     ...schema,
     properties: { ...properties, content: properties.content ?? { type: "string" } },
-    required: required.some((key) => key !== "content") ? required : [...new Set([...required, "content"])],
+    required: required.some((key) => key !== "content") || ownOptional ? required : [...new Set([...required, "content"])],
   };
 }
 
@@ -256,6 +270,13 @@ export function inputIssues(input: Json, schema: Json, at = "input"): InputIssue
     // A required text sent empty is one left blank (a form sends it so): said as a missing one is, never as its length.
     else if (error.keyword === "minLength" && emptyRequired(input, schema, error.instancePath, error.schemaPath)) add(where, "missing", `${where} is required`);
     else add(where, KEYWORD_REASON[error.keyword] ?? "invalid", `${where} ${error.message}`);
+  }
+  // A schema in force that requires nothing (inputSchemaOf: its own fields all optional) takes content or one of them:
+  // an input naming none says nothing, said at content, with the fields that would do instead.
+  const named = isObject(schema.properties) ? Object.keys(schema.properties) : [];
+  if (Array.isArray(schema.required) && schema.required.length === 0 && isObject(input) && !named.some((key) => input[key] !== undefined)) {
+    const instead = named.filter((key) => key !== "content").map((key) => `${at}.${key}`);
+    add(`${at}.content`, "missing", `${at}.content is required${instead.length ? `, or one of ${instead.join(", ")}` : ""}`);
   }
   return out;
 }

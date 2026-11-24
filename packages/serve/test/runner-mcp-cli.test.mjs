@@ -171,12 +171,13 @@ async function cliRun(t, { settings = {}, grants = ["mcp:fake/add"], before, gat
     runner = startRunner({ store, createLoop: tracked, name: "runner-b", ...STEADY });
   };
   /** The runner dies where it stands (no release, its claim left to run out) and another starts on the same store, which
-   *  claims the run once that claim has run out. */
+   *  claims the run once that claim has run out. The short lease belongs to the deliberate crash; the successor uses
+   *  steady timing so ordinary recovery is not constrained by that crash-expiry interval. */
   const crashRunner = () => {
     runner.kill();
     dead.push(...made);
     made = [];
-    runner = startRunner({ store, createLoop: tracked, name: "runner-b", ...timing });
+    runner = startRunner({ store, createLoop: tracked, name: "runner-b", ...STEADY });
   };
   // `settle: false`: the case starts its own wait (a run held mid-commit never settles before its runner is killed).
   return { ...(settle ? await settled() : {}), seen, fake, server, settled, replaceRunner, crashRunner };
@@ -237,7 +238,7 @@ test("C3b: a CLI's call outside its server's argument pin is refused in the pin'
   // The server's setting allows the tool pinned to a = 7; the CLI calls it with a = 2.
   const { seen, fake } = await cliRun(t, {
     before: ({ server }) => server.settings.put("tool-settings", { "mcp:fake/add": { permission: "allow", pin: { a: 7 } } }),
-    gateOf: ({ store, claim, work }) => adapterRunGate(store, claim, { kind: "agentic", body: {} }, work),
+    gateOf: ({ store, claim, work }) => adapterRunGate(store, claim, { kind: "agentic", body: {} }, work, undefined, { facts: undefined }),
   });
   const said = seen.answer?.text ?? "";
   assert.equal(seen.answer?.isError, true, JSON.stringify(seen.answer));

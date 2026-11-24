@@ -37,6 +37,8 @@ public final class FakeDevice implements Device {
 	public static final String SETTINGS = "com.android.settings";
 	public static final String LAUNCHER = "com.google.android.apps.nexuslauncher";
 	public static final String CHROME = "com.android.chrome";
+	/** The app whose activity Settings' search page is, on a phone. */
+	public static final String INTELLIGENCE = "com.android.settings.intelligence";
 	/** The ui fixture's app id, as the conformance suite names it (src/conformance/ui-fixture.ts). */
 	public static final String FIXTURE = "ai.agentrun.uifixture";
 	/** The fixture's window, in points (ui-fixture.ts size), and its delays (SAVED_MS, NEXT_MS, NEXT_ANIMATE_MS). */
@@ -83,6 +85,8 @@ public final class FakeDevice implements Device {
 	/** The windows on the screen, the one in front first. */
 	public final List<FakeWindow> windows = new ArrayList<>();
 	public final List<App> apps = new ArrayList<>();
+	/** Labels of packages that are not launcher apps (System UI), which apps.list does not list. */
+	public final Map<String, String> systemLabels = new LinkedHashMap<>();
 	public final boolean virtual;
 	private long now;
 	/** What an app does later, by when: run as the clock reaches it. */
@@ -94,6 +98,12 @@ public final class FakeDevice implements Device {
 	public long windowLagMs;
 	/** The app launched whose window has not shown yet, or null. */
 	private String starting;
+	/**
+	 * How long Settings' search page takes to show once its entry is pressed, as on a phone: the page is Settings
+	 * Intelligence's activity, a process that starts cold, so that app is in front at once and its window reaches the
+	 * tree this much later, Settings' own window still there, unchanged, until it does. 0 shows it at once.
+	 */
+	public long searchLagMs;
 	/**
 	 * How long a launched app's window takes to animate in once it shows, as on a phone: its elements start OPEN_SHIFT
 	 * pixels low and move into place in steps over this long, a frame each. 0 shows them in place.
@@ -298,7 +308,7 @@ public final class FakeDevice implements Device {
 		});
 		search = text("Search settings", 40, 160, 1040, 280).id("com.android.settings:id/search_action_bar").tappable();
 		search.on(a -> {
-			if (a.equals("ACTION_CLICK")) searchPage();
+			if (a.equals("ACTION_CLICK")) openSearch();
 		});
 		for (int i = 0; i < ROWS.length; i++) {
 			FakeNode row = row(ROWS[i][0], ROWS[i][1], LIST_TOP + i * ROW_HEIGHT, i == 0 ? this::internet : () -> {});
@@ -361,17 +371,31 @@ public final class FakeDevice implements Device {
 		show(INTERNET_WINDOW, "Internet", new Rect(0, 0, 1080, height), root, SETTINGS);
 	}
 
-	/** Settings' search: a SearchView whose field has the focus, so what is typed goes into it. */
+	/** Settings' search entry pressed: its page shows searchLagMs later, its app in front from now. */
+	private synchronized void openSearch() {
+		if (searchLagMs <= 0) {
+			searchPage();
+			return;
+		}
+		starting = INTELLIGENCE;
+		after(searchLagMs, this::searchPage);
+	}
+
+	/**
+	 * Settings' search, Settings Intelligence's page: a SearchView whose field has the focus, so what is typed goes into
+	 * it, and a press on the field changes nothing.
+	 */
 	public synchronized void searchPage() {
-		FakeNode field = FakeNode.of("android.widget.AutoCompleteTextView").at(160, 160, 1000, 280).id("com.android.settings:id/search_src_text");
+		FakeNode field = FakeNode.of("android.widget.AutoCompleteTextView").at(160, 160, 1000, 280).id("com.android.settings.intelligence:id/search_src_text");
 		field.editable = true;
+		field.clickable = true;
 		field.focused = true;
 		field.hint = "Search settings";
-		FakeNode view = FakeNode.of("android.widget.SearchView").at(40, 160, 1040, 280).id("com.android.settings:id/search_view");
+		FakeNode view = FakeNode.of("android.widget.SearchView").at(40, 160, 1040, 280).id("com.android.settings.intelligence:id/search_view");
 		view.add(field);
 		FakeNode root = FakeNode.of("android.widget.FrameLayout").at(0, 0, 1080, height);
 		root.add(view);
-		show(SEARCH_WINDOW, "Search", new Rect(0, 0, 1080, height), root, SETTINGS);
+		show(SEARCH_WINDOW, "Settings Suggestions", new Rect(0, 0, 1080, height), root, INTELLIGENCE);
 	}
 
 	/** Chrome's window: a page with its address. */
@@ -715,30 +739,66 @@ public final class FakeDevice implements Device {
 		}
 	};
 
+	/** How often the screen was read, and how many of those reads were encoded: what a watch costs the phone. */
+	public volatile int screenReads;
+	public volatile int encodes;
+	/** The pixels the last watchShot read, as the scene draws them: its shade and size. */
+	private String lastWatched;
+	/** Run as a watchShot has read the screen: a test's cancel at that moment. */
+	public volatile Runnable afterWatchRead;
+
 	@Override
 	public Screen screen() {
-		return (crop, maxEdge, format, quality) -> {
-			if (secure != null) return new Shot(new byte[0], 0, 0, secure);
-			Rect r = crop == null ? new Rect(0, 0, width, height) : crop;
-			int w = r.width();
-			int h = r.height();
-			if (maxEdge > 0 && Math.max(w, h) > maxEdge) {
-				double f = (double) maxEdge / Math.max(w, h);
-				w = Math.max(1, (int) Math.round(w * f));
-				h = Math.max(1, (int) Math.round(h * f));
+		return new Screen() {
+			@Override
+			public Shot shot(Rect crop, int maxEdge, String format, int quality) {
+				screenReads++;
+				return frame(crop, maxEdge, format, quality, shade());
 			}
-			return new Shot(encode(w, h, format, quality), w, h, null);
+
+			@Override
+			public Shot watchShot(int maxEdge, int quality, boolean skipUnchanged) {
+				screenReads++;
+				int shade = shade();
+				String pixels = secure != null ? null : shade + "|" + width + "x" + height;
+				boolean same = pixels != null && pixels.equals(lastWatched);
+				lastWatched = pixels;
+				Runnable after = afterWatchRead;
+				if (after != null) after.run();
+				if (skipUnchanged && same) return null;
+				return frame(null, maxEdge, "jpeg", quality, shade);
+			}
+
+			@Override
+			public void forgetWatched() {
+				lastWatched = null;
+			}
 		};
 	}
 
-	/** A frame of the scene: the front window's id as a shade, so a change of page changes the bytes. */
-	private byte[] encode(int w, int h, String format, int quality) {
+	private Shot frame(Rect crop, int maxEdge, String format, int quality, int shade) {
+		if (secure != null) return new Shot(new byte[0], 0, 0, secure);
+		Rect r = crop == null ? new Rect(0, 0, width, height) : crop;
+		int w = r.width();
+		int h = r.height();
+		if (maxEdge > 0 && Math.max(w, h) > maxEdge) {
+			double f = (double) maxEdge / Math.max(w, h);
+			w = Math.max(1, (int) Math.round(w * f));
+			h = Math.max(1, (int) Math.round(h * f));
+		}
+		encodes++;
+		return new Shot(encode(w, h, format, quality, shade), w, h, null);
+	}
+
+	/** The scene's shade: the front window's id, so a change of page changes the pixels. */
+	private synchronized int shade() {
+		return windows.isEmpty() ? 0 : (windows.get(0).id * 37) % 200;
+	}
+
+	/** A frame of the scene in its shade. */
+	private static byte[] encode(int w, int h, String format, int quality, int shade) {
 		BufferedImage image = new BufferedImage(w, h, BufferedImage.TYPE_INT_RGB);
 		Graphics2D g = image.createGraphics();
-		int shade;
-		synchronized (this) {
-			shade = windows.isEmpty() ? 0 : (windows.get(0).id * 37) % 200;
-		}
 		g.setColor(new Color(shade, 120, 200 - shade));
 		g.fillRect(0, 0, w, h);
 		g.dispose();
@@ -780,7 +840,7 @@ public final class FakeDevice implements Device {
 			@Override
 			public void launch(String id, String url) {
 				log.add("launch " + id + (url == null ? "" : " " + url));
-				if (apps.stream().noneMatch(a -> a.id.equals(id))) throw RpcError.notFound("no app " + id + " is installed on this phone");
+				if (apps.stream().noneMatch(a -> a.id.equals(id))) throw RpcError.notFound("the app (" + id + ") is not installed on this phone");
 				Runnable opens = () -> {
 					if (id.equals(CHROME)) chrome(url);
 					else open(id);
@@ -799,6 +859,12 @@ public final class FakeDevice implements Device {
 						opens.run();
 					});
 				}
+			}
+
+			@Override
+			public String label(String id) {
+				for (App a : apps) if (a.id.equals(id)) return a.name;
+				return systemLabels.get(id);
 			}
 
 			@Override

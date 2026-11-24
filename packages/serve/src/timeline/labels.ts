@@ -76,7 +76,7 @@ export function registerTurnEnding(tool: string): void {
 /** Whether `tool` ends its turn (registerTurnEnding). */
 export const endsTurn = (tool: string): boolean => turnEnding.has(tool);
 
-/** The label of a call; `result` is given once the call has finished. Unknown tools get Grep's own fallback. */
+/** The label of a call; `result` is given once the call has finished. Unknown tools get the default fallback. */
 export function labelOf(tool: string, args: Obj, result?: ToolResultView, extra?: Record<string, LabelFn>): string {
   const own = extra && Object.hasOwn(extra, tool) ? extra[tool] : undefined;
   return (own ?? labels.get(tool))?.(args, result) ?? mcpLabel(tool) ?? `Using tool: ${tool}`;
@@ -92,7 +92,7 @@ export function foldLabel(tool: string, calls: readonly { input: string | null; 
   return subjects.length ? `${head}: ${list(subjects)}` : head;
 }
 
-/** The input worth showing: Grep's keys first, then the browser and file ones, and last the app a computer's look or act
+/** The input worth showing: the base keys first, then the browser and file ones, and last the app a computer's look or act
  *  names (never what an act types: its steps; nor a codemode script, which can hold it). */
 export function inputPreview(args: Obj, max: number): string | null {
   for (const key of ["description", "command", "query", "file_path", "url", "path", "code", "app"]) {
@@ -107,6 +107,10 @@ export function savedPaths(tool: string, args: Obj, result: ToolResultView): str
   if (tool === "write" || tool === "edit") {
     const file = str(args.path) ?? str(args.file_path);
     return file ? [file] : [];
+  }
+  if (tool === "web_save") {
+    const saved = obj(json(result.text));
+    return saved?.ok === true && str(saved.path) ? [str(saved.path)!] : [];
   }
   if (tool !== "browser_downloads") return [];
   const fetched = json(result.text)?.fetched;
@@ -124,8 +128,14 @@ const GOTO = /page\.goto\(\s*["'`]([^"'`]+)/;
 /** A call refused before it ran, in plain words: "Refused: " and the tool's name with what it would have acted on (the
  *  path it would have read or written, the command it would have run, the page it would have fetched), never a label's
  *  past tense ("Wrote deny.md"), which says it ran. Any tool: one with none of those reads as its name alone (an MCP
- *  server's tool as its server and name, "fake · send_message", as its label reads it). */
+ *  server's tool as its server and name, "fake · send_message", as its label reads it). A computer_op reads as its op
+ *  alone ("Refused: files.write"), never its arguments, which hold what it would have written or typed; an op the
+ *  computer has no call for, as the tool's name. */
 export function refusedLabel(tool: string, args: Obj): string {
+  if (tool === "computer_op") {
+    const op = str(args.op);
+    return `Refused: ${op !== undefined && Object.hasOwn(OP_METHODS, op) ? op : tool}`;
+  }
   const command = str(args.command);
   const subject = path(args) ?? (str(args.url) ? where(str(args.url)!) : undefined) ?? (command ? `\`${cut(scrubUrls(firstLine(command)), 60)}\`` : undefined);
   return `Refused: ${mcpLabel(tool) ?? tool}${subject ? ` ${subject}` : ""}`;
@@ -153,6 +163,19 @@ const fetchOutcome: OutcomeFn = (result) => {
 // web_fetch answers a page, `{ok, url, status, title, text, links, refused?, error?}`.
 registerLabel("web_fetch", fetchLabel, fetchFold, { name: "Fetch web pages" });
 registerOutcome("web_fetch", fetchOutcome);
+// web_save answers `{ok: true, path, bytes, content_type, duration_s?, url}` or `{ok: false, url, path?, refused | error}` (web-save.ts):
+// the path it answered, else the one asked (a bare name under media/, as it saves one), and the host it was asked for.
+const savedAt = (a: Obj, result: { text: string } | undefined): string => {
+  const answered = result && str(obj(json(result.text))?.path);
+  const asked = str(a.path);
+  return answered ?? (asked ? (asked.includes("/") ? asked : `media/${asked}`) : "a file");
+};
+const fromHost = (a: Obj) => {
+  const host = URL.parse(str(a.url) ?? "")?.host;
+  return host ? ` from ${host}` : "";
+};
+registerLabel("web_save", (a, result) => `${unfetched(result) ? "Tried to save" : "Saved"} ${savedAt(a, result)}${fromHost(a)}`, { many: (n) => `Saved ${n} files from the web`, subject: (input) => input ?? undefined }, { name: "Save files from the web" });
+registerOutcome("web_save", fetchOutcome);
 registerLabel("web_search", (a) => {
   const query = str(a.query);
   return query ? `Searched the web for "${cut(scrubUrls(query), 60)}"` : "Searched the web";

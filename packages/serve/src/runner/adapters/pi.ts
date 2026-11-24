@@ -13,15 +13,16 @@ import type { JsonValue } from "@earendil-works/chord/json";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import type { Models } from "@earendil-works/pi-ai";
 import { clampThinkingLevel, createModels, getSupportedThinkingLevels } from "@earendil-works/pi-ai/models";
-import { type Conversation, defineExtension, defineTool, type Extension, GenerationTask, type Harness, hook, type JsonObject, type Registry, type Submission, type ToolExecutionApi, ToolTask, type ToolRegistration } from "@earendil-works/pi-durable";
+import { type Conversation, defineExtension, defineTool, type Extension, GenerationTask, type Harness, hook, type JsonObject, ProviderDoc, type Registry, type Submission, type ToolExecutionApi, ToolTask, type ToolRegistration } from "@earendil-works/pi-durable";
 import { anthropicPolicy, withWebSearches } from "@parcha/agentrun-harness-claude";
-import { type AdapterSession, type AgentAdapter, HOST_RESULT_MAX_CHARS, type HostTool, type NestedCalls, type SessionIO, type SessionPort, type SessionSpec, type ToolImage, type TurnStatus, type Wire } from "@parcha/agentrun-kernel";
-import { type ModelProxy, NATIVE_SEARCH_USD, type ProviderPolicy, startModelProxy } from "@parcha/agentrun-kernel/host";
+import { type AdapterSession, type AgentAdapter, HOST_RESULT_MAX_CHARS, type HostTool, type NestedCalls, type SessionIO, type SessionSpec, type ToolImage, type TurnStatus, type Wire } from "@parcha/agentrun-kernel";
+import { conversationLabel, type ModelProxy, NATIVE_SEARCH_USD, type ProviderPolicy, startModelProxy } from "@parcha/agentrun-kernel/host";
+import { INTERRUPTED_TEXT } from "@parcha/agentrun-kernel/kernel";
 import { randomBytes } from "node:crypto";
 import { DEFAULT_HARNESS } from "../../harness.js";
 import { durableWait } from "../../workflow/pi-versions.js";
 import { HOSTED_SEARCH_ALLOWANCE_TOKENS } from "../../hosted-search.js";
-import { sessionProvider, type ThinkingLevelMap, tierProvider } from "../../port-models.js";
+import { sessionProvider, type SessionLike, type SessionModelPort, tierProvider } from "../../port-models.js";
 import { type CallStatus, KINDS } from "../journal-kinds.js";
 import { CALL_REFUSED } from "../../timeline/index.js";
 import { type ComputerCallRecord, recordingCalls } from "../../computer-calls.js";
@@ -54,8 +55,11 @@ export type PreIntentAnswer = "allow" | { readonly deny: string } | { readonly p
 export type PiSessionIO = SessionIO & {
   gate?: (call: PreIntentCall, context: Context) => Promise<PreIntentAnswer>;
   /** What the request that just answered cost, as the runner's booking wrote it (the session's ledger): its figure, null
-   *  when unknown, undefined when none was booked. pi's own price for the model is none (the adapter does not know it). */
-  bookedCost?: () => Promise<number | null | undefined>;
+   *  when unknown, undefined when none was booked. pi's own price for the model is none (the adapter does not know it).
+   *  `conversation`: the answer's conversation, as each of its requests named it to the session's proxy (pi's own id for
+   *  it: port-models.ts sessionApi), so an answer reads its own conversation's bookings, never those of a conversation
+   *  asking beside it (a subagent's child). */
+  bookedCost?: (conversation?: string) => Promise<number | null | undefined>;
   /** Keeps a tool call's computer calls beside it on the run's root, by the call's id (the loop's, as its host tools'
    *  are kept): each run's pi-native tool (code mode's script among them) runs inside recordingCalls with it, so its row
    *  carries the calls it made as a host tool's does. */
@@ -86,11 +90,11 @@ export interface PiAdapterOptions {
    *  Messages or OpenAI's Responses) at `origin`, its credential, sent as `auth` says (Messages' default x-api-key;
    *  Responses' is always a bearer token). `api` is the one source of the session's wire: its policy, pi-ai's client and
    *  its port all read it. */
-  readonly provider: { readonly api: Wire; readonly origin: string; readonly credential: () => string | Promise<string>; readonly headers?: Readonly<Record<string, string>>; readonly auth?: "bearer" | "x-api-key"; readonly plan?: boolean; readonly refused?: (credential: string) => Promise<void>; readonly usageCost?: boolean };
+  readonly provider: { readonly api: Wire; readonly origin: string; readonly credential: () => string | Promise<string>; readonly headers?: Readonly<Record<string, string>>; readonly auth?: "bearer" | "x-api-key"; readonly plan?: boolean; readonly refused?: (credential: string) => Promise<void> };
   /** The model pi asks for. */
   readonly model: string;
   /** The catalog's entry for the model: whether it reasons, its window and its output ceiling, as pi-ai's model of it. */
-  readonly like?: { readonly reasoning?: boolean; readonly contextWindow?: number; readonly maxTokens?: number; readonly input?: readonly string[]; readonly inputLimits?: unknown; readonly developerRole?: boolean; readonly thinkingLevelMap?: ThinkingLevelMap };
+  readonly like?: SessionLike;
   /** The price of a request's usage, for the proxy's booking. */
   readonly price?: (model: string, usage: never) => number | null;
   /** The proxy's upstream fetch (a test's scripted origin). */
@@ -120,6 +124,15 @@ export interface PiAdapterOptions {
 }
 
 const PROVIDER = "agentrun-session";
+
+/** The input tokens pi (the @earendil-works/pi-* 1.5.2 packages serve pins) sends in a run's first model request before
+ *  the agent's own prompt: pi writes no system prompt of its own, so it is serve's (the environment line and the wrapper
+ *  around the agent's instructions) and the host's code mode tool, which every run is offered, with no tool granted.
+ *  Counted with o200k_base on the first request a run sent through its spec to a scripted provider on gpt-6.1-sol, 286
+ *  tokens, stated at 280 so its date line never puts it over (test/cap-save-warning.test.mjs keeps it at or under that
+ *  count). A save under a cap prices a least step on it (cap-short.ts). */
+export const PI_BASE_INPUT_TOKENS = 280;
+
 /** A host tool's value (HostTool's `structured`) in its pi result's details, which the model never reads: what a call
  *  nested in tools_call or a script reads (piNested). */
 const HOST_VALUE = "agentrun.value";
@@ -169,7 +182,7 @@ export type TierModel = Pick<PiAdapterOptions, "provider" | "model" | "like" | "
 
 /** The tier proxies a session holds (openTierProxies): each tier's port for a side request under `label`, and their close. */
 export interface TierProxies {
-  port(label: string, tier: string): SessionPort | undefined;
+  port(label: string, tier: string): SessionModelPort | undefined;
   /** Each tier, its route and its proxy: a subagent's child on the tier is sent there on the proxy's own key. */
   readonly each: readonly (readonly [string, TierModel, ModelProxy])[];
   close(): Promise<void>;
@@ -194,8 +207,6 @@ async function routeProxy(route: TierModel, hooks: SessionIO["models"], tools: r
     ...(route.provider.headers ? { headers: route.provider.headers } : {}),
     ...(route.fetch ? { fetch: route.fetch } : {}),
     ...(redact ? { redact } : {}),
-    // An answer that states its cost (OpenRouter's) is booked at it, the price's figure beside it (model-route.ts).
-    ...(route.provider.usageCost ? { usageCost: true } : {}),
   }, randomBytes(32).toString("base64url"));
 }
 
@@ -219,7 +230,7 @@ export async function openTierProxies(tiers: ReadonlyMap<string, TierModel>, hoo
   return {
     port: (label, tier) => {
       const at = open.get(tier);
-      return at ? { url: at.proxy.url, key: at.proxy.sideKey(label), model: at.route.model, api: at.route.provider.api } : undefined;
+      return at ? { url: at.proxy.url, key: at.proxy.sideKey(label), model: at.route.model, api: at.route.provider.api, ...(at.route.like ? { like: at.route.like } : {}) } : undefined;
     },
     each: [...open].map(([tier, { proxy, route }]) => [tier, route, proxy] as const),
     close,
@@ -309,6 +320,26 @@ function mandatoryThinking(own: Parameters<typeof getSupportedThinkingLevels>[0]
   return clampThinkingLevel(own, "off") as SessionSpec["thinking"];
 }
 
+/** The reasoning settings of the first request a pi session on `route` sends at thinking `level` (the run's effort; none,
+ *  pi's default): on Messages its `thinking` block (budgeted where the session's model reasons, which puts Claude's
+ *  thinking minimum in its least output) and any `output_config`, on Responses its `reasoning`. Read from the body pi-ai
+ *  builds for the session's own model (sessionOn's, at the same level), which is never sent: its payload hook stops it
+ *  before any request. A save under a cap prices its least output on these (cap-short.ts). */
+export async function piReasoningOf(route: { readonly provider: { readonly api: Wire }; readonly model: string; readonly like?: PiAdapterOptions["like"] }, level: string | undefined): Promise<Record<string, unknown>> {
+  const models = createModels();
+  models.setProvider(sessionProvider(route.provider.api, { url: "https://pi-reasoning.invalid", key: "unsent" }, route.model, { provider: PROVIDER, keyName: "AGENTRUN_SESSION_KEY", ...(route.like ? { like: route.like } : {}), reasoning: false }));
+  const model = models.getModel(PROVIDER, route.model);
+  if (!model) throw new Error(`no session model ${route.model}`);
+  // A run's spec carries its level as the session's thinking (adapter-run-spec.ts), as here.
+  const thinking = mandatoryThinking(model, level as SessionSpec["thinking"]);
+  let built: Record<string, unknown> | undefined;
+  const unsent = new Error("built, never sent");
+  const options = { ...(thinking && (thinking as string) !== "off" ? { reasoning: thinking } : {}), onPayload: (payload: unknown) => { built = payload as Record<string, unknown>; throw unsent; } };
+  await models.completeSimple(model, { messages: [{ role: "user", content: "", timestamp: 0 }] } as never, options as never).catch(() => undefined);
+  if (!built) throw new Error(`pi-ai built no request for ${route.model}`);
+  return Object.fromEntries(["thinking", "output_config", "reasoning"].filter((key) => built![key] !== undefined).map((key) => [key, built![key]]));
+}
+
 /** The session on its proxy: pi's models through it, the host's tools and the gate as pi's extension, the root's state. */
 async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: SessionSpec, io: PiSessionIO, context: Context, tiers: TierProxies): Promise<AdapterSession> {
   const { run, model, like } = options;
@@ -382,9 +413,12 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
       // An answer's cost is the runner's booking of its request, never pi's $0 for a model it has no price for: set on
       // the answer before pi stores it, so the answer, pi.usage and the live timeline carry it; unknown stays unknown.
       hook(GenerationTask, {
-        afterResponse: async (message) => {
+        afterResponse: async (message, api, hookContext: Context) => {
           if (!io.bookedCost) return;
-          const usd = await io.bookedCost();
+          // The conversation that asked, by the id pi sends with each of its requests (its pi.provider document's), as
+          // the session's client names it to the proxy (port-models.ts sessionApi).
+          const asked = await api.snapshot(ProviderDoc, api.conversationId, hookContext);
+          const usd = await io.bookedCost(conversationLabel(asked?.sessionId));
           if (usd === undefined) return;
           const cost = (message.usage as { cost?: Record<string, unknown> } | undefined)?.cost;
           if (cost) cost.total = usd;
@@ -480,9 +514,9 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
     // with a side key minted for `label`, pi's model and the provider's wire (never a literal), so the request goes through
     // the same policy, origin, credential, price and booking as pi's own, labelled. `tier`: that tier's proxy and model
     // instead (options.tiers), on the same booking; none for a tier the session has no proxy of. None once closed.
-    port: (label: string, tier?: string) => {
+    port: (label: string, tier?: string): SessionModelPort | undefined => {
       if (closed) return undefined;
-      return tier === undefined ? { url: proxy.url, key: proxy.sideKey(label), model, api } : tiers.port(label, tier);
+      return tier === undefined ? { url: proxy.url, key: proxy.sideKey(label), model, api, ...(like ? { like } : {}) } : tiers.port(label, tier);
     },
     // A steer: pi places it in the turn in flight, at its next boundary. `id`: its request id (the command's), so the
     // commit that places it is the one that takes its row. `origin` (a trigger's message): its input is the host's user
@@ -550,7 +584,9 @@ function piNested(api: ToolExecutionApi, context: Context, touched: ReadonlySet<
       const structured = (result.details as { [HOST_VALUE]?: JsonValue } | undefined)?.[HOST_VALUE];
       // A refusal in the gate's words (this session's), or, answered from an earlier session's record, said so.
       const words = refused ? (refusals.get(callId) ?? `${name} was refused (the run's tool settings or a person's answer), and it did not run.`) : undefined;
-      const text = words ?? (said || result.diagnostics.map((one) => one.message).join("\n"));
+      // A call a crash cut off reads in the kernel's words for an outcome not known (INTERRUPTED_TEXT), as a CLI's call cut
+      // off does on every other harness, never pi's own "Tool <name> was interrupted and may have partially run".
+      const text = words ?? (interrupted ? INTERRUPTED_TEXT : said || result.diagnostics.map((one) => one.message).join("\n"));
       await ended?.(callId, refused ? "refused" : interrupted ? "interrupted" : result.isError ? "failed" : "done", text);
       return {
         text,

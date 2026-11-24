@@ -14,9 +14,9 @@ const descriptors = await import("../dist/descriptors/index.js");
 const { AGENT37 } = await import("../dist/descriptors/agent37.js");
 
 const SSH_KEY = keyPair().private;
-/** The box recipe's hash as box/recipe.mjs computes it: the Dockerfile, then the helper it copies, 12 hex. */
+/** The box recipe's hash as box/recipe.mjs computes it: the Dockerfile, then install.sh and the helper it copies, 12 hex. */
 const HASH = createHash("sha256")
-	.update(Buffer.concat(["Dockerfile", "agentrun-archil"].map((name) => readFileSync(new URL(`../box/${name}`, import.meta.url)))))
+	.update(Buffer.concat(["Dockerfile", "install.sh", "agentrun-archil"].map((name) => readFileSync(new URL(`../box/${name}`, import.meta.url)))))
 	.digest("hex")
 	.slice(0, 12);
 const NAME = `agentrun-box-${HASH}`;

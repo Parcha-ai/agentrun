@@ -1,9 +1,8 @@
 import type { Api, Model, MutableModels, Provider } from "@earendil-works/pi-ai";
 import { freeModel, type ModelPrice, ROUTERS } from "@parcha/agentrun-kernel/kernel/cap";
+import { PARTICLE_1_PRICE, particleProvider } from "./particle-provider.js";
 
-/** Particle-1's price, USD per million tokens: Particle's own list price, from https://docs.particle.ai/models (read
- *  2026-11-07: $0.25 input, $0.03 cached input, $1.00 output; no cache-write price, so $0). */
-export const PARTICLE_1_PRICE = { input: 0.25, output: 1, cacheRead: 0.03, cacheWrite: 0 } as const;
+export { PARTICLE_1_PRICE } from "./particle-provider.js";
 
 /** How a model takes its tools: "native", the request's own tools parameter (every model pi-ai lists), or "text", the
  *  tools described in its system prompt and its calls read back from its reply (runner/text-tools.ts, on the runner's
@@ -41,21 +40,27 @@ const ZERO = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } as const;
  *  id, name, input, context window and output ceiling, at $0, taking its tools natively (the `like` entry's `toolsAs` is
  *  not copied). Context and output ceiling are OpenRouter's (GET https://openrouter.ai/api/v1/models, read 2026-11-15:
  *  context_length and top_provider.max_completion_tokens; pricing "0" prompt and completion). Each one answered a request
- *  that defined a tool with a call to that tool, through OpenRouter, on 2026-11-15, billed $0. */
-export const ADDED_MODELS: readonly { readonly provider: string; readonly id: string; readonly like: string; readonly name: string; readonly input: readonly ("text" | "image")[]; readonly contextWindow: number; readonly maxTokens: number }[] = [
-  { provider: "openrouter", id: "baidu/ernie-5.5-flash-preview:free", like: "inclusionai/ling-3.1-flash", name: "Baidu: ERNIE 5.5 Flash Preview (free)", input: ["text"], contextWindow: 1_024_000, maxTokens: 921_600 },
-  { provider: "openrouter", id: "inclusionai/ling-3.2-flash:free", like: "inclusionai/ling-3.1-flash", name: "inclusionAI: Ling 3.2 Flash (free)", input: ["text"], contextWindow: 1_048_576, maxTokens: 262_144 },
+ *  that defined a tool with a call to that tool, through OpenRouter, on 2026-11-15, billed $0. `mustReason` is that list's
+ *  `reasoning.mandatory` (read 2026-11-16): a model that must reason has thinking off mapped to no effort (thinkingLevelMap
+ *  `off: null`, as pi-ai's catalog maps Claude Sonnet 5.5's), so pi-ai never sends it `reasoning: {effort: "none"}`, which
+ *  OpenRouter refuses with "Reasoning is mandatory for this endpoint and cannot be disabled", and the model reasons at
+ *  its default. A model that lists `reasoning` among its supported parameters need not reason (Ling 3.2 Flash): only
+ *  `mandatory` says so. */
+export const ADDED_MODELS: readonly { readonly provider: string; readonly id: string; readonly like: string; readonly name: string; readonly input: readonly ("text" | "image")[]; readonly contextWindow: number; readonly maxTokens: number; readonly mustReason: boolean }[] = [
+  { provider: "openrouter", id: "baidu/ernie-5.5-flash-preview:free", like: "inclusionai/ling-3.1-flash", name: "Baidu: ERNIE 5.5 Flash Preview (free)", input: ["text"], contextWindow: 1_024_000, maxTokens: 921_600, mustReason: true },
+  { provider: "openrouter", id: "inclusionai/ling-3.2-flash:free", like: "inclusionai/ling-3.1-flash", name: "inclusionAI: Ling 3.2 Flash (free)", input: ["text"], contextWindow: 1_048_576, maxTokens: 262_144, mustReason: false },
 ];
 
 /** `list` with ADDED_MODELS appended, each built on its `like` entry in `list` (one whose `like` the list lacks is left
  *  out) and never twice: once pi-ai lists an id itself, its own entry stands. */
 const added = <M extends { id: string }>(list: readonly M[], adds: typeof ADDED_MODELS): readonly M[] => [
   ...list,
-  ...adds.flatMap(({ id, like, name, input, contextWindow, maxTokens }) => {
+  ...adds.flatMap(({ id, like, name, input, contextWindow, maxTokens, mustReason }) => {
     const base = list.find((model) => model.id === like);
     if (!base || list.some((model) => model.id === id)) return [];
-    const { toolsAs: _base, ...rest } = base as M & { toolsAs?: ToolsAs };
-    return [{ ...rest, id, name, input: [...input], contextWindow, maxTokens, cost: { ...ZERO } } as unknown as M];
+    const { toolsAs: _base, ...rest } = base as M & { toolsAs?: ToolsAs; thinkingLevelMap?: Record<string, string | null> | null };
+    const levels = (rest as { thinkingLevelMap?: Record<string, string | null> | null }).thinkingLevelMap;
+    return [{ ...rest, id, name, input: [...input], contextWindow, maxTokens, cost: { ...ZERO }, ...(mustReason ? { reasoning: true, thinkingLevelMap: { ...levels, off: null } } : {}) } as unknown as M];
   }),
 ];
 
@@ -73,10 +78,10 @@ export function isFree(model: { id: string; api?: string; cost?: ModelPrice | nu
   return freeModel({ id: model.id, api: model.api ?? "", price: model.cost ?? null, outputCeiling: null });
 }
 
-/** `models` (pi-ai's built-in catalog, or one built on it) with PRICE_OVERRIDES set on their providers' own entries and
- *  ADDED_MODELS listed beside them, in place: a request, a price and a capability read find the catalog's entry at the
- *  overridden price, with its toolsAs, and an added model as if the catalog listed it. */
+/** `models` with serve's direct Particle provider registered, PRICE_OVERRIDES on the built-in providers' entries,
+ *  and ADDED_MODELS beside them. Requests, prices and capability reads use this same catalog. */
 export function withLocalModels<M extends MutableModels>(models: M): M {
+  models.setProvider(particleProvider());
   for (const providerId of new Set([...PRICE_OVERRIDES, ...ADDED_MODELS].map((entry) => entry.provider))) {
     const own = models.getProvider(providerId);
     if (!own) continue;

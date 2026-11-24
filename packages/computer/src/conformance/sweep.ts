@@ -49,7 +49,7 @@ export interface SweepMachinesOptions {
 	requestMs?: number;
 	/** One whole listing's bound; default 60 s. */
 	listMs?: number;
-	/** Told, in words, of a machine not deleted or still there. */
+	/** Told, in words, of a machine not read, not deleted or still there. */
 	onWords?: (words: string) => void;
 }
 
@@ -110,7 +110,7 @@ interface HostModule {
 }
 
 const USAGE = `usage: node packages/computer/dist/conformance/sweep.js --provider <id> --before <file> | --after <file>
-  --provider <id>  a provider on the shared machine-host adapter (e2b, agent37, daytona)
+  --provider <id>  a provider on the shared machine-host adapter (e2b, agent37, morph, daytona, boxd, smolcloud, groundbox)
   --before <file>  record the id of every machine the vendor lists with ${COMPUTER_LABEL}=1 into <file>
   --after <file>   delete every machine listed with ${COMPUTER_LABEL}=1 and ${RUN_LABEL} whose id is not in <file>, read
                    each back until the vendor no longer has it (up to 60 s each), and print

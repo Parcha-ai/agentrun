@@ -13,6 +13,7 @@ import { FINDINGS } from "./fixtures/faux-review.mjs";
 
 /** An apply's warnings that a granted tool needs a key this server lacks (runnable.ts: "The tool <t> needs <key>"). */
 const keyedWarnings = (body) => body.warnings.filter((w) => w.reason === "not_set_up_here" && /^The tool \S+ needs /.test(w.message ?? ""));
+import { openapiDocument } from "../dist/openapi.js";
 import { schemaProblems } from "./schema-support.mjs";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { twoToolPackage } from "./fixtures/two-tool-template.mjs";
@@ -22,7 +23,7 @@ const REVIEW = new URL("../templates/code-review/", import.meta.url).pathname;
 const FIXTURES = new URL("./fixtures/templates/", import.meta.url).pathname;
 const REVIEW_FAUX = new URL("./fixtures/faux-review.mjs", import.meta.url).pathname;
 const KEY = "PARALLEL_API_KEY";
-const GITHUB_READS = ["pull_request_read", "get_file_contents", "get_repository_tree"];
+const GITHUB_READS = ["pull_request_read", "get_file_contents"];
 const GITHUB_TOOLS = [...GITHUB_READS, "pull_request_review_write", "add_comment_to_pending_review"];
 /** code-review's scope: every GitHub tool held to the one repository it was applied to. */
 const SCOPE = { owner: "${parameters.owner}", repo: "${parameters.repo}" };
@@ -70,7 +71,7 @@ const PULL_REQUESTS = {
 const OWN_TRIGGERS = /triggers:\n  - name: pull-requests[\s\S]*?(?=\n---\n)/;
 
 test("the code-review package reads whole: its review skill with the rules beside it, its findings schema and its eval case", () => {
-  const [review] = readPackages();
+  const review = readPackages().find((p) => p.name === "code-review");
   assert.deepEqual([review.name, review.version, review.model, review.effort, review.budget, review.learning], ["code-review", "0.4.0", { tier: "fast", choices: [{ id: "particle", label: "Particle 1 (OpenRouter)", model: "openrouter/particle-ai/particle-1", harness: "pi", secrets: ["OPENROUTER_API_KEY"], note: "The model this template was tuned and measured on: about 18 cents a review on our own pull requests." }] }, "medium", { per_run_usd: 2 }, false]);
   assert.deepEqual([review.tools, review.toolPolicy, review.computer, review.checkout], [["read", "bash", "subagent"], { bash: "read-only" }, ["shell", "none"], "pull_request"], "a shell where there is one, else none; bash read-only on the checkout the platform makes; read for the skill's own files; subagent for its eight reviewers");
   assert.deepEqual(Object.keys(review.skills).sort(), ["review/CODEREVIEW.md", "review/DEEP.md", "review/REVIEWER.md", "review/SKILL.md", "review/findings.schema.json"]);
@@ -82,7 +83,7 @@ test("the code-review package reads whole: its review skill with the rules besid
   assert.match(review.skills["review/SKILL.md"], /You never\s+edit, build, install, run the repository's code or tests, commit or push/);
   for (const guide of ["REVIEWER.md", "DEEP.md"]) assert.match(review.skills[`review/${guide}`], /you post nothing: answer with the JSON below/, `${guide}: a reviewer answers, the agent posts`);
   for (const path of Object.keys(review.skills).filter((x) => x.endsWith(".md"))) assert.ok(Buffer.byteLength(review.skills[path]) <= 8192, `${path}: at most 8 KB, read whole on every review`);
-  assert.deepEqual([review.output, review.evals, review.triggers, review.secrets], [{ schema: "skills/review/findings.schema.json" }, ["clean-refactor", "injection", "mentions-defused", "never-flag", "null-name", "off-by-one", "other-repo", "re-review", "re-review-open", "repo-rule", "two-defects"], [PULL_REQUESTS], []]);
+  assert.deepEqual([review.output, review.evals, review.triggers, review.secrets], [{ schema: "skills/review/findings.schema.json" }, ["clean-refactor", "injection", "mentions-defused", "never-flag", "null-name", "off-by-one", "other-repo", "pasted-by-reference", "re-review", "re-review-open", "repo-rule", "two-defects"], [PULL_REQUESTS], []]);
   assert.deepEqual([review.displayName, review.tools, review.mcp], ["Code review: ${parameters.owner}/${parameters.repo}", ["read", "bash", "subagent"], [{ source: "github", toolkit: "github", tools: GITHUB_TOOLS, required: false, reason: "Reads the pull request and the repo through GitHub, and posts one COMMENT review with the findings. Every call is held to this one repository. It never approves, requests changes or resolves a thread.", allow: GITHUB_READS, pin: REVIEW_PINS }]]);
   assert.match(review.instructions, /\$\{parameters\.owner\}\/\$\{parameters\.repo\}/, "placeholders stay unfilled until an apply");
 });
@@ -100,7 +101,15 @@ test("a tool-call budget is no field: a definition's max_tool_calls and a manife
   const issues = definitionIssues({ name: "a", instructions: "x", max_tool_calls: 30 });
   assert.deepEqual(issues.map((i) => [i.field, i.reason]), [["definition.max_tool_calls", "not_allowed"]]);
   const problems = await problemsOf(t, ({ edit }) => edit(/^budget: .*\n/m, "budget: { per_run_usd: 0.50, tool_calls: 30 }\n"));
-  assert.ok(problems.some((p) => /budget is \{per_run_usd: a number above 0\}/.test(p)), JSON.stringify(problems));
+  assert.ok(problems.some((p) => /budget is \{per_run_usd: a number above 0/.test(p)), JSON.stringify(problems));
+});
+
+test("a manifest's budget.max_requests is a whole number above 0: the package lists it; 0, a fraction or a word is refused, naming it", async (t) => {
+  assert.deepEqual(await problemsOf(t, ({ edit }) => edit(/^budget: .*\n/m, "budget: { per_run_usd: 2, max_requests: 20 }\n")), []);
+  for (const bad of ["0", "2.5", "lots", "-3"]) {
+    const problems = await problemsOf(t, ({ edit }) => edit(/^budget: .*\n/m, `budget: { per_run_usd: 2, max_requests: ${bad} }\n`));
+    assert.ok(problems.some((p) => /budget is \{per_run_usd: a number above 0, max_requests: a whole number of free-model requests above 0, when given\}/.test(p)), `${bad}: ${JSON.stringify(problems)}`);
+  }
 });
 
 test("the validator refuses a malformed package, naming each problem", async (t) => {
@@ -158,7 +167,7 @@ test("the validator refuses a malformed package, naming each problem", async (t)
   await refused(scheduled("${parameters.cron}", "  cron: { type: string, required: false, default: 7, description: the schedule }"), /parameters\.cron\.default is not a value it takes/);
   assert.deepEqual(await problemsOf(t, scheduled("${parameters.cron}", '  cron: { type: string, required: false, default: "0 8 * * 1", description: the schedule }')), [], "a schedule from parameters with good defaults reads");
   await refused(({ edit }) => trigger('{ kind: schedule, cron: "${parameters.repo}" }')(edit), /parameters\.repo is used in triggers\[0\]\.source\.cron, so it needs a default/);
-  await refused(({ edit }) => edit(OWN_TRIGGERS, 'triggers:\n  - name: "nightly ${parameters.repo}"\n    source: { kind: schedule, cron: "0 9 * * *" }\n    target: { kind: start_run, input: { content: Go. } }'), /triggers\[0\]\.name holds \$\{parameters\.repo\}: a placeholder goes in display_name, the instructions, a trigger's target\.input, a schedule's cron and timezone, a github or webhook trigger's where in values, or an mcp pin's values/);
+  await refused(({ edit }) => edit(OWN_TRIGGERS, 'triggers:\n  - name: "nightly ${parameters.repo}"\n    source: { kind: schedule, cron: "0 9 * * *" }\n    target: { kind: start_run, input: { content: Go. } }'), /triggers\[0\]\.name holds \$\{parameters\.repo\}: a placeholder goes in display_name, the instructions, a trigger's target\.input, a schedule's cron and timezone, a github, webhook, composio or feed trigger's where in values, a composio trigger's config values, a feed trigger's urls, or an mcp pin's values/);
   await refused(({ edit }) => edit("tools: [read, bash, subagent]", "tools: [read, bassh]"), /tools: bassh is not a tool this server binds/);
   await refused(({ dir }) => writeFileSync(join(dir, "skills", "review", "a\\b.md"), "x"), /skills\/review\/a\\b\.md: the skill path/);
   // An MCP tool is one tool by its name: `*`, the server's wildcard, is none; and a package asks allow only of its own.
@@ -238,20 +247,20 @@ test("code-review through the API: listed, applied with a repo it makes the agen
   const listed = await api("GET", "/templates");
   assert.equal(listed.status, 200);
   meets("/templates", "get", "200", listed.body);
-  assert.deepEqual(listed.body.templates.map((x) => x.name), ["code-review", "inbound-lead", "kyb", "market-monitor", "release-notes"]);
+  assert.deepEqual(listed.body.templates.map((x) => x.name), ["agent-scout", "code-review", "inbound-lead", "kyb", "market-monitor", "release-notes"]);
   for (const view of listed.body.templates) {
     assert.deepEqual(view.author, { name: "Parcha Labs" }, `${view.name} names its author`);
     assert.equal(typeof view.output?.schema, "string", `${view.name} names its answer's schema file`);
     assert.equal(view.output.json_schema.type, "object", `${view.name} shows the schema itself, for the console`);
   }
-  assert.deepEqual(Object.fromEntries(listed.body.templates.map((x) => [x.name, x.approvals_default])), { "code-review": "never", "inbound-lead": "never", kyb: "ask", "market-monitor": "never", "release-notes": "never" }, "a template whose job runs on triggers runs unattended by default");
+  assert.deepEqual(Object.fromEntries(listed.body.templates.map((x) => [x.name, x.approvals_default])), { "agent-scout": "never", "code-review": "never", "inbound-lead": "never", kyb: "ask", "market-monitor": "never", "release-notes": "never" }, "a template whose job runs on triggers runs unattended by default, and so does agent-scout, which the server starts for a scan and which writes nothing");
   const review = listed.body.templates.find((x) => x.name === "code-review");
-  assert.deepEqual([review.version, review.secrets, review.skills, review.evals, review.parameters.required],["0.4.0", [], ["review"], ["clean-refactor", "injection", "mentions-defused", "never-flag", "null-name", "off-by-one", "other-repo", "re-review", "re-review-open", "repo-rule", "two-defects"], ["owner", "repo"]]);
+  assert.deepEqual([review.version, review.secrets, review.skills, review.evals, review.parameters.required],["0.4.0", [], ["review"], ["clean-refactor", "injection", "mentions-defused", "never-flag", "null-name", "off-by-one", "other-repo", "pasted-by-reference", "re-review", "re-review-open", "repo-rule", "two-defects"], ["owner", "repo"]]);
 
   const applied = await api("POST", "/templates/code-review/apply", { parameters: AGENTRUN });
   assert.equal(applied.status, 201, JSON.stringify(applied.body));
   meets("/templates/{template}/apply", "post", "201", applied.body);
-  assert.deepEqual([applied.body.template, applied.body.version, applied.body.trigger_ids], ["code-review", "0.4.0", []]);
+  assert.deepEqual([applied.body.template, applied.body.version, applied.body.triggers], ["code-review", "0.4.0", []]);
   const skipped = applied.body.warnings.find((w) => w.field === "mcp.github");
   assert.match(skipped?.message ?? "", /No saved MCP server is github github, so the agent was made without its tools/, JSON.stringify(applied.body.warnings));
   assert.equal(applied.headers.get("location"), `/v2/agents/${applied.body.agent_id}`);
@@ -290,6 +299,43 @@ test("code-review through the API: listed, applied with a repo it makes the agen
   assert.ok(schemaProblems(schema, schema, { ...FINDINGS, findings: [{ ...FINDINGS.findings[0], priority: "P3" }] }).length, "the schema is a real check");
   assert.ok(schemaProblems(schema, schema, { ...FINDINGS, risk_score: 6 }).length, "the risk score is 1 to 5");
   assert.ok(schemaProblems(schema, schema, { ...FINDINGS, findings: [{ ...FINDINGS.findings[0], severity: "important" }] }).length, "v1's severity is gone: priority replaces it");
+});
+
+test("GET /templates/{template} answers one package whole, a bundled one's too: as the list shows it, its instructions and every skill file in full, and its console page; an unknown one is 404, and it takes the token", async (t) => {
+  const { api, baseUrl } = await serve(t, { runner: false });
+  const meets = await documented(baseUrl);
+  const listed = (await api("GET", "/templates")).body.templates;
+  assert.ok(listed.length > 0);
+  for (const view of listed) {
+    const one = await api("GET", `/templates/${encodeURIComponent(view.id)}`);
+    assert.equal(one.status, 200, `${view.id}: ${JSON.stringify(one.body)}`);
+    meets("/templates/{template}", "get", "200", one.body);
+    assert.deepEqual(one.body.template, view, `${view.id} reads as GET /templates lists it`);
+    assert.equal(new URL(one.body.console_url).hash, `#/templates/${encodeURIComponent(view.id)}`, `${view.id} links to its apply page`);
+  }
+
+  // What a person reads before applying it: the package's own files, as they are on disk.
+  const review = (await api("GET", "/templates/code-review")).body;
+  assert.equal(review.instructions, file("agent.md").replace(/^---[\s\S]*?\n---\n/, "").trim(), "the instructions in full, placeholders unfilled");
+  assert.deepEqual(Object.keys(review.skill_files).sort(), ["review/CODEREVIEW.md", "review/DEEP.md", "review/REVIEWER.md", "review/SKILL.md", "review/findings.schema.json"]);
+  assert.equal(review.skill_files["review/SKILL.md"], file("skills/review/SKILL.md"), "each skill file in full");
+  assert.equal(review.skill_files["review/CODEREVIEW.md"], file("rules/CODEREVIEW.md"), "the rules beside the skill that reads them");
+  assert.equal(review.skill_files["review/findings.schema.json"], file("skills/review/findings.schema.json"));
+
+  const unknown = await api("GET", "/templates/nope");
+  assert.deepEqual([unknown.status, unknown.body.error.code], [404, "not_found"], JSON.stringify(unknown.body));
+  assert.match(unknown.body.error.message, /no template nope: GET \/v2\/templates lists them/);
+  // The import route is a POST: a GET of its path asks for a package named "import", which there is none of.
+  assert.equal((await api("GET", "/templates/import")).status, 404);
+  assert.equal((await fetch(`${baseUrl}/templates/code-review`)).status, 401);
+});
+
+// An imported package's text is a third party's. Every surface that hands a package over whole (the API document, the
+// CLI's `template get`, the TypeScript and Python clients) says what it is, from the operation's summary, which each of
+// them is generated from (scripts/check-generated.mjs holds them to it).
+test("GET /templates/{template}'s summary says a package's instructions and skill files are the new agent's, not instructions to its reader", () => {
+  const { summary } = openapiDocument(() => undefined).paths["/templates/{template}"].get;
+  assert.match(summary, /Its instructions and skill files are what the new agent will be told, not instructions to you$/);
 });
 
 test("apply makes nothing when a secret is missing, its parameters do not check, or the package is unknown; it takes the token as creating an agent does", async (t) => {
@@ -331,8 +377,7 @@ test("an apply that makes a webhook trigger hands back its signing secret once, 
   const body = { parameters: { icp: "B2B fintech, 50-2000 people, US or EU", post_to: "none" } };
   const applied = await owner("POST", "/templates/inbound-lead/apply", body, { "idempotency-key": "lead-1" });
   assert.equal(applied.status, 201, JSON.stringify(applied.body));
-  const hooks = [];
-  for (const id of applied.body.trigger_ids) if ((await api("GET", `/triggers/${id}`)).body.source.kind === "webhook") hooks.push(id);
+  const hooks = applied.body.triggers.filter((one) => one.kind === "webhook").map((one) => one.trigger_id);
   assert.ok(hooks.length > 0, "inbound-lead makes a webhook trigger");
   assert.deepEqual(applied.body.webhook_secrets.map((one) => one.trigger_id), hooks);
   for (const one of applied.body.webhook_secrets) {
@@ -341,7 +386,7 @@ test("an apply that makes a webhook trigger hands back its signing secret once, 
   }
   // A retry under the key: the same agent and triggers, the secrets never again.
   const again = await owner("POST", "/templates/inbound-lead/apply", body, { "idempotency-key": "lead-1" });
-  assert.deepEqual([again.status, again.headers.get("idempotent-replayed"), again.body.agent_id, again.body.trigger_ids], [201, "true", applied.body.agent_id, applied.body.trigger_ids]);
+  assert.deepEqual([again.status, again.headers.get("idempotent-replayed"), again.body.agent_id, again.body.triggers], [201, "true", applied.body.agent_id, applied.body.triggers]);
   assert.ok(!JSON.stringify(again.body).includes("whsec_"));
   for (const one of again.body.webhook_secrets) assert.match(one.note, /shown once, in this apply's first answer; rotate it in the console/);
   for (const id of hooks) assert.ok(!JSON.stringify((await api("GET", `/triggers/${id}`)).body).includes("whsec_"), "no GET shows it");
@@ -358,12 +403,18 @@ test("a package's triggers are made on its agent, placeholders filled; a trigger
   const body = { parameters: { topic: "solar", words: 200 } };
   const applied = await api("POST", "/templates/nightly/apply", body, { "idempotency-key": "nightly-1" });
   assert.equal(applied.status, 201, JSON.stringify(applied.body));
-  const [id] = applied.body.trigger_ids;
+  const [{ trigger_id: id }] = applied.body.triggers;
   const trigger = (await api("GET", `/triggers/${id}`)).body;
   assert.deepEqual([trigger.name, trigger.enabled, trigger.source.cron], ["Morning brief", true, "0 9 * * *"]);
   assert.deepEqual(trigger.target, { kind: "start_run", agent_id: applied.body.agent_id, input: { content: "Today's brief on solar." } });
   const agent = (await api("GET", `/agents/${applied.body.agent_id}`)).body;
   assert.deepEqual([agent.definition.name, agent.definition.instructions, agent.definition.max_cost_usd], ["nightly", "Write a brief of about 200 words on solar.", 0.25]);
+  // The package itself is not filled by an apply: GET /templates/{template} still answers its placeholders, and no
+  // parameter value or secret from the apply or the server's environment comes back in it.
+  const read = (await api("GET", "/templates/nightly")).body;
+  assert.equal(read.instructions, "Write a brief of about ${parameters.words} words on ${parameters.topic}.");
+  assert.ok(JSON.stringify(read.template.triggers).includes("Today's brief on ${parameters.topic}."), JSON.stringify(read.template.triggers));
+  for (const filled of ["solar", "200 words", "fake-test-key"]) assert.ok(!JSON.stringify(read).includes(filled), `${filled} is not in the package read after an apply`);
   const again = await api("POST", "/templates/nightly/apply", body, { "idempotency-key": "nightly-1" });
   assert.deepEqual([again.status, again.headers.get("idempotent-replayed"), again.body], [201, "true", applied.body], "the same key answers the first apply, and makes nothing");
 
@@ -388,7 +439,7 @@ test("code-review's GitHub tools: never granted nor allowed by the package itsel
 
   // What a consent screen shows: each tool, and the permission the package asks for it.
   const listed = (await api("GET", "/templates")).body.templates.find((x) => x.name === "code-review");
-  const [review] = readPackages();
+  const review = readPackages().find((p) => p.name === "code-review");
   assert.deepEqual(listed.mcp, [{ source: "github", toolkit: "github", required: false, reason: review.mcp[0].reason, tools: GITHUB_TOOLS.map((name) => ({ name, tool: `mcp:github/${name}`, asks: GITHUB_READS.includes(name) ? "allow" : "ask", pin: REVIEW_PINS[name] })) }]);
 
   // No grants: the agent gets none of the GitHub tools. code-review runs unattended (approvals never), and never only
@@ -409,7 +460,7 @@ test("code-review's GitHub tools: never granted nor allowed by the package itsel
   const before = (await api("GET", "/agents")).body.agents.length;
   const stranger = await api("POST", "/templates/code-review/apply", { parameters: AGENTRUN, grants: [...reads, "mcp:github/create_repository", "mcp:github/*"] });
   assert.equal(stranger.status, 422, JSON.stringify(stranger.body));
-  assert.deepEqual(stranger.body.error.fields.map((f) => [f.field, f.reason]), [["grants.3", "not_allowed"], ["grants.4", "not_allowed"]]);
+  assert.deepEqual(stranger.body.error.fields.map((f) => [f.field, f.reason]), [["grants.2", "not_allowed"], ["grants.3", "not_allowed"]]);
   assert.equal((await api("GET", "/agents")).body.agents.length, before, "nothing was made");
 
   // A deny the owner set on this server is never lifted by a grant: the agent's runs stay refused the tool, and the apply says so.
@@ -421,8 +472,20 @@ test("code-review's GitHub tools: never granted nor allowed by the package itsel
   // The reads ticked are the agent's, run unasked under the template's approvals never (the denied one granted and refused); the two writes, unticked, are not the
   // agent's at all, so approvals never has nothing to lift for them.
   assert.deepEqual((await api("GET", `/agents/${consented.body.agent_id}`)).body.definition.tools, ["read", "subagent", ...reads]);
-  assert.deepEqual(await permissions(consented.body.agent_id), { pull_request_read: "allow", get_file_contents: "deny", get_repository_tree: "allow" });
+  assert.deepEqual(await permissions(consented.body.agent_id), { pull_request_read: "allow", get_file_contents: "deny" });
   assert.deepEqual(consented.body.warnings.filter((w) => w.field.startsWith("grants.")).map((w) => [w.field, w.reason]), [["grants.mcp:github/get_file_contents", "not_allowed"]]);
+});
+
+// GitHub's hosted MCP server (api.githubcopilot.com/mcp) with no toolsets header lists its default toolsets (context, repos,
+// issues, pull_requests, users), these 42 tools as a GitHub App server lists them. A tool outside them (get_repository_tree
+// is in the git toolset) is not on a server saved the usual way, so a package naming it is refused at apply.
+const GITHUB_DEFAULT_TOOLS = new Set(["add_comment_to_pending_review", "add_issue_comment", "add_reply_to_pull_request_comment", "create_branch", "create_or_update_file", "create_pull_request", "create_repository", "delete_file", "fork_repository", "get_commit", "get_file_contents", "get_label", "get_latest_release", "get_release_by_tag", "get_tag", "issue_read", "issue_write", "list_branches", "list_commits", "list_issue_fields", "list_issue_types", "list_issues", "list_pull_requests", "list_releases", "list_repository_collaborators", "list_tags", "merge_pull_request", "pull_request_read", "pull_request_review_write", "push_files", "request_copilot_review", "run_secret_scanning", "search_code", "search_commits", "search_issues", "search_pull_requests", "search_repositories", "search_users", "sub_issue_write", "update_issue_comment", "update_pull_request", "update_pull_request_branch"]);
+
+test("every GitHub tool a bundled package names is on GitHub's hosted MCP server as saved, with its default toolsets", () => {
+  assert.equal(GITHUB_DEFAULT_TOOLS.size, 42);
+  const named = readPackages().flatMap((p) => p.mcp.filter((need) => need.source === "github").flatMap((need) => need.tools.map((tool) => ({ p: p.name, tool }))));
+  assert.ok(named.length > 0);
+  assert.deepEqual(named.filter((x) => !GITHUB_DEFAULT_TOOLS.has(x.tool)).map((x) => `${x.p}: ${x.tool}`), [], "a GitHub tool outside the default toolsets");
 });
 
 test("an apply grants only the MCP tools the owner ticked: under never an unticked tool is not the agent's at all, so it is never offered nor run; none ticked grants none", async (t) => {
@@ -538,6 +601,7 @@ test("every package this server ships applies on a server with nothing saved: no
   withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") }, ["PARALLEL_API_KEY", "MONID_API_KEY", "BROWSERBASE_API_KEY", "KERNEL_API_KEY", "TYPESAFE_API_KEY"]);
   const { api } = await serve(t);
   const parameters = {
+    "agent-scout": {},
     "code-review": AGENTRUN,
     "inbound-lead": { icp: "B2B fintech, 50-2000 people, US or EU; never gambling operators", post_to: "none" },
     kyb: { risk_appetite: "medium" },
@@ -546,7 +610,7 @@ test("every package this server ships applies on a server with nothing saved: no
   };
   const listed = (await api("GET", "/templates")).body.templates;
   assert.deepEqual(listed.map((x) => x.name), Object.keys(parameters), "a new package gets its parameters here");
-  assert.deepEqual(listed.filter((x) => x.tools?.includes("bash")).map((x) => x.name), ["code-review"], "the one package with a shell");
+  assert.deepEqual(listed.filter((x) => x.tools?.includes("bash")).map((x) => x.name), ["agent-scout", "code-review"], "the packages with a shell");
   for (const { name, mcp, tools } of listed) {
     const before = (await api("GET", "/agents")).body.agents.length;
     const applied = await api("POST", `/templates/${name}/apply`, { parameters: parameters[name] });
@@ -588,7 +652,7 @@ test("a package granting a monid endpoint where there is no monid key is refused
   const { api } = await serve(t, { templates: dir });
   const applied = await api("POST", "/templates/keyed/apply", {});
   assert.notEqual(applied.status, 201, JSON.stringify(applied.body));
-  assert.match(JSON.stringify(applied.body), /no monid key here to read it with: save the monid key in Settings → Tool keys first/);
+  assert.match(JSON.stringify(applied.body), /no monid key here to read it with: save the monid key in Settings → API Keys first/);
 });
 
 test("a package's writes are bounded: each MCP tool it lists is a known read or write, a write is never in its allow, and in a package that runs unattended every write is pinned or bounded by a stated rule", () => {
@@ -598,7 +662,7 @@ test("a package's writes are bounded: each MCP tool it lists is a known read or 
   // classified here before it ships.
   const WRITES = new Set(["github/pull_request_review_write", "github/add_comment_to_pending_review", "github/issue_write", "hubspot/HUBSPOT_CREATE_NOTE", "slack/SLACK_SEND_MESSAGE", "gmail/GMAIL_SEND_EMAIL"]);
   // No free-text search: one reaches everything its credential does, and no pin can hold it to one repository or record.
-  const READS = new Set(["pull_request_read", "get_file_contents", "get_repository_tree", "list_releases", "get_latest_release", "get_release_by_tag", "list_tags", "get_tag", "list_commits", "get_commit", "list_pull_requests", "list_issues", "get_label"].map((tool) => `github/${tool}`));
+  const READS = new Set(["pull_request_read", "get_file_contents", "list_releases", "get_latest_release", "get_release_by_tag", "list_tags", "get_tag", "list_commits", "get_commit", "list_pull_requests", "list_issues", "get_label"].map((tool) => `github/${tool}`));
   // A write no pin can bound, and why it is bounded anyway. Each needs a reason a reviewer can check.
   const BOUNDED = {
     "hubspot/HUBSPOT_CREATE_NOTE": "it only adds a note, never changes or reads a record; the skill writes it only onto the contact a HubSpot CRM event's own payload names, and the HubSpot connection's scopes bound what it can touch",
@@ -612,7 +676,7 @@ test("a package's writes are bounded: each MCP tool it lists is a known read or 
   // URL it fetches. A package that fetches reads nothing through MCP.
   const fetches = new Set(packages.filter((p) => p.tools?.includes("web_fetch")).map((p) => p.name));
   assert.deepEqual(listed.filter((x) => fetches.has(x.p) && !WRITES.has(x.id)).map((x) => `${x.p}: ${x.id}`), [], "a package that holds web_fetch and reads through MCP");
-  assert.deepEqual(packages.filter((p) => p.approvals === "never").map((p) => p.name), ["code-review", "inbound-lead", "market-monitor", "release-notes"], "the packages whose job runs on triggers run unattended");
+  assert.deepEqual(packages.filter((p) => p.approvals === "never").map((p) => p.name), ["agent-scout", "code-review", "inbound-lead", "market-monitor", "release-notes"], "the packages whose job runs on triggers run unattended, and agent-scout, which the server starts for a scan and which writes nothing");
   assert.ok(listed.some((x) => WRITES.has(x.id) && x.pinned) && listed.some((x) => x.allowed), "the check sees pinned writes and allowed tools");
 });
 
@@ -665,7 +729,7 @@ test("an apply whose parameters, filled in, make a body over POST /v2/agents' 1 
 test("market-monitor's schedule comes from its parameters: Monday 08:00 UTC by default, the owner's own when given, and a bad one refuses the apply before anything is made", async (t) => {
   const { api } = await serve(t);
   const apply = (parameters) => api("POST", "/templates/market-monitor/apply", { parameters: { competitors: "Acme (acme.example)", ...parameters } });
-  const sourceOf = async (applied) => (await api("GET", `/triggers/${applied.body.trigger_ids[0]}`)).body.source;
+  const sourceOf = async (applied) => (await api("GET", `/triggers/${applied.body.triggers[0].trigger_id}`)).body.source;
   const plain = await apply({});
   assert.equal(plain.status, 201, JSON.stringify(plain.body));
   assert.deepEqual(await sourceOf(plain), { kind: "schedule", cron: "0 8 * * 1", timezone: "UTC" });
@@ -770,7 +834,7 @@ test("an mcp entry's pin is checked: each tool one of the entry's, 1 to 8 argume
   await refused("    pin: [slack_send_message]", /mcp\[0\]\.pin is \{<tool>: \{<argument>:/);
   // A placeholder is still refused anywhere else in a trigger, and the refusal names a pin as a place one goes.
   const { problems } = await pinProblems(t, "    pin: { slack_send_message: { channel_id: x } }\ntriggers:\n  - name: hook\n    source: { kind: webhook, name: \"${parameters.channel}\" }\n    target: { kind: start_run }\nbudget: { per_run_usd: 1 }");
-  assert.ok(problems.some((problem) => /a placeholder goes in display_name, the instructions, a trigger's target\.input, a schedule's cron and timezone, a github or webhook trigger's where in values, or an mcp pin's values/.test(problem)), JSON.stringify(problems));
+  assert.ok(problems.some((problem) => /a placeholder goes in display_name, the instructions, a trigger's target\.input, a schedule's cron and timezone, a github, webhook, composio or feed trigger's where in values, a composio trigger's config values, a feed trigger's urls, or an mcp pin's values/.test(problem)), JSON.stringify(problems));
 });
 
 test("market-monitor's sends are pinned to its channel: the consent screen shows each pin, apply writes it filled, and with no channel the sends are denied with a warning", async (t) => {

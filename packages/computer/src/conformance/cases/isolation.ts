@@ -2,16 +2,18 @@
 // (capabilities().vendorAgentPorts), and no outside address, sees its own loopback alone, and finds nothing listening in
 // its own network but computerd: computerd init --own-network at work. And it can write nothing root runs.
 import { DAEMON_IN_COMPUTER, SOCKET_DIR } from "../../drift.js";
+import { EGRESS_PROXY_SOCKET } from "../../hosted/network.js";
 import { ARCHIL_HELPER, ARCHIL_SYNC_SOCKET } from "../../mount-archil.js";
 import type { ComputerClient } from "../../protocol.js";
 import type { Case, CaseContext } from "../types.js";
 
 /**
- * The unix sockets a program of the computer's user may connect to: the computer's own, computerd's and the Archil sync
- * socket (which only syncs). A network namespace does not cut a path socket, and every program in the namespace reaches
- * an abstract name (@...), so any other socket is a door out.
+ * The unix sockets a program of the computer's user may connect to: the computer's own, computerd's, the Archil sync
+ * socket (which only syncs) and, under network open or a list, the egress proxy's (which reaches the public internet
+ * alone, as the spec's network asked). A network namespace does not cut a path socket, and every program in the
+ * namespace reaches an abstract name (@...), so any other socket is a door out.
  */
-export const OWN_SOCKETS: readonly string[] = [`${SOCKET_DIR}/computerd.sock`, ARCHIL_SYNC_SOCKET];
+export const OWN_SOCKETS: readonly string[] = [`${SOCKET_DIR}/computerd.sock`, ARCHIL_SYNC_SOCKET, EGRESS_PROXY_SOCKET];
 
 /**
  * The outside the case also probes: a public IP literal on 443, and a DNS name on 443, which a program could reach only
@@ -69,12 +71,15 @@ export async function assertIsolated(t: CaseContext, client?: ComputerClient): P
 	// The unix sockets: paths, which no network namespace cuts, and the abstract names of the user's own namespace.
 	// computerd's own listing, so no image can lack it. Each with the type that connected (stream, dgram, seqpacket); a
 	// search it could not finish proves nothing, and fails.
-	const search = probe.sockets as { sockets?: unknown; incomplete?: unknown } | undefined;
+	const search = probe.sockets as { sockets?: unknown; incomplete?: unknown; skipped?: unknown } | undefined;
 	if (search === null || typeof search !== "object" || !Array.isArray(search.sockets) || !Array.isArray(search.incomplete)) {
 		return t.assert(false, "the probe reported no list of the unix sockets a program can connect to (a computerd too old for probe --sockets), so the socket fence could not run");
 	}
 	const found = search.sockets.map((one) => ({ path: String((one as { path?: unknown }).path), type: String((one as { type?: unknown }).type) }));
 	t.observe(`unix sockets a tool can connect to: ${found.map(({ path, type }) => `${path} (${type})`).join(", ") || "none"}`);
+	// Folders of a filesystem no socket can be a file of (proc, sysfs a runtime mounted inside a searched root) are not
+	// gone into; they take nothing from the proof, and are said so a run shows them.
+	if (Array.isArray(search.skipped) && search.skipped.length > 0) t.observe(`not searched, no socket can be a file there: ${search.skipped.map(String).join(", ")}`);
 	const incomplete = search.incomplete.map(String);
 	t.assert(incomplete.length === 0, `the probe could not search every place a socket may be, so the socket fence is unproven: ${incomplete.join("; ")}`);
 	// A desktop's tools draw on its display: the X server of the display its hello names, on its path and on the same

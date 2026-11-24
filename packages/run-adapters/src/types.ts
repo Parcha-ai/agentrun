@@ -200,8 +200,10 @@ export interface ModelRequest {
    *  `under`: the key of the model session whose tool call it runs in (the CLI's session): a request of that session
    *  still in flight may be the one that asked for the call, unbooked until the call returns (Claude Code books its
    *  cost after its calls, Codex starts a call with its response open), so the call never waits on it (runBooking).
-   *  Not written on its record. */
-  paid?: { name: string; basis: string; call?: string; charged_by?: string; tool?: string; tag?: string; owed?: true; hold?: true; ref?: string; under?: string };
+   *  Not written on its record. `reported`: what it is settled at is the provider's own figure for the call (its answer
+   *  says what it charged), not a price this server set; written on its record, so a read of the booking can say how a
+   *  charge's figure was reached. */
+  paid?: { name: string; basis: string; call?: string; charged_by?: string; tool?: string; tag?: string; owed?: true; hold?: true; ref?: string; under?: string; reported?: true };
   /** A side call, never its turn's own: on another model than the session's (a client's title, a summary), or the
    *  host's own request beside the harness's (`host`). */
   side?: true;
@@ -217,10 +219,18 @@ export interface ModelRequest {
    *  the proxy minted for this label: ModelProxy.sideKey): a learned workflow's model node, say. The harness's own
    *  requests carry none, and it cannot send one that does: it holds only the session's key. */
   host?: string;
+  /** The conversation its client says it is asked in (the model proxy's CONVERSATION_HEADER), when it names one: the
+   *  client's own label, opaque to the booking and not written on its record. A host whose harness runs several
+   *  conversations at once (pi's subagents) reads it to know whose request a booking is. */
+  conversation?: string;
   /** Which of the session's routes it came by, when the session has more than one (ModelProxyOptions.route: a proxy beside
    *  the session's, for a model of another tier): the host prices it by its model and this route, so one model id two
    *  routes price apart is held at the price its route books it at. Absent: the session's own route. */
   route?: string;
+  /** The reasoning effort its body asks its model at, as its provider names it (the proxy's policy reads it:
+   *  ProviderPolicy.effortOf), when the body names one. What its least output was read at, so words that name its
+   *  figures can name it too. */
+  effort?: string;
   /** Aborted when the request's client goes (a stop, a cancel, a lost claim): a request still waiting for room under the
    *  run's cap (runBooking) leaves its line then, admitted for nothing and holding nothing. */
   signal?: AbortSignal;
@@ -242,6 +252,8 @@ export interface ModelUsage {
   /** A request a crash cut off: it left, and no answer came back to this run. Its tokens are unknown (0 here) and its
    *  price is null; the provider may have billed it. */
   cut?: boolean;
+  /** A cut request its host held a figure for: booked at that hold (runner.ts CUT_AT_HOLD), the most it can have cost. */
+  atMostUsd?: number;
   /** A paid step's hold given back unused (a workflow call node's, its effect never sent the paid request it held for):
    *  nothing was sent and nothing charged, at usd 0. Its record says so, so no reader takes it for a $0 charge or an
    *  unpriced one. */
@@ -278,16 +290,21 @@ export interface ModelPort {
   responded?(ids: Record<string, string>, ticket?: ModelTicket): Promise<void>;
   /** A note its host has for the session's next main-model request (the spend cap's wrap-up), taken by this call; the
    *  session's model proxy adds it to that request's body (ModelProxyHooks.note). `request`: that request as its client
-   *  sent it, measured before the note is placed (NoteRequest), so the host can price it as its admission will. */
+   *  sent it, measured before the note is placed (NoteRequest), so the host prices it as its admission will. */
   note?(model: string, request?: NoteRequest): string | undefined;
   /** The note `note` gave back: the request that took it left before its admission (its client gone, a refusal or an
    *  error before `beforeRequest`), so it was never sent, and the host may give it to the next request at once. */
   noteReturned?(note: string): void;
 }
 
-/** A request about to take its host's note, as its client sent it: its input bound and the output it asks for and needs
- *  at least, as the model proxy reads them (ModelRequest's figures, without the note). */
+/** A request about to take its host's note, as its client sent it: its input bound (the provider's count or the local
+ *  count where the proxy took one, else its bytes) and the output it asks for and needs at least, as the model proxy reads
+ *  them: ModelRequest's figures without the note (its `inputTokensMaxWithoutNote`), the same ones the cap admits it by. */
 export type NoteRequest = { inputTokensMax?: number; outputTokensAsked?: number; outputTokensLeast?: number };
+
+/** What a cut answer says when the run's cap limited its output: the cap, and the least cap that sends its request with
+ *  all the output it asked (its whole input uncached and that output, beside what the run had spent and held), in USD. */
+export type CapCut = { capUsd: number; raiseToUsd: number };
 
 /** A paid request's admission: the turn it was admitted as, which its answer is booked under. */
 export interface ModelTicket {
@@ -298,6 +315,9 @@ export interface ModelTicket {
   /** Admitted only without its host's note (ModelRequest.noted): its bytes did not fit what is left of the cap. The
    *  request goes as its client sent it, and the note waits for another request. */
   noteDropped?: true;
+  /** Limited below the output it asked (`outputTokensMax`) by what is left of its host's spend cap: an answer the provider
+   *  cuts at that limit is the cap's cut, said with these figures (turn_end's capCut), never a normal answer. */
+  capCut?: CapCut;
 }
 
 /** What the host lends a session. */
@@ -330,6 +350,25 @@ export interface SessionIO {
    *  a side effect, the host's hooks on the result). An adapter hands every tool it adds through it. Absent: the host
    *  keeps no record of calls, and the tool runs as it is. */
   hostTool?(tool: HostTool): HostTool;
+  /** The host's record of a call of the harness's own that runs host tools inside it (Codex's code-mode `exec`): its row,
+   *  and each host tool call it makes nested under it, as a host tool that `nests` (codemode) has its calls on every other
+   *  harness. Absent: the host keeps no record of calls. */
+  ownCalls?: OwnCalls;
+}
+
+/** The record of a call of the harness's own that host tool calls nest in (SessionIO.ownCalls). Each is said from what the
+ *  harness's own stream holds (the call's id, its input, its output), never a made-up id. */
+export interface OwnCalls {
+  /** The call started, `input` what it was given (once per call id: a second says nothing). */
+  opened(callId: string, name: string, input: unknown): Promise<void>;
+  /** The host tool call `callId` runs inside the harness's call `parent`: said before the call reaches the gate, so its
+   *  row (a refused or parked one's too) names its parent. */
+  nestedIn(callId: string, parent: string): void;
+  /** The call ended with `output`, `failed` when the harness's stream says it did not do its work (Codex's "Script failed"),
+   *  so its row reads failed as a failed call's does (once: a call already ended says nothing). A crash leaves an opened call
+   *  open on the host's record: the harness ends it after the resume, from its CLI's answer to it (Codex's recovered exec
+   *  output), so its end comes after the rows of the calls it made. */
+  ended(callId: string, output: string, failed: boolean): Promise<void>;
 }
 
 /** `tool`, a tool the adapter adds of its own, made the host's (SessionIO.hostTool). */
@@ -366,8 +405,16 @@ export type AdapterEvent =
   | { type: "tool_start"; callId: string; name: string; args: unknown; parent?: string }
   | { type: "tool_end"; callId: string; name: string; isError: boolean; result?: string; truncated?: true }
   /** `stopReason: "length"` only when the turn's final answer was cut at the model's output limit (unfinished), with that
-   *  answer's output tokens when the adapter knows them: a host reads the answer as cut, never as the run's end. */
-  | { type: "turn_end"; status: TurnStatus; stopReason?: "length"; outputTokens?: number };
+   *  answer's output tokens when the adapter knows them: a host reads the answer as cut, never as the run's end. `capCut`:
+   *  the limit it was cut at was the run's cap's (ModelTicket.capCut), with the cap and the least cap that finishes it. */
+  | { type: "turn_end"; status: TurnStatus; stopReason?: "length"; outputTokens?: number; capCut?: CapCut }
+  /** The model was given these submissions (the ids `send` or `steer` placed them under): a steer placed mid-turn reaches
+   *  it at the turn's next step, after the tool calls in flight. An adapter that records nothing of its own says it, so
+   *  its host records the message where the model read it. */
+  | { type: "message_taken"; ids: readonly string[] }
+  /** Something of the adapter's own the person should read on the run, in its words (the ACP mirror past its budget): a
+   *  host shows it as a step of the run, never as the model's text. */
+  | { type: "notice"; text: string };
 
 /** An event as a host receives it: the adapter's, the runner's own, and the node each belongs to. */
 export type HarnessEvent = (AdapterEvent
@@ -408,7 +455,9 @@ export interface AdapterSession {
    *  `mode`: "steer" (the default) steers the turn in flight; "followUp" waits for the turn's end and runs as a turn of
    *  its own (a message that answers nothing, such as a trigger's). `origin`: who wrote it when the person did not (a
    *  trigger's message), kept on the message the harness records, as the Timeline shows it. Absent when the harness takes
-   *  no message mid-turn: the host refuses the steer in words. */
+   *  no message mid-turn: the host refuses the steer in words. A host that lost its runner after the placement hands the
+   *  same message on again under the same `id`: an adapter that can tell (claude-agent's) places nothing again. An adapter
+   *  whose host keeps the record (a CLI's) says when the model took it (`message_taken`). */
   steer?(text: string, id?: string, mode?: "steer" | "followUp", options?: { readonly origin?: { readonly [key: string]: unknown } }): Promise<void>;
   /** The session's own model route, for a request the host sends beside the harness's own (a learned workflow's model
    *  node): its model proxy's address with a side key minted for `label` (ModelProxy.sideKey), the model its policy
@@ -421,6 +470,10 @@ export interface AdapterSession {
 
 /** The API a harness's model proxy speaks: what its provider, its keys and its catalog follow from. */
 export type Wire = "anthropic-messages" | "openai-responses";
+/** What a harness's facts say its model is reached on: a Wire of the host's proxy, or `plan`: none, its model is its
+ *  vendor's, billed to its owner's plan on the owner's own key (Cursor), so no request of it reaches a proxy of the host's
+ *  and no provider, key or catalog of the host's is its. */
+export type HarnessWire = Wire | "plan";
 
 /** What a harness is, as its adapter states it: the host reads these and never branches on a harness's name. They
  *  describe the harness; none renames or reshapes what its model sees, and none turns its own built-ins, sandbox or
@@ -430,8 +483,8 @@ export interface AdapterFacts {
   readonly id: string;
   /** Its name in a sentence ("Claude", "Codex", "OpenCode"). */
   readonly label: string;
-  /** The API its model proxy speaks. */
-  readonly wire: Wire;
+  /** The API its model proxy speaks, or `plan` where none of the host's is its (HarnessWire). */
+  readonly wire: HarnessWire;
   /** Whether it takes a message mid-turn (else a message waits for the turn's end). */
   readonly steer: boolean;
   /** False when a tool call that started is never run again by a restart, replay-safe or not: the harness's own process
@@ -474,6 +527,12 @@ export interface AdapterFacts {
   /** Its CLI's own tools, by the name a call reaches the host by, each with the host's table tool it is (Claude's
    *  `Bash` is `bash`): a host holds such a call to that tool's setting. None: its CLI calls only the host's tools. */
   readonly nativeTools?: Readonly<Record<string, string>>;
+  /** The input tokens its first model request carries before the agent's own prompt and the person's message: its own
+   *  system prompt and tool definitions, as measured on its pinned build (the constant beside its pin says how). A host
+   *  prices a cap's least step on it before any run (a save's warning that a cap is below one step and an answer). A
+   *  count of what was measured, with o200k_base or from billing (the constant says which). Absent: not measured, read
+   *  as 0 (a floor). */
+  readonly baseInputTokens?: number;
   /** The policy its model proxy applies, for a host that serves the same route itself (a test's faux harness). */
   policy(options: { model: string; tools: readonly string[]; auth?: "bearer" | "x-api-key"; webSearch?: true | "live"; webSearchAllowance?: number; maxOutputTokens?: number }): ProviderPolicy;
 }

@@ -70,6 +70,24 @@ test('a missing key names both variables for the provider and never echoes a key
   });
 });
 
+test('blank TypeSafe keys do not block a supplied host client', async () => {
+  for (const envKey of [emptyKey, blankKey]) {
+    await withEnv({ TYPESAFE_API_KEY: envKey }, async () => {
+      let calls = 0;
+      const runner = createJevRunner({
+        client: {
+          async systemOne() {
+            calls++;
+            return { answers };
+          },
+        },
+      });
+      assert.deepEqual((await runner(params)).answers, answers);
+      assert.equal(calls, 1);
+    });
+  }
+});
+
 test('provider openrouter never sends the TypeSafe key: with no OpenRouter key it is a configuration error even when TYPESAFE_API_KEY is set', async () => {
   sent.length = 0;
   await withEnv({ OPENROUTER_API_KEY: undefined, TYPESAFE_API_KEY: envTypesafeKey }, () => {

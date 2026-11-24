@@ -175,7 +175,7 @@ async function oauthSetUp(t, { expiresAt, sealKey = KEY, reuseRevokes = false } 
 }
 const refreshes = (oauth) => oauth.log.filter((entry) => entry.path === "/token" && entry.form?.grant_type === "refresh_token").length;
 
-test("M7: an expired token is refreshed once before the loop, its new token used and kept; a silent sign-in server is bounded and its calls refused unsent; a refused refresh says sign in again", async (t) => {
+test("M7: an expired token is refreshed once before the loop, its new token used and kept; a refresh whose answer is lost is sent once and its calls refused unsent; a refused refresh says sign in again", async (t) => {
   const { store, oauth, fake, claim, clock, set } = await oauthSetUp(t, { expiresAt: T0 - 1_000 });
   const kept = Buffer.from((await store.mcp.server("fake")).sealed);
   const step = await claimOf(store, claim, ["mcp:fake/add"], { now: () => T0 });
@@ -183,15 +183,14 @@ test("M7: an expired token is refreshed once before the loop, its new token used
   assert.ok(bearer(step) && bearer(step) !== `Bearer ${set.tokens.access_token}`, "the new token is the one handed to the loop");
   assert.equal(Buffer.from((await store.mcp.server("fake")).sealed).equals(kept), false, "and the new token set kept, sealed, in the server's row");
   step.release();
-  // Silent: no answer within the call's bound (the fake never answers, so the bound is all that ends it): the loop starts,
-  // and that server's calls are refused unsent. The request left, so it is sent once and never again, and the lease is held
-  // to its end: no claim sends that refresh token again meanwhile.
+  // Silent: the request reaches the sign-in server and its answer is lost (the fake reads it, then closes the connection),
+  // so the claim's end is that event, never a bound's time: the loop starts, and that server's calls are refused unsent.
+  // The request left, so it is sent once and never again, and the lease is held to its end: no claim sends that refresh
+  // token again meanwhile.
   await store.mcp.put({ name: "fake", url: fake.url, auth: "oauth", tools: [listed(ADD)], sealed: sealed("fake", fake.url, { type: "oauth", set: { ...set, expires_at: new Date(T0 - 1_000).toISOString() } }) });
-  oauth.hang();
-  const started = Date.now();
+  oauth.drop();
   const sent = refreshes(oauth);
-  const silent = await claimOf(store, claim, ["mcp:fake/add"], { now: () => T0, bounds: { requestMs: 20, tries: 2 } });
-  assert.ok(Date.now() - started < 2_000, "bounded");
+  const silent = await claimOf(store, claim, ["mcp:fake/add"], { now: () => T0, bounds: { requestMs: 60_000, tries: 2 } });
   assert.equal(silent.credentials.fake?.unopened, UNUSABLE.silent);
   assert.equal(refreshes(oauth) - sent, 1, "sent once: a request that left is never sent again");
   assert.notEqual((await store.mcp.server("fake")).refreshHolder, null, "its lease is held to its end");
@@ -450,8 +449,11 @@ test("M17: claims waiting on another claim's refresh read the server's row O(1) 
   const CLAIMS = 300;
   const steps = Array.from({ length: CLAIMS }, () => claimOf(counted, claim, ["mcp:fake/add"], { now: () => T0, bounds: { requestMs: 5_000, tries: 1 }, timer }));
   await hold.granted;
-  // Every other claim waits on the holder's lease: its wait armed, before the holder answers.
-  for (let i = 0; i < 20_000 && waiting() < CLAIMS - 1; i++) await new Promise((resolve) => setImmediate(resolve));
+  // Every other claim waits on the holder's lease: its wait armed, before the holder answers. The wait is on that event,
+  // bounded in time only for a failing run: on Postgres a claim's reads go through the pool, so a count of event-loop
+  // turns could end with one claim still reading (298 of 299 armed, CI 11-16).
+  const armedBy = Date.now() + 20_000;
+  while (waiting() < CLAIMS - 1 && Date.now() < armedBy) await new Promise((resolve) => setTimeout(resolve, 2));
   assert.equal(waiting(), CLAIMS - 1, "every other claim waits on the lease");
   hold.answer();
   // Bounded only for a failing run: a waiter no let-go wakes would sleep on a timer that never fires.

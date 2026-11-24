@@ -1,0 +1,1 @@
+- Skip junior job posts: leave junior, entry-level, graduate and intern postings out of the digest, even a first role in a new country, whatever the rules file says.

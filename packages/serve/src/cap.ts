@@ -1,7 +1,7 @@
 // What a run's spend cap leaves behind in serve once the kernel's cap (run-adapters kernel/cap) holds the money: the
 // refusal's code and words as every reader of a refusal reads them, the cap modes a run is created with, and the spend
 // and /usage meters read back from a run's entries (spentFrom, meterFiguresFrom), over marks the kernel's cap also reads.
-import { type EntryLike, REQUEST_COST, REQUEST_COST_LATE, REQUEST_ENDED, REQUEST_REFUSED, REQUEST_STARTED, REQUEST_CONTINUED, timelineOf, TOOL_COST, TOOL_STARTED } from "./timeline/index.js";
+import { compactionAnswers, type EntryLike, REQUEST_COST, REQUEST_COST_LATE, REQUEST_ENDED, REQUEST_REFUSED, REQUEST_STARTED, REQUEST_CONTINUED, timelineOf, TOOL_COST, TOOL_STARTED } from "./timeline/index.js";
 
 /** How a request the cap refused begins its error, which the server ends the run with. */
 export const SPEND_CAP_REACHED = "spend_cap_reached";
@@ -92,12 +92,18 @@ const close = (open: Figure[], figure?: number) => {
 function openFigures(entries: readonly EntryLike[]): { generation: Figure[]; compaction: Figure[] } {
   const open = { generation: [] as Figure[], compaction: [] as Figure[] };
   let [refused, continued] = [0, 0];
+  const sideSummaries = { count: 0 };
   for (const entry of entries) {
     const message = entry.model?.[0] as { stopReason?: unknown } | undefined;
     const data = (entry.data ?? {}) as Record<string, unknown>;
     // A side request (a compaction's summary, a tool's own request): marked with a label, as the timeline reads it.
     const kind = typeof data.request === "string" ? "compaction" : "generation";
-    if (entry.kind === REQUEST_REFUSED) refused += 1;
+    // pi's compaction entry answers its summary request when that left marked as a generation, by the timeline's own
+    // rule (compactionAnswers). One marked as a side request is closed by its cost.
+    const summaryAnswered = compactionAnswers(entry, sideSummaries);
+    if (entry.kind === "pi.compaction") {
+      if (summaryAnswered) close(open.generation);
+    } else if (entry.kind === REQUEST_REFUSED) refused += 1;
     else if (entry.kind === "pi.assistant" && refused > 0 && message?.stopReason === "error") refused -= 1;
     else if (entry.kind === REQUEST_CONTINUED) continued += 1;
     else if (entry.kind === "pi.assistant" && continued > 0 && message) continued -= 1;
@@ -272,7 +278,8 @@ export function meterFiguresFrom(rows: readonly { conversation: number; entry: E
   }
   const tools = marks.size || charges.some((usd) => usd === undefined) ? null : (charges as number[]).reduce((sum, usd) => sum + usd, 0);
   const rest = rows.filter(({ conversation, entry }) => conversation === root && entry.kind !== TOOL_STARTED && entry.kind !== TOOL_COST).map(({ entry }) => entry);
-  const usage = timelineOf(rest, { settled: true }).find((row) => row.kind === "usage");
+  // A hold is no charge here (/usage says no "at most"): read as a cost no one knows, beside the exact charges.
+  const usage = timelineOf(rest, { settled: true, holdsUnpriced: true }).find((row) => row.kind === "usage");
   const otherTools = marks.size || others.some((usd) => usd === undefined) ? null : (others as number[]).reduce((sum, usd) => sum + usd, 0);
   known.tokens = usage ? (usage.usage?.usd ?? usage.usage?.so_far_usd ?? 0) : 0;
   const notMetered = usage?.usage?.not_metered;

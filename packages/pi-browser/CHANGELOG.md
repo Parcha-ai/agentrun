@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+## 0.1.0-beta.50 (2026-11-20)
+
+- `web_save {url, path}`, a new host tool, saves one public file (at most 200 MiB) into the run's `work/`, a bare name under `media/`. It downloads through `web_fetch`'s guard, never overwrites, and saves media only when the bytes, the declared type and the extension agree. An agent gets it by naming it. pi-browser adds `publicDownload`, the bytes version of `publicFetch`. A template eval's `web:` fixture takes an optional `save` section. <!-- changes/web-save-tool.md -->
+
+## 0.1.0-beta.49 (2026-11-20)
+
+- A session whose create answer was lost, and which the release task found later by its tag, is now told to the host's `onSession` at its release with the id that lookup found and the bill its release records. Before, the host heard it with `resourceId` null and nothing spent, because the release is told before the commit that records them. <!-- changes/pi-browser-release-found-id.md -->
+
+## 0.1.0-beta.44 (2026-11-17)
+
+- An agent whose computer is a browser can record its runs: `computer: {"kind": "browser", ..., "record": true}` makes a video of each browser session's page, `recordings/<computer>.mp4` with one file per session, under the same caps, pause and stop rules as a desktop's or a phone's, listed in the run read's `recordings` and served by the files route. A browser with `record: true` was refused with 422 before.
+    - The video is the live view's own CDP screencast of the session, shared with a person's viewer (one screencast per session, never a second); each frame is stamped as it comes, so a page that sits still does not shorten the video.
+    - `@parcha/pi-browser`'s live view takes a host's watch of a session's frames, with or without a viewer: `liveView.watch(tag, { frame, ended })`. A viewer that joins a stream already running is sent the page, any dialog and the newest frame.
+
+## 0.1.0-beta.39 (2026-11-16)
+
+- A template eval case can fake the web: `web: unavailable` in its `case.yaml` fails every `web_search` with the words a rate-limited free search answers with and every `web_fetch` as a page that never answers, and `web: <fixture file>` answers each search from the first answer whose `query` (a regular expression) matches and each page from the answer for its exact URL, else the fixture's default. No call reaches the network, the calls show in the run's timeline and the graders' tool calls, so `tool_used` counts them, and the fixture is checked whole before any run.
+  - The same fake holds on pi, claude-agent and codex: on claude-agent and codex a faked case's runs are never offered the harness's own web search, so the run's `web_search` is the one that answers.
+  - Only the eval's own in-process server honours `web`; no package field, API field, setting or environment variable turns it on, and a case with `web` refuses to run with `--server`.
+  - Fix: a guarded public fetch of a 2xx answer with no body (204, 205) reads as an empty page instead of failing with "Cannot read properties of null".
+
 ## 0.1.0-beta.38 (2026-11-14)
 
 - web_fetch reads a site's feeds: a reply of type `application/<name>+xml` or `application/<name>+json` (`application/atom+xml`, `application/rss+xml`, `application/ld+json`) is text, read as it came.

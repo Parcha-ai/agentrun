@@ -1,0 +1,90 @@
+name: Helm walk
+
+# Runs deploy/helm/walk.sh on a kind cluster, after deploy/helm/render.sh. Not a required check.
+
+on:
+  pull_request:
+    paths:
+      - 'deploy/helm/**'
+      - 'deploy/walk/api.mjs'
+      - 'deploy/walk/faux-steps.mjs'
+      - 'deploy/walk/rows.sh'
+      - '.github/workflows/helm-walk.yml'
+      - '.github/actions/published-or-checkout-image/**'
+  push:
+    branches: [main]
+    paths:
+      - 'deploy/helm/**'
+      - 'deploy/walk/api.mjs'
+      - 'deploy/walk/faux-steps.mjs'
+      - 'deploy/walk/rows.sh'
+      - '.github/workflows/helm-walk.yml'
+      - '.github/actions/published-or-checkout-image/**'
+  workflow_dispatch:
+  # The daily walk (ways-in-daily.yml): image names an artifact of this run, a docker save of the image to walk in place
+  # of the release's (main's, built once for every row).
+  workflow_call:
+    inputs:
+      image:
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-helm-walk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  walk:
+    name: helm install, first run, upgrade, uninstall (kind)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v4.3.1
+      - uses: helm/kind-action@1544676c07bb3570fcb70166beaa07c4528fd4aa # v1.15.1
+        with:
+          cluster_name: helm-walk
+      - name: The image to walk
+        if: ${{ inputs.image }}
+        uses: ./.github/actions/walk-image
+        with:
+          artifact: ${{ inputs.image }}
+      # Otherwise the chart's own image, v<appVersion>, when GHCR has it; until its release publishes it (on the release's
+      # pull request, and on main until the tag's release finishes), this checkout's.
+      - name: The chart's image
+        id: pinned
+        if: ${{ !inputs.image }}
+        run: |
+          echo "image=$(sed -n 's/^  repository: //p' deploy/helm/agentrun/values.yaml):v$(sed -n 's/^appVersion: "\(.*\)"$/\1/p' deploy/helm/agentrun/Chart.yaml)" >> "$GITHUB_OUTPUT"
+      - name: Published, else this checkout's
+        if: ${{ !inputs.image }}
+        uses: ./.github/actions/published-or-checkout-image
+        with:
+          image: ${{ steps.pinned.outputs.image }}
+      - name: Into the cluster
+        if: ${{ env.AGENTRUN_IMAGE != '' }}
+        run: kind load docker-image "$AGENTRUN_IMAGE" --name helm-walk
+      - name: helm lint
+        run: helm lint deploy/helm/agentrun
+      - name: The public address the server gets is the one NOTES prints
+        run: sh deploy/helm/render.sh
+      - name: Walk
+        run: REPORT="$RUNNER_TEMP/helm-walk.md" sh deploy/helm/walk.sh
+      - name: Report
+        if: always()
+        run: '[ ! -f "$RUNNER_TEMP/helm-walk.md" ] || cat "$RUNNER_TEMP/helm-walk.md" >> "$GITHUB_STEP_SUMMARY"'
+      - name: Keep the report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: walk-report-helm
+          path: ${{ runner.temp }}/helm-walk.md
+          if-no-files-found: ignore

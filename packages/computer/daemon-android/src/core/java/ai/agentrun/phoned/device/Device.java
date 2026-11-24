@@ -134,6 +134,17 @@ public interface Device {
 		 * (0: as it is), encoded as format ("png" or "jpeg", quality 1 to 100 for jpeg).
 		 */
 		Shot shot(Rect crop, int maxEdge, String format, int quality);
+
+		/**
+		 * A watch frame: shot(null, maxEdge, "jpeg", quality), except that when skipUnchanged and the screen's pixels are
+		 * the ones the last watchShot read, null, with nothing scaled or encoded. A screen that cannot tell gives a frame.
+		 */
+		default Shot watchShot(int maxEdge, int quality, boolean skipUnchanged) {
+			return shot(null, maxEdge, "jpeg", quality);
+		}
+
+		/** Drops the pixels the last watchShot read, when that read never became the newest frame: the next is encoded. */
+		default void forgetWatched() {}
 	}
 
 	/** One encoded frame. */
@@ -167,6 +178,9 @@ public interface Device {
 		void launch(String id, String url);
 
 		void terminate(String id);
+
+		/** The label a person knows the app by ("Wikipedia", "System UI"), launcher app or not; null where the phone gives none. */
+		String label(String id);
 	}
 
 	final class App {

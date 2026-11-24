@@ -11,6 +11,5 @@ mcp:
 grants:
   - mcp:github/pull_request_read
   - mcp:github/get_file_contents
-  - mcp:github/get_repository_tree
   - mcp:github/pull_request_review_write
   - mcp:github/add_comment_to_pending_review

@@ -7,6 +7,7 @@
 import { createHash } from "node:crypto";
 import { DEADLINE_LABEL } from "../dist/drift.js";
 import { HostError } from "../dist/host.js";
+import { EGRESS_POLICY as POLICY, EGRESS_RELAY as RELAY } from "../dist/hosted/network.js";
 import { PROTOCOL_VERSION } from "../dist/protocol.js";
 import { GOOD_PREFLIGHT, mountsOf, rootVerb } from "./fake-archil.mjs";
 import { scriptOfWords } from "./fake-shell.mjs";
@@ -30,6 +31,9 @@ export const FAKE_DESCRIPTOR = {
 		{ kind: "desktop", groups: [...DESKTOP_GROUPS] },
 	],
 };
+
+/** The fake's descriptor declaring every network form, as the hosted vendors that run init's egress proxy do. */
+export const NETWORK_DESCRIPTOR = { ...FAKE_DESCRIPTOR, network: ["none", "open", "allow"] };
 
 /** The fake's descriptor with GPUs on its linux configuration. */
 export const gpuDescriptor = (gpu) => ({ ...FAKE_DESCRIPTOR, capabilities: [{ kind: "linux", groups: [...LINUX_GROUPS], gpu }, FAKE_DESCRIPTOR.capabilities[1]] });
@@ -101,9 +105,10 @@ const START = Date.now();
  *  - born(n): the creation time of the n-th machine made (1, 2, ...), or undefined for none; default the order made;
  *  - sha: "ok" or "lie"; install: the install's exit code; initFails: words init writes before it exits;
  *  - notListening: how many bridges find no daemon before one does;
- *  - box: what the daemon reports (hello patch, uid, gid, status, interfaces, reached, accepted, quiet, raised);
- *  - display: "ok", "never", "dies", or, with the display up, "manager missing" (the window manager does not start) or
- *    "manager dies" (it ends at once);
+ *  - box: what the daemon reports (hello patch, uid, gid, status, interfaces, reached, accepted, quiet, raised, and
+ *    workspace, the stat of a synced folder's directory: { path, type, owner "uid:gid", mode }, else install's);
+ *  - display: "ok", "never", "dies", or, with the display up, "manager missing" (the window manager computerd starts
+ *    finds no dbus-run-session) or "manager dies" (it ends at once);
  *  - lingers: { reads, lists, state } after a delete, a lingering read in state (running unless given); fileApi: false
  *    for a host with no upload;
  *  - timer: "ok" (extend moves the end and the deadline label: the vendor's timer, or with lifetime janitor the label
@@ -116,6 +121,11 @@ const START = Date.now();
  *    socketsFail: a path among them whose chmod fails;
  *  - stale: the listing reads each machine as its create made it, running, forever: it keeps a deleted machine, and
  *    shows create's end and labels after a timer moved (E2B's Sandbox.list, read live 11-14). get stays current.
+ *  - clock ({ now() }) with the vendor's own timers on it: idle, the ms after which it ends a machine no exec reached;
+ *    backstop, the vendor's delete timer set from the request's backstopAt, read back as endsAt, which ends the machine
+ *    there.
+ *  - onBoot(m): with facts.connect "dial" (no exec, no upload), called once a create's machine has started init from its
+ *    boot env (MachineRequest.boot): the dialer (fake-dial-host.mjs).
  * fake.events records every exec by script or verb, every daemon method and every delete, per machine.
  */
 export function fakeHost({
@@ -144,6 +154,10 @@ export function fakeHost({
 	rootOnlyFail,
 	stale = false,
 	descriptor = FAKE_DESCRIPTOR,
+	clock = { now: () => Date.now() },
+	idle,
+	backstop = false,
+	onBoot = () => {},
 } = {}) {
 	const machines = new Map();
 	const held = [];
@@ -155,6 +169,15 @@ export function fakeHost({
 		if (ctx?.signal?.aborted) throw Object.assign(new Error("This operation was aborted"), { name: "AbortError" });
 	};
 	const gone = (m) => m === undefined || (m.deleted && !(m.lingering?.reads > 0));
+	/** The vendor's own timers, read when a call reaches m: idle, then the backstop, end it. */
+	const timers = (m) => {
+		if (m === undefined || m.deleted) return;
+		const now = clock.now();
+		const why = idle !== undefined && now - m.touched >= idle ? "idle" : backstop && m.request && now >= Date.parse(m.request.backstopAt) ? "backstop" : undefined;
+		if (why === undefined) return;
+		m.deleted = true;
+		fake.events.push({ machine: m.id, what: `ended (${why})` });
+	};
 
 	const add = ({ labels = {}, network = "none", image = "img", lifetimeMs = 600_000, state = "running", startingReads = 0, box: extra = {} } = {}) => {
 		const n = ++counter;
@@ -163,6 +186,7 @@ export function fakeHost({
 		const machine = {
 			id,
 			createdAt,
+			touched: clock.now(),
 			labels: { ...labels },
 			network,
 			image,
@@ -208,8 +232,10 @@ export function fakeHost({
 		if (method === "hello") {
 			const groups = displayUp ? [...DESKTOP_GROUPS] : [...LINUX_GROUPS];
 			if (m.xvfb && (display === "ok" || display.startsWith("manager "))) m.displayUp = true;
-			return result({ ...m.box.hello, groups, kind: displayUp ? "desktop" : "linux", ...(m.box.helloPatch ?? {}) });
+			const windowManager = windowManagerOf(m, displayUp);
+			return result({ ...m.box.hello, groups, kind: displayUp ? "desktop" : "linux", ...(windowManager ? { windowManager } : {}), ...(m.box.helloPatch ?? {}) });
 		}
+		if (method === "ping") return result({});
 		if (method === "files.read" && params.path === "/proc/self/mounts") return result({ data: Buffer.from(mountsOf(m.box)).toString("base64"), size: 0, eof: true });
 		if (method === "mount.sync") {
 			fake.syncs.push(m.id);
@@ -222,6 +248,12 @@ export function fakeHost({
 			const text = Object.entries(fields).map(([k, v]) => `${k}:\t${v}\n`).join("");
 			return result({ data: Buffer.from(text).toString("base64"), size: text.length, eof: true });
 		}
+		if (method === "files.read" && params.path === POLICY) {
+			// The form init's proxy serves, as init wrote it; box.policy stands for another.
+			if (!m.init?.network) return error("not_found", `${params.path}: no such file`);
+			const text = `${m.box.policy ?? m.init.network}\n`;
+			return result({ data: Buffer.from(text).toString("base64"), size: text.length, eof: true });
+		}
 		if (method === "files.read" && params.path === "/proc/self/net/dev") {
 			const text = netDevText(m.box.interfaces);
 			return result({ data: Buffer.from(text).toString("base64"), size: text.length, eof: true });
@@ -229,13 +261,31 @@ export function fakeHost({
 		if (method === "files.stat") {
 			if (params.path === "/proc/self/cwd") return result({ path: params.path, type: "symlink", target: m.box.cwd });
 			if (params.path === "/proc/self/exe") return result({ path: params.path, type: "symlink", target: m.box.exe });
+			const dir = (type, owner, mode) => {
+				const [uid, gid] = owner.split(":").map(Number);
+				return result({ type, size: 4096, mode, mtimeMs: 0, uid, gid });
+			};
+			if (params.path === "/work") return dir("dir", `${m.box.uid}:${m.box.gid}`, 0o755);
+			const workspace = m.box.workspace;
+			if (workspace !== undefined && params.path === workspace.path) return dir(workspace.type, workspace.owner, workspace.mode);
 			return error("not_found", `${params.path}: no such file`);
 		}
 		if (method === "exec.run") {
 			const argv = params.argv;
 			if (argv[0] === DAEMON && argv[1] === "probe") {
+				// Init's egress relay answers on the loopback where init started a proxy, unless the box says it is down.
+				const relayed = m.init?.network && m.box.relay !== "down" ? [RELAY] : [];
 				const targets = argv.slice(2).filter((_, i) => i % 2 === 1);
-				const report = { uid: m.box.uid, gid: m.box.gid, kernel: m.box.kernel, interfaces: m.box.interfaces, quiet: m.box.quiet ?? [], raised: m.box.raised ?? [], reached: m.box.reached ?? [], accepted: m.box.accepted ?? targets.filter((t) => !t.endsWith("/udp") && !t.startsWith("[")) };
+				const report = {
+					uid: m.box.uid,
+					gid: m.box.gid,
+					kernel: m.box.kernel,
+					interfaces: m.box.interfaces,
+					quiet: m.box.quiet ?? [],
+					raised: m.box.raised ?? [],
+					reached: [...(m.box.reached ?? []), ...relayed.filter((t) => targets.includes(t))],
+					accepted: m.box.accepted ?? targets.filter((t) => !t.endsWith("/udp") && !t.startsWith("[") && t !== RELAY),
+				};
 				if (m.box.probe === "no-accepted") delete report.accepted;
 				return result({ exitCode: 0, stdout: Buffer.from(`${JSON.stringify(report)}\n`).toString("base64"), stderr: "", timedOut: false, truncated: false });
 			}
@@ -244,15 +294,11 @@ export function fakeHost({
 			return result({ exitCode: 0, stdout: Buffer.from(`${argv.join(" ")}\n`).toString("base64"), stderr: "", timedOut: false, truncated: false });
 		}
 		if (method === "process.start") {
-			const manager = params.argv.some((arg) => arg.includes("xfwm4"));
-			if (manager && display === "manager missing") return error("not_found", `${params.argv[0]}: executable file not found in $PATH`);
 			const entry = { id: `p${m.processes.length + 1}`, pid: 100 + m.processes.length, argv: params.argv, running: true, exitCode: null, signal: null, stderr: "" };
 			if (params.argv[0] === "Xvfb") {
 				m.xvfb = entry;
 				if (display === "dies") Object.assign(entry, { running: false, exitCode: 1, stderr: "(EE) Fatal server error:\n(EE) Cannot establish any listening sockets\n" });
 			}
-			// A window manager that starts and ends at once, as xfwm4 does with no session bus.
-			if (manager && display === "manager dies") Object.assign(entry, { running: false, exitCode: 1, stderr: "Xfconf could not be initialized\n" });
 			m.processes.push(entry);
 			return result({ id: entry.id, pid: entry.pid });
 		}
@@ -322,21 +368,36 @@ export function fakeHost({
 	}
 
 	/** init, once the daemon is in place: what start (child) or the entrypoint (pid1) runs. */
-	function startInit(m, { deadline, user, display: shown = "", max = "" }) {
+	function startInit(m, { deadline, user, display: shown = "", max = "", network = "", windowManager = false }) {
 		if (initFails !== undefined || m.daemon === undefined) {
 			m.initLog = `${initFails ?? `sh: ${DAEMON}: not found`}\n`;
 			return;
 		}
 		const [uid, gid] = user.split(":").map(Number);
 		Object.assign(m.box, { uid, gid });
-		m.init = { deadline, user, display: shown, max };
+		m.init = { deadline, user, display: shown, max, network, windowManager };
+	}
+
+	/**
+	 * hello's windowManager where init was given --window-manager: starting until the display is up and on the first hello
+	 * after, then running, or with display "manager missing" or "manager dies", ended in computerd's words.
+	 */
+	function windowManagerOf(m, displayUp) {
+		if (!m.init?.windowManager) return undefined;
+		const words = "the window manager computerd started (dbus-run-session -- xfwm4 --compositor=off --sm-client-disable)";
+		if (!displayUp) return { state: "starting" };
+		m.managerHellos = (m.managerHellos ?? 0) + 1;
+		if (m.managerHellos === 1) return { state: "starting" };
+		if (display === "manager missing") return { state: "ended", why: `${words} ended with exit code 127 within 1 s of starting on ${m.init.display}: sh: 1: exec: dbus-run-session: not found` };
+		if (display === "manager dies") return { state: "ended", why: `${words} ended with exit code 1 within 1 s of starting on ${m.init.display}: Xfconf could not be initialized` };
+		return { state: "running" };
 	}
 
 	/** Runs one argv as the machine's root shell would. */
 	function run(m, argv) {
 		const script = scriptOfWords(argv);
 		const verb = script === undefined ? rootVerb(argv) : undefined;
-		const kind = verb ?? script?.kind ?? (argv[2]?.includes("cat >") ? "upload" : argv[2]?.includes("touch") ? "touch" : argv.join(" "));
+		const kind = verb ?? script?.kind ?? (argv[2]?.includes("base64 -d") ? "upload" : argv[2]?.includes("touch") ? "touch" : argv.join(" "));
 		fake.events.push({ machine: m.id, what: `run ${kind}` });
 		const proc = processOf(m, kind);
 		if (hang !== undefined && hang === kind) return proc;
@@ -360,10 +421,21 @@ export function fakeHost({
 			return proc;
 		}
 		if (kind === "upload") {
-			proc.onEnd = async () => {
-				m.files.set(argv[4], Buffer.concat(proc.chunks));
+			// `head -c <length> | base64 -d > <path>`: done once the base64 text's length has come, end of stdin or not.
+			const length = Number(argv[5]);
+			let stored = false;
+			const done = async () => {
+				const text = Buffer.concat(proc.chunks).toString("latin1");
+				if (text.length < length || stored) return;
+				stored = true;
+				m.files.set(argv[4], Buffer.from(text.slice(0, length), "base64"));
 				fake.uploads.push({ machine: m.id, path: argv[4], through: "exec" });
 				proc.exit(0);
+			};
+			proc.onWrite = done;
+			proc.onEnd = async () => {
+				await done();
+				proc.exit(1, "base64: invalid input\n");
 			};
 			return proc;
 		}
@@ -376,7 +448,7 @@ export function fakeHost({
 			return proc;
 		}
 		if (kind === "install") {
-			const [staging, daemon, , , atomic, sha256, nonce] = script.args;
+			const [staging, daemon, , , atomic, sha256, nonce, workspace, owner] = script.args;
 			queueMicrotask(() => {
 				const bytes = m.files.get(staging);
 				if (install !== 0 || bytes === undefined) {
@@ -384,6 +456,8 @@ export function fakeHost({
 					return proc.exit(install || 5);
 				}
 				m.files.delete(staging);
+				// A synced folder's directory, made the computer user's before init (box.workspace stands for another).
+				if (workspace) m.box.workspace ??= { path: workspace, type: "dir", owner, mode: 0o700 };
 				m.daemon = { path: daemon, bytes, atomic: atomic === "1", sha256, ...(nonce ? { marker: nonce } : {}) };
 				proc.out.push(`installer 0 root\nsha256 ${sha === "lie" ? "0".repeat(64) : createHash("sha256").update(bytes).digest("hex")}\n`);
 				if (m.pid1) maybeEntry(m);
@@ -392,10 +466,10 @@ export function fakeHost({
 			return proc;
 		}
 		if (kind === "start") {
-			// start: [log, "sh", "-c", INIT, "sh", d, t, w, h, r, v?, m?]
-			const [, , , , , , deadline, user, , , shown = "", max = ""] = script.args;
+			// start: [log, "sh", "-c", INIT, "sh", d, t, w, h, r, v?, m?, n?, g?]
+			const [, , , , , , deadline, user, , , shown = "", max = "", network = "", manager = ""] = script.args;
 			queueMicrotask(() => {
-				startInit(m, { deadline, user, display: shown, max });
+				startInit(m, { deadline, user, display: shown, max, network, windowManager: manager !== "" });
 				proc.exit(0);
 			});
 			return proc;
@@ -472,7 +546,14 @@ export function fakeHost({
 		if (m.pid1.gate !== undefined && !m.files.has(m.pid1.gate)) return;
 		const args = m.pid1.initArgs;
 		const flag = (name) => args[args.indexOf(name) + 1];
-		startInit(m, { deadline: flag("--deadline"), user: flag("--user"), display: m.pid1.display, max: args.includes("--max-deadline") ? flag("--max-deadline") : "" });
+		startInit(m, {
+			deadline: flag("--deadline"),
+			user: flag("--user"),
+			display: m.pid1.display,
+			max: args.includes("--max-deadline") ? flag("--max-deadline") : "",
+			network: args.includes("--network") ? flag("--network") : "",
+			windowManager: args.includes("--window-manager"),
+		});
 	}
 	const chunks = (proc) => (proc.chunks.length === 0 ? undefined : Buffer.concat(proc.chunks).toString("utf8"));
 
@@ -504,7 +585,18 @@ export function fakeHost({
 				m.hidden = unlisted;
 				m.flaps = [...flaps];
 				m.request = req;
+				if (backstop) m.endsAt = new Date(req.backstopAt);
 				if (stale) m.listedAs = { ...view(m), state: "running" };
+				if (req.boot) {
+					// A dial machine's agentrun-dial: init started by AGENTRUN_INIT_ARGS, with the boot env's DISPLAY, then the dial
+					// itself, the caller's (onBoot).
+					m.boot = { ...req.boot.env };
+					const args = m.boot.AGENTRUN_INIT_ARGS.split(" ");
+					const flag = (name) => (args.includes(name) ? args[args.indexOf(name) + 1] : "");
+					m.daemon = { path: DAEMON, sha256: m.boot.AGENTRUN_DAEMON_SHA256 };
+					startInit(m, { deadline: flag("--deadline"), user: flag("--user"), display: m.boot.DISPLAY ?? "", max: flag("--max-deadline"), network: flag("--network"), windowManager: args.includes("--window-manager") });
+					queueMicrotask(() => onBoot(m));
+				}
 				if (req.command) {
 					// The entrypoint's words: the daemon, the wait, the home, the display, the nonce, then --gate <path> or not,
 					// then init's.
@@ -538,6 +630,7 @@ export function fakeHost({
 		async get(id, ctx) {
 			const m = machines.get(id);
 			await step("get", ctx, m);
+			timers(m);
 			if (m?.deleted && m.lingering?.reads > 0) {
 				m.lingering.reads--;
 				return { ...view(m), state: m.lingering.state };
@@ -550,6 +643,7 @@ export function fakeHost({
 		async list(labels, ctx) {
 			await step("list", ctx);
 			const matched = [...machines.values()].filter((m) => Object.entries(labels).every(([k, v]) => m.labels[k] === v));
+			for (const m of matched) timers(m);
 			if (stale) return matched.filter((m) => m.listedAs !== undefined).map((m) => structuredClone(m.listedAs));
 			const flapped = new Set(matched.filter((m) => m.flaps?.length > 0 && m.flaps.shift() === false));
 			const listed = matched.filter((m) => (!m.deleted || m.lingering?.lists > 0) && !(m.hidden > 0) && !flapped.has(m));
@@ -565,13 +659,20 @@ export function fakeHost({
 			fake.events.push({ machine: id, what: "delete" });
 			if (lingers) m.lingering = { reads: lingers.reads ?? 0, lists: lingers.lists ?? 0, state: lingers.state ?? "running" };
 		},
-		async exec(id, argv, ctx) {
-			const m = machines.get(id);
-			await step(`exec ${scriptOfWords(argv)?.kind ?? rootVerb(argv) ?? "other"}`, ctx, m);
-			if (gone(m)) throw new NotFound(`machine ${id} not found`);
-			return run(m, argv).api;
-		},
-		...(fileApi
+		// A dial host has no exec and no upload: its machines dial the server.
+		...(facts.connect === "dial"
+			? {}
+			: {
+					async exec(id, argv, ctx) {
+						const m = machines.get(id);
+						await step(`exec ${scriptOfWords(argv)?.kind ?? rootVerb(argv) ?? "other"}`, ctx, m);
+						timers(m);
+						if (gone(m)) throw new NotFound(`machine ${id} not found`);
+						m.touched = clock.now();
+						return run(m, argv).api;
+					},
+				}),
+		...(fileApi && facts.connect !== "dial"
 			? {
 					async upload(id, path, bytes, ctx) {
 						const m = machines.get(id);
@@ -606,6 +707,11 @@ export function fakeHost({
 
 	fake.host = host;
 	fake.add = add;
+	/** What the daemon in machine m answers to one request ({ method, params }): a dialer's side of the socket. */
+	fake.answer = (m, request) => {
+		fake.requests.push({ machine: m.id, method: request.method, params: request.params });
+		return answer(m, request);
+	};
 	/** Lets every held create go on, or, given an error, fail with it (having made nothing). */
 	fake.release = async (error) => {
 		for (const one of held.splice(0)) error === undefined ? one.resolve() : one.reject(error);

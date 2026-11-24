@@ -4,7 +4,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-const { closeReason, newAttachToken, newPairedId, newPairingCode, PAIR_TRIES_PER_MINUTE, pairBodyOf, pairedView, pairingCodeOf, pairRefusal, PairTries } = await import("../dist/computer-attach.js");
+const { MACHINE_TOKEN_SOURCE, newMachineToken } = await import("@parcha/agentrun-computer");
+const { closeReason, newPairedId, newPairingCode, PAIR_TRIES_PER_MINUTE, pairBodyOf, pairedView, pairingCodeOf, pairRefusal, pairTries } = await import("../dist/computer-attach.js");
 const { helloLacks, pairedEntry, servesNoKind, withPaired, ONE_PROCESS_WORDS, pairedProvider } = await import("../dist/workspace/attached-computers.js");
 const { resolveComputer } = await import("../dist/workspace/resolve-computer.js");
 const { PAIRING_CODE_PATTERN, PROTOCOL_VERSION, PROVIDERS, SETTING_KINDS, servingRefusals } = await import("@parcha/agentrun-computer");
@@ -19,12 +20,12 @@ test("a pairing code is eight characters of the alphabet in two groups of four; 
   assert.equal(pairingCodeOf(" k7pd-w3qx "), "K7PD-W3QX");
   for (const bad of ["K7PD-W3Q", "K7PD-W3QXY", "K0PD-W3QX", "K1PD-W3QX", "KIPD-W3QX", "KOPD-W3QX", 12345678, undefined]) assert.equal(pairingCodeOf(bad), undefined, `${bad} is no code`);
   assert.match(newPairedId(), /^cmp-[a-z2-9]{16}$/);
-  assert.match(newAttachToken(), /^art_[A-Za-z0-9_-]{43}$/, "art_ and 32 bytes");
+  assert.match(newMachineToken(), new RegExp(`^${MACHINE_TOKEN_SOURCE}$`), "art_ and 32 bytes in base64url");
 });
 
 test("the pair limit lets a source address try ten times a minute, then says how long to wait; another address is not held by it, an IPv6 one counted by its /64", () => {
   const clock = { now: 1_000_000 };
-  const tries = new PairTries(() => clock.now);
+  const tries = pairTries(() => clock.now);
   for (let i = 0; i < PAIR_TRIES_PER_MINUTE; i++) assert.deepEqual(tries.allow("192.0.2.7"), { ok: true });
   assert.deepEqual(tries.allow("192.0.2.7"), { ok: false, retryAfterMs: 60_000 });
   assert.deepEqual(tries.allow("192.0.2.8"), { ok: true }, "another address");
@@ -34,7 +35,7 @@ test("the pair limit lets a source address try ten times a minute, then says how
   assert.deepEqual(tries.allow("192.0.2.7"), { ok: true }, "a minute on");
   for (let i = 0; i < PAIR_TRIES_PER_MINUTE; i++) tries.allow(`2001:db8:1:2::${i + 1}`);
   assert.equal(tries.allow("2001:db8:1:2::ff").ok, false, "one /64");
-  const small = new PairTries(() => clock.now, 2);
+  const small = pairTries(() => clock.now, 2);
   small.allow("192.0.2.1");
   small.allow("192.0.2.2");
   assert.deepEqual(small.allow("192.0.2.3"), { ok: true }, "a full table still lets a new address try");
@@ -81,6 +82,12 @@ test("a paired computer is one more provider of the registry: its id, its name, 
   const entry = pairedEntry(row, registry);
   assert.deepEqual({ ...entry, capabilities: entry.capabilities.map((one) => one.kind) }, {
     id: "cmp-abc", label: "vesper-mac (macos)", kinds: ["desktop"], keys: [], mounts: [], network: ["open"], metered: false, capabilities: ["desktop"], defaultImage: { desktop: "attached" },
+    // Each kind it doesn't serve, with why: what the resolver says in its one "<label> gives no <kind> computer" shape.
+    unserved: {
+      sandbox: "it is a computer of your own, and only a Linux box paired with computerd and no display can be a sandbox computer; give this agent vesper-mac as a desktop computer",
+      phone: "it is a computer of your own, and it says desktop, which no phone computer is; update the driver on vesper-mac",
+      browser: "it is a computer of your own, and a paired computer can't be a browser computer yet; give this agent vesper-mac as a desktop computer",
+    },
   });
   const phone = pairedEntry({ ...row, hello: { ...HELLO, os: "android", kind: "android", groups: ["screen", "input.touch", "apps", "ui"] } }, registry);
   assert.deepEqual({ kinds: phone.kinds, label: phone.label }, { kinds: ["phone"], label: "vesper-mac (android)" }, "a phone pairs as a phone, named by its os");
@@ -101,14 +108,14 @@ test("a hello that serves no kind is said in words naming what its driver lacks,
   const browserSays = "a paired computer can't serve browser sessions yet, so pair a desktop or phone driver";
   assert.equal(servesNoKind("ada-chrome", { ...HELLO, os: "linux", kind: "browser", groups: ["cdp"] }), `ada-chrome's driver is a browser: ${browserSays}`);
   assert.equal(servesNoKind("ada-chrome", { ...HELLO, os: "macos", kind: "browser", groups: ["cdp"] }), `ada-chrome's driver is a browser: ${browserSays}`);
-  // A sandbox needs the run's folder mounted and a paired computer has no mount, so a linux shell driver is refused at pairing.
-  assert.equal(servesNoKind("lab", { ...HELLO, os: "linux", kind: "linux", groups: ["exec", "files", "processes"] }), "lab's driver is a sandbox: a paired computer can't mount a run's folder yet, so no agent could run a sandbox on it: pair a desktop or phone driver");
+  // A Linux box's computerd with no display is a sandbox (paired-sandbox.test.mjs): one without exec serves none.
+  assert.equal(servesNoKind("lab", { ...HELLO, os: "linux", kind: "linux", groups: ["files", "processes"] }), "lab's driver serves no kind: it says linux but declares no exec: update the driver on lab");
   assert.equal(servesNoKind("box", { ...HELLO, kind: "toaster" }), "box's driver serves no kind: it says toaster, which no kind of computer is: update the driver on box");
 
   // Paired before its driver lost a group: its run is refused saying why, then the providers to pick instead.
   const registry = withPaired({ SETTING_KINDS, PROVIDERS, servingRefusals }, [{ id: "cmp-abc", name: "vesper-mac", hello: screenOnly, driver: "0.2.0", labels: {}, createdAt: 1, seenAt: null, revokedAt: null }]);
   const { refused } = await resolveComputer({ kind: "desktop", provider: "cmp-abc" }, 1, registry, {});
-  assert.match(refused, /^vesper-mac is a computer of your own, and its driver gives no desktop computer: it says desktop but declares no input\.pointer, input\.keys\. Update the driver on vesper-mac, or pick one of /);
+  assert.match(refused, /^vesper-mac \(macos\) gives no desktop computer: it is a computer of your own, and it says desktop but declares no input\.pointer, input\.keys; update the driver on vesper-mac\. Pick one of /);
   const cloud = PROVIDERS.find((entry) => entry.kinds.includes("desktop"));
   assert.match(refused, new RegExp(cloud.label), "the cloud computers to pick instead");
 });
@@ -120,10 +127,10 @@ test("a paired Mac never runs a run's shell or holds its folder, granted exec an
   for (const mode of [1, 2]) {
     for (const one of [row, granted]) {
       const desktop = await resolveComputer({ kind: "desktop", provider: "cmp-abc" }, mode, withPaired({ SETTING_KINDS, PROVIDERS, servingRefusals }, [one]), keys);
-      assert.deepEqual({ refused: desktop.refused, mounts: desktop.mounts, ports: desktop.ports }, { refused: undefined, mounts: false, ports: ["screen", "input"] }, `Mode ${mode}, groups ${one.hello.groups}`);
+      assert.deepEqual({ refused: desktop.refused, folder: desktop.folder, ports: desktop.ports }, { refused: undefined, folder: undefined, ports: ["screen", "input"] }, `Mode ${mode}, groups ${one.hello.groups}`);
     }
     const { refused } = await resolveComputer({ kind: "sandbox", provider: "cmp-abc" }, mode, withPaired({ SETTING_KINDS, PROVIDERS, servingRefusals }, [row]), keys);
-    assert.match(refused, /^vesper-mac is a computer of your own, and a paired computer can't be a sandbox computer yet: give this agent vesper-mac as a desktop computer, or pick one of /);
+    assert.match(refused, /^vesper-mac \(macos\) gives no sandbox computer: it is a computer of your own, and only a Linux box paired with computerd and no display can be a sandbox computer; give this agent vesper-mac as a desktop computer\. Pick one of /);
   }
 });
 
@@ -133,14 +140,20 @@ test("a paired computer is listed as its hello says, the live one's while attach
   // A driver's malformed features are left out of the list: only true or {off: words} reach the console.
   const live = { ...row.hello, version: "0.2.1", osVersion: "11 24H2", device: { maker: "Acme", model: "Book" }, screen: { width: 1920, height: 1080, scale: 1 }, features: { ...features, "apps.launch": null, "ui.act": { off: 3 }, "ui.wait": "yes" } };
   const deadline = new Date(5000);
-  const hub = (attached, holder) => ({ online: () => attached, hello: () => (attached ? live : undefined), claimed: () => (holder ? { "agentrun.run": holder } : undefined), deadline: () => (holder ? deadline : undefined) });
+  const liveSince = new Date(7000);
+  const hub = (attached, holder) => ({ online: () => attached, since: () => (attached ? liveSince : undefined), hello: () => (attached ? live : undefined), claimed: () => (holder ? { "agentrun.run": holder } : undefined), deadline: () => (holder ? deadline : undefined) });
   assert.deepEqual(pairedView(row, hub(false), ["desktop"]), {
-    id: "cmp-abc", name: "desk", kind: "desktop", serves: ["desktop"], unserved: null, os: "windows", os_version: "11", device: null, arch: "arm64", screen: null, groups: HELLO.groups, features: {},
+    id: "cmp-abc", name: "desk", kind: "desktop", serves: ["desktop"], unserved: null, runs_refused: null, os: "windows", os_version: "11", device: null, arch: "arm64", screen: null, groups: HELLO.groups, features: {},
     driver: "0.2.0", online: false, held_by_run: null, held_until: null, pairing: "pairing-x", created_at: new Date(0).toISOString(), seen_at: new Date(1000).toISOString(),
   });
   const held = pairedView(row, hub(true, "run-1"), ["desktop"]);
   assert.deepEqual({ os_version: held.os_version, device: held.device, screen: held.screen, features: held.features, driver: held.driver, online: held.online }, { os_version: "11 24H2", device: live.device, screen: live.screen, features, driver: "0.2.1", online: true });
   assert.deepEqual({ held_by_run: held.held_by_run, held_until: held.held_until }, { held_by_run: "run-1", held_until: deadline.toISOString() });
+  assert.equal(held.seen_at, liveSince.toISOString(), "attached, it was seen when its live socket said hello");
+  // The hub has the socket live before the store keeps its first hello: listed between the two, it is online and seen.
+  const first = pairedView({ ...row, seenAt: null }, hub(true), ["desktop"]);
+  assert.deepEqual({ online: first.online, seen_at: first.seen_at }, { online: true, seen_at: liveSince.toISOString() }, "online is never listed as never seen");
+  assert.equal(pairedView({ ...row, seenAt: null }, hub(false), ["desktop"]).seen_at, null, "never attached, never seen");
   const lacking = pairedView({ ...row, hello: { ...row.hello, groups: ["screen"] } }, hub(false), []);
   assert.equal(lacking.unserved, "desk's driver serves no kind: it says desktop but declares no input.pointer, input.keys: update the driver on desk", "one that serves no kind says why");
 });

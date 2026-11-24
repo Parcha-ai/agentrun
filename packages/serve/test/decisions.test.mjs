@@ -300,7 +300,12 @@ test("a decision whose cost the provider reports is on its row, and the run's to
   const usage = rows.findLast((row) => row.kind === "usage");
   assert.equal(usage.usage.usd, run.cost.usd, "the timeline's usage row and the run's cost agree");
   assert.equal(run.cost.usd, 0.00003, "the model node is free under the fake, so the run's cost is the decision's, counted once");
-  assert.equal(storeRun(data, runId).costUsd, 0.00003, "and the store keeps the same total");
+  assert.equal(storeRun(data, runId).costUsd, 0.00003, "and the store keeps the same total");  const byLine = (await api("GET", `/runs/${runId}/usage`)).body;
+  // Its cost line by line: the decision on the model and provider that answered it (its receipt's, the provider's own
+  // figure), the model node on the run's model, joining to the run's cost.
+  assert.equal(byLine.reason, null);
+  assert.deepEqual(byLine.lines.map((line) => [line.meter, line.model, line.provider, line.requests, line.usd, line.basis]), [["tokens", "faux-1", "faux", 1, 0, "estimate"], ["tokens", "jev-1.14.0", "jev", 1, 0.00003, "reported"]]);
+  assert.deepEqual(byLine.total, { usd: run.cost.usd });
 });
 
 test("with no Parallel key, a node naming parallel saves with a warning, and its run is 409 not_set_up_here naming PARALLEL_API_KEY", async (t) => {

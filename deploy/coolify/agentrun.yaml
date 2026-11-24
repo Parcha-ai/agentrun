@@ -1,0 +1,36 @@
+# documentation: https://github.com/Parcha-ai/agentrun/blob/main/deploy/README.md#coolify
+# slogan: AgentRun Server: run AI agents on your own server, from a console or its API.
+# category: ai
+# tags: ai,agents,automation,api,llm
+# logo: svgs/agentrun.svg
+# port: 7340
+
+# AgentRun Server on Coolify. Steps and variables: deploy/README.md#coolify.
+services:
+  agentrun:
+    image: ghcr.io/parcha-ai/agentrun-server:v0.1.0-beta.56
+    environment:
+      - SERVICE_URL_AGENTRUN_7340
+      - AGENTRUN_PUBLIC_URL=${SERVICE_URL_AGENTRUN}
+      # 64 hex characters (32 random bytes): the setup code at the first visit, and the API's token.
+      - AGENTRUN_TOKEN=${SERVICE_HEX_64_AGENTRUN}
+      # base64 of 32 random bytes: saved model and tool keys, MCP credentials and trigger secrets are sealed under it.
+      # Keep it: without it they can't be opened.
+      - AGENTRUN_SEAL_KEY=${SERVICE_REALBASE64_32_SEALKEY}
+    volumes:
+      - agentrun-data:/data
+    # The runner budgets runs by this limit, less 128 MiB (deploy/README.md, runner memory): 2 GB, as on Render. Without one
+    # it would budget the whole server's memory, the platform's and other apps' included. Set AGENTRUN_MEMORY (1g, 4g, ...)
+    # to change it.
+    mem_limit: ${AGENTRUN_MEMORY:-2g}
+    # The runner's close bound is 31 s (a 6 s drain, then 25 s): Docker's default 10 s would cut a busy run's turn.
+    stop_grace_period: 35s
+    healthcheck:
+      test: ["CMD", "env", "-i", "/usr/local/bin/node", "-e", "fetch('http://127.0.0.1:7340/v2/health').then(({ ok, status }) => { if (!ok) throw new Error(String(status)) })"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+volumes:
+  agentrun-data:

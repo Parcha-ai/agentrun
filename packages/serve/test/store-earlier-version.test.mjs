@@ -2,7 +2,7 @@
 // found, with two choices: keep the directory with the earlier version, or start in a new, empty directory. Nothing is read, moved or changed there. An empty directory (or one
 // not made yet, or one holding this version's store) opens.
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,7 +11,7 @@ import { sqliteAdapterTests } from "./store-target.mjs";
 
 const test = sqliteAdapterTests(nodeTest, "an earlier version's data directory files");
 
-const { openSqliteStore } = await import("../dist/store/index.js");
+const { openSqliteStore, SCHEMA_VERSION } = await import("../dist/store/index.js");
 
 function dataDir(t) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-earlier-"));
@@ -63,13 +63,13 @@ const SHAPES = [
   ["a linked home's sign-ins.json", (dir) => linked(join(dir, "homes", "home-1"), (to) => file(join(to, "sign-ins", "sign-ins.json"))), join("homes", "home-1", "sign-ins", "sign-ins.json")],
 ];
 
-test("this version's own files beside its store open: .token, .server.json, a leftover box-image.json, the kept idempotency answers and the learning usage ledger this version still keeps beside the store, and an earlier build's webhook config and outbox, which nothing reads", async (t) => {
+test("this version's own files beside its store open: .token, .server.json, a leftover box-image.json, the kept idempotency answers, and an earlier build's webhook config and outbox and learning usage ledger, which nothing reads", async (t) => {
   const dir = dataDir(t);
   const store = await openSqliteStore({ dataDir: dir, role: "server" });
   await store.close();
   // This version writes these beside its store, in the same format an earlier version did, so a directory holding them is
-  // this version's own, not an earlier version's: it opens. The webhook's two files are an earlier build's, left unread
-  // (the webhook is in the store now): they refuse nothing.
+  // this version's own, not an earlier version's: it opens. The webhook's two files and the learning usage ledger are an
+  // earlier build's, left unread (the webhook is in the store now; learning's spend is the run's own): they refuse nothing.
   for (const name of [".token", ".server.json", "box-image.json", "webhook.json", "webhook-outbox.json", ".idempotency.json", "learning-usage.jsonl"]) file(join(dir, name), "{}");
   const again = await openSqliteStore({ dataDir: dir, role: "server" });
   await again.close();
@@ -93,6 +93,21 @@ for (const [what, make, named] of SHAPES) {
     assert.deepEqual(readdirSync(dir, { recursive: true }).sort(), before, "nothing made, moved or removed");
   });
 }
+
+test("a disk mounted as the data directory opens though its lost+found is root's and closed, and an earlier version's file beside it is still found", async (t) => {
+  const dir = dataDir(t);
+  const lost = join(dir, "lost+found");
+  mkdirSync(lost);
+  chmodSync(lost, 0o000);
+  try {
+    const store = await openSqliteStore({ dataDir: dir, role: "server" });
+    await store.close();
+    file(join(dir, "triggers.json"));
+    await assert.rejects(openSqliteStore({ dataDir: dir, role: "server" }), (error) => error.name === "StoreFromEarlierVersion" && error.found.includes("triggers.json"));
+  } finally {
+    chmodSync(lost, 0o700);
+  }
+});
 
 test("an empty data directory, one not made yet, and one holding this version's store all open", async (t) => {
   const empty = dataDir(t);
@@ -125,7 +140,7 @@ test("a store an earlier build of this version made (no revisions.mcp_pin, a per
   try {
     const check = new DatabaseSync(join(dir, "store.sqlite"), { readOnly: true });
     try {
-      assert.equal(check.prepare("SELECT schema_version FROM store_meta WHERE singleton = 1").get().schema_version, 11, "the store stays at version 11");
+      assert.equal(check.prepare("SELECT schema_version FROM store_meta WHERE singleton = 1").get().schema_version, SCHEMA_VERSION, "the server's open brings version 11 to this version");
       const column = check.prepare("SELECT name, type, \"notnull\" FROM pragma_table_info('revisions') WHERE name = 'mcp_pin'").get();
       assert.deepEqual({ ...column }, { name: "mcp_pin", type: "TEXT", notnull: 0 }, "the open adds revisions.mcp_pin, nullable TEXT");
       assert.equal(check.prepare("SELECT count(*) AS n FROM sqlite_schema WHERE type = 'table' AND name = 'mcp_pins'").get().n, 0, "the open drops mcp_pins");
@@ -150,6 +165,40 @@ test("a store an earlier build of this version made (no revisions.mcp_pin, a per
   // A second open finds the column and adds nothing.
   const again = await openSqliteStore({ dataDir: dir, role: "server" });
   await again.close();
+});
+
+test("a store an earlier build of this version made (no runs.cost_upper_bound) opens: a runner refuses it until the server adds the column, and a run ended before reads its cost as no bound", async (t) => {
+  const dir = dataDir(t);
+  const first = await openSqliteStore({ dataDir: dir, role: "server" });
+  await first.agents.create({ id: "agent-old", name: "agent-old" }, { id: "rev-old", kind: "agentic", body: { instructions: "Answer." } });
+  await first.runs.create({ id: "run-old", agentId: "agent-old", revisionId: "rev-old" });
+  const claim = await first.claim("run-old", "runner-a", { leaseMs: 60_000 });
+  await first.runs.update(claim, { state: "ended", costUsd: 0.5 });
+  await first.close();
+  const raw = new DatabaseSync(join(dir, "store.sqlite"));
+  try {
+    raw.exec("ALTER TABLE runs DROP COLUMN cost_upper_bound");
+  } finally {
+    raw.close();
+  }
+  await assert.rejects(openSqliteStore({ dataDir: dir, role: "runner" }), /Start the AgentRun server to add the bound beside each run's cost/, "a runner, which writes the bound at each end, waits for the server");
+  const store = await openSqliteStore({ dataDir: dir, role: "server" });
+  try {
+    const check = new DatabaseSync(join(dir, "store.sqlite"), { readOnly: true });
+    try {
+      assert.equal(check.prepare("SELECT schema_version FROM store_meta WHERE singleton = 1").get().schema_version, SCHEMA_VERSION, "the store stays at its version");
+      const column = check.prepare("SELECT name, type, \"notnull\", dflt_value FROM pragma_table_info('runs') WHERE name = 'cost_upper_bound'").get();
+      assert.deepEqual({ ...column }, { name: "cost_upper_bound", type: "INTEGER", notnull: 1, dflt_value: "0" }, "the open adds runs.cost_upper_bound, 0 by default");
+    } finally {
+      check.close();
+    }
+    const row = await store.runs.get("run-old");
+    assert.deepEqual([row.costUsd, row.costAtMostUsd], [0.5, null], "a run ended before reads its stored cost as exact, as it was read then");
+  } finally {
+    await store.close();
+  }
+  const runner = await openSqliteStore({ dataDir: dir, role: "runner" });
+  await runner.close();
 });
 
 
@@ -210,7 +259,7 @@ for (const missing of [["mcp_pin"], ["monid_pin"], ["mcp_pin", "monid_pin"], []]
       } finally { await runner.close(); }
     } finally { await server.close(); }
     const upgraded = snapshot();
-    assert.equal(upgraded.version, 11, "this additive metadata does not change the SQLite version policy");
+    assert.equal(upgraded.version, SCHEMA_VERSION, "this additive metadata does not change the SQLite version policy");
     assert.equal(upgraded.revision.body, before.revision.body, "the exact stored body JSON bytes are unchanged");
     assert.equal(upgraded.legacy, null, "only the server removes the obsolete per-run table");
     const raw = new DatabaseSync(file);

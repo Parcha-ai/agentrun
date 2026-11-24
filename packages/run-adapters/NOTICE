@@ -1,6 +1,10 @@
 AgentRun
 Copyright 2026 Parcha Labs, Inc.
 
+The boxd computer provider (packages/computer/src/boxd.ts) was contributed by Michiel Voortman.
+
 This product includes software from vercel-labs/durable-harness (https://github.com/vercel-labs/durable-harness), Copyright 2026 Vercel Inc., licensed under the Apache License 2.0.
 
 The copied files are listed in vendor/durable-harness/UPSTREAM.json. Two kernel files written for AgentRun, src/kernel/types.ts and src/kernel/errors.ts, keep one declaration each identical to that project's harness-world package (EffectRecord's fields and the EffectFailure class), so the copied files compile against them; UPSTREAM.json records them as "interfaces matched".
+
+This product includes OpenAI's o200k_base vocabulary from openai/tiktoken (https://github.com/openai/tiktoken), Copyright (c) 2022 OpenAI, Shantanu Jain, and the o200k_base split pattern as spelled for JavaScript by niieani/gpt-tokenizer (https://github.com/niieani/gpt-tokenizer), Copyright (c) 2023-2024 Bazyli Brzoska, both licensed under the MIT License. The vocabulary ships unchanged as vendor/o200k/o200k_base.tiktoken; vendor/o200k/LICENSE records where each came from and holds both licenses.

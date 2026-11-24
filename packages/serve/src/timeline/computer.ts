@@ -32,7 +32,8 @@ export type ComputerStepRow = {
 /** Apps whose id says little of the name a person knows them by. Any other id's last part is its name, capitalized. */
 const APP_NAMES: Readonly<Record<string, string>> = {
   "com.apple.systempreferences": "System Settings", "com.apple.iCal": "Calendar", "com.apple.finder": "Finder",
-  "com.android.settings": "Settings", "com.android.chrome": "Chrome", "xfce4-terminal": "Terminal", "org.xfce.terminal": "Terminal", xterm: "XTerm",
+  "com.android.settings": "Settings", "com.android.chrome": "Chrome", "com.android.deskclock": "Clock", "com.android.contacts": "Contacts",
+  "com.android.documentsui": "Files", "org.wikipedia": "Wikipedia", "xfce4-terminal": "Terminal", "org.xfce.terminal": "Terminal", xterm: "XTerm",
   "firefox-esr": "Firefox", "google-chrome": "Chrome",
 };
 /** An app's id as a person names it: "com.apple.TextEdit" is TextEdit, "org.xfce.mousepad" Mousepad. */

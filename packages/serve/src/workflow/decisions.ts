@@ -65,6 +65,9 @@ export type DecisionRow = {
   /** The state the judge saw, or past 64 KB of JSON the first 64 KB of its text, with `state_truncated` saying which. */
   state?: unknown;
   state_truncated?: boolean;
+  /** The state values the provider cut to fit its model's context before sending (`state` holds them cut): where each
+   *  sits (a JSON Pointer) and its UTF-8 bytes as asked and as sent. Absent when it sent the state as asked. */
+  state_cut?: Array<{ path: string; bytes: number; sent_bytes: number }>;
   /** The request's spend is on its frozen driver's state, so a cost fold counts it there, not here. */
   driver_spend?: true;
   /** The receipt's id, its place among its node's requests, the digest of the state it was asked with, and the key of

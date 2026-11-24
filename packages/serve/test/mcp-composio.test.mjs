@@ -15,7 +15,10 @@ const TOOLS = [
   { slug: "GITHUB_STAR_REPO", name: "Star a repo", description: "Star a repository." },
   { slug: "GITHUB_LIST_ISSUES", name: "List issues", description: "List a repository's issues." },
 ];
-const TOOLKITS = { github: { no_auth: false, tools: TOOLS }, slack: { no_auth: false, tools: TOOLS }, hackernews: { no_auth: true, tools: TOOLS } };
+// A save checks its slugs against the toolkit's list first: slack and hackernews list `add` too, the fake MCP server's
+// action (fake-mcp-server.mjs) that their saves grant.
+const ADD = { slug: "add", name: "Add", description: "Add two numbers." };
+const TOOLKITS = { github: { no_auth: false, tools: TOOLS }, slack: { no_auth: false, tools: [...TOOLS, ADD] }, hackernews: { no_auth: true, tools: [...TOOLS, ADD] } };
 
 async function setup(t, options = {}) {
   const composio = await startFakeComposio({ toolkits: TOOLKITS, ...options });
@@ -194,7 +197,7 @@ test("a save that wrote its entry and then failed keeps the Composio server its 
   // The save fails before writing (an older entry of the name keeps its old address): the new server is deleted.
   const refused = composioSave(body, control, async () => { throw new Error("refused"); }, "hn", undefined, async () => "https://old.example/mcp");
   await assert.rejects(refused, /refused/);
-  assert.equal(composio.to(`/api/v3.1/mcp/${composio.mcpId}`, "DELETE").length, 1, "a server no entry points to is deleted");
+  assert.equal(composio.to(`/api/v3.1/mcp/${composio.mcpIds[1]}`, "DELETE").length, 1, "a server no entry points to is deleted");
 });
 
 test("picked actions Composio serves none of: 422 in words naming them, never a bare 'Method not found', and the Composio server it made is deleted", async (t) => {

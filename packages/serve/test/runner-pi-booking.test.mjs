@@ -14,7 +14,7 @@ import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { createRegistry, Harness } from "@earendil-works/pi-durable";
 import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
-import { landWorkflows, startAt } from "./learned-workflow-seed-support.mjs";
+import { landWorkflows, promoteChecked, startAt } from "./learned-workflow-seed-support.mjs";
 
 const { openSqliteStore } = await import("../dist/store/sqlite/store.js");
 const { startRunner } = await import("../dist/runner/runner.js");
@@ -77,6 +77,7 @@ async function piRun(t, { tools, learned }) {
   });
   await server.agents.create({ id: "agent-1", name: "Learns" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", tools, ...(learned ? { learning: true } : {}) } });
   const seed = learned ? await landWorkflows(dir, "agent-1", [{ name: "answer", description: "Answers a question as a number", workflow: answerFlow }]) : undefined;
+  if (learned) await promoteChecked(server.settings, "agent-1", [{ name: "answer", workflow: answerFlow }]);
   const launch = { input: { content: "Do the task." }, title: "t", place: { mode: "runner" }, model: { provider: "anthropic", modelId: "claude-sonnet-5-5" }, ...(learned ? { learning: startAt(seed) } : {}) };
   await server.runs.create({ id: RUN, agentId: "agent-1", revisionId: "rev-1" }, { body: launch });
   await server.flush?.();
@@ -128,5 +129,5 @@ test("a pi run's learned_workflow call shows the nodes its workflow ran on its r
   assert.ok(result, `a learned_workflow result row: ${JSON.stringify(timeline.map((one) => [one.kind, one.tool_name]))}`);
   assert.deepEqual(result.learned_nodes?.map(({ label, kind, status }) => ({ label, kind, status })), [{ label: "answer", kind: "extract", status: "ok" }], JSON.stringify(result));
   assert.equal(typeof result.learned_nodes[0].duration_ms, "number");
-  assert.deepEqual(laid, { skills: [], workflows: ["answer"] }, "its claim recorded the learned workflow it laid");
+  assert.deepEqual(laid, { workflows: ["answer"] }, "its claim recorded the learned workflow it laid");
 });

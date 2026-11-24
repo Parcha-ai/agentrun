@@ -10,11 +10,17 @@ let root: ReturnType<typeof createRoot> | undefined;
 globalThis.ResizeObserver ??= class { observe() {} unobserve() {} disconnect() {} } as unknown as typeof ResizeObserver;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; vi.unstubAllGlobals(); history.replaceState(null, "", "/"); });
 
-// Setup's box: offered with the counts of a server on this machine (GET /v2/setup/import), never ticked, sent only when
-// ticked, and absent where the route answers nothing. Ticked, the console shows the import running, then done.
+// Setup's list: the projects a server on this machine found (GET /v2/setup/import), each with a box, none ticked; only
+// the projects ticked are sent, and the list is absent where the route answers nothing. With some ticked, the console
+// shows the import running, then done.
 describe("App, setup's import of this machine's sessions", () => {
   // Setup's twelve characters, and a value the source export knows for a test's own.
   const PASSWORD = "not-a-secret";
+  // A project the server names: `id` is what setup sends back for it.
+  const project = (n: number, sessions: number) => ({ id: `imp-${String(n).padStart(32, "0")}`, name: `project-${n}`, path: `/work/project-${n}`, sessions, sources: ["claude-code"], last_active: "2026-10-20T09:00:00.000Z" });
+  const [ONE, TWO, THREE] = [project(1, 2), project(2, 7), project(3, 3)];
+  /** The offer of a count that ended: its counts, and the projects to choose from. */
+  const counted = (...candidates: ReturnType<typeof project>[]) => ({ projects: candidates.length, sessions: candidates.reduce((n, c) => n + c.sessions, 0), candidates });
   const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
   const missing = (path: string) => ({ error: { code: "not_found", message: path, retryable: false } });
   /** A server before its owner: `offer` answers GET /v2/setup/import in turn until setup (its last again), then `after`
@@ -61,7 +67,8 @@ describe("App, setup's import of this machine's sessions", () => {
     await until(host, () => host.querySelector("form"));
     return host;
   }
-  const box = (host: HTMLElement) => host.querySelector<HTMLInputElement>("input[type=checkbox][name=import]");
+  const boxes = (host: HTMLElement) => [...host.querySelectorAll<HTMLInputElement>("input[type=checkbox][name=import]")];
+  const box = (host: HTMLElement, id?: string) => boxes(host).find((b) => id === undefined || b.value === id) ?? null;
   async function setPassword(host: HTMLElement) {
     for (const input of host.querySelectorAll<HTMLInputElement>("input[type=password]")) {
       await act(async () => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, PASSWORD); input.dispatchEvent(new Event("input", { bubbles: true })); });
@@ -69,17 +76,21 @@ describe("App, setup's import of this machine's sessions", () => {
   }
   const submit = (host: HTMLElement) => act(async () => { host.querySelector<HTMLButtonElement>("button[type=submit]")!.click(); });
 
-  it("shows the box with the server's counts, unticked", async () => {
-    server({ offer: [200, { projects: 3, sessions: 12 }] });
+  it("lists the server's projects, each with its sessions and none ticked", async () => {
+    server({ offer: [200, counted(ONE, TWO, THREE)] });
     const host = await render();
     expect(await until(host, () => box(host))).toBeTruthy();
-    expect(box(host)!.checked).toBe(false);
-    expect(host.textContent).toContain("Import this machine's Claude Code, Codex and pi sessions");
+    expect(boxes(host).map((b) => [b.value, b.checked])).toEqual([[ONE.id, false], [TWO.id, false], [THREE.id, false]]);
+    expect(host.textContent).toContain("Import sessions from this machine");
     expect(host.textContent).toContain("12 sessions in 3 projects");
+    expect(host.textContent).toContain("project-2");
+    expect(host.textContent).toContain("7 sessions · Claude Code");
+    expect(host.textContent).toContain("/work/project-2");
+    expect(host.textContent).toContain("None chosen: nothing will be imported.");
   });
 
-  it("sends no import unless the box is ticked", async () => {
-    const { sent } = server({ offer: [200, { projects: 1, sessions: 2 }] });
+  it("sends no import unless a project is ticked", async () => {
+    const { sent } = server({ offer: [200, counted(ONE, TWO)] });
     const host = await render();
     await until(host, () => box(host));
     await setPassword(host);
@@ -88,9 +99,49 @@ describe("App, setup's import of this machine's sessions", () => {
     expect(sent).toEqual([{ password: PASSWORD }]);
   });
 
-  it("sends import: true when ticked, then shows the import running, then done (a failed read tried again), and reads the page and the agents again", async () => {
+  it("sends only the projects ticked, by id, and says how much is chosen", async () => {
+    const { sent } = server({ offer: [200, counted(ONE, TWO, THREE)] });
+    const host = await render();
+    await until(host, () => box(host));
+    await act(async () => { box(host, TWO.id)!.click(); });
+    await act(async () => { box(host, THREE.id)!.click(); });
+    await act(async () => { box(host, THREE.id)!.click(); });
+    expect(boxes(host).map((b) => b.checked)).toEqual([false, true, false]);
+    expect(host.textContent).toContain("1 project, 7 sessions chosen.");
+    await setPassword(host);
+    await submit(host);
+    await until(host, () => sent.length);
+    expect(sent).toEqual([{ password: PASSWORD, import: [TWO.id] }]);
+  });
+
+  it("Select all ticks every project listed, and Clear unticks them", async () => {
+    const { sent } = server({ offer: [200, counted(ONE, TWO, THREE)] });
+    const host = await render();
+    await until(host, () => box(host));
+    const button = (name: string) => [...host.querySelectorAll<HTMLButtonElement>("button[type=button]")].find((b) => b.textContent === name);
+    await act(async () => { button("Select all")!.click(); });
+    expect(boxes(host).every((b) => b.checked)).toBe(true);
+    expect(host.textContent).toContain("3 projects, 12 sessions chosen.");
+    await act(async () => { button("Clear")!.click(); });
+    expect(boxes(host).some((b) => b.checked)).toBe(false);
+    await act(async () => { button("Select all")!.click(); });
+    await setPassword(host);
+    await submit(host);
+    await until(host, () => sent.length);
+    expect(sent).toEqual([{ password: PASSWORD, import: [ONE.id, TWO.id, THREE.id] }]);
+  });
+
+  it("says when the server lists only the latest of more projects", async () => {
+    server({ offer: [200, { projects: 640, sessions: 9000, candidates: [ONE, TWO] }] });
+    const host = await render();
+    await until(host, () => box(host));
+    expect(host.textContent).toContain("9,000 sessions in 640 projects");
+    expect(host.textContent).toContain("The 2 most recently active are listed.");
+  });
+
+  it("sends the projects ticked, then shows the import running, then done (a failed read tried again), and reads the page and the agents again", async () => {
     const failed = [500, { error: { code: "internal", message: "busy", retryable: true } }] as [number, unknown];
-    const { sent, agentsRead, statsRead } = server({ offer: [200, { projects: 1, sessions: 2 }], after: [[200, { state: "running" }], failed, [200, { state: "done", agents: 1, runs: 2, skipped: 0 }]] });
+    const { sent, agentsRead, statsRead } = server({ offer: [200, counted(ONE)], after: [[200, { state: "running" }], failed, [200, { state: "done", agents: 1, runs: 2, skipped: 0 }]] });
     const host = await render();
     await until(host, () => box(host));
     await act(async () => { box(host)!.click(); });
@@ -98,16 +149,27 @@ describe("App, setup's import of this machine's sessions", () => {
     await setPassword(host);
     await submit(host);
     await until(host, () => sent.length);
-    expect(sent).toEqual([{ password: PASSWORD, import: true }]);
+    expect(sent).toEqual([{ password: PASSWORD, import: [ONE.id] }]);
     expect(await until(host, () => /Importing this machine's sessions/.test(host.textContent ?? ""))).toBe(true);
     const [names, stats] = [agentsRead(), statsRead()];
     expect(await until(host, () => /Imported 2 sessions into 1 agent\./.test(host.textContent ?? ""), 6000)).toBe(true);
     expect(await until(host, () => agentsRead() > names && statsRead() > stats)).toBe(true);
   }, 15_000);
 
+  it("says an import the server gave up, and that its log says why", async () => {
+    const { sent } = server({ offer: [200, counted(ONE)], after: [[200, { state: "failed" }]] });
+    const host = await render();
+    await until(host, () => box(host));
+    await act(async () => { box(host)!.click(); });
+    await setPassword(host);
+    await submit(host);
+    await until(host, () => sent.length);
+    expect(await until(host, () => /was given up before it finished/.test(host.textContent ?? ""), 6000)).toBe(true);
+  }, 15_000);
+
   it("an import that ends while the agents list is open reads the agents' names again, though that list is not a runs view", async () => {
     location.hash = "#/agents";
-    const { sent, archivedRead } = server({ offer: [200, { projects: 1, sessions: 2 }], after: [[200, { state: "running" }], [200, { state: "done", agents: 1, runs: 2, skipped: 0 }]] });
+    const { sent, archivedRead } = server({ offer: [200, counted(ONE)], after: [[200, { state: "running" }], [200, { state: "done", agents: 1, runs: 2, skipped: 0 }]] });
     const host = await render();
     await until(host, () => box(host));
     await act(async () => { box(host)!.click(); });
@@ -134,7 +196,7 @@ describe("App, setup's import of this machine's sessions", () => {
       if (u.pathname === "/v2/auth/session") return json(200, { password_set: set, signed_in: set });
       if (u.pathname === "/v2/setup") { set = true; sent.push(JSON.parse(String(init?.body))); return json(201, { signed_in: true, importing: true }); }
       if (u.pathname === "/v2/setup/import") {
-        if (!set) return json(200, { projects: 1, sessions: 2 });
+        if (!set) return json(200, counted(ONE));
         // Running at the first read after setup, done at the next.
         reads += 1;
         if (reads < 2) return json(200, { state: "running" });
@@ -166,64 +228,67 @@ describe("App, setup's import of this machine's sessions", () => {
     location.hash = "";
   }, 15_000);
 
-  it("shows the box at once while the server counts, and fills in the counts when they arrive", async () => {
-    server({ offer: [[202, { counting: true }], [202, { counting: true }], [200, { projects: 3, sessions: 12 }]] });
+  it("says at once that it is looking while the server counts, with nothing to tick, and lists the projects when they arrive", async () => {
+    server({ offer: [[202, { counting: true }], [202, { counting: true }], [200, counted(ONE, TWO, THREE)]] });
     const host = await render();
-    expect(await until(host, () => box(host))).toBeTruthy();
-    expect(host.textContent).toContain("Counting sessions…");
-    expect(box(host)!.checked).toBe(false);
+    expect(await until(host, () => /Looking for this machine's Claude Code, Codex and pi sessions/.test(host.textContent ?? ""))).toBe(true);
+    expect(box(host)).toBeNull();
     expect(await until(host, () => /12 sessions in 3 projects/.test(host.textContent ?? ""), 5000)).toBe(true);
-    expect(host.textContent).not.toContain("Counting sessions…");
+    expect(host.textContent).not.toContain("Looking for this machine's");
+    expect(boxes(host).map((b) => b.checked)).toEqual([false, false, false]);
   }, 15_000);
 
-  it("sends import: true when ticked before the counts arrive", async () => {
+  it("sends no import when the password is set before the projects arrive: nothing was ticked", async () => {
     const { sent } = server({ offer: [202, { counting: true }] });
     const host = await render();
-    await until(host, () => box(host));
-    expect(host.textContent).toContain("Counting sessions…");
-    await act(async () => { box(host)!.click(); });
+    await until(host, () => /Looking for this machine's/.test(host.textContent ?? ""));
     await setPassword(host);
     await submit(host);
     await until(host, () => sent.length);
-    expect(sent).toEqual([{ password: PASSWORD, import: true }]);
+    expect(sent).toEqual([{ password: PASSWORD }]);
   });
 
   it.each([
     ["the server's count failed", [[202, { counting: true }], [200, { projects: null, sessions: null }]]],
-    ["a read failed after the box showed", [[202, { counting: true }], [500, { error: { code: "internal", message: "busy", retryable: true } }]]],
-  ] as [string, [number, unknown][]][])("keeps the box, its count unknown, when %s", async (_, offer) => {
-    server({ offer });
+    ["a read failed after the offer showed", [[202, { counting: true }], [500, { error: { code: "internal", message: "busy", retryable: true } }]]],
+  ] as [string, [number, unknown][]][])("says the sessions couldn't be listed, with nothing to tick, when %s", async (_, offer) => {
+    const { sent } = server({ offer });
     const host = await render();
-    expect(await until(host, () => /The count isn't known/.test(host.textContent ?? ""), 5000)).toBe(true);
-    expect(box(host)).toBeTruthy();
+    expect(await until(host, () => /sessions couldn't be listed/.test(host.textContent ?? ""), 5000)).toBe(true);
+    expect(box(host)).toBeNull();
+    await setPassword(host);
+    await submit(host);
+    await until(host, () => sent.length);
+    expect(sent).toEqual([{ password: PASSWORD }]);
   }, 15_000);
 
-  it("shows no box when the count finds no session", async () => {
-    server({ offer: [200, { projects: 0, sessions: 0 }] });
+  it("shows no list when the count finds no session", async () => {
+    server({ offer: [200, counted()] });
     const host = await render();
     await act(async () => { await new Promise((r) => setTimeout(r, 200)); });
     expect(box(host)).toBeNull();
+    expect(host.textContent).not.toContain("Import sessions from this machine");
   });
 
   it.each([
     [200, "a server that offers no import", { offer: false }],
     [404, "a server without accounts, which has no such route", undefined],
     [403, "a read the server refuses", undefined],
-  ] as [number, string, unknown][])("shows no box for %i, %s, and asks no more", async (status, _, body) => {
+  ] as [number, string, unknown][])("shows no list for %i, %s, and asks no more", async (status, _, body) => {
     const { importRead } = server({ offer: [status, body ?? missing("/v2/setup/import")] });
     const host = await render();
     // Past a poll's wait: no second read.
     await act(async () => { await new Promise((r) => setTimeout(r, 1500)); });
     expect(box(host)).toBeNull();
-    expect(host.textContent).not.toContain("Import this machine's");
+    expect(host.textContent).not.toContain("Import sessions from this machine");
     expect(importRead()).toBe(1);
   });
 
   it.each([
     ["a 500", [500, { error: { code: "internal", message: "busy", retryable: true } }]],
     ["a network failure", [0, null]],
-  ] as [string, [number, unknown]][])("shows the box once a read that failed before it showed (%s) is tried again", async (_, failed) => {
-    const { importRead } = server({ offer: [failed, [200, { projects: 3, sessions: 12 }]] });
+  ] as [string, [number, unknown]][])("shows the list once a read that failed before it showed (%s) is tried again", async (_, failed) => {
+    const { importRead } = server({ offer: [failed, [200, counted(ONE, TWO, THREE)]] });
     const host = await render();
     expect(await until(host, () => /12 sessions in 3 projects/.test(host.textContent ?? ""), 5000)).toBe(true);
     expect(box(host)!.checked).toBe(false);

@@ -2,14 +2,15 @@
 // (computer_observe, computer_act, computer_screenshot, computer_op, the hand-over) are the desktop's and the phone's
 // alike, held to the kind's settings key, as the browser's family is held to browser; the mapping is read from the kernel
 // registry's own definitions (their settingsKey), on every harness's names for them. Allowed by default like the table's
-// tools, so an observe never asks; an owner sets each key to allow or deny. The gate knows not the run's kind, so each is
-// held to the stricter of the two keys.
+// tools, so an observe never asks; an owner sets each key to allow or deny. Each is held to the stricter of the two keys,
+// and its refusal and ask name the key that decided it, the run's own kind (its revision's setting) on a tie.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { COMPUTER_TOOLS, computerToolDefs } from "@parcha/agentrun-kernel/kernel";
-import { deniedText, settingsKeyOf } from "../dist/tool-gate.js";
+import { deniedText, noApproverText, runGate } from "../dist/tool-gate.js";
+import { computerOffWords } from "../dist/refusal-words.js";
 import { KIND_KEYS, permissionsOf, settingsIssues } from "../dist/tool-plane.js";
-import { runnerGate } from "./gate-support.mjs";
+import { builtinKeyOf, runnerGate, storedSettings } from "./gate-support.mjs";
 
 test("the computer's tools are the desktop's and the phone's, each under its kind's key, by every harness's name for it", () => {
   assert.deepEqual([...KIND_KEYS], ["desktop", "phone"]);
@@ -17,7 +18,7 @@ test("the computer's tools are the desktop's and the phone's, each under its kin
   assert.deepEqual(computerToolDefs("phone", []).map((def) => [def.name, def.settingsKey]), COMPUTER_TOOLS.map((name) => [name, "phone"]));
   for (const name of COMPUTER_TOOLS) {
     for (const harness of ["pi", "claude-agent", "codex", "opencode"]) {
-      assert.equal(settingsKeyOf(harness, name), "desktop", `${harness} ${name}: named by the desktop's key in words`);    }
+      assert.equal(builtinKeyOf(harness, name), "desktop", `${harness} ${name}: named by the desktop's key in words`);    }
   }
 });
 
@@ -57,6 +58,51 @@ test("a script's shell, write and read are decided as the run's own bash, write 
   assert.equal(await readOnly.decide("bash", { command: "ls" }), "allow");
   const refused = await readOnly.decide("bash", { command: "rm -rf /workspace/x" });
   assert.ok(typeof refused === "object" && "deny" in refused, "a read-only policy refuses a command that writes");
+});
+
+// The run's kind is its revision's computer setting (runGate reads it): a phone run's refusals and asks name phone, a
+// desktop run's desktop, for a top-level step tool and a script's nested computer_op alike. The permission is still the
+// stricter of the two keys.
+const PHONE_REVISION = { kind: "agentic", body: { computer: { kind: "phone", provider: "phone-harness" } } };
+const DESKTOP_REVISION = { kind: "agentic", body: { computer: { kind: "desktop", provider: "e2b" } } };
+const gateOf = (revision, read, approvers = true) => runGate({ root: "/nonexistent/run", work: "/nonexistent/run", facts: undefined }, "r1", revision, typeof read === "function" ? read : () => storedSettings(read), approvers);
+const STEP_CALLS = [["computer_act", { steps: [{ press: "@e1" }] }], ["computer_observe", {}], ["computer_op", { op: "input.act", args: { actions: [] } }], ["computer_op", { op: "apps.open", args: { id: "com.android.settings" } }]];
+/** A run's first deny of its computer's own tools: `key`'s deny words, then that computer (`kind`) off for the run. Each
+ *  call below is decided on a gate of its own, a run's first: what follows a first deny is computer-all-denied.test.mjs's. */
+const firstDeny = (key, from, kind) => ({ deny: `${deniedText(key, key, from, "no")} ${computerOffWords(kind)}` });
+
+test("phone set to deny refuses a phone run's step tools and a script's nested computer_op in phone's words", async () => {
+  for (const from of ["server", "agent"]) {
+    const gate = () => (from === "server" ? gateOf(PHONE_REVISION, { phone: { permission: "deny" } }) : gateOf({ ...PHONE_REVISION, body: { ...PHONE_REVISION.body, toolSettings: { phone: { permission: "deny" } } } }, {}));
+    for (const [tool, args] of STEP_CALLS) assert.deepEqual(await gate().decide(tool, args), firstDeny("phone", from, "phone"), `${from}: ${tool} ${JSON.stringify(args)}`);
+    // A script's shell op is the kind's first, in its words.
+    assert.deepEqual(await gate().decide("computer_op", { op: "shell.run", args: { command: "ls" } }), firstDeny("phone", from, "phone"), `${from}: shell.run`);
+  }
+});
+
+test("a phone run's asked computer call is asked as phone, and where no one can approve it is refused in phone's words", async () => {
+  // No server settings ever read: every tool asks (fail closed).
+  const unread = () => ({ settings: {}, problems: [], unreadable: true });
+  const gate = gateOf(PHONE_REVISION, unread);
+  for (const [tool, args] of STEP_CALLS) {
+    assert.equal(await gate.decide(tool, args), "ask", `${tool} asks`);
+    assert.equal(gate.askedAs(tool, args), "phone", `${tool} ${JSON.stringify(args)} is asked as phone`);
+  }
+  const none = gateOf(PHONE_REVISION, unread, false);
+  for (const [tool, args] of STEP_CALLS) assert.deepEqual(await none.decide(tool, args), { deny: noApproverText("phone", "no") }, tool);
+});
+
+test("a desktop run's refusals and asks still name desktop", async () => {
+  for (const [tool, args] of STEP_CALLS) assert.deepEqual(await gateOf(DESKTOP_REVISION, { desktop: { permission: "deny" } }).decide(tool, args), firstDeny("desktop", "server", "desktop"), tool);
+  const asked = gateOf(DESKTOP_REVISION, () => ({ settings: {}, problems: [], unreadable: true }));
+  for (const [tool, args] of STEP_CALLS) assert.equal(asked.askedAs(tool, args), "desktop", tool);
+});
+
+test("a phone run is still held to the stricter key: desktop set to deny refuses it, in the words of the key that refused", async () => {
+  // The words name the key that refused; the computer that goes off is the run's own, the phone.
+  for (const [tool, args] of STEP_CALLS) assert.deepEqual(await gateOf(PHONE_REVISION, { desktop: { permission: "deny" } }).decide(tool, args), firstDeny("desktop", "server", "phone"), tool);
+  // Both set to deny: the run's own kind's words.
+  for (const [tool, args] of STEP_CALLS) assert.deepEqual(await gateOf(PHONE_REVISION, { desktop: { permission: "deny" }, phone: { permission: "deny" } }).decide(tool, args), firstDeny("phone", "server", "phone"), tool);
 });
 
 // A codemode script's `computer` reaches its shell and its files through computer_op: each op is held to the run's own

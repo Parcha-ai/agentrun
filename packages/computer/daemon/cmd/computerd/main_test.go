@@ -1,11 +1,15 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -17,12 +21,17 @@ import (
 
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/daemon"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/nocgo"
+	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/windowmanager"
 )
 
 // argsEnv makes the test binary run computerd's main with these arguments (JSON), as a process of its own.
 const argsEnv = "COMPUTERD_TEST_ARGS"
 
 func TestMain(m *testing.M) {
+	// The window manager's start, which init starts again as itself with a clean environment.
+	if len(os.Args) == 2 && os.Args[1] == windowmanager.ChildArg {
+		os.Exit(windowmanager.Child())
+	}
 	if args := os.Getenv(argsEnv); args != "" {
 		os.Args = []string{"computerd"}
 		if err := json.Unmarshal([]byte(args), &os.Args); err != nil {
@@ -277,8 +286,8 @@ func TestInitRefusesAnEgressSocketThatIsNotOneAbsolutePath(t *testing.T) {
 }
 
 // --own-network takes no value, once, and only with --user (init must start as root to make the namespace) and with no
-// --egress (a remote computer's network is none). That it then leaves init and its programs their own loopback alone is
-// internal/isolate's tests and the Docker live tests'.
+// --egress (a remote computer's way out is the proxy --network starts). That it then leaves init and its programs their
+// own loopback alone is internal/isolate's tests and the Docker live tests'.
 func TestInitRefusesOwnNetworkWithoutUserOrWithEgressOrTwice(t *testing.T) {
 	deadline := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
 	for _, args := range [][]string{
@@ -293,6 +302,63 @@ func TestInitRefusesOwnNetworkWithoutUserOrWithEgressOrTwice(t *testing.T) {
 		}
 		if !strings.Contains(stderr, "--own-network") {
 			t.Errorf("computerd %q: stderr does not say why in words: %q", args, stderr)
+		}
+	}
+}
+
+// --network names the form of the proxy init starts: open, or allow: and a list the Docker computer's would take; once,
+// and only with --own-network, whose programs reach the proxy through init's relay. That the proxy serves it is
+// internal/egress's tests and the hosted live checks'.
+func TestInitRefusesANetworkThatIsNotAFormOrWithoutOwnNetworkOrTwice(t *testing.T) {
+	deadline := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+	for _, test := range []struct {
+		args  []string
+		words string
+	}{
+		{[]string{"init", "--deadline", deadline, "--user", "2510:2510", "--network", "open"}, "with --own-network"},
+		{[]string{"init", "--deadline", deadline, "--user", "2510:2510", "--own-network", "--network", "none"}, "--network takes open"},
+		{[]string{"init", "--deadline", deadline, "--user", "2510:2510", "--own-network", "--network", "allow:"}, "no entry"},
+		{[]string{"init", "--deadline", deadline, "--user", "2510:2510", "--own-network", "--network", "allow:10.0.0.0/8"}, "refused range 10.0.0.0/8"},
+		{[]string{"init", "--deadline", deadline, "--user", "2510:2510", "--own-network", "--network", "allow:localhost"}, "two labels"},
+		{[]string{"init", "--deadline", deadline, "--user", "2510:2510", "--own-network", "--network", "open", "--network", "open"}, "given once"},
+		{[]string{"init", "--deadline", deadline, "--user", "2510:2510", "--own-network", "--network"}, "--network takes open"},
+		{[]string{"init", "--deadline", deadline, "--user", "65534:2510", "--own-network", "--network", "open"}, "--user may be neither"},
+		{[]string{"init", "--deadline", deadline, "--user", "2510:65534", "--own-network", "--network", "open"}, "--user may be neither"},
+	} {
+		code, stderr := computerd(t, 30*time.Second, test.args...)
+		if code != 2 {
+			t.Errorf("computerd %q: exit %d; want 2, a refusal", test.args, code)
+		}
+		if !strings.Contains(stderr, test.words) {
+			t.Errorf("computerd %q: stderr does not say %q: %q", test.args, test.words, stderr)
+		}
+	}
+}
+
+func TestInitWithANetworkMustStartAsRoot(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("runs as root: init would start a proxy and drop this test's privileges; the start is a live case")
+	}
+	deadline := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+	code, stderr := computerd(t, 30*time.Second, "init", "--own-network", "--network", "open", "--user", "2510:2510", "--deadline", deadline)
+	if code != 1 || !strings.Contains(stderr, "root") {
+		t.Fatalf("init --own-network --network open as uid %d: exit %d, stderr %q; want a refusal that says init must start as root", os.Geteuid(), code, stderr)
+	}
+}
+
+// The proxy init starts runs only as another user than root, and only as init starts it.
+func TestEgressProxyRefusesArgumentsInitDoesNotGive(t *testing.T) {
+	until := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+	for _, args := range [][]string{
+		{"egress-proxy"},
+		{"egress-proxy", "--network", "open", "--until", until},
+		{"egress-proxy", "--network", "none", "--until", until, "--parent", "1"},
+		{"egress-proxy", "--network", "open", "--until", "soon", "--parent", "1"},
+		{"egress-proxy", "--network", "open", "--until", until, "--parent", "0"},
+	} {
+		code, stderr := computerd(t, 30*time.Second, args...)
+		if code != 2 || !strings.Contains(stderr, "egress-proxy takes") {
+			t.Errorf("computerd %q: exit %d, stderr %q; want 2 and the words egress-proxy takes", args, code, stderr)
 		}
 	}
 }
@@ -577,5 +643,146 @@ func TestProbeDiagnoseTakesNoOtherArgument(t *testing.T) {
 		if code != 2 || stdout != "" || !strings.Contains(stderr, "--diagnose") {
 			t.Errorf("computerd %q: exit %d, stdout %q, stderr %q; want exit 2, nothing on stdout and a refusal that names --diagnose", args, code, stdout, stderr)
 		}
+	}
+}
+
+// attach takes its URL and token from the environment alone, refuses a missing or malformed one with 2, and stops with 3
+// when the server refuses the token at the upgrade; no line it writes holds the token. (internal/attach tests the rest.)
+func TestAttachReadsItsEnvironmentAndExitsAsItsWordsSay(t *testing.T) {
+	token := "art_" + strings.Repeat("Ab", 21) + "c"
+	t.Setenv("AGENTRUN_ATTACH_URL", "")
+	t.Setenv("AGENTRUN_ATTACH_TOKEN", token)
+	if code, stderr := computerd(t, 30*time.Second, "attach"); code != 2 || !strings.Contains(stderr, "AGENTRUN_ATTACH_URL") {
+		t.Fatalf("with no URL: exit %d, %s", code, stderr)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer "+token || r.URL.Path != "/v2/computers/attach" {
+			t.Errorf("the upgrade %s with %d bytes of Authorization", r.URL.Path, len(r.Header.Get("Authorization")))
+		}
+		w.Header().Set("WWW-Authenticate", "Bearer")
+		http.Error(w, "the token is unknown", http.StatusUnauthorized)
+	}))
+	defer server.Close()
+	t.Setenv("AGENTRUN_ATTACH_URL", "ws"+strings.TrimPrefix(server.URL, "http")+"/v2/computers/attach")
+	t.Setenv("AGENTRUN_ATTACH_TOKEN", token[:len(token)-1])
+	if code, stderr := computerd(t, 30*time.Second, "attach"); code != 2 || !strings.Contains(stderr, "AGENTRUN_ATTACH_TOKEN") || strings.Contains(stderr, token[:len(token)-1]) {
+		t.Fatalf("with a short token: exit %d, %s", code, stderr)
+	}
+	// attach dials only while init listens: a listener stands in for it.
+	socket := filepath.Join(t.TempDir(), "computerd.sock")
+	initListener, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer initListener.Close()
+	t.Setenv(daemon.SocketEnv, socket)
+	t.Setenv("AGENTRUN_ATTACH_TOKEN", token)
+	code, _, stderr := computerdOut(t, 30*time.Second, "attach")
+	if code != 3 || !strings.Contains(stderr, "refused the upgrade: 401 the token is unknown") || strings.Contains(stderr, token) {
+		t.Fatalf("refused: exit %d, %s", code, stderr)
+	}
+}
+
+// computerdIn runs main with args and stdin, and gives its exit code, stdout and stderr.
+func computerdIn(t *testing.T, stdin string, args ...string) (int, string, string) {
+	t.Helper()
+	encoded, _ := json.Marshal(append([]string{"computerd"}, args...))
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, os.Args[0])
+	cmd.Env = append(os.Environ(), argsEnv+"="+string(encoded))
+	cmd.Stdin = strings.NewReader(stdin)
+	var stdout, stderr strings.Builder
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	err := cmd.Run()
+	var exit *exec.ExitError
+	if errors.As(err, &exit) {
+		return exit.ExitCode(), stdout.String(), stderr.String()
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	return 0, stdout.String(), stderr.String()
+}
+
+// pair against a running init: the code comes from stdin (never argv), init's own hello goes to the server, the token
+// lands in the 0600 file and in no output; attach then reads that file and, refused, says to delete it; unpair deletes
+// it and says how the owner removes the computer.
+func TestPairAttachAndUnpairKeepTheTokenInItsFileAlone(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("runs as root: root's token file is /etc/agentrun/computer.token, which a test must not write")
+	}
+	token := "art_" + strings.Repeat("Zz_-", 10) + "Q0w"
+	config := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", config)
+	t.Setenv("AGENTRUN_ATTACH_TOKEN", "")
+	// init stands in as a listener that answers hello (init itself starts here only with an empty bounding set).
+	socket := filepath.Join(t.TempDir(), "computerd.sock")
+	initListener, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer initListener.Close()
+	go func() {
+		for {
+			conn, err := initListener.Accept()
+			if err != nil {
+				return
+			}
+			line, _ := bufio.NewReader(conn).ReadString('\n')
+			if strings.Contains(line, `"method":"hello"`) {
+				_, _ = io.WriteString(conn, `{"jsonrpc":"2.0","id":1,"result":{"protocol":"0.2","version":"0.0.0-dev","os":"linux","kind":"linux","arch":"amd64","groups":["exec","files","processes"]}}`+"\n")
+			}
+			_ = conn.Close()
+		}
+	}()
+	t.Setenv(daemon.SocketEnv, socket)
+	var sent struct {
+		Code  string         `json:"code"`
+		Name  string         `json:"name"`
+		Hello map[string]any `json:"hello"`
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v2/computers/pair":
+			if err := json.NewDecoder(r.Body).Decode(&sent); err != nil {
+				t.Error(err)
+			}
+			w.WriteHeader(http.StatusCreated)
+			fmt.Fprintf(w, `{"computer":"cmp-8f2k3jq7m4xw9tnb","token":%q,"runs_refused":null}`, token)
+		case "/v2/computers/attach":
+			if r.Header.Get("Authorization") != "Bearer "+token {
+				t.Errorf("the upgrade with %d bytes of Authorization", len(r.Header.Get("Authorization")))
+			}
+			http.Error(w, "no paired computer or hosted machine has this token", http.StatusUnauthorized)
+		}
+	}))
+	defer server.Close()
+	if code, _, stderr := computerdIn(t, "", "pair", server.URL, "K7PD-W3QX"); code != 2 || !strings.Contains(stderr, "the pairing code is read from stdin, never an argument") || sent.Code != "" {
+		t.Fatalf("a code in argv: exit %d, %s", code, stderr)
+	}
+	code, stdout, stderr := computerdIn(t, "k7pd-w3qx\n", "pair", server.URL, "--name", "build-box")
+	path := filepath.Join(config, "agentrun", "computer.token")
+	attachURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/v2/computers/attach"
+	if code != 0 || stdout != "computer: cmp-8f2k3jq7m4xw9tnb\nattach url: "+attachURL+"\ntoken file: "+path+"\n" || strings.Contains(stdout+stderr, token) {
+		t.Fatalf("pair: exit %d, stdout %q, stderr %q", code, stdout, stderr)
+	}
+	if sent.Code != "k7pd-w3qx" || sent.Name != "build-box" || sent.Hello["os"] != "linux" || sent.Hello["arch"] != "amd64" || sent.Hello["kind"] != "linux" || sent.Hello["protocol"] != "0.2" {
+		t.Fatalf("the server was sent %+v", sent)
+	}
+	if info, err := os.Lstat(path); err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("the token file: %v, %v", info, err)
+	}
+	t.Setenv("AGENTRUN_ATTACH_URL", attachURL)
+	code, stdout, stderr = computerdIn(t, "", "attach")
+	if code != 3 || !strings.Contains(stderr, "this machine's pairing was removed or revoked: delete "+path+" and pair again") || strings.Contains(stdout+stderr, token) {
+		t.Fatalf("attach, refused: exit %d, %s", code, stderr)
+	}
+	code, stdout, stderr = computerdIn(t, "", "unpair")
+	if _, err := os.Lstat(path); code != 0 || !errors.Is(err, os.ErrNotExist) || !strings.Contains(stdout, "the console's Computers page") {
+		t.Fatalf("unpair: exit %d, %s %s (%v)", code, stdout, stderr, err)
+	}
+	if code, _, stderr := computerdIn(t, "", "unpair"); code != 1 || !strings.Contains(stderr, "no token file at "+path) {
+		t.Fatalf("unpair again: exit %d, %s", code, stderr)
 	}
 }

@@ -7,7 +7,7 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { ApiError, invalid } from "./errors.js";
 import { appJwt, GITHUB_FIELDS, GITHUB_SCOPE, GITHUB_WEB, githubCall, githubTargetOf, mintInstallationToken } from "./github.js";
 import type { SealedSettingsOverStore } from "./sealed-settings-store.js";
-import { registerSecretWrite } from "./secret-writes.js";
+import { registerSecretPage, registerSecretWrite } from "./secret-writes.js";
 import type { Held } from "./template-github-permissions.js";
 import { isObject, type Json } from "./validate.js";
 
@@ -15,10 +15,12 @@ import { isObject, type Json } from "./validate.js";
 // takes), and disconnecting drops them: each a secret write, from the owner's session alone, whatever its request.
 registerSecretWrite("connectGitHub", () => true);
 registerSecretWrite("disconnectGitHub", () => true);
+registerSecretPage(["connectGitHub", "disconnectGitHub"], "/#/settings/github");
 
 /** What every GitHub App Connect GitHub makes asks of the repositories it is installed on (its manifest's
  *  default_permissions): the least its templates need. Applying a template warns from each installation's real permissions
- *  (installationPermissions, template-github-permissions.ts), never from this. */
+ *  (installationPermissions, template-github-permissions.ts), never from this. A Connect that asks for `contents: write`
+ *  (suggested agents' pull requests, which add files) gets that one widened; nothing else ever is. */
 export const APP_PERMISSIONS = { pull_requests: "write", contents: "read", metadata: "read", issues: "read" } as const satisfies Record<string, "read" | "write">;
 
 /** How long a Connect's state is good for, and the most kept at once. */
@@ -45,6 +47,10 @@ const PERMISSIONS_PARALLEL = 4;
 const PERMISSIONS_WITHIN_MS = 4_000;
 
 export type Installation = { id: number; account: string };
+/** The installation that covers one repository, and what it holds there (suggestions.ts reads it before a pull request). */
+export type RepoInstallation = { id: number; account: string; organization: boolean; permissions: Record<string, "read" | "write"> };
+/** One repository an installation covers, as GET /v2/integrations/github/repositories lists it. */
+export type ListedRepository = { full_name: string; private: boolean; default_branch?: string; description?: string; account: string; installation: number };
 /** What a caller (a GitHub template, the console) may read of the connection: never a secret. */
 export type GitHubConnectionView = { app_id: string; slug: string; installations: Installation[] };
 
@@ -204,8 +210,9 @@ export class GitHubConnect {
   /** POST /integrations/github/connect: the form the console posts to GitHub (its action, with the state, and the
    *  manifest), refused while GitHub could not reach this server, nothing could be kept, or an App is connected. */
   start(body: Json, origin: string): { action: string; manifest: Json; state: string } {
-    const issues = Object.keys(body).filter((key) => key !== "org").map((key) => ({ field: key, reason: "not_allowed", message: `The body keeps no field ${key}.` }));
+    const issues = Object.keys(body).filter((key) => key !== "org" && key !== "contents").map((key) => ({ field: key, reason: "not_allowed", message: `The body keeps no field ${key}.` }));
     if (body.org !== undefined && !(typeof body.org === "string" && LOGIN.test(body.org))) issues.push({ field: "org", reason: "invalid", message: "org is a GitHub organization's login: the App is made under it (absent: under the signed-in GitHub user)" });
+    if (body.contents !== undefined && body.contents !== "read" && body.contents !== "write") issues.push({ field: "contents", reason: "not_an_option", message: "contents is read (the default) or write: write lets suggested agents open pull requests that add files" });
     if (issues.length) throw invalid(issues);
     const base = this.options.publicUrl;
     if (!base) throw new ApiError("github_no_public_url", "GitHub can't reach this server: set its public URL first (AGENTRUN_PUBLIC_URL, the https address GitHub sends events to), then connect again.");
@@ -225,7 +232,8 @@ export class GitHubConnect {
       setup_url: `${base}${INSTALLED_PATH}`,
       setup_on_update: true,
       public: false,
-      default_permissions: { ...APP_PERMISSIONS },
+      // Contents write only when the owner asked for it (suggested agents' pull requests add files): never by default.
+      default_permissions: { ...APP_PERMISSIONS, ...(body.contents === "write" ? { contents: "write" } : {}) },
       // The events the templates' github triggers take: code-review's pull requests and comments, release-notes'
       // published releases. A trigger takes only what the App is subscribed to.
       default_events: ["pull_request", "issue_comment", "release"],
@@ -620,6 +628,90 @@ export class GitHubConnect {
     } finally {
       await githubCall(this.options.api, "/installation/token", { method: "DELETE", jwt: scout.token }).catch(() => undefined);
     }
+  }
+
+  /** GitHub's API this connection calls (GitHub's own, or a fake's). */
+  get api(): string {
+    return this.options.api;
+  }
+
+  /** The App's installation that covers `repo` (GET /repos/{owner}/{repo}/installation, with the App's JWT), with the
+   *  account it is on and what it holds (`admin` read as `write`), or why there is none: no App here, not installed there,
+   *  or GitHub that did not answer. Suggested agents read it before a pull request, to say what is missing first. */
+  async repoInstallation(repo: string, signal?: AbortSignal): Promise<RepoInstallation | { unusable: string; reason: "not_connected" | "not_installed" | "github_failed" }> {
+    const credentials = this.connection.credentials();
+    if (!credentials || !this.connection.view()) return { unusable: "This server has no GitHub App: connect GitHub in Settings → GitHub.", reason: "not_connected" };
+    const jwt = appJwt(credentials.appId, credentials.pem, this.options.now?.() ?? Date.now());
+    const answer = await githubCall(this.options.api, `/repos/${repo}/installation`, { jwt, ...(signal ? { signal } : {}) }).catch((error: Error) => ({ status: 0, json: null, headers: new Headers(), error }));
+    if (answer.status === 404) return { unusable: `The GitHub App isn't installed on ${repo}: add the repository to its installation on GitHub.`, reason: "not_installed" };
+    const id = isObject(answer.json) ? answer.json.id : undefined;
+    const account = isObject(answer.json) && isObject(answer.json.account) ? answer.json.account : {};
+    const map = isObject(answer.json) && isObject(answer.json.permissions) ? answer.json.permissions : undefined;
+    if (answer.status !== 200 || !Number.isSafeInteger(id) || !map) return { unusable: `GitHub did not say which installation covers ${repo}${answer.status ? ` (HTTP ${answer.status})` : ""}: try again.`, reason: "github_failed" };
+    const permissions: Record<string, "read" | "write"> = {};
+    for (const [name, level] of Object.entries(map)) if (level === "read" || level === "write" || level === "admin") permissions[name] = level === "read" ? "read" : "write";
+    return { id: id as number, account: typeof account.login === "string" ? account.login : "", organization: account.type === "Organization", permissions };
+  }
+
+  /** An installation token of installation `id` for `repo` alone with `permissions` (each at most what it holds), kept
+   *  among the live tokens; or why GitHub gave none. Revoke it (revokeToken) once its one job is done. */
+  async tokenWith(id: number, repo: string, permissions: Record<string, "read" | "write">, signal?: AbortSignal): Promise<{ token: string; expiresAt: number } | { unusable: string }> {
+    const credentials = this.connection.credentials();
+    if (!credentials) return { unusable: "This server has no GitHub App: connect GitHub in Settings → GitHub." };
+    const jwt = appJwt(credentials.appId, credentials.pem, this.options.now?.() ?? Date.now());
+    const minted = await this.mint(id, jwt, [repo.split("/")[1]!], { unusable: `GitHub gave no token for ${repo} with ${Object.entries(permissions).map(([name, level]) => `${name}: ${level}`).join(", ")}.` }, signal, permissions);
+    return "failed" in minted ? { unusable: minted.failed } : minted;
+  }
+
+  /** An installation token revoked at GitHub (DELETE /installation/token, the token its own credential): best effort. */
+  async revokeToken(token: string): Promise<void> {
+    await githubCall(this.options.api, "/installation/token", { method: "DELETE", jwt: token }).catch(() => undefined);
+    this.live.delete(token);
+  }
+
+  /** Every repository the App's installations cover, as GitHub lists them (GET /installation/repositories with a
+   *  metadata-read token per installation, revoked at once), at most `limit` in all; `truncated` when there were more.
+   *  An installation GitHub did not list is said in `unread`, never left out silently. */
+  async repositories(signal?: AbortSignal, limit = 500): Promise<{ repositories: ListedRepository[]; truncated: boolean; unread: { account: string; why: string }[] } | { unusable: string }> {
+    const credentials = this.connection.credentials();
+    const view = this.connection.view();
+    if (!credentials || !view) return { unusable: "This server has no GitHub App: connect GitHub in Settings → GitHub." };
+    const jwt = appJwt(credentials.appId, credentials.pem, this.options.now?.() ?? Date.now());
+    const repositories: ListedRepository[] = [];
+    const unread: { account: string; why: string }[] = [];
+    let truncated = false;
+    for (const installation of view.installations) {
+      const refused = { unusable: `GitHub gave no token to list the repositories of the installation on ${installation.account}.` };
+      const minted = await this.mint(installation.id, jwt, undefined, refused, signal, { metadata: "read" });
+      if (!("token" in minted)) {
+        unread.push({ account: installation.account, why: "failed" in minted ? minted.failed : minted.unusable });
+        continue;
+      }
+      try {
+        for (let page = 1; page <= 10; page++) {
+          const listed = await githubCall(this.options.api, `/installation/repositories?per_page=100&page=${page}`, { jwt: minted.token, ...(signal ? { signal } : {}) }).catch(() => undefined);
+          const list = listed && listed.status === 200 && isObject(listed.json) && Array.isArray(listed.json.repositories) ? listed.json.repositories : undefined;
+          if (!list) {
+            unread.push({ account: installation.account, why: `GitHub did not list its repositories${listed ? ` (HTTP ${listed.status})` : ""}` });
+            break;
+          }
+          for (const repo of list) {
+            if (!isObject(repo) || typeof repo.full_name !== "string") continue;
+            if (repositories.length >= limit) {
+              truncated = true;
+              break;
+            }
+            repositories.push({ full_name: repo.full_name, private: repo.private === true, ...(typeof repo.default_branch === "string" ? { default_branch: repo.default_branch } : {}), ...(typeof repo.description === "string" && repo.description ? { description: repo.description.slice(0, 300) } : {}), account: installation.account, installation: installation.id });
+          }
+          const total = isObject(listed!.json) && typeof listed!.json.total_count === "number" ? listed!.json.total_count : 0;
+          if (truncated || list.length < 100 || page * 100 >= total) break;
+        }
+      } finally {
+        await this.revokeToken(minted.token);
+      }
+    }
+    repositories.sort((a, b) => a.full_name.localeCompare(b.full_name));
+    return { repositories, truncated, unread };
   }
 
   private async mint(installation: number, jwt: string, repositories: string[] | undefined, refused: { unusable: string }, signal?: AbortSignal, permissions?: Record<string, string>): Promise<{ token: string; expiresAt: number } | { unusable: string } | Unanswered> {

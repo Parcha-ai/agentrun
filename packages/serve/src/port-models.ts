@@ -9,11 +9,12 @@
 // session's, at the proxy, in the API the proxy serves, with the side key as its bearer token. pi-ai's own cost on an
 // answer is the catalog's reading of its usage, for the call's own report (llm.ts); what the run is charged is the
 // session's booking.
-import type { Api, AssistantMessage, AssistantMessageEventStream, Context, Model, SimpleStreamOptions } from "@earendil-works/pi-ai";
+import type { Api, AssistantMessage, AssistantMessageEventStream, Context, Model, ProviderStreams, SimpleStreamOptions } from "@earendil-works/pi-ai";
 import { anthropicMessagesApi } from "@earendil-works/pi-ai/api/anthropic-messages.lazy";
 import { openAIResponsesApi } from "@earendil-works/pi-ai/api/openai-responses.lazy";
 import { createProvider } from "@earendil-works/pi-ai/models";
 import type { SessionPort } from "@parcha/agentrun-kernel";
+import { CONVERSATION_HEADER, conversationLabel } from "@parcha/agentrun-kernel/host";
 import { attachingImages } from "./attach-images.js";
 
 /** The provider id the port's one model is listed under. */
@@ -33,8 +34,15 @@ export type ThinkingLevelMap = NonNullable<Model<Api>["thinkingLevelMap"]>;
 /** The catalog's entry for a session's model, as its route carries it (model-route.ts `like`): its reasoning, price,
  *  window and ceiling, the effort each thinking level asks for, and what it takes as input with its input limits. */
 /** `developerRole`: on Responses, the instructions go as a developer message, not a system one (a ChatGPT plan's route,
- *  which takes no system message). */
-export type SessionLike = Partial<Pick<Model<Api>, "reasoning" | "cost" | "contextWindow" | "maxTokens" | "thinkingLevelMap">> & { readonly input?: readonly string[]; readonly inputLimits?: unknown; readonly developerRole?: boolean };
+ *  which takes no system message). `adaptiveThinking`: on Messages, the session asks its thinking level as an adaptive
+ *  effort (pi-ai's `forceAdaptiveThinking`), never a token budget: the route's own translation reads that level back
+ *  (model-route.ts LEVELS_BY_NAME). `translatedChatCompletions`: the Messages hop carries native Chat Completions
+ *  reasoning and a conversation cache key; its thinking blocks may have no signature. */
+export type SessionLike = Partial<Pick<Model<Api>, "reasoning" | "cost" | "contextWindow" | "maxTokens" | "thinkingLevelMap">> & { readonly input?: readonly string[]; readonly inputLimits?: unknown; readonly developerRole?: boolean; readonly adaptiveThinking?: boolean; readonly translatedChatCompletions?: boolean };
+
+/** Pi's side port with its route's catalog metadata. A plain harness port remains valid; the kernel needs only the
+ *  proxy coordinates, while the host's model client also keeps its reasoning, limits and translation settings. */
+export type SessionModelPort = SessionPort & { readonly like?: SessionLike };
 
 /** The one model of a session's route as pi-ai lists it, for the port's requests and for pi's own (runner adapters/pi.ts):
  *  `model` in `api` at the proxy `url` (sessionBaseUrl), under `provider`, with `headers` (the session key as the proxy
@@ -57,6 +65,7 @@ export function sessionModel(api: SessionPort["api"], url: string, model: string
     cost: like?.cost ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     contextWindow: like?.contextWindow ?? 200_000, maxTokens: like?.maxTokens ?? 32_000,
     ...(api === "openai-responses" ? { compat: { supportsDeveloperRole: like?.developerRole === true } } : {}),
+    ...(api === "anthropic-messages" && (like?.adaptiveThinking || like?.translatedChatCompletions) ? { compat: { forceAdaptiveThinking: true, ...(like.translatedChatCompletions ? { allowEmptySignature: true } : {}) } } : {}),
   } as unknown as Model<Api>;
 }
 
@@ -65,7 +74,7 @@ export function sessionModel(api: SessionPort["api"], url: string, model: string
  *  credential (named `keyName`). The proxy knows a request by `authorization: Bearer <key>`: on Messages that header is set
  *  on the model, since pi-ai's Anthropic client sends its key as x-api-key, which the proxy does not forward; on Responses
  *  pi-ai sends the key as that bearer token itself. The one client every runner caller of a session proxy builds: pi's
- *  sessions, the learning grader, a workflow's model nodes. Each request's images are checked as they are attached
+ *  sessions and a workflow's model nodes. Each request's images are checked as they are attached
  *  (attach-images.ts): one a provider would refuse goes as a text saying why. */
 export function sessionProvider(api: SessionPort["api"], proxy: { readonly url: string; readonly key: string }, model: string, options: { provider: string; keyName: string; like?: SessionLike; reasoning: boolean }): ReturnType<typeof createProvider> {
   return createProvider({
@@ -73,8 +82,33 @@ export function sessionProvider(api: SessionPort["api"], proxy: { readonly url: 
     baseUrl: sessionBaseUrl(api, proxy.url),
     auth: { apiKey: { name: options.keyName, resolve: async () => ({ auth: { apiKey: proxy.key }, source: "session" }) } },
     models: [sessionModel(api, proxy.url, model, { provider: options.provider, ...(api === "anthropic-messages" ? { headers: { authorization: `Bearer ${proxy.key}` } } : {}), ...(options.like ? { like: options.like } : {}), reasoning: options.reasoning })],
-    api: attachingImages(api === "anthropic-messages" ? anthropicMessagesApi() : openAIResponsesApi()),
+    api: sessionApi(api, options.like),
   } as never);
+}
+
+/** The session's client of `api`. Each request names its conversation to the proxy (CONVERSATION_HEADER: pi's own id for
+ *  it, the request's `sessionId`, one per conversation), so the host knows which of several conversations asking at once
+ *  a booking is; the proxy sends that header no further. A translated Chat Completions session also carries its cache
+ *  identity in Messages' existing metadata field: the proxy preserves it without forwarding extra headers. The
+ *  translation uses it only for provider cache affinity. */
+function sessionApi(api: SessionPort["api"], like?: SessionLike): ProviderStreams {
+  const own = attachingImages(api === "anthropic-messages" ? anthropicMessagesApi() : openAIResponsesApi());
+  const translated = api === "anthropic-messages" && like?.translatedChatCompletions === true;
+  const withSession = <O extends { sessionId?: string; cacheRetention?: "none" | "short" | "long"; metadata?: Record<string, unknown>; headers?: Record<string, string | null> }>(options?: O) => {
+    const conversation = conversationLabel(options?.sessionId);
+    return {
+      ...options,
+      ...(conversation === undefined ? {} : { headers: { ...options?.headers, [CONVERSATION_HEADER]: conversation } }),
+      // The upstream can have accepted a paid request before this hop fails. Never replay it implicitly.
+      ...(translated ? { maxRetries: 0 } : {}),
+      ...(!translated ? {} : options?.cacheRetention === "none" ? { metadata: { ...options.metadata, user_id: "" } } : options?.sessionId ? { metadata: { ...options.metadata, user_id: options.sessionId } } : {}),
+    };
+  };
+  return {
+    ...own,
+    stream: (model, context, options) => own.stream(model, context, withSession(options)),
+    streamSimple: (model, context, options) => own.streamSimple(model, context, withSession(options)),
+  };
 }
 
 /** The run's models over a session's port, as learned-workflow.ts, llm.ts and hosted-search.ts take them. */
@@ -87,13 +121,10 @@ export type PortModels = {
 
 /** Models over `port` (the session's, read at each request: undefined until a drive has attached a proxy, and anew for
  *  each drive), one model named by any provider and id: the session's own, listed under `provider`. `like`: the
- *  catalog's entry for the model the run is priced by, whose reasoning, limits and price the port's model takes. */
-export async function portModels(port: () => SessionPort | undefined, like?: Partial<Model<Api>>, provider: string = PORT_PROVIDER): Promise<PortModels> {
-  const [{ createModels, createProvider }, { anthropicMessagesApi }, { openAIResponsesApi }] = await Promise.all([
-    import("@earendil-works/pi-ai/models"),
-    import("@earendil-works/pi-ai/api/anthropic-messages.lazy"),
-    import("@earendil-works/pi-ai/api/openai-responses.lazy"),
-  ]);
+ *  catalog's entry for the model the run is priced by, whose reasoning, limits and price the port's model takes; absent,
+ *  the current port's own metadata, when supplied by Pi. */
+export async function portModels(port: () => SessionModelPort | undefined, like?: SessionLike, provider: string = PORT_PROVIDER): Promise<PortModels> {
+  const { createModels } = await import("@earendil-works/pi-ai/models");
   // One registry per proxy and key: a later drive's proxy is a new address.
   let built: { at: string; models: ReturnType<typeof createModels>; model: Model<Api> } | undefined;
   const current = () => {
@@ -102,16 +133,18 @@ export async function portModels(port: () => SessionPort | undefined, like?: Par
     const at = `${now.url} ${now.key} ${now.model} ${now.api}`;
     if (built?.at === at) return built;
     const baseUrl = sessionBaseUrl(now.api, now.url);
+    // Read the current drive's metadata with its port. An explicit caller description still takes precedence.
+    const description = like ?? now.like;
     // The side key as the proxy reads a key (a bearer token), and no beta header pi-ai would add of its own: the session's
     // policy admits the betas its harness sends, and these requests need none.
     const headers = { authorization: `Bearer ${now.key}`, ...(now.api === "anthropic-messages" ? { "anthropic-beta": null } : {}) };
-    const model = sessionModel(now.api, now.url, now.model, { provider, headers, ...(like ? { like } : {}), reasoning: true });
+    const model = sessionModel(now.api, now.url, now.model, { provider, headers, ...(description ? { like: description } : {}), reasoning: true });
     const models = createModels({});
     models.setProvider(createProvider({
       id: provider, baseUrl,
       auth: { apiKey: { name: "the session's side key", resolve: async () => ({ auth: { apiKey: now.key }, source: "session" }) } },
       models: [model as never],
-      api: attachingImages(now.api === "anthropic-messages" ? anthropicMessagesApi() : openAIResponsesApi()),
+      api: sessionApi(now.api, description),
     } as never));
     built = { at, models, model: models.getModel(provider, now.model) as Model<Api> };
     return built;

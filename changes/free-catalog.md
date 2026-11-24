@@ -1,6 +1,0 @@
----
-packages: @parcha/agentrun-serve, @parcha/agentrun-client
-kind: feature
----
-Free OpenRouter models are runnable at $0 and marked Free in the console's Model picker. `openrouter/baidu/ernie-5.5-flash-preview:free` and `openrouter/inclusionai/ling-3.2-flash:free` take tools but are not in pi-ai's catalog, so serve now lists them itself at $0, with OpenRouter's context window and output ceiling. Each one was checked live with a tool call. Capabilities' harness entries carry `free_models` (new, required, `harness/5`): the models in `models` whose catalog price is all zeros, each with its `context_window`. On pi with OpenRouter's key, that is pi-ai's own free models plus these two. A router that picks a model per request (`openrouter/auto`, `openrouter/free`) is not counted as free. The picker tags each free model "Free · <context> context", and a "Free models only" switch narrows the list to them. A template whose `model.prefer` names a model this server does not know now says so in a warning on apply, as it already did for a gateway server, instead of silently taking the tier's model.
-- Breaking: a client that validates capabilities against `harness/4` refuses the new `free_models` field.

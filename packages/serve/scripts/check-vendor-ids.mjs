@@ -21,12 +21,12 @@ import ts from "typescript";
 export const BASELINE = {
 	// S7, DEL-03: the old box stack (its Docker, Daytona and Modal boxes, and bwrap), its ids in the API.
 	"place.ts": { ids: { docker: 4, daytona: 1, modal: 1 }, why: "DEL-03 (S7): the old box stack's places" },
-	"place-offers.ts": { ids: { docker: 7, daytona: 5, modal: 4 }, why: "DEL-03 (S7): the box providers' names and offers, moved here from boxes.ts" },
+	"place-offers.ts": { ids: { docker: 7, daytona: 2, modal: 2 }, why: "DEL-03 (S7): the box providers' names and offers, moved here from boxes.ts" },
 	"server.ts": { ids: { docker: 1, browserbase: 4, kernel: 2 }, why: "DEL-03 (S7): the box stack's wiring; the browser plane's default vendor, Browserbase, for a run kept from before the pick" },
 	// The browser plane's default vendor, Browserbase (a run kept from before the pick, or a plane that names none); its
 	// vendors are the registry's browser providers that need a key. `kernel` in tool-plane.ts is web_fetch's guarded
-	// fetch, not the provider.
-	"tool-plane.ts": { ids: { browserbase: 3, kernel: 3 }, why: "the browser plane's default vendor; web_fetch's guarded fetch named kernel, a false positive" },
+	// fetch, not the provider, named once (DIRECT_FETCH).
+	"tool-plane.ts": { ids: { browserbase: 3, kernel: 1 }, why: "the browser plane's default vendor; web_fetch's guarded fetch named kernel, a false positive" },
 	"tools.ts": { ids: { browserbase: 1 }, why: "the browser plane's default vendor, for a plane that names none" },
 	// S6, CP-4's follow-up: sign-in profiles over the browser vendors' REST (the computer package's profiles take their
 	// place), and the browser tool's keys, key checks and list prices by vendor, beside the descriptors.

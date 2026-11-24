@@ -8,19 +8,17 @@ export {
   WorkflowInvalidError, WorkflowInputInvalidError, WorkflowOutputInvalidError, WorkflowCodeError, WorkflowStateError,
   WorkflowVerificationError, WorkflowDecisionRecordError, EffectFailure, EffectDeadlineExceededError,
   EffectOutcomeUnknownError, EscalationSignal, routesByValue, isItemFailure,
-  stepGuardOf, confidenceKey, SELF_CONFIDENCE_FIELD, GUARD_QUESTION_MAX, softEscalates,
 } from "./workflow.js";
 export { defineJob } from "./job.js";
 export type { Job } from "./job.js";
 export { DECISION_RECEIPT_VERSION, DECISION_INTERRUPTED, DECISION_REFUSED, DECISION_STATE_MAX_BYTES, rederiveDecision } from "./decision-receipts.js";
-export type { DecisionImageDigest, DecisionKind, DecisionReceipt, DecisionRule } from "./decision-receipts.js";
+export type { DecisionImageDigest, DecisionKind, DecisionReceipt, DecisionRule, DecisionStateCut, DecisionStateSent } from "./decision-receipts.js";
 export type {
   Workflow, WorkflowNode, NodeMetadata, WorkflowDeps, WorkflowEvent, WorkflowRunResult, HostPolicy, HostPolicyContext,
   Escalation, EffectSettlement, MapItem, MapItemFailure, DecisionExchange,
   LlmNode, JudgeNode, PickNode, SiftNode, RouteNode, RouteByJudgmentNode, RouteByValueNode, WorkflowInvocation,
   ArtifactNode, ArtifactState, CallNode, CodeNode, CallRetryClass, EffectFailureCode, CallPredicate, PollClause,
   ModelTier, AgentContext, WorkflowEffort, WorkflowThinking, VerifyClause,
-  NodeGuard, StepGuard, GuardFit, GuardStepParams, GuardTask, GuardVerdict,
   AskPredicate, DecisionEvidenceMode, DecisionImages, MechanicalPredicate, Predicate, ValidationCode, ValidationIssue, ValidateWorkflowOptions,
 } from "./workflow.js";
 export { dryRunWorkflow, SYNTHESIS_BUDGET, SynthesisTooLarge, synthesizeInstance, type SynthesisBudget } from "./dry-run.js";
@@ -53,6 +51,8 @@ export {
   childSteps, declaredWrites, artifactNodeIsProse, schemaProblems, HOST_STATE_KEY,
   // The host-side normalization the interpreter itself uses.
   normalizeStringNullsForSchema,
+  // Interpolation's placeholders in a string and its lookup order for one, for a host check of what a step reads.
+  placeholderValue, placeholdersOf,
 } from "./workflow.js";
 export { compileTransform, compileTransformSyntax, deniedGlobalReferences } from "./code-exec.js";
 export { resolveSchemaForWorkflow } from "./schema-references.js";
@@ -67,7 +67,6 @@ export {
 export type { AuthorHostAddendum, CandidatePolicyOptions, AuthorWorkflowOptions, AuthoredWorkflow, HostOutputTypeOptions } from "./author.js";
 export {
   GENERATIVE_NODE_KINDS, JUDGMENT_NODE_KINDS, NODE_FIELDS, HOST_NODE_FIELDS, IGNORED_NODE_FIELDS,
-  GUARD_SIGNALS, GUARD_FIELDS, GUARDED_NODE_KINDS, SELF_CONFIDENCE_KINDS, type GuardSignal,
   MECHANICAL_PREDICATES, WORKFLOW_PREDICATES, PREDICATE_FIELDS, FIELD_TYPES,
   EFFORT_LEVELS, THINKING_LEVELS, MODEL_TIERS, AGENT_CONTEXTS, CALL_TRANSPORTS, CALL_RETRY_CLASSES, EFFECT_FAILURE_CODES, PROSE_ARTIFACT_TYPES,
 } from "./vocabulary.js";

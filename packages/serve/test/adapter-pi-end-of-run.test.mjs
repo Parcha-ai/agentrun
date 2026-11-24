@@ -1,7 +1,6 @@
 // The end-of-run step, the end's patch and harnessReady on pi through the adapter loop (runner/adapter-loop.ts): the
 // pi loop's cases (runner-end-of-run on the cutover base) on the one loop. The step (loop-contract.ts EndOfRunTurn) is
-// asked once after the job's answer and before the end, its turn's writes under work/.learning/ refused, the rows it
-// returns landing in the end commit's one transaction, a lost claim writing no end and the next claim asking again; the
+// asked once after the job's answer and before the end, the rows it returns landing in the end commit's one transaction, a lost claim writing no end and the next claim asking again; the
 // end's patch (outcome, cost, metrics) rides in the end's commit; a mark committed through harnessReady's commit is
 // fenced with the run's. On a real store and runner, the model a scripted origin behind pi's session proxy.
 import assert from "node:assert/strict";
@@ -68,9 +67,11 @@ async function setup(t, timing = STEADY) {
   const endEntries = () => entriesOf("agentrun.end");
   /** Each end entry of the run, its data. */
   const endsOf = () => read("SELECT json_extract(record, '$.data') AS data FROM pi_entries WHERE run_id = ? AND json_extract(record, '$.kind') = 'agentrun.end'", "run-1").map((row) => JSON.parse(row.data));
+  /** The job's ends kept for the run's look-back (KINDS.jobEnd), oldest first. */
+  const jobEndsOf = () => read("SELECT json_extract(record, '$.data') AS data FROM pi_entries WHERE run_id = ? AND json_extract(record, '$.kind') = 'agentrun.end-of-run.job'", "run-1").map((row) => JSON.parse(row.data));
   /** The run's command rows: kind, taken or not, and why refused. */
   const commandsOf = () => read("SELECT kind, taken_at IS NOT NULL AS taken, refused FROM commands WHERE run_id = ? ORDER BY id", "run-1");
-  return { server, start, until, toldRows, endEntries, entriesOf, endsOf, commandsOf };
+  return { server, start, until, toldRows, endEntries, entriesOf, endsOf, jobEndsOf, commandsOf };
 }
 
 /** The adapter loop on `spec`, its spec naming the run's agent and carrying `extra` (endPatch, harnessReady), its deps
@@ -113,23 +114,32 @@ test("pi through the adapter: the rows the end-of-run step returns land with the
   assert.deepEqual(toldRows(), [{ channel: "learning:test", run_id: "run-1", marker: "proposed" }], "the step's row is stored with the end");
 });
 
-test("pi through the adapter: the learning hook keeps its turn and proposal with the end, and queues one learning run", async (t) => {
-  const { server, start, until } = await setup(t);
+const FLOW = JSON.stringify({ v: 2, name: "find-policies", schemas: {}, root: { node: "chain", steps: [] } });
+const BLOCK = `\`\`\`\`workflow find-policies\n---\ndescription: Find a store's refund policy\n---\n${FLOW}\n\`\`\`\``;
+/** The learning hook over fake reads: a compile due, checks that refuse the drafts `refusals` lists first, and a commit
+ *  that lands (`committed`, each merge asked for). */
+async function compilingHook(committed, refusals = []) {
   const { createReflectHook } = await import("../dist/runner/reflect-hook.js");
-  const hook = createReflectHook({
+  return createReflectHook({
     facts: async (runId) => ({ learns: runId === "run-1", costUsd: 0 }),
-    promptFacts: async () => ({ active: 0, tools: [] }),
-    asked: async () => ({ asked: ["Follow the script."] }),
-    check: async ({ turn }) => ({ state: "proposed", notes: 1, skills: 0, workflows: 0, proposal: { seed: "s", notes: [{ file: "n.md", text: turn.answer }], asked: turn.asked } }),
-    newRunId: () => "run-1-learning",
+    feedback: async () => [],
+    correctionRefused: async () => [],
+    compileFacts: async () => ({ mode: "new", reference: "REF", traces: [], tools: [], judges: false }),
+    checkDraft: async ({ draft }) => refusals.length ? { errors: [refusals.shift()] } : { errors: [], kept: { name: draft.name, files: [{ path: "workflows/find-policies/workflow.json", text: FLOW }] }, digest: "d1" },
+    commit: async (input) => (committed.push(input), { ok: true, commit: "c1" }),
   });
-  await start(loopWith(piAdapterSpec({ script: [{ say: "done" }, { say: "a note" }], tools: {}, hooks: quiet }), {}, { endOfRun: hook }), "runner-a");
+}
+
+test("pi through the adapter: the learning hook commits the compiled draft and keeps its learning with the end", async (t) => {
+  const { server, start, until } = await setup(t);
+  const committed = [];
+  const hook = await compilingHook(committed);
+  await start(loopWith(piAdapterSpec({ script: [{ say: "done" }, { say: BLOCK }], tools: {}, hooks: quiet }), {}, { endOfRun: hook }), "runner-a");
   await until((row) => row.state === "ended" && row.runner === null, "the run did not end");
   const kept = await server.learning.proposal("run-1");
-  assert.equal(kept?.turn?.answer, "a note", "the turn's answer is kept with the end");
-  assert.equal(kept?.proposal?.state, "proposed");
-  const learning = await server.runs.get("run-1-learning");
-  assert.deepEqual(learning && [learning.agentId, learning.revisionId], ["agent-1", "rev-1"], "one learning run of the run's agent and revision");
+  assert.equal(kept?.proposal?.state, "merged", JSON.stringify(kept?.proposal));
+  assert.deepEqual(kept.proposal.workflows, [{ file: "workflows/find-policies/workflow.json", name: "find-policies" }]);
+  assert.deepEqual(committed.map(({ runId, draft }) => [runId, draft?.name]), [["run-1", "find-policies"]], "one merge, by the run");
 });
 
 test("pi through the adapter: the end-of-run step's re-ask (again) is its own request in the same session: the model answers it anew", async (t) => {
@@ -148,29 +158,16 @@ test("pi through the adapter: the end-of-run step's re-ask (again) is its own re
   assert.match(JSON.stringify(requests[2].messages), /a note/, "the re-ask is in the same session: its request carries the first answer");
 });
 
-test("pi through the adapter: the learning hook asks again once when the parser refuses the answer, and a skill opened with three backticks, then four, is proposed", async (t) => {
+test("pi through the adapter: the learning hook asks again once when the checks refuse the draft, and commits the fixed one", async (t) => {
   const { server, start, until } = await setup(t);
-  const { createReflectHook } = await import("../dist/runner/reflect-hook.js");
-  const { parseReflection } = await import("../dist/learn/index.js");
-  const skillAnswer = (fence) => `${fence}skill find-policies\n---\nname: find-policies\ndescription: Find a store's refund policy\n---\n# Find policies\n\nOpen /policies/ first.\n${fence}`;
-  const hook = createReflectHook({
-    facts: async (runId) => ({ learns: runId === "run-1", costUsd: 0 }),
-    promptFacts: async () => ({ active: 0, tools: [] }),
-    asked: async () => ({ asked: ["Follow the script."] }),
-    check: async ({ turn }) => {
-      const parsed = parseReflection(turn.answer);
-      if (!parsed.ok) return parsed.reason === "empty" ? { state: "dropped", reason: "empty" } : { state: "dropped", reason: "unparsed", detail: parsed.detail };
-      return { state: "proposed", notes: parsed.notes.length, skills: parsed.skills?.length ?? 0, workflows: 0, proposal: { skills: parsed.skills } };
-    },
-    newRunId: () => "run-1-learning",
-  });
-  await start(loopWith(piAdapterSpec({ script: [{ say: "done" }, { say: skillAnswer("```") }, { say: skillAnswer("````") }], tools: {}, hooks: quiet }), {}, { endOfRun: hook }), "runner-a");
+  const committed = [];
+  const hook = await compilingHook(committed, ["workflows/find-policies/workflow.json: its dry run failed"]);
+  await start(loopWith(piAdapterSpec({ script: [{ say: "done" }, { say: BLOCK }, { say: BLOCK }], tools: {}, hooks: quiet }), {}, { endOfRun: hook }), "runner-a");
   await until((row) => row.state === "ended" && row.runner === null, "the run did not end");
   const kept = await server.learning.proposal("run-1");
-  assert.equal(kept?.proposal?.state, "proposed", JSON.stringify(kept?.proposal));
-  assert.equal(kept?.proposal?.skills, 1, "the skill is proposed");
-  assert.equal(kept?.turn?.answer, skillAnswer("````"), "the turn kept is the answer read");
-  assert.ok(await server.runs.get("run-1-learning"), "one learning run queued");
+  assert.equal(kept?.proposal?.state, "merged", JSON.stringify(kept?.proposal));
+  assert.deepEqual(kept.proposal.compiled.attempts.map((attempt) => attempt.ok), [false, true], "every attempt recorded");
+  assert.equal(committed.length, 1, "the fixed draft is committed once");
 });
 
 /** A journal that refuses the commit that writes the run's end, and every one after it: an end whose commit is fenced.
@@ -381,22 +378,6 @@ test("pi through the adapter: a lost claim during the end-of-run turn writes no 
   assert.deepEqual(toldRows().map((row) => row.marker), ["second"], "only the finished step's row");
 });
 
-test("pi through the adapter: the end-of-run turn's write under work/.learning/ is refused; the job's own write there is not", async (t) => {
-  const { start, until } = await setup(t);
-  const ran = [];
-  const write = { name: "write", replaySafe: false, ask: false, run: async (args) => (ran.push(args.path), "written") };
-  const script = [{ call: "write", args: { path: ".learning/job.md" } }, { say: "done" }, { call: "write", args: { path: ".learning/note.md" } }, { say: "a note" }];
-  let answer;
-  const endOfRun = async (input) => {
-    answer = await input.ask("What did you learn?", { origin: "reflect", deadlineMs: 10_000 });
-    return undefined;
-  };
-  await start(loopWith(piAdapterSpec({ script, tools: { write }, hooks: quiet }), {}, { endOfRun }), "runner-a");
-  await until((row) => row.state === "ended" && row.runner === null, "the run did not end");
-  assert.deepEqual(ran, [".learning/job.md"], "the job wrote; the end-of-run turn's write never ran");
-  assert.deepEqual(answer, { ended: true, answer: "a note" });
-});
-
 test("pi through the adapter: a person's stop during the job: the stopped end carries the step's rows for a cut run, and nothing is asked", async (t) => {
   const { server, start, until, toldRows } = await setup(t);
   const calls = [];
@@ -415,8 +396,10 @@ test("pi through the adapter: a person's stop during the job: the stopped end ca
   assert.deepEqual(toldRows(), [{ channel: "learning:test", run_id: "run-1", marker: "cut:stopped" }], "its rows stored with the stopped end");
 });
 
-test("pi through the adapter: a person's cancel during the end-of-run turn ends the run cancelled, the cut step's rows with that end", async (t) => {
-  const { server, start, until, toldRows } = await setup(t);
+// The job's end is kept before the end-of-run turn looks back (keepJobEnd), and every reader serves it from then on: a
+// cancel that reaches the runner then cuts only the look-back, and the run ends with its job's end, at its time.
+test("pi through the adapter: a cancel that reaches the runner during the end-of-run turn cuts only the look-back: the run ends with its job's end, the cut step's rows with it", async (t) => {
+  const { server, start, until, toldRows, commandsOf, endsOf, jobEndsOf } = await setup(t);
   const calls = [];
   const endOfRun = async (input) => {
     calls.push(input.cut ?? "asked");
@@ -428,11 +411,19 @@ test("pi through the adapter: a person's cancel during the end-of-run turn ends 
   const { tool, running } = heldTool();
   await start(loopWith(piAdapterSpec({ script: [{ say: "done" }, { call: "slow" }, { say: "a note" }], tools: { slow: tool }, hooks: quiet }), {}, { endOfRun }), "runner-a");
   await running;
+  // The job's end, kept before the end-of-run turn asked (keepJobEnd), so before the cancel below.
+  const [kept] = jobEndsOf();
+  assert.ok(kept?.endedAt, `the job's end is kept with its time: ${JSON.stringify(jobEndsOf())}`);
   await server.command("run-1", { kind: "cancel" });
-  const row = await until((r) => r.state === "stopped" && r.runner === null, "the run did not stop");
-  assert.equal(row.summary, "cancelled", "a cancel's end says cancelled, never a stop's words");
+  const row = await until((r) => r.state !== "running" && r.runner === null, "the run did not end");
+  assert.equal(row.state, "ended", `the job's end: ${JSON.stringify(row)}`);
+  assert.notEqual(row.summary, "cancelled", "never a cancel's end");
+  assert.equal(row.endedAt, kept.endedAt, "at its job's end, kept before the cancel");
+  assert.deepEqual(jobEndsOf(), [kept], "kept once");
+  assert.deepEqual(endsOf().map((end) => end.state), [kept.end.state], "one end, the job's");
+  assert.deepEqual(commandsOf().map((each) => [each.kind, each.taken]), [["cancel", 1]], "the cancel is taken by the end");
   assert.deepEqual(calls, ["asked", "stopped-looking"], "asked once, then told the run was cut while it looked back");
-  assert.deepEqual(toldRows().map((each) => each.marker), ["cut:stopped-looking"], "the cut step's rows stored with the cancelled end");
+  assert.deepEqual(toldRows().map((each) => each.marker), ["cut:stopped-looking"], "the cut step's rows stored with the job's end");
 });
 
 test("pi through the adapter: a cut step that never answers (its store stalled) cannot hold a person's stop: the run still ends stopped", async (t) => {

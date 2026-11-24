@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import { cap, capRun } from "./adapter-pi-cap-support.mjs";
+import { facts as claudeFacts } from "@parcha/agentrun-harness-claude/facts";
 import { claudeAgentSpec, closeOpenSessions as closeClaude } from "./conformance-claude-agent.mjs";
 import { closeOpenSessions as closeCodex, codexSpec } from "./conformance-codex.mjs";
 import { closeOpenSessions as closeOpenCode, openCodeSpec } from "./conformance-opencode.mjs";
@@ -150,6 +151,21 @@ test("a script stopped by a parked call lists each earlier call's result as the 
     `3. read_file completed: {"id":"m-1"}. Its effect is done; it was not run again.`,
     `4. send_email completed: "mailed". Its effect is done; it was not run again.`,
   ], answer.text);
+});
+
+test("a stopped script lists each call's whole value, a long one too: the model reads it nowhere else", async () => {
+  // QA: an HN item of about 9 KB, answered by the call a person approved, reached the model cut at 2,000 characters, so
+  // the title (late in the JSON) never did. The answer's own bound is the host's, on the whole answer (boundResult).
+  const item = { kids: Array.from({ length: 60 }, (_, i) => ({ id: i, text: `comment ${i} `.repeat(15) })), title: "My YC app: Dropbox - Throw away your USB drive" };
+  const user = { about: "Bug fixer.", karma: 157316, notes: "x".repeat(3_000) };
+  assert.ok(JSON.stringify(item).length > 8_000);
+  const first = { startedAt: 1, seed: 2, nonce: "the-first-run", tools: TOOLS.map((one) => [one.name, one.name]) };
+  const nested = { call: async (name) => (name === "send_email" ? { text: JSON.stringify(item), fresh: true } : { text: JSON.stringify(user), fresh: false }), memo: async () => first };
+  const [, , codemode] = metaTools({ tools: () => TOOLS, granted: async () => true, codemode: true, discovery: { search: true, call: true } });
+  const answer = await codemode.call({ script: "await tools.read_file({});\nreturn await tools.send_email({});" }, { signal: new AbortController().signal, nested });
+  const lines = answer.text.split("\n").filter((line) => /^\d+\. /.test(line));
+  assert.equal(lines[0], `1. read_file completed: ${JSON.stringify(user)}. Its effect is done; it was not run again.`);
+  assert.equal(lines[1], `2. send_email completed: ${JSON.stringify(item)}. Its effect is done; it was not run again.`);
 });
 
 test("a stopped script lists a call's string value as the script read it: its structured string, never its fuller text", async () => {
@@ -541,15 +557,17 @@ for (const harness of HARNESSES.filter((one) => one.discovery)) {
 
 // ---- the follow-ups of a live walk: one verdict on every harness, the three in the server's tool list, one name a script may call ----
 
-/** What claude-agent's adapter was opened with, for `tools` under `gate`: the host's verdict on deferring the catalog. */
-async function claudeVerdict(t, tools, gate) {
+/** What claude-agent's adapter was opened with, for `tools` under `gate`: the host's verdict on deferring the catalog.
+ *  `facts`: the spec's in place of claude-agent's own (cli-run-spec.ts hands one with no tool search of its own for a
+ *  run on a model the route translates). `offered`, given, gets the names of the tools the session was handed unmarked (not `deferred`). */
+async function claudeVerdict(t, tools, gate, { facts: given, offered } = {}) {
   const { server, runners: [store] } = await stores({ runners: 1 });
   await queue(server, "run-1");
   const seen = [];
   const base = claudeAgentSpec({ script: [{ call: "read", args: {} }, { say: "done" }], tools, hooks: quiet });
   const loop = createAdapterLoop(async (claim, run) => {
     const spec = await base(claim, run);
-    return { ...spec, gate, adapter: { ...spec.adapter, open: (session, io) => (seen.push(session.deferCatalog), spec.adapter.open(session, io)) } };
+    return { ...spec, ...(given ? { facts: given } : {}), gate, adapter: { ...spec.adapter, open: (session, io) => (seen.push(session.deferCatalog), offered?.push(...session.tools.filter((tool) => !tool.deferred).map((tool) => tool.name)), spec.adapter.open(session, io)) } };
   }, { restartLimit: MAX_RESTARTS });
   const runner = startRunner({ store, createLoop: loop, name: "runner-a", ...TIMING });
   t.after(() => runner.close());
@@ -567,6 +585,17 @@ test("claude-agent: its own tool search follows the one verdict (over the thresh
   assert.deepEqual(await claudeVerdict(t, tools, settingOf(TOOLS_SEARCH)), [false], "tools_search set to deny: every tool listed, its own search off");
   assert.deepEqual(await claudeVerdict(t, tools, settingOf(TOOLS_CALL)), [false], "tools_call set to deny: the same");
   assert.deepEqual(await claudeVerdict(t, { read: tools.read, ...catalog(3) }, settingOf(undefined)), [false], "a few catalog tools: nothing deferred");
+});
+
+test("claude-agent on a model the route translates (facts with no tool search of its own): its own search stays off and the host's tools_search and tools_call are offered, over the threshold as under it", async (t) => {
+  const { ownToolSearch: _own, ...routedFacts } = claudeFacts;
+  const tools = { read: { name: "read", replaySafe: true, run: async () => "r" }, ...catalog(21) };
+  const allow = Object.assign(() => "allow", { permission: async () => "allow" });
+  const offered = [];
+  assert.deepEqual(await claudeVerdict(t, tools, allow, { facts: routedFacts, offered }), [false], "21 catalog tools: deferred by the host, never by the CLI's own search");
+  assert.ok(offered.includes(TOOLS_SEARCH) && offered.includes(TOOLS_CALL), `the host's helpers are offered: ${offered.join(", ")}`);
+  assert.ok(!offered.some((name) => name.startsWith("mcp__") && name !== "read"), `the host marks the catalog's tools deferred: ${offered.join(", ")}`);
+  assert.deepEqual(await claudeVerdict(t, tools, allow), [true], "with its own facts, its own search, as before");
 });
 
 test("capabilities.tools lists tools_search, tools_call and codemode: each with a line for people, allow or deny, allow by default, and no grant", async () => {

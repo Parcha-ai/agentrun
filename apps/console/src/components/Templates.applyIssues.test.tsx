@@ -21,7 +21,7 @@ afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 const KYB: TemplateView = {
   id: "kyb", bundled: true, source: null, sha: null, publisher: null,
   name: "kyb", display_name: "KYB", version: "1.0.0", description: "Checks a business.", license: "MIT", author: null, repository: null, output: null,
-  harness: ["pi"], model: { tier: "balanced" }, effort: null, tools: null, tool_policy: null, computer: null, computer_here: null, checkout: null, mcp: [], input_schema: null,
+  harness: ["pi"], model: { tier: "balanced" }, effort: null, tools: null, tool_policy: null, computer: null, needs: null, computer_here: null, checkout: null, mcp: [], input_schema: null,
   parameters: { type: "object", additionalProperties: false, required: ["risk_appetite", "company"], properties: {
     risk_appetite: { type: "string", description: "How much risk to accept", enum: ["low", "medium", "high"] },
     company: { type: "string", description: "The company's legal name" },
@@ -35,7 +35,7 @@ async function open(apply: () => Promise<unknown>) {
   const v2 = { listTemplates: async () => ({ templates: [KYB] }), listMcpServers: async () => ({ servers: [] }), applyTemplate: async () => apply() };
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
-  await act(async () => { root!.render(createElement(TemplatesPage, { v2: v2 as never, name: "kyb", go: () => {} })); });
+  await act(async () => { root!.render(createElement(TemplatesPage, { v2: v2 as never, name: "kyb", playground: true, go: () => {} })); });
   const settle = async () => { for (let i = 0; i < 6; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
   await settle();
   const apply_ = async () => { await act(async () => { [...host.querySelectorAll("button")].find((b) => b.textContent === "Apply")!.click(); }); await settle(); };

@@ -159,7 +159,7 @@ func TestAGuardReapedElsewhereEndsAsKill(t *testing.T) {
 	}
 	program := g.Pid
 	t.Cleanup(func() { _ = syscall.Kill(-program, syscall.SIGKILL) })
-	_ = syscall.Kill(execrun.GuardPid(g), syscall.SIGKILL)
+	_ = syscall.Kill(g.GuardPid(), syscall.SIGKILL)
 	select {
 	case <-g.Done():
 	case <-time.After(patience):

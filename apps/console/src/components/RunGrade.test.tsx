@@ -21,8 +21,8 @@ const run = (over: Partial<Run> = {}): Run => ({ sha: null, updated_at: "2026-11
   created_at: "2026-11-14T10:00:00Z", ended_at: "2026-11-14T10:00:09Z", result: { final_answer: "6100" }, error: null, cost: { usd: null, basis: "estimate", charge_state: null, cap_usd: null }, archived_at: null, learning: LEARNS, ...over,
 } as Run);
 const read = (graded?: RunGraded): RunLearningRead => ({
-  run: "run-g", state: "dropped", reason: "empty", detail: null, at: "2026-11-14T10:00:09Z", seed: "c1", merged: null, pending: [], verdict: null, problems: [], compiled: null, draft_errors: [],
-  cost_usd: { grade: null }, tokens: { grade: null }, used: { skills: [], workflows: [] }, ...(graded ? { graded } : {}),
+  run: "run-g", state: "dropped", reason: "empty", detail: null, at: "2026-11-14T10:00:09Z", seed: "c1", merged: null, workflows: [], corrections: 0, problems: [], compiled: null, draft_errors: [],
+  used: { workflows: [] }, ...(graded ? { graded } : {}),
 });
 const answer = (body: GradeBody, feedback: GradeAnswer["feedback"]): GradeAnswer => ({ run_id: "run-g", correct: body.correct, source: "feedback", graded_at: "2026-11-14T10:05:00.000Z", path: "agent", workflow: null, workflow_digest: null, feedback });
 
@@ -57,7 +57,7 @@ async function open(r: Run, { graded, grade, readLearning, refreshed = true }: {
     }),
     onGrade: async (body: GradeBody) => {
       sent.push(body);
-      const { expected: _, ...a } = grade ? await grade(body) : answer(body, body.label ? "look_back" : null);
+      const { expected: _, ...a } = grade ? await grade(body) : answer(body, body.label ? "correction" : null);
       stored = { ...a, feedback_status: a.feedback ? "running" : null };
       if (a.feedback && refreshed) show({ ...r, status: "working", state: "working", ended_at: null });
       return a;
@@ -87,9 +87,8 @@ async function open(r: Run, { graded, grade, readLearning, refreshed = true }: {
   return { host, sent, section, button, click, boxes, type, rerender, end, tab, failNext, readCount };
 }
 
-/** A grade's answer that opened a `revise` round: a learned workflow gave the answer alone. */
-const revised = (body: GradeBody): GradeAnswer => ({ ...answer(body, "revise"), path: "workflow", workflow: "sort-invoice", workflow_digest: "0123456789abcdef" });
-const WORKFLOW = { file: "workflows/sort-invoice/workflow.json", name: "sort-invoice" };
+/** A grade's answer on a run a learned workflow answered alone: it opens no round, right or wrong. */
+const served = (body: GradeBody): GradeAnswer => ({ ...answer(body, null), path: "workflow", workflow: "sort-invoice", workflow_digest: "0123456789abcdef" });
 
 describe("a run's page, the Grade control", () => {
   it("grades it right in one click, and shows the grade with a way to grade again", async () => {
@@ -118,7 +117,7 @@ describe("a run's page, the Grade control", () => {
     let text = t.section()!.textContent ?? "";
     expect(text).toContain("Graded wrong");
     expect(text).toContain("Reviewing");
-    expect(text).toContain("The agent is looking back on your words.");
+    expect(text).toContain("Your words are being added to its corrections.");
     expect(t.button("Open the Timeline")).toBeTruthy();
     // The run, open again on the round, then ended again: the round is done.
     await t.rerender(run({ status: "working", state: "working", ended_at: null }));
@@ -126,7 +125,7 @@ describe("a run's page, the Grade control", () => {
     await t.end(run({ ended_at: "2026-11-14T10:06:00Z" }));
     text = t.section()!.textContent ?? "";
     expect(text).not.toContain("Reviewing");
-    expect(text).toContain("The agent looked back on your words.");
+    expect(text).toContain("Your words were added to its corrections.");
     expect(t.button("Grade again")).toBeTruthy();
   });
 
@@ -142,15 +141,15 @@ describe("a run's page, the Grade control", () => {
     await t.end(run({ ended_at: ENDED_SKEWED }));
     let text = t.section()!.textContent ?? "";
     expect(text).not.toContain("Reviewing");
-    expect(text).toContain("The agent looked back on your words.");
+    expect(text).toContain("Your words were added to its corrections.");
     expect(t.button("Grade again")).toBeTruthy();
     act(() => root?.unmount()); root = undefined; document.body.innerHTML = "";
 
     // And after a reload.
-    const again = await open(run({ ended_at: ENDED_SKEWED }), { graded: gradedOf({ feedback: "look_back", feedback_status: "ended" }) });
+    const again = await open(run({ ended_at: ENDED_SKEWED }), { graded: gradedOf({ feedback: "correction", feedback_status: "ended" }) });
     text = again.section()!.textContent ?? "";
     expect(text).not.toContain("Reviewing");
-    expect(again.section()!.querySelector('[role="status"]')?.textContent).toBe("The agent looked back on your words.");
+    expect(again.section()!.querySelector('[role="status"]')?.textContent).toBe("Your words were added to its corrections.");
     expect(again.button("Grade again")).toBeTruthy();
   });
 
@@ -162,12 +161,12 @@ describe("a run's page, the Grade control", () => {
     await t.rerender(run({ ended_at: "2026-11-14T10:06:00Z" }));
     let text = t.section()!.textContent ?? "";
     expect(text).toContain("Reviewing");
-    expect(text).toContain("The agent is looking back on your words.");
+    expect(text).toContain("Your words are being added to its corrections.");
     expect(t.button("Grade again")).toBeUndefined();
     act(() => root?.unmount()); root = undefined; document.body.innerHTML = "";
 
     // And after a reload.
-    const again = await open(run({ ended_at: "2026-11-14T10:06:00Z" }), { graded: gradedOf({ feedback: "look_back" }) });
+    const again = await open(run({ ended_at: "2026-11-14T10:06:00Z" }), { graded: gradedOf({ feedback: "correction" }) });
     text = again.section()!.textContent ?? "";
     expect(text).toContain("Reviewing");
     expect(again.button("Grade again")).toBeUndefined();
@@ -199,7 +198,7 @@ describe("a run's page, the Grade control", () => {
   });
 
   it("shows a graded run's grade read back, reviewing while the run is open again, and a re-grade replaces it", async () => {
-    const graded = gradedOf({ feedback: "look_back" });
+    const graded = gradedOf({ feedback: "correction" });
     const open1 = await open(run({ status: "working", state: "working", ended_at: null }), { graded });
     let text = open1.section()!.textContent ?? "";
     expect(text).toContain("Graded wrong");
@@ -220,21 +219,21 @@ describe("a run's page, the Grade control", () => {
   });
 
   it("says a finished round's outcome after a reload, from the grade read back", async () => {
-    const t = await open(run({ ended_at: ENDED_AGAIN }), { graded: gradedOf({ feedback: "look_back", feedback_status: "ended" }) });
+    const t = await open(run({ ended_at: ENDED_AGAIN }), { graded: gradedOf({ feedback: "correction", feedback_status: "ended" }) });
     const text = t.section()!.textContent ?? "";
     expect(text).toContain("Graded wrong");
     expect(text).not.toContain("Reviewing");
-    expect(t.section()!.querySelector('[role="status"]')?.textContent).toBe("The agent looked back on your words.");
+    expect(t.section()!.querySelector('[role="status"]')?.textContent).toBe("Your words were added to its corrections.");
     expect(t.button("Open the Timeline")).toBeTruthy();
     expect(t.button("Grade again")).toBeTruthy();
   });
 
   it("is still reviewing after a reload while the round's learning settles: no Grade again until it has", async () => {
     const settling = run({ ended_at: ENDED_AGAIN, learning: { ...LEARNS!, state: "reflecting", reason: null } });
-    const t = await open(settling, { graded: gradedOf({ feedback: "look_back", feedback_status: "ended" }) });
+    const t = await open(settling, { graded: gradedOf({ feedback: "correction", feedback_status: "ended" }) });
     const text = t.section()!.textContent ?? "";
     expect(text).toContain("Reviewing");
-    expect(text).toContain("The agent is looking back on your words.");
+    expect(text).toContain("Your words are being added to its corrections.");
     expect(t.button("Grade again")).toBeUndefined();
     await t.rerender(run({ ended_at: ENDED_AGAIN }));
     expect(t.section()!.textContent).not.toContain("Reviewing");
@@ -262,9 +261,9 @@ describe("a run's page, the Grade control", () => {
     text = t.section()!.textContent ?? "";
     expect(text).toContain("Graded wrong");
     expect(text).toContain("Reviewing");
-    expect(text).toContain("The agent is looking back on your words.");
+    expect(text).toContain("Your words are being added to its corrections.");
     await t.tab("Report");
-    expect(t.section()!.textContent).toContain("The agent is looking back on your words.");
+    expect(t.section()!.textContent).toContain("Your words are being added to its corrections.");
   });
 
   it("keeps the grade it sent while the learning read is still pending, or failed", async () => {
@@ -299,13 +298,13 @@ describe("a run's page, the Grade control", () => {
     // The page still holds the run as it ended before the grade.
     let text = t.section()!.textContent ?? "";
     expect(text).toContain("Reviewing");
-    expect(text).toContain("The agent is looking back on your words.");
+    expect(text).toContain("Your words are being added to its corrections.");
     expect(t.button("Grade again")).toBeUndefined();
     // The page's run read later brings the run's new end, which reads the learning again.
     await t.end(run({ ended_at: "2026-11-14T10:06:00Z" }));
     text = t.section()!.textContent ?? "";
     expect(text).not.toContain("Reviewing");
-    expect(text).toContain("The agent looked back on your words.");
+    expect(text).toContain("Your words were added to its corrections.");
     expect(t.button("Grade again")).toBeTruthy();
   });
 
@@ -327,8 +326,8 @@ describe("a run's page, the Grade control", () => {
     expect(t.button("Grade again")).toBeTruthy();
     act(() => root?.unmount()); root = undefined; document.body.innerHTML = "";
 
-    // And after a reload, a revise round the same.
-    const again = await open(refused, { graded: gradedOf({ feedback: "revise", path: "workflow", workflow: "sort-invoice", feedback_status: "not_run" }) });
+    // And after a reload, the same.
+    const again = await open(refused, { graded: gradedOf({ feedback: "correction", feedback_status: "not_run" }) });
     text = again.section()!.textContent ?? "";
     expect(text).not.toContain("Reviewing");
     expect(again.section()!.querySelector('[role="status"]')?.textContent).toBe(NOT_RUN);
@@ -354,7 +353,7 @@ describe("a run's page, the Grade control", () => {
     expect(t.readCount()).toBe(before + 2);
     const text = t.section()!.textContent ?? "";
     expect(text).not.toContain("Reviewing");
-    expect(text).toContain("The agent looked back on your words.");
+    expect(text).toContain("Your words were added to its corrections.");
     expect(t.button("Grade again")).toBeTruthy();
     // Settled: no read after it.
     await act(async () => { await new Promise((r) => setTimeout(r, 1_100)); });
@@ -373,38 +372,42 @@ describe("a run's page, the Grade control", () => {
     expect(text).not.toContain("Graded wrong");
   });
 
-  it("says a finished revise round revised the workflow only when its change was kept", async () => {
-    const reopened = run({ status: "working", state: "working", ended_at: null, learning: { ...LEARNS!, state: "reflecting", reason: null } });
-    const ends = (learning: Run["learning"]) => run({ ended_at: "2026-11-14T10:06:00Z", learning });
-    const cases: [Run["learning"], string][] = [
-      [{ ...LEARNS!, state: "merged", reason: null, workflows: [WORKFLOW] }, "The learned workflow that answered was revised with your grade."],
-      [{ ...LEARNS!, state: "merged", reason: null, workflows: [{ ...WORKFLOW, pending: true }] }, "The learned workflow that answered was revised with your grade. The revision waits for your OK."],
-      // Its draft failed the checks: nothing kept.
-      [{ ...LEARNS!, state: "dropped", reason: "checker" }, "The agent looked back at your grade; nothing changed."],
-      // A note kept, the workflow's revision not.
-      [{ ...LEARNS!, state: "merged", reason: null, learned: [{ file: "vendors.md", name: "vendors", supersedes: [] }] }, "The agent looked back at your grade; nothing changed."],
-    ];
-    for (const [learning, said] of cases) {
-      const t = await open(run(), { grade: async (body) => revised(body) });
-      await t.click("Wrong");
-      await t.type(t.boxes()[0]!, "Northwind is a freight vendor.");
-      await t.click("Send grade");
-      expect(t.section()!.textContent).toContain("The learned workflow that answered is being revised with your grade.");
-      await t.rerender(reopened);
-      expect(t.section()!.textContent).toContain("Reviewing");
-      await t.end(ends(learning));
-      const text = t.section()!.textContent ?? "";
-      expect(text).not.toContain("Reviewing");
-      expect(text).toContain(said);
-      if (said.includes("nothing changed")) expect(text).not.toContain("was revised");
-      act(() => root?.unmount()); root = undefined; document.body.innerHTML = "";
-    }
+  // A wrong grade of a run its learned workflow answered alone opens no round (the workflow's graded hold reads it): the
+  // grade is kept, said so at once, and nothing is reviewed.
+  it("says a wrong grade of a served run is kept, with no round", async () => {
+    const t = await open(run(), { grade: async (body) => served(body) });
+    await t.click("Wrong");
+    await t.type(t.boxes()[0]!, "Northwind is a freight vendor.");
+    await t.click("Send grade");
+    const text = t.section()!.textContent ?? "";
+    expect(text).toContain("Kept for this agent.");
+    expect(text).not.toContain("Reviewing");
+    expect(text).not.toMatch(/revis/i);
   });
 
   it("says a refused grade in the server's words and keeps the choice", async () => {
     const t = await open(run(), { grade: async () => { throw new ClientError(422, "invalid_input", "A replay run is never graded: its answer is scored against the run it replays."); } });
     await t.click("Right");
     expect(t.section()!.querySelector('[role="alert"]')?.textContent).toContain("A replay run is never graded");
+    expect(t.button("Right")).toBeTruthy();
+  });
+
+  // One rule for when a grade is refused, the server's: a run whose row has ended can still read `reflecting` while what
+  // it wrote is checked, and the server takes its grade. Only the server knows when it refuses one (409 run_learning).
+  const REFLECTING: Run["learning"] = { detail: null, at: "2026-11-14T10:00:09Z", state: "reflecting", reason: null };
+  const LEARNING_409 = "The run is still learning from its answer: grade it once that ends.";
+
+  it("offers the grade on an ended run that reads reflecting, and sends it", async () => {
+    const t = await open(run({ learning: REFLECTING }));
+    expect(t.section()!.textContent).toContain("Was the answer right?");
+    await t.click("Right");
+    expect(t.sent).toEqual([{ correct: true }]);
+  });
+
+  it("says a 409 run_learning in the server's words and keeps the choice", async () => {
+    const t = await open(run({ poll_after_ms: 1000, learning: REFLECTING }), { grade: async () => { throw new ClientError(409, "run_learning", LEARNING_409); } });
+    await t.click("Right");
+    expect(t.section()!.querySelector('[role="alert"]')?.textContent).toBe(`Your grade wasn't taken: ${LEARNING_409}`);
     expect(t.button("Right")).toBeTruthy();
   });
 

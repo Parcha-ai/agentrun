@@ -2,10 +2,10 @@ import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RunDetail } from "./RunDetail";
-import { useRunScreen, type ScreenView } from "./RunScreen";
+import { keptUntilOf, useRunScreen, type ScreenView } from "./RunScreen";
 import { messageFeatures, runFixture } from "@/fixtures";
 import { ClientError } from "@/lib/client";
-import type { Run, RunComputer } from "@/lib/v2";
+import type { Run, RunComputer, TimelineRow } from "@/lib/v2";
 
 // The run page's Screen tab, over GET /v2/runs/{id}/computer (owner session only, no-store): `off` (no browser, or it
 // resolves unavailable) hides it; `none` (one, with no session open) waits only while its session is opening, and says
@@ -436,11 +436,11 @@ describe("the run page's Screen tab, for a browser", () => {
 // the metered line for a metered provider of every kind but the browser; and the agent's ask at its computer, answered
 // Done or Cancel through the one hand-back.
 describe("the Screen tab for every kind, and the agent's ask", () => {
-  type Extra = { onTakeOver?: unknown; onHandBack?: unknown; readComputers?: unknown; tab?: "screen" };
+  type Extra = { onTakeOver?: unknown; onHandBack?: unknown; readComputers?: unknown; tab?: "screen"; rows?: unknown };
   async function screen(read: () => Promise<RunComputer>, run: Run, extra: Extra = {}) {
     const host = document.body.appendChild(document.createElement("div"));
     root = createRoot(host);
-    const show = (r: Run) => act(async () => { root!.render(createElement(RunDetail, { run: r, agentName: "using", messages: messageFeatures, harnessSteers: true, rows: f.page.rows, files: [], actions: {}, readComputer: read, computerEvery: 20, ...extra } as never)); });
+    const show = (r: Run, more: Extra = {}) => act(async () => { root!.render(createElement(RunDetail, { run: r, agentName: "using", messages: messageFeatures, harnessSteers: true, rows: f.page.rows, files: [], actions: {}, readComputer: read, computerEvery: 20, ...extra, ...more } as never)); });
     await show(run);
     await settle();
     const panel = () => host.querySelector('section[aria-label="Screen"]') as HTMLElement | null;
@@ -492,6 +492,89 @@ describe("the Screen tab for every kind, and the agent's ask", () => {
     await p.show(desktop);
     await settle(100);
     expect(p.panel()!.textContent).toContain("Waiting for the desktop. Its screen shows here once it is up.");
+  });
+
+  it("a desktop kept at the run's park says what the run waits for and until when (its park's row's time and minutes), never released or ended; past that time, that it wasn't kept", async () => {
+    const PARKED = "2026-11-05T09:10:00Z";
+    const UNTIL = "2026-11-05T09:20:00Z";
+    const at = new Date(UNTIL).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    const phase = (seq: number, summary: string, timestamp: string) => ({ id: `p${seq}`, seq, kind: "phase", summary, text: null, timestamp, created_at: timestamp, agent_label: null, tool_name: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null });
+    const rows = [phase(1, "The desktop is ready: Linux (amd64), from E2B.", "2026-11-05T09:00:00Z"), phase(2, "The desktop is kept for 10 minutes while you decide.", PARKED)];
+    let read: RunComputer = DESKTOP_LIVE();
+    const p = await screen(async () => read, desktop, { tab: "screen", rows });
+    expect(p.panel()!.querySelector("iframe")).not.toBeNull();
+    // Parked on a tool's approval: its viewer closed, the desktop kept for the resume (GET /computer: closed, no more).
+    read = { state: "none", kind: "desktop", hold: "agent", session: "closed" };
+    const waiting = (kind: string) => ({ ...desktop, status: "input_required", state: "waiting", pending: { kind } } as unknown as Run);
+    await p.show(waiting("approval"));
+    await settle(100);
+    expect(p.panel()!.querySelector("iframe")).toBeNull();
+    expect(p.panel()!.textContent).toContain(`Waiting for your approval. The desktop is kept until ${at}.`);
+    expect(p.panel()!.textContent).not.toMatch(/released|ended/);
+    expect(p.button("Take over")).toBeUndefined();
+    await p.show(waiting("question"));
+    await settle(60);
+    expect(p.panel()!.textContent).toContain(`Waiting for your answer. The desktop is kept until ${at}.`);
+    await p.show(waiting("budget"));
+    await settle(60);
+    expect(p.panel()!.textContent).toContain(`Waiting for you to raise the spend cap. The desktop is kept until ${at}.`);
+    // Its time passed: not kept, and a new one starts when the run goes on.
+    read = { state: "none", kind: "desktop", hold: "agent", session: "closed", ended: { at: UNTIL, why: "The desktop wasn't kept: 10 minutes passed. A new one starts when the run goes on." } };
+    await settle(100);
+    expect(p.panel()!.textContent).toContain("The desktop wasn't kept: 10 minutes passed. A new one starts when the run goes on.");
+    expect(p.panel()!.textContent).not.toContain("released");
+  });
+
+  it("a desktop kept at a park and answered in time is waited for until the resume's screen is up, never 'released'; let go after that, it is", async () => {
+    const PARKED = "2026-11-05T09:10:00Z";
+    const at = new Date("2026-11-05T09:20:00Z").toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    const phase = (seq: number, summary: string, timestamp: string) => ({ id: `p${seq}`, seq, kind: "phase", summary, text: null, timestamp, created_at: timestamp, agent_label: null, tool_name: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null });
+    const rows = [phase(1, "The desktop is ready: Linux (amd64), from E2B.", "2026-11-05T09:00:00Z"), phase(2, "The desktop is kept for 10 minutes while you decide.", PARKED)];
+    const resumed = [...rows, phase(3, "The desktop is ready: Linux (amd64), from E2B. It's the same desktop, as the wait left it.", "2026-11-05T09:11:10Z")];
+    // GET /computer for a desktop with no viewer up while its run is not over: opening (computer-view.ts sessionIn).
+    const opening: RunComputer = { state: "none", kind: "desktop", hold: "agent", session: "opening" };
+    const waiting = { ...desktop, status: "input_required", state: "waiting", pending: { kind: "approval" } } as unknown as Run;
+    let read: RunComputer = DESKTOP_LIVE();
+    const p = await screen(async () => read, desktop, { tab: "screen", rows });
+    expect(p.panel()!.querySelector("iframe")).not.toBeNull();
+    // Parked: the viewer goes with the park's process, the desktop kept.
+    read = opening;
+    await p.show(waiting);
+    await settle(100);
+    expect(p.panel()!.textContent).toContain(`Waiting for your approval. The desktop is kept until ${at}.`);
+    // Allowed: the run goes on, and its resume opens the same desktop's screen again.
+    await p.show(desktop);
+    await settle(100);
+    expect(p.panel()!.textContent).toContain("Waiting for the desktop. Its screen shows here once it is up.");
+    expect(p.panel()!.textContent).not.toContain("released");
+    await p.show(desktop, { rows: resumed });
+    await settle(100);
+    expect(p.panel()!.textContent).toContain("Waiting for the desktop. Its screen shows here once it is up.");
+    read = DESKTOP_LIVE();
+    await settle(100);
+    expect(p.panel()!.querySelector("iframe")).not.toBeNull();
+    // Let go at the run's end, before the run reads ended: released.
+    read = opening;
+    await settle(100);
+    expect(p.panel()!.textContent).toContain("This desktop has been released.");
+  });
+
+  it("a page opened on a parked run with its desktop kept says what the run waits for and until when, though it never saw the desktop live", async () => {
+    const phase = (seq: number, summary: string, timestamp: string) => ({ id: `p${seq}`, seq, kind: "phase", summary, text: null, timestamp, created_at: timestamp, agent_label: null, tool_name: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null });
+    const rows = [phase(1, "The desktop is kept for 10 minutes while you decide.", "2026-11-05T09:10:00Z")];
+    const at = new Date("2026-11-05T09:20:00Z").toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    const waiting = { ...desktop, status: "input_required", state: "waiting", pending: { kind: "approval" } } as unknown as Run;
+    const p = await screen(async () => ({ state: "none", kind: "desktop", hold: "agent", session: "opening" }), waiting, { tab: "screen", rows });
+    expect(p.panel()!.textContent).toContain(`Waiting for your approval. The desktop is kept until ${at}.`);
+  });
+
+  it("keptUntilOf reads the newest park's row of the kind, and nothing once that computer is ready again or for another kind", () => {
+    const phase = (seq: number, summary: string, timestamp = "2026-11-05T09:10:00Z") => ({ id: `p${seq}`, seq, kind: "phase", summary, text: null, timestamp }) as unknown as TimelineRow;
+    const kept = phase(2, "The phone is kept for 10 minutes while you decide.");
+    expect(keptUntilOf([phase(1, "The phone is ready: Android."), kept], "phone")).toBe("2026-11-05T09:20:00.000Z");
+    expect(keptUntilOf([kept, phase(3, "The phone is ready: Android. It's the same phone, as the wait left it.")], "phone")).toBeUndefined();
+    expect(keptUntilOf([kept], "desktop")).toBeUndefined();
+    expect(keptUntilOf([], "desktop")).toBeUndefined();
   });
 
   it("a stopped run's desktop never reads as waited for; the follow-up's new desktop, booting while the run is queued, is waited for", async () => {
@@ -858,5 +941,541 @@ describe("the screen is read again soon while a change is on its way", () => {
     await hook(async () => { reads += 1; return LIVE("agent"); });
     await settle(200);
     expect(reads).toBe(1);
+  });
+});
+
+// The run's recordings (its agent's computer.record), from its read: "Recording" while one is written, Export (the run
+// files route's ?download=1) for each one finished.
+describe("the Screen tab's recording", () => {
+  const desktop = { ...working, computer: { kind: "desktop", provider: "docker", state: "ready" } } as Run;
+  const rec = (path: string, finished: boolean) => ({ path, computer: "desk", seconds: 12.5, bytes: 4096, finished });
+  async function shown(recordings: ReturnType<typeof rec>[]) {
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    await act(async () => {
+      root!.render(createElement(RunDetail, { run: { ...desktop, recordings }, agentName: "rec", messages: messageFeatures, harnessSteers: true, rows: [], files: [], actions: {}, readComputer: async () => ({ state: "none", kind: "desktop", hold: "agent", session: "opening" }), computerEvery: 20, tab: "screen", fileUrl: (path: string) => `/v2/runs/${RUN}/files/${path}` } as never));
+    });
+    await settle();
+    const exports = [...host.querySelectorAll("a[download]")] as HTMLAnchorElement[];
+    return { text: host.textContent ?? "", exports };
+  }
+  it("says Recording while a file is written, and offers no Export for it", async () => {
+    const { text, exports } = await shown([rec("recordings/desk.mp4", false)]);
+    expect(text).toContain("Recording");
+    expect(exports).toEqual([]);
+  });
+  it("exports each finished file through the files route's download, and says nothing of recording then", async () => {
+    const { text, exports } = await shown([rec("recordings/desk.mp4", true), rec("recordings/desk-2.mp4", true)]);
+    expect(text).not.toContain("Recording");
+    expect(exports.map((a) => [a.getAttribute("href"), a.textContent?.trim()])).toEqual([[`/v2/runs/${RUN}/files/recordings/desk.mp4?download=1`, "Export 1"], [`/v2/runs/${RUN}/files/recordings/desk-2.mp4?download=1`, "Export 2"]]);
+  });
+  it("shows neither for a run that recorded nothing", async () => {
+    const { text, exports } = await shown([]);
+    expect(text).not.toContain("Recording");
+    expect(exports).toEqual([]);
+  });
+});
+
+// A finished run's recording plays where its live screen was: a muted, inline <video> of the run files route's file (the
+// Export's URL with no download flag), sized as the live view is; with several, a picker in the header. A run still
+// going keeps its live view.
+describe("the Screen tab plays a finished run's recording", () => {
+  const done = { ...f.run, status: "completed", state: "idle" } as Run;
+  const rec = (path: string, finished = true) => ({ path, computer: "desk", seconds: 12.5, bytes: 4096, finished });
+  const URL_OF = (path: string) => `/v2/runs/${RUN}/files/${path}`;
+  async function played(run: Run, read: () => Promise<RunComputer>, fileUrl: ((path: string) => string) | null = URL_OF) {
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    await act(async () => {
+      root!.render(createElement(RunDetail, { run, agentName: "rec", messages: messageFeatures, harnessSteers: true, rows: [], files: [], actions: {}, readComputer: read, computerEvery: 20, tab: "screen", ...(fileUrl ? { fileUrl } : {}) } as never));
+    });
+    await settle();
+    const panel = host.querySelector('section[aria-label="Screen"]') as HTMLElement;
+    return { panel, video: () => panel.querySelector("video"), exports: () => [...panel.querySelectorAll("a[download]")] as HTMLAnchorElement[] };
+  }
+  const closedDesktop = async () => ({ state: "none", kind: "desktop", hold: "agent", session: "closed" }) as RunComputer;
+  const onDesktop = (recordings: ReturnType<typeof rec>[], run: Run = done) => ({ ...run, computer: { kind: "desktop", provider: "docker", state: "ready" }, recordings }) as Run;
+
+  it("a finished desktop run plays its one recording from the file route, inline, muted, and keeps Export", async () => {
+    const p = await played(onDesktop([rec("recordings/desk.mp4")]), closedDesktop);
+    const video = p.video();
+    expect(video, "a player where the live screen was").toBeTruthy();
+    expect(video!.getAttribute("src")).toBe(URL_OF("recordings/desk.mp4"));
+    expect(video!.hasAttribute("controls")).toBe(true);
+    expect(video!.muted).toBe(true);
+    expect(video!.hasAttribute("playsinline")).toBe(true);
+    expect(video!.getAttribute("preload")).toBe("metadata");
+    expect(video!.className).toContain("aspect-[16/10]");
+    expect(p.panel.textContent).not.toContain("closed when the run ended");
+    expect(p.exports().map((a) => a.getAttribute("href"))).toEqual([`${URL_OF("recordings/desk.mp4")}?download=1`]);
+  });
+
+  it("a finished phone run's player is framed as the phone is, at the height below it", async () => {
+    const rect = (top: number, height: number) => ({ top, bottom: top + height, left: 0, right: 0, width: 0, height, x: 0, y: top, toJSON() {} }) as DOMRect;
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+      if (this.tagName === "VIDEO") return rect(350, 0);
+      if (this.hasAttribute("data-scroll-pane")) return rect(200, 600);
+      return rect(0, 0);
+    });
+    vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockImplementation(function (this: HTMLElement) { return this.hasAttribute("data-scroll-pane") ? 600 : 0; });
+    const run = { ...done, computer: { kind: "phone", provider: "phone-harness", state: "ready" }, recordings: [rec("recordings/phone.mp4")] } as Run;
+    const p = await played(run, async () => ({ state: "none", kind: "phone", hold: "agent", session: "closed" }));
+    const video = p.video();
+    expect(video!.getAttribute("src")).toBe(URL_OF("recordings/phone.mp4"));
+    expect(video!.className).toContain("aspect-[9/19]");
+    expect(video!.style.height).toBe(`${600 - 150 - 32}px`);
+  });
+
+  it("a live phone whose run ends in its recording fits the player, not the frame it replaced, and refits it", async () => {
+    let paneHeight = 600;
+    const rect = (top: number, height: number) => ({ top, bottom: top + height, left: 0, right: 0, width: 0, height, x: 0, y: top, toJSON() {} }) as DOMRect;
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+      if (this.tagName === "IFRAME") return rect(350, 0);
+      if (this.tagName === "VIDEO") return rect(300, 0);
+      if (this.hasAttribute("data-scroll-pane")) return rect(200, paneHeight);
+      return rect(0, 0);
+    });
+    vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockImplementation(function (this: HTMLElement) { return this.hasAttribute("data-scroll-pane") ? paneHeight : 0; });
+    const phone = { computer: { kind: "phone", provider: "phone-harness", state: "ready" }, recordings: [rec("recordings/phone.mp4")] };
+    const props = (run: Run) => ({ run, agentName: "rec", messages: messageFeatures, harnessSteers: true, rows: [], files: [], actions: {}, readComputer: async () => ({ state: "live", kind: "phone", viewer: VIEWER, hold: "agent" }), computerEvery: 20, tab: "screen", fileUrl: URL_OF }) as never;
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    await act(async () => { root!.render(createElement(RunDetail, props({ ...working, ...phone } as Run))); });
+    await settle();
+    expect((host.querySelector("iframe") as HTMLIFrameElement).style.height).toBe(`${600 - 150 - 32}px`);
+    await act(async () => { root!.render(createElement(RunDetail, props({ ...done, ...phone } as Run))); });
+    await settle();
+    const video = () => host.querySelector("video") as HTMLVideoElement;
+    expect(host.querySelector("iframe")).toBeNull();
+    expect(video().style.height).toBe(`${600 - 100 - 32}px`);
+    paneHeight = 650;
+    await act(async () => { window.dispatchEvent(new Event("resize")); });
+    expect(video().style.height).toBe(`${650 - 100 - 32}px`);
+  });
+
+  it("with several recordings, a picker in the header plays the one picked; every Export stays", async () => {
+    const p = await played(onDesktop([rec("recordings/desk.mp4"), rec("recordings/desk-2.mp4")]), closedDesktop);
+    expect(p.video()!.getAttribute("src")).toBe(URL_OF("recordings/desk.mp4"));
+    const picker = p.panel.querySelector('header [role="radiogroup"]') as HTMLElement;
+    expect(picker, "the picker sits in the header").toBeTruthy();
+    const second = [...picker.querySelectorAll("input")][1] as HTMLInputElement;
+    await act(async () => { second.click(); });
+    expect(p.video()!.getAttribute("src")).toBe(URL_OF("recordings/desk-2.mp4"));
+    expect(p.exports()).toHaveLength(2);
+  });
+
+  it("one finished recording has no picker, and one still being written is not played", async () => {
+    const p = await played(onDesktop([rec("recordings/desk.mp4"), rec("recordings/desk-2.mp4", false)]), closedDesktop);
+    expect(p.video()!.getAttribute("src")).toBe(URL_OF("recordings/desk.mp4"));
+    expect(p.panel.querySelector('[role="radiogroup"]')).toBeNull();
+  });
+
+  it("a run still going keeps its live view and its Recording chip: no player", async () => {
+    const p = await played(onDesktop([rec("recordings/desk.mp4"), rec("recordings/desk-2.mp4", false)], working), async () => ({ state: "live", kind: "desktop", viewer: VIEWER, hold: "agent" }));
+    expect(p.video()).toBeNull();
+    expect(p.panel.querySelector("iframe")).toBeTruthy();
+    expect(p.panel.textContent).toContain("Recording");
+  });
+
+  it("a finished run with no file route says its words, with no player", async () => {
+    const p = await played(onDesktop([rec("recordings/desk.mp4")]), closedDesktop, null);
+    expect(p.video()).toBeNull();
+    expect(p.panel.textContent).toContain("The desktop closed when the run ended.");
+  });
+});
+
+// A finished run's recording has the run's steps beside it: the timeline's own steps that began while the file was
+// recorded, each at its time on the video (its row's time less the time of the row that says the recording began). A
+// step is a button that moves the video there; the step the video is at is marked. With no row that says when the
+// recording began there is no list, and the player is alone as before.
+describe("the Screen tab's recording has the run's steps beside it", () => {
+  const done = { ...f.run, status: "completed", state: "idle" } as Run;
+  const URL_OF = (path: string) => `/v2/runs/${RUN}/files/${path}`;
+  const rec = (path: string) => ({ path, computer: "desk", seconds: 60, bytes: 4096, finished: true });
+  const recorded = (recordings: ReturnType<typeof rec>[]) => ({ ...done, computer: { kind: "desktop", provider: "docker", state: "ready" }, recordings }) as Run;
+  const at = (s: number) => new Date(Date.parse("2026-11-05T09:00:00Z") + s * 1000).toISOString();
+  let n = 0;
+  const row = (kind: TimelineRow["kind"], summary: string, timestamp: string, more: Partial<TimelineRow> = {}) => ({
+    id: `v${(n += 1)}`, seq: n, kind, summary, text: null, timestamp, created_at: timestamp, agent_label: null, tool_name: null, tool_use_id: null, tool_status: null,
+    tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null, ...more,
+  }) as TimelineRow;
+  const ROWS = [
+    row("user_message", "You: Find the cheapest nonstop.", at(-20)),
+    row("phase", "Recording the desktop's screen into recordings/desk.mp4.", at(0)),
+    row("tool_use", "computer_act", at(4), { tool_name: "computer_act", tool_use_id: "c1" }),
+    row("tool_result", "Opened Chrome: ok", at(6), { tool_name: "computer_act", tool_use_id: "c1", tool_status: "success" }),
+    row("phase", "You took over the desktop", at(75 - 60)),
+    row("tool_use", "computer_act", at(31), { tool_name: "computer_act", tool_use_id: "c2" }),
+    row("tool_result", "Clicked “Sort”: no element with that name", at(32), { tool_name: "computer_act", tool_use_id: "c2", tool_status: "failed" }),
+    row("phase", "Recording the desktop's screen into recordings/desk-2.mp4.", at(200)),
+    row("final_answer", "Skyline 214, $238.", at(210)),
+  ];
+  async function played(run: Run, rows: TimelineRow[]) {
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    await act(async () => {
+      root!.render(createElement(RunDetail, { run, agentName: "rec", messages: messageFeatures, harnessSteers: true, rows, files: [], actions: {}, readComputer: async () => ({ state: "none", kind: "desktop", hold: "agent", session: "closed" }), computerEvery: 20, tab: "screen", fileUrl: URL_OF } as never));
+    });
+    await settle();
+    const panel = host.querySelector('section[aria-label="Screen"]') as HTMLElement;
+    const list = () => panel.querySelector('ol[aria-label="The recording\'s steps"]');
+    const steps = () => [...(list()?.querySelectorAll("button") ?? [])] as HTMLButtonElement[];
+    return { panel, video: () => panel.querySelector("video") as HTMLVideoElement, list, steps, said: () => steps().map((b) => b.textContent), current: () => steps().filter((b) => b.getAttribute("aria-current") === "step").map((b) => b.textContent) };
+  }
+
+  it("lists the steps made while the file was recorded, each at its time on the video, in the timeline's words", async () => {
+    const p = await played(recorded([rec("recordings/desk.mp4")]), ROWS);
+    expect(p.said()).toEqual([
+      "0:00PhaseRecording the desktop's screen into recordings/desk.mp4.",
+      "0:06Computer actOpened Chrome",
+      "0:15PhaseYou took over the desktop",
+      "0:32Computer actClicked “Sort”: no element with that name",
+    ]);
+    // What came before the recording, and after its length, is not a step of this video.
+    expect(p.panel.textContent).not.toContain("Find the cheapest nonstop");
+    expect(p.panel.textContent).not.toContain("Skyline 214");
+    // A step that failed reads as failed.
+    expect(p.steps()[3]!.querySelector(".text-destructive-text")?.textContent).toBe("Clicked “Sort”: no element with that name");
+    // The player is the same one: the file route's file, sized as the live view is.
+    expect(p.video().getAttribute("src")).toBe(URL_OF("recordings/desk.mp4"));
+    expect(p.video().className).toContain("aspect-[16/10]");
+  });
+
+  // The run's trace, as far as these cases read it: its two computer calls, by the ids their timeline rows carry.
+  const call = (id: string, startedAt: string, status: "ok" | "failed") => ({ id: `t:0:${id}`, kind: "tool", parent_id: null, name: "computer_act", agent_label: null, started_at: startedAt, ended_at: startedAt, status, stop_reason: null, tokens: null, usd: null, charged: false, decision: false, not_metered: false, tool_use_id: id, input_preview: null, result_preview: null, result_size_bytes: null });
+  const TRACE = { run_id: RUN, model_requests: "priced", dropped: 0, spans: [call("c1", at(4), "ok"), call("c2", at(31), "failed"), call("c9", at(205), "ok")] };
+  async function traced(run: Run, rows: TimelineRow[], tab: "screen" | "trace" = "screen", trace: typeof TRACE = TRACE) {
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    await act(async () => {
+      root!.render(createElement(RunDetail, { run, agentName: "rec", messages: messageFeatures, harnessSteers: true, rows, files: [], actions: {}, readComputer: async () => ({ state: "none", kind: "desktop", hold: "agent", session: "closed" }), computerEvery: 20, tab, fileUrl: URL_OF, readTrace: async () => trace } as never));
+    });
+    await settle();
+    const tabNow = () => host.querySelector('[role=tab][aria-selected="true"]')!.textContent;
+    const toDevTools = () => [...host.querySelectorAll("button")].find((b) => b.textContent === "Open this step in Dev tools") as HTMLButtonElement | undefined;
+    const callPanel = () => host.querySelector("aside[aria-label='Call details']");
+    const toRecording = () => [...(callPanel()?.querySelectorAll("button") ?? [])].find((b) => b.textContent === "Show on the recording") as HTMLButtonElement | undefined;
+    const steps = () => [...host.querySelectorAll('ol[aria-label="The recording\'s steps"] button')] as HTMLButtonElement[];
+    const press = async (el: Element | null | undefined) => { expect(el).toBeTruthy(); await act(async () => { (el as HTMLElement).click(); }); await settle(); };
+    return { host, tabNow, toDevTools, callPanel, toRecording, steps, press, video: () => host.querySelector("video") as HTMLVideoElement };
+  }
+
+  it("the step the video is at opens in Dev tools when it is a tool call: the tab opens on that call's details", async () => {
+    const p = await traced(recorded([rec("recordings/desk.mp4")]), ROWS);
+    // At the recording's start the video is at a phase, which is no call: the button is there and says why it is off.
+    expect([p.toDevTools()!.disabled, p.toDevTools()!.title]).toEqual([true, "The step the video is at is not a tool call"]);
+    await p.press(p.steps()[3]);
+    expect(p.toDevTools()!.disabled).toBe(false);
+    await p.press(p.toDevTools());
+    expect(p.tabNow()).toBe("Dev tools");
+    // The failed click, by its call's id: the panel is that call's, and its row is the one marked open.
+    expect(p.callPanel()!.textContent).toMatch(/^Tool callFailedcomputer_act/);
+    expect([...p.host.querySelectorAll("section[aria-label='Trace'] > div > table > tbody > tr button[aria-pressed='true']")]).toHaveLength(1);
+  });
+
+  it("a call's details in Dev tools show it on the recording made while it ran: the Screen tab plays from the call's time", async () => {
+    const p = await traced(recorded([rec("recordings/desk.mp4")]), ROWS, "trace");
+    const row = (n: number) => p.host.querySelectorAll("section[aria-label='Trace'] > div > table > tbody > tr")[n]!;
+    // The call made after the recording's length is on no recording: its panel offers none.
+    await p.press(row(2));
+    expect(p.toRecording()).toBeUndefined();
+    await p.press(row(0));
+    await p.press(p.toRecording());
+    expect(p.tabNow()).toBe("Screen");
+    // The player takes no time before it knows the video's length: it moves once it does.
+    expect(p.video().currentTime).toBe(0);
+    await act(async () => { p.video().dispatchEvent(new Event("loadedmetadata")); });
+    // The first computer call's result came 6 s into the recording, where its step is.
+    expect(p.video().currentTime).toBe(6);
+  });
+
+  it("opens the very call a step is, though another conversation made a call of the same id, and shows that one on the recording", async () => {
+    // A subagent's conversation (1) makes a call with the id the run's own first call has: two spans, two steps.
+    const rows = [...ROWS.slice(0, 7),
+      row("tool_use", "computer_act", at(40), { tool_name: "computer_act", tool_use_id: "c1", conversation_id: 1 }),
+      row("tool_result", "Typed the query: ok", at(42), { tool_name: "computer_act", tool_use_id: "c1", conversation_id: 1, tool_status: "success" }),
+      ...ROWS.slice(7)];
+    const twice = { ...TRACE, spans: [TRACE.spans[0]!, TRACE.spans[1]!, { ...call("c1", at(40), "ok"), id: "t:1:c1" }] };
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    await act(async () => {
+      root!.render(createElement(RunDetail, { run: recorded([rec("recordings/desk.mp4")]), agentName: "rec", messages: messageFeatures, harnessSteers: true, rows, files: [], actions: {}, readComputer: async () => ({ state: "none", kind: "desktop", hold: "agent", session: "closed" }), computerEvery: 20, tab: "screen", fileUrl: URL_OF, readTrace: async () => twice } as never));
+    });
+    await settle();
+    const press = async (el: Element | null | undefined) => { expect(el).toBeTruthy(); await act(async () => { (el as HTMLElement).click(); }); await settle(); };
+    const button = (words: string) => [...host.querySelectorAll("button")].find((b) => b.textContent === words);
+    const steps = [...host.querySelectorAll('ol[aria-label="The recording\'s steps"] button')];
+    expect(steps.map((b) => b.textContent)).toContain("0:42Computer actTyped the query");
+    await press(steps.find((b) => b.textContent === "0:42Computer actTyped the query"));
+    await press(button("Open this step in Dev tools"));
+    // The subagent's call, by its span, never the run's own call of the same id.
+    const details = () => host.querySelector("aside[aria-label='Call details']")!;
+    expect(details().textContent).toContain("Spant:1:c1");
+    await press(button("Show on the recording"));
+    await act(async () => { host.querySelector("video")!.dispatchEvent(new Event("loadedmetadata")); });
+    expect(host.querySelector("video")!.currentTime).toBe(42);
+  });
+
+  it("a step clicked is the step marked and opened, though the player says a time a hair before the one it was sent to", async () => {
+    // Two calls 60 ms apart, at times the timeline keeps to the millisecond: their results at 3.963 s and 4.023 s.
+    const ms = (n: number) => new Date(Date.parse("2026-11-05T09:00:00Z") + n).toISOString();
+    const rows = [...ROWS.slice(0, 2),
+      row("tool_use", "computer_act", ms(3400), { tool_name: "computer_act", tool_use_id: "k1" }),
+      row("tool_result", "Acted on the page: ok", ms(3963), { tool_name: "computer_act", tool_use_id: "k1", tool_status: "success" }),
+      row("tool_use", "computer_act", ms(3970), { tool_name: "computer_act", tool_use_id: "k2" }),
+      row("tool_result", "Read the page: ok", ms(4023), { tool_name: "computer_act", tool_use_id: "k2", tool_status: "success" })];
+    const p = await traced(recorded([rec("recordings/desk.mp4")]), rows, "screen", { ...TRACE, spans: [call("k1", ms(3400), "ok"), call("k2", ms(3970), "ok")] });
+    // Chrome keeps a video's time in whole microseconds and cuts the rest: sent to 4.023 s, it says 4.022999.
+    const chrome = (video: HTMLVideoElement) => { let t = 0; Object.defineProperty(video, "currentTime", { configurable: true, get: () => t, set: (v: number) => { t = Math.floor(v * 1e6) / 1e6; } }); };
+    const current = () => p.steps().filter((b) => b.getAttribute("aria-current") === "step").map((b) => b.textContent);
+    chrome(p.video());
+    await p.press(p.steps().find((b) => b.textContent === "0:04Computer actRead the page"));
+    expect(p.video().currentTime).toBe(4.022999);
+    await act(async () => { p.video().dispatchEvent(new Event("seeked")); });
+    expect(current()).toEqual(["0:04Computer actRead the page"]);
+    await p.press(p.toDevTools());
+    expect(p.callPanel()!.textContent).toContain("Spant:0:k2");
+    // And back: the recording shown from the call's details is at that call's step, not the one before.
+    await p.press(p.toRecording());
+    chrome(p.video());
+    await act(async () => { p.video().dispatchEvent(new Event("loadedmetadata")); p.video().dispatchEvent(new Event("seeked")); });
+    expect(p.video().currentTime).toBe(4.022999);
+    expect(current()).toEqual(["0:04Computer actRead the page"]);
+  });
+
+  it("brings a call opened from the recording into view, as one opened from the table is", async () => {
+    // Under the wide layout the details sit below the table: far down the page here.
+    const into = vi.fn();
+    (Element.prototype as { scrollIntoView?: unknown }).scrollIntoView = into;
+    const box = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) { return { top: this.tagName === "ASIDE" ? 5000 : 0, left: 0, right: 0, bottom: 0, width: 0, height: 0, x: 0, y: 0, toJSON: () => ({}) } as DOMRect; });
+    try {
+      const p = await traced(recorded([rec("recordings/desk.mp4")]), ROWS);
+      await p.press(p.steps()[3]);
+      await p.press(p.toDevTools());
+      expect(p.callPanel()).toBeTruthy();
+      expect(into.mock.contexts.some((el) => (el as Element).tagName === "ASIDE")).toBe(true);
+    } finally {
+      box.mockRestore();
+      delete (Element.prototype as { scrollIntoView?: unknown }).scrollIntoView;
+    }
+  });
+
+  it("says so when a step's call is past what the trace returned, and opens no other call", async () => {
+    // A read serves a run's first spans: this one left the failed click out, with 12 more.
+    const short = { ...TRACE, spans: [TRACE.spans[0]!], dropped: 12 };
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    await act(async () => {
+      root!.render(createElement(RunDetail, { run: recorded([rec("recordings/desk.mp4")]), agentName: "rec", messages: messageFeatures, harnessSteers: true, rows: ROWS, files: [], actions: {}, readComputer: async () => ({ state: "none", kind: "desktop", hold: "agent", session: "closed" }), computerEvery: 20, tab: "screen", fileUrl: URL_OF, readTrace: async () => short } as never));
+    });
+    await settle();
+    const press = async (el: Element | null | undefined) => { expect(el).toBeTruthy(); await act(async () => { (el as HTMLElement).click(); }); await settle(); };
+    await press([...host.querySelectorAll('ol[aria-label="The recording\'s steps"] button')][3]);
+    await press([...host.querySelectorAll("button")].find((b) => b.textContent === "Open this step in Dev tools"));
+    expect(host.querySelector('[role=tab][aria-selected="true"]')!.textContent).toBe("Dev tools");
+    expect(host.querySelector("aside[aria-label='Call details']")).toBeNull();
+    expect(host.textContent).toContain("That step's call is not in this traceThe trace shows the run's first 1 requests and calls, and that call came after them.");
+  });
+
+  it("offers neither where the trace can't be read, or while the run can still open its computer", async () => {
+    const p = await played(recorded([rec("recordings/desk.mp4")]), ROWS);
+    expect([...p.panel.querySelectorAll("button")].map((b) => b.textContent)).not.toContain("Open this step in Dev tools");
+    act(() => root?.unmount()); root = undefined; document.body.innerHTML = "";
+    const live = await traced({ ...recorded([rec("recordings/desk.mp4")]), status: "working", state: "working" } as Run, ROWS, "trace");
+    await live.press(live.host.querySelectorAll("section[aria-label='Trace'] > div > table > tbody > tr")[0]);
+    expect(live.callPanel()).toBeTruthy();
+    expect(live.toRecording()).toBeUndefined();
+  });
+
+  it("a step moves the video to its time and is marked; the mark follows the video as it plays", async () => {
+    const p = await played(recorded([rec("recordings/desk.mp4")]), ROWS);
+    expect(p.current()).toEqual(["0:00PhaseRecording the desktop's screen into recordings/desk.mp4."]);
+    await act(async () => { p.steps()[2]!.click(); });
+    expect(p.video().currentTime).toBe(15);
+    expect(p.current()).toEqual(["0:15PhaseYou took over the desktop"]);
+    // The video plays on past the next step: the mark moves with it, on the player's own events.
+    await act(async () => { p.video().currentTime = 33; p.video().dispatchEvent(new Event("timeupdate")); });
+    expect(p.current()).toEqual(["0:32Computer actClicked “Sort”: no element with that name"]);
+    // Dragged back with the player's own bar.
+    await act(async () => { p.video().currentTime = 7; p.video().dispatchEvent(new Event("seeked")); });
+    expect(p.current()).toEqual(["0:06Computer actOpened Chrome"]);
+  });
+
+  it("another recording picked has its own steps, from its own start", async () => {
+    const p = await played(recorded([rec("recordings/desk.mp4"), rec("recordings/desk-2.mp4")]), ROWS);
+    const second = [...p.panel.querySelectorAll('header [role="radiogroup"] input')][1] as HTMLInputElement;
+    await act(async () => { second.click(); });
+    expect(p.video().getAttribute("src")).toBe(URL_OF("recordings/desk-2.mp4"));
+    expect(p.said()).toEqual(["0:00PhaseRecording the desktop's screen into recordings/desk-2.mp4.", "0:10AnswerSkyline 214, $238."]);
+  });
+
+  it("steps that arrive after the player is drawn come beside the same player: it is not made again", async () => {
+    const run = recorded([rec("recordings/desk.mp4")]);
+    const props = (rows: TimelineRow[]) => ({ run, agentName: "rec", messages: messageFeatures, harnessSteers: true, rows, files: [], actions: {}, readComputer: async () => ({ state: "none", kind: "desktop", hold: "agent", session: "closed" }), computerEvery: 20, tab: "screen", fileUrl: URL_OF }) as never;
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    await act(async () => { root!.render(createElement(RunDetail, props([]))); });
+    await settle();
+    const before = host.querySelector("video") as HTMLVideoElement;
+    expect(host.querySelector('ol[aria-label="The recording\'s steps"]')).toBeNull();
+    before.currentTime = 7;
+    // The timeline's pages come in.
+    await act(async () => { root!.render(createElement(RunDetail, props(ROWS))); });
+    await settle();
+    expect(host.querySelector("video"), "the same element").toBe(before);
+    expect(before.currentTime).toBe(7);
+    const marked = [...host.querySelectorAll('ol[aria-label="The recording\'s steps"] button[aria-current="step"]')].map((b) => b.textContent);
+    expect(marked, "marked where the video already is").toEqual(["0:06Computer actOpened Chrome"]);
+  });
+
+  it("with no row that says when the recording began there is no list: the player alone", async () => {
+    const p = await played(recorded([rec("recordings/desk.mp4")]), ROWS.filter((r) => r.kind !== "phase"));
+    expect(p.list()).toBeNull();
+    expect(p.panel.textContent).not.toContain("Steps");
+    expect(p.video().getAttribute("src")).toBe(URL_OF("recordings/desk.mp4"));
+  });
+});
+
+// A live screen has the run's steps so far beside it: the timeline's own steps and words, oldest first, the list kept at
+// its newest step as steps come until the reader scrolls up. With the steps beside it the panel is wider than the reading
+// column, so the frame keeps its size; alone (no step yet, or nothing live) it keeps the reading column's width.
+describe("the Screen tab's live screen has the run's steps beside it", () => {
+  const live = async () => ({ state: "live", kind: "desktop", viewer: VIEWER, hold: "agent" }) as RunComputer;
+  const onDesktop = (run: Run = working) => ({ ...run, computer: { kind: "desktop", provider: "docker", state: "ready" } }) as Run;
+  const at = (s: number) => new Date(Date.parse("2026-11-05T09:00:00Z") + s * 1000).toISOString();
+  let n = 0;
+  const row = (kind: TimelineRow["kind"], summary: string, timestamp: string, more: Partial<TimelineRow> = {}) => ({
+    id: `l${(n += 1)}`, seq: n, kind, summary, text: null, timestamp, created_at: timestamp, agent_label: null, tool_name: null, tool_use_id: null, tool_status: null,
+    tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null, ...more,
+  }) as TimelineRow;
+  const ROWS = [
+    row("user_message", "You: Find the cheapest nonstop.", at(0)),
+    row("phase", "The desktop is ready: Linux (amd64), from Docker.", at(4)),
+    row("tool_use", "computer_act", at(6), { tool_name: "computer_act", tool_use_id: "a1" }),
+    row("tool_result", "Opened Chrome: ok", at(8), { tool_name: "computer_act", tool_use_id: "a1", tool_status: "success" }),
+    row("usage", "Cost so far: $0.02", at(9)),
+  ];
+  const NEXT = [
+    row("tool_use", "computer_act", at(12), { tool_name: "computer_act", tool_use_id: "a2" }),
+    row("tool_result", "Clicked “Sort”: no element with that name", at(13), { tool_name: "computer_act", tool_use_id: "a2", tool_status: "failed" }),
+  ];
+  function mount() {
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    const draw = async (rows: TimelineRow[], run: Run = onDesktop(), read: () => Promise<RunComputer> = live) => {
+      await act(async () => {
+        root!.render(createElement(RunDetail, { run, agentName: "live", messages: messageFeatures, harnessSteers: true, rows, files: [], actions: {}, readComputer: read, computerEvery: 20, tab: "screen" } as never));
+      });
+      await settle();
+    };
+    // The box that scrolls: a named region the keyboard can stop on, the list inside it.
+    const list = () => host.querySelector('[role="region"][aria-label="The run\'s steps"]') as HTMLElement | null;
+    // A step's words without its time of day, which is the reader's own clock's.
+    const said = () => [...(list()?.querySelectorAll("li") ?? [])].map((li) => (li.textContent ?? "").replace(/^\d{1,2}:\d{2}\s?[AP]M/, ""));
+    const panel = () => host.querySelector('section[aria-label="Screen"]') as HTMLElement;
+    return { host, draw, list, said, panel, frame: () => host.querySelector("iframe") as HTMLIFrameElement };
+  }
+
+  it("lists the run's steps so far in the timeline's words, a tool once, without the cost row, and says the run is working", async () => {
+    const p = mount();
+    await p.draw(ROWS);
+    expect(p.frame().getAttribute("src")).toBe(`${FRAMED(VIEWER)}&hands=page`);
+    expect(p.said()).toEqual(["YouFind the cheapest nonstop.", "PhaseThe desktop is ready: Linux (amd64), from Docker.", "Computer actOpened Chrome", " Working"]);
+    expect(p.panel().textContent).toContain("3 steps so far");
+    expect(p.panel().textContent).not.toContain("Cost so far");
+    // A step that failed reads as failed.
+    await p.draw([...ROWS, ...NEXT]);
+    expect(p.said().at(-2)).toBe("Computer actClicked “Sort”: no element with that name");
+    expect(p.list()!.querySelector(".text-destructive-text")?.textContent).toBe("Clicked “Sort”: no element with that name");
+    expect(p.panel().textContent).toContain("4 steps so far");
+  });
+
+  it("a run that waits on its person is not said to be working", async () => {
+    const p = mount();
+    await p.draw(ROWS, onDesktop({ ...working, status: "input_required", state: "waiting" } as Run));
+    expect(p.said()).toEqual(["YouFind the cheapest nonstop.", "PhaseThe desktop is ready: Linux (amd64), from Docker.", "Computer actOpened Chrome"]);
+  });
+
+  it("the first steps come beside the same frame: the viewer is not loaded again", async () => {
+    const p = mount();
+    await p.draw([]);
+    const before = p.frame();
+    expect(before, "the frame, alone").toBeTruthy();
+    expect(p.list()).toBeNull();
+    await p.draw(ROWS);
+    expect(p.frame(), "the same element").toBe(before);
+    expect(p.list()).toBeTruthy();
+  });
+
+  it("stays at its newest step as steps come, until the reader scrolls up; back at the end it follows again", async () => {
+    const p = mount();
+    await p.draw(ROWS);
+    const box = p.list()!;
+    // jsdom lays nothing out: the list's own sizes are given, a box 100px tall over 400px of steps.
+    let height = 400;
+    Object.defineProperty(box, "scrollHeight", { configurable: true, get: () => height });
+    Object.defineProperty(box, "clientHeight", { configurable: true, get: () => 100 });
+    height = 460;
+    await p.draw([...ROWS, NEXT[0]!]);
+    expect(box.scrollTop, "followed the new step").toBe(460);
+    // The reader scrolls up to an earlier step.
+    await act(async () => { box.scrollTop = 120; box.dispatchEvent(new Event("scroll", { bubbles: true })); });
+    height = 520;
+    await p.draw([...ROWS, ...NEXT]);
+    expect(box.scrollTop, "left where the reader put it").toBe(120);
+    // Back at the end (within a line of it).
+    await act(async () => { box.scrollTop = 410; box.dispatchEvent(new Event("scroll", { bubbles: true })); });
+    height = 580;
+    await p.draw([...ROWS, ...NEXT, row("thinking", "Thinking: Try the menu instead.", at(20))]);
+    expect(box.scrollTop, "follows again").toBe(580);
+  });
+
+  it("follows a step whose words change without a new step: a call's result takes its call's place", async () => {
+    const p = mount();
+    const call = row("tool_use", "computer_act", at(12), { tool_name: "computer_act", tool_use_id: "b1" });
+    await p.draw([...ROWS, call]);
+    const box = p.list()!;
+    let height = 400;
+    Object.defineProperty(box, "scrollHeight", { configurable: true, get: () => height });
+    Object.defineProperty(box, "clientHeight", { configurable: true, get: () => 100 });
+    await act(async () => { box.scrollTop = 300; box.dispatchEvent(new Event("scroll", { bubbles: true })); });
+    // The result folds into its call's step (the count stays), with words that take more lines.
+    height = 470;
+    await p.draw([...ROWS, call, row("tool_result", "Clicked the check box “Nonstop only”, clicked the pop-up “Sort”, clicked “Price: low to high”: ok", at(14), { tool_name: "computer_act", tool_use_id: "b1", tool_status: "success" })]);
+    expect(p.said().filter((s) => s !== " Working")).toHaveLength(4);
+    expect(box.scrollTop, "followed the longer words").toBe(470);
+  });
+
+  it("the list's box is a named region the keyboard can stop on: it scrolls and holds no control", async () => {
+    const p = mount();
+    await p.draw(ROWS);
+    const box = p.list()!;
+    expect(box.getAttribute("tabindex")).toBe("0");
+    expect(box.querySelector("button, a, input")).toBeNull();
+    expect(box.querySelector("ol")).toBeTruthy();
+  });
+
+  it("is wider than the reading column with its steps, and the reading column's width alone", async () => {
+    const p = mount();
+    await p.draw([]);
+    expect(p.panel().parentElement!.className).toContain("max-w-4xl");
+    await p.draw(ROWS);
+    expect(p.panel().parentElement!.className).toContain("max-w-7xl");
+    expect(p.panel().parentElement!.className).not.toContain("max-w-4xl");
+  });
+
+  it("a screen that is not up has no steps beside it: its words alone, in the reading column", async () => {
+    const p = mount();
+    await p.draw(ROWS, onDesktop(), async () => ({ state: "none", kind: "desktop", hold: "agent", session: "opening" }));
+    expect(p.list()).toBeNull();
+    expect(p.panel().textContent).toContain("Waiting for the desktop");
+    expect(p.panel().parentElement!.className).toContain("max-w-4xl");
+  });
+
+  it("a browser's live page has them too", async () => {
+    const p = mount();
+    await p.draw(ROWS, { ...working, computer: { kind: "browser", provider: "local", state: "ready" } } as Run, async () => ({ state: "live", kind: "browser", viewer: VIEWER, hold: "agent" }));
+    expect(p.frame().getAttribute("src")).toBe(FRAMED(VIEWER));
+    expect(p.said().slice(0, 3)).toEqual(["YouFind the cheapest nonstop.", "PhaseThe desktop is ready: Linux (amd64), from Docker.", "Computer actOpened Chrome"]);
   });
 });

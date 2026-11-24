@@ -1,0 +1,125 @@
+name: Self-host walk
+
+# Runs deploy/selfhost/walk.sh for Coolify and for Dokploy, each on a VM of its own. Not a required check.
+
+on:
+  pull_request:
+    paths:
+      - 'deploy/coolify/**'
+      - 'deploy/dokploy/**'
+      - 'deploy/selfhost/**'
+      - 'deploy/walk/api.mjs'
+      - 'deploy/walk/faux-steps.mjs'
+      - 'deploy/walk/rows.sh'
+      - 'apps/console/e2e/setup-code.e2e.mjs'
+      - '.github/workflows/selfhost-walk.yml'
+      - '.github/actions/published-or-checkout-image/**'
+  push:
+    branches: [main]
+    paths:
+      - 'deploy/coolify/**'
+      - 'deploy/dokploy/**'
+      - 'deploy/selfhost/**'
+      - 'deploy/walk/api.mjs'
+      - 'deploy/walk/faux-steps.mjs'
+      - 'deploy/walk/rows.sh'
+      - 'apps/console/e2e/setup-code.e2e.mjs'
+      - '.github/workflows/selfhost-walk.yml'
+      - '.github/actions/published-or-checkout-image/**'
+  workflow_dispatch:
+  # The daily walk (ways-in-daily.yml): image names an artifact of this run, a docker save of the image to walk in place
+  # of the release's (main's, built once for every row).
+  workflow_call:
+    inputs:
+      image:
+        type: string
+        default: ''
+      # The platforms to walk, as JSON: the daily walk takes one per call, a row each.
+      platforms:
+        type: string
+        default: '["coolify", "dokploy"]'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-selfhost-walk-${{ github.ref }}-${{ inputs.platforms }}
+  cancel-in-progress: true
+
+jobs:
+  walk:
+    name: ${{ matrix.platform }}, template to first run to removed
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: ${{ fromJSON(inputs.platforms || '["coolify", "dokploy"]') }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+      # overlay.mjs's yaml, and the console row's playwright-core.
+      - run: npm ci --ignore-scripts
+      - name: The image to walk
+        if: ${{ inputs.image }}
+        uses: ./.github/actions/walk-image
+        with:
+          artifact: ${{ inputs.image }}
+      # Otherwise the template's own image, when GHCR has it; until its release publishes it (on the release's pull request,
+      # and on main until the tag's release finishes), this checkout's.
+      - name: The template's image
+        id: pinned
+        if: ${{ !inputs.image }}
+        env:
+          TEMPLATE: ${{ matrix.platform == 'coolify' && 'deploy/coolify/agentrun.yaml' || 'deploy/dokploy/agentrun/docker-compose.yml' }}
+        run: |
+          echo "image=$(sed -n 's/^ *image: //p' "$TEMPLATE" | head -n 1)" >> "$GITHUB_OUTPUT"
+      - name: Published, else this checkout's
+        if: ${{ !inputs.image }}
+        uses: ./.github/actions/published-or-checkout-image
+        with:
+          image: ${{ steps.pinned.outputs.image }}
+      # The console row's Chrome: ci.yml's pinned Chrome for Testing. The runner's own Chrome 157 refuses the platform's
+      # domain (net::ERR_BLOCKED_BY_CLIENT, by name mapped to loopback and through the platform's proxy alike); its
+      # managed policies, if any, are listed here.
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/chrome-for-testing
+          key: chrome-for-testing-${{ runner.os }}-155.0.8059.39
+      - name: Chrome for Testing
+        id: chrome
+        run: |
+          ls -l /etc/opt/chrome/policies/*/ 2>/dev/null || echo "no managed Chrome policies on this runner"
+          installed=$(npx --yes @puppeteer/browsers@3.2.3 install chrome@155.0.8059.39 --path "$HOME/chrome-for-testing")
+          echo "path=${installed#* }" >> "$GITHUB_OUTPUT"
+          "${installed#* }" --version
+      - name: Let an unprivileged Chrome start its sandbox
+        # The 24.04 runner image confines unprivileged user namespaces with AppArmor: an unpackaged Chrome aborts at start (ci.yml).
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - name: Walk
+        env:
+          CHROME_BIN: ${{ steps.chrome.outputs.path }}
+          SCREENSHOT: ${{ runner.temp }}/console-${{ matrix.platform }}.png
+        run: REPORT="$RUNNER_TEMP/selfhost-walk.md" sh deploy/selfhost/walk.sh "${{ matrix.platform }}"
+      - name: Report
+        if: always()
+        run: '[ ! -f "$RUNNER_TEMP/selfhost-walk.md" ] || cat "$RUNNER_TEMP/selfhost-walk.md" >> "$GITHUB_STEP_SUMMARY"'
+      - name: Keep the report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: walk-report-${{ matrix.platform }}
+          path: ${{ runner.temp }}/selfhost-walk.md
+          if-no-files-found: ignore
+      # The run's page after the first run, in the console at the platform's domain.
+      - name: Keep the console's screenshot
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: console-${{ matrix.platform }}
+          path: ${{ runner.temp }}/console-${{ matrix.platform }}.png
+          if-no-files-found: ignore

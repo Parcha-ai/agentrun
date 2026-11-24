@@ -3,10 +3,14 @@ package apps
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 
+	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/proctree"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/x11"
 )
 
@@ -215,6 +219,109 @@ func ownerByPid(byPid map[int]string, pid int) string {
 		pid = parentOf(pid)
 	}
 	return ""
+}
+
+// launchTree is one launch's processes: its launcher (root) and the guard it runs under (guard; 0 when the guard ended
+// before it was read). A launch's guard is a child subreaper that keeps what the launcher started (Orphans "keep"), so a
+// process the launcher started is still under it, and the launch's, once the launcher has ended.
+type launchTree struct {
+	root, guard int
+	// since is the guard's start time, so a pid the system hands out again is never taken for it.
+	since uint64
+}
+
+// treeOf is the launch of launcher root under guard, the pid process.start forked it as. The guard is not read from
+// the launcher's parent in /proc: a launcher that ends at once, leaving a process that shows a dialog a moment later,
+// may be gone by then, and what it left would pass for nothing of the launch's (CI 11-16, the arm runner).
+func treeOf(root, guard int) launchTree {
+	t := launchTree{root: root}
+	if guard > 1 && parentOf(guard) == os.Getpid() {
+		if since, ok := proctree.Started(guard); ok {
+			t.guard, t.since = guard, since
+		}
+	}
+	return t
+}
+
+// guarded is the launch's guard while it runs, else 0.
+func (t launchTree) guarded() int {
+	if t.guard > 1 && proctree.Running(t.guard, t.since) {
+		return t.guard
+	}
+	return 0
+}
+
+// owns is whether process pid is the launch's: the launcher or one it started, under its guard or in its group.
+func (t launchTree) owns(pid int) bool {
+	if pid <= 1 {
+		return false
+	}
+	if descends(pid, t.root) {
+		return true
+	}
+	if guard := t.guarded(); guard != 0 && descends(pid, guard) {
+		return true
+	}
+	group, err := syscall.Getpgid(pid)
+	return err == nil && group == t.root
+}
+
+// lingers is whether a process of the launch's still runs: one under its guard, or in its group. A launcher that ended
+// and left one has not handed anything over yet: what it left may still show a window.
+func (t launchTree) lingers() bool {
+	if guard := t.guarded(); guard != 0 {
+		for _, d := range proctree.Descendants(guard) {
+			if !proctree.Zombie(d) {
+				return true
+			}
+		}
+	}
+	err := syscall.Kill(-t.root, 0)
+	return err == nil || errors.Is(err, syscall.EPERM)
+}
+
+// dialogOf is a dialog the launch showed: a window of the app's that is new (not in had), made by a process of the
+// launch's, whose EWMH type is a dialog (_NET_WM_WINDOW_TYPE_DIALOG). Its title (WM_NAME) and the window; nil for none.
+func (g *group) dialogOf(s *snapshot, app string, had map[uint32]bool, t launchTree) (string, *window, error) {
+	c, err := g.display.Conn()
+	if err != nil {
+		return "", nil, err
+	}
+	typ, err := c.InternAtom("_NET_WM_WINDOW_TYPE", true)
+	if err != nil {
+		return "", nil, g.display.Gone(c, err)
+	}
+	dialog, err := c.InternAtom("_NET_WM_WINDOW_TYPE_DIALOG", true)
+	if err != nil {
+		return "", nil, g.display.Gone(c, err)
+	}
+	if typ == 0 || dialog == 0 {
+		return "", nil, nil
+	}
+	for _, w := range s.of(app) {
+		if had[w.id] || !t.owns(w.pid) {
+			continue
+		}
+		if p, err := c.GetProperty(w.id, typ); err == nil && slices.Contains(p.Cardinals(), dialog) {
+			name, _ := c.GetProperty(w.id, x11.AtomWMName)
+			return string(name.Value), &w, nil
+		}
+	}
+	if c.Err() != nil {
+		return "", nil, g.display.Gone(c, c.Err())
+	}
+	return "", nil, nil
+}
+
+// descends is whether process pid is root or one root started, from /proc.
+func descends(pid, root int) bool {
+	for step := 0; step < 32 && pid > 1; step++ {
+		if pid == root {
+			return true
+		}
+		pid = parentOf(pid)
+	}
+	return false
 }
 
 // parentOf is a process's parent, from /proc/<pid>/stat; 0 when it is gone.

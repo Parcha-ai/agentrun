@@ -32,7 +32,7 @@ const groups = (rows) => groupTimeline(rows.filter((row) => row.kind !== "usage"
 const norm = (line) => line.slice(10).replace(/(\S) {2,}/g, "$1 ");
 const summaries = (rows) => rows.map((row) => row.summary);
 
-test("every row carries Grep's 13 fields, a known kind, an ISO time and Grep's caps", () => {
+test("every row carries the 13 base fields, a known kind, an ISO time and the base caps", () => {
   const long = "x".repeat(5000);
   const rows = timelineOf([
     user(long, 0),
@@ -207,6 +207,22 @@ test("a fetch whose page says it was refused, or failed, reads as that and as fa
   assert.match(rendered, /Fetched example\.com +ok$/m);
 });
 
+test("web_save reads as the file it saved, a Saved row at the path it answered (media/ for a bare name), and a refusal in its own words", () => {
+  const rows = timelineOf([
+    assistant([call("a", "web_save", { url: "https://v3.fal.example/files/abc/cat.png", path: "cat.png" })], 0),
+    result("a", "web_save", JSON.stringify({ ok: true, path: "media/cat.png", bytes: 264, content_type: "image/png", url: "https://v3.fal.example/files/abc/cat.png" }), 0),
+    assistant([call("b", "web_save", { url: "http://127.0.0.1/x.png", path: "media/x.png" })], 1),
+    result("b", "web_save", JSON.stringify({ ok: false, url: "http://127.0.0.1/x.png", path: "media/x.png", refused: "refused: 127.0.0.1 is not a public host" }), 1),
+  ]);
+  assert.deepEqual(rows.filter((row) => ["tool_use", "tool_result", "phase"].includes(row.kind)).map((row) => [row.kind, row.summary, row.tool_status ?? null, row.path ?? null]), [
+    ["tool_use", "Saved media/cat.png from v3.fal.example", null, null],
+    ["tool_result", "Saved media/cat.png from v3.fal.example: ok", "success", null],
+    ["phase", "Saved media/cat.png", null, "media/cat.png"],
+    ["tool_use", "Tried to save media/x.png from 127.0.0.1", null, null],
+    ["tool_result", "Tried to save media/x.png from 127.0.0.1: refused: 127.0.0.1 is not a public host", "failed", null],
+  ]);
+});
+
 test("a result closes its call by id, whatever its order", () => {
   const rows = timelineOf([
     assistant([call("a", "read", { path: "one.md" }), call("b", "read", { path: "two.md" })], 0),
@@ -254,6 +270,21 @@ for (const [label, id, parent, expected] of [
   assert.equal(shaped[0].data.parentCallId, parent);
   const rows = timelineOf(shaped).filter(row => row.tool_use_id === id);
   assert.deepEqual(rows.map(row => [row.kind, row.parent_tool_use_id]), [["tool_use", expected], ["tool_result", expected]]);
+});
+
+test("a recorded call the run's end closed (withRun) reads interrupted with no status, never failed; one a crash cut keeps reading failed", () => {
+  const shaped = piShaped([
+    { kind: JOURNAL.callStart, data: { callId: "exec", tool: "exec", input: {}, nests: true } },
+    { kind: JOURNAL.callEnd, data: { callId: "exec", status: "interrupted", withRun: true } },
+    { kind: JOURNAL.callStart, data: { callId: "cut", tool: "read", input: { path: "x" } } },
+    { kind: JOURNAL.callEnd, data: { callId: "cut", status: "interrupted" } },
+  ]);
+  const rows = timelineOf(shaped);
+  const end = rows.find((row) => row.kind === "tool_result" && row.tool_use_id === "exec");
+  assert.deepEqual([end.tool_status, end.summary, end.refused], [null, "Using tool: exec interrupted", undefined]);
+  assert.match(end.tool_result_preview, /^interrupted: /);
+  assert.equal(rows.find((row) => row.kind === "tool_result" && row.tool_use_id === "cut").tool_status, "failed");
+  assert.match(text(rows), /Using tool: exec +interrupted\n.*Read x +failed/);
 });
 
 test("a subagent's rows sit under the call that spawned it", () => {

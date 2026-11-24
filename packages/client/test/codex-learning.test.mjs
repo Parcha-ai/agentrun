@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { withCodexAgentLearning } from '../dist/codex.js';
 
-function service({ enabled = true, eventsError = false } = {}) {
+function service({ enabled = true, eventsError = false, check } = {}) {
   const requests = [];
   return { requests, config: {
     agentId: 'backend-codex', instructions: 'Read release status accurately. Never change project files.',
@@ -14,8 +14,7 @@ function service({ enabled = true, eventsError = false } = {}) {
       if (path === '/v2/agents/backend-codex') return Response.json({ definition: { sdk: { runtime: 'codex-sdk' } } });
       if (path === '/v2/agents/backend-codex/sdk-runs') return Response.json({ run_id: 'sdk-run', agent_id: 'backend-codex',
         token: 'fixture-scoped-key', console_url: 'https://server.example/#/runs/sdk-run', learning: { enabled,
-          revision: enabled ? 'approved-revision' : null, context: 'Start release reports with Ready or Blocked.',
-          skills: [{ name: 'release-report', files: { 'SKILL.md': 'Keep the report to two sentences.' } }] } });
+          revision: enabled ? 'approved-revision' : null, context: '- Start release reports with Ready or Blocked.\n- Keep the report to two sentences.', ...(check ? { check } : {}) } });
       if (path === '/v2/sdk-runs/sdk-run/events') return eventsError
         ? Response.json({ error: { code: 'unavailable' } }, { status: 503 }) : Response.json({ accepted: true });
       if (path === '/v2/sdk-runs/sdk-run/complete') return Response.json({ accepted: true });
@@ -73,7 +72,7 @@ const response = { items: [
   { id: 'message-1', type: 'agent_message', text: 'Ready. Tests passed.' },
 ], finalResponse: 'Ready. Tests passed.', usage: { input_tokens: 20, cached_input_tokens: 8, cache_write_input_tokens: 4, output_tokens: 6 } };
 
-test('Codex uses the original client and thread, preserves result identity and options, and pins approved context', async () => {
+test('Codex uses the original client and thread, preserves result identity and options, and pins learning context', async () => {
   const { config, requests } = service(), { codex, calls, threads } = native({ result: response });
   const wrapped = withCodexAgentLearning(codex, config);
   const options = { model: 'native-model', sandboxMode: 'read-only', workingDirectory: '/fixture-project', approvalPolicy: 'never' };
@@ -88,6 +87,8 @@ test('Codex uses the original client and thread, preserves result identity and o
   assert.equal(calls.length, 1, 'reflection must not call the native SDK a second time');
   assert.equal(wrapped.otherMethod(), 'preserved');
   assert.match(calls[0].input, /Start release reports with Ready or Blocked/);
+  assert.match(calls[0].input, /AgentRun learning context/);
+  assert.doesNotMatch(calls[0].input, /approved learning|approved lessons/i, 'Receiving learning context must not claim approval of its contents.');
   assert.match(calls[0].input, /Keep the report to two sentences/);
   const start = requests.find(r => r.path.endsWith('/sdk-runs'));
   assert.equal(start.body.input, 'Report the release status.');
@@ -119,6 +120,31 @@ test('missing Codex cache counters leave exclusive input unknown rather than inv
   assert.equal(usage.cache_write_tokens, null);
 });
 
+test('buffered and synthesized Codex tool starts cannot claim known effect order in local shadow evidence',async()=>{
+  const candidate={id:'check-one',revision:'rev',digest:'digest',workflow:{name:'draft',description:'Draft.',workflow:'{}'}};
+  const item={id:'tool-one',type:'mcp_tool_call',server:'release',tool:'publish',arguments:{service:'api'},status:'completed',result:{content:[{type:'text',text:'model-facing'}],structuredContent:{brief:'done',content:'ordinary data'}}};
+  for(const mode of ['buffered','missing-start','streamed']) {
+    const checked=[], {config,requests}=service({check:candidate});
+    config.workflows={catalog:[],adapters:[],bind(){return {context:'',close(){}};},async check(check,turn){
+      checked.push(turn);return {type:'workflow_check',id:check.id,digest:check.digest,outcome:'failed',reason:'fixture'};
+    }};
+    const result={items:[item],finalResponse:'done'};
+    const stream=[...(mode==='streamed'?[{type:'item.started',item:{...item,status:'in_progress'}}]:[]),
+      {type:'item.completed',item},{type:'turn.completed'}];
+    const {codex}=native({result,events:stream}),wrapped=withCodexAgentLearning(codex,config),thread=wrapped.startThread();
+    if(mode==='buffered') assert.equal(await thread.run('Publish.'),result);
+    else for await(const event of (await thread.runStreamed('Publish.')).events) assert.ok(stream.includes(event));
+    await wrapped.flushLearning();
+    assert.equal(checked.length,1);
+    const facts=checked[0].events.filter(event=>event.type==='tool');
+    assert.equal(facts.length,2);
+    assert.equal(facts.some(event=>event.orderUnknown===true),mode!=='streamed',mode);
+    assert.equal(facts[1].outputFormat,'mcp');
+    assert.deepEqual(facts[1].output,item.result);
+    assert.doesNotMatch(JSON.stringify(requests),/orderUnknown|outputFormat|structuredContent|ordinary data/, 'Raw outputs and transport provenance stay local, outside telemetry.');
+  }
+});
+
 test('learning Off preserves input by identity, including multimodal native inputs', async () => {
   const { config, requests } = service({ enabled: false }), { codex, calls } = native({ result: response });
   const wrapped = withCodexAgentLearning(codex, config);
@@ -130,7 +156,7 @@ test('learning Off preserves input by identity, including multimodal native inpu
   assert.doesNotMatch(JSON.stringify(requests), /private\/diagram/);
 });
 
-test('multimodal calls preserve native image objects but cannot learn from images the grader has not seen', async () => {
+test('multimodal calls preserve native image objects but cannot learn from images the server has not seen', async () => {
   const { config, requests } = service(), { codex, calls } = native({ result: response });
   const wrapped = withCodexAgentLearning(codex, config);
   const image = { type: 'local_image', path: '/private/diagram.png' };

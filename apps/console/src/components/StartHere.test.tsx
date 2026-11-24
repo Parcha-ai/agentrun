@@ -1,8 +1,11 @@
-import { act, createElement } from "react";
+import { act, createElement, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { StartHere, type StartHereProps } from "./StartHere";
+import { ModelKeyCard } from "./ModelKeyCard";
+import { createClient } from "@/lib/client";
+import type { ChatGPTView } from "@/lib/v2";
 import { toolOffers } from "@/lib/agentForm";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -11,80 +14,164 @@ const tools = toolOffers([{ name: "write", available: true, harnesses: ["pi"] },
 const base: StartHereProps = { harnesses, tools, onTry: async () => null };
 const html = (p: Partial<StartHereProps> = {}) => renderToStaticMarkup(createElement(StartHere, { ...base, ...p }));
 let root: ReturnType<typeof createRoot> | undefined;
-afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
+afterEach(() => { act(() => root?.unmount()); root = undefined; document.body.innerHTML = ""; localStorage.clear(); vi.unstubAllGlobals(); });
+const mount = (p: Partial<StartHereProps> = {}) => {
+  const host = document.body.appendChild(document.createElement("div"));
+  root = createRoot(host);
+  act(() => root!.render(createElement(StartHere, { ...base, ...p })));
+  return host;
+};
+const button = (host: HTMLElement, text: string) => [...host.querySelectorAll("button")].find((b) => b.textContent?.trim() === text)!;
+const expand = (host: HTMLElement) => act(() => button(host, "Run an agent here").click());
 
-// Mission Control before the owner's first run: one click makes a template agent, runs it, and opens its run.
 describe("StartHere", () => {
-  it("offers the three templates, each with what it shows and Try it", () => {
-    const h = html();
-    for (const name of ["Hello, AgentRun", "Summarize a web page", "Plan a task"]) expect(h).toContain(name);
-    expect(h.match(/>Try it</g)).toHaveLength(3);
-    expect(h).toContain('href="#/agents/new"');
-    expect(h).toContain("Create your own");
+  it("starts with native connection, without model setup or expanded execution controls", () => {
+    const h = html({ harnesses: [{ id: "pi", available: true, default_model: null }] });
+    expect(h).toContain("No model key needed");
+    expect(h).toContain("Connect agent");
+    expect(h).toContain("live connection or a history import");
+    expect(h).toContain('aria-expanded="false"');
+    expect(h).not.toContain("Try it");
+    expect(h).not.toContain("Set up models");
   });
-  it("tries the template clicked, and says it's starting until the run opens", async () => {
+  it("offers runnable templates after choosing to run here, and starts only the one selected", async () => {
     const tried: string[] = [];
-    let open!: () => void;
-    const host = document.body.appendChild(document.createElement("div"));
-    root = createRoot(host);
-    act(() => root!.render(createElement(StartHere, { ...base, onTry: (t) => { tried.push(t.id); return new Promise((r) => { open = () => r(null); }); } })));
-    await act(async () => { host.querySelectorAll<HTMLButtonElement>("button")[1]!.click(); });
+    let finish!: () => void;
+    const host = mount({ onTry: (t) => { tried.push(t.id); return new Promise((r) => { finish = () => r(null); }); } });
+    expand(host);
+    for (const name of ["Hello, AgentRun", "Summarize a web page", "Plan a task"]) expect(host.textContent).toContain(name);
+    const tries = [...host.querySelectorAll("button")].filter((b) => b.textContent === "Try it");
+    expect(tries).toHaveLength(3);
+    // No card is singled out: every Try it is the same button.
+    expect(new Set(tries.map((t) => t.className)).size).toBe(1);
+    await act(async () => tries[1]!.click());
     expect(tried).toEqual(["web"]);
     expect(host.textContent).toContain("Starting…");
-    expect([...host.querySelectorAll("button")].every((b) => b.disabled)).toBe(true);
-    await act(async () => { open(); });
+    expect(tries.every((b) => b.disabled)).toBe(true);
+    await act(async () => finish());
+    expect(tries.every((b) => !b.disabled)).toBe(true);
   });
-  it("says why a try failed, and lets it be tried again", async () => {
-    const host = document.body.appendChild(document.createElement("div"));
-    root = createRoot(host);
-    act(() => root!.render(createElement(StartHere, { ...base, onTry: async () => "agent_not_runnable: pi is not set up here" })));
-    await act(async () => { host.querySelector<HTMLButtonElement>("button")!.click(); });
-    await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
-    expect(host.textContent).toContain("agent_not_runnable: pi is not set up here");
-    expect(host.querySelector<HTMLButtonElement>("button")!.disabled).toBe(false);
+  it("says why a try failed and lets it be tried again", async () => {
+    const host = mount({ onTry: async () => "agent_not_runnable: pi is not set up here" });
+    expand(host);
+    await act(async () => button(host, "Try it").click());
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain("agent_not_runnable");
+    expect(button(host, "Try it").disabled).toBe(false);
   });
-  it("offers a template only when its tools run here, and says why one doesn't", () => {
-    const h = html({ tools: toolOffers([{ name: "write", available: true, harnesses: ["pi"] }, { name: "web_fetch", available: false, missing: ["NETWORK"], harnesses: ["pi"] }]) });
-    expect(h.match(/>Try it</g)).toHaveLength(2);
-    expect(h).toContain("web_fetch can&#x27;t run on this server yet");
+  it("offers a template only when its tools run here", () => {
+    const host = mount({ tools: toolOffers([{ name: "write", available: true, harnesses: ["pi"] }, { name: "web_fetch", available: false, missing: ["NETWORK"], harnesses: ["pi"] }]) });
+    expand(host);
+    expect([...host.querySelectorAll("button")].filter((b) => b.textContent === "Try it")).toHaveLength(2);
+    expect(host.textContent).toContain("web_fetch can't run on this server yet");
   });
-  it("puts the model step first when no harness has a model to run, and no template", () => {
-    const h = html({ harnesses: [{ id: "pi", available: true, default_model: null }] });
-    expect(h).toContain("Add a model key");
-    // The server's own setup: a provider's key or a gateway where it runs (Settings holds tool keys, not models).
-    expect(h).toContain("ANTHROPIC_API_KEY");
-    expect(h).toContain("AGENT_MODEL_BASE_URL");
-    // A key alone names no model: the default model is AGENT_MODEL, for a provider's key and for a gateway alike.
-    expect(h.match(/AGENT_MODEL</g)).toHaveLength(2);
-    expect(h).not.toContain('href="#/settings/keys"');
-    expect(h).not.toContain(">Try it<");
-    expect(h).toContain("Then reload this page, and the templates here run in one click.");
+  it("takes execution setup to Settings only when the server can keep keys", () => {
+    const host = mount({ harnesses: [], keySettings: true });
+    expect(host.querySelector('a[href="#/settings/keys"]')).toBeNull();
+    expand(host);
+    expect(host.querySelector('a[href="#/settings/keys"]')?.textContent).toBe("Set up models in Settings");
+    expect(host.textContent).not.toContain("Try it");
   });
-  // QA: the step read "in its environment,AGENT_MODEL=provider/model-id": JSX drops a line break between text and the
-  // element after it, so the words ran together. The text as a person reads it has its spaces.
-  it("keeps the spaces in the step's setup text", () => {
-    const d = document.createElement("div");
-    d.innerHTML = html({ harnesses: [{ id: "pi", available: true, default_model: null }] });
-    expect(d.textContent).toContain("Start agentrun-serve with the model to run in its environment, AGENT_MODEL=provider/model-id, and that provider's key (ANTHROPIC_API_KEY, OPENAI_API_KEY or OPENROUTER_API_KEY). Or name a gateway: AGENT_MODEL_BASE_URL and AGENT_MODEL_API_KEY, with the gateway's model in AGENT_MODEL. Then reload this page");
-    expect(d.textContent).not.toMatch(/[,:][A-Za-z(]/);
+  it("explains server setup when Settings cannot save a model key", () => {
+    const host = mount({ harnesses: [], keySettings: false });
+    expand(host);
+    expect(host.textContent).toContain("Configure a model where this server runs");
+    expect(host.querySelector('a[href="#/settings/keys"]')).toBeNull();
   });
-  // QA: with the key card on screen above it (the server keeps keys), the step told the person to restart the server
-  // with AGENT_MODEL and reload. The card saves a key with no restart, so the step points at it instead.
-  it("points at the key card above when the server keeps keys, with no env advice and no reload", () => {
-    const h = html({ harnesses: [{ id: "pi", available: true, default_model: null }], keyCard: true });
-    expect(h).toContain("Add a model key");
-    expect(h).toContain("Add a model key in the card above, and the templates here run in one click.");
-    for (const gone of ["AGENT_MODEL", "ANTHROPIC_API_KEY", "agentrun-serve", "reload"]) expect(h).not.toContain(gone);
-    expect(h).not.toContain(">Try it<");
+  it("names imported history and supports an import action without asking for a key", () => {
+    const h = html({ imported: 6, importAction: createElement("button", null, "Import agents") });
+    expect(h).toContain("6 imported sessions");
+    expect(h).toContain('href="#/runs"');
+    expect(h).toContain(">Import agents<");
   });
-  it("leaves the templates alone when a harness has a model, key card or not", () => {
-    const h = html({ keyCard: true });
-    expect(h.match(/>Try it</g)).toHaveLength(3);
-    expect(h).not.toContain("card above");
+  it("remembers dismissing the introduction across visits", () => {
+    const host = mount();
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Dismiss introduction"]')!.click());
+    expect(host.textContent).toBe("");
+    act(() => root!.unmount()); root = undefined;
+    expect(mount().textContent).toBe("");
   });
-  it("names the imported history when there is some, with a way to browse it", () => {
-    expect(html({ imported: 6 })).toContain("6 imported sessions");
-    expect(html({ imported: 6 })).toContain('href="#/runs"');
-    expect(html()).not.toContain("imported");
-  });
+});
+
+
+it("mounts managed setup only on request and preserves its pending state across collapse", () => {
+  let mounts = 0;
+  let unmounts = 0;
+  function Setup() {
+    const [pending, setPending] = useState(false);
+    useEffect(() => { mounts++; return () => { unmounts++; }; }, []);
+    return createElement("button", { onClick: () => setPending(!pending) }, pending ? "Cancel pending setup" : "Begin managed setup");
+  }
+  const host = mount({ harnesses: [], modelSetup: createElement(Setup) });
+  expect(mounts).toBe(0);
+  expect(host.textContent).not.toContain("Begin managed setup");
+  expand(host);
+  act(() => button(host, "Begin managed setup").click());
+  expand(host);
+  const pending = button(host, "Cancel pending setup");
+  expect(pending.closest("[hidden]")).not.toBeNull();
+  expect(mounts).toBe(1);
+  expect(unmounts).toBe(0);
+  expand(host);
+  expect(button(host, "Cancel pending setup").closest("[hidden]")).toBeNull();
+  act(() => button(host, "Cancel pending setup").click());
+  expect(button(host, "Begin managed setup")).toBeTruthy();
+  expect(mounts).toBe(1);
+  expect(unmounts).toBe(0);
+});
+
+
+it("keeps the actual ChatGPT card and pasted callback through collapse, completion and Done", async () => {
+  const calls: string[] = [];
+  const authorize = "https://auth.openai.com/api/accounts/authorize?state=fake-state";
+  const pasted = "http://127.0.0.1:1455/auth/callback?code=fake-code&state=fake-state";
+  let state: ChatGPTView = { state: "signed_out" };
+  let refreshed = 0;
+  let done = 0;
+  vi.stubGlobal("open", vi.fn(() => ({ location: { href: "" }, opener: null, close() {} })));
+  const v2 = createClient({ fetch: (async (url, init) => {
+    const path = String(url);
+    calls.push(`${init?.method ?? "GET"} ${path}`);
+    let body: unknown = state;
+    if (path === "/v2/settings/tool-keys") body = { keys: [], reenter: null };
+    if (path === "/v2/settings/chatgpt/sign-in") {
+      state = { state: "pending", authorize_url: authorize };
+      body = { authorize_url: authorize, expires_at: "2099-01-01T00:00:00Z" };
+    }
+    if (path === "/v2/settings/chatgpt/sign-in/finish") {
+      expect(JSON.parse(String(init?.body))).toEqual({ redirect_url: pasted });
+      body = state = { state: "signed_in", email: "person@example.com", plan: "plus", models: ["gpt-6.1-sol"] };
+    }
+    return new Response(JSON.stringify(body), { headers: { "content-type": "application/json" } });
+  }) as typeof fetch });
+  function Page() {
+    const [plan, setPlan] = useState<ChatGPTView>({ state: "signed_out" });
+    const [ready, setReady] = useState(false);
+    const [planShown, setPlanShown] = useState(false);
+    return createElement(StartHere, { ...base, harnesses: ready ? harnesses : [], modelSetup: !ready || planShown
+      ? createElement(ModelKeyCard, { v2, writable: true, needs: ready ? null : "key", plan,
+        onPlan: (next: ChatGPTView) => { setPlan(next); setPlanShown(true); if (next.state === "signed_in") { refreshed++; setReady(true); } },
+        onDone: () => { done++; setPlanShown(false); } }) : undefined });
+  }
+  const host = document.body.appendChild(document.createElement("div"));
+  root = createRoot(host);
+  await act(async () => root!.render(createElement(Page)));
+  expect(calls).toEqual([]);
+  expand(host);
+  await act(async () => button(host, "Continue with ChatGPT").click());
+  const input = host.querySelector<HTMLInputElement>('input[name="redirect_url"]')!;
+  await act(async () => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, pasted); input.dispatchEvent(new Event("input", { bubbles: true })); });
+  expand(host);
+  expect(input.closest("[hidden]")).not.toBeNull();
+  expand(host);
+  expect(host.querySelector('input[name="redirect_url"]')).toBe(input);
+  expect(input.value).toBe(pasted);
+  await act(async () => button(host, "Finish sign-in").click());
+  expect(refreshed).toBe(1);
+  expect(host.textContent).toContain("Signed in as person@example.com (Plus)");
+  expect(host.textContent).toContain("Eligible usage in this app uses your ChatGPT plan");
+  expect(host.querySelector('[aria-label="Model key"]')).not.toBeNull();
+  await act(async () => button(host, "Done").click());
+  expect(done).toBe(1);
+  expect(host.querySelector('[aria-label="Model key"]')).toBeNull();
+  expect(calls.filter((c) => c.startsWith("POST"))).toEqual(["POST /v2/settings/chatgpt/sign-in", "POST /v2/settings/chatgpt/sign-in/finish"]);
 });

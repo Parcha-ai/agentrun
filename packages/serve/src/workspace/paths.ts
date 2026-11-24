@@ -11,6 +11,11 @@
 //                                                no Workspace: a harness's working directory, and its private files
 //                                                in harness/<claim's epoch>, swept at that claim's end
 //                                                (runner/cli-run-spec.ts)
+//   <data>/disk/agents/<agent>/runs/<run>/recordings
+//                                                a run's screen recordings (recordingsFolder): beside work/, never in
+//                                                its Workspace, so the agent neither reads nor changes them; on this
+//                                                machine in either mode, as the runner records them
+//                                                (computer-record.ts)
 // <agent> is the id in lower case, a dash, and 16 hex digits of the id's SHA-256, so ids that differ only in case never
 // share a folder on a disk that folds case.
 //
@@ -48,6 +53,12 @@ export const learningKey = (agentId: string): string => `agents/${agentDirName(a
 /** Run `runId`'s folder, the root of its Workspace: `<data>/disk/agents/<agent>/runs/<run>/work`. */
 export const runFolder = (dataDir: string, agentId: string, runId: string): string => join(dataDir, DISK_DIR, runKey(agentId, runId));
 
+/** The recordings folder's name: beside a run's folder on this machine, and the run files route's path to it. */
+export const RECORDINGS = "recordings";
+
+/** Run `runId`'s recordings on this machine, beside its folder: `<data>/disk/agents/<agent>/runs/<run>/recordings`. */
+export const recordingsFolder = (dataDir: string, agentId: string, runId: string): string => join(dirname(runFolder(dataDir, agentId, runId)), RECORDINGS);
+
 /** Agent `agentId`'s learning folder, the root of its learning Workspace: `<data>/disk/agents/<agent>/learning`. */
 export const agentLearningFolder = (dataDir: string, agentId: string): string => join(dataDir, DISK_DIR, learningKey(agentId));
 
@@ -56,6 +67,14 @@ export const homeKey = (agentId: string): string => `agents/${agentDirName(agent
 
 /** Agent `agentId`'s home, the root of its home Workspace: `<data>/disk/agents/<agent>/home`. */
 export const agentHomeFolder = (dataDir: string, agentId: string): string => join(dataDir, DISK_DIR, homeKey(agentId));
+
+/** Immutable source bundles, private to the server and outside every run's tool root. */
+export const sourceSnapshotsKey = (agentId: string): string => `agents/${agentDirName(agentId)}/source-snapshots`;
+export const sourceSnapshotsFolder = (dataDir: string, agentId: string): string => join(dataDir, DISK_DIR, sourceSnapshotsKey(agentId));
+
+/** A run's source placement receipt, beside work/ so its tools cannot rewrite the admission proof. */
+export const sourceRunControlKey = (agentId: string, runId: string): string => `agents/${agentDirName(agentId)}/runs/${checkId(runId, "run")}/source-control`;
+export const sourceRunControlFolder = (dataDir: string, agentId: string, runId: string): string => join(dataDir, DISK_DIR, sourceRunControlKey(agentId, runId));
 
 /** Run `runId`'s scratch folder on this machine: `<data>/scratch/<agent>/<run>`. Outside the disk, so no Workspace
  *  holds it, in either mode. */

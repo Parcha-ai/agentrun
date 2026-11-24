@@ -3,16 +3,19 @@
 // refuses, the conformance module's names), each read from options or from what the SDK slice is handed. The adapter's
 // lifecycle is tested once, against its one fake host (hosted-provider.test.mjs); Modal's own lifecycle is proven live
 // (test/modal). The SDK slice here only records what it is given and answers nothing that makes a sandbox: no sandbox
-// exists, no Modal client is constructed unless a test says so, and nothing reaches the network.
+// exists, no Modal client is constructed unless a test says so, and nothing reaches the network. One test, the desktop
+// over dial, gives the slice sandboxes it keeps, each booted from its env (fake-dial-host.mjs bootDial).
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { once } from "node:events";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { checkLifetime, kindRefusals, recordedMount, sweep } from "../dist/index.js";
+import { AttachHub, checkLifetime, kindRefusals, MemoryMachineTokens, mountsOf, recordedMount, sweep } from "../dist/index.js";
 import { fakeObjects } from "./fake-archil.mjs";
+import { bootDial, desktopOverDial, dialServer } from "./fake-dial-host.mjs";
 
 const modal = await import("../dist/modal.js");
 const { MODAL } = await import("../dist/descriptors/modal.js");
@@ -24,9 +27,9 @@ const APP = "computers";
 const COMPUTER = "agentrun.computer";
 const NAME = "agentrun.computer.name";
 const DAY_MS = 24 * 60 * 60 * 1000;
-/** The box image the release publishes, tagged with box/recipe.mjs's hash: the Dockerfile, then the helper it copies, 12 hex. */
+/** The box image the release publishes, tagged with box/recipe.mjs's hash: the Dockerfile, then install.sh and the helper it copies, 12 hex. */
 const BOX_IMAGE = `ghcr.io/parcha-ai/agentrun-box:${createHash("sha256")
-	.update(Buffer.concat(["Dockerfile", "agentrun-archil"].map((name) => readFileSync(new URL(`../box/${name}`, import.meta.url)))))
+	.update(Buffer.concat(["Dockerfile", "install.sh", "agentrun-archil"].map((name) => readFileSync(new URL(`../box/${name}`, import.meta.url)))))
 	.digest("hex")
 	.slice(0, 12)}`;
 const ENTRYPOINT_MARK = "# agentrun-computer: entrypoint";
@@ -111,14 +114,15 @@ async function withProcessEnv(values, fn) {
 
 // --- what a Modal computer is ---
 
-test("capabilities, as before the move: a linux VM whose lifetime Modal enforces up to 24 hours, init its main process, network none alone with no read-back, a uid, no agent port, GPUs on gVisor", () => {
+test("capabilities: a linux VM whose lifetime Modal enforces up to 24 hours, init its main process, network none, open and a list with no vendor read-back, a uid, no agent port, GPUs on gVisor", () => {
 	const { provider, rec } = setup();
 	assert.equal(provider.id, "modal");
 	assert.equal(provider.version, VERSION);
 	assert.deepEqual(provider.capabilities(), {
 		kind: "linux",
 		lifetime: "vendor",
-		network: ["none"],
+		network: ["none", "open", "allow"],
+		allow: { domains: { max: 256, ports: [80, 443] }, cidrs: { max: 256, ports: [80, 443] }, mixed: true },
 		networkReadBack: false,
 		isolation: "vm",
 		os: "linux",
@@ -127,20 +131,20 @@ test("capabilities, as before the move: a linux VM whose lifetime Modal enforces
 		maxLifetimeMs: DAY_MS,
 		user: ["uid"],
 		release: ["delete"],
-		mount: ["archil"],
+		mount: ["archil", "sync"],
 		vendorAgentPorts: [],
 		gpu: {
 			types: ["T4", "L4", "A10", "L40S", "A100", "A100-40GB", "A100-80GB", "RTX-PRO-6000", "H100", "H200", "B200", "B300"],
 			max: 8,
 			isolation: "gvisor",
 			preemptible: true,
-			mounts: [],
+			mounts: ["sync"],
 			unmounted: { why: "Archil's FUSE mount isn't proven on Modal's gVisor runtime (#2279)", yet: true },
 			fence: "userns-netns",
 		},
 	});
 	assert.deepEqual(MODAL.capabilities[0].gpu, provider.capabilities().gpu, "the static configuration declares the same GPUs");
-	assert.deepEqual(provider.capabilities().mount, ["archil"]);
+	assert.deepEqual(provider.capabilities().mount, ["archil", "sync"]);
 	assert.deepEqual(kindRefusals(provider.capabilities()), []);
 	assert.equal(provider.extend, undefined, "no extend(): Modal's timeout cannot move");
 	assert.equal(provider.stream, undefined, "no stream()");
@@ -195,10 +199,9 @@ test("check() refuses in words, field by field, with no SDK call", () => {
 	for (const lifetimeMs of [undefined, 0, 1.5, DAY_MS + 1]) {
 		assert.deepEqual(provider.check({ ...SPEC, lifetimeMs }), checkLifetime(lifetimeMs, provider.capabilities()), `lifetimeMs ${String(lifetimeMs)}: the shared rule's words`);
 	}
-	for (const network of ["open", { allow: ["8.8.8.0/24"] }]) {
-		assert.deepEqual(refused({ ...SPEC, network }), ["network"], `network ${JSON.stringify(network)}`);
-		assert.match(words({ ...SPEC, network }, "network"), /network "none" only/);
-	}
+	for (const network of ["open", { allow: ["8.8.8.0/24"] }]) assert.deepEqual(refused({ ...SPEC, network }), [], `network ${JSON.stringify(network)}`);
+	assert.deepEqual(refused({ ...SPEC, network: "wifi" }), ["network"]);
+	assert.match(words({ ...SPEC, network: "wifi" }, "network"), /network is required: none, open or a list/);
 	for (const cpus of [0, -1, 0.1, "2", Number.NaN]) assert.deepEqual(refused({ ...SPEC, cpus }), ["cpus"], `cpus ${String(cpus)}`);
 	assert.match(words({ ...SPEC, cpus: 0.1 }, "cpus"), /Modal counts physical cores, 2 CPUs each/);
 	for (const memoryMb of [0, 1.5, "512"]) assert.deepEqual(refused({ ...SPEC, memoryMb }), ["memoryMb"], `memoryMb ${String(memoryMb)}`);
@@ -359,12 +362,12 @@ const MOUNT = { kind: "archil", disk: "dsk-00000000000baf76", region: "aws-us-ea
 const ARCHIL_SPEC = { ...SPEC, labels: { "agentrun.run": RUN, "agentrun.epoch": "1" }, mount: MOUNT };
 const noToken = (value, what) => assert.ok(!JSON.stringify(value ?? null).includes(TOKEN), `${what} holds the token`);
 
-test("check(): an Archil spec takes network none, the run and epoch labels, the helper's shapes and the tool user, with no SDK call; no refusal holds the token", () => {
+test("check(): an Archil spec takes network none or open, the run and epoch labels, the helper's shapes and the tool user, with no SDK call; no refusal holds the token", () => {
 	const { provider, rec } = setup();
 	assert.deepEqual(provider.check(ARCHIL_SPEC), []);
+	assert.deepEqual(provider.check({ ...ARCHIL_SPEC, network: "open" }), [], "open: the tools' proxy beside root's mount");
 	assert.deepEqual(provider.check({ ...ARCHIL_SPEC, user: "2510:2510" }), [], "the tool user, named");
 	const cases = [
-		[{ network: "open" }, "network", /none/],
 		[{ labels: { "agentrun.run": RUN } }, "labels", /agentrun\.epoch/],
 		[{ mount: { ...MOUNT, folder: "agents/a1/runs/r2/work" } }, "mount", /run r2/],
 		[{ mount: { ...MOUNT, token: "short" } }, "mount", /mount\.token/],
@@ -388,6 +391,21 @@ test("create of an Archil computer: Modal's network stays on for root to reach A
 	assert.equal(tags["agentrun.mount"], JSON.stringify({ kind: "archil", disk: MOUNT.disk, region: MOUNT.region, agent: "a1" }));
 	assert.equal(recordedMount(tags).folder, MOUNT.folder, "read back as the adapter wrote it");
 	noToken(rec.calls, "what the SDK was handed");
+});
+
+test("create under open or a list leaves Modal's network on (no blockNetwork) for init's egress proxy, gives init --network and the form, and records it in a tag; an Archil computer under open too", async () => {
+	for (const [spec, form] of [
+		[{ ...SPEC, network: "open" }, "open"],
+		[{ ...SPEC, network: { allow: ["Example.com"] } }, "allow:example.com"],
+		[{ ...ARCHIL_SPEC, network: "open" }, "open"],
+	]) {
+		const { provider, rec } = setup();
+		await create(provider, spec);
+		const { blockNetwork, command, tags } = rec.params();
+		assert.equal(blockNetwork, undefined, form);
+		assert.deepEqual(command.slice(-2), ["--network", form]);
+		assert.equal(tags["agentrun.computer.network"], form);
+	}
 });
 
 test("Modal's 512 bytes of tags: qa36's Archil computer and one of the longest agent id on the box image fit; past the bound check() refuses in words, before any SDK call", async () => {
@@ -490,6 +508,8 @@ test("no real Modal client: the provider and the conformance module import nothi
 		tokenSecret: "COMPUTER_MODAL_TOKEN_SECRET",
 		app: "COMPUTER_MODAL_APP",
 		serverUrl: "COMPUTER_MODAL_SERVER_URL",
+		connect: "COMPUTER_MODAL_CONNECT",
+		kind: "COMPUTER_MODAL_KIND",
 	});
 	assert.equal(module.CONFORMANCE_MAX_LIFETIME_MS, 30 * 60_000);
 	assert.equal(modal.modalCommands, undefined, "the scripts are the adapter's");
@@ -595,6 +615,17 @@ test("the provider's create() reads no environment: the token, the app and the s
 		await modal.create({ ...TOKEN_OPTIONS, app: APP, serverUrl: "https://dev.example.invalid:443", ModalClient: chosen.ModalClient, daemonPath: DAEMON_PATH });
 		assert.deepEqual(chosen.servers, ["https://dev.example.invalid:443"], "options.serverUrl is the server");
 	});
+});
+
+test("the server URL is https alone, loopback included, so the token never crosses in the clear: another is refused before any client is made", async () => {
+	for (const serverUrl of ["http://api.modal.com:443", "http://127.0.0.1:8080", "http://[::1]:8080", "http://localhost:8080", "grpc://api.modal.com:443"]) {
+		const { ModalClient, made } = fakeClient();
+		await assert.rejects(modal.create({ ...TOKEN_OPTIONS, app: APP, serverUrl, ModalClient, daemonPath: DAEMON_PATH }), (error) => /^the Modal server URL \(options\.serverUrl\) must be https, so the key never crosses in the clear/.test(error.message) && !error.message.includes(TOKEN_OPTIONS.tokenId), serverUrl);
+		assert.deepEqual(made, [], serverUrl);
+	}
+	const { ModalClient, made } = fakeClient();
+	await assert.rejects(modal.create({ ...TOKEN_OPTIONS, app: APP, serverUrl: "//api.modal.com:443", ModalClient, daemonPath: DAEMON_PATH }), /the Modal server URL \(options\.serverUrl\) is not a URL/);
+	assert.deepEqual(made, []);
 });
 
 test("the conformance module reads COMPUTER_MODAL_APP and passes it as options.app, and refuses without it in words naming it", async () => {
@@ -725,15 +756,187 @@ test("the drifted provider uploads a daemon built as <version>-drift", async () 
 	assert.equal(drifted.id, "modal");
 });
 
+/** A sandbox whose exec runs argv as a process on this machine, handed over as Modal's binary-mode ContainerProcess is. */
+function processSandbox(execs) {
+	return {
+		sandboxId: "sb-here",
+		exec: async (argv, params) => {
+			execs.push({ argv, params });
+			const child = spawn(argv[0], argv.slice(1), { stdio: ["pipe", "pipe", "pipe"] });
+			child.stdin.on("error", () => {});
+			await once(child, "spawn");
+			const code = new Promise((done) => child.on("close", (exit, signal) => done(exit ?? (signal ? 137 : -1))));
+			return {
+				stdout: child.stdout,
+				stderr: child.stderr,
+				stdin: { writeBytes: async (bytes) => void child.stdin.write(bytes), close: async () => void child.stdin.end() },
+				wait: () => code,
+			};
+		},
+	};
+}
+
+test("kill ends an exec and every process under it by its pid, as Modal has no kill for an exec, and its stderr is the process's own", async (t) => {
+	if (!existsSync("/proc/self/stat")) return t.skip("no /proc here: the pid wrapper and its kill read /proc/<pid>/stat");
+	const { PID_KILL, PID_WRAPPER } = await import("../dist/hosted/scripts.js");
+	const execs = [];
+	const rec = recorder();
+	rec.sdk.sandboxes.fromId = async () => processSandbox(execs);
+	const provider = new ModalProvider({ sdk: rec.sdk, app: APP, daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
+	// A child that left the process group too: a kill of the group alone misses it.
+	const proc = await provider.host.exec("sb-here", ["sh", "-c", "echo its own words >&2; setsid sleep 600 & echo $!; cat"], { timeoutMs: 2_000 });
+	const err = [];
+	const errRead = (async () => {
+		for await (const chunk of proc.stderr) err.push(Buffer.from(chunk));
+	})();
+	const out = proc.stdout[Symbol.asyncIterator]();
+	const sleeper = Number(Buffer.from((await out.next()).value).toString().trim());
+	const dead = (pid) => {
+		try {
+			return readFileSync(`/proc/${pid}/stat`, "utf8").split(") ")[1].startsWith("Z");
+		} catch {
+			return true;
+		}
+	};
+	t.after(() => spawnSync("kill", ["-KILL", String(sleeper)]));
+	assert.equal(dead(sleeper), false);
+	await proc.kill();
+	assert.deepEqual(execs[0].argv, [...PID_WRAPPER, "sh", "-c", "echo its own words >&2; setsid sleep 600 & echo $!; cat"], "the process starts under the pid wrapper");
+	assert.deepEqual(execs[1].argv.slice(0, 4), ["sh", "-c", PID_KILL, "sh"], "kill is an exec of the kill script");
+	assert.equal(await proc.wait(), 137, "killed, while its stdin was still open");
+	for (let at = 0; at < 100 && !dead(sleeper); at++) await new Promise((done) => setTimeout(done, 20));
+	assert.equal(dead(sleeper), true, "the process under it is killed too");
+	await errRead;
+	assert.equal(Buffer.concat(err).toString(), "its own words\n", "the wrapper's line is taken off stderr");
+});
+
 // The loopback block: whatever Modal runs inside a sandbox, the daemon's programs get a network of their own (init
 // --own-network) and run as 2510:2510. No listener of Modal's inside is documented, so no port is declared.
 
-test("the loopback block: network none only, no agent port declared, open refused in words", () => {
+test("the loopback block: no agent port declared, open and a list taken through init's egress proxy alone", () => {
 	const { provider, rec } = setup();
-	assert.deepEqual(provider.capabilities().network, ["none"]);
+	assert.deepEqual(provider.capabilities().network, ["none", "open", "allow"]);
 	assert.deepEqual(provider.capabilities().vendorAgentPorts, []);
-	const refusals = provider.check({ ...SPEC, network: "open" });
-	assert.deepEqual(refusals.map((r) => r.field), ["network"]);
-	assert.match(refusals[0].message, /network "none" only: its programs run in a network of their own/);
+	assert.deepEqual(provider.check({ ...SPEC, network: "open" }), []);
 	assert.deepEqual(rec.calls, []);
+});
+
+/** A dial provider's server in tests: http on 127.0.0.1, which a dial provider takes in tests alone, its tokens and hub. */
+const dialOf = () => ({ url: "http://127.0.0.1:8080", tokens: new MemoryMachineTokens(), hub: new AttachHub({ helloMs: 1_000 }) });
+
+test("connect dial: the sandbox's command is agentrun-dial with the boot env as env (a Modal Secret), its network on, and the provider has no exec", async () => {
+	const dial = dialOf();
+	const { provider, rec } = setup({ connect: "dial", dial });
+	assert.equal(provider.host.facts.connect, "dial");
+	assert.equal(provider.host.exec, undefined, "no exec");
+	assert.equal(provider.host.upload, undefined, "no upload");
+	const result = await create(provider);
+	assert.equal(result.error?.code, "invalid", "a create Modal refused made nothing");
+	const params = rec.params();
+	assert.deepEqual(params.command, ["/usr/local/bin/agentrun-dial"]);
+	assert.deepEqual(Object.keys(params.env).sort(), ["AGENTRUN_ATTACH_TOKEN", "AGENTRUN_ATTACH_URL", "AGENTRUN_DAEMON_SHA256", "AGENTRUN_DAEMON_URL", "AGENTRUN_INIT_ARGS"]);
+	assert.equal(params.env.AGENTRUN_ATTACH_URL, "ws://127.0.0.1:8080/v2/computers/attach");
+	assert.match(params.env.AGENTRUN_INIT_ARGS, /^--deadline \S+ --user 2510:2510 --own-network --max-deadline \S+$/);
+	assert.equal(params.blockNetwork, undefined, "its root reaches the server; its tools' network none is init's");
+	assert.equal(params.runtime, "vm");
+	assert.equal(dial.tokens.check(params.env.AGENTRUN_ATTACH_TOKEN), undefined, "a create Modal refused has its token revoked");
+	// Exec stays the default: the entrypoint as the command, and no env.
+	const plain = setup();
+	await create(plain.provider);
+	assert.equal(plain.rec.params().env, undefined);
+	assert.ok(plain.rec.params().command[2].startsWith(`${ENTRYPOINT_MARK}\n`));
+	assert.equal(typeof plain.provider.host.exec, "function");
+});
+
+test("connect dial: init is agentrun-dial's child, no Archil mount (refused in words), GPUs still offered; no value but exec or dial", () => {
+	const { provider, rec } = setup({ connect: "dial", dial: dialOf() });
+	const caps = provider.capabilities();
+	assert.equal(caps.daemon, "child");
+	assert.deepEqual(caps.mount, ["sync"], "a synced folder alone: agentrun-dial makes /workspace");
+	assert.equal(caps.gpu?.isolation, "gvisor");
+	const refusals = provider.check({ ...SPEC, mount: { kind: "archil", disk: "dsk-00000000000baf76", region: "aws-us-east-1", folder: "agents/a1/runs/r1/work", token: "not-a-secret" } });
+	assert.deepEqual(refusals.map(({ field }) => field), ["mount"]);
+	assert.ok(refusals[0].message.includes(mountsOf(MODAL, () => false, true).unmounted.archil), refusals[0].message);
+	assert.throws(() => setup({ connect: "ssh" }), /connect is how Modal reaches its machines, "exec" \(the default\) or "dial", not "ssh"/);
+	assert.deepEqual(MODAL.settings, [
+		{ name: "modalApp", option: "app", default: "agentrun" },
+		{ name: "modalConnect", option: "connect" },
+	]);
+	assert.deepEqual(rec.calls, []);
+});
+
+test("kind desktop on connect dial: the desktop's groups, no GPU, the window manager, and DISPLAY beside the boot env, for init; on connect exec it is refused when made, in words", async () => {
+	const dial = dialOf();
+	const { provider, rec } = setup({ connect: "dial", dial, kind: "desktop" });
+	const caps = provider.capabilities();
+	assert.equal(caps.kind, "desktop");
+	assert.deepEqual(caps.groups, ["exec", "files", "processes", "screen", "input.pointer", "input.keys", "apps"]);
+	assert.equal(caps.gpu, undefined, "a desktop offers no GPU");
+	assert.deepEqual(provider.check({ ...SPEC, gpu: { type: "T4", count: 1 } }).map(({ field }) => field), ["gpu"]);
+	assert.equal(provider.host.facts.windowManager, true, "the box image has xfwm4");
+	const result = await create(provider);
+	assert.equal(result.error?.code, "invalid", "a create Modal refused made nothing");
+	const { env } = rec.params();
+	assert.deepEqual(Object.keys(env).sort(), ["AGENTRUN_ATTACH_TOKEN", "AGENTRUN_ATTACH_URL", "AGENTRUN_DAEMON_SHA256", "AGENTRUN_DAEMON_URL", "AGENTRUN_INIT_ARGS", "DISPLAY"]);
+	assert.equal(env.DISPLAY, ":0");
+	// connect exec makes kind linux, as it always has: a desktop there is refused before any SDK call, naming the connect
+	// its descriptor's desktop configuration takes.
+	for (const connect of [undefined, "exec"]) {
+		assert.throws(() => setup({ ...(connect ? { connect } : {}), kind: "desktop" }), /^Error: Modal gives a desktop computer on connect "dial" alone, not "exec"$/);
+	}
+	assert.equal(setup({ kind: "linux" }).provider.capabilities().kind, "linux");
+});
+
+test("Modal's desktop configuration, as serve builds it over connect exec, makes a desktop over dial: the sandbox boots from its env, dials, and its X server and xfwm4 start over that socket", async () => {
+	const dial = dialServer();
+	const sandboxes = new Map();
+	let booted;
+	// The SDK's slice keeping what it makes: a sandbox boots from the env it was given (bootDial), runs until terminated.
+	const rec = recorder();
+	const sandboxOf = (id, params) => {
+		let finished = null;
+		return { sandboxId: id, params, poll: async () => finished, getTags: async () => ({ ...params.tags }), terminate: async () => void (finished = 0) };
+	};
+	rec.sdk.sandboxes = {
+		create: async (app, image, params) => {
+			const sandbox = sandboxOf(`sb-${sandboxes.size + 1}`, params);
+			sandboxes.set(sandbox.sandboxId, sandbox);
+			booted = bootDial(params.env, dial, { daemon: readFileSync(DAEMON_PATH) });
+			return sandbox;
+		},
+		fromId: async (id) => {
+			if (!sandboxes.has(id)) throw Object.assign(new Error("Sandbox not found"), { name: "NotFoundError" });
+			return sandboxes.get(id);
+		},
+		list: ({ tags }) => ({
+			async *[Symbol.asyncIterator]() {
+				yield* [...sandboxes.values()].filter(({ params }) => Object.entries(tags).every(([key, value]) => params.tags[key] === value));
+			},
+		}),
+	};
+	const { options } = MODAL.capabilities.find(({ kind }) => kind === "desktop");
+	// serve's options for this provider: the keys' and the settings' (modalConnect exec), then the configuration's.
+	const provider = new ModalProvider({ sdk: rec.sdk, app: APP, daemonPath: DAEMON_PATH, timeouts: { ...TIMEOUTS, listedStableMs: 0 }, dial, connect: "exec", ...options });
+	assert.equal(provider.capabilities().kind, "desktop");
+	assert.equal(provider.host.facts.connect, "dial");
+	await desktopOverDial(provider, dial, () => booted, { image: BOX_IMAGE, lifetimeMs: 600_000, network: "none" });
+	const [sandbox] = sandboxes.values();
+	assert.deepEqual([sandbox.params.runtime, sandbox.params.cpuLimit, sandbox.params.memoryLimitMiB, sandbox.params.gpu], ["vm", 1, 4096, undefined], "2 CPUs (1 physical core) and 4 GiB on the VM runtime, no GPU");
+	assert.equal(await sandbox.poll(), 0, "release terminated the sandbox");
+});
+
+test("the conformance module reads COMPUTER_MODAL_CONNECT as connect, and its dialKit refuses in words: this process is no public server", async () => {
+	const { MODAL_ENV, settingsFromEnv, dialKit } = await import("../dist/conformance/modal.js");
+	const env = { [MODAL_ENV.tokenId]: "ak-fake-test-key", [MODAL_ENV.tokenSecret]: "as-not-a-secret", [MODAL_ENV.app]: APP, [MODAL_ENV.connect]: "dial" };
+	assert.equal(MODAL_ENV.connect, "COMPUTER_MODAL_CONNECT");
+	assert.equal(settingsFromEnv(env).connect, "dial");
+	assert.throws(() => dialKit(), /Modal's machines dial the server that minted their tokens, and this run has no public server: run its Core with packages\/serve\/scripts\/dial-conformance\.mjs --provider modal with COMPUTER_MODAL_CONNECT=dial inside a server the internet reaches at AGENTRUN_PUBLIC_URL/);
+});
+
+test("the conformance module's run image on dial is the box image, the one that holds agentrun-dial; on exec, the CLI's debian:bookworm-slim", async () => {
+	const { MODAL_ENV, conformanceImage } = await import("../dist/conformance/modal.js");
+	const { boxImageRef } = await import("../dist/box-image.js");
+	assert.equal(conformanceImage({ env: { [MODAL_ENV.connect]: "dial" } }), boxImageRef());
+	assert.equal(conformanceImage({ env: {} }), "debian:bookworm-slim");
+	assert.equal(conformanceImage({ env: { [MODAL_ENV.connect]: "exec" } }), "debian:bookworm-slim");
 });

@@ -8,7 +8,7 @@
 // through the inner loop the moment it is chosen. A launch whose harness this runner does not run, or whose body cannot
 // be read, fails the run in words (the dispatch's start() throws, which the runner records as the run failing).
 import { harnessOfBody } from "../harness.js";
-import { readLaunchBody, type RunLaunch } from "../run-launch.js";
+import { launchOnItsDisk, readLaunchBody, type RunLaunch } from "../run-launch.js";
 import type { Claim, Command, CommandOutcome, Loop, LoopDeps, LoopEnd, LoopFactory, StopReason } from "./loop-contract.js";
 
 /** What the dispatch reads of a run at its claim, and how it picks the harness's loop. */
@@ -18,8 +18,8 @@ export interface DispatchDeps {
   launchOf(runId: string): Promise<{ readonly body: unknown }>;
   /** The loop factory for a run launched with `harness`, built from its `launch` record and its run id (so the resolver may
    *  read the run's revision — a workflow revision runs on the workflow loop whatever its harness name), or undefined when
-   *  this runner does not run it (the run fails in words). pi is the adapter loop with adapterRunSpecFromLaunch; a built-in
-   *  learning run names "learning"; the CLI harnesses name their own. May be async (the revision read). */
+   *  this runner does not run it (the run fails in words). pi is the adapter loop with adapterRunSpecFromLaunch; the CLI
+   *  harnesses name their own. May be async (the revision read). */
   resolve(harness: string, launch: RunLaunch, runId: string): LoopFactory | undefined | Promise<LoopFactory | undefined>;
 }
 
@@ -75,7 +75,9 @@ function dispatchLoop(deps: DispatchDeps, loopDeps: LoopDeps): Loop {
 
   async function begin(claim: Claim): Promise<LoopEnd> {
     const row = await deps.launchOf(claim.runId);
-    const launch = readLaunchBody(row.body);
+    // The launch as this run runs it: on a named disk, with nothing learned on another disk (launchOnItsDisk).
+    const read = readLaunchBody(row.body);
+    const launch = read && launchOnItsDisk(read);
     if (!launch) throw new LaunchUnreadable(claim.runId);
     const harness = harnessOfBody(row.body as { harness?: string });
     const factory = await deps.resolve(harness, launch, claim.runId);

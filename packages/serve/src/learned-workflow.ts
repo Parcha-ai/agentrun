@@ -32,10 +32,11 @@ import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context"
 import type { TSchema } from "typebox";
 import { defineTool, ROOT_CONVERSATION_ID, type ToolRegistration } from "@earendil-works/pi-durable";
 import { registerLabel, registerOutcome } from "./timeline/index.js";
-import { type GuardRow, LEARNED_NODES, LEARNED_NODES_MAX, type LearnedEnded, type LearnedNode } from "./learned-nodes.js";
-import { guardJevOn, guardLine, rowOf, stepGuard } from "./runner/step-guard.js";
+import { LEARNED_NODES, LEARNED_NODES_MAX, type LearnedEnded, type LearnedNode, type LoopRow } from "./learned-nodes.js";
 import { draftProblems, LEARNED_MAX_TURNS } from "./learn/index.js";
-import { decisionsAsked, deniedDecisionWords } from "./learn/skills.js";
+import { repickLabels, repickSiteOf } from "./learn/check.js";
+import { capState, REPICK_MARK, repickMarked } from "./learn/repick.js";
+import { decisionsAsked, deniedDecisionWords } from "./learn/workflow-draft.js";
 import { DEFAULT_DECISION_PROVIDER } from "./decisions.js";
 import { type LearnedWorkflow, workflowLine } from "./learning.js";
 import type { ModelRef } from "./model.js";
@@ -55,7 +56,6 @@ import type { JsonValue, NestedCalls, Refusal } from "@parcha/agentrun-kernel";
 import type { RunDecisions } from "@parcha/agentrun-kernel/kernel/cap";
 import { workflowNodes } from "./model.js";
 import { type ReplayCalls, SKIPPED_WRITE, toolWord, unmarkedWords } from "./learn/replay-calls.js";
-import { SOFT_ESCALATE_THRESHOLD } from "./learn/promote.js";
 
 /** What a learned_workflow call's approval card says of its MCP actions' arguments: a `{name}` in one is filled in as
  *  the workflow runs. */
@@ -265,6 +265,8 @@ export function learnedText(text: string): string {
 /** What a learned workflow's model node is refused with when it names a tool: it runs in a session of its own here.
  *  The check before the run refuses such a workflow first (draftProblems); this one holds should it not. */
 export const NODE_TOOLS_REFUSED = "a learned workflow's model node runs without tools here";
+/** What a re-pick's pass over the pages is refused with, unsent, when its state cannot fit learning.repick_max_chars. */
+export const REPICK_STATE_REFUSED = "a quote re-pick's pass over the pages is not sent past its cap";
 
 /** The tool's description, sent with every model request of the run, so it holds what a model needs to call it right and
  *  no more: one line of what the tool does (one call, by name, a JSON input with the listed fields, `*` marking a required
@@ -314,25 +316,21 @@ async function sideStream(models: RunModels, model: unknown, context: object, op
 const HANDBACK_FIELDS = 20;
 const HANDBACK_VALUE = 2_000;
 
-/** The steps a learned workflow ran, as one line after its words: each node's label, kind and status; then the guards of
- *  those steps, and any check that handed back on a step past the trace's cap (`guards`: every check of the call). */
-const stepsLine = (nodes: readonly LearnedNode[], guards: readonly GuardRow[] = []): string => {
-  const shown = nodes.flatMap(({ guard }) => (guard ? [guard] : []));
-  const lines = [...shown, ...guards.filter((row) => row.escalated && !shown.includes(row))].map(guardLine);
-  return (nodes.length ? `\nIts steps: ${nodes.map(({ label, kind, status }) => `${label} (${kind}) ${status}`).join("; ")}.` : "") + (lines.length ? `\nIts guards: ${lines.join("; ")}.` : "");
-};
+/** The steps a learned workflow ran, as one line after its words: each node's label, kind and status. */
+const stepsLine = (nodes: readonly LearnedNode[]): string =>
+  nodes.length ? `\nIts steps: ${nodes.map(({ label, kind, status }) => `${label} (${kind}) ${status}`).join("; ")}.` : "";
 
 /** What a learned workflow that escalated says to whoever takes the job on: the step that handed it back and its own
  *  words for why, the steps it ran, and what it had found (its state's top-level fields, each whole or named by its
- *  size). A guard that fails is a handback, never a failure of the run: the agent finishes the job from here. */
-export function handedBackText(name: string, escalation: { kind: string; stage: string; summary: string; label?: string }, state: Record<string, unknown>, nodes: readonly LearnedNode[], guards: readonly GuardRow[] = []): string {
+ *  size). An escalate is a handback, never a failure of the run: the agent finishes the job from here. */
+export function handedBackText(name: string, escalation: { kind: string; stage: string; summary: string; label?: string }, state: Record<string, unknown>, nodes: readonly LearnedNode[]): string {
   const at = escalation.label ? ` at its step "${escalation.label}"` : "";
   const why = escalation.summary?.trim() || escalation.kind;
   const fields = Object.entries(state ?? {}).filter(([key]) => !key.startsWith("$")).slice(0, HANDBACK_FIELDS).map(([key, value]) => {
     const text = typeof value === "string" ? value : JSON.stringify(value) ?? "null";
     return `- ${key}: ${text.length > HANDBACK_VALUE ? `(${text.length} characters)` : text}`;
   });
-  return [`The learned workflow ${name} handed the job back${at}: ${why}${stepsLine(nodes, guards)}`, ...(fields.length ? ["What it had:", ...fields] : [])].join("\n");
+  return [`The learned workflow ${name} handed the job back${at}: ${why}${stepsLine(nodes)}`, ...(fields.length ? ["What it had:", ...fields] : [])].join("\n");
 }
 
 /** The run's `learned_workflow` tool over `run.workflows`. */
@@ -359,23 +357,24 @@ export function learnedWorkflowTool(run: LearnedWorkflowRun): ToolRegistration {
       const flow = run.workflows.find((workflow) => workflow.name === name);
       if (!flow) return forModel(`No learned workflow of this agent is named ${JSON.stringify(name)}. Its workflows: ${names.join(", ")}.`, { isError: true });
       const ledger = ledgerOf(api.callId);
-      // Which of its nodes ran, kept beside the call in the run's journal (LEARNED_NODES), for its timeline row, and every
-      // guard check it made (`guards`, uncapped: the run's metrics, B4's replay and refit read each); a trace that can't
-      // be kept never fails the call. A call stopped part way keeps the nodes and checks that ended before it stopped,
+      // Which of its nodes ran, kept beside the call in the run's journal (LEARNED_NODES), for its timeline row; a trace
+      // that can't be kept never fails the call. A call stopped part way keeps the nodes that ended before it stopped,
       // written outside the stopped call's context, and still ends as a stop.
       const trace: LearnedNode[] = [];
-      const guards: GuardRow[] = [];
+      // Every loop's exit (`loops`, uncapped too: a quote re-pick is a loop's second pass, which the run's metrics count).
+      const loops: LoopRow[] = [];
       // A replay's write the recording did not have (learn/replay-calls.ts) rides on the same entry, ran a node or not; so
       // does how the workflow ended (`ended`, LearnedEnded), the one thing a replay's outcome reads (workflow-first.ts
       // pathMetrics): a replay run keeps its entry whatever ran, so a refusal before any node is read as one.
       const keep = (signal: Context, ended?: LearnedEnded) => {
         const skipped = run.replay?.skipped;
-        if (!trace.length && !guards.length && !skipped && !(run.replay && ended)) return undefined;
-        return api.commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: LEARNED_NODES, data: { call: ledger.call, workflow: flow.name, nodes: trace, ...(guards.length ? { guards } : {}), ...(skipped ? { replay_skipped: skipped } : {}), ...(ended ? { ended } : {}) } as never })), signal).catch(() => undefined);
+        // A loop's exit counts too: a loop over an empty map ends no node, yet its row is the run's (metrics `loops`).
+        if (!trace.length && !loops.length && !skipped && !(run.replay && ended)) return undefined;
+        return api.commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: LEARNED_NODES, data: { call: ledger.call, workflow: flow.name, nodes: trace, ...(loops.length ? { loops } : {}), ...(skipped ? { replay_skipped: skipped } : {}), ...(ended ? { ended } : {}) } as never })), signal).catch(() => undefined);
       };
       let said: Awaited<ReturnType<typeof runLearned>>;
       try {
-        said = await runLearned(run, flow, input, context?.abortSignal, ledger, trace, guards, run.nestedOf?.(api.callId));
+        said = await runLearned(run, flow, input, context?.abortSignal, ledger, trace, run.nestedOf?.(api.callId), loops);
       } catch (error) {
         await keep(BACKGROUND_CONTEXT);
         throw error;
@@ -389,13 +388,11 @@ export function learnedWorkflowTool(run: LearnedWorkflowRun): ToolRegistration {
 /** `flow` run on `input` for `run`: its output as its tool hands it back (learnedOutput), or why it did not run, and each of its nodes that ran (at most
  *  LEARNED_NODES_MAX), none for one refused before any node ran. Never throws, but on an abort. `ledger`: the tool call's,
  *  which each call node's paid requests are booked under, as a call of its own within it. `nodes`: where each node is
- *  added as it ends, the caller's to keep when the call is aborted (and so throws) part way. `guards`: where every guard
- *  check is added as it is made, never capped (a map's checks past the trace's cap too), the caller's to keep likewise.
- *  `nested`: the session's tools as calls nested in this one, which its MCP nodes run as; and the values its first run
+ *  added as it ends, the caller's to keep when the call is aborted (and so throws) part way. `nested`: the session's tools as calls nested in this one, which its MCP nodes run as; and the values its first run
  *  fixed (`memo`), so a rerun of the call (after a park, a crash) goes on from what its model, decision and call nodes
  *  answered then, its MCP calls with the arguments they were asked and approved with, each recorded one answered from its
- *  record, never sent twice. */
-export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow, input: unknown, signal?: AbortSignal, ledger?: Ledger, nodes: LearnedNode[] = [], guards: GuardRow[] = [], nested?: NestedCalls): Promise<{ text: string; isError: boolean; nodes: LearnedNode[]; ended: LearnedEnded }> {
+ *  record, never sent twice. `loops`: where each loop's exit is added (LoopRow), never capped. */
+export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow, input: unknown, signal?: AbortSignal, ledger?: Ledger, nodes: LearnedNode[] = [], nested?: NestedCalls, loops: LoopRow[] = []): Promise<{ text: string; isError: boolean; nodes: LearnedNode[]; ended: LearnedEnded }> {
   const refuse = (why: string) => ({ text: `The learned workflow ${flow.name} was not run: ${why}`, isError: true, nodes, ended: "failed" as const });
   if (!input || typeof input !== "object" || Array.isArray(input)) return refuse("its input must be a JSON object");
   const dsl = await import("@parcha/agentrun-dsl");
@@ -420,6 +417,15 @@ export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow,
   const problems = draftProblems(dsl, flow.workflow, tools, gated, deniedBy, decisionsOf(run, dsl, flow.workflow));
   if (problems.length) return refuse(problems.map(({ detail }) => detail).join("; "));
   const doc = JSON.parse(flow.workflow);
+  // Its quote re-pick loops (check.ts repickLabels): their exits are the run's re-picks (LoopRow `repick`).
+  const repickAt = repickLabels(doc);
+  // The re-pick's pass over the run's pages (learning.repick, learn/repick.ts), by its label as the run gives it, with the
+  // most characters of state it sends: its prompt state is cut to that (capState), its longest strings first; the
+  // workflow's state, which the quote check after it reads, stays whole.
+  const pages = repickMarked(repickSiteOf(doc));
+  // The marker's key is the host's: an input holding it would pick the re-pick's pass (or fail its route), whatever the
+  // input's schema says of it, so such an input is refused before anything runs.
+  if (pages && Object.hasOwn(input as object, REPICK_MARK)) return refuse(`its input holds "${REPICK_MARK}", the key its quote re-pick keeps its pass under`);
   // What a node answered the first time this call ran it, in every rerun of the call (`nested.memo`, by `key`): a rerun
   // after a park or a crash goes on from the same answers, so its MCP calls are asked with the arguments a person saw,
   // and never does a node's work again: `work` is called only while no answer is recorded, so a model's request or a paid
@@ -471,8 +477,13 @@ export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow,
     const ref = run.modelOf(tier);
     const model = !ref ? undefined : ref.provider === PORT_PROVIDER ? (run.modelName?.(tier) ?? undefined) : ref.modelId;
     if (model && typeof request.executionPath === "string") ranOn.set(request.executionPath, { model, ...(tier ? { tier } : {}) });
+    const cap = request.label === pages?.label ? pages.cap : undefined;
+    const user = cap === undefined ? request.user : capState(request.user, cap);
+    // A state past the cap with every string cut to nothing is never sent: the node fails and the re-pick hands back.
+    if (user === undefined) throw new Error(`${REPICK_STATE_REFUSED}: its node "${request.label}" holds more than learning.repick_max_chars (${cap}) characters of state with every string cut`);
+    const sent = user === request.user ? request : { ...request, user };
     // Its own signal, which the DSL ties to the call's (a sibling's failure, a deadline, the call's stop).
-    return fixed(`node:${nestedKey(request.label, request.executionPath, request.item)}`, async () => (await runnerFor(request.tier as string | undefined))(request));
+    return fixed(`node:${nestedKey(request.label, request.executionPath, request.item)}`, async () => (await runnerFor(request.tier as string | undefined))(sent));
   };
   type EffectRequest = { node: { label: string; via: string; tool?: string }; input: Record<string, unknown>; signal: AbortSignal; executionPath?: string; item?: { index: number } };
   const liveEffect = async ({ node, input: given, signal: own, executionPath, item }: EffectRequest) => {
@@ -520,55 +531,33 @@ export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow,
   const skippedWords = () => {
     const skipped = replay?.skipped;
     const why = skipped?.unmarked ? `${unmarkedWords([toolWord(skipped.tool)])}; the graded run's recording has no call of it with these arguments` : `a write, and the graded run's recording has no call of it with these arguments, so it ${SKIPPED_WRITE}`;
-    return skipped ? { text: `The learned workflow ${flow.name} was not replayed on this input: its step "${skipped.step}" calls ${skipped.tool}, ${why}. Nothing was sent.${stepsLine(nodes, guards)}`, isError: true, nodes, ended: "failed" as const } : undefined;
+    return skipped ? { text: `The learned workflow ${flow.name} was not replayed on this input: its step "${skipped.step}" calls ${skipped.tool}, ${why}. Nothing was sent.${stepsLine(nodes)}`, isError: true, nodes, ended: "failed" as const } : undefined;
   };
-  // Its step guards (runner/step-guard.ts): a guard's Jev is a decision of the call, on the run's decisions (its judge,
-  // its gate, its one cap); a run with no Jev provider has no Jev signal, so a guard that reads one hands back.
-  const jevProvider = run.decisions?.providers.providers.jev;
-  const guardStep = stepGuard(runJudge && jevProvider ? guardJevOn(runJudge, jevProvider) : undefined);
-  // Each guard's check by its step's execution path, as the DSL decided it: kept in `guards` at once (what the run's
-  // metrics read), and its node.end (the same path) puts it on the step's trace, where the timeline and a hand-back say it.
-  const guarded = new Map<string, GuardRow>();
-  // A replay records each escalate that reads a judge's field instead of obeying it (the DSL's softEscalates): a judge's
-  // field is one model's opinion of a draft the workflow already wrote, so the workflow goes on to its answer, and the
-  // escalate's row says whether it fired, for the replay's score at the serving setting (it hands back when it fired) and
-  // the refit (it may be switched off). Every other escalate (on a call's result, a route's, the input) stops a replay as
-  // it stops serving. Serving obeys every escalate.
-  const soft = replay ? dsl.softEscalates(doc) : undefined;
   // Each node as it ends, by the DSL's own event: what the call's timeline row shows of it.
   const onEvent = (event: { type: string; label: string; detail?: unknown; executionPath?: string }) => {
-    if (event.type === "escalate.evaluated") {
-      const detail = (event.detail ?? {}) as { fired?: unknown; soft?: unknown };
-      if (detail.soft === true) guards.push({ node: String(event.label), signal: "escalate", p: detail.fired === true ? 0 : 1, threshold: SOFT_ESCALATE_THRESHOLD, escalated: false });
-      return;
-    }
-    if (event.type === "guard.evaluated") {
-      const row = rowOf(String(event.label), event.detail);
-      if (row) {
-        guards.push(row);
-        guarded.set(event.executionPath ?? String(event.label), row);
-      }
+    if (event.type === "loop.exited") {
+      const detail = (event.detail ?? {}) as { reason?: unknown; iterations?: unknown };
+      if (typeof detail.iterations === "number") loops.push({ node: String(event.label), iterations: detail.iterations, met: detail.reason === "condition_met", ...(repickAt.has(String(event.label)) ? { repick: true as const } : {}) });
       return;
     }
     if (event.type !== "node.end" || nodes.length >= LEARNED_NODES_MAX) return;
     const detail = (event.detail ?? {}) as { kind?: unknown; status?: unknown; duration_ms?: unknown };
     const ran = typeof event.executionPath === "string" ? ranOn.get(event.executionPath) : undefined;
-    const guard = guarded.get(event.executionPath ?? String(event.label));
-    nodes.push({ label: String(event.label), kind: String(detail.kind ?? ""), status: String(detail.status ?? ""), duration_ms: typeof detail.duration_ms === "number" ? detail.duration_ms : 0, ...ran, ...(guard ? { guard } : {}) });
+    nodes.push({ label: String(event.label), kind: String(detail.kind ?? ""), status: String(detail.status ?? ""), duration_ms: typeof detail.duration_ms === "number" ? detail.duration_ms : 0, ...ran });
   };
   try {
     const judging = runJudge && run.decisions ? { runJudge, decisionProviders: run.decisions.providers } : {};
-    const result = await dsl.runWorkflow(doc, input as Record<string, unknown>, { runNode: runNode as never, runEffect: runEffect as never, guardStep, onEvent, ...judging, ...(soft?.size ? { softEscalate: (label: string) => soft.has(label) } : {}), ...(stopped ? { signal: stopped } : {}) } as never);
+    const result = await dsl.runWorkflow(doc, input as Record<string, unknown>, { runNode: runNode as never, runEffect: runEffect as never, onEvent, ...judging, ...(stopped ? { signal: stopped } : {}) } as never);
     const skipped = skippedWords();
     if (skipped) return skipped;
-    if (result.status === "escalated") return { text: learnedText(handedBackText(flow.name, result.escalation, result.state, nodes, guards)), isError: true, nodes, ended: "escalated" };
+    if (result.status === "escalated") return { text: learnedText(handedBackText(flow.name, result.escalation, result.state, nodes)), isError: true, nodes, ended: "escalated" };
     if (result.status !== "complete") return refuse(`it ended ${(result as { status: string }).status}`);
     return { text: learnedText(learnedOutput(result.output)), isError: false, nodes, ended: "complete" };
   } catch (error) {
     if (signal?.aborted) throw error;
     const skipped = skippedWords();
     if (skipped) return skipped;
-    return { text: `The learned workflow ${flow.name} failed: ${String((error as Error)?.message ?? error).slice(0, 1000)}${stepsLine(nodes, guards)}`, isError: true, nodes, ended: "failed" };
+    return { text: `The learned workflow ${flow.name} failed: ${String((error as Error)?.message ?? error).slice(0, 1000)}${stepsLine(nodes)}`, isError: true, nodes, ended: "failed" };
   }
 }
 
@@ -579,7 +568,7 @@ export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow,
 const nestedKey = (label: string, executionPath: string | undefined, item: { index: number } | undefined): string =>
   `${label.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 40)}-${createHash("sha256").update(JSON.stringify([label, executionPath ?? "", item?.index ?? null])).digest("hex").slice(0, 16)}`;
 
-/** The draft check's decisions for `run` (learn/skills.ts DraftDecisions): its providers, and the gate's setting of each
+/** The draft check's decisions for `run` (learn/workflow-draft.ts DraftDecisions): its providers, and the gate's setting of each
  *  provider `text` asks (its bare id as the settings key) where it is not allow, with where a deny was set. A run handed
  *  no decisions (its claim was handed no key: none named, or each denied) has no provider, so a decision node is refused
  *  in the gate's words when its provider is denied, else as one the host does not have; never asked. */

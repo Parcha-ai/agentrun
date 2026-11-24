@@ -31,7 +31,8 @@ export const sealedAt = {
   },
   /** A run's computer session's live viewer token (browser-live.ts): one row per run, computer kind and session tag. */
   liveViewer: (runId: string, kind: string, tag: string): SealedAt => ({ table: "computer_viewers", row: `${runId}/${kind}:${tag}`, column: "sealed" }),
-  /** A run's launch secrets: the MCP credentials its caller handed it for its `per_run` servers (mcp_auth). */
+  /** A run's launch secrets: the MCP credentials its caller handed it for its `per_run` servers (mcp_auth), and its own
+   *  model key (model_key), with the gateway's origin it was handed for. */
   runLaunch: (runId: string): SealedAt => ({ table: "run_launch", row: runId, column: "sealed" }),
 };
 
@@ -84,11 +85,60 @@ export function openMcpCredential(key: Buffer, row: { readonly name: string; rea
   return { credential: credential as McpCredential & { origin: string } };
 }
 
-/** The MCP credentials a run's caller handed it (`mcp_auth` at its start or with a message), by server name: each one's
- *  headers and the origin of the server's url when it was handed, so a server moved since never receives them. */
-export type RunMcpAuth = Readonly<Record<string, { readonly headers: Readonly<Record<string, string>>; readonly origin: string }>>;
+/** A run's binding of a per-run Composio server: the Composio user its calls run as, and the connected account when the
+ *  caller names one. Never kept on the server's row: sealed in the run's launch alone. */
+export type ComposioBinding = { readonly user_id: string; readonly connected_account_id?: string };
 
-/** Seals a run's handed MCP credentials as its launch's sealed column (AAD run_launch|<run_id>|sealed). */
+/** What a run's caller handed one MCP server (`mcp_auth.<server>`): a per_run server's headers, or a per-run Composio
+ *  server's binding (its key stays the server's own); each with the origin of the server's url when it was handed, so a
+ *  server moved since never receives them. */
+export type RunMcpEntry = ({ readonly headers: Readonly<Record<string, string>> } | { readonly composio: ComposioBinding }) & { readonly origin: string };
+
+/** The MCP credentials a run's caller handed it (`mcp_auth` at its start or with a message), by server name. */
+export type RunMcpAuth = Readonly<Record<string, RunMcpEntry>>;
+
+/** A run's own model key (`model_key` at its start or with a message): the key its model requests carry, and the origin
+ *  of the gateway it was handed for (AGENT_MODEL_BASE_URL's then), so a gateway moved since never receives it. */
+export type RunModelKey = { readonly key: string; readonly origin: string };
+
+/** A run's own tool keys (`keys` at its start or with a message, run-keys.ts), by name. */
+export type RunToolKeys = Readonly<Record<string, string>>;
+
+/** What a run's launch holds sealed: its handed MCP credentials, its own model key and its own tool keys, each when it
+ *  has one. */
+export type RunLaunchSecrets = { readonly mcp?: RunMcpAuth; readonly model?: RunModelKey; readonly keys?: RunToolKeys };
+
+/** Seals a run's launch secrets as its launch's sealed column (AAD run_launch|<run_id>|sealed); null when it holds none. */
+export function sealRunLaunch(key: Buffer, runId: string, secrets: RunLaunchSecrets): Uint8Array | null {
+  const mcp = secrets.mcp && Object.keys(secrets.mcp).length ? secrets.mcp : undefined;
+  const keys = secrets.keys && Object.keys(secrets.keys).length ? secrets.keys : undefined;
+  if (!mcp && !secrets.model && !keys) return null;
+  return sealColumn(key, sealedAt.runLaunch(runId), JSON.stringify({ ...(mcp ? { mcp } : {}), ...(secrets.model ? { model: secrets.model } : {}), ...(keys ? { keys } : {}) }));
+}
+
+/** The tool keys of an opened launch: each name with text for its value, none else. */
+const toolKeysOf = (keys: unknown): RunToolKeys | undefined => {
+  if (typeof keys !== "object" || keys === null || Array.isArray(keys)) return undefined;
+  const out = Object.fromEntries(Object.entries(keys).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
+  return Object.keys(out).length ? out : undefined;
+};
+
+/** A run's launch secrets, opened: none when its launch holds none; undefined when the bytes do not open under `key` for
+ *  this run (sealed for another run, or under another key). */
+export function openRunLaunch(key: Buffer, runId: string, sealed: Uint8Array | null): RunLaunchSecrets | undefined {
+  if (sealed === null) return {};
+  try {
+    const opened = JSON.parse(unsealColumn(key, sealedAt.runLaunch(runId), sealed).toString("utf8")) as { mcp?: RunMcpAuth; model?: { key?: unknown; origin?: unknown }; keys?: unknown };
+    const model = typeof opened.model?.key === "string" && typeof opened.model.origin === "string" ? { key: opened.model.key, origin: opened.model.origin } : undefined;
+    const keys = toolKeysOf(opened.keys);
+    return { ...(opened.mcp ? { mcp: opened.mcp } : {}), ...(model ? { model } : {}), ...(keys ? { keys } : {}) };
+  } catch {
+    return undefined;
+  }
+}
+
+/** Seals a run's handed MCP credentials alone as its launch's sealed column (AAD run_launch|<run_id>|sealed): a run started
+ *  by the runner from another (a replay, an audit) takes its MCP credentials, never its model key. */
 export function sealRunMcpAuth(key: Buffer, runId: string, auth: RunMcpAuth): Uint8Array {
   return sealColumn(key, sealedAt.runLaunch(runId), JSON.stringify({ mcp: auth }));
 }
@@ -96,11 +146,6 @@ export function sealRunMcpAuth(key: Buffer, runId: string, auth: RunMcpAuth): Ui
 /** A run's handed MCP credentials, opened: none when its launch holds none; undefined when the bytes do not open under
  *  `key` for this run (sealed for another run, or under another key). */
 export function openRunMcpAuth(key: Buffer, runId: string, sealed: Uint8Array | null): RunMcpAuth | undefined {
-  if (sealed === null) return {};
-  try {
-    const opened = JSON.parse(unsealColumn(key, sealedAt.runLaunch(runId), sealed).toString("utf8")) as { mcp?: RunMcpAuth };
-    return opened.mcp ?? {};
-  } catch {
-    return undefined;
-  }
+  const opened = openRunLaunch(key, runId, sealed);
+  return opened && (opened.mcp ?? {});
 }

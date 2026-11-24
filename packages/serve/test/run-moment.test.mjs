@@ -65,6 +65,12 @@ test("a workflow run steers; an agentic run on an unknown harness does not", () 
   assert.equal(momentOf(run({ harness: "nonesuch" }), facts(), false).steers, false);
 });
 
+test("an agentic run on claude-agent steers mid-turn; one on codex or opencode does not", () => {
+  assert.equal(momentOf(run({ harness: "claude-agent" }), facts(), true).steers, true);
+  assert.equal(momentOf(run({ harness: "codex" }), facts(), true).steers, false);
+  assert.equal(momentOf(run({ harness: "opencode" }), facts(), true).steers, false);
+});
+
 test("the cap as it stands shows on the moment", () => {
   assert.equal(momentOf(run({ meta: { max_cost_usd: 5 } }), facts(), false).maxCostUsd, 5);
 });

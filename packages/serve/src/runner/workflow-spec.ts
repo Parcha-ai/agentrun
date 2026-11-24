@@ -18,7 +18,7 @@ import { chargedCost, type DecisionProvider, DecisionProviderError, EffectFailur
 import type { DecisionModelPrice } from "@parcha/agentrun-decisions";
 import { type BeforeRequest, modelPortFor, type Refusal, type RunSessions, type SessionWriter, type Wire } from "@parcha/agentrun-kernel";
 import { type ModelProxy, type ProviderPolicy, type ProxyUsage, startModelProxy } from "@parcha/agentrun-kernel/host";
-import { type CapModel, CapRefused, checkRaise, DecisionPriceUnreadable, DECISION_SESSION, type DecisionCapRequest, followUpOf, freeCeilingMessage, freeModelRequestsOf, parkOf, type RaiseState, runCap, type RunDecisions } from "@parcha/agentrun-kernel/kernel/cap";
+import { type CapModel, CapRefused, checkRaise, DecisionPriceUnreadable, DECISION_SESSION, type DecisionCapRequest, followUpOf, freeCeilingMessage, freeRequestLimitOf, maxRequestsOf, parkOf, type RaiseState, runCap, type RunDecisions } from "@parcha/agentrun-kernel/kernel/cap";
 import { completer } from "../llm.js";
 // The decision providers' list prices, the catalog's read and the replay check (decision-cap.ts), with holdOf, which the
 // parity tests hold this cap's figures to.
@@ -37,7 +37,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { bookedIn, type PaidBooking, parallelExtractFee, parallelSearchFee } from "../paid-calls.js";
 import { searchArgs, WEB_SEARCH_TOOL } from "../web-search.js";
 import { money, pricingOf, requestPrice, type RunTools, TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
-import { claimSecrets, withModelKeys } from "./claim-secrets.js";
+import { claimModelEnv, claimModelKey, claimSecrets, holdRunKey, keyedAtClaim, withoutModelKeys } from "./claim-secrets.js";
 import { type ModelRoute, routeOf } from "./model-route.js";
 import { capModelOf, PI_WIRES, storeSettings } from "./adapter-run-spec.js";
 import { policyFor } from "./adapters/pi.js";
@@ -46,14 +46,17 @@ import { journalSessions } from "./sessions.js";
 import { type BudgetData, type EndData, KINDS, NODE_LOG_SESSION, type RaiseData, WORKFLOW_SESSION } from "./journal-kinds.js";
 import type { NodeLine } from "../pause.js";
 import { cutStrings } from "../key-refusal.js";
-import { CLOSE_MS, entriesOf } from "./loop.js";
+import { CLOSE_MS } from "./loop.js";
 import { type CapRefusal, PAUSED_WORDS, type WorkflowCapRule, type WorkflowHostHooks, type WorkflowRunSpec, type WorkflowSpecRun } from "./workflow-loop.js";
-import { heldRedactor, holdClaimed } from "./redact.js";
+import { holdClaimed } from "./redact.js";
 import { holdStored } from "./store-secrets.js";
 import { type DecisionDriver, type NodeToolBinding, type PollDriver, type WorkflowCap, workflowHost, type WorkflowHostDeps } from "./workflow-host.js";
 import type { Journal, Store } from "../store/store.js";
+import type { WorkflowBody } from "../store/agent-body.js";
 import { SUBMIT_TOOL } from "../workflow/host-tools.js";
-import { bookedSpend } from "./metrics.js";
+import { endCostOf, runCostOf } from "./metrics.js";
+import { journalEntries } from "./journal-reader.js";
+import { warnHoldShort } from "../print.js";
 
 /** The one session key the workflow's model requests book under (the run's one booking sums it, runBooking). */
 const SESSION = WORKFLOW_SESSION;
@@ -93,8 +96,6 @@ export interface WorkflowProvider {
   readonly plan?: boolean;
   /** Told the credential an upstream 401 refused, so the next one is renewed (a ChatGPT plan's route). */
   readonly refused?: (credential: string) => Promise<void>;
-  /** Its answers state their cost (OpenRouter's): the proxy books that figure, the price's beside it (ModelRoute). */
-  readonly usageCost?: boolean;
 }
 
 /** A tier's provider from the runner's model route (model-route.ts routeOf), the one way the runner resolves a model
@@ -126,7 +127,6 @@ export async function providerFromRoute(route: ModelRoute): Promise<WorkflowProv
     ...(route.fetch ? { fetch: route.fetch } : {}),
     ...(route.provider.plan ? { plan: true } : {}),
     ...(route.provider.refused ? { refused: route.provider.refused } : {}),
-    ...(route.provider.usageCost ? { usageCost: true } : {}),
   };
 }
 
@@ -205,7 +205,7 @@ function capRuleOf(capUsd: () => number): WorkflowCapRule {
 
 /** The claim-time builder: `specOf(claim)` the loop calls. Reads the run's launch and revision, resolves each tier's
  *  provider, and returns the spec. The model proxies and the booking are started per claim (release closes them). */
-export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string; runner?: string }, run?: WorkflowSpecRun) => Promise<WorkflowRunSpec> {
+export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string; runner?: string }, run: WorkflowSpecRun) => Promise<WorkflowRunSpec> {
   // The proxies a claim started: closed by the spec's release once the claim is done, or here when the claim fails before
   // its spec is returned (the loop then has no spec to release), so a failed claim leaves no proxy listening.
   return async (claim, run) => {
@@ -217,11 +217,11 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string;
       throw error;
     }
   };
-  async function claimSpec(claim: { runId: string; runner?: string }, run: WorkflowSpecRun | undefined, proxies: ModelProxy[]): Promise<WorkflowRunSpec> {
+  async function claimSpec(claim: { runId: string; runner?: string }, run: WorkflowSpecRun, proxies: ModelProxy[]): Promise<WorkflowRunSpec> {
     /** The keys a claim opens, held by the runner's one redactor (run.redact) before a decision can echo one. */
     const holding = async (opening: Promise<NodeJS.ProcessEnv>): Promise<NodeJS.ProcessEnv> => {
       const opened = await opening;
-      if (run?.redact) holdClaimed(heldRedactor(run.redact), opened);
+      if (run?.redact) holdClaimed(run.redact, opened);
       return opened;
     };
     const claimed = await readClaim(deps, claim.runId);
@@ -232,7 +232,7 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string;
     const unbound = nodeNames.find((name) => !RUNNER_NODE_TOOLS.includes(name));
     if (unbound !== undefined) throw new Error(nodeToolUnboundText(unbound));
     // Every secret the server keeps sealed (store-secrets.ts) held by the runner's one redactor before the workflow runs.
-    if (run?.redact && deps.sealKey) await holdStored(heldRedactor(run.redact), deps.store, deps.sealKey, deps.data);
+    if (run?.redact && deps.sealKey) await holdStored(run.redact, deps.store, deps.sealKey, deps.data);
     const tiers = tiersOf(claimed.workflow);
 
     // The run's own keys, as the server's runnable check reads them: each by its name from the runner's environment first,
@@ -240,11 +240,17 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string;
     // models, its decisions, its call nodes' effects and its model nodes' tools all run on these, never on another run's
     // keys or on this process's whole environment.
     // Held by the runner's one redactor before anything can echo one (holding: run.redact), as the decision keys were.
-    const claimedEnv = await holding(claimSecrets({ store: deps.store, sealKey: deps.sealKey, ...(deps.env ? { env: deps.env } : {}) }, claimed.revision, { plane: claimed.plane }));
+    const claimedEnv = await holding(claimSecrets({ store: deps.store, sealKey: deps.sealKey, ...(deps.env ? { env: deps.env } : {}), redact: run?.redact }, claimed.revision, { plane: claimed.plane }, claim.runId));
     // The run's models resolve the one way the runner resolves any (routeProviderOf over routeOf), unless a test gives its
     // own: each tier's key from the runner's environment, else the one the claim opened (a key saved in
     // Settings → Model keys runs the next run with no restart).
-    const providerOf = deps.providerOf ?? routeProviderOf(withModelKeys(deps.env ?? process.env, claimedEnv));
+    // A run with its own model key (model_key, sealed in its launch): every model node carries that key alone, and no model
+    // key is on the env its decisions and call nodes run under. A workflow run takes no message, so its key is the one
+    // its start handed, for the run's life.
+    const runKey = await claimModelKey({ store: deps.store, sealKey: deps.sealKey, env: deps.env ?? process.env }, claim.runId);
+    if (keyedAtClaim(runKey)) withoutModelKeys(claimedEnv);
+    if (runKey && run?.redact) holdRunKey(run.redact, runKey);
+    const providerOf = deps.providerOf ?? routeProviderOf(claimModelEnv(deps.env ?? process.env, claimedEnv, runKey, claim));
 
     // Each tier's provider and cap model, resolved once; the proxies start here (before the Harness opens, since the models
     // catalog the Harness takes points at them), their hooks deferred to the booking wired at harnessReady.
@@ -281,7 +287,6 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string;
         ...(provider.headers ? { headers: provider.headers } : {}),
         ...(provider.fetch ? { fetch: provider.fetch } : {}),
         ...(provider.refused ? { credentialRefused: provider.refused } : {}),
-        ...(provider.usageCost ? { usageCost: true } : {}),
       }, randomBytes(32).toString("base64url"));
       proxies.push(proxy);
       // pi-ai's client of the provider's wire at its proxy (port-models.ts sessionProvider), as pi's session reaches its own.
@@ -368,7 +373,7 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string;
       agentId: claimed.agentId,
       revisionId: claimed.revisionId,
       ...(claimed.capUsd !== undefined ? { cap: capRuleOf(() => effectiveCapUsd ?? claimed.capUsd!) } : {}),
-      endPatch: async () => endPatchOf(booking, decisionCap, paidTools, run?.journal),
+      endPatch: async () => endPatchOf(booking, run?.journal),
       build: (loopHooks: WorkflowHostHooks) => {
         hooks.setPark(loopHooks);
         const hostDeps: WorkflowHostDeps = {
@@ -416,13 +421,17 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string;
         const writer = await sessions.open(SESSION);
         // Its model nodes' requests on free models count toward the run's limit of them, capped or not. A step waiting for
         // room under it (a map's branch, beside its siblings' holds) leaves at the run's stop or park, unsent.
-        const run = runCap({ sessions: sessions as unknown as RunSessions, capUsd: () => effectiveCapUsd, modelOf: capModelOf, freeRequests: freeModelRequestsOf(deps.env ?? process.env), ...(context.abortSignal ? { stopped: context.abortSignal } : {}) });
+        const run = runCap({ sessions: sessions as unknown as RunSessions, capUsd: () => effectiveCapUsd, modelOf: capModelOf, freeRequests: freeRequestLimitOf(deps.env ?? process.env, (claimed.revision.body as WorkflowBody).maxRequests), ...(maxRequestsOf((claimed.revision.body as WorkflowBody).maxRequests) === undefined ? {} : { maxRequests: maxRequestsOf((claimed.revision.body as WorkflowBody).maxRequests) }), ...(context.abortSignal ? { stopped: context.abortSignal } : {}) });
         booking = await modelPortFor(writer, {
           key: SESSION,
           label: SESSION,
           // The model booking is the run's rule itself (no second booking); a refusal parks the run through the loop's hook.
           beforeRequest: parkOnRefusal(run.before, hooks, flight, steps),
-          onEvent: async (event) => { if (event.type === "request_start") await deps.store.flush(); },
+          // A model node's request billed past the bound its hold was priced on: the cap's warn line (print.ts warnHoldShort).
+          onEvent: async (event) => {
+            if (event.type === "request_start") await deps.store.flush();
+            warnHoldShort(claim.runId, "workflow", event);
+          },
         });
         // An earlier claim's requests, before the workflow sends anything: one this runner's lost claim saw answer, its
         // record refused, is booked at what it reported (waiting, bounded, for one still in flight); one a dead runner left
@@ -781,8 +790,9 @@ type CallPolicy = (tool: string) => Promise<{ permission: "allow" | "ask" | "den
 function callPolicyOf(store: Pick<Store, "settings">, runId: string, claimed: Claimed): CallPolicy {
   // Nothing read yet: unread, so a policy asked before the first read fails closed too.
   let current: Awaited<ReturnType<typeof loadToolSettings>> = { settings: {}, problems: [], unreadable: true };
-  // Only the permission is read here: a workflow never parks, so whether anyone can answer an ask plays no part.
-  const gate = runGate({ root: claimed.workRoot, work: claimed.workRoot }, runId, claimed.revision as never, () => current, true);
+  // Only the permission is read here: a workflow never parks, so whether anyone can answer an ask plays no part. A
+  // workflow runs on no harness's adapter, so no facts name its tools.
+  const gate = runGate({ root: claimed.workRoot, work: claimed.workRoot, facts: undefined }, runId, claimed.revision as never, () => current, true);
   return async (tool) => {
     current = await storeSettings(store);
     return { permission: gate.policy(tool), denyFrom: gate.denyFrom(tool) };
@@ -853,31 +863,16 @@ function runEffectOf(claimed: Claimed, complete: ReturnType<typeof completer>, e
   }) as never;
 }
 
-/** The end's cost and metrics: what every model request of the run cost (the booking) plus what its decisions and its
- *  call nodes' paid requests cost (the decision cap, the paid tools), one spend for the run. Unknown (no figure) once any
- *  part is unknown. */
-/** What the run's decisions cost by their booking (bookedSpend, "decisions"), read from only what that needs: the root's
- *  session keys (journalSessions writes them there) and the decisions session's own conversation, never the run's model
- *  or tool records, so the read stays small within the end patch's bound. No decisions session: none, $0. */
-async function decisionsBooked(journal: Journal): Promise<number | null> {
-  const root = await entriesOf(journal, ROOT_CONVERSATION_ID, BACKGROUND_CONTEXT);
-  const key = root.find((entry) => entry.kind === KINDS.sessionKey && (entry.data as { key?: unknown } | undefined)?.key === DECISION_SESSION);
-  const conversation = (key?.data as { conversation?: unknown } | undefined)?.conversation;
-  if (conversation == null) return 0;
-  const decisions = await entriesOf(journal, conversation as never, BACKGROUND_CONTEXT);
-  return bookedSpend([key!, ...decisions] as never, "decisions").usd;
-}
-
-async function endPatchOf(booking: Awaited<ReturnType<typeof modelPortFor>> | undefined, decisionCap: RunDecisions | undefined, paidTools: RunTools | undefined, journalOf: (() => Journal) | undefined): Promise<Pick<EndData, "costUsd" | "metrics">> {
+/** The end's cost: its booking's, by the one rule every reader of an ended run's cost takes (metrics.ts runCostOf, as the
+ *  pi and CLI specs store it): every model request of its sessions, its call nodes' paid requests and its decisions, each
+ *  at what it was booked at, never the cap's figure for it (an answer with no price of its own is unknown, never its
+ *  hold). Unknown once any one is, written as null, never left out (an end that says nothing leaves the $0 the run read
+ *  before a response). With no journal to read, unknown. */
+async function endPatchOf(booking: Awaited<ReturnType<typeof modelPortFor>> | undefined, journalOf: (() => Journal) | undefined): Promise<Pick<EndData, "costUsd" | "costUpperBound" | "metrics">> {
   if (!booking) return {};
-  const model = booking.spentUsd();
-  // A decision's cost is what its booking says it charged (bookedSpend over the decisions session's records, as the pi and
-  // CLI specs read it): one its provider reported no cost for is unknown, never the hold the cap counts it at
-  // (decisionCap.spentUsd, which stays the cap's own figure). With no journal to read, any decision is unknown.
-  const decision = !decisionCap ? 0 : journalOf ? await decisionsBooked(journalOf()) : null;
-  const paid = paidTools ? paidTools.spentUsd() : 0;
-  // Unknown is written as null, never left out (an end that says nothing leaves the $0 the run read before a response).
-  return { costUsd: model === null || decision === null || paid === null ? null : model + decision + paid };
+  if (!journalOf) return { costUsd: null };
+  // With whether the figure is the most it can have cost (a request cut at its hold counted in it), stored beside it.
+  return endCostOf(runCostOf((await journalEntries(journalOf(), BACKGROUND_CONTEXT)) as never));
 }
 
 /** The run's one cap as a WorkflowCap: model nodes and call nodes pass through (their money is on the proxy), and a

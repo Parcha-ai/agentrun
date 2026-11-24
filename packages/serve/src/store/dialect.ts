@@ -12,10 +12,18 @@ export interface Dialect {
   readonly name: "sqlite" | "postgres";
   /** A JSON TEXT column's value at `path` (object keys), as SQL text to compare with a string parameter. */
   jsonText(column: string, path: readonly string[]): string;
+  /** The value at `path` as JSON text, preserving scalar types; SQL NULL when absent. */
+  jsonValue(column: string, path: readonly string[]): string;
   /** True unless the JSON TEXT column's value at `path` is false or 0 (absent or null count as true). */
   jsonNotFalse(column: string, path: readonly string[]): string;
+  /** The JSON TEXT column's value at `path` as a number to compare with one, or SQL NULL when it is absent or not a JSON
+   *  number (never a cast that fails on a row's text). */
+  jsonNumber(column: string, path: readonly string[]): string;
   /** True when the JSON array in TEXT column `column` holds the string parameter that follows (one `?`). */
   jsonArrayHas(column: string): string;
+  /** True when the JSON object of strings in TEXT column `column` holds the key and the value of the two string parameters
+   *  that follow (two `?`): bound, never spliced, so any key reads safely. False when the column is NULL. */
+  jsonObjectHas(column: string): string;
   /** The length of the JSON array in TEXT column `column`. */
   jsonArrayLength(column: string): string;
   /** The JSON object in TEXT column `column` without its top-level `key`. */
@@ -56,6 +64,9 @@ export interface Dialect {
    *  trigger's firings, an agent's current revision) is not interleaved with another. `"update"`: the run row of a write
    *  that moves its epoch (a release, a run's end), held against every write under the claim (`shareLock`) as well. */
   lockRow(tx: LockExecutor, table: string, column: string, value: string, mode?: "update"): Promise<void>;
+  /** lockRow (its first form) of every row whose `column` is one of `values`, in one statement and in `column`'s order, so
+   *  two transactions holding overlapping sets never wait on each other in a cycle. */
+  lockRows(tx: LockExecutor, table: string, column: string, values: readonly string[]): Promise<void>;
   /** Holds the named lock until the transaction ends: two transactions that each check, then write what the other checks. */
   lockKey(tx: LockExecutor, key: string): Promise<void>;
 }
@@ -73,8 +84,11 @@ const jsonPath =(path: readonly string[]): string => `'$.${path.join(".")}'`;
 export const SQLITE: Dialect = {
   name: "sqlite",
   jsonText: (column, path) => `json_extract(${column}, ${jsonPath(path)})`,
+  jsonValue: (column, path) => `${column} -> ${jsonPath(path)}`,
   jsonNotFalse: (column, path) => `json_extract(${column}, ${jsonPath(path)}) IS NOT 0`,
+  jsonNumber: (column, path) => `(CASE WHEN json_type(${column}, ${jsonPath(path)}) IN ('integer', 'real') THEN json_extract(${column}, ${jsonPath(path)}) END)`,
   jsonArrayHas: (column) => `EXISTS (SELECT 1 FROM json_each(${column}) WHERE value = ?)`,
+  jsonObjectHas: (column) => `EXISTS (SELECT 1 FROM json_each(${column}) AS entry WHERE entry.key = ? AND entry.value = ?)`,
   jsonArrayLength: (column) => `json_array_length(${column})`,
   jsonWithout: (column, key) => `json_remove(${column}, ${jsonPath([key])})`,
   firingOrder: "rowid",
@@ -89,6 +103,7 @@ export const SQLITE: Dialect = {
   claimOneLock: "",
   shareLock: "",
   lockRow: async () => undefined,
+  lockRows: async () => undefined,
   lockKey: async () => undefined,
 };
 

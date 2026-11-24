@@ -2,7 +2,7 @@ import type { Meta, StoryObj } from "@storybook/react-vite";
 import { Archive, Bot, Copy, History, LayoutDashboard, MoreHorizontal, Pencil, Play, Plus, Trash2 } from "lucide-react";
 import { useId, useState } from "react";
 import { Block, Themes } from "@/design/Themes";
-import { Banner, Button, Checkbox, Chip, ConfirmDialog, Dialog, Field, Input, Menu, MenuItem, MenuSeparator, NavItem, Picker, Radio, Segmented, Spinner, Switch, tabPanelProps, Tabs, Textarea, Tip, ToastProvider, useToast } from ".";
+import { Banner, Button, Checkbox, Chip, ConfirmDialog, CopyButton, Dialog, Field, Input, Menu, MenuItem, MenuSeparator, NavItem, Picker, Radio, Segmented, Spinner, Switch, tabPanelProps, Tabs, Textarea, Tip, ToastProvider, useToast } from ".";
 
 // Every primitive in every variant and state, in both themes. docs/console-design-system.md says which to reach for.
 const meta: Meta = { title: "Design system/Primitives" };
@@ -13,10 +13,10 @@ const noop = () => {};
 export const Buttons: Story = {
   render: () => (
     <Themes>
-      <Block title="Variants" note="One solid button a page, for its main action. Outline is the default.">
+      <Block title="Variants" note="One softly tinted orange primary action per toolbar or form. Top toolbars place it at the far right; other actions are neutral.">
         <div className="flex flex-wrap items-center gap-2">
-          <Button variant="solid"><Play aria-hidden /> Run agent</Button>
-          <Button variant="primary"><Plus aria-hidden /> New agent</Button>
+          <Button variant="primary"><Play aria-hidden /> Run agent</Button>
+          <Button><Plus aria-hidden /> New agent</Button>
           <Button>Cancel</Button>
           <Button variant="ghost">Skip</Button>
           <Button variant="destructive"><Trash2 aria-hidden /> Delete</Button>
@@ -152,7 +152,7 @@ function NavigationDemo() {
   const group = useId();
   return (
     <div className="space-y-8">
-      <Block title="NavItem" note="The sidebar's places. The one you are on is the brand colour with a 2px bar.">
+      <Block title="NavItem" note="The sidebar's places. The active place has a soft orange tint and the shared action corners.">
         <nav aria-label="Example" className="flex w-sidebar flex-col gap-1 border p-3">
           {([["mission", "Mission Control", LayoutDashboard], ["agents", "Agents", Bot], ["runs", "Runs", History]] as const).map(([id, label, icon]) => <NavItem key={id} icon={icon} active={at === id} onClick={() => setAt(id)}>{label}</NavItem>)}
         </nav>
@@ -177,6 +177,9 @@ export const Feedback: Story = {
     <Themes>
       <Block title="Spinner" note="Work with no length to show. Stands still under reduced motion.">
         <div className="flex items-center gap-3 text-body"><Spinner label="Reading the runs" /> Reading the runs…</div>
+      </Block>
+      <Block title="CopyButton" note="One press copies the text shown beside it and says Copied. Where the browser won't copy, it says to select the text.">
+        <div className="flex flex-wrap items-center gap-2"><code className="font-mono text-small">whsec_bm90LWEtcmVhbC1zZWNyZXQ</code><CopyButton text="whsec_bm90LWEtcmVhbC1zZWNyZXQ" label="Copy secret" /></div>
       </Block>
       <Block title="Tip" note="A few more words on hover and on keyboard focus. Never the only way to learn something.">
         <Tip tip="The most this run may spend before it stops and asks."><Button size="sm">Cost cap</Button></Tip>

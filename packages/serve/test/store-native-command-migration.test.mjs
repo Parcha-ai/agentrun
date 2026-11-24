@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { migrate, migrationsIn, openPostgresStore, openSqliteStore, SchemaVersionUnknown } from "../dist/store/index.js";
+import { migrate, migrationsIn, openPostgresStore, openSqliteStore, SCHEMA_VERSION, StoreAwaitsServer } from "../dist/store/index.js";
 import { client, dropSchema, freshSchema, PG_URL, postgresOnly } from "./store-target.mjs";
 
 const ONLY = postgresOnly("native command migration lineage");
@@ -45,7 +45,7 @@ for (const missing of missingMetadata) {
     });
     const before = snapshot(); db.close();
     if (missing.length) {
-      const refusal = missing.some(column => column !== "connector_id") ? /Start the AgentRun server to install MCP and Monid revision metadata/ : /Native command ownership metadata is not prepared/;
+      const refusal = missing.some(column => column !== "connector_id") ? /Start the AgentRun server to install MCP and Monid revision metadata/ : /Start the AgentRun server to add native command ownership metadata/;
       await assert.rejects(openSqliteStore({ file, role: "runner" }), refusal);
     } else {
       runner = await openSqliteStore({ file, role: "runner" });
@@ -68,7 +68,7 @@ for (const missing of missingMetadata) {
     const existingColumns = Object.keys(before.revisions[0]);
     assert.deepEqual(after.revisions.map(row => Object.assign(Object.create(null), Object.fromEntries(existingColumns.map(key => [key, row[key]])))), before.revisions);
     assert.equal(db.prepare("SELECT connector_id FROM settings WHERE key=?").get(commandKey).connector_id, "chosen");
-    assert.equal(db.prepare("SELECT schema_version FROM store_meta").get().schema_version, 11);
+    assert.equal(db.prepare("SELECT schema_version FROM store_meta").get().schema_version, SCHEMA_VERSION);
     assert.equal(db.prepare("SELECT count(*) n FROM sqlite_schema WHERE name='settings_native_commands'").get().n, 1);
     db.close();
     await runner.close(); runner = undefined;
@@ -96,21 +96,25 @@ async function fixture(t, migrations) {
 }
 
 for (const version of [10, 11, 12]) {
-  test(`a released PostgreSQL v${version} store upgrades through v13 with MCP, Monid and native ownership intact`, ONLY, async t => {
+  test(`a released PostgreSQL v${version} store upgrades through v13 and on to the newest with MCP, Monid and native ownership intact`, ONLY, async t => {
     const migrations = migrationsIn();
-    assert.deepEqual(migrations.map(m => m.version), Array.from({ length: 13 }, (_, i) => i + 1));
+    // The store's newest version, whatever migrations land after v13: the upgrade runs to it.
+    const newest = migrations.at(-1).version;
+    assert.ok(newest >= 13, `the store ships v13 and on: ${newest}`);
+    assert.deepEqual(migrations.map(m => m.version), Array.from({ length: newest }, (_, i) => i + 1));
     const { sql, schema, open } = await fixture(t, migrations.slice(0, version));
     if (version >= 11) await sql.query("UPDATE revisions SET mcp_pin=$1", [JSON.stringify(pin)]);
     if (version >= 12) await sql.query("UPDATE revisions SET monid_pin=$1", [JSON.stringify(monidPin)]);
     const history = (await sql.query("SELECT * FROM schema_migrations ORDER BY version")).rows;
     const before = (await sql.query("SELECT * FROM revisions ORDER BY id")).rows;
-    await assert.rejects(openPostgresStore({ url: PG_URL, schema, role: "runner" }), SchemaVersionUnknown);
+    // The runner waits for the server, which upgrades the store in place: no new-folder advice.
+    await assert.rejects(openPostgresStore({ url: PG_URL, schema, role: "runner" }), (error) => error instanceof StoreAwaitsServer && error.message.includes(`from version ${version} to ${newest}`) && !/new, empty data folder|--data <new folder>/.test(error.message));
     assert.deepEqual((await sql.query("SELECT * FROM schema_migrations ORDER BY version")).rows, history);
     assert.deepEqual((await sql.query("SELECT * FROM revisions ORDER BY id")).rows, before);
     assert.equal((await sql.query("SELECT count(*)::int n FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='settings' AND column_name='connector_id'")).rows[0].n, 0, "runner refuses without native metadata DDL");
     const store = await open();
     assert.deepEqual((await sql.query("SELECT * FROM schema_migrations WHERE version <= $1 ORDER BY version", [version])).rows, history, "released migration text, names and timestamps remain exact");
-    assert.deepEqual((await sql.query("SELECT version,name FROM schema_migrations WHERE version >= 11 ORDER BY version")).rows, [
+    assert.deepEqual((await sql.query("SELECT version,name FROM schema_migrations WHERE version BETWEEN 11 AND 13 ORDER BY version")).rows, [
       { version: 11, name: "revision_mcp_pin" }, { version: 12, name: "revision_monid_pin" }, { version: 13, name: "native_command_owner" },
     ]);
     assert.deepEqual((await sql.query("SELECT body,mcp_pin,monid_pin,created_at FROM revisions WHERE id='revision'")).rows, [
@@ -124,7 +128,8 @@ for (const version of [10, 11, 12]) {
       { value: payload, updated_at: 456, connector_id: "chosen" },
     ]);
     assert.deepEqual((await store.settings.all({ prefix: "native.remote.command.", connectorId: "chosen" })).map(row => row.value), [JSON.parse(payload)]);
-    assert.equal((await sql.query("SELECT schema_version FROM store_meta")).rows[0].schema_version, 13);
+    assert.equal((await sql.query("SELECT schema_version FROM store_meta")).rows[0].schema_version, newest);
+    assert.deepEqual((await sql.query("SELECT version FROM schema_migrations ORDER BY version")).rows.map(row => Number(row.version)), migrations.map(m => m.version), "every shipped migration applied");
     const applied = (await sql.query("SELECT * FROM schema_migrations ORDER BY version")).rows;
     await store.close();
     await open();

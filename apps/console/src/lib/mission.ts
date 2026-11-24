@@ -10,7 +10,7 @@ export type MissionView = {
   runs: { total: number; active: number; needsInput: number; failed: number; statusUnknown: number; needsReview: number };
   perAgent: { agentId: string; name: string; runs: number }[];
   /** `usd` sums the runs whose cost is known; `unknownRuns` counts the rest. No known cost at all is null, never 0. */
-  cost: { usd: number | null; basis: "estimate" | null; unknownRuns: number };
+  cost: { usd: number | null; basis: Stats["cost"]["basis"]; unknownRuns: number };
   recent: Run[];
   /** The runs' tokens, time, tools and success over the range the page asked for. */
   analytics: Analytics;
@@ -27,7 +27,8 @@ export function costLine(c: MissionView["cost"]): string {
  *  known sum. */
 export function costParts(c: MissionView["cost"]): { total: string; note?: string } {
   if (c.usd === null) return { total: "Unknown" };
-  const total = cost({ usd: c.usd, basis: "estimate", charge_state: null, cap_usd: null });
+  // The server's basis for the sum (GET /v2/stats): an estimate says est., a reported sum says so.
+  const total = cost({ usd: c.usd, basis: c.basis ?? "estimate", charge_state: null, cap_usd: null });
   return { total, ...(c.unknownRuns ? { note: `${c.unknownRuns} ${c.unknownRuns === 1 ? "run" : "runs"} unknown` } : {}) };
 }
 
@@ -37,19 +38,30 @@ export type Stats = {
   agents: number;
   runs: { total: number; active: number; needs_input: number; failed: number; status_unknown: number; needs_review: number };
   per_agent: { agent_id: string; name: string; runs: number }[];
-  /** `basis`: "estimate" when `usd` is a number, null when it is null (GET /v2/stats). */
-  cost: { usd: number | null; basis: "estimate" | null; unknown_runs: number };
+  /** `basis`: how the summed costs were reached when `usd` is a number (`reported`, `estimate` or `unpriced`), null when it
+   *  is null (GET /v2/stats). */
+  cost: { usd: number | null; basis: "reported" | "estimate" | "unpriced" | null; unknown_runs: number };
   archived?: { agents: number; runs: number };
   /** Over the runs `from`, `to` and `agent` pick (every other number is the whole store's). */
   analytics: Analytics;
 };
 
 /** Runs counted together in `analytics`. Escalated runs count in `completed`, and `needs_review` says how many.
- *  `tokens` sums over `runs_with_metrics` alone; `cost_usd` is null when no run's cost is known, and
+ *  `tokens` sums over `runs_with_token_metrics` alone; `cost_usd` is null when no run's cost is known, and
  *  `unknown_cost_runs` counts the runs it leaves out. */
-export type AnalyticsGroup = { runs: number; completed: number; failed: number; needs_review: number; runs_with_metrics: number; tokens: number | null; cost_usd: number | null; unknown_cost_runs: number };
+export type AnalyticsGroup = { runs: number; completed: number; failed: number; needs_review: number; runs_with_metrics: number; runs_with_token_metrics?: number; tokens: number | null; cost_usd: number | null; unknown_cost_runs: number };
+/** Unified reported usage. Run outcomes remain in Analytics.totals; these counters also include native sources. */
+export type AnalyticsUsage = {
+  tokens: number | null; input: number | null; output: number | null; cache_read: number | null; cache_write: number | null;
+  known_runs: number; unknown_runs: number; observed_sessions: number; unknown_sessions: number;
+  partial_days: number; retention_limited: boolean;
+  by_day: { day: string; tokens: number | null }[];
+  by_harness: { harness: string; tokens: number | null }[];
+};
 /** GET /v2/stats's `analytics`. `input` excludes cached input: the whole input is input + cache_read + cache_write. */
 export type Analytics = {
+  /** Optional when talking to an older server. */
+  usage?: AnalyticsUsage;
   filter: { from: string | null; to: string | null; agent: string | null };
   totals: AnalyticsGroup & { input: number | null; cache_read: number | null; cache_write: number | null; output: number | null; requests: number | null; unmetered: number | null };
   time: { ended_runs: number; wall_ms: number; active_runs: number; active_ms: number };
@@ -59,6 +71,12 @@ export type Analytics = {
   /** `label`: what a person calls the tool (the server's label registry). */
   tools: { tool: string; label: string; calls: number; errors: number }[];
 };
+
+/** Native usage may exist before this server has recorded a run. */
+export function hasAnalyticsActivity(a: Analytics): boolean {
+  return a.totals.runs > 0 || Boolean(a.usage && (a.usage.observed_sessions || a.usage.unknown_sessions
+    || a.usage.known_runs || a.usage.unknown_runs || a.usage.partial_days || a.usage.by_day.length));
+}
 
 /** The range Mission Control's analytics cover: the last 7 or 30 UTC days, today included, or every run. */
 export type StatsRange = "7d" | "30d" | "all";
@@ -80,15 +98,25 @@ export function outcomes(g: Pick<AnalyticsGroup, "completed" | "failed" | "needs
   return [`${g.completed - g.needs_review} completed`, `${g.failed} failed`, g.needs_review ? `${g.needs_review} ${g.needs_review === 1 ? "needs" : "need"} review` : ""].filter(Boolean).join(" · ");
 }
 /** The share of the whole input that was read from the cache, or null with no input at all. */
-export function cachedShare(t: Analytics["totals"]): number | null {
+export function cachedShare(t: Pick<Analytics["totals"], "input" | "cache_read" | "cache_write">): number | null {
   if (t.input === null || t.cache_read === null || t.cache_write === null) return null;
   const input = t.input + t.cache_read + t.cache_write;
   return input ? t.cache_read / input : null;
 }
-/** A group's cost with the store's basis (the page's), said as costParts says it: never $0 for a cost not known. */
+/** A group's cost with the store's basis (the page's), said as costParts says it: never $0 for a cost not known. The
+ *  analytics' runs are among the runs GET /v2/stats sums (archived ones out of both), so a store that reads `reported`
+ *  priced every one of a group's runs that way; a store that reads `estimate` labels each group `est.`, the cautious word
+ *  for a group that may be all reported, until the API says a group's own basis. */
 export const groupCost = (g: AnalyticsGroup, basis: MissionView["cost"]["basis"]) => costParts({ usd: g.cost_usd, basis, unknownRuns: g.unknown_cost_runs });
 /** What a token sum leaves out, said so a partial figure never reads as complete: "tokens from 3 of 5 runs". */
-export const coverage = (g: Pick<AnalyticsGroup, "runs" | "runs_with_metrics">) => (g.runs_with_metrics < g.runs ? `tokens from ${g.runs_with_metrics} of ${g.runs} runs` : undefined);
+export function coverage(g: Pick<AnalyticsGroup, "runs" | "runs_with_metrics" | "runs_with_token_metrics" | "tokens">): string | undefined {
+  if (!g.runs) return undefined;
+  // Older servers cannot distinguish metrics objects from token counts when their total is null.
+  if (g.runs_with_token_metrics === undefined && g.tokens === null) return "Token coverage unavailable";
+  const known = g.runs_with_token_metrics ?? g.runs_with_metrics;
+  if (g.runs_with_token_metrics === 0) return `Token counts unavailable for ${g.runs} ${g.runs === 1 ? "run" : "runs"}`;
+  return known < g.runs ? `tokens from ${known} of ${g.runs} runs` : undefined;
+}
 
 /** A native count the source did not report stays unknown; known counts share the console formatter. */
 export function compact(n: number | null): string {
@@ -112,7 +140,7 @@ export function trendDays(byDay: Analytics["by_day"], from: string | null, now =
   const out: Analytics["by_day"] = [];
   for (let at = first; at <= today; at += DAY) {
     const day = new Date(at).toISOString().slice(0, 10);
-    out.push(known.get(day) ?? { day, runs: 0, completed: 0, failed: 0, needs_review: 0, runs_with_metrics: 0, tokens: 0, cost_usd: null, unknown_cost_runs: 0 });
+    out.push(known.get(day) ?? { day, runs: 0, completed: 0, failed: 0, needs_review: 0, runs_with_metrics: 0, runs_with_token_metrics: 0, tokens: 0, cost_usd: null, unknown_cost_runs: 0 });
   }
   return out;
 }

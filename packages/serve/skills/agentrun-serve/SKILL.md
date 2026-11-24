@@ -1,6 +1,6 @@
 ---
 name: agentrun-serve
-description: Connect to AgentRun Server (start it when it is not running), then create agents, run them, answer their questions and read their results over its MCP endpoint or its /v2 API. Use when asked to run an agent on AgentRun, start or check the AgentRun server, connect to it over MCP, or find out what an AgentRun run did.
+description: Onboard to AgentRun by starting a new agent, observing agents already running in a backend or terminal, or connecting an existing Claude Code or Codex setup for future jobs. Import selected history and inspect results with optional checked learning. Use the intended instance and its matching CLI.
 ---
 
 # AgentRun Server
@@ -8,6 +8,274 @@ description: Connect to AgentRun Server (start it when it is not running), then 
 The open platform's server for agents. One process on this machine's loopback address, port 7340 by default, keeps
 agents (a prompt with tools, or a typed workflow) and every run of them: its timeline, its files and its cost. A coding
 agent drives it over MCP (`/v2/mcp`) or HTTP (`/v2`); a person follows the same runs in its console (`/`).
+
+Read this skill from the target server's `/skills/agentrun-serve/SKILL.md` when possible; it matches the deployed
+build. Inspect `/v2/capabilities` and `/v2/openapi.json` before using an optional feature. A handoff naming an
+existing instance is not permission to start a replacement or change its destination.
+
+Secrets are saved by the person in the console, never with the API token: a model or tool key, an MCP server's token
+or headers, the webhook's secret, Slack's incoming-webhook URL, GitHub. Prepare everything else through the API. A secret write answers `403
+forbidden` with `error.details.console_url`, the console's form with the rest filled in (or build it:
+`<console>/#/settings/mcp?add=<name>&auth=bearer`, adding `&url=<url>` only when no key or token is in the URL).
+Open that link in the person's browser for them and tell them to paste the secret there and save. Never ask for a
+secret in the chat.
+
+## Choose the onboarding path
+
+For general setup, establish whether the user wants to **start a new agent** or **bring an existing agent**.
+Ask only when the intent is missing: a Build an agent handoff already chose new, and a Connect agent handoff
+already chose existing. Reuse the named server and their existing inputs. For a new agent, clarify the job and
+expected result, offer a suitable template or a custom build, then follow Check the server and Create an agent.
+Inspect configured models before asking for a key. For an existing setup, follow Connect agent below; connection
+and history import need no destination model key. Live jobs use the source runtime's existing sign-in.
+
+Finish with the first requested run's result and console link, or imported history and counts. Offer optional
+self-improvement separately, and verify owner corrections in a fresh later run when requested.
+
+## Connect agent
+
+Use one entry point for observation, future jobs and history. Ask only what the conversation has not established:
+
+1. Should the existing application or terminal keep starting work (**observe existing agents**), or should
+   AgentRun start future jobs with the selected setup? For future jobs, ask about **live connection**, **history**,
+   or **both**. Do not substitute a new CLI job for an application agent already running.
+2. Which machine holds the existing setup and native sign-in, and which AgentRun instance should receive it?
+3. Which project, runtime and specific named agent/profile should be selected? Discover only the chosen source.
+
+Explain the difference before a choice: a live connection retains the original native configuration and sign-in,
+and supports new jobs with optional self-improvement. A history import creates historical records; it does not
+attach a running conversation, resume it or turn it into learning. Do not infer consent for history from consent
+to connect, or enable learning solely because an agent was connected.
+
+### Observe an existing backend, deployment or terminal session
+
+The OSS server supports the same metadata observer protocol as hosted AgentRun. Probe
+`/api/v2/control/connectors/capabilities`; compatible servers advertise polling and metadata-only OTLP logs.
+Use the existing Python CLI's ordinary `connect`, not `remote connect`. Observation does not need a Node bridge,
+imported definition or model key. Confirm the exact destination and selected sources. Never switch to a hosted
+destination because an older OSS server lacks the receiver; explain that the selected server needs upgrading.
+
+For a deployment, run `agentrun setup --target deployment` in the actual agent execution environment, then:
+
+```sh
+agentrun connect --origin https://console.example.com --workspace-id local \
+  --telemetry --subscribe-harness claude --name "Backend agent" \
+  --state-dir /private/agent-observer
+```
+
+Use the intended server origin. OSS advertises the workspace `local`; hosted destinations advertise their own
+authorized workspaces. Use `codex` for Codex. Enroll with the OSS owner's API credential through the CLI's secure
+prompt or a private origin-bound credential file. For authorized automation, `--credential-env NAME` reads a
+securely injected environment variable; never place a credential value in prompts, command arguments or logs.
+The CLI exchanges enrollment credentials for a restricted connector credential and retains only that credential.
+OSS API-key enrollment does not depend on the hosted device-auth provider.
+
+Review and deploy the generated Collector and selected harness fragments through the source's supervisor.
+The default receiver is loopback; a sidecar or shared Collector needs an explicitly reachable receiver. Configure
+the log-specific OTEL environment before a fresh Claude/Codex process starts. For SDK applications, preserve
+programmatic prompts, tools, permissions and model choices; apply the environment to the actual SDK child and
+merge lifecycle hooks with existing hooks. Preserve any existing trace exporter. Keep connector state and the
+Collector queue across container replacement. Installing the CLI in an API container that never executes the
+agent does not connect its sandbox automatically.
+
+For sessions already running locally, use `agentrun discover` and interactive `agentrun connect` to select sessions
+or future project/harness subscriptions. Polling uses the CLI daemon; OTLP uses the external Collector. Stop the
+Collector via its supervisor to pause OTLP; `daemon stop` only stops polling. `agentrun disconnect` stops local
+observation and requires a fresh OSS owner credential for remote revocation; the retained connector credential
+cannot revoke itself. For authorized unattended use:
+
+```sh
+agentrun disconnect --state-dir /private/agent-observer \
+  --credential-file /private/disconnect-owner.json --yes
+```
+
+Use a source-user-owned mode-0600 file with `origin` bound to this destination and `api_key` holding the owner's
+credential. Alternatively, with the owner credential securely injected as `AGENTRUN_OWNER_KEY`, explicitly name
+the same destination origin used to connect:
+
+```sh
+agentrun disconnect --state-dir /private/agent-observer \
+  --origin https://your-console.example --credential-env AGENTRUN_OWNER_KEY --yes
+```
+
+Replace the example origin with the connected destination. Pass the variable name, never its value. Never put the
+credential value in chat, arguments or logs. Require `status: disconnected`; `revocation_pending` only confirms local observation stopped,
+so correct authentication or connectivity and retry. Remove temporary owner credential material afterward.
+Confirmed revocation preserves received history while refusing ingestion with the old connector credential.
+
+Verify an actual destination receipt in Connected agents, Runs or Mission Control and report the selected source,
+reported model/harness and activity/usage. CLI `configured` or `delivery_state: unverified` alone is not proof of
+delivery. Observed sessions are read-only: idle is not proof of completion, and missing telemetry is not proof of
+an agent failure. No prompts, transcripts or tool contents are uploaded through this metadata path.
+
+For independently started **Codex CLI or Claude Code** sessions, use the existing CLI learning path below.
+For SDK application-owned jobs, follow the supported backend SDK learning
+integration and verify accepted-revision delivery in a fresh run. Observation alone cannot enable it. The current
+Claude Agent SDK and Codex SDK wrappers are TypeScript integrations; do not claim a Python SDK backend is wrapped
+by setting OTEL variables. Do not fabricate a runnable native agent or use a copied prompt as proof.
+
+### Learning in existing CLI sessions
+
+For a connected-session card handoff, read its exact `GET /v2/observations?session_id=...` record.
+On the source machine, resolve `external_session_id` through the collector's private identity map to the
+native session, then inspect that session's actual project through its harness. Never print the identity
+map or credentials, and never select a project from a display name or basename. A verified
+`learning.agent_id` links to the existing shared project/runtime learning profile; reuse it. If the
+source is unavailable, ask the user to open the original session. Run and Edit continue or change that
+original setup, not a managed run or a replacement definition. Delegated children cannot enable independent
+hook learning. Only offer enrollment for the selected root session's project, with its shared scope clear.
+
+When requested, use the matching build's `learning connect` on the source machine. This path keeps the
+original CLI in control of task execution and does not require an SDK wrapper. The initial integration
+requires AgentRun on that same machine; identify its loopback port and actual data directory. Do not
+silently replace a remote destination with a new local server. Enrollment uses the local owner credential
+privately and leaves a scoped connection credential for hooks, never an owner key in project files.
+
+```sh
+agentrun-serve learning connect --project /absolute/project --runtime codex \
+  --url http://127.0.0.1:7340 --data /absolute/server-data
+```
+
+Use `claude-code` for Claude Code. Scope enrollment to the selected project/runtime. Installation merges
+source hooks without replacing other hooks or changing tools, permissions, instructions or sign-in.
+Codex linked worktrees append exact project-scoped hooks to the corresponding main-checkout
+`.codex/hooks.json`, following native discovery. They keep separate local receipts and a local `.codex`
+directory; disconnect preserves surviving native hook positions. If `learning status` reports `migration-required`,
+rerun the same connect command to migrate unchanged owned hooks without replacing the connection.
+Verify `/hooks`; Codex must trust the current declaration. Project configuration does not hot reload:
+open a new session or close and resume it after the current task finishes. Reloading user settings alone
+does not reload these project hooks. Do not interrupt the user's running task to activate them.
+Do not claim merely writing a configuration file activated a running session. Begin on the next complete
+prompt after activation, without importing earlier conversations or learning from an in-flight turn.
+
+The prompt hook supplies pinned owner corrections; completion hooks record bounded role-preserving evidence
+and reported usage. Source dialogue never becomes a standing correction automatically. Source hooks do not
+provide a workflow execution bridge or make extra native reflection calls. Missing policy, truncated evidence
+and cancellation stay explicit. This is not metadata-only observation.
+
+Use `learning status` with the same project/runtime/data arguments and open the returned agent's Learning
+tab. Save a correction explicitly, then verify an actual completed source run and its delivery and use
+on a later prompt. Report incomplete evidence accurately. Learning Off controls guidance for future prompts;
+`learning disconnect` revokes enrollment and removes only its installed hooks, retaining prior history.
+
+### Live connection on this server
+
+Verify that the coding agent, source project and AgentRun server are on the same machine. A browser's loopback
+address alone does not prove this. Use the matching installed Node CLI:
+
+```sh
+npx @parcha/agentrun native discover --project /absolute/project
+npx @parcha/agentrun native connect --project /absolute/project --runtime claude-code --url http://127.0.0.1:7340
+```
+
+Use the verified server port, not necessarily 7340. Select `codex` for Codex, `--agent NAME` for a discovered Claude
+named agent or `--profile NAME` for a discovered Codex profile. Show the discovered setup and register only the
+user's selection. Verify sign-in separately from model execution. Reconnecting reuses its ordinary agent record.
+
+### Live connection from another machine
+
+Use the existing Python connector with its **remote** command from the same reviewed build as the OSS server.
+The ordinary observer mode does not execute jobs. Do not assume an older published launcher includes
+this extension. A source checkout can be installed with `uv tool install ./connector` after building its matching
+Node runtime. The source machine needs `agentrun-serve remote-bridge` from that build; the connector accepts an
+explicit `--bridge` path to its compiled `remote-worker-bridge.js` for checkout-based installations.
+
+For a checkout-based installation, use Python 3.12+ and Node 24.22.3+ in that reviewed checkout:
+
+```sh
+npm ci --ignore-scripts
+npm run build
+uv tool install ./connector
+```
+
+Pass `--bridge /absolute/path/to/checkout/packages/serve/dist/native/remote-worker-bridge.js` to discovery and
+connection: building the checkout does not install `agentrun-serve` on PATH. Do not substitute a published older
+connector or fetch an unrelated branch when the named server uses this development build. The Python connector
+and Node management CLI both use the command name `agentrun`; verify which is on PATH before invoking it.
+
+Run `python -m agentrun_cli remote --help` in the installed connector environment (or its `agentrun` entry point).
+Discover the selected project with `remote discover --project /absolute/project --runtime claude-code` or
+`--runtime codex`. Present the supported project default, Claude named agents or Codex profiles before importing.
+
+Have the user open the destination console's **Connect agent → Another machine** page, select **Live agent**,
+**History only** or **Both**, and create a one-use connection code. The grant must match the requested scope;
+the default Live agent grant cannot upload history. Enter the code directly into the CLI's secure prompt. Never place it in agent prompts, URLs, command
+arguments, shell history or logs. For an explicitly approved unattended setup, use the documented origin-bound,
+owner-only credential file; keep its contents out of chat. Do not send a broad server API key to the source.
+
+```sh
+agentrun remote connect --origin https://console.example.com --project /absolute/project --runtime claude-code
+```
+
+Replace the origin with the intended instance. Add `--selector-kind agent --selector-name NAME` for a Claude
+named agent, or `--selector-kind profile --selector-name NAME` for Codex. Use a separate private `--state-dir` for
+each connection. Import registers the selected source-bound setup as a normal agent/revision; it does not copy
+provider credentials, project files or historical conversations. Connection starts the source worker by default.
+Check `agentrun remote status`, the console's machine status and the imported agent link. Keep the source worker
+running for jobs. `agentrun remote worker --state-dir /private/connector --foreground` owns it in a terminal;
+persistent service installation is a separate user choice. Revocation prevents further remote work.
+
+The worker uses outbound HTTPS, the selected native target and a restricted connector credential. Native files,
+skills, MCP, hooks, models, permissions and sign-in remain on the source machine. Do not add permission-bypass
+flags or silently substitute managed execution. Independent desktop conversations are not attached.
+
+### Historical import from another machine
+
+History needs approval on both sides: the destination owner's code must allow history, and the source operator
+must explicitly select it. Use the same reviewed Python connector and Node bridge. First preview the exact project
+and runtime without uploading anything:
+
+```sh
+agentrun remote history-preview --project /absolute/project --runtime claude-code
+```
+
+Use `--runtime codex` for Codex. Show the candidate session counts and selected destination before upload; the
+export can skip oversized or unsettled content after the metadata preview. Only
+completed project sessions are eligible; recent sessions (last ten minutes) and child sessions are skipped.
+History cannot reliably identify one named Claude agent or Codex profile: do not attribute the project's sessions
+to one. History flags reject named/profile selectors. If the user wants that live setup too, connect it separately
+and import the project's history with a history-only connection.
+
+After the user approves the history scope, choose the matching code in the console and one of these commands:
+
+```sh
+# History only: no executing worker or self-improvement.
+agentrun remote connect --origin https://console.example.com --project /absolute/project --runtime claude-code --history-only
+
+# Both: connect the project for future jobs and import its completed history.
+agentrun remote connect --origin https://console.example.com --project /absolute/project --runtime claude-code --history
+```
+
+Run only the chosen command, with the intended origin, runtime and private `--state-dir`. With neither flag,
+connection imports no history. History-only needs no native sign-in or paid model call and cannot execute later;
+connecting it live requires a new owner grant. Historical records retain their source provenance and are excluded
+from live execution and automatic learning. Verify the imported/skipped counts and console links. Repeating
+`agentrun remote import-history --state-dir /private/connector` imports new eligible sessions for that approved
+target; duplicates are skipped. The worker does not continuously upload historical conversations.
+
+### Optional self-improvement
+
+When requested, verify the imported agent and enable its existing **Self-improving** control. Owner corrections
+are additive, pinned to a learning revision for each run. Eligible jobs compile into workflow drafts by resuming
+the exact task session with tools disabled; checks and a dry run decide whether to keep a draft. Compilation
+adds model usage. Learned workflows do not serve native runs in this release. Off means later runs receive
+and create no AgentRun learning. Do not start a paid run unless authorized, and do not promise enforcement
+of native dollar caps, interactive approvals, learned workflows or unsupported desktop tools.
+
+### Historical import into a local store
+
+Confirm source runtimes, projects and scope, then inspect the local importer with `npx @parcha/agentrun import
+--help`. This importer writes a local store and also supports pi history. For Claude Code or Codex sessions on
+another machine, use the scoped remote-history flow above. Do not silently import into another instance or
+transfer transcripts without approval.
+
+Identify the existing server's actual data directory, store configuration, seal key and supervisor. Preserve them
+without printing secrets. Run the selected `import --data DIR --dry-run` first. Before write import, inspect active
+and queued work and enabled triggers, present scope and the stop/restart plan, and obtain any missing approval.
+The importer requires exclusive store ownership: stop the original service in an agreed idle window, import the
+approved sources, and restart the same service even if import fails. Do not delete locks, reset owner setup or
+bypass ownership. Verify health and imported/skipped counts at the original console address. If safe restart is
+not possible, stop after the dry run and explain the operator action required.
 
 ## 1. Check the server
 
@@ -17,19 +285,36 @@ If `AGENTRUN_BASE_URL` is set, check it:
 curl -sf "$AGENTRUN_BASE_URL/health"
 ```
 
-If it is not set, or nothing answers, start the server from a checkout of the repository (Node 24.22.3 or later), in the
-background, with its data in a directory you name:
+If the user named an existing server and it does not answer, diagnose that instance; do not start another one.
+Only when the user wants a new local server, start it from the selected reviewed checkout (Node 24.22.3 or later),
+in the background, with its data in a directory you name. Run these commands from that checkout's root. Preserve
+its selected branch/commit; do not replace it with `main` or a released package when testing development features.
+If no checkout is available, obtain the intended reviewed source ref before installing, and use that same build
+for the source connector and Node bridge:
 
 ```sh
-git clone --branch main --single-branch https://github.com/Parcha-ai/agentrun.git && cd agentrun
-npm ci --ignore-scripts && npm run build
+npm ci --ignore-scripts && npm run build || exit 1
+umask 077
 node packages/serve/dist/cli.js --data "$PWD/.agentrun" > serve.log 2>&1 &
-until grep -q '^AGENTRUN_BASE_URL=' serve.log; do sleep 1; done
+agentrun_server_pid=$!
+for i in $(seq 600); do
+  grep -q '^AGENTRUN_BASE_URL=' serve.log && break
+  kill -0 "$agentrun_server_pid" 2>/dev/null || break
+  sleep 1
+done
+grep -q '^AGENTRUN_BASE_URL=' serve.log || { echo 'AgentRun did not start; inspect its private serve.log.'; exit 1; }
 export "$(grep -m1 '^AGENTRUN_BASE_URL=' serve.log)"
-until curl -sf "$AGENTRUN_BASE_URL/health" >/dev/null; do sleep 1; done
+agentrun_server_ready=
+for i in $(seq 60); do
+  if curl --max-time 5 -sf "$AGENTRUN_BASE_URL/health" >/dev/null; then agentrun_server_ready=1; break; fi
+  kill -0 "$agentrun_server_pid" 2>/dev/null || break
+  sleep 1
+done
+test "$agentrun_server_ready" = 1 || { echo 'AgentRun did not become healthy; inspect its private serve.log.'; exit 1; }
 ```
 
-It runs on the model `AGENT_MODEL` names, with that provider's key in the environment (for example
+For a new agent running in AgentRun's managed harness, configure the model `AGENT_MODEL` names, with that
+provider's key in the environment (for example
 `AGENT_MODEL=openrouter/anthropic/claude-sonnet-5.5` and `OPENROUTER_API_KEY`); the package README lists every way. To
 try it with no key and no network, add `--faux faux.mjs` with a module that answers every request itself:
 
@@ -73,8 +358,14 @@ A refusal comes back as a tool error holding the server's `error`: `code`, `mess
 
 ## 4. Create an agent
 
-Look for one first with `agents_list`. Ask the person before you create or revise an agent, and say what it will do.
-Then `agents_create`, for example `{"name": "Release notes", "instructions": "Write release notes from the commits you are given.", "tools": ["read", "write"]}`.
+Look for one first with `agents_list` and inspect the server's templates through `GET /v2/templates` or the
+matching Node CLI's `template list`, then read the one you would apply whole (its instructions and every skill file)
+with `GET /v2/templates/{id}` or `template get`. Offer a suitable template or a custom agent; ask only for missing details
+about the job, inputs, expected result and required tools. Before applying a template, explain its tool grants
+and triggers and confirm any permissions not already granted. Use the apply schema from this server's OpenAPI document.
+
+For a custom agent, show its proposed purpose and permissions and create or revise within what the user requested.
+Use `agents_create`, for example `{"name": "Release notes", "instructions": "Write release notes from the commits you are given.", "tools": ["read", "write"]}`.
 It writes files only with a tool like `write` in its `tools`; `whoami` lists the tools this server has.
 
 ## 5. Run it, poll it, answer it
@@ -122,9 +413,13 @@ For everything the MCP tools do not cover (tool keys, triggers, webhooks, files,
 ## Troubleshooting
 
 - `401`: the token is not this server's. Read it again from the data directory the server was started with.
+- `403 forbidden` with `error.details.console_url`: a secret write, which only the person's console makes. Open the link for them; they paste the secret there.
 - `403` on `/v2/mcp`: the request carried a browser `Origin` that is not the server's own. Call it from your MCP client, not a web page.
 - `405` on `/v2/mcp`: it takes POST only (no stream, no session).
 - `409 agent_not_runnable`: this server cannot run that agent yet (a harness, tool or key it lacks); `error.details` and `whoami` say which.
 - `422 input_invalid`: `error.fields` names each field to fix.
+- A refusal that says `restart the server with AGENTRUN_...`: a start-time switch is off (an MCP server or a webhook
+  receiver on this machine, the hosts a computer may reach). No API call sets it. `/v2/capabilities` `switches` lists
+  each and its value; set the variable and start the server again, the `=1` ones only on a machine you alone use.
 - `429 rate_limited` from `runs_start`: the server is at its most runs at once. Start it again when one ends.
 - Keep the server on the loopback address. Started with `--listen` on another one, put TLS in front of it.

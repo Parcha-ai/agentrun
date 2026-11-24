@@ -9,6 +9,7 @@ import (
 	"errors"
 	"image/png"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -82,6 +83,74 @@ func TestOnTheFakeAServerErrorStopsTheBatchBeforeItsNextAction(t *testing.T) {
 	for _, in := range inputs(f) {
 		if (in.kind == x11.ButtonPress && in.detail == 1) || in.kind == x11.KeyPress {
 			t.Fatalf("an action after the failed one reached the server: %+v in %+v", in, inputs(f))
+		}
+	}
+}
+
+// A chord presses its keys in order, shift among them as it is, and releases them in reverse; the next action of the
+// batch reaches the server only once the app has had keySettle to act on the shortcut (Calc moves its focus to the Name
+// Box for ctrl+shift+f5 after it reads the keys, so text typed with no gap went to the cell).
+func TestOnTheFakeAChordIsPressedInOrderAndTheNextActionWaitsForItToSettle(t *testing.T) {
+	type timed struct {
+		fakeInput
+		at time.Time
+	}
+	var (
+		mu  sync.Mutex
+		got []timed
+	)
+	_, act := onFake(t, func(f *x11fake.Server) {
+		// Control_L on 37, F5 on 71, Escape on 9, as Xvfb's map has them.
+		for code, sym := range map[int]uint32{37: 0xffe3, 71: 0xffc2, 9: 0xff1b} {
+			f.Keymap[(code-x11fake.MinKey)*2] = sym
+		}
+		f.Hold = func(r x11fake.Request) {
+			if r.Opcode == x11fake.XTest && r.Data == 2 {
+				mu.Lock()
+				got = append(got, timed{fakeInput{r.Body[0], r.Body[1]}, time.Now()})
+				mu.Unlock()
+			}
+		}
+	})
+	press, release := byte(x11.KeyPress), byte(x11.KeyRelease)
+	for _, c := range []struct {
+		keys  []string
+		codes []byte
+	}{
+		{[]string{"ctrl", "shift", "f5"}, []byte{37, 50, 71}},
+		{[]string{"shift", "escape"}, []byte{50, 9}},
+	} {
+		mu.Lock()
+		got = nil
+		mu.Unlock()
+		r, err := act(context.Background(), map[string]any{"type": "key", "keys": c.keys}, map[string]any{"type": "type", "text": "a"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if r := r.(desktop.ActionsResult); r.Done != 2 || r.Failed != nil {
+			t.Fatalf("%v then a: done %d, failed %+v", c.keys, r.Done, r.Failed)
+		}
+		var want []fakeInput
+		for _, code := range c.codes {
+			want = append(want, fakeInput{press, code})
+		}
+		for i := len(c.codes) - 1; i >= 0; i-- {
+			want = append(want, fakeInput{release, c.codes[i]})
+		}
+		want = append(want, fakeInput{press, 38}, fakeInput{release, 38})
+		mu.Lock()
+		sent := append([]timed(nil), got...)
+		mu.Unlock()
+		var seq []fakeInput
+		for _, s := range sent {
+			seq = append(seq, s.fakeInput)
+		}
+		if !slices.Equal(seq, want) {
+			t.Fatalf("%v then a sent %+v; want %+v", c.keys, seq, want)
+		}
+		last := len(c.codes) * 2
+		if gap := sent[last].at.Sub(sent[last-1].at); gap < desktop.KeySettleForTest {
+			t.Errorf("%v then a: the a reached the server %v after the chord's last release; want at least %v", c.keys, gap, desktop.KeySettleForTest)
 		}
 	}
 }
@@ -284,6 +353,64 @@ func TestOnTheFakeWaitingForTheDisplayEndsWithTheContext(t *testing.T) {
 	release.Do(func() { close(resume) })
 	if err := <-held; err != nil {
 		t.Fatalf("the first batch: %v", err)
+	}
+}
+
+// A screen.shot cancelled while the server sits on its GetImage (the fake reads nothing more meanwhile) answers aborted
+// while the server still sits on it, not once the read's own 30 s bound runs out, and lets the display go. Once the
+// server answers again, the next screen.shot on the display reads its own image (the cancelled one's late reply is read
+// past) and the next input.actions runs.
+func TestOnTheFakeACancelledShotAnswersAbortedAndTheNextCallsRun(t *testing.T) {
+	reached, resume := make(chan struct{}), make(chan struct{})
+	images := 0
+	d, act, shot := onFakeDisplay(t, func(f *x11fake.Server) {
+		f.Hold = func(r x11fake.Request) {
+			if r.Opcode == 73 { // GetImage
+				if images++; images == 1 {
+					close(reached)
+					<-resume
+				}
+			}
+		}
+	})
+	var release sync.Once
+	t.Cleanup(func() { release.Do(func() { close(resume) }) })
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := shot(ctx)
+		done <- err
+	}()
+	select {
+	case <-reached:
+	case err := <-done:
+		t.Fatalf("the shot ended before the fake held its GetImage: %v", err)
+	case <-time.After(patience):
+		t.Fatal("the fake never got the shot's GetImage")
+	}
+	cancel()
+	var err error
+	select {
+	case err = <-done:
+	case <-time.After(patience):
+		t.Fatal("the cancelled shot did not end")
+	}
+	var e *rpc.Error
+	if !errors.As(err, &e) || e.Kind != rpc.KindAborted {
+		t.Fatalf("the cancelled shot answered %v; want aborted", err)
+	}
+	release.Do(func() { close(resume) })
+	// A shot that answers keeps its PNG in its rpc session, so the next one goes through a server.
+	var next desktop.ShotResult
+	serve(t, d).ok("screen.shot", map[string]any{}, &next)
+	if next.Width != x11fake.Width || next.Height != x11fake.Height || next.Size == 0 {
+		t.Fatalf("the next screen.shot: %+v; want the whole %dx%d screen", next, x11fake.Width, x11fake.Height)
+	}
+	var got any
+	within(t, patience, "the next input.actions", func() { got, err = act(context.Background(), map[string]any{"type": "move", "at": []int{5, 5}}) })
+	if r, ok := got.(desktop.ActionsResult); err != nil || !ok || r.Done != 1 || r.Failed != nil {
+		t.Fatalf("the next input.actions: %+v, %v; want done 1", got, err)
 	}
 }
 

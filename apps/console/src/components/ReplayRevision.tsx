@@ -12,9 +12,9 @@ import type { ReplayRead } from "@/lib/v2";
 /** How long the card waits between two reads of a running replay. */
 export const POLL_MS = 3000;
 
-/** Whether a revision's standing offers Replay: one the server would take (not serving, served before, refit, or
+/** Whether a revision's standing offers Replay: one the server would take (not serving, nor served before, nor
  *  replaying already, which it refuses: 409). */
-export const replayable = (standing: Pick<Standing, "word">): boolean => standing.word === "Held" || standing.word === "Not decided" || standing.word === "Superseded";
+export const replayable = (standing: Pick<Standing, "word">): boolean => standing.word === "Held" || standing.word === "Not decided";
 
 type State =
   | { at: "idle" }
@@ -24,23 +24,22 @@ type State =
   | { at: "refused"; message: string; code: string | null };
 
 const pct = (v: number) => `${Math.round(v * 100)}%`;
-const pts = (d: number) => `${d >= 0 ? "+" : ""}${Math.round(d * 1000) / 10} pts`;
-const inputs = (n: number) => `${n} graded ${n === 1 ? "input" : "inputs"}`;
+const inputs = (n: number) => `${n} ${n === 1 ? "input" : "inputs"}`;
 
 /** What a running replay has done so far, in one line. */
 export function progressLine(read: ReplayRead | null): string {
   if (!read) return "Replay started: its runs are queued.";
   const o = read.outcomes;
   const done = o.answered + o.handed_back + o.failed + o.skipped_write;
-  return `Replaying on ${inputs(read.inputs)}: ${done} of ${read.inputs} ended (${o.answered} answered alone, ${o.handed_back} handed back${o.failed ? `, ${o.failed} failed` : ""}${o.skipped_write ? `, ${o.skipped_write} skipped` : ""}).`;
+  return `Checking on ${inputs(read.inputs)} of the agent's own runs: ${done} of ${read.inputs} ended (${o.answered} answered alone, ${o.handed_back} handed back${o.failed ? `, ${o.failed} failed` : ""}${o.skipped_write ? `, ${o.skipped_write} skipped` : ""}).`;
 }
 
 /** The decision of a replay in one sentence, the read's own words after its verdict, and its score. */
 export function decisionLine(read: ReplayRead): { text: string; score: string | null } {
   const reason = read.reason ? ` ${read.reason.charAt(0).toUpperCase()}${read.reason.slice(1)}` : "";
-  const text = read.status === "failed" ? `The replay did not finish.${reason}` : read.decided === "promote" ? `Promoted: it serves first now.${reason}` : read.decided === "hold" ? `Still held.${reason}` : read.decided === "superseded" ? `Superseded.${reason}` : `Decided.${reason}`;
+  const text = read.status === "failed" ? `The replay did not finish.${reason}` : read.decided === "promote" ? `Promoted: it serves first now.${reason}` : read.decided === "hold" ? `Still held.${reason}` : `Decided.${reason}`;
   const s = read.score;
-  return { text, score: s.n > 0 ? `Workflow ${pct(s.wf_acc)} vs agent ${pct(s.agent_acc)} on ${inputs(s.n)} (${pts(s.delta)}), ${s.handed_back} handed back` : null };
+  return { text, score: s.n > 0 ? `Workflow ${pct(s.wf_acc)} vs agent ${pct(s.agent_acc)} on ${inputs(s.n)} of the agent's own runs, ${s.agree} said what the agent said, ${s.handed_back} handed back` : null };
 }
 
 /** The Replay button of one revision of a learned workflow, and what its replay is doing or decided. */
@@ -87,7 +86,7 @@ export function ReplayRevision({ v2, agentId, workflow, digest, offered, resume 
   return (
     <div className="mt-2 space-y-1" data-testid="replay-revision">
       {(state.at === "idle" || state.at === "starting" || ((state.at === "refused" || state.at === "decided") && offered)) && (
-        <Button size="sm" onClick={start} disabled={busy} aria-label={`Replay revision ${digest.slice(0, 7)} on graded inputs`}>{state.at === "starting" ? "Starting…" : state.at === "idle" ? "Replay" : "Replay again"}</Button>
+        <Button size="sm" onClick={start} disabled={busy} aria-label={`Check revision ${digest.slice(0, 7)} on the inputs of the agent's own runs`}>{state.at === "starting" ? "Starting…" : state.at === "idle" ? "Replay" : "Replay again"}</Button>
       )}
       {state.at === "running" && (
         <p className="break-words text-body" role="status" data-testid="replay-progress">

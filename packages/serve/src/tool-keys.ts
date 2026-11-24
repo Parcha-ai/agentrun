@@ -7,12 +7,13 @@ import { HARNESSES } from "./harness.js";
 import type { KeyCheck } from "./key-check.js";
 import { MODEL_KEYS } from "./model.js";
 import { TOOL_KEY_ROWS } from "./key-words.js";
-import { registerSecretWrite, type SecretMeta, secretMeta, secretName } from "./secret-writes.js";
+import { registerSecretPage, registerSecretWrite, type SecretMeta, secretMeta, secretName } from "./secret-writes.js";
 
 // Every value a person saves here is a secret (a tool's key, a model provider's key; BROWSERBASE_PROJECT_ID is kept the
 // same way): saving one, replacing it or removing it takes the owner's session (secret-writes.ts), never the token.
 registerSecretWrite("saveToolKey", () => true);
 registerSecretWrite("deleteToolKey", () => true);
+registerSecretPage(["saveToolKey", "deleteToolKey"], "/#/settings/keys");
 
 export const SEAL_KEY_ENV = "AGENTRUN_SEAL_KEY";
 
@@ -34,14 +35,17 @@ export const TOOL_FIELDS: readonly string[] = TOOL_KEYS.filter((row) => row.kind
 
 /** What `candidates` unlock here, as capabilities show it: the tools of `tools` (capabilities' `tools`, available or
  *  not) and the providers of `providers` (its `workflows.decisions.providers`) named among them, and the harnesses
- *  that run those tools. A name neither holds is left out; a key that unlocks none of its names lists nothing. */
+ *  that run those tools: the built-in ones first, then any other the tools run on (Goose once its owner installs it). A
+ *  name neither holds is left out; a key that unlocks none of its names lists nothing. */
 export function unlockedBy(candidates: readonly string[], tools: readonly { name: string; harnesses: readonly string[] }[], providers: readonly { id: string }[]) {
   const bound = new Set([...tools.map((tool) => tool.name), ...providers.map((provider) => `decisions.${provider.id}`)]);
   // A catalog source's tools (`monid:*`) are granted by name, never listed: the source is shown as it is, and its tools are
-  // host tools, run on every harness.
+  // host tools, run on every harness: the built-in ones and any other a tool here runs on.
   const unlocks = candidates.filter((name) => bound.has(name) || name.endsWith(":*"));
-  const run = new Set(tools.filter((tool) => unlocks.includes(tool.name)).flatMap((tool) => tool.harnesses));
-  return { unlocks, harnesses: HARNESSES.filter((harness) => run.has(harness) || unlocks.some((name) => name.endsWith(":*"))) };
+  const every = unlocks.some((name) => name.endsWith(":*"));
+  const run = new Set(tools.filter((tool) => every || unlocks.includes(tool.name)).flatMap((tool) => tool.harnesses));
+  const listed = [...run].filter((harness) => !(HARNESSES as readonly string[]).includes(harness));
+  return { unlocks, harnesses: [...HARNESSES.filter((harness) => every || run.has(harness)), ...listed] };
 }
 
 /** What a row unlocks here: a `tool` row's, its tools and providers as capabilities bind them (unlockedBy); any other
@@ -49,14 +53,17 @@ export function unlockedBy(candidates: readonly string[], tools: readonly { name
  *  (`offers`, harness.ts' harnessOffers) on the row's key: one whose `keys` (the model keys that run it here, available
  *  now or once one is saved) include the row's (its first field). So OpenRouter's row names all three before any key
  *  is saved, and no row changes when another provider's key is saved; a harness not installed, off its pins or too big
- *  for this host is left out. */
+ *  for this host is left out. A harness the server lists beyond the built-in ones (Goose once its owner installs it: it
+ *  has no offer before) is named, after them, where its own offer's `keys` name the row's. */
 export function rowUnlocks(row: { kind: string; unlocks: readonly string[]; harnesses?: readonly string[]; fields?: readonly string[] }, tools: Parameters<typeof unlockedBy>[1], providers: Parameters<typeof unlockedBy>[2], offers: readonly { id: string; available: boolean; keys?: readonly string[] }[]) {
   if (row.kind === "tool") return unlockedBy(row.unlocks, tools, providers);
   const key = row.fields?.[0];
   // Where an offer knows which model keys run it (its `keys`), the row's key must be one of them, available now or not;
   // else (no key runs it: pi on any, or one unavailable for another reason) whether it runs here now.
   const runs = (harness: string) => offers.some((offer) => offer.id === harness && (offer.keys ? key !== undefined && offer.keys.includes(key) : offer.available));
-  return { unlocks: [] as string[], harnesses: HARNESSES.filter((harness) => (row.harnesses ?? HARNESSES).includes(harness) && runs(harness)) };
+  const builtin = HARNESSES.filter((harness) => (row.harnesses ?? HARNESSES).includes(harness) && runs(harness));
+  const listed = offers.filter((offer) => !(HARNESSES as readonly string[]).includes(offer.id) && key !== undefined && offer.keys?.includes(key)).map((offer) => offer.id);
+  return { unlocks: [] as string[], harnesses: [...builtin, ...listed] };
 }
 
 /** Whether a key row's `unlock` unlocks the tool `name`: by its name, or `<source>:*` for every tool of a catalog source

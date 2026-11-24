@@ -4,6 +4,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it } from "vitest";
 import { NeedsYouStrip, type NeedsYouProps } from "./NeedsYouStrip";
 import type { Run } from "@/lib/v2";
+import type { BackendSdkBinding } from "@/lib/backendSdk";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 const NOW = Date.parse("2026-11-03T16:20:00Z");
@@ -187,4 +188,51 @@ describe("NeedsYouStrip, a run paused at its spend cap", () => {
     expect(card.querySelector("input, textarea, form")).toBeNull();
     expect(card.querySelector('a[href="#/runs/b1"]')).not.toBeNull();
   });
+});
+
+
+describe("NeedsYouStrip, backend SDK execution ownership", () => {
+  const redactedPlatform = "🚀".repeat(72) + "[redacted]";
+  const sdk = (id: string, binding: BackendSdkBinding, over: Partial<Run> = {}) => run(id, "backend", {
+    sdk: { ...binding, model: "reported-model", session_id: "native-session", learning_revision: null, usage: null }, ...over,
+  });
+  it.each([{ runtime: "claude-agent-sdk" }, { runtime: "codex-sdk" }, { runtime: "eve" }, { runtime: "external", platform: "Atlas 工作流" }, { runtime: "external", platform: redactedPlatform }] as const)("keeps live and failed $runtime calls read-only with backend guidance and encoded run links", async (binding) => {
+    const writes: string[] = [];
+    const host = mount({ asking: [], live: [sdk("sdk/live", binding, { status: "working", state: "working" })],
+      failed: [sdk("sdk/failed", binding, { status: "failed", error: overloaded })],
+      onAnswer: async () => { writes.push("answer"); return null; },
+      onStop: async () => { writes.push("stop"); return null; },
+      onRunAgain: async () => { writes.push("rerun"); return { started: [], problem: null }; },
+    });
+    expect(host.textContent).toContain("your backend");
+    if (binding.runtime === "external") expect(host.textContent).toContain(binding.platform === redactedPlatform ? "External platform" : binding.platform);
+    expect(host.textContent).toContain(overloaded.message);
+    expect(host.textContent).not.toMatch(/Steer|Run again|Run all again|Open to cancel/);
+    expect([...host.querySelectorAll("button")].map((b) => b.textContent?.trim())).not.toContain("Stop");
+    expect(host.querySelector('a[href="#/runs/sdk%2Flive"]')?.textContent).toContain("Run sdk/live");
+    expect(host.querySelector('a[href="#/runs/sdk%2Ffailed"]')?.textContent).toContain("Run sdk/failed");
+    expect([...host.querySelectorAll("a")].filter((link) => link.textContent === "Open").map((link) => link.getAttribute("href"))).toEqual(["#/runs/sdk%2Ffailed", "#/runs/sdk%2Flive"]);
+    await act(async () => { host.querySelectorAll("button").forEach((button) => button.click()); });
+    expect(writes).toEqual([]);
+  });
+  it("never includes SDK failures in a managed retry group with the same error", async () => {
+    const retried: string[][] = [];
+    const host = mount({ asking: [], live: [], failed: [failed[0]!, failed[1]!, sdk("sdk-failed", { runtime: "external", platform: redactedPlatform }, { status: "failed", error: overloaded })],
+      onRunAgain: async (runs) => { retried.push(runs.map((r) => r.run_id)); return { started: runs.map((r) => r.run_id), problem: null }; },
+    });
+    await act(async () => { [...host.querySelectorAll("button")].find((b) => b.textContent === "Run all again")!.click(); });
+    expect(retried).toEqual([["f1", "f2"]]);
+    expect(host.textContent).toContain("Run sdk-failed");
+    expect(host.textContent).toContain("your backend");
+    expect([...host.querySelectorAll("button")].some((b) => b.textContent?.includes("Run again"))).toBe(false);
+  });
+});
+
+it.each(["codex-cli", "claude-code-cli"] as const)("keeps live and failed %s prompt windows out of managed controls", (runtime) => {
+  const cli_learning = { runtime, session_id: "source-session", turn_id: "turn", model: null, learning_revision: null, seed_observed: false, policy_complete: true, evidence_complete: true, usage: null };
+  const host = mount({ asking: [], live: [{ ...run("cli/live", "coding", { status: "working", state: "working" }), cli_learning } as Run],
+    failed: [{ ...run("cli/failed", "coding", { status: "failed", error: overloaded }), cli_learning } as Run] });
+  expect(host.textContent).toContain("your CLI");
+  expect(host.textContent).not.toMatch(/Steer|Run again|Run all again|Open to cancel/);
+  expect([...host.querySelectorAll("button")].map((b) => b.textContent?.trim())).not.toContain("Stop");
 });

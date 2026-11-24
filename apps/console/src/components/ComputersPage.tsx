@@ -1,26 +1,19 @@
-import { Monitor, Smartphone } from "lucide-react";
+import { SettingsSection, settingsBodyClass, settingsIntroClass, settingsPageClass } from "@/components/Settings";
+import { pasteFromClipboard } from "@/lib/paste";
+import { ArrowUpRight, Monitor, Smartphone } from "lucide-react";
 import { type FormEvent, type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { SecretRow } from "@/components/SecretRow";
+import { StatusBadge } from "@/components/StatusBadge";
 import { ListSkeleton } from "@/components/Skeleton";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/field";
 import { Chip } from "@/components/ui/chip";
 import { Picker } from "@/components/ui/picker";
 import { type Client, ClientError, problemOf } from "@/lib/client";
-import { BY_THE_MINUTE, METERED } from "@/lib/computers";
-import { clock, runLabel, when } from "@/lib/format";
+import { BY_THE_MINUTE, DRIVES, KIND_ICONS, METERED, providerOf, wordsOf } from "@/lib/computers";
+import { clock, runLabel, runTitle, when } from "@/lib/format";
 import { type SecretsWhyNot, WHY_NOT_WORDS } from "@/lib/secrets";
-import type { ApiError, ComputerChoices, ComputerKeyChoices, ComputerKindView, ComputerProvider, Computers, PairedComputer, Pairing } from "@/lib/v2";
-
-/** Each kind's name and what it gives a run, in the console's words. A kind the console doesn't know yet reads as its id. */
-const KIND_WORDS: Record<string, { label: string; gives: string }> = {
-  none: { label: "None", gives: "The run's folder only." },
-  sandbox: { label: "Sandbox", gives: "A Linux container." },
-  desktop: { label: "Desktop", gives: "A screen, with a pointer and keys." },
-  phone: { label: "Phone", gives: "A phone's screen and its apps." },
-  browser: { label: "Browser", gives: "A browser the agent drives." },
-};
-const wordsOf = (kind: string) => KIND_WORDS[kind] ?? { label: kind, gives: "" };
+import type { ApiError, ComputerChoices, ComputerKeyChoices, ComputerKindView, ComputerProvider, Computers, PairedComputer, Pairing, RunningRun } from "@/lib/v2";
 
 const apiError = (e: unknown): ApiError => (e instanceof ClientError ? e.toApiError() : { code: "network", message: e instanceof Error ? e.message : String(e), retryable: false });
 
@@ -32,10 +25,18 @@ type Opened = { paste: string } | { remove: string };
 /** A provider's last Test connection here: the server's passed (with its detail) or failed (with its why), and when. */
 type Tested = { ok: boolean; words: string; at: string };
 
+/** Whether Test connection has something to test: a provider's account, read with its saved keys. A provider with no
+ *  key (this machine's Docker) says whether it answers in its Ready or Not ready; one with a required key missing could
+ *  only fail, saying the key its Not ready already names. */
+export const testable = (p: ComputerProvider): boolean =>
+  p.secrets.some((secret) => secret.set) && p.required.every((name) => p.secrets.some((secret) => secret.name === name && secret.set));
+
 /** How often the page reads the computers again while a pairing code is up, so the computer that uses it shows. */
 export const PAIRING_POLL_MS = 2_000;
+/** How often the page reads the runs that have a computer again, so one that starts or ends shows without a reload. */
+export const RUNNING_POLL_MS = 10_000;
 
-/** Settings → Computers: first, the person's own computers paired with this server (Pair a computer: a code to type into
+/** Settings → Computers: first, the computers up now (RunningSection: each run still going that has a computer). Then the person's own computers paired with this server (Pair a computer: a code to type into
  *  the computer's driver with this server's address, one page for every OS; each paired computer as its hello says it,
  *  online or offline, the run that holds it and until when, and Remove). Each is
  *  also a provider of its kind in GET /v2/computers, and shows here once, in its own section. Then every kind of computer
@@ -43,7 +44,7 @@ export const PAIRING_POLL_MS = 2_000;
  *  server doesn't offer says the server's why. Each provider shows under every kind it serves, with its secrets as
  *  SecretRows (the KEY, Set or Missing, Optional unless required, where from and when, never a value), whether a run
  *  could have it now (and the server's why not), Paste or Replace of one key (PUT …/keys with that KEY), a removal
- *  (null), and Test connection (POST …/test). A key the provider lists as picked (Orgo's workspace) is never pasted: once
+ *  (null), and Test connection (POST …/test) once its keys are saved (testable). A key the provider lists as picked (Orgo's workspace) is never pasted: once
  *  its required keys are saved, it is picked by name from the vendor's own list (KeyChoices). A save or removal reads the whole page again: a key can make a provider
  *  ready, and a kind offered, under every kind at once. Keys change only on a writable session. A metered provider of a kind
  *  that bills by the minute says so, and that those minutes are outside a run's spending cap. */
@@ -62,6 +63,9 @@ export function ComputersPage({ v2, writable, whyNot = "sign_in" }: {
   const [tested, setTested] = useState<Record<string, Tested>>({});
   const [testing, setTesting] = useState<ReadonlySet<string>>(new Set());
   const reads = useRef(0);
+  // Each provider's key changes so far: a test answers for the keys it started with, so one that started before a save
+  // is dropped when it lands after it.
+  const keyChanges = useRef<Record<string, number>>({});
 
   const load = useCallback(() => {
     const n = ++reads.current;
@@ -87,10 +91,14 @@ export function ComputersPage({ v2, writable, whyNot = "sign_in" }: {
       return null;
     }
     setOpen(null);
+    // A key that changed makes the provider's last test stale: it said what the keys before it answered.
+    keyChanges.current[provider.id] = (keyChanges.current[provider.id] ?? 0) + 1;
+    setTested((t) => { const rest = { ...t }; delete rest[provider.id]; return rest; });
     load();
     return null;
   };
   const test = async (provider: ComputerProvider) => {
+    const keys = keyChanges.current[provider.id] ?? 0;
     setTesting((s) => new Set(s).add(provider.id));
     let next: Tested;
     try {
@@ -99,37 +107,101 @@ export function ComputersPage({ v2, writable, whyNot = "sign_in" }: {
     } catch (e) {
       next = { ok: false, words: problemOf(e), at: new Date().toISOString() };
     }
-    setTested((t) => ({ ...t, [provider.id]: next }));
+    if ((keyChanges.current[provider.id] ?? 0) === keys) setTested((t) => ({ ...t, [provider.id]: next }));
     setTesting((s) => { const left = new Set(s); left.delete(provider.id); return left; });
   };
 
   return (
     <div className="h-full overflow-auto">
-      <div className="mx-auto max-w-[1100px] space-y-6 px-6 py-8">
-        <div>
+      <div className={settingsPageClass}>
+        <div className={settingsIntroClass}>
           <p className="caps text-label text-muted-foreground">Settings</p>
           <h1 className="mt-1 text-2xl font-semibold">Computers</h1>
           <p className="mt-2 text-lead text-muted-foreground">The computers an agent can be given, and who provides them. An agent can have a kind once one of its providers is ready. Keys are kept sealed on this server and never shown again.</p>
         </div>
-        <PairedSection v2={v2} paired={view.paired} reload={load} />
-        {!writable && <p role="status" className="border bg-card p-4 text-body">{WHY_NOT_WORDS[whyNot]}</p>}
-        {view.kinds.map((k) => (
-          <KindSection key={k.kind} kind={k} providers={k.providers.filter((p) => !pairedIds.has(p.id))} own={k.providers.filter((p) => pairedIds.has(p.id)).map((p) => p.name)}>
-            {k.providers.filter((p) => !pairedIds.has(p.id)).map((p) => {
-              const at = `${k.kind}/${p.id}`;
-              return (
-                <ProviderRow key={p.id} v2={v2} kind={k.kind} provider={p} writable={writable} serves={servesOf(p.id)} tested={tested[p.id]} testing={testing.has(p.id)}
-                  open={open?.at === at ? open.mode : null} problem={problem?.at === at ? problem.words : null}
-                  onOpen={(mode) => { setOpen(mode ? { at, mode } : null); setProblem(null); }}
-                  onSave={(keys) => save(at, p, keys)}
-                  onRemove={async (name) => { const refused = await save(at, p, { [name]: null }); if (refused) setProblem({ at, words: refused.fields?.map((f) => f.message).join(" ") || refused.message }); }}
-                  onTest={() => void test(p)} />
-              );
-            })}
-          </KindSection>
-        ))}
+        <div className={settingsBodyClass}>
+          <RunningSection v2={v2} kinds={view.kinds} />
+          <PairedSection v2={v2} paired={view.paired} reload={load} />
+          {!writable && <p role="status" className="border bg-card p-4 text-body">{WHY_NOT_WORDS[whyNot]}</p>}
+          {view.kinds.map((k) => (
+            <KindSection key={k.kind} kind={k} providers={k.providers.filter((p) => !pairedIds.has(p.id))} own={k.providers.filter((p) => pairedIds.has(p.id)).map((p) => p.name)}>
+              {k.providers.filter((p) => !pairedIds.has(p.id)).map((p) => {
+                const at = `${k.kind}/${p.id}`;
+                return (
+                  <ProviderRow key={p.id} v2={v2} kind={k.kind} provider={p} writable={writable} serves={servesOf(p.id)} tested={tested[p.id]} testing={testing.has(p.id)}
+                    open={open?.at === at ? open.mode : null} problem={problem?.at === at ? problem.words : null}
+                    onOpen={(mode) => { setOpen(mode ? { at, mode } : null); setProblem(null); }}
+                    onSave={(keys) => save(at, p, keys)}
+                    onRemove={async (name) => { const refused = await save(at, p, { [name]: null }); if (refused) setProblem({ at, words: refused.fields?.map((f) => f.message).join(" ") || refused.message }); }}
+                    onTest={() => void test(p)} />
+                );
+              })}
+            </KindSection>
+          ))}
+        </div>
       </div>
     </div>
+  );
+}
+
+/** Running now: each run still going whose agent has a computer (GET /v2/computers/running), newest first, read when
+ *  the page opens and every RUNNING_POLL_MS after while the page is shown (and again when it is shown), one read at a time. A row is the run as the agent page's Live jobs list shows one (its
+ *  status, its title) with its computer: kind, provider by the name this page lists it under, when it started, You
+ *  drive while its owner has it, and a held run's hold; the row opens the run, whose Screen tab is the live view. A
+ *  read that fails keeps the last list and says so. */
+function RunningSection({ v2, kinds }: { v2: Client; kinds: ComputerKindView[] }) {
+  const [runs, setRuns] = useState<RunningRun[] | null>(null);
+  const [problem, setProblem] = useState<string | null>(null);
+  useEffect(() => {
+    // One read at a time: each costs the server a run read for every run listed.
+    let alive = true;
+    let reading = false;
+    const read = () => {
+      if (reading) return;
+      reading = true;
+      v2.runningComputers()
+        .then((answer) => { if (alive) { setRuns(answer.runs); setProblem(null); } }, (e) => { if (alive) setProblem(problemOf(e)); })
+        .finally(() => { reading = false; });
+    };
+    const readVisible = () => { if (!document.hidden) read(); };
+    read();
+    window.addEventListener("focus", readVisible);
+    document.addEventListener("visibilitychange", readVisible);
+    const timer = window.setInterval(readVisible, RUNNING_POLL_MS);
+    return () => { alive = false; window.clearInterval(timer); window.removeEventListener("focus", readVisible); document.removeEventListener("visibilitychange", readVisible); };
+  }, [v2]);
+  return (
+    <SettingsSection label="Running now" title="Running now"
+      note={<p>Each run still going that has a computer. Open one, then its Screen tab, to watch it or take it over.</p>}>
+      {problem && <p role="alert" className="border border-destructive/50 px-4 py-2.5 font-mono text-small text-destructive-text">The running computers could not be read: {problem}</p>}
+      {runs === null ? (!problem && <ListSkeleton label="Loading the running computers" rows={1} />)
+        : runs.length === 0 ? <p className="border bg-card p-4 text-body text-muted-foreground">No run with a computer is going now.</p>
+        : (
+          <ul className="divide-y border bg-card">
+            {runs.map((run) => {
+              const { kind, provider, state, held } = run.computer;
+              const Icon = KIND_ICONS[kind];
+              return (
+                <li key={run.run_id} data-running={run.run_id}>
+                  <a href={`#/runs/${encodeURIComponent(run.run_id)}`} className="flex flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3 hover:bg-accent">
+                    <Icon className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+                    <span className="min-w-0 flex-1 basis-56">
+                      <span className="block truncate text-body font-semibold">{runTitle(run)}</span>
+                      <span className="mt-0.5 block truncate font-mono text-small text-muted-foreground">{run.agent_id} · {wordsOf(kind).label} · {providerOf(kinds, kind, provider)?.name ?? provider} · started {when(run.created_at)}</span>
+                      {held && held.state !== "released" && <span className="mt-0.5 block text-small text-muted-foreground">Held for you{held.until ? ` until ${clock(held.until)}` : ""}.</span>}
+                    </span>
+                    <span className="flex flex-wrap items-center gap-2">
+                      <StatusBadge run={run} />
+                      {state === "taken_over" && <Chip tone="active">{DRIVES.person}</Chip>}
+                    </span>
+                    <ArrowUpRight className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+                  </a>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+    </SettingsSection>
   );
 }
 
@@ -196,13 +268,16 @@ function PairedSection({ v2, paired, reload }: { v2: Client; paired: PairedCompu
   const countdown = `${Math.floor(Math.max(0, left) / 60_000)}:${String(Math.floor((Math.max(0, left) % 60_000) / 1_000)).padStart(2, "0")}`;
 
   return (
-    <section aria-label="Your computers">
-      <h2 className="mb-2 flex flex-wrap items-center gap-2">
-        <span className="caps text-small font-semibold">Your computers</span>
-        <span className="text-small text-muted-foreground">A computer or phone of your own, attached by the driver you run on it. An agent can be given it as its computer.</span>
-      </h2>
-      {pairing
-        ? <div data-pairing className="mb-3 space-y-3 border bg-card p-4">
+    <SettingsSection label="Your computers" title="Your computers"
+      note={<p>A computer or phone of your own, attached by the driver you run on it. An agent can be given it as its computer.</p>}
+      aside={!pairing && (
+        <>
+          <Button size="sm" variant="primary" onClick={() => void make()} disabled={making}>{making ? "Making…" : "Pair a computer"}</Button>
+          {joined && <p role="status" className="text-body text-success-text">Paired {joined}.</p>}
+        </>
+      )}>
+      {pairing &&
+          <div data-pairing className="space-y-3 border bg-card p-4">
             <div className="flex flex-wrap gap-x-8 gap-y-3">
               <div>
                 <p className="caps text-label text-muted-foreground">Server address</p>
@@ -216,16 +291,13 @@ function PairedSection({ v2, paired, reload }: { v2: Client; paired: PairedCompu
             {live
               ? <p className="text-body">Type both into the driver on the computer. The code pairs one computer, once, in the next <span data-countdown className="font-mono">{countdown}</span>.</p>
               : <p role="status" className="text-body text-muted-foreground">This code has expired. Make a new one.</p>}
+            {pairing.code.runs_refused && <p data-runs-refused role="status" className="text-small text-warning-text">{pairing.code.runs_refused}</p>}
             <div className="flex gap-2">
               <Button size="sm" onClick={() => void make()} disabled={making}>{making ? "Making…" : "New code"}</Button>
               <Button size="sm" variant="ghost" onClick={() => setPairing(null)}>Done</Button>
             </div>
-          </div>
-        : <div className="mb-3 flex flex-wrap items-center gap-3">
-            <Button size="sm" variant="primary" onClick={() => void make()} disabled={making}>{making ? "Making…" : "Pair a computer"}</Button>
-            {joined && <p role="status" className="text-body text-success-text">Paired {joined}.</p>}
           </div>}
-      {problem && <p role="alert" className="mb-3 border border-destructive/50 px-3 py-2 font-mono text-small text-destructive-text">{problem}</p>}
+      {problem && <p role="alert" className="border border-destructive/50 px-3 py-2 font-mono text-small text-destructive-text">{problem}</p>}
       {paired.length
         ? <ul className="border">
             {paired.map((computer) => (
@@ -238,8 +310,10 @@ function PairedSection({ v2, paired, reload }: { v2: Client; paired: PairedCompu
                       {computer.online ? <Chip tone="success">Online</Chip> : <Chip tone="muted">Offline</Chip>}
                       {computer.held_by_run && <Chip tone="active">In use by run {runLabel(computer.held_by_run)}</Chip>}
                       {computer.unserved && <Chip tone="warning">No agent can use it</Chip>}
+                      {computer.runs_refused && <Chip tone="warning">No run here can use it</Chip>}
                     </p>
                     {computer.unserved && <p data-unserved role="status" className="mt-1.5 text-small text-warning-text">{computer.unserved}</p>}
+                    {computer.runs_refused && <p data-runs-refused role="status" className="mt-1.5 text-small text-warning-text">{computer.runs_refused}</p>}
                     {computer.held_by_run && computer.held_until && <p data-held-until className="mt-1.5 text-small text-muted-foreground">The run's hold ends by {when(computer.held_until)}, released or not.</p>}
                     {!computer.online && <p className="mt-1.5 font-mono text-small text-muted-foreground">Open its driver on that computer: it dials this server.</p>}
                     <p data-machine className="mt-2 text-small text-muted-foreground">{machineOf(computer)}</p>
@@ -259,25 +333,26 @@ function PairedSection({ v2, paired, reload }: { v2: Client; paired: PairedCompu
             ))}
           </ul>
         : <p className="border p-4 text-body text-muted-foreground">None paired yet. Pair a computer, then type the server address and its code into the driver on it.</p>}
-    </section>
+    </SettingsSection>
   );
 }
 
 function KindSection({ kind: k, providers, own, children }: { kind: ComputerKindView; providers: ComputerProvider[]; own: string[]; children: ReactNode }) {
   const { label, gives } = wordsOf(k.kind);
   return (
-    <section aria-label={label}>
-      <h2 className="mb-2 flex flex-wrap items-center gap-2">
-        <span className="caps text-small font-semibold">{label}</span>
-        {gives && <span className="text-small text-muted-foreground">{gives}</span>}
-        {!k.offered && <Chip tone="muted">Not offered here</Chip>}
-      </h2>
-      {!k.offered && k.why && <p className="mb-2 font-mono text-small text-muted-foreground">{k.why}</p>}
-      {own.length > 0 && <p className="mb-2 text-small text-muted-foreground">Also served by your computers: {own.join(", ")}.</p>}
+    <SettingsSection label={label} title={label}
+      note={(gives || !k.offered || own.length > 0) && (
+        <>
+          {gives && <p>{gives}</p>}
+          {!k.offered && <p><Chip tone="muted">Not offered here</Chip></p>}
+          {!k.offered && k.why && <p className="font-mono text-small">{k.why}</p>}
+          {own.length > 0 && <p className="text-small">Also served by your computers: {own.join(", ")}.</p>}
+        </>
+      )}>
       {providers.length
         ? <ul className="border">{children}</ul>
         : <p className="border p-4 text-body text-muted-foreground">{k.kind === "none" ? "Nothing to set up." : own.length ? "No other provider serves it on this server." : "No provider serves it on this server."}</p>}
-    </section>
+    </SettingsSection>
   );
 }
 
@@ -299,19 +374,24 @@ type RowProps = {
 };
 
 function ProviderRow({ v2, kind, provider: p, writable, serves, tested, testing, open, problem, onOpen, onSave, onRemove, onTest }: RowProps) {
+  const row = useRef<HTMLLIElement>(null);
   const pasting = open && "paste" in open ? open.paste : null;
   const removing = open && "remove" in open ? open.remove : null;
+  const canTest = testable(p);
   return (
-    <li className="border-b p-4 last:border-b-0">
+    <li ref={row} className="border-b p-4 last:border-b-0">
       <div className="flex flex-wrap items-start gap-3">
         <Monitor className="mt-1 size-4 shrink-0 text-muted-foreground" aria-hidden />
         <div className="min-w-0 flex-1">
           <p className="flex flex-wrap items-center gap-2">
             <span data-provider className="font-mono text-prose font-semibold">{p.name}</span>
             {p.ready ? <Chip tone="success">Ready</Chip> : <Chip>Not ready</Chip>}
+            {p.runs_refused && <Chip tone="warning">No run here can use it</Chip>}
             {p.metered && <span data-metered className="text-small text-muted-foreground">Metered</span>}
           </p>
           {!p.ready && p.why && <p className="mt-1.5 font-mono text-small text-muted-foreground">{p.why}</p>}
+          {/* A server whose runner runs apart: the server's words, with the fix (a dial provider's machines). */}
+          {p.runs_refused && <p data-runs-refused role="status" className="mt-1.5 text-small text-warning-text">{p.runs_refused}</p>}
           {p.metered && BY_THE_MINUTE.has(kind) && <p className="mt-1.5 text-small text-muted-foreground">{METERED}</p>}
           {p.secrets.length > 0 && (
             <ul className="mt-3 space-y-1.5">
@@ -321,21 +401,22 @@ function ProviderRow({ v2, kind, provider: p, writable, serves, tested, testing,
                 const key = keyOf(secret.name);
                 // A picked key is chosen from the vendor's list below (KeyChoices), never pasted.
                 const picked = p.picked?.includes(secret.name) ?? false;
-                return <SecretRow key={secret.name} field={secret} required={p.required.includes(secret.name)} writable={writable && !open}
-                  {...(picked ? {} : { onPaste: () => onOpen({ paste: key }) })} onRemove={() => onOpen({ remove: key })} />;
+                return <SecretRow key={secret.name} field={secret} required={p.required.includes(secret.name)} writable={writable && !open} actionsInline
+                  onPaste={picked ? undefined : () => void pasteFromClipboard(() => onOpen({ paste: key }), () => row.current?.querySelector("form")?.elements.namedItem(key) as HTMLInputElement | null)} onRemove={() => onOpen({ remove: key })} />;
               })}
             </ul>
           )}
           {p.picked && p.picked.length > 0 && p.required.every((name) => p.secrets.some((secret) => secret.name === name && secret.set)) && (
             <KeyChoices v2={v2} provider={p} writable={writable && !open} onSave={onSave} />
           )}
-          {tested && (
-            <p data-test className={`mt-2 text-small ${tested.ok ? "text-success-text" : "text-destructive-text"}`}>{`${tested.ok ? "Passed" : "Failed"} · ${clock(tested.at)} · ${tested.words}`}</p>
+          {/* After the keys it reads with: the step that follows saving them. */}
+          {canTest && (
+            <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2">
+              <Button size="sm" onClick={onTest} disabled={testing}>{testing ? "Testing…" : "Test connection"}</Button>
+              {tested && <p data-test className={`text-small ${tested.ok ? "text-success-text" : "text-destructive-text"}`}>{`${tested.ok ? "Passed" : "Failed"} · ${clock(tested.at)} · ${tested.words}`}</p>}
+            </div>
           )}
           <p className="mt-2 text-small text-muted-foreground">{p.secrets.length ? "" : "No key. "}Serves: {serves.join(", ")}</p>
-        </div>
-        <div className="flex gap-2">
-          <Button size="sm" onClick={onTest} disabled={testing}>{testing ? "Testing…" : "Test connection"}</Button>
         </div>
       </div>
       {writable && pasting && <ComputerKeyForm provider={p.name} name={pasting} set={p.secrets.some((secret) => keyOf(secret.name) === pasting && secret.set)} onSave={onSave} onCancel={() => onOpen(null)} />}

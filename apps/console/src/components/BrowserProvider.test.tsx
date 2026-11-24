@@ -4,9 +4,9 @@ import { afterEach, describe, expect, it } from "vitest";
 import { AgentEditor } from "./AgentEditor";
 import { PerHarness, ToolTable, toolRows } from "./ToolSettings";
 import type { Agent, AgentFields } from "@/lib/agentForm";
+import { SERVED_AGENT } from "@/test/agent";
 import { providerHelp, providerLabel, toolChoices } from "@/lib/toolSettings";
 import { optionsOf, pick, picker, valueOf } from "@/test/picker";
-import type { ToolSetting } from "@/lib/v2";
 
 // The browser's providers (serve's tool-plane.ts PROVIDERS.browser: auto, browserbase, kernel, chrome) read as the
 // browser's, not through the labels web_search and web_fetch share: there "kernel" is the guarded fetch and "auto" the
@@ -36,13 +36,13 @@ describe("the browser's provider names and help", () => {
     expect(providerHelp("browserbase", "browser")).toMatch(/Browserbase/);
   });
 
-  it("leaves search's and fetch's names and help as they were", () => {
-    expect(["auto", "native", "exa-keyless", "parallel"].map((p) => providerLabel(p, "web_search"))).toEqual(["auto", "native", "Exa keyless", "Parallel"]);
-    expect(["kernel", "parallel"].map((p) => providerLabel(p, "web_fetch"))).toEqual(["kernel fetch", "Parallel"]);
+  it("leaves search's and fetch's names and help their own", () => {
+    expect(["auto", "native", "firecrawl-keyless", "exa-keyless", "parallel"].map((p) => providerLabel(p, "web_search"))).toEqual(["auto", "native", "Firecrawl keyless", "Exa keyless", "Parallel"]);
+    expect(["auto", "firecrawl-keyless", "kernel", "parallel"].map((p) => providerLabel(p, "web_fetch"))).toEqual(["auto", "Firecrawl keyless", "kernel fetch", "Parallel"]);
     expect(providerHelp("kernel", "web_fetch")).toBe("This server's own fetch, guarded against private addresses.");
     // auto's order as the server resolves it (tool-plane.ts): the harness's or provider's own, Parallel on the server's
-    // key, then keyless Exa. Parallel is named, so a person with its key knows auto uses it.
-    expect(providerHelp("auto", "web_search")).toBe("The harness's own search, or the model provider's hosted one; else Parallel where this server holds its key; else keyless Exa.");
+    // key, then keyless Firecrawl with keyless Exa behind it. Parallel is named, so a person with its key knows auto uses it.
+    expect(providerHelp("auto", "web_search")).toBe("The harness's own search, or the model provider's hosted one; else Parallel where this server holds its key; else keyless Firecrawl, with keyless Exa behind it.");
     // A caller that names no tool reads the shared names, as before.
     expect(providerLabel("kernel")).toBe("kernel fetch");
   });
@@ -75,8 +75,8 @@ describe("Settings → Tools, the browser row", () => {
 
 describe("an agent's browser pick in its editor", () => {
   const caps = { harnesses: [{ id: "pi", available: true }], tools: [{ name: "read", available: true, harnesses: ["pi", "claude-agent", "codex", "opencode"] }, { name: "browser", available: true, harnesses: ["pi"] }], thinking: ["low"] };
-  const agentWith = (provider?: ToolSetting["provider"]): Agent => ({
-    agent_id: "browsing", kind: "agentic", revision: "r1", revisions: 1, archived_at: null,
+  const agentWith = (provider?: NonNullable<NonNullable<Agent["definition"]["tool_settings"]>["browser"]>["provider"]): Agent => ({
+    ...SERVED_AGENT, agent_id: "browsing", kind: "agentic", revision: "r1", revisions: 1, archived_at: null,
     definition: { version: 1, name: "Browsing", instructions: "Look.", harness: "pi", skills: [], tools: ["read", "browser"], ...(provider ? { tool_settings: { browser: { provider } } } : {}) },
     tools: [{ name: "read", permission: "allow" as const, permission_from: "default" as const, default_permission: "allow" as const, permissions: ["allow" as const, "ask" as const, "deny" as const] }, { name: "browser", permission: "allow" as const, permission_from: "default" as const, default_permission: "allow" as const, permissions: ["allow" as const, "ask" as const, "deny" as const], provider: provider ?? "auto", provider_from: provider ? "agent" : "server", default_provider: "auto", resolved: provider === "browserbase" ? "browserbase" : "kernel" }],
   });

@@ -1,16 +1,21 @@
-// A Docker computer's way out to the network when its spec asks for an allowlist ({ allow: [names or CIDRs] }): the
-// computer stays `--network none`, and its own egress proxy runs in a second container the provider makes, reads back
-// and removes with it. The proxy does not live in the process that
+// A Docker computer's way out to the network when its spec asks for open (every public host) or an allowlist ({ allow:
+// [names or CIDRs] }): the computer stays `--network none`, and its own egress proxy runs in a second container the
+// provider makes, reads back and removes with it. Open is the proxy with no list (`--open public`), on the same address
+// rule, so an open computer reaches neither the Docker host, nor a private range, nor metadata. The proxy does not live in the process that
 // made the computer, so the computer keeps its network when that process ends, and attach and list read it back from
 // Docker anywhere.
 //
 //  - The volume `<computer>-egress`: a tmpfs of 1 MiB, mode 0700, owned by the computer's uid:gid. The proxy's Unix
 //    socket is made in it; the computer mounts it read-only at EGRESS_MOUNT.
 //  - The proxy container `<computer>-egress`: this package's own proxy (egress-main.ts, egress-proxy.ts, egress-table.ts,
-//    bound read-only from dist/docker with the package's package.json), in a pinned Node image, on Docker's default
-//    bridge alone, publishing no port, as the computer's uid:gid, with a read-only root, no capability, no privilege to
-//    gain, and bounded memory, pids and log. Its argv holds the list, the computer's deadline (it ends itself then), the
+//    bound read-only from dist/docker with the package's package.json), in a pinned Node image, on the provider's own
+//    bridge alone (EGRESS_NETWORK), publishing no port, as the computer's uid:gid, with a read-only root, no capability,
+//    no privilege to gain, and bounded memory, pids and log. Its argv holds the list (or `--open public`), the computer's deadline (it ends itself then), the
 //    Docker host's own public addresses (refused as this host's) and the hint. It holds no key.
+//  - The network EGRESS_NETWORK: one user-defined bridge every proxy of every provider on this Docker host shares, made
+//    by the first create that needs it and never removed. Inter-container traffic on it is off (enable_icc=false), and
+//    no other workload's container is on it: on Docker's default bridge, one with NET_RAW could ARP-spoof the gateway
+//    every proxy goes out through. Each proxy holds no capability, NET_RAW included.
 //  - The computer: init gets `--egress <socket>` and relays its loopback port 3128 to the socket, and tells every program
 //    it starts that port is its HTTP and HTTPS proxy. A program that ignores that reaches nothing: there is no route.
 //  - Both carry the label EGRESS_LABEL=<computer>; release finds the proxy and the volume by it, never by name alone.
@@ -53,6 +58,37 @@ const EXAMPLE = '["pypi.org", "*.pythonhosted.org", "93.184.215.0/24"]';
 
 /** The proxy container's name, and the volume's, for computer `name`. */
 export const egressNameOf = (name: string): string => `${name}-egress`;
+
+/** The bridge every egress proxy is on, and the label and option it is made with (egressNetworkArgs). */
+export const EGRESS_NETWORK = "agentrun-egress";
+export const EGRESS_NETWORK_LABEL = "agentrun.computer.egress-network";
+const NO_ICC = "com.docker.network.bridge.enable_icc";
+
+/** `docker network create` of EGRESS_NETWORK: a local bridge with inter-container traffic off, carrying its label. */
+export function egressNetworkArgs(): string[] {
+	return ["network", "create", "--driver", "bridge", "--opt", `${NO_ICC}=false`, "--label", `${EGRESS_NETWORK_LABEL}=1`, EGRESS_NETWORK];
+}
+
+/** What `docker network inspect` reports of a network that egressNetworkProblem reads. */
+export interface DockerNetworkInspect {
+	Name?: string;
+	Driver?: string;
+	Scope?: string;
+	Internal?: boolean;
+	Options?: Record<string, string> | null;
+	Labels?: Record<string, string> | null;
+}
+
+/** Why the network named EGRESS_NETWORK is not one egressNetworkArgs makes, in words, or undefined when it is. */
+export function egressNetworkProblem(network: DockerNetworkInspect): string | undefined {
+	const found: string[] = [];
+	if (network.Name !== EGRESS_NETWORK) found.push(`is named ${show(network.Name)}`);
+	if (network.Driver !== "bridge" || network.Scope !== "local") found.push(`has driver ${show(network.Driver)} and scope ${show(network.Scope)}, not a local bridge`);
+	if (network.Internal === true) found.push("is internal, so no proxy on it reaches the internet");
+	if (network.Options?.[NO_ICC] !== "false") found.push(`has ${NO_ICC} ${show(network.Options?.[NO_ICC])}, not "false"`);
+	if (network.Labels?.[EGRESS_NETWORK_LABEL] !== "1") found.push(`does not carry the label ${EGRESS_NETWORK_LABEL}=1`);
+	return found.length === 0 ? undefined : `the Docker network ${EGRESS_NETWORK} ${found.join(", ")}: it is not the one this provider makes for its egress proxies; remove it (docker network rm ${EGRESS_NETWORK}) and create again`;
+}
 
 /** Where the proxy's code is on this machine: this package's dist/docker, and its package.json, which makes Node read
  *  the files as modules. */
@@ -101,7 +137,7 @@ export function egressCodeProblem({ dir, packageJson }: EgressCode, user: string
  * A spec's allowlist, normalized as the proxy reads it (parseAllow: lowercase, a name's trailing dot dropped, no
  * repeats), or why Docker cannot hold it, in words.
  */
-export function allowOf(entries: unknown): { list: string[] } | { problem: string } {
+export function allowOf(entries: unknown, owner = "a Docker allowlist"): { list: string[] } | { problem: string } {
 	if (!Array.isArray(entries) || !entries.every((entry) => typeof entry === "string")) return { problem: `an allowlist is a list of names and CIDRs, such as ${EXAMPLE}` };
 	if (entries.length === 0) return { problem: 'an allowlist needs at least one name or CIDR; for no network ask for "none"' };
 	let list: string[];
@@ -113,8 +149,8 @@ export function allowOf(entries: unknown): { list: string[] } | { problem: strin
 	if (list.length === 0) return { problem: 'an allowlist needs at least one name or CIDR; for no network ask for "none"' };
 	const cidrs = list.filter((entry) => entry.includes("/")).length;
 	const names = list.length - cidrs;
-	if (names > MAX_ALLOW) return { problem: `a Docker allowlist holds at most ${MAX_ALLOW} names, not ${names}` };
-	if (cidrs > MAX_ALLOW) return { problem: `a Docker allowlist holds at most ${MAX_ALLOW} CIDRs, not ${cidrs}` };
+	if (names > MAX_ALLOW) return { problem: `${owner} holds at most ${MAX_ALLOW} names, not ${names}` };
+	if (cidrs > MAX_ALLOW) return { problem: `${owner} holds at most ${MAX_ALLOW} CIDRs, not ${cidrs}` };
 	return { list };
 }
 
@@ -171,7 +207,8 @@ export interface EgressRun {
 	name: string;
 	user: string;
 	image: string;
-	allow: readonly string[];
+	/** The list, or "open": every public host. */
+	allow: readonly string[] | "open";
 	local: readonly string[];
 	deadline: string;
 	code: EgressCode;
@@ -201,7 +238,7 @@ export function egressRunArgs({ name, user, image, allow, local, deadline, code,
 	args.push("--cpu-period", String(PROXY_CPU_PERIOD_US), "--cpu-quota", String(PROXY_CPU_QUOTA_US), "--ulimit", `nofile=${PROXY_NOFILE}:${PROXY_NOFILE}`);
 	args.push("--log-driver", PROXY_LOG.driver);
 	for (const [key, value] of Object.entries(PROXY_LOG.options)) args.push("--log-opt", `${key}=${value}`);
-	args.push("--network", "bridge");
+	args.push("--network", EGRESS_NETWORK);
 	args.push("--mount", `type=volume,src=${proxy},dst=${PROXY_VOLUME}`);
 	if (code.volume === undefined) {
 		args.push("--mount", `type=bind,src=${code.dir},dst=${PROXY_CODE},readonly`, "--mount", `type=bind,src=${code.packageJson},dst=${PROXY_PACKAGE},readonly`);
@@ -212,7 +249,7 @@ export function egressRunArgs({ name, user, image, allow, local, deadline, code,
 	}
 	// Create pulled the image before it made the volume, so this run never pulls: the sweep's grace holds.
 	args.push("--pull", "never");
-	args.push("--entrypoint", "node", image, PROXY_MAIN, "--socket", PROXY_SOCKET, "--deadline", deadline, "--allow", allow.join(","));
+	args.push("--entrypoint", "node", image, PROXY_MAIN, "--socket", PROXY_SOCKET, "--deadline", deadline, ...(allow === "open" ? ["--open", "public"] : ["--allow", allow.join(",")]));
 	if (local.length > 0) args.push("--local", local.join(","));
 	if (hint !== undefined) args.push("--hint", hint);
 	return args;
@@ -233,16 +270,20 @@ export interface EgressOwner {
 }
 
 /**
- * A computer's allowlist, read back from its proxy container's inspect: the list its argv holds, when the container is
- * the computer's own (its label and deadline), running while the computer runs, and as create makes one (Docker's
- * default bridge alone, no port, the computer's user, a read-only root, no capability or privilege, exactly its volume
+ * A computer's network through its proxy, read back from the proxy container's inspect: "open" where its argv holds
+ * `--open public`, else the list its argv holds, when the container is
+ * the computer's own (its label and deadline), running while the computer runs, and as create makes one (the
+ * provider's bridge EGRESS_NETWORK alone, no port, the computer's user, a read-only root, no capability or privilege, exactly its volume
  * and its code, `code`'s when given), refusing every one of `local`, the Docker host's own addresses the provider
  * requires now (more is fine). Anything less is `{ other }` in words, never an allowlist. A host whose addresses
  * changed since the proxy was made reads as other: fail closed.
  */
-export function egressOf(proxy: DockerInspect | null | undefined, owner: EgressOwner, code?: EgressCode, local: readonly string[] = []): { allow: string[] } | { other: string } {
+export function egressOf(proxy: DockerInspect | null | undefined, owner: EgressOwner, code?: EgressCode, local: readonly string[] = []): "open" | { allow: string[] } | { other: string } {
 	const named = egressNameOf(owner.name);
-	const other = (what: string) => ({ other: `network allow, but its egress proxy ${named} ${what}` });
+	const cmd = Array.isArray(proxy?.Config?.Cmd) ? proxy.Config.Cmd : [];
+	// The form by the flag names alone (argv[1], [3], ...): a value such as a hint of "--open" never makes it open.
+	const form = cmd.some((arg, at) => at % 2 === 1 && arg === "--open") ? "open" : "allow";
+	const other = (what: string) => ({ other: `network ${form}, but its egress proxy ${named} ${what}` });
 	if (proxy === undefined || proxy === null) return other("is gone: the computer reaches nothing");
 	const config = proxy.Config ?? {};
 	const host = proxy.HostConfig ?? {};
@@ -252,7 +293,15 @@ export function egressOf(proxy: DockerInspect | null | undefined, owner: EgressO
 	if (labels[DEADLINE_LABEL] !== owner.deadline) return other(`has the deadline label ${show(labels[DEADLINE_LABEL])}, not the computer's ${show(owner.deadline)}`);
 	if (owner.running && proxy.State?.Running !== true) return other(`is not running (exit code ${show(proxy.State?.ExitCode)}): the computer reaches nothing`);
 	const networks = Object.keys(proxy.NetworkSettings?.Networks ?? {});
-	if (host.NetworkMode !== "bridge" || networks.length !== 1 || networks[0] !== "bridge") return other(`is on network mode ${String(host.NetworkMode)} and networks ${networks.join(", ") || "none"}, not Docker's default bridge alone`);
+	// The network by name: create checked it is the provider's bridge (egressNetworkProblem) before the proxy joined it,
+	// and Docker removes no network a running container is on, nor changes a network's options.
+	if (host.NetworkMode !== EGRESS_NETWORK || networks.length !== 1 || networks[0] !== EGRESS_NETWORK) {
+		// Docker's default bridge alone: where this provider put every proxy before the egress bridge.
+		if (host.NetworkMode === "bridge" && networks.length === 1 && networks[0] === "bridge") {
+			return other(`is on Docker's default bridge: an earlier release of this provider made it there, before the egress bridge ${EGRESS_NETWORK}; delete the computer and create it again`);
+		}
+		return other(`is on network mode ${String(host.NetworkMode)} and networks ${networks.join(", ") || "none"}, not the provider's bridge ${EGRESS_NETWORK} alone`);
+	}
 	if (host.Privileged !== false) return other("is privileged");
 	const capDrop = host.CapDrop;
 	if (!Array.isArray(capDrop) || capDrop.length !== 1 || capDrop[0] !== "ALL" || !blank(host.CapAdd)) return other(`keeps capabilities (CapDrop ${show(capDrop)}, CapAdd ${show(host.CapAdd)})`);
@@ -304,24 +353,25 @@ export function egressOf(proxy: DockerInspect | null | undefined, owner: EgressO
 	}
 	const entrypoint = config.Entrypoint;
 	if (!Array.isArray(entrypoint) || entrypoint.length !== 1 || entrypoint[0] !== "node") return other(`has the entrypoint ${show(entrypoint)}, not node`);
-	const cmd = Array.isArray(config.Cmd) ? config.Cmd : [];
 	const flags = new Map<string, string>();
 	for (let at = 1; at + 1 < cmd.length; at += 2) flags.set(String(cmd[at]), String(cmd[at + 1]));
 	if (cmd[0] !== PROXY_MAIN || cmd.length % 2 !== 1 || flags.size !== (cmd.length - 1) / 2) return other(`runs ${show(cmd)}, not ${PROXY_MAIN} and its flags`);
-	if (!flags.has("--allow")) return other("has no host list in its command");
+	if (flags.has("--open") && flags.has("--allow")) return other("has both --open and a host list in its command");
+	if (form === "open" && flags.get("--open") !== "public") return other(`runs with --open ${show(flags.get("--open"))}, not public`);
+	if (form === "allow" && !flags.has("--allow")) return other("has no host list in its command");
 	if (flags.get("--socket") !== PROXY_SOCKET) return other(`listens on ${show(flags.get("--socket"))}, not ${PROXY_SOCKET}`);
 	if (flags.get("--deadline") !== owner.deadline) return other(`ends at ${show(flags.get("--deadline"))}, not the computer's deadline ${show(owner.deadline)}`);
-	const unknown = [...flags.keys()].filter((flag) => !["--socket", "--deadline", "--allow", "--local", "--hint"].includes(flag));
+	const unknown = [...flags.keys()].filter((flag) => !["--socket", "--deadline", "--allow", "--open", "--local", "--hint"].includes(flag));
 	if (unknown.length > 0) return other(`runs with flags ${unknown.join(", ")}, which create never gives`);
-	const read = allowOf((flags.get("--allow") ?? "").split(","));
-	if ("problem" in read) return other(`holds a list this provider never makes: ${read.problem}`);
+	const read = form === "open" ? undefined : allowOf((flags.get("--allow") ?? "").split(","));
+	if (read !== undefined && "problem" in read) return other(`holds a list this provider never makes: ${read.problem}`);
 	// The host block: a --local removed or shortened lets the computer reach the Docker host's own addresses.
 	const refused = new Set((flags.get("--local") ?? "").split(",").filter(Boolean));
 	const missing = local.filter((address) => !refused.has(address));
 	if (missing.length > 0) {
 		return other(`does not refuse the Docker host's ${missing.length === 1 ? "address" : "addresses"} ${missing.join(", ")} (its --local reads ${show(flags.get("--local"))})`);
 	}
-	return { allow: read.list };
+	return read === undefined ? "open" : { allow: read.list };
 }
 
 /** The ports each entry of a Docker allowlist opens. */

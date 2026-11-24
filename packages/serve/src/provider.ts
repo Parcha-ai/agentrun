@@ -9,14 +9,23 @@
 //   openai-responses: the gateway at AGENT_MODEL_BASE_URL's base with its key (AGENT_MODEL_API_KEY, or none), the model
 //     as model.ts chose it; OpenAI with its key, OpenAI's id; or OpenRouter's Responses API (openRouterOnly, or a model
 //     the run names on it, `openrouter/openai/<model-id>`), the model's whole id. Each key goes as a bearer token.
-import type { Wire } from "@parcha/agentrun-kernel";
-import { chooseModel, FAUX_ENV, hostModel, MODEL_PROVIDER, type ModelNeeds, type ModelRef } from "./model.js";
-import { WIRES } from "./wires.js";
+//   any wire the runner's model route translates a model's provider onto (wires.ts routed: an Ollama model of this
+//     machine on Anthropic's Messages): the route's own origin and fetch (runner/model-route.ts routeOf), no key, at the
+//     model's catalog price; for every harness on that wire alike.
+//   claude-agent on Claude Code's login on this machine (claude-login.ts), when the owner turned it on: an Anthropic
+//     model goes on the person's plan, from the CLI itself, with no key of ours and no proxy (`login`).
+import type { HarnessWire as Wire, Wire as ModelWire } from "@parcha/agentrun-kernel";
+import { ROUTE_ORIGIN } from "@parcha/agentrun-kernel/host";
+import type { ClaudeAgentLogin } from "@parcha/agentrun-harness-claude";
+import { CLAUDE_LOGIN_PROVIDER, onClaudeLogin, claudeLoginOf } from "./claude-login.js";
+import { chooseModel, FAUX_ENV, hostModel, MODEL_PROVIDER, type ModelNeeds, type ModelRef, ollamaWouldRun, START_OLLAMA } from "./model.js";
+import { modelWire, routed, routedId, translatesOnto, WIRES, wireOf } from "./wires.js";
 import { modelFormWhy } from "./model-form.js";
+import { gatewayHeadersOf } from "./request-metadata.js";
 import { EXPIRED, PLAN_ORIGIN, PLAN_PROVIDER, planOf, SIGNED_OUT } from "./chatgpt-plan.js";
 
 // Each wire's own settings live in a leaf module (wires.ts), which the harness table reads as it loads.
-export { WIRES };
+export { modelWire, WIRES, wireOf };
 
 /** What fixes a harness that is not on this machine as its adapter needs it: `install`, its package or binary is missing;
  *  `pins`, what is installed is not the pinned build. */
@@ -70,6 +79,32 @@ export function gatewayBase(setting: string, value: string): string {
   return `${url.origin}${url.pathname.replace(/\/+$/, "").replace(/\/v1$/, "")}`;
 }
 
+/** The generic gateway must speak HTTP Responses (or Messages). Particle exposes Chat Completions
+ * and a WebSocket-only Responses subset, so a direct API base is not a compatible gateway. */
+export function modelGatewayBase(value: string): string {
+  const base = gatewayBase("AGENT_MODEL_BASE_URL", value);
+  if (["api.particle.ai", "us.api.particle.ai"].includes(new URL(base).hostname)) {
+    throw new HarnessUnavailable("Particle uses Chat Completions here: remove AGENT_MODEL_BASE_URL, save PARTICLE_API_KEY and select particle/particle-1 with Pi. Particle does not support HTTP POST /v1/responses.");
+  }
+  return base;
+}
+
+/** Whether `base` (a gatewayBase answer) is on the origin of serve's own gateway (AGENT_MODEL_BASE_URL): there a run's own
+ *  model key (run-model-key.ts) is sent, so the endpoint needs no standing key of the server's. */
+/** The headers a request to `origin` carries for serve's gateway (gatewayHeadersOf), when `origin` is that gateway's own
+ *  (AGENT_MODEL_BASE_URL's origin): none to any other origin, a vendor's own included. */
+export function gatewayHeadersAt(env: NodeJS.ProcessEnv, origin: string): Readonly<Record<string, string>> | undefined {
+  return onServeGateway(env, origin) ? gatewayHeadersOf(env) : undefined;
+}
+
+function onServeGateway(env: NodeJS.ProcessEnv, base: string): boolean {
+  if (!env.AGENT_MODEL_BASE_URL) return false;
+  try {
+    return new URL(gatewayBase("AGENT_MODEL_BASE_URL", env.AGENT_MODEL_BASE_URL)).origin === new URL(base).origin;
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Whether `wire` reaches its vendor's models here only through OpenRouter: OPENROUTER_API_KEY is set and none of the
@@ -79,6 +114,8 @@ export function gatewayBase(setting: string, value: string): string {
  * endpoint the host names never gets the OpenRouter key.
  */
 export function openRouterOnly(wire: Wire, env: NodeJS.ProcessEnv): boolean {
+  // A harness on its own plan (Cursor's) reaches nothing through OpenRouter, nor through any route of ours.
+  if (!modelWire(wire)) return false;
   return Boolean(env.OPENROUTER_API_KEY) && !env[WIRES[wire].base] && !env[WIRES[wire].key];
 }
 
@@ -86,7 +123,7 @@ export function openRouterOnly(wire: Wire, env: NodeJS.ProcessEnv): boolean {
  *  named on it (`openrouter/<vendor>/...`), or the wire's vendor reached only through it (openRouterOnly). Serve's gateway
  *  comes first on the wire it serves. */
 export function viaOpenRouter(wire: Wire, env: NodeJS.ProcessEnv, model?: string): boolean {
-  if (WIRES[wire].gateway && env.AGENT_MODEL_BASE_URL) return false;
+  if (!modelWire(wire) || (WIRES[wire].gateway && env.AGENT_MODEL_BASE_URL)) return false;
   return Boolean(model?.startsWith(`openrouter/${WIRES[wire].vendor}/`)) || openRouterOnly(wire, env);
 }
 
@@ -107,7 +144,40 @@ export function anthropicModelId(model: ModelRef): string {
  *  vendor, a key that is not set (its `keys` name the ones that would fix it), or an endpoint a key may not go to. */
 /** `billing: "plan"`: a ChatGPT plan's route (chatgpt-plan.ts), billed to the plan, never priced here; its credential is
  *  the plan's token, asked at each request, and `refused` tells the plan OpenAI answered 401 to one it sent. */
-export type Provider = { origin: string; credential: () => string | Promise<string>; auth: "bearer" | "x-api-key"; modelId: string; priceModel: ModelRef; billing?: "plan"; refused?: (credential: string) => Promise<void> };
+/** `login`: claude-agent on Claude Code's login on this machine (claude-login.ts): billed to the person's plan, its CLI
+ *  calling Anthropic itself; `origin` and `credential` are never read (no proxy, no key). */
+/** `headers`: what each request on serve's own gateway carries beside its key (request-metadata.ts: the run, turn and
+ *  attempt it was made for, as LiteLLM's spend-logs metadata); none on any other endpoint. */
+/** `fetch`: the route's own, for a model it translates onto the wire (routedProvider): the harness's proxy forwards
+ *  with it, to `origin` (ROUTE_ORIGIN), and nothing goes to the network but what the route sends. */
+export type Provider = { origin: string; credential: () => string | Promise<string>; auth: "bearer" | "x-api-key"; modelId: string; priceModel: ModelRef; billing?: "plan"; refused?: (credential: string) => Promise<void>; login?: ClaudeAgentLogin; headers?: Readonly<Record<string, string>>; fetch?: typeof fetch };
+
+/** A model the runner's route translates onto a harness's wire (wires.ts routed): its proxy forwards to the route's own
+ *  origin (ROUTE_ORIGIN), where the route's fetch answers (runner/model-route.ts routeOf on `env`: the model's own
+ *  provider, an Ollama model's num_ctx and its tools as text where it takes them so), translated onto `wire` by its entry
+ *  in TRANSLATORS, priced by its catalog entry ($0 for an Ollama model, whose requests the cap counts as local). No key. The route is made at the first
+ *  request (routeOf is asynchronous) and kept; one that failed is made again at the next. */
+function routedProvider(env: NodeJS.ProcessEnv, wire: ModelWire, model: ModelRef): Provider {
+  let route: Promise<typeof fetch> | undefined;
+  const sent = (async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+    route ??= import("./runner/model-route.js").then(({ TRANSLATORS }) => {
+      const translate = TRANSLATORS[wire];
+      if (!translate) throw new Error(`The model route has no translation onto ${wire}.`);
+      return translate(`${model.provider}/${model.modelId}`, env);
+    }).catch((error: unknown) => {
+      route = undefined;
+      throw error;
+    });
+    return (await route)(input, init);
+  }) as typeof fetch;
+  return { origin: ROUTE_ORIGIN, credential: () => "model-route", auth: "x-api-key", modelId: model.modelId, priceModel: model, fetch: sent };
+}
+
+/** `env`'s gateway headers (gatewayHeadersOf), as a Provider's optional field. */
+const onGateway = (env: NodeJS.ProcessEnv): { headers?: Readonly<Record<string, string>> } => {
+  const headers = gatewayHeadersOf(env);
+  return headers ? { headers } : {};
+};
 
 /** OpenRouter's key, read per request, refused by name where it is not set. */
 function openRouterKey(env: NodeJS.ProcessEnv, who: string, named: string): () => string {
@@ -117,10 +187,14 @@ function openRouterKey(env: NodeJS.ProcessEnv, who: string, named: string): () =
 
 /** Serve's gateway (AGENT_MODEL_BASE_URL) on either wire: its base, its key (AGENT_MODEL_API_KEY, or none) as a bearer
  *  token, the model id as model.ts chose it, priced as runModels prices it. */
-const gatewayProvider = (env: NodeJS.ProcessEnv, model: ModelRef): Provider => ({ origin: gatewayBase("AGENT_MODEL_BASE_URL", env.AGENT_MODEL_BASE_URL!), credential: () => env.AGENT_MODEL_API_KEY || "none", auth: "bearer", modelId: model.modelId, priceModel: model });
+const gatewayProvider = (env: NodeJS.ProcessEnv, model: ModelRef): Provider => ({ origin: modelGatewayBase(env.AGENT_MODEL_BASE_URL!), credential: () => env.AGENT_MODEL_API_KEY || "none", auth: "bearer", modelId: model.modelId, priceModel: model, ...onGateway(env) });
 
 export function providerFor(wire: Wire, env: NodeJS.ProcessEnv, model: ModelRef, who: string): Provider {
   const named = `${model.provider}/${model.modelId}`;
+  // A harness on its own plan (Cursor's) calls its vendor itself, on its owner's key: no route of ours is its.
+  if (!modelWire(wire)) throw new HarnessUnavailable(`${who} runs its model on its own plan, never through a model route of AgentRun's; ${named} is not one to proxy.`);
+  // A model the route translates onto this wire, for any harness on it; never behind serve's gateway, whose models are its.
+  if (routed(wire, model) && !env.AGENT_MODEL_BASE_URL) return routedProvider(env, wire, model);
   if (wire === "anthropic-messages") {
     // A model of serve's gateway that the gateway takes on Messages (a Claude model, model.ts gatewayWire): the gateway's
     // own route, as on Responses. No harness of this wire chooses one (claude-agent's model is never the gateway's).
@@ -131,12 +205,18 @@ export function providerFor(wire: Wire, env: NodeJS.ProcessEnv, model: ModelRef,
     }
     if (model.provider !== "anthropic") throw new HarnessUnavailable(`${who} runs Anthropic models; the run's model is ${named}.`);
     const own = anthropicModelId(model);
+    // Claude Code's login on this machine, turned on here: claude-agent's Anthropic model goes on it, whatever key is set.
+    const login = onClaudeLogin(env, who) ? claudeLoginOf(env) : undefined;
+    if (login) return { origin: ANTHROPIC_ORIGIN, credential: () => "", auth: "x-api-key", modelId: own, priceModel: { provider: CLAUDE_LOGIN_PROVIDER, modelId: own }, billing: "plan", login };
     if (openRouterOnly(wire, env)) return { origin: OPENROUTER_BASE, credential: openRouterKey(env, who, named), auth: "bearer", modelId: own, priceModel: { provider: "openrouter", modelId: `anthropic/${openRouterName(own)}` } };
     // The endpoint first: one it refuses is the reason, and no key would fix it (no `keys`). An endpoint the host names
     // takes Anthropic's key alone: OpenRouter's never goes there.
     const origin = env.ANTHROPIC_BASE_URL ? gatewayBase("ANTHROPIC_BASE_URL", env.ANTHROPIC_BASE_URL) : ANTHROPIC_ORIGIN;
-    if (!env.ANTHROPIC_API_KEY) throw env.ANTHROPIC_BASE_URL ? new HarnessUnavailable(`${who} needs ANTHROPIC_API_KEY.`, undefined, ["ANTHROPIC_API_KEY"]) : new HarnessUnavailable(`${who} needs ANTHROPIC_API_KEY or OPENROUTER_API_KEY.`, undefined, ["ANTHROPIC_API_KEY", "OPENROUTER_API_KEY"]);
-    return { origin, credential: () => env.ANTHROPIC_API_KEY ?? "", auth: "x-api-key", modelId: own, priceModel: { provider: "anthropic", modelId: own } };
+    // An endpoint on serve's own gateway's origin takes each run's own key where the server holds none (run-model-key.ts):
+    // the harness runs here with no standing key, and a run with no key to spend is refused at its start.
+    if (!env.ANTHROPIC_API_KEY && !onServeGateway(env, origin)) throw env.ANTHROPIC_BASE_URL ? new HarnessUnavailable(`${who} needs ANTHROPIC_API_KEY.`, undefined, ["ANTHROPIC_API_KEY"]) : new HarnessUnavailable(`${who} needs ANTHROPIC_API_KEY or OPENROUTER_API_KEY.`, undefined, ["ANTHROPIC_API_KEY", "OPENROUTER_API_KEY"]);
+    // On serve's own gateway's origin, the claim's request metadata goes with each request (request-metadata.ts).
+    return { origin, credential: () => env.ANTHROPIC_API_KEY ?? "", auth: "x-api-key", modelId: own, priceModel: { provider: "anthropic", modelId: own }, ...(onServeGateway(env, origin) ? onGateway(env) : {}) };
   }
   // A ChatGPT plan's model: OpenAI's Responses API on the plan's token, whatever else is set.
   if (model.provider === PLAN_PROVIDER) {
@@ -177,8 +257,17 @@ export type ModelChoice = { model: ModelRef; namedProvider?: string } | { why: s
  * (it prices the run): OpenRouter's key is the one providerFor sends. A save, a run and capabilities all ask this.
  */
 export async function modelOn(wire: Wire, env: NodeJS.ProcessEnv, ref: string | undefined, harness: string): Promise<ModelChoice> {
+  // A harness on its own plan chooses its model itself (its table entry's model): none of the host's is its.
+  if (!modelWire(wire)) return { why: `${harness} runs a model of its own plan, which its own entry chooses.`, host: false };
   const { vendor, label } = WIRES[wire];
   const named = ref ?? hostModel(env, "default", harness);
+  // A model the route translates onto this wire (an Ollama model; the host's default with no key held, read from the
+  // Ollama here): chosen as pi's is (model.ts chooseModel: that Ollama listed, its tag asked of it, an expired default
+  // chosen again), with the no-model words below where none is.
+  if (!env[FAUX_ENV] && !env.AGENT_MODEL_BASE_URL && (named === undefined ? translatesOnto(wire) : routedId(wire, named))) {
+    const chosen = await chooseModel(env, ref, "default", harness);
+    if ("model" in chosen || named !== undefined) return chosen;
+  }
   if (wire === "openai-responses") {
     if (env[FAUX_ENV] || !openRouterOnly(wire, env) || !named?.startsWith(`${vendor}/`)) return chooseModel(env, ref, "default", harness);
     const modelId = named.slice(vendor.length + 1);
@@ -186,7 +275,7 @@ export async function modelOn(wire: Wire, env: NodeJS.ProcessEnv, ref: string | 
     if (!builtinModels().getModel(vendor, modelId)) return { why: modelFormWhy(env, harness, named, ref === undefined), host: ref === undefined, needs: "model" };
     return { model: { provider: vendor, modelId } };
   }
-  if (!named) return { why: `No model yet for ${harness}: add an OpenRouter or ${label} key in Settings → Model keys, or set OPENROUTER_API_KEY or ${WIRES[wire].key} where AgentRun starts.`, host: true };
+  if (!named) return { why: `No model yet for ${harness}: ${ollamaWouldRun(env, harness) ? START_OLLAMA : ""}add an OpenRouter or ${label} key in Settings → Model keys, or set OPENROUTER_API_KEY or ${WIRES[wire].key} where AgentRun starts.`, host: true };
   const slash = named.indexOf("/");
   if (slash < 1) return { why: modelFormWhy(env, harness, named, ref === undefined), host: ref === undefined };
   const [provider, modelId] = [named.slice(0, slash), named.slice(slash + 1)];

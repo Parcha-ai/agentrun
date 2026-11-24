@@ -1,3 +1,5 @@
+import { SettingsSection, settingsBodyClass, settingsIntroClass, settingsPageClass } from "@/components/Settings";
+import { pasteFromClipboard } from "@/lib/paste";
 import { type FormEvent, type ReactNode, useEffect, useRef, useState } from "react";
 import { WhatRunsHere } from "@/components/ChatGPTSignIn";
 import { RunError } from "@/components/RunError";
@@ -39,7 +41,7 @@ export const KEY_GROUPS = [{ kind: "model", label: "Model keys" }, { kind: "tool
 /** The word on a model key, said wherever the console asks for one: an OpenRouter key runs every model, Jev included. */
 export const KEY_ADVICE = "We recommend an OpenRouter key with a dollar cap and an expiration date. Do not share this key with anyone.";
 
-/** Settings → Tool keys: each model provider's key (`kind: "model"`) and each key a tool needs, where each of its fields is
+/** Settings → API Keys: each model provider's key (`kind: "model"`) and each key a tool needs, where each of its fields is
  *  set, and a form to add, change or remove the one saved here. A value goes to the server and nowhere else: the
  *  inputs are never filled from it, never kept in the page's state, and cleared after a save or a cancel. `onChange`
  *  follows each save and removal (the server's tools and models may change with its keys). */
@@ -70,7 +72,7 @@ export function KeysPage({ v2, onChange, writable, whyNot = "sign_in", plan, har
 
   if (!view) return loadError
     ? <ReadError error={loadError} onRetry={load} />
-    : <div className="p-5 md:p-8"><ListSkeleton label="Loading the tool keys" rows={3} /></div>;
+    : <div className="p-5 md:p-8"><ListSkeleton label="Loading API keys" rows={3} /></div>;
   const reenter = view.reenter;
   // The model providers' keys first, then the tools': a group with no key listed is left out, and a lone group needs no
   // heading.
@@ -97,28 +99,28 @@ export function KeysPage({ v2, onChange, writable, whyNot = "sign_in", plan, har
   );
   return (
     <div className="h-full overflow-auto">
-      <div className="mx-auto max-w-[1100px] space-y-6 px-6 py-8">
-        <div>
+      <div className={settingsPageClass}>
+        <div className={settingsIntroClass}>
           <p className="caps text-label text-muted-foreground">Settings</p>
-          <h1 className="mt-1 text-2xl font-semibold">Keys</h1>
+          <h1 className="mt-1 text-2xl font-semibold">API Keys</h1>
           <p className="mt-2 text-lead text-muted-foreground">A model provider's key, which every agent runs on, and a tool's key, for every agent that uses the tool, kept on this server. A saved key is never shown again.</p>
         </div>
-        {!writable && <p className="border bg-card p-4 text-body" role="status">{WHY_NOT_WORDS[whyNot]}</p>}
-        {loadError && <ReadError inline error={loadError} onRetry={load} />}
-        {reenter && (
-          <Banner tone="warning" role="alert" aria-label="Keys to enter again" title="Enter these keys again">
-            <p>{REASON[reenter.reason]}</p>
-            <p className="mt-2 font-mono">{reenter.fields.length ? reenter.fields.join(", ") : "Which keys it held is not known: enter again each key you had saved."}</p>
-          </Banner>
-        )}
-        {groups.map((g) => (
-          <section key={g.label} aria-label={g.label}>
-            {groups.length > 1 && <h2 className="caps mb-2 text-small font-semibold text-muted-foreground">{g.label}</h2>}
-            {g.kind === "model" && <p className="mb-2 text-body text-muted-foreground">{KEY_ADVICE}</p>}
-            <ul className="border">{g.kind === "model" && plan}{g.keys.map(row)}</ul>
-          </section>
-        ))}
-        {harnesses && <WhatRunsHere harnesses={harnesses} />}
+        <div className={settingsBodyClass}>
+          {!writable && <p className="border bg-card p-4 text-body" role="status">{WHY_NOT_WORDS[whyNot]}</p>}
+          {loadError && <ReadError inline error={loadError} onRetry={load} />}
+          {reenter && (
+            <Banner tone="warning" role="alert" aria-label="Keys to enter again" title="Enter these keys again">
+              <p>{REASON[reenter.reason]}</p>
+              <p className="mt-2 font-mono">{reenter.fields.length ? reenter.fields.join(", ") : "Which keys it held is not known: enter again each key you had saved."}</p>
+            </Banner>
+          )}
+          {groups.map((g) => (
+            <SettingsSection key={g.label} label={g.label} title={g.label} note={g.kind === "model" ? <p>{KEY_ADVICE}</p> : undefined}>
+              <ul className="border">{g.kind === "model" && plan}{g.keys.map(row)}</ul>
+            </SettingsSection>
+          ))}
+          {harnesses && <WhatRunsHere harnesses={harnesses} />}
+        </div>
       </div>
     </div>
   );
@@ -127,7 +129,7 @@ export function KeysPage({ v2, onChange, writable, whyNot = "sign_in", plan, har
 function ReadError({ error, onRetry, inline = false }: { error: ApiError; onRetry: () => void; inline?: boolean }) {
   return (
     <Banner tone="error" className={inline ? undefined : "m-8"} actions={<Button type="button" size="xs" onClick={onRetry}>Try again</Button>}>
-      <p className="font-mono">The tool keys could not be read: {error.code}: {error.message}</p>
+      <p className="font-mono">The API keys could not be read: {error.code}: {error.message}</p>
     </Banner>
   );
 }
@@ -145,6 +147,7 @@ type RowProps = {
 };
 
 function KeyRow({ tool: k, writable, again, open, problem, onOpen, onSave, onRemove }: RowProps) {
+  const row = useRef<HTMLLIElement>(null);
   // Each field's secret ("tool:<KEY>"), and each secret's field (the form's input, and whether a saved one still opens).
   const secretOf = (f: ToolKeyField) => k.secrets.find((s) => secretLabel(s.name) === f.name);
   const fieldOf = (s: SecretMeta) => k.fields.find((f) => f.name === secretLabel(s.name));
@@ -152,7 +155,7 @@ function KeyRow({ tool: k, writable, again, open, problem, onOpen, onSave, onRem
   const own = k.fields.filter((f) => secretOf(f)?.source !== "env");
   const setCount = k.secrets.filter((s) => s.set).length;
   return (
-    <li className="border-b p-4 last:border-b-0">
+    <li ref={row} className="border-b p-4 last:border-b-0">
       <div className="flex flex-wrap items-start gap-3">
         <ProviderIcon id={k.id} className="mt-1" />
         <div className="min-w-0 flex-1">
@@ -166,13 +169,14 @@ function KeyRow({ tool: k, writable, again, open, problem, onOpen, onSave, onRem
             {/* A key no harness reads (one only a decision provider uses) names no harnesses, not an empty list. */}
             {k.harnesses.length > 0 && ` · Harnesses ${k.harnesses.length === 1 ? `${k.harnesses[0]} only` : k.harnesses.join(", ")}`}
           </p>
+          {keyHelp(k.id)?.note && <p className="mt-1.5 text-small text-muted-foreground">{keyHelp(k.id)!.note}</p>}
           {checkLine(k.label, k.check) && <p className={`mt-1.5 text-small ${k.check?.state === "accepted" ? "text-success-text" : "text-muted-foreground"}`}>{checkLine(k.label, k.check)}</p>}
           {/* Paste and Replace open the key's form (a key's fields go together); Remove asks to remove what is saved here.
               None while a form or a confirm is open. */}
           <ul className="mt-3 space-y-1.5">
             {k.secrets.map((s) => (
               <SecretRow key={s.name} field={s} stateSaid={k.secrets.length === 1} writable={writable && open === null} note={fieldOf(s)?.stored_unreadable ? UNREADABLE : undefined}
-                onPaste={() => onOpen("edit")} onRemove={s.source === "console" ? () => onOpen("remove") : undefined} />
+                onPaste={() => void pasteFromClipboard(() => onOpen("edit"), () => row.current?.querySelector("form")?.elements.namedItem(fieldOf(s)?.name ?? "") as HTMLInputElement | null)} onRemove={s.source === "console" ? () => onOpen("remove") : undefined} />
             ))}
           </ul>
           {!own.length && <p className="mt-3 text-small text-muted-foreground">Set when the server starts, and that one wins: change it where the server is started.</p>}
@@ -228,7 +232,7 @@ export function KeyForm({ tool: k, fields, onSave, onCancel }: { tool: ToolKey; 
       {help && (
         <p className="text-body text-muted-foreground">
           <span className="font-semibold text-foreground">{k.label}</span> · No key yet?{" "}
-          <a href={help.url} target="_blank" rel="noopener noreferrer" className="text-primary underline underline-offset-2">Get a key</a> (opens in a new tab)
+          <a href={help.url} target="_blank" rel="noopener noreferrer" className="text-primary-text underline underline-offset-2">Get a key</a> (opens in a new tab)
         </p>
       )}
       {fields.map((f) => (

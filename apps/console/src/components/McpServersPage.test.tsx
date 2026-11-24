@@ -1,6 +1,6 @@
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { freeName, McpServersPage } from "./McpServersPage";
 import { route } from "@/App";
 import { createClient } from "@/lib/client";
@@ -55,7 +55,7 @@ function server(lists: McpServer[][], answer: (call: Sent) => Response | Promise
 }
 
 let root: ReturnType<typeof createRoot> | undefined;
-afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
+afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; vi.unstubAllGlobals(); });
 
 async function open(v2: ReturnType<typeof createClient>, props: Record<string, unknown> = {}) {
   const host = document.body.appendChild(document.createElement("div"));
@@ -82,6 +82,23 @@ async function open(v2: ReturnType<typeof createClient>, props: Record<string, u
 }
 
 describe("Settings → MCP servers, adding one", () => {
+  it.each(["bearer", "headers"] as const)("Replace pastes the %s credential without submitting or previewing it", async (type) => {
+    const readText = vi.fn().mockResolvedValue(VARS.token);
+    vi.stubGlobal("navigator", { clipboard: { readText } });
+    const s = server([[saved({ auth: type === "bearer" ? { type } : { type, headers: ["X-Api-Key"] }, secret: { name: "mcp:fake", set: true, source: "console", changed_at: null } })]]);
+    const p = await open(s.v2);
+    await p.click(/^Replace$/, p.row("fake"));
+    const input = p.input(type === "bearer" ? "mcp-token" : "mcp-header-value-0");
+    expect(input.value).toBe(VARS.token);
+    expect(document.activeElement).toBe(input);
+    expect(p.host.innerHTML).not.toContain(VARS.token);
+    expect(s.writes()).toEqual([]);
+    await p.click(/^Cancel$/);
+    await p.click(/^Change$/, p.row("fake"));
+    expect(readText).toHaveBeenCalledTimes(1);
+    expect(p.input(input.name).value).toBe("");
+  });
+
   it("previews the tools and the protocol, then saves: the exact requests, and the token gone from the page", async () => {
     const s = server([[], [saved()]], (c) => (c.path.endsWith("/preview") ? json(200, PREVIEW) : c.method === "PUT" ? json(200, saved()) : undefined));
     const p = await open(s.v2);
@@ -499,6 +516,80 @@ describe("Settings → MCP servers, GitHub App", () => {
     expect(route("#/settings/mcp?add=slack&preset=composio&toolkit=slack&tools=SLACK_SEND_MESSAGE,bad%20name,SLACK_FIND_CHANNELS").add)
       .toEqual({ name: "slack", preset: "composio", toolkit: "slack", tools: ["SLACK_SEND_MESSAGE", "SLACK_FIND_CHANNELS"] });
     expect(route("#/settings/mcp?add=slack&preset=composio&toolkit=Not_A_Toolkit").add).toEqual({ name: "slack" });
+    expect(route("#/settings/mcp?change=slack&preset=composio&toolkit=slack&tools=SLACK_SEND_MESSAGE").add)
+      .toEqual({ name: "slack", preset: "composio", toolkit: "slack", tools: ["SLACK_SEND_MESSAGE"], change: true });
+    // A Composio toolkit's slug may hold "_" (Composio's rule, not a server name's).
+    expect(route("#/settings/mcp?add=google-sheets&preset=composio&toolkit=google_sheets").add).toEqual({ name: "google-sheets", preset: "composio", toolkit: "google_sheets" });
+  });
+
+  it("routes a refused secret write's link to the form filled with its name, address, kind of credential and toolkit: a user or password in the address is dropped", () => {
+    expect(route(`#/settings/mcp?add=linear&url=${encodeURIComponent("https://mcp.example.test/mcp")}&auth=bearer&toolkit=linear`).add)
+      .toEqual({ name: "linear", url: "https://mcp.example.test/mcp", auth: "bearer", toolkit: "linear" });
+    expect(route(`#/settings/mcp?change=docs&url=${encodeURIComponent(VARS.url)}&auth=headers`).add).toEqual({ name: "docs", change: true, url: VARS.url, auth: "headers" });
+    // A user and password in the address (built here, so no source line holds one).
+    const withUser = Object.assign(new URL("https://mcp.example.test/mcp"), { username: "someone", password: "pw" }).href;
+    expect(route(`#/settings/mcp?add=leaky&url=${encodeURIComponent(withUser)}&auth=nonsense`).add).toEqual({ name: "leaky" });
+    expect(route("#/settings/mcp?add=x&url=javascript:alert(1)").add).toEqual({ name: "x" });
+  });
+
+  it("a refused secret write's link opens the add form filled, the cursor in the token: the person pastes it, previews and saves", async () => {
+    const s = server([[]], (c) => (c.path.endsWith("/preview") ? json(200, PREVIEW) : c.method === "PUT" ? json(200, saved({ name: "linear" })) : undefined));
+    const p = await open(s.v2, { add: route(`#/settings/mcp?add=linear&url=${encodeURIComponent(VARS.url)}&auth=bearer&toolkit=linear`).add });
+    expect(p.host.querySelector('form[aria-label="Add an MCP server"]')).toBeTruthy();
+    expect(p.input("mcp-name").value).toBe("linear");
+    expect(p.input("mcp-url").value).toBe(VARS.url);
+    expect(p.input("mcp-toolkit").value).toBe("linear");
+    expect((p.host.querySelector('input[name="mcp-auth"][value="bearer"]') as HTMLInputElement).checked).toBe(true);
+    expect(p.input("mcp-token").value).toBe("");
+    expect(document.activeElement).toBe(p.input("mcp-token"));
+    await p.type("mcp-token", VARS.token);
+    await p.click(/^Preview$/);
+    await p.click(/^Save$/);
+    expect(s.writes().at(-1)).toEqual({ method: "PUT", path: "/v2/settings/mcp-servers/linear", body: { url: VARS.url, auth: { type: "bearer", token: VARS.token }, toolkit: "linear" } });
+  });
+
+  it("a link to change a saved server opens that server's Change form with the link's kind of credential, never a new server beside it", async () => {
+    const s = server([[saved({ name: "docs", auth: { type: "none" }, credential: null })]], (c) => (c.method === "PUT" ? json(200, saved({ name: "docs" })) : undefined));
+    const p = await open(s.v2, { add: route(`#/settings/mcp?change=docs&url=${encodeURIComponent(VARS.url)}&auth=bearer`).add });
+    expect(p.host.querySelector('form[aria-label="Change docs"]')).toBeTruthy();
+    expect(p.input("mcp-name").value).toBe("docs");
+    expect((p.host.querySelector('input[name="mcp-auth"][value="bearer"]') as HTMLInputElement).checked).toBe(true);
+    expect(document.activeElement).toBe(p.input("mcp-token"));
+    await p.type("mcp-token", VARS.token);
+    await p.click(/^Save$/);
+    expect(s.writes().at(-1)).toEqual({ method: "PUT", path: "/v2/settings/mcp-servers/docs", body: { url: VARS.url, auth: { type: "bearer", token: VARS.token } } });
+  });
+
+  it("a link to change a saved server with another toolkit fills the link's toolkit over the saved one, and Save sends it", async () => {
+    const s = server([[saved({ name: "docs", toolkit: "old-kit" })]], (c) => (c.method === "PUT" ? json(200, saved({ name: "docs", toolkit: "new-kit" })) : undefined));
+    const p = await open(s.v2, { add: route(`#/settings/mcp?change=docs&url=${encodeURIComponent(VARS.url)}&auth=bearer&toolkit=new-kit`).add });
+    expect(p.host.querySelector('form[aria-label="Change docs"]')).toBeTruthy();
+    expect(p.input("mcp-toolkit").value).toBe("new-kit");
+    await p.type("mcp-token", VARS.token);
+    await p.click(/^Save$/);
+    expect(s.writes().at(-1)).toEqual({ method: "PUT", path: "/v2/settings/mcp-servers/docs", body: { url: VARS.url, auth: { type: "bearer", token: VARS.token }, toolkit: "new-kit" } });
+  });
+
+  it("a link to change a saved server to no credential opens its Change form on none, so Save drops the credential as the refused save asked", async () => {
+    const s = server([[saved({ name: "docs" })]], (c) => (c.method === "PUT" ? json(200, saved({ name: "docs", auth: { type: "none" }, credential: null })) : undefined));
+    const p = await open(s.v2, { add: route("#/settings/mcp?change=docs&auth=none").add });
+    expect(p.host.querySelector('form[aria-label="Change docs"]')).toBeTruthy();
+    expect((p.host.querySelector('input[name="mcp-auth"][value="none"]') as HTMLInputElement).checked).toBe(true);
+    await p.click(/^Save$/);
+    expect(s.writes().at(-1)).toMatchObject({ method: "PUT", path: "/v2/settings/mcp-servers/docs", body: { auth: { type: "none" } } });
+  });
+
+  it("a second link opened on the same page starts a form of its own: its toolkit, and no credential typed for the first", async () => {
+    const s = server([[]]);
+    const first = route(`#/settings/mcp?add=crm&url=${encodeURIComponent(VARS.url)}&auth=bearer&toolkit=crm-one`).add;
+    const p = await open(s.v2, { add: first });
+    expect(p.input("mcp-toolkit").value).toBe("crm-one");
+    await p.type("mcp-token", VARS.token);
+    const second = route(`#/settings/mcp?add=crm&url=${encodeURIComponent(VARS.url)}&auth=bearer&toolkit=crm-two`).add;
+    await act(async () => { root!.render(createElement(McpServersPage, { v2: s.v2, writable: true, open: () => {}, add: second })); });
+    await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+    expect(p.input("mcp-toolkit").value).toBe("crm-two");
+    expect(p.input("mcp-token").value).toBe("");
   });
 
   it("opens the add form for a template's url need with its toolkit filled, and saves the server as url and that toolkit", async () => {
@@ -723,6 +814,37 @@ describe("Settings → MCP servers, the Composio preset", () => {
     expect(document.body.innerHTML).not.toContain(KEY);
   });
 
+  it("a save over a server shows, in its words, what it did at Composio with what the earlier save made", async () => {
+    const note = "Removed in Composio: the connected account ca_link_1 (its connect link with it).";
+    const s = server([[], [saved({ name: "gh" })]], (c) => (c.method === "PUT" && c.path === "/v2/settings/mcp-servers/gh/composio" ? json(200, { server: saved({ name: "gh" }), composio: { removed: true, note } }) : answer(c)));
+    const p = await open(s.v2);
+    await p.click(/^Add from Composio$/);
+    await p.type("composio-key", KEY);
+    await p.type("composio-toolkit", "github");
+    await p.click(/^Load actions$/);
+    await act(async () => { (p.host.querySelector('input[type="checkbox"][value="GITHUB_LIST_ISSUES"]') as HTMLInputElement).click(); });
+    await p.type("composio-name", "gh");
+    await p.click(/^Save$/);
+    const said = [...p.host.querySelectorAll('[role="status"]')].find((e) => e.textContent === note);
+    expect(said?.className).toContain("text-success-text");
+  });
+
+  it("a save refused on a field (422 with fields) shows the field's words and, under them, what it left at Composio", async () => {
+    const words = "Composio's github server doesn't serve GITHUB_LIST_ISSUES: pick another action.";
+    const note = "Left in Composio: the auth config ac_made_1. Remove what is left of gh in Composio yourself: https://platform.composio.dev";
+    const s = server([[]], (c) => (c.method === "PUT" && c.path === "/v2/settings/mcp-servers/gh/composio" ? refusal(422, "input_invalid", `${words} ${note}`, { fields: [{ field: "tools", reason: "not_served", message: words }], details: { composio: note } }) : answer(c)));
+    const p = await open(s.v2);
+    await p.click(/^Add from Composio$/);
+    await p.type("composio-key", KEY);
+    await p.type("composio-toolkit", "github");
+    await p.click(/^Load actions$/);
+    await act(async () => { (p.host.querySelector('input[type="checkbox"][value="GITHUB_LIST_ISSUES"]') as HTMLInputElement).click(); });
+    await p.type("composio-name", "gh");
+    await p.click(/^Save$/);
+    const alert = p.host.querySelector('[role="alert"]');
+    expect([...(alert?.querySelectorAll("p") ?? [])].map((e) => e.textContent)).toEqual([words, note]);
+  });
+
   it("drops an action list asked for a toolkit no longer in the field, and keeps Cancel off while a save is out", async () => {
     let late: (r: Response) => void = () => undefined;
     let first = true;
@@ -763,6 +885,21 @@ describe("Settings → MCP servers, the Composio preset", () => {
     expect(u.input("mcp-toolkit").value).toBe("hubspot");
   });
 
+  it("a refused Composio save's link to replace a saved server keeps its name: the save replaces slack, never a slack-2 beside it", async () => {
+    const SLACK = [{ slug: "SLACK_SEND_MESSAGE", name: "Send a message", description: "Send a message." }];
+    const s = server([[saved({ name: "slack", source: "composio", toolkit: "slack" })]], (c) => {
+      if (c.path === TOOLS_PATH) return json(200, { toolkit: "slack", no_auth: false, tools: SLACK });
+      if (c.method === "PUT" && c.path === "/v2/settings/mcp-servers/slack/composio") return json(200, { server: saved({ name: "slack", source: "composio", toolkit: "slack" }) });
+      return undefined;
+    });
+    const p = await open(s.v2, { add: route("#/settings/mcp?change=slack&preset=composio&toolkit=slack&tools=SLACK_SEND_MESSAGE").add });
+    await p.type("composio-key", KEY);
+    await p.click(/^Load actions$/);
+    expect(p.input("composio-name").value).toBe("slack");
+    await p.click(/^Save$/);
+    expect(s.writes().at(-1)).toEqual({ method: "PUT", path: "/v2/settings/mcp-servers/slack/composio", body: { api_key: KEY, toolkit: "slack", tools: ["SLACK_SEND_MESSAGE"] } });
+  });
+
   it("a free name stays within a server name's 32 characters: the toolkit's name is cut to leave room for its number", () => {
     const long = "a".repeat(32);
     expect(freeName(long, [{ name: long }])).toBe(`${"a".repeat(30)}-2`);
@@ -790,6 +927,56 @@ describe("Settings → MCP servers, the Composio preset", () => {
     await p.click(/^Save$/);
     expect(s.writes().at(-1)).toEqual({ method: "PUT", path: "/v2/settings/mcp-servers/gh/composio", body: { api_key: KEY, toolkit: "github", tools: ["GITHUB_LIST_ISSUES"] } });
   });
+  it("a filter over the actions keeps those whose name, slug or description has its words; a ticked action it hides stays ticked and is saved; Enter in it never saves", async () => {
+    const s = server([[], [saved({ name: "gh" })]], answer);
+    const p = await open(s.v2);
+    await p.click(/^Add from Composio$/);
+    await p.type("composio-key", KEY);
+    await p.type("composio-toolkit", "github");
+    await p.click(/^Load actions$/);
+    const filter = () => p.host.querySelector('input[aria-label="Filter actions"]') as HTMLInputElement;
+    const shown = () => [...p.host.querySelectorAll<HTMLInputElement>('form[aria-label="Add from Composio"] input[type="checkbox"]')].map((b) => b.value);
+    const status = () => filter().closest("div")!.querySelector('[role="status"]')!.textContent;
+    const typeFilter = async (value: string) => { await act(async () => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(filter(), value); filter().dispatchEvent(new Event("input", { bubbles: true })); }); };
+    expect(shown()).toEqual(["GITHUB_STAR_REPO", "GITHUB_LIST_ISSUES"]);
+    expect(status()).toBe("");
+    await typeFilter("ISSUES list");
+    expect(shown()).toEqual(["GITHUB_LIST_ISSUES"]);
+    expect(status()).toBe("1 of 2 shown, 0 ticked");
+    await act(async () => { (p.host.querySelector('input[type="checkbox"][value="GITHUB_LIST_ISSUES"]') as HTMLInputElement).click(); });
+    await typeFilter("a repository");
+    expect(shown(), "by description").toEqual(["GITHUB_STAR_REPO", "GITHUB_LIST_ISSUES"]);
+    await typeFilter("star_repo");
+    expect(shown(), "by slug").toEqual(["GITHUB_STAR_REPO"]);
+    expect(status()).toBe("1 of 2 shown, 1 ticked");
+    await typeFilter("nothing-like-it");
+    expect(shown()).toEqual([]);
+    expect(p.text()).toContain("No action matches “nothing-like-it”.");
+    await typeFilter("star");
+    await act(async () => { (p.host.querySelector('input[type="checkbox"][value="GITHUB_STAR_REPO"]') as HTMLInputElement).click(); });
+    await p.type("composio-name", "gh");
+    const enter = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true });
+    await act(async () => { filter().dispatchEvent(enter); });
+    expect(enter.defaultPrevented).toBe(true);
+    expect(s.writes()).toHaveLength(1);
+    await p.click(/^Save$/);
+    expect(s.writes()[1]).toEqual({ method: "PUT", path: "/v2/settings/mcp-servers/gh/composio", body: { api_key: KEY, toolkit: "github", tools: ["GITHUB_LIST_ISSUES", "GITHUB_STAR_REPO"] } });
+  });
+
+  it("loading the actions again clears the filter", async () => {
+    const s = server([[], [saved({ name: "gh" })]], answer);
+    const p = await open(s.v2);
+    await p.click(/^Add from Composio$/);
+    await p.type("composio-key", KEY);
+    await p.type("composio-toolkit", "github");
+    await p.click(/^Load actions$/);
+    const filter = () => p.host.querySelector('input[aria-label="Filter actions"]') as HTMLInputElement;
+    await act(async () => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(filter(), "star"); filter().dispatchEvent(new Event("input", { bubbles: true })); });
+    expect(p.host.querySelectorAll('form[aria-label="Add from Composio"] input[type="checkbox"]')).toHaveLength(1);
+    await p.click(/^Load actions$/);
+    expect(filter().value).toBe("");
+    expect(p.host.querySelectorAll('form[aria-label="Add from Composio"] input[type="checkbox"]')).toHaveLength(2);
+  });
 });
 
 describe("Settings → MCP servers, deleting a Composio server", () => {
@@ -801,6 +988,32 @@ describe("Settings → MCP servers, deleting a Composio server", () => {
     await p.click(/^Delete$/, p.row("hn").querySelector('[role="alertdialog"]')!);
     expect(p.text()).toContain("No MCP server is saved here yet");
     expect(p.host.querySelector('[role="status"]')?.textContent).toContain(note);
+    expect(p.host.querySelector('[role="status"]')?.className).toContain("text-warning-text");
+  });
+
+  it("says what it removed in Composio when all of it went, as a success, not a warning", async () => {
+    const note = "Removed in Composio: the MCP server srv_1, the connected account ca_1 (its connect link with it) and the auth config ac_1.";
+    const s = server([[saved({ name: "gh" })], []], (c) => (c.method === "DELETE" ? json(200, { deleted: true, composio: { removed: true, note } }) : undefined));
+    const p = await open(s.v2);
+    await p.click(/^Delete$/, p.row("gh"));
+    await p.click(/^Delete$/, p.row("gh").querySelector('[role="alertdialog"]')!);
+    expect(p.text()).toContain("No MCP server is saved here yet");
+    const status = p.host.querySelector('[role="status"]');
+    expect(status?.textContent).toContain(note);
+    expect(status?.className).toContain("text-success-text");
+    expect(status?.className).not.toContain("text-warning-text");
+  });
+
+  it("says what a change that moved a Composio server to another address removed in Composio", async () => {
+    const note = "Removed in Composio: the MCP server srv_1, the connected account ca_1 (its connect link with it) and the auth config ac_1.";
+    const s = server([[saved({ name: "work-slack", source: "composio", toolkit: "slack" })], [saved({ name: "work-slack" })]], (c) => (c.method === "PUT" ? json(200, { ...saved({ name: "work-slack" }), composio: { removed: true, note } }) : undefined));
+    const p = await open(s.v2);
+    await p.click(/^Change$/, p.row("work-slack"));
+    await p.click(/^Save$/);
+    expect(s.writes().at(-1)!.method).toBe("PUT");
+    const status = p.host.querySelector('[role="status"]');
+    expect(status?.textContent).toContain(note);
+    expect(status?.className).toContain("text-success-text");
   });
 });
 
@@ -985,5 +1198,158 @@ describe("Settings → MCP servers, a server's tool settings", () => {
     await p.click(/^Allow without asking$/, confirm());
     expect(s.writes()).toHaveLength(1);
     expect(document.activeElement).toBe(permission(p, "delete_repo"));
+  });
+});
+
+describe("Settings → MCP servers, URL presets", () => {
+  // The servers the templates use: each fills the add form's name, address, credential and toolkit, and says one line
+  // about it. Preview and Save are the form's own: the server checks the address as it checks any.
+  const PRESETS = [
+    { label: "Parallel Search", name: "parallel", url: "https://mcp.parallel.ai/mcp", auth: "none", note: /no key/i },
+    { label: "Firecrawl", name: "firecrawl", url: "https://mcp.firecrawl.dev/v2/mcp", auth: "none", note: /without a key/i },
+    { label: "GitHub (token)", name: "github", url: "https://api.githubcopilot.com/mcp/", auth: "bearer", note: /fine-grained/i },
+    { label: "Linear", name: "linear", url: "https://mcp.linear.app/mcp", auth: "oauth", note: /sign in/i },
+    { label: "Notion", name: "notion", url: "https://mcp.notion.com/mcp", auth: "oauth", note: /sign in/i },
+    { label: "fal (key)", name: "fal", url: "https://mcp.fal.ai/mcp", auth: "bearer", note: /your fal key.*bill your fal account/i },
+    { label: "fal (sign in)", name: "fal", url: "https://mcp.fal.ai/mcp-relay", auth: "oauth", note: /sign in with your fal account.*bill/i },
+  ] as const;
+  const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const checkedAuth = (host: HTMLElement) => host.querySelector<HTMLInputElement>('input[name="mcp-auth"]:checked')?.value;
+
+  it.each(PRESETS)("$label fills the name, address, credential, toolkit and its note", async (preset) => {
+    const s = server([[]]);
+    const p = await open(s.v2);
+    await p.click(/^Add server$/);
+    await p.click(new RegExp(`^${esc(preset.label)}$`));
+    expect(p.input("mcp-name").value).toBe(preset.name);
+    expect(p.input("mcp-url").value).toBe(preset.url);
+    expect(checkedAuth(p.host)).toBe(preset.auth);
+    expect(p.input("mcp-toolkit").value).toBe(preset.name);
+    expect(p.host.querySelector('[role="note"][data-mcp-preset]')?.textContent).toMatch(preset.note);
+    expect(s.writes()).toEqual([]);
+  });
+
+  it("shows the presets above \"Or any MCP URL\", only on a new server's form", async () => {
+    const s = server([[saved()]]);
+    const p = await open(s.v2);
+    await p.click(/^Add server$/);
+    const text = p.text();
+    for (const preset of PRESETS) expect(text.indexOf(preset.label)).toBeGreaterThan(-1);
+    expect(text.indexOf("Or any MCP URL")).toBeGreaterThan(Math.max(...PRESETS.map((x) => text.indexOf(x.label))));
+    await p.click(/^Cancel$/);
+    await p.click(/^Change$/, p.row("fake"));
+    expect(p.text()).not.toContain("Or any MCP URL");
+    expect(p.button(/^Parallel Search$/)).toBeUndefined();
+  });
+
+  it("GitHub (token) has a read-only choice that swaps the address to /readonly and back", async () => {
+    const p = await open(server([[]]).v2);
+    await p.click(/^Add server$/);
+    await p.click(/^GitHub \(token\)$/);
+    const readOnly = p.host.querySelector<HTMLButtonElement>('button[role="switch"][aria-label="Read-only"]')!;
+    expect(readOnly.getAttribute("aria-checked")).toBe("false");
+    await act(async () => { readOnly.click(); });
+    expect(p.input("mcp-url").value).toBe("https://api.githubcopilot.com/mcp/readonly");
+    await act(async () => { readOnly.click(); });
+    expect(p.input("mcp-url").value).toBe("https://api.githubcopilot.com/mcp/");
+  });
+
+  it("a preset's name already saved fills the first free one, so Save never replaces that server", async () => {
+    const p = await open(server([[saved({ name: "parallel" })]]).v2);
+    await p.click(/^Add server$/);
+    await p.click(/^Parallel Search$/);
+    expect(p.input("mcp-name").value).toBe("parallel-2");
+    expect(p.input("mcp-toolkit").value).toBe("parallel");
+  });
+
+  it("a preset's Preview and Save send what the form sends for any address", async () => {
+    const s = server([[]], (c) => (c.path.endsWith("/preview") ? json(200, PREVIEW) : c.method === "PUT" ? json(200, saved({ name: "firecrawl" })) : undefined));
+    const p = await open(s.v2);
+    await p.click(/^Add server$/);
+    await p.click(/^Firecrawl$/);
+    await p.click(/^Preview$/);
+    await p.click(/^Save$/);
+    expect(s.writes()).toEqual([
+      { method: "POST", path: "/v2/settings/mcp-servers/preview", body: { url: "https://mcp.firecrawl.dev/v2/mcp", auth: { type: "none" } } },
+      { method: "PUT", path: "/v2/settings/mcp-servers/firecrawl", body: { url: "https://mcp.firecrawl.dev/v2/mcp", auth: { type: "none" }, toolkit: "firecrawl" } },
+    ]);
+  });
+
+  it("routes #/settings/mcp?add=<name>&preset=<id> to the form with that preset filled; an unknown id is the plain form", () => {
+    expect(route("#/settings/mcp?add=notion&preset=notion").add).toEqual({ name: "notion", preset: "notion" });
+    expect(route("#/settings/mcp?add=gh&preset=github-token").add).toEqual({ name: "gh", preset: "github-token" });
+    expect(route("#/settings/mcp?add=foo&preset=nope").add).toEqual({ name: "foo" });
+  });
+
+  it("a deep link's preset opens the form filled, under the link's name", async () => {
+    const p = await open(server([[]]).v2, { add: route("#/settings/mcp?add=notion&preset=notion").add });
+    expect(p.input("mcp-name").value).toBe("notion");
+    expect(p.input("mcp-url").value).toBe("https://mcp.notion.com/mcp");
+    expect(checkedAuth(p.host)).toBe("oauth");
+    expect(p.host.querySelector('[role="note"][data-mcp-preset]')?.textContent).toMatch(/sign in/i);
+  });
+
+  it("a preset clears a credential typed for another server, so none is sent to the preset's address", async () => {
+    const s = server([[]], (c) => (c.path.endsWith("/preview") ? json(200, PREVIEW) : undefined));
+    const p = await open(s.v2);
+    await p.click(/^Add server$/);
+    await p.pick("bearer");
+    await p.type("mcp-token", "tok-for-another-server");
+    await p.click(/^GitHub \(token\)$/);
+    expect(p.input("mcp-token").value).toBe("");
+    await p.click(/^Preview$/);
+    expect(s.writes()).toEqual([{ method: "POST", path: "/v2/settings/mcp-servers/preview", body: { url: "https://api.githubcopilot.com/mcp/", auth: { type: "bearer" } } }]);
+  });
+
+  it("a preset clears the scopes and client typed for another OAuth server", async () => {
+    const p = await open(server([[]]).v2);
+    await p.click(/^Add server$/);
+    await p.click(/^Linear$/);
+    await p.type("mcp-scopes", "read write");
+    await p.type("mcp-client-id", "linear-client");
+    await p.type("mcp-client-secret", "linear-secret");
+    await p.click(/^Notion$/);
+    expect(p.input("mcp-scopes").value).toBe("");
+    expect(p.input("mcp-client-id").value).toBe("");
+    expect(p.input("mcp-client-secret").value).toBe("");
+  });
+
+  it("the presets wait for the saved servers to be read, so none picks a name that is taken", async () => {
+    let list!: (r: Response) => void;
+    const s = server([[]], (c) => (c.method === "GET" && c.path === "/v2/settings/mcp-servers" ? new Promise<Response>((r) => { list = r; }) : undefined));
+    const p = await open(s.v2);
+    await p.click(/^Add server$/);
+    expect(p.button(/^Parallel Search$/)?.disabled).toBe(true);
+    await act(async () => { list(json(200, { servers: [saved({ name: "parallel" })] })); });
+    await p.settle();
+    await p.click(/^Parallel Search$/);
+    expect(p.input("mcp-name").value).toBe("parallel-2");
+  });
+
+  it("a list that can't be read leaves the presets off", async () => {
+    const s = server([[]], (c) => (c.method === "GET" && c.path === "/v2/settings/mcp-servers" ? refusal(500, "internal", "down") : undefined));
+    const p = await open(s.v2);
+    await p.click(/^Add server$/);
+    expect(p.button(/^Parallel Search$/)?.disabled).toBe(true);
+  });
+
+  it("a new server's name already saved can't be saved: it would replace that server", async () => {
+    const s = server([[saved({ name: "fake" })]], (c) => (c.path.endsWith("/preview") ? json(200, PREVIEW) : c.method === "PUT" ? json(200, saved()) : undefined));
+    const p = await open(s.v2);
+    await p.click(/^Add server$/);
+    await p.type("mcp-name", "fake");
+    await p.type("mcp-url", "https://mcp.example.test/mcp");
+    await p.click(/^Preview$/);
+    expect(p.text()).toMatch(/fake is saved already/);
+    expect(p.button(/^Save$/)?.disabled).toBe(true);
+    expect(s.writes().filter((c) => c.method === "PUT")).toEqual([]);
+  });
+
+  it("a deep link with an unknown preset id opens the plain form", async () => {
+    const p = await open(server([[]]).v2, { add: route("#/settings/mcp?add=foo&preset=nope").add });
+    expect(p.input("mcp-name").value).toBe("foo");
+    expect(p.input("mcp-url").value).toBe("");
+    expect(checkedAuth(p.host)).toBe("none");
+    expect(p.host.querySelector("[data-mcp-preset]")).toBeNull();
   });
 });

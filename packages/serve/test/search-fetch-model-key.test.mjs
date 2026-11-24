@@ -14,6 +14,7 @@ import { test } from "node:test";
 import { CANARY as PARALLEL_CANARY } from "./fixtures/faux-parallel.mjs";
 import { agent, follow, scratch, serve, withEnv } from "./support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
+import { firecrawlServer } from "./fixtures/fake-firecrawl.mjs";
 
 /** A run of web_search, web_fetch and write is not offered the host's search, call-by-name or script tools (offersMetaTools). */
 
@@ -56,7 +57,7 @@ async function research(api, id, definition, fields = {}, until = ["completed"])
   return { runId: started.body.run_id, results, rows, usage: rows.findLast((row) => row.kind === "usage")?.usage, report: report.body };
 }
 /** What a search answers when Exa's free limit holds after its one retry: our words, never Exa's fix. */
-const RATE_LIMITED = "Free web search is rate-limited right now. Try again in a minute, or add a Parallel key in Settings → Tool keys to search with a key.";
+const RATE_LIMITED = "Free web search is rate-limited right now. Try again in a minute; add the free Parallel Search server in Settings → MCP servers and grant the agent its web_search; or add a Parallel key in Settings → API Keys to search with a key.";
 const EXA_FIX = /exa\.ai|Fix:|MCP URL|exaApiKey|free MCP rate limit/;
 const HARNESS_RESEARCH = "Research widgets on the web, read http://public.example/ and write report.md.";
 
@@ -153,7 +154,7 @@ test("a pi run on keyless Exa past its free limit: Exa is asked once more and it
 test("with a Parallel key saved on Tool keys, auto is Parallel where there is no native search: a pi run behind a gateway searches through Parallel and is billed its fee, keyless Exa never asked; an agent that picked exa-keyless still searches keyless", { timeout: 90_000 }, async (t) => {
   const { seen } = await setting(t, { AGENT_MODEL_BASE_URL: "https://gateway.example/v1", AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") });
   const { api } = await serve(t, FAUX);
-  assert.deepEqual((await resolves(api)).web_search, each("exa-keyless"), "no key yet: keyless Exa");
+  assert.deepEqual((await resolves(api)).web_search, each("firecrawl-keyless"), "no key yet: keyless Firecrawl, keyless Exa behind it");
   assert.equal((await api("PUT", "/settings/tool-keys/parallel", { values: { PARALLEL_API_KEY: PARALLEL_CANARY } })).status, 204);
   const checked = (await seen()).parallel.length; // the save checks the key against Parallel first (#1508): the run's requests are the ones after
   assert.deepEqual((await resolves(api)).web_search, each("parallel"), "the saved key, with no restart: Parallel before keyless Exa, on claude-agent too");
@@ -193,7 +194,8 @@ test("a capped claude-agent run on auto never sends Claude's own search: it reso
     assert.deepEqual(calls.opened.filter((line) => line.harness), [{ harness: "claude-agent", options: {} }], `${id}: no WebSearch on the adapter`);
     assert.deepEqual(calls.opened.filter((line) => line.tools).map((line) => line.tools), [["web_search", "web_fetch", "write", "codemode"]], `${id}: web_search a host tool`);
     // The run's resolved plane, as its start wrote it on the run's launch in the store (the runner reads it at the claim).
-    assert.equal((await store.runs.launch(run.runId))?.body?.plane?.web_search, keyed ? "parallel" : "exa-keyless");
+    assert.equal((await store.runs.launch(run.runId))?.body?.plane?.web_search, keyed ? "parallel" : "firecrawl-keyless");
+    // Keyless Firecrawl's fake is not named here, so under --faux it is never asked: keyless Exa behind it answers.
     assert.match(run.results.web_search, keyed ? /^\{"provider":"parallel"/ : /^\{"provider":"exa-keyless"/);
     assert.deepEqual([calls.parallel.map((call) => call.path), calls.exa.filter((call) => call.method === "tools/call").length, calls.upstream], keyed ? [["/v1/search"], 0, []] : [[], 1, []], `${id}: one search, on its provider; no model provider's search`);
   }
@@ -202,7 +204,8 @@ test("a capped claude-agent run on auto never sends Claude's own search: it reso
 test("a pi run whose model goes through a gateway searches keyless Exa, as claude-agent on auto does; a pick of Parallel without its key is unavailable, and refused", { timeout: 60_000 }, async (t) => {
   const { seen } = await setting(t, { AGENT_MODEL_BASE_URL: "https://gateway.example/v1" });
   const { api } = await serve(t, FAUX);
-  assert.deepEqual((await resolves(api)).web_search, each("exa-keyless"));
+  assert.deepEqual((await resolves(api)).web_search, each("firecrawl-keyless"));
+  // Keyless Firecrawl's fake is not named here, so under --faux it is never asked: keyless Exa behind it answers.
   const run = await research(api, "gateway-pi", {});
   assert.match(run.results.web_search, /^\{"provider":"exa-keyless","query":"widgets","results":\[\{"url":"http:\/\/public\.example\/","title":"Public page","snippet":"The answer is forty-two\. See the registry for more\.","published":"2026-10-01T00:00:00.000Z"\},\{"url":"https:\/\/result\.example\/2","title":"Result 2 for widgets","snippet":"Excerpt 2\."\}\]\}\nCite the URL of each result you rely on\.$/);
   assert.match(run.report, /Public page, http:\/\/public\.example\//);
@@ -215,5 +218,20 @@ test("a pi run whose model goes through a gateway searches keyless Exa, as claud
   assert.deepEqual((await resolves(api)).web_search, each("unavailable: parallel picked, no PARALLEL_API_KEY"));
   const refused = await api("POST", "/agents/gateway-pi/runs", { input: { content: "Research widgets on the web and write report.md." } });
   assert.deepEqual([refused.status, refused.body.error?.code, refused.body.error?.details?.missing], [409, "agent_not_runnable", { web_search: ["PARALLEL_API_KEY"] }]);
-  assert.match(refused.body.error.message, /web_search\ does\ not\ run\ here\ on\ pi:\ parallel\ is\ picked,\ and\ it\ needs\ a\ Parallel\ key:\ save\ one\ in\ Settings\ →\ Tool\ keys\ \(or\ set\ PARALLEL_API_KEY\ where\ the\ server\ starts\)/);
+  assert.match(refused.body.error.message, /web_search\ does\ not\ run\ here\ on\ pi:\ parallel\ is\ picked,\ and\ it\ needs\ a\ Parallel\ key:\ save\ one\ in\ Settings\ →\ API\ Keys\ \(or\ set\ PARALLEL_API_KEY\ where\ the\ server\ starts\)/);
+});
+
+test("a pi run with no key behind a gateway searches and reads through keyless Firecrawl (the server's fake, handed to the run): no key sent, keyless Exa never asked, the page never fetched directly", { timeout: 60_000 }, async (t) => {
+  const { seen } = await setting(t, { AGENT_MODEL_BASE_URL: "https://gateway.example/v1" });
+  const firecrawl = await firecrawlServer(t);
+  const { api } = await serve(t, { ...FAUX, fauxFirecrawl: firecrawl.url });
+  assert.deepEqual(await resolves(api), { web_search: each("firecrawl-keyless"), web_fetch: each("firecrawl-keyless") });
+  const run = await research(api, "firecrawl-pi", {});
+  assert.match(run.results.web_search, /^\{"provider":"firecrawl-keyless","query":"widgets","results":\[\{"url":"https:\/\/first\.example\/widgets"/);
+  assert.match(run.results.web_fetch, /"via":"firecrawl-keyless"/);
+  assert.match(run.report, /The answer is forty-two \(Read by Firecrawl, http:\/\/public\.example\/\)/);
+  assert.deepEqual(firecrawl.toolCalls().map((call) => [call.body.params.name, call.body.params.arguments]), [["firecrawl_search", { query: "widgets", limit: 2 }], ["firecrawl_scrape", { url: "http://public.example/", formats: ["markdown"] }]]);
+  for (const { headers } of firecrawl.got) assert.equal(headers.authorization, undefined);
+  const calls = await seen();
+  assert.deepEqual([calls.exa, calls.dialled, calls.upstream], [[], [], []], "Exa not asked, nothing dialled directly, no model provider's search");
 });

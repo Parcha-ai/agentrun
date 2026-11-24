@@ -6,7 +6,8 @@
 // Exa's JSON-RPC error (a 429 with Retry-After 30, as Exa's free limit answers); `429:<s>`, a 429 with Retry-After <s>;
 // `limited`, Exa's own notice of its free limit inside a 200 (a tool result marked isError and `ai.exa/rateLimited`,
 // its text telling the user to fix their MCP URL), as Exa answers when its search API refuses a keyless call. Each
-// request is filed in AGENTRUN_TEST_FAUX_EXA_CALLS: its method, session, arguments and whether it held a key.
+// request is filed in AGENTRUN_TEST_FAUX_EXA_CALLS: its method, session, arguments and whether it held a key, and
+// `aborted` where its signal had already ended when it was sent.
 import { appendFileSync } from "node:fs";
 
 const SESSION = "sess-faux-exa-1";
@@ -37,7 +38,7 @@ export const resetFauxExa = () => void ([counted, searches] = ["", 0]);
 export default async function fakeExa(url, init = {}) {
   const headers = new Headers(init.headers);
   const body = JSON.parse(typeof init.body === "string" ? init.body : new TextDecoder().decode(init.body));
-  if (process.env.AGENTRUN_TEST_FAUX_EXA_CALLS) appendFileSync(process.env.AGENTRUN_TEST_FAUX_EXA_CALLS, `${JSON.stringify({ pid: process.pid, url: String(url), method: body.method, session: headers.get("mcp-session-id"), keyed: headers.has("x-api-key") || headers.has("authorization"), ...(body.params?.name ? { tool: body.params.name, arguments: body.params.arguments } : {}) })}\n`);
+  if (process.env.AGENTRUN_TEST_FAUX_EXA_CALLS) appendFileSync(process.env.AGENTRUN_TEST_FAUX_EXA_CALLS, `${JSON.stringify({ pid: process.pid, url: String(url), method: body.method, session: headers.get("mcp-session-id"), keyed: headers.has("x-api-key") || headers.has("authorization"), ...(init.signal?.aborted ? { aborted: true } : {}), ...(body.params?.name ? { tool: body.params.name, arguments: body.params.arguments } : {}) })}\n`);
   if (body.method === "initialize") return stream({ id: body.id, result: { protocolVersion: body.params.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: "faux-exa", version: "0" } } }, { "mcp-session-id": SESSION });
   if (headers.get("mcp-session-id") !== SESSION) return new Response("unknown session", { status: 404 });
   if (body.method === "notifications/initialized") return new Response(null, { status: 202 });

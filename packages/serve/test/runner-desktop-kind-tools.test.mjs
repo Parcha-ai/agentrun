@@ -4,14 +4,15 @@
 // computer_act, computer_screenshot, computer_op (a codemode script's other ops) and computer_request_handoff, by the
 // kernel registry's own list
 // (computerToolsFor), each once. They go through the run's
-// one gate under the kind's settings key (`desktop`), so a deny refuses them in its words (naming desktop). A run with no computer gets
-// none of them.
+// one gate under the kind's settings key (`desktop`), so a deny refuses them in its words (naming desktop), the first of
+// them turning the computer off for the run; a run whose desktop is set to deny starts none and is handed none of them
+// (computer-all-denied.test.mjs). A run with no computer gets none of them.
 // The pi spec (adapter-run-spec.ts) through specFor, the CLI spec (cli-run-spec.ts) through the runner on Codex's
 // stand-in; the computer is --faux's desktop through the runner's one composer (computerDepsFrom), whose screen.shot is
 // a grey screen. Loopback only: no provider, no key.
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { cpSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { cpSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -23,6 +24,7 @@ const { computerToolsFor } = await import("../../run-adapters/dist/kernel/regist
 const { computerDepsFrom } = await import("../dist/workspace/index.js");
 const { fauxComputers } = await import("../dist/faux-computers.js");
 const { deniedText } = await import("../dist/tool-gate.js");
+const { computerOffText, computerOffWords } = await import("../dist/refusal-words.js");
 const { openSqliteStore } = await import("../dist/store/sqlite/store.js");
 const { startRunner } = await import("../dist/runner/runner.js");
 const { createDispatchLoop } = await import("../dist/runner/dispatch.js");
@@ -30,6 +32,7 @@ const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { CONFORMANCE_TIMING } = await import("../dist/runner/conformance/harness.js");
 const { cliRunSpecFromLaunch } = await import("../dist/runner/cli-run-spec.js");
 const { CODEX_STANDIN_ENV } = await import("../dist/adapters.js");
+const { KIND_SKILLS } = await import("../dist/workspace/index.js");
 
 /** The desktop's tools, as the kernel's registry lists them: imported, never retyped. */
 const DESKTOP = computerToolsFor(["screen", "input.pointer", "input.keys"]);
@@ -95,15 +98,14 @@ test("pi: an agent whose desktop's surface is code is listed the hand-over alone
   assert.deepEqual(listedAndScripts(spec), [["computer_request_handoff"], ["computer_observe", "computer_act", "computer_screenshot", "computer_op"]], JSON.stringify(toolNames(spec)));
 });
 
-test("pi: a desktop run's codemode is the host's: pi carries no code mode of its own, and under desktop set to deny codemode is allowed while each computer tool a script would call is refused", async (t) => {
+test("pi: a desktop run's codemode is the host's: pi carries no code mode of its own, and under desktop set to deny codemode is allowed while each computer tool a script would call is refused, the first in desktop's deny words with the desktop off for the run, the next short", async (t) => {
   for (const surface of [undefined, "code"]) {
     const { spec } = await specFor(t, { body: { tools: ["read"], computer: { ...FAUX_DESKTOP, ...(surface ? { surface } : {}) } }, settings: DENY_DESKTOP, computer: fauxComposer });
     const own = (spec.adapter.ownTools ?? []).map((tool) => tool.name);
     assert.ok(!own.includes("codemode"), `surface ${surface}: no pi-native codemode beside the host's: ${JSON.stringify(own)}`);
     assert.equal(await spec.gate({ callId: "m1", tool: "codemode", args: { script: "return 1;" } }), "allow", `surface ${surface}: codemode is held to its own setting, not desktop's`);
-    for (const [tool, args] of [["computer_op", { op: "input.act", args: { actions: [] } }], ["computer_act", CLICK]]) {
-      assert.deepEqual(await spec.gate({ callId: `n-${tool}`, tool, args }), { deny: deniedText("desktop") }, `surface ${surface}: ${tool} is refused in desktop's deny words`);
-    }
+    assert.deepEqual(await spec.gate({ callId: "n-op", tool: "computer_op", args: { op: "input.act", args: { actions: [] } } }), { deny: `${deniedText("desktop")} ${computerOffWords("desktop")}` }, `surface ${surface}: computer_op is refused in desktop's deny words, the desktop off for the run`);
+    assert.deepEqual(await spec.gate({ callId: "n-act", tool: "computer_act", args: CLICK }), { deny: computerOffText("desktop") }, `surface ${surface}: computer_act is refused short`);
   }
 });
 
@@ -113,14 +115,12 @@ test("pi: a run with no computer is handed none of the desktop's tools", async (
   assert.deepEqual(DESKTOP.filter((name) => names.includes(name)), [], `no desktop tool: ${JSON.stringify(names)}`);
 });
 
-test("pi: desktop set to deny on this server refuses computer_act and computer_screenshot at the run's gate, in the deny words naming desktop's setting", async (t) => {
+test("pi: desktop set to deny on this server starts no desktop and hands none of its tools; a call of one anyway is refused at the run's gate in the deny words naming desktop's setting, the desktop then off for the run", async (t) => {
   const { spec } = await specFor(t, { body: { tools: ["read"], computer: FAUX_DESKTOP }, settings: DENY_DESKTOP, computer: fauxComposer });
-  assert.ok(toolNames(spec).includes("computer_act"), "the tool is handed, and the gate holds it");
-  for (const [tool, args] of [["computer_act", CLICK], ["computer_screenshot", {}]]) {
-    const given = await spec.gate({ callId: `d-${tool}`, tool, args });
-    // The gate asks a kind's tool as its kind (tool-gate.ts askedAs), so its words name the setting the owner set: desktop.
-    assert.deepEqual(given, { deny: deniedText("desktop") }, `${tool} is refused in desktop's deny words`);
-  }
+  assert.deepEqual(DESKTOP.filter((name) => toolNames(spec).includes(name)), [], `no desktop tool is handed: ${JSON.stringify(toolNames(spec))}`);
+  // The gate asks a kind's tool as its kind (tool-gate.ts askedAs), so its words name the setting the owner set: desktop.
+  assert.deepEqual(await spec.gate({ callId: "d-act", tool: "computer_act", args: CLICK }), { deny: `${deniedText("desktop")} ${computerOffWords("desktop")}` }, "computer_act is refused in desktop's deny words");
+  assert.deepEqual(await spec.gate({ callId: "d-shot", tool: "computer_screenshot", args: {} }), { deny: computerOffText("desktop") }, "computer_screenshot is refused short");
 });
 
 /** A loopback gateway answering OpenAI's Responses API with `text` (SSE). */
@@ -160,9 +160,11 @@ function keepingHomes(spec, dir, kept) {
 }
 
 /** A codex run on the runner path, on Codex's stand-in, its agent's computer --faux's desktop, whose model calls `tool`
- *  with `args` (its first message is the stand-in's call). `settings`: the server's tool settings. Returns the tools
- *  Codex was handed and the call's answer from Codex's session record (undefined when none came within 15 s). */
-async function codexCall(t, tool, args, settings, computer = FAUX_DESKTOP) {
+ *  with `args` (its first message is the stand-in's call). `settings`: the server's tool settings; `composer`: the
+ *  claim's computers (--faux's, or a stand-in). Returns the tools Codex was handed, the call's answer from Codex's
+ *  session record (undefined when none came within 15 s), and the skills in its CODEX_HOME/skills, each name to its
+ *  SKILL.md. */
+async function codexCall(t, tool, args, settings, computer = FAUX_DESKTOP, composer = fauxComposer) {
   const was = process.env.AGENTRUN_CODEX_STANDIN;
   process.env.AGENTRUN_CODEX_STANDIN = "1";
   t.after(() => (was === undefined ? delete process.env.AGENTRUN_CODEX_STANDIN : (process.env.AGENTRUN_CODEX_STANDIN = was)));
@@ -195,7 +197,7 @@ async function codexCall(t, tool, args, settings, computer = FAUX_DESKTOP) {
     AGENT_MODEL_PRICE: "1,2,0.5",
   };
   const log = [];
-  const { computerForClaim, computerDeps } = fauxComposer({ store, sealKey });
+  const { computerForClaim, computerDeps } = composer({ store, sealKey });
   const deps = { env, data: dir, journal: (claim) => store.journal(claim), store, sealKey, routeOf: async () => assert.fail("a CLI run takes no pi route"), log: (line) => log.push(line), computerForClaim, computerDeps };
   runner = startRunner({
     store, name: "runner-a", ...CONFORMANCE_TIMING, leaseMs: 30_000, stopMarginMs: 5_000,
@@ -224,8 +226,35 @@ async function codexCall(t, tool, args, settings, computer = FAUX_DESKTOP) {
   const by = Date.now() + 15_000;
   while (!outputs().length && Date.now() < by) await new Promise((resolve) => setTimeout(resolve, 50));
   const lines = record();
-  return { handed: (lines[0].payload.dynamic_tools ?? []).map((given) => given.name), calls: lines.filter((line) => line.payload?.type === "function_call").map((line) => line.payload.name), answer: outputs()[0] };
+  const skillsDir = join(homes[0], "skills");
+  const skills = existsSync(skillsDir) ? Object.fromEntries(readdirSync(skillsDir).filter((name) => existsSync(join(skillsDir, name, "SKILL.md"))).map((name) => [name, readFileSync(join(skillsDir, name, "SKILL.md"), "utf8")])) : {};
+  return { handed: (lines[0].payload.dynamic_tools ?? []).map((given) => given.name), calls: lines.filter((line) => line.payload?.type === "function_call").map((line) => line.payload.name), answer: outputs()[0], skills };
 }
+
+/** A claim's computers with none to give: a phone setting's run with no phone, for what the claim lays from the setting
+ *  alone. */
+const noComposer = () => ({ computerForClaim: async () => ({ release: async () => {} }) });
+
+test("codex: a desktop run's CODEX_HOME/skills holds desktop-computer, as Codex lists a revision's own skills", { timeout: 120_000 }, async (t) => {
+  const { skills } = await codexCall(t, "read", { path: ".agents/skills/desktop-computer/SKILL.md" });
+  assert.deepEqual(Object.keys(skills), ["desktop-computer"], "the kind skill is Codex's own");
+  assert.equal(skills["desktop-computer"], KIND_SKILLS.desktop.text);
+});
+
+test("codex: a phone run's CODEX_HOME/skills holds phone-computer, and the model's read of .agents/skills/phone-computer/SKILL.md answers it", { timeout: 120_000 }, async (t) => {
+  const { skills, answer } = await codexCall(t, "read", { path: ".agents/skills/phone-computer/SKILL.md" }, undefined, { kind: "phone", provider: "phone-harness" }, noComposer);
+  assert.deepEqual(Object.keys(skills), ["phone-computer"], "the kind skill is Codex's own");
+  assert.equal(skills["phone-computer"], KIND_SKILLS.phone.text);
+  assert.ok(answer?.includes("# Using a phone"), `the read answered the skill: ${answer?.slice(0, 300)}`);
+});
+
+test("pi: phone set to deny refuses a phone run's computer_act in phone's words, the phone then off for the run, and a script's nested computer_op after it short", async (t) => {
+  const { spec } = await specFor(t, { body: { tools: ["read"], computer: { kind: "phone", provider: "phone-harness" } }, settings: { phone: { permission: "deny" } } });
+  assert.deepEqual(await spec.gate({ callId: "p-act", tool: "computer_act", args: CLICK }), { deny: `${deniedText("phone")} ${computerOffWords("phone")}` }, "computer_act is refused in phone's deny words");
+  for (const args of [{ op: "apps.open", args: { id: "com.android.settings" } }, { op: "input.act", args: { actions: [] } }]) {
+    assert.deepEqual(await spec.gate({ callId: `p-${args.op}`, tool: "computer_op", args }), { deny: computerOffText("phone") }, `${args.op} is refused short`);
+  }
+});
 
 test("codex: a run of an agent whose computer is a desktop is handed computer_screenshot, computer_act and computer_request_handoff, and the model's computer_screenshot call runs", { timeout: 120_000 }, async (t) => {
   const { handed, calls, answer } = await codexCall(t, "computer_screenshot", {});
@@ -243,8 +272,17 @@ test("codex: an agent whose desktop's surface is code is handed every computer t
   assert.doesNotMatch(answer, /not available|Permission denied|error|refused/i, `computer_op ran: ${answer}`);
 });
 
-test("codex: desktop set to deny on this server refuses the model's computer_act call in the deny words naming desktop's setting", { timeout: 120_000 }, async (t) => {
-  const { handed, answer } = await codexCall(t, "computer_act", CLICK, DENY_DESKTOP);
-  assert.ok(handed.includes("computer_act"), `computer_act is handed, and the gate holds it: ${JSON.stringify(handed)}`);
-  assert.ok(answer?.includes(deniedText("desktop")), `refused in desktop's deny words: ${answer}`);
+test("codex: desktop set to deny on this server starts no desktop and hands Codex none of its tools or its skill, and the run's read runs to the run's end", { timeout: 120_000 }, async (t) => {
+  let launches = 0;
+  const counting = (made) => {
+    const composed = fauxComposer(made);
+    return { ...composed, computerDeps: { ...composed.computerDeps, launch: (...args) => { launches += 1; return composed.computerDeps.launch(...args); } } };
+  };
+  const { handed, calls, answer, skills } = await codexCall(t, "read", { path: "AGENTS.md" }, DENY_DESKTOP, FAUX_DESKTOP, counting);
+  assert.equal(launches, 0, "no desktop was made");
+  assert.deepEqual(DESKTOP.filter((name) => handed.includes(name)), [], `no desktop tool is handed: ${JSON.stringify(handed)}`);
+  assert.equal(skills["desktop-computer"], undefined, `no desktop skill in CODEX_HOME: ${JSON.stringify(Object.keys(skills))}`);
+  assert.deepEqual(calls, ["read"], "the model's read reached Codex");
+  assert.ok(answer !== undefined, "the read answered");
+  assert.doesNotMatch(answer, /Permission denied/, `the read was not refused: ${answer}`);
 });

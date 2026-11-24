@@ -23,14 +23,17 @@ test("every operation with a field marked x-agentrun-secret has a predicate regi
   assert.ok(marked.includes("saveToolKey"), `saveToolKey's values are marked: ${JSON.stringify(marked)}`);
   // A removal carries no body, so the operation is marked whole: it writes a secret all the same.
   assert.ok(marked.includes("deleteToolKey"), `deleteToolKey is marked as a whole: ${JSON.stringify(marked)}`);
+  // A harness's key (harness-keys.ts): its value marked, its removal marked whole.
+  assert.ok(marked.includes("saveHarnessKey") && marked.includes("deleteHarnessKey"), `the harness keys' writes are marked: ${JSON.stringify(marked)}`);
+  assert.equal(doc.paths["/settings/harness-keys/{harness_id}/{key}"].put.requestBody.content["application/json"].schema.properties.value["x-agentrun-secret"], true);
   const whole = structuredClone(doc);
   whole.paths["/test-only-whole"] = { delete: { operationId: "testOnlyWhole", "x-agentrun-secret": true } };
-  assert.deepEqual(mod.unguardedOperations(whole, mod.registeredOperations()), ["testOnlyWhole"], "an operation marked whole and unregistered is named");
-  assert.deepEqual(mod.unguardedOperations(doc, mod.registeredOperations()), [], "no marked operation lacks a predicate");
+  assert.deepEqual(mod.unguardedOperations(whole), ["testOnlyWhole"], "an operation marked whole and unregistered is named");
+  assert.deepEqual(mod.unguardedOperations(doc), [], "no marked operation lacks a predicate");
   // The check catches one: a marked operation no plane registered.
   const extra = structuredClone(doc);
   extra.paths["/test-only"] = { put: { operationId: "testOnlyUnguarded", requestBody: { content: { "application/json": { schema: { type: "object", properties: { token: { type: "string", "x-agentrun-secret": true } } } } } } } };
-  assert.deepEqual(mod.unguardedOperations(extra, mod.registeredOperations()), ["testOnlyUnguarded"], "an unregistered marked operation is named");
+  assert.deepEqual(mod.unguardedOperations(extra), ["testOnlyUnguarded"], "an unregistered marked operation is named");
 });
 
 test("every registered secret write is an operation of the document", async () => {

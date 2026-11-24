@@ -5,7 +5,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { hostToolOf } from "../dist/host-tools.js";
 import { permissionsOf } from "../dist/tool-plane.js";
-import { defaultPermission, settingsKeyOf } from "../dist/tool-gate.js";
+import { defaultPermission } from "../dist/tool-gate.js";
+import { builtinKeyOf } from "./gate-support.mjs";
 import { blurbOf, isHostTool, tableTools } from "../dist/tool-list.js";
 
 const REG = { name: "x", description: "x", parameters: {} };
@@ -14,6 +15,8 @@ const PINNED = {
   read: [["allow", "ask", "deny"], ["allow", "allow"], "read", "safe"],
   bash: [["allow", "ask", "deny"], ["allow", "ask"], "bash", "never"],
   ask_person: [["allow", "deny"], ["allow", "allow"], "ask_person", "safe"],
+  // It writes a file: a repeat of a save that finished finds its path taken and would answer it failed.
+  web_save: [["allow", "ask", "deny"], ["allow", "allow"], "web_save", "never"],
   browser: [["allow", "deny"], ["allow", "allow"], "browser", undefined],
   bash_background: [["allow", "ask", "deny"], ["allow", "deny"], "bash", "never"],
   bash_output: [["allow", "ask", "deny"], ["allow", "deny"], "bash", "safe"],
@@ -29,13 +32,13 @@ test("each pinned name is permitted, defaulted, keyed and replayed as written", 
   for (const [name, [permissions, defaults, key, replay]] of Object.entries(PINNED)) {
     assert.deepEqual([...permissionsOf(name)], permissions, `${name} permissions`);
     assert.deepEqual([defaultPermission(name), defaultPermission(name, { computer: false })], defaults, `${name} default`);
-    assert.equal(settingsKeyOf("pi", name), key, `${name} key`);
+    assert.equal(builtinKeyOf("pi", name), key, `${name} key`);
     assert.equal(hostToolOf(name, REG, {})?.replay, replay, `${name} replay`);
   }
 });
 
 test("the table's names are these, in this order", () => {
-  assert.deepEqual(tableTools(), ["read", "write", "edit", "bash", "ask_person", "web_fetch", "web_search", "browser", "subagent", "pdf_pages", "llm"]);
+  assert.deepEqual(tableTools(), ["read", "write", "edit", "bash", "ask_person", "web_fetch", "web_search", "web_save", "email_search", "email_read", "email_draft", "email_send", "email_file", "calendar_events", "browser", "subagent", "pdf_pages", "llm"]);
   assert.equal(blurbOf("web_search"), "Search the web");
   assert.equal(isHostTool("web_search") && !isHostTool("monid:faux/person/enrich") && !isHostTool("browser"), true);
 });

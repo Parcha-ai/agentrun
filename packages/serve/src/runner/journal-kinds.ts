@@ -86,19 +86,26 @@ export const KINDS = {
    *  later claim that asks the same turn again reads the first ask's (the commit of main a compile turn was asked at among
    *  them), never its own. Neither a call nor a message: the reader passes over it. */
   endOfRunKept: "agentrun.end-of-run.kept",
+  /** A replay run's or an audit shadow's grader verdict (learn/promote.ts Compared), from its end-of-run step, written on
+   *  the root before its end: its metrics carry it (`replay.compared`, `audit.compared`). Neither a call nor a message. */
+  compared: "agentrun.learning.compared",
   /** How the run's job's own turn ended (JobEndData: the end it gives the run, a CLI's error answer), as the claim that
    *  read it decided, written on the root before the end-of-run step asks its first turn. A claim that finds that turn
    *  open ends the run on the newest one, never working the job's end out again. Neither a call nor a message. */
   jobEnd: "agentrun.end-of-run.job",
-  /** What a learning run's claim laid of its seed: the learned skills it was given (`skills`, by name) and the learned
-   *  workflows its learned_workflow tool runs (`workflows`, by name). Written once per claim, on the root; the newest is
-   *  what the run was given. Neither a call nor a message. */
+  /** What a learning run's claim laid of its seed: the learned workflows its learned_workflow tool runs (`workflows`, by
+   *  name). Written once per claim, on the root; the newest is what the run was given. Neither a call nor a message. */
   learningLaid: "agentrun.learning.laid",
   /** The claim made the run a computer of its own (`computer`: its kind, desktop, sandbox or phone; computer-for-claim.ts
    *  ClaimComputer.made): written on the root at the claim's first pass. A later claim's computer is a new one, and this
    *  entry is how that claim knows the run had one when nothing of the earlier claim's is left to let go (a server's
    *  stop, a park): computer-journal.ts hadComputer. Neither a call nor a message, and never on the Timeline. */
   computerMade: "agentrun.computer.made",
+  /** The run's computer is off for the rest of the run (`computer`: its kind): written on the root by the claim's gate at
+   *  the first deny of a call of that computer's own tools (tool-gate.ts RunGate.computerOff), whose refusal said so. A
+   *  later claim of the run starts no computer and refuses each call of its tools short: computer-journal.ts
+   *  computerTurnedOff. Neither a call nor a message, and never on the Timeline. */
+  computerOff: "agentrun.computer.off",
   /** A grade's feedback round (runner/feedback-round.ts): the run opened again on a grade's words, asked no turn of the
    *  job's; its next end's end-of-run turn reads them (`text`, the `round`, whether the grade said right, the workflow a
    *  revision is asked of). Written on the root by the commit that takes the round's steer row. Neither a call nor a
@@ -109,13 +116,6 @@ export const KINDS = {
    *  sent it to. On the node log (NODE_LOG_SESSION), for GET /runs/{id}/graph's nodes' `model` (graph-view.ts). Neither a
    *  call nor a message. */
   nodeModel: "agentrun.node.model",
-  /** A learning run's generality pre-check (learn/general.ts), its Jev requests about to leave: committed and made
-   *  durable before they do, as a grade request's record is (learning-ask.ts bookedAsk), so a restart that finds one with
-   *  no answer after it books what they spent as unknown (null) before it asks again. Paid, and Jev dedupes none. */
-  learningGeneralSent: "agentrun.learning.general.sent",
-  /** That check's end, kept before the grader starts: its scores, or why it could not run (`unchecked`), and what it spent.
-   *  A restart reuses it and never asks Jev again. */
-  learningGeneral: "agentrun.learning.general",
   /** A learning run's grade: the verdict and what it spent, written before its merge (a resumed run never asks again). */
   learningGraded: "agentrun.learning.graded",
   /** A learning run's merge: the new main and its commit, with the run's end. */
@@ -211,8 +211,13 @@ export interface CallStartData {
    *  so no waiting result shows for it, as on pi. */
   readonly parked?: true;
   /** A tool that only nests calls (tools_call, codemode; HostTool.nests): its calls start after it, each its own, and it
-   *  runs again whole after a crash, so a start a crash left open is never ended interrupted (adapter-loop.ts). */
+   *  runs again whole after a crash, so a start a crash left open is never ended interrupted (adapter-loop.ts). A call of
+   *  a harness's own that calls nest in (Codex's code-mode `exec`, SessionIO.ownCalls) is marked so too: its harness ends
+   *  it after the resume, from its CLI's answer to it. */
   readonly nests?: true;
+  /** The call of the harness's own this one runs inside (Codex's code-mode `exec`, SessionIO.ownCalls): its rows sit under
+   *  that call's, as a call a host tool that `nests` made sits under it by its id (`<callId>/<key>`). */
+  readonly parent?: string;
   /** The harness's working directory (a CLI's), which an absolute path in `input` is built from: the run's rows name a
    *  path under it by its name in the workspace (store-reads/journal.ts runTimeline). */
   readonly cwd?: string;
@@ -226,6 +231,9 @@ export interface CallEndData {
   readonly callId: string;
   readonly status: CallStatus;
   readonly output?: unknown;
+  /** On an `interrupted` end the run's own end wrote (a CLI's call still open: adapter-loop.ts openCalls):
+   *  nothing ended it, so it has no outcome. Its row reads interrupted, never failed (CALL_ENDED_WITH_RUN). */
+  readonly withRun?: true;
   /** When it was written (ms, the loop's clock): the Timeline dates the result's row by it. */
   readonly at?: number;
 }
@@ -255,6 +263,8 @@ export interface MessageData {
    *  answer's output tokens when known. The loop reads it as pi's stopReason (loop.ts cutLast). */
   readonly stopReason?: "length";
   readonly outputTokens?: number;
+  /** The limit it was cut at was the run's cap's (turn_end's capCut): the cap, and the least cap that finishes it. */
+  readonly capCut?: { readonly capUsd: number; readonly raiseToUsd: number };
   /** When it was written (ms, the loop's clock): the Timeline dates the message's row by it. */
   readonly at?: number;
 }
@@ -270,6 +280,9 @@ export interface AskData {
   readonly tool: string;
   /** The call's input as the gate saw it; null when it had none. */
   readonly args?: unknown;
+  /** Why a call its setting allows asks a person anyway (a tool's own ask, tools.ts ToolEntry.asks): the gate's alone,
+   *  never one of the call's arguments. */
+  readonly because?: string;
   /** When it was asked (ISO), from the loop's clock; a re-ask on a resume keeps the first. */
   readonly requestedAt?: string;
   /** Its approval price (a catalog tool's, the spec's mcp priceOf); null when it has none. */
@@ -297,6 +310,43 @@ export interface AnswerData {
   /** The allow a stop overrode (main's ApprovalAnswer.superseded): the call was approved but had not finished when its
    *  run was stopped, so the stop withdrew it. Kept as it was given. */
   readonly superseded?: { readonly decision: "allow"; readonly answeredAt?: string };
+}
+
+/** The calls of a tool a run's journal shows (toolCalls): `ran`, the ids run to a good end, and `unnamed`, those pi
+ *  recorded with no id; `ended`, every id with a result of any kind (done, an error, a refusal or a deny). */
+export type ToolCalls = { readonly ran: ReadonlySet<string>; readonly unnamed: number; readonly ended: ReadonlySet<string> };
+
+/** The calls of `tool` `entries` show: a CLI's (agentrun.call.start and its end) and pi's (a pi.tool-result of it), each
+ *  call id once, however many records say it. Run to a good end: a CLI's end done, a pi result that is no error. */
+export function toolCalls(entries: readonly { readonly kind: string; readonly data?: unknown; readonly model?: unknown }[], tool: string): ToolCalls {
+  const started = new Set<string>();
+  const ran = new Set<string>();
+  const ended = new Set<string>();
+  let unnamed = 0;
+  for (const entry of entries) {
+    if (entry.kind === KINDS.callStart && (entry.data as CallStartData).tool === tool) started.add((entry.data as CallStartData).callId);
+    else if (entry.kind === KINDS.callEnd && started.has((entry.data as CallEndData).callId)) {
+      ended.add((entry.data as CallEndData).callId);
+      if ((entry.data as CallEndData).status === "done") ran.add((entry.data as CallEndData).callId);
+    } else if (entry.kind === "pi.tool-result") {
+      const result = (entry.model as { toolName?: unknown; toolCallId?: unknown; isError?: unknown }[] | undefined)?.[0];
+      if (result?.toolName !== tool) continue;
+      const id = typeof result.toolCallId === "string" && result.toolCallId ? result.toolCallId : undefined;
+      if (id) ended.add(id);
+      if (result.isError === true) continue;
+      if (id) ran.add(id);
+      else unnamed++;
+    }
+  }
+  return { ran, unnamed, ended };
+}
+
+/** How many calls of `tool` `entries` show run to a good end (toolCalls): a call refused, denied, failed or not ended is
+ *  not counted. What a tool's own ask counts (tools.ts AskContext.ran), with the calls its gate let through and that
+ *  have no result yet (adapterRunGate). */
+export function ranCalls(entries: readonly { readonly kind: string; readonly data?: unknown; readonly model?: unknown }[], tool: string): number {
+  const calls = toolCalls(entries, tool);
+  return calls.ran.size + calls.unnamed;
 }
 
 /** Whether `entries` hold a call's finished result: an agentrun.call.end not cut (a CLI's call), or a pi.tool-result
@@ -336,6 +386,8 @@ export function withdrawnAnswers(entries: readonly { readonly kind: string; read
 }
 
 export interface EndData {
+  /** Immutable moved-project candidate or explicit uncertainty, committed atomically with this run end. */
+  readonly projectCheckpoint?: import("../source-sync/checkpoints.js").ProjectCheckpoint;
   readonly state: "ended" | "stopped" | "failed";
   readonly summary?: string;
   /** How the run ended beside its state (the store's RunOutcome): an escalation's 'escalated'; a stopped end's 'stopped'
@@ -344,6 +396,10 @@ export interface EndData {
   /** What the run cost, as its end knows it: null when unknown, which clears a cost an earlier end of the run stored (a
    *  follow-up's end). Absent: the stored cost is left as it is. */
   readonly costUsd?: number | null;
+  /** Whether `costUsd` is the most the run can have cost, not its cost (RunPatch.costUpperBound; the row reads it back
+   *  as RunRow.costAtMostUsd, its costUsd then null): it counts a
+   *  request cut with no answer at what its cap held for it. Written with the cost; absent, false. */
+  readonly costUpperBound?: boolean;
   /** The run's metrics (the old StoredMetrics JSON). */
   readonly metrics?: unknown;
   /** A completed workflow run's output: the value at its workflow's output path (readWorkflowRun's `output`, null when it
@@ -354,10 +410,12 @@ export interface EndData {
 }
 
 /** How a run's job's own turn ended (KINDS.jobEnd): the end it gives the run (its summary cut of every secret the runner
- *  holds), and a CLI's error answer the end writes as its error row (`failedWith`). */
+ *  holds), a CLI's error answer the end writes as its error row (`failedWith`), and the end's time (`endedAt`): the run
+ *  reads that end while it looks back, and its end is written at that time (feedback-round.ts KeptEnd). */
 export interface JobEndData {
   readonly end: EndData;
   readonly failedWith?: string;
+  readonly endedAt: number;
 }
 
 /** An escalated workflow run's review as its end keeps it: the escalation's kind, the escalate node's label (else the node

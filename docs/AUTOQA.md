@@ -6,7 +6,8 @@ discovery.
 
 Drafted from the first whole-platform QA run (2026-11-01, main `ba6a76271`). Sources: `AGENTS.md`,
 `packages/serve/README.md`, `packages/serve/src/{cli,server,harness,adapters,runs,tools,tool-keys}.ts`,
-`apps/console/src/App.tsx`.
+`apps/console/src/App.tsx`. Last walked against the published `v0.1.0-beta.46` (2026-11-19): install, kernel, runs
+on every harness, API and console.
 
 ## Unattended scope
 
@@ -31,10 +32,13 @@ Start it with the launcher, which hands secrets to the server over a pipe:
 `packages/serve/launcher/agentrun-serve --data DIR --port N`, on its default loopback listen
 address.
 `node packages/serve/dist/cli.js` also works, but then the secrets stay in the environment.
+To walk a published release, `npm i @parcha/agentrun-serve@<version>` into a fresh folder and start its
+`node_modules/.bin/agentrun-serve` the same way.
 
-The banner prints `AGENTRUN_BASE_URL`, then the token (on the first start only), then `Open <url>/` and
-`Set your password: <url>/setup`. Wait for the `Open` line. The token is also in `DIR/.token` (mode 0600). Read it from
-there and never print it.
+The launcher's banner prints `AGENTRUN_BASE_URL`, then the token (on the first start only), then `Open <url>/` and
+`Set your password: <url>/setup`. Wait for the `Open` line. `npx @parcha/agentrun`, a new user's start, prints one line
+on stdout instead once the server answers, `AgentRun is running at <url>/`; on that path, wait for that line. The token
+is also in `DIR/.token` (mode 0600). Read it from there and never print it.
 
 | Env | Why |
 | --- | --- |
@@ -42,8 +46,18 @@ there and never print it.
 | `XDG_CONFIG_HOME` | Point it at a QA dir so your own config directory is never touched. The seal key is `AGENTRUN_SEAL_KEY`, else `<data>/seal/seal.key`, made at the server's first start; nothing is kept under the config home. |
 | `AGENT_MODEL_BASE_URL`, `AGENT_MODEL_API_KEY`, `AGENT_MODEL` | Gateway for the pi and codex harnesses (OpenAI Responses; pi sends a Claude model on Anthropic's Messages to the same gateway). Point them at your gateway (its `/v1` base URL) and set `AGENT_MODEL` to a small, cheap model for smokes. |
 | `ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY` | The claude-agent harness only, on Anthropic Messages. Your gateway may serve `/v1/messages` too. |
+| `OPENROUTER_API_KEY` | Runs every harness through OpenRouter, the Codex and pi rows included. With it alone, pi defaults to `openrouter/openai/gpt-6.1-sol`, codex and opencode to `openai/gpt-6.1-sol` and claude-agent to `anthropic/claude-sonnet-5.5`, each on OpenRouter; set `AGENT_MODEL` for another (pi takes `openrouter/<vendor>/<model>`). Set it in the server's environment from your secret store by name; never print or log the value. Cap each live run with `max_cost_usd`. |
 | `AGENTRUN_MAX_RUNS` | The most runs a runner holds at once (the server's `--max-runs`, a runner process's `--loops`), and the `max_concurrent_runs` capabilities report. It does not refuse a start: a run past it waits `queued` until a runner has a free loop. |
 | `PARALLEL_API_KEY`, `BROWSERBASE_API_KEY` + `BROWSERBASE_PROJECT_ID`, `TYPESAFE_API_KEY` | Optional. They unlock web_fetch via Parallel, the `browser` tool, and Jev decisions. Without a key, only the checks that need it are UNTESTED: web_fetch's direct fetch and its private-host refusal need none and always run. |
+| `AGENTRUN_TELEMETRY=0` | Set it on every server QA starts, so a QA pass sends no usage counts (`--faux` already turns them off). |
+| `AGENTRUN_WEBHOOK_PRIVATE_TARGETS=1` | Only where a check sends the webhook to a receiver on loopback: without it, `PUT /v2/settings/webhook` to a loopback address is a 422 (a private network or this machine). It takes a restart. |
+
+On a box with a local key broker that holds the model key, point the gateway rows at the broker instead and keep the key
+out of every process: `AGENT_MODEL_BASE_URL=<broker>/v1` and `AGENT_MODEL_API_KEY=<dummy>` for pi and codex (the
+gateway form, with `AGENT_MODEL=<model>`), and `ANTHROPIC_BASE_URL=<broker>` and `ANTHROPIC_API_KEY=<dummy>` for
+claude-agent. `<dummy>` is a random string, never a word (see [Model and key caveats](#model-and-key-caveats): a word as a key stops learning).
+Through a broker, the OpenRouter-native forms (codex managed through OpenRouter, pi's `openrouter/<vendor>/<model>`)
+are not covered; QA reports them as a gap.
 
 Stop the server with SIGTERM to its exact PID. The runner beside it stops every run where it can resume, and the next claim carries on from the run's journal.
 
@@ -61,17 +75,21 @@ Stop the server with SIGTERM to its exact PID. The runner beside it stops every 
 
 Each row: entry point, then what makes it pass.
 
-1. **Boot + health**: banner `Open` line; `GET /v2/health` → `200 {"status":"ok","checks":{"store":"ok","disk":"ok"}}`.
+1. **Boot + health**: the start's ready line (`Open <url>/` from the launcher, `AgentRun is running at <url>/` from npx); `GET /v2/health` → `200 {"status":"ok","checks":{"store":"ok","disk":"ok"}}`.
 2. **Capabilities**: `GET /v2/capabilities` → `harnesses[]` (`pi`, `claude-agent`, `codex`, each with `available`),
-   `models.source`, `tools[]` with `available`/`missing`, `features`, and `limits.max_concurrent_runs`.
+   `models.source`, `tools[]` with `available` (an unavailable one says why in `reason`, and a tool short of a key
+   names its variables in `missing`), `features`, and `limits.max_concurrent_runs`.
 3. **OpenAPI**: `GET /v2/openapi.json` → 3.1 document.
 4. **Auth**: no token → 401; wrong token → 401 plus an `auth_failed` log line naming the reason and never the token;
    bad Host → 403.
 5. **Agent create**: `POST /v2/agents {definition:{id,name,instructions,harness?,model?,tools}}` → 201 with
-   `warnings: []`. Make one agent per harness. claude-agent needs `model: "anthropic/<id>"`, and codex/pi take the
-   host default.
+   `warnings: []`. Make one agent per harness. A definition with no `model` runs on its harness's `default_model`
+   (`harnesses[]` in capabilities; claude-agent's is an `anthropic/<id>`).
 6. **Agent edit**: `PUT /v2/agents/{id}/definition` with `If-Match: <home_etag>` → a new revision. A stale If-Match
-   → 412. `tools:["bash"]` → 422. Check `GET /v2/agents/{id}/revisions`.
+   → 412. A tool name the server does not bind (`tools:["nosuchtool"]`) → 422 at `definition.tools[0]`.
+   `tools:["bash"]` is a 422 only where the agent runs on a runner with no shell (Mode 1: `place: {mode: "runner"}`,
+   or no place on a server with no box); with no place where Docker is set up, it saves on the docker sandbox. Check
+   `GET /v2/agents/{id}/revisions`.
 7. **Agent archive**: archive → hidden from `GET /v2/agents`, listed under `?archived=true`. A new run → 409
    `agent_not_runnable`. Then unarchive.
 8. **Runs per harness × effort**: `POST /v2/agents/{id}/runs {input:{content}, effort:"low"|"medium"}`. Poll
@@ -80,7 +98,8 @@ Each row: entry point, then what makes it pass.
    calls in one turn): see the open findings.
 9. **Spend cap**: a priced model and a tiny `max_cost_usd`. A cap that can't buy the next request's least pauses the run:
    `input_required` and `waiting`, `error` null, `pending.kind: "budget"` (with `cap_usd`, `spent_usd`, `needs_usd`,
-   `suggested_cap_usd`), a `spend_cap_reached` row on the timeline, the refused request unsent, no files; a higher cap
+   `least_cap_usd`, `suggested_cap_usd`), the timeline's `phase` row `Paused at the run's cap` and `waiting` row
+   `Waiting for you to raise the cap`, the refused request unsent, no files; a higher cap
    sends it. A cap that buys a smaller request limits it (its output is held to what the cap buys) and the run can
    complete: e.g. `0.01` on luna completes and `0.0001` pauses. Only a refusal no cap fixes ends `failed`
    (`spend_cap_reached`). See serve's README, "A run paused at its cap".
@@ -98,8 +117,8 @@ Each row: entry point, then what makes it pass.
     resumes and completes with no duplicate writes. The prompt must say "do not reply or stop until …", or the model may
     end its turn with a progress note before the signal and the case proves nothing.
 14. **web_fetch**: a revision naming `web_fetch`, fetching `https://example.com` → `ok:true` with `via: direct` (or
-    `parallel` with the key). A loopback URL and the link-local cloud metadata address → `refused: … not a public
-    host`.
+    `parallel` with the key). A loopback URL on port 80 and the link-local cloud metadata address → `refused: … not a
+    public host`; a URL on any port but 80 or 443 is refused for its port first (`refused: port N is not 80 or 443`).
 15. **Workflow run**: create an agent from `packages/dsl/skills/author/examples/review-release-notes.json`, run it on
     its `.input.json` → `completed`, with `result.output.changes` length 2. `GET /v2/runs/{id}/graph` → `totals`.
 16. **Stats/analytics**: `GET /v2/stats` → `analytics.{totals,time,by_harness_effort,by_day,by_source,tools}`.
@@ -113,12 +132,21 @@ Each row: entry point, then what makes it pass.
     unchanged. On a machine with thousands of sessions it takes minutes.
 20. **Console UI** (a headless Chromium of your own on loopback, not a browser other work shares): setup, sign-in,
     Mission Control (`#/mission`), Agents (`#/agents`), agent page (`#/agents/<id>`), editor
-    (`#/agents/<id>/edit`, every step through History), New agent (`#/agents/new`, **create with the defaults**),
+    (`#/agents/<id>/edit`, every step through History), New agent (`#/agents/new`, **create with the defaults**; the
+    blank agent's Send request waits for Instructions),
     Playground (`#/playground`: send a run, then "Open this run" to follow it live), Runs plus a state filter
     (`#/runs?status=cancelled`), run detail tabs Report/Timeline/Files and the file viewer, and a workflow run's
     Graph. Capture console errors and HTTP ≥ 400 per page. The page CSP is
     `default-src 'self'` (plus the Keys page's provider icons from Google's favicon service), so any violation is a
     finding.
+21. **Run trace**: after a run that calls a tool, `GET /v2/runs/{id}/trace` → `model_requests` (`priced` on pi,
+    `not_recorded` on a CLI harness, `tokens_only` for a workflow run) and `spans[]`: on pi, one `model` span per
+    request with `tokens` and `usd`, whose `usd` sum to the run's `cost.usd`, and one `tool` span per call whose
+    `parent_id` is the request that made it. In the console the run's Dev tools tab lists the same spans, each with
+    its bar on the time axis; a row opens its panel. The table is one stop for the Tab key: the arrow keys move from
+    row to row, Enter opens a row's panel, Tab goes into it and Escape closes it, from the table or the panel, and
+    returns to the row. Zoom in lists
+    only the calls that ran in the part of the run that shows, and says how many.
 
 ## Subsystems
 
@@ -140,9 +168,9 @@ same ground with no key.
 
 | | Names on main |
 | --- | --- |
-| Serves | `POST /v2/agents/{id}/runs` (`input`, `revision`, `effort`, `max_cost_usd`), `GET /v2/runs`, `GET /v2/runs/{id}`, `GET /v2/runs/{id}/timeline` (pages or SSE), `POST /v2/runs/{id}/{messages,stop,cancel,pause,resume}`, `GET /v2/runs/{id}/graph`, `GET /v2/usage`, and `harnesses[]` in `GET /v2/capabilities` |
+| Serves | `POST /v2/agents/{id}/runs` (`input`, `revision`, `effort`, `max_cost_usd`), `GET /v2/runs`, `GET /v2/runs/{id}`, `GET /v2/runs/{id}/timeline` (pages or SSE), `POST /v2/runs/{id}/{messages,stop,cancel,pause,resume}`, `GET /v2/runs/{id}/graph`, `GET /v2/runs/{id}/trace`, `GET /v2/usage`, and `harnesses[]` in `GET /v2/capabilities` |
 | Run fields others read | `status`, `state`, `result.final_answer`, `error.code` (`spend_cap_reached`, `moderated`, `run_failed`, `escalated`), `cost.usd` (`null` when unknown) |
-| Journal | In the run's rows of the store (`pi_entries`, `pi_tasks`, `pi_submissions`), from `packages/serve/src/timeline`: `REQUEST_STARTED` (`heldUsd`, `capRefused`), `REQUEST_ENDED` (`heldUsd`, `unsent`), `REQUEST_COST`, `REQUEST_REFUSED`, `REQUEST_COST_PENDING`, `REQUEST_COST_LATE`, `REQUEST_CONTINUED`. Read through `timelineOf` and `runMetricsOf` |
+| Journal | In the run's rows of the store (`pi_entries`, `pi_tasks`, `pi_submissions`). A request's booking is `runner.request` and `runner.turn` (`packages/run-adapters/src/runner.ts` `RUNNER_RECORDS`); a pause is `agentrun.budget`, a raise `agentrun.raise` (`runner/journal-kinds.ts`); the request marks are `REQUEST_*` in `packages/serve/src/timeline`. Read through `timelineOf` and `runMetricsOf` |
 | Run directory | `DIR/disk/agents/<agent>/runs/<id>/work/`; the run's record is in the store, not its folder. The run's claim is its row in `runs` (`epoch`, `runner`, `claimed_until`), and a message, stop, cancel, raise or approval is a row of `commands` that its runner reads |
 | Adapters it calls | `dispatch.ts` reads the run's launch record and picks its loop (`harness-loops.ts` `resolveRunnerLoop`); `adapter-loop.ts` drives an `AgentAdapter` (`check`, `open`) for a `SessionSpec`: pi is `runner/adapters/pi.ts`, the others are `packages/run-adapters-*`. The cap is the loop's `beforeRequest` on the run's model port (`modelPortFor`), the one ledger for every harness; a CLI harness's requests reach it through `startModelProxy` under a `ProviderPolicy` |
 | Takes from the tool plane | `TOOLS` (`ToolEntry`, `tools.ts`); a run's session carries `HostTool[]`, each with its `replay` class (tool-list.ts) (`safe` or `never`), which the loop's side-effect rule (`runner/side-effects.ts`) reads before a call |
@@ -185,10 +213,13 @@ The journal is the run's rows of the store's `pi_entries` table.
 1. **Each harness answers.** For every entry of `harnesses[]` with `available: true`, a run ends `completed` with
    `result.final_answer` set and `cost.usd` a number. Each paid request is counted once. Alone: pi through the CLI
    (`What is six times seven?`); claude-agent and codex in `harness-run`, `claude-run` and `codex-run`.
-2. **The cap refuses before anything is sent.** `max_cost_usd: 1`, below one request's worst case: the run pauses,
-   `input_required` and `waiting`, `error` null, `pending.kind: "budget"` (`spent_usd` 0, `needs_usd` the request's
-   least), `result: null`, `cost.usd: 0`. The journal's only request mark is `agentrun.request_started` with
-   `capRefused: true`, and a higher cap sends it (`PATCH /v2/runs/{id}` `{max_cost_usd}`). Only a refusal no cap
+2. **The cap refuses before anything is sent.** `max_cost_usd: 0.05`, below one request's least ($0.1024: 1,024
+   output tokens at $100 a million): the run pauses, `input_required` and `waiting`, `error` null,
+   `pending.kind: "budget"` (`spent_usd` 0, `needs_usd` 0.1024, `least_cap_usd` 0.11), `result: null`, `cost.usd: 0`.
+   The journal holds `agentrun.budget` and no `runner.request`; the timeline's usage row says no model request was
+   sent. A higher cap sends it (`PATCH /v2/runs/{id}` `{max_cost_usd}`), its `runner.request` holding the worst case
+   (`heldUsd` 1.6384). A cap at or above the least but under the worst case (`1`) sends the request, held to what the
+   cap buys, and the run can complete. Only a refusal no cap
    fixes (a spend nobody knows, no output ceiling, no price) ends `failed`, `spend_cap_reached`. Alone: pi through the
    CLI, `adapter-pi-cap-park`, `cap-raise` and `runner-cap-raise`; claude-agent and codex in `claude-run`, `codex-run` and `cap-raise`.
 3. **A stopped request counts at the worst case the cap held.** `Take your time.` at `max_cost_usd: 2`; once it reads
@@ -197,8 +228,9 @@ The journal is the run's rows of the store's `pi_entries` table.
    the cap; if what is left can't buy that request's least, the run pauses at it (`input_required`,
    `pending.kind: "budget"`, `spent_usd` 1.6384) with nothing more sent. Either way the run never ends `failed` for room.
    At `10` the follow-up completes. `cost.usd` is `null` both ways. Read before `final`, at the first poll that shows the terminal status, it
-   can still be the live figure (`0`, or `0.0004` after the follow-up). The stopped request's `agentrun.request_ended`
-   mark carries `heldUsd: 1.6384`. Alone: pi through the CLI, and `cap-unknown`. For claude-agent and codex,
+   can still be the live figure (`0`, or `0.0004` after the follow-up). The stopped request's `runner.turn` carries
+   `bookedUsd: 1.6384` (`rule: "answered:error"`), and the follow-up's `runner.request` holds what is left (`heldUsd`
+   0.3616 at a cap of 2). Alone: pi through the CLI, and `cap-unknown`. For claude-agent and codex,
    run-adapters' `held-worst-case.test.mjs` covers a request cut short, and `adapter-cli-record` a tool call a crash cut
    (ended interrupted when the session opens again), on a scripted CLI adapter, not the real binaries. A runner lost
    with a request out is covered on pi only, by `adapter-pi-cap-raise-crash`; no test crashes claude-agent or codex
@@ -212,7 +244,8 @@ The journal is the run's rows of the store's `pi_entries` table.
    the server's own PID; the runner beside it stops the run where it can resume. Start it again on the same `--data` and
    make the file: the run ends `completed` with `Now.`. Crash: with a runner of its own (core row 12), `kill -KILL` the
    runner named in the run's row (`runs.runner`); once the claim lapses, a runner started again claims the run, which
-   completes, each paid request counted once. Alone: `store-resume`, `store-claim-lease`, `runner-close-claim` and
+   completes, each paid request counted once. The runner subcommand takes no `--faux`, so the crash needs a live
+   model; with no key, it is the tests'. Alone: `store-resume`, `store-claim-lease`, `runner-close-claim` and
    `runner-process`; `adapter-pi-claim-lost` for a claim lost mid-turn, and `adapter-pi-cap-raise-crash` for a runner lost
    around a raise's follow-up.
 6. **A multi-tool turn completes on claude-agent and codex.** Two tool calls in one model response end `completed`,
@@ -235,7 +268,7 @@ land (native and picked web search and tool settings, monid on every harness, th
   - the run's `work/` directory.
 - Gives back:
   - tool registrations per harness, and one journal entry per call;
-  - `GET /v2/capabilities` `tools[]` (`name`, `harnesses`, `missing`);
+  - `GET /v2/capabilities` `tools[]` (`name`, `harnesses`, `available`, `reason`, `missing`);
   - `GET/PUT/DELETE /v2/settings/tool-keys` (keys by name, sealed at rest, never returned);
   - files the tools write under `work/` (`work/evidence/`).
 
@@ -251,10 +284,11 @@ land (native and picked web search and tool settings, monid on every harness, th
 
 **Checks when the tool plane changed.**
 1. Every name in `GET /v2/settings/tool-keys` `unlocks` is a tool `GET /v2/capabilities` binds, on the harnesses it lists,
-   and `missing` names the key each tool still needs.
+   an unavailable tool says why in `reason`, and `missing` names the variables a tool short of a key still needs.
 2. `web_fetch` refuses loopback,
    private, link-local and metadata addresses and ports other than 80/443, at the first hop and after a redirect; a
-   refused URL is never sent to Parallel.
+   refused URL is never sent to Parallel, Firecrawl or Exa. With no Parallel key `web_fetch` reads through keyless
+   Firecrawl (`via: "firecrawl-keyless"`), which is sent the URL; Firecrawl refusing it, the guarded direct fetch.
 3. A tool key reaches only a run that names a tool it unlocks, over the pipe, never in any process's environment; a saved
    key exists on disk only sealed (no plaintext under the data directory).
 4. On claude-agent and codex, the host tools (`read`, `write`, `edit`, `web_fetch`, and
@@ -263,9 +297,11 @@ land (native and picked web search and tool settings, monid on every harness, th
 5. A monid endpoint's call (`monid:<provider>/<endpoint>`) is sent once and never retried; a wallet refusal (402) or a workspace control (`BLOCKED`) comes back
    by name; an answer over 60,000 characters is filed under `work/evidence/monid/`.
 6. On pi with no native search, `web_search` searches through Parallel where the server holds a Parallel key (its fee a
-   `Tool cost` line), else Exa's keyless endpoint with no key: only `{query, numResults}` leaves the server, over IPv4;
-   past Exa's free limit it is tried once more, then a tool error in our words (`Free web search is rate-limited right
-   now…`), never Exa's fix text and never a hang.
+   `Tool cost` line), else Firecrawl's keyless endpoint with no key and no header of ours (only `{query, limit}` leaves
+   the server), with Exa's keyless endpoint behind it (only `{query, numResults}`, over IPv4). Firecrawl's free limit
+   spent turns it off for the run and Exa answers the same call; both off, `web_search` answers `search is unavailable
+   for the rest of this run`. A rate limit is a tool error in our words (`Free web search is rate-limited right now…`), never Firecrawl's
+   or Exa's fix text and never a hang.
 
 ### Places (computers, workspace, files)
 
@@ -296,7 +332,8 @@ run's claim from the kernel. It gives back:
 - Serve, an agent's place (`place.ts`, `computer-setting.ts`): `definition.place` is `{mode: "runner"}` or
   `{mode: "sandbox", box}`, the API view of the computer setting (`runner` is kind `none`, `sandbox` a sandbox on that
   provider; a desktop, phone or browser reads `runner`). A setting this server cannot serve saves with a warning at
-  `definition.place`, and its run is `409 agent_not_runnable` in the same words.
+  `definition.computer` (a place saves as the computer setting it stands for), and its run is `409 agent_not_runnable`
+  in the same words.
 - Serve, a run's files: `GET /v2/runs/{id}/files` and `GET /v2/runs/{id}/files/{path}`; and what a run is told of them
   (`packages/serve/src/run-manifest.ts`): `firstMessage` adds one line to an agentic run's first message, `Files for this
   run: "inputs/<path>" (<size>), ...`, each name quoted, at most `MANIFEST_ENTRIES` (20), from the run's `work/inputs/`,
@@ -327,7 +364,8 @@ npm run test:docker -w @parcha/agentrun-computer` (without the variable, every D
 **Checks when it changed.**
 
 1. **Place and computer setting**: `place.test.mjs` and `computer-setting.test.mjs` pass. Each wrong shape is a 422 at
-   `definition.place`, and nothing is saved; a setting this server cannot serve saves with a warning, and its run is 409
+   `definition.place`, and nothing is saved; a setting this server cannot serve saves with a warning at
+   `definition.computer`, and its run is 409
    `agent_not_runnable` in the same words; an edit with no place keeps the agent's; a place and a computer that disagree
    are refused.
 2. **Computers and keys**: `computers.test.mjs` and `computers-route.test.mjs` pass. A kind no provider can serve here is
@@ -375,7 +413,7 @@ npm run test:docker -w @parcha/agentrun-computer` (without the variable, every D
 ### Console, import and analytics
 
 **Seam.** Takes the `/v2` routes the console reads: `/agents`, an agent's `/revisions` and `/runs`, `/runs` and a
-run's `/timeline`, `/graph` and `/files`, `/stats` with its `analytics` block, `/usage`, `/capabilities` and
+run's `/timeline`, `/trace`, `/graph` and `/files`, `/stats` with its `analytics` block, `/usage`, `/capabilities` and
 `/settings/tool-keys`. Also the agent store's `run_metrics` and `run_tool_metrics`, which `/stats` sums. Gives back
 `/v2` writes only: create, revise and archive an agent; start a run, message it, stop, cancel or archive it. `import`
 gives the store its runs through `AgentStore.importRun`, each with its `run_metrics`.
@@ -420,7 +458,7 @@ node --input-type=module -e '
 4. Mission Control shows the same totals as `/v2/stats` for a date range (`?from=&to=`). So does the agent page's
    Analytics tab, once it is on main (#1354).
 5. An import's dry run counts what the import then stores, and a second import adds nothing.
-6. Settings → Tool keys never shows a value.
+6. Settings → API Keys never shows a value.
 
 ### Learning loop
 
@@ -430,6 +468,8 @@ _Written by the lane that owns this subsystem._
 
 - Run smokes on the cheapest capable model your gateway offers, and a stronger one only when a case needs it. Send
   all model traffic through your gateway.
+- A dummy model key is a random string, never a word. The server refuses to send a prompt that holds a value it keeps
+  secret, so a key that is an English word (`placeholder`) found in learning's compile prompt stops learning.
 - The claude-agent adapter maps the CLI's Haiku slot to the session model (`ANTHROPIC_DEFAULT_HAIKU_MODEL = model`),
   so no Haiku traffic leaves a claude-agent run.
 - Spend-cap worst case is the request's input bound at the dearer of the model's input and cache-write prices, plus its

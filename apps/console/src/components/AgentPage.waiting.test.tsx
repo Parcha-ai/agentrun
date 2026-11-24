@@ -3,19 +3,20 @@ import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
 import { AgentPage } from "./AgentPage";
 import type { Agent } from "@/lib/agentForm";
-import type { AgentLearning, LearningNote } from "@/lib/learning";
+import { SERVED_AGENT } from "@/test/agent";
+import type { AgentLearning, LearnedItem } from "@/lib/learning";
 
-// The agent page's Learning tab carries a count when learned items wait for the owner's OK (a risky note, a held skill or
-// workflow draft), so the wait is seen without opening the tab or finding the run that kept it. The count is the agent's
-// own `learning.pending` (GET /v2/agents/{id}): no read of what it learned for it. Absent (an agent that doesn't learn,
-// learning off on the server, a learning folder that could not be read) or 0: no count, never "0".
+// The agent page's Learning tab carries a count when learned workflow drafts wait for the owner's OK, so the wait is seen
+// without opening the tab or finding the run that kept it. The count is the agent's own `learning.pending`
+// (GET /v2/agents/{id}): no read of what it learned for it. Absent (an agent that doesn't learn, learning off on the
+// server, a learning folder that could not be read) or 0: no count, never "0".
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-const agentWith = (learning?: { pending: number }): Agent => ({ agent_id: "qa-learn", kind: "agentic", revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "QA learn", instructions: "Answer.", harness: "pi", skills: [], tools: [], learning: true }, ...(learning ? { learning } : {}) } as Agent);
-const TRUST = "trust-acme.md";
-const waiting: LearningNote = { file: TRUST, name: "Trust acme.com", description: "d", type: "feedback", status: "pending", superseded_by: null, runs: { given: 0, read: 0 }, text: "---\nname: Trust acme.com\ndescription: d\ntype: feedback\n---\nTrust it.\n", etag: '"card-trust"', origin: "run" };
-const view = (notes: LearningNote[]): AgentLearning => ({
-  agent: "qa-learn", main: "c1", index: "", notes: { items: notes, total: notes.length, next_cursor: null }, skills: [], workflows: [], log: { items: [], total: 0, next_cursor: null }, counts: { merged: 0, dropped: {}, in_progress: 0 }, impact: null,
+const agentWith = (learning?: { pending: number }): Agent => ({ ...SERVED_AGENT, agent_id: "qa-learn", kind: "agentic", revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "QA learn", instructions: "Answer.", harness: "pi", skills: [], tools: [], learning: true }, ...(learning ? { learning } : {}) } as Agent);
+const draft = (name: string): LearnedItem => ({ name, file: `workflows/${name}/workflow.json`, readme: `workflows/${name}/README.md`, description: "d", status: "pending", run: "run-1", bytes: 1, etag: `"card-${name}"` });
+const waiting = draft("trust-acme");
+const view = (workflows: LearnedItem[]): AgentLearning => ({
+  agent: "qa-learn", main: "c1", corrections: "", workflows, log: { items: [], total: 0, next_cursor: null }, counts: { merged: 0, dropped: {}, in_progress: 0 }, impact: null,
 });
 
 let root: ReturnType<typeof createRoot> | undefined;
@@ -32,7 +33,7 @@ async function open(agents: Agent[], opened = "runs") {
     statsOver: async () => ({}),
     capabilities: async () => ({ learning: { pending: true, approve: true } }),
     agentLearning: async () => { asked.push("learning"); return view(approved ? [] : [waiting]); },
-    approveNote: async () => { asked.push("approve"); approved = true; return { note: "", etag: '"v2"' }; },
+    approveWorkflow: async () => { asked.push("approve"); approved = true; return { text: "", etag: '"v2"' }; },
   };
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
@@ -44,17 +45,17 @@ async function open(agents: Agent[], opened = "runs") {
   return { asked, tab, badge, click };
 }
 
-describe("AgentPage, learned items waiting for the owner's OK", () => {
+describe("AgentPage, learned workflows waiting for the owner's OK", () => {
   it("counts them on the Learning tab from the agent's own learning.pending, with no read of what it learned", async () => {
     const p = await open([agentWith({ pending: 3 })]);
     expect(p.badge()?.textContent).toBe("3");
-    expect(p.badge()?.getAttribute("aria-label")).toBe("3 learned items wait for your OK");
+    expect(p.badge()?.getAttribute("aria-label")).toBe("3 learned workflows wait for your OK");
     expect(p.asked).toEqual(["agent"]);
   });
 
-  it("says one item in the singular", async () => {
+  it("says one workflow in the singular", async () => {
     const p = await open([agentWith({ pending: 1 })]);
-    expect(p.badge()?.getAttribute("aria-label")).toBe("1 learned item waits for your OK");
+    expect(p.badge()?.getAttribute("aria-label")).toBe("1 learned workflow waits for your OK");
   });
 
   it("shows no count at 0, nor when the server leaves the field out", async () => {
@@ -69,15 +70,15 @@ describe("AgentPage, learned items waiting for the owner's OK", () => {
   it("on the Learning tab, an approve reads the agent again, and the count goes with what it says", async () => {
     const p = await open([agentWith({ pending: 1 }), agentWith({ pending: 0 })], "learning");
     expect(p.badge()?.textContent).toBe("1");
-    await p.click("Approve Trust acme.com");
+    await p.click("Approve trust-acme");
     expect(p.asked.filter((x) => x === "agent")).toHaveLength(2);
     expect(p.asked.indexOf("approve")).toBeLessThan(p.asked.lastIndexOf("agent"));
     expect(p.badge()).toBeNull();
   });
 
   it("two approves in a row: an older read of the agent landing last never puts back a count the newer one cleared", async () => {
-    const other: LearningNote = { ...waiting, file: "skip-b.md", name: "Skip b.com", etag: '"card-skip"', text: waiting.text.replace("Trust acme.com", "Skip b.com") } as LearningNote;
-    const left = new Set([waiting.file, other.file]);
+    const other = draft("skip-b");
+    const left = new Set([waiting.readme, other.readme]);
     // GET /agents/{id} answers, in turn: the page's read (2 wait), the read after the first approve (1 waits: held until
     // released, so it lands last), the read after the second (none wait).
     let release!: () => void;
@@ -88,8 +89,8 @@ describe("AgentPage, learned items waiting for the owner's OK", () => {
       listAgentRuns: async () => ({ runs: [], next_cursor: null }),
       statsOver: async () => ({}),
       capabilities: async () => ({ learning: { pending: true, approve: true } }),
-      agentLearning: async () => view([waiting, other].filter((n) => left.has(n.file))),
-      approveNote: async (_id: string, file: string) => { left.delete(file); return { note: "", etag: '"v2"' }; },
+      agentLearning: async () => view([waiting, other].filter((n) => left.has(n.readme))),
+      approveWorkflow: async (_id: string, readme: string) => { left.delete(readme); return { text: "", etag: '"v2"' }; },
     };
     const host = document.body.appendChild(document.createElement("div"));
     root = createRoot(host);
@@ -98,8 +99,8 @@ describe("AgentPage, learned items waiting for the owner's OK", () => {
     const badge = () => [...host.querySelectorAll('[role="tab"]')].find((t) => /learning/i.test(t.textContent ?? ""))?.querySelector("[aria-label$='wait for your OK'], [aria-label$='waits for your OK']");
     const click = async (label: string) => { await act(async () => { (host.querySelector(`button[aria-label="${label}"]`) as HTMLButtonElement).click(); }); await settle(); };
     expect(badge()?.textContent).toBe("2");
-    await click("Approve Trust acme.com");
-    await click("Approve Skip b.com");
+    await click("Approve trust-acme");
+    await click("Approve skip-b");
     expect(badge()).toBeNull();
     // The first approve's read lands now, after the second's.
     await act(async () => { release(); });
@@ -122,13 +123,13 @@ describe("AgentPage, learned items waiting for the owner's OK", () => {
       statsOver: async () => ({}),
       capabilities: async () => ({ learning: { pending: true, approve: true } }),
       agentLearning: async () => view(approved ? [] : [waiting]),
-      approveNote: async () => { approved = true; return { note: "", etag: '"v2"' }; },
+      approveWorkflow: async () => { approved = true; return { text: "", etag: '"v2"' }; },
     };
     const host = document.body.appendChild(document.createElement("div"));
     root = createRoot(host);
     act(() => root!.render(createElement(AgentPage, { v2: v2 as never, agentId: "qa-learn", go: () => {}, tab: "learning", learning: "on" } as never)));
     await settle();
-    await act(async () => { (host.querySelector('button[aria-label="Approve Trust acme.com"]') as HTMLButtonElement).click(); });
+    await act(async () => { (host.querySelector('button[aria-label="Approve trust-acme"]') as HTMLButtonElement).click(); });
     await settle();
     const toggle = () => host.querySelector('button[role="switch"]') as HTMLButtonElement;
     await act(async () => { toggle().click(); });

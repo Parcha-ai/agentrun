@@ -1,5 +1,6 @@
 // The tests a change reaches: `node scripts/test-affected.mjs` maps the paths changed since a base to the test files they
-// reach and prints a command per suite that runs only those. A round runs these; CI on the pushed head runs every suite.
+// reach and prints a command per suite that runs only those. A round runs these, and a pull request's CI runs them in its
+// any shards (scripts/ci-affected.mjs); the merge queue and main run every suite.
 //   node scripts/test-affected.mjs [--base <ref>] [--stdin] [<path>...] [--list | --json | --run] [--concurrency <n>] [--no-smoke]
 // - The changed paths: those given on argv, or one per line on stdin with --stdin; with neither, every file changed since
 //   the merge base of HEAD and <ref> (default origin/untangle/cutover, else origin/main), committed, staged, unstaged and
@@ -17,25 +18,26 @@
 //   package   a package's package.json, tsconfig*.json, vite or vitest config, or a file its build or test script names,
 //             picks every test file of the package.
 //   fallback  where the parse tree cannot be sure (a computed import(), a path built from strings, a fixture read by path),
-//             a file of the path's package that names the path's file (its basename; for a source file its path under
-//             src/, as .ts or .js) picks the tests that are or import that file; for a code file, only a file outside the
-//             package's source counts. A code file no test reaches either way
+//             a file of the path's package that names the path's file (its basename, alone or after folders that could be
+//             its own; for a source file its path under src/, as .ts or .js) picks the tests that are or import that
+//             file; for a code file, only a file outside the package's source counts. A code file no test reaches either way
 //             picks its package's test files that import by a computed path themselves.
 //   smoke     SMOKE below, a fast file per package, always (--no-smoke drops it), so a round catches a gross break.
 //   A shared root (SHARED_ROOTS: the root manifests, lockfile, scripts/, .github/) picks the tests that import it and the
-//   smoke set only, not every suite, and says so: CI runs every suite on the pushed head.
+//   smoke set only, not every suite, and says so: CI runs every test for it (scripts/ci-affected.mjs).
 // - Output: by default a shell command per suite, run from the root, on stdout, and what each changed path picked on stderr.
 //   --list prints the picked test files, one per line, from the root. --json prints { base, changed, paths, suites }, with
 //   each picked file's reasons: `{ kind, changed, chain }`, the chain running from the test to the changed path. --run runs
 //   the commands, one suite at a time. --concurrency <n> caps the test files at once in each command: a `node --test`'s
 //   --test-concurrency (lowered, never raised), and TEST_CONCURRENCY and VITEST_MAX_WORKERS for the others.
 // Exit: 0, or with --run every command passed; 1 a command failed; 2 a usage error.
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { existsSync, globSync, readFileSync, statSync } from 'node:fs';
 import { basename, dirname, join, posix, relative, resolve, sep } from 'node:path';
 import ts from 'typescript';
 import { readConfig, readSuites } from './ci-plan.mjs';
 import { isMain } from './is-main.mjs';
+import { npmSpawnSync, spawnArgvSync } from './npm-command.mjs';
 
 /** A fast test file per suite, run on every round: suite name to its file, relative to the suite's directory. */
 export const SMOKE = {
@@ -44,6 +46,7 @@ export const SMOKE = {
   '@parcha/agentrun-computer': 'test/entry.test.mjs',
   '@parcha/agentrun-decisions': 'test/parallel.test.mjs',
   '@parcha/agentrun-dsl': 'test/job.test.mjs',
+  '@parcha/agentrun-import': 'test/usage.test.mjs',
   '@parcha/agentrun-jev': 'test/adapter.test.mjs',
   '@parcha/pi-browser': 'test/dial.test.mjs',
   '@parcha/agentrun-kernel': 'test/kernel.test.mjs',
@@ -109,7 +112,10 @@ function isFile(root, path) {
   return fileCache.get(key);
 }
 
-/** The suites: `{ name, dir, files, command(files, { concurrency }) }`, `dir` and `files` relative to the root and `dir`. */
+/**
+ * The suites: `{ name, dir, files, whole, command(files, { concurrency }) }`, `dir` and `files` relative to the root and
+ * `dir`; `whole` marks a suite CI runs as one unit (ci-shards.json's `whole`), which still runs the files it is given here.
+ */
 export function readTestSets(root) {
   const config = existsSync(join(root, 'scripts', 'ci-shards.json')) ? readConfig(root).config : { rootSuites: [], whole: {} };
   const sets = readSuites(root, { config }).map((suite) => {
@@ -127,10 +133,10 @@ export function readTestSets(root) {
     // A whole suite's runner lists the files it runs with --list, and runs only the files it is given.
     const script = suite.workspace ? JSON.parse(readFileSync(join(root, suite.cwd, 'package.json'), 'utf8')).scripts.test : config.whole[suite.name];
     const where = suite.workspace ? ['-w', suite.workspace] : [];
-    const listed = spawnSync('npm', ['exec', ...where, '-c', `${script} --list`], { cwd: root, encoding: 'utf8' });
+    const listed = npmSpawnSync(['exec', ...where, '-c', `${script} --list`], { cwd: root, encoding: 'utf8' });
     if (listed.status !== 0) throw new Error(`${suite.name}: \`${script} --list\` exited ${listed.status ?? listed.signal}: ${(listed.stderr || '').trim().split('\n').slice(-2).join(' / ')}`);
     const files = [...new Set(listed.stdout.split('\n').map((line) => line.trim()).filter(Boolean))].sort();
-    return { name: suite.name, dir: suite.cwd, files, command: (some, { concurrency } = {}) => ({
+    return { name: suite.name, dir: suite.cwd, files, whole: true, command: (some, { concurrency } = {}) => ({
       argv: ['npm', 'exec', ...where, '-c', [script, ...some].join(' ')], env: concurrency ? knobs(concurrency) : {},
     }) };
   });
@@ -307,16 +313,49 @@ function reachers(reverse, tests, start) {
 // What names a file where a test reads it by path. A file of a package's source goes by its path under the source folder,
 // as source or built (src/store/runs.ts: store/runs.ts or store/runs.js), right after the source or built folder's name or
 // standing alone; a bare basename would match every same-named file (dist/runs.js is not src/store/runs.ts). Any other
-// file goes by its basename.
+// file goes by its basename, standing alone or after folders that could be its own (ownFolders below): many folders hold a
+// file of one name (each package's readme, say), and a path written through other folders names another of them. Returns
+// whether a text names the file.
 function mentionOf(path, pkg) {
   const escape = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  if (!pkg || !path.startsWith(`${pkg.rootDir}/`)) return new RegExp(`(?<![\\w.-])${escape(basename(path))}(?![\\w-])`);
+  if (!pkg || !path.startsWith(`${pkg.rootDir}/`)) {
+    const named = new RegExp(`(?<![\\w.-])${escape(basename(path))}(?![\\w-])`, 'g');
+    const folders = posix.dirname(path).split('/').filter((folder) => folder !== '.');
+    return (text) => text.matchAll(named).some((match) => ownFolders(text.slice(Math.max(0, match.index - 400), match.index), folders));
+  }
   const under = path.slice(pkg.rootDir.length + 1);
   const forms = [under];
   if (/\.(?:tsx?|mts|cts)$/.test(under) && !/\.d\.[cm]?ts$/.test(under)) forms.push(under.replace(/\.tsx?$/, '.js').replace(/\.mts$/, '.mjs').replace(/\.cts$/, '.cjs'));
   const folders = [basename(pkg.rootDir), ...(pkg.outDir ? [basename(pkg.outDir)] : [])];
   const either = forms.map(escape).join('|');
-  return new RegExp(`(?:(?<![\\w.-])(?:${folders.map(escape).join('|')})/|(?<![\\w./-]))(?:${either})(?![\\w-])`);
+  const named = new RegExp(`(?:(?<![\\w.-])(?:${folders.map(escape).join('|')})/|(?<![\\w./-]))(?:${either})(?![\\w-])`);
+  return (text) => named.test(text);
+}
+
+/**
+ * Whether the folders written right before a file's basename (`before` ends where the basename starts) could be the file's
+ * own, `folders` from the root. Read from the basename backwards, each is the file's next folder up, a part the text
+ * computes (`${dir}`, `*`), or a step that cannot be placed (`.`, `..`), which ends the reading. A computed part stands for
+ * one folder or several (`dir` may be `nested/deep`), so the folders written above it may sit at any depth that leaves it
+ * at least one; they must still be the file's own. A folder of another name means another file. No folder written, or
+ * more of them than the file has, could be it.
+ */
+export function ownFolders(before, folders) {
+  const written = /(?:[\w.@$*{}-]+\/)+$/.exec(before)?.[0].split('/').filter(Boolean) ?? [];
+  // Whether the first `w` written parts can be the file's first `f` folders.
+  const fits = (w, f) => {
+    if (w === 0) return true;
+    const part = written[w - 1];
+    if (part === '.' || part === '..') return true;
+    if (f === 0) return true;
+    if (/[$*{}]/.test(part)) {
+      if (w === 1) return true;
+      for (let span = 1; span < f; span++) if (fits(w - 1, f - span)) return true;
+      return false;
+    }
+    return part === folders[f - 1] && fits(w - 1, f - 1);
+  };
+  return fits(written.length, folders.length);
 }
 
 /**
@@ -376,7 +415,7 @@ export function select(root, changed, { sets = readTestSets(root), packages = re
       const code = CODE.test(path);
       const scope = (file) => (pkg ? inside(file, pkg.dir) && !(code && inside(file, pkg.rootDir)) : !ownerOf(file));
       for (const [file, text] of graph.texts) {
-        if (file === path || !scope(file) || !named.test(text)) continue;
+        if (file === path || !scope(file) || !named(text)) continue;
         for (const { test, chain } of reachers(reverse, tests, file)) {
           if (byImport.has(test) || test === path) continue;
           add(test, { kind: 'fallback', changed: path, chain: [...chain, path] });
@@ -391,7 +430,7 @@ export function select(root, changed, { sets = readTestSets(root), packages = re
         }
       }
     }
-    if (shared) note = 'a shared root: its importers and the smoke set only; CI runs every suite on the pushed head';
+    if (shared) note = 'a shared root: its importers and the smoke set only; CI runs every test for it';
     else if (!Object.keys(picked).length && !note) note = exists ? 'no test imports or names it' : 'deleted; no test names it';
     const kinds = Object.fromEntries(Object.entries(picked).map(([kind, set]) => [kind, set.size]));
     paths.push({ path, kinds, ...(note ? { note } : {}) });
@@ -490,7 +529,7 @@ function main(args) {
     const command = suite.command({ concurrency });
     console.error(`test-affected: ${suite.name}, ${suite.files.length} file${suite.files.length === 1 ? '' : 's'}: ${shellLine(command)}`);
     const started = Date.now();
-    const run = spawnSync(command.argv[0], command.argv.slice(1), { cwd: join(root, command.cwd ?? '.'), stdio: 'inherit', env: { ...env, ...command.env } });
+    const run = spawnArgvSync(command.argv, { cwd: join(root, command.cwd ?? '.'), stdio: 'inherit', env: { ...env, ...command.env } });
     const seconds = ((Date.now() - started) / 1000).toFixed(1);
     console.error(`test-affected: ${suite.name} ${run.status === 0 ? 'passed' : `failed (exit ${run.status ?? run.signal})`} in ${seconds} s`);
     if (run.status !== 0) failed.push(`${suite.name} (exit ${run.status ?? run.signal})`);

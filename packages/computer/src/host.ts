@@ -1,11 +1,13 @@
 // The machine host: what a vendor writes to put computers on its machines. A host has eleven members: its descriptor
 // and its facts, five calls about its own machines (create, get, list, delete, exec), and four optional hooks (upload,
-// errorCode, extend, check). HostedProvider (./hosted/provider.ts) owns everything else a ComputerProvider does: the
-// spec's check, the daemon's upload, install and start, the stdio bridge, the read-back and the probe, labels, list and
-// attach, the deadline and extend, the wait after a delete, the sweep of a lost create, the Archil mount, and the words
-// of every refusal. These doc comments are the contract a new vendor reads (PROVIDERS.md, "The eleven members").
+// errorCode, extend, check). A host whose machines dial the server (facts.connect "dial") has no exec and no upload.
+// HostedProvider (./hosted/provider.ts) owns everything else a ComputerProvider does: the spec's check, the daemon's
+// upload, install and start, the stdio bridge, the read-back and the probe, labels (packed where the host declares it),
+// list and attach, the deadline and extend, the wait after a delete, the sweep of a lost create, the Archil mount, and
+// the words of every refusal. These doc comments are the contract a new vendor reads (PROVIDERS.md, "The eleven
+// members").
 import type { ProviderDescriptor } from "./descriptor.js";
-import type { ComputerCapabilities, ComputerSpec, GpuSpec, Refusal } from "./provider.js";
+import type { ComputerCapabilities, ComputerResources, ComputerSpec, GpuSpec, Refusal } from "./provider.js";
 import type { ComputerErrorCode } from "./result.js";
 
 /**
@@ -27,11 +29,18 @@ export interface MachineHost {
 	 * run (the adapter polls get while it is starting) or to be listed (the adapter waits for that too), except where the
 	 * vendor applies a machine's settings only once it is ready: there it may wait for ready within ctx.timeoutMs, set
 	 * them, and answer then (PROVIDERS.md, create). The machine
-	 * carries req.name where the vendor can find it again by listing: the vendor's native name, or a label. An answer that
-	 * never comes is not a machine the adapter forgets: it lists by req.labels and deletes what it finds.
+	 * carries req.name where the vendor can find it again by listing: the vendor's native name, or a label. A native name
+	 * the vendor already has throws exists (a REST host's named call: hosted/rest.ts), and the adapter adopts the machine
+	 * the name lists, as a retry does. An answer that never comes is not a machine the adapter forgets: it lists by
+	 * req.labels and deletes what it finds.
 	 */
 	create(req: MachineRequest, ctx: HostCall): Promise<{ id: string }>;
-	/** One machine as the vendor reads it now; undefined once the vendor no longer has it (not found is that, or a HostError not_found). */
+	/**
+	 * One machine as the vendor reads it now; undefined once the vendor no longer has it (not found is that, or a
+	 * HostError not_found), and for a record the vendor keeps of a machine that is deleted and will not come back
+	 * (Hyperbrowser's closed, Blaxel's TERMINATED), which list leaves out too. gone is one still being destroyed: it holds
+	 * the wait after a delete, so a host that reads a kept record gone waits out goneMs on every delete.
+	 */
 	get(id: string, ctx: HostCall): Promise<Machine | undefined>;
 	/**
 	 * The machines of the account the vendor's listing shows for these labels, every page, within ctx.timeoutMs in all.
@@ -54,23 +63,40 @@ export interface MachineHost {
 	 *
 	 * exec is the whole protocol: the adapter installs and starts its daemon through it, then talks to the daemon over
 	 * one exec'd process's stdin and stdout for the computer's whole life (the stdio bridge, spec/computer/stdio.md). So:
-	 * - Two-way and live. Each write() reaches the process's stdin as it is written, and stdout and stderr bytes come
-	 *   back as the process writes them, while it runs. Not request and response, never held until the process exits.
-	 * - Byte-exact. Every byte value 0-255, both ways: no UTF-8 decode or encode, no newline translation, no terminal,
-	 *   nothing added or dropped. A client that hands output over as text breaks this (E2B's commands.run does).
+	 * - Two-way and live. Each write() reaches the process's stdin as it is written, and stdout and stderr come back as
+	 *   the process writes them, while it runs. Not request and response, never held until the process exits.
+	 * - Text intact. UTF-8 text both ways, every code point as it was: long lines, \r and \r\n kept (no terminal, no
+	 *   newline translation), nothing added or dropped. Everything the adapter sends or reads is text (the bridge's JSON
+	 *   lines, its upload in base64), and each write() holds whole characters. An exec that carries bytes carries this. A
+	 *   vendor whose input call ends what it is given with a newline (Daytona's) holds a write's last partial line until
+	 *   its newline or end(), so the process reads its stdin as written: the bridge's lines end in one, and what is
+	 *   read by length is followed by end().
 	 * - No timeout. The process runs until it exits or kill() ends it: a vendor's command timeout, and any idle timeout
 	 *   on the stream, are off.
-	 * - stdout and stderr stay apart. wait() answers the process's own exit code. kill() ends the process itself.
-	 * The process reads what write() gives until end(); the adapter ends stdin at once where it gives none. The exec
-	 * pre-check (conformance --exec-stream, src/conformance/exec-stream.ts) checks each of these on a machine made by
-	 * hand, with exec alone.
+	 * - stdout and stderr stay apart. wait() answers the process's own exit code. kill() ends the process in the
+	 *   machine, not only its streams.
+	 * end() ends stdin where the vendor can (the adapter calls it at once for a command it gives no input); where it
+	 * can't, end() does nothing, and nothing the adapter runs waits for it: its upload reads a
+	 * length, a root command's input is one line, its bridge ends by kill(). A vendor whose exec comes in pieces (a start, an event stream, a call per write, no end or no kill) builds
+	 * this from them with framedExec (./hosted/framed-exec.ts), as Daytona's does. The exec pre-check (conformance --exec-stream,
+	 * src/conformance/exec-stream.ts) checks each of these on a machine made by hand, with exec alone.
+	 *
+	 * Every host has it but one whose facts.connect is "dial", which has none (and no upload): its machine's computerd
+	 * dials the server instead.
 	 */
-	exec(id: string, argv: readonly string[], ctx: HostCall): Promise<MachineProcess>;
+	exec?(id: string, argv: readonly string[], ctx: HostCall): Promise<MachineProcess>;
 	/**
 	 * Puts bytes at path in the machine, as root. Optional: a vendor with no file API leaves it out, and the adapter
-	 * streams the file through exec's stdin.
+	 * streams the file through exec's stdin as base64 text, which root decodes (`base64 -d`, in coreutils and busybox).
 	 */
 	upload?(id: string, path: string, bytes: Uint8Array, ctx: HostCall): Promise<void>;
+	/**
+	 * What agentrun-dial wrote in a dial machine, for a create whose machine never dialed: the adapter adds its last lines
+	 * to the timeout's words. undefined when agentrun-dial never started there. A host that started agentrun-dial itself
+	 * and can read its output has it (Daytona's: its session command's log). A read that fails throws, and the timeout's
+	 * words stay as they were.
+	 */
+	dialLog?(id: string, ctx: HostCall): Promise<string | undefined>;
 	/**
 	 * The code of an error the vendor's client threw: one of ComputerErrorCode. Optional: the adapter reads a HostError's
 	 * own code, an AbortError as "aborted" and a TimeoutError as "timeout" itself, and anything else a host does not map
@@ -92,6 +118,12 @@ export interface MachineHost {
 	 */
 	check?(spec: Partial<ComputerSpec>): Refusal[];
 }
+
+/**
+ * How far past the most a deadline may reach MachineRequest.backstopAt is: the janitor ends the machine first while the
+ * server runs, and the vendor's clock may be off from the server's.
+ */
+export const BACKSTOP_MARGIN_MS = 300_000;
 
 /** A host's failure whose code it knows: thrown by a host member, read by the adapter as that code, in these words. */
 export class HostError extends Error {
@@ -122,8 +154,16 @@ export interface MachineRequest {
 	/** The spec's lifetime: the vendor's timer (facts.lifetime "vendor"); a janitor's host may leave it. */
 	lifetimeMs: number;
 	/**
-	 * Whether the machine reaches out: true only for an Archil computer's root, which reaches Archil. Its tools'
-	 * network is init's own, none, read from inside, either way.
+	 * An ISO time a margin past the most the machine's deadline may reach: create + maxLifetimeMs + BACKSTOP_MARGIN_MS. A
+	 * janitor's host whose vendor has a delete or stop timer of its own sets it here, so the machine still ends when the
+	 * server that made it is gone. A vendor-lifetime host ignores it.
+	 */
+	backstopAt: string;
+	/**
+	 * Whether the machine reaches out: true for an Archil computer's root, which reaches Archil, and for a network open
+	 * or a list, whose egress proxy init starts outside its tools' network (./hosted/network.ts), and for every dial
+	 * machine (boot), which fetches its daemon from the server and dials it. Its tools' own network is init's, loopback
+	 * alone, read from inside, either way.
 	 */
 	egress: boolean;
 	/** facts.daemon "pid1" alone: the machine's main process (the entrypoint that waits for the daemon, then becomes init). */
@@ -134,6 +174,13 @@ export interface MachineRequest {
 	memoryMb?: number;
 	/** With facts.user: the spec's user, uid:gid. */
 	user?: string;
+	/**
+	 * facts.connect "dial" alone: what the machine's environment holds, every name and value as given, in the vendor's
+	 * secret-env field where it has one. The box image's agentrun-dial reads it (spec/computer/attach.md, Hosted machines
+	 * that dial): AGENTRUN_ATTACH_URL, AGENTRUN_ATTACH_TOKEN, AGENTRUN_DAEMON_URL, AGENTRUN_DAEMON_SHA256 and
+	 * AGENTRUN_INIT_ARGS.
+	 */
+	boot?: { env: Record<string, string> };
 }
 
 /**
@@ -158,15 +205,18 @@ export interface Machine {
 	createdAt?: Date;
 	/** The vendor's words for a machine that is gone because it failed: a create stops in them. */
 	why?: string;
+	/** What the vendor's answer says the machine was given (its CPUs, memory, disk, GPUs), where it says it: a create
+	 *  returns these as its computer's resources. Absent where the answer says none. */
+	resources?: ComputerResources;
 }
 
 /** A process exec started: its output as it comes, its stdin, and its end. */
 export interface MachineProcess {
 	stdout: AsyncIterable<Uint8Array>;
 	stderr: AsyncIterable<Uint8Array>;
-	/** Writes to its stdin, in order; rejects once the process has ended. */
+	/** Writes UTF-8 text to its stdin, in order, whole characters each; rejects once the process has ended. */
 	write(bytes: Uint8Array): Promise<void>;
-	/** Ends its stdin, so it reads end of file. */
+	/** Ends its stdin, so it reads end of file, where the vendor can; else nothing (exec's doc). */
 	end(): Promise<void>;
 	/** Its exit code once it has ended. */
 	wait(): Promise<number>;
@@ -186,9 +236,10 @@ export type HostDescriptor = Pick<ProviderDescriptor, "id" | "label" | "network"
  */
 export interface HostFacts {
 	/**
-	 * child: the vendor's agent is the machine's first process and starts init, after the adapter closes the session
-	 * buses in /tmp (/tmp/dbus-*) to the computer's user, since a network namespace does not cut a path socket. pid1:
-	 * init is the machine's main process (Modal's, whose sandbox ends when it does), started by request.command.
+	 * child: the vendor starts the adapter's processes through exec, and the adapter starts init that way at boot, after
+	 * it closes the session buses in /tmp (/tmp/dbus-*) to the computer's user, since a network namespace does not cut a
+	 * path socket. pid1: init is the machine's main process (Modal's, whose sandbox ends when it does), started by
+	 * request.command.
 	 */
 	daemon: "child" | "pid1";
 	isolation: ComputerCapabilities["isolation"];
@@ -199,20 +250,30 @@ export interface HostFacts {
 	arch: "amd64" | "arm64";
 	/** The TCP ports the vendor's own agent listens on inside the machine (E2B's envd 49983). */
 	vendorAgentPorts: number[];
-	/** Whether its desktops run WINDOW_MANAGER (xfwm4, which its image has) once the display answers. Default none. */
+	/** Whether its desktops run a window manager (xfwm4, which its image has), which computerd starts (init --window-manager). Default none. */
 	windowManager?: boolean;
 	/** What spec.user may ask for, beside the daemon user: with it, the spec's user goes in MachineRequest.user. */
 	user?: Array<"root" | "uid">;
 	/**
 	 * The most a machine's labels may be, the adapter's own with the caller's: count, how many; bytes, every name and
 	 * value together, the adapter's at their longest. Past either, check() refuses, and so create, before any host call.
-	 * Absent: no bound.
+	 * Absent: no bound. packed: the adapter packs the labels it gives create (packLabels, ./hosted/values.ts: one name to
+	 * list by, the map in parts of at most valueBytes each), unpacks those get and list answer, and asks list for that
+	 * name alone; the host stores and answers them as they are. count and bytes are then the packed labels'.
 	 */
-	labels?: { count?: number; bytes?: number };
+	labels?: { count?: number; bytes?: number; packed?: { valueBytes?: number } };
 	/**
 	 * Paths of the vendor's image that root runs or reads and whose permissions its template build sets wider than
 	 * root's: create makes each root's alone (owned by root, writable by no group or other user), and everything under a
 	 * directory, before the daemon's upload, so the computer's user can change nothing root runs. Default none.
 	 */
 	rootOnly?: readonly string[];
+	/**
+	 * dial: the machine's computerd dials the server, and the host has no exec and no upload. The vendor boots the box
+	 * image with MachineRequest.boot.env, where agentrun-dial fetches the server's daemon, checks its sha256, starts init
+	 * and dials the attach route with the machine's own token; every connection goes over that socket
+	 * (HostedOptions.dial). Absent: the adapter connects through
+	 * exec.
+	 */
+	connect?: "dial";
 }

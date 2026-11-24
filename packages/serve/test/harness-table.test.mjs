@@ -13,9 +13,9 @@ import { scratch } from "./support.mjs";
 const SRC = fileURLToPath(new URL("../src/", import.meta.url));
 /** Every .ts file under serve/src, as a path relative to it. */
 const sources = (dir = SRC, prefix = "") => readdirSync(dir, { withFileTypes: true }).flatMap((entry) => (entry.isDirectory() ? sources(join(dir, entry.name), `${prefix}${entry.name}/`) : entry.name.endsWith(".ts") ? [`${prefix}${entry.name}`] : []));
-/** Transcript formats name the tools they import from, not the harness that runs (import.ts, import-sources.ts); the
- *  table is where an id meets its entry. */
-const EXCLUDED = new Set(["import.ts", "import-sources.ts", "harness-table.ts"]);
+/** Transcript formats name the tools they import from, not the harness that runs (import.ts; the readers themselves are
+ *  @parcha/agentrun-import's); the table is where an id meets its entry. */
+const EXCLUDED = new Set(["import.ts", "harness-table.ts"]);
 const NAMES = "pi|claude-agent|codex|opencode";
 const BRANCH = new RegExp(`(===|!==)\\s*"(${NAMES})"|"(${NAMES})"\\s*(===|!==)|\\bcase\\s+"(${NAMES})"|(===|!==)\\s*DEFAULT_HARNESS\\b|\\bDEFAULT_HARNESS\\s*(===|!==)`);
 
@@ -70,7 +70,7 @@ test("production code never builds a stand-in harness: serve/src imports no @par
 test("each adapter package exports its facts, and the table's entry for each id reads them: wire, steer, memory, thinking, search, own model, tool alias", async () => {
   const [{ facts: claude }, { facts: codex }, { facts: opencode }, { builtinHarness }] = await Promise.all([import("@parcha/agentrun-harness-claude/facts"), import("@parcha/agentrun-harness-codex/facts"), import("../dist/harness-opencode/facts.js"), import("../dist/harness-table.js")]);
   const shape = (f) => ({ id: f.id, wire: f.wire, steer: f.steer, runMib: f.runMib, thinking: [...f.thinking], webSearch: f.webSearch, ownModel: f.ownModel, hostName: f.hostName?.(f.id === "claude-agent" ? "mcp__hands__x" : f.id === "codex" ? "mcp_s__x" : "hands_x"), schema: typeof f.schemaProblems });
-  assert.deepEqual(shape(claude), { id: "claude-agent", wire: "anthropic-messages", steer: false, runMib: 288, thinking: ["low", "medium", "high", "xhigh", "max"], webSearch: "native", ownModel: true, hostName: "x", schema: "function" });
+  assert.deepEqual(shape(claude), { id: "claude-agent", wire: "anthropic-messages", steer: true, runMib: 288, thinking: ["low", "medium", "high", "xhigh", "max"], webSearch: "native", ownModel: true, hostName: "x", schema: "function" });
   assert.deepEqual(shape(codex), { id: "codex", wire: "openai-responses", steer: false, runMib: 192, thinking: ["low", "medium", "high", "xhigh"], webSearch: "live", ownModel: false, hostName: "mcp__s__x", schema: "function" });
   assert.deepEqual(shape(opencode), { id: "opencode", wire: "openai-responses", steer: false, runMib: 704, thinking: ["low", "medium", "high", "xhigh"], webSearch: undefined, ownModel: false, hostName: "x", schema: "undefined" });
   for (const facts of [claude, codex, opencode]) {

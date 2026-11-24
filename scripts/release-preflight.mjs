@@ -14,17 +14,17 @@ import { isMain } from './is-main.mjs';
 
 const exec = promisify(execFile);
 // The packages a release may publish, by directory, in publication order: dependencies first (dsl, then jev, which uses it), the
-// packages after them that depend on none of them (pi-browser; the computer protocol, computer, and the TypeScript client, client, depend on no package at all), serve (@parcha/agentrun-serve), which uses the packages before it,
+// packages after them that depend on none of them (pi-browser; import, the session readers behind serve's import; the computer protocol, computer, and the TypeScript client, client, depend on no package at all), serve (@parcha/agentrun-serve), which uses the packages before it,
 // and agentrun (`npx @parcha/agentrun`, on its own version line), which depends on serve at its exact version, last. This list is the gate for a new package: a workspace package that is not private and not
 // named here fails the preflight, so a package is never published (or half-released, on a missing trusted publisher) by accident.
-export const releasePackageNames = { dsl: '@parcha/agentrun-dsl', jev: '@parcha/agentrun-jev', 'pi-browser': '@parcha/pi-browser', decisions: '@parcha/agentrun-decisions', computer: '@parcha/agentrun-computer', client: '@parcha/agentrun-client', 'run-adapters': '@parcha/agentrun-kernel', 'run-adapters-claude-agent': '@parcha/agentrun-harness-claude', 'run-adapters-codex': '@parcha/agentrun-harness-codex', serve: '@parcha/agentrun-serve', agentrun: '@parcha/agentrun' };
+export const releasePackageNames = { dsl: '@parcha/agentrun-dsl', jev: '@parcha/agentrun-jev', 'pi-browser': '@parcha/pi-browser', import: '@parcha/agentrun-import', decisions: '@parcha/agentrun-decisions', computer: '@parcha/agentrun-computer', client: '@parcha/agentrun-client', eve: '@parcha/agentrun-eve', 'run-adapters': '@parcha/agentrun-kernel', 'run-adapters-claude-agent': '@parcha/agentrun-harness-claude', 'run-adapters-codex': '@parcha/agentrun-harness-codex', 'run-adapters-acp': '@parcha/agentrun-harness-acp', serve: '@parcha/agentrun-serve', agentrun: '@parcha/agentrun' };
 export const listedPackages = Object.keys(releasePackageNames);
 // The packages on a version line of their own (changes.mjs says why), checked and named at their manifest's version.
 export { ownVersionPackages };
 const releaseVersion = (directory, manifest, workspaceVersion) => (ownVersionPackages.includes(directory) ? manifest.version : workspaceVersion);
 // The clean consumer's runtime smoke in verify-packages, one key per installed package it runs: verify-packages asserts its
 // smoke against this set and the preflight requires a receipt that says exactly it, so the two cannot disagree.
-export const runtimeSmokeChecks = { core: true, jev: true, browser: true, serve: true, decisions: true, adapters: true, computer: true, client: true, network: 'prohibited' };
+export const runtimeSmokeChecks = { core: true, jev: true, browser: true, serve: true, decisions: true, adapters: true, computer: true, import: true, client: true, eve: true, network: 'prohibited' };
 // A package whose own manifest says "private": true is held: it is built, tested, typechecked, verified and checked to be at the workspace
 // version like every package, and it is never published. Lifting a hold removes that one flag; the publish set below follows it.
 const here = dirname(fileURLToPath(import.meta.url));
@@ -52,6 +52,29 @@ export function releaseLayers(directories, root = join(here, '..')) {
   for (const directory of directories) (layers[visit(directory, [])] ??= []).push(directory);
   return layers;
 }
+/**
+ * The packages whose NOTICE may carry third-party notices after the repository's, each with what it ships that they cover. A notice
+ * belongs to the package that ships what it covers; every other package's NOTICE is the root NOTICE exactly. A new appendix is a
+ * reviewed line here, never a copy into every package.
+ */
+export const noticeAppendices = {
+  'pi-browser': "Stagehand's Chrome flags and facade and code adapted from Browser Use Pi (MIT, each text in full)",
+  computer: 'code from E2B envd, Kubernetes sandboxd and scrcpy (Apache-2.0)',
+  'run-adapters': 'code from vercel-labs/durable-harness (Apache-2.0) and the o200k vocabulary (MIT)',
+  'run-adapters-claude-agent': 'code from vercel-labs/durable-harness (Apache-2.0)',
+  'run-adapters-codex': 'code from vercel-labs/durable-harness (Apache-2.0)',
+  serve: "the console in dist/console (the packages it bundles, the eve icon) and pi-durable's storage port (MIT, its text in full)",
+};
+/**
+ * Throws unless `text`, the NOTICE of the package in `directory`, is the root NOTICE (`root`) exactly or, for a package in
+ * noticeAppendices, the root NOTICE, a blank line, and more. A truncated or edited root header is not a prefix that passes.
+ */
+export function checkNotice(directory, text, root) {
+  const [packed, header] = [text.trim(), root.trim()];
+  if (packed === header) return;
+  assert.ok(packed.startsWith(`${header}\n\n`), `Missing or mismatched NOTICE in ${releasePackageNames[directory]}`);
+  assert.ok(Object.hasOwn(noticeAppendices, directory), `${releasePackageNames[directory]}'s NOTICE appends notices after the root NOTICE, but it is not a package that ships what they cover (noticeAppendices in scripts/release-preflight.mjs): move them to the NOTICE of the package that ships it, or name this package there with what it ships`);
+}
 const repository = 'git+https://github.com/Parcha-ai/agentrun.git';
 const digest = (bytes, algorithm = 'sha256') => createHash(algorithm).update(bytes).digest(algorithm === 'sha512' ? 'base64' : 'hex');
 const json = async path => JSON.parse(await readFile(path, 'utf8'));
@@ -61,6 +84,39 @@ export function checkReleaseDispatch(tag, commit, environment) {
 }
 async function command(file, args, cwd) {
   return (await exec(file, args, { cwd, timeout: 60_000, maxBuffer: 16 * 1024 * 1024 })).stdout.trim();
+}
+
+/** `npm view <name> version` on the registry the release publishes to: what npm prints, or execFile's rejection (npm's exit
+ *  status in `code`, its output in `stderr`). */
+export const npmView = name => command('npm', ['view', name, 'version', '--registry=https://registry.npmjs.org/'], tmpdir());
+
+/** npm's answer that a package is not in the registry at all (E404), as opposed to one it could not give. */
+const notOnNpm = error => /\bE404\b|\b404 Not Found\b/.test(`${error?.stderr ?? ''}\n${error?.stdout ?? ''}`);
+const listed = names => (names.length === 1 ? names[0] : `${names.slice(0, -1).join(', ')} and ${names.at(-1)}`);
+
+/** The gate for a package's first release: every package of the publish set exists on npm already, as a trusted publisher
+ *  can only be set up on a package that exists (docs/releasing.md, "Prepare publication"). A release that reached a missing
+ *  one would stop there, its earlier layers published. Fails closed: an npm failure that is not a 404 (network, auth) is
+ *  never taken for published. `view` is npmView, or a test's. */
+export async function checkPublished(names, view = npmView) {
+  const missing = [];
+  const failed = [];
+  for (const name of names) {
+    try {
+      await view(name);
+    } catch (error) {
+      if (notOnNpm(error)) missing.push(name);
+      else failed.push({ name, error });
+    }
+  }
+  const problems = [];
+  if (failed.length) {
+    const why = failed.map(({ name, error }) => `${name}: ${String(error?.stderr || error?.message || error).trim().split('\n')[0]}`).join('; ');
+    problems.push(`npm could not say whether ${listed(failed.map(({ name }) => name))} ${failed.length === 1 ? 'is' : 'are'} published (${why}); the release stops rather than take ${failed.length === 1 ? 'it' : 'them'} for published.`);
+  }
+  if (missing.length === 1) problems.push(`${missing[0]} is not on npm yet. Bootstrap it before releasing: publish a first version by hand and set up its trusted publisher (docs/releasing.md).`);
+  else if (missing.length) problems.push(`${listed(missing)} are not on npm yet. Bootstrap them before releasing: publish a first version of each by hand and set up its trusted publisher (docs/releasing.md).`);
+  if (problems.length) throw new Error(problems.join('\n'));
 }
 
 export function checkManifest(manifest, directory, version, license, workspaceVersion = version) {
@@ -75,6 +131,9 @@ export function checkManifest(manifest, directory, version, license, workspaceVe
   assert.equal(manifest.publishConfig?.tag, 'beta', 'This release workflow only publishes beta');
   if (manifest.publishConfig.registry !== undefined) assert.equal(manifest.publishConfig.registry, 'https://registry.npmjs.org/', 'Unexpected publication registry');
   if (directory === 'jev') assert.equal(manifest.dependencies?.['@parcha/agentrun-dsl'], version, 'Internal dependencies must use the exact release version');
+  if (directory === 'eve') for (const dependency of ['@parcha/agentrun-client', '@parcha/agentrun-dsl']) {
+    assert.equal(manifest.dependencies?.[dependency], version, `eve must pin ${dependency} to the exact release version`);
+  }
   // `npx @parcha/agentrun` installs the server it was released with: its one dependency, at this release's exact version.
   if (directory === 'agentrun') assert.deepEqual(manifest.dependencies, { '@parcha/agentrun-serve': workspaceVersion }, `@parcha/agentrun must depend on @parcha/agentrun-serve at the release version ${workspaceVersion}, and on nothing else`);
 }
@@ -132,7 +191,8 @@ export async function checkReleaseTree(root, tag, version) {
   } finally { await rm(scratch, { recursive: true, force: true }); }
 }
 
-export async function releasePreflight(root, tag, { checkGit = true } = {}) {
+/** `npmView` asks npm whether a package exists (default: the registry's own answer; a test hands in its own). */
+export async function releasePreflight(root, tag, { checkGit = true, npmView: view = npmView } = {}) {
   const workspace = await json(join(root, 'package.json'));
   assert.match(workspace.version, /^\d+\.\d+\.\d+-beta\.\d+$/, 'Only an explicit beta version can be released');
   assert.equal(tag, `v${workspace.version}`, 'Tag must match the exact workspace version');
@@ -176,6 +236,9 @@ export async function releasePreflight(root, tag, { checkGit = true } = {}) {
     const log = await readFile(join(root, 'packages', directory, 'CHANGELOG.md'), 'utf8').catch(error => { if (error.code === 'ENOENT') return null; throw error; });
     if (log !== null) assert.ok(!unreleasedSection(log).split('\n').slice(1).some(line => line.trim()), `${releasePackageNames[directory]}'s CHANGELOG.md still has entries under Unreleased; run node scripts/changes.mjs --fold`);
   }
+  // Every package this release publishes is on npm already, before an archive is checked: a first publication and its
+  // trusted publisher are set up by hand, and a release that reached a package without them would stop halfway through.
+  await checkPublished(releaseHere.map(directory => releasePackageNames[directory]), view);
   // A held package is bumped with the workspace like the rest and skipped only at publication.
   for (const directory of heldHere) {
     const held = await json(join(root, 'packages', directory, 'package.json'));
@@ -199,13 +262,9 @@ export async function releasePreflight(root, tag, { checkGit = true } = {}) {
       const packedManifest = JSON.parse(await command('tar', ['-xOf', archive, 'package/package.json'], root));
       assert.deepEqual(packedManifest, manifest, 'Packed metadata differs from the release source');
       assert.equal((await command('tar', ['-xOf', archive, 'package/LICENSE'], root)).trim(), license.trim(), `Missing or mismatched LICENSE in ${manifest.name}`);
-      // A package may carry third-party notices after the repository's NOTICE (pi-browser keeps Stagehand's MIT licence), never instead of
-      // it: the packed NOTICE is the root NOTICE exactly, or the root NOTICE, a blank line, and more. A truncated or edited root header
-      // is not a prefix that passes.
-      if (notice !== undefined) {
-        const packedNotice = (await command('tar', ['-xOf', archive, 'package/NOTICE'], root)).trim();
-        assert.ok(packedNotice === notice.trim() || packedNotice.startsWith(`${notice.trim()}\n\n`), `Missing or mismatched NOTICE in ${manifest.name}`);
-      }
+      // A package in noticeAppendices may carry third-party notices after the repository's NOTICE, never instead of it; every other
+      // package's packed NOTICE is the root NOTICE exactly.
+      if (notice !== undefined) checkNotice(directory, await command('tar', ['-xOf', archive, 'package/NOTICE'], root), notice);
       // Bind the checked source/build to the already verified bytes. Publish these exact archives, never a fresh pack.
       const [repacked] = JSON.parse(await command('npm', ['pack', '--ignore-scripts', '--json', '--pack-destination', temporary], join(root, 'packages', directory)));
       assert.equal(digest(await readFile(join(temporary, repacked.filename))), verified.sha256, 'Current package contents differ from the verified archive');

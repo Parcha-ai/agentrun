@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { agent, serve, withEnv } from "./support.mjs";
 
-const MODEL_VARS = ["AGENT_MODEL_BASE_URL", "AGENT_MODEL", "AGENT_MODEL_FAST", "AGENT_MODEL_STRONG", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY"];
+const MODEL_VARS = ["AGENT_MODEL_BASE_URL", "AGENT_MODEL", "AGENT_MODEL_FAST", "AGENT_MODEL_STRONG", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY", "PARTICLE_API_KEY"];
 const withKey = (t, env) => {
   withEnv(t, env, MODEL_VARS);
   return serve(t, { faux: undefined });
@@ -39,11 +39,19 @@ test("with only an OpenRouter key, the likely id and the examples are OpenRouter
   assert.match(message(refused), /Did you mean openrouter\/anthropic\/claude-sonnet-5\.5\?/);
 });
 
+test("cursor, billed to its own plan, refuses a model with no provider in its own form (cursor/<model id>), never a vendor of ours", async (t) => {
+  const { api } = await withKey(t, { ANTHROPIC_API_KEY: `not-a-secret-${"anthropic"}`, OPENROUTER_API_KEY: `not-a-secret-${"router"}` });
+  const refused = await api("POST", "/agents", agent("cursor-bare", { harness: "cursor", model: "gpt-5.4-nano" }));
+  assert.equal(refused.status, 422, JSON.stringify(refused.body));
+  assert.equal(refused.body.error.fields[0].field, "definition.model");
+  assert.equal(message(refused), 'On cursor, a model is cursor/<model id> (one Cursor lists for your key), like cursor/default: "gpt-5.4-nano" is not one.');
+});
+
 test("capabilities serve each harness's pickable models in the form it takes", async (t) => {
   const { api } = await withKey(t, { ANTHROPIC_API_KEY: `not-a-secret-${"anthropic"}`, OPENAI_API_KEY: `not-a-secret-${"openai"}` });
   const harnesses = (await api("GET", "/capabilities")).body.harnesses;
   const pi = harnesses.find((h) => h.id === "pi");
-  assert.deepEqual(pi.models, ["anthropic/claude-sonnet-5-5", "anthropic/claude-opus-5-5", "anthropic/claude-haiku-5-5", "anthropic/claude-fable-5-2", "openai/gpt-6.1-sol", "openai/gpt-6.1-terra", "openai/gpt-6-luna"]);
+  assert.deepEqual(pi.models, ["anthropic/claude-sonnet-5-5", "anthropic/claude-opus-5-5", "anthropic/claude-haiku-5-5", "anthropic/claude-fable-5-2", "openai/gpt-6.1-sol", "openai/gpt-6.1-terra", "openai/gpt-6-luna", "particle/particle-1"]);
   for (const h of harnesses) assert.ok(Array.isArray(h.models), h.id);
   for (const h of harnesses.filter((h) => !h.available)) assert.deepEqual(h.models, [], h.id);
 });

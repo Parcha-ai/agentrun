@@ -10,6 +10,17 @@ export const RAN_UNKNOWN = "It had started before the deny, and whether it took 
 export const STOPPED_WHILE_WAITING = "Not run: the run was stopped while it waited";
 /** A call that waited when its run ended (completed or failed) without anyone stopping it: never sent. */
 export const ENDED_WHILE_WAITING = "Not run: the run ended while it waited";
+/** How a refusal of a setting's deny, or of an ask no one can approve, opens (deniedText, noApproverText). */
+export const DENIED_OPENING = "Permission denied: ";
+/** How a person's deny opens (refusedText). */
+export const USER_DENIED_OPENING = "The user denied this ";
+/** What a read-only bash policy's refusal says after the tool's name (bash-read-only.ts readOnlyText). */
+export const READ_ONLY_REFUSED = " is read-only for this agent, so this call was refused: ";
+/** What a refusal of a tool no call of which can pass says after its name (a bash policy or a pin that does not read). */
+export const CANT_BE_CALLED = " can't be called: ";
+/** The words a refused call's answer opens with (or, past the tool's name, says first): what a script that reads its
+ *  calls' answers as text (Codex's code mode) checks for, as the desktop and phone kind skills name them. */
+export const REFUSAL_OPENINGS: readonly string[] = [DENIED_OPENING, USER_DENIED_OPENING, READ_ONLY_REFUSED, CANT_BE_CALLED];
 /** Where a permission was set (permissionFrom's `from`): the agent's own tool settings, the server's, or the default; or
  *  "unattended": an ask the agent's approvals "never" allowed. */
 export type SettingFrom = "agent" | "server" | "default" | "unattended";
@@ -23,8 +34,19 @@ export const deniedText = (tool: string, heldTo?: string, from: SettingFrom = "s
   // `ran`: "unknown" for a call an earlier attempt of which may have been sent (an approved call cut mid-flight, or a
   // replay-safe call run again after a crash): the words never claim it wasn't.
   const what = ran === "no" ? NOT_RUN : RAN_UNKNOWN;
-  return heldTo && heldTo !== tool ? `Permission denied: ${tool} follows ${heldTo}'s setting, which is deny ${denyPlace(from)}. ${what} Don't retry it.` : `Permission denied: ${tool} is set to deny ${denyPlace(from)}. ${what} Don't retry it.`;
+  return heldTo && heldTo !== tool ? `${DENIED_OPENING}${tool} follows ${heldTo}'s setting, which is deny ${denyPlace(from)}. ${what} Don't retry it.` : `${DENIED_OPENING}${tool} is set to deny ${denyPlace(from)}. ${what} Don't retry it.`;
 };
+/** What the first deny of a call of the run's computer's own tools (a desktop's or a phone's, a browser's) says after
+ *  its refusal, once: the computer is off for the rest of the run (tool-gate.ts RunGate.decide). */
+export const computerOffWords = (kind: string): string => `The ${kind} is off for the rest of this run, so every later call of its tools is refused too.`;
+/** The refusal of a later call of an off computer's tools, short: decided on the runner alone, no setting read. */
+export const computerOffText = (kind: string, ran: "no" | "unknown" = "no"): string => `${DENIED_OPENING}the ${kind} is off for this run. ${ran === "no" ? NOT_RUN : RAN_UNKNOWN}`;
+/** Why a later claim of a run starts no computer: an earlier claim's deny turned it off for the run (runner/
+ *  computer-journal.ts computerTurnedOff). Said on the run's timeline. */
+export const computerStillOffWords = (kind: string): string => `The ${kind} is off for this run: an earlier call of its tools was refused for a deny, so it is not started again.`;
+/** Why a run never starts the agent's computer: every tool it serves is set to deny (tool-gate.ts computerDenied). A
+ *  save's warning says it, and the run's timeline. */
+export const computerDeniedWords = (kind: string): string => `Every tool for this agent's ${kind} is set to deny, so a run never starts it: allow one, or set the computer to none.`;
 /** A workflow model node's tool set to ask: a model node cannot wait for a person's approval (the gate parks no workflow
  *  call), so the call is refused unrun and the model reads why (tool-gate.ts RunGate, on main and on the runner). */
 export const modelNodeAskText = (tool: string, ran: "no" | "unknown" = "no"): string =>
@@ -33,4 +55,4 @@ export const modelNodeAskText = (tool: string, ran: "no" | "unknown" = "no"): st
  *  (main's per-run process and the runner's workflow spec, the same words). */
 export const callNodeAskText = (tool: string): string => `This ${tool} call needs a person's approval, which a workflow's call node cannot wait for; it was not run.`;
 /** A call a person denied, with their reason when they gave one. */
-export const refusedText = (tool: string, note?: string, ran: "no" | "unknown" = "no"): string => `The user denied this ${tool} call. ${ran === "no" ? NOT_RUN : RAN_UNKNOWN}${note ? ` Reason: ${note}` : ""}`;
+export const refusedText = (tool: string, note?: string, ran: "no" | "unknown" = "no"): string => `${USER_DENIED_OPENING}${tool} call. ${ran === "no" ? NOT_RUN : RAN_UNKNOWN}${note ? ` Reason: ${note}` : ""}`;

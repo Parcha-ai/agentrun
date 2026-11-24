@@ -28,6 +28,8 @@ export { type LearningPlace, type LearningWorkspace, learningWorkspace, type Lea
 export { ARCHIL_MAX_EXEC_S, handsOf, MAX_EXEC_S, processesOf, shellEnv } from "./hands.js";
 export { type AgentComputer, type RunComputer, type RunHold, runTools, type RunTools, type ScriptComputer, withKindTools } from "./run-tools.js";
 export { NO_PROGRAMS_WORDS, portOf } from "./computer-ports.js";
+// Each provider as this server has it (the mounts its keys turn on), on a line of its own.
+export { registryHere } from "./resolve-computer.js";
 export { COMPUTER_MCP_NAME, computerMcp, type ComputerMcpAnswer, mcpAnswerOf } from "./computer-mcp.js";
 export {
   type ClaimSide, computerReadiness, type ComputerSetting, type KindRegistry, type LaunchedComputer, type Port, resolveComputer,
@@ -42,4 +44,4 @@ export { type ClaimComputer, type ClaimLaunch, computerForClaim, type ComputerFo
 export { JANITOR_EVERY_MS, type JanitorDeps, type ProviderSweep, startJanitor, sweepServerComputers } from "./computer-janitor.js";
 export { agentComputerOf, agentComputerView, ownerGoneOf, reconcileAgentComputer, serverIdOf } from "./agent-computer.js";
 export { layOwnSkills, RUN_SKILLS_DIR } from "./revision-skills.js";
-export { KIND_SKILLS, type KindSkill, kindSkillOf, type SkillKind } from "./kind-skills.js";
+export { KIND_SKILLS, type KindSkill, kindSkillOf, type SkillKind, withoutKindSkill } from "./kind-skills.js";

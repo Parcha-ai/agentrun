@@ -3,6 +3,7 @@
 // sends. Edit the server's document, then run node scripts/generate-clients.mjs; never a wire type here.
 
 import type { components, operations } from "./api.generated";
+import type { Definition } from "./agentForm";
 
 type Answer<Id extends keyof operations> = operations[Id]["answer"];
 type Body<Id extends keyof operations> = operations[Id]["body"];
@@ -52,12 +53,13 @@ export type InputIssue = components["InputIssue"];
 export type TemplateView = Answer<"listTemplates">["templates"][number];
 /** Applying a template (POST /v2/templates/{name}/apply): its parameters, and the gate names of the tools the owner grants. */
 export type TemplateApply = Body<"applyTemplate">;
-/** What an apply made: the agent, its triggers, and its warnings. */
-export type TemplateApplied = Answer<"applyTemplate">;
-/** A package read from GitHub (POST /v2/templates/import): checked, and shown whole (its instructions, every skill file). */
+/** What an apply made: the agent, its triggers, and its warnings. The console sends no dry_run, so never the plan answer. */
+export type TemplateApplied = Exclude<Answer<"applyTemplate">, { plan: unknown }>;
+/** A package read from GitHub or uploaded (POST /v2/templates/import): checked, and shown whole (its instructions, every skill file). */
 export type TemplateImported = Answer<"importTemplate">;
 
-/** `so_far_usd` and `unpriced` (serve's costsofar/1), present only while `usd` is null. */
+/** `so_far_usd` and `unpriced` (serve's costsofar/1), present while `usd` is null, and beside `upper_bound` (its exact
+ *  part and held count); `usd` is said first whenever it is known (format.ts chargeWords, soFar). */
 export type Cost = components["Cost"];
 
 export type Run = components["Run"];
@@ -108,16 +110,15 @@ export type RunLearningRead = Answer<"getRunLearning">;
 /** GET /v2/agents/{id}/learning/cost's answer: the agent's runs in the order they started, what each cost and what
  *  learning added for it, the path it took, and what the series shows (the takeover, the levels before and after it). */
 export type LearningCost = Answer<"getLearningCost">;
-/** The held-out tests recorded for an agent (GET /v2/agents/{id}/learning/evals), newest first. */
-export type LearningEvals = Answer<"listLearningEvals">;
-export type LearningEval = LearningEvals["evals"][number];
+/** The owner's bill over the series (its `bill`): booked $ only, run after run, against the agent for all of it, with
+ *  where it breaks even and each learned revision's check spend as its served runs carry it. */
+export type Bill = LearningCost["bill"];
+export type BillPoint = Bill["points"][number];
+/** GET /v2/agents/{id}/learning/audits: the audit ledger's rows, oldest first. */
+export type LearningAudits = Answer<"listLearningAudits">;
+export type AuditRow = LearningAudits["audits"][number];
 /** One run of that series. `path`: `workflow` a learned workflow finished it alone, `handed_back` one ran and the agent
  *  went on, `agent` none ran, `replay` a replay run deciding whether a learned workflow's new revision serves. */
-/** A learning batch (learn from rows): GET /v2/agents/{id}/learning/batches/{batch_id}'s answer, its list's headers, a start's body and a row. */
-export type LearningBatch = Answer<"getLearningBatch">;
-export type LearningBatchHead = Answer<"listLearningBatches">["batches"][number];
-export type LearningBatchStart = Body<"createLearningBatch">;
-export type LearningBatchRow = LearningBatch["rows"][number];
 export type CostRun = LearningCost["runs"][number];
 export type RunPath = CostRun["path"];
 /** GET /v2/agents/{id}/learning/workflows/{name}/revisions' answer: the commits on main that changed a learned workflow's
@@ -132,14 +133,20 @@ export type Promotions = Answer<"listLearningPromotions">;
 export type Promotion = Promotions["promotions"][number];
 /** What a learned workflow serves: its champion's digest (null: none, the agent takes its runs) and a newer revision replaying. */
 export type Serving = Promotions["serving"][number];
-/** GET /v2/agents/{id}/learning/loop: the agent's compile turns (newest first) and its learned workflows' guarded steps. */
+/** GET /v2/agents/{id}/learning/loop: the agent's compile turns (newest first). */
 export type LearningLoop = Answer<"getLearningLoop">;
 export type LoopCompile = LearningLoop["compiles"][number];
-export type LoopGuard = LearningLoop["guards"][number];
-/** What the run's job did with the learned skills and workflows it was offered (`used`): each skill and whether its job
- *  read it, each learned workflow it called, how many times and how many of those failed. */
+/** What the run's job did with the learned workflows it was offered (`used`): each one it called, how many times and how
+ *  many of those failed. */
 export type LearnedUse = NonNullable<RunLearningRead>["used"];
 export type TimelinePage = components["TimelinePage"];
+/** GET /v2/runs/{id}/trace's answer: each model request and tool call of a run as a span (the Dev tools tab). */
+export type RunTrace = Answer<"getRunTrace">;
+export type TraceSpan = RunTrace["spans"][number];
+/** GET /v2/runs/{id}/usage's answer: the run's cost line by line, from the server's booking (a line for each model, each
+ *  vendor that charged for a tool, each browser provider), or none and why (`reason`). */
+export type RunUsage = Answer<"getRunUsage">;
+export type UsageLine = NonNullable<RunUsage["lines"]>[number];
 
 export type RunFile = components["RunFile"];
 export type RunFiles = components["RunFileList"];
@@ -169,6 +176,9 @@ type ServedToolKeys = Answer<"listToolKeys">;
 /** A key with its secrets (`secrets`, "tool:<KEY>"/"model:<KEY>"); `fields` as served, for the paste form. */
 export type ToolKey = ServedToolKeys["keys"][number];
 export type ToolKeys = ServedToolKeys;
+/** Settings → Harness keys: each plan-billed recipe's harness, its keys as SecretMeta ("harness:<id>:<KEY>"), never a value. */
+export type HarnessKeys = Answer<"listHarnessKeys">;
+export type HarnessKeysEntry = HarnessKeys["harnesses"][number];
 export type ToolKeyField = ToolKey["fields"][number];
 
 /** A saved key's check with its provider. Null, or absent from a server that does not check, says nothing. */
@@ -178,6 +188,16 @@ export type ToolKeysReenter = NonNullable<ToolKeys["reenter"]>;
 /** `capabilities.features.tool_keys`. */
 export type ToolKeysFeature = NonNullable<components["Features"]["tool_keys"]>;
 
+/** Claude Code's login on this machine (GET /v2/settings/claude-login, a serve extension): on or off, and what the CLI
+ *  says of its login, never a token. */
+export type ClaudeLoginView = Answer<"getClaudeLogin">;
+/** The model gateway in force (GET /v2/settings/model-gateway, a serve extension): the environment's, the one saved in the
+ *  console, or none; its address, id style and models, and its key as a SecretMeta, never a value. */
+export type ModelGateway = Answer<"getModelGateway">;
+/** PUT /v2/settings/model-gateway's body: the address, the key (null removes it; left out, kept), the id style, the models. */
+export type ModelGatewayBody = Body<"saveModelGateway">;
+/** POST /v2/settings/model-gateway/test's answer: the model ids the gateway lists, or why not. */
+export type ModelGatewayTest = Answer<"testModelGateway">;
 /** This server's ChatGPT sign-in (GET /v2/settings/chatgpt, a serve extension): its state, who and which plan, never a
  *  token. */
 export type ChatGPTView = Answer<"getChatGPTSignIn">;
@@ -190,10 +210,30 @@ export type ChatGPTSignOut = Answer<"signOutChatGPT">;
 export type Webhook = Answer<"getWebhook">;
 /** A PUT's answer: the webhook, and its secret the first time (201), shown this once. */
 export type WebhookSaved = Answer<"saveWebhook"> & { signing_secret?: string };
+/** A rotation's answer (POST /v2/settings/webhook/secret): the webhook, and its new secret, shown this once. */
+export type WebhookRotated = Answer<"rotateWebhookSecret">;
 /** One try of a message (GET .../deliveries, newest first). */
 export type WebhookAttempt = Answer<"listWebhookDeliveries">["attempts"][number];
 /** `capabilities.features.webhooks`. */
 export type WebhooksFeature = NonNullable<components["Features"]["webhooks"]>;
+
+/** Slack (GET /v2/settings/slack, a serve extension): its URL's last four characters, never the URL, and its events. */
+export type Slack = Answer<"getSlack">;
+/** A PUT's body: the URL (a secret write, the owner's session alone), the events, or both. */
+export type SlackBody = Body<"saveSlack">;
+/** One try of a Slack message (GET .../deliveries, newest first). */
+export type SlackAttempt = Answer<"listSlackDeliveries">["attempts"][number];
+/** `capabilities.features.slack`. */
+export type SlackFeature = NonNullable<components["Features"]["slack"]>;
+
+/** The server's email account (GET /v2/settings/email): its address, servers and who signs in, never its password. */
+export type EmailAccount = Answer<"getEmailAccount">;
+/** A PUT's body: a preset (gmail, fastmail, icloud) or other with its own servers, the address and the password. */
+export type EmailAccountBody = Body<"saveEmailAccount">;
+/** A test's body: an account as typed, or none for the saved one; a password left out is the saved one. */
+export type EmailTestBody = Body<"testEmailAccount">;
+/** A test's answer: what IMAP and SMTP each said. Nothing is sent or saved. */
+export type EmailTest = Answer<"testEmailAccount">;
 
 /** GET /v2/integrations/github's answer, always a 200: `{connected: false}` with no App, else the App. */
 export type GitHubStatus = Answer<"getGitHubConnection">;
@@ -203,6 +243,23 @@ export type GitHubConnection = Extract<GitHubStatus, { connected: true }>;
 export type GitHubConnectStart = Answer<"connectGitHub">;
 /** DELETE /v2/integrations/github's answer: how many GitHub triggers went off, and what to delete on GitHub. */
 export type GitHubDisconnected = Answer<"disconnectGitHub">;
+
+/** GET /v2/integrations/github/repositories: the repositories the App's installations cover. */
+export type GitHubRepositories = Answer<"listGitHubRepositories">;
+export type GitHubRepository = GitHubRepositories["repositories"][number];
+/** GET /v2/suggestions: GitHub's state, each scanned repository (its newest scan) and the suggested agents. */
+export type SuggestionsList = Answer<"listSuggestions">;
+export type ScannedRepository = SuggestionsList["repositories"][number];
+/** One suggested agent, as the list shows it (no instructions). */
+export type Suggestion = SuggestionsList["suggestions"][number];
+/** GET /v2/suggestions/{id}: the suggestion whole, the files a create adds, and whether GitHub lets it now. */
+export type SuggestionDetail = Answer<"getSuggestion">;
+/** Whether this server's GitHub App can open the pull request, and what to fix where it can't. */
+export type SuggestionReadiness = SuggestionDetail["github"];
+/** POST /v2/suggestions/{id}/create's answer: the suggestion with its agent, branch and pull request. */
+export type SuggestionCreated = Answer<"createSuggestedAgent">;
+/** POST /v2/suggestions/scans's answer: the scan's run. */
+export type ScanStarted = Answer<"scanForSuggestions">;
 
 /** PATCH /v2/runs/{id} {max_cost_usd}'s answer: the cap now. */
 export type RaiseAnswer = Answer<"raiseRunCap">;
@@ -221,6 +278,10 @@ export type Recorded<T> = { request: { method: string; path: string }; status: n
 // Computers (Settings → Computers) and Archil (Settings → Workspace).
 /** GET /v2/computers: each kind, whether this server offers it, and its providers. */
 export type Computers = Answer<"listComputers">;
+/** GET /v2/computers/running: each run still going whose agent has a computer, as GET /v2/runs/{run_id} answers it, so
+ *  each carries its `computer`. */
+export type RunningRun = Run & { computer: RunMachine };
+export type RunningComputers = Answer<"listRunningComputers"> & { runs: RunningRun[] };
 export type ComputerKindView = Computers["kinds"][number];
 /** A person's own computer paired with this server: its name, what it paired as, its driver's build, whether it is
  *  attached now, and the run that holds it. */
@@ -254,3 +315,18 @@ export type SignIn = components["SignIn"];
 export type SignInForgotten = Answer<"forgetSignIn">;
 /** GET /v2/agents/{id}'s answer as served. */
 export type ServedAgent = Answer<"getAgent">;
+/** An agent as the server sends it: GET /v2/agents/{id} (which alone carries `tools` and `run_blockers`), a list's, and
+ *  a create's or an edit's answer (which alone carry `warnings`). Narrowed where the console reads it narrower:
+ *  `kind` and `revision` are non-null, since every agent a route returns has its first revision (POST /agents and a first
+ *  run of POST /runs make it in one transaction; null is the document's for a row before that); `definition` is the
+ *  console's Definition, which an edit sends back whole, since the generated one (`unknown & DefinitionInput`) loses the
+ *  document's required version, skills and tools. */
+export type Agent = components["Agent"] & { kind: NonNullable<components["Agent"]["kind"]>; revision: string; definition: Definition };
+
+/** GET /v2/capabilities' answer: what this server runs (its harnesses, tools, places and models), what it offers
+ *  (features) and its limits. `models.ready`: whether an agent that names no model runs here; when not, `needs` says
+ *  what would make it: a model provider's key, or another default model. */
+export type Capabilities = components["Capabilities"];
+/** One harness as capabilities list it: its id (a built-in one, or one the server's harness modules add), its label and
+ *  what it promises, whether it runs here and why not. */
+export type HarnessOfferView = Capabilities["harnesses"][number];

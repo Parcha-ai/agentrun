@@ -15,6 +15,10 @@ import { byConsoleSession, byOwnerSession } from "./page.js";
 /** The one refusal a secret write from anything but the owner's session gets (403 forbidden). */
 export const SECRET_WRITE_REFUSAL = "Saving, replacing or removing a secret takes the owner's signed-in session in the console; the API token can't write secrets.";
 
+/** The refusal's words with where to finish it: the one sentence, then "Finish it in the console: <link>" when the
+ *  operation has a console page (registerSecretPage). The same link is the error's `details.console_url`. */
+export const secretWriteRefusal = (link?: string): string => (link ? `${SECRET_WRITE_REFUSAL} Finish it in the console: ${link}` : SECRET_WRITE_REFUSAL);
+
 // ---- who may write a secret ------------------------------------------------------------------------------------------
 
 /**
@@ -86,8 +90,8 @@ export type SecretPredicate = (body: unknown) => boolean;
 /** What a request is besides its body, for a predicate that must read what is stored: the route's path parameters (in
  *  the order its pattern names them) and the server's one store. `seen`: what the predicate read to let the request
  *  through, which the dispatch hands its operation, so a write allowed against one stored state is refused when that
- *  state changed before the write lands. */
-export type SecretRequest = { readonly params: readonly string[]; readonly store: unknown; seen?: unknown };
+ *  state changed before the write lands. `apiOnly`: the server is API-only (api-only.ts), with no owner to write one. */
+export type SecretRequest = { readonly params: readonly string[]; readonly store: unknown; readonly apiOnly?: boolean; seen?: unknown };
 /** Whether a request writes a secret by what it would do to what is stored (drop or replace a sealed credential), read
  *  from the store: beside the body's predicate, in the same one check. */
 export type StoredSecretPredicate = (body: unknown, request: SecretRequest) => Promise<boolean>;
@@ -133,6 +137,39 @@ export async function writesSecretFor(operationId: string, body: unknown, reques
   return stored ? (await stored(body, request)) === true : false;
 }
 
+// ---- where a refused secret write is finished ------------------------------------------------------------------------
+//
+// The rule stays: the token never writes a secret. What a refusal adds is where the person finishes it: the console's page
+// for that operation, as a path from the console's root ("/#/settings/mcp?add=<name>&url=..."), which the dispatch puts
+// after the address people open the console at (server.ts linkOrigin). A page built from the request carries only what
+// is no secret (an MCP server's name, its URL when nothing in it could be a credential, the kind of credential), so the
+// person pastes the secret alone. Never a value, a header, a client secret, or anything secret-shaped.
+
+/** An operation's console page: a fixed path, or one built from the request's non-secret fields. */
+export type SecretPage = string | ((body: unknown, request: SecretRequest) => string | Promise<string>);
+
+const pages = new Map<string, SecretPage>();
+
+/** Where in the console the owner finishes `operationIds` (each a registered secret write). */
+export function registerSecretPage(operationIds: string | readonly string[], page: SecretPage): void {
+  for (const operationId of typeof operationIds === "string" ? [operationIds] : operationIds) pages.set(operationId, page);
+}
+
+/** Whether `operationId` names its console page. */
+export const hasSecretPage = (operationId: string): boolean => pages.has(operationId);
+
+/** The console page that finishes this request of `operationId`, a path from the console's root; undefined when the
+ *  console has none for it, or the page could not be built (then the refusal carries no link). */
+export async function secretPageFor(operationId: string, body: unknown, request: SecretRequest): Promise<string | undefined> {
+  const page = pages.get(operationId);
+  if (typeof page !== "function") return page;
+  try {
+    return await page(body, request);
+  } catch {
+    return undefined;
+  }
+}
+
 // ---- the API document's marks ----------------------------------------------------------------------------------------
 
 type Json = Record<string, unknown>;
@@ -168,10 +205,11 @@ export function markedOperations(doc: Json): string[] {
   return out;
 }
 
-/** The marked operations of `doc` no plane registered a predicate for (`registered`): each a route a secret could take
- *  past the dispatch check. Empty is the only passing answer. */
-export const unguardedOperations = (doc: Json, registered: readonly string[]): string[] =>
-  markedOperations(doc).filter((operationId) => !registered.includes(operationId));
+/** The marked operations of `doc` no plane registered a predicate for nor said on purpose to write no secret
+ *  (registerNotSecretWrite: a preview's marked fields are kept nowhere): each a route a secret could take past the
+ *  dispatch check. Empty is the only passing answer. */
+export const unguardedOperations = (doc: Json): string[] =>
+  markedOperations(doc).filter((operationId) => !registry.has(operationId) && notSecretWriteReason(operationId) === undefined);
 
 // ---- one metadata shape for every secret's view ----------------------------------------------------------------------
 //
@@ -219,7 +257,7 @@ export const SECRET_META_SCHEMA = {
   required: ["name", "set", "source", "changed_at"],
   description: "What a secret's view says of it: its name, whether it is set, where it came from, and when it last changed. Never a value, a prefix, a length or a hash.",
   properties: {
-    name: { type: "string", pattern: "^[a-z][a-z0-9-]*(:[^:]+)+$", description: "The secret's name, \"<plane>:<id>\": a lowercase plane and the id as the plane keys it, joined with \":\": tool:<KEY_NAME>, model:<KEY_NAME>, mcp:<server> (several of one server: mcp:<server>:<field>), computer:<provider>:<KEY>, workspace:archil, trigger:<id>, webhook:outbound, github:app, source:<adapter>:<field>. An object holding one secret carries it as `secret`, one holding several as `secrets`." },
+    name: { type: "string", pattern: "^[a-z][a-z0-9-]*(:[^:]+)+$", description: "The secret's name, \"<plane>:<id>\": a lowercase plane and the id as the plane keys it, joined with \":\": tool:<KEY_NAME>, model:<KEY_NAME>, mcp:<server> (several of one server: mcp:<server>:<field>), computer:<provider>:<KEY>, harness:<harness>:<KEY>, workspace:archil, trigger:<id>, webhook:outbound, github:app, source:<adapter>:<field>. An object holding one secret carries it as `secret`, one holding several as `secrets`." },
     set: { type: "boolean", description: "Whether a value is set." },
     source: { enum: ["env", "console", "sign-in", null], description: "Where it came from: env, the environment the server starts with (which always wins, by the same name, and greys the console's field); console, pasted in the console by the owner's session; sign-in, obtained by an OAuth sign-in or Connect. null when not set." },
     changed_at: { type: ["string", "null"], format: "date-time", description: "When the credential itself last changed (pasted, signed in, rotated); null when not set or not known." },

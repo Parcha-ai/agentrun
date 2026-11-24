@@ -127,6 +127,25 @@ class Rules(unittest.TestCase):
             self.assertNotIn(KEY, printed(error))
         self.assertNotIn(KEY, printed(client), "nor does the printed client")
 
+    def test_a_refusals_message_says_the_servers_reason_with_the_key_cut_from_it_on_one_line(self) -> None:
+        def answer(request: Request, reply: Reply) -> Any:
+            if request.url == "/v2/agents":
+                return json_answer(422, {"error": {"code": "invalid_input", "message": f"name is taken (key {KEY})\nby agent a"}})
+            if request.url == "/v2/runs":
+                return json_answer(409, {"error": {"code": "conflict", "message": "x" * 400}})
+            return json_answer(403, {"error": {"code": "forbidden", "message": "Only the owner may archive an agent."}})
+
+        server = Listener(self, answer)
+        client = AgentRun(base_url=server.base, api_key=KEY, max_retries=0)
+        taken = self.thrown(client.agents.list)
+        assert isinstance(taken, AgentRunRefused)
+        self.assertEqual(str(taken), "The server refused GET /agents: 422 invalid_input: name is taken (key [hidden]) by agent a")
+        long = self.thrown(client.runs.list)
+        self.assertEqual(str(long), f"The server refused GET /runs: 409 conflict: {'x' * 299}…")
+        owner = self.thrown(client.agents.archive, "a")
+        assert isinstance(owner, AgentRunAuthError)
+        self.assertEqual(str(owner), "The server refused the API key for POST /agents/{agent_id}/archive: 403 forbidden: Only the owner may archive an agent.")
+
     def test_a_bad_key_a_missing_key_and_a_base_url_that_would_carry_it_elsewhere_are_refused_before_any_request(self) -> None:
         server = Listener(self)
         for api_key in (f"{KEY}\nX-Other: 1", f"{KEY} ", "a\tb", "ключ", "a\x7f"):
@@ -136,6 +155,7 @@ class Rules(unittest.TestCase):
             self.assertNotIn(api_key, printed(error))
         with mock.patch.dict(os.environ, {"AGENTRUN_BASE_URL": server.base}):
             os.environ.pop("AGENTRUN_API_KEY", None)
+            os.environ.pop("AGENTRUN_TOKEN", None)
             missing = self.thrown(AgentRun)
             assert isinstance(missing, AgentRunAuthError)
             self.assertEqual(missing.reason, "no_token")
@@ -162,6 +182,67 @@ class Rules(unittest.TestCase):
         from_env.agents.list()
         self.assertEqual(server.requests[0].headers["authorization"], f"Bearer {KEY}")
 
+    def test_the_base_url_is_the_servers_address_with_or_without_v2_as_the_cli_takes_it_and_agentrun_token_stands_in_for_agentrun_api_key_which_wins(self) -> None:
+        server = Listener(self)
+        prefix = server.base[: -len("/v2")]
+        for base_url in (prefix, f"{prefix}/", f"{prefix}//", server.base, f"{server.base}/"):
+            self.assertEqual(AgentRun(base_url=base_url, api_key=KEY).base_url, server.base, base_url)
+        self.assertEqual(AgentRun(base_url=server.origin, api_key=KEY).base_url, f"{server.origin}/v2")
+        self.assertEqual(AgentRun(base_url=f"{server.base}/extra", api_key=KEY).base_url, f"{server.base}/extra", "a path with a v2 segment is kept")
+        AgentRun(base_url=prefix, api_key=KEY).agents.list()
+        self.assertEqual(server.requests[-1].url, "/v2/agents")
+        with mock.patch.dict(os.environ, {"AGENTRUN_BASE_URL": prefix, "AGENTRUN_TOKEN": KEY}):
+            os.environ.pop("AGENTRUN_API_KEY", None)
+            from_token = AgentRun()
+            self.assertEqual(from_token.base_url, server.base, "the environment's address without /v2")
+            from_token.agents.list()
+            self.assertEqual(server.requests[-1].headers["authorization"], f"Bearer {KEY}", "AGENTRUN_TOKEN when AGENTRUN_API_KEY is not set")
+            os.environ["AGENTRUN_API_KEY"] = f"{KEY}-api"
+            AgentRun().agents.list()
+            self.assertEqual(server.requests[-1].headers["authorization"], f"Bearer {KEY}-api", "AGENTRUN_API_KEY wins")
+            AgentRun(api_key=f"{KEY}-given").agents.list()
+            self.assertEqual(server.requests[-1].headers["authorization"], f"Bearer {KEY}-given", "api_key wins over both")
+            os.environ.pop("AGENTRUN_API_KEY")
+            os.environ["AGENTRUN_TOKEN"] = ""
+            missing = self.thrown(AgentRun)
+            assert isinstance(missing, AgentRunAuthError)
+            self.assertEqual(missing.reason, "no_token", "an empty AGENTRUN_TOKEN is no key")
+
+    def test_agentrun_token_goes_only_to_a_server_on_this_machine_and_any_other_base_a_lookalike_host_or_a_loopback_name_behind_a_user_part_among_them_takes_agentrun_api_key_or_api_key_and_with_neither_is_refused_before_any_request(self) -> None:
+        server = Listener(self)
+        with mock.patch.dict(os.environ, {"AGENTRUN_TOKEN": KEY}):
+            os.environ.pop("AGENTRUN_API_KEY", None)
+            os.environ.pop("AGENTRUN_BASE_URL", None)
+            # On this machine (the CLI's hosts): the token is its key, and it reaches the server.
+            AgentRun(base_url=server.base).agents.list()
+            self.assertEqual(server.requests[-1].headers["authorization"], f"Bearer {KEY}")
+            for base_url in ("http://localhost:7340", "http://[::1]:7340/v2", "HTTP://LocalHost:7340"):
+                AgentRun(base_url=base_url)  # no_token were the token not taken
+            # Anywhere else: refused before any request, naming AGENTRUN_API_KEY, never the token.
+            seen = len(server.requests)
+            for base_url in ("https://agentrun.example", "http://localhost.evil.example:7340", "http://127.0.0.1.nip.io:7340", "http://127.0.0.2:7340", "http://192.0.2.5:7340"):
+                error = self.thrown(AgentRun, base_url=base_url)
+                assert isinstance(error, AgentRunAuthError), f"{base_url}: {error!r}"
+                self.assertEqual(error.reason, "no_token", base_url)
+                self.assertIn("AGENTRUN_API_KEY", str(error), base_url)
+                self.assertNotIn(KEY, str(error), f"{base_url}: the token is in no message")
+            # A loopback name behind a user part or a fragment: the base URL itself is refused, before any key is read. An
+            # encoded @ is a host name of its own, not on this machine: no key.
+            for base_url in ("http://localhost@evil.example/", "http://" + "localhost:8080" + "@evil.example/", "http://evil.example/#@localhost"):
+                error = self.thrown(AgentRun, base_url=base_url)
+                assert isinstance(error, AgentRunUsage), f"{base_url}: {error!r}"
+                self.assertNotIn(KEY, str(error), f"{base_url}: the token is in no message")
+            error = self.thrown(AgentRun, base_url="http://127.0.0.1%40evil.example/")
+            assert isinstance(error, AgentRunAuthError), repr(error)
+            self.assertEqual(error.reason, "no_token")
+            self.assertIn("AGENTRUN_API_KEY", str(error))
+            self.assertNotIn(KEY, str(error))
+            self.assertEqual(len(server.requests), seen, "nothing was sent")
+            # There, AGENTRUN_API_KEY or api_key is the key.
+            os.environ["AGENTRUN_API_KEY"] = f"{KEY}-api"
+            AgentRun(base_url="https://agentrun.example")
+            AgentRun(base_url="https://agentrun.example", api_key=f"{KEY}-given")
+
     def test_a_path_argument_is_encoded_whole_a_file_path_keeps_its_slashes_and_one_that_would_read_as_another_route_is_refused_before_any_request(self) -> None:
         def answer(request: Request, reply: Reply) -> Any:
             if "/files/" in request.url and "learning" not in request.url:
@@ -182,10 +263,10 @@ class Rules(unittest.TestCase):
             error = self.thrown(call)
             self.assertIsInstance(error, AgentRunUsage, repr(error))
         self.assertEqual(server.requests, [], "nothing was sent")
-        client.learning.read("a", "skills/find-policies/SKILL.md")
+        client.learning.read("a", "workflows/find-policies/README.md")
         client.home.read("a", "notes/a b.md")
         client.runs.get("a b/c?d#e")
-        self.assertEqual([r.url for r in server.requests], ["/v2/agents/a/learning/files/skills%2Ffind-policies%2FSKILL.md", "/".join(["", "v2", "agents", "a", "home", "files", "notes", "a%20b.md"]), "/v2/runs/a%20b%2Fc%3Fd%23e"])
+        self.assertEqual([r.url for r in server.requests], ["/v2/agents/a/learning/files/workflows%2Ffind-policies%2FREADME.md","/".join(["", "v2", "agents", "a", "home", "files", "notes", "a%20b.md"]), "/v2/runs/a%20b%2Fc%3Fd%23e"])
 
     def test_a_secret_bodys_values_are_cut_from_the_answer_as_json_values_its_structure_and_public_fields_kept_and_a_refusal_keeps_only_its_code(self) -> None:
         secret = f's3cr"et/{secrets.token_hex(8)} x'
@@ -677,11 +758,14 @@ class Rules(unittest.TestCase):
         client = AgentRun(base_url=server.base, api_key=KEY)
         client.runs.list(limit=10, archived=True, status="completed", agent="a b")
         client.files.upload("f1", b"\x89PNG", body_type="image/png")
-        client.learning.write("notes", "policies.md", "# Policies\n", if_none_match="*", body_type="text/markdown")
-        first, upload, note = server.requests
+        client.learning.write_corrections("notes", "- Look in policies/ first.\n", if_match='"v1"', body_type="text/markdown")
+        first, upload, corrections = server.requests
         self.assertEqual(urlsplit(first.url).query, "limit=10&agent=a+b&status=completed&archived=true")
         self.assertEqual((upload.method, upload.headers["content-type"], upload.body), ("PUT", "image/png", b"\x89PNG"))
-        self.assertEqual((note.headers["content-type"], note.headers["if-none-match"], note.body), ("text/markdown", "*", b"# Policies\n"))
+        self.assertEqual(
+            (corrections.method, urlsplit(corrections.url).path, corrections.headers["content-type"], corrections.headers["if-match"], corrections.body),
+            ("PUT", "/v2/agents/notes/learning/corrections", "text/markdown", '"v1"', b"- Look in policies/ first.\n"),
+        )
 
     def test_a_server_that_echoes_the_key_in_what_it_answers_puts_it_in_no_error_no_frame_and_no_chained_exception(self) -> None:
         # Every echo is cut or not JSON: a 200 that is not JSON, a 4xx that is not JSON, an event that is not JSON, a JSON
@@ -978,6 +1062,20 @@ class Rules(unittest.TestCase):
             back = pickle.loads(pickle.dumps(error))
             self.assertIs(type(back), type(error))
             self.assertEqual((str(back), vars(back)), (str(error), vars(error)))
+
+
+
+class GeneratedNames(unittest.TestCase):
+    """A type the client exported keeps its name when the server's document adds a choice beside it."""
+
+    def test_mcp_auth_headers_shape_keeps_its_names(self):
+        # mcp_auth's per_run headers entry, exported by these names since mcpperrun/1; composioperrun/1 added the per-run
+        # Composio binding as a second choice of the same field.
+        for name in ("RunCreateMcpAuthValue", "RunCreateInlineMcpAuthValue", "MessageCreateMcpAuthValue"):
+            with self.subTest(name=name):
+                self.assertTrue(hasattr(agentrun, name), f"agentrun.{name} is importable")
+                self.assertIn(name, agentrun.__all__)
+                self.assertEqual(getattr(agentrun, name).__required_keys__, frozenset({"headers"}), f"{name} is the headers shape")
 
 
 if __name__ == "__main__":

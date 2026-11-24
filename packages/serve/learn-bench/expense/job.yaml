@@ -2,8 +2,8 @@
 # format. Step 01 teaches the format and says "every week"; steps 02-10 paste the data alone. No template: the agent is
 # this folder's agent.md (a template manifest, no tools), and every grader is a regex, so the job is cheap and needs no
 # grader model. The data is fixed per step, so every arm and harness sees the same series.
-# It measures workflow reuse (reuse: true): the format becomes a skill at 01, the skill's job is asked for as a workflow
-# draft at 05 at the earliest (after 3 runs of the skill, #2282), and 06-10 can call the kept workflow: 3 or more steps.
+# It measures workflow reuse (reuse: true): the job is compiled into a workflow at 05 at the earliest (the bench's
+# compile_after, 5 completed runs), and 06-10 can call the kept workflow: 3 or more steps.
 parameters: {}
 grants: []
 fakes: {}

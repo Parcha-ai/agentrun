@@ -9,6 +9,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { commitWrites } from "@earendil-works/pi-durable/testing";
 import { maxRunsOf } from "../dist/host.js";
 import { readFile } from "node:fs/promises";
+import { parse as parseYaml } from "yaml";
 import { besideRunnerOptions, besideStopping, DRAIN_TIMEOUT } from "../dist/runner/beside.js";
 import { durationMs } from "../dist/print.js";
 import { DEADLINE_MARGIN_MS } from "../dist/stop-signals.js";
@@ -82,10 +83,11 @@ async function besideRunner(t, flags, ids) {
 }
 
 test("the server's flags are the beside runner's: --max-runs its loops, as the capabilities count them, and --drain-timeout its drain", () => {
-  assert.deepEqual(besideRunnerOptions({ maxRuns: 2, drainTimeout: "6s" }, {}), { loops: 2, drainMs: 6_000 });
-  assert.deepEqual(besideRunnerOptions({}, { AGENTRUN_MAX_RUNS: "3" }), { loops: 3, drainMs: 30_000 }, "AGENTRUN_MAX_RUNS, and the documented 30s drain");
+  assert.deepEqual(besideRunnerOptions({ maxRuns: 2, drainTimeout: "6s" }, {}), { loops: 2, loopsTold: true, drainMs: 6_000 });
+  assert.deepEqual(besideRunnerOptions({}, { AGENTRUN_MAX_RUNS: "3" }), { loops: 3, loopsTold: true, drainMs: 30_000 }, "AGENTRUN_MAX_RUNS, and the documented 30s drain");
   assert.equal(DRAIN_TIMEOUT, "30s");
   assert.equal(besideRunnerOptions({}, {}).loops, maxRunsOf({}), "with neither, as many as the host holds: the capabilities' own number");
+  assert.equal(besideRunnerOptions({}, {}).loopsTold, false, "the host's memory's count is no number given: on uid isolation it is cut to the slots, never refused");
   assert.equal(besideRunnerOptions({ drainTimeout: "0s" }, {}).drainMs, 0);
 });
 
@@ -115,13 +117,21 @@ test("the CLI's stop deadline covers the runner's whole close: its drain, then t
   assert.ok(DEADLINE_MARGIN_MS > 0);
 });
 
-test("a runner of its own stops inside compose's stop grace: its default drain and the loops' stop after it", async () => {
+test("a runner of its own stops inside the stop grace of compose, the Helm chart and the Coolify and Dokploy templates: its default drain and the loops' stop after it", async () => {
   const compose = await readFile(new URL("../../../deploy/compose.yaml", import.meta.url), "utf8");
   const runner = /x-runner: &runner\n(?:  .*\n)*?  stop_grace_period: (\d+)s/.exec(compose);
   assert.ok(runner, "compose's runners name their stop_grace_period");
+  const values = await readFile(new URL("../../../deploy/helm/agentrun/values.yaml", import.meta.url), "utf8");
+  const pod = /^terminationGracePeriodSeconds: (\d+)$/m.exec(values);
+  assert.ok(pod, "the chart names its pod's terminationGracePeriodSeconds");
   const bound = runnerCloseBoundMs(durationMs(RUNNER_DRAIN_TIMEOUT));
   assert.equal(bound, 31_000, "6 + 25 = 31 s");
   assert.ok(bound < Number(runner[1]) * 1_000, `the runner's close (${bound} ms) is inside compose's ${runner[1]} s`);
+  assert.ok(bound < Number(pod[1]) * 1_000, `the runner's close (${bound} ms) is inside the chart's ${pod[1]} s`);
+  for (const path of ["deploy/coolify/agentrun.yaml", "deploy/dokploy/agentrun/docker-compose.yml"]) {
+    const grace = /^(\d+)s$/.exec(parseYaml(await readFile(new URL(`../../../${path}`, import.meta.url), "utf8")).services.agentrun.stop_grace_period);
+    assert.ok(grace && bound < Number(grace[1]) * 1_000, `the runner's close (${bound} ms) is inside ${path}'s stop_grace_period`);
+  }
 });
 
 test("--max-runs 2 with 4 runs queued: the runner holds 2 at once, the other 2 wait queued, then run as places free", async (t) => {

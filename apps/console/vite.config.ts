@@ -7,10 +7,11 @@ import { credentialGate } from "./credential-gate.mjs";
 import { thirdPartyNotices } from "./third-party-notices.mjs";
 
 // The console builds to static files with relative URLs, so AgentRun Server can serve them from any path.
-// `npm run dev` proxies /v2 as src/lib/devProxy.ts says: to the AgentRun Server AGENTRUN_URL names, else the one on this
-// machine at serve's default port, with AGENTRUN_TOKEN.
+// `npm run dev` proxies /v2 and the public setup skill as src/lib/devProxy.ts says: to the AgentRun Server AGENTRUN_URL
+// names, else the one on this machine at serve's default port, with AGENTRUN_TOKEN on API requests alone.
 
-const v2 = devProxy(process.env)["/v2"];
+const proxy = devProxy(process.env);
+const v2 = proxy["/v2"];
 // A cap on the test workers from VITEST_MAX_WORKERS, for a machine shared with other work. Vitest reads the variable too,
 // but with parseInt, which takes "4x" as 4 and drops "x" without a word. Unset or empty keeps vitest's own default of a
 // worker per core. Anything but a whole number is refused, as pi-browser's TEST_CONCURRENCY is: a cap that was asked for
@@ -39,6 +40,7 @@ export default defineConfig({
   plugins: [react(), thirdPartyNotices(), credentialGate()],
   server: {
     proxy: {
+      ...proxy,
       "/v2": {
         ...v2,
         // Without a token the console signs in like the served page: the server takes a cookie write only from its own
@@ -51,7 +53,9 @@ export default defineConfig({
     },
   },
   resolve: { alias },
-  build: { outDir: "dist", assetsInlineLimit: 0 },
+  // The server serves scripts, styles and fonts; its CSP also permits data images. Keep the small coding-agent and harness
+  // icons in the bundle so their marks work with existing servers, without widening their asset allowlist.
+  build: { outDir: "dist", assetsInlineLimit: (file) => ["coding-agents", "harnesses"].some(dir => file.replaceAll("\\", "/").includes(`/src/assets/${dir}/`)) },
   // css: tokens.css is read as text (`?raw`) by the design-system test and stories; every other stylesheet stays a stub.
   test: { environment: "jsdom", include: ["src/**/*.test.ts", "src/**/*.test.tsx"], css: { include: [/\.css\?raw$/] }, ...(workers ? { maxWorkers: workers } : {}), ...(projects ? { projects } : {}) },
 });

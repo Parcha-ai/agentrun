@@ -20,16 +20,36 @@ __all__ = [
     "AgentNativeStatusRemote",
     "AgentNativeStatusSelector",
     "AgentOwnComputer",
+    "AgentRunBlockers",
     "AgentRuns",
+    "AgentSourceSync",
     "AgentTemplate",
     "AgentToolsItem",
     "AgentsResource",
     "ApplyTemplateBody",
     "ApplyTemplateBodyOverrides",
     "ApplyTemplateResponse",
-    "ApplyTemplateResponseWebhookSecretsItem",
+    "ApplyTemplateResponseObject11",
+    "ApplyTemplateResponseObject11TriggersItem",
+    "ApplyTemplateResponseObject11WebhookSecretsItem",
+    "ApplyTemplateResponseObject12",
+    "ApplyTemplateResponseObject12Plan",
+    "ApplyTemplateResponseObject12PlanComputer",
+    "ApplyTemplateResponseObject12PlanTriggersItem",
+    "ApplyTemplateResponseObject12PlanUnmatchedMcpItem",
+    "ApplyTemplateResponseObject2",
+    "ApplyTemplateResponseObject2TriggersItem",
+    "ApplyTemplateResponseObject2WebhookSecretsItem",
     "ArchiveAgentResponse",
     "ArchiveRunResponse",
+    "BindSourceToolBody",
+    "BindSourceToolResponse",
+    "BindSourceToolResponseBlockersItem",
+    "BindSourceToolResponseConnection",
+    "BindSourceToolResponseProjectIssuesItem1",
+    "BindSourceToolResponseProjectIssuesItem2",
+    "BindSourceToolResponseToolConnectionsItem",
+    "BindSourceToolResponseToolConnectionsItemCandidatesItem",
     "CallMcpBody",
     "CallMcpResponse",
     "CallMcpResponseError",
@@ -38,43 +58,57 @@ __all__ = [
     "CallRunComputerResponseObject1",
     "CallRunComputerResponseObject2",
     "CallRunComputerResponseObject2Error",
-    "CancelLearningBatchResponse",
-    "CancelLearningBatchResponseLessons",
-    "CancelLearningBatchResponsePaths",
-    "CancelLearningBatchResponseRevisionsItem",
-    "CancelLearningBatchResponseRowsItem",
-    "CancelLearningBatchResponseRowsItemLearned",
     "CancelResult",
     "CancelRunResponse",
     "Capabilities",
     "CapabilitiesHarnessesItem",
     "CapabilitiesHarnessesItemFreeModelsItem",
+    "CapabilitiesHarnessesItemPromises",
     "CapabilitiesHome",
     "CapabilitiesLearning",
+    "CapabilitiesLearningModel",
     "CapabilitiesLinks",
     "CapabilitiesModels",
     "CapabilitiesPlaces",
     "CapabilitiesPlacesBoxesItem",
     "CapabilitiesPlacesDefaultPlace1",
     "CapabilitiesPlacesDefaultPlace2",
+    "CapabilitiesResource",
     "CapabilitiesSecrets",
     "CapabilitiesServer",
+    "CapabilitiesStoreSchema",
+    "CapabilitiesSwitchesValue",
     "CapabilitiesToolsItem",
     "CapabilitiesToolsItemResolves",
     "CapabilitiesToolsItemWhy",
     "CapabilitiesWorkflows",
     "CapabilitiesWorkflowsDecisions",
     "CapabilitiesWorkflowsDecisionsProvidersItem",
+    "CliLearningEventsBody",
+    "CliLearningEventsBodyEventsItem1",
+    "CliLearningEventsBodyEventsItem2",
+    "CliLearningEventsBodyEventsItem3",
+    "CliLearningEventsBodyEventsItem4",
+    "CliLearningEventsBodyEventsItem4Skipped",
+    "CliLearningEventsBodyEventsItem5",
+    "CliLearningEventsResponse",
+    "CliLearningResource",
     "CommitSha",
+    "CompleteCliLearningRunBody",
+    "CompleteCliLearningRunBodySourcePolicy",
+    "CompleteCliLearningRunBodyUsage",
+    "CompleteCliLearningRunResponse",
     "CompleteRemoteCommandBody",
     "CompleteRemoteCommandResponse",
     "CompleteSdkRunBody",
     "CompleteSdkRunBodyUsage",
     "CompleteSdkRunResponse",
+    "ComposioRunBinding",
     "ConnectGitHubBody",
     "ConnectGitHubResponse",
     "ConnectNativeBody",
     "ConnectNativeBodySelector",
+    "ConnectNativeBodySourceSync",
     "ConnectNativeResponse",
     "ConnectNativeResponseNative",
     "ConnectNativeResponseNativeCapabilities",
@@ -84,22 +118,29 @@ __all__ = [
     "ConnectorsResource",
     "Cost",
     "CostPlan",
+    "CostTokens",
     "CreateAgentBody",
     "CreateAgentResponse",
     "CreateFileBody",
     "CreateFileResponse",
     "CreateInlineRunBody",
     "CreateInlineRunResponse",
-    "CreateLearningBatchBody",
-    "CreateLearningBatchResponse",
-    "CreateLearningBatchResponseLessons",
-    "CreateLearningBatchResponsePaths",
-    "CreateLearningBatchResponseRevisionsItem",
-    "CreateLearningBatchResponseRowsItem",
-    "CreateLearningBatchResponseRowsItemLearned",
     "CreatePairingResponse",
     "CreateRunBody",
+    "CreateRunComputerViewerBody",
+    "CreateRunComputerViewerResponse",
     "CreateRunResponse",
+    "CreateSuggestedAgentBody",
+    "CreateSuggestedAgentResponse",
+    "CreateSuggestedAgentResponseAgent",
+    "CreateSuggestedAgentResponseAgentInputsItem",
+    "CreateSuggestedAgentResponseAgentOutputItem",
+    "CreateSuggestedAgentResponseCreated",
+    "CreateSuggestedAgentResponseCreatedPullRequest",
+    "CreateSuggestedAgentResponseEvidenceItem",
+    "CreateSuggestedAgentResponseIntegration",
+    "CreateSuggestedAgentResponseIntegrationCallSite",
+    "CreateSuggestedAgentResponseScan",
     "CreateTriggerBody",
     "CreateTriggerBodySource1",
     "CreateTriggerBodySource2",
@@ -119,6 +160,16 @@ __all__ = [
     "CreateTriggerBodySource6AcceptItemWhereItem1",
     "CreateTriggerBodySource6AcceptItemWhereItem2",
     "CreateTriggerBodySource6AcceptItemWhereItem3",
+    "CreateTriggerBodySource7",
+    "CreateTriggerBodySource7AcceptItem",
+    "CreateTriggerBodySource7AcceptItemWhereItem1",
+    "CreateTriggerBodySource7AcceptItemWhereItem2",
+    "CreateTriggerBodySource7AcceptItemWhereItem3",
+    "CreateTriggerBodySource8",
+    "CreateTriggerBodySource8AcceptItem",
+    "CreateTriggerBodySource8AcceptItemWhereItem1",
+    "CreateTriggerBodySource8AcceptItemWhereItem2",
+    "CreateTriggerBodySource8AcceptItemWhereItem3",
     "CreateTriggerBodyTarget1",
     "CreateTriggerBodyTarget2",
     "CreateTriggerBodyTarget2Input",
@@ -127,6 +178,8 @@ __all__ = [
     "CreateTriggerResponseDisabled2",
     "CreateTriggerResponseDisabled3",
     "CreateTriggerResponseDisabled4",
+    "CreateTriggerResponseDisabled5",
+    "CreateTriggerResponseLastCheck",
     "CreateTriggerResponseLastFiring",
     "CreateTriggerResponseLastFiringError",
     "CreateTriggerResponseSource1",
@@ -147,15 +200,28 @@ __all__ = [
     "CreateTriggerResponseSource6AcceptItemWhereItem1",
     "CreateTriggerResponseSource6AcceptItemWhereItem2",
     "CreateTriggerResponseSource6AcceptItemWhereItem3",
+    "CreateTriggerResponseSource7",
+    "CreateTriggerResponseSource7AcceptItem",
+    "CreateTriggerResponseSource7AcceptItemWhereItem1",
+    "CreateTriggerResponseSource7AcceptItemWhereItem2",
+    "CreateTriggerResponseSource7AcceptItemWhereItem3",
+    "CreateTriggerResponseSource8",
+    "CreateTriggerResponseSource8AcceptItem",
+    "CreateTriggerResponseSource8AcceptItemWhereItem1",
+    "CreateTriggerResponseSource8AcceptItemWhereItem2",
+    "CreateTriggerResponseSource8AcceptItemWhereItem3",
     "CreateTriggerResponseTarget1",
     "CreateTriggerResponseTarget2",
     "CreateTriggerResponseTarget2Input",
     "Definition",
+    "DefinitionCliLearning",
     "DefinitionComputer",
     "DefinitionComputerGpu",
     "DefinitionInput",
+    "DefinitionInputCliLearning",
     "DefinitionInputComputer",
     "DefinitionInputComputerGpu",
+    "DefinitionInputLearning",
     "DefinitionInputModelTiers",
     "DefinitionInputNative",
     "DefinitionInputNativeCapabilities",
@@ -165,12 +231,19 @@ __all__ = [
     "DefinitionInputPlace1",
     "DefinitionInputPlace2",
     "DefinitionInputSdk",
+    "DefinitionInputSdk2",
     "DefinitionInputToolSettings",
     "DefinitionInputToolSettingsAskPerson",
     "DefinitionInputToolSettingsBash",
     "DefinitionInputToolSettingsBrowser",
+    "DefinitionInputToolSettingsCalendarEvents",
     "DefinitionInputToolSettingsDesktop",
     "DefinitionInputToolSettingsEdit",
+    "DefinitionInputToolSettingsEmailDraft",
+    "DefinitionInputToolSettingsEmailFile",
+    "DefinitionInputToolSettingsEmailRead",
+    "DefinitionInputToolSettingsEmailSearch",
+    "DefinitionInputToolSettingsEmailSend",
     "DefinitionInputToolSettingsJev",
     "DefinitionInputToolSettingsLlm",
     "DefinitionInputToolSettingsOpenrouter",
@@ -180,8 +253,10 @@ __all__ = [
     "DefinitionInputToolSettingsRead",
     "DefinitionInputToolSettingsSubagent",
     "DefinitionInputToolSettingsWebFetch",
+    "DefinitionInputToolSettingsWebSave",
     "DefinitionInputToolSettingsWebSearch",
     "DefinitionInputToolSettingsWrite",
+    "DefinitionLearning",
     "DefinitionModelTiers",
     "DefinitionNative",
     "DefinitionNativeCapabilities",
@@ -191,12 +266,19 @@ __all__ = [
     "DefinitionPlace1",
     "DefinitionPlace2",
     "DefinitionSdk",
+    "DefinitionSdk2",
     "DefinitionToolSettings",
     "DefinitionToolSettingsAskPerson",
     "DefinitionToolSettingsBash",
     "DefinitionToolSettingsBrowser",
+    "DefinitionToolSettingsCalendarEvents",
     "DefinitionToolSettingsDesktop",
     "DefinitionToolSettingsEdit",
+    "DefinitionToolSettingsEmailDraft",
+    "DefinitionToolSettingsEmailFile",
+    "DefinitionToolSettingsEmailRead",
+    "DefinitionToolSettingsEmailSearch",
+    "DefinitionToolSettingsEmailSend",
     "DefinitionToolSettingsJev",
     "DefinitionToolSettingsLlm",
     "DefinitionToolSettingsOpenrouter",
@@ -206,6 +288,7 @@ __all__ = [
     "DefinitionToolSettingsRead",
     "DefinitionToolSettingsSubagent",
     "DefinitionToolSettingsWebFetch",
+    "DefinitionToolSettingsWebSave",
     "DefinitionToolSettingsWebSearch",
     "DefinitionToolSettingsWrite",
     "DeleteAgentArchilResponse",
@@ -214,10 +297,23 @@ __all__ = [
     "DeleteComposioSubscriptionResponse",
     "DeleteMcpServerResponse",
     "DeleteMcpServerResponseComposio",
+    "DeleteModelGatewayResponse",
+    "DeleteModelGatewayResponseModels",
+    "DeleteModelGatewayResponseSecret",
     "DeleteTriggerResponse",
     "DeleteTriggerResponseComposio",
     "DeleteWorkspaceArchilResponse",
     "DeleteWorkspaceArchilResponseSecret",
+    "DiscardSuggestionResponse",
+    "DiscardSuggestionResponseAgent",
+    "DiscardSuggestionResponseAgentInputsItem",
+    "DiscardSuggestionResponseAgentOutputItem",
+    "DiscardSuggestionResponseCreated",
+    "DiscardSuggestionResponseCreatedPullRequest",
+    "DiscardSuggestionResponseEvidenceItem",
+    "DiscardSuggestionResponseIntegration",
+    "DiscardSuggestionResponseIntegrationCallSite",
+    "DiscardSuggestionResponseScan",
     "DisconnectGitHubResponse",
     "DisconnectNativeResponse",
     "DisconnectNativeResponseNative",
@@ -232,6 +328,9 @@ __all__ = [
     "DiscoverNativeResponseTargetsItemConfigurationItem",
     "DiscoverNativeResponseTargetsItemSelector",
     "Effort",
+    "EnrollCliLearningBody",
+    "EnrollCliLearningBodySourceSync",
+    "EnrollCliLearningResponse",
     "EnrollRemoteConnectorBody",
     "EnrollRemoteConnectorBodyCapabilities",
     "EnrollRemoteConnectorResponse",
@@ -242,10 +341,13 @@ __all__ = [
     "FeaturesBrowserLive",
     "FeaturesComputers",
     "FeaturesFiles",
+    "FeaturesHarnessKeys",
     "FeaturesHome",
     "FeaturesMcpClient",
     "FeaturesMessages",
     "FeaturesRuns",
+    "FeaturesSdkRuns",
+    "FeaturesSlack",
     "FeaturesTimeline",
     "FeaturesToolKeys",
     "FeaturesTriggers",
@@ -271,21 +373,19 @@ __all__ = [
     "GetAgentLearningResponseImpact",
     "GetAgentLearningResponseImpactAfter",
     "GetAgentLearningResponseImpactBefore",
+    "GetAgentLearningResponseLearningModel",
     "GetAgentLearningResponseLog",
     "GetAgentLearningResponseLogItemsItem",
     "GetAgentLearningResponseLogItemsItemBy1",
     "GetAgentLearningResponseLogItemsItemBy2",
-    "GetAgentLearningResponseNotes",
-    "GetAgentLearningResponseNotesItemsItem",
-    "GetAgentLearningResponseNotesItemsItemLastChange",
-    "GetAgentLearningResponseNotesItemsItemRetired",
-    "GetAgentLearningResponseNotesItemsItemRuns",
-    "GetAgentLearningResponseSkillsItem",
-    "GetAgentLearningResponseSkillsItemLastChange",
-    "GetAgentLearningResponseSkillsItemRetired",
     "GetAgentLearningResponseWorkflowsItem",
     "GetAgentLearningResponseWorkflowsItemLastChange",
     "GetAgentLearningResponseWorkflowsItemRetired",
+    "GetAgentPackageResponse",
+    "GetAgentPackageResponseFilesItem",
+    "GetAgentPackageResponseReport",
+    "GetAgentPackageResponseReportBlockedItem",
+    "GetAgentPackageResponseReportRemadeItem",
     "GetAgentResponse",
     "GetAgentResponseExternal",
     "GetAgentResponseLearning",
@@ -297,11 +397,26 @@ __all__ = [
     "GetAgentResponseNativeStatusRemote",
     "GetAgentResponseNativeStatusSelector",
     "GetAgentResponseOwnComputer",
+    "GetAgentResponseRunBlockers",
     "GetAgentResponseRuns",
+    "GetAgentResponseSourceSync",
     "GetAgentResponseTemplate",
     "GetAgentResponseToolsItem",
+    "GetCalendarResponse",
     "GetCapabilitiesResponse",
+    "GetCapacityResponse",
+    "GetCapacityResponseHandBacks",
+    "GetCapacityResponseRunnersItem",
+    "GetCapacityResponseRuns",
     "GetChatGPTSignInResponse",
+    "GetClaudeLoginResponse",
+    "GetClaudeLoginResponseAccount",
+    "GetClaudeLoginResponseMachine",
+    "GetClaudeLoginResponseSignIn",
+    "GetCliLearningRunResponse",
+    "GetEmailAccountResponse",
+    "GetEmailAccountResponseImap",
+    "GetEmailAccountResponseSmtp",
     "GetFileResponse",
     "GetGitHubConnectionResponse",
     "GetGitHubConnectionResponseObject1",
@@ -312,38 +427,50 @@ __all__ = [
     "GetLearnedWorkflowReplayResponse",
     "GetLearnedWorkflowReplayResponseOutcomes",
     "GetLearnedWorkflowReplayResponseScore",
-    "GetLearningBatchResponse",
-    "GetLearningBatchResponseLessons",
-    "GetLearningBatchResponsePaths",
-    "GetLearningBatchResponseRevisionsItem",
-    "GetLearningBatchResponseRowsItem",
-    "GetLearningBatchResponseRowsItemLearned",
+    "GetLearningCorrectionsResponse",
     "GetLearningCostResponse",
+    "GetLearningCostResponseBill",
+    "GetLearningCostResponseBillBreakEven",
+    "GetLearningCostResponseBillHoldsItem",
+    "GetLearningCostResponseBillPointsItem",
+    "GetLearningCostResponseBillRevisionsItem",
     "GetLearningCostResponseRunsItem",
     "GetLearningCostResponseSummary",
     "GetLearningCostResponseSummaryAfter",
     "GetLearningCostResponseSummaryBefore",
     "GetLearningCostResponseSummaryHandBacks",
+    "GetLearningCostResponseSummaryReplay",
     "GetLearningCostResponseSummaryTakeover",
+    "GetLearningCostResponseSummaryWithheld",
     "GetLearningCostResponseWorkflowsItem",
     "GetLearningCostResponseWorkflowsItemByHand",
     "GetLearningCostResponseWorkflowsItemServed",
     "GetLearningLoopResponse",
     "GetLearningLoopResponseCompilesItem",
     "GetLearningLoopResponseCompilesItemAttemptsItem",
-    "GetLearningLoopResponseGuardsItem",
-    "GetLearningLoopResponseGuardsItemPointsItem",
     "GetMcpPrivateHostsResponse",
     "GetMcpServerResponse",
     "GetMcpServerResponseAuth",
     "GetMcpServerResponseOauth",
     "GetMcpServerResponseToolsItem",
+    "GetModelGatewayResponse",
+    "GetModelGatewayResponseModels",
+    "GetModelGatewayResponseSecret",
     "GetNativeResponse",
     "GetNativeResponseNative",
     "GetNativeResponseNativeCapabilities",
     "GetNativeResponseNativeConfigurationItem",
     "GetNativeResponseNativeRemote",
     "GetNativeResponseNativeSelector",
+    "GetObservationsResponse",
+    "GetObservationsResponseConnectorsItem",
+    "GetObservationsResponseLimits",
+    "GetObservationsResponseSessionsItem",
+    "GetObservationsResponseSessionsItemLearning",
+    "GetObservationsResponseSessionsItemUsage",
+    "GetObservationsResponseUsage",
+    "GetObservationsResponseUsageDailyItem",
+    "GetObservationsResponseUsageModelsItem",
     "GetOpenapiResponse",
     "GetRunGraphResponse",
     "GetRunGraphResponseDecisionsItem",
@@ -359,24 +486,37 @@ __all__ = [
     "GetRunLearningResponseObject",
     "GetRunLearningResponseObjectCompiled",
     "GetRunLearningResponseObjectCompiledAttemptsItem",
-    "GetRunLearningResponseObjectCostUsd",
-    "GetRunLearningResponseObjectGivenItem",
     "GetRunLearningResponseObjectGraded",
-    "GetRunLearningResponseObjectLearnedItem",
-    "GetRunLearningResponseObjectPendingItem",
     "GetRunLearningResponseObjectProblemsItem",
-    "GetRunLearningResponseObjectReadItem",
-    "GetRunLearningResponseObjectSkillsItem",
-    "GetRunLearningResponseObjectTokens",
-    "GetRunLearningResponseObjectTokensGrade",
     "GetRunLearningResponseObjectUsed",
-    "GetRunLearningResponseObjectUsedSkillsItem",
     "GetRunLearningResponseObjectUsedWorkflowsItem",
-    "GetRunLearningResponseObjectVerdict",
-    "GetRunLearningResponseObjectVerdictItemsItem",
     "GetRunLearningResponseObjectWorkflowsItem",
     "GetRunResponse",
+    "GetRunTraceResponse",
+    "GetRunTraceResponseSpansItem",
+    "GetRunTraceResponseSpansItemTokens",
+    "GetRunUsageResponse",
+    "GetRunUsageResponseBrowserSessionsItem",
+    "GetRunUsageResponseBrowserSessionsItemProviderRecord",
+    "GetRunUsageResponseComputerIntervalsItem",
+    "GetRunUsageResponseComputerIntervalsItemGpu",
+    "GetRunUsageResponseLinesItem",
+    "GetRunUsageResponseLinesItemTokens",
+    "GetRunUsageResponseTotal",
     "GetSdkRunResponse",
+    "GetSlackResponse",
+    "GetSlackResponseObject1",
+    "GetSlackResponseObject1Events",
+    "GetSlackResponseObject2",
+    "GetSlackResponseObject2Disabled",
+    "GetSlackResponseObject2Events",
+    "GetSourceSyncResponse",
+    "GetSourceSyncResponseBlockersItem",
+    "GetSourceSyncResponseConnection",
+    "GetSourceSyncResponseProjectIssuesItem1",
+    "GetSourceSyncResponseProjectIssuesItem2",
+    "GetSourceSyncResponseToolConnectionsItem",
+    "GetSourceSyncResponseToolConnectionsItemCandidatesItem",
     "GetStatsResponse",
     "GetStatsResponseAnalytics",
     "GetStatsResponseAnalyticsByDayItem",
@@ -386,11 +526,39 @@ __all__ = [
     "GetStatsResponseAnalyticsTime",
     "GetStatsResponseAnalyticsToolsItem",
     "GetStatsResponseAnalyticsTotals",
+    "GetStatsResponseAnalyticsUsage",
+    "GetStatsResponseAnalyticsUsageByDayItem",
+    "GetStatsResponseAnalyticsUsageByHarnessItem",
     "GetStatsResponseArchived",
     "GetStatsResponseCost",
     "GetStatsResponseLearning",
     "GetStatsResponsePerAgentItem",
     "GetStatsResponseRuns",
+    "GetSuggestionResponse",
+    "GetSuggestionResponseAgent",
+    "GetSuggestionResponseAgentInputsItem",
+    "GetSuggestionResponseAgentOutputItem",
+    "GetSuggestionResponseCreated",
+    "GetSuggestionResponseCreatedPullRequest",
+    "GetSuggestionResponseEvidenceItem",
+    "GetSuggestionResponseFilesItem",
+    "GetSuggestionResponseGithub",
+    "GetSuggestionResponseIntegration",
+    "GetSuggestionResponseIntegrationCallSite",
+    "GetSuggestionResponseScan",
+    "GetTemplateResponse",
+    "GetTemplateResponseTemplate",
+    "GetTemplateResponseTemplateAuthor",
+    "GetTemplateResponseTemplateBudget",
+    "GetTemplateResponseTemplateComputerHere",
+    "GetTemplateResponseTemplateComputerHereComputer",
+    "GetTemplateResponseTemplateMcpItem",
+    "GetTemplateResponseTemplateMcpItemToolsItem",
+    "GetTemplateResponseTemplateMcpItemToolsItemPinValue",
+    "GetTemplateResponseTemplateModel",
+    "GetTemplateResponseTemplateModelChoicesItem",
+    "GetTemplateResponseTemplateOutput",
+    "GetTemplateResponseTemplateToolPolicy",
     "GetTimelineResponse",
     "GetToolSettingsResponse",
     "GetToolSettingsResponseBrowser",
@@ -401,6 +569,8 @@ __all__ = [
     "GetTriggerResponseDisabled2",
     "GetTriggerResponseDisabled3",
     "GetTriggerResponseDisabled4",
+    "GetTriggerResponseDisabled5",
+    "GetTriggerResponseLastCheck",
     "GetTriggerResponseLastFiring",
     "GetTriggerResponseLastFiringError",
     "GetTriggerResponseSource1",
@@ -421,6 +591,16 @@ __all__ = [
     "GetTriggerResponseSource6AcceptItemWhereItem1",
     "GetTriggerResponseSource6AcceptItemWhereItem2",
     "GetTriggerResponseSource6AcceptItemWhereItem3",
+    "GetTriggerResponseSource7",
+    "GetTriggerResponseSource7AcceptItem",
+    "GetTriggerResponseSource7AcceptItemWhereItem1",
+    "GetTriggerResponseSource7AcceptItemWhereItem2",
+    "GetTriggerResponseSource7AcceptItemWhereItem3",
+    "GetTriggerResponseSource8",
+    "GetTriggerResponseSource8AcceptItem",
+    "GetTriggerResponseSource8AcceptItemWhereItem1",
+    "GetTriggerResponseSource8AcceptItemWhereItem2",
+    "GetTriggerResponseSource8AcceptItemWhereItem3",
     "GetTriggerResponseTarget1",
     "GetTriggerResponseTarget2",
     "GetTriggerResponseTarget2Input",
@@ -431,16 +611,27 @@ __all__ = [
     "GetWebhookResponseObject2Disabled",
     "GetWorkspaceArchilResponse",
     "GetWorkspaceArchilResponseSecret",
+    "GetWrappedResponse",
+    "GetWrappedResponseDaysItem",
+    "GetWrappedResponseHarnessesItem",
+    "GetWrappedResponseImportedItem",
+    "GetWrappedResponseModelsItem",
+    "GetWrappedResponseSourcesItem",
+    "GetWrappedResponseTokens",
     "GradeRunBody",
     "GradeRunResponse",
+    "GrantSourceSyncBody",
+    "GrantSourceSyncResponse",
     "HandBackRunComputerBody",
     "HandBackRunComputerResponse",
+    "HarnessKeysResource",
     "HomeResource",
     "Id",
     "ImportRemoteHistoryBody",
     "ImportRemoteHistoryResponse",
     "ImportRemoteHistoryResponseRunsItem",
     "ImportRemoteTargetBody",
+    "ImportRemoteTargetBodyCliAdoption",
     "ImportRemoteTargetBodyTarget",
     "ImportRemoteTargetBodyTargetCapabilities",
     "ImportRemoteTargetBodyTargetConfigurationItem",
@@ -453,6 +644,7 @@ __all__ = [
     "ImportRemoteTargetResponseNativeRemote",
     "ImportRemoteTargetResponseNativeSelector",
     "ImportTemplateBody",
+    "ImportTemplateBodyFilesItem",
     "ImportTemplateResponse",
     "ImportTemplateResponseTemplate",
     "ImportTemplateResponseTemplateAuthor",
@@ -473,6 +665,8 @@ __all__ = [
     "LimitsMaxCostUsd",
     "ListAgentsResponse",
     "ListAllRunsResponse",
+    "ListCliLearningResponse",
+    "ListCliLearningResponseConnectionsItem",
     "ListComposioEventsResponse",
     "ListComposioEventsResponseEventsItem",
     "ListComposioToolsBody",
@@ -492,11 +686,18 @@ __all__ = [
     "ListComputersResponseKindsItemProvidersItemGpuPerGpu",
     "ListComputersResponseKindsItemProvidersItemPersistent",
     "ListComputersResponseKindsItemProvidersItemSecretsItem",
+    "ListComputersResponseKindsItemRecord1",
+    "ListComputersResponseKindsItemRecord2",
     "ListComputersResponsePairedItem",
     "ListComputersResponsePairedItemDevice",
     "ListComputersResponsePairedItemFeaturesValue",
     "ListComputersResponsePairedItemScreen",
     "ListFilesResponse",
+    "ListGitHubRepositoriesResponse",
+    "ListGitHubRepositoriesResponseRepositoriesItem",
+    "ListGitHubRepositoriesResponseUnreadItem",
+    "ListHarnessKeysResponse",
+    "ListHarnessKeysResponseHarnessesItem",
     "ListHomeFilesResponse",
     "ListHomeFilesResponseFilesItem1",
     "ListHomeFilesResponseFilesItem2",
@@ -504,31 +705,37 @@ __all__ = [
     "ListLearnedWorkflowRevisionsResponseRevisionsItem",
     "ListLearnedWorkflowRevisionsResponseRevisionsItemBy1",
     "ListLearnedWorkflowRevisionsResponseRevisionsItemBy2",
-    "ListLearningBatchesResponse",
-    "ListLearningBatchesResponseBatchesItem",
-    "ListLearningBatchesResponseBatchesItemLessons",
-    "ListLearningBatchesResponseBatchesItemPaths",
-    "ListLearningBatchesResponseBatchesItemRevisionsItem",
-    "ListLearningEvalsResponse",
-    "ListLearningEvalsResponseEvalsItem",
-    "ListLearningEvalsResponseLatest",
+    "ListLearningAuditsResponse",
+    "ListLearningAuditsResponseAuditsItem",
     "ListLearningLogResponse",
     "ListLearningLogResponseItemsItem",
     "ListLearningLogResponseItemsItemBy1",
     "ListLearningLogResponseItemsItemBy2",
-    "ListLearningNotesResponse",
-    "ListLearningNotesResponseItemsItem",
-    "ListLearningNotesResponseItemsItemLastChange",
-    "ListLearningNotesResponseItemsItemRetired",
-    "ListLearningNotesResponseItemsItemRuns",
     "ListLearningPromotionsResponse",
     "ListLearningPromotionsResponsePromotionsItem",
-    "ListLearningPromotionsResponsePromotionsItemRefit",
-    "ListLearningPromotionsResponsePromotionsItemRefitGuardsItem",
-    "ListLearningPromotionsResponsePromotionsItemReplay",
-    "ListLearningPromotionsResponsePromotionsItemReplayOutcomes",
-    "ListLearningPromotionsResponsePromotionsItemReplaySkippedToolsItem",
+    "ListLearningPromotionsResponsePromotionsItemAudit",
+    "ListLearningPromotionsResponsePromotionsItemAuditDisagreementsItem",
+    "ListLearningPromotionsResponsePromotionsItemCheck",
+    "ListLearningPromotionsResponsePromotionsItemCheckDisagreementsItem",
+    "ListLearningPromotionsResponsePromotionsItemCheckOutcomes",
+    "ListLearningPromotionsResponsePromotionsItemCheckSkippedToolsItem",
+    "ListLearningPromotionsResponsePromotionsItemCheckTurns",
+    "ListLearningPromotionsResponsePromotionsItemCheckTurnsDisagreementsItem",
+    "ListLearningPromotionsResponsePromotionsItemCheckTurnsOutcomes",
     "ListLearningPromotionsResponseServingItem",
+    "ListLearningPromotionsResponseServingItemAudit",
+    "ListLearningPromotionsResponseServingItemChampion",
+    "ListLearningPromotionsResponseServingItemChampionCheck",
+    "ListLearningPromotionsResponseServingItemChampionCheckDisagreementsItem",
+    "ListLearningPromotionsResponseServingItemChampionCheckOutcomes",
+    "ListLearningPromotionsResponseServingItemChampionCheckSkippedToolsItem",
+    "ListLearningPromotionsResponseServingItemChampionCheckTurns",
+    "ListLearningPromotionsResponseServingItemChampionCheckTurnsDisagreementsItem",
+    "ListLearningPromotionsResponseServingItemChampionCheckTurnsOutcomes",
+    "ListLearningPromotionsResponseServingItemChampionNodesItem",
+    "ListLearningPromotionsResponseServingItemChampionNodesItemChecksItem",
+    "ListLearningPromotionsResponseServingItemCheck",
+    "ListMcpServerNamesResponse",
     "ListMcpServersResponse",
     "ListMcpServersResponseServersItem",
     "ListMcpServersResponseServersItemAuth",
@@ -542,7 +749,26 @@ __all__ = [
     "ListRevisionsResponseRevisionsItemMcpPinValue",
     "ListRevisionsResponseRevisionsItemMcpPinValueToolsItem",
     "ListRunFilesResponse",
+    "ListRunningComputersResponse",
     "ListRunsResponse",
+    "ListSlackDeliveriesResponse",
+    "ListSlackDeliveriesResponseAttemptsItem",
+    "ListSuggestionsResponse",
+    "ListSuggestionsResponseGithub",
+    "ListSuggestionsResponseGithubInstallationsItem",
+    "ListSuggestionsResponseRepositoriesItem",
+    "ListSuggestionsResponseRepositoriesItemCounts",
+    "ListSuggestionsResponseRepositoriesItemScan",
+    "ListSuggestionsResponseSuggestionsItem",
+    "ListSuggestionsResponseSuggestionsItemAgent",
+    "ListSuggestionsResponseSuggestionsItemAgentInputsItem",
+    "ListSuggestionsResponseSuggestionsItemAgentOutputItem",
+    "ListSuggestionsResponseSuggestionsItemCreated",
+    "ListSuggestionsResponseSuggestionsItemCreatedPullRequest",
+    "ListSuggestionsResponseSuggestionsItemEvidenceItem",
+    "ListSuggestionsResponseSuggestionsItemIntegration",
+    "ListSuggestionsResponseSuggestionsItemIntegrationCallSite",
+    "ListSuggestionsResponseSuggestionsItemScan",
     "ListTemplatesResponse",
     "ListTemplatesResponseTemplatesItem",
     "ListTemplatesResponseTemplatesItemAuthor",
@@ -572,6 +798,8 @@ __all__ = [
     "ListTriggersResponseTriggersItemDisabled2",
     "ListTriggersResponseTriggersItemDisabled3",
     "ListTriggersResponseTriggersItemDisabled4",
+    "ListTriggersResponseTriggersItemDisabled5",
+    "ListTriggersResponseTriggersItemLastCheck",
     "ListTriggersResponseTriggersItemLastFiring",
     "ListTriggersResponseTriggersItemLastFiringError",
     "ListTriggersResponseTriggersItemSource1",
@@ -592,6 +820,16 @@ __all__ = [
     "ListTriggersResponseTriggersItemSource6AcceptItemWhereItem1",
     "ListTriggersResponseTriggersItemSource6AcceptItemWhereItem2",
     "ListTriggersResponseTriggersItemSource6AcceptItemWhereItem3",
+    "ListTriggersResponseTriggersItemSource7",
+    "ListTriggersResponseTriggersItemSource7AcceptItem",
+    "ListTriggersResponseTriggersItemSource7AcceptItemWhereItem1",
+    "ListTriggersResponseTriggersItemSource7AcceptItemWhereItem2",
+    "ListTriggersResponseTriggersItemSource7AcceptItemWhereItem3",
+    "ListTriggersResponseTriggersItemSource8",
+    "ListTriggersResponseTriggersItemSource8AcceptItem",
+    "ListTriggersResponseTriggersItemSource8AcceptItemWhereItem1",
+    "ListTriggersResponseTriggersItemSource8AcceptItemWhereItem2",
+    "ListTriggersResponseTriggersItemSource8AcceptItemWhereItem3",
     "ListTriggersResponseTriggersItemTarget1",
     "ListTriggersResponseTriggersItemTarget2",
     "ListTriggersResponseTriggersItemTarget2Input",
@@ -604,8 +842,18 @@ __all__ = [
     "MessageCreateMcpAuthValue",
     "MessageResult",
     "Meter",
+    "MoveSourceAgentBody",
+    "MoveSourceAgentResponse",
+    "MoveSourceAgentResponseSource",
+    "MoveSourceAgentResponseSourceBlockersItem",
+    "MoveSourceAgentResponseSourceConnection",
+    "MoveSourceAgentResponseSourceProjectIssuesItem1",
+    "MoveSourceAgentResponseSourceProjectIssuesItem2",
+    "MoveSourceAgentResponseSourceToolConnectionsItem",
+    "MoveSourceAgentResponseSourceToolConnectionsItemCandidatesItem",
     "NextAction",
     "OPERATIONS",
+    "ObservationsResource",
     "PauseRunResponse",
     "PersonAction",
     "PollRemoteConnectorBody",
@@ -617,12 +865,22 @@ __all__ = [
     "PreviewMcpServerBodyObject2",
     "PreviewMcpServerResponse",
     "PreviewMcpServerResponseToolsItem",
+    "PublishSourceSyncBody",
+    "PublishSourceSyncResponse",
+    "PutLearningCorrectionsBody",
+    "PutLearningCorrectionsResponse",
     "PutToolSettingsBody",
     "PutToolSettingsBodyAskPerson",
     "PutToolSettingsBodyBash",
     "PutToolSettingsBodyBrowser",
+    "PutToolSettingsBodyCalendarEvents",
     "PutToolSettingsBodyDesktop",
     "PutToolSettingsBodyEdit",
+    "PutToolSettingsBodyEmailDraft",
+    "PutToolSettingsBodyEmailFile",
+    "PutToolSettingsBodyEmailRead",
+    "PutToolSettingsBodyEmailSearch",
+    "PutToolSettingsBodyEmailSend",
     "PutToolSettingsBodyJev",
     "PutToolSettingsBodyLlm",
     "PutToolSettingsBodyOpenrouter",
@@ -632,6 +890,7 @@ __all__ = [
     "PutToolSettingsBodyRead",
     "PutToolSettingsBodySubagent",
     "PutToolSettingsBodyWebFetch",
+    "PutToolSettingsBodyWebSave",
     "PutToolSettingsBodyWebSearch",
     "PutToolSettingsBodyWrite",
     "PutToolSettingsResponse",
@@ -655,8 +914,7 @@ __all__ = [
     "ReceiveHookComposioResponseObject2FiringsItem1",
     "ReceiveHookComposioResponseObject2FiringsItem1Error",
     "ReceiveHookComposioResponseObject2FiringsItem2",
-    "RecordLearningEvalBody",
-    "RecordLearningEvalResponse",
+    "RedeliverSlackResponse",
     "RedeliverWebhookResponse",
     "RefreshMcpServerResponse",
     "RefreshMcpServerResponseServer",
@@ -672,20 +930,56 @@ __all__ = [
     "ReleaseRunComputerBody",
     "ReleaseRunComputerResponse",
     "ReleaseRunComputerResponseHeld",
+    "ReleaseTriggerFiringBody",
+    "ReleaseTriggerFiringResponse",
+    "ReleaseTriggerFiringResponseError",
     "RemoteCommandEventsBody",
     "RemoteCommandEventsResponse",
     "RequestAction",
+    "ResolveSourceSyncBody",
+    "ResolveSourceSyncResponse",
+    "ResolveSourceSyncResponseSource",
+    "ResolveSourceSyncResponseSourceBlockersItem",
+    "ResolveSourceSyncResponseSourceConnection",
+    "ResolveSourceSyncResponseSourceProjectIssuesItem1",
+    "ResolveSourceSyncResponseSourceProjectIssuesItem2",
+    "ResolveSourceSyncResponseSourceToolConnectionsItem",
+    "ResolveSourceSyncResponseSourceToolConnectionsItemCandidatesItem",
     "Resources",
+    "RestoreSuggestionResponse",
+    "RestoreSuggestionResponseAgent",
+    "RestoreSuggestionResponseAgentInputsItem",
+    "RestoreSuggestionResponseAgentOutputItem",
+    "RestoreSuggestionResponseCreated",
+    "RestoreSuggestionResponseCreatedPullRequest",
+    "RestoreSuggestionResponseEvidenceItem",
+    "RestoreSuggestionResponseIntegration",
+    "RestoreSuggestionResponseIntegrationCallSite",
+    "RestoreSuggestionResponseScan",
     "ResumeRunResponse",
+    "ReviewSourceProjectBody",
+    "ReviewSourceProjectBodyReceiptsItem1",
+    "ReviewSourceProjectBodyReceiptsItem2",
+    "ReviewSourceProjectResponse",
+    "ReviewSourceProjectResponseBlockersItem",
+    "ReviewSourceProjectResponseConnection",
+    "ReviewSourceProjectResponseProjectIssuesItem1",
+    "ReviewSourceProjectResponseProjectIssuesItem2",
+    "ReviewSourceProjectResponseToolConnectionsItem",
+    "ReviewSourceProjectResponseToolConnectionsItemCandidatesItem",
     "RevisionsResource",
+    "RevokeCliLearningResponse",
     "RevokeRemoteConnectorResponse",
     "RevokeRemoteConnectorResponseConnector",
     "RevokeRemoteConnectorResponseConnectorCapabilities",
     "RotateComposioSecretResponse",
-    "RotateTriggerSecretBody",
     "RotateTriggerSecretResponse",
+    "RotateWebhookSecretResponse",
+    "RotateWebhookSecretResponseDisabled",
     "Run",
     "RunClaim",
+    "RunCliLearning",
+    "RunCliLearningUsage",
     "RunComputer",
     "RunComputerHeld",
     "RunCreate",
@@ -694,6 +988,7 @@ __all__ = [
     "RunCreateInlineArchilDisk",
     "RunCreateInlineMcpAuthValue",
     "RunCreateMcpAuthValue",
+    "RunCreateTriggerFiring",
     "RunError",
     "RunErrorCode",
     "RunErrorDetails",
@@ -706,11 +1001,6 @@ __all__ = [
     "RunFileList",
     "RunImportedFrom",
     "RunLearning",
-    "RunLearningGivenItem",
-    "RunLearningLearnedItem",
-    "RunLearningPendingItem",
-    "RunLearningReadItem",
-    "RunLearningSkillsItem",
     "RunLearningWorkflowsItem",
     "RunList",
     "RunNative",
@@ -723,15 +1013,21 @@ __all__ = [
     "RunPending3",
     "RunPending4",
     "RunPending5",
+    "RunPending6",
     "RunPlace1",
     "RunPlace2",
+    "RunRecordingsItem",
     "RunResult",
     "RunReview",
     "RunSdk",
+    "RunSdk2",
+    "RunSdk2Usage",
     "RunSdkUsage",
     "RunState",
     "RunStatus",
     "RunSummary",
+    "RunSummaryCliLearning",
+    "RunSummaryCliLearningUsage",
     "RunSummaryComputer",
     "RunSummaryComputerHeld",
     "RunSummaryFactory",
@@ -741,11 +1037,6 @@ __all__ = [
     "RunSummaryFactoryObservation",
     "RunSummaryImportedFrom",
     "RunSummaryLearning",
-    "RunSummaryLearningGivenItem",
-    "RunSummaryLearningLearnedItem",
-    "RunSummaryLearningPendingItem",
-    "RunSummaryLearningReadItem",
-    "RunSummaryLearningSkillsItem",
     "RunSummaryLearningWorkflowsItem",
     "RunSummaryNative",
     "RunSummaryNativeSelector",
@@ -757,14 +1048,22 @@ __all__ = [
     "RunSummaryPending3",
     "RunSummaryPending4",
     "RunSummaryPending5",
+    "RunSummaryPending6",
     "RunSummaryReview",
     "RunSummarySdk",
+    "RunSummarySdk2",
+    "RunSummarySdk2Usage",
     "RunSummarySdkUsage",
     "RunSummaryTrigger",
+    "RunSummaryWorkflow",
     "RunTrigger",
+    "RunWorkflow",
     "RunsResource",
+    "SaveCalendarBody",
+    "SaveCalendarResponse",
     "SaveComposioServerBody",
     "SaveComposioServerResponse",
+    "SaveComposioServerResponseComposio",
     "SaveComposioServerResponseServer",
     "SaveComposioServerResponseServerAuth",
     "SaveComposioServerResponseServerOauth",
@@ -775,12 +1074,30 @@ __all__ = [
     "SaveComputerKeysResponseGpuPerGpu",
     "SaveComputerKeysResponsePersistent",
     "SaveComputerKeysResponseSecretsItem",
+    "SaveEmailAccountBody",
+    "SaveEmailAccountBodyImap",
+    "SaveEmailAccountBodySmtp",
+    "SaveEmailAccountResponse",
+    "SaveEmailAccountResponseImap",
+    "SaveEmailAccountResponseSmtp",
+    "SaveHarnessKeyBody",
     "SaveMcpServerBody",
     "SaveMcpServerBodyAuth",
     "SaveMcpServerResponse",
     "SaveMcpServerResponseAuth",
+    "SaveMcpServerResponseComposio",
     "SaveMcpServerResponseOauth",
     "SaveMcpServerResponseToolsItem",
+    "SaveModelGatewayBody",
+    "SaveModelGatewayBodyModels",
+    "SaveModelGatewayResponse",
+    "SaveModelGatewayResponseModels",
+    "SaveModelGatewayResponseSecret",
+    "SaveSlackBody",
+    "SaveSlackBodyEvents",
+    "SaveSlackResponse",
+    "SaveSlackResponseDisabled",
+    "SaveSlackResponseEvents",
     "SaveToolKeyBody",
     "SaveWebhookBody",
     "SaveWebhookResponse",
@@ -790,10 +1107,14 @@ __all__ = [
     "SaveWebhookResponseObject21Disabled",
     "SaveWebhookResponseObject22",
     "SaveWebhookResponseObject22Disabled",
+    "ScanForSuggestionsBody",
+    "ScanForSuggestionsResponse",
     "SdkRunEventsBody",
     "SdkRunEventsBodyEventsItem1",
     "SdkRunEventsBodyEventsItem2",
     "SdkRunEventsBodyEventsItem3",
+    "SdkRunEventsBodyEventsItem3Skipped",
+    "SdkRunEventsBodyEventsItem4",
     "SdkRunEventsResponse",
     "SdkRunsResource",
     "SecretMeta",
@@ -802,31 +1123,67 @@ __all__ = [
     "ServerResource",
     "SetCurrentBody",
     "SetCurrentResponse",
+    "SetSourceSyncBody",
+    "SetSourceSyncResponse",
+    "SetSourceSyncResponseBlockersItem",
+    "SetSourceSyncResponseConnection",
+    "SetSourceSyncResponseProjectIssuesItem1",
+    "SetSourceSyncResponseProjectIssuesItem2",
+    "SetSourceSyncResponseToolConnectionsItem",
+    "SetSourceSyncResponseToolConnectionsItemCandidatesItem",
     "SignIn",
     "SignOutChatGPTResponse",
     "SkillFileInfo",
     "SkillFiles",
+    "SlackResource",
     "Source",
+    "SourceSyncFailureBody",
+    "SourceSyncFailureResponse",
     "StartChatGPTSignInResponse",
+    "StartClaudeLoginResponse",
+    "StartClaudeLoginResponseAccount",
+    "StartClaudeLoginResponseMachine",
+    "StartClaudeLoginResponseSignIn",
+    "StartCliLearningRunBody",
+    "StartCliLearningRunResponse",
+    "StartCliLearningRunResponseLearning",
+    "StartCliLearningRunResponseLearningCheck",
+    "StartCliLearningRunResponseLearningCheckWorkflow",
+    "StartCliLearningRunResponseLearningWorkflowsItem",
     "StartMcpOAuthBody",
     "StartMcpOAuthResponse",
     "StartRunBody",
     "StartRunResponse",
     "StartRunResponseHeld",
     "StartSdkRunBody",
+    "StartSdkRunBody2",
     "StartSdkRunBodyWorkflowToolsItem",
     "StartSdkRunResponse",
     "StartSdkRunResponseLearning",
-    "StartSdkRunResponseLearningSkillsItem",
+    "StartSdkRunResponseLearningCheck",
+    "StartSdkRunResponseLearningCheckWorkflow",
     "StartSdkRunResponseLearningWorkflowsItem",
     "StopResult",
     "StopRunResponse",
     "TakeOverRunComputerBody",
     "TakeOverRunComputerResponse",
     "TemplateResource",
+    "TestCalendarBody",
+    "TestCalendarResponse",
     "TestComputerResponse",
     "TestComputerResponseObject1",
     "TestComputerResponseObject2",
+    "TestEmailAccountBody",
+    "TestEmailAccountBodyImap",
+    "TestEmailAccountBodySmtp",
+    "TestEmailAccountResponse",
+    "TestEmailAccountResponseImap",
+    "TestEmailAccountResponseSmtp",
+    "TestModelGatewayBody",
+    "TestModelGatewayResponse",
+    "TestModelGatewayResponseObject1",
+    "TestModelGatewayResponseObject2",
+    "TestSlackResponse",
     "TestWebhookResponse",
     "TestWorkspaceArchilResponse",
     "TestWorkspaceArchilResponseObject1",
@@ -845,6 +1202,15 @@ __all__ = [
     "ToolKeysResource",
     "ToolSettingsResource",
     "TriggersResource",
+    "TurnOffClaudeLoginResponse",
+    "TurnOffClaudeLoginResponseAccount",
+    "TurnOffClaudeLoginResponseMachine",
+    "TurnOffClaudeLoginResponseSignIn",
+    "TurnOnClaudeLoginBody",
+    "TurnOnClaudeLoginResponse",
+    "TurnOnClaudeLoginResponseAccount",
+    "TurnOnClaudeLoginResponseMachine",
+    "TurnOnClaudeLoginResponseSignIn",
     "UnarchiveAgentResponse",
     "UnarchiveRunResponse",
     "UpdateDefinitionBody",
@@ -868,6 +1234,16 @@ __all__ = [
     "UpdateTriggerBodySource6AcceptItemWhereItem1",
     "UpdateTriggerBodySource6AcceptItemWhereItem2",
     "UpdateTriggerBodySource6AcceptItemWhereItem3",
+    "UpdateTriggerBodySource7",
+    "UpdateTriggerBodySource7AcceptItem",
+    "UpdateTriggerBodySource7AcceptItemWhereItem1",
+    "UpdateTriggerBodySource7AcceptItemWhereItem2",
+    "UpdateTriggerBodySource7AcceptItemWhereItem3",
+    "UpdateTriggerBodySource8",
+    "UpdateTriggerBodySource8AcceptItem",
+    "UpdateTriggerBodySource8AcceptItemWhereItem1",
+    "UpdateTriggerBodySource8AcceptItemWhereItem2",
+    "UpdateTriggerBodySource8AcceptItemWhereItem3",
     "UpdateTriggerBodyTarget1",
     "UpdateTriggerBodyTarget2",
     "UpdateTriggerBodyTarget2Input",
@@ -877,6 +1253,8 @@ __all__ = [
     "UpdateTriggerResponseDisabled2",
     "UpdateTriggerResponseDisabled3",
     "UpdateTriggerResponseDisabled4",
+    "UpdateTriggerResponseDisabled5",
+    "UpdateTriggerResponseLastCheck",
     "UpdateTriggerResponseLastFiring",
     "UpdateTriggerResponseLastFiringError",
     "UpdateTriggerResponseSource1",
@@ -897,6 +1275,16 @@ __all__ = [
     "UpdateTriggerResponseSource6AcceptItemWhereItem1",
     "UpdateTriggerResponseSource6AcceptItemWhereItem2",
     "UpdateTriggerResponseSource6AcceptItemWhereItem3",
+    "UpdateTriggerResponseSource7",
+    "UpdateTriggerResponseSource7AcceptItem",
+    "UpdateTriggerResponseSource7AcceptItemWhereItem1",
+    "UpdateTriggerResponseSource7AcceptItemWhereItem2",
+    "UpdateTriggerResponseSource7AcceptItemWhereItem3",
+    "UpdateTriggerResponseSource8",
+    "UpdateTriggerResponseSource8AcceptItem",
+    "UpdateTriggerResponseSource8AcceptItemWhereItem1",
+    "UpdateTriggerResponseSource8AcceptItemWhereItem2",
+    "UpdateTriggerResponseSource8AcceptItemWhereItem3",
     "UpdateTriggerResponseTarget1",
     "UpdateTriggerResponseTarget2",
     "UpdateTriggerResponseTarget2Input",
@@ -917,11 +1305,84 @@ __all__ = [
     "WebhookResource",
     "WorkflowsResource",
     "WriteHomeFileResponse",
-    "WriteLearningFileBody",
 ]
 
 
 ArchiveAgentResponse: TypeAlias = "dict[str, Any]"
+
+
+class BindSourceToolBody(TypedDict):
+    tool: str
+    server: str
+
+
+class _BindSourceToolResponseRequired(TypedDict):
+    enabled: bool
+    moved: bool
+    state: Literal["needs_connection", "paused", "syncing", "needs_attention", "ready", "moved", "conflict"]
+    blockers: list[BindSourceToolResponseBlockersItem]
+
+
+class BindSourceToolResponse(_BindSourceToolResponseRequired, total=False):
+    project_issues: list[BindSourceToolResponseProjectIssuesItem1 | BindSourceToolResponseProjectIssuesItem2]
+    snapshot: str
+    current_snapshot: str
+    connection: BindSourceToolResponseConnection
+    files: int
+    bytes: int
+    skills: int
+    tools: int
+    tool_connections: list[BindSourceToolResponseToolConnectionsItem]
+
+
+class _BindSourceToolResponseProjectIssuesItem1Required(TypedDict):
+    run_id: str
+    entry_id: int
+    status: Literal["pending", "conflict", "uncertain"]
+
+
+class BindSourceToolResponseProjectIssuesItem1(_BindSourceToolResponseProjectIssuesItem1Required, total=False):
+    reason: str
+
+
+class _BindSourceToolResponseProjectIssuesItem2Required(TypedDict):
+    run_id: str
+    entry_id: None
+    attempt_epoch: int
+    status: Literal["pending", "conflict", "uncertain"]
+
+
+class BindSourceToolResponseProjectIssuesItem2(_BindSourceToolResponseProjectIssuesItem2Required, total=False):
+    reason: str
+
+
+class _BindSourceToolResponseBlockersItemRequired(TypedDict):
+    code: str
+    message: str
+
+
+class BindSourceToolResponseBlockersItem(_BindSourceToolResponseBlockersItemRequired, total=False):
+    path: str
+
+
+class BindSourceToolResponseConnection(TypedDict):
+    connector_id: str
+    target_id: str
+
+
+class _BindSourceToolResponseToolConnectionsItemRequired(TypedDict):
+    name: str
+    ready: bool
+    candidates: list[BindSourceToolResponseToolConnectionsItemCandidatesItem]
+
+
+class BindSourceToolResponseToolConnectionsItem(_BindSourceToolResponseToolConnectionsItemRequired, total=False):
+    selected: str
+
+
+class BindSourceToolResponseToolConnectionsItemCandidatesItem(TypedDict):
+    name: str
+    auth: str
 
 
 class _ConnectNativeBodyRequired(TypedDict):
@@ -931,6 +1392,7 @@ class _ConnectNativeBodyRequired(TypedDict):
 
 class ConnectNativeBody(_ConnectNativeBodyRequired, total=False):
     selector: ConnectNativeBodySelector
+    source_sync: ConnectNativeBodySourceSync
 
 
 class _ConnectNativeBodySelectorRequired(TypedDict):
@@ -939,6 +1401,11 @@ class _ConnectNativeBodySelectorRequired(TypedDict):
 
 class ConnectNativeBodySelector(_ConnectNativeBodySelectorRequired, total=False):
     name: str
+
+
+class ConnectNativeBodySourceSync(TypedDict):
+    version: Literal[1]
+    scope: str
 
 
 class ConnectNativeResponse(TypedDict):
@@ -957,21 +1424,23 @@ class _AgentRequired(TypedDict):
     home_etag: str
     created_at: Timestamp
     updated_at: Timestamp
-
-
-class Agent(_AgentRequired, total=False):
-    native_status: AgentNativeStatus
-    external: AgentExternal
-    console_url: str
-    tools: list[AgentToolsItem]
     kind: Literal["agentic", "workflow"] | None
     revision: str | None
     revisions: int
     archived_at: str | None
+
+
+class Agent(_AgentRequired, total=False):
+    source_sync: AgentSourceSync
+    native_status: AgentNativeStatus
+    external: AgentExternal
+    console_url: str
+    tools: list[AgentToolsItem]
     learning: AgentLearning
     mcp_pin: dict[str, AgentMcpPinValue] | None
     own_computer: AgentOwnComputer | None
     template: AgentTemplate | None
+    run_blockers: AgentRunBlockers | None
     warnings: list[InputIssue]
 
 
@@ -993,25 +1462,38 @@ class Definition(_DefinitionRequired, total=False):
     output_schema: JsonObject
     workflow: JsonObject
     max_cost_usd: float
-    sdk: DefinitionSdk
+    cli_learning: DefinitionCliLearning
+    sdk: DefinitionSdk | DefinitionSdk2
     native: DefinitionNative
     model: str
     model_tiers: DefinitionModelTiers
     thinking: Literal["low", "medium", "high", "xhigh", "max"]
-    harness: Literal["pi", "claude-agent", "codex", "opencode"]
+    harness: str
     place: DefinitionPlace1 | DefinitionPlace2
     computer: DefinitionComputer
     tool_settings: DefinitionToolSettings
     approvals: Literal["ask", "never"]
-    learning: Literal[True, False, "notes"]
-    checkout: Literal["pull_request", "none"]
+    learning: bool | DefinitionLearning
+    checkout: Literal["pull_request", "repository", "none"]
+    max_requests: int
 
 
 JsonObject: TypeAlias = "dict[str, Any]"
 
 
+class DefinitionCliLearning(TypedDict):
+    runtime: Literal["codex", "claude-code"]
+    connection_id: str
+    project: str
+
+
 class DefinitionSdk(TypedDict):
-    runtime: Literal["claude-agent-sdk", "codex-sdk"]
+    runtime: Literal["claude-agent-sdk", "codex-sdk", "eve"]
+
+
+class DefinitionSdk2(TypedDict):
+    runtime: Literal["external"]
+    platform: str
 
 
 class _DefinitionNativeRequired(TypedDict):
@@ -1051,8 +1533,7 @@ class DefinitionNativeConfigurationItem(TypedDict):
 
 class DefinitionNativeCapabilities(TypedDict):
     launch: bool
-    notes: bool
-    skills: bool
+    learning: bool
     workflows: Literal[False]
     approval: Literal["native", "unavailable"]
     usage: bool
@@ -1088,6 +1569,8 @@ class DefinitionComputer(_DefinitionComputerRequired, total=False):
     persistent: bool
     surface: Literal["code", "tools"]
     exec: bool
+    record: bool
+    needs: list[str]
 
 
 class DefinitionComputerGpu(TypedDict):
@@ -1103,6 +1586,13 @@ class DefinitionToolSettings(TypedDict, total=False):
     ask_person: DefinitionToolSettingsAskPerson
     web_fetch: DefinitionToolSettingsWebFetch
     web_search: DefinitionToolSettingsWebSearch
+    web_save: DefinitionToolSettingsWebSave
+    email_search: DefinitionToolSettingsEmailSearch
+    email_read: DefinitionToolSettingsEmailRead
+    email_draft: DefinitionToolSettingsEmailDraft
+    email_send: DefinitionToolSettingsEmailSend
+    email_file: DefinitionToolSettingsEmailFile
+    calendar_events: DefinitionToolSettingsCalendarEvents
     browser: DefinitionToolSettingsBrowser
     subagent: DefinitionToolSettingsSubagent
     pdf_pages: DefinitionToolSettingsPdfPages
@@ -1136,12 +1626,43 @@ class DefinitionToolSettingsAskPerson(TypedDict, total=False):
 
 
 class DefinitionToolSettingsWebFetch(TypedDict, total=False):
-    provider: Literal["kernel", "parallel"]
+    provider: Literal["auto", "firecrawl-keyless", "kernel", "parallel"]
     permission: Literal["allow", "ask", "deny"]
 
 
 class DefinitionToolSettingsWebSearch(TypedDict, total=False):
-    provider: Literal["auto", "native", "exa-keyless", "parallel", "off"]
+    provider: Literal["auto", "native", "firecrawl-keyless", "exa-keyless", "parallel", "off"]
+    permission: Literal["allow", "ask", "deny"]
+
+
+class DefinitionToolSettingsWebSave(TypedDict, total=False):
+    permission: Literal["allow", "ask", "deny"]
+
+
+class DefinitionToolSettingsEmailSearch(TypedDict, total=False):
+    permission: Literal["allow", "ask", "deny"]
+    scope: Literal["thread", "mailbox"]
+
+
+class DefinitionToolSettingsEmailRead(TypedDict, total=False):
+    permission: Literal["allow", "ask", "deny"]
+    scope: Literal["thread", "mailbox"]
+
+
+class DefinitionToolSettingsEmailDraft(TypedDict, total=False):
+    permission: Literal["allow", "ask", "deny"]
+
+
+class DefinitionToolSettingsEmailSend(TypedDict, total=False):
+    permission: Literal["allow", "ask", "deny"]
+
+
+class DefinitionToolSettingsEmailFile(TypedDict, total=False):
+    permission: Literal["allow", "ask", "deny"]
+    scope: Literal["thread", "mailbox"]
+
+
+class DefinitionToolSettingsCalendarEvents(TypedDict, total=False):
     permission: Literal["allow", "ask", "deny"]
 
 
@@ -1180,6 +1701,21 @@ class DefinitionToolSettingsParallel(TypedDict, total=False):
 
 class DefinitionToolSettingsOpenrouter(TypedDict, total=False):
     permission: Literal["allow", "deny"]
+
+
+class DefinitionLearning(TypedDict, total=False):
+    compile_after: int
+    agree_min: float
+    alone_min: float
+    agree_on: list[str]
+    audit_every: int
+    audit_every_later: int
+    audit_later_after: int
+    hold_window: int
+    hold_disagree: int
+    stop_window: int
+    repick: bool
+    repick_max_chars: int
 
 
 class Source(TypedDict):
@@ -1223,6 +1759,10 @@ class AgentRuns(TypedDict):
     live: int
 
 
+class AgentSourceSync(TypedDict):
+    moved: Literal[True]
+
+
 class _AgentNativeStatusRequired(TypedDict):
     runtime: Literal["claude-code", "codex"]
     project: str
@@ -1260,8 +1800,7 @@ class AgentNativeStatusConfigurationItem(TypedDict):
 
 class AgentNativeStatusCapabilities(TypedDict):
     launch: bool
-    notes: bool
-    skills: bool
+    learning: bool
     workflows: Literal[False]
     approval: Literal["native", "unavailable"]
     usage: bool
@@ -1315,6 +1854,7 @@ class _AgentMcpPinValueToolsItemRequired(TypedDict):
 class AgentMcpPinValueToolsItem(_AgentMcpPinValueToolsItemRequired, total=False):
     title: str
     description: str
+    resource: Literal["list", "templates", "read"]
     annotations: dict[str, Any]
 
 
@@ -1336,6 +1876,11 @@ class AgentTemplate(TypedDict):
     id: str
     version: str
     sha: str | None
+
+
+class AgentRunBlockers(TypedDict):
+    message: str
+    fields: list[InputIssue]
 
 
 class _InputIssueRequired(TypedDict):
@@ -1388,8 +1933,7 @@ class ConnectNativeResponseNativeConfigurationItem(TypedDict):
 
 class ConnectNativeResponseNativeCapabilities(TypedDict):
     launch: bool
-    notes: bool
-    skills: bool
+    learning: bool
     workflows: Literal[False]
     approval: Literal["native", "unavailable"]
     usage: bool
@@ -1427,22 +1971,35 @@ class DefinitionInput(_DefinitionInputRequired, total=False):
     output_schema: JsonObject
     workflow: JsonObject
     max_cost_usd: float
-    sdk: DefinitionInputSdk
+    cli_learning: DefinitionInputCliLearning
+    sdk: DefinitionInputSdk | DefinitionInputSdk2
     native: DefinitionInputNative
     model: str
     model_tiers: DefinitionInputModelTiers
     thinking: Literal["low", "medium", "high", "xhigh", "max"]
-    harness: Literal["pi", "claude-agent", "codex", "opencode"]
+    harness: str
     place: DefinitionInputPlace1 | DefinitionInputPlace2
     computer: DefinitionInputComputer
     tool_settings: DefinitionInputToolSettings
     approvals: Literal["ask", "never"]
-    learning: Literal[True, False, "notes"]
-    checkout: Literal["pull_request", "none"]
+    learning: bool | DefinitionInputLearning
+    checkout: Literal["pull_request", "repository", "none"]
+    max_requests: int
+
+
+class DefinitionInputCliLearning(TypedDict):
+    runtime: Literal["codex", "claude-code"]
+    connection_id: str
+    project: str
 
 
 class DefinitionInputSdk(TypedDict):
-    runtime: Literal["claude-agent-sdk", "codex-sdk"]
+    runtime: Literal["claude-agent-sdk", "codex-sdk", "eve"]
+
+
+class DefinitionInputSdk2(TypedDict):
+    runtime: Literal["external"]
+    platform: str
 
 
 class _DefinitionInputNativeRequired(TypedDict):
@@ -1482,8 +2039,7 @@ class DefinitionInputNativeConfigurationItem(TypedDict):
 
 class DefinitionInputNativeCapabilities(TypedDict):
     launch: bool
-    notes: bool
-    skills: bool
+    learning: bool
     workflows: Literal[False]
     approval: Literal["native", "unavailable"]
     usage: bool
@@ -1519,6 +2075,8 @@ class DefinitionInputComputer(_DefinitionInputComputerRequired, total=False):
     persistent: bool
     surface: Literal["code", "tools"]
     exec: bool
+    record: bool
+    needs: list[str]
 
 
 class DefinitionInputComputerGpu(TypedDict):
@@ -1534,6 +2092,13 @@ class DefinitionInputToolSettings(TypedDict, total=False):
     ask_person: DefinitionInputToolSettingsAskPerson
     web_fetch: DefinitionInputToolSettingsWebFetch
     web_search: DefinitionInputToolSettingsWebSearch
+    web_save: DefinitionInputToolSettingsWebSave
+    email_search: DefinitionInputToolSettingsEmailSearch
+    email_read: DefinitionInputToolSettingsEmailRead
+    email_draft: DefinitionInputToolSettingsEmailDraft
+    email_send: DefinitionInputToolSettingsEmailSend
+    email_file: DefinitionInputToolSettingsEmailFile
+    calendar_events: DefinitionInputToolSettingsCalendarEvents
     browser: DefinitionInputToolSettingsBrowser
     subagent: DefinitionInputToolSettingsSubagent
     pdf_pages: DefinitionInputToolSettingsPdfPages
@@ -1567,12 +2132,43 @@ class DefinitionInputToolSettingsAskPerson(TypedDict, total=False):
 
 
 class DefinitionInputToolSettingsWebFetch(TypedDict, total=False):
-    provider: Literal["kernel", "parallel"]
+    provider: Literal["auto", "firecrawl-keyless", "kernel", "parallel"]
     permission: Literal["allow", "ask", "deny"]
 
 
 class DefinitionInputToolSettingsWebSearch(TypedDict, total=False):
-    provider: Literal["auto", "native", "exa-keyless", "parallel", "off"]
+    provider: Literal["auto", "native", "firecrawl-keyless", "exa-keyless", "parallel", "off"]
+    permission: Literal["allow", "ask", "deny"]
+
+
+class DefinitionInputToolSettingsWebSave(TypedDict, total=False):
+    permission: Literal["allow", "ask", "deny"]
+
+
+class DefinitionInputToolSettingsEmailSearch(TypedDict, total=False):
+    permission: Literal["allow", "ask", "deny"]
+    scope: Literal["thread", "mailbox"]
+
+
+class DefinitionInputToolSettingsEmailRead(TypedDict, total=False):
+    permission: Literal["allow", "ask", "deny"]
+    scope: Literal["thread", "mailbox"]
+
+
+class DefinitionInputToolSettingsEmailDraft(TypedDict, total=False):
+    permission: Literal["allow", "ask", "deny"]
+
+
+class DefinitionInputToolSettingsEmailSend(TypedDict, total=False):
+    permission: Literal["allow", "ask", "deny"]
+
+
+class DefinitionInputToolSettingsEmailFile(TypedDict, total=False):
+    permission: Literal["allow", "ask", "deny"]
+    scope: Literal["thread", "mailbox"]
+
+
+class DefinitionInputToolSettingsCalendarEvents(TypedDict, total=False):
     permission: Literal["allow", "ask", "deny"]
 
 
@@ -1611,6 +2207,21 @@ class DefinitionInputToolSettingsParallel(TypedDict, total=False):
 
 class DefinitionInputToolSettingsOpenrouter(TypedDict, total=False):
     permission: Literal["allow", "deny"]
+
+
+class DefinitionInputLearning(TypedDict, total=False):
+    compile_after: int
+    agree_min: float
+    alone_min: float
+    agree_on: list[str]
+    audit_every: int
+    audit_every_later: int
+    audit_later_after: int
+    hold_window: int
+    hold_disagree: int
+    stop_window: int
+    repick: bool
+    repick_max_chars: int
 
 
 SkillFiles: TypeAlias = "dict[str, str]"
@@ -1674,8 +2285,7 @@ class DisconnectNativeResponseNativeConfigurationItem(TypedDict):
 
 class DisconnectNativeResponseNativeCapabilities(TypedDict):
     launch: bool
-    notes: bool
-    skills: bool
+    learning: bool
     workflows: Literal[False]
     approval: Literal["native", "unavailable"]
     usage: bool
@@ -1730,8 +2340,7 @@ class DiscoverNativeResponseTargetsItemConfigurationItem(TypedDict):
 
 class DiscoverNativeResponseTargetsItemCapabilities(TypedDict):
     launch: bool
-    notes: bool
-    skills: bool
+    learning: bool
     workflows: Literal[False]
     approval: Literal["native", "unavailable"]
     usage: bool
@@ -1763,26 +2372,32 @@ class _GetAgentResponseRequired(TypedDict):
     created_at: Timestamp
     updated_at: Timestamp
     tools: list[GetAgentResponseToolsItem]
-
-
-class GetAgentResponse(_GetAgentResponseRequired, total=False):
-    native_status: GetAgentResponseNativeStatus
-    external: GetAgentResponseExternal
-    console_url: str
     kind: Literal["agentic", "workflow"] | None
     revision: str | None
     revisions: int
     archived_at: str | None
+
+
+class GetAgentResponse(_GetAgentResponseRequired, total=False):
+    source_sync: GetAgentResponseSourceSync
+    native_status: GetAgentResponseNativeStatus
+    external: GetAgentResponseExternal
+    console_url: str
     learning: GetAgentResponseLearning
     mcp_pin: dict[str, GetAgentResponseMcpPinValue] | None
     own_computer: GetAgentResponseOwnComputer | None
     template: GetAgentResponseTemplate | None
+    run_blockers: GetAgentResponseRunBlockers | None
     warnings: list[InputIssue]
 
 
 class GetAgentResponseRuns(TypedDict):
     count: int
     live: int
+
+
+class GetAgentResponseSourceSync(TypedDict):
+    moved: Literal[True]
 
 
 class _GetAgentResponseNativeStatusRequired(TypedDict):
@@ -1822,8 +2437,7 @@ class GetAgentResponseNativeStatusConfigurationItem(TypedDict):
 
 class GetAgentResponseNativeStatusCapabilities(TypedDict):
     launch: bool
-    notes: bool
-    skills: bool
+    learning: bool
     workflows: Literal[False]
     approval: Literal["native", "unavailable"]
     usage: bool
@@ -1877,6 +2491,7 @@ class _GetAgentResponseMcpPinValueToolsItemRequired(TypedDict):
 class GetAgentResponseMcpPinValueToolsItem(_GetAgentResponseMcpPinValueToolsItemRequired, total=False):
     title: str
     description: str
+    resource: Literal["list", "templates", "read"]
     annotations: dict[str, Any]
 
 
@@ -1900,6 +2515,11 @@ class GetAgentResponseTemplate(TypedDict):
     sha: str | None
 
 
+class GetAgentResponseRunBlockers(TypedDict):
+    message: str
+    fields: list[InputIssue]
+
+
 class GetAgentArchilResponse(TypedDict):
     on: bool
     archil_disk: GetAgentArchilResponseArchilDisk | None
@@ -1911,8 +2531,8 @@ class GetAgentArchilResponseArchilDisk(TypedDict):
 
 class GetLearningLoopResponse(TypedDict):
     agent: str
+    completed_runs: int
     compiles: list[GetLearningLoopResponseCompilesItem]
-    guards: list[GetLearningLoopResponseGuardsItem]
 
 
 class GetLearningLoopResponseCompilesItem(TypedDict):
@@ -1920,7 +2540,6 @@ class GetLearningLoopResponseCompilesItem(TypedDict):
     round: int
     at: str
     workflow: str | None
-    from_notes: list[str]
     attempts: list[GetLearningLoopResponseCompilesItemAttemptsItem]
     digest: str | None
     promoted: bool | None
@@ -1931,28 +2550,6 @@ class GetLearningLoopResponseCompilesItem(TypedDict):
 class GetLearningLoopResponseCompilesItemAttemptsItem(TypedDict):
     ok: bool
     errors: list[str]
-
-
-class GetLearningLoopResponseGuardsItem(TypedDict):
-    workflow: str
-    digest: str
-    node: str
-    signal: Literal["self", "jev", "both"]
-    threshold: float | None
-    runs: int
-    escalated: int
-    right: int
-    wrong: int
-    grades_past: int
-    replays: int
-    points: list[GetLearningLoopResponseGuardsItemPointsItem]
-
-
-class GetLearningLoopResponseGuardsItemPointsItem(TypedDict):
-    run_id: str
-    p: float | None
-    escalated: bool
-    correct: bool | None
 
 
 class GetNativeResponse(TypedDict):
@@ -1996,8 +2593,7 @@ class GetNativeResponseNativeConfigurationItem(TypedDict):
 
 class GetNativeResponseNativeCapabilities(TypedDict):
     launch: bool
-    notes: bool
-    skills: bool
+    learning: bool
     workflows: Literal[False]
     approval: Literal["native", "unavailable"]
     usage: bool
@@ -2008,12 +2604,105 @@ class GetNativeResponseNativeRemote(TypedDict):
     target_id: str
 
 
+class _GetSourceSyncResponseRequired(TypedDict):
+    enabled: bool
+    moved: bool
+    state: Literal["needs_connection", "paused", "syncing", "needs_attention", "ready", "moved", "conflict"]
+    blockers: list[GetSourceSyncResponseBlockersItem]
+
+
+class GetSourceSyncResponse(_GetSourceSyncResponseRequired, total=False):
+    project_issues: list[GetSourceSyncResponseProjectIssuesItem1 | GetSourceSyncResponseProjectIssuesItem2]
+    snapshot: str
+    current_snapshot: str
+    connection: GetSourceSyncResponseConnection
+    files: int
+    bytes: int
+    skills: int
+    tools: int
+    tool_connections: list[GetSourceSyncResponseToolConnectionsItem]
+
+
+class _GetSourceSyncResponseProjectIssuesItem1Required(TypedDict):
+    run_id: str
+    entry_id: int
+    status: Literal["pending", "conflict", "uncertain"]
+
+
+class GetSourceSyncResponseProjectIssuesItem1(_GetSourceSyncResponseProjectIssuesItem1Required, total=False):
+    reason: str
+
+
+class _GetSourceSyncResponseProjectIssuesItem2Required(TypedDict):
+    run_id: str
+    entry_id: None
+    attempt_epoch: int
+    status: Literal["pending", "conflict", "uncertain"]
+
+
+class GetSourceSyncResponseProjectIssuesItem2(_GetSourceSyncResponseProjectIssuesItem2Required, total=False):
+    reason: str
+
+
+class _GetSourceSyncResponseBlockersItemRequired(TypedDict):
+    code: str
+    message: str
+
+
+class GetSourceSyncResponseBlockersItem(_GetSourceSyncResponseBlockersItemRequired, total=False):
+    path: str
+
+
+class GetSourceSyncResponseConnection(TypedDict):
+    connector_id: str
+    target_id: str
+
+
+class _GetSourceSyncResponseToolConnectionsItemRequired(TypedDict):
+    name: str
+    ready: bool
+    candidates: list[GetSourceSyncResponseToolConnectionsItemCandidatesItem]
+
+
+class GetSourceSyncResponseToolConnectionsItem(_GetSourceSyncResponseToolConnectionsItemRequired, total=False):
+    selected: str
+
+
+class GetSourceSyncResponseToolConnectionsItemCandidatesItem(TypedDict):
+    name: str
+    auth: str
+
+
 ListAgentsResponse: TypeAlias = "AgentList"
 
 
 class AgentList(TypedDict):
     agents: list[Agent]
     next_cursor: str | None
+
+
+class ListLearningAuditsResponse(TypedDict):
+    agent: str
+    audits: list[ListLearningAuditsResponseAuditsItem]
+
+
+class _ListLearningAuditsResponseAuditsItemRequired(TypedDict):
+    run: str
+    shadow_run: str | None
+    workflow: str
+    digest: str
+    promoted_at: str | None
+    source: Literal["shadow", "grade"]
+    agreed: bool | None
+    served_cost: float | None
+    shadow_cost: float | None
+    at: str
+
+
+class ListLearningAuditsResponseAuditsItem(_ListLearningAuditsResponseAuditsItemRequired, total=False):
+    turn: str
+    skipped: Literal["no allowance"]
+    parked: Literal[True]
 
 
 class ListLearningPromotionsResponse(TypedDict):
@@ -2026,71 +2715,525 @@ class _ListLearningPromotionsResponsePromotionsItemRequired(TypedDict):
     workflow: str
     digest: str
     at: str
-    decided: Literal["promote", "hold", "replaying", "superseded"]
-    source: Literal["replay", "dry_run", "refit", "graded"]
+    decided: Literal["promote", "hold", "replaying"]
     reason: str
 
 
 class ListLearningPromotionsResponsePromotionsItem(_ListLearningPromotionsResponsePromotionsItemRequired, total=False):
-    replay: ListLearningPromotionsResponsePromotionsItemReplay
+    check: ListLearningPromotionsResponsePromotionsItemCheck
     runs: list[str]
     inputs: list[str]
     replay_id: str
-    refit: ListLearningPromotionsResponsePromotionsItemRefit
-    checked: int
-    since: int
-    held_on: list[str]
     commit: str
-    superseded_by: str
+    via: Literal["sdk"]
+    audit: ListLearningPromotionsResponsePromotionsItemAudit
 
 
-class _ListLearningPromotionsResponsePromotionsItemReplayRequired(TypedDict):
+class _ListLearningPromotionsResponsePromotionsItemCheckRequired(TypedDict):
+    compile_after: int
+    agree_min: float
+    alone_min: float
+    attempt: Literal[1, 2]
+
+
+class ListLearningPromotionsResponsePromotionsItemCheck(_ListLearningPromotionsResponsePromotionsItemCheckRequired, total=False):
+    agree_on: list[str]
+    grader: str
     n: int
-    agree: int
-    agent_acc: float
-    wf_acc: float
-    delta: float
-    handed_back: int
-
-
-class ListLearningPromotionsResponsePromotionsItemReplay(_ListLearningPromotionsResponsePromotionsItemReplayRequired, total=False):
+    agreed: int
+    alone: int
     of: list[str]
     cost_usd: float | None
-    skipped_tools: list[ListLearningPromotionsResponsePromotionsItemReplaySkippedToolsItem]
-    outcomes: ListLearningPromotionsResponsePromotionsItemReplayOutcomes
+    outcomes: ListLearningPromotionsResponsePromotionsItemCheckOutcomes
+    unstarted: int
+    skipped_tools: list[ListLearningPromotionsResponsePromotionsItemCheckSkippedToolsItem]
+    disagreements: list[ListLearningPromotionsResponsePromotionsItemCheckDisagreementsItem]
+    stopped: Literal[True]
+    released: int
+    fresh_reads: int
+    turns: ListLearningPromotionsResponsePromotionsItemCheckTurns
 
 
-class ListLearningPromotionsResponsePromotionsItemReplaySkippedToolsItem(TypedDict):
-    tool: str
-    inputs: int
-    no_read_only_hint: bool
-
-
-class ListLearningPromotionsResponsePromotionsItemReplayOutcomes(TypedDict):
+class ListLearningPromotionsResponsePromotionsItemCheckOutcomes(TypedDict):
     answered: int
     handed_back: int
     failed: int
     skipped_write: int
 
 
-ListLearningPromotionsResponsePromotionsItemRefit = TypedDict("ListLearningPromotionsResponsePromotionsItemRefit", {"from": "str", "guards": "list[ListLearningPromotionsResponsePromotionsItemRefitGuardsItem]"})
+class ListLearningPromotionsResponsePromotionsItemCheckSkippedToolsItem(TypedDict):
+    tool: str
+    inputs: int
+    no_read_only_hint: bool
 
 
-class _ListLearningPromotionsResponsePromotionsItemRefitGuardsItemRequired(TypedDict):
-    node: str
-    was: float | None
-    threshold: float | None
+class _ListLearningPromotionsResponsePromotionsItemCheckDisagreementsItemRequired(TypedDict):
+    run: str
+    input: str
+    agent: str | None
 
 
-class ListLearningPromotionsResponsePromotionsItemRefitGuardsItem(_ListLearningPromotionsResponsePromotionsItemRefitGuardsItemRequired, total=False):
-    fit: dict[str, Any]
-    escalate: Literal[True]
+class ListLearningPromotionsResponsePromotionsItemCheckDisagreementsItem(_ListLearningPromotionsResponsePromotionsItemCheckDisagreementsItemRequired, total=False):
+    draft: str
+    escalated: str
+    failed: Literal[True]
+    differs_on: str
+
+
+class _ListLearningPromotionsResponsePromotionsItemCheckTurnsRequired(TypedDict):
+    n: int
+    agreed: int
+    alone: int
+    of: list[str]
+    outcomes: ListLearningPromotionsResponsePromotionsItemCheckTurnsOutcomes
+
+
+class ListLearningPromotionsResponsePromotionsItemCheckTurns(_ListLearningPromotionsResponsePromotionsItemCheckTurnsRequired, total=False):
+    disagreements: list[ListLearningPromotionsResponsePromotionsItemCheckTurnsDisagreementsItem]
+    fresh_reads: int
+
+
+class ListLearningPromotionsResponsePromotionsItemCheckTurnsOutcomes(TypedDict):
+    answered: int
+    handed_back: int
+    failed: int
+    skipped_write: int
+
+
+class _ListLearningPromotionsResponsePromotionsItemCheckTurnsDisagreementsItemRequired(TypedDict):
+    run: str
+    input: str
+    agent: str | None
+
+
+class ListLearningPromotionsResponsePromotionsItemCheckTurnsDisagreementsItem(_ListLearningPromotionsResponsePromotionsItemCheckTurnsDisagreementsItemRequired, total=False):
+    draft: str
+    escalated: str
+    failed: Literal[True]
+    differs_on: str
+
+
+class _ListLearningPromotionsResponsePromotionsItemAuditRequired(TypedDict):
+    window: int
+    disagree: int
+    rows: int
+    disagreements: list[ListLearningPromotionsResponsePromotionsItemAuditDisagreementsItem]
+
+
+class ListLearningPromotionsResponsePromotionsItemAudit(_ListLearningPromotionsResponsePromotionsItemAuditRequired, total=False):
+    stopped: Literal[True]
+
+
+class _ListLearningPromotionsResponsePromotionsItemAuditDisagreementsItemRequired(TypedDict):
+    run: str
+    served: str
+    input: str
+    agent: str | None
+    draft: str | None
+
+
+class ListLearningPromotionsResponsePromotionsItemAuditDisagreementsItem(_ListLearningPromotionsResponsePromotionsItemAuditDisagreementsItemRequired, total=False):
+    graded: Literal[True]
 
 
 class ListLearningPromotionsResponseServingItem(TypedDict):
     workflow: str
     digest: str | None
     replaying: str | None
+    state: Literal["serving", "checking", "held", "stopped"]
+    check: ListLearningPromotionsResponseServingItemCheck | None
+    audit: ListLearningPromotionsResponseServingItemAudit | None
+    audits_off: str | None
+    not_auditable: int
+    champion: ListLearningPromotionsResponseServingItemChampion | None
+
+
+class ListLearningPromotionsResponseServingItemCheck(TypedDict):
+    n: int
+    agreed: int
+    alone: int
+    attempt: Literal[1, 2]
+
+
+class ListLearningPromotionsResponseServingItemAudit(TypedDict):
+    window: int
+    disagree: int
+    rows: int
+    disagreed: int
+
+
+class ListLearningPromotionsResponseServingItemChampion(TypedDict):
+    digest: str
+    commit: str | None
+    nodes: list[ListLearningPromotionsResponseServingItemChampionNodesItem] | None
+    check: ListLearningPromotionsResponseServingItemChampionCheck | None
+
+
+class ListLearningPromotionsResponseServingItemChampionNodesItem(TypedDict):
+    path: str
+    kind: str
+    label: str
+    tier: Literal["fast", "agent"] | None
+    checks: list[ListLearningPromotionsResponseServingItemChampionNodesItemChecksItem]
+
+
+class ListLearningPromotionsResponseServingItemChampionNodesItemChecksItem(TypedDict):
+    on: Literal["when", "until"]
+    predicate: dict[str, Any]
+
+
+class _ListLearningPromotionsResponseServingItemChampionCheckRequired(TypedDict):
+    compile_after: int
+    agree_min: float
+    alone_min: float
+    attempt: Literal[1, 2]
+
+
+class ListLearningPromotionsResponseServingItemChampionCheck(_ListLearningPromotionsResponseServingItemChampionCheckRequired, total=False):
+    agree_on: list[str]
+    grader: str
+    n: int
+    agreed: int
+    alone: int
+    of: list[str]
+    cost_usd: float | None
+    outcomes: ListLearningPromotionsResponseServingItemChampionCheckOutcomes
+    unstarted: int
+    skipped_tools: list[ListLearningPromotionsResponseServingItemChampionCheckSkippedToolsItem]
+    disagreements: list[ListLearningPromotionsResponseServingItemChampionCheckDisagreementsItem]
+    stopped: Literal[True]
+    released: int
+    fresh_reads: int
+    turns: ListLearningPromotionsResponseServingItemChampionCheckTurns
+
+
+class ListLearningPromotionsResponseServingItemChampionCheckOutcomes(TypedDict):
+    answered: int
+    handed_back: int
+    failed: int
+    skipped_write: int
+
+
+class ListLearningPromotionsResponseServingItemChampionCheckSkippedToolsItem(TypedDict):
+    tool: str
+    inputs: int
+    no_read_only_hint: bool
+
+
+class _ListLearningPromotionsResponseServingItemChampionCheckDisagreementsItemRequired(TypedDict):
+    run: str
+    input: str
+    agent: str | None
+
+
+class ListLearningPromotionsResponseServingItemChampionCheckDisagreementsItem(_ListLearningPromotionsResponseServingItemChampionCheckDisagreementsItemRequired, total=False):
+    draft: str
+    escalated: str
+    failed: Literal[True]
+    differs_on: str
+
+
+class _ListLearningPromotionsResponseServingItemChampionCheckTurnsRequired(TypedDict):
+    n: int
+    agreed: int
+    alone: int
+    of: list[str]
+    outcomes: ListLearningPromotionsResponseServingItemChampionCheckTurnsOutcomes
+
+
+class ListLearningPromotionsResponseServingItemChampionCheckTurns(_ListLearningPromotionsResponseServingItemChampionCheckTurnsRequired, total=False):
+    disagreements: list[ListLearningPromotionsResponseServingItemChampionCheckTurnsDisagreementsItem]
+    fresh_reads: int
+
+
+class ListLearningPromotionsResponseServingItemChampionCheckTurnsOutcomes(TypedDict):
+    answered: int
+    handed_back: int
+    failed: int
+    skipped_write: int
+
+
+class _ListLearningPromotionsResponseServingItemChampionCheckTurnsDisagreementsItemRequired(TypedDict):
+    run: str
+    input: str
+    agent: str | None
+
+
+class ListLearningPromotionsResponseServingItemChampionCheckTurnsDisagreementsItem(_ListLearningPromotionsResponseServingItemChampionCheckTurnsDisagreementsItemRequired, total=False):
+    draft: str
+    escalated: str
+    failed: Literal[True]
+    differs_on: str
+
+
+MoveSourceAgentBody: TypeAlias = "dict[str, Any]"
+
+
+class MoveSourceAgentResponse(TypedDict):
+    agent: Agent
+    source: MoveSourceAgentResponseSource
+
+
+class _MoveSourceAgentResponseSourceRequired(TypedDict):
+    enabled: bool
+    moved: bool
+    state: Literal["needs_connection", "paused", "syncing", "needs_attention", "ready", "moved", "conflict"]
+    blockers: list[MoveSourceAgentResponseSourceBlockersItem]
+
+
+class MoveSourceAgentResponseSource(_MoveSourceAgentResponseSourceRequired, total=False):
+    project_issues: list[MoveSourceAgentResponseSourceProjectIssuesItem1 | MoveSourceAgentResponseSourceProjectIssuesItem2]
+    snapshot: str
+    current_snapshot: str
+    connection: MoveSourceAgentResponseSourceConnection
+    files: int
+    bytes: int
+    skills: int
+    tools: int
+    tool_connections: list[MoveSourceAgentResponseSourceToolConnectionsItem]
+
+
+class _MoveSourceAgentResponseSourceProjectIssuesItem1Required(TypedDict):
+    run_id: str
+    entry_id: int
+    status: Literal["pending", "conflict", "uncertain"]
+
+
+class MoveSourceAgentResponseSourceProjectIssuesItem1(_MoveSourceAgentResponseSourceProjectIssuesItem1Required, total=False):
+    reason: str
+
+
+class _MoveSourceAgentResponseSourceProjectIssuesItem2Required(TypedDict):
+    run_id: str
+    entry_id: None
+    attempt_epoch: int
+    status: Literal["pending", "conflict", "uncertain"]
+
+
+class MoveSourceAgentResponseSourceProjectIssuesItem2(_MoveSourceAgentResponseSourceProjectIssuesItem2Required, total=False):
+    reason: str
+
+
+class _MoveSourceAgentResponseSourceBlockersItemRequired(TypedDict):
+    code: str
+    message: str
+
+
+class MoveSourceAgentResponseSourceBlockersItem(_MoveSourceAgentResponseSourceBlockersItemRequired, total=False):
+    path: str
+
+
+class MoveSourceAgentResponseSourceConnection(TypedDict):
+    connector_id: str
+    target_id: str
+
+
+class _MoveSourceAgentResponseSourceToolConnectionsItemRequired(TypedDict):
+    name: str
+    ready: bool
+    candidates: list[MoveSourceAgentResponseSourceToolConnectionsItemCandidatesItem]
+
+
+class MoveSourceAgentResponseSourceToolConnectionsItem(_MoveSourceAgentResponseSourceToolConnectionsItemRequired, total=False):
+    selected: str
+
+
+class MoveSourceAgentResponseSourceToolConnectionsItemCandidatesItem(TypedDict):
+    name: str
+    auth: str
+
+
+class GetAgentPackageResponse(TypedDict):
+    name: str
+    files: list[GetAgentPackageResponseFilesItem]
+    sha256: str
+    report: GetAgentPackageResponseReport
+
+
+class GetAgentPackageResponseFilesItem(TypedDict):
+    path: str
+    encoding: Literal["utf8", "base64"]
+    content: str
+
+
+class GetAgentPackageResponseReport(TypedDict):
+    blocked: list[GetAgentPackageResponseReportBlockedItem]
+    remade: list[GetAgentPackageResponseReportRemadeItem]
+
+
+class GetAgentPackageResponseReportBlockedItem(TypedDict):
+    kind: Literal["mcp_server", "trigger", "pin", "tool_setting", "tool_policy", "computer", "paired_computer", "sign_in", "learning", "input_schema", "budget", "package"]
+    name: str
+    reason: str
+
+
+class GetAgentPackageResponseReportRemadeItem(TypedDict):
+    kind: Literal["mcp_server", "trigger", "pin", "tool_setting", "tool_policy", "computer", "paired_computer", "sign_in", "learning", "input_schema", "budget", "package"]
+    name: str
+    reason: str
+
+
+class ResolveSourceSyncBody(TypedDict):
+    revision: str
+    snapshot: str
+
+
+class ResolveSourceSyncResponse(TypedDict):
+    agent: Agent
+    source: ResolveSourceSyncResponseSource
+
+
+class _ResolveSourceSyncResponseSourceRequired(TypedDict):
+    enabled: bool
+    moved: bool
+    state: Literal["needs_connection", "paused", "syncing", "needs_attention", "ready", "moved", "conflict"]
+    blockers: list[ResolveSourceSyncResponseSourceBlockersItem]
+
+
+class ResolveSourceSyncResponseSource(_ResolveSourceSyncResponseSourceRequired, total=False):
+    project_issues: list[ResolveSourceSyncResponseSourceProjectIssuesItem1 | ResolveSourceSyncResponseSourceProjectIssuesItem2]
+    snapshot: str
+    current_snapshot: str
+    connection: ResolveSourceSyncResponseSourceConnection
+    files: int
+    bytes: int
+    skills: int
+    tools: int
+    tool_connections: list[ResolveSourceSyncResponseSourceToolConnectionsItem]
+
+
+class _ResolveSourceSyncResponseSourceProjectIssuesItem1Required(TypedDict):
+    run_id: str
+    entry_id: int
+    status: Literal["pending", "conflict", "uncertain"]
+
+
+class ResolveSourceSyncResponseSourceProjectIssuesItem1(_ResolveSourceSyncResponseSourceProjectIssuesItem1Required, total=False):
+    reason: str
+
+
+class _ResolveSourceSyncResponseSourceProjectIssuesItem2Required(TypedDict):
+    run_id: str
+    entry_id: None
+    attempt_epoch: int
+    status: Literal["pending", "conflict", "uncertain"]
+
+
+class ResolveSourceSyncResponseSourceProjectIssuesItem2(_ResolveSourceSyncResponseSourceProjectIssuesItem2Required, total=False):
+    reason: str
+
+
+class _ResolveSourceSyncResponseSourceBlockersItemRequired(TypedDict):
+    code: str
+    message: str
+
+
+class ResolveSourceSyncResponseSourceBlockersItem(_ResolveSourceSyncResponseSourceBlockersItemRequired, total=False):
+    path: str
+
+
+class ResolveSourceSyncResponseSourceConnection(TypedDict):
+    connector_id: str
+    target_id: str
+
+
+class _ResolveSourceSyncResponseSourceToolConnectionsItemRequired(TypedDict):
+    name: str
+    ready: bool
+    candidates: list[ResolveSourceSyncResponseSourceToolConnectionsItemCandidatesItem]
+
+
+class ResolveSourceSyncResponseSourceToolConnectionsItem(_ResolveSourceSyncResponseSourceToolConnectionsItemRequired, total=False):
+    selected: str
+
+
+class ResolveSourceSyncResponseSourceToolConnectionsItemCandidatesItem(TypedDict):
+    name: str
+    auth: str
+
+
+class ReviewSourceProjectBody(TypedDict):
+    receipts: list[ReviewSourceProjectBodyReceiptsItem1 | ReviewSourceProjectBodyReceiptsItem2]
+
+
+class ReviewSourceProjectBodyReceiptsItem1(TypedDict):
+    run_id: str
+    entry_id: int
+
+
+class ReviewSourceProjectBodyReceiptsItem2(TypedDict):
+    run_id: str
+    entry_id: None
+    attempt_epoch: int
+
+
+class _ReviewSourceProjectResponseRequired(TypedDict):
+    enabled: bool
+    moved: bool
+    state: Literal["needs_connection", "paused", "syncing", "needs_attention", "ready", "moved", "conflict"]
+    blockers: list[ReviewSourceProjectResponseBlockersItem]
+
+
+class ReviewSourceProjectResponse(_ReviewSourceProjectResponseRequired, total=False):
+    project_issues: list[ReviewSourceProjectResponseProjectIssuesItem1 | ReviewSourceProjectResponseProjectIssuesItem2]
+    snapshot: str
+    current_snapshot: str
+    connection: ReviewSourceProjectResponseConnection
+    files: int
+    bytes: int
+    skills: int
+    tools: int
+    tool_connections: list[ReviewSourceProjectResponseToolConnectionsItem]
+
+
+class _ReviewSourceProjectResponseProjectIssuesItem1Required(TypedDict):
+    run_id: str
+    entry_id: int
+    status: Literal["pending", "conflict", "uncertain"]
+
+
+class ReviewSourceProjectResponseProjectIssuesItem1(_ReviewSourceProjectResponseProjectIssuesItem1Required, total=False):
+    reason: str
+
+
+class _ReviewSourceProjectResponseProjectIssuesItem2Required(TypedDict):
+    run_id: str
+    entry_id: None
+    attempt_epoch: int
+    status: Literal["pending", "conflict", "uncertain"]
+
+
+class ReviewSourceProjectResponseProjectIssuesItem2(_ReviewSourceProjectResponseProjectIssuesItem2Required, total=False):
+    reason: str
+
+
+class _ReviewSourceProjectResponseBlockersItemRequired(TypedDict):
+    code: str
+    message: str
+
+
+class ReviewSourceProjectResponseBlockersItem(_ReviewSourceProjectResponseBlockersItemRequired, total=False):
+    path: str
+
+
+class ReviewSourceProjectResponseConnection(TypedDict):
+    connector_id: str
+    target_id: str
+
+
+class _ReviewSourceProjectResponseToolConnectionsItemRequired(TypedDict):
+    name: str
+    ready: bool
+    candidates: list[ReviewSourceProjectResponseToolConnectionsItemCandidatesItem]
+
+
+class ReviewSourceProjectResponseToolConnectionsItem(_ReviewSourceProjectResponseToolConnectionsItemRequired, total=False):
+    selected: str
+
+
+class ReviewSourceProjectResponseToolConnectionsItemCandidatesItem(TypedDict):
+    name: str
+    auth: str
 
 
 ListRunsResponse: TypeAlias = "RunList"
@@ -2124,17 +3267,23 @@ class _RunSummaryRequired(TypedDict):
 
 class RunSummary(_RunSummaryRequired, total=False):
     computer: RunSummaryComputer
-    sdk: RunSummarySdk
+    sdk: RunSummarySdk | RunSummarySdk2
+    cli_learning: RunSummaryCliLearning
     native: RunSummaryNative
     factory: RunSummaryFactory
     console_url: str
+    labels: dict[str, str]
+    stopped_for: Literal["budget"] | None
+    budget_refused_calls: int
     effort: Effort
     error: RunError | None
     learning: RunSummaryLearning | None
     review: RunSummaryReview | None
-    pending: RunSummaryPending1 | RunSummaryPending2 | RunSummaryPending3 | RunSummaryPending4 | RunSummaryPending5 | None
+    pending: RunSummaryPending1 | RunSummaryPending2 | RunSummaryPending3 | RunSummaryPending4 | RunSummaryPending5 | RunSummaryPending6 | None
     imported_from: RunSummaryImportedFrom | None
     trigger: RunSummaryTrigger | None
+    path: Literal["agent", "handed_back", "workflow", "replay", "audit"] | None
+    workflow: RunSummaryWorkflow | None
 
 
 RunStatus: TypeAlias = "Literal[\"queued\", \"working\", \"paused\", \"input_required\", \"completed\", \"failed\", \"cancelled\"]"
@@ -2145,7 +3294,7 @@ RunState: TypeAlias = "Literal[\"working\", \"waiting\", \"idle\"]"
 
 class _CostRequired(TypedDict):
     usd: float | None
-    basis: Literal["charge", "estimate"]
+    basis: Literal["charge", "estimate", "reported", "unpriced"]
 
 
 class Cost(_CostRequired, total=False):
@@ -2154,12 +3303,32 @@ class Cost(_CostRequired, total=False):
     free: Literal[True]
     so_far_usd: float
     unpriced: int
+    upper_bound: Literal[True]
+    unknown: Literal["booking_unread"]
+    tokens: CostTokens
+    learning_usd: float | None
+    tools_usd: float | None
+    all_in_usd: float | None
+    degraded: Literal[True]
     plan: CostPlan
+
+
+class _CostTokensRequired(TypedDict):
+    input: int
+    output: int
+    cache_read: int
+    cache_write: int
+
+
+class CostTokens(_CostTokensRequired, total=False):
+    requests: int
+    unmetered: int
 
 
 class CostPlan(TypedDict):
     requests: int
     tokens: int
+    on: Literal["chatgpt", "claude_code"]
 
 
 class _RunSummaryComputerRequired(TypedDict):
@@ -2184,7 +3353,7 @@ class RunSummaryComputerHeld(_RunSummaryComputerHeldRequired, total=False):
 
 
 class RunSummarySdk(TypedDict):
-    runtime: Literal["claude-agent-sdk", "codex-sdk"]
+    runtime: Literal["claude-agent-sdk", "codex-sdk", "eve"]
     model: str | None
     session_id: str | None
     learning_revision: str | None
@@ -2192,6 +3361,43 @@ class RunSummarySdk(TypedDict):
 
 
 class RunSummarySdkUsage(TypedDict, total=False):
+    input_tokens: int | None
+    output_tokens: int | None
+    cache_read_tokens: int | None
+    cache_write_tokens: int | None
+    cost_usd: float | None
+
+
+class RunSummarySdk2(TypedDict):
+    runtime: Literal["external"]
+    platform: str
+    model: str | None
+    session_id: str | None
+    learning_revision: str | None
+    usage: RunSummarySdk2Usage | None
+
+
+class RunSummarySdk2Usage(TypedDict, total=False):
+    input_tokens: int | None
+    output_tokens: int | None
+    cache_read_tokens: int | None
+    cache_write_tokens: int | None
+    cost_usd: float | None
+
+
+class RunSummaryCliLearning(TypedDict):
+    runtime: Literal["codex-cli", "claude-code-cli"]
+    session_id: str
+    turn_id: str
+    model: str | None
+    learning_revision: str | None
+    seed_observed: bool
+    policy_complete: bool
+    evidence_complete: bool
+    usage: RunSummaryCliLearningUsage | None
+
+
+class RunSummaryCliLearningUsage(TypedDict, total=False):
     input_tokens: int | None
     output_tokens: int | None
     cache_read_tokens: int | None
@@ -2295,7 +3501,7 @@ class RunError(_RunErrorRequired, total=False):
     details: RunErrorDetails
 
 
-RunErrorCode: TypeAlias = "Literal[\"run_failed\", \"moderated\", \"agent_not_runnable\", \"needs_connection\", \"needs_reconnect\", \"connection_revoked\", \"output_invalid\", \"spend_cap_reached\", \"wall_clock_timeout\", \"input_expired\", \"internal\"]"
+RunErrorCode: TypeAlias = "Literal[\"run_failed\", \"moderated\", \"agent_not_runnable\", \"needs_connection\", \"needs_reconnect\", \"connection_revoked\", \"output_invalid\", \"spend_cap_reached\", \"wall_clock_timeout\", \"input_expired\", \"internal\", \"computer_unavailable\", \"runner_refused\"]"
 
 
 NextAction: TypeAlias = "RequestAction | PersonAction"
@@ -2323,43 +3529,13 @@ class RunErrorDetails(TypedDict):
 
 
 class _RunSummaryLearningRequired(TypedDict):
-    state: Literal["seeded", "reflecting", "proposed", "merged", "dropped"]
-    reason: Literal["seed_failed", "no_budget", "unknown_cost", "cancelled", "crashed", "reflect_timeout", "reflect_failed", "empty", "unparsed", "propose_failed", "checker", "grader", "grade_failed", "use"] | None
+    state: Literal["seeded", "reflecting", "merged", "dropped"]
+    reason: Literal["seed_failed", "no_budget", "unknown_cost", "cancelled", "crashed", "reflect_failed", "empty", "checker", "use", "reset"] | None
     detail: str | None
 
 
 class RunSummaryLearning(_RunSummaryLearningRequired, total=False):
-    given: list[RunSummaryLearningGivenItem]
-    read: list[RunSummaryLearningReadItem]
-    learned: list[RunSummaryLearningLearnedItem]
-    skills: list[RunSummaryLearningSkillsItem]
     workflows: list[RunSummaryLearningWorkflowsItem]
-    pending: list[RunSummaryLearningPendingItem]
-
-
-class RunSummaryLearningGivenItem(TypedDict):
-    file: str
-    name: str
-
-
-class RunSummaryLearningReadItem(TypedDict):
-    file: str
-    name: str
-
-
-class RunSummaryLearningLearnedItem(TypedDict):
-    file: str
-    name: str
-    supersedes: list[str]
-
-
-class _RunSummaryLearningSkillsItemRequired(TypedDict):
-    file: str
-    name: str
-
-
-class RunSummaryLearningSkillsItem(_RunSummaryLearningSkillsItemRequired, total=False):
-    pending: Literal[True]
 
 
 class _RunSummaryLearningWorkflowsItemRequired(TypedDict):
@@ -2369,11 +3545,6 @@ class _RunSummaryLearningWorkflowsItemRequired(TypedDict):
 
 class RunSummaryLearningWorkflowsItem(_RunSummaryLearningWorkflowsItemRequired, total=False):
     pending: Literal[True]
-
-
-class RunSummaryLearningPendingItem(TypedDict):
-    file: str
-    name: str
 
 
 class RunSummaryReview(TypedDict):
@@ -2399,6 +3570,8 @@ class _RunSummaryPending2Required(TypedDict):
 
 
 class RunSummaryPending2(_RunSummaryPending2Required, total=False):
+    summary: str
+    asks_because: str
     price: float | Literal["not metered"] | Literal["priced by usage"]
     destructive: Literal[True]
 
@@ -2436,6 +3609,10 @@ class RunSummaryPending5(TypedDict):
     expires_at: str
 
 
+class RunSummaryPending6(TypedDict):
+    kind: Literal["stopped"]
+
+
 class RunSummaryImportedFrom(TypedDict):
     source: Literal["claude-code", "codex", "pi"]
     session: str
@@ -2444,6 +3621,85 @@ class RunSummaryImportedFrom(TypedDict):
 class RunSummaryTrigger(TypedDict):
     id: str
     firing_key: str
+
+
+class RunSummaryWorkflow(TypedDict):
+    name: str | None
+    digest: str | None
+    repick: Literal["found", "missed"] | None
+
+
+class SetSourceSyncBody(TypedDict):
+    enabled: bool
+
+
+class _SetSourceSyncResponseRequired(TypedDict):
+    enabled: bool
+    moved: bool
+    state: Literal["needs_connection", "paused", "syncing", "needs_attention", "ready", "moved", "conflict"]
+    blockers: list[SetSourceSyncResponseBlockersItem]
+
+
+class SetSourceSyncResponse(_SetSourceSyncResponseRequired, total=False):
+    project_issues: list[SetSourceSyncResponseProjectIssuesItem1 | SetSourceSyncResponseProjectIssuesItem2]
+    snapshot: str
+    current_snapshot: str
+    connection: SetSourceSyncResponseConnection
+    files: int
+    bytes: int
+    skills: int
+    tools: int
+    tool_connections: list[SetSourceSyncResponseToolConnectionsItem]
+
+
+class _SetSourceSyncResponseProjectIssuesItem1Required(TypedDict):
+    run_id: str
+    entry_id: int
+    status: Literal["pending", "conflict", "uncertain"]
+
+
+class SetSourceSyncResponseProjectIssuesItem1(_SetSourceSyncResponseProjectIssuesItem1Required, total=False):
+    reason: str
+
+
+class _SetSourceSyncResponseProjectIssuesItem2Required(TypedDict):
+    run_id: str
+    entry_id: None
+    attempt_epoch: int
+    status: Literal["pending", "conflict", "uncertain"]
+
+
+class SetSourceSyncResponseProjectIssuesItem2(_SetSourceSyncResponseProjectIssuesItem2Required, total=False):
+    reason: str
+
+
+class _SetSourceSyncResponseBlockersItemRequired(TypedDict):
+    code: str
+    message: str
+
+
+class SetSourceSyncResponseBlockersItem(_SetSourceSyncResponseBlockersItemRequired, total=False):
+    path: str
+
+
+class SetSourceSyncResponseConnection(TypedDict):
+    connector_id: str
+    target_id: str
+
+
+class _SetSourceSyncResponseToolConnectionsItemRequired(TypedDict):
+    name: str
+    ready: bool
+    candidates: list[SetSourceSyncResponseToolConnectionsItemCandidatesItem]
+
+
+class SetSourceSyncResponseToolConnectionsItem(_SetSourceSyncResponseToolConnectionsItemRequired, total=False):
+    selected: str
+
+
+class SetSourceSyncResponseToolConnectionsItemCandidatesItem(TypedDict):
+    name: str
+    auth: str
 
 
 UnarchiveAgentResponse: TypeAlias = "dict[str, Any]"
@@ -2496,8 +3752,7 @@ class VerifyNativeResponseNativeConfigurationItem(TypedDict):
 
 class VerifyNativeResponseNativeCapabilities(TypedDict):
     launch: bool
-    notes: bool
-    skills: bool
+    learning: bool
     workflows: Literal[False]
     approval: Literal["native", "unavailable"]
     usage: bool
@@ -2506,6 +3761,246 @@ class VerifyNativeResponseNativeCapabilities(TypedDict):
 class VerifyNativeResponseNativeRemote(TypedDict):
     connector_id: str
     target_id: str
+
+
+class GetCapacityResponse(TypedDict):
+    at: str
+    runs: GetCapacityResponseRuns
+    runners: list[GetCapacityResponseRunnersItem]
+    free_slots: int
+    hand_backs: GetCapacityResponseHandBacks
+
+
+class GetCapacityResponseRuns(TypedDict):
+    queued: int
+    executing: int
+
+
+class GetCapacityResponseRunnersItem(TypedDict):
+    id: str
+    version: str | None
+    slots: int | None
+    executing: int
+    free_slots: int | None
+    refused: bool
+    seen_at: str
+
+
+class GetCapacityResponseHandBacks(TypedDict):
+    window_minutes: int
+    count: int
+
+
+class _CompleteCliLearningRunBodyRequired(TypedDict):
+    status: Literal["completed", "failed", "cancelled"]
+    answer: str
+
+
+class CompleteCliLearningRunBody(_CompleteCliLearningRunBodyRequired, total=False):
+    error: str
+    model: str
+    session_id: str
+    usage: CompleteCliLearningRunBodyUsage
+    evidence_complete: bool
+    seed_observed: bool
+    seed_revision: str
+    source_policy: CompleteCliLearningRunBodySourcePolicy
+
+
+class CompleteCliLearningRunBodyUsage(TypedDict, total=False):
+    input_tokens: int | None
+    output_tokens: int | None
+    cache_read_tokens: int | None
+    cache_write_tokens: int | None
+    cost_usd: float | None
+
+
+class CompleteCliLearningRunBodySourcePolicy(TypedDict):
+    instructions: str
+    complete: bool
+
+
+class CompleteCliLearningRunResponse(TypedDict):
+    accepted: Literal[True]
+
+
+class _EnrollCliLearningBodyRequired(TypedDict):
+    runtime: Literal["codex", "claude-code"]
+    project: str
+
+
+class EnrollCliLearningBody(_EnrollCliLearningBodyRequired, total=False):
+    name: str
+    source_sync: EnrollCliLearningBodySourceSync
+
+
+class EnrollCliLearningBodySourceSync(TypedDict):
+    version: Literal[1]
+    scope: str
+
+
+class _EnrollCliLearningResponseRequired(TypedDict):
+    connection_id: str
+    agent_id: str
+    runtime: Literal["codex", "claude-code"]
+    project: str
+    active: bool
+    token: str
+
+
+class EnrollCliLearningResponse(_EnrollCliLearningResponseRequired, total=False):
+    last_hook_at: str
+    last_run_id: str
+
+
+class CliLearningEventsBody(TypedDict):
+    sequence: int
+    events: list[CliLearningEventsBodyEventsItem1 | CliLearningEventsBodyEventsItem2 | CliLearningEventsBodyEventsItem3 | CliLearningEventsBodyEventsItem4 | CliLearningEventsBodyEventsItem5]
+
+
+class CliLearningEventsBodyEventsItem1(TypedDict):
+    type: Literal["message"]
+    role: Literal["user", "assistant"]
+    text: str
+
+
+class CliLearningEventsBodyEventsItem2(TypedDict):
+    type: Literal["text"]
+    text: str
+
+
+class CliLearningEventsBodyEventsItem3(TypedDict):
+    type: Literal["session"]
+    session_id: str
+
+
+class _CliLearningEventsBodyEventsItem4Required(TypedDict):
+    type: Literal["workflow_check"]
+    id: str
+    digest: str
+    outcome: Literal["answered", "handed_back", "failed", "skipped_write"]
+
+
+class CliLearningEventsBodyEventsItem4(_CliLearningEventsBodyEventsItem4Required, total=False):
+    answer: str
+    reason: str
+    skipped: CliLearningEventsBodyEventsItem4Skipped
+    fresh_reads: int
+
+
+class _CliLearningEventsBodyEventsItem4SkippedRequired(TypedDict):
+    tool: str
+
+
+class CliLearningEventsBodyEventsItem4Skipped(_CliLearningEventsBodyEventsItem4SkippedRequired, total=False):
+    unmarked: Literal[True]
+
+
+class _CliLearningEventsBodyEventsItem5Required(TypedDict):
+    type: Literal["tool"]
+    id: str
+    name: str
+    status: Literal["started", "completed", "failed"]
+
+
+class CliLearningEventsBodyEventsItem5(_CliLearningEventsBodyEventsItem5Required, total=False):
+    input: Any
+    output: Any
+    parent_tool_use_id: str
+
+
+class CliLearningEventsResponse(TypedDict):
+    accepted: Literal[True]
+
+
+class _GetCliLearningRunResponseRequired(TypedDict):
+    run_id: str
+    state: Literal["running", "processing", "completed", "failed", "cancelled"]
+    learning: Any
+
+
+class GetCliLearningRunResponse(_GetCliLearningRunResponseRequired, total=False):
+    learning_run_id: str
+
+
+class ListCliLearningResponse(TypedDict):
+    connections: list[ListCliLearningResponseConnectionsItem]
+
+
+class _ListCliLearningResponseConnectionsItemRequired(TypedDict):
+    connection_id: str
+    agent_id: str
+    runtime: Literal["codex", "claude-code"]
+    project: str
+    active: bool
+
+
+class ListCliLearningResponseConnectionsItem(_ListCliLearningResponseConnectionsItemRequired, total=False):
+    last_hook_at: str
+    last_run_id: str
+
+
+class _RevokeCliLearningResponseRequired(TypedDict):
+    connection_id: str
+    agent_id: str
+    runtime: Literal["codex", "claude-code"]
+    project: str
+    active: bool
+
+
+class RevokeCliLearningResponse(_RevokeCliLearningResponseRequired, total=False):
+    last_hook_at: str
+    last_run_id: str
+
+
+class _StartCliLearningRunBodyRequired(TypedDict):
+    session_id: str
+    turn_id: str
+    input: str
+    instructions: str
+    policy_complete: bool
+
+
+class StartCliLearningRunBody(_StartCliLearningRunBodyRequired, total=False):
+    model: str
+
+
+class StartCliLearningRunResponse(TypedDict):
+    run_id: str
+    agent_id: str
+    console_url: str
+    token: str
+    learning: StartCliLearningRunResponseLearning
+
+
+class _StartCliLearningRunResponseLearningRequired(TypedDict):
+    enabled: bool
+    revision: str | None
+    context: str
+    workflows: list[StartCliLearningRunResponseLearningWorkflowsItem]
+
+
+class StartCliLearningRunResponseLearning(_StartCliLearningRunResponseLearningRequired, total=False):
+    check: StartCliLearningRunResponseLearningCheck
+
+
+class StartCliLearningRunResponseLearningWorkflowsItem(TypedDict):
+    name: str
+    workflow: str
+    description: str
+
+
+class StartCliLearningRunResponseLearningCheck(TypedDict):
+    id: str
+    revision: str
+    digest: str
+    workflow: StartCliLearningRunResponseLearningCheckWorkflow
+
+
+class StartCliLearningRunResponseLearningCheckWorkflow(TypedDict):
+    name: str
+    workflow: str
+    description: str
 
 
 class _CompleteRemoteCommandBodyRequired(TypedDict):
@@ -2524,17 +4019,25 @@ class CompleteRemoteCommandResponse(TypedDict):
 class EnrollRemoteConnectorBody(TypedDict, total=False):
     label: str
     capabilities: EnrollRemoteConnectorBodyCapabilities
+    connector_id: str
 
 
 class EnrollRemoteConnectorBodyCapabilities(TypedDict, total=False):
     native_execution: bool
     history_import: bool
+    config_sync: bool
 
 
 class EnrollRemoteConnectorResponse(TypedDict):
     enrollment_token: str
     expires_at: str
     workspace_id: Literal["local"]
+
+
+GrantSourceSyncBody: TypeAlias = "dict[str, Any]"
+
+
+GrantSourceSyncResponse: TypeAlias = "dict[str, Any]"
 
 
 class ImportRemoteHistoryBody(TypedDict):
@@ -2562,6 +4065,7 @@ class _ImportRemoteTargetBodyRequired(TypedDict):
 class ImportRemoteTargetBody(_ImportRemoteTargetBodyRequired, total=False):
     name: str
     history_only: bool
+    cli_adoption: ImportRemoteTargetBodyCliAdoption
 
 
 class _ImportRemoteTargetBodyTargetRequired(TypedDict):
@@ -2601,8 +4105,7 @@ class ImportRemoteTargetBodyTargetConfigurationItem(TypedDict):
 
 class ImportRemoteTargetBodyTargetCapabilities(TypedDict):
     launch: bool
-    notes: bool
-    skills: bool
+    learning: bool
     workflows: Literal[False]
     approval: Literal["native", "unavailable"]
     usage: bool
@@ -2611,6 +4114,12 @@ class ImportRemoteTargetBodyTargetCapabilities(TypedDict):
 class ImportRemoteTargetBodyTargetRemote(TypedDict):
     connector_id: str
     target_id: str
+
+
+class ImportRemoteTargetBodyCliAdoption(TypedDict):
+    connection_id: str
+    credential_epoch: str
+    proof: str
 
 
 class ImportRemoteTargetResponse(TypedDict):
@@ -2655,8 +4164,7 @@ class ImportRemoteTargetResponseNativeConfigurationItem(TypedDict):
 
 class ImportRemoteTargetResponseNativeCapabilities(TypedDict):
     launch: bool
-    notes: bool
-    skills: bool
+    learning: bool
     workflows: Literal[False]
     approval: Literal["native", "unavailable"]
     usage: bool
@@ -2686,6 +4194,7 @@ class ListRemoteConnectorsResponseConnectorsItemCapabilities(TypedDict):
     observe: Literal[True]
     native_execution: bool
     history_import: bool
+    config_sync: bool
 
 
 class _PollRemoteConnectorBodyRequired(TypedDict):
@@ -2708,6 +4217,15 @@ class PollRemoteConnectorResponse(TypedDict):
     lease_ttl_ms: float
 
 
+class PublishSourceSyncBody(TypedDict):
+    generation: str
+    sequence: int
+    snapshot: dict[str, Any]
+
+
+PublishSourceSyncResponse: TypeAlias = "dict[str, Any]"
+
+
 class _RegisterRemoteConnectorBodyRequired(TypedDict):
     installation_id: str
     operation_id: str
@@ -2724,6 +4242,7 @@ class _RegisterRemoteConnectorBodyCapabilitiesRequired(TypedDict):
 
 class RegisterRemoteConnectorBodyCapabilities(_RegisterRemoteConnectorBodyCapabilitiesRequired, total=False):
     history_import: bool
+    config_sync: bool
 
 
 class RegisterRemoteConnectorResponse(TypedDict):
@@ -2747,6 +4266,7 @@ class RegisterRemoteConnectorResponseConnectorCapabilities(TypedDict):
     observe: Literal[True]
     native_execution: bool
     history_import: bool
+    config_sync: bool
 
 
 class RemoteCommandEventsBody(TypedDict):
@@ -2778,6 +4298,16 @@ class RevokeRemoteConnectorResponseConnectorCapabilities(TypedDict):
     observe: Literal[True]
     native_execution: bool
     history_import: bool
+    config_sync: bool
+
+
+class SourceSyncFailureBody(TypedDict):
+    generation: str
+    sequence: int
+    code: Literal["unsupported_platform", "source_changed", "source_unavailable", "snapshot_too_large"]
+
+
+SourceSyncFailureResponse: TypeAlias = "dict[str, Any]"
 
 
 CreateFileBody: TypeAlias = "FileCreate"
@@ -2836,6 +4366,17 @@ class ListFilesResponse(TypedDict):
 UploadFileResponse: TypeAlias = "File"
 
 
+class ListHarnessKeysResponse(TypedDict):
+    harnesses: list[ListHarnessKeysResponseHarnessesItem]
+
+
+class ListHarnessKeysResponseHarnessesItem(TypedDict):
+    id: str
+    label: str
+    keys: list[SecretMeta]
+    ready: bool
+
+
 class ListHomeFilesResponse(TypedDict):
     agent_id: Id
     files: list[ListHomeFilesResponseFilesItem1 | ListHomeFilesResponseFilesItem2]
@@ -2870,296 +4411,10 @@ class WriteHomeFileResponse(_WriteHomeFileResponseRequired, total=False):
     unreadable: Literal[True]
 
 
-class _GetLearningBatchResponseRequired(TypedDict):
-    id: str
-    agent_id: str
-    created_at: str
-    ended_at: str | None
-    status: Literal["running", "completed", "cancelled", "stopped"]
-    stopped: Literal["cap", "cost_unknown", "learning_off"] | None
-    inputs: list[str]
-    answer: str
-    answer_field: str | None
-    effort: str | None
-    max_cost_usd: float
-    total: int
-    finished: int
-    right: int
-    wrong: int
-    failed: int
-    spent_usd: float
-    unknown_cost_rows: int
-    paths: GetLearningBatchResponsePaths
-    lessons: GetLearningBatchResponseLessons
-    revisions: list[GetLearningBatchResponseRevisionsItem]
-    cost_usd: float | None
-    remaining_usd: float | None
-    current: int | None
-    rows: list[GetLearningBatchResponseRowsItem]
-
-
-class GetLearningBatchResponse(_GetLearningBatchResponseRequired, total=False):
-    error: str
-
-
-class GetLearningBatchResponsePaths(TypedDict):
-    agent: int
-    handed_back: int
-    workflow: int
-
-
-class GetLearningBatchResponseLessons(TypedDict):
-    notes: list[str]
-    skills: list[str]
-    workflows: list[str]
-
-
-class GetLearningBatchResponseRevisionsItem(TypedDict):
-    row: int
-    commit: str | None
-    workflows: list[str]
-
-
-class _GetLearningBatchResponseRowsItemRequired(TypedDict):
-    n: int
-    state: Literal["pending", "running", "done", "failed"]
-    reference: str
-
-
-class GetLearningBatchResponseRowsItem(_GetLearningBatchResponseRowsItemRequired, total=False):
-    run_id: str
-    answer: str | None
-    right: bool
-    reviewed: bool
-    path: Literal["agent", "handed_back", "workflow"]
-    cost_usd: float | None
-    learning_usd: float | None
-    total_usd: float | None
-    learned: GetLearningBatchResponseRowsItemLearned
-    merged: str | None
-    error: str
-
-
-class GetLearningBatchResponseRowsItemLearned(TypedDict):
-    notes: list[str]
-    skills: list[str]
-    workflows: list[str]
-
-
-class _CancelLearningBatchResponseRequired(TypedDict):
-    id: str
-    agent_id: str
-    created_at: str
-    ended_at: str | None
-    status: Literal["running", "completed", "cancelled", "stopped"]
-    stopped: Literal["cap", "cost_unknown", "learning_off"] | None
-    inputs: list[str]
-    answer: str
-    answer_field: str | None
-    effort: str | None
-    max_cost_usd: float
-    total: int
-    finished: int
-    right: int
-    wrong: int
-    failed: int
-    spent_usd: float
-    unknown_cost_rows: int
-    paths: CancelLearningBatchResponsePaths
-    lessons: CancelLearningBatchResponseLessons
-    revisions: list[CancelLearningBatchResponseRevisionsItem]
-    cost_usd: float | None
-    remaining_usd: float | None
-    current: int | None
-    rows: list[CancelLearningBatchResponseRowsItem]
-
-
-class CancelLearningBatchResponse(_CancelLearningBatchResponseRequired, total=False):
-    error: str
-
-
-class CancelLearningBatchResponsePaths(TypedDict):
-    agent: int
-    handed_back: int
-    workflow: int
-
-
-class CancelLearningBatchResponseLessons(TypedDict):
-    notes: list[str]
-    skills: list[str]
-    workflows: list[str]
-
-
-class CancelLearningBatchResponseRevisionsItem(TypedDict):
-    row: int
-    commit: str | None
-    workflows: list[str]
-
-
-class _CancelLearningBatchResponseRowsItemRequired(TypedDict):
-    n: int
-    state: Literal["pending", "running", "done", "failed"]
-    reference: str
-
-
-class CancelLearningBatchResponseRowsItem(_CancelLearningBatchResponseRowsItemRequired, total=False):
-    run_id: str
-    answer: str | None
-    right: bool
-    reviewed: bool
-    path: Literal["agent", "handed_back", "workflow"]
-    cost_usd: float | None
-    learning_usd: float | None
-    total_usd: float | None
-    learned: CancelLearningBatchResponseRowsItemLearned
-    merged: str | None
-    error: str
-
-
-class CancelLearningBatchResponseRowsItemLearned(TypedDict):
-    notes: list[str]
-    skills: list[str]
-    workflows: list[str]
-
-
-class _CreateLearningBatchBodyRequired(TypedDict):
-    inputs: list[str]
-    answer: str
-    rows: list[dict[str, str]]
-    max_cost_usd: float
-
-
-class CreateLearningBatchBody(_CreateLearningBatchBodyRequired, total=False):
-    answer_field: str
-    effort: str
-
-
-class _CreateLearningBatchResponseRequired(TypedDict):
-    id: str
-    agent_id: str
-    created_at: str
-    ended_at: str | None
-    status: Literal["running", "completed", "cancelled", "stopped"]
-    stopped: Literal["cap", "cost_unknown", "learning_off"] | None
-    inputs: list[str]
-    answer: str
-    answer_field: str | None
-    effort: str | None
-    max_cost_usd: float
-    total: int
-    finished: int
-    right: int
-    wrong: int
-    failed: int
-    spent_usd: float
-    unknown_cost_rows: int
-    paths: CreateLearningBatchResponsePaths
-    lessons: CreateLearningBatchResponseLessons
-    revisions: list[CreateLearningBatchResponseRevisionsItem]
-    cost_usd: float | None
-    remaining_usd: float | None
-    current: int | None
-    rows: list[CreateLearningBatchResponseRowsItem]
-
-
-class CreateLearningBatchResponse(_CreateLearningBatchResponseRequired, total=False):
-    error: str
-
-
-class CreateLearningBatchResponsePaths(TypedDict):
-    agent: int
-    handed_back: int
-    workflow: int
-
-
-class CreateLearningBatchResponseLessons(TypedDict):
-    notes: list[str]
-    skills: list[str]
-    workflows: list[str]
-
-
-class CreateLearningBatchResponseRevisionsItem(TypedDict):
-    row: int
-    commit: str | None
-    workflows: list[str]
-
-
-class _CreateLearningBatchResponseRowsItemRequired(TypedDict):
-    n: int
-    state: Literal["pending", "running", "done", "failed"]
-    reference: str
-
-
-class CreateLearningBatchResponseRowsItem(_CreateLearningBatchResponseRowsItemRequired, total=False):
-    run_id: str
-    answer: str | None
-    right: bool
-    reviewed: bool
-    path: Literal["agent", "handed_back", "workflow"]
-    cost_usd: float | None
-    learning_usd: float | None
-    total_usd: float | None
-    learned: CreateLearningBatchResponseRowsItemLearned
-    merged: str | None
-    error: str
-
-
-class CreateLearningBatchResponseRowsItemLearned(TypedDict):
-    notes: list[str]
-    skills: list[str]
-    workflows: list[str]
-
-
-class ListLearningBatchesResponse(TypedDict):
-    batches: list[ListLearningBatchesResponseBatchesItem]
-
-
-class _ListLearningBatchesResponseBatchesItemRequired(TypedDict):
-    id: str
-    agent_id: str
-    created_at: str
-    ended_at: str | None
-    status: Literal["running", "completed", "cancelled", "stopped"]
-    stopped: Literal["cap", "cost_unknown", "learning_off"] | None
-    inputs: list[str]
-    answer: str
-    answer_field: str | None
-    effort: str | None
-    max_cost_usd: float
-    total: int
-    finished: int
-    right: int
-    wrong: int
-    failed: int
-    spent_usd: float
-    unknown_cost_rows: int
-    paths: ListLearningBatchesResponseBatchesItemPaths
-    lessons: ListLearningBatchesResponseBatchesItemLessons
-    revisions: list[ListLearningBatchesResponseBatchesItemRevisionsItem]
-    cost_usd: float | None
-    remaining_usd: float | None
-
-
-class ListLearningBatchesResponseBatchesItem(_ListLearningBatchesResponseBatchesItemRequired, total=False):
-    error: str
-
-
-class ListLearningBatchesResponseBatchesItemPaths(TypedDict):
-    agent: int
-    handed_back: int
-    workflow: int
-
-
-class ListLearningBatchesResponseBatchesItemLessons(TypedDict):
-    notes: list[str]
-    skills: list[str]
-    workflows: list[str]
-
-
-class ListLearningBatchesResponseBatchesItemRevisionsItem(TypedDict):
-    row: int
-    commit: str | None
-    workflows: list[str]
+class GetLearningCorrectionsResponse(TypedDict):
+    text: str
+    etag: str
+    cap_bytes: Literal[2048]
 
 
 class GetLearningCostResponse(TypedDict):
@@ -3170,16 +4425,20 @@ class GetLearningCostResponse(TypedDict):
     unknown_path_runs: int
     workflows: list[GetLearningCostResponseWorkflowsItem]
     summary: GetLearningCostResponseSummary
+    bill: GetLearningCostResponseBill
 
 
 class GetLearningCostResponseRunsItem(TypedDict):
-    n: int
+    n: int | None
     run_id: str
     started_at: str
-    path: Literal["agent", "handed_back", "workflow", "replay"]
+    path: Literal["agent", "handed_back", "workflow", "replay", "audit"]
     workflow: str | None
-    learned_revision: str | None
+    digest: str | None
+    took_over: bool
+    audited: bool
     cost_usd: float | None
+    cost_upper_bound: bool
     learning_usd: float | None
     total_usd: float | None
 
@@ -3207,8 +4466,11 @@ class GetLearningCostResponseSummary(TypedDict):
     takeover: GetLearningCostResponseSummaryTakeover | None
     before: GetLearningCostResponseSummaryBefore | None
     after: GetLearningCostResponseSummaryAfter | None
+    after_state: Literal["priced", "no_served_runs", "cost_unknown"]
     times_cheaper: float | None
     hand_backs: GetLearningCostResponseSummaryHandBacks | None
+    withheld: GetLearningCostResponseSummaryWithheld | None
+    replay: GetLearningCostResponseSummaryReplay | None
 
 
 class GetLearningCostResponseSummaryTakeover(TypedDict):
@@ -3231,122 +4493,83 @@ class GetLearningCostResponseSummaryHandBacks(TypedDict):
     back: int
 
 
-class ListLearningEvalsResponse(TypedDict):
-    agent: str
-    latest: ListLearningEvalsResponseLatest | None
-    evals: list[ListLearningEvalsResponseEvalsItem]
+class GetLearningCostResponseSummaryWithheld(TypedDict):
+    unknown: int
+    at_most: int
 
 
-class ListLearningEvalsResponseLatest(TypedDict):
-    id: str
-    name: str
+class GetLearningCostResponseSummaryReplay(TypedDict):
     n: int
-    correct: int
-    label_source: str | None
-    cost_per_task_usd: float | None
-    baseline_cost_per_task_usd: float | None
-    learned_revision: str | None
-    accuracy: float
-    ci: list[float]
-    recorded_at: str
+    workflow_pct: float
+    agent_pct: float
+    cleared: bool
+    agreed: int
+    alone: int
+    agree_min: float
 
 
-class ListLearningEvalsResponseEvalsItem(TypedDict):
-    id: str
-    name: str
+class GetLearningCostResponseBill(TypedDict):
+    learning_usd: float
+    points: list[GetLearningCostResponseBillPointsItem]
+    break_even: GetLearningCostResponseBillBreakEven | None
+    gap_usd: float | None
+    withheld: int
+    booked_usd: float
+    revisions: list[GetLearningCostResponseBillRevisionsItem]
+    unattributed_usd: float | None
+    holds: list[GetLearningCostResponseBillHoldsItem]
+
+
+class GetLearningCostResponseBillPointsItem(TypedDict):
     n: int
-    correct: int
-    label_source: str | None
-    cost_per_task_usd: float | None
-    baseline_cost_per_task_usd: float | None
-    learned_revision: str | None
-    accuracy: float
-    ci: list[float]
-    recorded_at: str
+    run_id: str
+    actual_usd: float
+    agent_usd: float | None
+
+
+class GetLearningCostResponseBillBreakEven(TypedDict):
+    n: int
+    run_id: str
+
+
+class GetLearningCostResponseBillRevisionsItem(TypedDict):
+    workflow: str
+    digest: str
+    compile_usd: float | None
+    check_usd: float | None
+    spend_usd: float | None
+    k: int
+    served: int
+    attributed_usd: float | None
+    unattributed_usd: float | None
+    state: Literal["checking", "serving", "stopped"]
+
+
+class GetLearningCostResponseBillHoldsItem(TypedDict):
+    n: int | None
+    at: str
+    workflow: str
+    by: Literal["audit", "check", "dsl"]
+    reason: str
 
 
 class GetAgentLearningResponse(TypedDict):
+    learning_model: GetAgentLearningResponseLearningModel
     agent: str
     main: str | None
-    index: str
-    notes: GetAgentLearningResponseNotes
-    skills: list[GetAgentLearningResponseSkillsItem]
+    corrections: str
     workflows: list[GetAgentLearningResponseWorkflowsItem]
     log: GetAgentLearningResponseLog
     counts: GetAgentLearningResponseCounts
     impact: GetAgentLearningResponseImpact | None
 
 
-class GetAgentLearningResponseNotes(TypedDict):
-    items: list[GetAgentLearningResponseNotesItemsItem]
-    total: int
-    next_cursor: str | None
-
-
-class _GetAgentLearningResponseNotesItemsItemRequired(TypedDict):
-    file: str
-    name: str
-    description: str
-    type: Literal["user", "feedback", "project", "reference"]
-    status: Literal["active", "superseded", "retired", "pending"]
-    origin: Literal["you", "run"]
-    superseded_by: str | None
-    text: str
-    etag: str
-    runs: GetAgentLearningResponseNotesItemsItemRuns
-
-
-class GetAgentLearningResponseNotesItemsItem(_GetAgentLearningResponseNotesItemsItemRequired, total=False):
-    retired: GetAgentLearningResponseNotesItemsItemRetired
-    last_change: GetAgentLearningResponseNotesItemsItemLastChange
-
-
-class GetAgentLearningResponseNotesItemsItemRuns(TypedDict):
-    given: int
-    read: int
-
-
-_GetAgentLearningResponseNotesItemsItemRetiredRequired = TypedDict("_GetAgentLearningResponseNotesItemsItemRetiredRequired", {"at": "str", "by": "Literal[\"person\", \"run\", \"host\"]"})
-_GetAgentLearningResponseNotesItemsItemRetiredOptional = TypedDict("_GetAgentLearningResponseNotesItemsItemRetiredOptional", {"from": "Literal[\"active\", \"pending\"]", "why": "Literal[\"unreadable\"]"}, total=False)
-
-
-class GetAgentLearningResponseNotesItemsItemRetired(_GetAgentLearningResponseNotesItemsItemRetiredRequired, _GetAgentLearningResponseNotesItemsItemRetiredOptional):
-    pass
-
-
-class GetAgentLearningResponseNotesItemsItemLastChange(TypedDict):
-    kind: Literal["approved", "edited", "created", "retired", "restored", "learned", "superseded"]
-    by: Literal["person", "run"]
-    at: str
-
-
-class _GetAgentLearningResponseSkillsItemRequired(TypedDict):
-    name: str
-    file: str
-    description: str
-    status: Literal["active", "pending", "retired"]
-    run: str | None
-    bytes: int
-    etag: str
-
-
-class GetAgentLearningResponseSkillsItem(_GetAgentLearningResponseSkillsItemRequired, total=False):
-    retired: GetAgentLearningResponseSkillsItemRetired
-    last_change: GetAgentLearningResponseSkillsItemLastChange
-
-
-_GetAgentLearningResponseSkillsItemRetiredRequired = TypedDict("_GetAgentLearningResponseSkillsItemRetiredRequired", {"at": "str", "by": "Literal[\"person\", \"run\", \"host\"]"})
-_GetAgentLearningResponseSkillsItemRetiredOptional = TypedDict("_GetAgentLearningResponseSkillsItemRetiredOptional", {"from": "Literal[\"active\", \"pending\"]", "why": "Literal[\"unreadable\"]"}, total=False)
-
-
-class GetAgentLearningResponseSkillsItemRetired(_GetAgentLearningResponseSkillsItemRetiredRequired, _GetAgentLearningResponseSkillsItemRetiredOptional):
-    pass
-
-
-class GetAgentLearningResponseSkillsItemLastChange(TypedDict):
-    kind: Literal["approved", "edited", "created", "retired", "restored", "learned", "superseded"]
-    by: Literal["person", "run"]
-    at: str
+class GetAgentLearningResponseLearningModel(TypedDict):
+    location: Literal["server", "native"]
+    ready: bool
+    model: str | None
+    needs: Literal["key", "model"] | None
+    reason: str | None
 
 
 class _GetAgentLearningResponseWorkflowsItemRequired(TypedDict):
@@ -3354,7 +4577,7 @@ class _GetAgentLearningResponseWorkflowsItemRequired(TypedDict):
     file: str
     readme: str
     description: str
-    status: Literal["active", "pending", "retired"]
+    status: Literal["serving", "checking", "held", "stopped", "pending", "retired"]
     run: str | None
     bytes: int
     etag: str
@@ -3374,7 +4597,7 @@ class GetAgentLearningResponseWorkflowsItemRetired(_GetAgentLearningResponseWork
 
 
 class GetAgentLearningResponseWorkflowsItemLastChange(TypedDict):
-    kind: Literal["approved", "edited", "created", "retired", "restored", "learned", "superseded"]
+    kind: Literal["approved", "edited", "created", "retired", "restored", "learned"]
     by: Literal["person", "run"]
     at: str
 
@@ -3419,17 +4642,11 @@ class GetAgentLearningResponseImpact(TypedDict):
 class GetAgentLearningResponseImpactBefore(TypedDict):
     runs: int
     median_duration_s: float
-    median_cost_usd: float | None
-    cost_runs: int
-    median_learning_usd: float | None
 
 
 class GetAgentLearningResponseImpactAfter(TypedDict):
     runs: int
     median_duration_s: float
-    median_cost_usd: float | None
-    cost_runs: int
-    median_learning_usd: float | None
 
 
 class ListLearningLogResponse(TypedDict):
@@ -3458,77 +4675,7 @@ class ListLearningLogResponseItemsItemBy2(_ListLearningLogResponseItemsItemBy2Re
     via: str
 
 
-class ListLearningNotesResponse(TypedDict):
-    items: list[ListLearningNotesResponseItemsItem]
-    total: int
-    next_cursor: str | None
-
-
-class _ListLearningNotesResponseItemsItemRequired(TypedDict):
-    file: str
-    name: str
-    description: str
-    type: Literal["user", "feedback", "project", "reference"]
-    status: Literal["active", "superseded", "retired", "pending"]
-    origin: Literal["you", "run"]
-    superseded_by: str | None
-    text: str
-    etag: str
-    runs: ListLearningNotesResponseItemsItemRuns
-
-
-class ListLearningNotesResponseItemsItem(_ListLearningNotesResponseItemsItemRequired, total=False):
-    retired: ListLearningNotesResponseItemsItemRetired
-    last_change: ListLearningNotesResponseItemsItemLastChange
-
-
-class ListLearningNotesResponseItemsItemRuns(TypedDict):
-    given: int
-    read: int
-
-
-_ListLearningNotesResponseItemsItemRetiredRequired = TypedDict("_ListLearningNotesResponseItemsItemRetiredRequired", {"at": "str", "by": "Literal[\"person\", \"run\", \"host\"]"})
-_ListLearningNotesResponseItemsItemRetiredOptional = TypedDict("_ListLearningNotesResponseItemsItemRetiredOptional", {"from": "Literal[\"active\", \"pending\"]", "why": "Literal[\"unreadable\"]"}, total=False)
-
-
-class ListLearningNotesResponseItemsItemRetired(_ListLearningNotesResponseItemsItemRetiredRequired, _ListLearningNotesResponseItemsItemRetiredOptional):
-    pass
-
-
-class ListLearningNotesResponseItemsItemLastChange(TypedDict):
-    kind: Literal["approved", "edited", "created", "retired", "restored", "learned", "superseded"]
-    by: Literal["person", "run"]
-    at: str
-
-
 ReadLearningFileResponse: TypeAlias = "Any"
-
-
-class _RecordLearningEvalBodyRequired(TypedDict):
-    name: str
-    n: int
-    correct: int
-
-
-class RecordLearningEvalBody(_RecordLearningEvalBodyRequired, total=False):
-    label_source: str | None
-    cost_per_task_usd: float | None
-    baseline_cost_per_task_usd: float | None
-    learned_revision: str | None
-
-
-class RecordLearningEvalResponse(TypedDict):
-    id: str
-    name: str
-    n: int
-    correct: int
-    label_source: str | None
-    cost_per_task_usd: float | None
-    baseline_cost_per_task_usd: float | None
-    learned_revision: str | None
-    accuracy: float
-    ci: list[float]
-    recorded_at: str
 
 
 class _GetLearnedWorkflowReplayResponseRequired(TypedDict):
@@ -3543,7 +4690,7 @@ class _GetLearnedWorkflowReplayResponseRequired(TypedDict):
 
 
 class GetLearnedWorkflowReplayResponse(_GetLearnedWorkflowReplayResponseRequired, total=False):
-    decided: Literal["promote", "hold", "superseded"]
+    decided: Literal["promote", "hold"]
     reason: str
 
 
@@ -3591,12 +4738,19 @@ class ListLearnedWorkflowRevisionsResponseRevisionsItemBy2(_ListLearnedWorkflowR
     via: str
 
 
-class WriteLearningFileBody(TypedDict):
+class PutLearningCorrectionsBody(TypedDict):
     text: str
+
+
+class PutLearningCorrectionsResponse(TypedDict):
+    text: str
+    etag: str
+    cap_bytes: Literal[2048]
 
 
 class ConnectGitHubBody(TypedDict, total=False):
     org: str
+    contents: Literal["read", "write"]
 
 
 class ConnectGitHubResponse(TypedDict):
@@ -3609,10 +4763,125 @@ class CreatePairingResponse(TypedDict):
     id: str
     code: str
     expires_at: str
+    runs_refused: str | None
+
+
+class CreateSuggestedAgentBody(TypedDict, total=False):
+    name: str
+
+
+class CreateSuggestedAgentResponse(TypedDict):
+    id: str
+    repo: str
+    key: str
+    status: Literal["open", "created", "discarded"]
+    title: str
+    summary: str
+    why: str
+    impact: Literal["high", "medium", "low"]
+    evidence: list[CreateSuggestedAgentResponseEvidenceItem]
+    agent: CreateSuggestedAgentResponseAgent
+    integration: CreateSuggestedAgentResponseIntegration
+    scan: CreateSuggestedAgentResponseScan
+    decided_at: str | None
+    created: None | CreateSuggestedAgentResponseCreated
+    warnings: list[dict[str, Any]]
+
+
+class CreateSuggestedAgentResponseEvidenceItem(TypedDict):
+    path: str
+    line: int
+    quote: str
+    url: str
+
+
+class _CreateSuggestedAgentResponseAgentRequired(TypedDict):
+    name: str
+    description: str
+    inputs: list[CreateSuggestedAgentResponseAgentInputsItem]
+    output: list[CreateSuggestedAgentResponseAgentOutputItem]
+    tools: list[Literal["web_search", "web_fetch"]]
+    tier: Literal["fast", "balanced", "strong"]
+
+
+class CreateSuggestedAgentResponseAgent(_CreateSuggestedAgentResponseAgentRequired, total=False):
+    instructions: str
+
+
+class CreateSuggestedAgentResponseAgentInputsItem(TypedDict):
+    name: str
+    type: Literal["string", "number", "integer", "boolean"]
+    description: str
+    required: bool
+
+
+class _CreateSuggestedAgentResponseAgentOutputItemRequired(TypedDict):
+    name: str
+    type: Literal["string", "number", "integer", "boolean", "string_list"]
+    description: str
+
+
+class CreateSuggestedAgentResponseAgentOutputItem(_CreateSuggestedAgentResponseAgentOutputItemRequired, total=False):
+    enum: list[str]
+
+
+class CreateSuggestedAgentResponseIntegration(TypedDict):
+    language: Literal["typescript", "javascript", "python", "other"]
+    path: str
+    call_site: CreateSuggestedAgentResponseIntegrationCallSite
+
+
+class CreateSuggestedAgentResponseIntegrationCallSite(TypedDict):
+    path: str
+    line: int
+    note: str
+    url: str
+
+
+class CreateSuggestedAgentResponseScan(TypedDict):
+    run_id: str
+    commit: str | None
+    at: str
+
+
+class CreateSuggestedAgentResponseCreated(TypedDict):
+    agent_id: str
+    template_id: str
+    branch: str | None
+    pull_request: None | CreateSuggestedAgentResponseCreatedPullRequest
+    pull_error: str | None
+
+
+class CreateSuggestedAgentResponseCreatedPullRequest(TypedDict):
+    number: int
+    url: str
 
 
 class DeleteComposioSubscriptionResponse(TypedDict):
     deleted: Literal[True]
+
+
+class DeleteModelGatewayResponse(TypedDict):
+    source: Literal["env", "console"] | None
+    base_url: str | None
+    ids: Literal["as_named", "bare"]
+    models: DeleteModelGatewayResponseModels
+    set_at_start: list[str]
+    secret: DeleteModelGatewayResponseSecret
+    problem: str | None
+
+
+class DeleteModelGatewayResponseModels(TypedDict):
+    default: str | None
+    fast: str | None
+    strong: str | None
+
+
+class DeleteModelGatewayResponseSecret(TypedDict):
+    name: str
+    set: bool
+    source: Literal["env", "console", "sign-in"] | None
+    changed_at: str | None
 
 
 class _DeleteWorkspaceArchilResponseRequired(TypedDict):
@@ -3632,6 +4901,92 @@ class DeleteWorkspaceArchilResponseSecret(TypedDict):
     set: bool
     source: Literal["env", "console", "sign-in"] | None
     changed_at: str | None
+
+
+class DiscardSuggestionResponse(TypedDict):
+    id: str
+    repo: str
+    key: str
+    status: Literal["open", "created", "discarded"]
+    title: str
+    summary: str
+    why: str
+    impact: Literal["high", "medium", "low"]
+    evidence: list[DiscardSuggestionResponseEvidenceItem]
+    agent: DiscardSuggestionResponseAgent
+    integration: DiscardSuggestionResponseIntegration
+    scan: DiscardSuggestionResponseScan
+    decided_at: str | None
+    created: None | DiscardSuggestionResponseCreated
+
+
+class DiscardSuggestionResponseEvidenceItem(TypedDict):
+    path: str
+    line: int
+    quote: str
+    url: str
+
+
+class _DiscardSuggestionResponseAgentRequired(TypedDict):
+    name: str
+    description: str
+    inputs: list[DiscardSuggestionResponseAgentInputsItem]
+    output: list[DiscardSuggestionResponseAgentOutputItem]
+    tools: list[Literal["web_search", "web_fetch"]]
+    tier: Literal["fast", "balanced", "strong"]
+
+
+class DiscardSuggestionResponseAgent(_DiscardSuggestionResponseAgentRequired, total=False):
+    instructions: str
+
+
+class DiscardSuggestionResponseAgentInputsItem(TypedDict):
+    name: str
+    type: Literal["string", "number", "integer", "boolean"]
+    description: str
+    required: bool
+
+
+class _DiscardSuggestionResponseAgentOutputItemRequired(TypedDict):
+    name: str
+    type: Literal["string", "number", "integer", "boolean", "string_list"]
+    description: str
+
+
+class DiscardSuggestionResponseAgentOutputItem(_DiscardSuggestionResponseAgentOutputItemRequired, total=False):
+    enum: list[str]
+
+
+class DiscardSuggestionResponseIntegration(TypedDict):
+    language: Literal["typescript", "javascript", "python", "other"]
+    path: str
+    call_site: DiscardSuggestionResponseIntegrationCallSite
+
+
+class DiscardSuggestionResponseIntegrationCallSite(TypedDict):
+    path: str
+    line: int
+    note: str
+    url: str
+
+
+class DiscardSuggestionResponseScan(TypedDict):
+    run_id: str
+    commit: str | None
+    at: str
+
+
+class DiscardSuggestionResponseCreated(TypedDict):
+    agent_id: str
+    template_id: str
+    branch: str | None
+    pull_request: None | DiscardSuggestionResponseCreatedPullRequest
+    pull_error: str | None
+
+
+class DiscardSuggestionResponseCreatedPullRequest(TypedDict):
+    number: int
+    url: str
 
 
 class DisconnectGitHubResponse(TypedDict):
@@ -3654,6 +5009,14 @@ class FinishChatGPTSignInResponse(_FinishChatGPTSignInResponseRequired, total=Fa
     authorize_url: str
     expires_at: str
     models: list[str]
+    problem: str
+
+
+class GetCalendarResponse(TypedDict):
+    configured: bool
+    host: str | None
+    name: str | None
+    time_zone: str | None
 
 
 class _GetChatGPTSignInResponseRequired(TypedDict):
@@ -3666,6 +5029,67 @@ class GetChatGPTSignInResponse(_GetChatGPTSignInResponseRequired, total=False):
     authorize_url: str
     expires_at: str
     models: list[str]
+    problem: str
+
+
+class _GetClaudeLoginResponseRequired(TypedDict):
+    state: Literal["off", "other_machine", "signed_in", "signed_out", "no_cli", "unknown"]
+    place: Literal["agentrun", "machine"]
+    command: str
+    can_start: bool
+    folder: str
+    machine: GetClaudeLoginResponseMachine
+
+
+class GetClaudeLoginResponse(_GetClaudeLoginResponseRequired, total=False):
+    refused: str
+    account: GetClaudeLoginResponseAccount
+    sign_in: GetClaudeLoginResponseSignIn
+
+
+class GetClaudeLoginResponseAccount(TypedDict, total=False):
+    method: str
+    email: str
+    organization: str
+    plan: str
+
+
+class GetClaudeLoginResponseMachine(TypedDict):
+    folder: str
+    source: Literal["CLAUDE_CONFIG_DIR", "default"]
+
+
+class _GetClaudeLoginResponseSignInRequired(TypedDict):
+    state: Literal["waiting", "signed_in", "timed_out", "failed", "not_started"]
+    started_at: str
+    limit_ms: int
+
+
+class GetClaudeLoginResponseSignIn(_GetClaudeLoginResponseSignInRequired, total=False):
+    ended_at: str
+    exit_code: int
+    signal: str
+    error: str
+
+
+class GetEmailAccountResponse(TypedDict):
+    configured: bool
+    preset: Literal["gmail", "fastmail", "icloud", "other"] | None
+    address: str | None
+    user: str | None
+    imap: GetEmailAccountResponseImap | None
+    smtp: GetEmailAccountResponseSmtp | None
+    password_unreadable: bool
+
+
+class GetEmailAccountResponseImap(TypedDict):
+    host: str
+    port: int
+
+
+class GetEmailAccountResponseSmtp(TypedDict):
+    host: str
+    port: int
 
 
 GetGitHubConnectionResponse: TypeAlias = "GetGitHubConnectionResponseObject1 | GetGitHubConnectionResponseObject2"
@@ -3685,6 +5109,133 @@ class GetGitHubConnectionResponseObject2(TypedDict):
 class GetGitHubConnectionResponseObject2InstallationsItem(TypedDict):
     id: int
     account: str
+
+
+class GetModelGatewayResponse(TypedDict):
+    source: Literal["env", "console"] | None
+    base_url: str | None
+    ids: Literal["as_named", "bare"]
+    models: GetModelGatewayResponseModels
+    set_at_start: list[str]
+    secret: GetModelGatewayResponseSecret
+    problem: str | None
+
+
+class GetModelGatewayResponseModels(TypedDict):
+    default: str | None
+    fast: str | None
+    strong: str | None
+
+
+class GetModelGatewayResponseSecret(TypedDict):
+    name: str
+    set: bool
+    source: Literal["env", "console", "sign-in"] | None
+    changed_at: str | None
+
+
+class GetSuggestionResponse(TypedDict):
+    id: str
+    repo: str
+    key: str
+    status: Literal["open", "created", "discarded"]
+    title: str
+    summary: str
+    why: str
+    impact: Literal["high", "medium", "low"]
+    evidence: list[GetSuggestionResponseEvidenceItem]
+    agent: GetSuggestionResponseAgent
+    integration: GetSuggestionResponseIntegration
+    scan: GetSuggestionResponseScan
+    decided_at: str | None
+    created: None | GetSuggestionResponseCreated
+    files: list[GetSuggestionResponseFilesItem]
+    problems: list[str]
+    github: GetSuggestionResponseGithub
+
+
+class GetSuggestionResponseEvidenceItem(TypedDict):
+    path: str
+    line: int
+    quote: str
+    url: str
+
+
+class _GetSuggestionResponseAgentRequired(TypedDict):
+    name: str
+    description: str
+    inputs: list[GetSuggestionResponseAgentInputsItem]
+    output: list[GetSuggestionResponseAgentOutputItem]
+    tools: list[Literal["web_search", "web_fetch"]]
+    tier: Literal["fast", "balanced", "strong"]
+
+
+class GetSuggestionResponseAgent(_GetSuggestionResponseAgentRequired, total=False):
+    instructions: str
+
+
+class GetSuggestionResponseAgentInputsItem(TypedDict):
+    name: str
+    type: Literal["string", "number", "integer", "boolean"]
+    description: str
+    required: bool
+
+
+class _GetSuggestionResponseAgentOutputItemRequired(TypedDict):
+    name: str
+    type: Literal["string", "number", "integer", "boolean", "string_list"]
+    description: str
+
+
+class GetSuggestionResponseAgentOutputItem(_GetSuggestionResponseAgentOutputItemRequired, total=False):
+    enum: list[str]
+
+
+class GetSuggestionResponseIntegration(TypedDict):
+    language: Literal["typescript", "javascript", "python", "other"]
+    path: str
+    call_site: GetSuggestionResponseIntegrationCallSite
+
+
+class GetSuggestionResponseIntegrationCallSite(TypedDict):
+    path: str
+    line: int
+    note: str
+    url: str
+
+
+class GetSuggestionResponseScan(TypedDict):
+    run_id: str
+    commit: str | None
+    at: str
+
+
+class GetSuggestionResponseCreated(TypedDict):
+    agent_id: str
+    template_id: str
+    branch: str | None
+    pull_request: None | GetSuggestionResponseCreatedPullRequest
+    pull_error: str | None
+
+
+class GetSuggestionResponseCreatedPullRequest(TypedDict):
+    number: int
+    url: str
+
+
+class GetSuggestionResponseFilesItem(TypedDict):
+    path: str
+    content: str
+
+
+class GetSuggestionResponseGithub(TypedDict):
+    ready: bool
+    reason: Literal["not_connected", "not_installed", "github_failed", "permission_missing"] | None
+    message: str | None
+    missing: list[str]
+    install_url: str | None
+    permissions_url: str | None
+    installation_url: str | None
 
 
 class _GetWorkspaceArchilResponseRequired(TypedDict):
@@ -3718,6 +5269,7 @@ class _ListComposioEventsResponseEventsItemRequired(TypedDict):
     description: str
     config: dict[str, Any]
     polled: bool
+    sealed: list[str]
 
 
 class ListComposioEventsResponseEventsItem(_ListComposioEventsResponseEventsItemRequired, total=False):
@@ -3798,6 +5350,7 @@ class ListComputersResponsePairedItem(TypedDict):
     kind: str
     serves: list[Literal["none", "sandbox", "desktop", "phone", "browser"]]
     unserved: str | None
+    runs_refused: str | None
     os: str
     os_version: str | None
     device: ListComputersResponsePairedItemDevice | None
@@ -3834,6 +5387,8 @@ class _ListComputersResponseKindsItemRequired(TypedDict):
     offered: bool
     groups: list[str]
     tools: list[str]
+    settings: list[str]
+    record: ListComputersResponseKindsItemRecord1 | ListComputersResponseKindsItemRecord2
     providers: list[ListComputersResponseKindsItemProvidersItem]
 
 
@@ -3844,6 +5399,15 @@ class ListComputersResponseKindsItem(_ListComputersResponseKindsItemRequired, to
     shell_note: str
 
 
+class ListComputersResponseKindsItemRecord1(TypedDict):
+    available: Literal[True]
+
+
+class ListComputersResponseKindsItemRecord2(TypedDict):
+    available: Literal[False]
+    why: str
+
+
 class _ListComputersResponseKindsItemProvidersItemRequired(TypedDict):
     id: str
     name: str
@@ -3851,6 +5415,8 @@ class _ListComputersResponseKindsItemProvidersItemRequired(TypedDict):
     secrets: list[ListComputersResponseKindsItemProvidersItemSecretsItem]
     required: list[str]
     ready: bool
+    runs_refused: str | None
+    folder: Literal["bind", "archil", "sync"] | None
     shell: Literal["computer", "local", "none"]
     host_tools: list[str]
 
@@ -3898,787 +5464,35 @@ class ListComputersResponseKindsItemProvidersItemPersistent(TypedDict, total=Fal
     images: list[str]
 
 
-class _PutWorkspaceArchilBodyRequired(TypedDict):
-    region: str
-    s3Url: str
+class ListGitHubRepositoriesResponse(TypedDict):
+    repositories: list[ListGitHubRepositoriesResponseRepositoriesItem]
+    truncated: bool
+    unread: list[ListGitHubRepositoriesResponseUnreadItem]
 
 
-class PutWorkspaceArchilBody(_PutWorkspaceArchilBodyRequired, total=False):
-    image: str
-    keys: PutWorkspaceArchilBodyKeys
+class _ListGitHubRepositoriesResponseRepositoriesItemRequired(TypedDict):
+    full_name: str
+    private: bool
+    account: str
+    installation: int
 
 
-class PutWorkspaceArchilBodyKeys(TypedDict, total=False):
-    ARCHIL_API_KEY: str | None
-
-
-class _PutWorkspaceArchilResponseRequired(TypedDict):
-    on: bool
-    secret: PutWorkspaceArchilResponseSecret
-
-
-class PutWorkspaceArchilResponse(_PutWorkspaceArchilResponseRequired, total=False):
-    source: Literal["env", "console"]
-    region: str
-    s3Url: str
-    image: str
-
-
-class PutWorkspaceArchilResponseSecret(TypedDict):
-    name: str
-    set: bool
-    source: Literal["env", "console", "sign-in"] | None
-    changed_at: str | None
-
-
-ReceiveHookComposioResponse: TypeAlias = "ReceiveHookComposioResponseObject11 | ReceiveHookComposioResponseObject12 | ReceiveHookComposioResponseObject2"
-
-
-class ReceiveHookComposioResponseObject11(TypedDict):
-    firings: list[ReceiveHookComposioResponseObject11FiringsItem1 | ReceiveHookComposioResponseObject11FiringsItem2]
-
-
-class _ReceiveHookComposioResponseObject11FiringsItem1Required(TypedDict):
-    key: str
-    by: Literal["schedule", "manual", "webhook", "github", "composio"]
-    nominal_at: str
-    status: Literal["due", "started", "sent", "skipped", "failed", "missed"]
-    at: str
-    run_id: str | None
-    reason: str | None
-    error: ReceiveHookComposioResponseObject11FiringsItem1Error | None
-
-
-class ReceiveHookComposioResponseObject11FiringsItem1(_ReceiveHookComposioResponseObject11FiringsItem1Required, total=False):
-    count: int
-    attempts: int
-    retry_at: str
-    catch_up: Literal[True]
-
-
-class ReceiveHookComposioResponseObject11FiringsItem1Error(TypedDict):
-    code: str
-    message: str
-
-
-class ReceiveHookComposioResponseObject11FiringsItem2(TypedDict):
-    ok: Literal["duplicate"]
-
-
-class ReceiveHookComposioResponseObject12(TypedDict):
-    ok: Literal["ignored"]
-
-
-class ReceiveHookComposioResponseObject2(TypedDict):
-    firings: list[ReceiveHookComposioResponseObject2FiringsItem1 | ReceiveHookComposioResponseObject2FiringsItem2]
-
-
-class _ReceiveHookComposioResponseObject2FiringsItem1Required(TypedDict):
-    key: str
-    by: Literal["schedule", "manual", "webhook", "github", "composio"]
-    nominal_at: str
-    status: Literal["due", "started", "sent", "skipped", "failed", "missed"]
-    at: str
-    run_id: str | None
-    reason: str | None
-    error: ReceiveHookComposioResponseObject2FiringsItem1Error | None
-
-
-class ReceiveHookComposioResponseObject2FiringsItem1(_ReceiveHookComposioResponseObject2FiringsItem1Required, total=False):
-    count: int
-    attempts: int
-    retry_at: str
-    catch_up: Literal[True]
-
-
-class ReceiveHookComposioResponseObject2FiringsItem1Error(TypedDict):
-    code: str
-    message: str
-
-
-class ReceiveHookComposioResponseObject2FiringsItem2(TypedDict):
-    ok: Literal["duplicate"]
-
-
-class RotateComposioSecretResponse(TypedDict):
-    rotated: Literal[True]
-
-
-class _SaveComposioServerBodyRequired(TypedDict):
-    api_key: str
-    toolkit: str
-    tools: list[str]
-
-
-class SaveComposioServerBody(_SaveComposioServerBodyRequired, total=False):
-    user_id: str
-
-
-class _SaveComposioServerResponseRequired(TypedDict):
-    server: SaveComposioServerResponseServer
-
-
-class SaveComposioServerResponse(_SaveComposioServerResponseRequired, total=False):
-    connect_url: str
-    not_served: list[str]
-
-
-class _SaveComposioServerResponseServerRequired(TypedDict):
-    name: str
-    url: str
-    source: Literal["composio", "github", "url"]
-    toolkit: str | None
-    auth: SaveComposioServerResponseServerAuth
-    credential: Literal["sealed", "unreadable", "expired"] | None
-    protocol: str
-    server_info: dict[str, Any] | None
-    tools: list[SaveComposioServerResponseServerToolsItem]
-    listed_at: str
-    updated_at: str
-
-
-class SaveComposioServerResponseServer(_SaveComposioServerResponseServerRequired, total=False):
-    oauth: SaveComposioServerResponseServerOauth
-    instructions: str
-    prices: dict[str, float]
-    not_metered: list[str]
-    secret: SecretMeta
-
-
-class _SaveComposioServerResponseServerAuthRequired(TypedDict):
-    type: Literal["none", "bearer", "headers", "oauth", "github_app", "per_run"]
-
-
-class SaveComposioServerResponseServerAuth(_SaveComposioServerResponseServerAuthRequired, total=False):
-    headers: list[str]
-
-
-class _SaveComposioServerResponseServerOauthRequired(TypedDict):
-    scopes: list[str]
-    client: Literal["pre-registered", "metadata-document", "dynamic"]
-
-
-class SaveComposioServerResponseServerOauth(_SaveComposioServerResponseServerOauthRequired, total=False):
-    expires_at: str
-    client_id: str
-
-
-class _SaveComposioServerResponseServerToolsItemRequired(TypedDict):
-    name: str
-    input_schema: dict[str, Any]
-
-
-class SaveComposioServerResponseServerToolsItem(_SaveComposioServerResponseServerToolsItemRequired, total=False):
-    title: str
+class ListGitHubRepositoriesResponseRepositoriesItem(_ListGitHubRepositoriesResponseRepositoriesItemRequired, total=False):
+    default_branch: str
     description: str
-    output_schema: dict[str, Any]
-    annotations: dict[str, Any]
-    grantable: Literal[False]
-    reason: str
-    effect: Literal["read", "write", "destructive"]
-    grant_problems: dict[str, str]
-    permission: Literal["allow", "ask", "deny"]
-    allow_reads: Literal[True]
-    fallback_allow_reads: Literal[True]
-    default_permission: Literal["allow", "ask", "deny"]
-    permissions: list[Literal["allow", "ask", "deny"]]
 
 
-SaveComputerKeysBody: TypeAlias = "dict[str, str | None]"
-
-
-class _SaveComputerKeysResponseRequired(TypedDict):
-    id: str
-    name: str
-    metered: bool
-    secrets: list[SaveComputerKeysResponseSecretsItem]
-    required: list[str]
-    ready: bool
-    shell: Literal["computer", "local", "none"]
-    host_tools: list[str]
-
-
-class SaveComputerKeysResponse(_SaveComputerKeysResponseRequired, total=False):
-    why: str
-    picked: list[str]
-    shell_note: str
-    gpu: SaveComputerKeysResponseGpu
-    network: str
-    images: list[str]
-    persistent: SaveComputerKeysResponsePersistent
-
-
-class SaveComputerKeysResponseSecretsItem(TypedDict):
-    name: str
-    set: bool
-    source: Literal["env", "console", "sign-in"] | None
-    changed_at: str | None
-
-
-class _SaveComputerKeysResponseGpuRequired(TypedDict):
-    types: list[str]
-    max: int
-
-
-class SaveComputerKeysResponseGpu(_SaveComputerKeysResponseGpuRequired, total=False):
-    isolation: Literal["container", "gvisor", "microvm", "vm", "machine"]
-    preemptible: bool
-    stopDeletes: bool
-    region: str
-    perGpu: SaveComputerKeysResponseGpuPerGpu
-    mounts: list[str]
-    fence: Literal["netns", "userns-netns"]
+class ListGitHubRepositoriesResponseUnreadItem(TypedDict):
+    account: str
     why: str
 
 
-class SaveComputerKeysResponseGpuPerGpu(TypedDict):
-    cpus: int
-    memoryMb: int
-    diskMb: int
+class ListMcpServerNamesResponse(TypedDict):
+    names: list[str]
 
 
-class SaveComputerKeysResponsePersistent(TypedDict, total=False):
-    images: list[str]
-
-
-class _SignOutChatGPTResponseRequired(TypedDict):
-    revoked: bool
-
-
-class SignOutChatGPTResponse(_SignOutChatGPTResponseRequired, total=False):
-    message: str
-
-
-class StartChatGPTSignInResponse(TypedDict):
-    authorize_url: str
-    expires_at: str
-
-
-class _StartMcpOAuthBodyRequired(TypedDict):
-    url: str
-
-
-class StartMcpOAuthBody(_StartMcpOAuthBodyRequired, total=False):
-    scopes: list[str]
-    client_id: str
-    client_secret: str
-    toolkit: str | None
-
-
-class StartMcpOAuthResponse(TypedDict):
-    authorization_url: str
-
-
-TestComputerResponse: TypeAlias = "TestComputerResponseObject1 | TestComputerResponseObject2"
-
-
-class TestComputerResponseObject1(TypedDict):
-    ok: Literal[True]
-    detail: str
-
-
-class TestComputerResponseObject2(TypedDict):
-    ok: Literal[False]
-    why: str
-
-
-TestWorkspaceArchilResponse: TypeAlias = "TestWorkspaceArchilResponseObject1 | TestWorkspaceArchilResponseObject2"
-
-
-class TestWorkspaceArchilResponseObject1(TypedDict):
-    ok: Literal[True]
-    detail: str
-
-
-class TestWorkspaceArchilResponseObject2(TypedDict):
-    ok: Literal[False]
-    why: str
-
-
-class DeleteMcpServerResponse(TypedDict):
-    deleted: Literal[True]
-    composio: DeleteMcpServerResponseComposio
-
-
-class DeleteMcpServerResponseComposio(TypedDict):
-    removed: Literal[False]
-    note: str
-
-
-class _GetMcpServerResponseRequired(TypedDict):
-    name: str
-    url: str
-    source: Literal["composio", "github", "url"]
-    toolkit: str | None
-    auth: GetMcpServerResponseAuth
-    credential: Literal["sealed", "unreadable", "expired"] | None
-    protocol: str
-    server_info: dict[str, Any] | None
-    tools: list[GetMcpServerResponseToolsItem]
-    listed_at: str
-    updated_at: str
-
-
-class GetMcpServerResponse(_GetMcpServerResponseRequired, total=False):
-    oauth: GetMcpServerResponseOauth
-    instructions: str
-    prices: dict[str, float]
-    not_metered: list[str]
-    secret: SecretMeta
-
-
-class _GetMcpServerResponseAuthRequired(TypedDict):
-    type: Literal["none", "bearer", "headers", "oauth", "github_app", "per_run"]
-
-
-class GetMcpServerResponseAuth(_GetMcpServerResponseAuthRequired, total=False):
-    headers: list[str]
-
-
-class _GetMcpServerResponseOauthRequired(TypedDict):
-    scopes: list[str]
-    client: Literal["pre-registered", "metadata-document", "dynamic"]
-
-
-class GetMcpServerResponseOauth(_GetMcpServerResponseOauthRequired, total=False):
-    expires_at: str
-    client_id: str
-
-
-class _GetMcpServerResponseToolsItemRequired(TypedDict):
-    name: str
-    input_schema: dict[str, Any]
-
-
-class GetMcpServerResponseToolsItem(_GetMcpServerResponseToolsItemRequired, total=False):
-    title: str
-    description: str
-    output_schema: dict[str, Any]
-    annotations: dict[str, Any]
-    grantable: Literal[False]
-    reason: str
-    effect: Literal["read", "write", "destructive"]
-    grant_problems: dict[str, str]
-    permission: Literal["allow", "ask", "deny"]
-    allow_reads: Literal[True]
-    fallback_allow_reads: Literal[True]
-    default_permission: Literal["allow", "ask", "deny"]
-    permissions: list[Literal["allow", "ask", "deny"]]
-
-
-class ListMcpServersResponse(TypedDict):
-    servers: list[ListMcpServersResponseServersItem]
-
-
-class _ListMcpServersResponseServersItemRequired(TypedDict):
-    name: str
-    url: str
-    source: Literal["composio", "github", "url"]
-    toolkit: str | None
-    auth: ListMcpServersResponseServersItemAuth
-    credential: Literal["sealed", "unreadable", "expired"] | None
-    protocol: str
-    server_info: dict[str, Any] | None
-    tools: list[ListMcpServersResponseServersItemToolsItem]
-    listed_at: str
-    updated_at: str
-
-
-class ListMcpServersResponseServersItem(_ListMcpServersResponseServersItemRequired, total=False):
-    oauth: ListMcpServersResponseServersItemOauth
-    instructions: str
-    prices: dict[str, float]
-    not_metered: list[str]
-    secret: SecretMeta
-
-
-class _ListMcpServersResponseServersItemAuthRequired(TypedDict):
-    type: Literal["none", "bearer", "headers", "oauth", "github_app", "per_run"]
-
-
-class ListMcpServersResponseServersItemAuth(_ListMcpServersResponseServersItemAuthRequired, total=False):
-    headers: list[str]
-
-
-class _ListMcpServersResponseServersItemOauthRequired(TypedDict):
-    scopes: list[str]
-    client: Literal["pre-registered", "metadata-document", "dynamic"]
-
-
-class ListMcpServersResponseServersItemOauth(_ListMcpServersResponseServersItemOauthRequired, total=False):
-    expires_at: str
-    client_id: str
-
-
-class _ListMcpServersResponseServersItemToolsItemRequired(TypedDict):
-    name: str
-    input_schema: dict[str, Any]
-
-
-class ListMcpServersResponseServersItemToolsItem(_ListMcpServersResponseServersItemToolsItemRequired, total=False):
-    title: str
-    description: str
-    output_schema: dict[str, Any]
-    annotations: dict[str, Any]
-    grantable: Literal[False]
-    reason: str
-    effect: Literal["read", "write", "destructive"]
-    grant_problems: dict[str, str]
-    permission: Literal["allow", "ask", "deny"]
-    allow_reads: Literal[True]
-    fallback_allow_reads: Literal[True]
-    default_permission: Literal["allow", "ask", "deny"]
-    permissions: list[Literal["allow", "ask", "deny"]]
-
-
-McpOAuthClientResponse: TypeAlias = "dict[str, Any]"
-
-
-PreviewMcpServerBody: TypeAlias = "PreviewMcpServerBodyObject1 | PreviewMcpServerBodyObject2"
-
-
-class _PreviewMcpServerBodyObject1Required(TypedDict):
-    url: str
-
-
-class PreviewMcpServerBodyObject1(_PreviewMcpServerBodyObject1Required, total=False):
-    auth: PreviewMcpServerBodyObject1Auth
-    name: str
-
-
-class _PreviewMcpServerBodyObject1AuthRequired(TypedDict):
-    type: Literal["none", "bearer", "headers", "oauth", "github_app", "per_run"]
-
-
-class PreviewMcpServerBodyObject1Auth(_PreviewMcpServerBodyObject1AuthRequired, total=False):
-    token: str
-    headers: dict[str, str]
-
-
-class PreviewMcpServerBodyObject2(TypedDict):
-    name: str
-
-
-class _PreviewMcpServerResponseRequired(TypedDict):
-    protocol: str
-    server_info: dict[str, Any] | None
-    tools: list[PreviewMcpServerResponseToolsItem]
-
-
-class PreviewMcpServerResponse(_PreviewMcpServerResponseRequired, total=False):
-    instructions: str
-
-
-class _PreviewMcpServerResponseToolsItemRequired(TypedDict):
-    name: str
-    input_schema: dict[str, Any]
-
-
-class PreviewMcpServerResponseToolsItem(_PreviewMcpServerResponseToolsItemRequired, total=False):
-    title: str
-    description: str
-    output_schema: dict[str, Any]
-    annotations: dict[str, Any]
-    grantable: Literal[False]
-    reason: str
-    effect: Literal["read", "write", "destructive"]
-    grant_problems: dict[str, str]
-    permission: Literal["allow", "ask", "deny"]
-    allow_reads: Literal[True]
-    fallback_allow_reads: Literal[True]
-    default_permission: Literal["allow", "ask", "deny"]
-    permissions: list[Literal["allow", "ask", "deny"]]
-
-
-class GetMcpPrivateHostsResponse(TypedDict):
-    hosts: list[str]
-
-
-class RefreshMcpServerResponse(TypedDict):
-    added: list[str]
-    removed: list[str]
-    changed: list[str]
-    server: RefreshMcpServerResponseServer
-
-
-class _RefreshMcpServerResponseServerRequired(TypedDict):
-    name: str
-    url: str
-    source: Literal["composio", "github", "url"]
-    toolkit: str | None
-    auth: RefreshMcpServerResponseServerAuth
-    credential: Literal["sealed", "unreadable", "expired"] | None
-    protocol: str
-    server_info: dict[str, Any] | None
-    tools: list[RefreshMcpServerResponseServerToolsItem]
-    listed_at: str
-    updated_at: str
-
-
-class RefreshMcpServerResponseServer(_RefreshMcpServerResponseServerRequired, total=False):
-    oauth: RefreshMcpServerResponseServerOauth
-    instructions: str
-    prices: dict[str, float]
-    not_metered: list[str]
-    secret: SecretMeta
-
-
-class _RefreshMcpServerResponseServerAuthRequired(TypedDict):
-    type: Literal["none", "bearer", "headers", "oauth", "github_app", "per_run"]
-
-
-class RefreshMcpServerResponseServerAuth(_RefreshMcpServerResponseServerAuthRequired, total=False):
-    headers: list[str]
-
-
-class _RefreshMcpServerResponseServerOauthRequired(TypedDict):
-    scopes: list[str]
-    client: Literal["pre-registered", "metadata-document", "dynamic"]
-
-
-class RefreshMcpServerResponseServerOauth(_RefreshMcpServerResponseServerOauthRequired, total=False):
-    expires_at: str
-    client_id: str
-
-
-class _RefreshMcpServerResponseServerToolsItemRequired(TypedDict):
-    name: str
-    input_schema: dict[str, Any]
-
-
-class RefreshMcpServerResponseServerToolsItem(_RefreshMcpServerResponseServerToolsItemRequired, total=False):
-    title: str
-    description: str
-    output_schema: dict[str, Any]
-    annotations: dict[str, Any]
-    grantable: Literal[False]
-    reason: str
-    effect: Literal["read", "write", "destructive"]
-    grant_problems: dict[str, str]
-    permission: Literal["allow", "ask", "deny"]
-    allow_reads: Literal[True]
-    fallback_allow_reads: Literal[True]
-    default_permission: Literal["allow", "ask", "deny"]
-    permissions: list[Literal["allow", "ask", "deny"]]
-
-
-class _SaveMcpServerBodyRequired(TypedDict):
-    url: str
-
-
-class SaveMcpServerBody(_SaveMcpServerBodyRequired, total=False):
-    auth: SaveMcpServerBodyAuth
-    prices: dict[str, float]
-    toolkit: str | None
-
-
-class _SaveMcpServerBodyAuthRequired(TypedDict):
-    type: Literal["none", "bearer", "headers", "oauth", "github_app", "per_run"]
-
-
-class SaveMcpServerBodyAuth(_SaveMcpServerBodyAuthRequired, total=False):
-    token: str
-    headers: dict[str, str]
-
-
-class _SaveMcpServerResponseRequired(TypedDict):
-    name: str
-    url: str
-    source: Literal["composio", "github", "url"]
-    toolkit: str | None
-    auth: SaveMcpServerResponseAuth
-    credential: Literal["sealed", "unreadable", "expired"] | None
-    protocol: str
-    server_info: dict[str, Any] | None
-    tools: list[SaveMcpServerResponseToolsItem]
-    listed_at: str
-    updated_at: str
-
-
-class SaveMcpServerResponse(_SaveMcpServerResponseRequired, total=False):
-    oauth: SaveMcpServerResponseOauth
-    instructions: str
-    prices: dict[str, float]
-    not_metered: list[str]
-    secret: SecretMeta
-
-
-class _SaveMcpServerResponseAuthRequired(TypedDict):
-    type: Literal["none", "bearer", "headers", "oauth", "github_app", "per_run"]
-
-
-class SaveMcpServerResponseAuth(_SaveMcpServerResponseAuthRequired, total=False):
-    headers: list[str]
-
-
-class _SaveMcpServerResponseOauthRequired(TypedDict):
-    scopes: list[str]
-    client: Literal["pre-registered", "metadata-document", "dynamic"]
-
-
-class SaveMcpServerResponseOauth(_SaveMcpServerResponseOauthRequired, total=False):
-    expires_at: str
-    client_id: str
-
-
-class _SaveMcpServerResponseToolsItemRequired(TypedDict):
-    name: str
-    input_schema: dict[str, Any]
-
-
-class SaveMcpServerResponseToolsItem(_SaveMcpServerResponseToolsItemRequired, total=False):
-    title: str
-    description: str
-    output_schema: dict[str, Any]
-    annotations: dict[str, Any]
-    grantable: Literal[False]
-    reason: str
-    effect: Literal["read", "write", "destructive"]
-    grant_problems: dict[str, str]
-    permission: Literal["allow", "ask", "deny"]
-    allow_reads: Literal[True]
-    fallback_allow_reads: Literal[True]
-    default_permission: Literal["allow", "ask", "deny"]
-    permissions: list[Literal["allow", "ask", "deny"]]
-
-
-class ListRevisionsResponse(TypedDict):
-    revisions: list[ListRevisionsResponseRevisionsItem]
-    next_cursor: str | None
-
-
-class _ListRevisionsResponseRevisionsItemRequired(TypedDict):
-    revision: str
-    version: int
-    parent: str | None
-    kind: Literal["agentic", "workflow"]
-    current: bool
-    note: str | None
-    created_at: Timestamp
-    definition: Definition
-
-
-class ListRevisionsResponseRevisionsItem(_ListRevisionsResponseRevisionsItemRequired, total=False):
-    mcp_pin: dict[str, ListRevisionsResponseRevisionsItemMcpPinValue] | None
-
-
-class _ListRevisionsResponseRevisionsItemMcpPinValueRequired(TypedDict):
-    tools: list[ListRevisionsResponseRevisionsItemMcpPinValueToolsItem]
-
-
-class ListRevisionsResponseRevisionsItemMcpPinValue(_ListRevisionsResponseRevisionsItemMcpPinValueRequired, total=False):
-    prices: dict[str, float]
-
-
-class _ListRevisionsResponseRevisionsItemMcpPinValueToolsItemRequired(TypedDict):
-    name: str
-    input_schema: dict[str, Any]
-
-
-class ListRevisionsResponseRevisionsItemMcpPinValueToolsItem(_ListRevisionsResponseRevisionsItemMcpPinValueToolsItemRequired, total=False):
-    title: str
-    description: str
-    annotations: dict[str, Any]
-
-
-class SetCurrentBody(TypedDict):
-    revision: str
-
-
-SetCurrentResponse: TypeAlias = "Agent"
-
-
-ArchiveRunResponse: TypeAlias = "dict[str, Any]"
-
-
-CancelRunResponse: TypeAlias = "CancelResult"
-
-
-class CancelResult(TypedDict):
-    run_id: Id
-    cancel_requested: bool
-    already_terminal: bool
-    status: RunStatus
-
-
-class _CallRunComputerBodyRequired(TypedDict):
-    method: Literal["apps.install", "apps.launch", "apps.list", "apps.terminate", "deadline.extend", "exec.run", "files.list", "files.mkdir", "files.move", "files.read", "files.remove", "files.stat", "files.write", "hello", "input.actions", "mount.sync", "ping", "process.list", "process.read", "process.resize", "process.signal", "process.start", "process.wait", "process.write", "screen.read", "screen.shot", "screen.watch", "tar.pull.begin", "tar.pull.end", "tar.pull.read", "tar.push.begin", "tar.push.end", "tar.push.write", "ui.act", "ui.observe"]
-
-
-class CallRunComputerBody(_CallRunComputerBodyRequired, total=False):
-    params: dict[str, Any]
-
-
-CallRunComputerResponse: TypeAlias = "CallRunComputerResponseObject1 | CallRunComputerResponseObject2"
-
-
-class CallRunComputerResponseObject1(TypedDict):
-    ok: Literal[True]
-    value: Any
-
-
-class CallRunComputerResponseObject2(TypedDict):
-    ok: Literal[False]
-    error: CallRunComputerResponseObject2Error
-
-
-class CallRunComputerResponseObject2Error(TypedDict):
-    code: str
-    message: str
-
-
-ReleaseRunComputerBody: TypeAlias = "dict[str, Any]"
-
-
-class ReleaseRunComputerResponse(TypedDict):
-    held: ReleaseRunComputerResponseHeld
-
-
-class ReleaseRunComputerResponseHeld(TypedDict):
-    state: Literal["released"]
-
-
-CreateInlineRunBody: TypeAlias = "RunCreateInline"
-
-
-class _RunCreateInlineRequired(TypedDict):
-    external: ExternalRef
-    definition: DefinitionInput
-    input: dict[str, Any]
-
-
-class RunCreateInline(_RunCreateInlineRequired, total=False):
-    skills: SkillFiles
-    note: str
-    file_ids: list[Id]
-    effort: Effort
-    max_cost_usd: float
-    quote_id: str
-    mcp_auth: dict[str, RunCreateInlineMcpAuthValue]
-    workflow_first: bool
-    learning: Literal["use"]
-    repo: str
-    archil_disk: RunCreateInlineArchilDisk
-    hold: bool
-    hold_minutes: int
-
-
-class ExternalRef(TypedDict):
-    source: str
-    kind: str
-    id: str
-    version: str | int
-
-
-class RunCreateInlineMcpAuthValue(TypedDict):
-    headers: dict[str, str]
-
-
-class RunCreateInlineArchilDisk(TypedDict):
-    disk_id: str
-
-
-CreateInlineRunResponse: TypeAlias = "Run"
+class ListRunningComputersResponse(TypedDict):
+    runs: list[Run]
 
 
 class _RunRequired(TypedDict):
@@ -4704,21 +5518,29 @@ class _RunRequired(TypedDict):
 
 class Run(_RunRequired, total=False):
     effort: Effort
-    sdk: RunSdk
+    sdk: RunSdk | RunSdk2
+    cli_learning: RunCliLearning
     native: RunNative
     factory: RunFactory
     console_url: str
+    labels: dict[str, str]
+    stopped_for: Literal["budget"] | None
+    budget_refused_calls: int
     approvals: Literal["ask", "never"]
     last_progress_at: str | None
+    recordings: list[RunRecordingsItem]
     input: dict[str, Any] | None
     file_ids: list[str]
     claim: RunClaim | None
     computer: RunComputer
     learning: RunLearning | None
     review: RunReview | None
-    pending: RunPending1 | RunPending2 | RunPending3 | RunPending4 | RunPending5 | None
+    pending: RunPending1 | RunPending2 | RunPending3 | RunPending4 | RunPending5 | RunPending6 | None
     imported_from: RunImportedFrom | None
     trigger: RunTrigger | None
+    audit_of: str | None
+    path: Literal["agent", "handed_back", "workflow", "replay", "audit"] | None
+    workflow: RunWorkflow | None
 
 
 class _RunResultRequired(TypedDict):
@@ -4731,7 +5553,7 @@ class RunResult(_RunResultRequired, total=False):
 
 
 class RunSdk(TypedDict):
-    runtime: Literal["claude-agent-sdk", "codex-sdk"]
+    runtime: Literal["claude-agent-sdk", "codex-sdk", "eve"]
     model: str | None
     session_id: str | None
     learning_revision: str | None
@@ -4739,6 +5561,43 @@ class RunSdk(TypedDict):
 
 
 class RunSdkUsage(TypedDict, total=False):
+    input_tokens: int | None
+    output_tokens: int | None
+    cache_read_tokens: int | None
+    cache_write_tokens: int | None
+    cost_usd: float | None
+
+
+class RunSdk2(TypedDict):
+    runtime: Literal["external"]
+    platform: str
+    model: str | None
+    session_id: str | None
+    learning_revision: str | None
+    usage: RunSdk2Usage | None
+
+
+class RunSdk2Usage(TypedDict, total=False):
+    input_tokens: int | None
+    output_tokens: int | None
+    cache_read_tokens: int | None
+    cache_write_tokens: int | None
+    cost_usd: float | None
+
+
+class RunCliLearning(TypedDict):
+    runtime: Literal["codex-cli", "claude-code-cli"]
+    session_id: str
+    turn_id: str
+    model: str | None
+    learning_revision: str | None
+    seed_observed: bool
+    policy_complete: bool
+    evidence_complete: bool
+    usage: RunCliLearningUsage | None
+
+
+class RunCliLearningUsage(TypedDict, total=False):
     input_tokens: int | None
     output_tokens: int | None
     cache_read_tokens: int | None
@@ -4828,6 +5687,14 @@ class RunFactoryChildrenItem(TypedDict):
     label: str | None
 
 
+class RunRecordingsItem(TypedDict):
+    path: str
+    computer: str
+    seconds: float
+    bytes: int
+    finished: bool
+
+
 class RunClaim(TypedDict):
     runner: str
     epoch: int
@@ -4865,44 +5732,14 @@ class RunComputerHeld(_RunComputerHeldRequired, total=False):
 
 
 class _RunLearningRequired(TypedDict):
-    state: Literal["seeded", "reflecting", "proposed", "merged", "dropped"]
-    reason: Literal["seed_failed", "no_budget", "unknown_cost", "cancelled", "crashed", "reflect_timeout", "reflect_failed", "empty", "unparsed", "propose_failed", "checker", "grader", "grade_failed", "use"] | None
+    state: Literal["seeded", "reflecting", "merged", "dropped"]
+    reason: Literal["seed_failed", "no_budget", "unknown_cost", "cancelled", "crashed", "reflect_failed", "empty", "checker", "use", "reset"] | None
     detail: str | None
     at: str
 
 
 class RunLearning(_RunLearningRequired, total=False):
-    given: list[RunLearningGivenItem]
-    read: list[RunLearningReadItem]
-    learned: list[RunLearningLearnedItem]
-    skills: list[RunLearningSkillsItem]
     workflows: list[RunLearningWorkflowsItem]
-    pending: list[RunLearningPendingItem]
-
-
-class RunLearningGivenItem(TypedDict):
-    file: str
-    name: str
-
-
-class RunLearningReadItem(TypedDict):
-    file: str
-    name: str
-
-
-class RunLearningLearnedItem(TypedDict):
-    file: str
-    name: str
-    supersedes: list[str]
-
-
-class _RunLearningSkillsItemRequired(TypedDict):
-    file: str
-    name: str
-
-
-class RunLearningSkillsItem(_RunLearningSkillsItemRequired, total=False):
-    pending: Literal[True]
 
 
 class _RunLearningWorkflowsItemRequired(TypedDict):
@@ -4912,11 +5749,6 @@ class _RunLearningWorkflowsItemRequired(TypedDict):
 
 class RunLearningWorkflowsItem(_RunLearningWorkflowsItemRequired, total=False):
     pending: Literal[True]
-
-
-class RunLearningPendingItem(TypedDict):
-    file: str
-    name: str
 
 
 class RunReview(TypedDict):
@@ -4942,6 +5774,8 @@ class _RunPending2Required(TypedDict):
 
 
 class RunPending2(_RunPending2Required, total=False):
+    summary: str
+    asks_because: str
     price: float | Literal["not metered"] | Literal["priced by usage"]
     destructive: Literal[True]
 
@@ -4979,6 +5813,10 @@ class RunPending5(TypedDict):
     expires_at: str
 
 
+class RunPending6(TypedDict):
+    kind: Literal["stopped"]
+
+
 class RunImportedFrom(TypedDict):
     source: Literal["claude-code", "codex", "pi"]
     session: str
@@ -4987,6 +5825,1462 @@ class RunImportedFrom(TypedDict):
 class RunTrigger(TypedDict):
     id: str
     firing_key: str
+
+
+class RunWorkflow(TypedDict):
+    name: str | None
+    digest: str | None
+    repick: Literal["found", "missed"] | None
+
+
+class ListSuggestionsResponse(TypedDict):
+    github: ListSuggestionsResponseGithub
+    repositories: list[ListSuggestionsResponseRepositoriesItem]
+    suggestions: list[ListSuggestionsResponseSuggestionsItem]
+
+
+class ListSuggestionsResponseGithub(TypedDict):
+    connected: bool
+    app: str | None
+    installations: list[ListSuggestionsResponseGithubInstallationsItem]
+    install_url: str | None
+
+
+class ListSuggestionsResponseGithubInstallationsItem(TypedDict):
+    account: str
+
+
+class ListSuggestionsResponseRepositoriesItem(TypedDict):
+    repo: str
+    scan: ListSuggestionsResponseRepositoriesItemScan
+    counts: ListSuggestionsResponseRepositoriesItemCounts
+
+
+class ListSuggestionsResponseRepositoriesItemScan(TypedDict):
+    run_id: str
+    agent_id: str
+    started_at: str
+    status: Literal["running", "waiting", "completed", "failed", "cancelled"]
+    ended_at: str | None
+    app: str | None
+    commit: str | None
+    found: int | None
+    dropped: list[str]
+    already_decided: int
+    error: str | None
+
+
+class ListSuggestionsResponseRepositoriesItemCounts(TypedDict):
+    open: int
+    created: int
+    discarded: int
+
+
+class ListSuggestionsResponseSuggestionsItem(TypedDict):
+    id: str
+    repo: str
+    key: str
+    status: Literal["open", "created", "discarded"]
+    title: str
+    summary: str
+    why: str
+    impact: Literal["high", "medium", "low"]
+    evidence: list[ListSuggestionsResponseSuggestionsItemEvidenceItem]
+    agent: ListSuggestionsResponseSuggestionsItemAgent
+    integration: ListSuggestionsResponseSuggestionsItemIntegration
+    scan: ListSuggestionsResponseSuggestionsItemScan
+    decided_at: str | None
+    created: None | ListSuggestionsResponseSuggestionsItemCreated
+
+
+class ListSuggestionsResponseSuggestionsItemEvidenceItem(TypedDict):
+    path: str
+    line: int
+    quote: str
+    url: str
+
+
+class _ListSuggestionsResponseSuggestionsItemAgentRequired(TypedDict):
+    name: str
+    description: str
+    inputs: list[ListSuggestionsResponseSuggestionsItemAgentInputsItem]
+    output: list[ListSuggestionsResponseSuggestionsItemAgentOutputItem]
+    tools: list[Literal["web_search", "web_fetch"]]
+    tier: Literal["fast", "balanced", "strong"]
+
+
+class ListSuggestionsResponseSuggestionsItemAgent(_ListSuggestionsResponseSuggestionsItemAgentRequired, total=False):
+    instructions: str
+
+
+class ListSuggestionsResponseSuggestionsItemAgentInputsItem(TypedDict):
+    name: str
+    type: Literal["string", "number", "integer", "boolean"]
+    description: str
+    required: bool
+
+
+class _ListSuggestionsResponseSuggestionsItemAgentOutputItemRequired(TypedDict):
+    name: str
+    type: Literal["string", "number", "integer", "boolean", "string_list"]
+    description: str
+
+
+class ListSuggestionsResponseSuggestionsItemAgentOutputItem(_ListSuggestionsResponseSuggestionsItemAgentOutputItemRequired, total=False):
+    enum: list[str]
+
+
+class ListSuggestionsResponseSuggestionsItemIntegration(TypedDict):
+    language: Literal["typescript", "javascript", "python", "other"]
+    path: str
+    call_site: ListSuggestionsResponseSuggestionsItemIntegrationCallSite
+
+
+class ListSuggestionsResponseSuggestionsItemIntegrationCallSite(TypedDict):
+    path: str
+    line: int
+    note: str
+    url: str
+
+
+class ListSuggestionsResponseSuggestionsItemScan(TypedDict):
+    run_id: str
+    commit: str | None
+    at: str
+
+
+class ListSuggestionsResponseSuggestionsItemCreated(TypedDict):
+    agent_id: str
+    template_id: str
+    branch: str | None
+    pull_request: None | ListSuggestionsResponseSuggestionsItemCreatedPullRequest
+    pull_error: str | None
+
+
+class ListSuggestionsResponseSuggestionsItemCreatedPullRequest(TypedDict):
+    number: int
+    url: str
+
+
+class _PutWorkspaceArchilBodyRequired(TypedDict):
+    region: str
+    s3Url: str
+
+
+class PutWorkspaceArchilBody(_PutWorkspaceArchilBodyRequired, total=False):
+    image: str
+    keys: PutWorkspaceArchilBodyKeys
+
+
+class PutWorkspaceArchilBodyKeys(TypedDict, total=False):
+    ARCHIL_API_KEY: str | None
+
+
+class _PutWorkspaceArchilResponseRequired(TypedDict):
+    on: bool
+    secret: PutWorkspaceArchilResponseSecret
+
+
+class PutWorkspaceArchilResponse(_PutWorkspaceArchilResponseRequired, total=False):
+    source: Literal["env", "console"]
+    region: str
+    s3Url: str
+    image: str
+
+
+class PutWorkspaceArchilResponseSecret(TypedDict):
+    name: str
+    set: bool
+    source: Literal["env", "console", "sign-in"] | None
+    changed_at: str | None
+
+
+ReceiveHookComposioResponse: TypeAlias = "ReceiveHookComposioResponseObject11 | ReceiveHookComposioResponseObject12 | ReceiveHookComposioResponseObject2"
+
+
+class ReceiveHookComposioResponseObject11(TypedDict):
+    firings: list[ReceiveHookComposioResponseObject11FiringsItem1 | ReceiveHookComposioResponseObject11FiringsItem2]
+
+
+class _ReceiveHookComposioResponseObject11FiringsItem1Required(TypedDict):
+    key: str
+    by: Literal["schedule", "email", "feed", "manual", "webhook", "github", "composio"]
+    nominal_at: str
+    status: Literal["due", "started", "sent", "skipped", "failed", "missed"]
+    at: str
+    run_id: str | None
+    reason: str | None
+    error: ReceiveHookComposioResponseObject11FiringsItem1Error | None
+
+
+class ReceiveHookComposioResponseObject11FiringsItem1(_ReceiveHookComposioResponseObject11FiringsItem1Required, total=False):
+    count: int
+    attempts: int
+    retry_at: str
+    start_by: str
+    catch_up: Literal[True]
+
+
+class ReceiveHookComposioResponseObject11FiringsItem1Error(TypedDict):
+    code: str
+    message: str
+
+
+class ReceiveHookComposioResponseObject11FiringsItem2(TypedDict):
+    ok: Literal["duplicate"]
+
+
+class ReceiveHookComposioResponseObject12(TypedDict):
+    ok: Literal["ignored"]
+
+
+class ReceiveHookComposioResponseObject2(TypedDict):
+    firings: list[ReceiveHookComposioResponseObject2FiringsItem1 | ReceiveHookComposioResponseObject2FiringsItem2]
+
+
+class _ReceiveHookComposioResponseObject2FiringsItem1Required(TypedDict):
+    key: str
+    by: Literal["schedule", "email", "feed", "manual", "webhook", "github", "composio"]
+    nominal_at: str
+    status: Literal["due", "started", "sent", "skipped", "failed", "missed"]
+    at: str
+    run_id: str | None
+    reason: str | None
+    error: ReceiveHookComposioResponseObject2FiringsItem1Error | None
+
+
+class ReceiveHookComposioResponseObject2FiringsItem1(_ReceiveHookComposioResponseObject2FiringsItem1Required, total=False):
+    count: int
+    attempts: int
+    retry_at: str
+    start_by: str
+    catch_up: Literal[True]
+
+
+class ReceiveHookComposioResponseObject2FiringsItem1Error(TypedDict):
+    code: str
+    message: str
+
+
+class ReceiveHookComposioResponseObject2FiringsItem2(TypedDict):
+    ok: Literal["duplicate"]
+
+
+class RestoreSuggestionResponse(TypedDict):
+    id: str
+    repo: str
+    key: str
+    status: Literal["open", "created", "discarded"]
+    title: str
+    summary: str
+    why: str
+    impact: Literal["high", "medium", "low"]
+    evidence: list[RestoreSuggestionResponseEvidenceItem]
+    agent: RestoreSuggestionResponseAgent
+    integration: RestoreSuggestionResponseIntegration
+    scan: RestoreSuggestionResponseScan
+    decided_at: str | None
+    created: None | RestoreSuggestionResponseCreated
+
+
+class RestoreSuggestionResponseEvidenceItem(TypedDict):
+    path: str
+    line: int
+    quote: str
+    url: str
+
+
+class _RestoreSuggestionResponseAgentRequired(TypedDict):
+    name: str
+    description: str
+    inputs: list[RestoreSuggestionResponseAgentInputsItem]
+    output: list[RestoreSuggestionResponseAgentOutputItem]
+    tools: list[Literal["web_search", "web_fetch"]]
+    tier: Literal["fast", "balanced", "strong"]
+
+
+class RestoreSuggestionResponseAgent(_RestoreSuggestionResponseAgentRequired, total=False):
+    instructions: str
+
+
+class RestoreSuggestionResponseAgentInputsItem(TypedDict):
+    name: str
+    type: Literal["string", "number", "integer", "boolean"]
+    description: str
+    required: bool
+
+
+class _RestoreSuggestionResponseAgentOutputItemRequired(TypedDict):
+    name: str
+    type: Literal["string", "number", "integer", "boolean", "string_list"]
+    description: str
+
+
+class RestoreSuggestionResponseAgentOutputItem(_RestoreSuggestionResponseAgentOutputItemRequired, total=False):
+    enum: list[str]
+
+
+class RestoreSuggestionResponseIntegration(TypedDict):
+    language: Literal["typescript", "javascript", "python", "other"]
+    path: str
+    call_site: RestoreSuggestionResponseIntegrationCallSite
+
+
+class RestoreSuggestionResponseIntegrationCallSite(TypedDict):
+    path: str
+    line: int
+    note: str
+    url: str
+
+
+class RestoreSuggestionResponseScan(TypedDict):
+    run_id: str
+    commit: str | None
+    at: str
+
+
+class RestoreSuggestionResponseCreated(TypedDict):
+    agent_id: str
+    template_id: str
+    branch: str | None
+    pull_request: None | RestoreSuggestionResponseCreatedPullRequest
+    pull_error: str | None
+
+
+class RestoreSuggestionResponseCreatedPullRequest(TypedDict):
+    number: int
+    url: str
+
+
+class RotateComposioSecretResponse(TypedDict):
+    rotated: Literal[True]
+
+
+class SaveCalendarBody(TypedDict):
+    url: str
+
+
+class SaveCalendarResponse(TypedDict):
+    configured: bool
+    host: str | None
+    name: str | None
+    time_zone: str | None
+
+
+class _SaveComposioServerBodyRequired(TypedDict):
+    toolkit: str
+    tools: list[str]
+
+
+class SaveComposioServerBody(_SaveComposioServerBodyRequired, total=False):
+    user_id: str
+    auth_config_id: str
+    price_usd: float
+    api_key: str
+    api_key_env: Literal["COMPOSIO_API_KEY"]
+
+
+class _SaveComposioServerResponseRequired(TypedDict):
+    server: SaveComposioServerResponseServer
+
+
+class SaveComposioServerResponse(_SaveComposioServerResponseRequired, total=False):
+    connect_url: str
+    not_served: list[str]
+    composio: SaveComposioServerResponseComposio
+
+
+class _SaveComposioServerResponseServerRequired(TypedDict):
+    name: str
+    url: str
+    source: Literal["composio", "github", "url"]
+    toolkit: str | None
+    auth: SaveComposioServerResponseServerAuth
+    credential: Literal["sealed", "unreadable", "expired"] | None
+    protocol: str
+    server_info: dict[str, Any] | None
+    tools: list[SaveComposioServerResponseServerToolsItem]
+    listed_at: str
+    updated_at: str
+
+
+class SaveComposioServerResponseServer(_SaveComposioServerResponseServerRequired, total=False):
+    oauth: SaveComposioServerResponseServerOauth
+    instructions: str
+    prices: dict[str, float]
+    not_metered: list[str]
+    secret: SecretMeta
+
+
+class _SaveComposioServerResponseServerAuthRequired(TypedDict):
+    type: Literal["none", "bearer", "headers", "oauth", "github_app", "per_run"]
+
+
+class SaveComposioServerResponseServerAuth(_SaveComposioServerResponseServerAuthRequired, total=False):
+    headers: list[str]
+    api_key_env: Literal["COMPOSIO_API_KEY"]
+
+
+class _SaveComposioServerResponseServerOauthRequired(TypedDict):
+    scopes: list[str]
+    client: Literal["pre-registered", "metadata-document", "dynamic"]
+
+
+class SaveComposioServerResponseServerOauth(_SaveComposioServerResponseServerOauthRequired, total=False):
+    expires_at: str
+    client_id: str
+
+
+class _SaveComposioServerResponseServerToolsItemRequired(TypedDict):
+    name: str
+    input_schema: dict[str, Any]
+
+
+class SaveComposioServerResponseServerToolsItem(_SaveComposioServerResponseServerToolsItemRequired, total=False):
+    title: str
+    description: str
+    resource: Literal["list", "templates", "read"]
+    output_schema: dict[str, Any]
+    annotations: dict[str, Any]
+    grantable: Literal[False]
+    reason: str
+    effect: Literal["read", "write", "destructive"]
+    grant_problems: dict[str, str]
+    permission: Literal["allow", "ask", "deny"]
+    allow_reads: Literal[True]
+    fallback_allow_reads: Literal[True]
+    default_permission: Literal["allow", "ask", "deny"]
+    permissions: list[Literal["allow", "ask", "deny"]]
+
+
+class SaveComposioServerResponseComposio(TypedDict):
+    removed: bool
+    note: str
+
+
+SaveComputerKeysBody: TypeAlias = "dict[str, str | None]"
+
+
+class _SaveComputerKeysResponseRequired(TypedDict):
+    id: str
+    name: str
+    metered: bool
+    secrets: list[SaveComputerKeysResponseSecretsItem]
+    required: list[str]
+    ready: bool
+    runs_refused: str | None
+    folder: Literal["bind", "archil", "sync"] | None
+    shell: Literal["computer", "local", "none"]
+    host_tools: list[str]
+
+
+class SaveComputerKeysResponse(_SaveComputerKeysResponseRequired, total=False):
+    why: str
+    picked: list[str]
+    shell_note: str
+    gpu: SaveComputerKeysResponseGpu
+    network: str
+    images: list[str]
+    persistent: SaveComputerKeysResponsePersistent
+
+
+class SaveComputerKeysResponseSecretsItem(TypedDict):
+    name: str
+    set: bool
+    source: Literal["env", "console", "sign-in"] | None
+    changed_at: str | None
+
+
+class _SaveComputerKeysResponseGpuRequired(TypedDict):
+    types: list[str]
+    max: int
+
+
+class SaveComputerKeysResponseGpu(_SaveComputerKeysResponseGpuRequired, total=False):
+    isolation: Literal["container", "gvisor", "microvm", "vm", "machine"]
+    preemptible: bool
+    stopDeletes: bool
+    region: str
+    perGpu: SaveComputerKeysResponseGpuPerGpu
+    mounts: list[str]
+    fence: Literal["netns", "userns-netns"]
+    why: str
+
+
+class SaveComputerKeysResponseGpuPerGpu(TypedDict):
+    cpus: int
+    memoryMb: int
+    diskMb: int
+
+
+class SaveComputerKeysResponsePersistent(TypedDict, total=False):
+    images: list[str]
+
+
+class _SaveEmailAccountBodyRequired(TypedDict):
+    address: str
+    password: str
+
+
+class SaveEmailAccountBody(_SaveEmailAccountBodyRequired, total=False):
+    preset: Literal["gmail", "fastmail", "icloud", "other", "outlook"]
+    user: str
+    imap: SaveEmailAccountBodyImap
+    smtp: SaveEmailAccountBodySmtp
+
+
+class SaveEmailAccountBodyImap(TypedDict):
+    host: str
+    port: int
+
+
+class SaveEmailAccountBodySmtp(TypedDict):
+    host: str
+    port: int
+
+
+class SaveEmailAccountResponse(TypedDict):
+    configured: bool
+    preset: Literal["gmail", "fastmail", "icloud", "other"] | None
+    address: str | None
+    user: str | None
+    imap: SaveEmailAccountResponseImap | None
+    smtp: SaveEmailAccountResponseSmtp | None
+    password_unreadable: bool
+
+
+class SaveEmailAccountResponseImap(TypedDict):
+    host: str
+    port: int
+
+
+class SaveEmailAccountResponseSmtp(TypedDict):
+    host: str
+    port: int
+
+
+class SaveHarnessKeyBody(TypedDict):
+    value: str
+
+
+class _SaveModelGatewayBodyRequired(TypedDict):
+    base_url: str
+
+
+class SaveModelGatewayBody(_SaveModelGatewayBodyRequired, total=False):
+    api_key: str | None
+    ids: Literal["as_named", "bare"]
+    models: SaveModelGatewayBodyModels
+
+
+class SaveModelGatewayBodyModels(TypedDict, total=False):
+    default: str
+    fast: str | None
+    strong: str | None
+
+
+class SaveModelGatewayResponse(TypedDict):
+    source: Literal["env", "console"] | None
+    base_url: str | None
+    ids: Literal["as_named", "bare"]
+    models: SaveModelGatewayResponseModels
+    set_at_start: list[str]
+    secret: SaveModelGatewayResponseSecret
+    problem: str | None
+
+
+class SaveModelGatewayResponseModels(TypedDict):
+    default: str | None
+    fast: str | None
+    strong: str | None
+
+
+class SaveModelGatewayResponseSecret(TypedDict):
+    name: str
+    set: bool
+    source: Literal["env", "console", "sign-in"] | None
+    changed_at: str | None
+
+
+class ScanForSuggestionsBody(TypedDict):
+    repo: str
+
+
+class ScanForSuggestionsResponse(TypedDict):
+    repo: str
+    run_id: str
+    agent_id: str
+    status: Literal["running"]
+    already_running: bool
+
+
+class _SignOutChatGPTResponseRequired(TypedDict):
+    revoked: bool
+
+
+class SignOutChatGPTResponse(_SignOutChatGPTResponseRequired, total=False):
+    message: str
+
+
+class StartChatGPTSignInResponse(TypedDict):
+    authorize_url: str
+    expires_at: str
+
+
+class _StartClaudeLoginResponseRequired(TypedDict):
+    state: Literal["off", "other_machine", "signed_in", "signed_out", "no_cli", "unknown"]
+    place: Literal["agentrun", "machine"]
+    command: str
+    can_start: bool
+    folder: str
+    machine: StartClaudeLoginResponseMachine
+
+
+class StartClaudeLoginResponse(_StartClaudeLoginResponseRequired, total=False):
+    refused: str
+    account: StartClaudeLoginResponseAccount
+    sign_in: StartClaudeLoginResponseSignIn
+
+
+class StartClaudeLoginResponseAccount(TypedDict, total=False):
+    method: str
+    email: str
+    organization: str
+    plan: str
+
+
+class StartClaudeLoginResponseMachine(TypedDict):
+    folder: str
+    source: Literal["CLAUDE_CONFIG_DIR", "default"]
+
+
+class _StartClaudeLoginResponseSignInRequired(TypedDict):
+    state: Literal["waiting", "signed_in", "timed_out", "failed", "not_started"]
+    started_at: str
+    limit_ms: int
+
+
+class StartClaudeLoginResponseSignIn(_StartClaudeLoginResponseSignInRequired, total=False):
+    ended_at: str
+    exit_code: int
+    signal: str
+    error: str
+
+
+class _StartMcpOAuthBodyRequired(TypedDict):
+    url: str
+
+
+class StartMcpOAuthBody(_StartMcpOAuthBodyRequired, total=False):
+    scopes: list[str]
+    client_id: str
+    client_secret: str
+    toolkit: str | None
+
+
+class StartMcpOAuthResponse(TypedDict):
+    authorization_url: str
+
+
+class TestCalendarBody(TypedDict, total=False):
+    url: str
+
+
+class TestCalendarResponse(TypedDict):
+    ok: bool
+    message: str
+
+
+TestComputerResponse: TypeAlias = "TestComputerResponseObject1 | TestComputerResponseObject2"
+
+
+class TestComputerResponseObject1(TypedDict):
+    ok: Literal[True]
+    detail: str
+
+
+class TestComputerResponseObject2(TypedDict):
+    ok: Literal[False]
+    why: str
+
+
+class TestEmailAccountBody(TypedDict, total=False):
+    preset: Literal["gmail", "fastmail", "icloud", "other", "outlook"]
+    address: str
+    user: str
+    password: str
+    imap: TestEmailAccountBodyImap
+    smtp: TestEmailAccountBodySmtp
+
+
+class TestEmailAccountBodyImap(TypedDict):
+    host: str
+    port: int
+
+
+class TestEmailAccountBodySmtp(TypedDict):
+    host: str
+    port: int
+
+
+class TestEmailAccountResponse(TypedDict):
+    ok: bool
+    imap: TestEmailAccountResponseImap
+    smtp: TestEmailAccountResponseSmtp
+
+
+class TestEmailAccountResponseImap(TypedDict):
+    ok: bool
+    message: str
+
+
+class TestEmailAccountResponseSmtp(TypedDict):
+    ok: bool
+    message: str
+
+
+class TestModelGatewayBody(TypedDict, total=False):
+    base_url: str
+    api_key: str | None
+
+
+TestModelGatewayResponse: TypeAlias = "TestModelGatewayResponseObject1 | TestModelGatewayResponseObject2"
+
+
+class TestModelGatewayResponseObject1(TypedDict):
+    ok: Literal[True]
+    models: list[str]
+
+
+class TestModelGatewayResponseObject2(TypedDict):
+    ok: Literal[False]
+    why: str
+
+
+TestWorkspaceArchilResponse: TypeAlias = "TestWorkspaceArchilResponseObject1 | TestWorkspaceArchilResponseObject2"
+
+
+class TestWorkspaceArchilResponseObject1(TypedDict):
+    ok: Literal[True]
+    detail: str
+
+
+class TestWorkspaceArchilResponseObject2(TypedDict):
+    ok: Literal[False]
+    why: str
+
+
+class _TurnOffClaudeLoginResponseRequired(TypedDict):
+    state: Literal["off", "other_machine", "signed_in", "signed_out", "no_cli", "unknown"]
+    place: Literal["agentrun", "machine"]
+    command: str
+    can_start: bool
+    folder: str
+    machine: TurnOffClaudeLoginResponseMachine
+
+
+class TurnOffClaudeLoginResponse(_TurnOffClaudeLoginResponseRequired, total=False):
+    refused: str
+    account: TurnOffClaudeLoginResponseAccount
+    sign_in: TurnOffClaudeLoginResponseSignIn
+
+
+class TurnOffClaudeLoginResponseAccount(TypedDict, total=False):
+    method: str
+    email: str
+    organization: str
+    plan: str
+
+
+class TurnOffClaudeLoginResponseMachine(TypedDict):
+    folder: str
+    source: Literal["CLAUDE_CONFIG_DIR", "default"]
+
+
+class _TurnOffClaudeLoginResponseSignInRequired(TypedDict):
+    state: Literal["waiting", "signed_in", "timed_out", "failed", "not_started"]
+    started_at: str
+    limit_ms: int
+
+
+class TurnOffClaudeLoginResponseSignIn(_TurnOffClaudeLoginResponseSignInRequired, total=False):
+    ended_at: str
+    exit_code: int
+    signal: str
+    error: str
+
+
+class _TurnOnClaudeLoginBodyRequired(TypedDict):
+    only_me: Literal[True]
+
+
+class TurnOnClaudeLoginBody(_TurnOnClaudeLoginBodyRequired, total=False):
+    place: Literal["agentrun", "machine"]
+
+
+class _TurnOnClaudeLoginResponseRequired(TypedDict):
+    state: Literal["off", "other_machine", "signed_in", "signed_out", "no_cli", "unknown"]
+    place: Literal["agentrun", "machine"]
+    command: str
+    can_start: bool
+    folder: str
+    machine: TurnOnClaudeLoginResponseMachine
+
+
+class TurnOnClaudeLoginResponse(_TurnOnClaudeLoginResponseRequired, total=False):
+    refused: str
+    account: TurnOnClaudeLoginResponseAccount
+    sign_in: TurnOnClaudeLoginResponseSignIn
+
+
+class TurnOnClaudeLoginResponseAccount(TypedDict, total=False):
+    method: str
+    email: str
+    organization: str
+    plan: str
+
+
+class TurnOnClaudeLoginResponseMachine(TypedDict):
+    folder: str
+    source: Literal["CLAUDE_CONFIG_DIR", "default"]
+
+
+class _TurnOnClaudeLoginResponseSignInRequired(TypedDict):
+    state: Literal["waiting", "signed_in", "timed_out", "failed", "not_started"]
+    started_at: str
+    limit_ms: int
+
+
+class TurnOnClaudeLoginResponseSignIn(_TurnOnClaudeLoginResponseSignInRequired, total=False):
+    ended_at: str
+    exit_code: int
+    signal: str
+    error: str
+
+
+class DeleteMcpServerResponse(TypedDict):
+    deleted: Literal[True]
+    composio: DeleteMcpServerResponseComposio
+
+
+class DeleteMcpServerResponseComposio(TypedDict):
+    removed: bool
+    note: str
+
+
+class _GetMcpServerResponseRequired(TypedDict):
+    name: str
+    url: str
+    source: Literal["composio", "github", "url"]
+    toolkit: str | None
+    auth: GetMcpServerResponseAuth
+    credential: Literal["sealed", "unreadable", "expired"] | None
+    protocol: str
+    server_info: dict[str, Any] | None
+    tools: list[GetMcpServerResponseToolsItem]
+    listed_at: str
+    updated_at: str
+
+
+class GetMcpServerResponse(_GetMcpServerResponseRequired, total=False):
+    oauth: GetMcpServerResponseOauth
+    instructions: str
+    prices: dict[str, float]
+    not_metered: list[str]
+    secret: SecretMeta
+
+
+class _GetMcpServerResponseAuthRequired(TypedDict):
+    type: Literal["none", "bearer", "headers", "oauth", "github_app", "per_run"]
+
+
+class GetMcpServerResponseAuth(_GetMcpServerResponseAuthRequired, total=False):
+    headers: list[str]
+    api_key_env: Literal["COMPOSIO_API_KEY"]
+
+
+class _GetMcpServerResponseOauthRequired(TypedDict):
+    scopes: list[str]
+    client: Literal["pre-registered", "metadata-document", "dynamic"]
+
+
+class GetMcpServerResponseOauth(_GetMcpServerResponseOauthRequired, total=False):
+    expires_at: str
+    client_id: str
+
+
+class _GetMcpServerResponseToolsItemRequired(TypedDict):
+    name: str
+    input_schema: dict[str, Any]
+
+
+class GetMcpServerResponseToolsItem(_GetMcpServerResponseToolsItemRequired, total=False):
+    title: str
+    description: str
+    resource: Literal["list", "templates", "read"]
+    output_schema: dict[str, Any]
+    annotations: dict[str, Any]
+    grantable: Literal[False]
+    reason: str
+    effect: Literal["read", "write", "destructive"]
+    grant_problems: dict[str, str]
+    permission: Literal["allow", "ask", "deny"]
+    allow_reads: Literal[True]
+    fallback_allow_reads: Literal[True]
+    default_permission: Literal["allow", "ask", "deny"]
+    permissions: list[Literal["allow", "ask", "deny"]]
+
+
+class ListMcpServersResponse(TypedDict):
+    servers: list[ListMcpServersResponseServersItem]
+
+
+class _ListMcpServersResponseServersItemRequired(TypedDict):
+    name: str
+    url: str
+    source: Literal["composio", "github", "url"]
+    toolkit: str | None
+    auth: ListMcpServersResponseServersItemAuth
+    credential: Literal["sealed", "unreadable", "expired"] | None
+    protocol: str
+    server_info: dict[str, Any] | None
+    tools: list[ListMcpServersResponseServersItemToolsItem]
+    listed_at: str
+    updated_at: str
+
+
+class ListMcpServersResponseServersItem(_ListMcpServersResponseServersItemRequired, total=False):
+    oauth: ListMcpServersResponseServersItemOauth
+    instructions: str
+    prices: dict[str, float]
+    not_metered: list[str]
+    secret: SecretMeta
+
+
+class _ListMcpServersResponseServersItemAuthRequired(TypedDict):
+    type: Literal["none", "bearer", "headers", "oauth", "github_app", "per_run"]
+
+
+class ListMcpServersResponseServersItemAuth(_ListMcpServersResponseServersItemAuthRequired, total=False):
+    headers: list[str]
+    api_key_env: Literal["COMPOSIO_API_KEY"]
+
+
+class _ListMcpServersResponseServersItemOauthRequired(TypedDict):
+    scopes: list[str]
+    client: Literal["pre-registered", "metadata-document", "dynamic"]
+
+
+class ListMcpServersResponseServersItemOauth(_ListMcpServersResponseServersItemOauthRequired, total=False):
+    expires_at: str
+    client_id: str
+
+
+class _ListMcpServersResponseServersItemToolsItemRequired(TypedDict):
+    name: str
+    input_schema: dict[str, Any]
+
+
+class ListMcpServersResponseServersItemToolsItem(_ListMcpServersResponseServersItemToolsItemRequired, total=False):
+    title: str
+    description: str
+    resource: Literal["list", "templates", "read"]
+    output_schema: dict[str, Any]
+    annotations: dict[str, Any]
+    grantable: Literal[False]
+    reason: str
+    effect: Literal["read", "write", "destructive"]
+    grant_problems: dict[str, str]
+    permission: Literal["allow", "ask", "deny"]
+    allow_reads: Literal[True]
+    fallback_allow_reads: Literal[True]
+    default_permission: Literal["allow", "ask", "deny"]
+    permissions: list[Literal["allow", "ask", "deny"]]
+
+
+McpOAuthClientResponse: TypeAlias = "dict[str, Any]"
+
+
+PreviewMcpServerBody: TypeAlias = "PreviewMcpServerBodyObject1 | PreviewMcpServerBodyObject2"
+
+
+class _PreviewMcpServerBodyObject1Required(TypedDict):
+    url: str
+
+
+class PreviewMcpServerBodyObject1(_PreviewMcpServerBodyObject1Required, total=False):
+    auth: PreviewMcpServerBodyObject1Auth
+    name: str
+
+
+class _PreviewMcpServerBodyObject1AuthRequired(TypedDict):
+    type: Literal["none", "bearer", "headers", "oauth", "github_app", "per_run"]
+
+
+class PreviewMcpServerBodyObject1Auth(_PreviewMcpServerBodyObject1AuthRequired, total=False):
+    token: str
+    headers: dict[str, str]
+
+
+class PreviewMcpServerBodyObject2(TypedDict):
+    name: str
+
+
+class _PreviewMcpServerResponseRequired(TypedDict):
+    protocol: str
+    server_info: dict[str, Any] | None
+    tools: list[PreviewMcpServerResponseToolsItem]
+
+
+class PreviewMcpServerResponse(_PreviewMcpServerResponseRequired, total=False):
+    instructions: str
+
+
+class _PreviewMcpServerResponseToolsItemRequired(TypedDict):
+    name: str
+    input_schema: dict[str, Any]
+
+
+class PreviewMcpServerResponseToolsItem(_PreviewMcpServerResponseToolsItemRequired, total=False):
+    title: str
+    description: str
+    resource: Literal["list", "templates", "read"]
+    output_schema: dict[str, Any]
+    annotations: dict[str, Any]
+    grantable: Literal[False]
+    reason: str
+    effect: Literal["read", "write", "destructive"]
+    grant_problems: dict[str, str]
+    permission: Literal["allow", "ask", "deny"]
+    allow_reads: Literal[True]
+    fallback_allow_reads: Literal[True]
+    default_permission: Literal["allow", "ask", "deny"]
+    permissions: list[Literal["allow", "ask", "deny"]]
+
+
+class GetMcpPrivateHostsResponse(TypedDict):
+    hosts: list[str]
+
+
+class RefreshMcpServerResponse(TypedDict):
+    added: list[str]
+    removed: list[str]
+    changed: list[str]
+    server: RefreshMcpServerResponseServer
+
+
+class _RefreshMcpServerResponseServerRequired(TypedDict):
+    name: str
+    url: str
+    source: Literal["composio", "github", "url"]
+    toolkit: str | None
+    auth: RefreshMcpServerResponseServerAuth
+    credential: Literal["sealed", "unreadable", "expired"] | None
+    protocol: str
+    server_info: dict[str, Any] | None
+    tools: list[RefreshMcpServerResponseServerToolsItem]
+    listed_at: str
+    updated_at: str
+
+
+class RefreshMcpServerResponseServer(_RefreshMcpServerResponseServerRequired, total=False):
+    oauth: RefreshMcpServerResponseServerOauth
+    instructions: str
+    prices: dict[str, float]
+    not_metered: list[str]
+    secret: SecretMeta
+
+
+class _RefreshMcpServerResponseServerAuthRequired(TypedDict):
+    type: Literal["none", "bearer", "headers", "oauth", "github_app", "per_run"]
+
+
+class RefreshMcpServerResponseServerAuth(_RefreshMcpServerResponseServerAuthRequired, total=False):
+    headers: list[str]
+    api_key_env: Literal["COMPOSIO_API_KEY"]
+
+
+class _RefreshMcpServerResponseServerOauthRequired(TypedDict):
+    scopes: list[str]
+    client: Literal["pre-registered", "metadata-document", "dynamic"]
+
+
+class RefreshMcpServerResponseServerOauth(_RefreshMcpServerResponseServerOauthRequired, total=False):
+    expires_at: str
+    client_id: str
+
+
+class _RefreshMcpServerResponseServerToolsItemRequired(TypedDict):
+    name: str
+    input_schema: dict[str, Any]
+
+
+class RefreshMcpServerResponseServerToolsItem(_RefreshMcpServerResponseServerToolsItemRequired, total=False):
+    title: str
+    description: str
+    resource: Literal["list", "templates", "read"]
+    output_schema: dict[str, Any]
+    annotations: dict[str, Any]
+    grantable: Literal[False]
+    reason: str
+    effect: Literal["read", "write", "destructive"]
+    grant_problems: dict[str, str]
+    permission: Literal["allow", "ask", "deny"]
+    allow_reads: Literal[True]
+    fallback_allow_reads: Literal[True]
+    default_permission: Literal["allow", "ask", "deny"]
+    permissions: list[Literal["allow", "ask", "deny"]]
+
+
+class _SaveMcpServerBodyRequired(TypedDict):
+    url: str
+
+
+class SaveMcpServerBody(_SaveMcpServerBodyRequired, total=False):
+    auth: SaveMcpServerBodyAuth
+    prices: dict[str, float]
+    toolkit: str | None
+
+
+class _SaveMcpServerBodyAuthRequired(TypedDict):
+    type: Literal["none", "bearer", "headers", "oauth", "github_app", "per_run"]
+
+
+class SaveMcpServerBodyAuth(_SaveMcpServerBodyAuthRequired, total=False):
+    token: str
+    headers: dict[str, str]
+
+
+class _SaveMcpServerResponseRequired(TypedDict):
+    name: str
+    url: str
+    source: Literal["composio", "github", "url"]
+    toolkit: str | None
+    auth: SaveMcpServerResponseAuth
+    credential: Literal["sealed", "unreadable", "expired"] | None
+    protocol: str
+    server_info: dict[str, Any] | None
+    tools: list[SaveMcpServerResponseToolsItem]
+    listed_at: str
+    updated_at: str
+
+
+class SaveMcpServerResponse(_SaveMcpServerResponseRequired, total=False):
+    oauth: SaveMcpServerResponseOauth
+    instructions: str
+    prices: dict[str, float]
+    not_metered: list[str]
+    secret: SecretMeta
+    composio: SaveMcpServerResponseComposio
+
+
+class _SaveMcpServerResponseAuthRequired(TypedDict):
+    type: Literal["none", "bearer", "headers", "oauth", "github_app", "per_run"]
+
+
+class SaveMcpServerResponseAuth(_SaveMcpServerResponseAuthRequired, total=False):
+    headers: list[str]
+    api_key_env: Literal["COMPOSIO_API_KEY"]
+
+
+class _SaveMcpServerResponseOauthRequired(TypedDict):
+    scopes: list[str]
+    client: Literal["pre-registered", "metadata-document", "dynamic"]
+
+
+class SaveMcpServerResponseOauth(_SaveMcpServerResponseOauthRequired, total=False):
+    expires_at: str
+    client_id: str
+
+
+class _SaveMcpServerResponseToolsItemRequired(TypedDict):
+    name: str
+    input_schema: dict[str, Any]
+
+
+class SaveMcpServerResponseToolsItem(_SaveMcpServerResponseToolsItemRequired, total=False):
+    title: str
+    description: str
+    resource: Literal["list", "templates", "read"]
+    output_schema: dict[str, Any]
+    annotations: dict[str, Any]
+    grantable: Literal[False]
+    reason: str
+    effect: Literal["read", "write", "destructive"]
+    grant_problems: dict[str, str]
+    permission: Literal["allow", "ask", "deny"]
+    allow_reads: Literal[True]
+    fallback_allow_reads: Literal[True]
+    default_permission: Literal["allow", "ask", "deny"]
+    permissions: list[Literal["allow", "ask", "deny"]]
+
+
+class SaveMcpServerResponseComposio(TypedDict):
+    removed: bool
+    note: str
+
+
+class GetObservationsResponse(TypedDict):
+    connectors: list[GetObservationsResponseConnectorsItem]
+    sessions: list[GetObservationsResponseSessionsItem]
+    usage: GetObservationsResponseUsage
+    limits: GetObservationsResponseLimits
+
+
+class GetObservationsResponseConnectorsItem(TypedDict):
+    id: str
+    display_name: str
+    connection_state: Literal["online", "offline", "disconnected"]
+    ingestion_mode: Literal["polling", "otlp"]
+    last_heartbeat_at: str | None
+    receipt_count: int
+    receipt_capacity: int
+    storage_full: bool
+
+
+class _GetObservationsResponseSessionsItemRequired(TypedDict):
+    id: str
+    connector_id: str
+    source_id: str
+    external_session_id: str
+    harness: Literal["claude", "codex"]
+    activity: Literal["unknown", "working", "idle", "waiting_input", "finished", "failed", "stopped"]
+    reported_activity: Literal["unknown", "working", "idle", "waiting_input", "finished", "failed", "stopped"]
+    connection_state: Literal["online", "offline", "disconnected"]
+    selection_active: bool
+    occurred_at: str
+    received_at: str
+    created_at: str
+    updated_at: str
+    sequence: int
+    display_name: str
+    models: list[str]
+    usage: GetObservationsResponseSessionsItemUsage
+    observation_only: Literal[True]
+    learning: GetObservationsResponseSessionsItemLearning
+
+
+class GetObservationsResponseSessionsItem(_GetObservationsResponseSessionsItemRequired, total=False):
+    project_name: str
+
+
+class GetObservationsResponseSessionsItemUsage(TypedDict):
+    input_tokens: int
+    output_tokens: int
+    cache_read_tokens: int | None
+    cache_write_tokens: int | None
+    total_tokens: int
+    cache_hit_rate: float | None
+    overflow: bool
+    status: Literal["reported", "unavailable"]
+
+
+class _GetObservationsResponseSessionsItemLearningRequired(TypedDict):
+    state: Literal["on", "off", "setup_required", "unknown", "unsupported"]
+    reason: Literal["ready", "source_setup_required", "source_unknown", "delegated_session", "connection_unavailable", "server_disabled", "agent_disabled", "awaiting_activation"]
+
+
+class GetObservationsResponseSessionsItemLearning(_GetObservationsResponseSessionsItemLearningRequired, total=False):
+    agent_id: str
+    connection_id: str
+    mode: Literal["off", "notes", "corrections", "workflows"]
+
+
+class GetObservationsResponseUsage(TypedDict):
+    input_tokens: int | None
+    output_tokens: int | None
+    cache_read_tokens: int | None
+    cache_write_tokens: int | None
+    total_tokens: int | None
+    cache_hit_rate: float | None
+    overflow: bool
+    status: Literal["partial", "unavailable"]
+    models: list[GetObservationsResponseUsageModelsItem]
+    daily: list[GetObservationsResponseUsageDailyItem]
+
+
+class GetObservationsResponseUsageModelsItem(TypedDict):
+    input_tokens: int | None
+    output_tokens: int | None
+    cache_read_tokens: int | None
+    cache_write_tokens: int | None
+    total_tokens: int | None
+    cache_hit_rate: float | None
+    overflow: bool
+    model: str
+
+
+class GetObservationsResponseUsageDailyItem(TypedDict):
+    date: str
+    total_tokens: int | None
+
+
+class GetObservationsResponseLimits(TypedDict):
+    max_receipts_per_connector: int
+    max_sessions_per_connector: int
+    receipt_retention: str
+    receipt_window_seconds: int
+    session_retention_days: int
+    usage_retention_days: int
+
+
+class ListRevisionsResponse(TypedDict):
+    revisions: list[ListRevisionsResponseRevisionsItem]
+    next_cursor: str | None
+
+
+class _ListRevisionsResponseRevisionsItemRequired(TypedDict):
+    revision: str
+    version: int
+    parent: str | None
+    kind: Literal["agentic", "workflow"]
+    current: bool
+    note: str | None
+    created_at: Timestamp
+    definition: Definition
+
+
+class ListRevisionsResponseRevisionsItem(_ListRevisionsResponseRevisionsItemRequired, total=False):
+    mcp_pin: dict[str, ListRevisionsResponseRevisionsItemMcpPinValue] | None
+
+
+class _ListRevisionsResponseRevisionsItemMcpPinValueRequired(TypedDict):
+    tools: list[ListRevisionsResponseRevisionsItemMcpPinValueToolsItem]
+
+
+class ListRevisionsResponseRevisionsItemMcpPinValue(_ListRevisionsResponseRevisionsItemMcpPinValueRequired, total=False):
+    prices: dict[str, float]
+
+
+class _ListRevisionsResponseRevisionsItemMcpPinValueToolsItemRequired(TypedDict):
+    name: str
+    input_schema: dict[str, Any]
+
+
+class ListRevisionsResponseRevisionsItemMcpPinValueToolsItem(_ListRevisionsResponseRevisionsItemMcpPinValueToolsItemRequired, total=False):
+    title: str
+    description: str
+    resource: Literal["list", "templates", "read"]
+    annotations: dict[str, Any]
+
+
+class SetCurrentBody(TypedDict):
+    revision: str
+
+
+SetCurrentResponse: TypeAlias = "Agent"
+
+
+ArchiveRunResponse: TypeAlias = "dict[str, Any]"
+
+
+CancelRunResponse: TypeAlias = "CancelResult"
+
+
+class CancelResult(TypedDict):
+    run_id: Id
+    cancel_requested: bool
+    already_terminal: bool
+    status: RunStatus
+
+
+class _CallRunComputerBodyRequired(TypedDict):
+    method: Literal["apps.install", "apps.launch", "apps.list", "apps.terminate", "deadline.extend", "exec.run", "files.list", "files.mkdir", "files.move", "files.read", "files.remove", "files.stat", "files.write", "hello", "input.actions", "mount.sync", "ping", "process.list", "process.read", "process.resize", "process.signal", "process.start", "process.wait", "process.write", "screen.read", "screen.shot", "screen.watch", "tar.pull.begin", "tar.pull.end", "tar.pull.read", "tar.push.begin", "tar.push.end", "tar.push.write", "ui.act", "ui.observe"]
+
+
+class CallRunComputerBody(_CallRunComputerBodyRequired, total=False):
+    params: dict[str, Any]
+
+
+CallRunComputerResponse: TypeAlias = "CallRunComputerResponseObject1 | CallRunComputerResponseObject2"
+
+
+class CallRunComputerResponseObject1(TypedDict):
+    ok: Literal[True]
+    value: Any
+
+
+class CallRunComputerResponseObject2(TypedDict):
+    ok: Literal[False]
+    error: CallRunComputerResponseObject2Error
+
+
+class CallRunComputerResponseObject2Error(TypedDict):
+    code: str
+    message: str
+
+
+ReleaseRunComputerBody: TypeAlias = "dict[str, Any]"
+
+
+class ReleaseRunComputerResponse(TypedDict):
+    held: ReleaseRunComputerResponseHeld
+
+
+class ReleaseRunComputerResponseHeld(TypedDict):
+    state: Literal["released"]
+
+
+CreateInlineRunBody: TypeAlias = "RunCreateInline"
+
+
+class _RunCreateInlineRequired(TypedDict):
+    external: ExternalRef
+    definition: DefinitionInput
+    input: dict[str, Any]
+
+
+class RunCreateInline(_RunCreateInlineRequired, total=False):
+    skills: SkillFiles
+    note: str
+    file_ids: list[Id]
+    effort: Effort
+    max_cost_usd: float
+    quote_id: str
+    model_key: str
+    keys: dict[str, str]
+    mcp_auth: dict[str, RunCreateInlineMcpAuthValue | ComposioRunBinding]
+    labels: dict[str, str]
+    workflow_first: bool
+    learning: Literal["use"]
+    repo: str
+    archil_disk: RunCreateInlineArchilDisk
+    hold: bool
+    hold_minutes: int
+
+
+class ExternalRef(TypedDict):
+    source: str
+    kind: str
+    id: str
+    version: str | int
+
+
+class RunCreateInlineMcpAuthValue(TypedDict):
+    headers: dict[str, str]
+
+
+class _ComposioRunBindingRequired(TypedDict):
+    composio_user_id: str
+
+
+class ComposioRunBinding(_ComposioRunBindingRequired, total=False):
+    connected_account_id: str
+
+
+class RunCreateInlineArchilDisk(TypedDict):
+    disk_id: str
+
+
+CreateInlineRunResponse: TypeAlias = "Run"
+
+
+CreateRunComputerViewerBody: TypeAlias = "dict[str, Any]"
+
+
+class CreateRunComputerViewerResponse(TypedDict):
+    url: str
+    expires_at: str
 
 
 ListRunFilesResponse: TypeAlias = "RunFileList"
@@ -5008,6 +7302,7 @@ class _RunFileRequired(TypedDict):
 class RunFile(_RunFileRequired, total=False):
     content_type: str | None
     unreadable: Literal[True]
+    name: str
 
 
 GetRunResponse: TypeAlias = "Run"
@@ -5028,10 +7323,10 @@ class _GradeRunResponseRequired(TypedDict):
     correct: bool
     source: Literal["feedback", "eval"]
     graded_at: str
-    path: Literal["agent", "handed_back", "workflow", "replay"]
+    path: Literal["agent", "handed_back", "workflow", "replay", "audit"]
     workflow: str | None
     workflow_digest: str | None
-    feedback: Literal["revise", "look_back"] | None
+    feedback: Literal["correction"] | None
 
 
 class GradeRunResponse(_GradeRunResponseRequired, total=False):
@@ -5149,52 +7444,31 @@ GetRunLearningResponse: TypeAlias = "GetRunLearningResponseObject | None"
 
 class _GetRunLearningResponseObjectRequired(TypedDict):
     run: str
-    state: Literal["seeded", "reflecting", "proposed", "merged", "dropped"]
-    reason: Literal["seed_failed", "no_budget", "unknown_cost", "cancelled", "crashed", "reflect_timeout", "reflect_failed", "empty", "unparsed", "propose_failed", "checker", "grader", "grade_failed", "use"] | None
+    state: Literal["seeded", "reflecting", "merged", "dropped"]
+    reason: Literal["seed_failed", "no_budget", "unknown_cost", "cancelled", "crashed", "reflect_failed", "empty", "checker", "use", "reset"] | None
     detail: str | None
     at: str
     seed: str | None
     merged: str | None
-    pending: list[GetRunLearningResponseObjectPendingItem]
-    verdict: GetRunLearningResponseObjectVerdict | None
+    workflows: list[GetRunLearningResponseObjectWorkflowsItem]
+    corrections: int
     problems: list[GetRunLearningResponseObjectProblemsItem]
     compiled: GetRunLearningResponseObjectCompiled | None
     draft_errors: list[str]
-    cost_usd: GetRunLearningResponseObjectCostUsd
-    tokens: GetRunLearningResponseObjectTokens
     used: GetRunLearningResponseObjectUsed
 
 
 class GetRunLearningResponseObject(_GetRunLearningResponseObjectRequired, total=False):
-    given: list[GetRunLearningResponseObjectGivenItem]
-    read: list[GetRunLearningResponseObjectReadItem]
-    learned: list[GetRunLearningResponseObjectLearnedItem]
-    skills: list[GetRunLearningResponseObjectSkillsItem]
-    workflows: list[GetRunLearningResponseObjectWorkflowsItem]
     graded: GetRunLearningResponseObjectGraded
 
 
-class GetRunLearningResponseObjectPendingItem(TypedDict):
+class _GetRunLearningResponseObjectWorkflowsItemRequired(TypedDict):
     file: str
     name: str
 
 
-class GetRunLearningResponseObjectVerdict(TypedDict):
-    merge: bool
-    reason: str
-    items: list[GetRunLearningResponseObjectVerdictItemsItem]
-
-
-class _GetRunLearningResponseObjectVerdictItemsItemRequired(TypedDict):
-    file: str
-    keep: bool
-    why: str
-
-
-class GetRunLearningResponseObjectVerdictItemsItem(_GetRunLearningResponseObjectVerdictItemsItemRequired, total=False):
+class GetRunLearningResponseObjectWorkflowsItem(_GetRunLearningResponseObjectWorkflowsItemRequired, total=False):
     pending: Literal[True]
-    origin: Literal["you", "run"]
-    question: str
 
 
 class _GetRunLearningResponseObjectProblemsItemRequired(TypedDict):
@@ -5208,7 +7482,6 @@ class GetRunLearningResponseObjectProblemsItem(_GetRunLearningResponseObjectProb
 
 class GetRunLearningResponseObjectCompiled(TypedDict):
     workflow: str
-    from_notes: list[str]
     attempts: list[GetRunLearningResponseObjectCompiledAttemptsItem]
     digest: str | None
     promoted: bool | None
@@ -5219,29 +7492,8 @@ class GetRunLearningResponseObjectCompiledAttemptsItem(TypedDict):
     errors: list[str]
 
 
-class GetRunLearningResponseObjectCostUsd(TypedDict):
-    grade: float | None
-
-
-class GetRunLearningResponseObjectTokens(TypedDict):
-    grade: GetRunLearningResponseObjectTokensGrade | None
-
-
-class GetRunLearningResponseObjectTokensGrade(TypedDict):
-    input: int
-    cache_read: int
-    cache_write: int
-    output: int
-
-
 class GetRunLearningResponseObjectUsed(TypedDict):
-    skills: list[GetRunLearningResponseObjectUsedSkillsItem]
     workflows: list[GetRunLearningResponseObjectUsedWorkflowsItem]
-
-
-class GetRunLearningResponseObjectUsedSkillsItem(TypedDict):
-    name: str
-    read: bool
 
 
 class GetRunLearningResponseObjectUsedWorkflowsItem(TypedDict):
@@ -5250,49 +7502,15 @@ class GetRunLearningResponseObjectUsedWorkflowsItem(TypedDict):
     failed: int
 
 
-class GetRunLearningResponseObjectGivenItem(TypedDict):
-    file: str
-    name: str
-
-
-class GetRunLearningResponseObjectReadItem(TypedDict):
-    file: str
-    name: str
-
-
-class GetRunLearningResponseObjectLearnedItem(TypedDict):
-    file: str
-    name: str
-    supersedes: list[str]
-
-
-class _GetRunLearningResponseObjectSkillsItemRequired(TypedDict):
-    file: str
-    name: str
-
-
-class GetRunLearningResponseObjectSkillsItem(_GetRunLearningResponseObjectSkillsItemRequired, total=False):
-    pending: Literal[True]
-
-
-class _GetRunLearningResponseObjectWorkflowsItemRequired(TypedDict):
-    file: str
-    name: str
-
-
-class GetRunLearningResponseObjectWorkflowsItem(_GetRunLearningResponseObjectWorkflowsItemRequired, total=False):
-    pending: Literal[True]
-
-
 class GetRunLearningResponseObjectGraded(TypedDict):
     run_id: str
     correct: bool
     source: Literal["feedback", "eval"]
     graded_at: str
-    path: Literal["agent", "handed_back", "workflow", "replay"]
+    path: Literal["agent", "handed_back", "workflow", "replay", "audit"]
     workflow: str | None
     workflow_digest: str | None
-    feedback: Literal["revise", "look_back"] | None
+    feedback: Literal["correction"] | None
     feedback_status: Literal["running", "ended", "not_run"] | None
 
 
@@ -5323,7 +7541,9 @@ class _MessageCreateRequired(TypedDict):
 
 
 class MessageCreate(_MessageCreateRequired, total=False):
-    mcp_auth: dict[str, MessageCreateMcpAuthValue]
+    model_key: str
+    mcp_auth: dict[str, MessageCreateMcpAuthValue | ComposioRunBinding]
+    keys: dict[str, str]
 
 
 class MessageCreateMcpAuthValue(TypedDict):
@@ -5383,13 +7603,17 @@ class RunCreate(_RunCreateRequired, total=False):
     effort: Effort
     max_cost_usd: float
     quote_id: str
-    mcp_auth: dict[str, RunCreateMcpAuthValue]
+    model_key: str
+    keys: dict[str, str]
+    mcp_auth: dict[str, RunCreateMcpAuthValue | ComposioRunBinding]
+    labels: dict[str, str]
     workflow_first: bool
     learning: Literal["use"]
     repo: str
     archil_disk: RunCreateArchilDisk
     hold: bool
     hold_minutes: int
+    trigger_firing: RunCreateTriggerFiring
 
 
 class RunCreateMcpAuthValue(TypedDict):
@@ -5398,6 +7622,11 @@ class RunCreateMcpAuthValue(TypedDict):
 
 class RunCreateArchilDisk(TypedDict):
     disk_id: str
+
+
+class RunCreateTriggerFiring(TypedDict):
+    trigger_id: str
+    firing_id: str
 
 
 CreateRunResponse: TypeAlias = "Run"
@@ -5504,12 +7733,13 @@ class TimelineUsage(_TimelineUsageRequired, total=False):
     free: Literal[True]
     so_far_usd: float
     unpriced: int
+    upper_bound: Literal[True]
     not_metered: int
 
 
 class _TimelineRowTriggerRequired(TypedDict):
     id: str
-    source: Literal["schedule", "webhook", "slack", "github", "composio"]
+    source: Literal["schedule", "webhook", "slack", "github", "composio", "email", "feed"]
     owner: bool
 
 
@@ -5565,12 +7795,149 @@ class TimelineRowComputerCallsItemStepsItemOn(_TimelineRowComputerCallsItemSteps
 
 
 class TimelineRowLearning(TypedDict):
-    state: Literal["seeded", "reflecting", "proposed", "merged", "dropped"]
-    reason: Literal["seed_failed", "no_budget", "unknown_cost", "cancelled", "crashed", "reflect_timeout", "reflect_failed", "empty", "unparsed", "propose_failed", "checker", "grader", "grade_failed", "use"] | None
+    state: Literal["seeded", "reflecting", "merged", "dropped"]
+    reason: Literal["seed_failed", "no_budget", "unknown_cost", "cancelled", "crashed", "reflect_failed", "empty", "checker", "use", "reset"] | None
     detail: str | None
 
 
+class GetRunTraceResponse(TypedDict):
+    run_id: Id
+    model_requests: Literal["priced", "tokens_only", "not_recorded"]
+    spans: list[GetRunTraceResponseSpansItem]
+    dropped: int
+
+
+class GetRunTraceResponseSpansItem(TypedDict):
+    id: str
+    kind: Literal["model", "tool"]
+    parent_id: str | None
+    name: str
+    agent_label: str | None
+    started_at: Timestamp
+    ended_at: str | None
+    status: Literal["ok", "failed", "refused", "interrupted", "waiting", "running"]
+    stop_reason: str | None
+    tokens: GetRunTraceResponseSpansItemTokens | None
+    usd: float | None
+    decision: bool
+    charged: bool
+    not_metered: bool
+    tool_use_id: str | None
+    input_preview: str | None
+    result_preview: str | None
+    result_size_bytes: int | None
+
+
+class _GetRunTraceResponseSpansItemTokensRequired(TypedDict):
+    input: int
+    cache_read: int
+    cache_write: int
+    output: int
+
+
+class GetRunTraceResponseSpansItemTokens(_GetRunTraceResponseSpansItemTokensRequired, total=False):
+    reasoning: int
+
+
 UnarchiveRunResponse: TypeAlias = "dict[str, Any]"
+
+
+class GetRunUsageResponse(TypedDict):
+    run_id: Id
+    ended_at: str | None
+    currency: Literal["USD"]
+    total: GetRunUsageResponseTotal | None
+    lines: list[GetRunUsageResponseLinesItem] | None
+    browser_sessions: list[GetRunUsageResponseBrowserSessionsItem] | None
+    computer_intervals: list[GetRunUsageResponseComputerIntervalsItem] | None
+    infra_usd: float | None
+    reason: Literal["running", "not_booked", "reopened"] | None
+
+
+class _GetRunUsageResponseTotalRequired(TypedDict):
+    usd: float | None
+
+
+class GetRunUsageResponseTotal(_GetRunUsageResponseTotalRequired, total=False):
+    so_far_usd: float
+    unpriced: int
+    upper_bound: Literal[True]
+
+
+class _GetRunUsageResponseLinesItemRequired(TypedDict):
+    meter: Literal["tokens", "tools", "browser_time", "compute_time"]
+    model: str | None
+    provider: str | None
+    charged_by: str | None
+    quantity: float | None
+    unit: Literal["token", "call", "second", "vcpu_second", "gib_second", "gpu_second", "gb_month"]
+    basis: Literal["reported", "estimate", "unpriced"]
+    attempt: int | None
+    billable: bool
+    usd: float | None
+
+
+class GetRunUsageResponseLinesItem(_GetRunUsageResponseLinesItemRequired, total=False):
+    so_far_usd: float
+    unpriced: int
+    upper_bound: Literal[True]
+    requests: int
+    tokens: GetRunUsageResponseLinesItemTokens
+    unmetered_requests: int
+    not_metered_calls: int
+    resource: Literal["vcpu", "memory", "gpu", "disk"]
+    gpu_type: str | None
+    unheld_quantity: float | None
+    open_computers: int
+    measured_to: str
+
+
+class GetRunUsageResponseLinesItemTokens(TypedDict):
+    input: int
+    output: int
+    cache_read: int
+    cache_write: int
+
+
+class GetRunUsageResponseBrowserSessionsItem(TypedDict):
+    provider: str
+    tag: str
+    provider_session_id: str | None
+    started_at: str | None
+    ended_at: str | None
+    release_reason: str | None
+    charged_seconds: float | None
+    provider_record: GetRunUsageResponseBrowserSessionsItemProviderRecord | None
+    provider_record_status: Literal["read", "not_offered", "not_found", "failed", "no_session"] | None
+    attempt: int | None
+    billable: bool
+
+
+class GetRunUsageResponseBrowserSessionsItemProviderRecord(TypedDict):
+    started_at: str | None
+    ended_at: str | None
+    proxy_bytes: int | None
+
+
+class GetRunUsageResponseComputerIntervalsItem(TypedDict):
+    provider: str
+    provider_id: str
+    kind: str | None
+    gpu: GetRunUsageResponseComputerIntervalsItemGpu | None
+    cpus: float | None
+    memory_mb: int | None
+    disk_gb: float | None
+    started_at: str
+    ended_at: str | None
+    kept: bool
+    booked_seconds: float
+    attempt: int | None
+    billable: bool
+
+
+class GetRunUsageResponseComputerIntervalsItemGpu(TypedDict):
+    type: str | None
+    count: int | None
 
 
 class _CompleteSdkRunBodyRequired(TypedDict):
@@ -5600,7 +7967,7 @@ class CompleteSdkRunResponse(TypedDict):
 
 class SdkRunEventsBody(TypedDict):
     sequence: int
-    events: list[SdkRunEventsBodyEventsItem1 | SdkRunEventsBodyEventsItem2 | SdkRunEventsBodyEventsItem3]
+    events: list[SdkRunEventsBodyEventsItem1 | SdkRunEventsBodyEventsItem2 | SdkRunEventsBodyEventsItem3 | SdkRunEventsBodyEventsItem4]
 
 
 class SdkRunEventsBodyEventsItem1(TypedDict):
@@ -5614,13 +7981,35 @@ class SdkRunEventsBodyEventsItem2(TypedDict):
 
 
 class _SdkRunEventsBodyEventsItem3Required(TypedDict):
+    type: Literal["workflow_check"]
+    id: str
+    digest: str
+    outcome: Literal["answered", "handed_back", "failed", "skipped_write"]
+
+
+class SdkRunEventsBodyEventsItem3(_SdkRunEventsBodyEventsItem3Required, total=False):
+    answer: str
+    reason: str
+    skipped: SdkRunEventsBodyEventsItem3Skipped
+    fresh_reads: int
+
+
+class _SdkRunEventsBodyEventsItem3SkippedRequired(TypedDict):
+    tool: str
+
+
+class SdkRunEventsBodyEventsItem3Skipped(_SdkRunEventsBodyEventsItem3SkippedRequired, total=False):
+    unmarked: Literal[True]
+
+
+class _SdkRunEventsBodyEventsItem4Required(TypedDict):
     type: Literal["tool"]
     id: str
     name: str
     status: Literal["started", "completed", "failed"]
 
 
-class SdkRunEventsBodyEventsItem3(_SdkRunEventsBodyEventsItem3Required, total=False):
+class SdkRunEventsBodyEventsItem4(_SdkRunEventsBodyEventsItem4Required, total=False):
     input: Any
     output: Any
     parent_tool_use_id: str
@@ -5641,7 +8030,7 @@ class GetSdkRunResponse(_GetSdkRunResponseRequired, total=False):
 
 
 class _StartSdkRunBodyRequired(TypedDict):
-    runtime: Literal["claude-agent-sdk", "codex-sdk"]
+    runtime: Literal["claude-agent-sdk", "codex-sdk", "eve"]
     input: str
     instructions: str
 
@@ -5650,6 +8039,9 @@ class StartSdkRunBody(_StartSdkRunBodyRequired, total=False):
     model: str
     workflow_tools: list[StartSdkRunBodyWorkflowToolsItem]
     workflow_adapters: list[Literal["runNode", "runJudge"]]
+    started_at: str
+    title: str
+    labels: dict[str, str]
 
 
 class _StartSdkRunBodyWorkflowToolsItemRequired(TypedDict):
@@ -5664,6 +8056,20 @@ class StartSdkRunBodyWorkflowToolsItem(_StartSdkRunBodyWorkflowToolsItemRequired
     price_usd: float
 
 
+class _StartSdkRunBody2Required(TypedDict):
+    runtime: Literal["external"]
+    platform: str
+    input: str
+    instructions: str
+
+
+class StartSdkRunBody2(_StartSdkRunBody2Required, total=False):
+    model: str
+    started_at: str
+    title: str
+    labels: dict[str, str]
+
+
 class StartSdkRunResponse(TypedDict):
     run_id: str
     agent_id: str
@@ -5672,20 +8078,31 @@ class StartSdkRunResponse(TypedDict):
     learning: StartSdkRunResponseLearning
 
 
-class StartSdkRunResponseLearning(TypedDict):
+class _StartSdkRunResponseLearningRequired(TypedDict):
     enabled: bool
     revision: str | None
     context: str
-    skills: list[StartSdkRunResponseLearningSkillsItem]
     workflows: list[StartSdkRunResponseLearningWorkflowsItem]
 
 
-class StartSdkRunResponseLearningSkillsItem(TypedDict):
-    name: str
-    files: dict[str, str]
+class StartSdkRunResponseLearning(_StartSdkRunResponseLearningRequired, total=False):
+    check: StartSdkRunResponseLearningCheck
 
 
 class StartSdkRunResponseLearningWorkflowsItem(TypedDict):
+    name: str
+    workflow: str
+    description: str
+
+
+class StartSdkRunResponseLearningCheck(TypedDict):
+    id: str
+    revision: str
+    digest: str
+    workflow: StartSdkRunResponseLearningCheckWorkflow
+
+
+class StartSdkRunResponseLearningCheckWorkflow(TypedDict):
     name: str
     workflow: str
     description: str
@@ -5703,17 +8120,22 @@ class _CapabilitiesRequired(TypedDict):
     features: Features
     regions: list[Region]
     limits: Limits
+    learning_model: CapabilitiesLearningModel
     learning: CapabilitiesLearning
     places: CapabilitiesPlaces
+    harnesses: list[CapabilitiesHarnessesItem]
     tools: list[CapabilitiesToolsItem]
+    switches: dict[str, CapabilitiesSwitchesValue]
 
 
 class Capabilities(_CapabilitiesRequired, total=False):
-    harnesses: list[CapabilitiesHarnessesItem]
+    store_schema: CapabilitiesStoreSchema
     workflows: CapabilitiesWorkflows
     links: CapabilitiesLinks
     home: CapabilitiesHome
     secrets: CapabilitiesSecrets
+    run_isolation: Literal["uid", "process"]
+    runner_refused: str | None
 
 
 class _CapabilitiesServerRequired(TypedDict):
@@ -5761,11 +8183,15 @@ class Features(_FeaturesRequired, total=False):
     learning: Literal["on", "off"]
     browser_live: FeaturesBrowserLive
     computers: FeaturesComputers
+    claude_login: bool
     tool_keys: FeaturesToolKeys
+    harness_keys: FeaturesHarnessKeys
     mcp_client: FeaturesMcpClient
     tool_permissions: bool
     webhooks: FeaturesWebhooks
+    slack: FeaturesSlack
     triggers: FeaturesTriggers
+    sdk_runs: FeaturesSdkRuns
 
 
 _FeaturesAgentsRequired = TypedDict("_FeaturesAgentsRequired", {"create": "bool", "update": "bool", "list": "bool"})
@@ -5841,6 +8267,12 @@ class FeaturesToolKeys(TypedDict):
     at_rest: Literal["sealed"]
 
 
+class FeaturesHarnessKeys(TypedDict):
+    routes: bool
+    at_rest: Literal["sealed"]
+    harnesses: list[str]
+
+
 class FeaturesMcpClient(TypedDict):
     transports: list[Literal["streamable-http"]]
     auth: list[Literal["none", "bearer", "headers", "oauth", "github_app", "per_run"]]
@@ -5855,9 +8287,15 @@ class FeaturesWebhooks(TypedDict):
     at_rest: Literal["sealed"]
 
 
-class FeaturesTriggers(TypedDict):
+class FeaturesSlack(TypedDict):
     routes: bool
-    sources: list[Literal["schedule", "webhook", "github", "composio"]]
+    events: list[Literal["run.needs_input", "run.ended", "trigger.failed"]]
+    at_rest: Literal["sealed"]
+
+
+class _FeaturesTriggersRequired(TypedDict):
+    routes: bool
+    sources: list[Literal["schedule", "webhook", "github", "composio", "email", "feed"]]
     targets: list[Literal["start_run", "message_run"]]
     min_every_s: int
     history_kept: int
@@ -5866,13 +8304,24 @@ class FeaturesTriggers(TypedDict):
     webhook: FeaturesTriggersWebhook
 
 
+class FeaturesTriggers(_FeaturesTriggersRequired, total=False):
+    public_url: bool
+
+
 class FeaturesTriggersWebhook(TypedDict):
     signing: Literal["standard-webhooks/v1"]
-    signatures: list[Literal["standard", "github", "composio"]]
+    signatures: list[Literal["standard", "github"]]
     tolerance_s: int
     max_body_bytes: int
     payload_kept_bytes: int
     at_rest: Literal["sealed"]
+
+
+class FeaturesSdkRuns(TypedDict):
+    started_at: bool
+    title: bool
+    labels: bool
+    max_open_s: int
 
 
 class Region(TypedDict):
@@ -5906,8 +8355,21 @@ class LimitsMaxCostUsd(TypedDict):
 Usd: TypeAlias = "float"
 
 
+class CapabilitiesLearningModel(TypedDict):
+    location: Literal["server", "native"]
+    ready: bool
+    model: str | None
+    needs: Literal["key", "model"] | None
+    reason: str | None
+
+
+class CapabilitiesStoreSchema(TypedDict):
+    version: int | None
+    runner_floor: int | None
+    known: int
+
+
 class _CapabilitiesLearningRequired(TypedDict):
-    grade_model: str | None
     pending: Literal[True]
     approve: bool
 
@@ -5950,7 +8412,9 @@ class CapabilitiesPlacesDefaultPlace2(TypedDict):
 
 
 class _CapabilitiesHarnessesItemRequired(TypedDict):
-    id: Literal["pi", "claude-agent", "codex", "opencode"]
+    id: str
+    label: str
+    promises: CapabilitiesHarnessesItemPromises
     available: bool
     free_models: list[CapabilitiesHarnessesItemFreeModelsItem]
     models: list[str]
@@ -5964,6 +8428,13 @@ class CapabilitiesHarnessesItem(_CapabilitiesHarnessesItemRequired, total=False)
     reason: str
     needs: list[Literal["key", "chatgpt"]]
     installs: Literal["on_first_use"]
+    card: str
+
+
+class CapabilitiesHarnessesItemPromises(TypedDict):
+    resume: Literal["exact", "load", "restart"]
+    tool_gate: Literal["every_call", "permission", "config"]
+    billing: Literal["proxy", "plan"]
 
 
 class CapabilitiesHarnessesItemFreeModelsItem(TypedDict):
@@ -5977,7 +8448,7 @@ class _CapabilitiesToolsItemRequired(TypedDict):
     nodes: bool
     calls: bool
     available: bool
-    harnesses: list[Literal["pi", "claude-agent", "codex", "opencode"]]
+    harnesses: list[str]
     permission: Literal["allow", "ask", "deny"]
     default_permission: Literal["allow", "ask", "deny"]
     permissions: list[Literal["allow", "ask", "deny"]]
@@ -5996,7 +8467,7 @@ class CapabilitiesToolsItem(_CapabilitiesToolsItemRequired, total=False):
     resolves: CapabilitiesToolsItemResolves
     why: CapabilitiesToolsItemWhy
     ask_needs: Literal["password"]
-    key: Literal["parallel", "monid", "browserbase", "kernel", "typesafe", "anthropic", "openai", "openrouter"]
+    key: Literal["parallel", "monid", "browserbase", "kernel", "typesafe", "anthropic", "openai", "particle", "openrouter"]
 
 
 CapabilitiesToolsItemResolves = TypedDict("CapabilitiesToolsItemResolves", {"pi": "str", "claude-agent": "str", "codex": "str", "opencode": "str"})
@@ -6045,14 +8516,28 @@ class CapabilitiesSecrets(TypedDict):
     limit: str
 
 
-class GetHealthResponse(TypedDict):
-    status: Literal["ok", "failing"]
+class CapabilitiesSwitchesValue(TypedDict):
+    on: bool
+    value: str | None
+    allows: str
+
+
+class _GetHealthResponseRequired(TypedDict):
+    status: Literal["ok", "degraded", "failing", "warming"]
     checks: GetHealthResponseChecks
 
 
-class GetHealthResponseChecks(TypedDict):
-    store: Literal["ok", "does_not_open"]
+class GetHealthResponse(_GetHealthResponseRequired, total=False):
+    runner_refused: str
+
+
+class _GetHealthResponseChecksRequired(TypedDict):
+    store: Literal["ok", "does_not_open", "opening"]
     disk: Literal["ok", "below_floor", "cannot_check"]
+
+
+class GetHealthResponseChecks(_GetHealthResponseChecksRequired, total=False):
+    runner: Literal["refused"]
 
 
 class _CallMcpBodyRequired(TypedDict):
@@ -6083,6 +8568,99 @@ class CallMcpResponseError(TypedDict):
 GetOpenapiResponse: TypeAlias = "dict[str, Any]"
 
 
+class ListSlackDeliveriesResponse(TypedDict):
+    attempts: list[ListSlackDeliveriesResponseAttemptsItem]
+
+
+class ListSlackDeliveriesResponseAttemptsItem(TypedDict):
+    webhook_id: str
+    type: Literal["run.needs_input", "run.ended", "trigger.failed", "slack.test"]
+    at: str
+    status_code: int | None
+    latency_ms: int
+    error: str | None
+    retry_at: str | None
+    redelivery: bool
+
+
+GetSlackResponse: TypeAlias = "GetSlackResponseObject1 | GetSlackResponseObject2"
+
+
+class GetSlackResponseObject1(TypedDict):
+    configured: Literal[False]
+    secret: SecretMeta
+    events: GetSlackResponseObject1Events
+
+
+GetSlackResponseObject1Events = TypedDict("GetSlackResponseObject1Events", {"run.needs_input": "bool", "run.ended": "bool", "trigger.failed": "bool"})
+
+
+class GetSlackResponseObject2(TypedDict):
+    configured: Literal[True]
+    url: str
+    url_state: Literal["sealed", "unreadable"]
+    secret: SecretMeta
+    events: GetSlackResponseObject2Events
+    disabled: GetSlackResponseObject2Disabled | None
+    updated_at: str
+
+
+GetSlackResponseObject2Events = TypedDict("GetSlackResponseObject2Events", {"run.needs_input": "bool", "run.ended": "bool", "trigger.failed": "bool"})
+
+
+class GetSlackResponseObject2Disabled(TypedDict):
+    at: str
+    reason: str
+
+
+class RedeliverSlackResponse(TypedDict):
+    webhook_id: str
+    type: Literal["run.needs_input", "run.ended", "trigger.failed", "slack.test"]
+    at: str
+    status_code: int | None
+    latency_ms: int
+    error: str | None
+    retry_at: str | None
+    redelivery: bool
+
+
+class SaveSlackBody(TypedDict, total=False):
+    url: str
+    events: SaveSlackBodyEvents
+
+
+SaveSlackBodyEvents = TypedDict("SaveSlackBodyEvents", {"run.needs_input": "bool", "run.ended": "bool", "trigger.failed": "bool"}, total=False)
+
+
+class SaveSlackResponse(TypedDict):
+    configured: Literal[True]
+    url: str
+    url_state: Literal["sealed", "unreadable"]
+    secret: SecretMeta
+    events: SaveSlackResponseEvents
+    disabled: SaveSlackResponseDisabled | None
+    updated_at: str
+
+
+SaveSlackResponseEvents = TypedDict("SaveSlackResponseEvents", {"run.needs_input": "bool", "run.ended": "bool", "trigger.failed": "bool"})
+
+
+class SaveSlackResponseDisabled(TypedDict):
+    at: str
+    reason: str
+
+
+class TestSlackResponse(TypedDict):
+    webhook_id: str
+    type: Literal["run.needs_input", "run.ended", "trigger.failed", "slack.test"]
+    at: str
+    status_code: int | None
+    latency_ms: int
+    error: str | None
+    retry_at: str | None
+    redelivery: bool
+
+
 class GetStatsResponse(TypedDict):
     agents: int
     runs: GetStatsResponseRuns
@@ -6110,7 +8688,7 @@ class GetStatsResponsePerAgentItem(TypedDict):
 
 class GetStatsResponseCost(TypedDict):
     usd: float | None
-    basis: Literal["estimate"] | None
+    basis: Literal["reported", "estimate", "unpriced"] | None
     unknown_runs: int
 
 
@@ -6120,6 +8698,7 @@ class GetStatsResponseArchived(TypedDict):
 
 
 class GetStatsResponseAnalytics(TypedDict):
+    usage: GetStatsResponseAnalyticsUsage
     filter: GetStatsResponseAnalyticsFilter
     totals: GetStatsResponseAnalyticsTotals
     time: GetStatsResponseAnalyticsTime
@@ -6127,6 +8706,32 @@ class GetStatsResponseAnalytics(TypedDict):
     by_day: list[GetStatsResponseAnalyticsByDayItem]
     by_source: list[GetStatsResponseAnalyticsBySourceItem]
     tools: list[GetStatsResponseAnalyticsToolsItem]
+
+
+class GetStatsResponseAnalyticsUsage(TypedDict):
+    tokens: int | None
+    input: int | None
+    output: int | None
+    cache_read: int | None
+    cache_write: int | None
+    known_runs: int
+    unknown_runs: int
+    observed_sessions: int
+    unknown_sessions: int
+    partial_days: int
+    retention_limited: bool
+    by_day: list[GetStatsResponseAnalyticsUsageByDayItem]
+    by_harness: list[GetStatsResponseAnalyticsUsageByHarnessItem]
+
+
+class GetStatsResponseAnalyticsUsageByDayItem(TypedDict):
+    day: str
+    tokens: int | None
+
+
+class GetStatsResponseAnalyticsUsageByHarnessItem(TypedDict):
+    harness: str
+    tokens: int | None
 
 
 GetStatsResponseAnalyticsFilter = TypedDict("GetStatsResponseAnalyticsFilter", {"from": "str | None", "to": "str | None", "agent": "str | None"})
@@ -6138,6 +8743,7 @@ class GetStatsResponseAnalyticsTotals(TypedDict):
     needs_review: int
     failed: int
     runs_with_metrics: int
+    runs_with_token_metrics: int
     tokens: int | None
     cost_usd: float | None
     unknown_cost_runs: int
@@ -6164,6 +8770,7 @@ class GetStatsResponseAnalyticsByHarnessEffortItem(TypedDict):
     needs_review: int
     failed: int
     runs_with_metrics: int
+    runs_with_token_metrics: int
     tokens: int | None
     cost_usd: float | None
     unknown_cost_runs: int
@@ -6176,6 +8783,7 @@ class GetStatsResponseAnalyticsByDayItem(TypedDict):
     needs_review: int
     failed: int
     runs_with_metrics: int
+    runs_with_token_metrics: int
     tokens: int | None
     cost_usd: float | None
     unknown_cost_runs: int
@@ -6188,6 +8796,7 @@ class GetStatsResponseAnalyticsBySourceItem(TypedDict):
     needs_review: int
     failed: int
     runs_with_metrics: int
+    runs_with_token_metrics: int
     tokens: int | None
     cost_usd: float | None
     unknown_cost_runs: int
@@ -6208,10 +8817,14 @@ class GetStatsResponseLearning(TypedDict):
 
 
 class ApplyTemplateBody(TypedDict, total=False):
+    dry_run: bool
     parameters: dict[str, Any]
     servers: dict[str, str]
     grants: list[str]
+    agent_id: str
     overrides: ApplyTemplateBodyOverrides
+    revision: str
+    sha: str
 
 
 class ApplyTemplateBodyOverrides(TypedDict, total=False):
@@ -6220,37 +8833,255 @@ class ApplyTemplateBodyOverrides(TypedDict, total=False):
     approvals: Literal["ask", "never"]
 
 
-class _ApplyTemplateResponseRequired(TypedDict):
+ApplyTemplateResponse: TypeAlias = "ApplyTemplateResponseObject11 | ApplyTemplateResponseObject12 | ApplyTemplateResponseObject2"
+
+
+class _ApplyTemplateResponseObject11Required(TypedDict):
     template: str
     version: str
     agent_id: str
+    revision_id: str | None
+    revision_version: int
+    agent_change: Literal["made", "updated", "unchanged"]
     servers: dict[str, str | None]
-    trigger_ids: list[str]
+    triggers: list[ApplyTemplateResponseObject11TriggersItem]
     warnings: list[InputIssue]
 
 
-class ApplyTemplateResponse(_ApplyTemplateResponseRequired, total=False):
-    webhook_secrets: list[ApplyTemplateResponseWebhookSecretsItem]
+class ApplyTemplateResponseObject11(_ApplyTemplateResponseObject11Required, total=False):
+    webhook_secrets: list[ApplyTemplateResponseObject11WebhookSecretsItem]
 
 
-class _ApplyTemplateResponseWebhookSecretsItemRequired(TypedDict):
+class ApplyTemplateResponseObject11TriggersItem(TypedDict):
+    trigger_id: str
+    name: str
+    kind: Literal["schedule", "webhook", "github", "composio", "email", "feed"]
+    enabled: bool
+
+
+class _ApplyTemplateResponseObject11WebhookSecretsItemRequired(TypedDict):
     trigger_id: str
     secret: SecretMeta
 
 
-class ApplyTemplateResponseWebhookSecretsItem(_ApplyTemplateResponseWebhookSecretsItemRequired, total=False):
+class ApplyTemplateResponseObject11WebhookSecretsItem(_ApplyTemplateResponseObject11WebhookSecretsItemRequired, total=False):
     signing_secret: str
     secret_set: Literal[True]
     note: str
 
 
-class _ImportTemplateBodyRequired(TypedDict):
+class ApplyTemplateResponseObject12(TypedDict):
+    plan: ApplyTemplateResponseObject12Plan
+
+
+class ApplyTemplateResponseObject12Plan(TypedDict):
+    action: Literal["create", "revise"]
+    agent_id: str | None
+    current_revision_id: str | None
+    twins: list[str]
+    missing_secrets: list[str]
+    unmatched_mcp: list[ApplyTemplateResponseObject12PlanUnmatchedMcpItem]
+    triggers: list[ApplyTemplateResponseObject12PlanTriggersItem]
+    computer: ApplyTemplateResponseObject12PlanComputer | None
+
+
+class ApplyTemplateResponseObject12PlanUnmatchedMcpItem(TypedDict):
     source: str
+    toolkit: str
+    required: bool
 
 
-class ImportTemplateBody(_ImportTemplateBodyRequired, total=False):
+class _ApplyTemplateResponseObject12PlanTriggersItemRequired(TypedDict):
+    name: str
+    kind: str
+    action: Literal["create", "update", "remove", "skip"]
+
+
+class ApplyTemplateResponseObject12PlanTriggersItem(_ApplyTemplateResponseObject12PlanTriggersItemRequired, total=False):
+    code: Literal["not_set_up_here", "not_an_option"]
+    reason: str
+
+
+class ApplyTemplateResponseObject12PlanComputer(TypedDict):
+    kind: str
+    provider: str | None
+
+
+class _ApplyTemplateResponseObject2Required(TypedDict):
+    template: str
+    version: str
+    agent_id: str
+    revision_id: str | None
+    revision_version: int
+    agent_change: Literal["made", "updated", "unchanged"]
+    servers: dict[str, str | None]
+    triggers: list[ApplyTemplateResponseObject2TriggersItem]
+    warnings: list[InputIssue]
+
+
+class ApplyTemplateResponseObject2(_ApplyTemplateResponseObject2Required, total=False):
+    webhook_secrets: list[ApplyTemplateResponseObject2WebhookSecretsItem]
+
+
+class ApplyTemplateResponseObject2TriggersItem(TypedDict):
+    trigger_id: str
+    name: str
+    kind: Literal["schedule", "webhook", "github", "composio", "email", "feed"]
+    enabled: bool
+
+
+class _ApplyTemplateResponseObject2WebhookSecretsItemRequired(TypedDict):
+    trigger_id: str
+    secret: SecretMeta
+
+
+class ApplyTemplateResponseObject2WebhookSecretsItem(_ApplyTemplateResponseObject2WebhookSecretsItemRequired, total=False):
+    signing_secret: str
+    secret_set: Literal[True]
+    note: str
+
+
+class GetTemplateResponse(TypedDict):
+    template: GetTemplateResponseTemplate
+    instructions: str
+    skill_files: dict[str, str]
+    console_url: str
+
+
+class GetTemplateResponseTemplate(TypedDict):
+    id: str
+    bundled: bool
+    source: str | None
+    sha: str | None
+    publisher: str | None
+    name: str
+    display_name: str | None
+    version: str
+    description: str
+    license: str | None
+    author: GetTemplateResponseTemplateAuthor | None
+    repository: str | None
+    output: GetTemplateResponseTemplateOutput | None
+    harness: list[str] | None
+    model: GetTemplateResponseTemplateModel | None
+    effort: str | None
+    tools: list[str] | None
+    checkout: Literal["pull_request", "repository"] | None
+    tool_policy: GetTemplateResponseTemplateToolPolicy | None
+    computer: list[Literal["shell", "none"]] | None
+    needs: list[str] | None
+    computer_here: GetTemplateResponseTemplateComputerHere | None
+    category: Literal["engineering", "security", "sales", "marketing", "research", "finance", "operations", "compliance", "personal"] | None
+    tags: list[str]
+    mcp: list[GetTemplateResponseTemplateMcpItem]
+    parameters: dict[str, Any]
+    input_schema: dict[str, Any] | None
+    secrets: list[str]
+    budget: GetTemplateResponseTemplateBudget | None
+    learning: bool | dict[str, Any]
+    approvals_default: Literal["ask", "never"]
+    triggers: list[dict[str, Any]]
+    skills: list[str]
+    evals: list[str]
+
+
+class _GetTemplateResponseTemplateAuthorRequired(TypedDict):
+    name: str
+
+
+class GetTemplateResponseTemplateAuthor(_GetTemplateResponseTemplateAuthorRequired, total=False):
+    email: str
+    url: str
+
+
+class GetTemplateResponseTemplateOutput(TypedDict):
+    schema: str
+    json_schema: dict[str, Any] | None
+
+
+class _GetTemplateResponseTemplateModelRequired(TypedDict):
+    tier: Literal["fast", "balanced", "strong"]
+
+
+class GetTemplateResponseTemplateModel(_GetTemplateResponseTemplateModelRequired, total=False):
+    prefer: str
+    fast: str
+    strong: str
+    choices: list[GetTemplateResponseTemplateModelChoicesItem]
+
+
+class GetTemplateResponseTemplateModelChoicesItem(TypedDict):
+    id: str
+    label: str
+    model: str
+    harness: str
+    warning: str | None
+    note: str | None
+    secrets: list[str]
+
+
+class GetTemplateResponseTemplateToolPolicy(TypedDict):
+    bash: Literal["read-only"]
+
+
+class GetTemplateResponseTemplateComputerHere(TypedDict):
+    entry: Literal["shell", "none"] | None
+    computer: GetTemplateResponseTemplateComputerHereComputer | None
+    shell: str | None
+    dropped: list[str]
+    note: str | None
+
+
+class _GetTemplateResponseTemplateComputerHereComputerRequired(TypedDict):
+    kind: str
+
+
+class GetTemplateResponseTemplateComputerHereComputer(_GetTemplateResponseTemplateComputerHereComputerRequired, total=False):
+    provider: str
+    needs: list[str]
+
+
+class GetTemplateResponseTemplateMcpItem(TypedDict):
+    source: Literal["composio", "github", "url"]
+    toolkit: str
+    required: bool
+    reason: str | None
+    tools: list[GetTemplateResponseTemplateMcpItemToolsItem]
+
+
+class _GetTemplateResponseTemplateMcpItemToolsItemRequired(TypedDict):
+    name: str
+    tool: str
+    asks: Literal["allow", "ask"]
+
+
+class GetTemplateResponseTemplateMcpItemToolsItem(_GetTemplateResponseTemplateMcpItemToolsItemRequired, total=False):
+    pin: dict[str, str | float | bool | None | list[str | float | bool | None] | GetTemplateResponseTemplateMcpItemToolsItemPinValue]
+
+
+class GetTemplateResponseTemplateMcpItemToolsItemPinValue(TypedDict):
+    keys: list[str]
+
+
+class _GetTemplateResponseTemplateBudgetRequired(TypedDict):
+    per_run_usd: float
+
+
+class GetTemplateResponseTemplateBudget(_GetTemplateResponseTemplateBudgetRequired, total=False):
+    max_requests: int
+
+
+class ImportTemplateBody(TypedDict, total=False):
+    source: str
+    files: list[ImportTemplateBodyFilesItem]
     dry_run: bool
     trust_publisher: bool
+
+
+class ImportTemplateBodyFilesItem(TypedDict):
+    path: str
+    encoding: Literal["utf8", "base64"]
+    content: str
 
 
 class ImportTemplateResponse(TypedDict):
@@ -6281,9 +9112,10 @@ class ImportTemplateResponseTemplate(TypedDict):
     model: ImportTemplateResponseTemplateModel | None
     effort: str | None
     tools: list[str] | None
-    checkout: Literal["pull_request"] | None
+    checkout: Literal["pull_request", "repository"] | None
     tool_policy: ImportTemplateResponseTemplateToolPolicy | None
     computer: list[Literal["shell", "none"]] | None
+    needs: list[str] | None
     computer_here: ImportTemplateResponseTemplateComputerHere | None
     category: Literal["engineering", "security", "sales", "marketing", "research", "finance", "operations", "compliance", "personal"] | None
     tags: list[str]
@@ -6292,7 +9124,7 @@ class ImportTemplateResponseTemplate(TypedDict):
     input_schema: dict[str, Any] | None
     secrets: list[str]
     budget: ImportTemplateResponseTemplateBudget | None
-    learning: bool
+    learning: bool | dict[str, Any]
     approvals_default: Literal["ask", "never"]
     triggers: list[dict[str, Any]]
     skills: list[str]
@@ -6352,6 +9184,7 @@ class _ImportTemplateResponseTemplateComputerHereComputerRequired(TypedDict):
 
 class ImportTemplateResponseTemplateComputerHereComputer(_ImportTemplateResponseTemplateComputerHereComputerRequired, total=False):
     provider: str
+    needs: list[str]
 
 
 class ImportTemplateResponseTemplateMcpItem(TypedDict):
@@ -6376,8 +9209,12 @@ class ImportTemplateResponseTemplateMcpItemToolsItemPinValue(TypedDict):
     keys: list[str]
 
 
-class ImportTemplateResponseTemplateBudget(TypedDict):
+class _ImportTemplateResponseTemplateBudgetRequired(TypedDict):
     per_run_usd: float
+
+
+class ImportTemplateResponseTemplateBudget(_ImportTemplateResponseTemplateBudgetRequired, total=False):
+    max_requests: int
 
 
 class ListTemplatesResponse(TypedDict):
@@ -6402,9 +9239,10 @@ class ListTemplatesResponseTemplatesItem(TypedDict):
     model: ListTemplatesResponseTemplatesItemModel | None
     effort: str | None
     tools: list[str] | None
-    checkout: Literal["pull_request"] | None
+    checkout: Literal["pull_request", "repository"] | None
     tool_policy: ListTemplatesResponseTemplatesItemToolPolicy | None
     computer: list[Literal["shell", "none"]] | None
+    needs: list[str] | None
     computer_here: ListTemplatesResponseTemplatesItemComputerHere | None
     category: Literal["engineering", "security", "sales", "marketing", "research", "finance", "operations", "compliance", "personal"] | None
     tags: list[str]
@@ -6413,7 +9251,7 @@ class ListTemplatesResponseTemplatesItem(TypedDict):
     input_schema: dict[str, Any] | None
     secrets: list[str]
     budget: ListTemplatesResponseTemplatesItemBudget | None
-    learning: bool
+    learning: bool | dict[str, Any]
     approvals_default: Literal["ask", "never"]
     triggers: list[dict[str, Any]]
     skills: list[str]
@@ -6473,6 +9311,7 @@ class _ListTemplatesResponseTemplatesItemComputerHereComputerRequired(TypedDict)
 
 class ListTemplatesResponseTemplatesItemComputerHereComputer(_ListTemplatesResponseTemplatesItemComputerHereComputerRequired, total=False):
     provider: str
+    needs: list[str]
 
 
 class ListTemplatesResponseTemplatesItemMcpItem(TypedDict):
@@ -6497,8 +9336,12 @@ class ListTemplatesResponseTemplatesItemMcpItemToolsItemPinValue(TypedDict):
     keys: list[str]
 
 
-class ListTemplatesResponseTemplatesItemBudget(TypedDict):
+class _ListTemplatesResponseTemplatesItemBudgetRequired(TypedDict):
     per_run_usd: float
+
+
+class ListTemplatesResponseTemplatesItemBudget(_ListTemplatesResponseTemplatesItemBudgetRequired, total=False):
+    max_requests: int
 
 
 class ListToolKeysResponse(TypedDict):
@@ -6507,11 +9350,11 @@ class ListToolKeysResponse(TypedDict):
 
 
 class ListToolKeysResponseKeysItem(TypedDict):
-    id: Literal["parallel", "monid", "browserbase", "kernel", "typesafe", "anthropic", "openai", "openrouter"]
+    id: Literal["parallel", "monid", "browserbase", "kernel", "typesafe", "anthropic", "openai", "particle", "openrouter"]
     kind: Literal["tool", "model"]
     label: str
     unlocks: list[str]
-    harnesses: list[Literal["pi", "claude-agent", "codex", "opencode"]]
+    harnesses: list[str]
     fields: list[ListToolKeysResponseKeysItemFieldsItem]
     secrets: list[SecretMeta]
     check: ListToolKeysResponseKeysItemCheck1 | ListToolKeysResponseKeysItemCheck2 | ListToolKeysResponseKeysItemCheck3 | None
@@ -6563,7 +9406,7 @@ class GetToolSettingsResponse(TypedDict):
 
 
 class _GetToolSettingsResponseWebSearchRequired(TypedDict):
-    provider: Literal["auto", "native", "exa-keyless", "parallel", "off"]
+    provider: Literal["auto", "native", "firecrawl-keyless", "exa-keyless", "parallel", "off"]
 
 
 class GetToolSettingsResponseWebSearch(_GetToolSettingsResponseWebSearchRequired, total=False):
@@ -6571,7 +9414,7 @@ class GetToolSettingsResponseWebSearch(_GetToolSettingsResponseWebSearchRequired
 
 
 class _GetToolSettingsResponseWebFetchRequired(TypedDict):
-    provider: Literal["kernel", "parallel"]
+    provider: Literal["auto", "firecrawl-keyless", "kernel", "parallel"]
 
 
 class GetToolSettingsResponseWebFetch(_GetToolSettingsResponseWebFetchRequired, total=False):
@@ -6594,6 +9437,13 @@ class PutToolSettingsBody(TypedDict, total=False):
     ask_person: PutToolSettingsBodyAskPerson
     web_fetch: PutToolSettingsBodyWebFetch
     web_search: PutToolSettingsBodyWebSearch
+    web_save: PutToolSettingsBodyWebSave
+    email_search: PutToolSettingsBodyEmailSearch
+    email_read: PutToolSettingsBodyEmailRead
+    email_draft: PutToolSettingsBodyEmailDraft
+    email_send: PutToolSettingsBodyEmailSend
+    email_file: PutToolSettingsBodyEmailFile
+    calendar_events: PutToolSettingsBodyCalendarEvents
     browser: PutToolSettingsBodyBrowser
     subagent: PutToolSettingsBodySubagent
     pdf_pages: PutToolSettingsBodyPdfPages
@@ -6626,12 +9476,40 @@ class PutToolSettingsBodyAskPerson(TypedDict, total=False):
 
 
 class PutToolSettingsBodyWebFetch(TypedDict, total=False):
-    provider: Literal["kernel", "parallel"]
+    provider: Literal["auto", "firecrawl-keyless", "kernel", "parallel"]
     permission: Literal["allow", "ask", "deny"]
 
 
 class PutToolSettingsBodyWebSearch(TypedDict, total=False):
-    provider: Literal["auto", "native", "exa-keyless", "parallel", "off"]
+    provider: Literal["auto", "native", "firecrawl-keyless", "exa-keyless", "parallel", "off"]
+    permission: Literal["allow", "ask", "deny"]
+
+
+class PutToolSettingsBodyWebSave(TypedDict, total=False):
+    permission: Literal["allow", "ask", "deny"]
+
+
+class PutToolSettingsBodyEmailSearch(TypedDict, total=False):
+    permission: Literal["allow", "ask", "deny"]
+
+
+class PutToolSettingsBodyEmailRead(TypedDict, total=False):
+    permission: Literal["allow", "ask", "deny"]
+
+
+class PutToolSettingsBodyEmailDraft(TypedDict, total=False):
+    permission: Literal["allow", "ask", "deny"]
+
+
+class PutToolSettingsBodyEmailSend(TypedDict, total=False):
+    permission: Literal["allow", "ask", "deny"]
+
+
+class PutToolSettingsBodyEmailFile(TypedDict, total=False):
+    permission: Literal["allow", "ask", "deny"]
+
+
+class PutToolSettingsBodyCalendarEvents(TypedDict, total=False):
     permission: Literal["allow", "ask", "deny"]
 
 
@@ -6679,7 +9557,7 @@ class PutToolSettingsResponse(TypedDict):
 
 
 class _PutToolSettingsResponseWebSearchRequired(TypedDict):
-    provider: Literal["auto", "native", "exa-keyless", "parallel", "off"]
+    provider: Literal["auto", "native", "firecrawl-keyless", "exa-keyless", "parallel", "off"]
 
 
 class PutToolSettingsResponseWebSearch(_PutToolSettingsResponseWebSearchRequired, total=False):
@@ -6687,7 +9565,7 @@ class PutToolSettingsResponseWebSearch(_PutToolSettingsResponseWebSearchRequired
 
 
 class _PutToolSettingsResponseWebFetchRequired(TypedDict):
-    provider: Literal["kernel", "parallel"]
+    provider: Literal["auto", "firecrawl-keyless", "kernel", "parallel"]
 
 
 class PutToolSettingsResponseWebFetch(_PutToolSettingsResponseWebFetchRequired, total=False):
@@ -6703,7 +9581,7 @@ class PutToolSettingsResponseBrowser(_PutToolSettingsResponseBrowserRequired, to
 
 
 class _CreateTriggerBodyRequired(TypedDict):
-    source: CreateTriggerBodySource1 | CreateTriggerBodySource2 | CreateTriggerBodySource3 | CreateTriggerBodySource4 | CreateTriggerBodySource5 | CreateTriggerBodySource6
+    source: CreateTriggerBodySource1 | CreateTriggerBodySource2 | CreateTriggerBodySource3 | CreateTriggerBodySource4 | CreateTriggerBodySource5 | CreateTriggerBodySource6 | CreateTriggerBodySource7 | CreateTriggerBodySource8
     target: CreateTriggerBodyTarget1 | CreateTriggerBodyTarget2
 
 
@@ -6742,7 +9620,7 @@ class _CreateTriggerBodySource4Required(TypedDict):
 
 
 class CreateTriggerBodySource4(_CreateTriggerBodySource4Required, total=False):
-    signature: Literal["standard", "github", "composio"]
+    signature: Literal["standard", "github"]
     accept: list[CreateTriggerBodySource4AcceptItem]
 
 
@@ -6805,6 +9683,7 @@ class _CreateTriggerBodySource6Required(TypedDict):
 class CreateTriggerBodySource6(_CreateTriggerBodySource6Required, total=False):
     accept: list[CreateTriggerBodySource6AcceptItem]
     instance_id: str
+    sealed_config: list[str]
     hook: str
     move_subscription: Literal[True]
 
@@ -6827,6 +9706,75 @@ class CreateTriggerBodySource6AcceptItemWhereItem2(TypedDict):
 
 
 class CreateTriggerBodySource6AcceptItemWhereItem3(TypedDict):
+    pointer: str
+    prefix: str
+
+
+class _CreateTriggerBodySource7Required(TypedDict):
+    kind: Literal["email"]
+
+
+class CreateTriggerBodySource7(_CreateTriggerBodySource7Required, total=False):
+    account: Literal["default"]
+    mailbox: str
+    every_s: int
+    accept: list[CreateTriggerBodySource7AcceptItem]
+
+
+class _CreateTriggerBodySource7AcceptItemRequired(TypedDict):
+    event: str
+
+
+class CreateTriggerBodySource7AcceptItem(_CreateTriggerBodySource7AcceptItemRequired, total=False):
+    actions: list[str]
+    where: list[CreateTriggerBodySource7AcceptItemWhereItem1 | CreateTriggerBodySource7AcceptItemWhereItem2 | CreateTriggerBodySource7AcceptItemWhereItem3]
+
+
+CreateTriggerBodySource7AcceptItemWhereItem1 = TypedDict("CreateTriggerBodySource7AcceptItemWhereItem1", {"pointer": "str", "in": "list[Any]"})
+
+
+class CreateTriggerBodySource7AcceptItemWhereItem2(TypedDict):
+    pointer: str
+    exists: bool
+
+
+class CreateTriggerBodySource7AcceptItemWhereItem3(TypedDict):
+    pointer: str
+    prefix: str
+
+
+class _CreateTriggerBodySource8Required(TypedDict):
+    kind: Literal["feed"]
+    urls: list[str]
+
+
+class CreateTriggerBodySource8(_CreateTriggerBodySource8Required, total=False):
+    every_s: int
+    items: str
+    id: str
+    updated: str
+    fields: list[str]
+    accept: list[CreateTriggerBodySource8AcceptItem]
+
+
+class _CreateTriggerBodySource8AcceptItemRequired(TypedDict):
+    event: str
+
+
+class CreateTriggerBodySource8AcceptItem(_CreateTriggerBodySource8AcceptItemRequired, total=False):
+    actions: list[str]
+    where: list[CreateTriggerBodySource8AcceptItemWhereItem1 | CreateTriggerBodySource8AcceptItemWhereItem2 | CreateTriggerBodySource8AcceptItemWhereItem3]
+
+
+CreateTriggerBodySource8AcceptItemWhereItem1 = TypedDict("CreateTriggerBodySource8AcceptItemWhereItem1", {"pointer": "str", "in": "list[Any]"})
+
+
+class CreateTriggerBodySource8AcceptItemWhereItem2(TypedDict):
+    pointer: str
+    exists: bool
+
+
+class CreateTriggerBodySource8AcceptItemWhereItem3(TypedDict):
     pointer: str
     prefix: str
 
@@ -6856,12 +9804,12 @@ class _CreateTriggerResponseRequired(TypedDict):
     id: str
     name: str
     enabled: bool
-    source: CreateTriggerResponseSource1 | CreateTriggerResponseSource2 | CreateTriggerResponseSource3 | CreateTriggerResponseSource4 | CreateTriggerResponseSource5 | CreateTriggerResponseSource6
+    source: CreateTriggerResponseSource1 | CreateTriggerResponseSource2 | CreateTriggerResponseSource3 | CreateTriggerResponseSource4 | CreateTriggerResponseSource5 | CreateTriggerResponseSource6 | CreateTriggerResponseSource7 | CreateTriggerResponseSource8
     target: CreateTriggerResponseTarget1 | CreateTriggerResponseTarget2
     catchup_window_s: int
     max_active_runs: int | None
     failures_in_a_row: int
-    disabled: CreateTriggerResponseDisabled1 | CreateTriggerResponseDisabled2 | CreateTriggerResponseDisabled3 | CreateTriggerResponseDisabled4 | None
+    disabled: CreateTriggerResponseDisabled1 | CreateTriggerResponseDisabled2 | CreateTriggerResponseDisabled3 | CreateTriggerResponseDisabled4 | CreateTriggerResponseDisabled5 | None
     next_at: str | None
     last_run_id: str | None
     created_at: str
@@ -6870,6 +9818,7 @@ class _CreateTriggerResponseRequired(TypedDict):
 
 
 class CreateTriggerResponse(_CreateTriggerResponseRequired, total=False):
+    last_check: CreateTriggerResponseLastCheck | None
     hook_url: str
     secret: SecretMeta
     signing_secret: str
@@ -6899,7 +9848,7 @@ class _CreateTriggerResponseSource4Required(TypedDict):
 
 
 class CreateTriggerResponseSource4(_CreateTriggerResponseSource4Required, total=False):
-    signature: Literal["standard", "github", "composio"]
+    signature: Literal["standard", "github"]
     accept: list[CreateTriggerResponseSource4AcceptItem]
 
 
@@ -6962,6 +9911,7 @@ class _CreateTriggerResponseSource6Required(TypedDict):
 class CreateTriggerResponseSource6(_CreateTriggerResponseSource6Required, total=False):
     accept: list[CreateTriggerResponseSource6AcceptItem]
     instance_id: str
+    sealed_config: list[str]
     hook: str
     move_subscription: Literal[True]
 
@@ -6984,6 +9934,75 @@ class CreateTriggerResponseSource6AcceptItemWhereItem2(TypedDict):
 
 
 class CreateTriggerResponseSource6AcceptItemWhereItem3(TypedDict):
+    pointer: str
+    prefix: str
+
+
+class _CreateTriggerResponseSource7Required(TypedDict):
+    kind: Literal["email"]
+    account: Literal["default"]
+    mailbox: str
+    every_s: int
+
+
+class CreateTriggerResponseSource7(_CreateTriggerResponseSource7Required, total=False):
+    accept: list[CreateTriggerResponseSource7AcceptItem]
+
+
+class _CreateTriggerResponseSource7AcceptItemRequired(TypedDict):
+    event: str
+
+
+class CreateTriggerResponseSource7AcceptItem(_CreateTriggerResponseSource7AcceptItemRequired, total=False):
+    actions: list[str]
+    where: list[CreateTriggerResponseSource7AcceptItemWhereItem1 | CreateTriggerResponseSource7AcceptItemWhereItem2 | CreateTriggerResponseSource7AcceptItemWhereItem3]
+
+
+CreateTriggerResponseSource7AcceptItemWhereItem1 = TypedDict("CreateTriggerResponseSource7AcceptItemWhereItem1", {"pointer": "str", "in": "list[Any]"})
+
+
+class CreateTriggerResponseSource7AcceptItemWhereItem2(TypedDict):
+    pointer: str
+    exists: bool
+
+
+class CreateTriggerResponseSource7AcceptItemWhereItem3(TypedDict):
+    pointer: str
+    prefix: str
+
+
+class _CreateTriggerResponseSource8Required(TypedDict):
+    kind: Literal["feed"]
+    urls: list[str]
+    every_s: int
+
+
+class CreateTriggerResponseSource8(_CreateTriggerResponseSource8Required, total=False):
+    items: str
+    id: str
+    updated: str
+    fields: list[str]
+    accept: list[CreateTriggerResponseSource8AcceptItem]
+
+
+class _CreateTriggerResponseSource8AcceptItemRequired(TypedDict):
+    event: str
+
+
+class CreateTriggerResponseSource8AcceptItem(_CreateTriggerResponseSource8AcceptItemRequired, total=False):
+    actions: list[str]
+    where: list[CreateTriggerResponseSource8AcceptItemWhereItem1 | CreateTriggerResponseSource8AcceptItemWhereItem2 | CreateTriggerResponseSource8AcceptItemWhereItem3]
+
+
+CreateTriggerResponseSource8AcceptItemWhereItem1 = TypedDict("CreateTriggerResponseSource8AcceptItemWhereItem1", {"pointer": "str", "in": "list[Any]"})
+
+
+class CreateTriggerResponseSource8AcceptItemWhereItem2(TypedDict):
+    pointer: str
+    exists: bool
+
+
+class CreateTriggerResponseSource8AcceptItemWhereItem3(TypedDict):
     pointer: str
     prefix: str
 
@@ -7032,9 +10051,15 @@ class CreateTriggerResponseDisabled4(TypedDict):
     detail: str
 
 
+class CreateTriggerResponseDisabled5(TypedDict):
+    at: str
+    reason: Literal["sign_in_refused"]
+    detail: str
+
+
 class _CreateTriggerResponseLastFiringRequired(TypedDict):
     key: str
-    by: Literal["schedule", "manual", "webhook", "github", "composio"]
+    by: Literal["schedule", "email", "feed", "manual", "webhook", "github", "composio"]
     nominal_at: str
     status: Literal["due", "started", "sent", "skipped", "failed", "missed"]
     at: str
@@ -7047,11 +10072,18 @@ class CreateTriggerResponseLastFiring(_CreateTriggerResponseLastFiringRequired, 
     count: int
     attempts: int
     retry_at: str
+    start_by: str
     catch_up: Literal[True]
 
 
 class CreateTriggerResponseLastFiringError(TypedDict):
     code: str
+    message: str
+
+
+class CreateTriggerResponseLastCheck(TypedDict):
+    at: str
+    ok: bool
     message: str
 
 
@@ -7067,7 +10099,7 @@ class DeleteTriggerResponseComposio(TypedDict):
 
 class _FireTriggerResponseRequired(TypedDict):
     key: str
-    by: Literal["schedule", "manual", "webhook", "github", "composio"]
+    by: Literal["schedule", "email", "feed", "manual", "webhook", "github", "composio"]
     nominal_at: str
     status: Literal["due", "started", "sent", "skipped", "failed", "missed"]
     at: str
@@ -7080,6 +10112,7 @@ class FireTriggerResponse(_FireTriggerResponseRequired, total=False):
     count: int
     attempts: int
     retry_at: str
+    start_by: str
     catch_up: Literal[True]
 
 
@@ -7094,7 +10127,7 @@ class ListTriggerFiringsResponse(TypedDict):
 
 class _ListTriggerFiringsResponseFiringsItemRequired(TypedDict):
     key: str
-    by: Literal["schedule", "manual", "webhook", "github", "composio"]
+    by: Literal["schedule", "email", "feed", "manual", "webhook", "github", "composio"]
     nominal_at: str
     status: Literal["due", "started", "sent", "skipped", "failed", "missed"]
     at: str
@@ -7107,6 +10140,7 @@ class ListTriggerFiringsResponseFiringsItem(_ListTriggerFiringsResponseFiringsIt
     count: int
     attempts: int
     retry_at: str
+    start_by: str
     catch_up: Literal[True]
 
 
@@ -7119,12 +10153,12 @@ class _GetTriggerResponseRequired(TypedDict):
     id: str
     name: str
     enabled: bool
-    source: GetTriggerResponseSource1 | GetTriggerResponseSource2 | GetTriggerResponseSource3 | GetTriggerResponseSource4 | GetTriggerResponseSource5 | GetTriggerResponseSource6
+    source: GetTriggerResponseSource1 | GetTriggerResponseSource2 | GetTriggerResponseSource3 | GetTriggerResponseSource4 | GetTriggerResponseSource5 | GetTriggerResponseSource6 | GetTriggerResponseSource7 | GetTriggerResponseSource8
     target: GetTriggerResponseTarget1 | GetTriggerResponseTarget2
     catchup_window_s: int
     max_active_runs: int | None
     failures_in_a_row: int
-    disabled: GetTriggerResponseDisabled1 | GetTriggerResponseDisabled2 | GetTriggerResponseDisabled3 | GetTriggerResponseDisabled4 | None
+    disabled: GetTriggerResponseDisabled1 | GetTriggerResponseDisabled2 | GetTriggerResponseDisabled3 | GetTriggerResponseDisabled4 | GetTriggerResponseDisabled5 | None
     next_at: str | None
     last_run_id: str | None
     created_at: str
@@ -7133,6 +10167,7 @@ class _GetTriggerResponseRequired(TypedDict):
 
 
 class GetTriggerResponse(_GetTriggerResponseRequired, total=False):
+    last_check: GetTriggerResponseLastCheck | None
     hook_url: str
     secret: SecretMeta
     note: str
@@ -7160,7 +10195,7 @@ class _GetTriggerResponseSource4Required(TypedDict):
 
 
 class GetTriggerResponseSource4(_GetTriggerResponseSource4Required, total=False):
-    signature: Literal["standard", "github", "composio"]
+    signature: Literal["standard", "github"]
     accept: list[GetTriggerResponseSource4AcceptItem]
 
 
@@ -7223,6 +10258,7 @@ class _GetTriggerResponseSource6Required(TypedDict):
 class GetTriggerResponseSource6(_GetTriggerResponseSource6Required, total=False):
     accept: list[GetTriggerResponseSource6AcceptItem]
     instance_id: str
+    sealed_config: list[str]
     hook: str
     move_subscription: Literal[True]
 
@@ -7245,6 +10281,75 @@ class GetTriggerResponseSource6AcceptItemWhereItem2(TypedDict):
 
 
 class GetTriggerResponseSource6AcceptItemWhereItem3(TypedDict):
+    pointer: str
+    prefix: str
+
+
+class _GetTriggerResponseSource7Required(TypedDict):
+    kind: Literal["email"]
+    account: Literal["default"]
+    mailbox: str
+    every_s: int
+
+
+class GetTriggerResponseSource7(_GetTriggerResponseSource7Required, total=False):
+    accept: list[GetTriggerResponseSource7AcceptItem]
+
+
+class _GetTriggerResponseSource7AcceptItemRequired(TypedDict):
+    event: str
+
+
+class GetTriggerResponseSource7AcceptItem(_GetTriggerResponseSource7AcceptItemRequired, total=False):
+    actions: list[str]
+    where: list[GetTriggerResponseSource7AcceptItemWhereItem1 | GetTriggerResponseSource7AcceptItemWhereItem2 | GetTriggerResponseSource7AcceptItemWhereItem3]
+
+
+GetTriggerResponseSource7AcceptItemWhereItem1 = TypedDict("GetTriggerResponseSource7AcceptItemWhereItem1", {"pointer": "str", "in": "list[Any]"})
+
+
+class GetTriggerResponseSource7AcceptItemWhereItem2(TypedDict):
+    pointer: str
+    exists: bool
+
+
+class GetTriggerResponseSource7AcceptItemWhereItem3(TypedDict):
+    pointer: str
+    prefix: str
+
+
+class _GetTriggerResponseSource8Required(TypedDict):
+    kind: Literal["feed"]
+    urls: list[str]
+    every_s: int
+
+
+class GetTriggerResponseSource8(_GetTriggerResponseSource8Required, total=False):
+    items: str
+    id: str
+    updated: str
+    fields: list[str]
+    accept: list[GetTriggerResponseSource8AcceptItem]
+
+
+class _GetTriggerResponseSource8AcceptItemRequired(TypedDict):
+    event: str
+
+
+class GetTriggerResponseSource8AcceptItem(_GetTriggerResponseSource8AcceptItemRequired, total=False):
+    actions: list[str]
+    where: list[GetTriggerResponseSource8AcceptItemWhereItem1 | GetTriggerResponseSource8AcceptItemWhereItem2 | GetTriggerResponseSource8AcceptItemWhereItem3]
+
+
+GetTriggerResponseSource8AcceptItemWhereItem1 = TypedDict("GetTriggerResponseSource8AcceptItemWhereItem1", {"pointer": "str", "in": "list[Any]"})
+
+
+class GetTriggerResponseSource8AcceptItemWhereItem2(TypedDict):
+    pointer: str
+    exists: bool
+
+
+class GetTriggerResponseSource8AcceptItemWhereItem3(TypedDict):
     pointer: str
     prefix: str
 
@@ -7293,9 +10398,15 @@ class GetTriggerResponseDisabled4(TypedDict):
     detail: str
 
 
+class GetTriggerResponseDisabled5(TypedDict):
+    at: str
+    reason: Literal["sign_in_refused"]
+    detail: str
+
+
 class _GetTriggerResponseLastFiringRequired(TypedDict):
     key: str
-    by: Literal["schedule", "manual", "webhook", "github", "composio"]
+    by: Literal["schedule", "email", "feed", "manual", "webhook", "github", "composio"]
     nominal_at: str
     status: Literal["due", "started", "sent", "skipped", "failed", "missed"]
     at: str
@@ -7308,11 +10419,18 @@ class GetTriggerResponseLastFiring(_GetTriggerResponseLastFiringRequired, total=
     count: int
     attempts: int
     retry_at: str
+    start_by: str
     catch_up: Literal[True]
 
 
 class GetTriggerResponseLastFiringError(TypedDict):
     code: str
+    message: str
+
+
+class GetTriggerResponseLastCheck(TypedDict):
+    at: str
+    ok: bool
     message: str
 
 
@@ -7324,12 +10442,12 @@ class _ListTriggersResponseTriggersItemRequired(TypedDict):
     id: str
     name: str
     enabled: bool
-    source: ListTriggersResponseTriggersItemSource1 | ListTriggersResponseTriggersItemSource2 | ListTriggersResponseTriggersItemSource3 | ListTriggersResponseTriggersItemSource4 | ListTriggersResponseTriggersItemSource5 | ListTriggersResponseTriggersItemSource6
+    source: ListTriggersResponseTriggersItemSource1 | ListTriggersResponseTriggersItemSource2 | ListTriggersResponseTriggersItemSource3 | ListTriggersResponseTriggersItemSource4 | ListTriggersResponseTriggersItemSource5 | ListTriggersResponseTriggersItemSource6 | ListTriggersResponseTriggersItemSource7 | ListTriggersResponseTriggersItemSource8
     target: ListTriggersResponseTriggersItemTarget1 | ListTriggersResponseTriggersItemTarget2
     catchup_window_s: int
     max_active_runs: int | None
     failures_in_a_row: int
-    disabled: ListTriggersResponseTriggersItemDisabled1 | ListTriggersResponseTriggersItemDisabled2 | ListTriggersResponseTriggersItemDisabled3 | ListTriggersResponseTriggersItemDisabled4 | None
+    disabled: ListTriggersResponseTriggersItemDisabled1 | ListTriggersResponseTriggersItemDisabled2 | ListTriggersResponseTriggersItemDisabled3 | ListTriggersResponseTriggersItemDisabled4 | ListTriggersResponseTriggersItemDisabled5 | None
     next_at: str | None
     last_run_id: str | None
     created_at: str
@@ -7338,6 +10456,7 @@ class _ListTriggersResponseTriggersItemRequired(TypedDict):
 
 
 class ListTriggersResponseTriggersItem(_ListTriggersResponseTriggersItemRequired, total=False):
+    last_check: ListTriggersResponseTriggersItemLastCheck | None
     hook_url: str
     secret: SecretMeta
     note: str
@@ -7365,7 +10484,7 @@ class _ListTriggersResponseTriggersItemSource4Required(TypedDict):
 
 
 class ListTriggersResponseTriggersItemSource4(_ListTriggersResponseTriggersItemSource4Required, total=False):
-    signature: Literal["standard", "github", "composio"]
+    signature: Literal["standard", "github"]
     accept: list[ListTriggersResponseTriggersItemSource4AcceptItem]
 
 
@@ -7428,6 +10547,7 @@ class _ListTriggersResponseTriggersItemSource6Required(TypedDict):
 class ListTriggersResponseTriggersItemSource6(_ListTriggersResponseTriggersItemSource6Required, total=False):
     accept: list[ListTriggersResponseTriggersItemSource6AcceptItem]
     instance_id: str
+    sealed_config: list[str]
     hook: str
     move_subscription: Literal[True]
 
@@ -7450,6 +10570,75 @@ class ListTriggersResponseTriggersItemSource6AcceptItemWhereItem2(TypedDict):
 
 
 class ListTriggersResponseTriggersItemSource6AcceptItemWhereItem3(TypedDict):
+    pointer: str
+    prefix: str
+
+
+class _ListTriggersResponseTriggersItemSource7Required(TypedDict):
+    kind: Literal["email"]
+    account: Literal["default"]
+    mailbox: str
+    every_s: int
+
+
+class ListTriggersResponseTriggersItemSource7(_ListTriggersResponseTriggersItemSource7Required, total=False):
+    accept: list[ListTriggersResponseTriggersItemSource7AcceptItem]
+
+
+class _ListTriggersResponseTriggersItemSource7AcceptItemRequired(TypedDict):
+    event: str
+
+
+class ListTriggersResponseTriggersItemSource7AcceptItem(_ListTriggersResponseTriggersItemSource7AcceptItemRequired, total=False):
+    actions: list[str]
+    where: list[ListTriggersResponseTriggersItemSource7AcceptItemWhereItem1 | ListTriggersResponseTriggersItemSource7AcceptItemWhereItem2 | ListTriggersResponseTriggersItemSource7AcceptItemWhereItem3]
+
+
+ListTriggersResponseTriggersItemSource7AcceptItemWhereItem1 = TypedDict("ListTriggersResponseTriggersItemSource7AcceptItemWhereItem1", {"pointer": "str", "in": "list[Any]"})
+
+
+class ListTriggersResponseTriggersItemSource7AcceptItemWhereItem2(TypedDict):
+    pointer: str
+    exists: bool
+
+
+class ListTriggersResponseTriggersItemSource7AcceptItemWhereItem3(TypedDict):
+    pointer: str
+    prefix: str
+
+
+class _ListTriggersResponseTriggersItemSource8Required(TypedDict):
+    kind: Literal["feed"]
+    urls: list[str]
+    every_s: int
+
+
+class ListTriggersResponseTriggersItemSource8(_ListTriggersResponseTriggersItemSource8Required, total=False):
+    items: str
+    id: str
+    updated: str
+    fields: list[str]
+    accept: list[ListTriggersResponseTriggersItemSource8AcceptItem]
+
+
+class _ListTriggersResponseTriggersItemSource8AcceptItemRequired(TypedDict):
+    event: str
+
+
+class ListTriggersResponseTriggersItemSource8AcceptItem(_ListTriggersResponseTriggersItemSource8AcceptItemRequired, total=False):
+    actions: list[str]
+    where: list[ListTriggersResponseTriggersItemSource8AcceptItemWhereItem1 | ListTriggersResponseTriggersItemSource8AcceptItemWhereItem2 | ListTriggersResponseTriggersItemSource8AcceptItemWhereItem3]
+
+
+ListTriggersResponseTriggersItemSource8AcceptItemWhereItem1 = TypedDict("ListTriggersResponseTriggersItemSource8AcceptItemWhereItem1", {"pointer": "str", "in": "list[Any]"})
+
+
+class ListTriggersResponseTriggersItemSource8AcceptItemWhereItem2(TypedDict):
+    pointer: str
+    exists: bool
+
+
+class ListTriggersResponseTriggersItemSource8AcceptItemWhereItem3(TypedDict):
     pointer: str
     prefix: str
 
@@ -7498,9 +10687,15 @@ class ListTriggersResponseTriggersItemDisabled4(TypedDict):
     detail: str
 
 
+class ListTriggersResponseTriggersItemDisabled5(TypedDict):
+    at: str
+    reason: Literal["sign_in_refused"]
+    detail: str
+
+
 class _ListTriggersResponseTriggersItemLastFiringRequired(TypedDict):
     key: str
-    by: Literal["schedule", "manual", "webhook", "github", "composio"]
+    by: Literal["schedule", "email", "feed", "manual", "webhook", "github", "composio"]
     nominal_at: str
     status: Literal["due", "started", "sent", "skipped", "failed", "missed"]
     at: str
@@ -7513,6 +10708,7 @@ class ListTriggersResponseTriggersItemLastFiring(_ListTriggersResponseTriggersIt
     count: int
     attempts: int
     retry_at: str
+    start_by: str
     catch_up: Literal[True]
 
 
@@ -7521,8 +10717,38 @@ class ListTriggersResponseTriggersItemLastFiringError(TypedDict):
     message: str
 
 
-class RotateTriggerSecretBody(TypedDict, total=False):
-    secret: str
+class ListTriggersResponseTriggersItemLastCheck(TypedDict):
+    at: str
+    ok: bool
+    message: str
+
+
+class ReleaseTriggerFiringBody(TypedDict):
+    error: str
+
+
+class _ReleaseTriggerFiringResponseRequired(TypedDict):
+    key: str
+    by: Literal["schedule", "email", "feed", "manual", "webhook", "github", "composio"]
+    nominal_at: str
+    status: Literal["due", "started", "sent", "skipped", "failed", "missed"]
+    at: str
+    run_id: str | None
+    reason: str | None
+    error: ReleaseTriggerFiringResponseError | None
+
+
+class ReleaseTriggerFiringResponse(_ReleaseTriggerFiringResponseRequired, total=False):
+    count: int
+    attempts: int
+    retry_at: str
+    start_by: str
+    catch_up: Literal[True]
+
+
+class ReleaseTriggerFiringResponseError(TypedDict):
+    code: str
+    message: str
 
 
 class _RotateTriggerSecretResponseRequired(TypedDict):
@@ -7536,7 +10762,7 @@ class RotateTriggerSecretResponse(_RotateTriggerSecretResponseRequired, total=Fa
 class UpdateTriggerBody(TypedDict, total=False):
     name: str
     enabled: bool
-    source: UpdateTriggerBodySource1 | UpdateTriggerBodySource2 | UpdateTriggerBodySource3 | UpdateTriggerBodySource4 | UpdateTriggerBodySource5 | UpdateTriggerBodySource6
+    source: UpdateTriggerBodySource1 | UpdateTriggerBodySource2 | UpdateTriggerBodySource3 | UpdateTriggerBodySource4 | UpdateTriggerBodySource5 | UpdateTriggerBodySource6 | UpdateTriggerBodySource7 | UpdateTriggerBodySource8
     target: UpdateTriggerBodyTarget1 | UpdateTriggerBodyTarget2
     catchup_window_s: int
     max_active_runs: int | None
@@ -7570,7 +10796,7 @@ class _UpdateTriggerBodySource4Required(TypedDict):
 
 
 class UpdateTriggerBodySource4(_UpdateTriggerBodySource4Required, total=False):
-    signature: Literal["standard", "github", "composio"]
+    signature: Literal["standard", "github"]
     accept: list[UpdateTriggerBodySource4AcceptItem]
 
 
@@ -7633,6 +10859,7 @@ class _UpdateTriggerBodySource6Required(TypedDict):
 class UpdateTriggerBodySource6(_UpdateTriggerBodySource6Required, total=False):
     accept: list[UpdateTriggerBodySource6AcceptItem]
     instance_id: str
+    sealed_config: list[str]
     hook: str
     move_subscription: Literal[True]
 
@@ -7655,6 +10882,75 @@ class UpdateTriggerBodySource6AcceptItemWhereItem2(TypedDict):
 
 
 class UpdateTriggerBodySource6AcceptItemWhereItem3(TypedDict):
+    pointer: str
+    prefix: str
+
+
+class _UpdateTriggerBodySource7Required(TypedDict):
+    kind: Literal["email"]
+
+
+class UpdateTriggerBodySource7(_UpdateTriggerBodySource7Required, total=False):
+    account: Literal["default"]
+    mailbox: str
+    every_s: int
+    accept: list[UpdateTriggerBodySource7AcceptItem]
+
+
+class _UpdateTriggerBodySource7AcceptItemRequired(TypedDict):
+    event: str
+
+
+class UpdateTriggerBodySource7AcceptItem(_UpdateTriggerBodySource7AcceptItemRequired, total=False):
+    actions: list[str]
+    where: list[UpdateTriggerBodySource7AcceptItemWhereItem1 | UpdateTriggerBodySource7AcceptItemWhereItem2 | UpdateTriggerBodySource7AcceptItemWhereItem3]
+
+
+UpdateTriggerBodySource7AcceptItemWhereItem1 = TypedDict("UpdateTriggerBodySource7AcceptItemWhereItem1", {"pointer": "str", "in": "list[Any]"})
+
+
+class UpdateTriggerBodySource7AcceptItemWhereItem2(TypedDict):
+    pointer: str
+    exists: bool
+
+
+class UpdateTriggerBodySource7AcceptItemWhereItem3(TypedDict):
+    pointer: str
+    prefix: str
+
+
+class _UpdateTriggerBodySource8Required(TypedDict):
+    kind: Literal["feed"]
+    urls: list[str]
+
+
+class UpdateTriggerBodySource8(_UpdateTriggerBodySource8Required, total=False):
+    every_s: int
+    items: str
+    id: str
+    updated: str
+    fields: list[str]
+    accept: list[UpdateTriggerBodySource8AcceptItem]
+
+
+class _UpdateTriggerBodySource8AcceptItemRequired(TypedDict):
+    event: str
+
+
+class UpdateTriggerBodySource8AcceptItem(_UpdateTriggerBodySource8AcceptItemRequired, total=False):
+    actions: list[str]
+    where: list[UpdateTriggerBodySource8AcceptItemWhereItem1 | UpdateTriggerBodySource8AcceptItemWhereItem2 | UpdateTriggerBodySource8AcceptItemWhereItem3]
+
+
+UpdateTriggerBodySource8AcceptItemWhereItem1 = TypedDict("UpdateTriggerBodySource8AcceptItemWhereItem1", {"pointer": "str", "in": "list[Any]"})
+
+
+class UpdateTriggerBodySource8AcceptItemWhereItem2(TypedDict):
+    pointer: str
+    exists: bool
+
+
+class UpdateTriggerBodySource8AcceptItemWhereItem3(TypedDict):
     pointer: str
     prefix: str
 
@@ -7684,12 +10980,12 @@ class _UpdateTriggerResponseRequired(TypedDict):
     id: str
     name: str
     enabled: bool
-    source: UpdateTriggerResponseSource1 | UpdateTriggerResponseSource2 | UpdateTriggerResponseSource3 | UpdateTriggerResponseSource4 | UpdateTriggerResponseSource5 | UpdateTriggerResponseSource6
+    source: UpdateTriggerResponseSource1 | UpdateTriggerResponseSource2 | UpdateTriggerResponseSource3 | UpdateTriggerResponseSource4 | UpdateTriggerResponseSource5 | UpdateTriggerResponseSource6 | UpdateTriggerResponseSource7 | UpdateTriggerResponseSource8
     target: UpdateTriggerResponseTarget1 | UpdateTriggerResponseTarget2
     catchup_window_s: int
     max_active_runs: int | None
     failures_in_a_row: int
-    disabled: UpdateTriggerResponseDisabled1 | UpdateTriggerResponseDisabled2 | UpdateTriggerResponseDisabled3 | UpdateTriggerResponseDisabled4 | None
+    disabled: UpdateTriggerResponseDisabled1 | UpdateTriggerResponseDisabled2 | UpdateTriggerResponseDisabled3 | UpdateTriggerResponseDisabled4 | UpdateTriggerResponseDisabled5 | None
     next_at: str | None
     last_run_id: str | None
     created_at: str
@@ -7698,6 +10994,7 @@ class _UpdateTriggerResponseRequired(TypedDict):
 
 
 class UpdateTriggerResponse(_UpdateTriggerResponseRequired, total=False):
+    last_check: UpdateTriggerResponseLastCheck | None
     hook_url: str
     secret: SecretMeta
     note: str
@@ -7726,7 +11023,7 @@ class _UpdateTriggerResponseSource4Required(TypedDict):
 
 
 class UpdateTriggerResponseSource4(_UpdateTriggerResponseSource4Required, total=False):
-    signature: Literal["standard", "github", "composio"]
+    signature: Literal["standard", "github"]
     accept: list[UpdateTriggerResponseSource4AcceptItem]
 
 
@@ -7789,6 +11086,7 @@ class _UpdateTriggerResponseSource6Required(TypedDict):
 class UpdateTriggerResponseSource6(_UpdateTriggerResponseSource6Required, total=False):
     accept: list[UpdateTriggerResponseSource6AcceptItem]
     instance_id: str
+    sealed_config: list[str]
     hook: str
     move_subscription: Literal[True]
 
@@ -7811,6 +11109,75 @@ class UpdateTriggerResponseSource6AcceptItemWhereItem2(TypedDict):
 
 
 class UpdateTriggerResponseSource6AcceptItemWhereItem3(TypedDict):
+    pointer: str
+    prefix: str
+
+
+class _UpdateTriggerResponseSource7Required(TypedDict):
+    kind: Literal["email"]
+    account: Literal["default"]
+    mailbox: str
+    every_s: int
+
+
+class UpdateTriggerResponseSource7(_UpdateTriggerResponseSource7Required, total=False):
+    accept: list[UpdateTriggerResponseSource7AcceptItem]
+
+
+class _UpdateTriggerResponseSource7AcceptItemRequired(TypedDict):
+    event: str
+
+
+class UpdateTriggerResponseSource7AcceptItem(_UpdateTriggerResponseSource7AcceptItemRequired, total=False):
+    actions: list[str]
+    where: list[UpdateTriggerResponseSource7AcceptItemWhereItem1 | UpdateTriggerResponseSource7AcceptItemWhereItem2 | UpdateTriggerResponseSource7AcceptItemWhereItem3]
+
+
+UpdateTriggerResponseSource7AcceptItemWhereItem1 = TypedDict("UpdateTriggerResponseSource7AcceptItemWhereItem1", {"pointer": "str", "in": "list[Any]"})
+
+
+class UpdateTriggerResponseSource7AcceptItemWhereItem2(TypedDict):
+    pointer: str
+    exists: bool
+
+
+class UpdateTriggerResponseSource7AcceptItemWhereItem3(TypedDict):
+    pointer: str
+    prefix: str
+
+
+class _UpdateTriggerResponseSource8Required(TypedDict):
+    kind: Literal["feed"]
+    urls: list[str]
+    every_s: int
+
+
+class UpdateTriggerResponseSource8(_UpdateTriggerResponseSource8Required, total=False):
+    items: str
+    id: str
+    updated: str
+    fields: list[str]
+    accept: list[UpdateTriggerResponseSource8AcceptItem]
+
+
+class _UpdateTriggerResponseSource8AcceptItemRequired(TypedDict):
+    event: str
+
+
+class UpdateTriggerResponseSource8AcceptItem(_UpdateTriggerResponseSource8AcceptItemRequired, total=False):
+    actions: list[str]
+    where: list[UpdateTriggerResponseSource8AcceptItemWhereItem1 | UpdateTriggerResponseSource8AcceptItemWhereItem2 | UpdateTriggerResponseSource8AcceptItemWhereItem3]
+
+
+UpdateTriggerResponseSource8AcceptItemWhereItem1 = TypedDict("UpdateTriggerResponseSource8AcceptItemWhereItem1", {"pointer": "str", "in": "list[Any]"})
+
+
+class UpdateTriggerResponseSource8AcceptItemWhereItem2(TypedDict):
+    pointer: str
+    exists: bool
+
+
+class UpdateTriggerResponseSource8AcceptItemWhereItem3(TypedDict):
     pointer: str
     prefix: str
 
@@ -7859,9 +11226,15 @@ class UpdateTriggerResponseDisabled4(TypedDict):
     detail: str
 
 
+class UpdateTriggerResponseDisabled5(TypedDict):
+    at: str
+    reason: Literal["sign_in_refused"]
+    detail: str
+
+
 class _UpdateTriggerResponseLastFiringRequired(TypedDict):
     key: str
-    by: Literal["schedule", "manual", "webhook", "github", "composio"]
+    by: Literal["schedule", "email", "feed", "manual", "webhook", "github", "composio"]
     nominal_at: str
     status: Literal["due", "started", "sent", "skipped", "failed", "missed"]
     at: str
@@ -7874,11 +11247,18 @@ class UpdateTriggerResponseLastFiring(_UpdateTriggerResponseLastFiringRequired, 
     count: int
     attempts: int
     retry_at: str
+    start_by: str
     catch_up: Literal[True]
 
 
 class UpdateTriggerResponseLastFiringError(TypedDict):
     code: str
+    message: str
+
+
+class UpdateTriggerResponseLastCheck(TypedDict):
+    at: str
+    ok: bool
     message: str
 
 
@@ -7890,7 +11270,7 @@ class UpdateTriggerResponseComposio(TypedDict):
 GetUsageResponse: TypeAlias = "Usage"
 
 
-_UsageRequired = TypedDict("_UsageRequired", {"from": "Timestamp", "to": "Timestamp", "currency": "Literal[\"USD\"]", "basis": "Literal[\"charge\", \"estimate\"]", "group_by": "Literal[\"meter\", \"agent\", \"key\", \"day\", \"region\"]", "total_usd": "float | None", "lines": "list[UsageLine]", "account": "UsageAccount | None"})
+_UsageRequired = TypedDict("_UsageRequired", {"from": "Timestamp", "to": "Timestamp", "currency": "Literal[\"USD\"]", "basis": "Literal[\"charge\", \"estimate\", \"reported\", \"unpriced\"]", "group_by": "Literal[\"meter\", \"agent\", \"key\", \"day\", \"region\"]", "total_usd": "float | None", "lines": "list[UsageLine]", "account": "UsageAccount | None"})
 _UsageOptional = TypedDict("_UsageOptional", {"unpriced_runs": "int"}, total=False)
 
 
@@ -7964,6 +11344,21 @@ class RedeliverWebhookResponse(TypedDict):
     error: str | None
     retry_at: str | None
     redelivery: bool
+
+
+class RotateWebhookSecretResponse(TypedDict):
+    configured: Literal[True]
+    url: str
+    secret: SecretMeta
+    signing: Literal["sealed", "unreadable"]
+    disabled: RotateWebhookSecretResponseDisabled | None
+    updated_at: str
+    signing_secret: str
+
+
+class RotateWebhookSecretResponseDisabled(TypedDict):
+    at: str
+    reason: str
 
 
 class SaveWebhookBody(TypedDict):
@@ -8048,11 +11443,70 @@ class ValidateWorkflowResponseIssuesItem(TypedDict):
     message: str
 
 
+class GetWrappedResponse(TypedDict):
+    year: int
+    sessions: int
+    turns: int
+    requests: int
+    tokens: GetWrappedResponseTokens
+    cost_usd: float
+    unpriced_requests: int
+    days: list[GetWrappedResponseDaysItem]
+    hours: list[int]
+    weekdays: list[int]
+    active_ms: int
+    harnesses: list[GetWrappedResponseHarnessesItem]
+    models: list[GetWrappedResponseModelsItem]
+    sources: list[GetWrappedResponseSourcesItem]
+    imported: list[GetWrappedResponseImportedItem]
+    unread_files: int
+
+
+class GetWrappedResponseTokens(TypedDict):
+    input: int
+    output: int
+    cache_read: int
+    cache_write: int
+
+
+class GetWrappedResponseDaysItem(TypedDict):
+    day: str
+    requests: int
+    tokens: int
+
+
+class GetWrappedResponseHarnessesItem(TypedDict):
+    harness: str
+    sessions: int
+    requests: int
+    tokens: int
+
+
+class GetWrappedResponseModelsItem(TypedDict):
+    model: str
+    requests: int
+    tokens: int
+    cost_usd: float
+
+
+class GetWrappedResponseSourcesItem(TypedDict):
+    source: str
+    sessions: int
+    requests: int
+
+
+class GetWrappedResponseImportedItem(TypedDict):
+    source: str
+    runs: int
+
+
 # Each operation as the runtime sends it, by operationId.
 OPERATIONS: dict[str, Operation] = {
     "archiveAgent": Operation(method="POST", path="/agents/{agent_id}/archive", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "bindSourceTool": Operation(method="POST", path="/agents/{agent_id}/source/tools", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "connectNative": Operation(method="POST", path="/native/connect", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "createAgent": Operation(method="POST", path="/agents", path_params=(), multi_segment=(), query=(), headers=("Idempotency-Key",), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
+    "deleteAgent": Operation(method="DELETE", path="/agents/{agent_id}", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=None, answer="none", secret=False, public_fields=(), tagged=False),
     "deleteAgentArchil": Operation(method="DELETE", path="/agents/{agent_id}/archil", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "disconnectNative": Operation(method="POST", path="/agents/{agent_id}/native/disconnect", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "discoverNative": Operation(method="POST", path="/native/discover", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
@@ -8061,54 +11515,79 @@ OPERATIONS: dict[str, Operation] = {
     "getAgentArchil": Operation(method="GET", path="/agents/{agent_id}/archil", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getLearningLoop": Operation(method="GET", path="/agents/{agent_id}/learning/loop", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getNative": Operation(method="GET", path="/agents/{agent_id}/native", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "getSourceSync": Operation(method="GET", path="/agents/{agent_id}/source", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "listAgents": Operation(method="GET", path="/agents", path_params=(), multi_segment=(), query=("limit", "cursor", "archived"), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "listLearningAudits": Operation(method="GET", path="/agents/{agent_id}/learning/audits", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "listLearningPromotions": Operation(method="GET", path="/agents/{agent_id}/learning/promotions", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
-    "listRuns": Operation(method="GET", path="/agents/{agent_id}/runs", path_params=("agent_id",), multi_segment=(), query=("limit", "cursor", "status", "scope"), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "moveSourceAgent": Operation(method="POST", path="/agents/{agent_id}/source/move", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
+    "getAgentPackage": Operation(method="GET", path="/agents/{agent_id}/package", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "resolveSourceSync": Operation(method="POST", path="/agents/{agent_id}/source/resolve", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
+    "reviewSourceProject": Operation(method="POST", path="/agents/{agent_id}/source/project-review", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
+    "listRuns": Operation(method="GET", path="/agents/{agent_id}/runs", path_params=("agent_id",), multi_segment=(), query=("limit", "cursor", "status", "scope", "label"), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "setSourceSync": Operation(method="PATCH", path="/agents/{agent_id}/source", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "unarchiveAgent": Operation(method="POST", path="/agents/{agent_id}/unarchive", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "updateDefinition": Operation(method="PUT", path="/agents/{agent_id}/definition", path_params=("agent_id",), multi_segment=(), query=(), headers=("If-Match",), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=True),
     "verifyNative": Operation(method="POST", path="/agents/{agent_id}/native/verify", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "getCapacity": Operation(method="GET", path="/capacity", path_params=(), multi_segment=(), query=("window",), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "completeCliLearningRun": Operation(method="POST", path="/cli-learning/runs/{run_id}/complete", path_params=("run_id",), multi_segment=(), query=(), headers=("Idempotency-Key",), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
+    "enrollCliLearning": Operation(method="POST", path="/cli-learning/connections", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
+    "cliLearningEvents": Operation(method="POST", path="/cli-learning/runs/{run_id}/events", path_params=("run_id",), multi_segment=(), query=(), headers=("Idempotency-Key",), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
+    "getCliLearningRun": Operation(method="GET", path="/cli-learning/runs/{run_id}", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "listCliLearning": Operation(method="GET", path="/cli-learning/connections", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "revokeCliLearning": Operation(method="DELETE", path="/cli-learning/connections/{connection_id}", path_params=("connection_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "startCliLearningRun": Operation(method="POST", path="/cli-learning/connections/{connection_id}/runs", path_params=("connection_id",), multi_segment=(), query=(), headers=("Idempotency-Key",), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "completeRemoteCommand": Operation(method="POST", path="/connectors/{connector_id}/commands/{command_id}/complete", path_params=("connector_id", "command_id"), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "enrollRemoteConnector": Operation(method="POST", path="/connectors/enrollment", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
+    "grantSourceSync": Operation(method="POST", path="/connectors/{connector_id}/targets/{target_id}/sync/grant", path_params=("connector_id", "target_id"), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "importRemoteHistory": Operation(method="POST", path="/connectors/{connector_id}/targets/{target_id}/history", path_params=("connector_id", "target_id"), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "importRemoteTarget": Operation(method="POST", path="/connectors/{connector_id}/import", path_params=("connector_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "listRemoteConnectors": Operation(method="GET", path="/connectors", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "pollRemoteConnector": Operation(method="POST", path="/connectors/{connector_id}/poll", path_params=("connector_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
+    "publishSourceSync": Operation(method="POST", path="/connectors/{connector_id}/targets/{target_id}/sync", path_params=("connector_id", "target_id"), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "registerRemoteConnector": Operation(method="POST", path="/connectors", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "remoteCommandEvents": Operation(method="POST", path="/connectors/{connector_id}/commands/{command_id}/events", path_params=("connector_id", "command_id"), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "revokeRemoteConnector": Operation(method="DELETE", path="/connectors/{connector_id}", path_params=("connector_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "sourceSyncFailure": Operation(method="POST", path="/connectors/{connector_id}/targets/{target_id}/sync/status", path_params=("connector_id", "target_id"), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "createFile": Operation(method="POST", path="/files", path_params=(), multi_segment=(), query=("path", "content_type", "sha256"), headers=("Idempotency-Key",), body=OperationBody(required=True, types=("application/json", "application/octet-stream", "*/*")), answer="json", secret=False, public_fields=(), tagged=False),
     "deleteFile": Operation(method="DELETE", path="/files/{file_id}", path_params=("file_id",), multi_segment=(), query=(), headers=(), body=None, answer="none", secret=False, public_fields=(), tagged=False),
     "getFile": Operation(method="GET", path="/files/{file_id}", path_params=("file_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "listFiles": Operation(method="GET", path="/files", path_params=(), multi_segment=(), query=("limit", "cursor"), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "uploadFile": Operation(method="PUT", path="/files/{file_id}", path_params=("file_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/octet-stream",)), answer="json", secret=False, public_fields=(), tagged=False),
+    "listHarnessKeys": Operation(method="GET", path="/settings/harness-keys", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "deleteHomeFile": Operation(method="DELETE", path="/agents/{agent_id}/home/files/{path}", path_params=("agent_id", "path"), multi_segment=("path",), query=(), headers=(), body=None, answer="none", secret=False, public_fields=(), tagged=False),
     "listHomeFiles": Operation(method="GET", path="/agents/{agent_id}/home/files", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "readHomeFile": Operation(method="GET", path="/agents/{agent_id}/home/files/{path}", path_params=("agent_id", "path"), multi_segment=("path",), query=("download",), headers=(), body=None, answer="bytes", secret=False, public_fields=(), tagged=False),
     "writeHomeFile": Operation(method="PUT", path="/agents/{agent_id}/home/files/{path}", path_params=("agent_id", "path"), multi_segment=("path",), query=(), headers=(), body=OperationBody(required=True, types=("application/octet-stream", "*/*")), answer="json", secret=False, public_fields=(), tagged=False),
-    "getLearningBatch": Operation(method="GET", path="/agents/{agent_id}/learning/batches/{batch_id}", path_params=("agent_id", "batch_id"), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
-    "cancelLearningBatch": Operation(method="POST", path="/agents/{agent_id}/learning/batches/{batch_id}/cancel", path_params=("agent_id", "batch_id"), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
-    "createLearningBatch": Operation(method="POST", path="/agents/{agent_id}/learning/batches", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
-    "listLearningBatches": Operation(method="GET", path="/agents/{agent_id}/learning/batches", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "getLearningCorrections": Operation(method="GET", path="/agents/{agent_id}/learning/corrections", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=True),
     "getLearningCost": Operation(method="GET", path="/agents/{agent_id}/learning/cost", path_params=("agent_id",), multi_segment=(), query=("limit", "format"), headers=(), body=None, answer="json+text", secret=False, public_fields=(), tagged=False),
-    "listLearningEvals": Operation(method="GET", path="/agents/{agent_id}/learning/evals", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getAgentLearning": Operation(method="GET", path="/agents/{agent_id}/learning", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "listLearningLog": Operation(method="GET", path="/agents/{agent_id}/learning/log", path_params=("agent_id",), multi_segment=(), query=("cursor", "limit"), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
-    "listLearningNotes": Operation(method="GET", path="/agents/{agent_id}/learning/notes", path_params=("agent_id",), multi_segment=(), query=("cursor", "limit", "status"), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "readLearningFile": Operation(method="GET", path="/agents/{agent_id}/learning/files/{file}", path_params=("agent_id", "file"), multi_segment=(), query=(), headers=(), body=None, answer="json+text", secret=False, public_fields=(), tagged=True),
-    "recordLearningEval": Operation(method="POST", path="/agents/{agent_id}/learning/evals", path_params=("agent_id",), multi_segment=(), query=(), headers=("Idempotency-Key",), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "getLearnedWorkflowReplay": Operation(method="GET", path="/agents/{agent_id}/learning/workflows/{name}/revisions/{digest}/replays/{replay_id}", path_params=("agent_id", "name", "digest", "replay_id"), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "deleteAgentLearning": Operation(method="DELETE", path="/agents/{agent_id}/learning", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=None, answer="none", secret=False, public_fields=(), tagged=False),
     "retireLearningFile": Operation(method="POST", path="/agents/{agent_id}/learning/files/{file}/retire", path_params=("agent_id", "file"), multi_segment=(), query=(), headers=("If-Match",), body=None, answer="text", secret=False, public_fields=(), tagged=True),
     "listLearnedWorkflowRevisions": Operation(method="GET", path="/agents/{agent_id}/learning/workflows/{name}/revisions", path_params=("agent_id", "name"), multi_segment=(), query=("limit",), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
-    "writeLearningFile": Operation(method="PUT", path="/agents/{agent_id}/learning/files/{file}", path_params=("agent_id", "file"), multi_segment=(), query=(), headers=("If-Match", "If-None-Match"), body=OperationBody(required=True, types=("text/markdown", "text/plain", "application/json")), answer="text", secret=False, public_fields=(), tagged=True),
+    "putLearningCorrections": Operation(method="PUT", path="/agents/{agent_id}/learning/corrections", path_params=("agent_id",), multi_segment=(), query=(), headers=("If-Match",), body=OperationBody(required=True, types=("text/markdown", "text/plain", "application/json")), answer="json", secret=False, public_fields=(), tagged=True),
     "connectGitHub": Operation(method="POST", path="/integrations/github/connect", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=False, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "createPairing": Operation(method="POST", path="/computers/pairings", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "createSuggestedAgent": Operation(method="POST", path="/suggestions/{suggestion_id}/create", path_params=("suggestion_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=False, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
+    "deleteCalendar": Operation(method="DELETE", path="/settings/calendar", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="none", secret=False, public_fields=(), tagged=False),
     "deleteComposioSubscription": Operation(method="DELETE", path="/settings/mcp-servers/{name}/composio/subscription", path_params=("name",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "deleteComputer": Operation(method="DELETE", path="/computers/{computer_id}", path_params=("computer_id",), multi_segment=(), query=(), headers=(), body=None, answer="none", secret=False, public_fields=(), tagged=False),
+    "deleteEmailAccount": Operation(method="DELETE", path="/settings/email", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="none", secret=False, public_fields=(), tagged=False),
+    "deleteHarnessKey": Operation(method="DELETE", path="/settings/harness-keys/{harness_id}/{key}", path_params=("harness_id", "key"), multi_segment=(), query=(), headers=(), body=None, answer="none", secret=False, public_fields=(), tagged=False),
+    "deleteModelGateway": Operation(method="DELETE", path="/settings/model-gateway", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "deleteWorkspaceArchil": Operation(method="DELETE", path="/workspace/archil", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "discardSuggestion": Operation(method="POST", path="/suggestions/{suggestion_id}/discard", path_params=("suggestion_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "disconnectGitHub": Operation(method="DELETE", path="/integrations/github", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "finishChatGPTSignIn": Operation(method="POST", path="/settings/chatgpt/sign-in/finish", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
+    "getCalendar": Operation(method="GET", path="/settings/calendar", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getChatGPTSignIn": Operation(method="GET", path="/settings/chatgpt", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "getClaudeLogin": Operation(method="GET", path="/settings/claude-login", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "getEmailAccount": Operation(method="GET", path="/settings/email", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getGitHubConnection": Operation(method="GET", path="/integrations/github", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "getModelGateway": Operation(method="GET", path="/settings/model-gateway", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "getSuggestion": Operation(method="GET", path="/suggestions/{suggestion_id}", path_params=("suggestion_id",), multi_segment=(), query=("name",), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getWorkspaceArchil": Operation(method="GET", path="/workspace/archil", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "gitHubCallback": Operation(method="GET", path="/integrations/github/callback", path_params=(), multi_segment=(), query=("code", "state"), headers=(), body=None, answer="none", secret=False, public_fields=(), tagged=False),
     "gitHubInstalled": Operation(method="GET", path="/integrations/github/installed", path_params=(), multi_segment=(), query=("installation_id", "setup_action", "state"), headers=(), body=None, answer="none", secret=False, public_fields=(), tagged=False),
@@ -8117,16 +11596,32 @@ OPERATIONS: dict[str, Operation] = {
     "listComposioTriggers": Operation(method="GET", path="/settings/mcp-servers/{name}/composio/triggers", path_params=("name",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "listComputerChoices": Operation(method="GET", path="/computers/{provider}/choices", path_params=("provider",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "listComputers": Operation(method="GET", path="/computers", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "listGitHubRepositories": Operation(method="GET", path="/integrations/github/repositories", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "listMcpServerNames": Operation(method="GET", path="/settings/mcp-server-names", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "listRunningComputers": Operation(method="GET", path="/computers/running", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "listSuggestions": Operation(method="GET", path="/suggestions", path_params=(), multi_segment=(), query=("repo", "status"), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "putWorkspaceArchil": Operation(method="PUT", path="/workspace/archil", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "receiveHook_composio": Operation(method="POST", path="/hooks/composio/{hook}", path_params=("hook",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("*/*",)), answer="json", secret=False, public_fields=(), tagged=False),
+    "restoreSuggestion": Operation(method="POST", path="/suggestions/{suggestion_id}/restore", path_params=("suggestion_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "rotateComposioSecret": Operation(method="POST", path="/settings/mcp-servers/{name}/composio/rotate-secret", path_params=("name",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "saveCalendar": Operation(method="PUT", path="/settings/calendar", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "saveComposioServer": Operation(method="PUT", path="/settings/mcp-servers/{name}/composio", path_params=("name",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=True, public_fields=("toolkit", "tools.[]", "user_id"), tagged=False),
     "saveComputerKeys": Operation(method="PUT", path="/computers/{provider}/keys", path_params=("provider",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
+    "saveEmailAccount": Operation(method="PUT", path="/settings/email", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
+    "saveHarnessKey": Operation(method="PUT", path="/settings/harness-keys/{harness_id}/{key}", path_params=("harness_id", "key"), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="none", secret=False, public_fields=(), tagged=False),
+    "saveModelGateway": Operation(method="PUT", path="/settings/model-gateway", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=True, public_fields=("base_url", "ids", "models.default", "models.fast", "models.strong"), tagged=False),
+    "scanForSuggestions": Operation(method="POST", path="/suggestions/scans", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "signOutChatGPT": Operation(method="DELETE", path="/settings/chatgpt", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "startChatGPTSignIn": Operation(method="POST", path="/settings/chatgpt/sign-in", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "startClaudeLogin": Operation(method="POST", path="/settings/claude-login/login", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "startMcpOAuth": Operation(method="POST", path="/settings/mcp-servers/{name}/oauth/start", path_params=("name",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=True, public_fields=("url", "scopes.[]", "client_id"), tagged=False),
+    "testCalendar": Operation(method="POST", path="/settings/calendar/test", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=False, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "testComputer": Operation(method="POST", path="/computers/{provider}/test", path_params=("provider",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "testEmailAccount": Operation(method="POST", path="/settings/email/test", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=False, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
+    "testModelGateway": Operation(method="POST", path="/settings/model-gateway/test", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=False, types=("application/json",)), answer="json", secret=True, public_fields=("base_url",), tagged=False),
     "testWorkspaceArchil": Operation(method="POST", path="/workspace/archil/test", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "turnOffClaudeLogin": Operation(method="DELETE", path="/settings/claude-login", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "turnOnClaudeLogin": Operation(method="PUT", path="/settings/claude-login", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "deleteMcpServer": Operation(method="DELETE", path="/settings/mcp-servers/{name}", path_params=("name",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getMcpServer": Operation(method="GET", path="/settings/mcp-servers/{name}", path_params=("name",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "listMcpServers": Operation(method="GET", path="/settings/mcp-servers", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
@@ -8135,6 +11630,7 @@ OPERATIONS: dict[str, Operation] = {
     "getMcpPrivateHosts": Operation(method="GET", path="/settings/mcp-servers/oauth/private-hosts", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "refreshMcpServer": Operation(method="POST", path="/settings/mcp-servers/{name}/refresh", path_params=("name",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "saveMcpServer": Operation(method="PUT", path="/settings/mcp-servers/{name}", path_params=("name",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=True, public_fields=("url", "auth.type"), tagged=False),
+    "getObservations": Operation(method="GET", path="/observations", path_params=(), multi_segment=(), query=("days", "session_id"), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "listRevisions": Operation(method="GET", path="/agents/{agent_id}/revisions", path_params=("agent_id",), multi_segment=(), query=("limit", "cursor"), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "setCurrent": Operation(method="POST", path="/agents/{agent_id}/current", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "archiveRun": Operation(method="POST", path="/runs/{run_id}/archive", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
@@ -8142,25 +11638,29 @@ OPERATIONS: dict[str, Operation] = {
     "callRunComputer": Operation(method="POST", path="/runs/{run_id}/computer/call", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "releaseRunComputer": Operation(method="POST", path="/runs/{run_id}/computer/release", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=False, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "createInlineRun": Operation(method="POST", path="/runs", path_params=(), multi_segment=(), query=(), headers=("Idempotency-Key",), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
-    "listRunFiles": Operation(method="GET", path="/runs/{run_id}/files", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "createRunComputerViewer": Operation(method="POST", path="/runs/{run_id}/computer/viewer", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=False, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
+    "deleteRun": Operation(method="DELETE", path="/runs/{run_id}", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=None, answer="none", secret=False, public_fields=(), tagged=False),
+    "listRunFiles": Operation(method="GET", path="/runs/{run_id}/files", path_params=("run_id",), multi_segment=(), query=("cut",), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getRun": Operation(method="GET", path="/runs/{run_id}", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "gradeRun": Operation(method="PUT", path="/runs/{run_id}/grade", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "getRunGraph": Operation(method="GET", path="/runs/{run_id}/graph", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "handBackRunComputer": Operation(method="POST", path="/runs/{run_id}/computer/hand-back", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=False, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "getRunLearning": Operation(method="GET", path="/runs/{run_id}/learning", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getRunLearningDiff": Operation(method="GET", path="/runs/{run_id}/learning/diff", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
-    "listAllRuns": Operation(method="GET", path="/runs", path_params=(), multi_segment=(), query=("limit", "cursor", "agent", "revision", "status", "scope", "archived"), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "listAllRuns": Operation(method="GET", path="/runs", path_params=(), multi_segment=(), query=("limit", "cursor", "agent", "revision", "status", "scope", "archived", "label"), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "sendMessage": Operation(method="POST", path="/runs/{run_id}/messages", path_params=("run_id",), multi_segment=(), query=(), headers=("Idempotency-Key",), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "pauseRun": Operation(method="POST", path="/runs/{run_id}/pause", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "raiseRunCap": Operation(method="PATCH", path="/runs/{run_id}", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
-    "readRunFile": Operation(method="GET", path="/runs/{run_id}/files/{path}", path_params=("run_id", "path"), multi_segment=("path",), query=("download",), headers=("Range",), body=None, answer="bytes", secret=False, public_fields=(), tagged=False),
+    "readRunFile": Operation(method="GET", path="/runs/{run_id}/files/{path}", path_params=("run_id", "path"), multi_segment=("path",), query=("download", "cut"), headers=("Range",), body=None, answer="bytes", secret=False, public_fields=(), tagged=False),
     "resumeRun": Operation(method="POST", path="/runs/{run_id}/resume", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "createRun": Operation(method="POST", path="/agents/{agent_id}/runs", path_params=("agent_id",), multi_segment=(), query=(), headers=("Idempotency-Key",), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "startRun": Operation(method="POST", path="/runs/{run_id}/start", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=False, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "stopRun": Operation(method="POST", path="/runs/{run_id}/stop", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "takeOverRunComputer": Operation(method="POST", path="/runs/{run_id}/computer/take-over", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=False, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "getTimeline": Operation(method="GET", path="/runs/{run_id}/timeline", path_params=("run_id",), multi_segment=(), query=("after", "wait_ms", "limit", "calls"), headers=("Last-Event-ID",), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "getRunTrace": Operation(method="GET", path="/runs/{run_id}/trace", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "unarchiveRun": Operation(method="POST", path="/runs/{run_id}/unarchive", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "getRunUsage": Operation(method="GET", path="/runs/{run_id}/usage", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "completeSdkRun": Operation(method="POST", path="/sdk-runs/{run_id}/complete", path_params=("run_id",), multi_segment=(), query=(), headers=("Idempotency-Key",), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "sdkRunEvents": Operation(method="POST", path="/sdk-runs/{run_id}/events", path_params=("run_id",), multi_segment=(), query=(), headers=("Idempotency-Key",), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "getSdkRun": Operation(method="GET", path="/sdk-runs/{run_id}", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
@@ -8169,9 +11669,16 @@ OPERATIONS: dict[str, Operation] = {
     "getHealth": Operation(method="GET", path="/health", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "callMcp": Operation(method="POST", path="/mcp", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "getOpenapi": Operation(method="GET", path="/openapi.json", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "deleteSlack": Operation(method="DELETE", path="/settings/slack", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="none", secret=False, public_fields=(), tagged=False),
+    "listSlackDeliveries": Operation(method="GET", path="/settings/slack/deliveries", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "getSlack": Operation(method="GET", path="/settings/slack", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "redeliverSlack": Operation(method="POST", path="/settings/slack/deliveries/{webhook_id}/redeliver", path_params=("webhook_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "saveSlack": Operation(method="PUT", path="/settings/slack", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=True, public_fields=(), tagged=False),
+    "testSlack": Operation(method="POST", path="/settings/slack/test", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getStats": Operation(method="GET", path="/stats", path_params=(), multi_segment=(), query=("from", "to", "agent"), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "applyTemplate": Operation(method="POST", path="/templates/{template}/apply", path_params=("template",), multi_segment=(), query=(), headers=("Idempotency-Key",), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "deleteTemplate": Operation(method="DELETE", path="/templates/{template}", path_params=("template",), multi_segment=(), query=(), headers=(), body=None, answer="none", secret=False, public_fields=(), tagged=False),
+    "getTemplate": Operation(method="GET", path="/templates/{template}", path_params=("template",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "importTemplate": Operation(method="POST", path="/templates/import", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "listTemplates": Operation(method="GET", path="/templates", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "deleteToolKey": Operation(method="DELETE", path="/settings/tool-keys/{key_id}", path_params=("key_id",), multi_segment=(), query=(), headers=(), body=None, answer="none", secret=False, public_fields=(), tagged=False),
@@ -8185,16 +11692,19 @@ OPERATIONS: dict[str, Operation] = {
     "listTriggerFirings": Operation(method="GET", path="/triggers/{trigger_id}/firings", path_params=("trigger_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getTrigger": Operation(method="GET", path="/triggers/{trigger_id}", path_params=("trigger_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "listTriggers": Operation(method="GET", path="/triggers", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
-    "rotateTriggerSecret": Operation(method="POST", path="/triggers/{trigger_id}/secret", path_params=("trigger_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=False, types=("application/json",)), answer="json", secret=True, public_fields=(), tagged=False),
+    "releaseTriggerFiring": Operation(method="POST", path="/triggers/{trigger_id}/firings/{firing_id}/release", path_params=("trigger_id", "firing_id"), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
+    "rotateTriggerSecret": Operation(method="POST", path="/triggers/{trigger_id}/secret", path_params=("trigger_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=True, public_fields=(), tagged=False),
     "updateTrigger": Operation(method="PATCH", path="/triggers/{trigger_id}", path_params=("trigger_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "getUsage": Operation(method="GET", path="/usage", path_params=(), multi_segment=(), query=("from", "to", "group_by"), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "deleteWebhook": Operation(method="DELETE", path="/settings/webhook", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="none", secret=False, public_fields=(), tagged=False),
     "listWebhookDeliveries": Operation(method="GET", path="/settings/webhook/deliveries", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getWebhook": Operation(method="GET", path="/settings/webhook", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "redeliverWebhook": Operation(method="POST", path="/settings/webhook/deliveries/{webhook_id}/redeliver", path_params=("webhook_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "rotateWebhookSecret": Operation(method="POST", path="/settings/webhook/secret", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=True, public_fields=(), tagged=False),
     "saveWebhook": Operation(method="PUT", path="/settings/webhook", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "testWebhook": Operation(method="POST", path="/settings/webhook/test", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "validateWorkflow": Operation(method="POST", path="/workflows/validate", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
+    "getWrapped": Operation(method="GET", path="/wrapped", path_params=(), multi_segment=(), query=("year",), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
 }
 
 
@@ -8205,6 +11715,10 @@ class AgentsResource(Group):
         """Archive the agent: hidden from the lists, kept with its history (POST /agents/{agent_id}/archive)."""
         return self._call("archiveAgent", (agent_id,), None, None, timeout=timeout)
 
+    def bind_source_tool(self, agent_id: str, body: BindSourceToolBody, *, timeout: float | None = None) -> BindSourceToolResponse:
+        """Choose the existing destination account for a required source tool (POST /agents/{agent_id}/source/tools)."""
+        return self._call("bindSourceTool", (agent_id,), body, None, timeout=timeout)
+
     def connect_native(self, body: ConnectNativeBody, *, timeout: float | None = None) -> ConnectNativeResponse:
         """Connect a native project using ordinary agent and revision storage (POST /native/connect)."""
         return self._call("connectNative", (), body, None, timeout=timeout)
@@ -8212,6 +11726,10 @@ class AgentsResource(Group):
     def create(self, body: CreateAgentBody, *, idempotency_key: str | None = None, timeout: float | None = None) -> CreateAgentResponse:
         """Create an agent home (POST /agents)."""
         return self._call("createAgent", (), body, {"Idempotency-Key": idempotency_key}, timeout=timeout)
+
+    def delete_agent(self, agent_id: str, *, timeout: float | None = None) -> None:
+        """Delete an agent another system owns, or purge an archived agent made here (DELETE /agents/{agent_id})."""
+        return self._call("deleteAgent", (agent_id,), None, None, timeout=timeout)
 
     def delete_agent_archil(self, agent_id: str, *, timeout: float | None = None) -> DeleteAgentArchilResponse:
         """Remove an agent's own Archil disk, and everything on it (DELETE /agents/{agent_id}/archil)."""
@@ -8238,24 +11756,52 @@ class AgentsResource(Group):
         return self._call("getAgentArchil", (agent_id,), None, None, timeout=timeout)
 
     def get_learning_loop(self, agent_id: str, *, timeout: float | None = None) -> GetLearningLoopResponse:
-        """The self-learning loop's own record: each compile turn, and each guarded step of the learned workflows (GET /agents/{agent_id}/learning/loop)."""
+        """The self-learning loop's own record: each compile turn (GET /agents/{agent_id}/learning/loop)."""
         return self._call("getLearningLoop", (agent_id,), None, None, timeout=timeout)
 
     def get_native(self, agent_id: str, *, timeout: float | None = None) -> GetNativeResponse:
         """Read a native connection (GET /agents/{agent_id}/native)."""
         return self._call("getNative", (agent_id,), None, None, timeout=timeout)
 
+    def get_source_sync(self, agent_id: str, *, timeout: float | None = None) -> GetSourceSyncResponse:
+        """Read source sync and managed Move readiness (GET /agents/{agent_id}/source)."""
+        return self._call("getSourceSync", (agent_id,), None, None, timeout=timeout)
+
     def list(self, *, limit: int | None = None, cursor: str | None = None, archived: bool | None = None, timeout: float | None = None) -> ListAgentsResponse:
         """List agents (GET /agents)."""
         return self._call("listAgents", (), None, {"limit": limit, "cursor": cursor, "archived": archived}, timeout=timeout)
+
+    def list_learning_audits(self, agent_id: str, *, timeout: float | None = None) -> ListLearningAuditsResponse:
+        """The audit ledger of the agent's serving learned workflows (GET /agents/{agent_id}/learning/audits)."""
+        return self._call("listLearningAudits", (agent_id,), None, None, timeout=timeout)
 
     def list_learning_promotions(self, agent_id: str, *, timeout: float | None = None) -> ListLearningPromotionsResponse:
         """Each learned workflow revision's promotion: its replay's numbers and whether it serves (GET /agents/{agent_id}/learning/promotions)."""
         return self._call("listLearningPromotions", (agent_id,), None, None, timeout=timeout)
 
-    def runs(self, agent_id: str, *, limit: int | None = None, cursor: str | None = None, status: Literal["queued", "working", "paused", "input_required", "completed", "failed", "cancelled"] | None = None, scope: Literal["active", "review"] | None = None, timeout: float | None = None) -> ListRunsResponse:
+    def move_source_agent(self, agent_id: str, body: MoveSourceAgentBody, *, timeout: float | None = None) -> MoveSourceAgentResponse:
+        """Move the same agent to server-managed execution from its complete synchronized setup (POST /agents/{agent_id}/source/move)."""
+        return self._call("moveSourceAgent", (agent_id,), body, None, timeout=timeout)
+
+    def package(self, agent_id: str, *, timeout: float | None = None) -> GetAgentPackageResponse:
+        """The agent's current revision as a template package (GET /agents/{agent_id}/package)."""
+        return self._call("getAgentPackage", (agent_id,), None, None, timeout=timeout)
+
+    def resolve_source_sync(self, agent_id: str, body: ResolveSourceSyncBody, *, timeout: float | None = None) -> ResolveSourceSyncResponse:
+        """Use an explicitly reviewed source snapshot while retaining the prior managed revision in history (POST /agents/{agent_id}/source/resolve)."""
+        return self._call("resolveSourceSync", (agent_id,), body, None, timeout=timeout)
+
+    def review_source_project(self, agent_id: str, body: ReviewSourceProjectBody, *, timeout: float | None = None) -> ReviewSourceProjectResponse:
+        """Acknowledge exact unresolved run receipts and allow later runs to use the saved project (POST /agents/{agent_id}/source/project-review)."""
+        return self._call("reviewSourceProject", (agent_id,), body, None, timeout=timeout)
+
+    def runs(self, agent_id: str, *, limit: int | None = None, cursor: str | None = None, status: Literal["queued", "working", "paused", "input_required", "completed", "failed", "cancelled"] | None = None, scope: Literal["active", "review"] | None = None, label: str | None = None, timeout: float | None = None) -> ListRunsResponse:
         """The agent's runs index (GET /agents/{agent_id}/runs)."""
-        return self._call("listRuns", (agent_id,), None, {"limit": limit, "cursor": cursor, "status": status, "scope": scope}, timeout=timeout)
+        return self._call("listRuns", (agent_id,), None, {"limit": limit, "cursor": cursor, "status": status, "scope": scope, "label": label}, timeout=timeout)
+
+    def set_source_sync(self, agent_id: str, body: SetSourceSyncBody, *, timeout: float | None = None) -> SetSourceSyncResponse:
+        """Enable or pause this agent’s source sync (PATCH /agents/{agent_id}/source)."""
+        return self._call("setSourceSync", (agent_id,), body, None, timeout=timeout)
 
     def unarchive(self, agent_id: str, *, timeout: float | None = None) -> UnarchiveAgentResponse:
         """Show the archived agent in the lists again (POST /agents/{agent_id}/unarchive)."""
@@ -8270,6 +11816,46 @@ class AgentsResource(Group):
         return self._call("verifyNative", (agent_id,), None, None, timeout=timeout)
 
 
+class CapabilitiesResource(Group):
+    """client.capabilities: one method per operation."""
+
+    def get_capacity(self, *, window: int | None = None, timeout: float | None = None) -> GetCapacityResponse:
+        """The runs waiting and held, the live runners and the recent hand-backs (GET /capacity)."""
+        return self._call("getCapacity", (), None, {"window": window}, timeout=timeout)
+
+
+class CliLearningResource(Group):
+    """client.cli_learning: one method per operation."""
+
+    def complete(self, run_id: str, body: CompleteCliLearningRunBody, *, idempotency_key: str | None = None, timeout: float | None = None) -> CompleteCliLearningRunResponse:
+        """Close an existing CLI prompt window exactly once (POST /cli-learning/runs/{run_id}/complete)."""
+        return self._call("completeCliLearningRun", (run_id,), body, {"Idempotency-Key": idempotency_key}, timeout=timeout)
+
+    def enroll(self, body: EnrollCliLearningBody, *, timeout: float | None = None) -> EnrollCliLearningResponse:
+        """Enable learning for an existing local CLI without launching it (POST /cli-learning/connections)."""
+        return self._call("enrollCliLearning", (), body, None, timeout=timeout)
+
+    def events(self, run_id: str, body: CliLearningEventsBody, *, idempotency_key: str | None = None, timeout: float | None = None) -> CliLearningEventsResponse:
+        """Upload bounded role-preserving CLI dialogue and tool evidence (POST /cli-learning/runs/{run_id}/events)."""
+        return self._call("cliLearningEvents", (run_id,), body, {"Idempotency-Key": idempotency_key}, timeout=timeout)
+
+    def get(self, run_id: str, *, timeout: float | None = None) -> GetCliLearningRunResponse:
+        """Read CLI prompt-window learning progress (GET /cli-learning/runs/{run_id})."""
+        return self._call("getCliLearningRun", (run_id,), None, None, timeout=timeout)
+
+    def list(self, *, timeout: float | None = None) -> ListCliLearningResponse:
+        """Read enrolled CLI learning connections (GET /cli-learning/connections)."""
+        return self._call("listCliLearning", (), None, None, timeout=timeout)
+
+    def revoke(self, connection_id: str, *, timeout: float | None = None) -> RevokeCliLearningResponse:
+        """Revoke CLI capture and guidance delivery, retaining history and learned files (DELETE /cli-learning/connections/{connection_id})."""
+        return self._call("revokeCliLearning", (connection_id,), None, None, timeout=timeout)
+
+    def start(self, connection_id: str, body: StartCliLearningRunBody, *, idempotency_key: str | None = None, timeout: float | None = None) -> StartCliLearningRunResponse:
+        """Register one prompt window from an existing CLI session (POST /cli-learning/connections/{connection_id}/runs)."""
+        return self._call("startCliLearningRun", (connection_id,), body, {"Idempotency-Key": idempotency_key}, timeout=timeout)
+
+
 class ConnectorsResource(Group):
     """client.connectors: one method per operation."""
 
@@ -8280,6 +11866,10 @@ class ConnectorsResource(Group):
     def enroll_remote_connector(self, body: EnrollRemoteConnectorBody, *, timeout: float | None = None) -> EnrollRemoteConnectorResponse:
         """Create a ten-minute one-use connection code (POST /connectors/enrollment)."""
         return self._call("enrollRemoteConnector", (), body, None, timeout=timeout)
+
+    def grant_source_sync(self, connector_id: str, target_id: str, body: GrantSourceSyncBody, *, timeout: float | None = None) -> GrantSourceSyncResponse:
+        """Read or establish this explicitly authorized source sync grant without re-enabling a paused grant (POST /connectors/{connector_id}/targets/{target_id}/sync/grant)."""
+        return self._call("grantSourceSync", (connector_id, target_id), body, None, timeout=timeout)
 
     def import_remote_history(self, connector_id: str, target_id: str, body: ImportRemoteHistoryBody, *, timeout: float | None = None) -> ImportRemoteHistoryResponse:
         """Import explicitly selected, redacted past sessions without running or learning from them (POST /connectors/{connector_id}/targets/{target_id}/history)."""
@@ -8297,6 +11887,10 @@ class ConnectorsResource(Group):
         """Renew active source leases and claim one command without replay (POST /connectors/{connector_id}/poll)."""
         return self._call("pollRemoteConnector", (connector_id,), body, None, timeout=timeout)
 
+    def publish_source_sync(self, connector_id: str, target_id: str, body: PublishSourceSyncBody, *, timeout: float | None = None) -> PublishSourceSyncResponse:
+        """Publish a bounded source snapshot under its grant and sequence (POST /connectors/{connector_id}/targets/{target_id}/sync)."""
+        return self._call("publishSourceSync", (connector_id, target_id), body, None, timeout=timeout)
+
     def register_remote_connector(self, body: RegisterRemoteConnectorBody, *, timeout: float | None = None) -> RegisterRemoteConnectorResponse:
         """Exchange a one-use enrollment code for a connector-scoped credential (POST /connectors)."""
         return self._call("registerRemoteConnector", (), body, None, timeout=timeout)
@@ -8308,6 +11902,10 @@ class ConnectorsResource(Group):
     def revoke_remote_connector(self, connector_id: str, *, timeout: float | None = None) -> RevokeRemoteConnectorResponse:
         """Revoke a source connector and stop its outstanding commands (DELETE /connectors/{connector_id})."""
         return self._call("revokeRemoteConnector", (connector_id,), None, None, timeout=timeout)
+
+    def source_sync_failure(self, connector_id: str, target_id: str, body: SourceSyncFailureBody, *, timeout: float | None = None) -> SourceSyncFailureResponse:
+        """Record a fixed source failure while preserving its last complete snapshot (POST /connectors/{connector_id}/targets/{target_id}/sync/status)."""
+        return self._call("sourceSyncFailure", (connector_id, target_id), body, None, timeout=timeout)
 
 
 class FilesResource(Group):
@@ -8332,6 +11930,14 @@ class FilesResource(Group):
     def upload(self, file_id: str, body: RawBody, *, body_type: str | None = None, timeout: float | None = None) -> UploadFileResponse:
         """Send a reserved file's bytes (PUT /files/{file_id})."""
         return self._call("uploadFile", (file_id,), body, None, timeout=timeout, body_type=body_type)
+
+
+class HarnessKeysResource(Group):
+    """client.harness_keys: one method per operation."""
+
+    def list(self, *, timeout: float | None = None) -> ListHarnessKeysResponse:
+        """The keys each plan-billed harness recipe runs on, and which are saved: names only, never a value (GET /settings/harness-keys)."""
+        return self._call("listHarnessKeys", (), None, None, timeout=timeout)
 
 
 class HomeResource(Group):
@@ -8361,65 +11967,45 @@ class HomeResource(Group):
 class LearningResource(Group):
     """client.learning: one method per operation."""
 
-    def batch(self, agent_id: str, batch_id: str, *, timeout: float | None = None) -> GetLearningBatchResponse:
-        """A learning batch's progress: rows done, right or wrong, lessons, workflow revisions, cost, the path each run took (GET /agents/{agent_id}/learning/batches/{batch_id})."""
-        return self._call("getLearningBatch", (agent_id, batch_id), None, None, timeout=timeout)
-
-    def batch_cancel(self, agent_id: str, batch_id: str, *, timeout: float | None = None) -> CancelLearningBatchResponse:
-        """Cancel a running learning batch (POST /agents/{agent_id}/learning/batches/{batch_id}/cancel)."""
-        return self._call("cancelLearningBatch", (agent_id, batch_id), None, None, timeout=timeout)
-
-    def batch_start(self, agent_id: str, body: CreateLearningBatchBody, *, timeout: float | None = None) -> CreateLearningBatchResponse:
-        """Learn from rows: run the agent on each in order, with learning on, and tell it the reference answer after each (POST /agents/{agent_id}/learning/batches)."""
-        return self._call("createLearningBatch", (agent_id,), body, None, timeout=timeout)
-
-    def batches(self, agent_id: str, *, timeout: float | None = None) -> ListLearningBatchesResponse:
-        """The agent's learning batches, latest first (GET /agents/{agent_id}/learning/batches)."""
-        return self._call("listLearningBatches", (agent_id,), None, None, timeout=timeout)
+    def corrections(self, agent_id: str, *, timeout: float | None = None) -> Tagged[GetLearningCorrectionsResponse]:
+        """The agent's corrections.md on main, with its ETag (GET /agents/{agent_id}/learning/corrections)."""
+        return self._call("getLearningCorrections", (agent_id,), None, None, timeout=timeout)
 
     def cost(self, agent_id: str, *, limit: int | None = None, format: Literal["json", "csv"] | None = None, timeout: float | None = None) -> GetLearningCostResponse | str:
         """The agent's cost per run, run after run: its own cost, what learning added and the path it took (GET /agents/{agent_id}/learning/cost)."""
         return self._call("getLearningCost", (agent_id,), None, {"limit": limit, "format": format}, timeout=timeout)
 
-    def evals(self, agent_id: str, *, timeout: float | None = None) -> ListLearningEvalsResponse:
-        """The agent's eval records: the latest, and every one kept, newest first (GET /agents/{agent_id}/learning/evals)."""
-        return self._call("listLearningEvals", (agent_id,), None, None, timeout=timeout)
-
     def get(self, agent_id: str, *, timeout: float | None = None) -> GetAgentLearningResponse:
-        """What the agent has learned: its index, notes, log of changes and counts (GET /agents/{agent_id}/learning)."""
+        """What the agent has learned: its corrections, workflow drafts, log of changes and counts (GET /agents/{agent_id}/learning)."""
         return self._call("getAgentLearning", (agent_id,), None, None, timeout=timeout)
 
     def log(self, agent_id: str, *, cursor: str | None = None, limit: int | None = None, timeout: float | None = None) -> ListLearningLogResponse:
         """A page of the changes on the agent's main, newest first (GET /agents/{agent_id}/learning/log)."""
         return self._call("listLearningLog", (agent_id,), None, {"cursor": cursor, "limit": limit}, timeout=timeout)
 
-    def notes(self, agent_id: str, *, cursor: str | None = None, limit: int | None = None, status: Literal["active", "superseded", "retired", "pending"] | None = None, timeout: float | None = None) -> ListLearningNotesResponse:
-        """A page of the agent's notes (GET /agents/{agent_id}/learning/notes)."""
-        return self._call("listLearningNotes", (agent_id,), None, {"cursor": cursor, "limit": limit, "status": status}, timeout=timeout)
-
     def read(self, agent_id: str, file: str, *, timeout: float | None = None) -> Tagged[ReadLearningFileResponse | str]:
-        """One note (or MEMORY.md, a skill's SKILL.md or a draft's file) on main, as text, with its ETag (GET /agents/{agent_id}/learning/files/{file})."""
+        """One file of a learned workflow on main (its workflow.json or README.md), as text, with its ETag (GET /agents/{agent_id}/learning/files/{file})."""
         return self._call("readLearningFile", (agent_id, file), None, None, timeout=timeout)
-
-    def record_eval(self, agent_id: str, body: RecordLearningEvalBody, *, idempotency_key: str | None = None, timeout: float | None = None) -> RecordLearningEvalResponse:
-        """Record a held-out test of the agent: its counts and the cost a task, with learning and by hand (POST /agents/{agent_id}/learning/evals)."""
-        return self._call("recordLearningEval", (agent_id,), body, {"Idempotency-Key": idempotency_key}, timeout=timeout)
 
     def replay(self, agent_id: str, name: str, digest: str, replay_id: str, *, timeout: float | None = None) -> GetLearnedWorkflowReplayResponse:
         """Read a replay's result: running, done or failed, its counts and its score (start one from the console's Learning tab) (GET /agents/{agent_id}/learning/workflows/{name}/revisions/{digest}/replays/{replay_id})."""
         return self._call("getLearnedWorkflowReplay", (agent_id, name, digest, replay_id), None, None, timeout=timeout)
 
+    def reset(self, agent_id: str, *, timeout: float | None = None) -> None:
+        """Reset the agent's learning: everything it learned deleted, the agent and its runs kept (DELETE /agents/{agent_id}/learning)."""
+        return self._call("deleteAgentLearning", (agent_id,), None, None, timeout=timeout)
+
     def retire(self, agent_id: str, file: str, *, if_match: str | None = None, timeout: float | None = None) -> Tagged[str]:
-        """Retire a note, a skill or a workflow draft: out of every later run, kept in history (POST /agents/{agent_id}/learning/files/{file}/retire)."""
+        """Retire a workflow draft: out of every later run, kept in history (POST /agents/{agent_id}/learning/files/{file}/retire)."""
         return self._call("retireLearningFile", (agent_id, file), None, {"If-Match": if_match}, timeout=timeout)
 
     def workflow_revisions(self, agent_id: str, name: str, *, limit: int | None = None, timeout: float | None = None) -> ListLearnedWorkflowRevisionsResponse:
         """A learned workflow's revisions on main, oldest first, each with its workflow.json as it was then (GET /agents/{agent_id}/learning/workflows/{name}/revisions)."""
         return self._call("listLearnedWorkflowRevisions", (agent_id, name), None, {"limit": limit}, timeout=timeout)
 
-    def write(self, agent_id: str, file: str, body: WriteLearningFileBody | RawBody, *, if_match: str | None = None, if_none_match: str | None = None, body_type: str | None = None, timeout: float | None = None) -> Tagged[str]:
-        """Edit a note (If-Match) or create one (If-None-Match: *) (PUT /agents/{agent_id}/learning/files/{file})."""
-        return self._call("writeLearningFile", (agent_id, file), body, {"If-Match": if_match, "If-None-Match": if_none_match}, timeout=timeout, body_type=body_type)
+    def write_corrections(self, agent_id: str, body: PutLearningCorrectionsBody | RawBody, *, if_match: str | None = None, body_type: str | None = None, timeout: float | None = None) -> Tagged[PutLearningCorrectionsResponse]:
+        """Replace the agent's corrections.md (If-Match) (PUT /agents/{agent_id}/learning/corrections)."""
+        return self._call("putLearningCorrections", (agent_id,), body, {"If-Match": if_match}, timeout=timeout, body_type=body_type)
 
 
 class LocalResource(Group):
@@ -8429,6 +12015,14 @@ class LocalResource(Group):
         """A code that pairs a person's own computer with this server (POST /computers/pairings)."""
         return self._call("createPairing", (), None, None, timeout=timeout)
 
+    def create_suggested_agent(self, suggestion_id: str, body: CreateSuggestedAgentBody | None = None, *, timeout: float | None = None) -> CreateSuggestedAgentResponse:
+        """Create a suggested agent: a branch with its package and client, the agent made here, and a pull request (POST /suggestions/{suggestion_id}/create)."""
+        return self._call("createSuggestedAgent", (suggestion_id,), body, None, timeout=timeout)
+
+    def delete_calendar(self, *, timeout: float | None = None) -> None:
+        """Forget this server's calendar (DELETE /settings/calendar)."""
+        return self._call("deleteCalendar", (), None, None, timeout=timeout)
+
     def delete_composio_subscription(self, name: str, *, timeout: float | None = None) -> DeleteComposioSubscriptionResponse:
         """Delete the Composio project's webhook subscription, once no trigger uses it (DELETE /settings/mcp-servers/{name}/composio/subscription)."""
         return self._call("deleteComposioSubscription", (name,), None, None, timeout=timeout)
@@ -8437,9 +12031,25 @@ class LocalResource(Group):
         """Remove a paired computer: its token ends and its socket closes (DELETE /computers/{computer_id})."""
         return self._call("deleteComputer", (computer_id,), None, None, timeout=timeout)
 
+    def delete_email_account(self, *, timeout: float | None = None) -> None:
+        """Forget this server's email account (DELETE /settings/email)."""
+        return self._call("deleteEmailAccount", (), None, None, timeout=timeout)
+
+    def delete_harness_key(self, harness_id: str, key: str, *, timeout: float | None = None) -> None:
+        """Forget one key of a plan-billed harness recipe (DELETE /settings/harness-keys/{harness_id}/{key})."""
+        return self._call("deleteHarnessKey", (harness_id, key), None, None, timeout=timeout)
+
+    def delete_model_gateway(self, *, timeout: float | None = None) -> DeleteModelGatewayResponse:
+        """Stop using the saved model gateway: the provider keys are back in force (DELETE /settings/model-gateway)."""
+        return self._call("deleteModelGateway", (), None, None, timeout=timeout)
+
     def delete_workspace_archil(self, *, timeout: float | None = None) -> DeleteWorkspaceArchilResponse:
         """Turn Mode 2 off: run folders on this server's own disk (DELETE /workspace/archil)."""
         return self._call("deleteWorkspaceArchil", (), None, None, timeout=timeout)
+
+    def discard_suggestion(self, suggestion_id: str, *, timeout: float | None = None) -> DiscardSuggestionResponse:
+        """Discard a suggested agent: it goes away, and later scans leave it out (POST /suggestions/{suggestion_id}/discard)."""
+        return self._call("discardSuggestion", (suggestion_id,), None, None, timeout=timeout)
 
     def disconnect_git_hub(self, *, timeout: float | None = None) -> DisconnectGitHubResponse:
         """Disconnect GitHub: the App's credentials gone from this server, and every github trigger off (DELETE /integrations/github)."""
@@ -8449,13 +12059,33 @@ class LocalResource(Group):
         """Finish signing in with ChatGPT with the address the sign-in tab ended on (POST /settings/chatgpt/sign-in/finish)."""
         return self._call("finishChatGPTSignIn", (), body, None, timeout=timeout)
 
+    def get_calendar(self, *, timeout: float | None = None) -> GetCalendarResponse:
+        """This server's calendar: its host, name and time zone, never its address (GET /settings/calendar)."""
+        return self._call("getCalendar", (), None, None, timeout=timeout)
+
     def get_chat_gptsign_in(self, *, timeout: float | None = None) -> GetChatGPTSignInResponse:
         """This server's ChatGPT sign-in: its state, who and which plan, never a token (GET /settings/chatgpt)."""
         return self._call("getChatGPTSignIn", (), None, None, timeout=timeout)
 
+    def get_claude_login(self, *, timeout: float | None = None) -> GetClaudeLoginResponse:
+        """Claude Code's login on this machine: on or off, and what its CLI says of it (GET /settings/claude-login)."""
+        return self._call("getClaudeLogin", (), None, None, timeout=timeout)
+
+    def get_email_account(self, *, timeout: float | None = None) -> GetEmailAccountResponse:
+        """This server's email account: its address, servers and who signs in, never its password (GET /settings/email)."""
+        return self._call("getEmailAccount", (), None, None, timeout=timeout)
+
     def get_git_hub_connection(self, *, timeout: float | None = None) -> GetGitHubConnectionResponse:
         """Whether a GitHub App is connected, and if so its id, slug and installations, never a secret (GET /integrations/github)."""
         return self._call("getGitHubConnection", (), None, None, timeout=timeout)
+
+    def get_model_gateway(self, *, timeout: float | None = None) -> GetModelGatewayResponse:
+        """The model gateway in force: the environment's, the one saved here, or none (GET /settings/model-gateway)."""
+        return self._call("getModelGateway", (), None, None, timeout=timeout)
+
+    def get_suggestion(self, suggestion_id: str, *, name: str | None = None, timeout: float | None = None) -> GetSuggestionResponse:
+        """One suggested agent whole: its instructions, the files a create adds, and whether GitHub lets it (GET /suggestions/{suggestion_id})."""
+        return self._call("getSuggestion", (suggestion_id,), None, {"name": name}, timeout=timeout)
 
     def get_workspace_archil(self, *, timeout: float | None = None) -> GetWorkspaceArchilResponse:
         """Whether run folders are on Archil disks (Mode 2), the settings, and whether its keys are saved (GET /workspace/archil)."""
@@ -8481,6 +12111,22 @@ class LocalResource(Group):
         """Settings → Computers: the kinds of computer this server offers, each provider and whether its keys are saved (GET /computers)."""
         return self._call("listComputers", (), None, None, timeout=timeout)
 
+    def list_git_hub_repositories(self, *, timeout: float | None = None) -> ListGitHubRepositoriesResponse:
+        """The repositories this server's GitHub App is installed on (GET /integrations/github/repositories)."""
+        return self._call("listGitHubRepositories", (), None, None, timeout=timeout)
+
+    def list_mcp_server_names(self, *, timeout: float | None = None) -> ListMcpServerNamesResponse:
+        """The names of the MCP servers saved here, and nothing else of them (GET /settings/mcp-server-names)."""
+        return self._call("listMcpServerNames", (), None, None, timeout=timeout)
+
+    def list_running_computers(self, *, timeout: float | None = None) -> ListRunningComputersResponse:
+        """Every run still going that has a computer (GET /computers/running)."""
+        return self._call("listRunningComputers", (), None, None, timeout=timeout)
+
+    def list_suggestions(self, *, repo: str | None = None, status: Literal["open", "created", "discarded", "all"] | None = None, timeout: float | None = None) -> ListSuggestionsResponse:
+        """Suggested agents: each repository's scan and the agents it suggests (GET /suggestions)."""
+        return self._call("listSuggestions", (), None, {"repo": repo, "status": status}, timeout=timeout)
+
     def put_workspace_archil(self, body: PutWorkspaceArchilBody, *, timeout: float | None = None) -> PutWorkspaceArchilResponse:
         """Turn Mode 2 on: run folders on Archil disks, one per agent (PUT /workspace/archil)."""
         return self._call("putWorkspaceArchil", (), body, None, timeout=timeout)
@@ -8489,9 +12135,17 @@ class LocalResource(Group):
         """Fire a Composio trigger: a request it checks, no token (POST /hooks/composio/{hook})."""
         return self._call("receiveHook_composio", (hook,), body, None, timeout=timeout, body_type=body_type)
 
+    def restore_suggestion(self, suggestion_id: str, *, timeout: float | None = None) -> RestoreSuggestionResponse:
+        """Bring a discarded suggestion back (an undo) (POST /suggestions/{suggestion_id}/restore)."""
+        return self._call("restoreSuggestion", (suggestion_id,), None, None, timeout=timeout)
+
     def rotate_composio_secret(self, name: str, *, timeout: float | None = None) -> RotateComposioSecretResponse:
         """Rotate the Composio project's webhook subscription's secret, and keep the new one (POST /settings/mcp-servers/{name}/composio/rotate-secret)."""
         return self._call("rotateComposioSecret", (name,), None, None, timeout=timeout)
+
+    def save_calendar(self, body: SaveCalendarBody, *, timeout: float | None = None) -> SaveCalendarResponse:
+        """Save this server's calendar, its iCal address sealed (PUT /settings/calendar)."""
+        return self._call("saveCalendar", (), body, None, timeout=timeout)
 
     def save_composio_server(self, name: str, body: SaveComposioServerBody, *, timeout: float | None = None) -> SaveComposioServerResponse:
         """Have Composio make a managed MCP server for a toolkit's chosen actions, and save it as an MCP server (PUT /settings/mcp-servers/{name}/composio). Its body's string values are secrets: each copy is cut from the answer, and a refusal keeps only its code."""
@@ -8501,6 +12155,22 @@ class LocalResource(Group):
         """Save a computer provider's keys, sealed (PUT /computers/{provider}/keys)."""
         return self._call("saveComputerKeys", (provider,), body, None, timeout=timeout)
 
+    def save_email_account(self, body: SaveEmailAccountBody, *, timeout: float | None = None) -> SaveEmailAccountResponse:
+        """Save this server's email account, its password sealed (PUT /settings/email)."""
+        return self._call("saveEmailAccount", (), body, None, timeout=timeout)
+
+    def save_harness_key(self, harness_id: str, key: str, body: SaveHarnessKeyBody, *, timeout: float | None = None) -> None:
+        """Save one key of a plan-billed harness recipe, sealed, for that harness alone (PUT /settings/harness-keys/{harness_id}/{key})."""
+        return self._call("saveHarnessKey", (harness_id, key), body, None, timeout=timeout)
+
+    def save_model_gateway(self, body: SaveModelGatewayBody, *, timeout: float | None = None) -> SaveModelGatewayResponse:
+        """Use a model gateway for every model, saved here (PUT /settings/model-gateway). Its body's string values are secrets: each copy is cut from the answer, and a refusal keeps only its code."""
+        return self._call("saveModelGateway", (), body, None, timeout=timeout)
+
+    def scan_for_suggestions(self, body: ScanForSuggestionsBody, *, timeout: float | None = None) -> ScanForSuggestionsResponse:
+        """Scan a repository for places its app needs an agent (POST /suggestions/scans)."""
+        return self._call("scanForSuggestions", (), body, None, timeout=timeout)
+
     def sign_out_chat_gpt(self, *, timeout: float | None = None) -> SignOutChatGPTResponse:
         """Sign out of ChatGPT: the session revoked at OpenAI, then forgotten here (DELETE /settings/chatgpt)."""
         return self._call("signOutChatGPT", (), None, None, timeout=timeout)
@@ -8509,13 +12179,37 @@ class LocalResource(Group):
         """Start signing in with ChatGPT: the link to open (POST /settings/chatgpt/sign-in)."""
         return self._call("startChatGPTSignIn", (), None, None, timeout=timeout)
 
+    def start_claude_login(self, *, timeout: float | None = None) -> StartClaudeLoginResponse:
+        """Start the Claude Code CLI's own sign-in on this machine (POST /settings/claude-login/login)."""
+        return self._call("startClaudeLogin", (), None, None, timeout=timeout)
+
+    def test_calendar(self, body: TestCalendarBody | None = None, *, timeout: float | None = None) -> TestCalendarResponse:
+        """Read the calendar and say what it holds (POST /settings/calendar/test)."""
+        return self._call("testCalendar", (), body, None, timeout=timeout)
+
     def test_computer(self, provider: str, *, timeout: float | None = None) -> TestComputerResponse:
         """Test a computer provider's account with its saved keys (POST /computers/{provider}/test)."""
         return self._call("testComputer", (provider,), None, None, timeout=timeout)
 
+    def test_email_account(self, body: TestEmailAccountBody | None = None, *, timeout: float | None = None) -> TestEmailAccountResponse:
+        """Sign in to the email account's IMAP and SMTP servers, sending nothing (POST /settings/email/test)."""
+        return self._call("testEmailAccount", (), body, None, timeout=timeout)
+
+    def test_model_gateway(self, body: TestModelGatewayBody | None = None, *, timeout: float | None = None) -> TestModelGatewayResponse:
+        """Ask a model gateway which models it serves (POST /settings/model-gateway/test). Its body's string values are secrets: each copy is cut from the answer, and a refusal keeps only its code."""
+        return self._call("testModelGateway", (), body, None, timeout=timeout)
+
     def test_workspace_archil(self, *, timeout: float | None = None) -> TestWorkspaceArchilResponse:
         """Test the Archil account key at its region's control plane (POST /workspace/archil/test)."""
         return self._call("testWorkspaceArchil", (), None, None, timeout=timeout)
+
+    def turn_off_claude_login(self, *, timeout: float | None = None) -> TurnOffClaudeLoginResponse:
+        """Turn off Claude Code's login on this machine (DELETE /settings/claude-login)."""
+        return self._call("turnOffClaudeLogin", (), None, None, timeout=timeout)
+
+    def turn_on_claude_login(self, body: TurnOnClaudeLoginBody, *, timeout: float | None = None) -> TurnOnClaudeLoginResponse:
+        """Turn on Claude Code's login on this machine for claude-agent's runs (PUT /settings/claude-login)."""
+        return self._call("turnOnClaudeLogin", (), body, None, timeout=timeout)
 
 
 class McpServersResource(Group):
@@ -8554,6 +12248,14 @@ class McpServersResource(Group):
         return self._call("saveMcpServer", (name,), body, None, timeout=timeout)
 
 
+class ObservationsResource(Group):
+    """client.observations: one method per operation."""
+
+    def get_observations(self, *, days: int | None = None, session_id: str | None = None, timeout: float | None = None) -> GetObservationsResponse:
+        """Read activity and token usage reported by externally running agents (GET /observations)."""
+        return self._call("getObservations", (), None, {"days": days, "session_id": session_id}, timeout=timeout)
+
+
 class RevisionsResource(Group):
     """client.revisions: one method per operation."""
 
@@ -8589,9 +12291,17 @@ class RunsResource(Group):
         """Start a run of an agent another system owns, given inline (POST /runs)."""
         return self._call("createInlineRun", (), body, {"Idempotency-Key": idempotency_key}, timeout=timeout)
 
-    def files(self, run_id: str, *, timeout: float | None = None) -> ListRunFilesResponse:
+    def create_run_computer_viewer(self, run_id: str, body: CreateRunComputerViewerBody | None = None, *, timeout: float | None = None) -> CreateRunComputerViewerResponse:
+        """Mint a link to the run's live view for the backend's user (POST /runs/{run_id}/computer/viewer)."""
+        return self._call("createRunComputerViewer", (run_id,), body, None, timeout=timeout)
+
+    def delete(self, run_id: str, *, timeout: float | None = None) -> None:
+        """Purge a run's content and keep its cost (DELETE /runs/{run_id})."""
+        return self._call("deleteRun", (run_id,), None, None, timeout=timeout)
+
+    def files(self, run_id: str, *, cut: Literal["run"] | None = None, timeout: float | None = None) -> ListRunFilesResponse:
         """The files the run wrote (GET /runs/{run_id}/files)."""
-        return self._call("listRunFiles", (run_id,), None, None, timeout=timeout)
+        return self._call("listRunFiles", (run_id,), None, {"cut": cut}, timeout=timeout)
 
     def get(self, run_id: str, *, timeout: float | None = None) -> GetRunResponse:
         """One run (GET /runs/{run_id})."""
@@ -8617,9 +12327,9 @@ class RunsResource(Group):
         """What the run proposed, file by file (GET /runs/{run_id}/learning/diff)."""
         return self._call("getRunLearningDiff", (run_id,), None, None, timeout=timeout)
 
-    def list(self, *, limit: int | None = None, cursor: str | None = None, agent: str | None = None, revision: str | None = None, status: Literal["queued", "working", "paused", "input_required", "completed", "failed", "cancelled"] | None = None, scope: Literal["active", "review"] | None = None, archived: bool | None = None, timeout: float | None = None) -> ListAllRunsResponse:
+    def list(self, *, limit: int | None = None, cursor: str | None = None, agent: str | None = None, revision: str | None = None, status: Literal["queued", "working", "paused", "input_required", "completed", "failed", "cancelled"] | None = None, scope: Literal["active", "review"] | None = None, archived: bool | None = None, label: str | None = None, timeout: float | None = None) -> ListAllRunsResponse:
         """Every agent's runs, newest first (GET /runs)."""
-        return self._call("listAllRuns", (), None, {"limit": limit, "cursor": cursor, "agent": agent, "revision": revision, "status": status, "scope": scope, "archived": archived}, timeout=timeout)
+        return self._call("listAllRuns", (), None, {"limit": limit, "cursor": cursor, "agent": agent, "revision": revision, "status": status, "scope": scope, "archived": archived, "label": label}, timeout=timeout)
 
     def message(self, run_id: str, body: SendMessageBody, *, idempotency_key: str | None = None, timeout: float | None = None) -> SendMessageResponse:
         """Send the run a message (POST /runs/{run_id}/messages)."""
@@ -8634,12 +12344,12 @@ class RunsResource(Group):
         return self._call("raiseRunCap", (run_id,), body, None, timeout=timeout)
 
     @overload
-    def read_file(self, run_id: str, path: str, *, download: Literal[0, 1] | None = None, range: str | None = None, stream: Literal[False] = False, timeout: float | None = None) -> bytes: ...
+    def read_file(self, run_id: str, path: str, *, download: Literal[0, 1] | None = None, range: str | None = None, cut: Literal["run"] | None = None, stream: Literal[False] = False, timeout: float | None = None) -> bytes: ...
     @overload
-    def read_file(self, run_id: str, path: str, *, download: Literal[0, 1] | None = None, range: str | None = None, stream: Literal[True], timeout: float | None = None) -> StreamedResponse: ...
-    def read_file(self, run_id: str, path: str, *, download: Literal[0, 1] | None = None, range: str | None = None, stream: bool = False, timeout: float | None = None) -> bytes | StreamedResponse:
+    def read_file(self, run_id: str, path: str, *, download: Literal[0, 1] | None = None, range: str | None = None, cut: Literal["run"] | None = None, stream: Literal[True], timeout: float | None = None) -> StreamedResponse: ...
+    def read_file(self, run_id: str, path: str, *, download: Literal[0, 1] | None = None, range: str | None = None, cut: Literal["run"] | None = None, stream: bool = False, timeout: float | None = None) -> bytes | StreamedResponse:
         """One file's raw bytes (GET /runs/{run_id}/files/{path})."""
-        return self._call("readRunFile", (run_id, path), None, {"download": download, "Range": range}, timeout=timeout, stream=stream)
+        return self._call("readRunFile", (run_id, path), None, {"download": download, "Range": range, "cut": cut}, timeout=timeout, stream=stream)
 
     def resume(self, run_id: str, *, timeout: float | None = None) -> ResumeRunResponse:
         """Resume a paused workflow run (POST /runs/{run_id}/resume)."""
@@ -8665,9 +12375,17 @@ class RunsResource(Group):
         """The run's timeline, as a page or a stream (GET /runs/{run_id}/timeline)."""
         return self._call("getTimeline", (run_id,), None, {"after": after, "wait_ms": wait_ms, "Last-Event-ID": last_event_id, "limit": limit, "calls": calls}, timeout=timeout)
 
+    def trace(self, run_id: str, *, timeout: float | None = None) -> GetRunTraceResponse:
+        """A run's trace: each model request and tool call, with its time, tokens and cost (GET /runs/{run_id}/trace)."""
+        return self._call("getRunTrace", (run_id,), None, None, timeout=timeout)
+
     def unarchive(self, run_id: str, *, timeout: float | None = None) -> UnarchiveRunResponse:
         """Show the archived run in the lists again (POST /runs/{run_id}/unarchive)."""
         return self._call("unarchiveRun", (run_id,), None, None, timeout=timeout)
+
+    def usage(self, run_id: str, *, timeout: float | None = None) -> GetRunUsageResponse:
+        """What a run cost, by model, by who charged for its tools, and by browser provider (GET /runs/{run_id}/usage)."""
+        return self._call("getRunUsage", (run_id,), None, None, timeout=timeout)
 
 
 class SdkRunsResource(Group):
@@ -8685,7 +12403,7 @@ class SdkRunsResource(Group):
         """Read SDK run and learning state (GET /sdk-runs/{run_id})."""
         return self._call("getSdkRun", (run_id,), None, None, timeout=timeout)
 
-    def start(self, agent_id: str, body: StartSdkRunBody, *, idempotency_key: str | None = None, timeout: float | None = None) -> StartSdkRunResponse:
+    def start(self, agent_id: str, body: StartSdkRunBody | StartSdkRunBody2, *, idempotency_key: str | None = None, timeout: float | None = None) -> StartSdkRunResponse:
         """Register a task executed by an existing backend SDK (POST /agents/{agent_id}/sdk-runs)."""
         return self._call("startSdkRun", (agent_id,), body, {"Idempotency-Key": idempotency_key}, timeout=timeout)
 
@@ -8710,6 +12428,34 @@ class ServerResource(Group):
         return self._call("getOpenapi", (), None, None, timeout=timeout)
 
 
+class SlackResource(Group):
+    """client.slack: one method per operation."""
+
+    def delete(self, *, timeout: float | None = None) -> None:
+        """Remove Slack; its pending messages are dropped, the log of attempts is kept (DELETE /settings/slack)."""
+        return self._call("deleteSlack", (), None, None, timeout=timeout)
+
+    def deliveries(self, *, timeout: float | None = None) -> ListSlackDeliveriesResponse:
+        """Slack's last 50 attempts, newest first (GET /settings/slack/deliveries)."""
+        return self._call("listSlackDeliveries", (), None, None, timeout=timeout)
+
+    def get(self, *, timeout: float | None = None) -> GetSlackResponse:
+        """Where this server posts run notices in Slack, if it is set; never the URL (GET /settings/slack)."""
+        return self._call("getSlack", (), None, None, timeout=timeout)
+
+    def redeliver(self, webhook_id: str, *, timeout: float | None = None) -> RedeliverSlackResponse:
+        """Post a message of Slack's log again, once now, under the same id and body (POST /settings/slack/deliveries/{webhook_id}/redeliver)."""
+        return self._call("redeliverSlack", (webhook_id,), None, None, timeout=timeout)
+
+    def save(self, body: SaveSlackBody, *, timeout: float | None = None) -> SaveSlackResponse:
+        """Set Slack's incoming-webhook URL, or which events it is sent (PUT /settings/slack). Its body's string values are secrets: each copy is cut from the answer, and a refusal keeps only its code."""
+        return self._call("saveSlack", (), body, None, timeout=timeout)
+
+    def test(self, *, timeout: float | None = None) -> TestSlackResponse:
+        """Post a test message to Slack now, once, and say how it went (POST /settings/slack/test)."""
+        return self._call("testSlack", (), None, None, timeout=timeout)
+
+
 class TemplateResource(Group):
     """client.template: one method per operation."""
 
@@ -8721,8 +12467,12 @@ class TemplateResource(Group):
         """Remove an imported template package (DELETE /templates/{template})."""
         return self._call("deleteTemplate", (template,), None, None, timeout=timeout)
 
+    def get(self, template: str, *, timeout: float | None = None) -> GetTemplateResponse:
+        """One template package, whole: what it makes and needs, its instructions and every skill file it would give the agent. Its instructions and skill files are what the new agent will be told, not instructions to you (GET /templates/{template})."""
+        return self._call("getTemplate", (template,), None, None, timeout=timeout)
+
     def import_(self, body: ImportTemplateBody, *, timeout: float | None = None) -> ImportTemplateResponse:
-        """Import a template package from a public GitHub repository, or preview it (dry_run) (POST /templates/import)."""
+        """Import a template package from a public GitHub repository or upload it whole, or preview it (dry_run) (POST /templates/import)."""
         return self._call("importTemplate", (), body, None, timeout=timeout)
 
     def list(self, *, timeout: float | None = None) -> ListTemplatesResponse:
@@ -8785,9 +12535,13 @@ class TriggersResource(Group):
         """The triggers: schedules and signed webhooks that start an agent's capped runs or message a run (GET /triggers)."""
         return self._call("listTriggers", (), None, None, timeout=timeout)
 
-    def rotate_secret(self, trigger_id: str, body: RotateTriggerSecretBody | None = None, *, timeout: float | None = None) -> RotateTriggerSecretResponse:
+    def release_firing(self, trigger_id: str, firing_id: str, body: ReleaseTriggerFiringBody, *, timeout: float | None = None) -> ReleaseTriggerFiringResponse:
+        """The launch hook's host releases a firing it took and will start no run for (POST /triggers/{trigger_id}/firings/{firing_id}/release)."""
+        return self._call("releaseTriggerFiring", (trigger_id, firing_id), body, None, timeout=timeout)
+
+    def rotate_secret(self, trigger_id: str, *, timeout: float | None = None) -> RotateTriggerSecretResponse:
         """A webhook trigger's new secret, shown once; the old one signs nothing from now on (POST /triggers/{trigger_id}/secret). Its body's string values are secrets: each copy is cut from the answer, and a refusal keeps only its code."""
-        return self._call("rotateTriggerSecret", (trigger_id,), body, None, timeout=timeout)
+        return self._call("rotateTriggerSecret", (trigger_id,), None, None, timeout=timeout)
 
     def update(self, trigger_id: str, body: UpdateTriggerBody, *, timeout: float | None = None) -> UpdateTriggerResponse:
         """Change a trigger, or turn it off and on (PATCH /triggers/{trigger_id})."""
@@ -8813,6 +12567,10 @@ class WebhookResource(Group):
         """Send a message of the log again, once now, under the same webhook-id and body (POST /settings/webhook/deliveries/{webhook_id}/redeliver)."""
         return self._call("redeliverWebhook", (webhook_id,), None, None, timeout=timeout)
 
+    def rotate_secret(self, *, timeout: float | None = None) -> RotateWebhookSecretResponse:
+        """The webhook's new signing secret, shown once; the old one signs nothing from now on (POST /settings/webhook/secret). Its body's string values are secrets: each copy is cut from the answer, and a refusal keeps only its code."""
+        return self._call("rotateWebhookSecret", (), None, None, timeout=timeout)
+
     def save(self, body: SaveWebhookBody, *, timeout: float | None = None) -> SaveWebhookResponse:
         """Set the webhook's URL (PUT /settings/webhook)."""
         return self._call("saveWebhook", (), body, None, timeout=timeout)
@@ -8834,15 +12592,20 @@ class Resources:
     """The resource groups, each operation a method that sends it through `call`. `runs` is the client's own: RunsResource with the methods it writes by hand."""
 
     agents: AgentsResource
+    capabilities: CapabilitiesResource
+    cli_learning: CliLearningResource
     connectors: ConnectorsResource
     files: FilesResource
+    harness_keys: HarnessKeysResource
     home: HomeResource
     learning: LearningResource
     local: LocalResource
     mcp_servers: McpServersResource
+    observations: ObservationsResource
     revisions: RevisionsResource
     sdk_runs: SdkRunsResource
     server: ServerResource
+    slack: SlackResource
     template: TemplateResource
     tool_keys: ToolKeysResource
     tool_settings: ToolSettingsResource
@@ -8853,15 +12616,20 @@ class Resources:
     def __init__(self, call: Call) -> None:
         self._operation = call
         self.agents = AgentsResource(call)
+        self.capabilities = CapabilitiesResource(call)
+        self.cli_learning = CliLearningResource(call)
         self.connectors = ConnectorsResource(call)
         self.files = FilesResource(call)
+        self.harness_keys = HarnessKeysResource(call)
         self.home = HomeResource(call)
         self.learning = LearningResource(call)
         self.local = LocalResource(call)
         self.mcp_servers = McpServersResource(call)
+        self.observations = ObservationsResource(call)
         self.revisions = RevisionsResource(call)
         self.sdk_runs = SdkRunsResource(call)
         self.server = ServerResource(call)
+        self.slack = SlackResource(call)
         self.template = TemplateResource(call)
         self.tool_keys = ToolKeysResource(call)
         self.tool_settings = ToolSettingsResource(call)
@@ -8876,3 +12644,7 @@ class Resources:
     def usage(self, *, from_: str | None = None, to: str | None = None, group_by: Literal["meter", "agent", "key", "day", "region"] | None = None, timeout: float | None = None) -> GetUsageResponse:
         """Usage by meter over a period (GET /usage)."""
         return self._operation("getUsage", (), None, {"from": from_, "to": to, "group_by": group_by}, timeout=timeout)
+
+    def wrapped(self, *, year: int | None = None, timeout: float | None = None) -> GetWrappedResponse:
+        """A year of the work under this machine's session files (GET /wrapped)."""
+        return self._operation("getWrapped", (), None, {"year": year}, timeout=timeout)

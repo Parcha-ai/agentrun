@@ -1,6 +1,6 @@
 # Learning in an existing backend SDK agent
 
-These opt-in live examples wrap an existing Claude Agent SDK query or Codex SDK client. Your backend still starts the job and runs its tools. AgentRun stores its result, checks proposed learning, and supplies approved notes and skills to the next fresh SDK session.
+These opt-in live examples wrap an existing Claude Agent SDK query or Codex SDK client. Your backend still starts the job and runs its tools. AgentRun stores its result and supplies the owner's corrections (the agent's `corrections.md`, given whole) to the next fresh SDK session.
 
 Use the client and server from this reviewed development checkout. These wrapper entry points are not a claim about an already-published npm release.
 
@@ -11,7 +11,7 @@ npm run build -w @parcha/agentrun-client
 npm install --prefix examples/sdk-learning --ignore-scripts --package-lock=false
 ```
 
-Run the matching AgentRun server with its runner enabled. Set up an API key and a reflection/grading model under Settings. Set `AGENTRUN_BASE_URL` to its API URL ending in `/v2`, and `AGENTRUN_API_KEY` in your backend environment. Keep your existing Claude/Codex credentials in that backend. Do not paste either kind of key into a prompt.
+Run the matching AgentRun server with its runner enabled. Set up an API key under Settings. Set `AGENTRUN_BASE_URL` to its API URL ending in `/v2`, and `AGENTRUN_API_KEY` in your backend environment. Keep your existing Claude/Codex credentials in that backend. Do not paste either kind of key into a prompt.
 
 Choose one example:
 
@@ -20,15 +20,15 @@ npm run claude --prefix examples/sdk-learning -- --live
 npm run codex --prefix examples/sdk-learning -- --live
 ```
 
-Both commands make real model calls and create two demo agents on your server. `CLAUDE_MODEL` or `CODEX_MODEL` can select the existing backend model. AgentRun's reflection and independent grading use the separately configured server model and add usage.
+Both commands make real model calls and create two demo agents on your server. `CLAUDE_MODEL` or `CODEX_MODEL` can select the existing backend model.
 
 Each example performs three tasks with fictional release data:
 
-1. Teach a reporting preference while using the backend's existing read-only tool.
-2. Wait for checking/grading to accept a note or skill, then make the same request in a fresh session without repeating the preference.
+1. Report the release status once, using the backend's existing read-only tool.
+2. As the owner, add one correction to the agent's `corrections.md` (`PUT /v2/agents/{id}/learning/corrections`, on the version just read): begin every release report with "Release brief:". Then make the same request in a fresh session, the correction nowhere in its prompt.
 3. Make that request with a separate learning-Off control agent.
 
-The script checks the accepted note or skill, the learning revision supplied to the second run, the reused prefix, the control answer, and native tool execution. It prints those results and links to the runs. A failed check exits nonzero; it does not retry a paid task or force a proposal through review. Inspect the agent's Learning Dojo results and run timeline to understand a rejection. This is one integration smoke test, not a learning-quality benchmark.
+An SDK task carries no owner feedback of its own, so the owner's words reach `corrections.md` through that API or the console's Learning tab. The script checks that main holds the correction, that the second run started from that revision and was given it, the reused prefix, the control answer, and native tool execution. It prints those results and links to the runs. A failed check exits nonzero; it does not retry a paid task. This is one integration smoke test, not a learning-quality benchmark.
 
 Claude uses a real in-process MCP `release_status` tool. Codex uses its normal shell in a temporary read-only workspace containing `release-status.json`; that workspace is removed afterward. Agent definitions and run evidence remain in AgentRun so you can inspect them.
 
@@ -44,7 +44,7 @@ To adapt an existing backend, see the [Claude Agent SDK cookbook](../../docs/tut
 
 ## Learn an executable workflow
 
-The workflow variants add an explicit MCP bridge to each native SDK. Each example imports its own `@parcha/agentrun-dsl` engine and passes it through `createWorkflowMcpBridge({ engine, ... })`; the client does not install or select an interpreter. Your existing backend tools and the learned workflow call the same callback functions. See the [workflow MCP cookbook](../../docs/tutorials/sdk-workflow-learning.md) to adapt your own backend.
+The workflow variants add an explicit MCP bridge to each native SDK. This example explicitly installs the bridge's optional peers (`@modelcontextprotocol/sdk`, `ajv`, and `ajv-formats`) so it does not depend on another package installing them transitively. Each example imports its own `@parcha/agentrun-dsl` engine and passes it through `createWorkflowMcpBridge({ engine, ... })`; the client does not install or select an interpreter. Your existing backend tools and the learned workflow call the same callback functions. See the [workflow MCP cookbook](../../docs/tutorials/sdk-workflow-learning.md) to adapt your own backend.
 
 Build the DSL and client before installing the standalone example dependencies:
 
@@ -57,15 +57,18 @@ npm run claude:workflows --prefix examples/sdk-learning -- --live
 npm run codex:workflows --prefix examples/sdk-learning -- --live
 ```
 
-Use the same server, API key, server grading model and backend credentials described above. Each command can make seven native-model tasks plus the associated server reflection/grading calls. It creates an On agent and an Off control. These examples use local read-only tools with no metered tool cost; the model calls still incur usage. They do not require native shell execution.
+Use the same server, API key and backend credentials described above, with a server model for the compile turn. Each command can make at most twelve native-model tasks plus the server's compilation calls. It creates an On agent and an Off control. These examples use local read-only tools with no metered tool cost; the model calls still incur usage. They do not require native shell execution.
 
 The sequence is:
 
 1. Teach a reusable two-tool procedure: read a fictional release's status, then pass that unchanged status to the existing formatter.
-2. Require an accepted run-generated skill. Make up to four fresh practice runs: teaching plus four completed practice runs reaches the ordinary five-run compile threshold. The host asks a separate compiler turn when there is no workflow and no recent compilation; three kept notes can also make a job eligible.
-3. Require an active workflow generated and checked by the normal learning pipeline. A pending proposal stops the demo for owner review; the script never approves it.
-4. Request a different service in a fresh native session. Require the accepted workflow revision, a successful `learned_workflow` MCP invocation, and both original tool callbacks executing inside that workflow with the new service/version.
-5. Give a learning-Off agent the same request. Verify its tools still work and no learned workflow was offered or executed.
+2. Make up to four fresh practice runs: teaching plus four completed practice runs reaches the agent's compile threshold, which the demo sets at registration with `learning: { compile_after: 5 }` (20 by default). The host asks its compile turn once the agent has that many completed runs and no workflow.
+3. Require a compiled draft from the normal learning pipeline. A workflow waiting for its owner's OK stops the demo; the script never approves it.
+4. Run fresh native tasks with the draft reserved only as `learning.check`, outside the model's executable workflow list, five of them (the agent's `compile_after`). The shared client checks each against its task's recorded tool evidence; the server decides once on all five, and the demo requires it to promote that candidate. A held check stops the proof without more paid attempts.
+5. Request a different service in a fresh native session. Require the promoted workflow revision, a successful `learned_workflow` MCP invocation, and both original tool callbacks executing inside that workflow with the new service/version.
+6. Give a learning-Off agent the same request. Verify its tools still work and no learned workflow was offered or executed.
+
+The bounded proof makes at most twelve native tasks: five practice/teaching tasks, five independent check tasks, one reuse and one Off control. One successful check on five tasks is integration evidence, not a statistical quality benchmark.
 
 The formatter accepts only the exact fresh status object returned by the status callback, including a new observation identifier. A hardcoded answer, stale result, or direct-tool fallback cannot satisfy the workflow-reuse assertion. The evidence output includes the generated workflow, learning revision, console links, lifecycle events, and fictional tool observations. It deliberately excludes native prompts, run tokens and MCP capability values.
 

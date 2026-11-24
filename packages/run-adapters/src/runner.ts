@@ -10,7 +10,7 @@ import { Compile } from "typebox/compile";
 import { submitParameters } from "@parcha/agentrun-dsl";
 import { HarnessRunError, SessionFenced, TurnParked } from "./errors.js";
 import { bookRequest, type Ended } from "./booking.js";
-import type { AdapterEvent, AgentAdapter, HarnessEvent, HostTool, JsonValue, ModelPort, ModelRequest, ModelTicket, ModelUsage, NodeRequest, NoteRequest, SessionRecord, SessionSpec, SessionStore, SessionWriter } from "./types.js";
+import type { AdapterEvent, AgentAdapter, CapCut, HarnessEvent, HostTool, JsonValue, ModelPort, ModelRequest, ModelTicket, ModelUsage, NodeRequest, NoteRequest, SessionRecord, SessionSpec, SessionStore, SessionWriter } from "./types.js";
 
 /** Exactly the interpreter's `runNode`, plus `stop`: a pause of every node it is running. With `drainMs`, each node
  *  starts no new turn, call or paid request, its calls in flight run on until their outcomes are recorded (for at most
@@ -86,6 +86,9 @@ export type BeforeRequest = (request: {
   /** The run's requests on free models so far (runBooking, over every session of the run): each whose runner.request says
    *  so (`freeRequest`), answered, in flight or cut, and each admitted that no record shows yet. Absent: not counted here. */
   freeRequestsMade?: number;
+  /** The run's requests on local models so far, counted the same way (`localRequest`): free, never under the server's
+   *  limit, but under the agent's own (RunCapOptions.maxRequests) beside freeRequestsMade. Absent: not counted here. */
+  localRequestsMade?: number;
   /** The request's client's signal (ModelRequest.signal): a host that makes it wait for room lets it go when it aborts. */
   signal?: AbortSignal;
   /** The booking's own stop or pause, now (its `stopped`, `draining`, or a cost it could not record): a request waiting
@@ -108,7 +111,7 @@ export type Refusal = { refuse: string; forGood?: boolean; figures?: { spentUsd:
 /** A request admitted and not yet answered, as a budget holds it: at what its host held for it (`holdUsd`), when it held
  *  one. `stays`: a hold-only step (ModelRequest.paid.hold, a browser session's reserve), let go only when its holder says,
  *  never by settling on its own: no request waits for it. */
-export type InFlight = { turn: number; model: string; inputTokensMax?: number; outputTokensMax?: number; holdUsd?: number; host?: string; route?: string; freeRequest?: true; stays?: true };
+export type InFlight = { turn: number; model: string; inputTokensMax?: number; outputTokensMax?: number; holdUsd?: number; host?: string; route?: string; freeRequest?: true; localRequest?: true; stays?: true };
 /** A host's admission: what it holds for the request (`holdUsd`), and the most output tokens, thinking included, it may
  *  be sent with (`outputTokensMax`, what is left of a cap can buy), which its ticket carries to the model proxy. A
  *  request its client stops part way (`ModelUsage.stoppedAfterBytes`), its cost unknown, counts at `stoppedUsd` of what
@@ -117,13 +120,17 @@ export type InFlight = { turn: number; model: string; inputTokensMax?: number; o
  *  `note`: the host's record of the note this request carries, written on the request's `runner.turn` record once it
  *  ends, beside how it was booked, so a later process reads whether the note reached an answer. `freeRequest`: one of
  *  the run's requests on a free model, which its ceiling on such requests counts: written on its runner.request (as
- *  `freeRequest`), so the count holds it in every process, and a cut one books at $0 (bookCut). */
-export type Admission = { holdUsd?: number; outputTokensMax?: number; stoppedUsd?: (streamedTokens: number) => number; withoutNote?: true; note?: { [key: string]: JsonValue }; freeRequest?: true };
+ *  `freeRequest`), so the count holds it in every process, and a cut one books at $0 (bookCut). `localRequest`: one on a
+ *  local model (CapModel.local), counted apart (`localRequest` on its runner.request) for the agent's own limit. `capCut`: its output
+ *  limited below what it asked by what is left of the cap, the figures an answer cut at that limit says (ModelTicket). */
+export type Admission = { holdUsd?: number; outputTokensMax?: number; stoppedUsd?: (streamedTokens: number) => number; withoutNote?: true; note?: { [key: string]: JsonValue }; freeRequest?: true; localRequest?: true; capCut?: CapCut };
 
 /** An admission as a host gives it: with `free` when the request is on a free model (its known price is $0 for every
  *  token, with no fee beside), so it costs nothing however it ends: booked a known $0 (booking.ts), its own cost 0, its
- *  runner.turn marked `free` for a reader to say why. */
-export type Admitted = Admission & { free?: true };
+ *  runner.turn marked `free` for a reader to say why. `plan`: the request is billed to a person's subscription plan (a
+ *  ChatGPT plan's model, CapModel.plan), never in dollars: it costs the run $0 however it ends, its runner.request and
+ *  runner.turn marked so (`plan`, `billing: "plan"`), so a later process books it so too when a crash cut it. */
+export type Admitted = Admission & { free?: true; plan?: true };
 export interface HarnessRunnerOptions {
   /** The run's store, through whoever owns it. */
   store: SessionStore;
@@ -158,9 +165,29 @@ const positive = (value: number, name: string): number => {
  *  refused answer, a misconfigured model) would be sent turns forever, on microtasks no timer can interrupt. */
 export const NO_PROGRESS_TURNS = 3;
 
+/** A request whose answer billed more input than the bound its hold was priced on (InFlight.inputTokensMax): the cap's
+ *  one failure that matters, a hold too small. Its model; that bound and what it billed (input, cache reads and cache
+ *  writes together, as `inputAfter` reads a bill), in tokens; what was held for it and, when its answer was priced, what
+ *  it billed, in USD. */
+export type HoldShort = { model: string; boundTokens: number; billedTokens: number; heldUsd: number; billedUsd?: number };
+
 /** What a paid request tells a host, beside its session's key and label. A `request_end` carries how its path saw the
- *  request end (`ended`, booking.ts), when the path said. */
-export type ModelPortEvent = { type: "request_start"; turn: number; model: string; host?: string } | { type: "request_end"; turn: number; usage: ModelUsage; host?: string; ended?: Ended };
+ *  request end (`ended`, booking.ts), when the path said, and `holdShort` when it billed past its hold's bound. */
+export type ModelPortEvent = { type: "request_start"; turn: number; model: string; host?: string } | { type: "request_end"; turn: number; usage: ModelUsage; host?: string; ended?: Ended; holdShort?: HoldShort };
+
+/** `usage` against the bound its request's hold was priced on (`flight`'s inputTokensMax; `hold`, what was held): a
+ *  HoldShort when it billed more input than that bound. Undefined when it billed at or under it, or when there is nothing
+ *  to compare: no bound, no hold (no cap priced it), a request held at $0 whatever its input (billed to a plan or on a
+ *  free model, `unpriced`), or a usage with no input count (one cut, or one whose answer reported none). */
+const holdShortOf = (usage: ModelUsage, flight: InFlight | undefined, hold: number | undefined, unpriced: boolean): HoldShort | undefined => {
+  const count = (value: unknown) => (typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined);
+  const input = count(usage.input);
+  const bound = count(flight?.inputTokensMax);
+  if (!flight || bound === undefined || hold === undefined || unpriced || usage.billing === "plan" || usage.cut || usage.givenBack || input === undefined) return undefined;
+  const billed = input + (count(usage.cacheRead) ?? 0) + (count(usage.cacheWrite) ?? 0);
+  if (billed <= bound) return undefined;
+  return { model: flight.model, boundTokens: bound, billedTokens: billed, heldUsd: hold, ...(typeof usage.usd === "number" && Number.isFinite(usage.usd) ? { billedUsd: usage.usd } : {}) };
+};
 
 export interface ModelPortOptions {
   /** The session's key: what `beforeRequest` and every event carry. */
@@ -207,7 +234,8 @@ export interface ModelBooking {
    *  has no hold (never under a cap, which refuses a request it cannot price): unknown, never read as 0. */
   heldUsd(): number | null;
   /** Books, once, each paid request a crash cut off (a `runner.request` with no `runner.turn`): a `runner.turn` marked
-   *  `cut` at an unknown price, and a `request_end` saying so. A booked request is answered, so this is idempotent.
+   *  `cut`, at its hold as the most it can have cost (CUT_AT_HOLD) or, with none, at an unknown price (one billed to a
+   *  plan, its runner.request's `plan`: at $0, `billing: "plan"`), and a `request_end` saying so. A booked request is answered, so this is idempotent.
    *  Call it before the session sends anything. */
   bookCut(): Promise<void>;
 }
@@ -233,9 +261,13 @@ export function sessionSpendOf(records: readonly SessionRecord[]): { turns: numb
   requests.forEach((data, i) => { if (data.hold === true) holdOnly.add(turns[i]!); });
   const hosts = new Map<number, string>();
   requests.forEach((data, i) => { if (typeof data.host === "string") hosts.set(turns[i]!, data.host); });
+  // One billed to a person's plan (Admitted.plan) costs the run $0 however it ends: its figure for the cap, held or not,
+  // and its cost while it is open, known and never unpriced (turnCostOf's rule once it is booked).
+  const onPlan = new Set<number>();
+  requests.forEach((data, i) => { if (billedToPlan(data)) onPlan.add(turns[i]!); });
   const held = new Map<number, number>();
   requests.forEach((data, i) => {
-    const figure = heldFigure(data.heldUsd);
+    const figure = onPlan.has(turns[i]!) ? 0 : heldFigure(data.heldUsd);
     if (figure !== undefined) held.set(turns[i]!, figure);
   });
   // A request that never answered (a crash or a lost claim cut it; booked cut or not yet) counts for the cap at its hold,
@@ -246,18 +278,20 @@ export function sessionSpendOf(records: readonly SessionRecord[]): { turns: numb
   // earliest still open, as answers then came in order).
   const answered = new Set<number>();
   let spentUsd: number | null = 0;
-  // The run's cost: what is known (each booked or reported figure), and how many requests have none. A held figure is
-  // the cap's, never a cost: a request without its own figure makes the cost unknown, the known part kept beside it.
-  let soFarUsd = 0;
+  // The run's cost (costOfParts): what is known (each booked or reported figure), each cut request booked at its hold
+  // apart (`bounded`, the most it can have cost), and how many requests have none. A held figure is the cap's, never a
+  // cost: a request without its own figure makes the cost unknown, the known part kept beside it.
+  let known = 0;
+  let bounded = 0;
   let unpriced = 0;
+  let atMost = 0;
   // Each request's figure for the cap, in the order its spend is summed (`spentUsd` is their sum; null: no figure).
   const figures: { turn: number; usd: number | null }[] = [];
   for (const r of records) {
     if (r.kind !== RUNNER_RECORDS.turn) continue;
     const data = r.data as { turn?: number; usd?: number | null; heldUsd?: unknown; bookedUsd?: unknown; cut?: unknown; rule?: unknown };
-    // A request is booked once: a second runner.turn of a turn already answered (two bookings of one session that each
-    // read it open, a cut written twice) counts no money and no request again.
-    if (typeof data.turn === "number" && answered.has(data.turn)) continue;
+    // A request is booked once (rebooked): a second runner.turn of a turn already answered counts no money and no request.
+    if (rebooked(answered, typeof data.turn === "number" ? data.turn : undefined)) continue;
     const turn = data.turn ?? turns.find((t) => !answered.has(t)) ?? 0;
     answered.add(turn);
     // The figure it was booked at (bookRequest), as written. A record from before that has none: a request cut off with
@@ -268,11 +302,12 @@ export function sessionSpendOf(records: readonly SessionRecord[]): { turns: numb
     const figure = booked !== undefined ? (booked ?? undefined) : cut ? worst(turn) : data.usd === null ? (heldFigure(data.heldUsd) ?? held.get(turn)) : (data.usd ?? 0);
     spentUsd = spent(spentUsd, figure);
     figures.push({ turn, usd: figure ?? null });
-    // An answer with no price of its own (usd null) was booked at its hold for the cap: as a cost it is unknown, never
-    // the hold (0 with no cap), as main read an unpriced answer.
-    const own = answeredUnpriced(data) ? null : booked !== undefined ? booked : cut || data.usd === null ? null : data.usd === undefined ? 0 : (heldFigure(data.usd) ?? null);
-    if (own === null) unpriced++;
-    else soFarUsd += own;
+    // Its own cost (turnCostOf): an answer with no price of its own is unknown, never the hold it counts at for the cap; a
+    // request cut with no answer and booked at its hold is that figure, the most it can have cost.
+    const own = turnCostOf(data);
+    if (own.usd === null) unpriced++;
+    else if (own.atMost) (bounded += own.usd), atMost++;
+    else known += own.usd;
   }
   const openHolds = new Set<number>();
   for (const turn of turns) {
@@ -283,9 +318,64 @@ export function sessionSpendOf(records: readonly SessionRecord[]): { turns: numb
     }
     spentUsd = spent(spentUsd, worst(turn));
     figures.push({ turn, usd: worst(turn) ?? null });
-    unpriced++;
+    if (!onPlan.has(turn)) unpriced++;
   }
-  return { turns, held, hosts, answered, openHolds, spentUsd, figures, cost: { usd: unpriced > 0 ? null : soFarUsd, soFarUsd, unpriced } };
+  return { turns, held, hosts, answered, openHolds, spentUsd, figures, cost: costOfParts([{ known, bounded, atMost, unpriced }]) };
+}
+
+/** A cost's parts, each charge counted by turnCostOf: `known`, the sum of the figures that are a charge's own; `bounded`,
+ *  the sum of those that are a cut request's hold (CUT_AT_HOLD), the most each can have cost, and `atMost`, how many those
+ *  are; `unpriced`, how many charges have no figure at all. */
+export type CostParts = { readonly known: number; readonly bounded: number; readonly atMost: number; readonly unpriced: number };
+
+/** The one rule for a cost made of parts, as every reader of a run's cost says it (the session's, the run's stored cost,
+ *  its view and its usage row). Every charge counted: `usd` is their sum, holds included, and `atMost` how many of them are
+ *  a hold, so the cost is at most `usd`. Any charge with no figure: `usd` is null, `soFarUsd` the charges' own figures
+ *  alone, and `unpriced` counts the held ones with those of no figure. A hold is a ceiling, never spend: beside a cost no
+ *  one knows it bounds nothing, so it joins no known sum, where it would read as money spent. */
+export function costOfParts(parts: readonly CostParts[]): SessionCost {
+  let known = 0;
+  let bounded = 0;
+  let atMost = 0;
+  let unpriced = 0;
+  for (const part of parts) (known += part.known), (bounded += part.bounded), (atMost += part.atMost), (unpriced += part.unpriced);
+  if (unpriced > 0) return { usd: null, soFarUsd: known, unpriced: unpriced + atMost };
+  return { usd: known + bounded, soFarUsd: known + bounded, unpriced: 0, ...(atMost > 0 ? { atMost } : {}) };
+}
+
+/** Whether a runner.turn books a request already booked: its turn (`key`, as the reader names it) is in `seen`, which it
+ *  joins otherwise. Every reader of a booking (sessionSpendOf, serve's bookedSpend) skips such a record, so a request is
+ *  counted once: two bookings of one session that each read it open, or a cut written twice, wrote it twice. A record
+ *  with no turn (written before turns were named) is never a repeat. */
+export function rebooked<K>(seen: Set<K>, key: K | undefined): boolean {
+  if (key === undefined) return false;
+  if (seen.has(key)) return true;
+  seen.add(key);
+  return false;
+}
+
+/** The rule (runner.turn `rule`) of a request cut with no answer that bookCut booked at what its host held for it: the
+ *  most it can have cost (its whole input uncached and the output it was sent with), marked `atMost`. */
+export const CUT_AT_HOLD = "cut";
+
+/** Whether a runner.request (its `data`) is billed to a person's plan (Admitted.plan, its record's `plan`): $0 to the run
+ *  however it ends, open or booked. The one check every reader of a booking makes (sessionSpendOf, bookCut, serve's
+ *  bookedSpend). */
+export const billedToPlan = (data: unknown): boolean => (data as { plan?: unknown } | null | undefined)?.plan === true;
+
+/** A booked request's own cost, from its runner.turn, as every reader of a run's cost reads it (the session's cost, the
+ *  run's stored cost and its views): what it was booked at, else its `usd`; null when no one knows it (an answer with no
+ *  price of its own booked at its hold for the cap, answeredUnpriced; a request cut with no hold). `atMost`: a request cut
+ *  with no answer, booked at its hold (CUT_AT_HOLD), so the figure is the most it can have cost, never less. One billed to
+ *  a person's plan (`billing: "plan"`) is $0 to the run however it ended: the plan pays for it, never the run. */
+export function turnCostOf(data: { usd?: unknown; bookedUsd?: unknown; cut?: unknown; rule?: unknown; atMost?: unknown; billing?: unknown }): { usd: number | null; atMost: boolean } {
+  // Billed to a person's plan (Admitted.plan): no dollars to the run however it ended, answered, stopped or cut.
+  if (data.billing === "plan") return { usd: 0, atMost: false };
+  if (answeredUnpriced(data)) return { usd: null, atMost: false };
+  const booked = data.bookedUsd === null ? null : heldFigure(data.bookedUsd);
+  if (booked !== undefined) return { usd: booked, atMost: booked !== null && data.rule === CUT_AT_HOLD && data.atMost === true };
+  if (data.cut === true || data.usd === null) return { usd: null, atMost: false };
+  return { usd: data.usd === undefined ? 0 : (heldFigure(data.usd) ?? null), atMost: false };
 }
 
 /** Whether a request ended with no price of its own (usd null) under a rule that books it at a figure of the host's: an
@@ -296,12 +386,14 @@ export const answeredUnpriced = (data: { usd?: unknown; rule?: unknown }): boole
   data.usd === null && typeof data.rule === "string" && (data.rule === "answered" || data.rule.startsWith("answered:") || data.rule === "stopped" || data.rule === "lost" || data.rule.startsWith("lost:"));
 
 /** A session's cost as a person is shown it: `usd` when every paid request has its own figure, else null with the known
- *  part so far (`soFarUsd`) and how many have none (`unpriced`). */
-export type SessionCost = { usd: number | null; soFarUsd: number; unpriced: number };
+ *  part so far (`soFarUsd`, the charges' own figures alone) and how many have none (`unpriced`, a cut request's hold
+ *  among them). `atMost`, set only while `usd` is known: how many of its figures are a cut request's hold (turnCostOf),
+ *  so the cost is at most what it says (costOfParts). */
+export type SessionCost = { usd: number | null; soFarUsd: number; unpriced: number; atMost?: number };
 
 /** A request's booking its own write could not keep, as it would have been written and told: its runner.turn, and the
- *  request_end its host was never sent. */
-type Handed = { data: SessionRecord["data"]; usage: ModelUsage; ended?: Ended };
+ *  request_end its host was never sent (with its `holdShort`, when it billed past its hold's bound). */
+type Handed = { data: SessionRecord["data"]; usage: ModelUsage; ended?: Ended; holdShort?: HoldShort };
 /** The bookings of each session scope (SessionWriter.scope) in this process, across its claims: each request a booking
  *  admitted and has not seen answer (`flying`, settled once its afterRequest has written or failed to), and each answered
  *  request whose runner.turn the store refused (`refused`: a claim lost as the request answered). The scope's next
@@ -345,6 +437,8 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
   const notes = new Map<number, { [key: string]: JsonValue }>();
   /** The requests of this process on a free model (Admitted.free): each booked a known $0 however it ends. */
   const freeTurns = new Set<number>();
+  /** The requests of this process billed to a plan (Admitted.plan): each booked $0 to the run however it ends. */
+  const planTurns = new Set<number>();
   const answered = read.answered;
   let spentUsd: number | null = read.spentUsd;
   // The ids each request's response gave it, kept as its headers arrived: a request cut off after them reached the provider.
@@ -422,8 +516,14 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
     // Durable before the request leaves: admitted, then sent. It counts as a turn once its record is written (admissions
     // run one at a time), so a write that fails refuses the request and costs no turn.
     const turn = turns + 1;
+    // Billed to a plan (Admitted.plan), or counted toward the run's free-model limit (Admitted.freeRequest): said on its
+    // record, so a later process that books it cut books it so, and the next count holds it. Never both (runCap).
+    const onPlan = !!verdict && "plan" in verdict && verdict.plan === true;
     const freeRequest = !!verdict && "freeRequest" in verdict && verdict.freeRequest === true;
-    await write([{ kind: RUNNER_RECORDS.request, data: { turn, model, ...(hold === undefined ? {} : { heldUsd: hold }), ...(freeRequest ? { freeRequest: true as const } : {}), ...(side ? { side } : {}), ...(host === undefined ? {} : { host }), ...(paid?.call === undefined ? {} : { call: paid.call }), ...(paid?.charged_by === undefined ? {} : { charged_by: paid.charged_by }), ...(paid?.tool === undefined ? {} : { tool: paid.tool }), ...(paid?.tag === undefined ? {} : { tag: paid.tag }), ...(paid?.owed ? { owed: true as const } : {}), ...(paid?.hold ? { hold: true as const } : {}), ...(paid?.ref === undefined ? {} : { ref: paid.ref }) } }]);
+    const localRequest = !!verdict && "localRequest" in verdict && verdict.localRequest === true;
+    // A paid tool call (ModelRequest.paid) says so on its record (`paid`), so a later process that books it cut knows its
+    // hold is its fee as admitted, never a bound on what its provider charged (bookCut).
+    await write([{ kind: RUNNER_RECORDS.request, data: { turn, model, ...(paid ? { paid: true as const } : {}), ...(hold === undefined ? {} : { heldUsd: hold }), ...(onPlan ? { plan: true as const } : {}), ...(freeRequest ? { freeRequest: true as const } : {}), ...(localRequest ? { localRequest: true as const } : {}), ...(side ? { side } : {}), ...(host === undefined ? {} : { host }), ...(paid?.call === undefined ? {} : { call: paid.call }), ...(paid?.charged_by === undefined ? {} : { charged_by: paid.charged_by }), ...(paid?.tool === undefined ? {} : { tool: paid.tool }), ...(paid?.tag === undefined ? {} : { tag: paid.tag }), ...(paid?.owed ? { owed: true as const } : {}), ...(paid?.hold ? { hold: true as const } : {}), ...(paid?.ref === undefined ? {} : { ref: paid.ref }), ...(paid?.reported ? { reported: true as const } : {}) } }]);
     turns = turn;
     if (host !== undefined) hosts.set(turn, host);
     if (hold !== undefined) held.set(turn, hold);
@@ -432,6 +532,7 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
     const note = verdict && "note" in verdict && verdict.note && typeof verdict.note === "object" && !withoutNote ? verdict.note : undefined;
     if (note) notes.set(turn, note);
     if (verdict && "free" in verdict && verdict.free === true) freeTurns.add(turn);
+    if (onPlan) planTurns.add(turn);
     // A stop that came while the record was written: the request has not left. It is booked withdrawn, at $0, so no
     // later process books it as cut at an unknown price; if that write fails, it is booked cut, which is never less.
     // Its record is written, so it costs a turn of the cap, never money.
@@ -462,7 +563,9 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
     }
     open.push({ turn, model, inputTokensMax, ...(limited === undefined ? {} : { outputTokensMax: limited }), ...(hold === undefined ? {} : { holdUsd: hold }), ...(host === undefined ? {} : { host }), ...(route === undefined ? {} : { route }), ...(paid?.hold ? { stays: true as const } : {}) });
     fly(turn);
-    return { turn, ...(limited === undefined ? {} : { outputTokensMax: limited }), ...(withoutNote ? { noteDropped: true as const } : {}) };
+    // The cap's figures for a cut of its answer, only with the limit they are about.
+    const capCut = limited !== undefined && verdict && "capCut" in verdict && verdict.capCut ? verdict.capCut : undefined;
+    return { turn, ...(limited === undefined ? {} : { outputTokensMax: limited }), ...(withoutNote ? { noteDropped: true as const } : {}), ...(capCut ? { capCut } : {}) };
   };
   const models: ModelPort = {
     ...(options.note ? { note: options.note } : {}),
@@ -486,6 +589,8 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
       // The turn this request was admitted as (its ticket; without one, the earliest still in flight).
       const turn = ticket?.turn ?? open[0]?.turn ?? turns;
       const at = open.findIndex((f) => f.turn === turn);
+      // As it was admitted: the bound its hold was priced on (holdShortOf).
+      const flight = at >= 0 ? open[at] : undefined;
       if (at >= 0) open.splice(at, 1);
       // A cost that never came in (a response cut short): at what the host held for the request, else unknown. One its
       // client stopped part way at what the host counts it at by what streamed (one token a byte), never more than that.
@@ -494,6 +599,10 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
       stoppedAt.delete(turn);
       const note = notes.get(turn);
       notes.delete(turn);
+      // Billed to a plan: so booked however it ended (a cut or a stop reports no usage that says so), at $0 for the cap
+      // as its hold is, and $0 to the run (turnCostOf).
+      const plan = planTurns.delete(turn);
+      if (plan && usage.billing === undefined) usage = { ...usage, billing: "plan" };
       // On a free model nothing it was billed for costs anything: its own cost is a known $0, never unknown. A cost its
       // provider reported above $0 is a cost all the same: booked as it is, never free. A request billed to a plan is the
       // plan's, at no price here, whatever its listing says: never free.
@@ -508,13 +617,16 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
       const stopped = usage.usd === null && hold !== undefined && stoppedUsd && sent !== undefined ? heldFigure(stoppedUsd(sent + Math.max(0, hidden - reasoned))) : undefined;
       // How its path saw it end, booked by the one rule (booking.ts); a host from before that says nothing of it: as
       // before, its own cost, else what streamed of a stop, else the hold.
-      const booking = ended ? bookRequest(ended, { ...(hold === undefined ? {} : { hold }), ...(stoppedUsd ? { stoppedPrice: stoppedUsd } : {}), ...(free ? { free } : {}) }) : undefined;
+      const booking = ended ? bookRequest(ended, { ...(hold === undefined ? (plan ? { hold: 0 } : {}) : { hold }), ...(stoppedUsd ? { stoppedPrice: stoppedUsd } : {}), ...(free ? { free } : {}) }) : undefined;
       const figure = booking ? booking.usd : usage.usd !== null ? usage.usd : stopped === undefined ? hold : Math.min(hold!, stopped);
       spentUsd = spent(spentUsd, figure ?? undefined);
       const settle = settles.get(turn);
       const data: SessionRecord["data"] = { turn, usd: usage.usd, ...tokensOf(usage), ...(usage.givenBack ? { givenBack: true } : {}), ...(usage.estimated ? { estimated: true } : {}), ...(usage.tableUsd === undefined ? {} : { tableUsd: usage.tableUsd }), ...(usage.billing ? { billing: usage.billing } : {}), ...(usage.providerIds ? { providerIds: usage.providerIds } : {}), ...(stopped === undefined ? {} : { heldUsd: Math.min(hold!, stopped), stopped: true }), ...(booking ? { bookedUsd: booking.usd, rule: booking.rule } : {}), ...(ended?.end === "nothing" && ended.label === "refused" && ended.reason ? { refusal: ended.reason } : {}), ...(ended?.end === "answered" && ended.label === "error" && ended.reason ? { providerError: ended.reason } : {}), ...(note ? { note } : {}) };
       // Marked so, for a reader to say why it cost nothing (a run on free models: "$0 · free model").
       if (free) data.free = true;
+      // Billed past the bound its hold was priced on: told with its end, for the host's warn line, here or, its write
+      // refused, by the next booking that writes it (handoffs). Its booking is as above.
+      const holdShort = holdShortOf(usage, flight, hold, plan || free);
       try {
         // A runner.turn with the ids holds what a carried response record of this turn would: that one is dropped. A
         // stopped one keeps the figure it counts at (`heldUsd`), so a later process counts it the same.
@@ -524,7 +636,7 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
       } catch (error) {
         // Refused (its claim lost as it answered, say): the booking is handed to the session's next booking in this
         // process, which writes it at its bookCut, never cutting a request that answered (handoffs).
-        if (scope !== undefined) handoffOf(scope).refused.set(turn, { data, usage, ...(ended ? { ended } : {}) });
+        if (scope !== undefined) handoffOf(scope).refused.set(turn, { data, usage, ...(ended ? { ended } : {}), ...(holdShort ? { holdShort } : {}) });
         settle?.();
         // A paid request whose cost can't be kept: the attempt stops, saying so, rather than spend on uncounted. Asked
         // with the request's own host label, as its admission was: a stop that holds only the harness's own requests (a
@@ -539,7 +651,7 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
       const hosted = hosts.get(turn);
       // Awaited: a host that marks the request's end on its record writes it before the booking counts as settled, so a
       // run's end never lands ahead of the mark that says its request was cut.
-      await emit({ type: "request_end", turn, usage, ...(hosted === undefined ? {} : { host: hosted }), ...(ended ? { ended } : {}) });
+      await emit({ type: "request_end", turn, usage, ...(hosted === undefined ? {} : { host: hosted }), ...(ended ? { ended } : {}), ...(holdShort ? { holdShort } : {}) });
     },
   };
   // One booking of the cut requests at a time: a call made while one is writing waits for it, never books them again.
@@ -592,7 +704,7 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
         if (turns === inherited.length && open.length === 0) spentUsd = sessionSpendOf([...now, ...booked]).spentUsd;
         for (const one of taken) {
           const hosted = hosts.get(one.turn);
-          await emit({ type: "request_end", turn: one.turn, usage: one.usage, ...(hosted === undefined ? {} : { host: hosted }), ...(one.ended ? { ended: one.ended } : {}) });
+          await emit({ type: "request_end", turn: one.turn, usage: one.usage, ...(hosted === undefined ? {} : { host: hosted }), ...(one.ended ? { ended: one.ended } : {}), ...(one.holdShort ? { holdShort: one.holdShort } : {}) });
         }
       }
       handoffDone(scope);
@@ -610,12 +722,12 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
       return data.owed === true && data.hold !== true ? [inherited[i]!] : [];
     }));
     const owed = left.filter((t) => !read.openHolds.has(t) && owedTurns.has(t) && (held.get(t) ?? 0) > 0);
-    // A request on a free model (its runner.request says `freeRequest`, as the run's cap admitted it) an earlier process
-    // left open costs nothing whatever reached the provider: booked cut at a known $0 and marked `free`, as this process
-    // books its own (bookRequest's free), never unknown. Any other keeps the rule below.
+    // A request on a free model (its runner.request says `freeRequest`, or `localRequest` for a local one, as the run's cap
+    // admitted it) an earlier process left open costs nothing whatever reached the provider: booked cut at a known $0 and
+    // marked `free`, as this process books its own (bookRequest's free), never unknown. Any other keeps the rule below.
     const freeTurns = new Set(options.records.filter((r) => r.kind === RUNNER_RECORDS.request).flatMap((r, i) => {
-      const data = (r.data ?? {}) as { turn?: unknown; freeRequest?: unknown };
-      return data.freeRequest === true ? [typeof data.turn === "number" ? data.turn : i + 1] : [];
+      const data = (r.data ?? {}) as { turn?: unknown; freeRequest?: unknown; localRequest?: unknown };
+      return data.freeRequest === true || data.localRequest === true ? [typeof data.turn === "number" ? data.turn : i + 1] : [];
     }));
     const free = left.filter((t) => !read.openHolds.has(t) && !owed.includes(t) && freeTurns.has(t));
     const numbers = left.filter((t) => !read.openHolds.has(t) && !owed.includes(t) && !free.includes(t));
@@ -632,10 +744,29 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
       }
     }
     // A cut request whose response had begun carries the ids it gave: the provider saw it, under them. One with none may
-    // still have reached the provider before any answer; both are booked at an unknown price (a free model's at $0).
+    // still have reached the provider before any answer. Neither left a figure of its own (the process that would have
+    // read what it reported is gone): one its host held a figure for is booked at that hold, the most it can have cost
+    // (CUT_AT_HOLD, `atMost`), so the run's cost stays known and says it is an upper bound; one with no hold (no cap) is
+    // booked at an unknown price, as no one can bound it. A hold of $0 (no cap's) bounds nothing, and a paid tool call's
+    // (its runner.request's `paid`) is its fee as admitted, not what its provider may have charged: both stay unknown.
+    // One billed to a person's plan (its runner.request's `plan`) costs the run $0 however it ended: booked cut at $0,
+    // marked as the plan's (`billing`), a known figure, never an unknown that blanks the run's cost.
+    // Each request left open is in exactly one class, taken in this order: given back (an open hold-only step), owed (its
+    // figure settled at admission), free (`freeRequest`: a known $0, `free`), then `numbers`, where a plan request books $0
+    // billing "plan" and any other at its hold (`atMost`) or unknown. A request is never both free and plan: the cap marks
+    // a plan request `plan` before it looks at free, and freeModel refuses a plan model, so no plan request is admitted
+    // `freeRequest`.
+    const modelTurns = new Set(options.records.filter((r) => r.kind === RUNNER_RECORDS.request).flatMap((r, i) => ((r.data as { paid?: unknown } | undefined)?.paid === true ? [] : [inherited[i]!])));
+    const onPlan = new Set(options.records.filter((r) => r.kind === RUNNER_RECORDS.request).flatMap((r, i) => (billedToPlan(r.data) ? [inherited[i]!] : [])));
+    const boundOf = (turn: number): number | undefined => {
+      const hold = held.get(turn);
+      return hold !== undefined && hold > 0 && modelTurns.has(turn) ? hold : undefined;
+    };
     const cutOf = (turn: number): SessionRecord["data"] => {
       const providerIds = responses.get(turn);
-      return providerIds ? { usd: null, cut: true, turn, providerIds } : { usd: null, cut: true, turn };
+      if (onPlan.has(turn)) return { usd: null, cut: true, turn, bookedUsd: 0, rule: CUT_AT_HOLD, billing: "plan", ...(providerIds ? { providerIds } : {}) };
+      const hold = boundOf(turn);
+      return { usd: null, cut: true, turn, ...(hold === undefined ? {} : { bookedUsd: hold, rule: CUT_AT_HOLD, atMost: true }), ...(providerIds ? { providerIds } : {}) };
     };
     if (free.length) {
       await book(free.map((turn) => {
@@ -660,7 +791,8 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
     for (const turn of numbers) {
       const providerIds = responses.get(turn);
       const hosted = hosts.get(turn);
-      emit({ type: "request_end", turn, usage: { input: 0, output: 0, cacheRead: 0, usd: null, estimated: true, cut: true, ...(providerIds ? { providerIds } : {}) }, ...(hosted === undefined ? {} : { host: hosted }), ended: { end: "lost", label: "cut" } });
+      const hold = onPlan.has(turn) ? undefined : boundOf(turn);
+      emit({ type: "request_end", turn, usage: { input: 0, output: 0, cacheRead: 0, usd: null, estimated: true, cut: true, ...(hold === undefined ? {} : { atMostUsd: hold }), ...(onPlan.has(turn) ? { billing: "plan" as const } : {}), ...(providerIds ? { providerIds } : {}) }, ...(hosted === undefined ? {} : { host: hosted }), ended: { end: "lost", label: "cut" } });
     }
   };
   return {

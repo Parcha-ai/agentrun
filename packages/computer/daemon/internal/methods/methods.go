@@ -18,6 +18,7 @@ import (
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/lifetime"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/process"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/rpc"
+	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/windowmanager"
 )
 
 // Groups is what this daemon offers with no display, as hello reports it: the groups of src/protocol.ts it answers.
@@ -40,6 +41,8 @@ type Options struct {
 	// Fence is how init holds its programs off the computer's network, as hello reports it: "netns", "userns-netns", or
 	// "" for no network of their own.
 	Fence string
+	// WindowManager is the desktop's window manager init starts (init --window-manager), as hello reports it; nil is none.
+	WindowManager *windowmanager.Manager
 }
 
 type mountSyncParams struct{}
@@ -93,6 +96,9 @@ type HelloResult struct {
 	// root) or "userns-netns" (made inside a user namespace of its own, where root may not make one); absent when its
 	// programs have no network of their own.
 	Fence string `json:"fence,omitempty"`
+	// WindowManager is the desktop's window manager init starts itself (init --window-manager): starting, running, or
+	// ended with why; absent when init starts none, and a client then starts one itself where its host's desktops run one.
+	WindowManager *windowmanager.Fact `json:"windowManager,omitempty"`
 	// Features is what this computer's groups can do here past each group's methods, by the names in protocol.ts's
 	// FEATURES: a desktop's screen.watch takes an ask ahead (screen.ahead).
 	Features map[string]bool `json:"features,omitempty"`
@@ -127,7 +133,7 @@ func Handlers(version string, table *process.Table, options Options) map[string]
 				kind, groups, name = "desktop", append(groups, extra...), display.Name()
 				features = map[string]bool{"screen.ahead": true}
 			}
-			return HelloResult{Protocol: ProtocolVersion, Version: version, OS: runtime.GOOS, Kind: kind, Arch: runtime.GOARCH, Groups: groups, Display: name, Fence: options.Fence, Features: features}, nil
+			return HelloResult{Protocol: ProtocolVersion, Version: version, OS: runtime.GOOS, Kind: kind, Arch: runtime.GOARCH, Groups: groups, Display: name, Fence: options.Fence, WindowManager: options.WindowManager.Fact(), Features: features}, nil
 		},
 		"ping": func(context.Context, json.RawMessage) (any, error) {
 			return struct{}{}, nil

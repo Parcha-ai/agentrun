@@ -12,6 +12,17 @@ Archive the agent: hidden from the lists, kept with its history.
 
 Route: `POST /agents/{agent_id}/archive`.
 
+### `agentrun agents bind-source-tool AGENT_ID`
+
+Choose the existing destination account for a required source tool.
+
+Route: `POST /agents/{agent_id}/source/tools`.
+
+- `--tool STRING` (string, required)
+- `--server STRING` (string, required)
+- `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
+- `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
+
 ### `agentrun agents connect-native`
 
 Connect a native project using ordinary agent and revision storage.
@@ -29,10 +40,16 @@ Create an agent home.
 
 Route: `POST /agents`.
 
-- `--idempotency-key STRING` (string): Makes a create safe to retry. The same key and body within `limits.idempotency_ttl_s` replays the first
+- `--idempotency-key STRING` (string): Makes a create safe to retry. The same key and body within `limits.idempotency_ttl_s` replays the first answer with `Idempotent-Replayed: true`; another body is `409 idempotency_mismatch`; a retry while the first is in flight is `409 idempotency_in_progress`. Keys are scoped to the credential's account and the route.
 - `--note STRING` (string): What the revision changes, kept with it (GET /agents/{agent_id}/revisions).
 - `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
 - `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
+
+### `agentrun agents delete-agent AGENT_ID`
+
+Delete an agent another system owns, or purge an archived agent made here.
+
+Route: `DELETE /agents/{agent_id}`.
 
 ### `agentrun agents delete-agent-archil AGENT_ID`
 
@@ -77,7 +94,7 @@ Route: `GET /agents/{agent_id}/archil`.
 
 ### `agentrun agents get-learning-loop AGENT_ID`
 
-The self-learning loop's own record: each compile turn, and each guarded step of the learned workflows.
+The self-learning loop's own record: each compile turn.
 
 Route: `GET /agents/{agent_id}/learning/loop`.
 
@@ -86,6 +103,12 @@ Route: `GET /agents/{agent_id}/learning/loop`.
 Read a native connection.
 
 Route: `GET /agents/{agent_id}/native`.
+
+### `agentrun agents get-source-sync AGENT_ID`
+
+Read source sync and managed Move readiness.
+
+Route: `GET /agents/{agent_id}/source`.
 
 ### `agentrun agents list`
 
@@ -98,11 +121,52 @@ Route: `GET /agents`.
 - `--archived` (boolean): true lists only archived agents; false, the default, the others.
 - `--all` (boolean, this CLI's own): every page: follows next_cursor and prints one list, its next_cursor null; stops past 1000 pages, exit 1
 
+### `agentrun agents list-learning-audits AGENT_ID`
+
+The audit ledger of the agent's serving learned workflows.
+
+Route: `GET /agents/{agent_id}/learning/audits`.
+
 ### `agentrun agents list-learning-promotions AGENT_ID`
 
 Each learned workflow revision's promotion: its replay's numbers and whether it serves.
 
 Route: `GET /agents/{agent_id}/learning/promotions`.
+
+### `agentrun agents move-source-agent AGENT_ID`
+
+Move the same agent to server-managed execution from its complete synchronized setup.
+
+Route: `POST /agents/{agent_id}/source/move`.
+
+- `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
+- `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
+
+### `agentrun agents package AGENT_ID`
+
+The agent's current revision as a template package.
+
+Route: `GET /agents/{agent_id}/package`.
+
+### `agentrun agents resolve-source-sync AGENT_ID`
+
+Use an explicitly reviewed source snapshot while retaining the prior managed revision in history.
+
+Route: `POST /agents/{agent_id}/source/resolve`.
+
+- `--revision STRING` (string, required)
+- `--snapshot STRING` (string, required)
+- `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
+- `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
+
+### `agentrun agents review-source-project AGENT_ID`
+
+Acknowledge exact unresolved run receipts and allow later runs to use the saved project.
+
+Route: `POST /agents/{agent_id}/source/project-review`.
+
+- `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
+- `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
 
 ### `agentrun agents runs AGENT_ID`
 
@@ -114,7 +178,18 @@ Route: `GET /agents/{agent_id}/runs`.
 - `--cursor STRING` (string): `next_cursor` from the previous page.
 - `--status queued|working|paused|input_required|completed|failed|cancelled` (string, one of these): Only runs with this status.
 - `--scope active|review` (string, one of these): Factory active executions (including archived) or unarchived terminal escalations and failures for this agent, excluding imports. Uses keyset cursors bound to filters; incompatible with status and archived. Default scoped page size 50, maximum 100.
+- `--label STRING` (string): Only runs holding this label: `<key>:<value>`, split at the first `:` (a key holds none). Once per request; a second `label`, or one that does not read as a label, is 400.
 - `--all` (boolean, this CLI's own): every page: follows next_cursor and prints one list, its next_cursor null; stops past 1000 pages, exit 1
+
+### `agentrun agents set-source-sync AGENT_ID`
+
+Enable or pause this agent’s source sync.
+
+Route: `PATCH /agents/{agent_id}/source`.
+
+- `--enabled` (boolean, required)
+- `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
+- `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
 
 ### `agentrun agents unarchive AGENT_ID`
 
@@ -138,6 +213,93 @@ Check native CLI and sign-in without a paid model call.
 
 Route: `POST /agents/{agent_id}/native/verify`.
 
+## capabilities
+
+### `agentrun capabilities get-capacity`
+
+The runs waiting and held, the live runners and the recent hand-backs.
+
+Route: `GET /capacity`.
+
+- `--window INTEGER` (integer): The hand-back window in minutes, from 1 to 1440. Default 15.
+
+## cli-learning
+
+### `agentrun cli-learning complete RUN_ID`
+
+Close an existing CLI prompt window exactly once.
+
+Route: `POST /cli-learning/runs/{run_id}/complete`.
+
+- `--idempotency-key STRING` (string)
+- `--status completed|failed|cancelled` (string, one of these, required)
+- `--answer STRING` (string, required)
+- `--error STRING` (string)
+- `--model STRING` (string)
+- `--session-id STRING` (string)
+- `--evidence-complete` (boolean)
+- `--seed-observed` (boolean)
+- `--seed-revision STRING` (string)
+- `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
+- `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
+
+### `agentrun cli-learning enroll`
+
+Enable learning for an existing local CLI without launching it.
+
+Route: `POST /cli-learning/connections`.
+
+- `--runtime codex|claude-code` (string, one of these, required)
+- `--project STRING` (string, required)
+- `--name STRING` (string)
+- `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
+- `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
+
+### `agentrun cli-learning events RUN_ID`
+
+Upload bounded role-preserving CLI dialogue and tool evidence.
+
+Route: `POST /cli-learning/runs/{run_id}/events`.
+
+- `--idempotency-key STRING` (string)
+- `--sequence INTEGER` (integer, required)
+- `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
+- `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
+
+### `agentrun cli-learning get RUN_ID`
+
+Read CLI prompt-window learning progress.
+
+Route: `GET /cli-learning/runs/{run_id}`.
+
+### `agentrun cli-learning list`
+
+Read enrolled CLI learning connections.
+
+Route: `GET /cli-learning/connections`.
+
+### `agentrun cli-learning revoke CONNECTION_ID`
+
+Revoke CLI capture and guidance delivery, retaining history and learned files.
+
+Route: `DELETE /cli-learning/connections/{connection_id}`.
+
+### `agentrun cli-learning start CONNECTION_ID`
+
+Register one prompt window from an existing CLI session.
+
+Route: `POST /cli-learning/connections/{connection_id}/runs`.
+
+- `--idempotency-key STRING` (string, required)
+- `--session-id STRING` (string, required)
+- `--turn-id STRING` (string, required)
+- `--input STRING` (string, required)
+- `--instructions STRING` (string, required)
+- `--policy-complete` (boolean, required)
+- `--model STRING` (string)
+- `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
+- `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
+
 ## connectors
 
 ### `agentrun connectors complete-remote-command CONNECTOR_ID COMMAND_ID`
@@ -158,6 +320,16 @@ Create a ten-minute one-use connection code.
 Route: `POST /connectors/enrollment`.
 
 - `--label STRING` (string)
+- `--connector-id STRING` (string)
+- `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
+- `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
+
+### `agentrun connectors grant-source-sync CONNECTOR_ID TARGET_ID`
+
+Read or establish this explicitly authorized source sync grant without re-enabling a paused grant.
+
+Route: `POST /connectors/{connector_id}/targets/{target_id}/sync/grant`.
+
 - `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
 - `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
 
@@ -198,6 +370,17 @@ Route: `POST /connectors/{connector_id}/poll`.
 - `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
 - `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
 
+### `agentrun connectors publish-source-sync CONNECTOR_ID TARGET_ID`
+
+Publish a bounded source snapshot under its grant and sequence.
+
+Route: `POST /connectors/{connector_id}/targets/{target_id}/sync`.
+
+- `--generation STRING` (string, required)
+- `--sequence INTEGER` (integer, required)
+- `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
+- `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
+
 ### `agentrun connectors register-remote-connector`
 
 Exchange a one-use enrollment code for a connector-scoped credential.
@@ -227,6 +410,71 @@ Revoke a source connector and stop its outstanding commands.
 
 Route: `DELETE /connectors/{connector_id}`.
 
+### `agentrun connectors source-sync-failure CONNECTOR_ID TARGET_ID`
+
+Record a fixed source failure while preserving its last complete snapshot.
+
+Route: `POST /connectors/{connector_id}/targets/{target_id}/sync/status`.
+
+- `--generation STRING` (string, required)
+- `--sequence INTEGER` (integer, required)
+- `--code unsupported_platform|source_changed|source_unavailable|snapshot_too_large` (string, one of these, required)
+- `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
+- `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
+
+## deploy
+
+### `agentrun deploy SOURCE`
+
+Deploy an agent's package to another AgentRun: upload, plan, apply, lock (deploy rollback, deploy delete).
+
+Route: `POST /templates/import`, `POST /templates/{template}/apply`.
+
+- `--to URL` (string, this CLI's own): where: cloud (the hosted AgentRun; AGENTRUN_CLOUD_URL overrides its address), or an AgentRun's address; left out after the first deploy, the lock's target (a folder's, only where this CLI deployed it, or cloud)
+- `--yes` (boolean, this CLI's own): apply without asking (needed off a terminal)
+- `--force` (boolean, this CLI's own): replace an agent edited on the target since the last deploy
+- `--params FILE` (string, this CLI's own): the package's parameters, a JSON object
+- `--pause-source` (boolean, this CLI's own): an install agent: turn its schedules off on this install once deployed (else they fire in both places)
+- `--agent ID|new` (string, this CLI's own): with no lock for the target: deploy onto its agent ID, or make another agent (new), where it has one this package made with these parameters; with a lock, only the lock's agent
+
+### `agentrun deploy delete SOURCE`
+
+Delete the deployed agent from its target (archived first), and the lock here.
+
+Route: `POST /agents/{agent_id}/archive`, `DELETE /agents/{agent_id}`.
+
+- `--to URL` (string, this CLI's own): the target, in place of the lock's
+- `--yes` (boolean, this CLI's own): delete without asking (needed off a terminal)
+
+### `agentrun deploy rollback SOURCE`
+
+Make the deployed agent's previous revision current on its target, and the lock follow.
+
+Route: `GET /agents/{agent_id}/revisions`, `POST /agents/{agent_id}/current`.
+
+- `--to URL` (string, this CLI's own): the target, in place of the lock's
+
+## doctor
+
+### `agentrun doctor`
+
+Check how this AgentRun is set up (Node, the server, its service, address, password, models, switches, Docker) and print what to change; read-only (exit 0 ok or warnings, 1 a check failed, 3 no server answering).
+
+Route: none, it runs on this machine.
+
+- `--data DIR` (string, this CLI's own): the data directory whose server it checks (default ~/.agentrun)
+- `--json` (boolean, this CLI's own): print the checks as JSON: {exit, server, checks: [{id, status, summary, fix, docs}]}
+
+## export
+
+### `agentrun export AGENT`
+
+Write an agent's current revision as a template package folder, and say what the target sets up again.
+
+Route: `GET /agents/{agent_id}/package`.
+
+- `--out DIR` (string, this CLI's own): the folder to write: a new one, or an empty one
+
 ## files
 
 ### `agentrun files create`
@@ -238,10 +486,10 @@ Route: `POST /files`.
 - `--path STRING` (string): With the file's bytes as the body: the file's path (FilePathString). Its presence makes the body the file.
 - `--content-type STRING` (string): With `path`: the file's type. Absent, the request's own type when it names one (not application/octet-stream, not application/x-www-form-urlencoded), else the path's extension's, else application/octet-stream.
 - `--sha256 STRING` (string): With `path`: the hash the bytes must have (`422 input_invalid` at sha256 when they do not).
-- `--idempotency-key STRING` (string): Makes a create safe to retry. The same key and body within `limits.idempotency_ttl_s` replays the first
+- `--idempotency-key STRING` (string): Makes a create safe to retry. The same key and body within `limits.idempotency_ttl_s` replays the first answer with `Idempotent-Replayed: true`; another body is `409 idempotency_mismatch`; a retry while the first is in flight is `409 idempotency_in_progress`. Keys are scoped to the credential's account and the route.
 - `--size-bytes INTEGER` (integer, required): At most `limits.max_upload_bytes`.
-- `--body JSON|@FILE|-` (application/json, application/octet-stream, */*, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
-- `--body-type TYPE` (string): The body's type, one of application/json, application/octet-stream, */*; any other than JSON is sent as given.
+- `--body JSON|@FILE|-` (application/json, application/octet-stream, `*/*`, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
+- `--body-type TYPE` (string): The body's type, one of application/json, application/octet-stream, `*/*`; any other than JSON is sent as given.
 
 ### `agentrun files delete FILE_ID`
 
@@ -274,6 +522,56 @@ Route: `PUT /files/{file_id}`.
 - `--body JSON|@FILE|-` (application/octet-stream, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
 - `--body-type TYPE` (string): The body's type, one of application/octet-stream; any other than JSON is sent as given.
 
+## harness
+
+### `agentrun harness install HARNESS`
+
+Install a harness AgentRun runs only once its owner installs it (goose, cursor, or a recipe file's), then restart AgentRun.
+
+Route: none, it runs on this machine.
+
+- `--recipe FILE` (string, this CLI's own): in place of HARNESS: a recipe file (HARNESS.md#a-recipe), checked against its five rules before anything is downloaded
+- `--data DIR` (string, this CLI's own): the data directory of the AgentRun it is for (default ~/.agentrun, where npx @parcha/agentrun keeps it)
+
+### `agentrun harness keys`
+
+Print the link to Settings → Harness keys, where the owner saves the keys a plan-billed recipe runs on, for that harness alone (exit 1 when no AgentRun has started on DATA).
+
+Route: none, it runs on this machine.
+
+- `--data DIR` (string, this CLI's own): the data directory of the AgentRun the keys are for (default ~/.agentrun)
+
+### `agentrun harness sign-in`
+
+Sign a recipe's agent in to your own account with the agent's own sign-in, in this terminal (Antigravity's agy acp --login); a server you start with --harness-sign-in on your own machine then runs your own runs on it.
+
+Route: none, it runs on this machine.
+
+- `--recipe FILE` (string, this CLI's own): the recipe file, whose signIn names the agent's own sign-in flags; its agent installed first with agentrun harness install --recipe FILE
+- `--data DIR` (string, this CLI's own): the data directory the recipe's agent was installed into (default ~/.agentrun)
+
+## harness-check
+
+### `agentrun harness-check`
+
+Run a recipe's installed agent for real and check it (tools off, env allowlist, pins, limits, no side requests, resume, a denied call, an MCP tool): a JSON report and three facts. Real models cost money.
+
+Route: none, it runs on this machine.
+
+- `--recipe FILE` (string, this CLI's own): the recipe file (HARNESS.md#a-recipe); its agent installed first with agentrun harness install --recipe FILE
+- `--model PROVIDER/MODEL` (string, this CLI's own): the run's model, for a recipe billed through the proxy (openrouter/anthropic/claude-haiku-4.5, anthropic/claude-haiku-4-5)
+- `--report FILE` (string, this CLI's own): where the JSON report goes (default ./harness-check-ID.json)
+- `--cap USD` (string, this CLI's own): the most the check may spend (default 0.25)
+- `--data DIR` (string, this CLI's own): the data directory the recipe's agent was installed into (default ~/.agentrun)
+
+## harness-keys
+
+### `agentrun harness-keys list`
+
+The keys each plan-billed harness recipe runs on, and which are saved: names only, never a value.
+
+Route: `GET /settings/harness-keys`.
+
 ## home
 
 ### `agentrun home delete AGENT_ID PATH`
@@ -302,41 +600,16 @@ Write one file of the agent's home.
 
 Route: `PUT /agents/{agent_id}/home/files/{path}`. PATH keeps its slashes.
 
-- `--body JSON|@FILE|-` (application/octet-stream, */*, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
-- `--body-type TYPE` (string): The body's type, one of application/octet-stream, */*; any other than JSON is sent as given.
+- `--body JSON|@FILE|-` (application/octet-stream, `*/*`, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
+- `--body-type TYPE` (string): The body's type, one of application/octet-stream, `*/*`; any other than JSON is sent as given.
 
 ## learning
 
-### `agentrun learning batch AGENT_ID BATCH_ID`
+### `agentrun learning corrections AGENT_ID`
 
-A learning batch's progress: rows done, right or wrong, lessons, workflow revisions, cost, the path each run took.
+The agent's corrections.md on main, with its ETag.
 
-Route: `GET /agents/{agent_id}/learning/batches/{batch_id}`.
-
-### `agentrun learning batch-cancel AGENT_ID BATCH_ID`
-
-Cancel a running learning batch.
-
-Route: `POST /agents/{agent_id}/learning/batches/{batch_id}/cancel`.
-
-### `agentrun learning batch-start AGENT_ID`
-
-Learn from rows: run the agent on each in order, with learning on, and tell it the reference answer after each.
-
-Route: `POST /agents/{agent_id}/learning/batches`.
-
-- `--answer STRING` (string, required): The column holding the reference answer.
-- `--max-cost-usd NUMBER` (number, required): Caps what the batch's runs spend (job, look-back, review turn); grades are booked and shown, uncapped.
-- `--answer-field STRING` (string): A dotted path into a JSON answer to compare, such as result.code; absent: the whole answer.
-- `--effort STRING` (string): The runs' effort, as a run's.
-- `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
-- `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
-
-### `agentrun learning batches AGENT_ID`
-
-The agent's learning batches, latest first.
-
-Route: `GET /agents/{agent_id}/learning/batches`.
+Route: `GET /agents/{agent_id}/learning/corrections`.
 
 ### `agentrun learning cost AGENT_ID`
 
@@ -345,17 +618,11 @@ The agent's cost per run, run after run: its own cost, what learning added and t
 Route: `GET /agents/{agent_id}/learning/cost`.
 
 - `--limit INTEGER` (integer): The latest runs to answer, each keeping its number. At most 10000.
-- `--format json|csv` (string, one of these): `csv`: the runs as CSV, columns n, run_id, started_at, path, workflow, learned_revision, cost_usd, learning_usd, total_usd.
-
-### `agentrun learning evals AGENT_ID`
-
-The agent's eval records: the latest, and every one kept, newest first.
-
-Route: `GET /agents/{agent_id}/learning/evals`.
+- `--format json|csv` (string, one of these): `csv`: the runs as CSV, columns n, run_id, started_at, path, workflow, digest, audited, cost_usd, cost_upper_bound, learning_usd, total_usd.
 
 ### `agentrun learning get AGENT_ID`
 
-What the agent has learned: its index, notes, log of changes and counts.
+What the agent has learned: its corrections, workflow drafts, log of changes and counts.
 
 Route: `GET /agents/{agent_id}/learning`.
 
@@ -369,39 +636,11 @@ Route: `GET /agents/{agent_id}/learning/log`.
 - `--limit INTEGER` (integer): At most 200.
 - `--all` (boolean, this CLI's own): every page: follows next_cursor and prints one list, its next_cursor null; stops past 1000 pages, exit 1
 
-### `agentrun learning notes AGENT_ID`
-
-A page of the agent's notes.
-
-Route: `GET /agents/{agent_id}/learning/notes`.
-
-- `--cursor STRING` (string): `next_cursor` from the previous page: opaque, read at the commit the first page was.
-- `--limit INTEGER` (integer): At most 200.
-- `--status active|superseded|retired|pending` (string, one of these): Only notes with this status.
-- `--all` (boolean, this CLI's own): every page: follows next_cursor and prints one list, its next_cursor null; stops past 1000 pages, exit 1
-
 ### `agentrun learning read AGENT_ID FILE`
 
-One note (or MEMORY.md, a skill's SKILL.md or a draft's file) on main, as text, with its ETag.
+One file of a learned workflow on main (its workflow.json or README.md), as text, with its ETag.
 
 Route: `GET /agents/{agent_id}/learning/files/{file}`.
-
-### `agentrun learning record-eval AGENT_ID`
-
-Record a held-out test of the agent: its counts and the cost a task, with learning and by hand.
-
-Route: `POST /agents/{agent_id}/learning/evals`.
-
-- `--idempotency-key STRING` (string): Makes a create safe to retry. The same key and body within `limits.idempotency_ttl_s` replays the first
-- `--name STRING` (string, required): What ran the test, one line: a bench's name and set, a script's.
-- `--n INTEGER` (integer, required): The held-out jobs the test counted: jobs the agent never learned from.
-- `--correct INTEGER` (integer, required): How many of the `n` jobs the agent with what it learned got right: 0 to `n`.
-- `--label-source STRING` (string): Where the right answers came from, one line; null (or absent) when not said.
-- `--cost-per-task-usd NUMBER` (number): The agent with what it learned: its mean cost a task, in USD; null (or absent) when not counted.
-- `--baseline-cost-per-task-usd NUMBER` (number): The agent by hand (learning off): its mean cost a task, in USD; null (or absent) when not counted.
-- `--learned-revision STRING` (string): The learning folder's commit the test ran from; null (or absent) when not said.
-- `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
-- `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
 
 ### `agentrun learning replay AGENT_ID NAME DIGEST REPLAY_ID`
 
@@ -409,13 +648,19 @@ Read a replay's result: running, done or failed, its counts and its score (start
 
 Route: `GET /agents/{agent_id}/learning/workflows/{name}/revisions/{digest}/replays/{replay_id}`.
 
+### `agentrun learning reset AGENT_ID`
+
+Reset the agent's learning: everything it learned deleted, the agent and its runs kept.
+
+Route: `DELETE /agents/{agent_id}/learning`.
+
 ### `agentrun learning retire AGENT_ID FILE`
 
-Retire a note, a skill or a workflow draft: out of every later run, kept in history.
+Retire a workflow draft: out of every later run, kept in history.
 
 Route: `POST /agents/{agent_id}/learning/files/{file}/retire`. It prints the answer's bytes as they are.
 
-- `--if-match STRING` (string): The note's ETag, as a GET answered it: an edit or a retire lands only on that version, else 412.
+- `--if-match STRING` (string): The file's ETag, as a GET answered it: the write lands only on that version, else 412.
 
 ### `agentrun learning workflow-revisions AGENT_ID NAME`
 
@@ -425,15 +670,14 @@ Route: `GET /agents/{agent_id}/learning/workflows/{name}/revisions`.
 
 - `--limit INTEGER` (integer): The latest revisions to answer. At most 50.
 
-### `agentrun learning write AGENT_ID FILE`
+### `agentrun learning write-corrections AGENT_ID`
 
-Edit a note (If-Match) or create one (If-None-Match: *).
+Replace the agent's corrections.md (If-Match).
 
-Route: `PUT /agents/{agent_id}/learning/files/{file}`. It prints the answer's bytes as they are.
+Route: `PUT /agents/{agent_id}/learning/corrections`.
 
-- `--if-match STRING` (string): The note's ETag, as a GET answered it: an edit or a retire lands only on that version, else 412.
-- `--if-none-match STRING` (string): `*`: create the note, only if the name is not taken, else 412.
-- `--text STRING` (string, required): The note's whole text, front matter included.
+- `--if-match STRING` (string, required): The file's ETag, as a GET answered it: the write lands only on that version, else 412.
+- `--text STRING` (string, required): corrections.md's whole text.
 - `--body JSON|@FILE|-` (text/markdown, text/plain, application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
 - `--body-type TYPE` (string): The body's type, one of text/markdown, text/plain, application/json; any other than JSON is sent as given.
 
@@ -444,6 +688,16 @@ Route: `PUT /agents/{agent_id}/learning/files/{file}`. It prints the answer's by
 A code that pairs a person's own computer with this server.
 
 Route: `POST /computers/pairings`.
+
+### `agentrun local create-suggested-agent SUGGESTION_ID`
+
+Create a suggested agent: a branch with its package and client, the agent made here, and a pull request.
+
+Route: `POST /suggestions/{suggestion_id}/create`.
+
+- `--name STRING` (string): The agent's name, in place of the suggestion's.
+- `--body JSON|@FILE|-` (application/json): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
+- `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
 
 ### `agentrun local delete-composio-subscription NAME`
 
@@ -463,6 +717,12 @@ Turn Mode 2 off: run folders on this server's own disk.
 
 Route: `DELETE /workspace/archil`.
 
+### `agentrun local discard-suggestion SUGGESTION_ID`
+
+Discard a suggested agent: it goes away, and later scans leave it out.
+
+Route: `POST /suggestions/{suggestion_id}/discard`.
+
 ### `agentrun local disconnect-git-hub`
 
 Disconnect GitHub: the App's credentials gone from this server, and every github trigger off.
@@ -474,6 +734,20 @@ Route: `DELETE /integrations/github`.
 Whether a GitHub App is connected, and if so its id, slug and installations, never a secret.
 
 Route: `GET /integrations/github`.
+
+### `agentrun local get-model-gateway`
+
+The model gateway in force: the environment's, the one saved here, or none.
+
+Route: `GET /settings/model-gateway`.
+
+### `agentrun local get-suggestion SUGGESTION_ID`
+
+One suggested agent whole: its instructions, the files a create adds, and whether GitHub lets it.
+
+Route: `GET /suggestions/{suggestion_id}`.
+
+- `--name STRING` (string): The agent's name a create would be sent (`POST .../create` `name`): `files` are rendered with it, as the create pushes them. 422 when it is not 3 to 60 characters.
 
 ### `agentrun local get-workspace-archil`
 
@@ -505,20 +779,63 @@ Settings → Computers: the kinds of computer this server offers, each provider 
 
 Route: `GET /computers`.
 
+### `agentrun local list-git-hub-repositories`
+
+The repositories this server's GitHub App is installed on.
+
+Route: `GET /integrations/github/repositories`.
+
+### `agentrun local list-mcp-server-names`
+
+The names of the MCP servers saved here, and nothing else of them.
+
+Route: `GET /settings/mcp-server-names`.
+
+### `agentrun local list-running-computers`
+
+Every run still going that has a computer.
+
+Route: `GET /computers/running`.
+
+### `agentrun local list-suggestions`
+
+Suggested agents: each repository's scan and the agents it suggests.
+
+Route: `GET /suggestions`.
+
+- `--repo STRING` (string): owner/name: one repository's alone.
+- `--status open|created|discarded|all` (string, one of these)
+
 ### `agentrun local receive-hook-composio HOOK`
 
 Fire a Composio trigger: a request it checks, no token.
 
 Route: `POST /hooks/composio/{hook}`.
 
-- `--body JSON|@FILE|-` (*/*, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
-- `--body-type TYPE` (string): The body's type, one of */*; any other than JSON is sent as given.
+- `--body JSON|@FILE|-` (`*/*`, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
+- `--body-type TYPE` (string): The body's type, one of `*/*`; any other than JSON is sent as given.
+
+### `agentrun local restore-suggestion SUGGESTION_ID`
+
+Bring a discarded suggestion back (an undo).
+
+Route: `POST /suggestions/{suggestion_id}/restore`.
 
 ### `agentrun local rotate-composio-secret NAME`
 
 Rotate the Composio project's webhook subscription's secret, and keep the new one.
 
 Route: `POST /settings/mcp-servers/{name}/composio/rotate-secret`.
+
+### `agentrun local scan-for-suggestions`
+
+Scan a repository for places its app needs an agent.
+
+Route: `POST /suggestions/scans`.
+
+- `--repo STRING` (string, required): owner/name, or its https://github.com URL.
+- `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
+- `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
 
 ### `agentrun local test-computer PROVIDER`
 
@@ -536,11 +853,12 @@ Route: `POST /workspace/archil/test`.
 
 ### `agentrun login`
 
-Check a server's token, read from stdin, and keep it with the server's address in the config file.
+Sign in to a server, with a device code when it offers one, else a token read from stdin, and keep the token with the server's address in the config file.
 
-Route: `GET /agents?limit=1, to check the token`.
+Route: `GET /capabilities, then its device sign-in; else GET /agents?limit=1, to check a token from stdin`.
 
-- `--base-url URL` (string, this CLI's own): the server's API, ending /v2 (default AGENTRUN_BASE_URL)
+- `--to URL|cloud` (string, this CLI's own): the server, /v2 added when its address's path holds none; cloud is AgentRun cloud (AGENTRUN_CLOUD_URL, else https://api.agentrun.ai). When its capabilities offer a device sign-in, prints an address and a code to approve there, else reads the token from stdin
+- `--base-url URL` (string, this CLI's own): the server, /v2 added as for --to (default AGENTRUN_BASE_URL); the token from stdin, or on a terminal a device sign-in when the server offers one
 
 ## logout
 
@@ -587,6 +905,28 @@ Route: `GET /settings/mcp-servers/oauth/private-hosts`.
 List a saved MCP server's tools again, keep them, and say what changed.
 
 Route: `POST /settings/mcp-servers/{name}/refresh`.
+
+## Observations
+
+### `agentrun Observations get-observations`
+
+Read activity and token usage reported by externally running agents.
+
+Route: `GET /observations`.
+
+- `--days INTEGER` (integer): UTC calendar days including today; session details remain visible for their full retention period.
+- `--session-id STRING` (string)
+
+## open
+
+### `agentrun open`
+
+Open AgentRun in this machine's browser: the setup page, its code filled in, until the owner's password is set; the console after (where no browser opens, it prints the link).
+
+Route: none, it runs on this machine.
+
+- `--data DIR` (string, this CLI's own): the data directory of the AgentRun to open (default ~/.agentrun)
+- `--setup-only` (boolean, this CLI's own): open nothing once the owner's password is set (the installer's last step)
 
 ## revisions
 
@@ -649,24 +989,42 @@ Start a run of an agent another system owns, given inline.
 
 Route: `POST /runs`.
 
-- `--idempotency-key STRING` (string): Makes a create safe to retry. The same key and body within `limits.idempotency_ttl_s` replays the first
+- `--idempotency-key STRING` (string): Makes a create safe to retry. The same key and body within `limits.idempotency_ttl_s` replays the first answer with `Idempotent-Replayed: true`; another body is `409 idempotency_mismatch`; a retry while the first is in flight is `409 idempotency_in_progress`. Keys are scoped to the credential's account and the route.
 - `--note STRING` (string): What the version changes, kept with its revision by the version's first run (GET /agents/{agent_id}/revisions); not part of its definition.
 - `--effort low|medium|high` (string, one of these): How hard a run works. It sets the model's thinking level, and adds a short note on how to work right after the agent's instructions, on every harness: low answers directly, medium plans briefly and checks once, high plans each part, fills the gaps and reviews. A run started with none thinks at its agent revision's own thinking level, else the host's default, and gets no note.
 - `--max-cost-usd NUMBER` (number): This run's cap, for every turn of it. Default the definition's `max_cost_usd`, else the effort default.
 - `--quote-id STRING` (string): Run at a quote's terms. A different `effort` or `max_cost_usd` than the quote's is `409 quote_invalid`.
+- `--model-key STRING` (string): The run's own model key: a key for the model gateway at AGENT_MODEL_BASE_URL, such as a LiteLLM virtual key minted for this run, which every model request tied to the run carries in place of the server's own key (its turns, its subagents, its learned workflows' nodes, a workflow's model nodes, its end-of-run compile turn). AgentRun never mints, lists or revokes it. Sealed into the run's launch bound to the gateway's origin, read at each claim (a reclaim after a crash among them), erased from the store by the write that ends the run's turn; never in its saved body, its timeline, its view, a log or an Idempotency-Key's fingerprint (a retry with a new key answers the first request's run, its first key kept). The harness, its tools and its sandbox never see it. 422 `invalid` at `model_key` for a key under 8 characters (no cut could hold it) or one with a character that is not visible ASCII (a space, a control character, anything past ASCII); 422 at `model_key` when the run's model never goes to that gateway (no AGENT_MODEL_BASE_URL here, a native run, or a model routed elsewhere). Absent, the run spends on the server's key for its route; where the server holds none (no AGENT_MODEL_API_KEY, none saved in Settings), a start without it is 422 `model_key_required`, never a failure at its first model call.
 - `--workflow-first` (boolean): Whether a run of an agent that learns may start on one of its learned workflows. On (absent or true), a run whose input fits exactly one active learned workflow (its input schema has a required field, and the run's input passes it) runs that workflow first, with no turn of the agent's model: its answer is the run's answer, and if it hands the job back (it escalates, a step fails), the same run goes on with the agent, given what the workflow found. The run keeps which path it took: `workflow`, `handed_back` or `agent`. false: the agent takes the run from its first turn.
-- `--learning use` (string, one of these): `use`: the run starts from what its agent learned (its notes, learned skills and learned workflows, as a run that learns is given them), whatever its agent's `learning` says, and keeps nothing: no end-of-run turn, no proposal, no grade and no merge, at its end or after a follow-up. Its `learning` reads `seeded` while it runs, then `dropped` with reason `use`. So many runs of one agent read one learned state, frozen (a held-out evaluation). On a server whose learning is off it is given nothing, as every run there. Absent: the agent's own (`learning: true` learns). 422 not_an_option for anything else.
+- `--learning use` (string, one of these): `use`: the run starts from what its agent learned (its corrections and learned workflows, as a run that learns is given them), whatever its agent's `learning` says, and keeps nothing: no compile turn, no correction and no merge, at its end or after a follow-up. Its `learning` reads `seeded` while it runs, then `dropped` with reason `use`. So many runs of one agent read one learned state, frozen (a held-out evaluation). On a server whose learning is off it is given nothing, as every run there. Absent: the agent's own (`learning: true` learns). 422 not_an_option for anything else.
 - `--repo STRING` (string): The GitHub repository (`owner/name`) this run reaches: the one its GitHub App token is made for, so its github MCP calls are scoped to it. It must be one the agent is bound to (a repository its GitHub triggers' `accept` names on `/repository/full_name`); another is 422 at `repo` in words naming the repositories it is bound to. Absent: the agent's repository when it is bound to exactly one and the first message names none; otherwise the repository a `https://github.com/<owner>/<repo>` URL in the first message names. A run a trigger starts takes its repository from its event, and `repo` there is 422.
 - `--hold` (boolean): true: the run claims its computer and holds it for its owner. Its agent waits until POST /runs/{run_id}/start; meanwhile POST /runs/{run_id}/computer/call sends the computer protocol calls, to set a task up. After the agent's end the run keeps the computer, for the owner's calls (to check what the agent left), until POST /runs/{run_id}/computer/release; then it ends as its agent did. A stop (POST /runs/{run_id}/stop) ends the agent and keeps the computer the same way, and the run ends stopped at the release; a cancel ends the run at once and lets the computer go. Each wait lets the computer go after `hold_minutes` with no call from the owner: before the start, the run then ends cancelled. The run read's `computer.held` says where the hold is. Only for an agent whose computer is a sandbox, a desktop or a phone, never a workflow (422 `hold` not_an_option otherwise). A run that loses its runner, or whose harness restarts after a fault, loses the computer it held: it fails, and `computer.held.why` is `lost`.
 - `--hold-minutes INTEGER` (integer): With `hold: true`: how long the held computer waits with no call from its owner, before the start and after the agent's end. Absent: 30. Above 120, or without hold, is 422.
 - `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
 - `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
 
+### `agentrun runs create-run-computer-viewer RUN_ID`
+
+Mint a link to the run's live view for the backend's user.
+
+Route: `POST /runs/{run_id}/computer/viewer`.
+
+- `--body JSON|@FILE|-` (application/json): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
+- `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
+
+### `agentrun runs delete RUN_ID`
+
+Purge a run's content and keep its cost.
+
+Route: `DELETE /runs/{run_id}`.
+
 ### `agentrun runs files RUN_ID`
 
 The files the run wrote.
 
 Route: `GET /runs/{run_id}/files`.
+
+- `--cut run` (string, one of these): `run`: each file also has its `name`, its path under the run's own cut (each value the cut holds and each secret shape replaced by `[redacted]` in place, as a cut read cuts a file's text), whatever its type. A run whose cut can't be read is `403 forbidden`, as without `cut`. A server that doesn't know `cut` lists no `name`.
 
 ### `agentrun runs get RUN_ID`
 
@@ -682,7 +1040,7 @@ Route: `PUT /runs/{run_id}/grade`.
 
 - `--correct` (boolean, required)
 - `--source feedback|eval` (string, one of these)
-- `--label STRING` (string): The grade's words (a teacher's label, a reviewer's note): what the run's look-back or its workflow's revision ask reads.
+- `--label STRING` (string): The grade's words (a teacher's label, a reviewer's note): what the run's look-back reads.
 - `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
 - `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
 
@@ -727,6 +1085,7 @@ Route: `GET /runs`.
 - `--status queued|working|paused|input_required|completed|failed|cancelled` (string, one of these): Only runs with this status.
 - `--scope active|review` (string, one of these): Factory scope: active includes every nonterminal execution and continuable stopped turn, including archived runs; review selects unarchived terminal escalations and failures separately. Both exclude imported history and use keyset cursors bound to scope, agent and revision. Cannot combine with status or archived. Page limit defaults to 50 (maximum 100). No scope preserves the ordinary history listing.
 - `--archived` (boolean): true lists only archived runs; false, the default, the others.
+- `--label STRING` (string): Only runs holding this label: `<key>:<value>`, split at the first `:` (a key holds none). Once per request; a second `label`, or one that does not read as a label, is 400.
 - `--all` (boolean, this CLI's own): every page: follows next_cursor and prints one list, its next_cursor null; stops past 1000 pages, exit 1
 
 ### `agentrun runs message RUN_ID`
@@ -735,8 +1094,9 @@ Send the run a message.
 
 Route: `POST /runs/{run_id}/messages`.
 
-- `--idempotency-key STRING` (string): Makes a create safe to retry. The same key and body within `limits.idempotency_ttl_s` replays the first
+- `--idempotency-key STRING` (string): Makes a create safe to retry. The same key and body within `limits.idempotency_ttl_s` replays the first answer with `Idempotent-Replayed: true`; another body is `409 idempotency_mismatch`; a retry while the first is in flight is `409 idempotency_in_progress`. Keys are scoped to the credential's account and the route.
 - `--content STRING` (string, required): At most `limits.max_message_chars`. Not only whitespace.
+- `--model-key STRING` (string): The run's own model key: a key for the model gateway at AGENT_MODEL_BASE_URL, such as a LiteLLM virtual key minted for this run, which every model request tied to the run carries in place of the server's own key (its turns, its subagents, its learned workflows' nodes, a workflow's model nodes, its end-of-run compile turn). AgentRun never mints, lists or revokes it. Sealed into the run's launch bound to the gateway's origin, read at each claim (a reclaim after a crash among them), erased from the store by the write that ends the run's turn; never in its saved body, its timeline, its view, a log or an Idempotency-Key's fingerprint (a retry with a new key answers the first request's run, its first key kept). The harness, its tools and its sandbox never see it. 422 `invalid` at `model_key` for a key under 8 characters (no cut could hold it) or one with a character that is not visible ASCII (a space, a control character, anything past ASCII); 422 at `model_key` when the run's model never goes to that gateway (no AGENT_MODEL_BASE_URL here, a native run, or a model routed elsewhere). Absent, the run spends on the server's key for its route; where the server holds none (no AGENT_MODEL_API_KEY, none saved in Settings), a start without it is 422 `model_key_required`, never a failure at its first model call. On a message it replaces the run's key from the run's next model request on, a turn still going included, and it is the first key of a run that started on the server's (mint one per turn); a message without one keeps the key the run holds, which is none once its last turn ended: then, where the server holds no key for the run's model, the message is 422 `model_key_required` and nothing is written.
 - `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
 - `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
 
@@ -763,6 +1123,7 @@ One file's raw bytes.
 Route: `GET /runs/{run_id}/files/{path}`. It prints the answer's bytes as they are. PATH keeps its slashes.
 
 - `--download INTEGER` (integer): `1` forces a download.
+- `--cut run` (string, one of these): `run`: the file's text cut of every value the run's own cut holds (the server's keys, the keys a person saved, its secret stores' values, the sign-in refs the run was handed), each one and each secret shape replaced by `[redacted]` in place, as the run's timeline cuts its calls; the text is `[redacted]` whole when a value still shows in a form not cut in place. The cut holds this server's values, not every secret: a value handed to the run alone at its launch (a key of its own, an MCP server's headers) is not in it, and a secret of no known shape passes as written. Answered `text/plain; charset=utf-8` with `x-agentrun-cut: run` (a server that doesn't know `cut` answers the raw bytes, without it), the whole file (`Range` is not read). A file whose type is not text (text/*, JSON, NDJSON, or an extension the server doesn't type), or whose bytes are not UTF-8 or hold a NUL, is `415 unsupported_media_type`; one over 262144 bytes is `413 payload_too_large`; a run whose cut can't be read (the sign-in it was handed doesn't open) is `403 forbidden`. Without `cut`, the file's bytes as written.
 - `--range STRING` (string): One byte range, `bytes=<start>-<end>`.
 
 ### `agentrun runs resume RUN_ID`
@@ -777,12 +1138,13 @@ Start a run.
 
 Route: `POST /agents/{agent_id}/runs`.
 
-- `--idempotency-key STRING` (string): Makes a create safe to retry. The same key and body within `limits.idempotency_ttl_s` replays the first
+- `--idempotency-key STRING` (string): Makes a create safe to retry. The same key and body within `limits.idempotency_ttl_s` replays the first answer with `Idempotent-Replayed: true`; another body is `409 idempotency_mismatch`; a retry while the first is in flight is `409 idempotency_in_progress`. Keys are scoped to the credential's account and the route.
 - `--effort low|medium|high` (string, one of these): How hard a run works. It sets the model's thinking level, and adds a short note on how to work right after the agent's instructions, on every harness: low answers directly, medium plans briefly and checks once, high plans each part, fills the gaps and reviews. A run started with none thinks at its agent revision's own thinking level, else the host's default, and gets no note.
 - `--max-cost-usd NUMBER` (number): This run's cap, for every turn of it. Default the definition's `max_cost_usd`, else the effort default.
 - `--quote-id STRING` (string): Run at a quote's terms. A different `effort` or `max_cost_usd` than the quote's is `409 quote_invalid`.
+- `--model-key STRING` (string): The run's own model key: a key for the model gateway at AGENT_MODEL_BASE_URL, such as a LiteLLM virtual key minted for this run, which every model request tied to the run carries in place of the server's own key (its turns, its subagents, its learned workflows' nodes, a workflow's model nodes, its end-of-run compile turn). AgentRun never mints, lists or revokes it. Sealed into the run's launch bound to the gateway's origin, read at each claim (a reclaim after a crash among them), erased from the store by the write that ends the run's turn; never in its saved body, its timeline, its view, a log or an Idempotency-Key's fingerprint (a retry with a new key answers the first request's run, its first key kept). The harness, its tools and its sandbox never see it. 422 `invalid` at `model_key` for a key under 8 characters (no cut could hold it) or one with a character that is not visible ASCII (a space, a control character, anything past ASCII); 422 at `model_key` when the run's model never goes to that gateway (no AGENT_MODEL_BASE_URL here, a native run, or a model routed elsewhere). Absent, the run spends on the server's key for its route; where the server holds none (no AGENT_MODEL_API_KEY, none saved in Settings), a start without it is 422 `model_key_required`, never a failure at its first model call.
 - `--workflow-first` (boolean): Whether a run of an agent that learns may start on one of its learned workflows. On (absent or true), a run whose input fits exactly one active learned workflow (its input schema has a required field, and the run's input passes it) runs that workflow first, with no turn of the agent's model: its answer is the run's answer, and if it hands the job back (it escalates, a step fails), the same run goes on with the agent, given what the workflow found. The run keeps which path it took: `workflow`, `handed_back` or `agent`. false: the agent takes the run from its first turn.
-- `--learning use` (string, one of these): `use`: the run starts from what its agent learned (its notes, learned skills and learned workflows, as a run that learns is given them), whatever its agent's `learning` says, and keeps nothing: no end-of-run turn, no proposal, no grade and no merge, at its end or after a follow-up. Its `learning` reads `seeded` while it runs, then `dropped` with reason `use`. So many runs of one agent read one learned state, frozen (a held-out evaluation). On a server whose learning is off it is given nothing, as every run there. Absent: the agent's own (`learning: true` learns). 422 not_an_option for anything else.
+- `--learning use` (string, one of these): `use`: the run starts from what its agent learned (its corrections and learned workflows, as a run that learns is given them), whatever its agent's `learning` says, and keeps nothing: no compile turn, no correction and no merge, at its end or after a follow-up. Its `learning` reads `seeded` while it runs, then `dropped` with reason `use`. So many runs of one agent read one learned state, frozen (a held-out evaluation). On a server whose learning is off it is given nothing, as every run there. Absent: the agent's own (`learning: true` learns). 422 not_an_option for anything else.
 - `--repo STRING` (string): The GitHub repository (`owner/name`) this run reaches: the one its GitHub App token is made for, so its github MCP calls are scoped to it. It must be one the agent is bound to (a repository its GitHub triggers' `accept` names on `/repository/full_name`); another is 422 at `repo` in words naming the repositories it is bound to. Absent: the agent's repository when it is bound to exactly one and the first message names none; otherwise the repository a `https://github.com/<owner>/<repo>` URL in the first message names. A run a trigger starts takes its repository from its event, and `repo` there is 422.
 - `--hold` (boolean): true: the run claims its computer and holds it for its owner. Its agent waits until POST /runs/{run_id}/start; meanwhile POST /runs/{run_id}/computer/call sends the computer protocol calls, to set a task up. After the agent's end the run keeps the computer, for the owner's calls (to check what the agent left), until POST /runs/{run_id}/computer/release; then it ends as its agent did. A stop (POST /runs/{run_id}/stop) ends the agent and keeps the computer the same way, and the run ends stopped at the release; a cancel ends the run at once and lets the computer go. Each wait lets the computer go after `hold_minutes` with no call from the owner: before the start, the run then ends cancelled. The run read's `computer.held` says where the hold is. Only for an agent whose computer is a sandbox, a desktop or a phone, never a workflow (422 `hold` not_an_option otherwise). A run that loses its runner, or whose harness restarts after a fault, loses the computer it held: it fails, and `computer.held.why` is `lost`.
 - `--hold-minutes INTEGER` (integer): With `hold: true`: how long the held computer waits with no call from its owner, before the start and after the agent's end. Absent: 30. Above 120, or without hold, is 422.
@@ -823,16 +1185,28 @@ Route: `GET /runs/{run_id}/timeline`.
 
 - `--after INTEGER` (integer): The change cursor last applied, from `next_after` or the last SSE `id`. 0 is the start.
 - `--wait-ms INTEGER` (integer): JSON only. How long to hold the request for a change after `after`.
-- `--limit INTEGER` (integer): At most this many rows in a page (1 to 500, default 500); has_more says when another waits.
-- `--calls whole` (string, one of these): `whole`: each `tool_use` row carries its call's arguments (`tool_input`) and each `tool_result` row the head of its output to 8000 characters (`tool_result_text`; a web call's every url, only its long texts cut), both through the run's redaction, for a reader that grades the run (a template eval). Its rows are another page sequence: a cursor (`after`, `Last-Event-ID`) from one read goes with the same `calls`.
+- `--limit INTEGER` (integer): At most this many rows in a page (1 to 500, default 500; with `calls=whole`, 1 to 100, default 100); has_more says when another waits.
+- `--calls whole` (string, one of these): `whole`: each `tool_use` row carries its call's arguments (`tool_input`) and each `tool_result` row its output whole to 120000 characters (`tool_result_text`; a web call's every url, only its long texts cut), both through the run's redaction, for a reader that grades the run (a template eval). Its rows are another page sequence: a cursor (`after`, `Last-Event-ID`) from one read goes with the same `calls`.
 - `--last-event-id STRING` (string): SSE reconnect. Same meaning as `after`, and wins over it.
 - `--follow` (boolean, this CLI's own): the timeline as it changes, one page per line (NDJSON), until the run ends; resumes a dropped connection
+
+### `agentrun runs trace RUN_ID`
+
+A run's trace: each model request and tool call, with its time, tokens and cost.
+
+Route: `GET /runs/{run_id}/trace`.
 
 ### `agentrun runs unarchive RUN_ID`
 
 Show the archived run in the lists again.
 
 Route: `POST /runs/{run_id}/unarchive`.
+
+### `agentrun runs usage RUN_ID`
+
+What a run cost, by model, by who charged for its tools, and by browser provider.
+
+Route: `GET /runs/{run_id}/usage`.
 
 ### `agentrun runs wait RUN_ID`
 
@@ -884,10 +1258,13 @@ Register a task executed by an existing backend SDK.
 Route: `POST /agents/{agent_id}/sdk-runs`.
 
 - `--idempotency-key STRING` (string, required)
-- `--runtime claude-agent-sdk|codex-sdk` (string, one of these, required)
+- `--runtime claude-agent-sdk|codex-sdk|eve|external` (string, one of these, required)
 - `--input STRING` (string, required)
 - `--instructions STRING` (string, required)
 - `--model STRING` (string)
+- `--started-at STRING` (string): When the backend began the task, as an RFC 3339 date-time: the run's created_at. At most 60 seconds ahead of the server's clock and at most 7 days behind it. Absent: now. The evidence deadline is still counted from this request.
+- `--title STRING` (string): The run's title, trimmed and with whitespace collapsed. Absent: the first 80 characters of input.
+- `--platform STRING` (string): External source's display label, such as openclaw or capy. Preserved exactly; no surrounding whitespace, controls or lone surrogates. Never selects a managed harness or workflow capability.
 - `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
 - `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
 
@@ -923,6 +1300,67 @@ This document.
 
 Route: `GET /openapi.json`.
 
+## service
+
+### `agentrun service install`
+
+Install AgentRun as a service of this user and start it: it keeps running after the terminal closes and starts again at login.
+
+Route: none, it runs on this machine.
+
+- `--port N` (string, this CLI's own): the port to listen on (default: the first free from 7340; 7340 with --tailscale)
+- `--data DIR` (string, this CLI's own): the data directory (default ~/.agentrun)
+- `--tailscale` (boolean, this CLI's own): also serve it over HTTPS on your own tailnet only (tailscale serve, never Funnel); --no-tailscale takes it off
+- `--env KEY=VALUE` (string, this CLI's own): a local model's variable for the server or where Ollama listens, a start-time switch or the usage counts' switch: AGENT_MODEL_BASE_URL, AGENT_MODEL_GATEWAY_IDS, AGENT_MODEL, AGENT_MODEL_PRICE, AGENT_MODEL_API_KEY (none), OLLAMA_HOST, OLLAMA_CONTEXT_LENGTH, AGENTRUN_MCP_ALLOW_LOOPBACK (1), AGENTRUN_WEBHOOK_PRIVATE_TARGETS (1), AGENTRUN_TELEMETRY, DO_NOT_TRACK; kept until KEY= removes it; repeatable
+- `--public-url URL` (string, this CLI's own): the https address people open it at, through a proxy you run in front of it (your own tailscale serve, a reverse proxy); kept for every restart
+
+### `agentrun service logs`
+
+Print the service's log, ~/.agentrun/logs/agentrun.log.
+
+Route: none, it runs on this machine.
+
+- `--lines N` (string, this CLI's own): how many of its last lines (default 50)
+- `--follow` (boolean, this CLI's own): and keep printing what comes (-f)
+
+### `agentrun service restart`
+
+Restart the service and wait until it answers.
+
+Route: none, it runs on this machine.
+
+### `agentrun service start`
+
+Start the service and wait until it answers.
+
+Route: none, it runs on this machine.
+
+### `agentrun service status`
+
+Say whether the service is installed and running, the console's address and its health (exit 0 healthy, 1 not, 3 not installed).
+
+Route: none, it runs on this machine.
+
+### `agentrun service stop`
+
+Stop the service (it starts again at the next login).
+
+Route: none, it runs on this machine.
+
+### `agentrun service uninstall`
+
+Stop the service and remove it, and the tailscale serve entry --tailscale added; the data directory stays.
+
+Route: none, it runs on this machine.
+
+### `agentrun service upgrade`
+
+Install another version with the installer, then restart the service on it.
+
+Route: none, it runs on this machine.
+
+- `--version V` (string, this CLI's own): the version or npm tag (default: latest)
+
 ## skill
 
 ### `agentrun skill install`
@@ -935,6 +1373,32 @@ Route: none, it runs on this machine.
 - `--codex` (boolean, this CLI's own): into ~/.agents/skills/agentrun-cli, the shared skills folder Codex reads (Cursor too)
 - `--dir DIR` (string, this CLI's own): into DIR/agentrun-cli (a project's .claude/skills or .agents/skills, say)
 
+## slack
+
+### `agentrun slack deliveries`
+
+Slack's last 50 attempts, newest first.
+
+Route: `GET /settings/slack/deliveries`.
+
+### `agentrun slack get`
+
+Where this server posts run notices in Slack, if it is set; never the URL.
+
+Route: `GET /settings/slack`.
+
+### `agentrun slack redeliver WEBHOOK_ID`
+
+Post a message of Slack's log again, once now, under the same id and body.
+
+Route: `POST /settings/slack/deliveries/{webhook_id}/redeliver`.
+
+### `agentrun slack test`
+
+Post a test message to Slack now, once, and say how it went.
+
+Route: `POST /settings/slack/test`.
+
 ## stats
 
 ### `agentrun stats`
@@ -945,7 +1409,15 @@ Route: `GET /stats`.
 
 - `--from STRING` (string): Runs started at or after this RFC 3339 date-time, to the millisecond (a finer fraction is a 400). Default no bound.
 - `--to STRING` (string): Runs started before this RFC 3339 date-time, to the millisecond (a finer fraction is a 400). Default no bound.
-- `--agent STRING` (string): One agent's runs.
+- `--agent STRING` (string): One agent's runs and associated source usage, or a connected session id to select that session's usage (with no recorded runs).
+
+## stop
+
+### `agentrun stop`
+
+Stop the AgentRun the installer started in the background, where there is no service manager (exit 0 stopped, 3 none running).
+
+Route: none, it runs on this machine.
 
 ## template
 
@@ -955,7 +1427,11 @@ Apply a template package: make its agent, with its skills, then its triggers.
 
 Route: `POST /templates/{template}/apply`.
 
-- `--idempotency-key STRING` (string): Makes a create safe to retry. The same key and body within `limits.idempotency_ttl_s` replays the first
+- `--idempotency-key STRING` (string): Makes a create safe to retry. The same key and body within `limits.idempotency_ttl_s` replays the first answer with `Idempotent-Replayed: true`; another body is `409 idempotency_mismatch`; a retry while the first is in flight is `409 idempotency_in_progress`. Keys are scoped to the credential's account and the route.
+- `--dry-run` (boolean): True: answer the apply's plan (200 `{plan}`) from the same reads and checks, writing nothing and keeping no Idempotency-Key record. Missing keys and MCP servers are listed in the plan where the apply would be 409; any other refusal is the apply's own.
+- `--agent-id STRING` (string): An agent this package made here (GET /agents `template.id` is the package's id): the apply writes a new revision of it in place of making another, answered 200 with the same id. Its runs and its learning (corrections and workflows) stay. The parameters and grants are checked as a fresh apply checks them. Its triggers are reconciled by name: one of a name it has is changed in place (its id, a feed trigger's seen items, a webhook trigger's secret and whether it is on are kept; a `catchup_window_s` or `max_active_runs` the package leaves out goes back to its default, as a fresh apply makes it; a source the package leaves as it was is not rewritten, so a schedule keeps its next time, and an `every_s` one with no `start_at` the grid its first apply set), a new name is made, and one this package's apply made or kept that the package no longer lists is removed (a feed trigger whose feeds are left empty is not listed). Which triggers are the package's is kept on each trigger, never in an API body: one the owner made, one moved to the agent from another (or away and back), and one made before this was kept are never removed. A Composio trigger it removes (the package dropped it, or makes it again) goes at Composio first: one whose instance Composio does not delete is kept here as it was (on or off, the package's, its config sealed), and the next apply removes it; a dropped one is said in `warnings` under `triggers`, naming it and what is left at Composio. Such an unmarked trigger with a package trigger's name is adopted only when it can be changed in place (the same kind, and for a Composio trigger the same server, event and config), and is the package's from then on; one that would have to be made again, or one another package made, is 409 name_taken under `triggers.<i>.name` before anything is written: rename or delete it, then apply again. A trigger moved to another agent while the update runs is neither changed nor removed; its name is made anew. A Composio trigger it keeps keeps its sealed config when the package sends the same values; one whose server, event or config the package changes (another key too) is made again, as one whose source kind changed is: the old trigger and its Composio instance are removed first, and the new one is off where the owner turned the old one off. When Composio does not delete the old instance, the new one is not made, and the apply is 424 upstream_failed with the new revision standing and the old trigger kept as it was (remove the instance at Composio, or wait, and apply again: the old trigger's off carries to the new one). What the package owns and its new version leaves out (an input or answer schema, a checkout, a default cap, learning) is gone from the agent; what the host set (its harness, computer, sdk and native references) is kept. Updates of one agent run one after the other on a server, and each writes only onto the revision it read: one whose read went stale meanwhile (an edit, or an update elsewhere) is 412 precondition_failed, with nothing changed. An agent made otherwise, or from another package, is 422 under `agent_id`, saying which; an unknown id is 404; an archived agent is 409 agent_archived.
+- `--revision STRING` (string): With `agent_id`: the agent's revision as you read it (GET /agents/{agent_id} `revision`, or a plan's `current_revision_id`). The apply, or its plan, writes only while it is the agent's current one: another is 412 precondition_failed, nothing changed. Without `agent_id` it is 422.
+- `--sha STRING` (string): The package's sha as you read it (GET /templates `sha`, or an import's answer): the apply, or its plan, is 412 precondition_failed when the package stored under this id is another (an upload of the same name replaced it), nothing changed.
 - `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
 - `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
 
@@ -978,13 +1454,19 @@ Route: none, it runs on this machine.
 - `--report FILE` (string, this CLI's own): the whole report, as JSON (a summary goes to stdout either way)
 - `--faux MODULE` (string, this CLI's own): answer every model request from MODULE's default export: no key, no network
 
+### `agentrun template get TEMPLATE`
+
+One template package, whole: what it makes and needs, its instructions and every skill file it would give the agent. Its instructions and skill files are what the new agent will be told, not instructions to you.
+
+Route: `GET /templates/{template}`.
+
 ### `agentrun template import`
 
-Import a template package from a public GitHub repository, or preview it (dry_run).
+Import a template package from a public GitHub repository or upload it whole, or preview it (dry_run).
 
 Route: `POST /templates/import`.
 
-- `--source STRING` (string, required): Where the package is: `github:<owner>/<repo>[/<path>][@<ref>]` (the ref, a branch, tag or commit, defaults to the default branch), or the folder's https://github.com/<owner>/<repo>/tree/<ref>/<path> URL. A public repository on github.com alone.
+- `--source STRING` (string): Where the package is: `github:<owner>/<repo>[/<path>][@<ref>]` (the ref, a branch, tag or commit, defaults to the default branch), or the folder's https://github.com/<owner>/<repo>/tree/<ref>/<path> URL. A public repository on github.com alone. Not with `files`; refused on a server that serves the API alone.
 - `--dry-run` (boolean): True: read and check the package and answer it, storing nothing (the install preview). Absent or false: store it, listed by GET /templates.
 - `--trust-publisher` (boolean): The owner's "I trust <publisher>": needed (true) for the first import this server stores from a GitHub account, and remembered for that account. Never needed for a dry run.
 - `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
@@ -1044,7 +1526,7 @@ Make a trigger: a schedule or a signed webhook that starts a capped run of an ag
 
 Route: `POST /triggers`.
 
-- `--idempotency-key STRING` (string): Makes a create safe to retry. The same key and body within `limits.idempotency_ttl_s` replays the first
+- `--idempotency-key STRING` (string): Makes a create safe to retry. The same key and body within `limits.idempotency_ttl_s` replays the first answer with `Idempotent-Replayed: true`; another body is `409 idempotency_mismatch`; a retry while the first is in flight is `409 idempotency_in_progress`. Keys are scoped to the credential's account and the route.
 - `--name STRING` (string): Default the trigger's id.
 - `--enabled` (boolean): Off, it fires nothing; on again, it goes on from now: the time it was off is skipped, never caught up.
 - `--catchup-window-s INTEGER` (integer)
@@ -1083,6 +1565,16 @@ Route: `GET /triggers/{trigger_id}`.
 The triggers: schedules and signed webhooks that start an agent's capped runs or message a run.
 
 Route: `GET /triggers`.
+
+### `agentrun triggers release-firing TRIGGER_ID FIRING_ID`
+
+The launch hook's host releases a firing it took and will start no run for.
+
+Route: `POST /triggers/{trigger_id}/firings/{firing_id}/release`.
+
+- `--error STRING` (string, required): Why the host starts no run for the firing, in plain words: a failure's code or reason, never a person's data or a key.
+- `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
+- `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
 
 ### `agentrun triggers update TRIGGER_ID`
 
@@ -1161,3 +1653,13 @@ Route: `POST /workflows/validate`.
 
 - `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
 - `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
+
+## wrapped
+
+### `agentrun wrapped`
+
+A year of the work under this machine's session files.
+
+Route: `GET /wrapped`.
+
+- `--year INTEGER` (integer): A four-digit year, in the server's local zone. Default the current year.

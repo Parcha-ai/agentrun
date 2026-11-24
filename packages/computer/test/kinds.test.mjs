@@ -19,6 +19,7 @@ import {
 	KIND_SHAPES,
 	kindOf,
 	kindRefusals,
+	mountsOf,
 	PROVIDERS,
 	providerIds,
 	providerModule,
@@ -27,6 +28,9 @@ import {
 	servingRefusals,
 } from "../dist/index.js";
 import { Agent37Provider } from "../dist/agent37.js";
+import { MorphProvider } from "../dist/morph.js";
+import { BoxdProvider } from "../dist/boxd.js";
+import { GroundboxProvider } from "../dist/groundbox.js";
 import { keyPair } from "./fake-agent37.mjs";
 import { BrowserbaseProvider } from "../dist/browserbase.js";
 import { E2BProvider } from "../dist/e2b.js";
@@ -90,7 +94,7 @@ test("PROVIDERS is one entry per descriptor, in the registry's order, with the d
 	assert.equal(new Set(providerIds).size, providerIds.length, "each id once");
 	for (const [index, descriptor] of DESCRIPTORS.entries()) {
 		const { id, label, keys, metered, mounts } = PROVIDERS[index];
-		assert.deepEqual({ id, label, keys, metered, mounts }, { id: descriptor.id, label: descriptor.label, keys: descriptor.keys, metered: descriptor.metered, mounts: descriptor.mounts }, id);
+		assert.deepEqual({ id, label, keys, metered, mounts }, { id: descriptor.id, label: descriptor.label, keys: descriptor.keys, metered: descriptor.metered, mounts: mountsOf(descriptor, () => false).mounts }, id);
 		assert.ok(label.length > 0, `${id} has a label`);
 		for (const key of keys) assert.match(key.name, /^[A-Z][A-Z0-9_]*$/, `${id}: ${key.name} is a setting's name`);
 	}
@@ -100,7 +104,13 @@ test("PROVIDERS is one entry per descriptor, in the registry's order, with the d
 	// What is no key: Modal's app (default the server's own), Docker's image made before the first create on this host, and
 	// the ledgers the server keeps: the phone harness's sessions, and Orgo's agents' computers.
 	const extra = Object.fromEntries(PROVIDERS.map(({ id, settings, prepareImage, imageEnv, local, ledger, hostEnv, parked }) => [id, { settings, prepareImage, imageEnv, local, ledger, hostEnv, parked }]));
-	assert.deepEqual(extra.modal.settings, [{ name: "modalApp", option: "app", default: "agentrun" }]);
+	assert.deepEqual(extra.modal.settings, [
+		{ name: "modalApp", option: "app", default: "agentrun" },
+		{ name: "modalConnect", option: "connect" },
+	]);
+	// How E2B's, Modal's and Daytona's machines are reached: the provider's exec unless a server's settings say dial.
+	assert.deepEqual(extra.e2b.settings, [{ name: "e2bConnect", option: "connect" }]);
+	assert.deepEqual(extra.daytona.settings, [{ name: "daytonaConnect", option: "connect" }]);
 	assert.deepEqual([extra.docker.prepareImage, extra.docker.local], [true, true]);
 	// Agent37 registers the published box image in the key's workspace before the first create; its computers are remote.
 	assert.deepEqual([extra.agent37.prepareImage, extra.agent37.local], [true, undefined]);
@@ -108,6 +118,10 @@ test("PROVIDERS is one entry per descriptor, in the registry's order, with the d
 	assert.deepEqual([extra.modal.prepareImage, extra.modal.local], [true, undefined]);
 	// E2B starts its sandboxes and desktops from the box image's public template; its computers are remote.
 	assert.deepEqual([extra.e2b.prepareImage, extra.e2b.local], [true, undefined]);
+	// boxd builds its desktop snapshot in the key's org before the first create; its computers are remote.
+	assert.deepEqual([extra.boxd.prepareImage, extra.boxd.local], [true, undefined]);
+	// Morph starts its instances from the box image as a snapshot it builds in the key's account; its computers are remote.
+	assert.deepEqual([extra.morph.prepareImage, extra.morph.local], [true, undefined]);
 	// Daytona's image is the operator's snapshot when the server names one (an Archil mount needs box/Dockerfile's); no
 	// other provider declares one.
 	assert.deepEqual(Object.entries(extra).filter(([, one]) => one.imageEnv !== undefined).map(([id, one]) => [id, one.imageEnv]), [["daytona", "AGENTRUN_DAYTONA_SNAPSHOT"]]);
@@ -118,16 +132,26 @@ test("PROVIDERS is one entry per descriptor, in the registry's order, with the d
 	// The cloud browsers read the gateway a server reaches them through.
 	assert.deepEqual(extra.browserbase.hostEnv, ["BROWSERBASE_BASE_URL", "BROWSERBASE_CONNECT_BASE_URL"]);
 	assert.deepEqual(extra.kernel.hostEnv, ["KERNEL_BASE_URL"]);
+	// The phone harness reads the APKs every phone installs, each pinned by its sha256: the operator's setting.
+	assert.deepEqual(extra["phone-harness"].hostEnv, ["PHONE_HARNESS_APKS"]);
 	// Orgo offers its Linux desktop; its Windows and macOS desktops are parked, each with why, and offered by no
 	// configuration.
 	assert.deepEqual(extra.orgo.parked.map((one) => one.image), ["windows", "macos"]);
 	assert.ok(extra.orgo.parked.every((one) => /parked/.test(one.why)));
 	assert.deepEqual(PROVIDERS.find((one) => one.id === "orgo").capabilities.map((one) => one.image), ["linux"]);
+	// Cloudflare's containers start from the box image its relay was deployed FROM, which the relay's health names.
+	assert.deepEqual([extra.cloudflare.prepareImage, extra.cloudflare.local], [true, undefined]);
+	// Fly Machines start from the box image's registry tag, which Fly pulls at each create.
+	assert.deepEqual([extra.fly.prepareImage, extra.fly.local], [true, undefined]);
+	// smol cloud machines start from the same tag, which smol cloud pulls at each create.
+	assert.deepEqual([extra.smolcloud.prepareImage, extra.smolcloud.local], [true, undefined]);
+	// Groundbox sandboxes start from the same tag, which Groundbox turns into a disk at the first create.
+	assert.deepEqual([extra.groundbox.prepareImage, extra.groundbox.local], [true, undefined]);
 	for (const [id, fields] of Object.entries(extra)) {
-		if (id !== "modal") assert.equal(fields.settings, undefined, id);
-		if (!["docker", "agent37", "modal", "e2b"].includes(id)) assert.deepEqual([fields.prepareImage, fields.local], [undefined, undefined], id);
+		if (!["modal", "e2b", "daytona"].includes(id)) assert.equal(fields.settings, undefined, id);
+		if (!["docker", "agent37", "modal", "e2b", "boxd", "morph", "cloudflare", "fly", "smolcloud", "groundbox"].includes(id)) assert.deepEqual([fields.prepareImage, fields.local], [undefined, undefined], id);
 		if (id !== "phone-harness" && id !== "orgo") assert.equal(fields.ledger, undefined, id);
-		if (!["local-chrome", "browserbase", "kernel"].includes(id)) assert.equal(fields.hostEnv, undefined, id);
+		if (!["local-chrome", "browserbase", "kernel", "phone-harness"].includes(id)) assert.equal(fields.hostEnv, undefined, id);
 		if (id !== "orgo") assert.equal(fields.parked, undefined, id);
 	}
 	// Kinds are derived by serves() (the test below); every kind but none has a provider that serves it.
@@ -137,7 +161,8 @@ test("PROVIDERS is one entry per descriptor, in the registry's order, with the d
 	assert.deepEqual(PROVIDERS.find((entry) => entry.id === "docker").kinds, ["sandbox", "desktop"]);
 	const mounts = Object.fromEntries(PROVIDERS.map((entry) => [entry.id, entry.mounts]));
 	assert.deepEqual(mounts.docker, ["bind"]);
-	for (const id of ["orgo", "phone-harness", "browserbase", "kernel", "local-chrome"]) assert.deepEqual(mounts[id], [], id);
+	for (const id of ["morph", "boxd", "groundbox"]) assert.deepEqual(mounts[id], ["sync"], id);
+	for (const id of ["orgo", "phone-harness", "browserbase", "kernel", "local-chrome", "smolcloud"]) assert.deepEqual(mounts[id], [], id);
 });
 
 test("PROVIDERS' default images: each kind is one of the entry's own, and each value is its descriptor's constant", async () => {
@@ -159,11 +184,15 @@ test("PROVIDERS' default images: each kind is one of the entry's own, and each v
 		modal: undefined,
 		e2b: undefined,
 		agent37: undefined,
+		morph: undefined,
 		orgo: { desktop: orgo.ORGO_BASE_IMAGE },
 		"phone-harness": { phone: phone.PHONE_IMAGE },
 		browserbase: { browser: browser.BROWSER_IMAGE },
 		kernel: { browser: browser.BROWSER_IMAGE },
 		"local-chrome": { browser: browser.BROWSER_IMAGE },
+		// A desktop has none: it starts from the snapshot prepareImage() builds.
+		boxd: { sandbox: all.BOXD_DEFAULT_IMAGE },
+		groundbox: undefined,
 	};
 	for (const [id, images] of Object.entries(expected)) {
 		assert.deepEqual(PROVIDERS.find((entry) => entry.id === id)?.defaultImage, images, `${id}: its default images are its modules' constants`);
@@ -173,9 +202,11 @@ test("PROVIDERS' default images: each kind is one of the entry's own, and each v
 		[daytona.DAYTONA_DEFAULT_SNAPSHOT, all.AGENT37_BASE_TEMPLATE, orgo.ORGO_BASE_IMAGE, phone.PHONE_IMAGE, browser.BROWSER_IMAGE],
 		["default", "agent37-base", "linux", "android", "chromium"],
 	);
-	// Docker's sandbox has none: serve builds its own image (DOCKER_RECIPE). Agent37, Modal and E2B have none: each
-	// prepares the box image (prepareImage).
-	for (const id of ["docker", "agent37", "modal", "e2b"]) assert.equal(PROVIDERS.find((entry) => entry.id === id).defaultImage, undefined, id);
+	assert.equal(all.BOXD_DEFAULT_IMAGE, "default");
+	assert.equal(all.GROUNDBOX_OWN_IMAGE, "default");
+	// Docker's sandbox has none: serve builds its own image (DOCKER_RECIPE). Agent37, Modal, E2B, Morph and Groundbox have
+	// none: each prepares the box image (prepareImage).
+	for (const id of ["docker", "agent37", "modal", "e2b", "morph", "groundbox"]) assert.equal(PROVIDERS.find((entry) => entry.id === id).defaultImage, undefined, id);
 	assert.equal("MODAL_DEFAULT_IMAGE" in all, false, "no Modal default image: its prepareImage() answers the box image");
 	for (const name of ["E2B_BASE_TEMPLATE", "E2B_DESKTOP_TEMPLATE"]) assert.equal(name in all, false, `no ${name}: E2B's prepareImage() answers the box template`);
 });
@@ -210,6 +241,9 @@ test("a descriptor is checked when it is defined: its id, keys, settings and con
 	assert.equal(defineProvider(good), good);
 	assert.deepEqual(descriptorProblems(good), []);
 	assert.deepEqual(descriptorProblems({ ...good, unmounted: { archil: "Archil's client hangs here" } }), [], "a kind it doesn't take, with why");
+	const relay = { ...good, keys: [...good.keys, { name: "ACME_RELAY", option: "relay", required: false }], unmounted: { archil: "Archil's client hangs here" }, mountsWith: { archil: "ACME_RELAY" } };
+	assert.deepEqual(descriptorProblems(relay), [], "a kind it takes once the operator sets one of its keys");
+	assert.deepEqual(descriptorProblems({ ...good, unserved: { desktop: "its window manager can't start there" } }), [], "a setting kind it doesn't serve, with why");
 	for (const [change, words] of [
 		[{ id: "Acme Cloud" }, /id "Acme Cloud" is not lowercase letters, digits and hyphens/],
 		[{ label: " " }, /label is not a name in words/],
@@ -218,10 +252,21 @@ test("a descriptor is checked when it is defined: its id, keys, settings and con
 		[{ keys: [{ name: "ACME_KEY", option: "apiKey" }] }, /each key says whether it is required/],
 		[{ capabilities: [] }, /capabilities is not a list of one configuration or more/],
 		[{ mounts: ["nfs"] }, /mounts is not a list of mount kinds/],
-		[{ unmounted: { nfs: "no NFS here" } }, /unmounted maps mount kinds \(bind, archil\) to why, in words/],
-		[{ unmounted: { archil: " " } }, /unmounted maps mount kinds \(bind, archil\) to why, in words/],
-		[{ unmounted: ["archil"] }, /unmounted maps mount kinds \(bind, archil\) to why, in words/],
+		[{ mounts: ["sync"] }, /mounts is not a list of mount kinds \(bind, archil\): sync is derived, never listed/],
+		[{ unmounted: { nfs: "no NFS here" } }, /unmounted maps mount kinds \(bind, archil, sync\) to why, in words/],
+		[{ unmounted: { archil: " " } }, /unmounted maps mount kinds \(bind, archil, sync\) to why, in words/],
+		[{ unmounted: ["archil"] }, /unmounted maps mount kinds \(bind, archil, sync\) to why, in words/],
 		[{ mounts: ["archil"], unmounted: { archil: "it hangs" } }, /unmounted names a mount kind that mounts declares/],
+		[{ unmounted: { archil: "it hangs" }, mountsWith: { archil: "ACME_RELAY" } }, /mountsWith maps mount kinds \(bind, archil\) to the name of one of its keys that is not required/],
+		[{ unmounted: { archil: "it hangs" }, mountsWith: { archil: "ACME_KEY" } }, /mountsWith maps mount kinds .* not required/],
+		[{ unmounted: { archil: "it hangs" }, mountsWith: { nfs: "ACME_KEY" } }, /mountsWith maps mount kinds/],
+		[{ unmounted: { archil: "it hangs" }, mountsWith: ["archil"] }, /mountsWith maps mount kinds/],
+		[{ keys: [{ name: "ACME_KEY", option: "apiKey", required: true }, { name: "ACME_RELAY", option: "relay", required: false }], mountsWith: { archil: "ACME_RELAY" } }, /each kind of mountsWith is in unmounted too/],
+		[{ unserved: { desktop: " " } }, /unserved maps setting kinds \(sandbox, desktop, phone, browser\) to why, in words/],
+		[{ unserved: { none: "nothing to serve" } }, /unserved maps setting kinds/],
+		[{ unserved: { desktp: "a misspelt kind" } }, /unserved maps setting kinds/],
+		[{ unserved: { linux: "a machine kind, not a setting kind" } }, /unserved maps setting kinds/],
+		[{ unserved: ["desktop"] }, /unserved maps setting kinds/],
 		[{ network: [] }, /network is not a list of the network forms/],
 		[{ network: ["vpn"] }, /network is not a list of the network forms/],
 		[{ load: "./acme.js" }, /load is not a function/],
@@ -256,7 +301,12 @@ test("a kind's images, and the configuration a setting selects: by its image; no
 
 /** The E2B SDK's Sandbox slice, never called: these build a provider only to read what it declares. */
 const E2B_SANDBOX = Object.fromEntries(["create", "connect", "getInfo", "setTimeout", "kill", "list"].map((name) => [name, () => assert.fail(`Sandbox.${name} was called`)]));
-/** ssh2's Client slice for Agent37, never constructed here; and a fresh key, never used. */
+/** boxd's SDK slice: a client whose every machines call fails the test. */
+const BOXD_SDK = class {
+	machines = { ...Object.fromEntries(["create", "get", "list", "delete", "streamExec", "waitUntilReady", "setEgressAllow", "setAutoHibernateTimeout", "updateLabels"].map((name) => [name, () => assert.fail(`machines.${name} was called`)])), files: { upload: () => assert.fail("machines.files.upload was called") } };
+	snapshots = Object.fromEntries(["create", "get"].map((name) => [name, () => assert.fail(`snapshots.${name} was called`)]));
+};
+/** ssh2's Client slice for Agent37 and Morph, never constructed here; and a fresh key, never used. */
 const AGENT37_SSH2 = {
 	Client: class {
 		constructor() {
@@ -279,8 +329,11 @@ const BUILT = {
 	e2b: [() => new E2BProvider({ apiKey: "fake-test-key", Sandbox: E2B_SANDBOX, kind: "linux" }), () => new E2BProvider({ apiKey: "fake-test-key", Sandbox: E2B_SANDBOX })],
 	// Each configuration built by its own create() options, as serve builds the one a setting selects.
 	agent37: PROVIDERS.find((one) => one.id === "agent37").capabilities.map(({ options }) => () => new Agent37Provider({ ...options, apiKey: "fake-test-key", sshKey: FAKE_SSH_KEY, ssh2: AGENT37_SSH2, fetch: async () => new Response(null, { status: 500 }) })),
-	daytona: [() => new DaytonaProvider({ apiKey: "fake-test-key", apiUrl: "https://api.daytona.test/api", daemonPath: "/nonexistent/computerd", fetch: async () => new Response(null, { status: 500 }) })],
-	modal: [() => new ModalProvider({ sdk: MODAL_SDK, app: "computers" })],
+	// Each configuration built by its own create() options over a server's connect exec, as serve builds the one a setting
+	// selects ({ ...the settings' options, ...the configuration's }): the sandbox on exec, the desktop on the dial its
+	// configuration selects.
+	daytona: PROVIDERS.find((one) => one.id === "daytona").capabilities.map(({ options }) => () => new DaytonaProvider({ apiKey: "fake-test-key", apiUrl: "https://api.daytona.test/api", daemonPath: "/nonexistent/computerd", fetch: async () => new Response(null, { status: 500 }), connect: "exec", ...options })),
+	modal: PROVIDERS.find((one) => one.id === "modal").capabilities.map(({ options }) => () => new ModalProvider({ sdk: MODAL_SDK, app: "computers", connect: "exec", ...options })),
 	browserbase: [() => new BrowserbaseProvider({ apiKey: BROWSERBASE_KEY, apiUrl: BROWSERBASE_URL, fetch: fakeBrowserbase().fetch })],
 	kernel: [() => new KernelProvider({ apiKey: KERNEL_KEY, apiUrl: KERNEL_URL, fetch: fakeKernel().fetch })],
 	"local-chrome": [() => new LocalBrowserProvider({ executablePath: "/nonexistent/chrome" })],
@@ -291,6 +344,9 @@ const BUILT = {
 		},
 	],
 	// Each configuration built by its own create() options, as serve builds the one a setting's image selects.
+	morph: [() => new MorphProvider({ apiKey: "fake-test-key", ssh2: AGENT37_SSH2, fetch: async () => new Response(null, { status: 500 }) })],
+	boxd: PROVIDERS.find((one) => one.id === "boxd").capabilities.map(({ options }) => () => new BoxdProvider({ ...options, apiKey: "fake-test-key", Boxd: BOXD_SDK })),
+	groundbox: PROVIDERS.find((one) => one.id === "groundbox").capabilities.map(({ options }) => () => new GroundboxProvider({ ...options, apiKey: "fake-test-key", fetch: async () => new Response(null, { status: 500 }), webSocket: () => assert.fail("a command stream was opened") })),
 	orgo: PROVIDERS.find((one) => one.id === "orgo").capabilities.map(({ options }) => () => createOrgo({ ...options, apiKey: "fake-test-key", workspaceId: "ws-test", fetch: async () => new Response(null, { status: 500 }) })),
 };
 
@@ -309,4 +365,30 @@ test("a built provider's capabilities, in each configuration, are its entry's st
 		for (const { network } of built) assert.ok(network.every((form) => entry.network.includes(form)), `${id}: ${network} is among ${entry.network}`);
 		assert.deepEqual([...new Set(built.flatMap(({ network }) => network))].sort(), [...entry.network].sort(), `${id}: its configurations make every form its entry declares`);
 	}
+});
+
+test("mountsOf: a descriptor's mounts with the operator's keys, the kinds of mountsWith whose key is set taken and left out of unmounted; Daytona's archil with DAYTONA_ARCHIL_EGRESS alone", () => {
+	const daytona = DESCRIPTORS.find((one) => one.id === "daytona");
+	assert.deepEqual(daytona.mountsWith, { archil: "DAYTONA_ARCHIL_EGRESS" });
+	assert.deepEqual(daytona.keys.find((key) => key.name === "DAYTONA_ARCHIL_EGRESS"), { name: "DAYTONA_ARCHIL_EGRESS", option: "archilEgress", required: false });
+	assert.deepEqual(mountsOf(daytona, () => false), { mounts: ["sync"], unmounted: { archil: daytona.unmounted.archil } }, "hosted Daytona: the synced folder, and why no Archil");
+	assert.match(daytona.unmounted.archil, /Archil's client hangs on its sandboxes/);
+	assert.deepEqual(mountsOf(daytona, (name) => name === "DAYTONA_ARCHIL_EGRESS"), { mounts: ["archil", "sync"], unmounted: {} }, "with an egress: the Archil mount too");
+	assert.deepEqual(mountsOf(daytona, (name) => name === "DAYTONA_API_KEY"), mountsOf(daytona, () => false), "only the key mountsWith names turns it on");
+	// No other provider has a mount its keys turn on: each one's mounts are its descriptor's, whatever is set.
+	for (const one of DESCRIPTORS.filter((d) => d.id !== "daytona")) {
+		assert.equal(one.mountsWith, undefined, one.id);
+		assert.deepEqual(mountsOf(one, () => true).mounts, mountsOf(one, () => false).mounts, one.id);
+	}
+	// The registry's entry carries it, for a server to read without loading the provider.
+	assert.deepEqual(PROVIDERS.find((one) => one.id === "daytona").mountsWith, { archil: "DAYTONA_ARCHIL_EGRESS" });
+	assert.deepEqual(mountsOf({ mounts: ["bind"], unmounted: { archil: "why" }, mountsWith: { archil: "K" }, capabilities: [] }, () => true), { mounts: ["bind", "archil"], unmounted: {} });
+});
+
+test("mountsOf with dial: machines that dial the server take no Archil mount, even with the key that turns it on, and say why in one sentence", () => {
+	const daytona = DESCRIPTORS.find((one) => one.id === "daytona");
+	const archil = "Daytona's machines dial this server, and a machine that dials takes no Archil mount";
+	assert.deepEqual(mountsOf(daytona, (name) => name === "DAYTONA_ARCHIL_EGRESS", true), { mounts: ["sync"], unmounted: { archil } });
+	assert.deepEqual(mountsOf(daytona, () => false, true), { mounts: ["sync"], unmounted: { archil } });
+	assert.deepEqual(mountsOf({ label: "X", mounts: ["archil"], capabilities: [] }, () => false, true), { mounts: [], unmounted: { archil: "X's machines dial this server, and a machine that dials takes no Archil mount" } });
 });

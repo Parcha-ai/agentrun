@@ -57,11 +57,14 @@ export function formatReport(report: ConformanceReport): string {
 		lines.push(`core ${"not run".padEnd(9)} ${first}`, ...rest.map((more) => `${INDENT}${more}`));
 	}
 	// Each computer's daemon, named with its role: computers of one run may answer differently (a GPU computer's fence).
-	for (const daemon of daemons) lines.push(`daemon ${daemon.computer} (${daemon.role}): ${said(daemon)}${daemon.fence === undefined ? "" : ` · fence ${daemon.fence}`}`);
+	for (const daemon of daemons) lines.push(`daemon ${daemon.computer} (${daemon.role}): ${said(daemon)}${daemon.fence === undefined ? "" : ` · fence ${daemon.fence}`}${daemon.windowManager === undefined ? "" : ` · window manager ${daemon.windowManager.state}${daemon.windowManager.why ? `: ${daemon.windowManager.why}` : ""}`}`);
 	for (const note of report.notes ?? []) lines.push(`note: ${note}`);
 	for (const { computer, role, note } of report.computerNotes ?? []) lines.push(`note ${computer} (${role}): ${note}`);
 	// What a provider said through onNote, such as a release whose final sync or checkin did not go cleanly.
 	for (const { computer, note } of report.providerNotes ?? []) lines.push(`provider note ${computer}: ${note}`);
+	// What a vendor plan or rate limit that keeps fewer would refuse: --concurrency caps it.
+	const { peak, cap } = report.computers;
+	lines.push(`computers alive at once: ${peak} at most${cap === undefined ? "" : ` (--concurrency ${cap})`}`);
 	const core = results.filter((r) => levelOf(r) === "core");
 	const notDeclared = results.filter((r) => levelOf(r) === "optional").length;
 	const full = results.filter((r) => r.level === "full");

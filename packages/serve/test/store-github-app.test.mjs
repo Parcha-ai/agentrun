@@ -151,10 +151,12 @@ test("the GitHub API base has one way in, a test runner's option: no api_url (or
   const { GITHUB_FIELDS } = await import("../dist/github.js");
   assert.deepEqual(Object.values(GITHUB_FIELDS).sort(), ["app_id", "client_id", "installations", "private_key", "settings_url", "slug", "webhook_secret"], "the App's fields: no API base among them (settings_url is the App's page on GitHub, shown to its owner)");
   const githubApi = files.filter((f) => /\bgithubApi\b/.test(text[f])).sort();
-  assert.deepEqual(githubApi, ["runner/adapter-run-spec.ts", "runner/cli-run-spec.ts", "runner/github-app.ts", "runner/pr-checkout.ts", "server.ts"], "the spec deps (a test runner's option, which github-app.ts's doc names), the checkout's revoke beside the mint, and the server's own test seam");
+  // run-child-host.ts hands the spec deps' option to a run's own process in its loop's start message, and run-child.ts
+  // puts it back in that process's spec deps: the same option carried, never read from anywhere else.
+  assert.deepEqual(githubApi, ["runner/adapter-run-spec.ts", "runner/cli-run-spec.ts", "runner/github-app.ts", "runner/pr-checkout.ts", "runner/run-child-host.ts", "runner/run-child.ts", "server.ts"], "the spec deps (a test runner's option, which github-app.ts's doc names), carried to a run's process, the checkout's revoke beside the mint, and the server's own test seam");
   // GitHub's site a run's pull request is fetched from (pr-checkout.ts) likewise: the spec deps' test option alone.
   const githubWeb = files.filter((f) => /\bgithubWeb\b/.test(text[f])).sort();
-  assert.deepEqual(githubWeb, ["runner/adapter-run-spec.ts", "runner/pr-checkout.ts"], "the spec deps and the checkout that reads them");
+  assert.deepEqual(githubWeb, ["runner/adapter-run-spec.ts", "runner/pr-checkout.ts", "runner/run-child-host.ts", "runner/run-child.ts"], "the spec deps, carried to a run's process, and the checkout that reads them");
   for (const f of ["cli.ts", "runner/main.ts", "server.ts"]) assert.ok(!/githubWeb|GITHUB_WEB_URL/.test(text[f]), `${f} maps nothing onto it`);
   assert.ok(!/githubApi|GITHUB_API_URL|github-api/.test(text["cli.ts"]), "the CLI maps nothing onto it");
   assert.deepEqual(files.filter((f) => /process\.env\.[A-Z_]*GITHUB|env\[["'][A-Z_]*GITHUB/.test(text[f])), [], "no environment variable names it");
@@ -163,14 +165,15 @@ test("the GitHub API base has one way in, a test runner's option: no api_url (or
   // githubMcpOrigin (test/support.mjs startInProcessRunner); the CLI and the runner's main never name it; no environment
   // variable or flag maps onto it; absent, GitHub's hosted MCP.
   const githubMcpOrigin = files.filter((f) => /\bgithubMcpOrigin\b/.test(text[f])).sort();
-  assert.deepEqual(githubMcpOrigin, ["mcp-servers-store.ts", "mcp-store.ts", "runner/adapter-run-spec.ts", "runner/cli-run-spec.ts", "runner/mcp-claim.ts", "runner/mcp-run.ts", "server.ts"], "the claim step's and registries' seam, the spec deps and mcpForClaim that hand it on, and the server's own test seam");
+  assert.deepEqual(githubMcpOrigin, ["mcp-servers-store.ts", "mcp-store.ts", "runner/adapter-run-spec.ts", "runner/cli-run-spec.ts", "runner/mcp-claim.ts", "runner/mcp-run.ts", "runner/run-child-host.ts", "runner/run-child.ts", "server.ts"], "the claim step's and registries' seam, the spec deps and mcpForClaim that hand it on (to a run's process too), and the server's own test seam");
   for (const f of ["cli.ts", "runner/main.ts"]) assert.ok(!/githubMcpOrigin|GITHUB_MCP_ORIGIN|mcp-origin/i.test(text[f]), `${f} maps nothing onto it`);
   const lines = Object.entries(text).flatMap(([f, body]) => body.split("\n").map((line) => [f, line]));
   assert.deepEqual(lines.filter(([, line]) => /githubMcpOrigin|GITHUB_MCP_ORIGIN/.test(line) && /process\.env|\benv\[|\bargv\b|--[a-z]/.test(line)), [], "no environment variable or flag names it");
   const testDir = new URL("./", import.meta.url).pathname;
   const tests = (await readdir(testDir, { recursive: true })).filter((f) => /\.(mjs|js|ts)$/.test(f));
   const setters = [];
-  for (const f of tests) for (const line of (await readFile(testDir + f, "utf8")).split("\n")) if (/dispatchRunner\(/.test(line) && /githubMcpOrigin/.test(line)) setters.push(f);
+  // A runner's deps given the option: startInProcessRunner's, which its dispatch loop and its run processes' loop share.
+  for (const f of tests) for (const line of (await readFile(testDir + f, "utf8")).split("\n")) if (/\.\.\.\(githubMcpOrigin \? \{ githubMcpOrigin \} : \{\}\)/.test(line)) setters.push(f);
   assert.deepEqual(setters, ["support.mjs"], "its one setter on a runner: the test's startInProcessRunner");
   assert.deepEqual(lines.filter(([, line]) => /dispatchRunner\(/.test(line) && /githubMcpOrigin/.test(line)), [], "no runner the server or the CLI starts sets it");
   assert.match(text["github.ts"], /export const GITHUB_MCP_ORIGIN = "https:\/\/api\.githubcopilot\.com";/);

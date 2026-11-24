@@ -75,7 +75,7 @@ test("an image of this serve passes, by the harnesses this serve really reports 
   const offers = await harnessOffers({ AGENTRUN_SERVE_DATA: data });
   const codex = offers.find((h) => h.id === "codex");
   assert.deepEqual([codex?.available, codex?.installs], [false, "on_first_use"], "with no key this serve offers codex as unavailable, installing on first use");
-  const r = await smoke(t, serving(offers.map(({ default_model: _model, models: _models, free_models: _free, run_memory_mib: _mib, ...offer }) => offer)));
+  const r = await smoke(t, serving(offers.map(({ default_model: _model, models: _models, free_models: _free, run_memory_mib: _mib, label: _label, promises: _promises, ...offer }) => offer)));
   assert.equal(r.code, 0, r.stderr);
   assert.match(r.stdout, /codex: unavailable \(codex needs OPENAI_API_KEY[^\n]*\), installs on first use/);
 });
@@ -91,7 +91,8 @@ test("an image that serves passes: health 200 ok, pi available, claude-agent ins
   // With a key, available, still installing on first use.
   assert.equal((await smoke(t, serving([pi, { id: "claude-agent", available: true, installs: "on_first_use" }, { id: "codex", available: true, installs: "on_first_use" }]))).code, 0);
   assert.match(r.stdout, /codex: unavailable \(No model key is set: set AGENT_MODEL_API_KEY\), installs on first use/);
-  assert.ok(r.calls[0].startsWith("run -d --name agentrun-image-smoke-") && r.calls[0].endsWith(` -p ${LOOPBACK}::7340 -e AGENT_MODEL=m agentrun-server:test`), r.calls[0]);
+  // The smoke's server sends no usage counts (docs/telemetry.md), and the caller's own -e flags come after that one.
+  assert.ok(r.calls[0].startsWith("run -d --name agentrun-image-smoke-") && r.calls[0].endsWith(` -p ${LOOPBACK}::7340 -e AGENTRUN_TELEMETRY=0 -e AGENT_MODEL=m agentrun-server:test`), r.calls[0]);
   assert.match(r.calls.at(-1), /^rm -f -v agentrun-image-smoke-\d+$/, "the container it started is removed");
 });
 

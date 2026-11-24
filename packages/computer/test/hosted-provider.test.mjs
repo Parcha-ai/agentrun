@@ -11,11 +11,11 @@ import { join } from "node:path";
 import test from "node:test";
 import { checkLifetime, computerNameFor as nameOf } from "../dist/index.js";
 import { HostError } from "../dist/host.js";
-import { DAEMON, DESKTOP_GROUPS, deferred, FAKE_DESCRIPTOR, fakeHost, gpuDescriptor, LINUX_GROUPS, NotFound, VERSION } from "./fake-host.mjs";
+import { DAEMON, DESKTOP_GROUPS, deferred, FAKE_DESCRIPTOR, fakeHost, gpuDescriptor, LINUX_GROUPS, NETWORK_DESCRIPTOR, NotFound, VERSION } from "./fake-host.mjs";
 
 const { HostedProvider } = await import("../dist/hosted/provider.js");
-const { hostedCommands } = await import("../dist/hosted/scripts.js");
-const { WINDOW_MANAGER } = await import("../dist/desktop.js");
+const { AGENTRUN_DIAL, dialLaunch, hostedCommands, initFlags, quote } = await import("../dist/hosted/scripts.js");
+const VALUES = await import("../dist/hosted/values.js");
 
 const COMPUTER = "agentrun.computer";
 const NAME = "agentrun.computer.name";
@@ -84,7 +84,7 @@ test("capabilities come from the host's descriptor (network, mounts, the kind's 
 		groups: DESKTOP_GROUPS,
 		maxLifetimeMs: 24 * HOUR,
 		release: ["delete"],
-		mount: ["archil"],
+		mount: ["archil", "sync"],
 		vendorAgentPorts: [7777],
 	});
 	assert.deepEqual(setup().provider.capabilities().groups, LINUX_GROUPS, "linux by default");
@@ -95,9 +95,13 @@ test("capabilities come from the host's descriptor (network, mounts, the kind's 
 	assert.equal(setup({}, { timer: "none" }).provider.extend, undefined, "no extend where the host has none");
 	assert.throws(() => setup({ maxLifetimeMs: 25 * HOUR }), /at most 86400000 ms, the longest Fakehost keeps a computer/);
 	assert.throws(() => setup({ daemonUser: "0:0" }), /root or in root's group/);
-	// The descriptor is the network's and the mounts' one source: the host's facts name neither.
+	// The descriptor is the network's and the mounts' one source: the host's facts name neither. A synced folder is derived
+	// from a configuration with exec and files, unless the descriptor says why not.
 	const unmounted = setup({ descriptor: { ...FAKE_DESCRIPTOR, mounts: [], unmounted: { archil: "Archil mounts don't work on Fakehost" } } }).provider;
-	assert.deepEqual(unmounted.capabilities().mount, []);
+	assert.deepEqual(unmounted.capabilities().mount, ["sync"]);
+	const unsynced = setup({ descriptor: { ...FAKE_DESCRIPTOR, mounts: [], unmounted: { sync: "no /workspace on Fakehost" } } }).provider;
+	assert.deepEqual(unsynced.capabilities().mount, []);
+	assert.deepEqual(unsynced.check({ ...SPEC, mount: { kind: "sync" } }), [{ field: "mount", message: "no /workspace on Fakehost" }]);
 	assert.match(unmounted.check({ ...SPEC, mount: { kind: "archil", disk: "d", region: "r", folder: "f", token: "t" } })[0].message, /Archil mounts don't work on Fakehost/);
 	assert.deepEqual(setup(WITH_GPU).provider.capabilities().gpu, { types: ["H100"], max: 1 }, "the kind's GPUs, from its configuration");
 	assert.equal(setup({ ...WITH_GPU, kind: "desktop" }).provider.capabilities().gpu, undefined, "a desktop configuration offers none");
@@ -293,11 +297,116 @@ test("the root-only script, run by sh: group and other write go from each path a
 	}
 });
 
+test("start, run by sh under umask 022: init's log is root's alone, 0600", () => {
+	const root = mkdtempSync(join(tmpdir(), "computer-start-"));
+	try {
+		// Not root here: start reaches root through sudo -n, which this stand-in runs as it is.
+		const bin = join(root, "bin");
+		mkdirSync(bin);
+		writeFileSync(join(bin, "sudo"), '#!/bin/sh\n[ "$1" = -n ] && shift\nexec "$@"\n', { mode: 0o755 });
+		const log = join(root, "init.log");
+		const [, , script, name] = hostedCommands().start;
+		const ran = spawnSync("sh", ["-c", 'umask 022; exec sh -c "$@"', "sh", script, name, log, "true"], { env: { PATH: `${bin}:${process.env.PATH}` }, encoding: "utf8" });
+		assert.equal(ran.status, 0, ran.stdout + ran.stderr);
+		assert.equal(statSync(log).mode & 0o777, 0o600);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("dialLaunch, run by sh: under umask 077, the root-only step when rootOnly names paths, then the sockets step, then agentrun-dial, the URL its quoted assignment when given; a step that fails never reaches agentrun-dial", () => {
+	const root = mkdtempSync(join(tmpdir(), "computer-dial-launch-"));
+	try {
+		// Not root here: the steps reach root through sudo -n, which this stand-in runs as it is.
+		const bin = join(root, "bin");
+		mkdirSync(bin);
+		writeFileSync(join(bin, "sudo"), '#!/bin/sh\n[ "$1" = -n ] && shift\nexec "$@"\n', { mode: 0o755 });
+		const dial = join(root, "agentrun-dial");
+		writeFileSync(dial, '#!/bin/sh\necho "dialed ${AGENTRUN_ATTACH_URL-unset} $(umask)"\n', { mode: 0o755 });
+		const local = join(root, "local");
+		mkdirSync(local);
+		const bus = join(root, "dbus-Y8OW6E3FDx");
+		execFileSync("python3", ["-I", "-c", "import socket, sys\ns = socket.socket(socket.AF_UNIX)\ns.bind(sys.argv[1])", bus]);
+		const linked = join(root, "linked");
+		symlinkSync(local, linked);
+		const ATTACH = "wss://agentrun.example/v2/computers/attach?a=1&b='2' $HOME";
+		// The line as dialLaunch gives it, with the box's agentrun-dial and /tmp's buses pointed here: nothing of this host's is touched.
+		const run = (options, { path = bin, env = {} } = {}) => {
+			const line = dialLaunch(options);
+			assert.ok(line.endsWith(` exec ${AGENTRUN_DIAL}`), line);
+			assert.equal(line.split(quote("/tmp/dbus-*")).length, 2, `one sockets step: ${line}`);
+			const here = `${line.replace(quote("/tmp/dbus-*"), quote(`${root}/dbus-*`)).slice(0, -AGENTRUN_DIAL.length)}${dial}`;
+			for (const open of [local, bus]) chmodSync(open, 0o777);
+			return spawnSync("sh", ["-c", `umask 022; ${here}`], { env: { PATH: `${path}:${process.env.PATH}`, ...env }, encoding: "utf8" });
+		};
+
+		const ran = run({ rootOnly: [local], attach: ATTACH });
+		assert.equal(ran.status, 0, ran.stdout + ran.stderr);
+		assert.equal(ran.stdout, `closed ${bus}\ndialed ${ATTACH} 0077\n`, "the buses closed, then agentrun-dial with the URL as given, under umask 077");
+
+		assert.equal(dialLaunch({ rootOnly: [] }), dialLaunch({}), "no paths: no root-only step");
+		assert.doesNotMatch(dialLaunch({}), /root-only|AGENTRUN_ATTACH_URL/);
+		const inherited = run({}, { env: { AGENTRUN_ATTACH_URL: "from-the-env" } });
+		assert.equal(inherited.status, 0, inherited.stdout + inherited.stderr);
+		assert.equal(inherited.stdout, `closed ${bus}\ndialed from-the-env 0077\n`, "no attach: agentrun-dial reads the URL from the env it inherits");
+
+		const refused = run({ rootOnly: [linked], attach: ATTACH });
+		assert.equal(refused.status, 6, refused.stdout + refused.stderr);
+		assert.match(refused.stdout, /is a symbolic link/);
+		assert.doesNotMatch(refused.stdout, /closed|dialed/, "a root-only step that fails runs neither the sockets step nor agentrun-dial");
+
+		// A chmod that fails: the sockets step fails, and agentrun-dial never starts.
+		const failing = join(root, "failing");
+		mkdirSync(failing);
+		writeFileSync(join(failing, "chmod"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+		const shut = run({ attach: ATTACH }, { path: `${failing}:${bin}` });
+		assert.equal(shut.status, 1, shut.stdout + shut.stderr);
+		assert.equal(shut.stdout, `failed ${bus}\n`, "a sockets step that fails never reaches agentrun-dial");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
 test("a host with no file API gets the daemon through exec's stdin", async () => {
 	const { provider, fake } = setup({}, { fileApi: false });
 	made(await create(provider));
 	assert.deepEqual(fake.uploads.map(({ through }) => through), ["exec"]);
 	assert.deepEqual(only(fake).daemon.bytes, DAEMON_BYTES);
+});
+
+test("create answers with what the vendor's read of the running machine says it was given (resources), and with none where it says none", async () => {
+	const { provider, fake } = setup();
+	const given = { cpus: 2, memoryMb: 4096, diskGb: 10 };
+	const read = fake.host.get.bind(fake.host);
+	fake.host.get = async (id, ctx) => {
+		const machine = await read(id, ctx);
+		return machine && { ...machine, resources: given };
+	};
+	assert.deepEqual(made(await create(provider)).resources, given);
+	fake.host.get = read;
+	assert.equal(Object.hasOwn(made(await create(provider)), "resources"), false, "none said: none answered, never what was asked");
+});
+
+test("a retried create, and another instance's create of the same request, answer the computer's resources too, read from the vendor (#3338 review)", async () => {
+	const { provider, fake } = setup();
+	const given = { cpus: 4, memoryMb: 8192 };
+	const read = fake.host.get.bind(fake.host);
+	fake.host.get = async (id, ctx) => {
+		const machine = await read(id, ctx);
+		return machine && { ...machine, resources: given };
+	};
+	const first = made(await provider.create(SPEC, { requestId: "same-request" }));
+	assert.deepEqual(first.resources, given);
+	// The same request again on this provider: the computer it made is found by its name, not made again.
+	const again = made(await provider.create(SPEC, { requestId: "same-request" }));
+	assert.equal(again.id, first.id);
+	assert.deepEqual(again.resources, given, "a retry answers the vendor's figures");
+	// Another instance over the same vendor adopts it.
+	const other = new HostedProvider(fake.host, { daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
+	const adopted = made(await other.create(SPEC, { requestId: "same-request" }));
+	assert.equal(adopted.id, first.id);
+	assert.deepEqual(adopted.resources, given, "an adopted computer answers the vendor's figures");
+	assert.equal(fake.machines.size, 1, "one machine");
 });
 
 test("create waits while the machine starts, and until the listing shows it twice", async () => {
@@ -322,6 +431,91 @@ test("create's listing wait holds a stability window: the polls that show the ma
 	// The name's listing, the convergence read before and after, and polls 5 ms apart until 60 ms passed: well over two.
 	assert.ok(lists >= 6, `the wait polled on until the window passed (${lists} listings)`);
 	assert.throws(() => setup({ timeouts: { ...TIMEOUTS, listedStableMs: -1 } }), /timeouts\.listedStableMs must be a whole number of ms 0 or more/);
+});
+
+test("create's listing wait backs off from 150 ms to the host's pollMs: a vendor that lists a machine 10 s late costs a handful of listings", async (t) => {
+	t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+	const fake = fakeHost();
+	const listedAt = Date.now() + 10_000;
+	let lists = 0;
+	// The vendor's listing leaves every machine out for its first 10 s.
+	const host = { ...fake.host, list: async (labels, ctx) => (++lists, Date.now() < listedAt ? [] : fake.host.list(labels, ctx)) };
+	const provider = new HostedProvider(host, { daemonPath: DAEMON_PATH, timeouts: { ...TIMEOUTS, pollMs: 2_000, listedMs: 30_000, listedStableMs: 1_000 } });
+	let answer;
+	create(provider).then((result) => (answer = result));
+	while (answer === undefined && Date.now() < listedAt + 30_000) {
+		for (let i = 0; i < 5; i++) await new Promise((done) => setImmediate(done));
+		t.mock.timers.tick(10);
+	}
+	const waited = Date.now() - listedAt + 10_000;
+	t.mock.timers.reset();
+	made(answer);
+	// Two reads around the vendor's create, then the wait's, 150, 300, 600, 1200 and 2000 ms apart: eight to the 10 s
+	// mark and two that show it, 13 in all. At 150 ms flat, 78.
+	assert.ok(lists <= 14,`the wait backed off to pollMs (${lists} listings in ${waited / 1000} s)`);
+});
+
+// A vendor's listing may trail its create past listedMs: Daytona's GET /sandbox is eventually consistent (an index the
+// API never writes itself), and on a hosted deployment it left new sandboxes unlisted for 15 s, each started,
+// dialed and checked from inside, and each deleted for it ("the computer was not listed within 15 s of its creation").
+test("a computer the listing never shows within listedMs, which a read by its id finds running with its labels, is kept and answered, with a note naming the labels, the machine and the wait", async () => {
+	const fake = fakeHost();
+	let lists = 0;
+	const host = { ...fake.host, list: async () => (++lists, []) };
+	const provider = new HostedProvider(host, { daemonPath: DAEMON_PATH, timeouts: { ...TIMEOUTS, listedMs: 200 } });
+	const ref = made(await create(provider));
+	const m = only(fake);
+	assert.equal(m.deleted, false, "the machine create started and checked is not deleted for a listing that trails it");
+	assert.equal(ref.id, m.id);
+	assert.ok(!fake.calls.some(([name]) => name === "delete"), "no delete");
+	const note = ref.notes?.find((line) => line.startsWith("the listing by the labels"));
+	assert.ok(note, `a note says the listing trailed: ${JSON.stringify(ref.notes)}`);
+	assert.match(note, new RegExp(`^the listing by the labels ${COMPUTER}=1, ${NAME.replaceAll(".", "\\.")}=${ref.name} did not show ${ref.name} \\(machine ${ref.id}\\) on 2 polls in a row within 0\\.2 s \\(\\d+ polls in [\\d.]+ s, 0 of them showed it\\); a read by its id finds it running with its labels, so it is kept`));
+	assert.ok(lists >= 3, `the wait polled the listing (${lists})`);
+});
+
+test("a retry of the request whose computer create kept unlisted finds that computer by its id while the listing still leaves it out, and never asks the vendor for a second; once released, a retry answers that it ended", async () => {
+	const fake = fakeHost();
+	const host = { ...fake.host, list: async () => [] };
+	const provider = new HostedProvider(host, { daemonPath: DAEMON_PATH, timeouts: { ...TIMEOUTS, listedMs: 100 } });
+	const first = made(await provider.create(SPEC, { requestId: "kept-unlisted" }));
+	const again = made(await provider.create(SPEC, { requestId: "kept-unlisted" }));
+	assert.deepEqual({ id: again.id, name: again.name }, { id: first.id, name: first.name }, "the retry answers the kept computer");
+	assert.equal(fake.calls.filter(([name]) => name === "create").length, 1, "one vendor create");
+	assert.equal(fake.machines.size, 1, "one machine");
+	made(await provider.release({ id: first.id, name: first.name }, "delete"));
+	const after = await provider.create(SPEC, { requestId: "kept-unlisted" });
+	assert.equal(after.ok, false, "a retry after the release never answers the deleted computer");
+	assert.equal(after.error.code, "exists");
+	assert.match(after.error.message, /was made for this request and has ended/);
+});
+
+test("a retry whose read of the computer create kept unlisted fails answers that failure, and never asks the vendor for a second; a later retry whose read answers finds it", async () => {
+	const fake = fakeHost();
+	let failing = false;
+	const host = { ...fake.host, list: async () => [], get: async (id, ctx) => { if (failing) throw new HostError("vendor", "503 from the vendor"); return fake.host.get(id, ctx); } };
+	const provider = new HostedProvider(host, { daemonPath: DAEMON_PATH, timeouts: { ...TIMEOUTS, listedMs: 100 } });
+	const first = made(await provider.create(SPEC, { requestId: "kept-read-fails" }));
+	failing = true;
+	const failed = await provider.create(SPEC, { requestId: "kept-read-fails" });
+	assert.equal(failed.ok, false);
+	assert.match(failed.error.message, new RegExp(`${first.name} \\(machine ${first.id}\\), which create kept while the listing left it out, could not be read, so no second computer is made: .*503 from the vendor`));
+	assert.equal(fake.calls.filter(([name]) => name === "create").length, 1, "no second vendor create");
+	failing = false;
+	assert.equal(made(await provider.create(SPEC, { requestId: "kept-read-fails" })).id, first.id, "the entry stayed: a retry that reads it answers it");
+});
+
+test("a computer the listing never shows within listedMs, which a read by its id finds not running, fails create as a timeout naming the labels, the machine, the polls and the wait, and is deleted", async () => {
+	const fake = fakeHost();
+	let lists = 0;
+	// The name's listing and the convergence read come first; from the wait's own polls on, the vendor reads it stopped.
+	const host = { ...fake.host, list: async () => (++lists, []), get: async (id, ctx) => { const got = await fake.host.get(id, ctx); return lists > 2 && got ? { ...got, state: "stopped" } : got; } };
+	const provider = new HostedProvider(host, { daemonPath: DAEMON_PATH, timeouts: { ...TIMEOUTS, listedMs: 200 } });
+	const failed = await create(provider);
+	assert.equal(failed.ok, false);
+	assert.equal(failed.error.code, "timeout");
+	assert.match(failed.error.message, new RegExp(`the listing by the labels ${COMPUTER}=1, ${NAME.replaceAll(".", "\\.")}=computer-[0-9a-f]{12} did not show computer-[0-9a-f]{12} \\(machine [^)]+\\) on 2 polls in a row within 0\\.2 s \\(\\d+ polls in [\\d.]+ s, 0 of them showed it\\); a read by its id finds it stopped`));
+	assert.equal(only(fake).deleted, true, "a computer that is not running is deleted, as before");
 });
 
 test("idempotent create: a retry of one request returns the computer the first made, and never makes a second", async () => {
@@ -501,6 +695,27 @@ test("a create the host refused makes nothing and deletes nothing", async () => 
 	assert.equal(refused.error?.code, "invalid");
 	assert.equal(fake.machines.size, 0);
 	assert.deepEqual(fake.events.filter(({ what }) => what === "delete"), []);
+});
+
+test("a named create the vendor refuses as exists (a duplicate name, 409) adopts the machine the name's listing finds, as a retry does; with none listed, the refusal stands", async () => {
+	const fake = fakeHost();
+	const name = nameOf("taken");
+	// Another instance's create of the request made it, and the first listing by the name lags it.
+	const other = fake.add({ labels: { [COMPUTER]: "1", [NAME]: name, [DEADLINE]: new Date(Date.now() + 600_000).toISOString(), [MAX]: new Date(Date.now() + HOUR).toISOString(), "agentrun.computer.image": "img" } });
+	other.daemon = { path: DAEMON, bytes: DAEMON_BYTES };
+	other.init = { deadline: other.labels[DEADLINE], user: "2510:2510", display: "", max: other.labels[MAX] };
+	other.hidden = 1;
+	const taken = { ...fake.host, create: async () => Promise.reject(new HostError("exists", `POST /v1/machines: 409 the name ${name} is taken`)) };
+	const provider = new HostedProvider(taken, { daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
+	const adopted = made(await provider.create(SPEC, { requestId: "taken" }));
+	assert.equal(adopted.id, other.id, "the name's machine, adopted");
+	assert.equal(other.deleted, false);
+	// No machine carries the name: the vendor's words stand, and nothing is swept.
+	const lone = fakeHost();
+	const refused = await new HostedProvider({ ...lone.host, create: taken.create }, { daemonPath: DAEMON_PATH, timeouts: TIMEOUTS }).create(SPEC, { requestId: "taken-alone" });
+	assert.equal(refused.error?.code, "exists");
+	assert.match(refused.error.message, /409 the name computer-[0-9a-f]{12} is taken/);
+	assert.deepEqual(lone.calls.filter(([what]) => what === "delete"), []);
 });
 
 test("a create whose answer is lost or broken is swept by its name: the machine it made is deleted and read back gone", async () => {
@@ -765,6 +980,20 @@ test("release waits until get answers none: a machine the vendor still reads gon
 	const stuck = await slow.provider.release(made(await create(slow.provider)), "delete");
 	assert.equal(stuck.error?.code, "timeout", "a machine read gone and never none is still there at goneMs");
 	assert.match(stuck.error.message, /read it gone/);
+});
+
+test("a vendor's record of a deleted machine (a tombstone: Hyperbrowser's closed, Blaxel's TERMINATED) is undefined from get and left out of list, so release ends at once; read gone, it holds release to goneMs", async () => {
+	// The vendor keeps the record for longer than goneMs. A host that reads it gone (lingers, state gone):
+	const kept = setup({}, { lingers: { reads: 10_000, lists: 10_000, state: "gone" } });
+	const waited = await kept.provider.release(made(await create(kept.provider)), "delete");
+	assert.equal(waited.error?.code, "timeout", "a tombstone read gone waits out goneMs on every delete");
+	// A host that reads it as the vendor no longer having the machine (the fake's get and list after a delete):
+	const { provider, fake } = setup();
+	const ref = made(await create(provider));
+	assert.deepEqual(await provider.release(ref, "delete"), { ok: true, value: undefined });
+	const gets = fake.calls.slice(fake.calls.findIndex(([name]) => name === "delete")).filter(([name]) => name === "get");
+	assert.equal(gets.length, 2, "two reads of none, twice running, end the wait");
+	assert.deepEqual(made(await provider.list({})), []);
 });
 
 test("release never touches a machine that is not this provider's, and refuses stop and detach in words", async () => {
@@ -1032,7 +1261,7 @@ test("network() reads the network from inside (the probe) and refuses any change
 	assert.equal(made(await provider.network(ref)), "none");
 	assert.ok(probes() > before, "the probe from inside is the network's truth, with no vendor read-back");
 	only(fake).box.reached = ["1.1.1.1:443"];
-	assert.match(made(await provider.network(ref)).other, /created none, yet from inside an answer came back from 1\.1\.1\.1:443/, "a probe that reaches out is no network none");
+	assert.match(made(await provider.network(ref)).other, /created none, yet from inside: .*an answer from 1\.1\.1\.1:443/, "a probe that reaches out is no network none");
 	only(fake).box.reached = [];
 	assert.equal(made(await provider.network(ref, "none")), "none", "the network it already has answers ok");
 	for (const policy of ["open", { allow: ["example.com"] }]) {
@@ -1040,6 +1269,205 @@ test("network() reads the network from inside (the probe) and refuses any change
 		assert.equal(refused.error?.code, "refused");
 		assert.match(refused.error.message, /fixed at create/);
 	}
+});
+
+// --- network open and a list: init's egress proxy ---
+
+const NETWORK_LABEL = "agentrun.computer.network";
+const POLICY = "/opt/agentrun/egress/policy";
+const RELAY = "127.0.0.1:3128";
+/** The fake with every network form declared, as Agent37, E2B, Modal and Daytona declare them. */
+const OPEN = { descriptor: NETWORK_DESCRIPTOR };
+const LIST = { allow: ["Example.com", "93.184.215.0/24"] };
+const policyReads = (fake) => fake.requests.filter(({ method, params }) => method === "files.read" && params.path === POLICY).length;
+
+test("a descriptor's network forms are what the adapter declares and takes; a form it does not declare is refused at check() in words naming the provider and the choices, never widened or narrowed", () => {
+	const open = setup(OPEN).provider;
+	assert.deepEqual(open.capabilities().network, ["none", "open", "allow"]);
+	assert.deepEqual(open.capabilities().allow, { domains: { max: 256, ports: [80, 443] }, cidrs: { max: 256, ports: [80, 443] }, mixed: true }, "a list's bounds: Docker's, ports 80 and 443");
+	for (const network of ["none", "open", LIST]) assert.deepEqual(open.check({ ...SPEC, network }), [], JSON.stringify(network));
+	const bad = open.check({ ...SPEC, network: { allow: ["*.com.", "example.com"] } });
+	assert.deepEqual(bad.map(({ field }) => field), ["network"], "a malformed list is refused, in the list's own words");
+	assert.match(bad[0].message, /Fakehost's allowlist|not a name|wildcard|entry/i);
+	const words = (descriptor, network) => setup({ descriptor }).provider.check({ ...SPEC, network }).map(({ field, message }) => `${field}: ${message}`);
+	assert.deepEqual(words(FAKE_DESCRIPTOR, "open"), ["network: Fakehost can't open the network; choose none"]);
+	assert.deepEqual(words(FAKE_DESCRIPTOR, LIST), ["network: Fakehost can't limit the network to a list; choose none"]);
+	const noList = { ...FAKE_DESCRIPTOR, network: ["none", "open"] };
+	assert.deepEqual(words(noList, LIST), ["network: Fakehost can't limit the network to a list; choose none or open"], "the lead's words");
+	assert.equal(setup({ descriptor: noList }).provider.capabilities().allow, undefined, "no list's bounds where no list is declared");
+	assert.deepEqual(words(noList, "open"), []);
+	assert.deepEqual(words(NETWORK_DESCRIPTOR, "wide"), ["network: network is required: none, open or a list ({ allow: [names or CIDRs] })"]);
+	// The proxy runs as nobody, so the programs' user may not be nobody where it runs: then they could signal it.
+	const users = setup(OPEN, { facts: USER_FACTS }).provider;
+	for (const user of ["65534", "1000:65534"]) {
+		assert.deepEqual(users.check({ ...SPEC, network: "open", user }).map(({ field }) => field), ["user"], user);
+		assert.deepEqual(users.check({ ...SPEC, user }), [], `${user} under none: no proxy`);
+	}
+});
+
+test("create under open: the machine is asked for egress, carries the form in a label, init is given --network open; the read-back finds init's relay answering, nothing answering directly, and the proxy's policy; list, attach and network() read open back", async () => {
+	const { provider, fake } = setup(OPEN);
+	const ref = made(await create(provider, { ...SPEC, network: "open" }));
+	const m = only(fake);
+	assert.equal(m.request.egress, true, "the machine gets the vendor's egress, for the proxy");
+	assert.equal(m.request.labels[NETWORK_LABEL], "open");
+	assert.equal(m.init.network, "open", "init starts the proxy for open");
+	const start = fake.events.find(({ machine, what }) => machine === m.id && what === "run start");
+	assert.ok(start, "a child host's start");
+	assert.ok(policyReads(fake) >= 1, "the policy beside the proxy's socket is read back");
+	const probe = fake.requests.find(({ method, params }) => method === "exec.run" && params.argv[1] === "probe" && params.argv.includes("--connect"));
+	assert.ok(probe.params.argv.includes(RELAY), "the probe tries init's relay too");
+	assert.deepEqual(ref.notes, [INSTALLER_NOTE]);
+	const [info] = made(await provider.list({}));
+	assert.equal(info.network, "open");
+	assert.equal(made(await provider.attach({ id: ref.id })).spec.network, "open");
+	assert.equal(made(await provider.network(ref)), "open");
+	assert.equal(made(await provider.network(ref, "open")), "open", "the network it has answers ok");
+	for (const policy of ["none", LIST]) {
+		const refused = await provider.network(ref, policy);
+		assert.equal(refused.error?.code, "refused");
+		assert.match(refused.error.message, /fixed at create/);
+	}
+	// From inside, against what the label records: each is drift, and network() says so.
+	m.box.reached = ["1.1.1.1:443"];
+	assert.match(made(await provider.network(ref)).other, /created open, yet from inside: .*direct answer from 1\.1\.1\.1:443/);
+	m.box.reached = [];
+	m.box.relay = "down";
+	assert.match(made(await provider.network(ref)).other, /relay at 127\.0\.0\.1:3128 did not answer/);
+	delete m.box.relay;
+	m.box.policy = "allow:example.com";
+	assert.match(made(await provider.network(ref)).other, /the egress proxy serves "allow:example\.com"/);
+	delete m.box.policy;
+	m.box.interfaces = ["lo", "eth0"];
+	assert.match(made(await provider.network(ref)).other, /eth0/, "the netns is lo alone under open too");
+});
+
+test("create under a list: the form, normalized, goes to the label and to init; list, attach and network() read the list back; a retry with another list is refused as exists", async () => {
+	const { provider, fake } = setup(OPEN);
+	const spec = { ...SPEC, network: LIST };
+	const ref = made(await provider.create(spec, { requestId: "listed" }));
+	const m = only(fake);
+	assert.equal(m.request.egress, true);
+	assert.equal(m.request.labels[NETWORK_LABEL], "allow:example.com,93.184.215.0/24");
+	assert.equal(m.init.network, "allow:example.com,93.184.215.0/24");
+	const read = { allow: ["example.com", "93.184.215.0/24"] };
+	assert.deepEqual(made(await provider.list({})).map((info) => info.network), [read]);
+	assert.deepEqual(made(await provider.attach({ id: ref.id })).spec.network, read);
+	assert.deepEqual(made(await provider.network(ref)), read);
+	assert.deepEqual(made(await provider.network(ref, LIST)), read, "the same list, as given, answers ok");
+	assert.equal((await provider.network(ref, { allow: ["example.org"] })).error?.code, "refused");
+	assert.equal(made(await provider.create(spec, { requestId: "listed" })).id, ref.id, "a retry of the same list finds it");
+	const other = await provider.create({ ...SPEC, network: { allow: ["example.org"] } }, { requestId: "listed" });
+	assert.equal(other.error?.code, "exists", other.error?.message);
+	assert.equal(fake.machines.size, 1);
+});
+
+test("a computer whose network does not read back as created is refused at create and deleted: a direct answer, init's relay down, the proxy serving another form", async () => {
+	for (const [box, words] of [
+		[{ reached: ["1.1.1.1:443"] }, /declared open through the egress proxy alone, read back a direct answer from 1\.1\.1\.1:443/],
+		[{ relay: "down" }, /init's relay at 127\.0\.0\.1:3128 did not answer from inside/],
+		[{ policy: "allow:example.com" }, /declared open, the egress proxy serves "allow:example\.com"/],
+	]) {
+		const { provider, fake } = setup(OPEN, { box });
+		const refused = await create(provider, { ...SPEC, network: "open" });
+		assert.equal(refused.error?.code, "refused", JSON.stringify(box));
+		assert.match(refused.error.message, words);
+		await nothingLeft(fake, JSON.stringify(box));
+	}
+});
+
+test("create under none, with every form declared, is as before: no egress, no network label, no --network for init, no proxy policy read", async () => {
+	const { provider, fake } = setup(OPEN);
+	const ref = made(await create(provider));
+	const m = only(fake);
+	assert.equal(m.request.egress, false);
+	assert.equal(m.request.labels[NETWORK_LABEL], undefined);
+	assert.equal(m.init.network, "", "no proxy");
+	assert.equal(policyReads(fake), 0);
+	const probe = fake.requests.find(({ method, params }) => method === "exec.run" && params.argv[1] === "probe" && params.argv.includes("--connect"));
+	assert.ok(!probe.params.argv.includes(RELAY), "the probe tries the configured targets alone");
+	assert.deepEqual(ref.notes, [INSTALLER_NOTE, ACCEPTED_NOTE]);
+	assert.equal(made(await provider.network(ref)), "none");
+});
+
+test("pid1 under open: the entrypoint gives init --network open after its other flags, and the read-back holds", async () => {
+	const { provider, fake } = setup(OPEN, { facts: { daemon: "pid1" } });
+	made(await create(provider, { ...SPEC, network: "open" }));
+	const m = only(fake);
+	assert.equal(m.request.egress, true);
+	assert.deepEqual(m.request.command.slice(-2), ["--network", "open"]);
+	assert.equal(m.init.network, "open");
+	const plain = setup(OPEN, { facts: { daemon: "pid1" } });
+	made(await create(plain.provider));
+	assert.ok(!only(plain.fake).request.command.includes("--network"), "none: no --network");
+});
+
+test("Archil under open and under none: the root still gets egress and mounts before init starts, and init gets the network form alone under open", async () => {
+	for (const network of ["none", "open"]) {
+		const { provider, fake } = setup(OPEN, { box: { reached: [] } });
+		const ref = made(await create(provider, { ...ARCHIL_SPEC, network }));
+		const m = only(fake);
+		assert.equal(m.request.egress, true, `${network}: the root reaches Archil`);
+		const runs = runsOf(fake, m.id);
+		assert.ok(runs.indexOf("run mount") < runs.indexOf("run serve") && runs.indexOf("run serve") < runs.indexOf("run start"), runs.join(", "));
+		assert.equal(m.init.network, network === "open" ? "open" : "");
+		const [info] = made(await provider.list({ "agentrun.run": "r1" }));
+		assert.equal(info.network, network);
+		assert.equal(info.mount.kind, "archil");
+		assert.equal(made(await provider.network(ref)), network);
+	}
+});
+
+test("the pid1 entrypoint, run by sh, gives init --network and the form where one is given, and nothing where none is", () => {
+	const root = mkdtempSync(join(tmpdir(), "computer-entrypoint-"));
+	try {
+		const home = join(root, "work");
+		mkdirSync(home);
+		const daemon = join(root, "computerd");
+		writeFileSync(daemon, '#!/bin/sh\necho "args=$*"\n');
+		chmodSync(daemon, 0o755);
+		writeFileSync(`${daemon}.installed`, "n0nce\n");
+		const run = (network) => {
+			const words = [...hostedCommands({ deadline: "2030-01-01T00:00:00.000Z", atomic: true, waitS: 5, nonce: "n0nce", network }).entrypoint];
+			words[4] = daemon;
+			words[6] = home;
+			return execFileSync(words[0], words.slice(1), { cwd: "/", env: { PATH: process.env.PATH }, encoding: "utf8" }).trim();
+		};
+		const base = "args=init --deadline 2030-01-01T00:00:00.000Z --user 2510:2510 --own-network";
+		assert.equal(run("open"), `${base} --network open`);
+		assert.equal(run("allow:example.com,93.184.215.0/24"), `${base} --network allow:example.com,93.184.215.0/24`);
+		assert.equal(run(""), base);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("init's flags carry --window-manager last where asked, as the entrypoint and a dial machine's AGENTRUN_INIT_ARGS give them, and the child's start as its ninth word", () => {
+	const deadline = "2030-01-01T00:00:00.000Z";
+	assert.deepEqual(initFlags({ deadline, windowManager: true }), ["--deadline", deadline, "--user", "2510:2510", "--own-network", "--window-manager"]);
+	assert.deepEqual(initFlags({ deadline, network: "open", windowManager: true }).slice(-3), ["--network", "open", "--window-manager"]);
+	assert.ok(!initFlags({ deadline }).includes("--window-manager"));
+	assert.deepEqual(hostedCommands({ deadline, display: ":0", windowManager: true }).entrypoint.slice(-1), ["--window-manager"]);
+	const { start } = hostedCommands({ deadline, display: ":0", windowManager: true });
+	assert.deepEqual(start.slice(start.indexOf(DAEMON) + 5), [":0", "", "", "1"]);
+	const init = start.find((word) => word.startsWith("# agentrun-computer: init"));
+	assert.match(init, /g=\$\{9-\}/);
+	assert.match(init, /\$\{g:\+--window-manager\}/, "init takes it as --window-manager");
+});
+
+test("a child's start gives init the network form as its eighth word, after the display and the maximum, empty where not given", () => {
+	const at = (options) => {
+		const { start } = hostedCommands({ deadline: "2030-01-01T00:00:00.000Z", ...options });
+		// start: [..., INIT, "sh", d, t, w, h, r, v?, m?, n?]: the words after the daemon's own, home and the socket's folder.
+		return start.slice(start.indexOf(DAEMON) + 5);
+	};
+	assert.deepEqual(at({ network: "open" }), ["", "", "open"]);
+	assert.deepEqual(at({ display: ":0", maxDeadline: "2030-01-02T00:00:00.000Z", network: "open" }), [":0", "2030-01-02T00:00:00.000Z", "open"]);
+	assert.deepEqual(at({ display: ":0" }), [":0", ""], "no form, no eighth word");
+	assert.deepEqual(at({}), []);
+	const init = hostedCommands().start.find((word) => word.startsWith("# agentrun-computer: init"));
+	assert.match(init, /n=\$\{8-\}/);
+	assert.match(init, /\$\{n:\+--network "\$n"\}/, "init takes it as --network");
 });
 
 test("testConnection lists by the adapter's label and counts this provider's machines, making nothing", async () => {
@@ -1166,6 +1594,122 @@ test("facts.labels.bytes: the adapter prices the caller's labels with its own at
 	assert.match(gpu.provider.check({ ...SPEC, gpu: H100, labels: { a: "" } })[0].message, new RegExp(`${GPU_LABEL} 27`));
 });
 
+/**
+ * A vendor whose labels are tight (a cap on their count, short values), its host declaring facts.labels.packed and
+ * storing, reading and listing labels as the adapter gives them: it never packs. Its create refuses labels past the
+ * room, as the vendor would.
+ */
+function packedHost(fake, room) {
+	return {
+		...fake.host,
+		facts: { ...fake.host.facts, labels: room },
+		/** Each create's request, as the adapter gave it. */
+		requests: [],
+		async create(req, ctx) {
+			this.requests.push(req);
+			const entries = Object.entries(req.labels);
+			if (room.count !== undefined && entries.length > room.count) throw new Error(`400: a machine takes at most ${room.count} tags, not ${entries.length}`);
+			const long = entries.find(([, value]) => Buffer.byteLength(value) > (room.packed.valueBytes ?? Number.POSITIVE_INFINITY));
+			if (long) throw new Error(`400: the tag ${long[0]} is longer than ${room.packed.valueBytes} bytes`);
+			return fake.host.create(req, ctx);
+		},
+	};
+}
+
+test("facts.labels.packed is the adapter's to keep: a host that declares it and never packs (it stores and lists labels as given) passes the provider's Core cases in 5 tags of 256 bytes, and leaves nothing behind", async () => {
+	const { conformanceCases, runConformance } = await import("../dist/conformance/index.js");
+	const cases = conformanceCases.filter((one) => one.group === "provider" && one.level === "core" && one.id !== "provider.deadline");
+	const host = packedHost(fakeHost(), { count: 5, packed: { valueBytes: 256 } });
+	const report = await runConformance(new HostedProvider(host, { daemonPath: DAEMON_PATH, timeouts: TIMEOUTS }), { image: "img", cases, caseTimeoutMs: 20_000, cleanupTimeoutMs: 5_000 });
+	assert.ok(report.results.length >= 3, report.results.map(({ id }) => id).join(" "));
+	assert.deepEqual(
+		report.results.filter(({ status }) => status !== "pass").map(({ id, status, reason }) => `${id} ${status}: ${reason}`),
+		[],
+	);
+	assert.ok(host.requests.length > 0 && host.requests.every((req) => Object.keys(req.labels).length <= 5), "every create gave the host labels that fit its 5 tags");
+	assert.deepEqual(report.cleanup.sweep.stillThere, [], "the end-of-run sweep finds the run's label in the packed tags");
+});
+
+test("facts.labels.packed: the adapter's real labels (a deadline, an image ref, a list, an Archil mount) round-trip exactly under a 5-tag cap, Kubernetes' rules, Cloudflare's names and a string list; a map that can't fit is refused in words", async () => {
+	const { packLabels, unpackLabels } = VALUES;
+	const image = "ghcr.io/parcha-ai/agentrun-box@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+	const spec = { ...ARCHIL_SPEC, image, network: { allow: ["api.github.com", "registry.npmjs.org", "93.184.215.0/24"] } };
+	const { fake } = setup(OPEN, { box: { reached: [] } });
+	const host = packedHost(fake, { count: 5, packed: { valueBytes: 256 } });
+	// Made whole on a packed host: every label the adapter reads back by get came back exactly.
+	made(await create(new HostedProvider(host, { daemonPath: DAEMON_PATH, timeouts: TIMEOUTS }), spec));
+	assert.ok(Object.keys(only(fake).labels).length <= 5, "stored in 5 tags");
+	const [{ name }] = host.requests;
+	const labels = unpackLabels(host.requests[0].labels);
+	assert.ok(labels[DEADLINE] && labels["agentrun.computer.image"] === image && labels[NETWORK_LABEL].startsWith("allow:") && labels["agentrun.mount"], JSON.stringify(labels));
+	const DNS = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/;
+	const K8S_VALUE = /^[A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?$/;
+	const shapes = [
+		// Vercel: 5 tags, values of 256.
+		["a 5-tag cap", { count: 5, packed: { valueBytes: 256 } }, (stored) => assert.ok(Object.keys(stored).length <= 5)],
+		// Kubernetes: names and values of [A-Za-z0-9._-], letters or digits at both ends, at most 63.
+		["Kubernetes", { packed: { valueBytes: 63 } }, (stored) => Object.entries(stored).forEach(([key, value]) => assert.ok(DNS.test(key) && key.length <= 63 && K8S_VALUE.test(value) && value.length <= 63, `${key}=${value}`))],
+		// Cloudflare: 10 labels, names of 16 bytes, values of 64.
+		["Cloudflare", { count: 10, packed: { valueBytes: 64 } }, (stored) => Object.entries(stored).forEach(([key, value]) => assert.ok(key.length <= 16 && value.length <= 64))],
+	];
+	for (const [what, room, holds] of shapes) {
+		const packed = packLabels(labels, name, room);
+		assert.equal(packed.problem, undefined, what);
+		holds(packed.labels);
+		assert.deepEqual(unpackLabels(packed.labels), labels, `${what}: read back exactly`);
+	}
+	// Fly: a list of strings of at most 64, each name=value; read back in any order.
+	const list = Object.entries(packLabels(labels, name, { packed: { valueBytes: 52 } }).labels).map(([key, value]) => `${key}=${value}`);
+	assert.ok(list.every((entry) => entry.length <= 64), list.join(" "));
+	const fromList = Object.fromEntries(list.reverse().map((entry) => [entry.slice(0, entry.indexOf("=")), entry.slice(entry.indexOf("=") + 1)]));
+	assert.deepEqual(unpackLabels(fromList), labels, "a string list: read back exactly");
+	assert.equal(unpackLabels({ [NAME]: name, run: "r1" }), undefined, "labels not packed are no packed map");
+	// Too little room: refused in words at check(), and at create before any host call; an Archil computer's mount is the field.
+	const tight = packedHost(fakeHost(OPEN), { count: 3, packed: { valueBytes: 63 } });
+	const refused = new HostedProvider(tight, { daemonPath: DAEMON_PATH, timeouts: TIMEOUTS }).check(spec);
+	assert.deepEqual(refused.map(({ field }) => field), ["mount"]);
+	assert.match(refused[0].message, /^a Fakehost computer keeps its labels packed, and its labels pack into \d+ labels of \d+ bytes in all, past the 3 labels it keeps: give a shorter image, mount folder, network list or labels$/);
+	assert.match(packLabels(labels, name, { packed: { valueBytes: 10 } }).problem, /values hold at most 10 bytes, too few for the name computer-[0-9a-f]{12}/);
+	const small = setup({}, { facts: { labels: { bytes: 100, packed: {} } } });
+	// A digest's hex, which deflate barely shrinks.
+	const none = await create(small.provider, { ...SPEC, labels: { note: createHash("sha512").update("note").digest("hex") } });
+	assert.equal(none.error?.code, "refused");
+	assert.match(none.error.message, /^labels: a Fakehost computer keeps its labels packed, and its labels pack into 2 labels of \d+ bytes in all, past the 100 bytes it keeps/);
+	assert.deepEqual(small.fake.calls, [], "no host call");
+	// A map past what unpackLabels inflates (1 MiB of JSON) is refused, though it deflates to almost nothing.
+	assert.match(packLabels({ a: "x".repeat(1 << 20) }, name).problem, /as JSON, past the 1048576 a packed map holds/);
+	const most = { a: "x".repeat((1 << 20) - 8) };
+	assert.deepEqual(unpackLabels(packLabels(most, name).labels), most, "at the bound: read back");
+});
+
+test("facts.labels.packed at the edge: check() answers a spec the same every time, a computer made attaches, and create never gives the host labels that don't fit; one whose own deadlines pack a part longer is refused before any host call", async () => {
+	const spec = { ...SPEC, image: "ghcr.io/parcha-ai/agentrun-box@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" };
+	// The real map's one part, from a create on a packed host with room.
+	const roomy = packedHost(fakeHost(), { packed: {} });
+	made(await create(new HostedProvider(roomy, { daemonPath: DAEMON_PATH, timeouts: TIMEOUTS }), spec));
+	const part = roomy.requests[0].labels["agentrun-0"].length;
+	// One name and one part: the part's room steps across the map's length, so some creates land on the edge.
+	const sizes = [];
+	for (let valueBytes = part - 10; valueBytes <= part + 10; valueBytes++) {
+		const fake = fakeHost();
+		const host = packedHost(fake, { count: 2, packed: { valueBytes } });
+		const provider = new HostedProvider(host, { daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
+		// check() answers a spec the same every time: attach and a retry check it again.
+		assert.equal(new Set(Array.from({ length: 10 }, () => JSON.stringify(provider.check(spec)))).size, 1, `${valueBytes}: one answer`);
+		const result = await create(provider, spec);
+		if (result.ok) {
+			sizes.push(["made", valueBytes]);
+			made(await provider.attach({ id: result.value.id }));
+		} else {
+			assert.equal(result.error.code, "refused", result.error.message);
+			assert.match(result.error.message, /keeps its labels packed, and its labels pack into 3 labels/);
+			assert.equal(host.requests.length, 0, `${valueBytes}: no labels that don't fit reach the host`);
+			sizes.push(["refused", valueBytes]);
+		}
+	}
+	assert.ok(sizes.some(([what]) => what === "made") && sizes.some(([what]) => what === "refused"), JSON.stringify(sizes));
+});
+
 test("Archil: a higher epoch fences the create: nothing mounted, init never starts, and the machine is deleted", async () => {
 	const { provider, fake } = setup({}, { box: { reached: [] } });
 	made(await create(provider, { ...ARCHIL_SPEC, labels: { "agentrun.run": "r1", "agentrun.epoch": "5" } }));
@@ -1240,47 +1784,33 @@ test("pid1: the machine's command is the entrypoint; the daemon goes in beside i
 	assert.equal(provider.capabilities().daemon, "pid1");
 });
 
-test("a desktop's window manager starts once the display answers, with DISPLAY, where the host's facts say so; one that cannot start or ends at once fails create, and nothing is left", async () => {
-	const starts = (fake, id) => fake.requests.filter(({ machine, method }) => machine === id && method === "process.start").map(({ params }) => params);
-	const managed = setup({ kind: "desktop" }, { facts: { windowManager: true } });
-	made(await create(managed.provider));
-	const m = only(managed.fake);
-	const [server, manager, ...more] = starts(managed.fake, m.id);
-	assert.equal(server.argv[0], "Xvfb", "the X server first");
-	assert.deepEqual(manager, { argv: [...WINDOW_MANAGER], env: { DISPLAY: ":0", NO_AT_BRIDGE: "1" } }, "then the window manager, on the display, with no accessibility bus");
-	assert.deepEqual(more, []);
-	const order = managed.fake.requests.filter(({ machine }) => machine === m.id).map(({ method, params }) => (method === "process.start" ? params.argv[0] : method));
-	const between = order.slice(order.indexOf("Xvfb") + 1, order.indexOf(WINDOW_MANAGER[0]));
-	assert.ok(between.filter((method) => method === "hello").length >= 2, `the window manager starts after a hello saw the display, not before: ${order.join(", ")}`);
+const processStarts = (fake, id) => fake.requests.filter(({ machine, method }) => machine === id && method === "process.start").map(({ params }) => params);
+
+test("a desktop whose host's facts say windowManager has computerd start it (init --window-manager): create starts the X server alone and waits until hello says the manager runs; one that ended fails create in computerd's words, and nothing is left", async () => {
+	for (const daemon of ["child", "pid1"]) {
+		const managed = setup({ kind: "desktop" }, { facts: { windowManager: true, daemon } });
+		made(await create(managed.provider));
+		const m = only(managed.fake);
+		assert.equal(m.init.windowManager, true, `${daemon}: init is asked for the window manager`);
+		assert.deepEqual(processStarts(managed.fake, m.id).map(({ argv }) => argv[0]), ["Xvfb"], `${daemon}: the X server alone: computerd starts the manager`);
+		assert.ok(managed.fake.requests.filter(({ machine, method }) => machine === m.id && method === "hello").length >= 3, "hello until the manager runs");
+	}
 
 	const bare = setup({ kind: "desktop" });
 	made(await create(bare.provider));
-	assert.deepEqual(starts(bare.fake, only(bare.fake).id).map(({ argv }) => argv[0]), ["Xvfb"], "no window manager unless the host's facts say so");
+	assert.equal(only(bare.fake).init.windowManager, false, "no --window-manager unless the host's facts say so");
+	assert.deepEqual(processStarts(bare.fake, only(bare.fake).id).map(({ argv }) => argv[0]), ["Xvfb"]);
+	const linux = setup({}, { facts: { windowManager: true } });
+	made(await create(linux.provider));
+	assert.equal(only(linux.fake).init.windowManager, false, "nor on a computer with no desktop");
 
-	const missing = setup({ kind: "desktop" }, { facts: { windowManager: true }, display: "manager missing", lingers: { reads: 1, lists: 1 } });
-	const failed = await create(missing.provider);
-	assert.equal(failed.error?.code, "not_found");
-	assert.match(failed.error.message, /the window manager \(unshare .*dbus-run-session .*xfwm4 [^<]*\) did not start on :0: unshare: executable file not found/);
-	await nothingLeft(missing.fake, "a window manager that cannot start");
-
-	const ends = setup({ kind: "desktop" }, { facts: { windowManager: true }, display: "manager dies", lingers: { reads: 1, lists: 1 } });
-	const ended = await create(ends.provider);
-	assert.equal(ended.error?.code, "vendor");
-	assert.match(ended.error.message, /the window manager \(unshare .*dbus-run-session .*xfwm4 [^<]*\) ended with exit code 1 within 1 s of starting on :0: Xfconf could not be initialized/);
-	await nothingLeft(ends.fake, "a window manager that ends at once");
-	assert.ok(
-		managed.fake.requests.some(({ machine, method, params }) => machine === m.id && method === "process.wait" && params.timeoutMs === 1000),
-		"create watches the window manager for a second",
-	);
-
-	// The watch has its own bound: a display with a short timeoutMs that came up with less than a second of it left still
-	// gets a healthy manager, whose process.wait computerd holds the whole second.
-	let held;
-	held = setup(
-		{ kind: "desktop", desktop: { timeoutMs: 700 } },
-		{ facts: { windowManager: true }, onStep: async (name) => (name === "process.wait" && held.fake.requests.at(-1).params.timeoutMs === 1000 ? new Promise((done) => setTimeout(done, 1000)) : undefined) },
-	);
-	made(await create(held.provider));
+	for (const display of ["manager missing", "manager dies"]) {
+		const broken = setup({ kind: "desktop" }, { facts: { windowManager: true }, display, lingers: { reads: 1, lists: 1 } });
+		const failed = await create(broken.provider);
+		assert.equal(failed.error?.code, "vendor");
+		assert.match(failed.error.message, /the window manager computerd started \(dbus-run-session -- xfwm4 [^)]*\) ended with exit code \d+ within 1 s of starting on :0: \S/);
+		await nothingLeft(broken.fake, `a window manager computerd started that ended (${display})`);
+	}
 });
 
 test("pid1 desktop: the entrypoint carries the display, and init starts with it", async () => {

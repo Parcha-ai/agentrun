@@ -1,6 +1,8 @@
 import DOMPurify from "dompurify";
 import { marked } from "marked";
 import type { MouseEvent } from "react";
+import { PLAN_NO_DOLLARS } from "./chatgpt";
+import { LOGIN_NO_DOLLARS } from "./claudeLogin";
 import type { Cost } from "./v2";
 
 /** The tags DOMPurify keeps: its own allowed-tag config, read once through its uponSanitizeElement hook (the tag list is
@@ -48,6 +50,27 @@ export function bytes(n: number): string {
 /** Whether a cost is an estimate, by its basis. The label's "est." and the run page's billing disclaimer both read it. */
 export const isEstimate = (c: Cost) => c.basis === "estimate";
 
+/** The word a figure carries for its basis: " est." for a price table's (an estimate), " reported" for the provider's or
+ *  its gateway's own figure; none for a charge or a cost nothing priced. */
+const basisMark = (c: Pick<Cost, "basis">): string => (c.basis === "estimate" ? " est." : c.basis === "reported" ? " reported" : "");
+
+/** How a cost was reached, in a sentence for its hover note (the server's `basis`); undefined for a charge. */
+export const basisNote = (c: Pick<Cost, "basis">): string | undefined =>
+  c.basis === "estimate" ? "A local estimate, not a bill" : c.basis === "reported" ? "As the provider or gateway reported it" : c.basis === "unpriced" ? "No model request was priced" : undefined;
+
+/** A run's tokens as its cost says them (costbasis/1 `cost.tokens`): "12.4K in · 1,250 out", the prompt cache's reads and
+ *  writes when there were any, and the requests that reported no tokens. Undefined when the run says none. `in` leaves the
+ *  cached input out, as the server counts it. */
+export function tokensWords(c: Cost | null | undefined): string | undefined {
+  const t = c?.tokens;
+  if (!t) return undefined;
+  const parts = [`${compact(t.input)} in`, `${compact(t.output)} out`];
+  if (t.cache_read > 0) parts.push(`${compact(t.cache_read)} cache read`);
+  if (t.cache_write > 0) parts.push(`${compact(t.cache_write)} cache write`);
+  if (t.unmetered) parts.push(`${compact(t.unmetered)} ${t.unmetered === 1 ? "request" : "requests"} unmetered`);
+  return parts.join(" · ");
+}
+
 /** A run's cost in dollars: a figure above zero never reads as $0 (under a hundredth of a cent it reads "<$0.0001"),
  *  four places under a cent, two from a cent up. */
 export const dollars = (usd: number) => (usd > 0 && usd < 0.0001 ? "<$0.0001" : usd < 0.01 ? `$${usd.toFixed(4)}` : `$${usd.toFixed(2)}`);
@@ -62,8 +85,9 @@ const soFarDollars = (usd: number) => {
   return `$${whole}.${places.replace(/0+$/, "").padEnd(2, "0")}`;
 };
 
-/** The cost known so far, when the server can't give the whole (costsofar/1: `so_far_usd` and `unpriced`, sent only while
- *  `usd` is null); undefined when it says neither. */
+/** The cost known so far, when the server can't give the whole (costsofar/1: `so_far_usd` and `unpriced` while `usd` is
+ *  null); undefined when it says neither, or when `usd` is known (beside an `upper_bound` the server sends them too, and
+ *  the bound is what is said). */
 export const soFar = (c: Cost | null | undefined): (Cost & { so_far_usd: number; unpriced: number }) | undefined =>
   c && c.usd === null && typeof c.so_far_usd === "number" && typeof c.unpriced === "number" ? (c as Cost & { so_far_usd: number; unpriced: number }) : undefined;
 
@@ -79,13 +103,19 @@ export const runEnded = (status: string | undefined | null): boolean => typeof s
 /** A known $0 that is a free model's (the server's `free`, freemodel/1): every model request went to a model whose known
  *  price is $0 for every token. Said as the server's usage row says it. */
 export const FREE_COST = "$0 · free model";
+/** An ended run's cost the server could not read (its `unknown`, costunknown/1: `booking_unread`): unknown, and why. */
+export const UNREAD_COST = "Unknown · cost not read";
 const freeCost = (c: { usd: number | null; free?: boolean }) => c.usd === 0 && c.free === true;
+
+/** A known cost that counts a request cut with no answer at what its cap held for it (the server's `upper_bound`,
+ *  cutathold/1): the most the run can have cost, said "at most $0.25", never as the exact figure. */
+const atMost = (c: { upper_bound?: boolean }) => (c.upper_bound === true ? "at most " : "");
 
 /** A charge on a timeline row, in words: "$0.0018", or what is known so far ("so far $0.001, 1 not priced") when one of its
  *  charges has no price; on a run that has ended (`ended`), what is known without "so far" ("$0.001 known, 1 not priced"),
  *  as cost says the run's. */
-export const chargeWords = (u: { usd: number | null; so_far_usd?: number; unpriced?: number }, { ended = false }: { ended?: boolean } = {}): string =>
-  u.usd !== null ? dollars(u.usd)
+export const chargeWords = (u: { usd: number | null; so_far_usd?: number; unpriced?: number; upper_bound?: boolean }, { ended = false }: { ended?: boolean } = {}): string =>
+  u.usd !== null ? `${atMost(u)}${dollars(u.usd)}`
     : typeof u.so_far_usd === "number" ? (ended ? `${soFarDollars(u.so_far_usd)} known, ${u.unpriced ?? 0} not priced` : `so far ${soFarDollars(u.so_far_usd)}, ${u.unpriced ?? 0} not priced`)
     : "not priced";
 
@@ -95,27 +125,31 @@ export const chargeWords = (u: { usd: number | null; so_far_usd?: number; unpric
  *  whole cost; a run that has ended (`ended`) says what is known without "so far" ("$0.0123 known · 1 not priced"), as its
  *  usage row says its cost. Never a billed amount, never an invented zero. A run on the server's ChatGPT plan alone says
  *  its tokens ("41.2K tokens · Using ChatGPT plan"), never "$0.00"; one that also spent dollars says them, then "+ ChatGPT
- *  plan". A run whose every model request went to a free model (`free`: its known price is $0 for every token) says why
- *  its cost is $0 (FREE_COST). */
+ *  plan". A run on Claude Code's login says "on your Claude plan" in the same places. A run whose every model request went
+ *  to a free model (`free`: its known price is $0 for every token) says why its cost is $0 (FREE_COST). */
 export function cost(c: Cost | null | undefined, { ended = false }: { ended?: boolean } = {}): string {
   const plan = planOf(c);
-  if (plan && c?.usd === 0) return `${compact(plan.tokens)} tokens · Using ChatGPT plan`;
+  const claude = plan?.on === "claude_code";
+  if (plan && c?.usd === 0) return `${compact(plan.tokens)} tokens · ${claude ? "On your Claude plan" : "Using ChatGPT plan"}`;
   const words = dollarWords(c, ended);
-  return plan ? `${words} + ChatGPT plan` : words;
+  return plan ? `${words} + ${claude ? "your Claude plan" : "ChatGPT plan"}` : words;
 }
 function dollarWords(c: Cost | null | undefined, ended: boolean): string {
   const known = soFar(c);
-  const est = (x: Cost) => (isEstimate(x) ? " est." : "");
+  const est = basisMark;
   if (known) return ended ? `${soFarDollars(known.so_far_usd)}${est(known)} known · ${known.unpriced} not priced` : `so far ${soFarDollars(known.so_far_usd)}${est(known)} · ${known.unpriced} not priced`;
-  if (!c || c.usd === null) return "Unknown";
+  if (!c || c.usd === null) return c?.unknown === "booking_unread" ? UNREAD_COST : "Unknown";
   if (freeCost(c)) return FREE_COST;
-  return `${dollars(c.usd)}${est(c)}`;
+  return `${atMost(c)}${dollars(c.usd)}${est(c)}`;
 }
 
-/** What a run used on the server's ChatGPT plan (chatgpt/1 `cost.plan`): its requests there and their tokens, which cost
- *  no dollars here; undefined for a run that made none. A run on the plan alone says its tokens, never "$0.00" (cost). */
-export const planOf = (c: Cost | null | undefined): { requests: number; tokens: number } | undefined =>
+/** What a run used on a person's plan (chatgpt/1 `cost.plan`): its requests there, their tokens, and which plan (`on`:
+ *  the ChatGPT sign-in, or Claude Code's login), which cost no dollars here; undefined for a run that made none. A run on
+ *  the plan alone says its tokens, never "$0.00" (cost). */
+export const planOf = (c: Cost | null | undefined): { requests: number; tokens: number; on?: "chatgpt" | "claude_code" } | undefined =>
   c?.plan && c.plan.requests > 0 ? c.plan : undefined;
+/** The hover words for a run's plan requests: no dollars here, the plan's own limits. */
+export const planNoDollars = (plan: { on?: string }): string => (plan.on === "claude_code" ? LOGIN_NO_DOLLARS : PLAN_NO_DOLLARS);
 
 /** 1,284 / 12.9K / 4.2M. */
 export function compact(n: number): string {
@@ -134,7 +168,7 @@ export function costOfCap(c: Cost | null | undefined, cap: number | null | undef
   const figure = text !== undefined ? ONE_FIGURE.test(text) : !soFar(c) && !planOf(c) && !!c && c.usd !== null && !freeCost(c);
   return figure ? `${shown} of ${capDollars(cap)}` : `${shown} · cap ${capDollars(cap)}`;
 }
-const ONE_FIGURE = /^<?\$[\d.,]+( est\.)?$/;
+const ONE_FIGURE = /^<?\$[\d.,]+( est\.| reported)?$/;
 
 /** A spend cap in dollars as it was set: two places at least ($1.00, $2.50), more when the cap has them ($0.013), so a
  *  raise finer than a cent still reads as a change. */

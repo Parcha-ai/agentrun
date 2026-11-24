@@ -12,7 +12,7 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { HOST_RESULT_MAX_CHARS, READ_SKILL_FILE, hostedTool, readSkillFileTool, skillProblems, toolSchemaProblems, type HostSkill } from "@parcha/agentrun-kernel";
-import type { AdapterEvent, AdapterSession, AgentAdapter, GateCall, HostTool, SessionIO, SessionSpec, TurnStatus } from "@parcha/agentrun-kernel";
+import type { AdapterEvent, AdapterSession, AgentAdapter, CapCut, GateCall, HostTool, SessionIO, SessionSpec, TurnStatus } from "@parcha/agentrun-kernel";
 import { abortedOutcome, openDrive, SessionHalt, type Drive } from "@parcha/agentrun-kernel/kernel";
 import { pendingSubmissions } from "@parcha/agentrun-kernel/kernel";
 import { bridgeTool, NativeJournal, recoveryNote, settleTurn, transcriptOf } from "@parcha/agentrun-kernel/process";
@@ -104,6 +104,12 @@ function adapterEvent(event: unknown, hostName: (name: string) => string): Adapt
   return undefined;
 }
 
+/** A turn entry's `capCut` when it is one (two money figures), as `{ capCut }`. */
+const capCutOf = (value: unknown): { capCut: CapCut } | undefined => {
+  if (typeof value !== "object" || value === null) return undefined;
+  const { capUsd, raiseToUsd } = value as { capUsd?: unknown; raiseToUsd?: unknown };
+  return typeof capUsd === "number" && Number.isFinite(capUsd) && typeof raiseToUsd === "number" && Number.isFinite(raiseToUsd) ? { capCut: { capUsd, raiseToUsd } } : undefined;
+};
 const turnsIn = (drive: Drive) => transcriptOf(drive.state()).filter((r) => r.data?.type === "turn");
 
 /** Where Codex finds a user's skills: `$CODEX_HOME/skills`. It lists those to the model in a turn with no environment
@@ -208,6 +214,8 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
         })),
         // The host's gate, asked about each host-tool call before its intent is written.
         ...(io.gate ? { gate: (call: GateCall) => io.gate!({ ...call, tool: hostName(call.tool) }) } : {}),
+        // The host's record of a code-mode `exec`: its row, and its script's calls under it.
+        ...(io.ownCalls ? { ownCalls: io.ownCalls } : {}),
         builtins: false,
         // Codex's bundled skills (imagegen, skill-installer, ...), which it writes under `$CODEX_HOME/skills/.system` at every
         // start, are off in every session, skills or not: the model is shown the host's skills and no others.
@@ -276,12 +284,12 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
         running = (async () => {
           let outcome: { status: TurnStatus; error?: string };
           // A turn whose answer the model cut at its output limit says so on its turn_end: stopReason "length", with the cut
-          // answer's output tokens when the provider said them.
-          let stop: { stopReason?: "length"; outputTokens?: number } = {};
+          // answer's output tokens when the provider said them, and the cap's figures when the limit was the cap's.
+          let stop: { stopReason?: "length"; outputTokens?: number; capCut?: CapCut } = {};
           try {
             await harness.drive(current);
-            const ended = turnsIn(current).slice(before).at(-1)?.data as { status?: TurnStatus; error?: string; stopReason?: string; outputTokens?: unknown } | undefined;
-            if (ended?.stopReason === "length") stop = { stopReason: "length", ...(typeof ended.outputTokens === "number" ? { outputTokens: ended.outputTokens } : {}) };
+            const ended = turnsIn(current).slice(before).at(-1)?.data as { status?: TurnStatus; error?: string; stopReason?: string; outputTokens?: unknown; capCut?: unknown } | undefined;
+            if (ended?.stopReason === "length") stop = { stopReason: "length", ...(typeof ended.outputTokens === "number" ? { outputTokens: ended.outputTokens } : {}), ...(capCutOf(ended.capCut) ?? {}) };
             outcome = ended?.status ? { status: ended.status, ...(ended.error ? { error: ended.error } : {}) } : { status: "failed", error: "the turn ended with no outcome in the session's records" };
           } catch (error) {
             // Stopped by the session or its host: interrupted. Halted by anything else: failed, naming why.

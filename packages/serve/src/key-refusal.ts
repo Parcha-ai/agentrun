@@ -4,13 +4,15 @@
 // count, a file name, a duration, another service's status) is no refused key, and the error is left as it is.
 import { DEFAULT_HARNESS } from "./harness.js";
 import { harnessOf } from "./harness-table.js";
-import { redactSecrets, valueMatcher } from "./learn/secrets.js";
+import { cutSecrets, endsInScheme, redactSecrets, secretShapes, valueLeft, valueMatcher } from "./learn/secrets.js";
 import { hostModel, MODEL_KEYS } from "./model.js";
-import { openRouterOnly, WIRES } from "./provider.js";
+import { modelWire, openRouterOnly, WIRES } from "./provider.js";
+import type { Span } from "./redact/match.js";
+import { savedGatewayIn } from "./model-gateway.js";
 
 /** The key a run's model requests carry, and who reads it: a provider's (saved in Settings → Model keys, or set where
  *  AgentRun starts), or serve's gateway's (set where AgentRun starts only). */
-export type RunKey = { who: string; field: string; saved: boolean };
+export type RunKey = { who: string; field: string; saved: boolean; where?: string };
 
 const row = (id: string): RunKey | undefined => {
   const found = MODEL_KEYS.find((r) => r.id === id);
@@ -22,8 +24,11 @@ const row = (id: string): RunKey | undefined => {
 export function runKeyOf(env: NodeJS.ProcessEnv, harness: string = DEFAULT_HARNESS, ref?: string): RunKey | undefined {
   const named = ref ?? hostModel(env, "default", harness);
   const provider = named?.includes("/") ? named.slice(0, named.indexOf("/")) : undefined;
-  const gateway: RunKey = { who: "The gateway at AGENT_MODEL_BASE_URL", field: "AGENT_MODEL_API_KEY", saved: false };
+  // A gateway saved in the console (model-gateway.ts) is fixed there, never where AgentRun starts.
+  const gateway: RunKey = savedGatewayIn(env) ? { who: "The model gateway saved in Settings → Model keys", field: "its key", saved: true, where: "enter its key again in Settings → Model keys → Use a model gateway, and test it there." } : { who: "The gateway at AGENT_MODEL_BASE_URL", field: "AGENT_MODEL_API_KEY", saved: false };
   const wire = harnessOf(env, harness)?.facts?.wire;
+  // A harness billed to its own plan (Cursor's) runs on no model key of this server's.
+  if (wire && !modelWire(wire)) return undefined;
   // Serve's gateway takes every request of the wire it serves, pi's too; a wire it does not serve never goes there.
   if (env.AGENT_MODEL_BASE_URL && (!wire || WIRES[wire].gateway)) return gateway;
   if (wire) return row(provider === "openrouter" || openRouterOnly(wire, env) ? "openrouter" : WIRES[wire].vendor);
@@ -59,7 +64,7 @@ const SHOWN = 2000;
  *  form (6 times it, for JSON's \uXXXX; percent is 3, hex 2, base64 4/3) and 16 more. A key whose start the cut can show
  *  starts before SHOWN, so it ends inside that head and is found whole; one that starts later is never shown. So a long
  *  error costs no more to redact than a short one, whatever it holds. `shown`: a head of another length, for a reader
- *  that is shown more (a template eval's grader reads a call's result to CALL_RESULT_CHARS). */
+ *  that is shown more. */
 export function redacted(text: string, secrets: readonly string[], shown = SHOWN): string {
   const longest = secrets.reduce((most, value) => Math.max(most, value.length), 0);
   const window = shown + 6 * longest + 16;
@@ -84,34 +89,250 @@ export const answerPasses = { count: 0 };
 /** `text`, a run's answer as serve serves it (its final answer, or a string in its workflow output), with no held secret
  *  in it, and NEVER cut: an answer is shown whole. The same rule as redacted() (redactSecrets over `secrets`), over the
  *  whole text, read in pieces of about ANSWER_PIECE characters cut at whitespace. No form of a held value redactSecrets
- *  finds as it stands (as written, JSON-escaped, base64, hex) holds whitespace, so a cut there splits none. A run of more
- *  than ANSWER_PIECE characters with no whitespace is no person's text and is shown as "[redacted]", unread. A value split
- *  by whitespace across a cut, or a form only found across pieces, still shows to one valueMatcher pass over the joined
- *  output, and then the whole answer is "[redacted]", as redactSecrets does with a text that still holds a value. */
+ *  finds as it stands (as written, JSON-escaped, base64, hex) holds whitespace, so a cut there splits none; the one shape
+ *  read across whitespace, a Bearer scheme and its token, is never cut between the two (endsInScheme). A run with no
+ *  whitespace past a piece is cut at the end of a JSON string in it (never in a URL's user and password), or, a run of
+ *  a JSON array's numbers only, after a comma (runCut), so compact JSON reads in pieces too. A run of more than ANSWER_PIECE characters with neither is no
+ *  person's text and is shown as "[redacted]", unread, from where its run starts. A value or a secret shape split across
+ *  a cut, or a form only found across pieces, still shows to one pass over the joined pieces (heldIn: valueLeft over
+ *  them as they came, and secretShapes over them redacted; with the head of each run left unread, where the rest of a
+ *  value split before it would be), and then the whole answer is "[redacted]", as redactSecrets does with a text that
+ *  still holds a value. So is an answer whose pieces, as shown, read as a held value together (heldIn reads the text it
+ *  returns too). A value split inside one piece withholds only that piece, by the piece's own redaction. */
 export function redactedAnswer(text: string, secrets: readonly string[]): string {
   if (!text) return text;
   answerPasses.count++;
-  const parts: string[] = [];
-  for (let from = 0; from < text.length; ) {
-    let to = Math.min(text.length, from + ANSWER_PIECE);
-    if (to < text.length) {
-      const space = text.slice(from, to).search(/\s[^\s]*$/);
-      if (space <= 0) {
-        // No whitespace in this piece: the run of text with none goes on to the next whitespace, read as one.
-        const next = text.slice(to).search(/\s/);
-        to = next < 0 ? text.length : to + next;
-        parts.push(to - from > ANSWER_PIECE ? "[redacted]" : redactSecrets(text.slice(from, to), secrets, Buffer.byteLength(text.slice(from, to))));
-        from = to;
-        continue;
+  const { out, seen } = inPieces(text, secrets);
+  return heldIn(seen, secrets, out) ? "[redacted]" : out;
+}
+
+/** `text`, a call's result as a grader's read shows it (timeline calls, tool_result_text), with no held secret in it:
+ *  read in pieces as redactedAnswer reads an answer, each piece redacted, then shown as `show` makes it (the timeline's
+ *  scrubUrls), then one pass over the pieces (heldIn). Every check reads the text as it came, redacted, and not only as
+ *  shown: shown, a URL's query, fragment and userinfo are cut apart, and a held value in one no longer reads as itself;
+ *  what it returns is read too, for a held value its pieces show only together. A piece
+ *  never splits a URL (it is cut at whitespace, after a quote, or in a run of numbers), so a piece shows as the whole
+ *  text would. Only the head the reader is shown is read: pieces stop once they show more than `shown` characters, and
+ *  the pass also reads the text where they stopped (peek), so a value or a shape the stop split is seen whole. Every
+ *  character returned was read; the caller cuts it to `shown`. So no redaction pass reads more than a piece, however long
+ *  the result or its head. */
+export function redactedCall(text: string, secrets: readonly string[], shown: number, show: (piece: string) => string = (piece) => piece): string {
+  if (!text) return text;
+  const { out, seen, short } = inPieces(text, secrets, shown, show);
+  // A read that stopped on what it read, before what it shows reached `shown`, ends as a cut does ("...", timeline/util.ts
+  // cut), so a reader (the link check) knows it is not whole.
+  const result = short ? `${out}...` : out;
+  return heldIn(seen, secrets, result) ? "[redacted]" : result;
+}
+
+/** Whether redactSecrets withholds `text` whole: it holds a held value or a secret shape no cut in place takes (split by
+ *  whitespace, encoded, written as JSON's \uXXXX escapes). Read whole, never in pieces: the caller bounds what it reads
+ *  (a web call's strings, joined: timeline calls.holds). */
+export function withheldWhole(text: string, secrets: readonly string[]): boolean {
+  return redactSecrets(text, secrets, Number.POSITIVE_INFINITY) === "[redacted]";
+}
+
+/** Whether the text a reader is about to be shown (`shown`, what the caller returns) holds a held value, or the joined
+ *  pieces still hold one or a secret shape: one a cut split. `shown` is read whole for a held value (valueMatcher, one
+ *  linear pass): however the pieces were put together, as each was cut or shown, or an unread run's "[redacted]" between
+ *  them, no text that reads as a held value is returned (a held value holding "[redacted]", its parts on either side of
+ *  a cut in another piece). A value is also looked for in the pieces as they came, joined by line breaks, each piece's
+ *  own cuts covering it (valueLeft): a piece's cut can take part of a value split across pieces (a credential
+ *  parameter's value cut in place at the end of a piece, the rest of the held value in the next), and the rest then no
+ *  longer reads as the value. A piece withheld whole covers all of itself, so a value split inside one piece is that
+ *  piece's own redaction's, and only a value no cut covers across pieces (or in the text read past where they stopped)
+ *  withholds the text. Each unread run's head is covered (it shows as "[redacted]") and read for the rest of a value
+ *  split before it. A shape is looked for in the pieces each redacted (a shape whole in one is no shape a cut split). A
+ *  peek too long to read (`unread`) withholds the text too. */
+function heldIn(seen: Seen, secrets: readonly string[], shown: string): boolean {
+  return seen.unread || valueMatcher(secrets)(shown) || valueLeft(seen.raw, secrets, seen.cuts) || secretShapes(seen.shapes).length > 0;
+}
+
+/** What the pass after the pieces reads: their text as it came, joined by line breaks (`raw`), with the spans of it the
+ *  pieces cut (`cuts`), and the pieces each redacted, for the shapes (`shapes`). */
+type Seen = { raw: string; cuts: Span[]; shapes: string; unread: boolean };
+/** A stretch of the text as it came, as the pass reads it, and the spans of it its piece cut. */
+type Read = { text: string; cuts: readonly Span[] };
+
+/** `text` read in pieces as redactedAnswer says (pieceEnd), each redacted by itself: what the pieces show, joined, and
+ *  what the pass after them reads (heldIn): each piece as it came and the spans its redaction cut, and each piece
+ *  redacted, with the head of each unread run put back (covered, as it came; redacted by itself before its "[redacted]"
+ *  for the shapes). A run runCut cut that then goes on past a piece with
+ *  no place to cut is unread from its start, the pieces of it already read taken back, so no piece shows the head of a
+ *  value or a shape the cut split. With `enough`, no piece is read once the pieces show more than `enough` characters,
+ *  and the text where they stopped, `hold` characters the matcher sees of it (peek), goes to the pass the same way.
+ *  Each piece is redacted, then shown as `show` makes it: `out` is what the pieces show, the pass reads them unshown. */
+function inPieces(text: string, secrets: readonly string[], enough = Number.POSITIVE_INFINITY, show: (piece: string) => string = (piece) => piece): { out: string; seen: Seen; short: boolean } {
+  const hold = 6 * secrets.reduce((most, value) => Math.max(most, value.length), 0) + 16;
+  const out: string[] = [];
+  const shapes: string[] = [];
+  const reads: Read[] = [];
+  let shown = 0;
+  let unread = false;
+  // The run runCut is cutting: where it starts in `text`, and its first piece's index in `out`.
+  let run: { from: number; at: number } | undefined;
+  let from = 0;
+  // Also stops past 4 × `enough` characters read: text that shows as almost nothing (URLs whose queries are elided) is
+  // not read to its end. Where it stops, the peek reads on as at any stop.
+  while (from < text.length && shown <= enough && from <= 4 * enough) {
+    const to = pieceEnd(text, from);
+    const raw = text.slice(from, to);
+    if (raw.length > ANSWER_PIECE) {
+      const start = run?.from ?? from;
+      if (run) {
+        for (const part of out.splice(run.at)) shown -= part.length;
+        shapes.splice(run.at);
+        reads.splice(run.at);
       }
-      to = from + space + 1;
+      const head = peek(text, start, hold);
+      if (head === undefined) unread = true;
+      else {
+        shapes.push(`${redactSecrets(head, secrets, Buffer.byteLength(head))}[redacted]`);
+        // The run is shown as "[redacted]": all of its head is covered.
+        reads.push({ text: head, cuts: head ? [[0, head.length]] : [] });
+      }
+      out.push("[redacted]");
+      shown += "[redacted]".length;
+      run = undefined;
+    } else {
+      const cut = cutSecrets(raw, secrets, Buffer.byteLength(raw));
+      const part = cut === "whole" ? "[redacted]" : cut.out;
+      reads.push({ text: raw, cuts: cut === "whole" ? [[0, raw.length]] : cut.spans });
+      // A piece that ends inside a run (runCut's): its run goes on in the next piece.
+      if (to < text.length && /\S/.test(text[to - 1] ?? "") && /\S/.test(text[to] ?? "")) run ??= { from, at: out.length };
+      else run = undefined;
+      const showsAs = show(part);
+      out.push(showsAs);
+      shapes.push(part);
+      shown += showsAs.length;
     }
-    const piece = text.slice(from, to);
-    parts.push(redactSecrets(piece, secrets, Buffer.byteLength(piece)));
     from = to;
   }
-  const out = parts.join("");
-  return valueMatcher(secrets)(out) ? "[redacted]" : out;
+  if (from < text.length) {
+    // Stopped inside a run runCut cut: the rest of it, to its next whitespace (at most a piece), goes to the pass too.
+    const space = run ? text.slice(from, from + ANSWER_PIECE).search(/\s/) : 0;
+    const runTo = from + (space < 0 ? ANSWER_PIECE : space);
+    const ahead = peek(text, from, hold);
+    if (ahead === undefined) unread = true;
+    else {
+      const rest = runTo > from + ahead.length ? text.slice(from, runTo) : ahead;
+      shapes.push(redactSecrets(rest, secrets, Buffer.byteLength(rest)));
+      reads.push({ text: rest, cuts: [] });
+    }
+  }
+  // The reads joined by line breaks, each one's cuts moved to where it stands in the join. The matcher's views read a
+  // line break as nothing, so a value whole across two pieces is no form found as it stands there, and is left.
+  let raw = "";
+  const cuts: Span[] = [];
+  reads.forEach((read, at) => {
+    if (at > 0) raw += "\n";
+    for (const [start, end] of read.cuts) cuts.push([raw.length + start, raw.length + end]);
+    raw += read.text;
+  });
+  return { out: out.join(""), seen: { raw, cuts, shapes: shapes.join(""), unread }, short: from < text.length && shown <= enough };
+}
+
+/** text from `from` on, as far as `count` characters the matcher sees (all of it, if it holds fewer), each run of
+ *  whitespace in it one space. The matcher reads "+" as a space and decodes percent-encoded bytes and JSON's \uXXXX
+ *  escapes, so a "+", an encoded byte and an escape that decodes to whitespace count no more than whitespace does, and
+ *  any other escape counts as the one character it decodes to: padding of any of them never hides the rest of a value
+ *  split before it. Undefined, so the caller withholds the text, when that takes more than a piece of text
+ *  (a run of whitespace counted as one): no redaction pass reads more than a piece. */
+function peek(text: string, from: number, count: number): string | undefined {
+  const parts: string[] = [];
+  let span = 0;
+  let found = 0;
+  for (let at = from; at < text.length && found < count; ) {
+    SPACES.lastIndex = at;
+    let end = SPACES.test(text) ? SPACES.lastIndex : at;
+    if (end > at) {
+      parts.push(" ");
+      span++;
+    } else {
+      while (end - at <= ANSWER_PIECE && text[end] === "%" && HEX_PAIR.test(text.slice(end + 1, end + 3))) end += 3;
+      if (end > at) found += Buffer.from(text.slice(at, end).replaceAll("%", ""), "hex").toString("utf8").replace(/\s+/g, "").length;
+      else if (text[at] === "\\" && text[at + 1] === "u" && HEX_QUAD.test(text.slice(at + 2, at + 6))) {
+        end = at + 6;
+        if (!/\s/.test(String.fromCharCode(Number.parseInt(text.slice(at + 2, end), 16)))) found++;
+      } else {
+        end = at + 1;
+        if (text[at] !== "+") found++;
+      }
+      parts.push(text.slice(at, end));
+      span += end - at;
+    }
+    if (span > ANSWER_PIECE) return undefined;
+    at = end;
+  }
+  return parts.join("");
+}
+const SPACES = /\s+/y;
+const HEX_PAIR = /^[0-9A-Fa-f]{2}$/;
+const HEX_QUAD = /^[0-9A-Fa-f]{4}$/;
+
+/** Where the piece of `text` read from `from` ends: at its last whitespace before ANSWER_PIECE characters; with none, at
+ *  runCut's place, else at the next whitespace (a run read as one, or unread past ANSWER_PIECE). */
+function pieceEnd(text: string, from: number): number {
+  const to = Math.min(text.length, from + ANSWER_PIECE);
+  if (to === text.length) return to;
+  const head = text.slice(from, to);
+  const space = head.search(/\s[^\s]*$/);
+  if (space <= 0) {
+    const cut = runCut(text, from, to);
+    return cut > from ? cut : runEnd(text, to);
+  }
+  const end = from + space + 1;
+  // A cut after a Bearer scheme would leave its token at the head of the next piece, where no shape reads it (the shape
+  // is the scheme, then the token). The cut moves back to the whitespace before the scheme; with none in this piece, the
+  // scheme and its token are read as one run, to the next whitespace, as a run with no whitespace is.
+  if (!endsInScheme(text.slice(from, end))) return end;
+  const before = text.slice(from, end).trimEnd().search(/\s[^\s]*$/);
+  return before > 0 ? from + before + 1 : runEnd(text, end);
+}
+
+/** The next whitespace in `text` at or after `at`, or its end. */
+function runEnd(text: string, at: number): number {
+  const next = text.slice(at).search(/\s/);
+  return next < 0 ? text.length : at + next;
+}
+
+/** Where a run with no whitespace in text[from, to) may be cut, or -1: after the last quote in it that ends a JSON
+ *  string (no backslash before it; a comma, colon or closing bracket after it) and is in no URL's authority
+ *  (authorities); or, a run of a JSON array's numbers only, after its last comma. The one secret shape that may hold a
+ *  quote is a URL's user and password, so no cut splits a shape, whatever its length: a run with no other place to cut
+ *  is read to its end, or unread from its start. A held value cut there still shows to the pass over the joined pieces
+ *  (heldIn), and withholds the text whole. Each search keeps to text[from, to), but for where a URL's authority ends,
+ *  which is read once per URL, to the end of its run at most. */
+function runCut(text: string, from: number, to: number): number {
+  const head = text.slice(from, to);
+  const urls = authorities(text, from, head);
+  let url = urls.length - 1;
+  for (let at = head.lastIndexOf('"'); at >= 0; at = at > 0 ? head.lastIndexOf('"', at - 1) : -1) {
+    // The authority starting last before this quote, the one it could be in: they do not overlap.
+    while (url >= 0 && urls[url]![0] >= at) url--;
+    const inUrl = url >= 0 && at < urls[url]![1];
+    if (!inUrl && (at > 0 ? head[at - 1] : text[from - 1]) !== "\\" && /[,:\]}]/.test(text[from + at + 1] ?? "")) return from + at + 1;
+  }
+  const comma = head.lastIndexOf(",");
+  return comma > 0 && /^\s?[-+.\deE,[\]{}:]+$/.test(head) ? from + comma + 1 : -1;
+}
+
+/** Each URL authority in `head` (text from `from`) that holds a user and password, as [start, end) in `head`: from its
+ *  "://" to the "@" that ends it, past the head's end if need be. One whose first whitespace, "/", "?" or "#" comes
+ *  before any "@" (a URL with no password, then the rest of the JSON it is in) holds none, so none of it is kept whole. */
+function authorities(text: string, from: number, head: string): [number, number][] {
+  const found: [number, number][] = [];
+  const stop = /[\s/?#@]/g;
+  for (let at = head.indexOf("://"); at >= 0; at = head.indexOf("://", at)) {
+    stop.lastIndex = from + at + 3;
+    const hit = stop.exec(text);
+    const end = (hit?.index ?? text.length) - from;
+    if (hit?.[0] === "@") found.push([at, end]);
+    if (end >= head.length) break;
+    // Past an "@", on; past any other stop, from the character before it: a "/" may be the first of the next "://".
+    at = hit?.[0] === "@" ? end : end - 1;
+  }
+  return found;
 }
 
 /** Whether a number shows a held value. A held value can be all digits (a gateway's key), and a record or a call's
@@ -174,7 +395,7 @@ export function keyRefusal(text: string | undefined, key: RunKey | undefined, se
   const at = REFUSED.exec(said);
   if (!at) return undefined;
   const detail = detailOf(said.slice(at[0].length));
-  const where = key.saved ? "set it where AgentRun starts, or save it in Settings → Model keys." : "set it where AgentRun starts.";
+  const where = key.where ?? (key.saved ? "set it where AgentRun starts, or save it in Settings → Model keys." : "set it where AgentRun starts.");
   return `${key.who} refused ${key.field} (401${detail ? `: ${detail}` : ""}): ${where}`;
 }
 

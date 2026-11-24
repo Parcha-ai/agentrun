@@ -5,6 +5,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"testing"
@@ -39,6 +40,9 @@ func listed(search probe.SocketSearch) string {
 	return strings.Join(parts, ",")
 }
 
+// noMounts is a mount table that cannot be read: no folder is skipped.
+const noMounts = ""
+
 // table writes text as a /proc/net/unix for ConnectableSockets to read, and gives its path.
 func table(t *testing.T, text string) string {
 	t.Helper()
@@ -53,7 +57,7 @@ func table(t *testing.T, text string) string {
 // search said nothing of the abstract names it never tried.
 func TestConnectableSocketsSaysWhenItCouldNotReadTheTableOfAbstractNames(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "unix")
-	search := probe.ConnectableSockets(nil, missing, probe.DefaultSocketBounds, 2*time.Second)
+	search := probe.ConnectableSockets(nil, missing, noMounts, probe.DefaultSocketBounds, 2*time.Second)
 	if len(search.Incomplete) != 1 || !strings.Contains(search.Incomplete[0], missing) || !strings.Contains(search.Incomplete[0], "no abstract name was tried") {
 		t.Fatalf("Incomplete = %q; want the table named, and that no abstract name was tried", search.Incomplete)
 	}
@@ -134,7 +138,7 @@ func TestConnectableSocketsListsThoseThatAcceptByTheirRealPathAndTypeAndNoOther(
 		"0000000000000000: 00000002 00000000 00000000 0002 01 12348\n"+
 		"0000000000000000: 00000002 00000000 00010000 0001 01 12349 @pso-no-one-listens\n")
 
-	search := probe.ConnectableSockets([]string{dir}, netUnix, probe.SocketBounds{Entries: 1000, Depth: 8}, 2*time.Second)
+	search := probe.ConnectableSockets([]string{dir}, netUnix, noMounts, probe.SocketBounds{Entries: 1000, Depth: 8}, 2*time.Second)
 	want := set("dgram "+dgram, "seqpacket "+seqpacket, "stream "+stream, "stream "+named, "stream "+abstract, "stream "+spaced)
 	if got := listed(search); got != want {
 		t.Fatalf("ConnectableSockets = %s; want %s (not the dead socket, the file, the link again or the abstract name no one listens on)", got, want)
@@ -148,8 +152,12 @@ func TestConnectableSocketsListsThoseThatAcceptByTheirRealPathAndTypeAndNoOther(
 // shared count let a large root leave the next unsearched. Each root has its own budget, and a bound reached is said.
 func TestConnectableSocketsSaysWhichRootItCouldNotSearchWholeAndGivesEachRootItsOwnBudget(t *testing.T) {
 	big := shortDir(t)
+	many := filepath.Join(big, "many")
+	if err := os.Mkdir(many, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	for i := 0; i < 20; i++ {
-		if err := os.WriteFile(filepath.Join(big, fmt.Sprintf("f%02d", i)), nil, 0o600); err != nil {
+		if err := os.WriteFile(filepath.Join(many, fmt.Sprintf("f%02d", i)), nil, 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -165,12 +173,134 @@ func TestConnectableSocketsSaysWhichRootItCouldNotSearchWholeAndGivesEachRootIts
 	}
 	defer l.Close()
 
-	search := probe.ConnectableSockets([]string{big, deep, small}, table(t, ""), probe.SocketBounds{Entries: 10, Depth: 2}, 2*time.Second)
+	search := probe.ConnectableSockets([]string{big, deep, small}, table(t, ""), noMounts, probe.SocketBounds{Entries: 10, Depth: 2}, 2*time.Second)
 	if got := listed(search); got != "stream "+socket {
 		t.Fatalf("ConnectableSockets = %s; want the socket in the root after the large one, searched with its own budget", got)
 	}
 	words := strings.Join(search.Incomplete, "; ")
 	if len(search.Incomplete) != 2 || !strings.Contains(words, big) || !strings.Contains(words, "10 entries") || !strings.Contains(words, deep) || !strings.Contains(words, "deeper than 2") {
 		t.Fatalf("Incomplete = %q; want the large root (its entry budget) and the deep one (its depth), each named", search.Incomplete)
+	}
+	// The root itself, then many and 8 of its files fill the 10: the words name the folder that filled the budget.
+	if !strings.Contains(words, "(most under "+many+" 9)") {
+		t.Fatalf("Incomplete = %q; want the stopped walk to name %s, which filled its budget, with its 9 entries", search.Incomplete, many)
+	}
+}
+
+func TestConnectableSocketsNamesTheThreeHeaviestFoldersOfAStoppedWalkMostFirst(t *testing.T) {
+	// a, b, c and d hold 1, 4, 3 and 2 files, so with each folder they are 2, 5, 4 and 3 entries. With the root that is
+	// 15, the budget, and z, walked last, stops the walk.
+	root := shortDir(t)
+	for folder, files := range map[string]int{"a": 1, "b": 4, "c": 3, "d": 2} {
+		if err := os.Mkdir(filepath.Join(root, folder), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		for i := 0; i < files; i++ {
+			if err := os.WriteFile(filepath.Join(root, folder, fmt.Sprintf("f%d", i)), nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if err := os.WriteFile(filepath.Join(root, "z"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	search := probe.ConnectableSockets([]string{root}, table(t, ""), noMounts, probe.SocketBounds{Entries: 15, Depth: 8}, 2*time.Second)
+	want := fmt.Sprintf("(most under %s 5, %s 4, %s 3)", filepath.Join(root, "b"), filepath.Join(root, "c"), filepath.Join(root, "d"))
+	if len(search.Incomplete) != 1 || !strings.HasSuffix(search.Incomplete[0], want) {
+		t.Fatalf("Incomplete = %q; want the stopped walk to end %q: the three heaviest, most first, and not a (2 entries)", search.Incomplete, want)
+	}
+}
+
+// cloudflare-dial-live-10 (11-17): Cloudflare's runtime mounts proc and sysfs at /run/cloudchamber, about 58,000 entries,
+// and the walk of /run stopped at its 50,000 budget, so isolation.vendor-agent failed on a search with no socket left in
+// it. Review (#3103, PRRT_kwDOUmdVMs64nUgt): skipping a proc or sysfs folder whole would hide a mount below it that can
+// hold a socket. A test cannot mount, so the mount table is written: p is proc and holds 30 files (the budget is 10),
+// "p/in ner" below it is a tmpfs (its point escaped as the kernel writes it) with a socket, and p/in ner/q below that is
+// sysfs with a socket of its own.
+func TestConnectableSocketsSkipsProcAndSysfsButWalksTheMountsBelowThem(t *testing.T) {
+	root := shortDir(t)
+	proc := filepath.Join(root, "p")
+	inner := filepath.Join(proc, "in ner")
+	sysfs := filepath.Join(inner, "q")
+	if err := os.MkdirAll(sysfs, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 30; i++ {
+		if err := os.WriteFile(filepath.Join(proc, fmt.Sprintf("f%02d", i)), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reached, hidden := filepath.Join(inner, "s.sock"), filepath.Join(sysfs, "t.sock")
+	for _, path := range []string{reached, hidden} {
+		l, err := net.Listen("unix", path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer l.Close()
+	}
+	mountinfo := filepath.Join(t.TempDir(), "mountinfo")
+	escaped := func(path string) string { return strings.ReplaceAll(path, " ", `\040`) }
+	text := "24 1 0:4 / /proc rw,nosuid - proc proc rw\n" +
+		"25 1 0:5 / " + escaped(proc) + " rw - proc proc rw\n" +
+		"26 25 0:6 / " + escaped(inner) + " rw,relatime shared:7 master:1 - tmpfs tmpfs rw\n" +
+		"27 26 0:7 / " + escaped(sysfs) + " rw - sysfs sysfs rw\n"
+	if err := os.WriteFile(mountinfo, []byte(text), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	search := probe.ConnectableSockets([]string{root}, table(t, ""), mountinfo, probe.SocketBounds{Entries: 10, Depth: 8}, 2*time.Second)
+	if got := listed(search); got != "stream "+reached {
+		t.Fatalf("ConnectableSockets = %s; want the socket on the tmpfs below proc, and not the one in sysfs", got)
+	}
+	want := []string{proc + " (proc)", sysfs + " (sysfs)"}
+	if strings.Join(search.Skipped, "|") != strings.Join(want, "|") {
+		t.Fatalf("Skipped = %q; want %q", search.Skipped, want)
+	}
+	if len(search.Incomplete) != 0 {
+		t.Fatalf("Incomplete = %q; want none: a skipped folder costs the budget nothing", search.Incomplete)
+	}
+}
+
+// Review (#3103, PRRT_kwDOUmdVMs64niwY): below a skipped proc, the tmpfs mounts a, a-b and a/sub sort as a, a-b, a/sub
+// ('-' before '/'), so a check against the last kept mount alone kept a/sub, and it was walked twice: once through a,
+// once from the queue. Once is 8 entries (the root, p, a, sub and its 3 files, a-b); twice is 12, past the budget of 10.
+func TestConnectableSocketsWalksEachMountBelowASkippedFolderOnce(t *testing.T) {
+	root := shortDir(t)
+	proc := filepath.Join(root, "p")
+	a, ab, sub := filepath.Join(proc, "a"), filepath.Join(proc, "a-b"), filepath.Join(proc, "a", "sub")
+	for _, dir := range []string{ab, sub} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 0; i < 3; i++ {
+		if err := os.WriteFile(filepath.Join(sub, fmt.Sprintf("f%d", i)), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mountinfo := filepath.Join(t.TempDir(), "mountinfo")
+	text := "25 1 0:5 / " + proc + " rw - proc proc rw\n" +
+		"26 25 0:6 / " + a + " rw - tmpfs tmpfs rw\n" +
+		"27 25 0:7 / " + ab + " rw - tmpfs tmpfs rw\n" +
+		"28 26 0:8 / " + sub + " rw - tmpfs tmpfs rw\n"
+	if err := os.WriteFile(mountinfo, []byte(text), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	search := probe.ConnectableSockets([]string{root}, table(t, ""), mountinfo, probe.SocketBounds{Entries: 10, Depth: 8}, 2*time.Second)
+	if len(search.Incomplete) != 0 {
+		t.Fatalf("Incomplete = %q; want none: each mount below p walked once is 8 entries", search.Incomplete)
+	}
+}
+
+// The real mount table names /proc proc: walked as a root, it is skipped at once.
+func TestConnectableSocketsSkipsTheRealProcByTheRealMountTable(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("/proc/self/mountinfo is Linux's")
+	}
+	search := probe.ConnectableSockets([]string{"/proc"}, table(t, ""), "/proc/self/mountinfo", probe.DefaultSocketBounds, 2*time.Second)
+	if len(search.Skipped) == 0 || search.Skipped[0] != "/proc (proc)" || len(search.Incomplete) != 0 {
+		t.Fatalf("Skipped = %q, Incomplete = %q; want /proc (proc) first, and none incomplete", search.Skipped, search.Incomplete)
 	}
 }

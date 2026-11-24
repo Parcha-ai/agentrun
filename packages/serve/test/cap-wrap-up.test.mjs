@@ -19,7 +19,11 @@ const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { piAdapter } = await import("../dist/runner/adapters/pi.js");
 const { openSqliteStore } = await import("../dist/store/index.js");
 const { suiteTools, MAX_RESTARTS } = await import("../dist/runner/conformance/harness.js");
-const { reserveFor, WRAP_UP_TEXT, wrappingUp } = await import("../dist/wrap-up.js");
+const { reserveFor, stepAndAnswerFor, WRAP_UP_TEXT, wrappingUp, wrapUpText } = await import("../dist/wrap-up.js");
+const { journalRecords } = await import("../dist/runner/journal-reader.js");
+const { BACKGROUND_CONTEXT } = await import("@earendil-works/chord/context");
+/** The wrap-up's refusals run-1's journal keeps (CAP_REFUSED): each refused call and the cap it was refused under. */
+const refusalsKept = async (store) => (await journalRecords(store.readJournal("run-1"), BACKGROUND_CONTEXT)).entries.filter((entry) => entry.kind === "agentrun.cap_refused").map((entry) => entry.data);
 const TIMING = { ...STEADY_LEASE, pollMs: 20, commandPollMs: 30 };
 const quiet = { beforeIntent: async () => {}, beforeResult: async () => {} };
 after(closeOpenSessions);
@@ -97,7 +101,7 @@ const deferred = () => {
 
 /** A store with run-1 queued, a runner on the adapter loop under `capUsd` (undefined: no cap), the model held at `hold`
  *  and billed at `billed` a request, its root and children answered by `fetch`. `judged`: each request the cap judged. */
-async function wrapRun(t, { capUsd, hold, billed, fetch, tools, onLedger, model, price }) {
+async function wrapRun(t, { capUsd, hold, billed, fetch, tools, onLedger, model, price, hooks }) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-cap-wrap-up-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -116,7 +120,7 @@ async function wrapRun(t, { capUsd, hold, billed, fetch, tools, onLedger, model,
     session: { key: "root", label: "root", system: ["Follow the script."], tools: hostTools(tools), context: "fresh" },
     input: "Follow the script.",
     runCap: { capUsd: () => (typeof capUsd === "function" ? capUsd() : capUsd), modelOf: () => model ?? priced(hold), judged: (request, answer) => void judged.push(answer) },
-    hooks: quiet,
+    hooks: hooks ?? quiet,
     gate: () => "allow",
   }), { restartLimit: MAX_RESTARTS });
   runner = startRunner({ store, createLoop: loop, name: "runner-a", ...TIMING });
@@ -124,7 +128,7 @@ async function wrapRun(t, { capUsd, hold, billed, fetch, tools, onLedger, model,
     const now = await server.runs.get("run-1");
     return now.state !== "running" && now.state !== "queued" && now.runner === null && now;
   }, "the run settled", 30_000);
-  return { row, judged };
+  return { row, judged, server };
 }
 
 // The root hands three children their tasks at once, then would hand a fourth, then answers. Child 1 would read six
@@ -175,6 +179,31 @@ test("the rule: a capped run wraps up once its spend and holds leave too little 
   assert.equal(wrappingUp(undefined, 1e6, reserve), false, "no cap");
   assert.equal(wrappingUp(1, null, reserve), false, "a spend no one knows: the cap refuses the next request for that");
   assert.equal(wrappingUp(1, 0.99, undefined), false, "no reserve yet: the cap stays the last line");
+});
+
+test("a cap below what the model needs for one more step and an answer is named in the wrap-up's words, by the same rule: Codex on GPT-6.1 Sol at medium under $0.25", async () => {
+  const { requestFigures } = await import("@parcha/agentrun-kernel/kernel/cap");
+  // Sol's list price ($2 in, $2.50 a cache write, $10 out, a million tokens), its first request some 12,200 tokens (the
+  // Codex CLI's prompt and tools, as a follow-up drafter's run wrote its cache), medium effort: 1,024 answer tokens and
+  // 8,192 of reasoning at least. Its whole input at the cache-write rate (the cap's worst for input): its least is $0.1227,
+  // its step-0 step (a 4,096-token answer) $0.0715, so a step in flight and what the run keeps back to answer come to
+  // $0.3168.
+  const SOL = { id: "gpt-6.1-sol", api: "openai-responses", price: { input: 2, output: 10, cacheRead: 0.1, cacheWrite: 2.5 }, outputCeiling: 128_000, reasoning: true };
+  const figures = requestFigures({ kind: "model", id: "p", model: SOL, inputTokens: 12_200, outputAsked: 32_000, outputTokensLeast: 9_216 });
+  const step0 = (step0Usd) => step0Usd;
+  const need = stepAndAnswerFor(figures, step0);
+  assert.ok(Math.abs(need - (figures.leastUsd + figures.step0Usd + figures.leastUsd)) < 1e-12, `its least, a step-0 step and a least answer: ${need}`);
+  assert.ok(Math.abs(need - 0.31678) < 1e-9, `$${need}`);
+  // Under $0.25 a run wraps up at its first call with nothing spent but that step in flight at its least.
+  assert.equal(wrappingUp(0.25, figures.leastUsd, reserveFor(figures, step0)), true);
+  assert.equal(wrapUpText(0.25, SOL.id, need), `${WRAP_UP_TEXT} This run's cap of $0.25 is below what gpt-6.1-sol needs for one more step and an answer, about $0.32.`);
+  // The effort its request named, the one its least was read at, is named beside the model.
+  assert.equal(wrapUpText(0.25, SOL.id, need, "medium"), `${WRAP_UP_TEXT} This run's cap of $0.25 is below what gpt-6.1-sol at medium effort needs for one more step and an answer, about $0.32.`);
+  assert.equal(wrapUpText(1, SOL.id, need, "medium"), WRAP_UP_TEXT);
+  // A cap that holds a step and an answer wraps up only once its spend says so, in WRAP_UP_TEXT alone; with no figure, the same.
+  assert.equal(wrapUpText(1, SOL.id, need), WRAP_UP_TEXT);
+  assert.equal(wrapUpText(need, SOL.id, need), WRAP_UP_TEXT, "a cap at the need is not below it");
+  assert.equal(wrapUpText(0.25, SOL.id, undefined), WRAP_UP_TEXT);
 });
 
 test("children whose reservations push the run near its cap wrap up: every conversation that started answers, the root answers, no request is refused for the cap, and nothing is billed past it", async (t) => {
@@ -243,10 +272,13 @@ test("a single-agent run under a $0.30 cap spends past 75% and still works: its 
   const { tools, ran } = suiteTools();
   const fetch = scriptedOrigin([...Array.from({ length: 12 }, () => ({ call: "read" })), { say: "answered under the cap" }], requests);
   const fetchTold = scriptedOrigin(Array.from({ length: 4 }, () => ({ say: "answered under the cap" })), requests);
-  const { row, judged } = await wrapRun(t, { capUsd: CAP, hold: 0.04, billed: BILLED, tools, fetch: (url, init) => (toldToWrapUp(JSON.parse(String(init.body))) ? fetchTold : fetch)(url, init) });
+  const { row, judged, server } = await wrapRun(t, { capUsd: CAP, hold: 0.04, billed: BILLED, tools, fetch: (url, init) => (toldToWrapUp(JSON.parse(String(init.body))) ? fetchTold : fetch)(url, init) });
   assert.deepEqual([row.state, row.summary], ["ended", null], `the run ended answered: ${JSON.stringify(row)}`);
   assert.equal(ran.read, 8, "eight reads ran: past 75% of the cap ($0.24 of $0.30), the run still worked");
   assert.deepEqual(resultsIn(requests).filter((result) => result.text === WRAP_UP_TEXT), [{ text: WRAP_UP_TEXT, isError: true }], "one call refused, the ninth");
+  const kept = await refusalsKept(server);
+  assert.deepEqual(kept.map((data) => data.capUsd), [CAP], `the refusal is kept on the run, under its cap: ${JSON.stringify(kept)}`);
+  assert.equal(typeof kept[0].callId, "string");
   assert.equal(judged.filter((answer) => answer && "refuse" in answer).length, 0, "the cap refused no request: the answer fit");
   assert.ok(requests.length * BILLED <= CAP + 1e-9, `billed $${(requests.length * BILLED).toFixed(2)} of a $${CAP} cap`);
 });
@@ -279,7 +311,9 @@ test("a call a running script makes is never refused by the wrap-up (the tool in
   const origin = scriptedOrigin([{ call: "codemode", args: { script: "await tools.lower({}); await tools.read({}); return 'both ran';" } }, { call: "read" }, { say: "answered" }], requests);
   const [first, rest] = [billedAt(origin, 0.002, HOLD), billedAt(origin, 0.001, HOLD)];
   const fetch = (url, init) => ((JSON.parse(String(init.body)).messages ?? []).some((message) => message.role === "assistant") ? rest : first)(url, init);
-  await wrapRun(t, { capUsd: () => capNow, hold: HOLD, fetch, tools: { ...tools, lower }, price: (_model, usage) => (usage.output * HOLD) / OUTPUT });
+  const { server } = await wrapRun(t, { capUsd: () => capNow, hold: HOLD, fetch, tools: { ...tools, lower }, price: (_model, usage) => (usage.output * HOLD) / OUTPUT });
+  // Only the model's own read is kept as refused: the script's call ran.
+  assert.deepEqual((await refusalsKept(server)).map((data) => data.capUsd), [0.0045]);
   assert.equal(lowered, 1);
   assert.equal(ran.read, 1, "the script's read ran under the wrap-up; the model's own did not");
   const results = resultsIn(requests);
@@ -288,12 +322,41 @@ test("a call a running script makes is never refused by the wrap-up (the tool in
   assert.deepEqual(results[1], { text: WRAP_UP_TEXT, isError: true }, JSON.stringify(results));
 });
 
+test("a refusal is kept under the cap it was judged under: a raise landing while the gate reads the run's spend is the next call's", async (t) => {
+  // The case above, with a raise to $2 the moment the gate has read the cap for the model's own read (the second read the
+  // gate is asked about; the script's is the first): that read is refused under $0.0045, and kept so, never under $2.
+  const HOLD = 0.004;
+  let capNow = 1_000;
+  let reads = 0;
+  let raiseAfterNextRead = false;
+  const cap = () => {
+    if (!raiseAfterNextRead) return capNow;
+    raiseAfterNextRead = false;
+    const judged = capNow;
+    capNow = 2;
+    return judged;
+  };
+  const hooks = { beforeIntent: async (call) => void (call.tool === "read" && (reads += 1) === 2 && (raiseAfterNextRead = true)), beforeResult: async () => {} };
+  const { tools } = suiteTools();
+  const lower = { name: "lower", replaySafe: true, run: async () => ((capNow = 0.0045), "lowered") };
+  const requests = [];
+  const origin = scriptedOrigin([{ call: "codemode", args: { script: "await tools.lower({}); await tools.read({}); return 'both ran';" } }, { call: "read" }, { say: "answered" }], requests);
+  const [first, rest] = [billedAt(origin, 0.002, HOLD), billedAt(origin, 0.001, HOLD)];
+  const fetch = (url, init) => ((JSON.parse(String(init.body)).messages ?? []).some((message) => message.role === "assistant") ? rest : first)(url, init);
+  const { server } = await wrapRun(t, { capUsd: cap, hold: HOLD, fetch, tools: { ...tools, lower }, price: (_model, usage) => (usage.output * HOLD) / OUTPUT, hooks });
+  assert.equal(reads, 2, "the gate was asked about both reads");
+  assert.equal(capNow, 2, "the raise landed");
+  assert.deepEqual(resultsIn(requests)[1], { text: WRAP_UP_TEXT, isError: true }, "the model's read was refused under $0.0045");
+  assert.deepEqual((await refusalsKept(server)).map((data) => data.capUsd), [0.0045], "kept under the cap it was refused under");
+});
+
 test("a run with no cap is unchanged: every child runs its whole script and every spawn is made", async (t) => {
   const { requests, fetch } = fanOut();
   const { tools, ran } = suiteTools();
-  const { row } = await wrapRun(t, { capUsd: undefined, hold: 0.3, billed: 0.13, fetch, tools });
+  const { row, server } = await wrapRun(t, { capUsd: undefined, hold: 0.3, billed: 0.13, fetch, tools });
   assert.deepEqual([row.state, row.summary], ["ended", null], JSON.stringify(row));
   assert.equal(ran.read, 6, "child 1 read six times");
+  assert.deepEqual(await refusalsKept(server), [], "no refusal kept");
   assert.equal(resultsIn(Object.values(requests).flat()).filter((result) => result.text === WRAP_UP_TEXT).length, 0);
   assert.equal(requests[4].length, 1, "the fourth child was spawned");
   assert.deepEqual(texts(requests[0]), ["child 1 done", "child 2 done", "child 3 done", "child 4 done"]);
@@ -357,4 +420,6 @@ test("the wrap-up holds across a claim moved to another runner: it is read from 
   assert.deepEqual(resultsIn(requests).at(-1), { text: WRAP_UP_TEXT, isError: true });
   assert.equal(judged.filter((answer) => answer && "refuse" in answer).length, 0, "the cap refused no request");
   assert.ok(requests.length * USD <= CAP, `billed $${requests.length * USD} of a $${CAP} cap`);
+  // The new claim's refusal is kept on the run: the wrap-up is read from the store, never from memory.
+  assert.deepEqual((await refusalsKept(server)).map((data) => data.capUsd), [CAP]);
 });

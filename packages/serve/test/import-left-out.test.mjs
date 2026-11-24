@@ -57,7 +57,7 @@ test("--include-deleted imports the sessions of folders that no longer exist, ea
   t.after(async () => await store.close());
   const report = await importing.runImport(store, plan, options);
   assert.deepEqual(report.agents.map((a) => [a.cwd, a.runs]), [[h.live, 1], [join(h.at, "worktrees", "billing-api-docs"), 1], [join(h.at, "worktrees", "billing-api-retries"), 2]]);
-  assert.equal((await store.agents.revisions(report.agents[2].id))[0].body.instructions, "", "a folder that is gone has no instructions to read");
+  assert.equal((await store.agents.revisions(report.agents[2].id))[0].body.instructions, importing.importedInstructions("billing-api-retries", "claude-code"), "a folder that is gone has no instructions to read: the agent gets the import's own");
 });
 
 test("the CLI's dry run and import count what they leave out by why, with the flag that brings each kind in, and list each file only with --verbose", async (t) => {

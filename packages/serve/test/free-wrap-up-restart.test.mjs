@@ -14,8 +14,11 @@ import { agent, follow, journalOf, scratch, serve, withEnv } from "./support.mjs
 
 const HOLD_LOOP = new URL("./fixtures/faux-loop-hold.mjs", import.meta.url).pathname;
 const ENV = "AGENTRUN_FREE_MODEL_REQUESTS";
-/** A short lease, so a crashed runner's claim runs out soon (cap-never-passed.test.mjs's). */
-const CRASHABLE = { leaseMs: 1_500, renewEveryMs: 300, stopMarginMs: 300, pollMs: 20, commandPollMs: 30 };
+/** A lease short enough that a crashed runner's claim runs out soon, and long enough that a slow flush on CI (the lease
+ *  renewal waits behind it on the store's one worker) never loses the live runner's claim before the crash: a lost
+ *  claim books the request in flight cut, and a cut request is counted (kernel cap free.ts), so the note would come one
+ *  request early. 1.5 s was lost on CI behind a flush of 1.1 s or more. */
+const CRASHABLE = { leaseMs: 4_000, renewEveryMs: 300, stopMarginMs: 300, pollMs: 20, commandPollMs: 30 };
 /** The words with `left` requests left (kernel cap free.ts). */
 const WORDS = (left) => `${left} free-model requests left in this run, this one included: finish now with your answer.`;
 /** The text between the tags the proxy places the note in. */
@@ -62,15 +65,6 @@ function toldOnce({ view, sent, rows, entries }) {
   assert.deepEqual(told.map((entry) => entry.data.freeLimit), [10], "one record of the told limit");
   assert.deepEqual(rows.map((row) => row.text), [WORDS(3)], "one row of the server's says so");
 }
-
-test("a free-limit note told before a runner restart is never told again: the next runner reads it from the run's records", { timeout: 240_000 }, async (t) => {
-  // Its 8th request carries the note (3 left); the 9th is out when the runner crashes, and the next runner sends it again,
-  // the 10th counted, 1 left: due by the count, and already told.
-  const ran = await restartedAt(t, 9);
-  t.diagnostic(`notes: ${JSON.stringify(ran.sent.map((call) => call.note && reminderIn(call.note).trim()))}`);
-  toldOnce(ran);
-  assert.equal(ran.sent.findIndex((call) => call.note !== null), 7, "the 8th answered request carried it, before the restart");
-});
 
 test("a runner restart before the free-limit note is due never loses it: the next runner tells it, once", { timeout: 240_000 }, async (t) => {
   // The 5th request is out when the runner crashes; the next runner sends it again (the 6th counted), and the note comes

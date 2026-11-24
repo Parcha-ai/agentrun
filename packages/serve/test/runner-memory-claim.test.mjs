@@ -139,6 +139,12 @@ test("the weights and the budget a runner claims by (memory-claim.ts): each run 
   const weights = await memory.weigh(["run-claude", "run-codex", "run-opencode", "run-pi", "run-default", "run-learning", "run-no-launch"]);
   assert.deepEqual(Object.fromEntries(weights), { "run-claude": 288, "run-codex": 192, "run-opencode": 704, "run-pi": 128, "run-default": 128, "run-learning": 128, "run-no-launch": 128 });
   assert.equal(claimMibOf("claude-agent"), 288);
+  // A runner whose runs are each a process of their own weighs that process too (a learning run, which stays in the
+  // runner's, aside): 96 MiB, a run's process at its first turn (224 MiB resident on the faux model) less pi's own 128.
+  const { RUN_PROCESS_MIB } = await import("../dist/runner/memory-claim.js");
+  assert.equal(RUN_PROCESS_MIB, 96);
+  const own = await runnerMemory(server, 2048 * MiB, {}, RUN_PROCESS_MIB).weigh(["run-claude", "run-pi", "run-learning", "run-no-launch"]);
+  assert.deepEqual(Object.fromEntries(own), { "run-claude": 288 + 96, "run-pi": 128 + 96, "run-learning": 128, "run-no-launch": 128 + 96 });
   // The bug this fixes, in numbers: the default count on a 2 GB host is 15 (pi's), and 15 claude-agent runs weigh 4320 MiB;
   // by weight the budget holds 6.
   assert.equal(Math.floor(memory.budgetMib / 128), 15);

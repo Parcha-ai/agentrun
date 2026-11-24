@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { AgentEditor } from "./AgentEditor";
 import { ToolsPage } from "./ToolsPage";
 import type { Agent } from "@/lib/agentForm";
+import { SERVED_AGENT } from "@/test/agent";
 import { toolChoices, toolGates } from "@/lib/toolSettings";
 import type { AgentTool, ToolSettings } from "@/lib/v2";
 import { picker, valueOf } from "@/test/picker";
@@ -56,7 +57,7 @@ describe("a server deny, in the agent editor", () => {
   ];
   const caps = { harnesses: [{ id: "pi", available: true }], tools: RAW.map(({ name, available }) => ({ name, available, harnesses: ["pi"] })), thinking: [] };
   const agentWith = (tools: string[], over: Partial<Agent> = {}, toolSettings?: ToolSettings): Agent => ({
-    agent_id: "fixer", kind: "agentic", revision: "r1", revisions: 1, archived_at: null,
+    ...SERVED_AGENT, agent_id: "fixer", kind: "agentic", revision: "r1", revisions: 1, archived_at: null,
     definition: { version: 1, name: "Fixer", instructions: "Fix it.", harness: "pi", skills: [], tools, ...(toolSettings ? { tool_settings: toolSettings } : {}) },
     ...over,
   });

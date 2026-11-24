@@ -1,4 +1,4 @@
-// The keys a person may save on Settings → Tool keys (tool-keys.ts' TOOL_KEYS reads the tool rows from here), and the
+// The keys a person may save on Settings → API Keys (tool-keys.ts' TOOL_KEYS reads the tool rows from here), and the
 // words for one a tool needs that this server does not hold: where the person saves it is named first, then the
 // variable to set where the server starts, since a key saved and then removed in Settings was never in the environment.
 import { MODEL_KEYS } from "./model.js";
@@ -17,7 +17,7 @@ export const TOOL_KEY_ROWS = [
   { id: "typesafe", kind: "tool", label: "TypeSafe (Jev)", fields: ["TYPESAFE_API_KEY"], unlocks: ["decisions.jev"] },
 ] as const;
 
-/** Every key Settings → Tool keys saves, tool keys and model keys alike (a saved model key reaches every run): its label
+/** Every key Settings → API Keys saves, tool keys and model keys alike (a saved model key reaches every run): its label
  *  and fields. */
 const SAVABLE: readonly { label: string; fields: readonly string[] }[] = [
   ...TOOL_KEY_ROWS.map((row) => ({ label: row.label, fields: row.fields as readonly string[] })),
@@ -27,7 +27,7 @@ const SAVABLE: readonly { label: string; fields: readonly string[] }[] = [
 const article = (label: string) => (/^[AEIOU]/i.test(label) ? "an" : "a");
 
 /** What `vars` (the variables a tool needs that this server does not hold) are, as a person fixes them: each savable
- *  key's "a <Label> key: save one in Settings → Tool keys (or set <VARS> where the server starts)", then any variable no
+ *  key's "a <Label> key: save one in Settings → API Keys (or set <VARS> where the server starts)", then any variable no
  *  key saves, to set where the server starts. */
 export function keyNeeded(vars: readonly string[]): string {
   const left = [...vars];
@@ -36,7 +36,7 @@ export function keyNeeded(vars: readonly string[]): string {
     const hit = row.fields.filter((field) => left.includes(field));
     if (!hit.length) continue;
     for (const field of hit) left.splice(left.indexOf(field), 1);
-    parts.push(`${article(row.label)} ${row.label} key: save one in Settings → Tool keys (or set ${hit.join(" and ")} where the server starts)`);
+    parts.push(`${article(row.label)} ${row.label} key: save one in Settings → API Keys (or set ${hit.join(" and ")} where the server starts)`);
   }
   for (const name of left) parts.push(`${name}, set where the server starts`);
   return parts.join("; and ");

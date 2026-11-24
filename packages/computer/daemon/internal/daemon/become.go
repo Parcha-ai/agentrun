@@ -9,21 +9,19 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
-	"unsafe"
 
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/isolate"
+	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/windowmanager"
 )
 
 const (
-	prCapbsetRead        = 23
-	prCapbsetDrop        = 24
-	prSetNoNewPrivs      = 38
-	prGetNoNewPrivs      = 39
-	prCapAmbient         = 47
-	prCapAmbientIsSet    = 1
-	prCapAmbientClearAll = 4
-	capVersion3          = 0x20080522
-	capLastCapFile       = "/proc/sys/kernel/cap_last_cap"
+	prCapbsetRead     = 23
+	prCapbsetDrop     = 24
+	prSetNoNewPrivs   = 38
+	prGetNoNewPrivs   = 39
+	prCapAmbient      = 47
+	prCapAmbientIsSet = 1
+	capLastCapFile    = "/proc/sys/kernel/cap_last_cap"
 )
 
 // Become is init's start on a vendor that runs every computer as root and has no user of its own to give (Modal: "Modal
@@ -65,7 +63,8 @@ func Become(uid, gid int, home, socket string, isolation Isolation) error {
 			return err
 		}
 	}
-	if err := dropPrivileges(becomeUser(uid, gid)); err != nil {
+	become := becomeUser(uid, gid)
+	if err := dropPrivileges(func() error { isolation.WindowManager.Start(); return become() }); err != nil {
 		return err
 	}
 	if isolation.OwnNetwork {
@@ -81,10 +80,13 @@ func Become(uid, gid int, home, socket string, isolation Isolation) error {
 // (isolate.DenySockets): init and every program it starts reach their own loopback and nothing else, and a failure of
 // any step refuses to start. With StartedIn, init was started in a network namespace of its own already, inside a user
 // namespace of its own (InitInUserNamespace), and StartedIn names the network namespace the init that started it was
-// in: Become brings the loopback up and reads it back (isolate.KeepOwnNetwork) instead of making the namespace.
+// in: Become brings the loopback up and reads it back (isolate.KeepOwnNetwork) instead of making the namespace. With
+// WindowManager, Become forks the desktop's window manager's start as uid:gid in a network namespace it makes (Start),
+// while still root, once no_new_privs is set and the bounding set is empty, before the uid change.
 type Isolation struct {
-	OwnNetwork bool
-	StartedIn  string
+	OwnNetwork    bool
+	StartedIn     string
+	WindowManager *windowmanager.Manager
 }
 
 // procRoot is the /proc RefuseStrangers reads.
@@ -111,9 +113,11 @@ func becomeUser(uid, gid int) func() error {
 
 // Unprivileged is init's start as the user the provider gave it (Docker: --user). It leaves every thread of init, and so
 // every program it starts, with no capability and no way to gain one, whatever the uid, root included: see
-// dropPrivileges. It must run before Init.
-func Unprivileged() error {
-	return dropPrivileges(nil)
+// dropPrivileges. It must run before Init. With manager, it forks the window manager's start as its own uid in a network
+// namespace it makes (windowmanager.Manager.Start), once no_new_privs is set and the bounding set is empty: init must be
+// root with CAP_SYS_ADMIN for that, or the manager's fact says why it did not start.
+func Unprivileged(manager *windowmanager.Manager) error {
+	return dropPrivileges(func() error { manager.Start(); return nil })
 }
 
 // dropPrivileges sets no_new_privs and empties the capability bounding set on every thread, calls become (the uid
@@ -137,7 +141,7 @@ func dropPrivileges(become func() error) error {
 			return err
 		}
 	}
-	if err := clearCapabilitiesOnEveryThread(); err != nil {
+	if err := isolate.ClearCapabilities(); err != nil {
 		return err
 	}
 	return checkUnprivileged(last)
@@ -186,32 +190,6 @@ func dropBoundingSetOnEveryThread(last uintptr) error {
 	return nil
 }
 
-type capHeader struct {
-	version uint32
-	pid     int32
-}
-
-type capData struct{ effective, permitted, inheritable uint32 }
-
-// The capset arguments live outside any goroutine's stack, which may move while AllThreadsSyscall runs.
-var (
-	capsetHeader = capHeader{version: capVersion3}
-	capsetData   [2]capData
-)
-
-// clearCapabilitiesOnEveryThread empties every thread's ambient, effective, permitted and inheritable sets. Dropping a
-// capability needs none. A kernel with no ambient set answers EINVAL to it, and has nothing there to empty.
-func clearCapabilitiesOnEveryThread() error {
-	if _, _, errno := syscall.AllThreadsSyscall6(syscall.SYS_PRCTL, prCapAmbient, prCapAmbientClearAll, 0, 0, 0, 0); errno != 0 && errno != syscall.EINVAL {
-		return fmt.Errorf("cannot empty the ambient capability set of every thread: %w", errno)
-	}
-	capsetData = [2]capData{}
-	if _, _, errno := syscall.AllThreadsSyscall(syscall.SYS_CAPSET, uintptr(unsafe.Pointer(&capsetHeader)), uintptr(unsafe.Pointer(&capsetData[0])), 0); errno != 0 {
-		return fmt.Errorf("cannot empty the capability sets of every thread: %w", errno)
-	}
-	return nil
-}
-
 // checkUnprivileged reads back what dropPrivileges set: no_new_privs, and no capability up to last in the bounding or
 // ambient set, through calls made on every thread, which agree or end the process; and every thread's effective,
 // permitted and inheritable sets, by its id.
@@ -237,15 +215,14 @@ func checkUnprivileged(last uintptr) error {
 		if err != nil {
 			continue
 		}
-		header := capHeader{version: capVersion3, pid: int32(tid)}
-		var data [2]capData
-		if _, _, errno := syscall.RawSyscall(syscall.SYS_CAPGET, uintptr(unsafe.Pointer(&header)), uintptr(unsafe.Pointer(&data[0])), 0); errno != 0 {
-			if errno == syscall.ESRCH {
-				continue
-			}
-			return fmt.Errorf("cannot read thread %d's capabilities back: %w", tid, errno)
+		data, err := isolate.ThreadCapabilities(tid)
+		if errors.Is(err, syscall.ESRCH) {
+			continue
 		}
-		if data != [2]capData{} {
+		if err != nil {
+			return fmt.Errorf("cannot read thread %d's capabilities back: %w", tid, err)
+		}
+		if data != [2]isolate.CapData{} {
 			return fmt.Errorf("thread %d still holds capabilities after they were emptied: %+v", tid, data)
 		}
 	}

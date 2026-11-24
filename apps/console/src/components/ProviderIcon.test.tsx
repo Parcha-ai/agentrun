@@ -24,7 +24,7 @@ describe("a provider's icon", () => {
     expect(img.getAttribute("alt")).toBe("");
   });
   it("only ever asks the host the server's CSP allows", () => {
-    for (const id of ["anthropic", "openai", "openrouter", "parallel", "monid", "browserbase", "kernel", "typesafe"]) {
+    for (const id of ["anthropic", "openai", "openrouter", "particle", "parallel", "monid", "browserbase", "kernel", "typesafe"]) {
       const img = draw(id).querySelector("img")!;
       expect(new URL(img.src).origin, id).toBe("https://www.google.com");
       act(() => root?.unmount());

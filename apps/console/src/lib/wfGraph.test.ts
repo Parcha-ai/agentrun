@@ -1,7 +1,7 @@
 import { workflowGraph } from "@dsl/graph";
 import { describe, expect, it } from "vitest";
-import { BATCH_MID, batchRunAt } from "@/fixtures/dwf/runs";
-import { kybWorkflow } from "@/fixtures/dwf/workflows";
+import { BATCH_MID, batchRunAt } from "@/demo/dwf/runs";
+import { kybWorkflow } from "@/demo/dwf/workflows";
 import { runMarks } from "./runGraph";
 import { drawWorkflowGraph, hitOf } from "./wfGraph";
 import { nodeMeta } from "./workflowDoc";
@@ -33,6 +33,23 @@ describe("drawWorkflowGraph", () => {
     expect(s.querySelector('.rcell[data-item="0"] .cell-name')?.textContent).toBeTruthy();
     expect(hitOf(cells[7])).toEqual({ path: "/root/steps/0", item: 7 });
     expect(hitOf(s.querySelector('g[data-path="/root/steps/1"] .box'))).toEqual({ path: "/root/steps/1", item: null });
+  });
+  it("names a cell by a file's name, and by the head of a label that is text, slashes in it or not", () => {
+    const run = batchRunAt(BATCH_MID);
+    const map = run.graph.nodes.find((n) => n.kind === "map")!.path;
+    const items = run.nodes[map].items!;
+    items[0].label = "The legacy /events endpoint has been removed. Send event queries to /v2/events instead.";
+    items[1].label = "invoices/2026/acme-march.pdf";
+    items[2].label = "https://example.com/pricing";
+    items[3].label = "Requests now require the X-Workspace header.";
+    const s = svg();
+    drawWorkflowGraph(s, run.graph, runMarks(run, null));
+    const name = (i: number) => s.querySelector(`.rcell[data-item="${i}"] .cell-name`)?.textContent ?? "";
+    expect(name(0)).toMatch(/^The legacy/);
+    expect(name(1)).toBe("acme-march");
+    expect(name(2)).toBe("pricing");
+    expect(name(3)).toMatch(/^Requests now/);
+    expect(s.querySelector('.rcell[data-item="0"] title')?.textContent).toContain(items[0].label);
   });
   it("names a cell's outcome by the item's route branch, in its tone, with the probability behind it", () => {
     const run = batchRunAt(BATCH_MID);

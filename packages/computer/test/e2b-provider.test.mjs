@@ -12,16 +12,17 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { checkLifetime, kindRefusals } from "../dist/index.js";
+import { AttachHub, checkLifetime, kindRefusals, MACHINE_TOKEN_SOURCE, MemoryMachineTokens } from "../dist/index.js";
 import * as registry from "../dist/providers.js";
 import { fakeObjects } from "./fake-archil.mjs";
+import { bootDial, desktopOverDial, dialServer } from "./fake-dial-host.mjs";
 import { fakeEnvd } from "./fake-envd.mjs";
 
 const e2b = await import("../dist/e2b.js");
 const { E2BProvider, create } = e2b;
 const { providerFor } = registry;
 /** The conformance module's names: the only place E2B settings are read from an environment. */
-const { E2B_ENV: ENV, settingsFromEnv, createHost } = await import("../dist/conformance/e2b.js");
+const { E2B_ENV: ENV, settingsFromEnv, createHost, dialKit } = await import("../dist/conformance/e2b.js");
 const { checkExecStream, formatExecStream } = await import("../dist/conformance/exec-stream.js");
 
 const VERSION = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
@@ -32,9 +33,9 @@ const HOUR = 3_600_000;
 const DESKTOP_GROUPS = ["exec", "files", "processes", "screen", "input.pointer", "input.keys", "apps"];
 const LINUX_GROUPS = ["exec", "files", "processes"];
 const BARE = "e2b_bare_key_must_never_be_used";
-/** The public box template release.yml's box-e2b job publishes: its E2B team's slug, then agentrun-archil-<box/recipe.mjs's hash>. */
+/** The public box template release.yml's box job publishes: its E2B team's slug, then agentrun-archil-<box/recipe.mjs's hash>. */
 const BOX_TEMPLATE = `agentrun-oss/agentrun-archil-${createHash("sha256")
-	.update(Buffer.concat(["Dockerfile", "agentrun-archil"].map((name) => readFileSync(new URL(`../box/${name}`, import.meta.url)))))
+	.update(Buffer.concat(["Dockerfile", "install.sh", "agentrun-archil"].map((name) => readFileSync(new URL(`../box/${name}`, import.meta.url)))))
 	.digest("hex")
 	.slice(0, 12)}`;
 const dir = mkdtempSync(join(tmpdir(), "computer-e2b-"));
@@ -97,12 +98,12 @@ async function withProcessEnv(values, fn) {
 	}
 }
 
-test("an E2B desktop is kind desktop with daemon child, the desktop groups, network none probed from inside, envd's port, and Hobby's 1 h cap", () => {
+test("an E2B desktop is kind desktop with daemon child, the desktop groups, network none, open and a list probed from inside, envd's port, and Hobby's 1 h cap", () => {
 	const { provider } = setup();
 	const caps = provider.capabilities();
 	assert.deepEqual(
 		{ kind: caps.kind, os: caps.os, daemon: caps.daemon, lifetime: caps.lifetime, isolation: caps.isolation, network: caps.network, networkReadBack: caps.networkReadBack, release: caps.release, vendorAgentPorts: caps.vendorAgentPorts },
-		{ kind: "desktop", os: "linux", daemon: "child", lifetime: "vendor", isolation: "microvm", network: ["none"], networkReadBack: false, release: ["delete"], vendorAgentPorts: [49983] },
+		{ kind: "desktop", os: "linux", daemon: "child", lifetime: "vendor", isolation: "microvm", network: ["none", "open", "allow"], networkReadBack: false, release: ["delete"], vendorAgentPorts: [49983] },
 	);
 	assert.deepEqual(caps.groups, DESKTOP_GROUPS);
 	assert.equal(caps.maxLifetimeMs, HOUR, "E2B Hobby caps a sandbox at 1 h");
@@ -202,14 +203,15 @@ test("kind linux is the plain template: no display, groups exec, files and proce
 	assert.throws(() => setup({ kind: "android" }), /desktop or linux/);
 });
 
-test("check() takes a template as the image, network none, and labels; it refuses open, an allowlist, sizes, a user and a workdir in words", () => {
+test("check() takes a template as the image, network none, open or a list, and labels; it refuses a malformed list, sizes, a user and a workdir in words", () => {
 	const { provider } = setup();
 	assert.deepEqual(provider.check({ ...SPEC, labels: { run: "r1" } }), []);
 	const fields = (spec) => provider.check(spec).map((r) => r.field);
 	assert.deepEqual(fields({ ...SPEC, image: "" }), ["image"]);
-	assert.deepEqual(fields({ ...SPEC, network: "open" }), ["network"]);
-	assert.deepEqual(fields({ ...SPEC, network: { allow: ["example.com"] } }), ["network"]);
-	assert.match(provider.check({ ...SPEC, network: { allow: ["example.com"] } })[0].message, /allowlists wait for a proxy/);
+	assert.deepEqual(fields({ ...SPEC, network: "open" }), []);
+	assert.deepEqual(fields({ ...SPEC, network: { allow: ["example.com"] } }), []);
+	assert.deepEqual(fields({ ...SPEC, network: { allow: ["192.168.0.0/16"] } }), ["network"], "a list the proxy would refuse is refused at check");
+	assert.deepEqual(fields({ ...SPEC, network: "wifi" }), ["network"]);
 	assert.deepEqual(fields({ ...SPEC, cpus: 2 }), ["cpus"]);
 	assert.deepEqual(fields({ ...SPEC, memoryMb: 1024 }), ["memoryMb"]);
 	assert.match(provider.check({ ...SPEC, cpus: 2 })[0].message, /an E2B computer has the size of its template: name a template of the size you need, not cpus/, "E2B's own check: the adapter passes sizes on");
@@ -334,6 +336,30 @@ test("create() asks E2B for the lifetime as its timeout in whole seconds, the la
 	assert.match(opts.metadata[`${COMPUTER}.name`], /^computer-[0-9a-f]{12}$/);
 	assert.equal(opts.metadata[`${COMPUTER}.timeout-ms`], "601000");
 	assert.equal(opts.signal, undefined, "never cancelled: an aborted create could leave a sandbox whose id never came back");
+	assert.equal(opts.metadata[`${COMPUTER}.network`], undefined, "none carries no network label");
+});
+
+test("create() under open or a list asks E2B for internet access, for init's egress proxy, still no public traffic, and records the form in a label", async () => {
+	for (const [network, form] of [
+		["open", "open"],
+		[{ allow: ["Example.com"] }, "allow:example.com"],
+	]) {
+		const calls = [];
+		const Sandbox = {
+			...recorder().Sandbox,
+			list: () => ({ hasNext: true, nextItems: async () => ((Sandbox.listed = true), []), get hasNext() { return !Sandbox.listed; } }),
+			create: async (template, opts) => {
+				calls.push([template, opts]);
+				throw Object.assign(new Error("400: template not found"), { name: "InvalidArgumentError" });
+			},
+		};
+		const provider = new E2BProvider({ apiKey: KEY, Sandbox, daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
+		await provider.create({ ...SPEC, network }, { requestId: `r-net-${form}` });
+		const [, opts] = calls[0];
+		assert.equal(opts.allowInternetAccess, true, form);
+		assert.deepEqual(opts.network, { allowPublicTraffic: false });
+		assert.equal(opts.metadata[`${COMPUTER}.network`], form);
+	}
 });
 
 test("the provider refuses to start while E2B_SANDBOX_URL is set in process.env: the SDK would send every sandbox call there", async () => {
@@ -356,6 +382,13 @@ test("the real SDK, given the provider's connection options, takes none of an am
 		assert.equal(config.debug, false);
 		assert.equal(config.sandboxUrl, undefined);
 	});
+});
+
+test("get reads what E2B gave the sandbox (getInfo's cpuCount and memoryMB) as its resources, and none where getInfo says none", async () => {
+	const info = (fields) => ({ sandboxId: "sbx-1", templateId: "base", metadata: {}, startedAt: new Date(), endAt: new Date(Date.now() + HOUR), state: "running", ...fields });
+	const hostWith = (fields) => createHost({ env: { [ENV.key]: KEY }, Sandbox: { ...recorder().Sandbox, getInfo: async () => info(fields) } });
+	assert.deepEqual((await (await hostWith({ cpuCount: 2, memoryMB: 512 })).get("sbx-1", { timeoutMs: 1_000 })).resources, { cpus: 2, memoryMb: 512 });
+	assert.equal(Object.hasOwn(await (await hostWith({})).get("sbx-1", { timeoutMs: 1_000 }), "resources"), false);
 });
 
 test("E2B's exec, through the real SDK's envd client, passes the exec pre-check: every byte comes back as sent, where commands.run's onStdout decodes UTF-8", async (t) => {
@@ -483,13 +516,11 @@ test("the live E2B suite skips when only E2B_API_KEY is set", () => {
 // The loopback block: E2B's envd runs as root in the sandbox and answers on 49983, so the daemon's programs get a network
 // of their own (init --own-network) and run as 2510:2510.
 
-test("the loopback block: network none only, envd's port declared, open refused in words", () => {
+test("the loopback block: envd's port declared, open and a list taken through init's egress proxy alone (it refuses envd's port)", () => {
 	const { provider, rec } = setup();
-	assert.deepEqual(provider.capabilities().network, ["none"]);
+	assert.deepEqual(provider.capabilities().network, ["none", "open", "allow"]);
 	assert.deepEqual(provider.capabilities().vendorAgentPorts, [49983]);
-	const refusals = provider.check({ ...SPEC, network: "open" });
-	assert.deepEqual(refusals.map((r) => r.field), ["network"]);
-	assert.match(refusals[0].message, /network "none" only: its programs run in a network of their own/);
+	assert.deepEqual(provider.check({ ...SPEC, network: "open" }), []);
 	assert.deepEqual(rec.calls, []);
 });
 
@@ -559,7 +590,7 @@ test("E2B's descriptor says it prepares its image and names no default image: ev
 		assert.equal(name in (await import("../dist/index.js")), false, name);
 	}
 	const { BOX_E2B_PUBLISHER, boxE2bTemplate } = await import("../dist/box-image.js");
-	assert.equal(BOX_E2B_PUBLISHER, "agentrun-oss","the E2B team release.yml's box-e2b job publishes from");
+	assert.equal(BOX_E2B_PUBLISHER, "agentrun-oss","the E2B team release.yml's box job publishes from");
 	assert.equal(boxE2bTemplate(), BOX_TEMPLATE);
 });
 
@@ -596,5 +627,172 @@ test("E2B's metadata on an Archil computer of the longest agent id, on the box t
 	assert.ok(pairs.length <= 257, `${pairs.length} pairs`);
 	assert.ok(bytes <= 65_570, `${bytes} bytes of keys and values: ${JSON.stringify(metadata)}`);
 	assert.equal(metadata["agentrun.computer.image"], BOX_TEMPLATE);
+});
+
+/** The public address a dial provider is given in tests: http on 127.0.0.1, which it takes in tests alone. */
+const DIAL_URL = "http://127.0.0.1:8080";
+const BOOT_NAMES = ["AGENTRUN_ATTACH_TOKEN", "AGENTRUN_ATTACH_URL", "AGENTRUN_DAEMON_SHA256", "AGENTRUN_DAEMON_URL", "AGENTRUN_INIT_ARGS"];
+
+/**
+ * E2B's SDK slice for a dial create: Sandbox.create answers a sandbox whose envd process stream (commands.rpc.start)
+ * records each start, answers its start event, and then holds until the client lets go of it; getInfo and list read the
+ * sandbox back running with create's metadata; files.write and Sandbox.connect fail the test. Nothing reaches a network.
+ */
+function dialSandbox() {
+	const calls = [];
+	let made;
+	let startedAt;
+	let killed = false;
+	const info = () => {
+		if (killed) throw Object.assign(new Error("sandbox not found"), { name: "SandboxNotFoundError" });
+		return { sandboxId: "sbx-dial", templateId: "box", metadata: made.metadata, startedAt, endAt: new Date(startedAt.getTime() + made.timeoutMs), state: "running" };
+	};
+	const sandbox = {
+		sandboxId: "sbx-dial",
+		files: { write: async () => assert.fail("a dial create uploads nothing") },
+		commands: {
+			rpc: {
+				start(request, options) {
+					const started = { request, options };
+					calls.push(["rpc.start", started]);
+					return (async function* () {
+						yield { event: { event: { case: "start", value: { pid: 7 } } } };
+						await new Promise((done) => options.signal.addEventListener("abort", done, { once: true }));
+					})();
+				},
+			},
+		},
+	};
+	const Sandbox = {
+		create: async (template, opts) => {
+			calls.push(["Sandbox.create", template, opts]);
+			made = opts;
+			startedAt = new Date();
+			return sandbox;
+		},
+		connect: async () => assert.fail("a dial create connects to no sandbox's envd"),
+		getInfo: async () => info(),
+		setTimeout: async () => {},
+		kill: async (id) => {
+			calls.push(["Sandbox.kill", id]);
+			killed = true;
+		},
+		list: () => {
+			let done = false;
+			return { get hasNext() { return !done; }, nextItems: async () => ((done = true), made && !killed ? [info()] : []) };
+		},
+	};
+	return { calls, Sandbox };
+}
+
+const dialOf = () => ({ url: DIAL_URL, tokens: new MemoryMachineTokens(), hub: new AttachHub({ helloMs: 1_000 }) });
+
+test("connect dial: create starts agentrun-dial once as root with the boot env, after the root-only and socket steps; the sandbox's envs hold none of it, and nothing is uploaded or bridged", async () => {
+	const { calls, Sandbox } = dialSandbox();
+	const dial = dialOf();
+	const provider = new E2BProvider({ apiKey: KEY, Sandbox, kind: "linux", connect: "dial", dial, daemonPath: DAEMON_PATH, timeouts: { ...TIMEOUTS, createMs: 300 } });
+	assert.equal(provider.host.facts.connect, "dial");
+	assert.equal(provider.host.exec, undefined, "no exec");
+	assert.equal(provider.host.upload, undefined, "no upload");
+	const made = await provider.create({ ...SPEC, image: BOX_TEMPLATE }, { requestId: "r-dial" });
+	// Nothing here dials back, so the create waits for the socket and gives up, naming the address.
+	assert.equal(made.error?.code, "timeout", JSON.stringify(made));
+	assert.match(made.error.message, /did not dial ws:\/\/127\.0\.0\.1:8080\/v2\/computers\/attach/);
+	const [, template, opts] = calls.find(([what]) => what === "Sandbox.create");
+	assert.equal(template, BOX_TEMPLATE);
+	assert.deepEqual(opts.envs, {}, "the token never goes in the sandbox's envs, which envd gives every process");
+	assert.equal(opts.allowInternetAccess, true, "its root reaches the server");
+	const starts = calls.filter(([what]) => what === "rpc.start").map(([, started]) => started);
+	assert.equal(starts.length, 1, "one process: the launch");
+	const [{ request, options }] = starts;
+	assert.equal(request.process.cmd, "/bin/sh");
+	assert.equal(request.process.args[0], "-c");
+	assert.equal(request.process.args.length, 2);
+	const script = request.process.args[1];
+	assert.match(script, /exec >>\/run\/agentrun-dial\.log 2>&1 <\/dev\/null/);
+	assert.match(script, /# agentrun-computer: root-only[\s\S]*' sh \/usr\/local \/usr\/bin\/envd \/etc\/inittab && sh -c '# agentrun-computer: sockets[\s\S]*' sh '\/tmp\/dbus-\*' && exec \/usr\/local\/bin\/agentrun-dial$/);
+	assert.deepEqual(Object.keys(request.process.envs).sort(), [...BOOT_NAMES, "PATH"].sort());
+	assert.equal(request.process.envs.PATH, "/usr/sbin:/usr/bin:/sbin:/bin");
+	assert.match(request.process.envs.AGENTRUN_ATTACH_TOKEN, new RegExp(`^${MACHINE_TOKEN_SOURCE}$`));
+	assert.equal(request.process.envs.AGENTRUN_ATTACH_URL, "ws://127.0.0.1:8080/v2/computers/attach");
+	assert.equal(request.stdin, false);
+	assert.equal(options.headers.Authorization, `Basic ${Buffer.from("root:").toString("base64")}`);
+	assert.equal(options.timeoutMs, 0, "no deadline on the process");
+	assert.equal(options.signal.aborted, true, "the stream was let go of once envd started it");
+	assert.equal(dial.tokens.check(request.process.envs.AGENTRUN_ATTACH_TOKEN), undefined, "a machine that never dialed has its token revoked");
+	assert.ok(calls.some(([what, id]) => what === "Sandbox.kill" && id === "sbx-dial"), "and is deleted");
+});
+
+test("connect dial: a desktop's launch gives agentrun-dial DISPLAY beside the boot env, for init", async () => {
+	const { calls, Sandbox } = dialSandbox();
+	const provider = new E2BProvider({ apiKey: KEY, Sandbox, connect: "dial", dial: dialOf(), daemonPath: DAEMON_PATH, timeouts: { ...TIMEOUTS, createMs: 300 } });
+	const made = await provider.create({ ...SPEC, image: BOX_TEMPLATE }, { requestId: "r-dial-desktop" });
+	assert.equal(made.error?.code, "timeout", JSON.stringify(made));
+	const [[, { request }]] = calls.filter(([what]) => what === "rpc.start");
+	assert.deepEqual(Object.keys(request.process.envs).sort(), [...BOOT_NAMES, "DISPLAY", "PATH"].sort());
+	assert.equal(request.process.envs.DISPLAY, ":0");
+});
+
+test("E2B's desktop configuration, as serve builds it on connect dial, makes a desktop over dial: agentrun-dial boots from the envs envd started it with, dials, and its X server and xfwm4 start over that socket", async () => {
+	const { calls, Sandbox } = dialSandbox();
+	const dial = dialServer();
+	let booted;
+	// The sandbox's envd starts agentrun-dial with the boot env (rpc.start's envs): that machine boots and dials (bootDial).
+	const make = Sandbox.create;
+	Sandbox.create = async (...args) => {
+		const sandbox = await make(...args);
+		const start = sandbox.commands.rpc.start;
+		sandbox.commands.rpc.start = (request, options) => {
+			const { envs } = request.process;
+			if (envs.AGENTRUN_ATTACH_TOKEN !== undefined) booted = bootDial(envs, dial, { daemon: readFileSync(DAEMON_PATH) });
+			return start(request, options);
+		};
+		return sandbox;
+	};
+	const { options } = registry.descriptorOf("e2b").capabilities.find(({ kind }) => kind === "desktop");
+	// serve's options for this provider: the keys' and the settings' (e2bConnect dial), then the configuration's (none).
+	const provider = new E2BProvider({ apiKey: KEY, Sandbox, daemonPath: DAEMON_PATH, timeouts: { ...TIMEOUTS, listedStableMs: 0 }, dial, connect: "dial", ...options });
+	assert.equal(provider.capabilities().kind, "desktop");
+	await desktopOverDial(provider, dial, () => booted, { ...SPEC, image: BOX_TEMPLATE });
+	assert.equal(calls.find(([what]) => what === "Sandbox.create")[1], BOX_TEMPLATE, "made from the box template");
+	assert.ok(calls.some(([what, id]) => what === "Sandbox.kill" && id === "sbx-dial"), "release killed the sandbox");
+});
+
+test("connect dial takes a desktop, its default as on exec, or kind linux, no Archil mount and no value but exec or dial, in words; exec stays the default", () => {
+	const { Sandbox } = dialSandbox();
+	const options = { apiKey: KEY, Sandbox, daemonPath: DAEMON_PATH, dial: dialOf() };
+	// A server passes connect alone (its e2bConnect setting): the box template has the desktop, so dial's kind is exec's.
+	assert.equal(new E2BProvider({ ...options, connect: "dial" }).capabilities().kind, "desktop");
+	assert.equal(new E2BProvider({ ...options, kind: "linux", connect: "dial" }).capabilities().kind, "linux");
+	assert.equal(new E2BProvider(options).capabilities().kind, "desktop");
+	assert.throws(() => new E2BProvider({ ...options, connect: "ssh" }), /connect is how E2B reaches its machines, "exec" \(the default\) or "dial", not "ssh"/);
+	const provider = new E2BProvider({ ...options, kind: "linux", connect: "dial" });
+	assert.deepEqual(provider.capabilities().mount, ["sync"], "a synced folder alone: agentrun-dial makes /workspace");
+	assert.deepEqual(provider.check({ ...SPEC, mount: { ...MOUNT } }).map(({ field, message }) => [field, message.includes("dial")]), [["mount", true]]);
+	const plain = new E2BProvider(options);
+	assert.equal(plain.host.facts.connect, undefined);
+	assert.equal(typeof plain.host.exec, "function");
+	assert.equal(typeof plain.host.upload, "function");
+});
+
+test("E2B's descriptor declares the connect setting, with no default of its own: a server's settings pass it to create() as connect, else the provider's exec holds", async () => {
+	const { E2B } = await import("../dist/descriptors/e2b.js");
+	assert.deepEqual(E2B.settings, [{ name: "e2bConnect", option: "connect" }]);
+});
+
+test("the conformance module reads COMPUTER_E2B_CONNECT as connect, and its dialKit refuses in words: this process is no public server", () => {
+	assert.deepEqual(settingsFromEnv({ [ENV.key]: KEY, [ENV.connect]: "dial" }), { apiKey: KEY, connect: "dial" });
+	assert.equal(ENV.connect, "COMPUTER_E2B_CONNECT");
+	assert.throws(() => dialKit(), /E2B's machines dial the server that minted their tokens, and this run has no public server: run its Core with packages\/serve\/scripts\/dial-conformance\.mjs --provider e2b with COMPUTER_E2B_CONNECT=dial inside a server the internet reaches at AGENTRUN_PUBLIC_URL/);
+});
+
+test("the conformance module's run image on dial is the box template, the one that holds agentrun-dial; a template named still wins", async () => {
+	const { conformanceImage } = await import("../dist/conformance/e2b.js");
+	const { boxE2bTemplate } = await import("../dist/box-image.js");
+	assert.equal(conformanceImage({ env: { [ENV.connect]: "dial" } }), boxE2bTemplate());
+	assert.equal(conformanceImage({ env: { [ENV.connect]: "dial", [ENV.kind]: "linux" } }), boxE2bTemplate());
+	assert.equal(conformanceImage({ env: { [ENV.connect]: "dial", [ENV.template]: "mine" } }), "mine");
+	assert.equal(conformanceImage({ env: { [ENV.kind]: "linux" } }), "base");
+	assert.equal(conformanceImage({ env: {} }), "desktop");
 });
 

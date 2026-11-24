@@ -1,0 +1,31 @@
+AgentRun Server {{ .Chart.AppVersion }} is starting in {{ .Release.Namespace }}, on a {{ .Values.persistence.size }} volume.
+
+Open the console:
+{{- with include "agentrun.publicUrl" . }}
+  {{ . }}
+{{- if and $.Values.existingSecret $.Values.ingress.enabled (not $.Values.env.AGENTRUN_PUBLIC_URL) }}
+  This ingress address overrides any AGENTRUN_PUBLIC_URL in Secret {{ $.Values.existingSecret }}. To keep that one, set
+  env.AGENTRUN_PUBLIC_URL to it.
+{{- end }}
+{{- else }}
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ .Release.Name }} 7340:{{ .Values.service.port }}
+  then http://127.0.0.1:7340/
+{{- end }}
+
+The token sets your password on the first screen. It's yours alone: don't share it.
+  kubectl -n {{ .Release.Namespace }} get secret {{ .Values.existingSecret | default .Release.Name }} -o jsonpath='{.data.AGENTRUN_TOKEN}' | base64 -d
+
+Then Continue with ChatGPT, or add a model key (Settings, Model keys), and run your first agent.
+Agents here get file tools and web_fetch, and no shell: a cluster gives the server no Docker. For a shell, add a sandbox
+provider's key in the console.
+{{- if not (and .Values.existingSecret .Values.persistence.existingClaim) }}
+
+helm uninstall keeps your runs and keys: it leaves the volume and the Secret, and an install with the same release name
+here takes them up again. To remove them too, after helm uninstall:
+{{- if not .Values.existingSecret }}
+  kubectl -n {{ .Release.Namespace }} delete secret {{ .Release.Name }}
+{{- end }}
+{{- if not .Values.persistence.existingClaim }}
+  kubectl -n {{ .Release.Namespace }} delete pvc {{ .Release.Name }}
+{{- end }}
+{{- end }}

@@ -57,22 +57,31 @@ function scriptedRoute(corrected) {
 }
 
 for (const runtime of ["claude-agent-sdk", "codex-sdk"]) {
-  for (const corrected of [true, false]) test(`${runtime} HTTP learning exposes ${corrected ? "a checked draft awaiting promotion" : "exhausted compiler errors and its quiet window"}`, async t => {
+  for (const corrected of [true, false]) test(`${runtime} HTTP learning exposes ${corrected ? "a checked draft awaiting promotion" : "exhausted compiler errors, its one recompile, then none"}`, async t => {
     const server = await serve(t, { runner: false });
     const agentId = "sdk-compile-results";
     assert.equal((await server.api("POST", "/agents", { definition: {
-      id: agentId, name: agentId, instructions, sdk: { runtime }, learning: true, tools: [], output_schema: tool.output_schema,
+      id: agentId, name: agentId, instructions, sdk: { runtime }, learning: { compile_after: 5 }, tools: [], output_schema: tool.output_schema,
     } })).status, 201);
     const { route, requests } = scriptedRoute(corrected);
     let sequence = 0;
-    const completeRun = async () => {
+    const completeRun = async (served = [], checking = false) => {
       const started = await server.api("POST", `/agents/${agentId}/sdk-runs`, {
         runtime, input: `Check release ${++sequence}.`, instructions, workflow_tools: [tool],
       }, { "Idempotency-Key": `compile-results-${sequence}` });
       assert.equal(started.status, 201, JSON.stringify(started.body));
-      // Neither an ungraded proposal nor a refused draft is eligible for execution on a later SDK run.
-      assert.deepEqual(started.body.learning.workflows, []);
+      // Static/dry-run admission commits a draft; only its independent native check can make it executable.
+      assert.deepEqual(started.body.learning.workflows.map(flow => flow.name), served);
       const id = started.body.run_id;
+      if (checking) {
+        const check = started.body.learning.check;
+        assert.equal(check.workflow.name, "release-status");
+        assert.equal((await client(server.baseUrl, started.body.token)("POST", `/sdk-runs/${id}/events`, { sequence: 1, events: [
+          { type: "tool", id: "native", name: tool.name, status: "started", input: {} },
+          { type: "tool", id: "native", name: tool.name, status: "completed", output: { ready: true } },
+          { type: "workflow_check", id: check.id, digest: check.digest, outcome: "answered", answer: '{"ready":true}' },
+        ] })).status, 200);
+      }
       const completed = await client(server.baseUrl, started.body.token)("POST", `/sdk-runs/${id}/complete`, {
         status: "completed", answer: '{"ready":true}', usage: { cost_usd: 0.25, input_tokens: 20, output_tokens: 5, cache_read_tokens: 0, cache_write_tokens: 0 },
       });
@@ -90,13 +99,12 @@ for (const runtime of ["claude-agent-sdk", "codex-sdk"]) {
     };
     for (let n = 0; n < 4; n++) {
       const { learning } = await completeRun();
-      assert.equal(learning.compiled, null, "the compiler waits for the real five-run threshold");
+      assert.equal(learning.compiled, null, "the compiler waits for its definition's five-run threshold (compile_after 5)");
       assert.deepEqual(learning.draft_errors, []);
     }
     const { id, learning } = await completeRun();
     assert.equal(learning.run, id);
     assert.equal(learning.compiled.workflow, "release-status");
-    assert.deepEqual(learning.compiled.from_notes, []);
     assert.deepEqual(learning.compiled.attempts.map(attempt => attempt.ok), corrected ? [false, true] : [false, false, false, false]);
     const refused = corrected ? /mcp:backend\/unavailable/ : /ready|required|output schema/;
     assert.match(learning.compiled.attempts[0].errors.join("\n"), refused);
@@ -111,10 +119,30 @@ for (const runtime of ["claude-agent-sdk", "codex-sdk"]) {
     }
     const attempts = requests.filter(request => request.compile).length;
     assert.equal(attempts, corrected ? 2 : 4);
-    const next = await completeRun();
-    assert.equal(next.learning.compiled, null, "an attempted compile starts the quiet window even when all drafts fail");
+    let asked = attempts;
+    if (!corrected) {
+      // Compile once: the failed drafts are the compile's attempt (a hold naming the failed check), which earns the one
+      // recompile on the next run, as a check's hold does; it fails too, and stops.
+      const recompile = await completeRun();
+      assert.equal(recompile.learning.compiled?.workflow, "release-status", "the one recompile");
+      assert.match(recompile.learning.draft_errors.join("\n"), refused);
+      asked = requests.filter(request => request.compile).length;
+      assert.equal(asked, 2 * attempts);
+      const { promotions } = (await server.api("GET", `/agents/${agentId}/learning/promotions`)).body;
+      assert.deepEqual(promotions.map(({ decided, check }) => [decided, check?.attempt, check?.n, check?.stopped ?? false]), [["hold", 1, 0, false], ["hold", 2, 0, true]], JSON.stringify(promotions));
+    }
+    // Checked on compile_after (5) independent native turns, as a managed draft is on that many inputs.
+    if (corrected) for (let turn = 1; turn <= 5; turn++) {
+      const shadow = await completeRun([], true);
+      assert.equal(shadow.learning.compiled, null, `check turn ${turn} does not compile another draft`);
+    }
+    const next = await completeRun(corrected ? ["release-status"] : []);
+    assert.equal(next.learning.compiled, null, corrected ? "a committed workflow is not compiled again" : "a recompile that failed its checks stops: nothing compiles again");
     assert.deepEqual(next.learning.draft_errors, []);
-    assert.equal(requests.filter(request => request.compile).length, attempts, "the next run does not pay for another compiler attempt");
-    assert.deepEqual((await server.api("GET", `/runs/${id}/learning`)).body, learning, "later runs do not erase the original attempt history");
+    assert.equal(requests.filter(request => request.compile).length, asked, "the next run does not pay for another compiler attempt");
+    const original = (await server.api("GET", `/runs/${id}/learning`)).body;
+    assert.deepEqual(original.compiled.attempts, learning.compiled.attempts, "later promotion does not erase the original compiler attempt history");
+    assert.equal(original.run, learning.run);
+    assert.deepEqual(original.draft_errors, learning.draft_errors);
   });
 }

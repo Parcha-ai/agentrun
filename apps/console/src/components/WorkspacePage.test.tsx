@@ -1,6 +1,6 @@
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { WorkspacePage } from "./WorkspacePage";
 import { SETTINGS_PAGES } from "./Settings";
 import { SIGN_IN_TO_CHANGE } from "@/lib/secrets";
@@ -39,7 +39,7 @@ function server(views: (Archil | Response)[], write: (call: Call) => Response | 
 }
 
 let root: ReturnType<typeof createRoot> | undefined;
-afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
+afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; vi.unstubAllGlobals(); });
 
 async function open(v2: ReturnType<typeof createClient>, writable = true) {
   const host = document.body.appendChild(document.createElement("div"));
@@ -62,6 +62,17 @@ async function open(v2: ReturnType<typeof createClient>, writable = true) {
 }
 
 describe("Settings → Workspace", () => {
+  it("Replace fills the masked key from the clipboard without changing the saved settings", async () => {
+    vi.stubGlobal("navigator", { clipboard: { readText: () => Promise.resolve(FAKE) } });
+    const { v2, calls } = server([on]);
+    const p = await open(v2);
+    await p.click(/^Replace$/);
+    expect(p.input("ARCHIL_API_KEY").value).toBe(FAKE);
+    expect(p.input("ARCHIL_API_KEY").type).toBe("password");
+    expect(calls.filter((c) => c.method !== "GET")).toEqual([]);
+    expect(p.host.innerHTML).not.toContain(FAKE);
+  });
+
   it("is a Settings tab, at #/settings/workspace", () => {
     expect(SETTINGS_PAGES.map((p) => p.label)).toContain("Workspace");
     expect(route("#/settings/workspace")).toEqual({ section: "settings", settings: "workspace" });

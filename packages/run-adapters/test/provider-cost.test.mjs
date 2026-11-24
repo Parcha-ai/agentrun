@@ -1,7 +1,7 @@
 // What the provider says a request cost, read from its answer's own usage, and a refusal it sends inside a 200 stream.
 // OpenRouter routes a request to one of a model's providers, often below the list price the catalog has (run 01a1ddee:
-// $0.0147 at list, $0.0030 billed), and states what it charged in each answer's usage (`cost`, USD). A proxy told its
-// upstream does so (`usageCost`) books that figure, the table's beside it. The cap still held the request at list before
+// $0.0147 at list, $0.0030 billed), and states what it charged in each answer's usage (`cost`, USD). A proxy whose
+// upstream does so (its origin: `statesUsageCost`) books that figure, the table's beside it. The cap still held the request at list before
 // it left; a reported figure above that hold is not believed and the table's stands.
 // OpenRouter (and Anthropic) answer 200 before the model's first token, so a rate limit, an overload or a failure after
 // that comes as an error event inside the 200 stream. With no token reported before it, the request was refused and
@@ -9,7 +9,7 @@
 import assert from 'node:assert/strict';
 import { request } from 'node:http';
 import { test } from 'node:test';
-import { lastObjectOf, startModelProxy } from '@parcha/agentrun-kernel/host';
+import { lastObjectOf, ROUTE_ORIGIN, startModelProxy, statesUsageCost } from '@parcha/agentrun-kernel/host';
 import { bookRequest, modelPortFor, RUNNER_RECORDS } from '@parcha/agentrun-kernel';
 import * as testing from '@parcha/agentrun-kernel/testing';
 
@@ -36,16 +36,16 @@ const stream = (...events) => events.map((event) => `${event}\n\n`).join('');
 const usageEvent = (usage) => `data: ${JSON.stringify({ choices: [], usage })}`;
 const answering = (body, { contentType = 'text/event-stream', headers = {} } = {}) => async () => new Response(body, { status: 200, headers: { 'content-type': contentType, ...headers } });
 
-async function proxy(t, { fetch, usageCost = true, hooks: given } = {}) {
+/** A proxy on OpenRouter's origin (its answers state their cost), or with `origin` on another. */
+async function proxy(t, { fetch, origin = 'https://openrouter.ai/api', hooks: given } = {}) {
   const after = [];
   const p = await startModelProxy({
     policy,
     model: 'session-model',
-    origin: 'https://provider.invalid',
+    origin,
     credential: () => SECRET,
     hooks: given ?? { beforeRequest: async () => ({ turn: 1 }), afterRequest: async (usage, _ticket, ended) => void after.push({ usage, ended }) },
     price: () => LIST_USD,
-    ...(usageCost ? { usageCost: true } : {}),
     fetch,
   }, KEY);
   t.after(() => p.close());
@@ -101,11 +101,23 @@ test("a whole JSON answer's usage cost is read too", async (t) => {
   assert.deepEqual(after[0].usage, { input: 90_000, output: 2_000, cacheRead: 0, usd: 0.003, tableUsd: LIST_USD });
 });
 
-test("a proxy not told its upstream states its cost never reads one: the table's figure, estimated", async (t) => {
-  const { p, after } = await proxy(t, { usageCost: false, fetch: answering(stream(usageEvent({ in: 90_000, out: 2_000, cost: 0.003 }))) });
+test("a proxy on an origin that does not state its cost never reads one: the table's figure, estimated", async (t) => {
+  for (const origin of ['https://provider.invalid', 'https://api.openai.com', 'https://openrouter.ai.example', 'https://gateway.example/openrouter.ai']) {
+    const { p, after } = await proxy(t, { origin, fetch: answering(stream(usageEvent({ in: 90_000, out: 2_000, cost: 0.003 }))) });
+    await send(p.url);
+    await until(() => after.length === 1, 'the booking');
+    assert.deepEqual(after[0].usage, { input: 90_000, output: 2_000, cacheRead: 0, usd: LIST_USD, estimated: true }, origin);
+  }
+});
+
+test("the proxy reads a stated cost on OpenRouter's origin and on a translation route's (which passes OpenRouter's on), on no other", async (t) => {
+  assert.equal(ROUTE_ORIGIN, 'https://model-route.invalid');
+  assert.deepEqual(['https://openrouter.ai/api', 'https://openrouter.ai', ROUTE_ORIGIN].map(statesUsageCost), [true, true, true]);
+  assert.deepEqual(['https://provider.invalid', 'https://api.openai.com', 'https://openrouter.ai.example', 'http://gateway.example/openrouter.ai', 'not a url'].map(statesUsageCost), [false, false, false, false, false]);
+  const { p, after } = await proxy(t, { origin: ROUTE_ORIGIN, fetch: answering(stream(usageEvent({ in: 90_000, out: 2_000, cost: 0.003 }))) });
   await send(p.url);
   await until(() => after.length === 1, 'the booking');
-  assert.deepEqual(after[0].usage, { input: 90_000, output: 2_000, cacheRead: 0, usd: LIST_USD, estimated: true });
+  assert.deepEqual(after[0].usage, { input: 90_000, output: 2_000, cacheRead: 0, usd: 0.003, tableUsd: LIST_USD });
 });
 
 test("a missing or insane usage cost falls back to the table's figure, estimated; a gateway's header still comes first", async (t) => {

@@ -31,6 +31,8 @@ import {
   waitForSubmissions,
 } from './host/process.js';
 import { durableEnv, nativeModelId } from './env.js';
+import { type ClaudeAgentLogin, loginBooking } from './login.js';
+import type { ModelPort } from '@parcha/agentrun-kernel';
 import { uuidFrom } from './ids.js';
 import { MessageQueue } from './inbox.js';
 import { sandboxSpawn } from './spawn.js';
@@ -225,6 +227,12 @@ export interface ClaudeCodeHarnessOptions {
   credential?: () => Promise<string>;
   /** The Gateway's base URL. Default `gatewayUrl()`. */
   gatewayUrl?: string;
+  /**
+   * The person's own login the CLI runs on (login.ts), in place of the model route: the drive asks its machine for no
+   * proxy, the CLI's environment holds no model URL, key or token, and each response is booked from the CLI's stream
+   * through `models`, billed to the plan. `credential` and `gatewayUrl` are not read.
+   */
+  login?: { at: ClaudeAgentLogin; models: Pick<ModelPort, 'beforeRequest' | 'afterRequest'> };
   /** The CLI's path in the VM. Default `CLAUDE_VM_EXECUTABLE` (the base image's pinned build). Tests on the stand-in VM pass the host build. */
   executable?: string;
   /** The kernel name (its sessions' runs are `workflow//durable-harness@<version>//<name>`). Default `claude-code`. */
@@ -262,10 +270,12 @@ export interface ClaudeCodeHarnessOptions {
   gate?: (call: GateCall) => Promise<GateAnswer>;
   /** The clock a user turn's day is read from (dateLine). Default the system's. */
   now?: () => Date;
+  /** The IANA zone the day is read in (dateLine). Default UTC. */
+  zone?: string;
 }
 
 /**
- * The line a user turn starts with when the session's model was not yet told its day: today's date, in UTC.
+ * The line a user turn starts with when the session's model was not yet told its day: today's date, in `zone` (UTC by default).
  *
  * The CLI records a session's system prompt at its first request and every resume sends that record, so a date the
  * host put there (serve's environment line) stays the first day's. Re-rendering it (`snapshot: false`) records nothing
@@ -273,11 +283,13 @@ export interface ClaudeCodeHarnessOptions {
  * not been told carries this line, in the CLI's transcript only (the host's log keeps the person's words). The
  * session's first launch sends no line on its first day: its fresh system prompt is the one recorded.
  */
-export function dateLine(now: Date): string {
-  return `Today is ${dayOf(now)} (UTC).`;
+export function dateLine(now: Date, zone = 'UTC'): string {
+  return `Today is ${dayOf(now, zone)}.`;
 }
 
-const dayOf = (now: Date) => now.toISOString().slice(0, 10);
+/** `now`'s day as a person in `zone` reads it, the zone's name after it ("Sunday 15 November 2026 (America/Los_Angeles)"). */
+const dayOf = (now: Date, zone = 'UTC') =>
+  `${new Intl.DateTimeFormat('en-GB', { timeZone: zone, weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }).format(now).replace(',', '')} (${zone})`;
 
 /** The effect a user message that told its model the day is recorded under (`date:<message uuid>`, input `{ day }`). */
 const DATE_EFFECT = 'date';
@@ -401,14 +413,15 @@ export function builtinTools(builtins: ClaudeBuiltins | undefined): string[] | u
 }
 
 /** The Claude Code sandbox settings for the VM (§5.5 "Claude Code runs under its own sandbox"; P0.10, P0.16). */
-export function claudeSandboxSettings(machine: Pick<SessionMachine, 'root' | 'dirs'>, network: ClaudeSandboxNetwork): NonNullable<QueryOptions['sandbox']> {
+export function claudeSandboxSettings(machine: Pick<SessionMachine, 'root' | 'dirs'>, network: ClaudeSandboxNetwork, login?: ClaudeAgentLogin): NonNullable<QueryOptions['sandbox']> {
   const { dirs } = machine;
   const open = [dirs.tmp, dirs.home, dirs.cache];
   return {
     enabled: true,
     failIfUnavailable: true,
     allowUnsandboxedCommands: false,
-    filesystem: { allowWrite: [machine.root, ...open], denyRead: [dirname(dirs.config)], allowRead: open },
+    // A person's login is the CLI's alone: no command it runs reads it.
+    filesystem: { allowWrite: [machine.root, ...open], denyRead: [dirname(dirs.config), ...(login ? [login.dir, login.profiles] : [])], allowRead: open },
     credentials: { envVars: [{ name: 'ANTHROPIC_AUTH_TOKEN', mode: 'deny' }] },
     network: {
       ...(network === 'allow-all' ? { allowedDomains: ['*'] } : network === 'deny-all' ? { allowedDomains: [], strictAllowlist: true } : { allowedDomains: [...network.allow], strictAllowlist: true }),
@@ -490,7 +503,11 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
       const credential = options.credential ?? gatewayCredential;
       if (ctx.deadline === undefined) log('claude-agent: the kernel gave no deadline; assuming a 300 s invocation', {});
       const deadline = ctx.deadline ?? Date.now() + ASSUMED_INVOCATION_MS;
-      const handler = gatewayHandler({
+      // On a person's login there is no model route: the CLI calls Anthropic itself, and its responses are booked from
+      // its stream (loginBooking).
+      const login = options.login;
+      const booking = login ? loginBooking(login.models, model, (error) => ctx.halt?.(error)) : undefined;
+      const handler = login ? undefined : gatewayHandler({
         routes: CLAUDE_ROUTES,
         models: { model, ...(smallModel ? { smallModel } : {}) },
         providerTools,
@@ -510,7 +527,7 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
       let held: SessionMachine | undefined;
       let configDir: string | undefined;
       try {
-        const machine = (held = await sandbox.attach(ctx, { model: handler, deadline }));
+        const machine = (held = await sandbox.attach(ctx, { ...(handler ? { model: handler } : {}), deadline }));
         if (!isBrandedMachine(machine)) throw sandboxRequired();
 
         // The Function's side of the CLI's config dir: empty, 0700, this drive's.
@@ -730,8 +747,7 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
           configDir: machine.dirs.config,
           tmpDir: machine.dirs.tmp,
           cacheDir: machine.dirs.cache,
-          baseUrl: machine.modelUrl,
-          token: machine.modelKey,
+          ...(login ? { login: login.at } : { baseUrl: machine.modelUrl, token: machine.modelKey }),
           model,
           ...(smallModel ? { smallModel } : {}),
           ...(sandbox.commandTimeoutMs ? { bashTimeoutMs: sandbox.commandTimeoutMs } : {}),
@@ -765,7 +781,7 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
         // nothing). Once a record exists a resume sends it, whatever day it names, and a recovery's own fresh prompt is
         // never recorded: every other day reaches the model in its turn (dateLine).
         const now = options.now ?? (() => new Date());
-        const recordedDay = !store.hasSession ? dayOf(now()) : undefined;
+        const recordedDay = !store.hasSession ? dayOf(now(), options.zone) : undefined;
         /** A message the CLI's transcript holds told the model `day`. */
         const told = (day: string) =>
           ctx.state().effectOrder.some((e) => e.name === DATE_EFFECT && (e.input as { day?: unknown } | undefined)?.day === day && store.hasUser(e.key.slice(DATE_EFFECT.length + 1)));
@@ -781,7 +797,7 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
           ...(skills ? { plugins: [{ type: 'local' as const, path: skills.plugin }], skills: [...skills.names] } : {}),
           disallowedTools: disallowed,
           hooks,
-          ...(ownSandbox ? { sandbox: claudeSandboxSettings(machine, sandbox.network) } : {}),
+          ...(ownSandbox ? { sandbox: claudeSandboxSettings(machine, sandbox.network, login?.at) } : {}),
           ...(bridge.tools.length ? { mcpServers: { [MCP_SERVER]: server } } : {}),
           allowedTools: bridge.tools.map((t) => `mcp__${MCP_SERVER}__${t.name}`),
           permissionMode: 'dontAsk',
@@ -843,11 +859,18 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
           // The first message on a day the model was not told carries that day (dateLine), the session's recorded first
           // day aside. Recorded under the message's uuid: the day counts as told once the transcript holds the message.
           const at = now();
-          const day = dayOf(at);
+          const day = dayOf(at, options.zone);
           if (!told(day)) {
-            if (day !== recordedDay) text = `${dateLine(at)}\n\n${text}`;
+            if (day !== recordedDay) text = `${dateLine(at, options.zone)}\n\n${text}`;
             await ctx.effect(`${DATE_EFFECT}:${uuid}`, { name: DATE_EFFECT, replay: 'safe', input: { day } }, async () => day);
           }
+          // Once the transcript holds the message (its own user entry, or the `queued_command` attachment a steer becomes
+          // when the CLI takes it at its next step), the host hears which submissions reached the model: a steer's record is
+          // written there, after the tool call it was sent during, never when it was only queued.
+          const carried = [...placed.map((p) => p.id), ...(how.covers ?? [])];
+          if (carried.length) void store.whenUser(uuid).then(() => ctx.live({ type: 'message_taken', ids: carried }));
+          // On a login, the request this message makes is admitted before the CLI has it (loginBooking).
+          await booking?.sending();
           outstanding.add(uuid);
           input.push({
             type: 'user',
@@ -856,6 +879,8 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
             uuid: uuid as UserMessage['uuid'],
             ...(how.priority ? { priority: how.priority } : {}),
           });
+          // The CLI has the message now: a steer() waiting on it returns (the session keeps this to itself).
+          if (placed.length) ctx.live({ type: 'message_sent', ids: placed.map((p) => p.id) });
         };
 
         /**
@@ -894,8 +919,13 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
               ctx.halt?.(mirrorUnmapped('a batch the Agent SDK could not keep in the log'));
               throw ctx.signal.reason ?? mirrorUnmapped('a batch the Agent SDK could not keep in the log');
             }
+            booking?.observe(m);
             const end = transcript.observe(m);
-            if (end) return end;
+            // A turn on a login ends once its responses are booked.
+            if (end) {
+              await booking?.settle();
+              return end;
+            }
           }
         };
 
@@ -1003,6 +1033,9 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
         // A drive that ends unstopped (the CLI exited mid-turn, a Restart): its spend records and the mirror lines still in the coalesce
         // window reach the log before the rebuilt drive reads it (bounded: a failing journal has halted the drive anyway).
         if (!ctx.signal.aborted) await Promise.race([Promise.allSettled([store.flush(), journal.flush()]), new Promise((r) => setTimeout(r, 2000).unref())]);
+        // On a login, a response the drive's end cut off is booked as it stands, and an admission no request took is closed
+        // (bounded the same way).
+        if (booking) await Promise.race([booking.settle(true), new Promise((r) => setTimeout(r, 2000).unref())]);
         // Nothing the model started outlives the drive: the session's processes in the VM are killed (the VM and the Drive stay).
         if (held) await held.close().catch(() => {});
         if (configDir) await rm(configDir, { recursive: true, force: true }).catch(() => {});

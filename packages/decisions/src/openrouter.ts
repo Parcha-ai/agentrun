@@ -38,8 +38,10 @@ export interface OpenRouterOptions {
    *  once, through `fetch`, the first time a request carries an image; a model it does not list with image input is refused
    *  before sending. A catalog that cannot be read refuses nothing. */
   takesImages?: (model: string) => boolean | Promise<boolean>;
-  /** Sent as OpenRouter's app attribution headers (HTTP-Referer, X-Title) when set. */
-  app?: { url?: string; title?: string };
+  /** Sent as OpenRouter's app attribution headers when set (https://openrouter.ai/docs/app-attribution): `url` as
+   *  HTTP-Referer, `title` as X-OpenRouter-Title, `categories` (at most 2 of OpenRouter's, comma separated) as
+   *  X-OpenRouter-Categories. AgentRun's server hands it AgentRun's app (agentrun-kernel host/openrouter-attribution.ts). */
+  app?: { url?: string; title?: string; categories?: string };
   /** Whether a citation keeps its passage (default true); false keeps none, whatever the model sent. */
   includeExcerpts?: boolean;
 }
@@ -265,7 +267,7 @@ export function openrouterProvider(options: OpenRouterOptions = {}): DecisionPro
       const payload = { state, model, questions: request.questions };
       // Sent and lost: it may have been answered and billed, so it is never sent again, at an unknown cost.
       const lost = (attempts: number, what: string, status?: number) => new DecisionProviderError("outcome_unknown", `OpenRouter ${what} after the request was sent; it may have been answered, and is not sent again.`, { attempts, ...(status !== undefined ? { status } : {}), costUsd: null, costBasis: "unknown" });
-      const app = { ...(options.app?.url ? { "HTTP-Referer": options.app.url } : {}), ...(options.app?.title ? { "X-Title": options.app.title } : {}) };
+      const app = { ...(options.app?.url ? { "HTTP-Referer": options.app.url } : {}), ...(options.app?.title ? { "X-OpenRouter-Title": options.app.title } : {}), ...(options.app?.categories ? { "X-OpenRouter-Categories": options.app.categories } : {}) };
       for (let attempt = 1; ; attempt++) {
         // A form body is read as it is sent, so each attempt builds its own.
         const { body, headers } = bodyOf(payload, images);
