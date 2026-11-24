@@ -18,6 +18,8 @@ import { PARALLEL_EXTRACT_USD, PARALLEL_SEARCH_URL, PARALLEL_SEARCH_USD, paralle
 import * as keyless from "../dist/web-run.js";
 import { hostedSearch } from "../dist/hosted-search.js";
 import { runModels } from "../dist/model.js";
+import { TOOLS } from "../dist/tools.js";
+import { TOOL_PLANE_ENV } from "../dist/tool-plane.js";
 import fakeParallel, { CANARY } from "./fixtures/faux-parallel.mjs";
 import fakeExa, { EXA_LIMIT_TEXT, resetFauxExa } from "./fixtures/faux-exa.mjs";
 import { network } from "./fixtures/fake-network.mjs";
@@ -76,6 +78,17 @@ test("an answer is held to the host's result bound: past it, the least relevant 
   assert.deepEqual(kept.results, quoted.results.slice(0, kept.results.length), "the most relevant, in order, each whole");
   assert.equal(kept.omitted, 25 - kept.results.length);
   assert.ok(text.length > searches.SEARCH_MAX_CHARS - 7_000, "as many as fit");
+});
+
+test("a call node's search is held to the same bound as the agent's: an answer past it comes back fitted, its least relevant results left out and counted (omitted)", async (t) => {
+  withEnv(t, {}, [MODE]);
+  process.env[MODE] = "long";
+  const env = { [TOOL_PLANE_ENV]: JSON.stringify({ web_search: "parallel" }), PARALLEL_API_KEY: CANARY, AGENTRUN_SERVE_FAUX: FAUX, AGENTRUN_SERVE_FAUX_PARALLEL: FAUX_PARALLEL };
+  const answer = await TOOLS.web_search.effect({ query: "widgets", n: 25 }, { env, ledger: { call: "node-1", paid: await toolLedger() } });
+  assert.equal(answer.provider, "parallel", JSON.stringify(answer).slice(0, 300));
+  assert.ok(answer.omitted > 0 && answer.results.length + answer.omitted === 25, `${answer.results.length} kept, ${answer.omitted} omitted`);
+  assert.ok(JSON.stringify(answer).length <= searches.SEARCH_MAX_CHARS, "within the bound");
+  assert.deepEqual(answer, searches.fitSearch(answer), "fitted");
 });
 
 test("under a spend cap, a search through Parallel is a paid call on the run's one ledger: sent only when what the run spent and holds plus its price fits the cap, then booked at its price; else refused in the cap's words and never sent", async (t) => {
