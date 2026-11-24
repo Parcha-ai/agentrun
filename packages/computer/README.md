@@ -1377,8 +1377,8 @@ unless they start with `modal_proto/`. Docs: modal.com, read 2026-11-05.
 `create(options)` in `dist/modal.js` builds a real client from `options.tokenId` and `options.tokenSecret`, and the
 provider in `options.app` (required: without it, it refuses in words naming the option, before any client). It reads no
 setting from the environment (see [Settings](#settings)) and passes the token to `ModalClient` explicitly, so a
-`MODAL_TOKEN_ID` or `MODAL_TOKEN_SECRET` on the host is never used. The key goes only to `options.serverUrl`, else the
-SDK's default `https://api.modal.com:443`: since the client cannot take a server, it refuses while `MODAL_SERVER_URL`
+`MODAL_TOKEN_ID` or `MODAL_TOKEN_SECRET` on the host is never used. The key goes only to `options.serverUrl` (https
+alone), else the SDK's default `https://api.modal.com:443`: since the client cannot take a server, it refuses while `MODAL_SERVER_URL`
 is set, and sets it to its choice only while it constructs the client, one construction at a time and put back after
 each, so neither `MODAL_PROFILE` nor a profile in `MODAL_CONFIG_PATH` or `~/.modal.toml` can redirect the key. The
 daemon is uploaded from `options.daemonPath`, else `dist/computerd-linux-amd64`, so a run publishes nothing.
@@ -2816,7 +2816,7 @@ explicitly, so the SDK takes none of them from the environment.
 | `apiKey` | the boxd API key | required |
 | `org` | the org machines are made in and listed from, by name or id | the key's own |
 | `region` | the region machines are made in (`fra`, `nyc`) | the API's home region |
-| `baseUrl` | the API's address | `https://boxd.sh:9443` |
+| `baseUrl` | the API's address, https alone | `https://boxd.sh:9443` |
 | `vcpu`, `memory` | a boxd size: 1 and `4G`, 2 and `8G`, 4 and `16G`, or 8 and `32G`; both or neither; a sandbox's alone | the org's default |
 | `kind` | `linux` or `desktop` (from the desktop snapshot) | `linux` |
 | `maxLifetimeMs` | the longest lifetime `check` takes, at most 30 days | 24 h |
@@ -2940,7 +2940,7 @@ node packages/computer/dist/conformance/sweep.js --provider smolcloud --before /
 ```
 
 The conformance module, `dist/conformance/smolcloud.js`, checks `AGENTRUN_COMPUTER_LIVE_SMOLCLOUD=1` first, then reads
-`COMPUTER_SMOLCLOUD_API_KEY` (`apiKey`, required), `COMPUTER_SMOLCLOUD_API_URL` (`apiUrl`) and
+`COMPUTER_SMOLCLOUD_API_KEY` (`apiKey`, required), `COMPUTER_SMOLCLOUD_API_URL` (`apiUrl`, https alone) and
 `COMPUTER_SMOLCLOUD_IMAGE` (the run's image, default the box image), never `SMOLCLOUD_API_KEY`. Every computer of a run
 lives at most 30 minutes. The live sweep is the shared one; its scope is the key's account.
 
@@ -3012,8 +3012,7 @@ What Groundbox refuses or this host works around:
   should Groundbox start it after all; every other dropped socket closes with 4000, which leaves it running. A new
   socket counts as reading on only once Groundbox says something on it, so a peer that takes each attach and stays
   silent fails the stream after 5 minutes instead of holding `wait()` forever.
-- The API URL is https; http is taken only to a loopback host (127.0.0.0/8, `::1`, `localhost`), since the key rides
-  every call and the stream's upgrade.
+- The API URL is https alone, loopback included, since the key rides every call and the stream's upgrade.
 - On the box image and any other public image Groundbox runs a command as root. On Groundbox's own image and its
   templates it runs as the image's user, `runner` (uid 1001), with passwordless sudo, which the adapter's scripts use;
   `daemonUser` may not be 1001 there.

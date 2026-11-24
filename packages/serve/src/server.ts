@@ -143,7 +143,7 @@ import { runLines } from "./usage-lines.js";
 import { type BoxOffer, boxesByDefault, boxesLog, type ContainerFacts, enabledBoxes, placeOffers, withNetworks } from "./place-offers.js";
 import { dockerComputerRefusal, type DockerPaths, dockerPathsOf, FAUX_MOUNTINFO_ENV, remoteDockerOnce } from "./box-paths.js";
 import { dockerDaemonCheck, type DockerDaemon } from "./docker-daemon.js";
-import { hostAddressesOnce, noHostAddresses, retryHostAddresses, unionOf, type Wait } from "./docker-host-addresses.js";
+import { type HostRead, hostAddressesOnce, noHostAddresses, retryHostAddresses, unionOf, type Wait } from "./docker-host-addresses.js";
 import { DOCUMENTS_ENV } from "./pdf-pages.js";
 import { type Blocker, blockersOf, CODE_NODES_ENV, deniedComputer, issueOf, NOT_SET_UP, type RevisionShape } from "./runnable.js";
 import { computerDeniedWords } from "./refusal-words.js";
@@ -1654,7 +1654,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // A read that failed with none known is read again in the background (retryHostAddresses) until one answers and the
   // helper containers the failed reads left are gone, or this server stops: the boxes are made again from the answer and
   // said again, so Docker is offered with no restart. Every reader of boxOffers reads it when it is called; capabilities
-  // are composed again.
+  // are composed again. One that failed with the operator's addresses known changes no box: the retry only removes the
+  // containers it left. The close cuts a read in flight (its client killed) and stop() awaits the retry last, so the
+  // read's container is removed within the stop's deadline (docker-host-addresses.ts REMOVE_MS).
   const boxesOf = (hostAddresses: { addresses: readonly string[]; why?: string } | undefined): BoxOffer[] => {
     if (hostAddresses) log?.(logLine("docker_host_addresses", { addresses: hostAddresses.addresses.join(",") || "none", ...(hostAddresses.why ? { read: hostAddresses.why } : {}) }));
     const dockerRefused = dockerElsewhere ?? (hostAddresses && hostAddresses.addresses.length === 0 ? noHostAddresses(hostAddresses.why ?? "the read through Docker's socket found none") : undefined);
@@ -1665,19 +1667,24 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   };
   const hostAddresses = dockerElsewhere === undefined && "paths" in dockerPaths && boxAllow !== "none" ? unionOf(await hostAddressesOnce(env), dockerHostAddressesOf(env)) : undefined;
   let boxOffers = boxesOf(hostAddresses);
-  if (hostAddresses?.why !== undefined && hostAddresses.addresses.length === 0) {
-    void retryHostAddresses({
-      env,
-      read: () => hostAddressesOnce(env),
-      found: (read) => {
-        boxOffers = boxesOf(unionOf(read, dockerHostAddressesOf(env)));
-        // Capabilities are first composed at the start's probe, below; before it, there is nothing to compose again.
-        if (caps) recompose();
-      },
-      signal: stopping.signal,
-      ...(options.hostReadWait ? { wait: options.hostReadWait } : {}),
-    });
-  }
+  const hostRetried: Promise<void> =
+    hostAddresses === undefined || hostAddresses.why === undefined
+      ? Promise.resolve()
+      : retryHostAddresses({
+          env,
+          ...(hostAddresses.addresses.length === 0
+            ? {
+                read: () => hostAddressesOnce(env, stopping.signal),
+                found: (read: HostRead) => {
+                  boxOffers = boxesOf(unionOf(read, dockerHostAddressesOf(env)));
+                  // Capabilities are first composed at the start's probe, below; before it, there is nothing to compose again.
+                  if (caps) recompose();
+                },
+              }
+            : {}),
+          signal: stopping.signal,
+          ...(options.hostReadWait ? { wait: options.hostReadWait } : {}),
+        }).catch(() => undefined);
   const adapters = options.triggerAdapters ?? TRIGGER_ADAPTERS;
   const openapi = openapiDocument((operationId) => ROUTES.find((r) => r.name === operationId)?.capability, adapters);
   const sealKey = seal.key;
@@ -6790,6 +6797,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     await store.close();
     dataLock.release();
     seal.release();
+    // Last, so a stop cut at its deadline has closed the rest: the host-address retry, aborted above, its read in flight
+    // cut then and its container's removal running since, within two REMOVE_MS.
+    await hostRetried;
   }
   return {
     url,
