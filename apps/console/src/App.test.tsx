@@ -9,7 +9,7 @@ import type { Agent } from "@/lib/agentForm";
 import { runLabel } from "@/lib/format";
 import type { Run, TimelinePage } from "@/lib/v2";
 import { servedKey } from "@/test/keys";
-import { pick } from "@/test/picker";
+import { pick, wordsOf } from "@/test/picker";
 
 // Mission Control is the first page: the bare address and the old start page's both open it, so no link dead-ends.
 describe("route", () => {
@@ -540,7 +540,7 @@ describe("App, the agents' names", () => {
     await act(async () => { link()!.click(); });
     await until(() => location.hash === `#/agents/${encodeURIComponent(made.agent_id)}`);
         await act(async () => { location.hash = `#/playground?agent=${encodeURIComponent(made.agent_id)}`; });
-    await until(() => host.querySelector<HTMLButtonElement>('button[aria-haspopup="listbox"][aria-label="Agent"]')?.textContent === made.definition.name);
+    await until(() => wordsOf(host.querySelector('button[aria-haspopup="listbox"][aria-label="Agent"]')) === made.definition.name);
     await type(host.querySelector<HTMLTextAreaElement>("textarea")!, "Check the 2.3.0 entry.");
     await act(async () => { button(/send request/i)!.click(); });
     await until(() => !!button(/Open this run/));
@@ -570,7 +570,7 @@ describe("App, the agents' names", () => {
     // Straight to the Playground, as a person tries a new agent: it is offered there, picked, and run.
     await act(async () => { location.hash = `#/playground?agent=${encodeURIComponent(made.agent_id)}`; });
     const pick = () => host.querySelector<HTMLButtonElement>('button[aria-haspopup="listbox"][aria-label="Agent"]');
-    await until(() => !!pick()?.textContent?.includes(made.definition.name!));
+    await until(() => wordsOf(pick()) === made.definition.name);
     await type(host.querySelector<HTMLTextAreaElement>("textarea")!, "Check the 2.3.0 entry.");
     await act(async () => { button(/send request/i)!.click(); });
     // The run panel's breadcrumb names the agent, as the run's page does.
@@ -584,7 +584,7 @@ describe("App, the agents' names", () => {
     const [first, second] = agentsList();
     server({ active: [first, second] });
     const { host, until } = await open(`#/playground?agent=${encodeURIComponent(second.agent_id)}`);
-    const selected = () => host.querySelector<HTMLButtonElement>('button[aria-haspopup="listbox"][aria-label="Agent"]')?.textContent;
+    const selected = () => wordsOf(host.querySelector('button[aria-haspopup="listbox"][aria-label="Agent"]'));
     await until(() => selected() === second.definition.name);
     expect(selected()).toBe(second.definition.name);
     await act(async () => { location.hash = `#/playground?agent=${encodeURIComponent(first.agent_id)}`; });
@@ -608,7 +608,7 @@ describe("App, the agents' names", () => {
       const option = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find((o) => o.textContent === second.definition.name)!;
       option.click();
     });
-    await until(() => picker()?.textContent === second.definition.name);
+    await until(() => wordsOf(picker()) === second.definition.name);
     await pick(host.querySelector<HTMLButtonElement>("#api-operation")!, "edit-agent");
     await until(() => location.hash.includes(`agent=${encodeURIComponent(second.agent_id)}`) && !!host.querySelector('input[aria-label="Name"]'));
     expect(host.querySelector<HTMLInputElement>('input[aria-label="Name"]')!.value).toBe(second.definition.name);
