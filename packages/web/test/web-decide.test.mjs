@@ -141,12 +141,12 @@ test("a dropped passage's place counts from the page's start, not the part's", a
   assert.deepEqual(receipt.classifier.dropped.map((d) => d.at), [[A.length, A.length + answer.chars]]);
 });
 
-test("a fetch with no task is not judged: the part whole, a line saying so, and a record that says why", async () => {
+test("a fetch with no task is not judged: the part whole, no sift field, and a record that says why", async () => {
   const { asked, provider } = fakeProvider();
   const { answer, receipt } = await fakeWeb({ decider: priced(provider), send: { parallel: longPages } }).fetch(PUBLIC);
   assert.equal(asked.length, 0);
   assert.equal(answer.text, LONG);
-  assert.equal(answer.sift, "not run (no task given); this part is whole");
+  assert.equal(Object.hasOwn(answer, "sift"), false, `no sift field; got ${JSON.stringify(answer.sift)}`);
   assert.equal(receipt.classifier.ran, false);
   assert.equal(receipt.classifier.skipped, "no task");
 });

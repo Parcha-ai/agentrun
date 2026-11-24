@@ -137,7 +137,7 @@ test("no decider without TypeSafe's key: an OpenRouter key alone, a key only in 
   assert.deepEqual(calls(), [], "Jev was never asked");
 });
 
-test("a failing Jev leaves the results unsifted, as without it; a fetch with no objective is never judged and its page is whole", async (t) => {
+test("a failing Jev leaves the results unsifted, as without it; a fetch with no objective is never judged, its page whole and with no sift field", async (t) => {
   const calls = jevCalls(t);
   const without = (await onLedger(() => search(claimEnv()))).got;
   processEnv(t, "AGENTRUN_TEST_FAUX_JEV_STATUS", "503");
@@ -153,6 +153,7 @@ test("a failing Jev leaves the results unsifted, as without it; a fetch with no 
   const judged = await read(claimEnv({ TYPESAFE_API_KEY: JEV_KEY }));
   assert.equal(plain.ok, true, `the page was read: ${JSON.stringify(plain)}`);
   assert.equal(judged.text, plain.text, "the page is whole");
+  assert.equal(Object.hasOwn(judged, "sift"), false, `no sift field on a fetch Jev never judged: ${JSON.stringify(judged.sift)}`);
   assert.equal(calls().length, before, "a fetch with no objective asks Jev nothing");
 });
 
