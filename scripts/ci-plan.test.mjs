@@ -108,10 +108,11 @@ test('each suite is in one pool, and the pool without a list takes every other s
 test('a shard that runs a quarter and a minute over its model warns that ci-timings.json is stale, naming it; one within either does not', () => {
   // any-2 on 11-04: modelled 275 s, its tests ran 398 s, from a timings file a day old.
   assert.match(timingDrift('any-2', 275, 398), /^::warning title=ci-timings\.json is stale::any-2 ran 398 s, modelled 275 s: refresh scripts\/ci-timings\.json from CI's job logs \(node scripts\/ci-timings\.mjs <job log>\.\.\.\)/);
-  assert.equal(timingDrift('any-1', 275, 335), undefined, 'a minute over is noise on a hosted runner');
+  assert.equal(timingDrift('any-1', 275, 335), undefined, 'a minute over is a runner\'s noise');
   assert.equal(timingDrift('any-1', 20, 70), undefined, 'under a minute over, however many times its model');
   assert.equal(timingDrift('any-1', 400, 470), undefined, 'over by a minute but under a quarter');
-  assert.equal(timingDrift('any-1', 275, 100), undefined, 'faster than its model (a Blacksmith runner in the queue)');
+  assert.equal(timingDrift('any-1', 275, 100), undefined, 'faster than its model');
+  assert.equal(timingDrift('any-2', 275, 398, { untimedRunner: true }), undefined, 'on a runner the weights were not measured on');
 });
 
 test('a cover that drops a unit, runs one twice or adds one is refused, naming it', () => {
@@ -160,6 +161,8 @@ test("on a pull request this repository's any pool runs the tests its changes re
   const steps = workflow.jobs.test.steps;
   const shard = steps.find((step) => /ci-shard\.mjs/.test(step.run ?? ''));
   assert.equal(shard.env.CI_AFFECTED_BASE, "${{ github.event_name == 'pull_request' && 'HEAD^1' || '' }}", 'the base is set on a pull request only');
+  // The weights are Blacksmith's: a shard on one of GitHub's runners never warns that they are stale.
+  assert.equal(shard.env.CI_SHARD_UNTIMED_RUNNER, "${{ runner.environment == 'github-hosted' && '1' || '' }}");
   // HEAD^1 is in the checkout only with a depth of 2 or more (0 is the whole history).
   const depth = steps.find((step) => /^actions\/checkout@/.test(step.uses ?? '')).with['fetch-depth'];
   assert.match(depth, /github\.event_name == 'pull_request' && startsWith\(matrix\.shard, 'any-'\)\) && '2'/, depth);
