@@ -1,9 +1,12 @@
 // Two forms of a held value the redactor missed: a key written with JSON's \uXXXX escapes (every character or some),
-// and a key split across two strings of a web call's JSON, each string redacted on its own. Both withhold the text.
+// and a key split across two strings of a web call's JSON (a property name among them), each string redacted on its own.
+// Both withhold the text: in a calls read's result, the row's preview, and the answer the runner stores.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { redactSecrets, valueMatcher } from "../dist/learn/secrets.js";
-import { redactedAnswer, redactedCall, withheldWhole } from "../dist/key-refusal.js";
+import { redacted, redactedAnswer, redactedCall, withheldWhole } from "../dist/key-refusal.js";
+import { answersCut } from "../dist/runner/adapter-run-spec.js";
+import { secretRedactor } from "../dist/runner/redact.js";
 import { CALL_RESULT_CHARS, scrubUrls, timelineOf, webShownOf, webWithin } from "../dist/timeline/index.js";
 import { assistant, call, result, user } from "./timeline-lib-support.mjs";
 
@@ -40,15 +43,19 @@ test("valueLeft maps each \\uXXXX escape to its six raw characters: a value esca
   assert.equal(valueLeft(text, [KEY], [[start, end - 6]]), true);
 });
 
-/** A call's tool_result_text as a served calls read shows it: redactedCall per string, and the strings' join read. */
-const resultTextOf = (text, secrets, tool) => {
-  const calls = { result: CALL_RESULT_CHARS, redact: (part) => redactedCall(part, secrets, CALL_RESULT_CHARS, scrubUrls), holds: (joined) => withheldWhole(joined, secrets) };
-  const rows = timelineOf([user("Run it."), assistant([call("c1", tool, { query: "q" })]), result("c1", tool, text)], { calls });
-  return rows.find((row) => row.kind === "tool_result" && row.tool_use_id === "c1").tool_result_text;
+/** A call's tool_result row as a served read shows it (run-timeline-served.ts): the rows' redactor, the strings' join read
+ *  (`holds`), and with `calls` redactedCall per string. */
+const resultRowOf = (text, secrets, tool, calls = true) => {
+  const options = { redact: (part) => redacted(part, secrets), holds: (joined) => withheldWhole(joined, secrets), ...(calls ? { calls: { result: CALL_RESULT_CHARS, redact: (part) => redactedCall(part, secrets, CALL_RESULT_CHARS, scrubUrls) } } : {}) };
+  const rows = timelineOf([user("Run it."), assistant([call("c1", tool, { query: "q" })]), result("c1", tool, text)], options);
+  return rows.find((row) => row.kind === "tool_result" && row.tool_use_id === "c1");
 };
+const resultTextOf = (text, secrets, tool) => resultRowOf(text, secrets, tool).tool_result_text;
+const search = (title, snippet, url = "https://h.example/a") => JSON.stringify({ query: "q", results: [{ url, title, snippet }] });
+/** A calls read's per-string redaction, as the served one makes it. */
+const callEach = (secrets) => (part) => scrubUrls(redactedCall(part, secrets, CALL_RESULT_CHARS, scrubUrls));
 
 test("a held value split across two strings of a web call's JSON withholds the call's result; one whole in a string is cut in place", () => {
-  const search = (title, snippet) => JSON.stringify({ query: "q", results: [{ url: "https://h.example/a", title, snippet }] });
   const split = search(`see ${HEAD}`, `${REST} more`);
   assert.equal(resultTextOf(split, [KEY], "web_search"), "[redacted]");
   const page = JSON.stringify({ ok: true, url: "https://h.example/page", title: `A page ${HEAD}`, text: `${REST} and on` });
@@ -66,7 +73,8 @@ test("a held value split across two strings of a web call's JSON withholds the c
 test("a held value split where a call's read stops, its rest past \\uXXXX escapes of whitespace, shows none of it; other escapes count as one character each", () => {
   // The matcher decodes each escape, so the value reads whole across escaped whitespace: the read past the stop counts
   // an escape as the character it decodes to, so padding of them up to a piece never hides the rest.
-  for (const pad of ["\\u0020".repeat(100), "\\u000a".repeat(100), "\\u3000".repeat(100), `${" ".repeat(3000)}${"\\u0020".repeat(100)}`]) {
+  // 300 escapes, past the 208 characters (6 * 32 + 16) the read holds: counted as one character each, they would hide it.
+  for (const pad of ["\\u0020".repeat(300), "\\u000a".repeat(300), "\\u3000".repeat(300), `${" ".repeat(3000)}${"\\u0020".repeat(300)}`]) {
     const text = `${"y ".repeat(59_940)}${HEAD}\n${pad}${REST}${"z".repeat(9000)} end`;
     const shown = redactedCall(text, [KEY], CALL_RESULT_CHARS).slice(0, CALL_RESULT_CHARS);
     assert.ok(!shown.includes(HEAD.slice(0, 8)), `${pad.slice(0, 7)}: ${shown.slice(-60)}`);
@@ -77,8 +85,53 @@ test("a held value split where a call's read stops, its rest past \\uXXXX escape
   // Padding of escapes longer than a piece is more than the read past the stop reads: the text is withheld.
   assert.equal(redactedCall(`${"y ".repeat(59_940)}${HEAD}${"\\u0020".repeat(1400)}${REST} end`, [KEY], CALL_RESULT_CHARS), "[redacted]");
   // The same text with no held value split there is served, cut where the read stopped.
-  const plain = `${"y ".repeat(59_940)}${"q".repeat(16)}\n${"\\u0020".repeat(100)}${"z".repeat(9000)} end`;
+  const plain = `${"y ".repeat(59_940)}${"q".repeat(16)}\n${"\\u0020".repeat(300)}${"z".repeat(9000)} end`;
   assert.ok(redactedCall(plain, [KEY], CALL_RESULT_CHARS).startsWith("y y "));
+});
+
+test("a held value split across two strings of a web call's JSON withholds the row's preview too, with or without calls", () => {
+  const split = search(`see ${HEAD}`, `${REST} more`);
+  for (const calls of [true, false]) {
+    const row = resultRowOf(split, [KEY], "web_search", calls);
+    assert.equal(row.tool_result_preview, "[redacted]", `calls ${calls}: ${row.tool_result_preview}`);
+    assert.ok(!row.summary.includes(HEAD) && !row.summary.includes(REST), row.summary);
+  }
+  const page = JSON.stringify({ ok: true, url: "https://h.example/page", title: `A page ${HEAD}`, text: `${REST} and on` });
+  assert.equal(resultRowOf(page, [KEY], "web_fetch", false).tool_result_preview, "[redacted]");
+  // A value whole in one string is cut in place: the preview is its JSON, the value cut.
+  const whole = resultRowOf(search(`see ${KEY}`, `${REST} more`), [KEY], "web_search", false).tool_result_preview;
+  assert.ok(whole.startsWith('{"query":"q"') && whole.includes("[redacted]") && !whole.includes(HEAD), whole);
+});
+
+test("the runner stores a web answer with a held value split across two of its strings as \"[redacted]\"; one whole in a string is cut in place", async () => {
+  const context = { callId: "c1", signal: new AbortController().signal };
+  const tool = (text, name = "web_search") => ({ name, description: "", inputSchema: {}, replay: "safe", call: async () => ({ text }) });
+  const split = search(`see ${HEAD}`, `${REST} more`);
+  assert.equal((await answersCut(tool(split), secretRedactor([KEY])).call({}, context)).text, "[redacted]");
+  const page = JSON.stringify({ ok: true, url: "https://h.example/page", title: `A page ${HEAD}`, text: `${REST} and on` });
+  assert.equal((await answersCut(tool(page, "web_fetch"), secretRedactor([KEY])).call({}, context)).text, "[redacted]");
+  // A redactor that does not know its values: the join is read through it, withheld when it withholds the join whole.
+  const plain = (text) => redactedAnswer(text, [KEY]);
+  assert.equal((await answersCut(tool(split), plain).call({}, context)).text, "[redacted]");
+  const whole = (await answersCut(tool(search(`see ${KEY}`, `${REST} more`)), secretRedactor([KEY])).call({}, context)).text;
+  assert.deepEqual(JSON.parse(whole).results[0], { url: "https://h.example/a", title: "see [redacted]", snippet: `${REST} more` });
+});
+
+test("a web call's join is read as it came: one string's cut taking the value's head in place still withholds its rest's neighbour", () => {
+  // The url's cut (its query value elided, the head redacted in place) takes the head; read as shown, the join no longer
+  // holds it and the title's rest would show.
+  const text = search(`${REST} more`, "s", `https://h.example/a?token=${HEAD}`);
+  assert.equal(webWithin(webShownOf("web_search", text, callEach([KEY]), (joined) => withheldWhole(joined, [KEY])), 1000), "[redacted]");
+  assert.equal(resultTextOf(text, [KEY], "web_search"), "[redacted]");
+});
+
+test("a web call's property names are read: a held value in one is cut (two cut to one name both kept, the later numbered), one split across a name and its value withholds the result", () => {
+  const holds = (joined) => withheldWhole(joined, [KEY]);
+  const named = JSON.stringify({ query: "q", results: [{ url: "https://h.example/a", title: "t", [KEY]: "x", [Buffer.from(KEY).toString("hex")]: "y" }] });
+  const shown = JSON.parse(webWithin(webShownOf("web_search", named, callEach([KEY]), holds), 1000));
+  assert.deepEqual(shown.results[0], { url: "https://h.example/a", title: "t", "[redacted]": "x", "[redacted] (2)": "y" });
+  const split = JSON.stringify({ query: "q", results: [{ url: "https://h.example/a", [`n ${HEAD}`]: `${REST} v` }] });
+  assert.equal(webWithin(webShownOf("web_search", split, callEach([KEY]), holds), 1000), "[redacted]");
 });
 
 test("a held value split where a call's read stops, its rest past JSON's one-character escapes of whitespace or quotes (one level and two) or past characters that render as nothing, shows none of it; escaped backslashes count as one character each", () => {

@@ -401,7 +401,7 @@ async function storeRunIn(store: Store, runId: string, deps: ViewDeps, cut: Awai
   // Its final answer whole (store-reads/journal.ts wholeAnswers), as main served a run's answer: a row's cut is no answer's.
   // A run that ended reads settled, and its usage row says its cost ("Cost: …"), never what it has cost so far. One
   // looking back is still going: its look-back's rows come yet.
-  // A call's arguments split across two strings are withheld whole (TimelineOptions.holds).
+  // A call's arguments, or a web call's output, split across two strings are withheld whole (TimelineOptions.holds).
   const timelineOptions = { settled: terminal && !lookingBack, ended: terminal && !lookingBack, redact: (text: string) => redacted(text, values), holds: (text: string) => withheldWhole(text, values) };
   // Rendered from the records read above, so its usage row and the cost's `plan` (bookedSpend over the same entries) are
   // of one read.

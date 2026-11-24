@@ -22,12 +22,47 @@ function clip(text: string, keep: number): string {
   return `${text.slice(0, code >= 0xd800 && code <= 0xdbff ? keep - 1 : keep)}…`;
 }
 
-/** Every string in `value`, property names aside, through `each`. */
+/** Every string in `value` through `each`, property names too (a tool may write a value as one): two names `each` makes
+ *  one are both kept, the later ones numbered, as the runner's cutDeep keeps them (runner/redact.ts). */
 function eachString(value: unknown, each: (text: string) => string): unknown {
   if (typeof value === "string") return each(value);
   if (Array.isArray(value)) return value.map((item) => eachString(item, each));
-  if (isObj(value)) return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, eachString(item, each)]));
-  return value;
+  if (!isObj(value)) return value;
+  const out: Obj = {};
+  for (const [key, item] of Object.entries(value)) {
+    const once = each(key);
+    let name = once;
+    for (let n = 2; Object.hasOwn(out, name); n++) name = `${once} (${n})`;
+    Object.defineProperty(out, name, { value: eachString(item, each), enumerable: true, writable: true, configurable: true });
+  }
+  return out;
+}
+
+/** `text`, a call of `tool`'s output, read as its tool writes it: the JSON object on its first line, and where that line
+ *  ends (-1 when it is the whole text). Undefined for a tool other than web_search and web_fetch, or an output whose
+ *  first line is not a JSON object. */
+function webRead(tool: string, text: string): { read: Obj; end: number } | undefined {
+  if (tool !== WEB_SEARCH && tool !== WEB_FETCH) return undefined;
+  const end = text.indexOf("\n");
+  let read: unknown;
+  try {
+    read = JSON.parse(end < 0 ? text : text.slice(0, end));
+  } catch {
+    return undefined;
+  }
+  return isObj(read) ? { read, end } : undefined;
+}
+
+/** Whether `text`, a web call's output, is withheld whole: `holds` (whether a text holds a held value no cut in place
+ *  takes: key-refusal.ts withheldWhole) reads the output as it came, its JSON line and the lines after it, through the
+ *  matcher's join view, the one check every tool's output and every call's arguments read through (redact/match.ts
+ *  joinView: a JSON text's strings joined, its values alone, its names with them, then all of it). Each string is cut on
+ *  its own wherever the output is shown (webCut, webShownOf), so a held value split across two of them, or across a
+ *  property name and its value, is found only here. Every reader of a web call's output asks this first: the runner
+ *  before it stores the answer (adapter-run-spec.ts answersCut), a timeline before its row shows any of it (timeline.ts
+ *  shownOf, resultText). False for an output that is not a web call's JSON. */
+export function webHeld(tool: string, text: string, holds: (text: string) => boolean): boolean {
+  return webRead(tool, text) ? holds(text) : false;
 }
 
 /** What a web call withheld whole shows. */
@@ -43,45 +78,30 @@ function linksWithin(links: readonly unknown[], keep: number): number {
   return links.length;
 }
 
-/** `text`, a call of `tool`'s output, with `cut` (the run's redactor) applied to each string of its JSON by itself and to
- *  the lines after it, never to its JSON line whole: the redactor reads a run of more than 8,192 characters with no
- *  whitespace as "[redacted]" (key-refusal.ts redactedAnswer), and a JSON line, whose newlines are escapes, is one such
- *  run from its text's last space through its links, so cut whole it loses its links and no longer parses. Undefined for
- *  a tool other than web_search and web_fetch, or an output whose first line is not a JSON object: that one is cut as
- *  any other tool's. */
-export function webCut(tool: string, text: string, cut: (text: string) => string): string | undefined {
-  if (tool !== WEB_SEARCH && tool !== WEB_FETCH) return undefined;
-  const end = text.indexOf("\n");
-  let read: unknown;
-  try {
-    read = JSON.parse(end < 0 ? text : text.slice(0, end));
-  } catch {
-    return undefined;
-  }
-  if (!isObj(read)) return undefined;
-  return `${JSON.stringify(eachString(read, cut))}${end < 0 ? "" : cut(text.slice(end))}`;
+/** `text`, a call of `tool`'s output, with `cut` (the run's redactor) applied to each string of its JSON by itself, its
+ *  property names too, and to the lines after it, never to its JSON line whole: the redactor reads a run of more than
+ *  8,192 characters with no whitespace as "[redacted]" (key-refusal.ts redactedAnswer), and a JSON line, whose newlines
+ *  are escapes, is one such run from its text's last space through its links, so cut whole it loses its links and no
+ *  longer parses. "[redacted]" when `holds` finds a held value split across its strings (webHeld). Undefined for a tool
+ *  other than web_search and web_fetch, or an output whose first line is not a JSON object: that one is cut as any other
+ *  tool's. */
+export function webCut(tool: string, text: string, cut: (text: string) => string, holds?: (text: string) => boolean): string | undefined {
+  const web = webRead(tool, text);
+  if (!web) return undefined;
+  if (holds?.(text)) return "[redacted]";
+  return `${JSON.stringify(eachString(web.read, cut))}${web.end < 0 ? "" : cut(text.slice(web.end))}`;
 }
 
 /** `text`, a call of `tool`'s output, as a grader reads it (WebShown), each of its strings through `each` first (the
  *  run's redaction, its URLs' query values elided), so a cut never falls inside what that takes out. Undefined for a
  *  tool other than web_search and web_fetch, or an output that is not its JSON. A page's links past a cut are counted
- *  in `links_cut`. `holds`, whether a text holds a held value no cut in place takes (key-refusal.ts withheldWhole): it
- *  reads the output as it came, its JSON line and the lines after it, through the matcher's join view, the one check
- *  every tool's output and every call's arguments read through (redact/match.ts joinView), so a held value split
- *  across two strings, or across a property name and its value, which `each` reads one at a time, withholds the output
- *  whole, as "[redacted]". */
+ *  in `links_cut`. With `holds`, an output it withholds (webHeld: a held value split across two strings, or across a
+ *  property name and its value, which `each` reads one at a time) shows "[redacted]". */
 export function webShownOf(tool: string, text: string, each: (text: string) => string = (part) => part, holds?: (text: string) => boolean): WebShown | undefined {
-  if (tool !== WEB_SEARCH && tool !== WEB_FETCH) return undefined;
-  const end = text.indexOf("\n");
-  let read: unknown;
-  try {
-    read = JSON.parse(end < 0 ? text : text.slice(0, end));
-  } catch {
-    return undefined;
-  }
-  const shown = eachString(read, each);
-  if (!isObj(shown)) return undefined;
-  const after = end < 0 ? "" : each(text.slice(end));
+  const web = webRead(tool, text);
+  if (!web) return undefined;
+  const shown = eachString(web.read, each) as Obj;
+  const after = web.end < 0 ? "" : each(text.slice(web.end));
   const withheld = () => holds?.(text) ?? false;
   if (tool === WEB_SEARCH) {
     const results = shown.results;

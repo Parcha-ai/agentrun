@@ -2,7 +2,7 @@ import { BROWSER_OPENERS, BROWSER_STEPS, callFailed, endsTurn, failedWith, input
 import { cut, firstLine, firstSentence, json, obj, saidSummary, scrubUrls, str, utf8Bytes, type Obj } from "./util.js";
 import { BESIDE_SUFFIX, NOTE_SUFFIX, originMatcher, TRIGGER_LABELS, type TriggerSource } from "./origin.js";
 import type { ComputerCallRow } from "./computer.js";
-import { webShownOf, webWithin } from "./web-calls.js";
+import { webHeld, webShownOf, webWithin } from "./web-calls.js";
 
 export type TimelineKind =
   | "thinking" | "text_block" | "tool_use" | "tool_result" | "phase"
@@ -79,7 +79,7 @@ export type TimelineEvent = {
   computer_calls?: readonly ComputerCallRow[];
   computer_calls_dropped?: number;
   /** On a `tool_use` row of a timeline read with `calls` (TimelineOptions): the call's arguments, each string as `redact`
-   *  makes it where the call is first seen, cut at CAPS.text. Absent when `calls.holds` withholds them whole. */
+   *  makes it where the call is first seen, cut at CAPS.text. Absent when `holds` withholds them whole. */
   tool_input?: Obj;
   /** On a `tool_result` row of a timeline read with `calls`: the call's output whole to `calls.result` characters (its
    *  head past that), as `calls.redact` makes it, its URLs' query values elided as the preview's are; a web call's every
@@ -307,20 +307,20 @@ export type TimelineOptions = {
    *  tail as long as a key, not by the word holdback. */
   redactLive?: (text: string) => string;
   /** Whether a text holds a held value no cut in place takes (key-refusal.ts withheldWhole, whose join view reads a
-   *  JSON text's strings joined): a call's arguments, each string of which `redact` reads on its own, are read with it
-   *  as their JSON, and withheld whole when it says so (argsOf), in every read. Default: `calls.holds`, else none. */
+   *  JSON text's strings joined, property names among them). Read in every read, with `calls` or without, before any
+   *  row shows what it reads: a call's arguments, each string of which `redact` reads on its own, are read with it as
+   *  their JSON (argsOf), and a web call's output as it came (web-calls.ts webHeld). A value split across two of their
+   *  strings, or across a property name and its value, which `redact` and `calls.redact` never read side by side,
+   *  withholds them whole: the call's rows read it as one with no arguments, or its output's preview, summary and a
+   *  `calls` read's text read "[redacted]". Default: none withheld. */
   holds?: (text: string) => boolean;
   /** For a reader that grades the run (a template eval): each `tool_use` row carries its call's arguments whole
    *  (`tool_input`), and each `tool_result` row the head of its output to `result` characters (`tool_result_text`; a
    *  web call's every url, each of its strings redacted on its own), made safe by `redact`, a redactor that reads that
    *  far (the rows' own `redact` stops at the head a row shows).
    *  Without `redact`, the rows' own. `held`: whether a number in the arguments shows a held value (a key that is all
-   *  digits); such a number is shown as "[redacted]". `holds`: whether a text holds a held value no cut in place takes
-   *  (key-refusal.ts withheldWhole, whose join view reads a JSON text's strings joined). A call's arguments, each string
-   *  redacted on its own, are read with it as their JSON, and a web call's output, each string of it redacted on its own,
-   *  as it came: a value split across two strings, or across a property name and its value, withholds the arguments
-   *  (argsOf) or the result (web-calls.ts webShownOf). */
-  calls?: { result: number; redact?: (text: string) => string; held?: (value: number | bigint) => boolean; holds?: (text: string) => boolean };
+   *  digits); such a number is shown as "[redacted]". */
+  calls?: { result: number; redact?: (text: string) => string; held?: (value: number | bigint) => boolean };
 };
 
 /** A tool's calls in a run, and how many failed. */
@@ -805,7 +805,7 @@ function createProjector(options: TimelineOptions) {
   /** The arguments of calls a read withholds whole (argsOf). */
   const withheldArgs = new WeakSet<Obj>();
   /** A call's arguments as its rows may show them: redacted once, where the call is first seen (redactValue). Arguments
-   *  whose JSON holds a held value no cut in place takes (`holds`, else `calls.holds`: split across two of their
+   *  whose JSON holds a held value no cut in place takes (`holds`: split across two of their
    *  strings, or across a property name and its value, which redactValue reads one at a time) are withheld whole, in a
    *  read with calls or without: the call's rows read it as one with no arguments, its preview is "[redacted]" and its
    *  `tool_input` is left out. */
@@ -819,10 +819,9 @@ function createProjector(options: TimelineOptions) {
   };
   /** Whether the read withholds `args` whole (argsOf); arguments that cannot be read as JSON are. */
   const argsHeld = (args: Obj): boolean => {
-    const holds = options.holds ?? options.calls?.holds;
-    if (!holds) return false;
+    if (!options.holds) return false;
     try {
-      return holds(JSON.stringify(args));
+      return options.holds(JSON.stringify(args));
     } catch {
       return true;
     }
@@ -833,10 +832,14 @@ function createProjector(options: TimelineOptions) {
     const verdict = /^(\w+): /.exec(text);
     return verdict ? `${verdict[1]}: ${scrubUrls(firstLine(redactText(text.slice(verdict[0].length))))}` : scrubUrls(firstLine(redactText(text)));
   };
-  /** A result as its rows show it: its whole output redacted once, which its label, summary and preview are all taken
-   *  from (resultRow); its details and error flag as they came. */
-  const shownOf = (view: ToolResultView): ToolResultView =>
-    options.redact ? { ...view, text: view.text ? options.redact(view.text) : view.text, details: redactValue(view.details) } : view;
+  /** A result as its rows show it: its whole output redacted once, or "[redacted]" when it is withheld whole (`withheld`),
+   *  which its label, summary and preview are all taken from (resultRow); its details and error flag as they came. */
+  const shownOf = (tool: string, view: ToolResultView): ToolResultView =>
+    withheld(tool, view.text) ? { ...view, text: "[redacted]", details: redactValue(view.details) }
+    : options.redact ? { ...view, text: view.text ? options.redact(view.text) : view.text, details: redactValue(view.details) } : view;
+  /** Whether a call of `tool`'s output is withheld whole before any row shows it: a web call's output, read as it came
+   *  through `holds` (TimelineOptions.holds, web-calls.ts webHeld). */
+  const withheld = (tool: string, text: string): boolean => (options.holds && text ? webHeld(tool, text, options.holds) : false);
   const failure = (text: string) => scrubUrls(firstLine(str(json(text)?.message) ?? diagnosticOf(text) ?? text)) || "no detail";
   /** Whether a result is a call's refusal before it ran: an error its host marked so in its details (CALL_REFUSED),
    *  read by that field, never by its words. */
@@ -862,7 +865,8 @@ function createProjector(options: TimelineOptions) {
   const callShown = (text: string) => scrubUrls(wholeRedact ? wholeRedact(text) : text);
   const resultText = (tool: string, text: string): string | null => {
     if (!text) return null;
-    const web = webShownOf(tool, text, callShown, options.calls!.holds);
+    if (withheld(tool, text)) return "[redacted]";
+    const web = webShownOf(tool, text, callShown);
     return web ? webWithin(web, options.calls!.result) : cut(callShown(text), options.calls!.result);
   };
   /** The `tool_result` row of a finished call, named `named`; `parent` is a nested call's caller. */
@@ -1063,7 +1067,7 @@ function createProjector(options: TimelineOptions) {
       const call = calls.get(`${conv}:${id}`);
       const name = call?.name ?? str(message.toolName) ?? "tool";
       const view = viewOf(message);
-      const shown = shownOf(view);
+      const shown = shownOf(name, view);
       // A call that failed ended nothing: the agent goes on after it, so a message then is still a steer.
       ended.set(conv, (previous.get(conv) !== "pi.tool-result" || ended.get(conv) === true) && endsTurn(name) && !view.isError);
       // One an abort cut did end the turn. A round's results come in as its calls end, so one that ended before the abort
@@ -1186,7 +1190,7 @@ function createProjector(options: TimelineOptions) {
     const text = typeof output === "string" ? output : output !== undefined ? JSON.stringify(output) : (diagnostic ?? "");
     const failed = result.isError === true;
     const view: ToolResultView = { text, details: result.details, isError: failed };
-    const shown = shownOf(view);
+    const shown = shownOf(call.name, view);
     const named = nameFor(call.name, call.args, view, shown);
     call.done = true;
     call.use.summary = clean(named, caps.summary);

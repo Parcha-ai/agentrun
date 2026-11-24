@@ -26,7 +26,8 @@ const halves = [HEAD.slice(0, 8), REST.slice(0, 8)];
 const rowsOf = (tool, args, text) =>
   timelineOf([user("Run it."), assistant([call("c1", tool, args)]), result("c1", tool, text)], {
     redact: (part) => redacted(part, SECRETS),
-    calls: { result: CALL_RESULT_CHARS, redact: (part) => redactedCall(part, SECRETS, CALL_RESULT_CHARS, scrubUrls), holds: (whole) => withheldWhole(whole, SECRETS) },
+    holds: (whole) => withheldWhole(whole, SECRETS),
+    calls: { result: CALL_RESULT_CHARS, redact: (part) => redactedCall(part, SECRETS, CALL_RESULT_CHARS, scrubUrls) },
   });
 const rowOf = (rows, kind) => rows.find((row) => row.kind === kind && row.tool_use_id === "c1");
 const grader = { file: "rubric.md", type: "llm", rubric: "Pass if the run ran its command." };
@@ -95,7 +96,8 @@ test("graderInput: the prompt built from a run whose calls split a held value ho
     ],
     {
       redact: (part) => redacted(part, SECRETS),
-      calls: { result: CALL_RESULT_CHARS, redact: (part) => redactedCall(part, SECRETS, CALL_RESULT_CHARS, scrubUrls), holds: (whole) => withheldWhole(whole, SECRETS) },
+      holds: (whole) => withheldWhole(whole, SECRETS),
+      calls: { result: CALL_RESULT_CHARS, redact: (part) => redactedCall(part, SECRETS, CALL_RESULT_CHARS, scrubUrls) },
     },
   );
   const prompt = graderInput(grader, "task", { answer: "done", calls: callsOf(rows, "pi"), mcpCalls: [], files: [] });
