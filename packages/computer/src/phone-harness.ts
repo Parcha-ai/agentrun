@@ -19,6 +19,7 @@ import { fileURLToPath } from "node:url";
 import { DaemonClient } from "./client.js";
 import { CreateRequests, endedWords, labelsDiffer, otherSpecWords } from "./create-requests.js";
 import { PHONE_GROUPS, PHONE_HARNESS } from "./descriptors/phone-harness.js";
+import { httpsBase } from "./hosted/rest.js";
 import { type ComputerClient, type DaemonMethod, type DaemonMethods, type HelloResult, PROTOCOL_VERSION } from "./protocol.js";
 import {
 	type AttachedComputer,
@@ -401,7 +402,7 @@ export interface PhoneProviderOptions {
 	apiKey: string;
 	/** Which phone: "android", a temporary cloud emulator (the default). "ios" is refused until it is built. */
 	platform?: "android" | "ios";
-	/** The API's base URL; default PHONE_HARNESS_URL. */
+	/** The API's base URL, https alone; default PHONE_HARNESS_URL. */
 	baseUrl?: string;
 	/** fetch; default the global one. Tests give a fake. */
 	fetch?: typeof globalThis.fetch;
@@ -530,7 +531,7 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		if (platform === "ios") throw new Error('platform "ios" is not offered yet: the phone-harness provider rents a cloud Android; an iPhone is a later change');
 		if (platform !== "android") throw new Error(`platform ${show(platform)} is not one of android, ios`);
 		this.#apiKey = apiKey;
-		this.#baseUrl = (options.baseUrl ?? PHONE_HARNESS_URL).replace(/\/+$/, "");
+		this.#baseUrl = httpsBase(options.baseUrl ?? PHONE_HARNESS_URL, "the phone harness URL");
 		this.#fetch = options.fetch ?? globalThis.fetch;
 		const adb = options.adb;
 		if (adb !== undefined && typeof adb !== "string" && !(typeof adb?.run === "function" && typeof adb?.server === "function" && typeof adb?.open === "function")) {
@@ -611,6 +612,8 @@ export class PhoneHarnessProvider implements ComputerProvider {
 				method,
 				headers: { Authorization: `Bearer ${this.#apiKey}`, Accept: "application/json", ...(body === undefined ? {} : { "Content-Type": "application/json" }), ...headers },
 				...(body === undefined ? {} : { body: JSON.stringify(body) }),
+				// Never followed: the key's header would go on to wherever a redirect points, as rest.ts's client refuses too.
+				redirect: "error",
 				signal: either,
 			});
 		} catch (error) {

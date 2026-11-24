@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { recordingStart, stepAt, videoClock, videoSteps } from "./runVideo";
+import { steps } from "./timeline";
+import { recordingStart, stepAt, stepCall, videoClock, videoSteps } from "./runVideo";
 import type { TimelineRow } from "./v2";
 
 // A recording's steps: the run's timeline put on the video's clock. The server never says when a recording began on the
@@ -145,5 +146,17 @@ describe("videoClock", () => {
     expect(videoClock(760)).toBe("12:40");
     expect(videoClock(3725)).toBe("1:02:05");
     expect(videoClock(-3)).toBe("0:00");
+  });
+});
+
+describe("the tool call a step is", () => {
+  it("is the call's id, from its row or from its result's once the result folded into it; none for a step that is no call", () => {
+    const told = steps([
+      row("phase", "The desktop is ready.", "2026-11-05T09:00:00Z"),
+      row("tool_use", "computer_act", "2026-11-05T09:00:04Z", { tool_name: "computer_act", tool_use_id: "call_a" }),
+      row("tool_result", "Opened Chrome: ok", "2026-11-05T09:00:06Z", { tool_name: "computer_act", tool_use_id: "call_a", tool_status: "success" }),
+      row("tool_use", "computer_act", "2026-11-05T09:00:08Z", { tool_name: "computer_act", tool_use_id: "call_b" }),
+    ]);
+    expect(told.map(stepCall)).toEqual([null, "call_a", "call_b"]);
   });
 });

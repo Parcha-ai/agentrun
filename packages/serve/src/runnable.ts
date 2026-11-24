@@ -15,7 +15,7 @@ import type { BoxOffer } from "./place-offers.js";
 import { boxAvailability, newAgentPlace, placeFix, RUN_BOXES } from "./place.js";
 import { allows, BOUND_TOOLS, CALL_TOOLS, grantedTools, missingEnv, NODE_TOOLS, shellTools, toolOf, workflowTools } from "./tools.js";
 import { DENIED, isUnavailable, NO_PARALLEL_KEY, type Pickable, planeFor, type ToolSettingsMap, whyUnavailable } from "./tool-plane.js";
-import { denyPlace, permissionFrom, permissionKeys, permissionOf } from "./tool-gate.js";
+import { computerDenied, denyPlace, permissionFrom, permissionKeys, permissionOf } from "./tool-gate.js";
 import { approvalsOf } from "./approvals.js";
 import { PARALLEL_KEY_ENV } from "./decisions.js";
 import { keyNeeded } from "./key-words.js";
@@ -78,6 +78,15 @@ const PRICE_FIX = "Set AGENT_MODEL_PRICE (USD per million input,output,cacheRead
  *  `new Function` transform, which is no sandbox. Off by default. */
 export const CODE_NODES_ENV = "AGENTRUN_SERVE_CODE_NODES";
 
+/** The kind of an agentic `revision`'s computer setting when every tool that computer serves is set to deny under the
+ *  server's tool `settings` (tool-gate.ts computerDenied), with its shell where `shellOf` puts it: a run of it never
+ *  starts that computer (computer-for-claim.ts), so blockersOf asks nothing of it, and a save warns (server.ts saveable).
+ *  Undefined for one with no computer setting, or with no `shellOf` to place its shell. */
+export async function deniedComputer(revision: RevisionShape, settings: ToolSettingsMap, shellOf?: (setting: RevisionComputer) => Promise<ShellPlace>): Promise<string | undefined> {
+  if (revision.kind !== "agentic" || !revision.computer || !shellOf) return undefined;
+  return computerDenied({ kind: revision.kind, body: revision }, await shellOf(revision.computer), { settings, problems: [] });
+}
+
 /** What keeps `revision` from running in `env` under the server's tool `settings` (tool-plane.ts). `boxes`: what this
  *  server found at its start (place-offers.ts); none, every box is unavailable. `monid`: its pin. `offers`: the harnesses' offers
  *  the server already holds (its reading); none given, they are probed here. `computerReady`: whether an agent's computer
@@ -108,9 +117,10 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
   // edit that leaves the place out keeps the agent's (agents-store.ts), so removing the field would change nothing.
   if (revision.kind === "workflow" && place && place.mode !== "runner") out.push({ field: "definition.place", reason: "not_an_option", message: `A workflow runs on the runner here: its place is runner (or none), not ${place.mode} on ${place.box ?? "no box"}.`, fix: placeFix({ mode: "runner" }), host: false });
   // An agent with a computer setting is checked by the claim's own answers (resolve-computer.ts computerReadiness: the
-  // provider and its kind, the mode's mount, its keys), not as a box; one with only an old place keeps the box check.
+  // provider and its kind, the mode's mount, its keys), not as a box; one with only an old place keeps the box check. One
+  // every tool of whose computer is set to deny is not: its runs never start it (deniedComputer).
   else if (revision.kind === "agentic" && revision.computer && computerReady) {
-    const ready = await computerReady(revision.computer);
+    const ready = (await deniedComputer(revision, settings, shellOf)) ? { ok: true as const } : await computerReady(revision.computer);
     if ("refused" in ready) out.push({ field: "definition.computer", reason: NOT_SET_UP, message: ready.refused, host: true, ...(ready.box ? { box: ready.box } : {}) });
   } else if (place && place.mode !== "runner") {
     const box = boxAvailability(boxes).find((b) => b.id === place.box);

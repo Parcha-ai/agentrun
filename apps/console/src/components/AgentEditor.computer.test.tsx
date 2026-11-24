@@ -71,7 +71,7 @@ describe("AgentEditor, the Computer step", () => {
   // The kind cards, each kind's providers and "The loop gets …" read the server's computers list (capabilities.computers,
   // the same list GET /v2/computers answers). The words below are this fixture's; the console shows the server's.
   const KINDS = [
-    { kind: "none", offered: true, groups: [], tools: ["read", "write", "edit", "bash"], settings: [], record: { available: false, why: "with no computer, there is no screen to record" }, providers: [] },
+    { kind: "none", offered: true, groups: [], tools: ["read", "write", "edit", "bash"], settings: [], record: { available: false, why: "fixture: no computer" }, providers: [] },
     { kind: "sandbox", offered: true, groups: ["exec", "files", "processes"], tools: ["read", "write", "edit", "bash", "bash_background"], settings: ["image", "persistent", "gpu"], record: { available: false, why: "fixture: a sandbox has no screen to record" }, providers: [
       { id: "docker", name: "Docker", secrets: [], required: [], ready: true, metered: false },
       { id: "daytona", name: "Daytona", secrets: [{ name: "computer:daytona:DAYTONA_API_KEY", set: true, source: "console", changed_at: null }], required: ["computer:daytona:DAYTONA_API_KEY"], ready: false, why: "fixture: Daytona can't mount this server's run folders" },
