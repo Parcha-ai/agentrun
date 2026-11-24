@@ -167,7 +167,9 @@ export function bodyOf(input: RevisionBodyInput): { body: AgenticBody | Workflow
     if (typeof input.instructions !== "string") invalid("an agentic revision needs instructions (its prompt, possibly empty)");
     for (const field of ["model", "thinking"] as const) if (input[field] !== undefined && (typeof input[field] !== "string" || input[field] === "")) invalid(`the ${field} is not a non-empty string`);
     if (input.learning !== undefined) {
-      const wrong = learningSettingIssue(input.learning);
+      // Read as stored: an edit carries the saved setting forward (a `__proto__` agree_on segment it kept included); a
+      // write naming one is refused before it gets here (validate.ts, templates.ts).
+      const wrong = learningSettingIssue(input.learning, "learning", true);
       if (wrong) invalid(wrong);
     }
     if (input.inputSchema !== undefined && !isObject(input.inputSchema)) invalid("the inputSchema is not a JSON object");

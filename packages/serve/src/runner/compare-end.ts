@@ -8,7 +8,7 @@
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { LearningFolder } from "../learn/folder.js";
-import { type Compared, type GraderReply, gradeAnswers, gradesOf, knownAnswerText, sameAnswer } from "../learn/promote.js";
+import { type Compared, type ComparedGrade, comparedGrade, type GraderReply, gradeAnswers, gradesOf, knownAnswerText, sameAnswer } from "../learn/promote.js";
 import type { PortModels } from "../port-models.js";
 import type { RunLaunch } from "../run-launch.js";
 import type { Store } from "../store/store.js";
@@ -38,17 +38,18 @@ const inputText = (input: unknown): string => (typeof input === "string" ? input
 /** The two answers a replay run or a shadow compares at its end: the known one and the workflow's. A replay's workflow
  *  answer is its own, when the workflow it replays answered it; its known answer is its source run's newest grade's
  *  expected answer written over that run's own answer (knownAnswerText, which the check reads too), else that run's
- *  own answer. A shadow's agent answer is its own; the workflow's is the served run's answer it audits (its open ledger
- *  line's turn). Null: nothing to compare. */
-async function pairOf(launch: RunLaunch, deps: CompareEndDeps, runId: string): Promise<{ agent: string; workflow: string } | null> {
+ *  own answer, with that grade (`graded`, null for none), which its verdict keeps. A shadow's agent answer is its own;
+ *  the workflow's is the served run's answer it audits (its open ledger line's turn). Null: nothing to compare. */
+async function pairOf(launch: RunLaunch, deps: CompareEndDeps, runId: string): Promise<{ agent: string; workflow: string; graded?: ComparedGrade | null } | null> {
   if (launch.replay) {
     const path = await runPathOverStore(deps.store, runId, launch.learning, deps.redact);
     if (path.path !== "workflow" || path.workflow !== launch.replay.workflow) return null;
     const workflow = await answerOf(deps.store, runId, BACKGROUND_CONTEXT);
     const said = await answerOf(deps.store, launch.replay.of, BACKGROUND_CONTEXT);
-    const expected = await expectedOf(deps.store, launch.replay.of);
-    const agent = expected ? knownAnswerText(said, expected) : said;
-    return workflow === null || agent === null ? null : { agent, workflow };
+    // The grade read once: the verdict keeps it, so the check judges this input on the grade its grader was asked against.
+    const graded = await gradeOf(deps.store, launch.replay.of);
+    const agent = graded?.expected ? knownAnswerText(said, graded.expected) : said;
+    return workflow === null || agent === null ? null : { agent, workflow, graded };
   }
   if (launch.audit) {
     const [agent, workflow] = [await answerOf(deps.store, runId, BACKGROUND_CONTEXT), await auditedAnswerOf({ store: deps.store, context: BACKGROUND_CONTEXT, folder: deps.folder }, runId)];
@@ -57,11 +58,10 @@ async function pairOf(launch: RunLaunch, deps: CompareEndDeps, runId: string): P
   return null;
 }
 
-/** Run `of`'s newest grade's expected answer, when it has one that is not empty. */
-async function expectedOf(store: Store, of: string): Promise<Readonly<Record<string, unknown>> | undefined> {
+/** Run `of`'s newest grade as the check judges it (comparedGrade), null when it has none. */
+async function gradeOf(store: Store, of: string): Promise<ComparedGrade | null> {
   const source = await store.runs.get(of);
-  const grade = source ? (await gradesOf(store.settings, source.agentId)).findLast((one) => one.run === of) : undefined;
-  return grade?.expected && Object.keys(grade.expected).length ? grade.expected : undefined;
+  return comparedGrade(source ? (await gradesOf(store.settings, source.agentId)).findLast((one) => one.run === of) : undefined);
 }
 
 /** The end-of-run step of a replay run or an audit's shadow (its callers pass no other run): its comparison (above),
@@ -77,7 +77,8 @@ export function compareEndOfRun(launch: RunLaunch, deps: CompareEndDeps): EndOfR
       const pair = await pairOf(launch, deps, input.runId);
       if (!pair || sameAnswer(pair.agent, pair.workflow)) return undefined;
       const grade = input.grade;
-      const compared: Compared = await gradeAnswers(inputText(launch.input), pair.agent, pair.workflow, { model: input.grader, ask: (request) => grade(request) });
+      const verdict = await gradeAnswers(inputText(launch.input), pair.agent, pair.workflow, { model: input.grader, ask: (request) => grade(request) });
+      const compared: Compared = pair.graded !== undefined ? { ...verdict, graded: pair.graded } : verdict;
       return { also: [], compared };
     } catch (error) {
       deps.log(`learning: run ${input.runId}'s comparison was not asked (${(error as Error)?.message ?? error})`);

@@ -3,13 +3,15 @@
 // prose beyond each field's numbers in words. The caller turns its replays (or native turns) into rows, and stores and
 // words what comes back (runner/promotion.ts decideCheck).
 //
-// A field passes when, on the inputs the workflow answered alone, its answers are right against the known answer:
-//   - known from a label or a grade: at least `agree_min` of those inputs right, and at most `margin` under the agent's
-//     own accuracy on them (a correction, where the agent was wrong, gives no free pass);
-//   - known only from the agent: at least the agent's agreement with itself on that field, less `margin` (the noise
-//     floor: two runs of the agent differ too), or the bar's `agree_min` when no self-agreement was measured.
+// A field passes when, on the inputs the workflow answered alone, its answers are right against the known answer, over
+// all of its known inputs at once (pooled across where each input's known answer came from):
+//   - at least `agree_min` of them right; an input known only from the agent counts at the agent's agreement with itself
+//     on that field less `margin` instead (the noise floor: two runs of the agent differ too), where that was measured;
+//   - and, on the inputs known from a label, and apart on those known from a grade, at most `margin` under the agent's
+//     own accuracy on them (a correction, where the agent was wrong, gives no free pass).
 // Each row's field is judged against its own best known answer, so a field with labels on some inputs is judged against
-// the labels there and against the agent elsewhere, and must pass both. An input with no known answer on a field (the
+// the labels there and against the agent elsewhere; one graded input missed among many the agent knows is one input of
+// the field's floor, not a source of its own that fails. An input with no known answer on a field (the
 // agent's answer graded wrong with none given, and the workflow said another) is unjudged there: never right, so never
 // right on every field at once, and a field judged on fewer than `alone_min` of the inputs that carried it fails. The
 // workflow serves only when it answered at least `alone_min` of the inputs alone, at least `agree_min` of those were
@@ -26,10 +28,11 @@ export type Known = (typeof KNOWN)[number];
 /** One field of one input: the workflow's value and the agent's (undefined: missing, never right), and the label's and
  *  the grade's when one exists. `agrees`: whether the workflow's value is right against the field's best known answer
  *  when something other than equal values decides it (a whole answer: equal, else the grader's verdict on that pair);
- *  absent, equal JSON values are right. `agent_correct`: what a grade said of the agent's answer. Against the grade's
- *  value, it decides whether the agent was right. With no grade value, false says the agent's answer was wrong, so
- *  repeating it is wrong and any other value has no known answer (unjudged); true changes nothing: the agent's answer is
- *  known as it is with no grade, at the same bar (a thumbs-up never makes the check stricter than none). */
+ *  absent, equal JSON values are right. `agent_correct`: what a grade said of the agent's answer. False says the agent's
+ *  answer was wrong, so a value equal to it is never right, whatever `agrees` says. Against the grade's value, it decides
+ *  whether the agent was right. With no grade value, false leaves any other value with no known answer (unjudged); true
+ *  changes nothing: the agent's answer is known as it is with no grade, at the same bar (a thumbs-up never makes the
+ *  check stricter than none). */
 export type FieldAnswers = {
   readonly workflow: unknown;
   readonly agent: unknown;
@@ -81,7 +84,8 @@ export type CheckTally = {
 /** One field's verdict: its counts over all its inputs, each against that input's best known answer (`agent_right` over
  *  the inputs with a label or grade only: where the known answer is the agent's own, the agent is not measured), the
  *  strongest source it was known from, whether it passes, why in numbers, and the counts per source (`by`; there, an
- *  agent-known source's agent_right is its n). */
+ *  agent-known source's agent_right is the inputs the agent gave a value on, and `pass` says whether that source would
+ *  pass alone, at agree_min and the margin: the field's own `pass` pools them). */
 export type FieldVerdict = FieldCount & {
   /** The inputs that carried it with no known answer (judged on `n` of n + unjudged), when any. */
   readonly unjudged?: number;
@@ -130,16 +134,19 @@ function knownOf(one: FieldAnswers): { value: unknown; known: Known } {
 
 /** Whether the workflow's value on one field is right, and the agent's, against that field's best known answer;
  *  undefined when it has none (the agent's answer graded wrong with no expected one, and the workflow said another).
- *  `marked`: judged by a grade that gave no right answer (the workflow repeated the answer it marked wrong). */
+ *  `marked`: judged by a grade that gave no right answer (the workflow repeated the answer it marked wrong). A value equal
+ *  to an answer a grade marked wrong is never right, whatever `agrees` says; where the agent gave no value, the agent is
+ *  never right either. */
 function judged(one: FieldAnswers): { known: Known; expected: unknown; workflow: boolean; agent: boolean; marked?: true } | undefined {
   const { value, known } = knownOf(one);
+  const repeatsWrong = one.agent_correct === false && right(one.workflow, one.agent);
   if (known !== "agent") {
     const agent = known === "grade" && one.agent_correct !== undefined ? one.agent_correct : right(one.agent, value);
-    return { known, expected: value, workflow: one.agrees ?? right(one.workflow, value), agent };
+    return { known, expected: value, workflow: !repeatsWrong && (one.agrees ?? right(one.workflow, value)), agent };
   }
   const same = one.agrees ?? right(one.workflow, one.agent);
-  if (one.agent_correct === false) return same ? { known: "grade", expected: undefined, workflow: false, agent: false, marked: true } : undefined;
-  return { known, expected: value, workflow: same, agent: true };
+  if (one.agent_correct === false) return same || repeatsWrong ? { known: "grade", expected: undefined, workflow: false, agent: false, marked: true } : undefined;
+  return { known, expected: value, workflow: same, agent: one.agent !== undefined };
 }
 
 const NO_TALLY: CheckTally = { n: 0, alone: 0, agreed: 0, agent_agreed: 0, fields: {} };
@@ -199,31 +206,35 @@ export function missesOf(rows: readonly CheckInput[]): Miss[] {
 
 /** At least `share` of `n`, counted in whole inputs. Bars are decimals (0.8, 0.92 - 0.02), so the product is rounded off
  *  its float noise before it is rounded up: 0.9 of 20 needs 18, never 19. */
-const atLeast = (count: number, share: number, n: number): boolean => count >= Math.ceil(Math.round(share * n * 1e6) / 1e6);
+const atLeast = (count: number, share: number, n: number): boolean => atLeastOf(count, share * n);
+/** At least `needed` inputs (a float product of a bar and a count), rounded off its float noise, then up. */
+const atLeastOf = (count: number, needed: number): boolean => count >= Math.ceil(Math.round(needed * 1e6) / 1e6);
 
 const pct = (value: number): string => `${(value * 100).toFixed(1)}%`;
 const share = (count: number, n: number): string => pct(n ? count / n : 0);
 
-/** One source's verdict on a field: against labels or grades, at least agree_min right and within `margin` of the agent's
- *  accuracy on the same inputs; against the agent's own answers, at least the floor. */
-function sourceVerdict(name: string, known: Known, count: FieldCount, bar: FieldBar): { pass: boolean; words: string } {
+/** One source's part of a field's verdict: how many of the field's right inputs its inputs need (`needed`: agree_min of
+ *  them, or for agent-known ones the measured self-agreement less the margin), whether it keeps the margin (from a label
+ *  or a grade: workflow_right / n >= agent_right / n - margin, so the workflow may be margin * n inputs under the agent;
+ *  the agent's own answers have no margin), and whether it would pass alone (`pass`: its own floor and margin). */
+function sourceVerdict(name: string, known: Known, count: FieldCount, bar: FieldBar): { pass: boolean; margin: boolean; needed: number; words: string } {
   const margin = bar.margin ?? DEFAULT_MARGIN;
   if (known === "agent") {
     const self = bar.self_agreement && Object.hasOwn(bar.self_agreement, name) ? bar.self_agreement[name] : undefined;
     const floor = self === undefined ? bar.agree_min : Math.max(0, self - margin);
-    const pass = atLeast(count.workflow_right, floor, count.n);
     const why = self === undefined ? `the bar ${pct(floor)}` : `the floor ${pct(floor)}: the agent agrees with itself on it ${pct(self)}, less ${pct(margin)}`;
-    return { pass, words: `${count.workflow_right} of ${count.n} said what the agent said (${share(count.workflow_right, count.n)}, ${why})` };
+    return { pass: atLeast(count.workflow_right, floor, count.n), margin: true, needed: floor * count.n, words: `${count.workflow_right} of ${count.n} said what the agent said (${share(count.workflow_right, count.n)}, ${why})` };
   }
-  // At least agree_min of them right, and workflow_right / n >= agent_right / n - margin: the workflow may be margin * n
-  // inputs under the agent, never under agree_min (where the agent was wrong too, any answer would be within the margin).
-  const pass = atLeast(count.workflow_right, bar.agree_min, count.n) && count.workflow_right + Math.round(margin * count.n * 1e6) / 1e6 >= count.agent_right;
+  const kept = count.workflow_right + Math.round(margin * count.n * 1e6) / 1e6 >= count.agent_right;
   const against = known === "label" ? "the labels" : "the grades' expected answers";
-  return { pass, words: `${count.workflow_right} of ${count.n} right against ${against} (${share(count.workflow_right, count.n)}, the bar ${pct(bar.agree_min)}), the agent ${count.agent_right} (${share(count.agent_right, count.n)}; at most ${pct(margin)} under it)` };
+  return { pass: kept && atLeast(count.workflow_right, bar.agree_min, count.n), margin: kept, needed: bar.agree_min * count.n, words: `${count.workflow_right} of ${count.n} right against ${against} (${share(count.workflow_right, count.n)}, the bar ${pct(bar.agree_min)}), the agent ${count.agent_right} (${share(count.agent_right, count.n)}; at most ${pct(margin)} under it)` };
 }
 
-/** `tally` judged on `bar`. A field passes when every source it was known from passes and it was judged on at least
- *  `alone_min` of the inputs that carried it; it fails with no input. */
+/** `tally` judged on `bar`. A field passes when, over all its known inputs pooled, as many are right as its sources'
+ *  floors add up to (agree_min of them where no self-agreement was measured), each label- or grade-known source keeps
+ *  the margin under the agent, and it was judged on at least `alone_min` of the inputs that carried it; it fails with no
+ *  input. One graded input missed among many the agent knows is one input under the field's floor, never a source that
+ *  fails alone. */
 export function verdictOf(tally: CheckTally, bar: FieldBar): Omit<CheckVerdict, "misses"> {
   const fields = new Map<string, FieldVerdict>();
   for (const [name, stored] of Object.entries(tally.fields)) {
@@ -235,9 +246,13 @@ export function verdictOf(tally: CheckTally, bar: FieldBar): Omit<CheckVerdict, 
     const carried = sum("n") + unjudged;
     // Judged on enough of the inputs that carried it: unknown answers never stand in for known ones.
     const enough = atLeast(sum("n"), bar.alone_min, carried);
-    const pass = sources.length > 0 && sources.every((known) => judgedBy[known]!.pass) && enough;
+    // The field's floor over its known inputs pooled: each source's floor on its own inputs, added up.
+    const needed = sources.reduce((total, known) => total + judgedBy[known]!.needed, 0);
+    const floor = atLeastOf(sum("workflow_right"), needed);
+    const pass = sources.length > 0 && floor && sources.every((known) => judgedBy[known]!.margin) && enough;
     const words = [
       ...sources.map((known) => judgedBy[known]!.words),
+      ...(sources.length > 1 ? [`in all: ${sum("workflow_right")} of ${sum("n")} right (${share(sum("workflow_right"), sum("n"))}, the bar ${pct(needed / sum("n"))})`] : []),
       ...(unjudged ? [`judged on ${sum("n")} of ${carried} (${share(sum("n"), carried)}, the bar ${pct(bar.alone_min)}): ${unjudged} had no known answer (graded wrong, none given, and the workflow said another)`] : []),
     ];
     fields.set(name, {

@@ -96,7 +96,10 @@ test("graded inputs with no agree_on: one field, the whole answer, judged agains
   assert.equal(same.record.decided, "promote", `the same decisions as the expected answer by the fast model's verdict: ${same.record.reason}`);
   assert.deepEqual(same.stored.check.fields.answer.by, { grade: { n: 5, workflow_right: 5, agent_right: 0, pass: true } });
 
-  const equal = await decide({}, gradedRead(readOf(() => draftSays({ ...AGENT, ...expected })), expected));
+  // A correction that changes the agent's answer (graded wrong, an expected answer equal to it would repeat what the
+  // grade marked wrong, which is never right): a draft equal to the corrected answer is right, no model asked.
+  const fixed = { riskTier: "medium" };
+  const equal = await decide({}, gradedRead(readOf(() => draftSays({ ...AGENT, ...fixed })), fixed));
   assert.equal(equal.record.decided, "promote", `equal to the corrected answer, no model asked: ${equal.record.reason}`);
 
   // The expected keys alone leave out the rest of the agent's answer: another answer, with no verdict saying otherwise.

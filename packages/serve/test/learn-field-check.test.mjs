@@ -196,8 +196,8 @@ test("a missing value is never right: not the workflow's, and not against a miss
   assert.deepEqual(verdict.misses.map((miss) => miss.input_id), ["in-0", "in-1", "in-3"]);
   assert.deepEqual(verdict.fields.x.by, {
     grade: { n: 2, workflow_right: 1, agent_right: 1, pass: false },
-    agent: { n: 2, workflow_right: 0, agent_right: 2, pass: false },
-  });
+    agent: { n: 2, workflow_right: 0, agent_right: 1, pass: false },
+  }, "in-1's agent gave no value: it is not counted as the agent's right answer there");
 });
 
 test("values compare as JSON values: keys in any order, arrays in order; `agrees` decides a field known from the agent", () => {

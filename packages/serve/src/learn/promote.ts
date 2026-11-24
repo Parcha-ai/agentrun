@@ -677,6 +677,9 @@ export const valueAtPath = (value: unknown, path: string): unknown => {
 /** The value at dotted `path` of an answer (its JSON, valueOf), undefined where it does not resolve or there is none. */
 export const answerAt = (answer: string | null, path: string): unknown => (answer === null ? undefined : valueAtPath(valueOf(answer), path));
 
+/** An answer as the value sameAnswer compares (its JSON, else its trimmed text), undefined when there is none. */
+export const answerValue = (answer: string | null): unknown => (answer === null ? undefined : valueOf(answer));
+
 /** The known answer a whole-answer check compares a draft with, given a grade's `expected` answer, as JSON: the agent's
  *  answer (`agent`, its JSON) with the grade's keys written over it when both are JSON objects, so a grade that names
  *  only the keys it corrects leaves the rest of the agent's answer standing; else the expected answer whole. Own keys
@@ -710,8 +713,12 @@ export const graderUserText = (input: string, agent: string, draft: string): str
 /** How a pair of answers compared: `same`, the grader's model when it was asked (`grader`; none when they were equal,
  *  compared on agree_on, or compared whole), what they differ on when they do (`differs_on`: the grader's words, or
  *  why its verdict could not be had), and the two answers the grader read (`pair`, answersPair): its verdict is of that
- *  pair alone. */
-export type Compared = { readonly same: boolean; readonly grader?: string; readonly differs_on?: string; readonly pair?: string };
+ *  pair alone. A replay's verdict keeps the grade of its source run it was asked against (`graded`: whether the agent
+ *  was right, and its expected answer when it gave one; null: none), so the check judges that input on that grade
+ *  (runner/promotion.ts checkRows), never on one given after the grader was asked, whose pair it is not. */
+export type Compared = { readonly same: boolean; readonly grader?: string; readonly differs_on?: string; readonly pair?: string; readonly graded?: ComparedGrade | null };
+/** The grade a replay's verdict was asked against (Compared.graded). */
+export type ComparedGrade = { readonly correct: boolean; readonly expected?: Readonly<Record<string, unknown>> };
 
 /** The two answers a grader's verdict is of, as one digest: the sha256 of each answer's sha256, the two in order, so
  *  the pair reads the same whichever side is named first and no two answers run together. */
@@ -782,8 +789,15 @@ export function compareAnswers(a: string | null, b: string | null, on: readonly 
 /** A `compared` as a run's record keeps it (metrics `compared`), else undefined. */
 export function comparedOf(value: unknown): Compared | undefined {
   if (!isObject(value) || typeof value.same !== "boolean") return undefined;
-  return { same: value.same, ...(typeof value.grader === "string" ? { grader: value.grader } : {}), ...(typeof value.differs_on === "string" ? { differs_on: value.differs_on } : {}), ...(typeof value.pair === "string" ? { pair: value.pair } : {}) };
+  const graded = value.graded === null ? null : isObject(value.graded) && typeof value.graded.correct === "boolean"
+    ? { correct: value.graded.correct, ...(isObject(value.graded.expected) && Object.keys(value.graded.expected).length ? { expected: value.graded.expected } : {}) }
+    : undefined;
+  return { same: value.same, ...(typeof value.grader === "string" ? { grader: value.grader } : {}), ...(typeof value.differs_on === "string" ? { differs_on: value.differs_on } : {}), ...(typeof value.pair === "string" ? { pair: value.pair } : {}), ...(graded !== undefined ? { graded } : {}) };
 }
+
+/** A run's newest grade as a check judges it (an empty expected answer is none), null for none. */
+export const comparedGrade = (grade: Grade | undefined): ComparedGrade | null =>
+  grade ? { correct: grade.correct, ...(grade.expected && Object.keys(grade.expected).length ? { expected: grade.expected } : {}) } : null;
 
 /** A grade as the API answers it (PUT /runs/{id}/grade; GET /runs/{id}/learning's `graded`, without `expected`). */
 export const gradeView = (grade: Grade) => ({

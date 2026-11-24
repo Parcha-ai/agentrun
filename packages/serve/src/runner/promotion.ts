@@ -60,7 +60,7 @@ import { pinAnnotations, type Recorded, recordedCalls, type ReplayCalls, replayC
 import { listed } from "../learning-words.js";
 import { isObject, type Json } from "../validate.js";
 import { agentRun, lastOwnRuns, newCompileAttempt, sinceReset } from "../learn/compile.js";
-import { answerAt, type CheckBar, type CheckDisagreement, type CheckKnown, type CheckRecord, type CheckTurns, checkShares, CHECK_TEXT_MAX, championOf, compareAnswers, type Compared, comparedOf, gradesOf, knownAnswerText, type PromotionRecord, promotionOf, promotionsOf, recordPromotion, type Refused, type ReplayLaunch, type ReplayOutcomes, type ReplayScore, replayingOf, type SkippedTool, skippedToolsOf, valueAtPath } from "../learn/promote.js";
+import { answerAt, answerValue, type CheckBar, type CheckDisagreement, type CheckKnown, type CheckRecord, type CheckTurns, checkShares, CHECK_TEXT_MAX, championOf, compareAnswers, type Compared, comparedGrade, comparedOf, gradesOf, knownAnswerText, type PromotionRecord, promotionOf, promotionsOf, recordPromotion, type Refused, type ReplayLaunch, type ReplayOutcomes, type ReplayScore, replayingOf, type SkippedTool, skippedToolsOf, valueAtPath } from "../learn/promote.js";
 import { check as checkFields, type CheckInput, type CheckTally, type FieldAnswers } from "../learn/field-check.js";
 import { refusedIn } from "../purged-workflow.js";
 import { sendCommand } from "./commands.js";
@@ -524,7 +524,8 @@ function checkInputOf(row: CheckRow, on: readonly string[] | undefined, compared
     })) };
   }
   const graded = row.expected ? { grade: row.expected, ...(row.correct !== undefined ? { agent_correct: row.correct } : {}) } : row.correct === false ? { agent_correct: false } : {};
-  return { input_id: row.of, outcome, fields: { [WHOLE_ANSWER]: { workflow: row.answer ?? undefined, agent: row.agent ?? undefined, agrees: compared.same, ...graded } } };
+  // The answers as sameAnswer reads them, so a draft that says the agent's answer in another dress repeats it.
+  return { input_id: row.of, outcome, fields: { [WHOLE_ANSWER]: { workflow: answerValue(row.answer), agent: answerValue(row.agent), agrees: compared.same, ...graded } } };
 }
 
 /** Decides `ahead`, the check at work for a revision older than the laid (newest) one, as a claim laying it would
@@ -554,11 +555,9 @@ async function checkRows(deps: Pick<PromotionDeps, "store" | "agentId" | "contex
   if (!late && runs.some((row) => !row || !FINAL_STATES.includes(row.state))) return undefined;
   // The newest grade of each run (gradesOf keeps them oldest first): a re-grade replaces what an earlier one said.
   const grades = new Map((await gradesOf(store.settings, deps.agentId)).map((grade) => [grade.run, grade] as const));
-  const graded = (of: string) => {
-    const grade = grades.get(of);
-    if (!grade) return {};
-    return { correct: grade.correct, ...(grade.expected && Object.keys(grade.expected).length ? { expected: grade.expected } : {}) };
-  };
+  // An input whose grader was asked is judged on the grade it was asked against (Compared.graded): a grade given after
+  // that is not the pair's, so it counts from the next check, never makes this verdict stale.
+  const graded = (of: string, compared: Compared | undefined) => (compared?.graded !== undefined ? compared.graded : comparedGrade(grades.get(of))) ?? {};
   const rows: CheckRow[] = [];
   for (const [i, run] of runs.entries()) {
     const reservedOf = record.inputs?.[i];
@@ -581,7 +580,7 @@ async function checkRows(deps: Pick<PromotionDeps, "store" | "agentId" | "contex
       answer: outcome === "answered" ? await answerOf(store, run.id, context) : null,
       ...(outcome === "handed_back" ? { escalated: (await handedBackOf(store, run.id, context)) ?? "" } : {}),
       ...(stoppedAt ? { skipped: stoppedAt } : {}),
-      ...graded(replayed),
+      ...graded(replayed, compared),
     });
   }
   // The outcomes are the rows', so they add up to its n: a reserved run never created is a failed input there too.

@@ -120,12 +120,17 @@ decision). No field name is ever taken from a
 grade's keys: they are a person's data, and a run's purge leaves them nowhere in the record. A grade with no expected answer still says something: not
 correct, on the whole answer, makes a draft that repeats it wrong there, and leaves any other answer unjudged (under
 agree_on it names no field, so it changes nothing); correct changes nothing (the agent's answer is known as with no
-grade, at the same bar: a thumbs-up never makes the check stricter). An unjudged input is never right: not on every
-field at once, and a field judged on fewer than `alone_min` of the inputs that carried it fails. A field known from a
-grade passes when the draft is right on at least `agree_min` of those inputs and within `margin` (0.02) of the agent's
-own accuracy on them (a correction, where the agent was wrong, is no free pass); one known only from the agent passes
-when at least the agent's self-agreement on it less the margin, or `agree_min` where no self-agreement was measured
-(none is yet), said what the agent said. It serves when at least `alone_min` of the inputs were answered alone, at least
+grade, at the same bar: a thumbs-up never makes the check stricter). A draft whose answer is the one a grade marked
+wrong (sameAnswer: equal as JSON or trimmed text, in any dress) is never right on that input, whatever the grader says.
+Each replay's verdict keeps the grade it was asked against (`replay.compared.graded`, null for none), and the check
+judges that input on it: a grade given after the replay ended counts from the next check, never makes this one's pair
+stale. An unjudged input is never right: not on every field at once, and a field judged on fewer than `alone_min` of
+the inputs that carried it fails. A field passes on all its known inputs pooled, wherever each one's known answer came
+from: at least `agree_min` of them right (an input known only from the agent counts at the agent's self-agreement on
+the field less the margin instead, where that was measured; none is yet), and, on the inputs known from labels and
+apart on those known from grades, within `margin` (0.02) of the agent's own accuracy there (a correction, where the
+agent was wrong, is no free pass). So one graded input missed among 19 the agent knows passes at 19 of 20, and
+`check.fields.<f>.by` keeps each source's counts, with whether it would pass alone. It serves when at least `alone_min` of the inputs were answered alone, at least
 `agree_min` of those were right on every field at once (the joint floor: misses spread over several fields add up), and
 every field passes; a hold names the failing fields (`check.fields`, each with its counts and reason), or its fields
 together when only the joint floor fell short, and each disagreement the fields it had wrong, with the known answer of

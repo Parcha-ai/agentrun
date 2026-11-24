@@ -318,7 +318,6 @@ test("(e) agree_min 0.9 on the definition: 4 of 5 saying what the agent said is 
   assert.match(failed.reason, /^its draft failed its checks: .+It was the recompile, so it stops/);
 });
 
-/** Odd questions: the first revision answers 41 (the agent said 42) or hands back; the revision says 42 when `fixed`. */
 test("(f) graded inputs: a draft that says neither the expected 41 nor the agent's 42 is held, though the agent was wrong on every one", { timeout: 180_000 }, async (t) => {
   const w = await world(t, { learning: { compile_after: 5 }, prior: 5, submit: () => ({ answer: 7, sure: true }) });
   for (let i = 0; i < 5; i++) await putGrade(w.server.settings, "agent-1", { run: `prior-${i}`, correct: false, expected: { answer: 41, sure: true }, source: "eval", at: new Date().toISOString(), path: "agent" });
@@ -333,6 +332,7 @@ test("(f) graded inputs: a draft that says neither the expected 41 nor the agent
   assert.deepEqual(held.check.disagreements.map((one) => one.expected), Array.from({ length: 5 }, () => [{ field: "answer", known: "grade", value: JSON.stringify({ answer: 41, sure: true }) }]), "each disagreement carries the known answer it missed, whole");
 });
 
+/** Odd questions: the first revision answers 41 (the agent said 42) or hands back; the revision says 42 when `fixed`. */
 const twice = (fixed) => (text) => (text.includes("exactly") && fixed ? { answer: 42, sure: true } : /Question [13]\b/.test(text) ? { answer: 41, sure: true } : /Question 2\b/.test(text) ? { answer: 42, sure: false } : { answer: 42, sure: true });
 
 test("(c) under the bar: held, the next run is asked one revision with the inputs it disagreed on as data, and the revision's check promotes it", { timeout: 240_000 }, async (t) => {
