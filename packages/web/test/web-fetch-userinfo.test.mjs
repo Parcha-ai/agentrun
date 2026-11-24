@@ -70,21 +70,24 @@ test("a provider's page whose url, after a redirect, holds a user name and passw
   const landed = credentialed("landed");
   const scraped = { markdown: "# Landed\n\nRead after a redirect.", metadata: { title: "Landed", url: landed, sourceURL: landed, statusCode: 200 } };
   const fc = await firecrawlServer(t, (name) => (name === "firecrawl_scrape" ? { content: [{ type: "text", text: JSON.stringify(scraped) }] } : answers(name)));
-  const extract = async () => new Response(JSON.stringify({ results: [{ url: landed, title: "Landed", full_content: "Read after a redirect." }] }), { status: 200, headers: { "content-type": "application/json" } });
+  const extract = (url) => async () => new Response(JSON.stringify({ results: [{ url, title: "Landed", full_content: "Read after a redirect." }] }), { status: 200, headers: { "content-type": "application/json" } });
+  // A URL drops a tab in a user name, where a scrub of text stops at it: only a url cleared as a URL loses them.
+  const tabbed = landed.replace("//", "//\t");
   const rows = [
-    ["firecrawl-keyless", { firecrawl: firecrawlFetch({ endpoint: fc.url }) }],
-    ["parallel", { parallel: parallelExtract("not-a-secret", extract) }],
+    ["firecrawl-keyless", "firecrawl-keyless", { firecrawl: firecrawlFetch({ endpoint: fc.url }) }],
+    ["parallel", "parallel", { parallel: parallelExtract("not-a-secret", extract(landed)) }],
+    ["parallel, a tab before the user name", "parallel", { parallel: parallelExtract("not-a-secret", extract(tabbed)) }],
   ];
   const urls = [];
   const leaks = [];
-  for (const [provider, client] of rows) {
+  for (const [name, provider, client] of rows) {
     const read = await fetched({ ...client, order: [provider, "direct"] });
-    assert.deepEqual([read.page.ok, read.page.via, turns(read.tries)], [true, provider, [[provider, "ok"]]], `${provider}: the provider read the page`);
-    urls.push([provider, read.page.url]);
-    leaks.push(...leaking(places(provider, read)));
+    assert.deepEqual([read.page.ok, read.page.via, turns(read.tries)], [true, provider, [[provider, "ok"]]], `${name}: the provider read the page`);
+    urls.push([name, read.page.url]);
+    leaks.push(...leaking(places(name, read)));
   }
   assert.deepEqual(leaks, [], `no part of them in: ${leaks.join("; ")}`);
-  assert.deepEqual(urls, rows.map(([provider]) => [provider, `${PUBLIC}landed`]), "the url of each page, without them");
+  assert.deepEqual(urls, rows.map(([name]) => [name, `${PUBLIC}landed`]), "the url of each page, without them");
 });
 
 // undici's fetch builds a Request for each hop, and Request refuses a URL holding a user name or password with an error
