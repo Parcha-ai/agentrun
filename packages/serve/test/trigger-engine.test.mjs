@@ -1708,3 +1708,86 @@ test("a host start whose run was written apart from its firing (by a server from
   assert.deepEqual([row.status, row.runId, row.error?.code], ["failed", null, "host_released"], JSON.stringify(row));
   assert.deepEqual(said.filter((f) => f.firing === key && /fired|release/.test(f.condition)).map((f) => [f.condition, f.run]), [["trigger_run_after_release", "run-apart"]], JSON.stringify(said));
 });
+
+test("a release that lands while the engine is still writing its hook's 2xx waits for that write, and fails the firing host_released: never refused not_due as a firing not handed yet, and its trigger's room is free for the next firing", async (t) => {
+  const host = await heldHost(t);
+  const on = await shared(t, "2026-06-01T00:00:00Z");
+  const said = [];
+  const reached = held();
+  const go = held();
+  const { store, triggers } = await engine(t, {
+    launchHook: host.launchHook,
+    say: (fields) => said.push(fields),
+    // The engine's write of its hook's 2xx (sent), held until the test lets it go.
+    store: settledThrough(on.store, async (write, change) => {
+      if (change.status !== "sent") return write();
+      reached.resolve();
+      await go.promise;
+      return write();
+    }),
+  }, { on });
+  const made = await triggers.create({ ...hookBody, max_active_runs: 1 });
+  await triggers.receive(made.id, "evt-a", "{}");
+  const key = firingKey("webhook", made.id, "evt-a");
+  await until(() => host.open.length === 1, "the host has the POST");
+  host.open[0].writeHead(200).end();
+  // The engine read the 2xx and holds its write: the firing is still due, in the engine's turn.
+  await reached.promise;
+  assert.equal((await store.triggers.firing(made.id, key)).status, "due");
+  const releasing = triggers.release(made.id, key, { error: "The job failed at launch." }, (text) => text);
+  const answered = { done: false };
+  // Handled from here (a refusal can land before the test awaits it), and asserted below.
+  releasing.then(() => (answered.done = true), () => (answered.done = true));
+  await until(() => answered.done || said.some((f) => f.condition === "trigger_release_waits" && f.firing === key), "the release answered, or waits on the engine's turn");
+  go.resolve();
+  const released = await releasing;
+  assert.deepEqual([released.status, released.error?.code], ["failed", "host_released"], JSON.stringify(released));
+  const row = await store.triggers.firing(made.id, key);
+  assert.deepEqual([row.status, row.runId, row.error?.code], ["failed", null, "host_released"], JSON.stringify(row));
+  await triggers.receive(made.id, "evt-c", "{}");
+  await until(() => host.open.length === 2, "the next firing handed to the host: the released one holds no room");
+});
+
+test("a drive whose overlap check skipped its firing, its write landing after the last run ended and the host's start of that firing started it with its run, leaves the firing started with that run, never skipped over it", async (t) => {
+  const host = await heldHost(t);
+  const on = await shared(t, "2026-06-01T00:00:00Z");
+  const states = new Map();
+  const skips = [];
+  const reached = held();
+  const go = held();
+  const wrote = held();
+  const { clock, store, triggers } = await engine(t, {
+    launchHook: host.launchHook,
+    statusOf: async (id) => states.get(id) ?? null,
+    // The drive's write of its overlap skip, held until the test lets it go.
+    store: settledThrough(on.store, async (write, change) => {
+      if (change.status !== "skipped") return write();
+      skips.push(change.reason);
+      reached.resolve();
+      await go.promise;
+      try {
+        return await write();
+      } finally {
+        wrote.resolve();
+      }
+    }),
+  }, { on });
+  const made = await triggers.create(hookBody);
+  const a = await timedOut(triggers, store, host, made.id, "evt-a");
+  const b = await timedOut(triggers, store, host, made.id, "evt-b");
+  assert.deepEqual(await triggers.handedStart({ trigger_id: made.id, firing_id: a }, "a", hostRun(store, a, "run-a")), { run_id: "run-a", replayed: false });
+  states.set("run-a", "running");
+  // b's retry comes due: its drive finds run-a still running, and holds its skip.
+  const { retryAt } = await store.triggers.firing(made.id, b);
+  await armed(clock, new Date(retryAt).toISOString());
+  clock.to(new Date(retryAt).toISOString());
+  await reached.promise;
+  assert.match(skips[0], /run-a.*still running/);
+  // run-a ends, and b's host start finds the room free: its run's write starts b.
+  states.set("run-a", "completed");
+  assert.deepEqual(await triggers.handedStart({ trigger_id: made.id, firing_id: b }, "a", hostRun(store, b, "run-b")), { run_id: "run-b", replayed: false });
+  go.resolve();
+  await wrote.promise;
+  const row = await store.triggers.firing(made.id, b);
+  assert.deepEqual([row.status, row.runId, row.reason], ["started", "run-b", null], JSON.stringify(row));
+});
