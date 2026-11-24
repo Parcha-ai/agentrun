@@ -461,7 +461,17 @@ function ComposioForm({ v2, add, onClose, onSaved }: { v2: Client; add?: Add; on
     // The template's actions ticked, those of them the toolkit lists, while the toolkit is still the one it needs.
     if (add?.tools && answer.toolkit === add.toolkit) setPicked(answer.tools.map((t) => t.slug).filter((slug) => add.tools!.includes(slug)));
   });
-  const loadKits = () => act(async () => { setKits((await v2.composioToolkits(key())).toolkits); });
+  // The toolkit list is the key's: each edit of the key drops it, the toolkit picked from it (a template's stays), and an
+  // answer to a list asked with the key before.
+  const askedKits = useRef(0);
+  const keyChanged = () => { askedKits.current++; setKits(null); setToolkit((now) => (add?.toolkit && now === add.toolkit ? now : "")); };
+  const loadKits = () => act(async () => {
+    const mine = ++askedKits.current;
+    try {
+      const answer = await v2.composioToolkits(key());
+      if (mine === askedKits.current) setKits(answer.toolkits);
+    } catch (e) { if (mine === askedKits.current) throw e; }
+  });
   const kitOptions: PickerOption[] = (kits ?? []).map((k) => ({ value: k.slug, label: `${k.name} · ${k.slug}` }));
   // A toolkit already chosen (a template's) that the list doesn't have stays an option, so the field still shows it.
   if (toolkit && !kitOptions.some((o) => o.value === toolkit)) kitOptions.unshift({ value: toolkit, label: toolkit });
@@ -486,7 +496,7 @@ function ComposioForm({ v2, add, onClose, onSaved }: { v2: Client; add?: Add; on
   }
   return (
     <form ref={form} autoComplete="off" onSubmit={(e) => { e.preventDefault(); if (listed && picked.length && name.trim()) void save(); }} aria-label="Add from Composio" className="space-y-4 border bg-card p-4"
-      onInput={(e) => { if ((e.target as HTMLInputElement).name === "composio-key") { changed(); setHasKey(!!key()); } }}>
+      onInput={(e) => { if ((e.target as HTMLInputElement).name === "composio-key") { changed(); keyChanged(); setHasKey(!!key()); } }}>
       <p className="text-small text-muted-foreground">Composio runs the toolkit's actions for you. This saves an MCP server that grants only the actions you tick, with your Composio key sealed like any credential.</p>
       {add?.tools && <p role="note" className="text-small text-muted-foreground">A template uses {add.tools.join(", ")}: enter your key and load the actions, and those are ticked.</p>}
       <label className="block"><span className="caps mb-2 block text-small font-semibold">Composio API key</span><Input name="composio-key" {...secret} /></label>
