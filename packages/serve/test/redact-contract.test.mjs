@@ -418,12 +418,14 @@ const CASES = [
       client_id: "123456789012345678901",
     }, null, 2);
     return [
+      // Its header starts a private key block with no END line, cut through its lines to the text's end, the lines' own
+      // cuts inside it.
       {
         name: "the first 11 lines of a held PEM-like value (head -n 11) show no line of it",
         text: `$ head -n 11 key.pem\n${pem.split("\n").slice(0, 11).join("\n")}\n`,
         values: [pem],
         hides: lines.slice(0, 10).map((line) => line.slice(0, 12)),
-        exact: all(`$ head -n 11 key.pem\n${Array(11).fill("[redacted]").join("\n")}\n`),
+        exact: all("$ head -n 11 key.pem\n[redacted]"),
       },
       {
         name: "a held PEM-like value's body, its armor stripped, shows no line of it",
@@ -495,9 +497,13 @@ const CASES = [
   })(),
   // A held value with line breaks written in JSON: escaped once ("\n"), it is cut in place where it stands; escaped
   // twice (JSON in a JSON string, "\\n"), or with its line breaks written "\r\n", it is found in the text decoded and
-  // withholds the text.
+  // withholds the text. A PEM-like one is a private key block, cut in place from its BEGIN line to its END line however
+  // its line breaks are escaped, so the view finds it inside that cut; a value of short lines and no armor is cut by no
+  // shape, and withholds.
   ...(() => {
     const { lines, pem } = fakePem(6);
+    const short = ["made-up-line-one", "made-up-line-two", "made-up-line-six"];
+    const note = short.join("\n");
     const all = (shown) => Object.fromEntries(Object.keys(ENTRIES).map((name) => [name, shown]));
     return [
       {
@@ -508,17 +514,31 @@ const CASES = [
         exact: all('{"private_key":"[redacted]"}'),
       },
       {
-        name: "a held PEM-like value in JSON in a JSON string, its line breaks escaped twice, withholds the text",
+        name: "a held PEM-like value in JSON in a JSON string, its line breaks escaped twice, is cut in place as a private key block",
         text: JSON.stringify({ out: JSON.stringify({ private_key: pem }) }),
         values: [pem],
         hides: lines.map((line) => line.slice(0, 12)),
-        exact: all("[redacted]"),
+        exact: all(JSON.stringify({ out: JSON.stringify({ private_key: "[redacted]" }) })),
       },
       {
-        name: "a held PEM-like value in JSON, its line breaks written as \\r\\n, withholds the text",
+        name: "a held PEM-like value in JSON, its line breaks written as \\r\\n, is cut in place as a private key block",
         text: JSON.stringify({ private_key: pem.replaceAll("\n", "\r\n") }),
         values: [pem],
         hides: lines.map((line) => line.slice(0, 12)),
+        exact: all('{"private_key":"[redacted]"}'),
+      },
+      {
+        name: "a held value of short lines in JSON in a JSON string, its line breaks escaped twice, withholds the text",
+        text: JSON.stringify({ out: JSON.stringify({ note }) }),
+        values: [note],
+        hides: short,
+        exact: all("[redacted]"),
+      },
+      {
+        name: "a held value of short lines in JSON, its line breaks written as \\r\\n, withholds the text",
+        text: JSON.stringify({ note: note.replaceAll("\n", "\r\n") }),
+        values: [note],
+        hides: short,
         exact: all("[redacted]"),
       },
     ];
