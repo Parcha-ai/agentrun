@@ -89,6 +89,11 @@ export const computerHeldWords = (kind: string): string => `The ${kind} wasn't k
 
 /** The live view's words once the kept computer's time passed, the run still parked. */
 export const lapsedWords = (kind: string): string => `${computerLapsedWords(kind)} A new one starts when the run goes on.`;
+
+/** The live view's words, the run still parked, for a kept computer whose end began before its time: a claim that could
+ *  not reach it went on without it (restoreKept), or a later park kept nothing beside another runner's row (keepKept).
+ *  Its time did not pass, and nothing happens at it for this run, so no reason is given. */
+export const unkeptWords = (kind: string): string => `The ${kind} wasn't kept. A new one starts when the run goes on.`;
 /** The settings key prefix of the kept computers, one row per run (the store's, which its claim rule reads). */
 export const KEPT_PREFIX = KEPT_ROWS;
 /** The settings key of `runId`'s kept computer. */
