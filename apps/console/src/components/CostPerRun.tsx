@@ -343,6 +343,8 @@ export function CostChart({ data, on, width: fixed, promotions = [], execution =
 }
 
 const MIX_H = 64;
+/** The runs the strip's share line counts. */
+const LAST_RUNS = 20;
 const MIX_M = { top: 4, bottom: 6 };
 /** Bottom to top: the learned workflow on the baseline, so its share grows from it. */
 const STACK = [...PATHS].reverse();
@@ -368,8 +370,8 @@ function Mix({ runs, width, x, step, plot, takeover }: { runs: readonly CostRun[
   /** A block's whole slots on the axis: from half a run before its first to half a run after its last, inside the plot. */
   const span = (b: Block) => ({ from: clamp(x(b.from) - step / 2), to: clamp(x(b.to) + step / 2) });
   const y = (share: number) => MIX_M.top + height * (1 - share);
-  // What the last words count: the last block; on a strip of more than 20 runs (a run a column), the last 20 runs.
-  const last = size === 1 && jobs.length > 20 ? blocksOf(jobs.slice(-20), 20)[0]! : blocks.at(-1)!;
+  // What the last words count: the last 20 runs (all of them, with fewer), whatever the columns' grouping at this width.
+  const last = blocksOf(jobs.slice(-LAST_RUNS), LAST_RUNS)[0]!;
   const edges = (b: Block) => {
     const { from, to } = span(b);
     // A 2px card gap between columns, when a column is wide enough to give it; a hairline between a strip's runs.
@@ -377,7 +379,7 @@ function Mix({ runs, width, x, step, plot, takeover }: { runs: readonly CostRun[
     return { x0: from + gap, w: Math.max(1, to - from - 2 * gap) };
   };
   const words = (b: Block) => `${runsOf(b)}: ${PATHS.filter((p) => b.counts[p.path]).map((p) => `${p.label.toLowerCase()} ${b.counts[p.path]}`).join(", ")}`;
-  // The last block's share by the learned workflow; before any workflow has finished a run, who did finish it.
+  // The last runs' share by the learned workflow; before any workflow has finished a run, who did finish them.
   const lastShare = blocks.some((b) => b.counts.workflow)
     ? `${pct(last.counts.workflow, last.runs)} by the learned workflow`
     : PATHS.filter((p) => last.counts[p.path]).map((p) => `${pct(last.counts[p.path], last.runs)} ${p.label.toLowerCase()}`).join(", ");

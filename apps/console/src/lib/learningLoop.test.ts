@@ -170,7 +170,7 @@ describe("the story", () => {
     expect(stages[4]!.detail).toBe("of 3 runs it ran first");
   });
   // A cleared check says what happened (it passed the agreement check: N of M agreed, against its bar), never "at the
-  // same accuracy" (#3064 review: an 80% bar is no equal accuracy); else the ratio alone and why accuracy is not claimed.
+  // same accuracy" (#3064 review: an 80% bar is no equal accuracy); else the ratio alone and why agreement is not claimed.
   // A ratio whose runs' cost isn't all known is no ratio: the sentence says why.
   const took = { takeover: { n: 2, run_id: "r2" }, before: { runs: 18, mean_usd: 0.89 }, after: { runs: 59, mean_usd: 0.127 }, hand_backs: { ran: 59, back: 3 } };
   const cheaper = (over: Partial<LearningCost["summary"]>) => storyOf({ ...base, corrections: 3, runs: 80, cost: cost({ ...took, ...over }) }).find((s) => s.key === "cheaper")!;
@@ -186,11 +186,20 @@ describe("the story", () => {
     expect(cheaper({ times_cheaper: 1.6, replay: passed(32, 40) }).value).toBe(`${timesOf(1.6)} cheaper`);
     expect(cheaper({ times_cheaper: 1.6 }).value).toBe("1.6x cheaper");
   });
-  it("without a cleared check: the ratio alone, and why accuracy is not claimed", () => {
+  it("without a cleared check: the ratio alone, and why agreement is not claimed", () => {
     const none = cheaper({ times_cheaper: 7 });
-    expect([none.value, none.detail, none.state]).toEqual(["7.0x cheaper", "accuracy not claimed: no check yet", "done"]);
+    expect([none.value, none.detail, none.state]).toEqual(["7.0x cheaper", "agreement not claimed: no check yet", "done"]);
     const below = cheaper({ times_cheaper: 7, replay: { n: 40, workflow_pct: 70, agent_pct: 82, cleared: false, agreed: 28, alone: 40, agree_min: 0.8 } });
-    expect([below.value, below.detail]).toEqual(["7.0x cheaper", "accuracy not claimed: its check was below the bar (workflow 70% vs agent 82% on 40 inputs)"]);
+    expect([below.value, below.detail]).toEqual(["7.0x cheaper", "agreement not claimed: its check was below the bar (workflow 70% vs agent 82% on 40 inputs)"]);
+  });
+  it("a held revision: the ratio, that it was held, and its own check's agreement, never 'no check yet'", () => {
+    const check = { n: 20, alone: 17, agreed: 15, alone_min: 0.7, agree_min: 0.8, attempt: 1 };
+    const promotions = [
+      { workflow: "w", digest: "d1", at: "2026-11-01T00:00:00Z", decided: "promote", reason: "promoted", check },
+      { workflow: "w", digest: "d1", at: "2026-11-02T00:00:00Z", decided: "hold", reason: "held by its audits" },
+    ] as unknown as Promotion[];
+    const stage = storyOf({ ...base, corrections: 3, runs: 80, promotions, cost: cost({ ...took, times_cheaper: 7 }) }).find((s) => s.key === "cheaper")!;
+    expect([stage.value, stage.detail]).toEqual(["7.0x cheaper", "agreement not claimed: it was held. Its check: 15 of 17 agreed (bar 80%)"]);
   });
   // The after side is served runs only (never a replay): its count said with its level, and no figure when none is priced.
   it("says the after side's served runs, and in words when none is served or priced", () => {
