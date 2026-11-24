@@ -9,31 +9,9 @@ const GITHUB_TOKEN = /gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{20,}/;
  *  later start reaches the same "." the first does with fewer characters, so it finds nothing the first doesn't, and
  *  the lookbehind reads back only to the "eyJ" before it. */
 const JWT = /eyJ(?<!eyJ[A-Za-z0-9_-]*?eyJ)[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/;
-/** A private key block, whole: its BEGIN line through its body to its END line, the key itself, not its header alone (a
- *  cut read serves a run's whole file). The header's key type (RSA, EC, OPENSSH, ENCRYPTED, an armored key's "PGP ...
- *  BLOCK") is at most 64 characters each side: two unbounded runs read a long header of repeated words in quadratic time
- *  (24 s over 256 KiB of "PRIVATE KEY "). With its END line within 16 KiB, all between is cut, whatever wraps the body's
- *  lines (a code string literal on each, a "#" or ">" before each, an XML or HTML line break, an escape, an armored key's
- *  headers): the body is any character but a "-" followed by "----", so a reading from one BEGIN stops at the next
- *  "-----", and a text of repeated headers reads in linear time. With no END line in reach (a key cut short, one past the
- *  bound, or one the edge of a window key-refusal.ts reads crosses), it is cut through its body's lines
- *  (PRIVATE_KEY_LINES). */
-const PRIVATE_KEY = new RegExp(String.raw`-----BEGIN[ A-Z0-9]{0,64}PRIVATE KEY[ A-Z0-9]{0,64}-----(?:(?:[^-]|-(?!----)){0,16384}?-----END[ A-Z0-9]{0,64}PRIVATE KEY[ A-Z0-9]{0,64}-----|${privateKeyLines()})`);
-
-/** A key's body lines when no END line is in reach: the first maybe glued to its header, at most 1,024 lines in all. A
- *  line break is LF, CRLF or CR, or one escaped in a quoted string ("\n", "\r\n", "\\n" in a string within a string: at
- *  most 8 backslashes, four strings deep). A line is blanks (a space, a tab, or an escaped tab), then base64 of at most
- *  16,384 characters (its slashes maybe escaped, "\/"), or a legacy PEM's or armored key's header (Proc-Type, DEK-Info,
- *  Version, Comment) of at most 256 after its colon, or nothing (a blank line), then blanks; it ends at a line break or
- *  a closing quote (either maybe escaped), an XML or HTML tag's "<", or the text's end. Text after the body that is no
- *  such line (prose, a field) stays. Each part is bounded and no two of a line's parts take the same character but the
- *  header's blanks, at most 256: the reading stays linear. */
-function privateKeyLines(): string {
-  const lineBreak = String.raw`(?:\r\n?|\n|\\{1,8}r(?:\\{1,8}n)?|\\{1,8}n)`;
-  const blank = String.raw`(?:[ \t]|\\{1,8}t)`;
-  const line = String.raw`${blank}*(?:(?:(?:[A-Za-z0-9+=]|\\{0,8}\/){1,16384}|(?:Proc-Type|DEK-Info|Version|Comment):[^\r\n\\"'<]{0,256})${blank}*)?(?=[\r\n"'<]|\\{1,8}[rn"']|$)`;
-  return `${lineBreak}?${line}(?:${lineBreak}${line}){0,1023}`;
-}
+/** A private key block's header, its key type (RSA, EC, OPENSSH, ENCRYPTED) at most 64 characters each side: two
+ *  unbounded runs read a long header of repeated words in quadratic time (24 s over 256 KiB of "PRIVATE KEY "). */
+const PRIVATE_KEY = /-----BEGIN[ A-Z0-9]{0,64}PRIVATE KEY[ A-Z0-9]{0,64}-----/;
 /** A Standard Webhooks signing secret: `whsec_` and base64, this server's or any other's. */
 const WEBHOOK_SECRET = /whsec_[A-Za-z0-9+/]{24,}={0,2}/;
 /** The token after a `Bearer` scheme (RFC 6750's characters), in any case: twenty characters or more with a digit among
