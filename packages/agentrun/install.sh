@@ -182,7 +182,14 @@ EOF
       # exits 3 when there is none.
       code=0
       "$shim" service status > /dev/null 2>&1 || code=$?
-      if { [ "$code" = 0 ] || [ "$code" = 1 ]; } && [ -z "$ts_flag" ]; then
+      if { [ "$code" = 0 ] || [ "$code" = 1 ]; } && [ -n "$no_service" ]; then
+        # --no-service where AgentRun is a service already: asked for by name, so the service goes, and AgentRun runs in
+        # the background until this machine stops. `service install` brings the service back.
+        say "--no-service: removing the AgentRun service of this user; AgentRun runs in the background until this machine stops."
+        "$shim" service uninstall
+        start_background
+        say "To keep it running after a restart again: $(shown_shim) service install"
+      elif { [ "$code" = 0 ] || [ "$code" = 1 ]; } && [ -z "$ts_flag" ]; then
         "$shim" service restart
       elif [ "$code" = 0 ] || [ "$code" = 1 ]; then
         stop_background
@@ -231,7 +238,7 @@ Options:
                     floor's major line, from nodejs.org/dist/index.json)
   --no-start        install only
   --service         install the service without asking, and fail if this machine can't run one
-  --no-service      never install the service: run AgentRun in the background until the machine stops
+  --no-service      never install the service, and remove one installed before: run AgentRun in the background until the machine stops
   --tailscale       also serve it over HTTPS on your own tailnet only, at this machine's name there
                     (tailscale serve, never Funnel; Tailscale must be installed and logged in, and it says how when
                     not); --no-tailscale takes it off

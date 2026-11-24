@@ -32,3 +32,35 @@ test("--no-service says no without asking, and no terminal to ask in keeps the s
   assert.equal(await ask(t, { answer: "y", noService: "1" }), 1);
   assert.equal(await ask(t, { terminal: false }), 0);
 });
+
+// The installer's choice once AgentRun is installed (its `default)` start), run with a fake agentrun whose
+// `service status` exits as a service manager would: 0 or 1 a service is there, 3 none.
+const choice = /^    default\)\n([\s\S]*?)\n      ;;\n  esac/m.exec(await readFile(INSTALL, "utf8"))?.[1];
+async function started(t, { status, noService = "", wanted = false }) {
+  const dir = await mkdtemp(join(tmpdir(), "install-start-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const shim = join(dir, "agentrun");
+  await writeFile(shim, `#!/bin/sh\necho "agentrun $*"\n[ "$1 $2" = "service status" ] && exit ${status}\nexit 0\n`, { mode: 0o755 });
+  const script = [
+    "set -u", `no_service=${noService}`, "ts_flag=", "version=test", "why=", `shim=${shim}`,
+    'say() { echo "say: $*"; }', "start_background() { echo start_background; }", "stop_background() { echo stop_background; }",
+    "service_manager() { return 0; }", `want_service() { return ${wanted ? 0 : 1}; }`, "shown_shim() { echo agentrun; }",
+    choice,
+  ].join("\n");
+  await writeFile(join(dir, "script.sh"), `${script}\n`);
+  const { stdout } = await promisify(execFile)("sh", [join(dir, "script.sh")]);
+  return stdout.split("\n").filter((line) => line && !line.startsWith("say: ") && line !== "agentrun service status");
+}
+
+test("install.sh's start has its default branch", () => assert.ok(choice, "    default) ... ;; esac in install.sh"));
+
+test("--no-service where a service is installed removes it and runs in the background, never restarting it", async (t) => {
+  for (const status of [0, 1]) assert.deepEqual(await started(t, { status, noService: "1" }), ["agentrun service uninstall", "start_background"], `status ${status}`);
+});
+
+test("without --no-service an installed service restarts; with none, a No runs in the background and a Yes installs it", async (t) => {
+  assert.deepEqual(await started(t, { status: 0 }), ["agentrun service restart"]);
+  assert.deepEqual(await started(t, { status: 3 }), ["start_background"]);
+  assert.deepEqual(await started(t, { status: 3, noService: "1" }), ["start_background"]);
+  assert.deepEqual(await started(t, { status: 3, wanted: true }), ["stop_background", "agentrun service install"]);
+});
