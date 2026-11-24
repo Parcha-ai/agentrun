@@ -543,7 +543,7 @@ export class Agent37Provider extends HostedProvider {
 		if (typeof fetcher !== "function") throw new Error("options.fetch must be a function, as the global fetch is");
 		if (typeof WebSocket !== "function") throw new Error("options.WebSocket must be a WebSocket class that takes headers, as Node's global one does");
 		const api = new URL(httpsBase(apiUrl, "the Agent37 API URL"));
-		if (api.search !== "" || api.hash !== "") throw new Error(`the Agent37 API URL takes no query or fragment, as ${DEFAULT_API_URL} has none: ${JSON.stringify(apiUrl)}`);
+		if (api.search !== "" || api.hash !== "") throw new Error(`the Agent37 API URL takes no query or fragment, as ${DEFAULT_API_URL} has none: ${api.protocol}//${api.host}`);
 		if (typeof proxyDomain !== "string" || !DOMAIN.test(proxyDomain)) throw new Error(`proxyDomain must be a host name such as ${DEFAULT_PROXY_DOMAIN}, not ${JSON.stringify(proxyDomain)}`);
 		if (type !== "vm" && type !== "default") throw new Error(`type is vm or default, not ${JSON.stringify(type)}`);
 		if (region !== "us" && region !== "eu" && region !== "ap-south") throw new Error(`region is us, eu or ap-south, not ${JSON.stringify(region)}`);

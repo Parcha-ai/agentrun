@@ -58,7 +58,7 @@ test("Orgo: the provider takes its key and workspace as options, reads no enviro
 	assert.ok(create({ apiKey: KEY, fetch: api.fetch }) instanceof OrgoProvider);
 	assert.throws(() => create({ apiKey: KEY, workspaceId: "../other", fetch: api.fetch }), (error) => /workspaceId/.test(error.message) && !error.message.includes(KEY));
 	for (const apiUrl of ["http://orgo.example/api", "http://127.0.0.1:8080/api"]) {
-		assert.throws(() => create({ apiKey: KEY, workspaceId: WORKSPACE, fetch: api.fetch, apiUrl }), /^Error: the Orgo API URL must be https, so the key never crosses in the clear/);
+		assert.throws(() => create({ apiKey: KEY, workspaceId: WORKSPACE, fetch: api.fetch, apiUrl }), /must be https/);
 	}
 	assert.throws(() => create({ apiKey: KEY, workspaceId: WORKSPACE, fetch: api.fetch, apiUrl: "https://agentrun@orgo.example/api" }), /the Orgo API URL holds no credentials/);
 	assert.deepEqual(api.requests, []);

@@ -516,7 +516,7 @@ export class MorphProvider extends HostedProvider {
 		if (typeof (ssh2 as { Client?: unknown } | null)?.Client !== "function") throw new Error("options.ssh2 must be the ssh2 package (its Client class): the host installs it, as it does for Agent37");
 		if (typeof fetcher !== "function") throw new Error("options.fetch must be a function, as the global fetch is");
 		const api = new URL(httpsBase(apiUrl, "the Morph API URL"));
-		if (api.search !== "" || api.hash !== "") throw new Error(`the Morph API URL takes no query or fragment, as ${DEFAULT_API_URL} has none: ${JSON.stringify(apiUrl)}`);
+		if (api.search !== "" || api.hash !== "") throw new Error(`the Morph API URL takes no query or fragment, as ${DEFAULT_API_URL} has none: ${api.protocol}//${api.host}`);
 		if (typeof sshHost !== "string" || !(DOMAIN.test(sshHost) || isIP(sshHost) !== 0)) throw new Error(`sshHost must be a host name such as ${DEFAULT_SSH_HOST}, not ${JSON.stringify(sshHost)}`);
 		if (!Number.isSafeInteger(sshPort) || sshPort < 1 || sshPort > 65_535) throw new Error(`sshPort must be a TCP port, not ${JSON.stringify(sshPort)}`);
 		super(new MorphHost({ apiKey, ssh2, fetch: fetcher, apiUrl: api.href.replace(/\/+$/, ""), sshHost, sshPort }), { ...rest, timeouts });

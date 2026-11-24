@@ -116,7 +116,7 @@ test("the constructor refuses a size that is not boxd's and the machine user's u
 test("the API URL is https alone, loopback included, so the key never crosses in the clear: another is refused before any client is made", () => {
 	for (const baseUrl of ["http://boxd.sh:9443", "http://127.0.0.1:9443", "http://[::1]:9443", "http://localhost:9443", "ws://boxd.sh:9443"]) {
 		const rec = recorder();
-		assert.throws(() => new BoxdProvider({ apiKey: KEY, Boxd: rec.Boxd, baseUrl }), (error) => /^the boxd API URL must be https, so the key never crosses in the clear/.test(error.message) && !error.message.includes(KEY), baseUrl);
+		assert.throws(() => new BoxdProvider({ apiKey: KEY, Boxd: rec.Boxd, baseUrl }), (error) => /must be https/.test(error.message) && !error.message.includes(KEY), baseUrl);
 		assert.deepEqual(rec.clients, [], baseUrl);
 	}
 	assert.throws(() => new BoxdProvider({ apiKey: KEY, Boxd: recorder().Boxd, baseUrl: "//boxd.sh:9443" }), /the boxd API URL is not a URL/);

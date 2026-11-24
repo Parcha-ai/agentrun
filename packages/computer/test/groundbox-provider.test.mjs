@@ -340,7 +340,7 @@ test("a stream that cannot be read on because the sandbox is gone fails at once,
 	await assert.rejects(proc.wait(), /no longer keeps 10 bytes of the command's output/);
 });
 
-test("a stream that does not start says why: the sandbox read for a refused upgrade, the stream's own error by its code, the call's bound for one that never opens", async () => {
+test("a stream that does not start says why: the sandbox read for a refused upgrade, the stream's own error by its code, the call's bound for one that never opens", async (t) => {
 	const refused = (route) => {
 		const streams = fakeCommands();
 		streams.refuse(true);
@@ -359,14 +359,12 @@ test("a stream that does not start says why: the sandbox read for a refused upgr
 	};
 	const saying = stub((listeners) => listeners.message({ data: JSON.stringify({ type: "error", message: "Sandbox sbx_0123456789ab is paused", code: "conflict" }) }));
 	await assert.rejects(hostOf(() => undefined, saying).host.exec(ID, ["true"], CTX), (error) => error.code === "refused" && /Groundbox ended the command: Sandbox sbx_0123456789ab is paused/.test(error.message));
-	// No `started` within the call's bound (an image with no Node runs no resumable command): the call's timeout. The
-	// bound's timer is unref'd, as a caller's would be, so the test holds the event loop open while it waits.
-	const alive = setInterval(() => {}, 1_000);
-	try {
-		await assert.rejects(hostOf(() => undefined, stub()).host.exec(ID, ["true"], { timeoutMs: 50 }), (error) => error.name === "TimeoutError");
-	} finally {
-		clearInterval(alive);
-	}
+	// No `started` within the call's bound (an image with no Node runs no resumable command): the call's timeout.
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	const refusedAtBound = assert.rejects(hostOf(() => undefined, stub()).host.exec(ID, ["true"], { timeoutMs: 50 }), (error) => error.name === "TimeoutError");
+	await turn();
+	t.mock.timers.tick(50);
+	await refusedAtBound;
 });
 
 test("kill is the shared pid kill of the sh's recorded pid, as root: the command and every process under it end, wait answers, and its directory goes", async (t) => {
@@ -875,6 +873,17 @@ test("the scripts, run by sh against paths of the test's: the start refuses a pa
 	assert.equal(sh(killScript, [fresh(), pidKill]).status, 0);
 });
 
+test("a start whose fifo cannot be opened refuses with exit 126, like its other refusals, and leaves no directory behind", async (t) => {
+	const { startScript } = await sentScripts();
+	const { root, bin } = scratch(t);
+	// A mkfifo that makes a directory where the fifo goes: the open of it for reading and writing fails.
+	const broken = bin("broken-mkfifo", { mkfifo: 'mkdir "$3"' });
+	const dir = join(root, "c1");
+	const ran = spawnSync("sh", ["-c", startScript, "sh", dir, "sh", "-c", "echo ran"], { encoding: "utf8", timeout: 20_000, env: { ...process.env, PATH: `${broken}:${process.env.PATH}` } });
+	assert.deepEqual([ran.status, ran.stdout], [126, ""]);
+	assert.equal(existsSync(dir), false, "the refused start removed its directory");
+});
+
 test("a write whose bytes went in went through, however soon the command ends after: an end after `cat` answers 0; a fifo gone before the write's open answers 3 and leaves nothing; a directory gone before it, or a `cat` that failed, answers 3", async (t) => {
 	if (!HAS_PROC) return t.skip("needs /proc");
 	const { writeScript } = await sentScripts();
@@ -987,15 +996,16 @@ test("a write is made once its bytes are in the command's fifo, though the comma
 test("a start that does not hear `started` within its bound ends the command: its socket closes with 1000, so a late `started` leaves nothing running", async (t) => {
 	const streams = fakeCommands();
 	t.after(streams.stopAll);
-	streams.startedAfter(300);
+	streams.holdStarted();
+	t.mock.timers.enable({ apis: ["setTimeout"] });
 	const { host } = hostOf(() => undefined, streams);
-	// The bound's timer is unref'd, as a caller's would be: the test holds the event loop open while it waits.
-	const alive = setInterval(() => {}, 1_000);
-	try {
-		await assert.rejects(host.exec(ID, ["sleep", "600"], { timeoutMs: 100 }), (error) => error.name === "TimeoutError");
-	} finally {
-		clearInterval(alive);
-	}
+	const starting = host.exec(ID, ["sleep", "600"], { timeoutMs: 100 });
+	const refused = assert.rejects(starting, (error) => error.name === "TimeoutError");
+	await turn();
+	t.mock.timers.tick(100);
+	await refused;
+	// The sandbox's late `started`, said after the bound: the socket is closed, so it reaches nothing.
+	streams.releaseStarted();
 	const [opened] = streams.opened;
 	assert.equal(opened.closed, 1000, "a close that is not 1000 leaves the command running");
 	const [command] = streams.commands.values();
@@ -1005,7 +1015,7 @@ test("a start that does not hear `started` within its bound ends the command: it
 
 test("the API URL is https alone, loopback included, so the key never crosses in the clear", () => {
 	for (const apiUrl of ["http://api.groundbox.dev/v1", "http://10.0.0.5:8080/v1", "http://127.0.0.1:8080/v1", "http://[::1]:8080/v1", "http://localhost:8080/v1", "ws://api.groundbox.dev/v1"]) {
-		assert.throws(() => new GroundboxProvider({ apiKey: KEY, apiUrl, daemonPath: "/nonexistent/computerd" }), (error) => /^the Groundbox API URL must be https, so the key never crosses in the clear/.test(error.message) && !error.message.includes(KEY), apiUrl);
+		assert.throws(() => new GroundboxProvider({ apiKey: KEY, apiUrl, daemonPath: "/nonexistent/computerd" }), (error) => /must be https/.test(error.message) && !error.message.includes(KEY), apiUrl);
 	}
 	assert.doesNotThrow(() => new GroundboxProvider({ apiKey: KEY, apiUrl: "https://api.groundbox.dev/v1", daemonPath: "/nonexistent/computerd" }));
 });

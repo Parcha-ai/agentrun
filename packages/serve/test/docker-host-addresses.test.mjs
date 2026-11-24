@@ -116,6 +116,35 @@ test("a read in flight is cut at once by its signal (the server's close), its cl
   assert.deepEqual(asked, []);
 });
 
+// The read the runner beside the server starts has no signal (runner/beside.ts), and the server's stop asks for the same
+// read with its own: the stop's signal cuts the shared read, so the stop answers at once and the container is removed by
+// name, not left to the read's 60 s bound. No clock: the case's timeout, under READ_MS, bounds a read the signal didn't cut.
+test("the stop's signal cuts a read another caller started with no signal: the stop's ask answers at once, and the helper container is removed by name", { timeout: 30_000 }, async (t) => {
+  const dir = await scratch(t);
+  const bin = join(dir, "bin");
+  const state = join(dir, "state");
+  await mkdir(bin);
+  await mkdir(join(state, "containers"), { recursive: true });
+  const fake = new URL("./fixtures/fake-docker.mjs", import.meta.url).pathname;
+  await writeFile(join(bin, "docker"), `#!/bin/sh\nexec '${process.execPath}' '${fake}' "$@"\n`, { mode: 0o755 });
+  await writeFile(join(state, "host-addresses-hold"), "");
+  const held = join(state, "host-addresses-held");
+  execFileSync("mkfifo", [held]);
+  const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, FAKE_DOCKER_STATE: state };
+  const beside = hostRead.hostAddressesOnce(env);
+  await readFile(held, "utf8");
+  assert.equal(readdirSync(join(state, "containers")).length, 1, "the stalled read's container is made");
+  const stopping = new AbortController();
+  const stop = hostRead.hostAddressesOnce(env, stopping.signal);
+  stopping.abort();
+  const [stopped, other] = await Promise.all([stop, beside]);
+  assert.deepEqual(stopped, other, "one read, shared");
+  assert.deepEqual(stopped, { why: "the read through Docker's socket was stopped with the server (its container was removed)" });
+  assert.deepEqual(readdirSync(join(state, "containers")), [], "the helper container is removed");
+  const calls = readFileSync(join(state, "argv.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line));
+  assert.deepEqual(calls.map((args) => args[0]), ["run", "rm", "inspect"]);
+});
+
 // Through the tests' fake docker, whose read stalls while `host-addresses-hold` is in its state (its container made and
 // running, the client never answering): the read's client is killed at its bound, and its container is removed.
 test("a stalled read's container is removed through the fake docker, and the read says so", { timeout: 60_000 }, async (t) => {

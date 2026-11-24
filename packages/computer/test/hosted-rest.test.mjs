@@ -1,7 +1,7 @@
 // The shared REST client (src/hosted/rest.ts): status table, retry rules, accept, redirect refusal, cursor pages. No vendor, no network.
 import assert from "node:assert/strict";
 import test from "node:test";
-import { allPages, httpCode, rest } from "../dist/hosted/rest.js";
+import { allPages, httpCode, httpsBase, rest } from "../dist/hosted/rest.js";
 
 const answers = (...replies) => {
 	const calls = [];
@@ -17,6 +17,26 @@ const client = (fetch, extra = {}) => {
 	const pauses = [];
 	return { pauses, api: rest({ base: "https://api.example.test//", headers: () => ({ Authorization: "Bearer k" }), vendor: "acme", fetch, timeoutMs: 1000, retry: { attempts: 3, baseMs: 2, pause: async (ms) => void pauses.push(ms) }, ...extra }) };
 };
+
+test("httpsBase takes an https URL with its trailing slashes stripped, and refuses every other scheme, loopback http included, and a bad URL", () => {
+	for (const [url, base] of [
+		["https://api.example.test", "https://api.example.test"],
+		["https://api.example.test/v1/", "https://api.example.test/v1"],
+		["https://api.example.test/v1///", "https://api.example.test/v1"],
+	]) assert.equal(httpsBase(url, "the API URL"), base, url);
+	for (const url of ["http://api.example.test", "http://127.0.0.1:8080", "http://[::1]:8080", "http://localhost:8080", "ws://api.example.test", "wss://api.example.test"]) {
+		assert.throws(() => httpsBase(url, "the API URL"), /^Error: the API URL must be https/, url);
+	}
+	// A bad URL is refused in words that echo nothing of it: it may carry a key in its query.
+	assert.throws(() => httpsBase("not a url?key=fake-test-key", "the API URL"), (error) => error.message === "the API URL is not a URL");
+	// An http URL's words give its scheme, not the rest of it.
+	assert.throws(() => httpsBase("http://api.example.test/?key=fake-test-key", "the API URL"), (error) => !error.message.includes("fake-test-key"));
+});
+
+test("httpsBase returns the normalized URL: a lower-case scheme and host, a default port dropped, so a case-sensitive reader of the scheme sees https", () => {
+	assert.equal(httpsBase("HTTPS://API.EXAMPLE.TEST:443/", "the API URL"), "https://api.example.test");
+	assert.equal(httpsBase("HTTPS://Api.Example.test:8443/v1/", "the API URL"), "https://api.example.test:8443/v1");
+});
 
 test("httpCode maps a status to one code", () => {
 	const table = { 401: "denied", 403: "denied", 404: "not_found", 410: "not_found", 408: "timeout", 402: "limit", 429: "limit", 507: "limit", 400: "invalid", 409: "invalid", 422: "invalid", 500: "vendor", 502: "vendor" };

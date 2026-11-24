@@ -176,8 +176,8 @@ test("the constructor refuses what it cannot run with, in words", () => {
 	const make = (options) => () => new DaytonaProvider({ apiKey: KEY, apiUrl: API, daemonPath: DAEMON, fetch: async () => assert.fail("no request"), ...options });
 	assert.throws(make({ apiKey: "" }), /the Daytona API key, is required/);
 	assert.throws(() => create({ daemonPath: DAEMON }), /options\.apiKey/);
-	for (const apiUrl of ["http://api.daytona.test/api", "http://127.0.0.1:3000/api", "http://localhost:3000/api"]) assert.throws(make({ apiUrl }), /^Error: the Daytona API URL must be https, so the key never crosses in the clear: http:$/, apiUrl);
-	assert.throws(make({ apiUrl: "api.daytona.test" }), /^Error: the Daytona API URL is not a URL: "api\.daytona\.test"$/);
+	for (const apiUrl of ["http://api.daytona.test/api", "http://127.0.0.1:3000/api", "http://localhost:3000/api"]) assert.throws(make({ apiUrl }), /must be https/, apiUrl);
+	assert.throws(make({ apiUrl: "api.daytona.test" }), /^Error: the Daytona API URL is not a URL$/);
 	assert.throws(make({ daemonUser: "0:0" }), /root/);
 	assert.throws(make({ daemonUser: "1000:0" }), /root's group/);
 	for (const daemonUser of ["00:1000", "000:000", "1000:00", "0:01000"]) assert.throws(make({ daemonUser }), /root or in root's group/, daemonUser);
