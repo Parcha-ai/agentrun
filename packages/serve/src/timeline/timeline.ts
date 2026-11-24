@@ -2,7 +2,7 @@ import { BROWSER_OPENERS, BROWSER_STEPS, callFailed, endsTurn, failedWith, input
 import { cut, firstLine, firstSentence, json, obj, saidSummary, scrubUrls, str, utf8Bytes, type Obj } from "./util.js";
 import { BESIDE_SUFFIX, NOTE_SUFFIX, originMatcher, TRIGGER_LABELS, type TriggerSource } from "./origin.js";
 import type { ComputerCallRow } from "./computer.js";
-import { webShownOf, webWithin } from "./web-calls.js";
+import { webHeld, webShownOf, webWithin } from "./web-calls.js";
 
 export type TimelineKind =
   | "thinking" | "text_block" | "tool_use" | "tool_result" | "phase"
@@ -313,6 +313,11 @@ export type TimelineOptions = {
    *  Without `redact`, the rows' own. `held`: whether a number in the arguments shows a held value (a key that is all
    *  digits); such a number is shown as "[redacted]". */
   calls?: { result: number; redact?: (text: string) => string; held?: (value: number | bigint) => boolean };
+  /** Whether a text holds a held value no cut in place takes (key-refusal.ts withheldWhole). A web call's output is read
+   *  through it joined, its JSON's strings as they came (web-calls.ts webHeld), before any of its rows shows any of it: a
+   *  value split across two of its strings, which `redact` and `calls.redact` never read side by side, withholds the
+   *  output, so its preview, its summary and a `calls` read's text read "[redacted]". Default: none withheld. */
+  holds?: (text: string) => boolean;
 };
 
 /** A tool's calls in a run, and how many failed. */
@@ -802,10 +807,14 @@ function createProjector(options: TimelineOptions) {
     const verdict = /^(\w+): /.exec(text);
     return verdict ? `${verdict[1]}: ${scrubUrls(firstLine(redactText(text.slice(verdict[0].length))))}` : scrubUrls(firstLine(redactText(text)));
   };
-  /** A result as its rows show it: its whole output redacted once, which its label, summary and preview are all taken
-   *  from (resultRow); its details and error flag as they came. */
-  const shownOf = (view: ToolResultView): ToolResultView =>
-    options.redact ? { ...view, text: view.text ? options.redact(view.text) : view.text, details: redactValue(view.details) } : view;
+  /** A result as its rows show it: its whole output redacted once, or "[redacted]" when it is withheld whole (`withheld`),
+   *  which its label, summary and preview are all taken from (resultRow); its details and error flag as they came. */
+  const shownOf = (tool: string, view: ToolResultView): ToolResultView =>
+    withheld(tool, view.text) ? { ...view, text: "[redacted]", details: redactValue(view.details) }
+    : options.redact ? { ...view, text: view.text ? options.redact(view.text) : view.text, details: redactValue(view.details) } : view;
+  /** Whether a call of `tool`'s output is withheld whole before any row shows it: a web call's strings, read joined
+   *  (TimelineOptions.holds). */
+  const withheld = (tool: string, text: string): boolean => (options.holds && text ? webHeld(tool, text, options.holds) : false);
   const failure = (text: string) => scrubUrls(firstLine(str(json(text)?.message) ?? diagnosticOf(text) ?? text)) || "no detail";
   /** Whether a result is a call's refusal before it ran: an error its host marked so in its details (CALL_REFUSED),
    *  read by that field, never by its words. */
@@ -831,6 +840,7 @@ function createProjector(options: TimelineOptions) {
   const callShown = (text: string) => scrubUrls(wholeRedact ? wholeRedact(text) : text);
   const resultText = (tool: string, text: string): string | null => {
     if (!text) return null;
+    if (withheld(tool, text)) return "[redacted]";
     const web = webShownOf(tool, text, callShown);
     return web ? webWithin(web, options.calls!.result) : cut(callShown(text), options.calls!.result);
   };
@@ -1032,7 +1042,7 @@ function createProjector(options: TimelineOptions) {
       const call = calls.get(`${conv}:${id}`);
       const name = call?.name ?? str(message.toolName) ?? "tool";
       const view = viewOf(message);
-      const shown = shownOf(view);
+      const shown = shownOf(name, view);
       // A call that failed ended nothing: the agent goes on after it, so a message then is still a steer.
       ended.set(conv, (previous.get(conv) !== "pi.tool-result" || ended.get(conv) === true) && endsTurn(name) && !view.isError);
       // One an abort cut did end the turn. A round's results come in as its calls end, so one that ended before the abort
@@ -1155,7 +1165,7 @@ function createProjector(options: TimelineOptions) {
     const text = typeof output === "string" ? output : output !== undefined ? JSON.stringify(output) : (diagnostic ?? "");
     const failed = result.isError === true;
     const view: ToolResultView = { text, details: result.details, isError: failed };
-    const shown = shownOf(view);
+    const shown = shownOf(call.name, view);
     const named = nameFor(call.name, call.args, view, shown);
     call.done = true;
     call.use.summary = clean(named, caps.summary);

@@ -113,7 +113,8 @@ const fitted = (width: number, height: number, edge: number): [number, number] =
 };
 
 /** ffmpeg's arguments for one file: `format` frames piped in, each stamped as it is read (in ms), fitted into
- *  width x height, H.264 at the frames' own times, a key frame every 2 s at most apart, fragmented MP4. The file is on disk
+ *  width x height, H.264 at the frames' own times, a key frame every 2 s at most apart, fragmented MP4 whose header says
+ *  when it started (its mvhd's creation time, which run-recordings.ts orders a run's computers by). The file is on disk
  *  as it goes, a fragment at each key frame (run-recordings.ts reads it mid-run): the input is not probed (a quiet screen's
  *  few frames would never fill ffmpeg's 5 MB probe), it is decoded on one thread (the PNG decoder's frame threads hold one
  *  frame per core back), and each fragment is flushed as it is written. */
@@ -122,7 +123,8 @@ const argsOf = (format: ScreenFrame["format"], width: number, height: number, pa
   "-probesize", "32", "-analyzeduration", "0", "-fpsprobesize", "0", "-threads", "1", "-use_wallclock_as_timestamps", "1", "-framerate", "1000", "-f", "image2pipe", "-c:v", format === "png" ? "png" : "mjpeg", "-i", "pipe:0",
   "-an", "-vf", `scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2,format=yuv420p`,
   "-fps_mode", "vfr", "-c:v", "libx264", "-preset", "veryfast", "-tune", "zerolatency", "-crf", "28",
-  "-force_key_frames", "expr:gte(t,n_forced*2)", "-movflags", "+frag_keyframe+empty_moov+default_base_moof", "-flush_packets", "1", "-f", "mp4", "-n", path,
+  "-force_key_frames", "expr:gte(t,n_forced*2)", "-movflags", "+frag_keyframe+empty_moov+default_base_moof", "-flush_packets", "1",
+  "-metadata", `creation_time=${new Date().toISOString()}`, "-f", "mp4", "-n", path,
 ];
 
 /** A length in words: "2 h", "90 min", "45 s". */

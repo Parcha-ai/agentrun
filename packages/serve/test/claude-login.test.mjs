@@ -262,6 +262,13 @@ test("one owner: refused in one line where more than one person can start runs, 
   withEnv(t, {}, MODEL_VARS);
   assert.equal(whyNotOneOwner({ apiOnly: false, tokens: 1 }), undefined);
   assert.match(whyNotOneOwner({ apiOnly: true, tokens: 1 }), /^This server has no owner .*one person's\.$/);
+  // A key made in the console for an app is one more caller, as a second token is (api-keys.ts).
+  assert.equal(whyNotOneOwner({ apiOnly: false, tokens: 1, keys: 0 }), undefined);
+  assert.equal(whyNotOneOwner({ apiOnly: false, tokens: 1, keys: 1 }), "This server has an API key made for apps (Settings → AgentRun API keys), so more than one caller can start runs here: a Claude plan is one person's. Revoke it first.");
+  assert.match(whyNotOneOwner({ apiOnly: false, tokens: 1, keys: 3 }), /^This server has 3 API keys made for apps .*Revoke them first\.$/);
+  // Keys that open nothing here (a server on its owner's own sign-in) are said as that: none is a second caller now.
+  assert.equal(whyNotOneOwner({ apiOnly: false, tokens: 1, keys: 2, keysDormant: true }), "This server keeps 2 API keys made for apps (Settings → AgentRun API keys). They open nothing here, and would open the server at a start that takes keys again: a Claude plan is one person's. Revoke them first.");
+  assert.equal(whyNotOneOwner({ apiOnly: false, tokens: 1, keys: 0, keysDormant: true }), undefined);
   assert.deepEqual(turnOnBody({ only_me: true }), { place: "agentrun" });
   assert.deepEqual(turnOnBody({ only_me: true, place: "machine" }), { place: "machine" });
   assert.ok("problem" in turnOnBody({ place: "machine" }));
@@ -652,7 +659,7 @@ test("the CLI's sign-in is refused for a login turned on over another data folde
     data,
     env: { HOME: data, PATH: "/usr/bin:/bin" },
     pinned: async () => pinned,
-    refused: undefined,
+    refused: () => undefined,
     sameMachine: true,
     claude: async () => ({
       claudeLoginCommand: () => "claude auth login",
@@ -725,7 +732,7 @@ async function loginRig(t) {
       return { ended, stop: () => { one.stopped = true; end({ end: "stopped" }); } };
     },
   };
-  const deps = (over) => ({ signIns, settings, data, env, pinned: async () => pinned, refused: undefined, sameMachine: true, claude: async () => cli, saved: () => {}, changed: async () => {}, ...over });
+  const deps = (over) => ({ signIns, settings, data, env, pinned: async () => pinned, refused: () => undefined, turn: (work) => work(), sameMachine: true, claude: async () => cli, saved: () => {}, changed: async () => {}, ...over });
   const stale = (keeps) => started.filter((one) => !one.stopped && one.dir !== keeps);
   return { data, env, rows, settings, started, signIns, pinned, deps, stale };
 }
@@ -1152,7 +1159,7 @@ test("the person's home is read once, where the login is made: with the server's
     const env = { HOME: person, PATH: `${dirname(fake.cli)}${delimiter}${process.env.PATH}`, ...extra };
     const rows = new Map([[CLAUDE_LOGIN_SETTING, settingFor(place, data)]]);
     const settings = { get: async (key) => rows.get(key) ?? null, put: async (key, value) => void rows.set(key, value), remove: async (key) => void rows.delete(key) };
-    const deps = { signIns, settings, data, env, pinned: async () => undefined, refused: undefined, sameMachine: true, claude: async () => claude, changed: async () => {} };
+    const deps = { signIns, settings, data, env, pinned: async () => undefined, refused: () => undefined, sameMachine: true, claude: async () => claude, changed: async () => {} };
     const from = fake.calls().length;
     assert.equal((await claudeLoginView(deps)).state, "signed_out", place);
     await startLoginHere(deps);
@@ -1311,7 +1318,7 @@ test("the Settings view feeds the same answer: after it read the login signed in
     data,
     env: { HOME: data, PATH: "/usr/bin:/bin" },
     pinned: async () => pinned,
-    refused: undefined,
+    refused: () => undefined,
     sameMachine: false,
     claude: async () => ({
       claudeLoginCommand: () => "claude auth login",
