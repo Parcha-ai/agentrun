@@ -42,6 +42,7 @@ function memorySettings() {
     rows,
     get: async (key) => (rows.has(key) ? structuredClone(rows.get(key)) : undefined),
     put: async (key, value) => void rows.set(key, structuredClone(value)),
+    putIfAbsent: async (key, value) => structuredClone(rows.has(key) ? rows.get(key) : (rows.set(key, structuredClone(value)), value)),
     replaceIf: async (key, was, value) => rows.has(key) && JSON.stringify(rows.get(key)) === JSON.stringify(was) && (rows.set(key, structuredClone(value)), true),
     removeIf: async (key, was) => rows.has(key) && JSON.stringify(rows.get(key)) === JSON.stringify(was) && rows.delete(key),
     remove: async (key) => void rows.delete(key),
@@ -142,10 +143,11 @@ async function server({ setting = E2B_DESKTOP, mode = 1, groups = DESKTOP_GROUPS
   const providers = Object.fromEntries(["docker", "e2b", "agent37", "phone-harness", "daytona"].map((id) => [id, () => account.provider]));
   const mounts = { revoked: 0, inherited: 0 };
   const deps = { mode, kinds: KINDS, sealKey, providers, spec: SPEC, workspace: workspace ?? localWorkspace(root), revokeMount: async () => void (mounts.revoked += 1), inheritMount: () => void (mounts.inherited += 1), now: () => clock.now };
-  // `launch`: more of the claim's launch (its `holder`: the runner that claims and its incarnation).
-  const claim = (epoch, extra = {}, launch = {}) => {
+  // `launch`: more of the claim's launch (its `holder`: the runner that claims and its incarnation). `runners`: who is
+  // there, as the claim reads it (its give-back of a kept row, its park's keep); absent, none is read.
+  const claim = (epoch, extra = {}, launch = {}, runners = undefined) => {
     store.runs.take("run-1", epoch);
-    return computerForClaim({ runId: "run-1", epoch, computer: setting, ...launch }, store, { ...deps, check: { readBackOf, epoch }, ...extra });
+    return computerForClaim({ runId: "run-1", epoch, computer: setting, ...launch }, runners ? { ...store, runners } : store, { ...deps, check: { readBackOf, epoch }, ...extra });
   };
   // `self` and `runners`: the janitor of a runner (its name and incarnation), reading which runners are there.
   const janitor = ({ self, runners } = {}) => sweepKeptComputers({ store: runners ? { ...store, runners } : store, computers: { kinds: KINDS, providers, keyOf: (name) => getSealedKey(store, sealKey, name) }, now: () => clock.now, ...(self ? { self } : {}) });
@@ -540,6 +542,53 @@ test("a Docker sandbox's park names the runner that claimed it and its incarnati
   assert.equal(said.length, 1, "said once");
   assert.equal(computerReadyWords(said[0]), "The sandbox is ready: Linux (amd64), from Docker. The sandbox wasn't kept: the runner that kept it is gone. It's a new sandbox: the one before is gone, with what was on it.");
   await resumed.release();
+});
+
+// A park after a claim went on without a kept machine pinned to another runner (keepKept): never over that runner's row
+// while it is there, which its end compares; the park's own machine then goes as at the run's end.
+test("a park never writes over a kept row pinned to another runner still there: it keeps nothing, its own machine goes as at the run's end, and that row is left ending for its runner's end; once that runner is gone, the park's row replaces it", async () => {
+  const key = keptKeyOf("run-1");
+  const refusing = { live: async () => [{ ...RUNNER_A, refused: "draining" }] };
+  /** run-1 parked by runner-a, then claimed by runner-b reading `runners`: runner-a's container is on its own engine, so
+   *  runner-b's finds none and makes c2. */
+  const reclaimed = async (runners) => {
+    const one = await server(SANDBOX);
+    await (await one.claim(3, {}, { holder: RUNNER_A })).park("approval");
+    const atPark = await readKept(one.store.settings, "run-1");
+    const written = await one.store.settings.get(key);
+    one.account.computers.delete("c1");
+    one.clock.now = T0 + 60_000;
+    const resumed = await one.claim(5, { hadComputer: async () => true }, { holder: RUNNER_B }, runners);
+    assert.deepEqual(creates(one.account), ["c1", "c2"], "runner-b went on on a new sandbox");
+    return { one, atPark, written, resumed };
+  };
+
+  // runner-a there: runner-b gave its row back marked ending, and its park leaves it so.
+  const there = await reclaimed(refusing);
+  assert.equal(JSON.stringify(await there.one.store.settings.get(key)), JSON.stringify({ ...there.written, ending: true }), "runner-a's row given back, marked ending");
+  assert.equal(await there.resumed.park("approval"), false, "runner-b's park keeps nothing");
+  assert.equal(JSON.stringify(await there.one.store.settings.get(key)), JSON.stringify({ ...there.written, ending: true }), "runner-a's row stands");
+  assert.deepEqual(deletes(there.one.account), ["c2"], "runner-b's own sandbox went as at the run's end: nothing left with no row");
+  assert.equal(await endKept(there.one.store.settings, "run-1", there.atPark, async () => {}), true, "runner-a's end at its time still finds its row, and ends it");
+  assert.equal((await readKept(there.one.store.settings, "run-1")).ended, true);
+
+  // runner-a there, its row as its park wrote it (a claim that never took it back): the park marks it ending, so no claim
+  // takes that machine back as the run's, and runner-a's end still finishes it.
+  const untaken = await reclaimed(refusing);
+  await untaken.one.store.settings.put(key, untaken.written);
+  assert.equal(await untaken.resumed.park("approval"), false, "runner-b's park keeps nothing");
+  assert.equal(JSON.stringify(await untaken.one.store.settings.get(key)), JSON.stringify({ ...untaken.written, ending: true }), "runner-a's row, marked ending");
+  assert.deepEqual(deletes(untaken.one.account), ["c2"]);
+  assert.equal(await endKept(untaken.one.store.settings, "run-1", untaken.atPark, async () => {}), true, "runner-a's end finishes it");
+
+  // runner-a gone: its row (left as its park wrote it) is replaced by runner-b's park, as before.
+  const gone = await reclaimed({ live: async () => [] });
+  assert.equal(await gone.one.store.settings.get(key), undefined, "runner-a gone: its row stays off");
+  await gone.one.store.settings.put(key, gone.written);
+  assert.equal(await gone.resumed.park("approval"), true, "runner-b's park keeps its sandbox");
+  assert.deepEqual(await readKept(gone.one.store.settings, "run-1"), { provider: "docker", kind: "sandbox", id: "c2", name: "c2", epoch: 5, until: T0 + 60_000 + KEEP_MS, folder: "bind", ...RUNNER_B }, "runner-b's row replaced runner-a's");
+  assert.deepEqual(deletes(gone.one.account), [], "nothing deleted at the park");
+  await gone.resumed.release();
 });
 
 test("a phone harness kept at its park is not pinned: its row names no runner, and another runner's resume attaches the same phone", async () => {

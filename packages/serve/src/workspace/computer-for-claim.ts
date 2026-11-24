@@ -58,7 +58,7 @@ import { type AttachedComputers, pairedProvider, withPaired } from "./attached-c
 import { computerHold, type HeldComputer, heldHands } from "./computer-hold.js";
 import { endingDeletes, figuresOf, type IntervalWrites, intervalWrites } from "./computer-intervals.js";
 import { type ComputeLedger, type ComputeMeter, computeMeter, type ComputeMeterOptions } from "../compute-cost.js";
-import { deleteKept, endKept, heldElsewhere, KEEP_MS, type Kept, keptBy, type KeptHolder, type ParkCause, type ParkedEnd, pinnedOf, readKept, restoreKept, takeKept, writeKept } from "./computer-kept.js";
+import { deleteKept, endKept, heldElsewhere, keepKept, KEEP_MS, type Kept, keptBy, type KeptHolder, type ParkCause, type ParkedEnd, pinnedOf, readKept, restoreKept, takeKept } from "./computer-kept.js";
 import { type ProviderLedger, storeLedger } from "./computer-ledger.js";
 import { type ClaimBrowser, type ClaimSide, type ComputerSetting, type ComputerSettingKind, type KindCapabilities, type KindRegistry, type LaunchedComputer, type ProviderEntry, providerKeys, registryHere, resolveComputer } from "./resolve-computer.js";
 import type { RunComputer, RunHold } from "./run-tools.js";
@@ -1042,8 +1042,10 @@ export async function computerForClaim(
       /** Whether this claim took the row off (takeKept) and has not given it back. */
       let took = false;
       // Taken and not reached here: while the runner it is pinned to is still there (heldElsewhere: refusing claims or
-      // not), the row goes back as that runner's park wrote it, so that runner's own end at its time (or its janitor's)
-      // still finds it and deletes the machine. A row left off would leave the machine running with nothing to end it.
+      // not), the row goes back as that runner's park wrote it, marked ending (restoreKept): this claim goes on on a new
+      // machine, so no claim takes that one back as the run's, and that runner's own end at its time (endKept finishes a
+      // row so marked) or its janitor's still finds it and deletes the machine. A row left off would leave the machine
+      // running with nothing to end it.
       // Once that runner is gone, the row stays off: the machine went with it, or its host's janitor ends it. A failed
       // read of who is there puts it back: any janitor ends a row whose runner is gone.
       const giveBack = async (): Promise<void> => {
@@ -1053,9 +1055,16 @@ export async function computerForClaim(
         if (there) await restoreKept(settings, launch.runId, record).catch(() => false);
       };
       try {
-        // Its time over (on the store's clock, which stamped it), or its end took it first (ending or ended): a new one,
-        // said so.
-        if (record.ending || record.ended || (await storeClock()) >= record.until || !(took = await takeKept(settings, launch.runId, record))) {
+        // Its end begun before its time: a claim that could not reach it went on on a new machine and gave its row back so,
+        // or a park that kept nothing marked it so (restoreKept, keepKept). It is the run's no more, and it did not lapse:
+        // a new one, said as any replaced one is. Ending or ended once its time passed (a clock that can't be read counts
+        // so): it lapsed, said so.
+        if (record.ending || record.ended) {
+          lapsed = await storeClock().then((at) => at >= record.until, () => true);
+          return undefined;
+        }
+        // Its time over (on the store's clock, which stamped it), or its end took it first: a new one, said so.
+        if ((await storeClock()) >= record.until || !(took = await takeKept(settings, launch.runId, record))) {
           lapsed = true;
           return undefined;
         }
@@ -1298,20 +1307,25 @@ export async function computerForClaim(
         await release();
         return false;
       }
-      let row: Kept;
+      let written: Kept | undefined;
       /** This process's clock when the keep's end was stamped: its own timer and its live view count from it. */
-      let stamped: number;
+      let stamped = 0;
       try {
         // The keep's end on the store's clock, the one the claim rule's pin, every claim's take-back and every janitor
         // judge it by: a runner whose clock is off from the store's never moves it.
         const at = await storeClock();
         stamped = now();
-        row = await writeKept(settings, launch.runId, { provider: keeps.entry, kind: keeps.kind, id: ref.id, name: ref.name, epoch: keeps.epoch, until: at + KEEP_MS, ...(resolved.folder ? { folder: resolved.folder } : {}), ...(keeps.pinned && launch.holder ? { runner: launch.holder.runner, incarnation: launch.holder.incarnation } : {}) });
+        // Never over a row pinned to another runner still there (keepKept): that runner's end compares it.
+        written = await keepKept(settings, launch.runId, { provider: keeps.entry, kind: keeps.kind, id: ref.id, name: ref.name, epoch: keeps.epoch, until: at + KEEP_MS, ...(resolved.folder ? { folder: resolved.folder } : {}), ...(keeps.pinned && launch.holder ? { runner: launch.holder.runner, incarnation: launch.holder.incarnation } : {}) }, { ...(store.runners ? { runners: store.runners } : {}), ...(launch.holder ? { self: launch.holder } : {}) });
       } catch {
-        // No clock read or no row, nothing to find it by: it goes as at the run's end.
+        written = undefined;
+      }
+      // No clock read, no row, or a row this park may not write over: nothing to find it by, so it goes as at the run's end.
+      if (!written) {
         await release();
         return false;
       }
+      const row: Kept = written;
       /** The keep's end on this process's clock: KEEP_MS from the stamp. */
       const localUntil = stamped + KEEP_MS;
       await writes.kept(keeps.entry, ref.id);

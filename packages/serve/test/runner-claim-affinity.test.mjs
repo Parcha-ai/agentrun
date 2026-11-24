@@ -358,7 +358,7 @@ test("park on A, A goes stale: B claims it, starts a new desktop, and the run sa
   assert.equal(await readKept(one.server.settings, RUN), undefined, "the keep was taken");
 });
 
-test("park on A, A still there but refusing claims: B claims on the answer, can't reach A's desktop, and puts the kept row back as A's park wrote it, so A's own end at its time deletes the desktop", { timeout: 120_000 }, async (t) => {
+test("park on A, A still there but refusing claims: B claims on the answer, can't reach A's desktop, and puts the kept row back as A's park wrote it, marked ending, so A's own end at its time deletes the desktop", { timeout: 120_000 }, async (t) => {
   const one = await parkedOnA(t);
   const key = keptKeyOf(RUN);
   // The row as A's park wrote it: A's timer ends the desktop only while the row still reads this (endKept's compare).
@@ -375,10 +375,11 @@ test("park on A, A still there but refusing claims: B claims on the answer, can'
   assert.deepEqual(creates(one.hosts.b), ["b-d1"], "B went on on a new desktop of its own host");
   assert.ok(one.hosts.a.computers.has("a-d1"), "A's desktop still runs on A's host");
   assert.ok((await one.server.runners.live(PRESENCE_STALE_MS)).some((row) => row.runner === "runner-a"), "runner-a is still there");
-  // B took the row and could not reach the machine: the row is back, the same text, for A's end to compare against.
-  assert.deepEqual(await one.server.settings.get(key), written, `the kept row is back as runner-a's park wrote it: ${JSON.stringify(await one.server.settings.get(key))}`);
-  assert.equal(JSON.stringify(await one.server.settings.get(key)), JSON.stringify(written), "byte for byte");
-  // A's timer at the keep's time (computer-for-claim.ts park): its end finds the row it wrote and deletes the desktop.
+  // B took the row and could not reach the machine: the row is back as A's park wrote it, marked ending (B went on on a
+  // new desktop, so no claim takes A's back as the run's), for A's end to finish.
+  assert.equal(JSON.stringify(await one.server.settings.get(key)), JSON.stringify({ ...written, ending: true }), `the kept row is back as runner-a's park wrote it, marked ending: ${JSON.stringify(await one.server.settings.get(key))}`);
+  // A's timer at the keep's time (computer-for-claim.ts park): its end finds the row it wrote, so marked, and deletes the
+  // desktop.
   const ended = await endKept(one.server.settings, RUN, atPark, async () => {
     await one.hosts.a.provider.release({ id: atPark.id, name: atPark.name }, "delete");
   });
