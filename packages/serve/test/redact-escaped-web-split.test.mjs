@@ -123,6 +123,16 @@ test("a held hex identifier split where a call's read stops, its rest past dots 
   assert.ok(shown.startsWith("y y ") && shown.includes(HEAD), shown.slice(-60));
 });
 
+test("a held value split where a call's read stops, its rest past character references to a space, shows none of it: the read past the stop counts a reference as the character it stands for", () => {
+  // The views decode "&#32;" and "&#x20;" to a space, which they drop. Counted as their five or six raw characters, 300
+  // of them were more than the read past the stop reads, and the rest was never read.
+  for (const pad of ["&#32;".repeat(300), "&#x20;".repeat(300)]) {
+    const text = `${"y ".repeat(59_940)}${HEAD}\n${pad}${REST}${"z".repeat(9000)} end`;
+    const shown = redactedCall(text, [KEY], CALL_RESULT_CHARS).slice(0, CALL_RESULT_CHARS);
+    assert.ok(!shown.includes(HEAD.slice(0, 8)), `${pad.slice(0, 6)}: ${shown.slice(-60)}`);
+  }
+});
+
 test("a held value split across two strings where a call's read stops, empty strings between, shows none of it: the read past the stop counts quotes and JSON's punctuation as nothing", () => {
   // The join view reads a JSON text's strings joined and drops its quotes and punctuation, so ["<H>", "", "", ..., "<R>"]
   // reads the value whole. The read stops right after the head's string; counted as one each, 900 characters of empty

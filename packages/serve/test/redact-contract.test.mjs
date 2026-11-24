@@ -674,6 +674,28 @@ const CASES = [
       { name: "combining mark: a held value with an accent in it, as it is, is cut in place (control)", text: `see ${accented} ok`, values: [accented], hides: [P24[0], P24[1]], exact: all("see [redacted] ok") },
     ];
   })(),
+  // HTML's numeric character references (P3): a held value written as "&#NNN;" or "&#xHH;", every character or some, or
+  // split by one that stands for a space, read as itself in no view. The views decode them, so each withholds the text.
+  // A reference that stands for no character (zero, a surrogate, past U+10FFFF) is text, and a held value cut in place
+  // next to a reference stays cut in place (controls).
+  ...(() => {
+    const [H, R] = P24;
+    const KEY = P24.join("");
+    const dec = (text) => [...text].map((char) => `&#${char.codePointAt(0)};`).join("");
+    const hex = (text, upper = false) => [...text].map((char) => `&#${upper ? "X" : "x"}${char.codePointAt(0).toString(16)[upper ? "toUpperCase" : "toLowerCase"]()};`).join("");
+    const all = (shown) => Object.fromEntries(Object.keys(ENTRIES).map((name) => [name, shown]));
+    const none = "a &#0; b &#xD800; c &#1114112; d &#x110000; e &#; f &#x; g &#65 h";
+    return [
+      ...[
+        ["written as decimal references", `x ${dec(KEY)} y`],
+        ["written as hex references, in lower and upper case", `x ${hex(H)}${hex(R, true)} y`],
+        ["split by a reference to a space", `x ${H}&#32;${R} y`],
+        ["one character of it a reference", `x ${H}${hex(R.slice(0, 1))}${R.slice(1)} y`],
+      ].map(([what, text]) => ({ name: `character reference: a held value ${what} withholds the text`, text, values: [KEY], hides: [H.slice(0, 8), R.slice(4, 12)], exact: all("[redacted]") })),
+      { name: "character reference: references that stand for no character are text (control)", text: none, values: [KEY], hides: [], exact: all(none) },
+      { name: "character reference: a held value next to a reference is cut in place (control)", text: `see ${KEY}&#233;&#x2014; ok`, values: [KEY], hides: [H], exact: all("see [redacted]&#233;&#x2014; ok") },
+    ];
+  })(),
   // Adversarial texts of the cut read's cap: each is read once, so each comes back as its shape says.
   { name: "adversarial: eyJ x n, no dot", text: fill("eyJ"), values: [CUT_KEY], hides: [], exact: { runFile: fill("eyJ") } },
   { name: "adversarial: eyJ- x n, no dot", text: fill("eyJ-"), values: [CUT_KEY], hides: [], exact: { runFile: fill("eyJ-") } },
