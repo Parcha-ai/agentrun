@@ -1,7 +1,7 @@
 // The API-only profile's MCP origins (AGENTRUN_API_ONLY_MCP_ORIGINS, env-switch.ts) held to past the save. The server
 // writes the list it started with into the store (`mcp.api_only_origins`), and removes it when it starts without the
 // profile, so every reader on that store holds a per_run server the token saved to the list as it is now. The readers
-// are the server's pin at an agent's save, a runner's first pin and a run's claim. Drop an origin and restart, and a
+// are the server's pin at an agent's save, a runner's first pin, a run's claim and each of its calls. Drop an origin and restart, and a
 // server the token saved there sends nothing more: no listing, no run's mcp_auth. A server saved any other way (by the
 // owner before the profile was on) is the owner's, and the list does not govern it.
 import { mcpSourceKey, savedByToken } from "./mcp-sources.js";
