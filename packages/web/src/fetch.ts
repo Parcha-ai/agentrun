@@ -98,6 +98,7 @@ async function readOnce(url: unknown, { parallel, firecrawl, order, guard, check
       // Why Firecrawl gave no page goes to the log, never to the model (the page is the direct fetch's); never the URL.
       if (firecrawlSaid !== undefined) log?.("web_fetch_firecrawl_failed", { said: firecrawlSaid.slice(0, 300), direct: direct.ok ? "read" : "failed" });
       // A second scrub behind readDirect's own, kept on purpose: it covers a url readDirect did not clear and has not cut.
+      // No test reaches it: readDirect clears every url it names, the URL asked and the one its fetch ended at alike.
       return { ...direct, url: withoutCredentials(direct.url), via: "direct", ...(why ? { parallel: why } : {}) };
     }
   }
