@@ -788,9 +788,12 @@ function inFiles(value: unknown, texts: readonly FinalFile[]): unknown {
 
 /** Each call's arguments (their JSON, none for a call with none) in at most `room` characters in all: undefined when they
  *  fit whole; else each past a length L keeps its first two thirds and last third of L with its middle cut and marked
- *  (middle), L the longest that fits, so the longest are cut first. */
+ *  (middle), L the longest that fits, so the longest are cut first. A list no longer than L and a marker (40 characters)
+ *  stays whole, so a cut never takes a short list's text for a marker as long; when even L = 0 passes the room, the
+ *  short lists stay whole, the long ones show their marker alone, and fitCalls drops calls as it does. */
 export function fitArgs(args: readonly (string | undefined)[], room: number): (string | undefined)[] | undefined {
-  const sizeOf = (keep: number) => args.reduce((sum, text) => sum + (text === undefined ? 0 : text.length > keep ? keep + 40 : text.length), 0);
+  const cuts = (text: string, keep: number) => text.length > keep + 40;
+  const sizeOf = (keep: number) => args.reduce((sum, text) => sum + (text === undefined ? 0 : cuts(text, keep) ? keep + 40 : text.length), 0);
   if (sizeOf(Number.MAX_SAFE_INTEGER) <= room) return undefined;
   let [low, top] = [0, Math.max(0, ...args.map((text) => text?.length ?? 0))];
   while (low < top) {
@@ -798,7 +801,7 @@ export function fitArgs(args: readonly (string | undefined)[], room: number): (s
     if (sizeOf(mid) <= room) low = mid;
     else top = mid - 1;
   }
-  return args.map((text) => (text === undefined ? text : middle(text, low)));
+  return args.map((text) => (text !== undefined && cuts(text, low) ? middle(text, low) : text));
 }
 
 /** A grader's calls, one line each (`head`, then `: <result>`), in at most `room` characters: whole when they fit; else
