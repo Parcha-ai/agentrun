@@ -11,7 +11,7 @@
 // it already has (`{ id, is_composio_managed, status? }`), each read alone by GET /auth_configs/{id} with that toolkit. `active`: toolkit slugs the user already has an ACTIVE connected account for, under the auth config the
 // call names. `accounts`: by toolkit slug, the user's accounts as `{ status, auth_config, id?, created_at?, shown?, user? }` (an ACTIVE one under another
 // config, say; `shown`, more fields its listing answers: alias, word_id, state; `user`, the Composio user it is another's of, else the one
-// asked for); as the real one, `auth_config_ids` narrows the list to those under it, and `user_ids` to that user's, unless `ignoreUserIds`
+// asked for; null, answered with no user_id, as Composio's docs say it will stop answering one); as the real one, `auth_config_ids` narrows the list to those under it, and `user_ids` to that user's, unless `ignoreUserIds`
 // (a Composio that answers every user's accounts under the config).
 // `accounts` is read at each call, so a test changes it between two (an account connected meanwhile). `noTools`: its MCP endpoint serves no tool at all. `listStatus`: its MCP endpoint answers every request after the first handshake with that HTTP status (an outage, not an answer "no"). `fail`: `{ path, status, method? }`
 // makes the call whose path ends in `path` (or for which `path`, a function, holds) answer that status; a list of them
@@ -215,7 +215,7 @@ export async function startFakeComposio({ apiKey = "fake-test-key", toolkits, au
       const under = url.searchParams.get("auth_config_ids");
       const listed = [...(accounts[kit] ?? []), active.includes(kit) ? { status: "ACTIVE", auth_config: under ?? "ac_unnamed" } : { status: "INITIATED", auth_config: under ?? "ac_unnamed" }];
       const user = url.searchParams.get("user_ids") ?? "agentrun";
-      return reply(200, { items: listed.filter((a) => (!under || a.auth_config === under) && (ignoreUserIds || (a.user ?? user) === user)).map((a) => ({ id: a.id ?? `ca_fake_${kit}${a.status === "ACTIVE" ? "" : `_${a.status.toLowerCase()}`}`, user_id: a.user ?? user, status: a.status, toolkit: { slug: kit }, auth_config: { id: a.auth_config }, created_at: a.created_at ?? ACCOUNT_MADE, ...(a.shown ?? {}) })) });
+      return reply(200, { items: listed.filter((a) => (!under || a.auth_config === under) && (ignoreUserIds || (a.user ?? user) === user)).map((a) => ({ id: a.id ?? `ca_fake_${kit}${a.status === "ACTIVE" ? "" : `_${a.status.toLowerCase()}`}`, ...(a.user === null ? {} : { user_id: a.user ?? user }), status: a.status, toolkit: { slug: kit }, auth_config: { id: a.auth_config }, created_at: a.created_at ?? ACCOUNT_MADE, ...(a.shown ?? {}) })) });
     }
     if (req.method === "POST" && url.pathname === "/api/v3/connected_accounts/link") {
       const started = `ca_link_${++links}`;

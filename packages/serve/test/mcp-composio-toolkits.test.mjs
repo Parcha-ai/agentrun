@@ -157,3 +157,15 @@ for (const [what, user] of [["empty", ""], ["the per-run sentinel", "per_run"]])
     assert.deepEqual(res.body.server.composio_account, { state: "unknown", checked_at: res.body.server.composio_account?.checked_at });
   });
 }
+
+test("an account Composio answers with no user_id, under the user asked for, still connects the server", async (t) => {
+  // Composio's docs mark the listing's user_id deprecated, to be dropped: only one that names another user is refused.
+  const accounts = {};
+  const s = await setup(t, { accounts });
+  assert.equal((await s.api("PUT", "/settings/mcp-servers/gmail/composio", { api_key: s.composio.apiKey, toolkit: "gmail", tools: ["add"] })).status, 200);
+  const config = s.composio.to("/api/v3.1/mcp/servers/custom")[0].body.auth_config_ids[0];
+  accounts.gmail = [{ id: "ca_connected02", user: null, status: "ACTIVE", auth_config: config, shown: { alias: "person@example.com" } }];
+  const res = await s.api("POST", "/settings/mcp-servers/gmail/refresh");
+  assert.equal(res.status, 200, JSON.stringify(res.body));
+  assert.deepEqual({ state: res.body.server.composio_account?.state, labels: res.body.server.composio_account?.labels }, { state: "connected", labels: ["person@example.com"] });
+});
