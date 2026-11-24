@@ -1,9 +1,8 @@
-// web_search: the web searched by the provider the run's plane resolves it to (tool-plane.ts). On pi, natively, one
-// request to the run's own model provider with its hosted search (hosted-search.ts); on claude-agent, where it is picked
-// (`native`), Claude's own search, and on codex Codex's own, so this tool is not offered there; with no native search
-// (claude-agent on auto, codex behind a gateway, on OpenRouter or under a spend cap, a gateway, another model provider),
-// Parallel where the server holds its key, else Firecrawl's keyless MCP endpoint (firecrawl-keyless.ts) with Exa's
-// keyless one behind it (exa-keyless.ts); a pick of exa-keyless names Exa alone. Where Parallel resolves (so, or
+// web_search: the web searched by the provider the run's plane resolves it to (tool-plane.ts). On `auto`, every
+// harness's: Parallel where the server holds its key, else Firecrawl's keyless MCP endpoint (firecrawl-keyless.ts) with
+// Exa's keyless one behind it (exa-keyless.ts). Only where `native` is picked: on pi one request to the run's own model
+// provider with its hosted search (hosted-search.ts), and on claude-agent and codex the harness's own search (Claude's,
+// Codex's). A pick of exa-keyless names Exa alone. Where Parallel resolves (so, or
 // picked), Parallel's Search API (POST https://api.parallel.ai/v1/search,
 // https://docs.parallel.ai/api-reference/search/search) in its fast mode, the one Parallel recommends for an agent's
 // tool calls (about 700 ms, $0.001 a search). Every provider answers one shape, `{provider, query, results: [{url,
