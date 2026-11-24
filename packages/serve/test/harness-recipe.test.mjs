@@ -442,6 +442,21 @@ test("harness-check fails an agent that asks permission for our tool on a recipe
   assert.ok(run.report.gate.asked.some((g) => g.tool === "acp_other" && g.answer === "deny"), JSON.stringify(run.report.gate.asked));
 });
 
+test("harness-check counts a refused request for our tool that never runs by check_echo's arguments: no allowFile, Goose-style, so mcp_tool fails with the allowFile hint", { skip: linux, timeout: 120_000 }, async (t) => {
+  // Before: only a request under the id a check_echo call then ran with was ours, so a refused one that never ran
+  // counted as the agent's own (ourAsks 0) and the row lost the hint.
+  const { data, file, env } = await installed(t, recipeOf(undefined, { allowFile: undefined }));
+  const run = await check(t, file, data, env);
+  const row = run.report?.stage3?.mcp_tool;
+  assert.equal(run.status, 1, `${run.stdout}\n${run.stderr}\n${JSON.stringify(run.report?.gate)}`);
+  assert.equal(row.ok, false);
+  assert.equal(row.calls, 0, "the check echo call never ran");
+  assert.equal(row.permissionAsks, 1);
+  assert.equal(row.ourAsks, 1, JSON.stringify(row));
+  assert.match(row.problem, /asked permission for our tool[^]*allowFile/);
+  assert.ok(run.report.gate.asked.some((g) => g.tool === "acp_other" && g.answer === "deny"), JSON.stringify(run.report.gate.asked));
+});
+
 test("harness-check counts an agent's permission request for a call of its own apart from ours: refused at the host's gate, it fails no stage when our tool then runs unasked", { skip: linux, timeout: 120_000 }, async (t) => {
   // Before: every request counted as one for our tool, so an agent asking about its own `read` failed mcp_tool.
   const { data, file, env } = await installed(t, recipeOf(undefined, { env: { MODEL_AGENT_MODE: "own-ask" } }));
