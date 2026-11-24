@@ -601,6 +601,10 @@ test("per-run process (run-child-host heldFor): the runner answers a held run it
   const unheldEnd = await seam({ ...launch, learning: { seed: "0".repeat(40), section: "" } }).endOfRun({ ...ended, ask: async () => Promise.reject(new Error("the control's step asked its model")) })
     .then(() => "answered", (error) => error.message);
   assert.doesNotMatch(unheldEnd, HELD_SPEND_WORDS, "the same learning run not held is not refused its end-of-run step: only a held run its model kept from running is");
+  // And held, its hold carrying no refusal (its model fine): the refusal is the hold's refusal's, never the hold's.
+  const heldFineEnd = await seam({ ...launch, hold: { minutes: 5 }, learning: { seed: "0".repeat(40), section: "" } }).endOfRun({ ...ended, ask: async () => Promise.reject(new Error("the control's step asked its model")) })
+    .then(() => "answered", (error) => error.message);
+  assert.doesNotMatch(heldFineEnd, HELD_SPEND_WORDS, "a held learning run whose hold carries no refusal is not refused its end-of-run step either: only one its model kept from running is");
 });
 
 /** A learning start, as a learning run's launch carries it (run-launch.ts learningStartOf). */
