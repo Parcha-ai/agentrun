@@ -539,8 +539,9 @@ export function readCases(dir: string, names?: readonly string[]): { pkg: Packag
 // ---- grading ---------------------------------------------------------------------------------------------------------
 
 /** A call a run made: from its timeline (`tool`, its gate name, a preview of its input, its `arguments` through the run's
- *  redaction, and the head of its `result`) or, for a faked MCP tool, from the fake's own log (`arguments` whole). */
-export type ToolCall = { tool: string; name?: string; preview?: string | null; status?: string | null; result?: string | null; arguments?: Json };
+ *  redaction, the head of its `result`, and `refused` when the run refused it before it ran) or, in RunRecord.fakeLog
+ *  alone, from a fake MCP server's own log (`arguments` whole). */
+export type ToolCall = { tool: string; name?: string; preview?: string | null; status?: string | null; result?: string | null; arguments?: Json; refused?: true };
 /** A file a run left in its work folder, as a grader is told of it: its name (its path under the run's cut, the listing's
  *  `name`; absent from a server that doesn't cut its listing's names, when the file is shown by no name, never its path),
  *  its size in bytes and, for a text file read whole, its text. */
@@ -551,8 +552,13 @@ export type RunRecord = {
   answer: string;
   /** Its tool calls as its timeline shows them, in order. */
   calls: ToolCall[];
-  /** The calls each fake MCP server received, with their arguments, in order. */
+  /** The calls each fake MCP server received, as its timeline shows them (the faked servers' calls of `calls` that ran,
+   *  each argument through the run's redaction), in order: what an llm grader and the report are shown. */
   mcpCalls: ToolCall[];
+  /** Each fake MCP server's own log of the calls that reached it, their arguments whole: read only to match a tool_used
+   *  grader's `args` on a faked tool, never shown to a grader nor put in the report (a value the run's cut holds, handed
+   *  to a fake tool, is whole here). */
+  fakeLog: ToolCall[];
   /** The paths of its files, from its work folder. */
   files: string[];
   /** Its work folder's files as it left them, for its llm graders (finalFilesOf): each text file with its whole `text`,
@@ -672,11 +678,11 @@ export function gradeDeterministic(grader: Exclude<Grader, { type: "llm" }>, run
       return { pass, reason: pass ? `the run's work folder holds ${grader.path}` : `the run's work folder has no ${grader.path}${run.files.length ? ` (it holds ${run.files.slice(0, 10).join(", ")}${run.files.length > 10 ? ", ..." : ""})` : " (it holds no file)"}` };
     }
     case "tool_used": {
-      // A faked MCP tool's calls are its fake's log (each call that reached it, whole); any other tool's, the timeline's,
-      // its arguments as the run's redaction shows them (callsOf).
+      // A faked MCP tool's calls are its fake's log (each call that reached it, whole: fakeLog, never shown); any other
+      // tool's, the timeline's, its arguments as the run's redaction shows them (callsOf).
       const calls = grader.tools.flatMap((tool) => {
         const server = mcpNameOf(tool)?.server;
-        const from = server !== undefined && faked.includes(server) ? run.mcpCalls : run.calls;
+        const from = server !== undefined && faked.includes(server) ? run.fakeLog : run.calls;
         return from.filter((call) => call.tool === tool && (!grader.args || carries(call.arguments, grader.args)));
       });
       const what = `${grader.tools.join(" or ")}${grader.args ? ` with ${JSON.stringify(grader.args)}` : ""}`;
@@ -731,8 +737,9 @@ export function graderInput(grader: Extract<Grader, { type: "llm" }>, input: str
     const named = texts.flatMap((file) => (file.name !== undefined && (head.includes(file.name) || result.includes(file.name)) ? [file.name] : [])).sort((a, b) => b.length - a.length)[0];
     return { head: named ? `${head} [the file ${named} is in <files>, whole unless marked cut]` : head, result, tool: call.name ?? call.tool };
   });
-  // Each call a fake MCP server received, its arguments whole in its log: they are the part a cut may take.
-  const mcpLines = run.mcpCalls.map((call, i) => ({ head: `${i + 1}. ${call.tool}`, result: JSON.stringify(call.arguments ?? {}) }));
+  // Each call a fake MCP server received, its arguments as the run's timeline shows them (RunRecord.mcpCalls, under the
+  // run's cut; never the fake's own log): they are the part a cut of this prompt may take.
+  const mcpLines = run.mcpCalls.map((call, i) => ({ head: `${i + 1}. ${call.tool}`, result: call.arguments !== undefined ? JSON.stringify(call.arguments) : (call.preview ?? "{}") }));
   const wrap = (text: string) => `<tool-calls untrusted>\n${text}\n</tool-calls>`;
   const wrapMcp = (text: string) => `<mcp-calls untrusted>\nThe calls the MCP servers received, with their arguments, in order:\n${text}\n</mcp-calls>`;
   // A run that searched or fetched: each link its answer cites, matched against its web calls' urls in code (link-check.ts).
@@ -1032,11 +1039,19 @@ async function waitRun(api: Api, runId: string, deadline: number, signal?: Abort
   }
 }
 
+/** The calls the faked MCP servers `faked` received, as the run's timeline shows them (`calls`, from callsOf: each argument
+ *  through the run's redaction): each call on a faked server's tool, less any the run refused before it ran (it never
+ *  reached the fake). What an llm grader's <mcp-calls> and the report's `mcp_calls` show, never the fake's own log. */
+export function mcpCallsOf(calls: readonly ToolCall[], faked: readonly string[]): ToolCall[] {
+  return calls.filter((call) => !call.refused && faked.includes(mcpNameOf(call.tool)?.server ?? ""));
+}
+
 /** A run's tool calls, each named as a grader names it: the gate's own rule (RunGate.enter), its settings key, but a
  *  shell tool held to bash's setting (bash_background, bash_output, ...) keeps its own name, so its grader sees it. A
  *  call on a saved server `toolkits` names ({<saved server>: <the package's toolkit>}, a need an owner's server filled
  *  under another name) is named on the package's toolkit, as the package's graders name it. Each with its arguments and
- *  its output as the rows of a calls=whole read carry them (tool_input, tool_result_text), else its previews. */
+ *  its output as the rows of a calls=whole read carry them (tool_input, tool_result_text), else its previews, and
+ *  `refused` when its result row says the run refused it before it ran (a deny, a pin, an approval never given). */
 export function callsOf(rows: readonly Json[], harness: string, toolkits: Readonly<Record<string, string>> = {}): ToolCall[] {
   const results = new Map(rows.filter((row) => row.kind === "tool_result" && row.tool_use_id).map((row) => [String(row.tool_use_id), row]));
   // The rows are a server's, read over its API: the names are the built-in harness's, the only facts known here.
@@ -1046,7 +1061,7 @@ export function callsOf(rows: readonly Json[], harness: string, toolkits: Readon
     const result = results.get(String(row.tool_use_id));
     const key = settingsKeyOf(harness, name, names);
     const output = typeof result?.tool_result_text === "string" ? result.tool_result_text : ((result?.tool_result_preview as string | undefined) ?? null);
-    return { tool: shellToolOf(name) ?? (key === undefined ? undefined : onServerName(key, toolkits)) ?? name, name, preview: (row.tool_input_preview as string | null) ?? null, ...(isObject(row.tool_input) ? { arguments: row.tool_input } : {}), status: (result?.tool_status as string | undefined) ?? null, result: output };
+    return { tool: shellToolOf(name) ?? (key === undefined ? undefined : onServerName(key, toolkits)) ?? name, name, preview: (row.tool_input_preview as string | null) ?? null, ...(isObject(row.tool_input) ? { arguments: row.tool_input } : {}), status: (result?.tool_status as string | undefined) ?? null, result: output, ...(result?.refused === true ? { refused: true as const } : {}) };
   });
 }
 
@@ -1684,10 +1699,12 @@ async function ranOnce(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[
   const result = isObject(view.result) ? view.result : {};
   const harness = isObject(agent.definition) && typeof agent.definition.harness === "string" ? agent.definition.harness : "pi";
   const listed = await filesOf(api, runId);
+  const calls = callsOf(ended.rows, harness, Object.fromEntries(Object.entries(used).map(([toolkit, server]) => [server, toolkit])));
   const record: RunRecord = {
     answer: typeof result.final_answer === "string" ? result.final_answer : "",
-    calls: callsOf(ended.rows, harness, Object.fromEntries(Object.entries(used).map(([toolkit, server]) => [server, toolkit]))),
-    mcpCalls: fakes.flatMap((fake) => fake.calls.map((call) => ({ ...call }))),
+    calls,
+    mcpCalls: mcpCallsOf(calls, Object.keys(one.mcp)),
+    fakeLog: fakes.flatMap((fake) => fake.calls.map((call) => ({ ...call }))),
     files: await (async () => {
       const paths = listed.map((file) => file.path);
       const named = one.graders.flatMap((grader) => (grader.type === "file_exists" ? [grader.path] : []));
