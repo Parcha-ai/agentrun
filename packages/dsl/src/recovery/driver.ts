@@ -282,7 +282,7 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
   /** A state the run references by digest, read back and checked against it. */
   const stateBy = async (sha256: string): Promise<State> => {
     const state = await journal.stateOf!(sha256);
-    if (!state || typeof state !== "object" || Array.isArray(state) || hash(state) !== sha256) throw invalid(`The state ${sha256} the run references is missing or changed`);
+    if (!isRecord(state) || hash(state) !== sha256) throw invalid(`The state ${sha256} the run references is missing or changed`);
     writtenStates.add(sha256);
     digests.set(state, sha256);
     return state as State;

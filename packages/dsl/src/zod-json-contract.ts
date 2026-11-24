@@ -1,3 +1,5 @@
+import { isRecord } from "./record.js";
+
 /** Zod documents _zod.def as the traversal interface for schema tools:
  * https://zod.dev/packages/core. Keep this dependency-free and fail closed on new
  * constructs: the JSON interpreter cannot execute a schema library's parser hooks. */
@@ -20,9 +22,6 @@ const SCHEMA_KEYWORDS = new Set([
   "uniqueItems", "minProperties", "maxProperties", "contentEncoding", "contentMediaType", "contentSchema",
 ]);
 type RecordValue = Record<string, unknown>;
-function record(value: unknown): value is RecordValue {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
 
 export function assertZodJsonContract(schema: unknown, inputRoot = false): void {
   const seen = new Set<object>();
@@ -30,7 +29,7 @@ export function assertZodJsonContract(schema: unknown, inputRoot = false): void 
     throw new Error(`${path}: ${reason}; use JSON-representable Zod schemas and put parsing or custom checks in an explicit workflow step`);
   };
   const check = (value: unknown, path: string): void => {
-    if (!record(value) || !record(value._zod) || !record(value._zod.def)) fail(path, "unsupported Zod check representation");
+    if (!isRecord(value) || !isRecord(value._zod) || !isRecord(value._zod.def)) fail(path, "unsupported Zod check representation");
     const def = (value as { _zod: { def: RecordValue } })._zod.def;
     if (!CHECKS.has(String(def.check))) fail(path, `Zod check ${String(def.check)} is not supported`);
     if (def.check === "string_format" && !(def.pattern instanceof RegExp) && def.format !== "url") {
@@ -40,7 +39,7 @@ export function assertZodJsonContract(schema: unknown, inputRoot = false): void 
     if (def.normalize || def.hostname || def.protocol) fail(path, "URL normalization and custom URL constraints do not survive JSON Schema conversion");
   };
   const visit = (value: unknown, path: string): void => {
-    if (!record(value) || !record(value._zod) || !record(value._zod.def)) fail(path, "unsupported Zod schema representation");
+    if (!isRecord(value) || !isRecord(value._zod) || !isRecord(value._zod.def)) fail(path, "unsupported Zod schema representation");
     const node = value as RecordValue & { _zod: { def: RecordValue }; meta?: () => RecordValue | undefined };
     if (seen.has(node)) return;
     seen.add(node);
@@ -57,7 +56,7 @@ export function assertZodJsonContract(schema: unknown, inputRoot = false): void 
       (def.checks as unknown[]).forEach((entry, index) => check(entry, `${path}.checks[${index}]`));
     }
     if (def.type === "object") {
-      if (!record(def.shape)) fail(path, "unsupported Zod object shape");
+      if (!isRecord(def.shape)) fail(path, "unsupported Zod object shape");
       for (const [key, child] of Object.entries(def.shape as RecordValue)) visit(child, `${path}.${key}`);
       if (def.catchall !== undefined) visit(def.catchall, `${path}.*`);
     }

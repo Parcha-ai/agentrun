@@ -65,10 +65,10 @@ export function compileQuestions(schema: Record<string, unknown>, definitions: R
       if (spec.enum.length > SYSTEM_ONE_LIMITS.maxChoiceOptions) { errors.push(`property "${id}": a choice takes at most ${SYSTEM_ONE_LIMITS.maxChoiceOptions} options (${spec.enum.length} given)`); continue; }
       const map: Record<string, string | null> = Object.create(null);
       for (const option of spec.enum as string[]) {
-        const text = criteria && typeof criteria === "object" && !Array.isArray(criteria) ? criteria[option] : undefined;
+        const text = isRecord(criteria) ? criteria[option] : undefined;
         map[option] = typeof text === "string" && text.trim() ? text.trim() : null;
       }
-      if (criteria && typeof criteria === "object" && !Array.isArray(criteria)) {
+      if (isRecord(criteria)) {
         const unknown = Object.keys(criteria).filter((k) => !(spec.enum as string[]).includes(k));
         if (unknown.length) errors.push(`property "${id}": criteria name options the enum does not have: ${unknown.join(", ")}`);
       }
@@ -76,7 +76,7 @@ export function compileQuestions(schema: Record<string, unknown>, definitions: R
       continue;
     }
     if (types.length === 1 && types[0] === "boolean") {
-      const c = criteria && typeof criteria === "object" && !Array.isArray(criteria) ? criteria : undefined;
+      const c = isRecord(criteria) ? criteria : undefined;
       questions[id] = { type: "noul", instructions, ...(c ? { criteria: { ...(typeof c.true === "string" ? { true: c.true } : {}), ...(typeof c.false === "string" ? { false: c.false } : {}) } } : {}) };
       continue;
     }
@@ -208,7 +208,7 @@ function scoreContradictsDistribution(score: number, probabilities: Record<strin
 }
 
 export function validateAnswers(questions: Record<string, SystemOneQuestion>, answers: unknown): asserts answers is Record<string, SystemOneAnswer> {
-  if (!answers || typeof answers !== "object" || Array.isArray(answers)) throw new SystemOneError("System One response carries no answers", null, undefined, "answers_shape");
+  if (!isRecord(answers)) throw new SystemOneError("System One response carries no answers", null, undefined, "answers_shape");
   const answerKeys = Object.keys(answers);
   if (answerKeys.length !== Object.keys(questions).length || answerKeys.some(id => !Object.hasOwn(questions, id))) throw new SystemOneError("System One answer keys do not match questions", null, undefined, "answer_keys");
   for (const [id, q] of Object.entries(questions)) {
@@ -235,7 +235,7 @@ export function validateAnswers(questions: Record<string, SystemOneQuestion>, an
     if (Array.isArray(a.probabilities) || probabilityKeys.length !== expectedKeys.length || expectedKeys.some(key => !Object.hasOwn(a.probabilities, key))) throw new SystemOneError("System One answer: probabilities must contain exactly the declared options", null, undefined, "probability_keys");
     if (!roundedFromUnitMass(Object.values(a.probabilities as Record<string, number>))) throw new SystemOneError("System One answer: probabilities must sum to 1", null, undefined, "probability_mass");
     if (q.type === "score") {
-      if (!a.legend || typeof a.legend !== "object" || Array.isArray(a.legend) || Object.keys(a.legend).length !== expectedKeys.length || q.criteria.some((text, index) => a.legend[String(index)] !== text)) throw new SystemOneError("System One answer: legend must match the score criteria", null, undefined, "score_legend");
+      if (!isRecord(a.legend) || Object.keys(a.legend).length !== expectedKeys.length || q.criteria.some((text, index) => a.legend[String(index)] !== text)) throw new SystemOneError("System One answer: legend must match the score criteria", null, undefined, "score_legend");
       if (scoreContradictsDistribution(a.score, a.probabilities)) throw new SystemOneError("System One answer: score must match its weighted distribution", null, undefined, "score_consistency");
     }
     if (q.type === "choice" && !(typeof a.choice === "string" && Object.prototype.hasOwnProperty.call(q.criteria, a.choice))) throw new SystemOneError("System One answer: choice is not an option", null, undefined, "choice_option");
