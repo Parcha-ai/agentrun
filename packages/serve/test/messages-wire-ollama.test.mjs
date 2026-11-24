@@ -101,7 +101,14 @@ test("a harness module on Messages that does not say it forwards the route (no f
   const { model, why } = await modelOn(MESSAGES, env, undefined, MESSAGES_BARE);
   assert.equal(model, undefined, JSON.stringify(model));
   assert.match(why, /^No model yet for messages-bare: add an OpenRouter or Anthropic key/, why);
-  assert.throws(() => providerFor(MESSAGES, env, ollamaRef(TOOLS), MESSAGES_BARE), (error) => error instanceof HarnessUnavailable && /runs Anthropic models; the run's model is ollama\//.test(error.message), "named, it gets no route it would not use");
+  // Named, it gets no route it would not use, and words that name the fix. Before: "runs Anthropic models", which sent
+  // its owner after a key.
+  assert.throws(() => providerFor(MESSAGES, env, ollamaRef(TOOLS), MESSAGES_BARE), (error) => {
+    assert.ok(error instanceof HarnessUnavailable, String(error));
+    assert.equal(error.keys, undefined, "no key fixes it");
+    assert.match(error.message, /ModuleLaunch\.fetch.*forwardsRoute/s);
+    return true;
+  });
 });
 
 test("a harness module on Messages is handed the route's fetch: its requests reach the fake's /api/chat with num_ctx, its tools native on a tools model and as text on one without", async (t) => {
