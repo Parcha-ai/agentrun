@@ -233,9 +233,10 @@ function inPieces(text: string, secrets: readonly string[], enough = Number.POSI
 }
 
 /** text from `from` on, as far as `count` characters the matcher sees (all of it, if it holds fewer), each run of
- *  whitespace in it one space. The matcher reads "+" as a space and decodes percent-encoded bytes, so a "+" and an
- *  encoded byte that decodes to whitespace count no more than whitespace does: padding of either never hides the rest
- *  of a value split before it. Undefined, so the caller withholds the text, when that takes more than a piece of text
+ *  whitespace in it one space. The matcher reads "+" as a space and decodes percent-encoded bytes and JSON's \uXXXX
+ *  escapes, so a "+", an encoded byte and an escape that decodes to whitespace count no more than whitespace does, and
+ *  any other escape counts as the one character it decodes to: padding of any of them never hides the rest of a value
+ *  split before it. Undefined, so the caller withholds the text, when that takes more than a piece of text
  *  (a run of whitespace counted as one): no redaction pass reads more than a piece. */
 function peek(text: string, from: number, count: number): string | undefined {
   const parts: string[] = [];
@@ -250,7 +251,10 @@ function peek(text: string, from: number, count: number): string | undefined {
     } else {
       while (end - at <= ANSWER_PIECE && text[end] === "%" && HEX_PAIR.test(text.slice(end + 1, end + 3))) end += 3;
       if (end > at) found += Buffer.from(text.slice(at, end).replaceAll("%", ""), "hex").toString("utf8").replace(/\s+/g, "").length;
-      else {
+      else if (text[at] === "\\" && text[at + 1] === "u" && HEX_QUAD.test(text.slice(at + 2, at + 6))) {
+        end = at + 6;
+        if (!/\s/.test(String.fromCharCode(Number.parseInt(text.slice(at + 2, end), 16)))) found++;
+      } else {
         end = at + 1;
         if (text[at] !== "+") found++;
       }
@@ -264,6 +268,7 @@ function peek(text: string, from: number, count: number): string | undefined {
 }
 const SPACES = /\s+/y;
 const HEX_PAIR = /^[0-9A-Fa-f]{2}$/;
+const HEX_QUAD = /^[0-9A-Fa-f]{4}$/;
 
 /** Where the piece of `text` read from `from` ends: at its last whitespace before ANSWER_PIECE characters; with none, at
  *  runCut's place, else at the next whitespace (a run read as one, or unread past ANSWER_PIECE). */
