@@ -49,6 +49,8 @@ export function ModelKeyCard({ v2, needs, model, onSaved, writable, whyNot = "si
   const own = picked?.fields.filter((f) => picked.secrets.find((s) => secretLabel(s.name) === f.name)?.source !== "env") ?? [];
   // The ChatGPT sign-in, offered where it gives the server its model: not for a default the server names (AGENT_MODEL),
   // which only its provider's key runs. Offered, the keys wait behind "Add a key".
+  // Behind a gateway that is any default at all (its ids carry the route prefix), so where the sign-in shows here the
+  // server has no default, and what the plan runs depends on the source alone.
   const planOffered = !!planView && needs !== "model" && !provider;
   const keysShown = needs !== "model" && (!planOffered || keysOpen);
   const moved = (v: ChatGPTView) => { setPlanView(v); onPlan?.(v); };
@@ -84,7 +86,7 @@ export function ModelKeyCard({ v2, needs, model, onSaved, writable, whyNot = "si
                 <p className="text-body text-muted-foreground">This server has no model yet, so an agent that names no model can't run.</p>
                 <ChatGPTSignIn v2={v2} view={planView} onView={moved} writable={writable} whyNot={whyNot}
                   beside={<Button type="button" size="sm" aria-expanded={keysOpen} onClick={() => setKeysOpen((open) => !open)}>Add a key</Button>} />
-                <p className="text-body text-muted-foreground">{planRuns(source, model)}</p>
+                <p className="text-body text-muted-foreground">{planRuns(source)}</p>
                 {keysOpen && <p className="text-body text-muted-foreground">{KEY_ADVICE}</p>}
               </>
             : <><p className="text-body text-muted-foreground">No model provider's key is set on this server, so an agent that names no model can't run. Save one: such an agent then runs on that provider's everyday model.</p>

@@ -165,7 +165,7 @@ const STATE: Record<ChatGPTView["state"], { tone: ChipTone; words: string }> = {
  *  usage; Sign out asks first and then says what is left to do in ChatGPT; expired, it says so and offers the sign-in
  *  again. Nothing on a server without the sign-in (its GET is not one). `onChange`: after a sign-in or a sign-out, which
  *  change the server's models. */
-export function ChatGPTRow({ v2, writable, whyNot, onChange, source, defaultModel }: { v2: Client; writable: boolean; whyNot?: SecretsWhyNot; onChange?: () => void; source?: Capabilities["models"]["source"]; defaultModel?: string | null }) {
+export function ChatGPTRow({ v2, writable, whyNot, onChange, source, defaultModel, routePrefix }: { v2: Client; writable: boolean; whyNot?: SecretsWhyNot; onChange?: () => void; source?: Capabilities["models"]["source"]; defaultModel?: string | null; routePrefix?: string | null }) {
   const [view, setView] = useState<ChatGPTView | null>(null);
   const [confirming, setConfirming] = useState(false);
   // `settings`: the note says to act in ChatGPT's settings, which it links beside its words.
@@ -200,7 +200,7 @@ export function ChatGPTRow({ v2, writable, whyNot, onChange, source, defaultMode
         <span className="font-mono text-prose font-semibold">ChatGPT plan</span>
         <Chip tone={state.tone}>{state.words}</Chip>
       </p>
-      <p className="mt-1.5 font-mono text-small text-muted-foreground">{planRuns(source, defaultModel)}</p>
+      <p className="mt-1.5 font-mono text-small text-muted-foreground">{planRuns(source, defaultModel, routePrefix)}</p>
       <div className="mt-3 space-y-3">
         {view.state === "expired" && <p className="text-body text-warning-text">{EXPIRED}</p>}
         {view.state === "signed_in" && view.models?.length ? <p className="font-mono text-small text-muted-foreground">Models: {view.models.join(" · ")}</p> : null}
