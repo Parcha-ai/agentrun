@@ -734,8 +734,8 @@ export function graderInput(grader: Extract<Grader, { type: "llm" }>, input: str
   const files = run.finalFiles ?? [];
   const texts = files.filter((file) => file.text !== undefined);
   // Each call with its arguments (else its input's preview), its status and its output's head; a call that names a file
-  // shown whole says where it is. A string argument a shown file holds whole (a write's content) is cut at FILE_ARG_CHARS
-  // there, so the grader's room never holds those bytes twice.
+  // shown whole says where it is. A string argument the text of a file in <files> holds (a write's content) is cut at
+  // FILE_ARG_CHARS there, so the grader's room never holds those bytes twice.
   const calls = run.calls.map((call, i) => {
     const args = call.arguments ? JSON.stringify(inFiles(call.arguments, texts)) : undefined;
     const tail = call.status ? ` -> ${call.status}` : "";
@@ -766,10 +766,12 @@ export function graderInput(grader: Extract<Grader, { type: "llm" }>, input: str
   const left = room - (shownFiles === undefined ? 0 : shownFiles.length);
   const mcpRoom = callsWhole + mcpWhole <= left ? mcpWhole : Math.floor((left * mcpWhole) / Math.max(1, callsWhole + mcpWhole));
   const after = mcpLines.length ? [wrapMcp(fitCalls(mcpLines, mcpRoom, "argument list"))] : [];
-  // The calls' arguments take at most half their room (fitArgs), so a call with long arguments never leaves the others
-  // without their results.
+  // The calls' arguments take what the rest of the calls' lines (their heads' other parts and their results) leave of
+  // the calls' room, and when that is less than half of it, half (fitArgs): whole when the calls fit, and a call with
+  // long arguments never leaves the others without their results.
   const callsRoom = left - mcpRoom;
-  const kept = fitArgs(calls.map((call) => call.args), Math.floor(callsRoom / 2));
+  const rest = callsWhole - calls.reduce((sum, call) => sum + (call.args?.length ?? 0), 0);
+  const kept = fitArgs(calls.map((call) => call.args), Math.max(Math.floor(callsRoom / 2), callsRoom - rest));
   const fitted = kept === undefined ? lines : calls.map((call, i) => ({ head: call.head(kept[i]), result: call.result, tool: call.tool }));
   return [...before, ...(shownFiles === undefined ? [] : [wrapFiles(shownFiles)]), wrap(fitted.length ? fitCalls(fitted, callsRoom) : "(none)"), ...linked, ...after].join("\n\n");
 }
@@ -777,8 +779,8 @@ export function graderInput(grader: Extract<Grader, { type: "llm" }>, input: str
 /** How much of a write's content a grader's call line shows when a file in <files> holds it whole. */
 const FILE_ARG_CHARS = 2000;
 
-/** A call's arguments with each string past FILE_ARG_CHARS that a shown file's text holds whole cut there, ending "...":
- *  <files> shows it, and the call's pointer says so. */
+/** A call's arguments with each string past FILE_ARG_CHARS that the text of a file in <files> holds cut there, ending
+ *  "...": <files> shows that file, whole unless marked cut, as the call's pointer says. */
 function inFiles(value: unknown, texts: readonly FinalFile[]): unknown {
   if (typeof value === "string") return value.length > FILE_ARG_CHARS && texts.some((file) => file.text?.includes(value)) ? `${value.slice(0, FILE_ARG_CHARS - 3)}...` : value;
   if (Array.isArray(value)) return value.map((item) => inFiles(item, texts));
@@ -795,13 +797,19 @@ export function fitArgs(args: readonly (string | undefined)[], room: number): (s
   const cuts = (text: string, keep: number) => text.length > keep + 40;
   const sizeOf = (keep: number) => args.reduce((sum, text) => sum + (text === undefined ? 0 : cuts(text, keep) ? keep + 40 : text.length), 0);
   if (sizeOf(Number.MAX_SAFE_INTEGER) <= room) return undefined;
-  let [low, top] = [0, Math.max(0, ...args.map((text) => text?.length ?? 0))];
+  const keep = longestKeep(sizeOf, Math.max(0, ...args.map((text) => text?.length ?? 0)), room);
+  return args.map((text) => (text !== undefined && cuts(text, keep) ? middle(text, keep) : text));
+}
+
+/** The longest keep in [0, high] whose `size` is within `room`, else 0: `size` never falls as keep grows. */
+function longestKeep(size: (keep: number) => number, high: number, room: number): number {
+  let [low, top] = [0, high];
   while (low < top) {
     const mid = Math.ceil((low + top) / 2);
-    if (sizeOf(mid) <= room) low = mid;
+    if (size(mid) <= room) low = mid;
     else top = mid - 1;
   }
-  return args.map((text) => (text !== undefined && cuts(text, low) ? middle(text, low) : text));
+  return low;
 }
 
 /** A grader's calls, one line each (`head`, then `: <result>`), in at most `room` characters: whole when they fit; else
@@ -822,15 +830,7 @@ export function fitCalls(lines: readonly { head: string; result: string; tool?: 
   // on every result `keep` cuts.
   const cutTo = (text: string, keep: number) => (text.length > keep ? keep + 42 : text ? text.length + 2 : 0);
   const high = Math.max(...lines.map((one) => one.result.length));
-  const longest = (size: (keep: number) => number) => {
-    let [low, top] = [0, high];
-    while (low < top) {
-      const mid = Math.ceil((low + top) / 2);
-      if (size(mid) <= room) low = mid;
-      else top = mid - 1;
-    }
-    return low;
-  };
+  const longest = (size: (keep: number) => number) => longestKeep(size, high, room);
   // A web call's line is measured as it is shown.
   const size = (keep: number) => LONG.length + 1 + lines.reduce((sum, one, i) => sum + (webs[i] ? line(one.head, webs[i](keep)).length : one.head.length + cutTo(one.result, keep)) + 1, 0);
   if (size(0) <= room) {
@@ -888,13 +888,8 @@ export function fitFiles(files: readonly FinalFile[], room: number): string {
   const LONG = saidCut("each long file keeps its head and tail, its middle cut where marked");
   const size = (keep: number) => LONG.length + 1 + texts.reduce((sum, file) => sum + block(file, "").length + (file.text.length <= keep ? file.text.length : keep + 40) + 1, 0) + named.reduce((sum, line) => sum + line.length, 0);
   if (texts.length && size(0) <= room) {
-    let [low, top] = [0, Math.max(...texts.map((file) => file.text.length))];
-    while (low < top) {
-      const mid = Math.ceil((low + top) / 2);
-      if (size(mid) <= room) low = mid;
-      else top = mid - 1;
-    }
-    return [LONG, ...texts.map((file) => block(file, middle(file.text, low))), ...named].join("\n");
+    const keep = longestKeep(size, Math.max(...texts.map((file) => file.text.length)), room);
+    return [LONG, ...texts.map((file) => block(file, middle(file.text, keep))), ...named].join("\n");
   }
   const list = [saidCut("every file's text is left out"), `By path and size in bytes: ${namesOf(files)}`].join("\n");
   return list.length <= room ? list : room < 4 ? "" : `${list.slice(0, room - 4)} ...`;

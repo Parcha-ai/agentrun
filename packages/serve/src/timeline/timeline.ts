@@ -111,8 +111,8 @@ export const CAPS = { summary: 500, preview: 500, text: 2000, thinking: 100 };
  *  and page text cut to fit (web-calls.ts), past this only when its urls alone pass it. */
 export const CALL_RESULT_CHARS = 120_000;
 
-/** The most rows a `calls=whole` timeline page holds, and its default: each row's result, or the names and values of
- *  its call's arguments together (tool_input, inputShown), may be CALL_RESULT_CHARS long. */
+/** The most rows a `calls=whole` timeline page holds, and its default: each row's result, or the names, values and
+ *  brackets of its call's arguments together (tool_input, inputShown), may be CALL_RESULT_CHARS long. */
 export const CALLS_PAGE_ROWS = 100;
 
 /** A host's marks of a model request: as it leaves (written before it does), and as its stream ends aborted. A request
@@ -646,17 +646,28 @@ const textOf = (message: Obj | undefined, type = "text", field = "text") =>
   blocksOf(message).filter((block) => block.type === type).map((block) => str(block[field]) ?? "").join("\n").trim();
 /** Every string a row shows goes through here: a URL keeps its origin, path and query keys, then the text is cut. */
 const clean = (text: string, max: number) => cut(scrubUrls(text), max);
-/** A call's arguments as `tool_input` carries them, at most `budget` characters of names and values a row, taken in
- *  order: each property name as `redact` makes it, as only this field shows them, each string as `read` makes it of the
- *  head it is given, each number as its text (one `held` names shows as "[redacted]"), and every name and value costs at
- *  least one character, so a row holds at most `budget` of them. The name or string that reaches the budget is cut
- *  there; an array or object then ends with one "..." (an item, or a "..." name), and a value reached past it shows as
- *  "...", unread, however much it holds. So a row's names and values come to `budget` characters, past which only a
- *  "..." for the value it stopped in and one for each array or object still open, whatever its call holds. An object two of whose names come out the same is withheld
- *  whole, as "[redacted]", never one value merged over the other. */
+/** A call's arguments as `tool_input` carries them, at most `budget` characters a row, taken in order: each property
+ *  name as `redact` makes it, as only this field shows them, each string as `read` makes it of the head it is given,
+ *  each number, boolean or null as its text (a number `held` names as "[redacted]"), and each array or object its two
+ *  brackets. Every name and value costs at least one character. The name or string that reaches the budget is cut
+ *  there, and a number, boolean or null that would pass it shows as "..."; an array or object then ends with one "..."
+ *  (an item, or a "..." name), and a value reached past it shows as "...", unread, however much it holds. So a row's
+ *  names, values and brackets come to at most `budget` characters, past which only a "..." for the value it stopped in
+ *  and one for each array or object still open, whatever its call holds. An object two of whose names come out the
+ *  same is withheld whole, as "[redacted]", never one value merged over the other. */
 const inputShown = (args: unknown, budget: number, read: (text: string, shown: number) => string, redact: (text: string) => string = (text) => text, held: (value: number | bigint) => boolean = () => false): unknown => {
   let left = budget;
   const spend = (size: number) => (left -= Math.max(1, size));
+  // A number, boolean or null shows whole or as "...": a cut one would read as another value.
+  const scalar = (out: unknown): unknown => {
+    const text = String(out);
+    if (text.length > left) {
+      left = 0;
+      return "...";
+    }
+    spend(text.length);
+    return out;
+  };
   const shown = (value: unknown): unknown => {
     if (left <= 3) return "...";
     if (typeof value === "string") {
@@ -664,12 +675,9 @@ const inputShown = (args: unknown, budget: number, read: (text: string, shown: n
       spend(text.length);
       return text;
     }
-    if (typeof value === "number" || typeof value === "bigint") {
-      const out = held(value) ? "[redacted]" : value;
-      spend(String(out).length);
-      return out;
-    }
+    if (typeof value === "number" || typeof value === "bigint") return scalar(held(value) ? "[redacted]" : value);
     if (Array.isArray(value)) {
+      spend(2);
       const out: unknown[] = [];
       for (const item of value) {
         if (left <= 3) return [...out, "..."];
@@ -677,10 +685,8 @@ const inputShown = (args: unknown, budget: number, read: (text: string, shown: n
       }
       return out;
     }
-    if (!value || typeof value !== "object") {
-      spend(String(value).length);
-      return value;
-    }
+    if (!value || typeof value !== "object") return scalar(value);
+    spend(2);
     const entries: (readonly [string, unknown])[] = [];
     let ended = false;
     for (const [key, item] of Object.entries(value)) {
