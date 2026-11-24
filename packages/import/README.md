@@ -28,11 +28,11 @@ const sessions = await parseHome(homedir(), { sources: ["claude-code", "codex"] 
   totalled; without it, parseHome throws `ReadFailures`. An unreadable file is never taken for an empty one.
 - `env` names where a source keeps its own directory (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`); without it the home's.
 - `threads` reads the files on that many worker threads (default: the cores the process may run on, at most 8; `1`
-  reads them in order on the calling thread). A read is kept only when it is the one the import's order would make; any
+  reads them in order on the calling thread; at most 64). A read is kept only when it is the one the import's order would make; any
   other file is read again in order, so the totals are the same whatever the count. A call with a `state`, or with
   readers of its own, reads on the calling thread.
-- `readAhead` caps the bytes of finished reads waiting to be taken (default 1 GiB, or a sixteenth of the machine's
-  memory when that is less: 512 MiB at 8 GiB). Under it, files of 64 MiB and over are read first, largest first, then
+- `readAhead` caps the bytes of finished reads waiting to be taken (default 1 GiB, or a sixteenth of the memory the
+  process may use, its container's limit when one is set, when that is less: 512 MiB at 8 GiB). Under it, files of 64 MiB and over are read first, largest first, then
   the rest in order; at it, the threads read only the file the import waits on. It is a cap on finished reads waiting,
   plus at most one read in flight per thread (one of those can be a giant file), not on the process's memory.
 - `workerOldMb` caps each worker's old generation (default 64). A line over an eighth of it, or a file that runs a worker

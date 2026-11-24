@@ -37,8 +37,13 @@ export const BIG_FILE = 64 * 2 ** 20;
  *  memory. */
 export const READ_AHEAD_BYTES = 2 ** 30;
 
-/** The default read-ahead: READ_AHEAD_BYTES, or a sixteenth of this machine's memory when that is less (512 MiB at 8 GiB). */
-export const readAheadBytes = (memory = totalmem()): number => Math.min(READ_AHEAD_BYTES, Math.floor(memory / 16));
+/** The memory this process may use: its container's limit (process.constrainedMemory) when one is set below the
+ *  machine's, else the machine's. A 2 GiB container on a 512 GiB host has 2 GiB. */
+export const memoryLimit = (total = totalmem(), constrained = process.constrainedMemory()): number => (constrained > 0 && constrained < total ? constrained : total);
+
+/** The default read-ahead: READ_AHEAD_BYTES, or a sixteenth of the memory this process may use when that is less (512 MiB
+ *  at 8 GiB, 128 MiB in a 2 GiB container). */
+export const readAheadBytes = (memory = memoryLimit()): number => Math.min(READ_AHEAD_BYTES, Math.floor(memory / 16));
 
 /** Workers lost (out of memory, or ended) past this many times the threads: the pool stops, and parseHome reads the rest. */
 const LOSSES_PER_THREAD = 2;

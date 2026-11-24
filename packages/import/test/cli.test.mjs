@@ -64,7 +64,7 @@ test("--threads and --read-ahead change how the home is read, not the answer; a 
     assert.equal(result.status, 0, `${args.join(" ")}: ${result.stderr}`);
     assert.equal(result.stdout, plain.stdout, args.join(" "));
   }
-  for (const args of [["--threads", "0"], ["--threads", "2.5"], ["--threads", "two"], ["--read-ahead", "-1"], ["--read-ahead", "1t"], ["--threads", "1k"]]) {
+  for (const args of [["--threads", "0"], ["--threads", "2.5"], ["--threads", "two"], ["--read-ahead", "-1"], ["--read-ahead", "1t"], ["--threads", "1k"], ["--threads", "65"]]) {
     const result = run(dir, ...args, "--known-answer");
     assert.equal(result.status, 2, args.join(" "));
     assert.match(result.stderr, /usage: agentrun-import/, args.join(" "));

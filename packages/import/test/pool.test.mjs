@@ -6,7 +6,7 @@ import { appendFile, utimes } from "node:fs/promises";
 import { test } from "node:test";
 import { relative } from "node:path";
 import { parseHome, READERS } from "../dist/index.js";
-import { ReadPool, readAheadBytes } from "../dist/pool.js";
+import { memoryLimit, ReadPool, readAheadBytes } from "../dist/pool.js";
 import { anthropicUsage, claudeAnswer, claudeFile, claudeUser, codexAnswer, codexContext, codexFile, codexMeta, codexTokens, codexUser, openaiUsage, subagentFile, tempHome, writeJsonl } from "./fixtures.mjs";
 
 const THREADS = [2, 3, 4];
@@ -129,6 +129,22 @@ test("threads, readAhead and workerOldMb out of range are refused", async (t) =>
   for (const opts of [{ threads: 0 }, { threads: 2.5 }, { threads: Number.NaN }, { readAhead: -1 }, { readAhead: Number.NaN }, { workerOldMb: 0 }, { workerOldMb: 1.5 }]) {
     await assert.rejects(parseHome(home, { catalog: false, ...opts }), RangeError, JSON.stringify(opts));
   }
+});
+
+test("threads over 64 are refused before any worker starts", async (t) => {
+  const home = await plainHome(t);
+  for (const threads of [65, 100_000]) {
+    const { result, workers } = await workersOf(() => parseHome(home, { catalog: false, threads }).then(() => "read", (e) => e));
+    assert.ok(result instanceof RangeError, `threads ${threads}: ${result}`);
+    assert.equal(workers, 0, `threads ${threads}: no worker started`);
+  }
+});
+
+test("a container's memory limit below the machine's sets the default read-ahead", () => {
+  assert.equal(memoryLimit(512 * 2 ** 30, 2 * 2 ** 30), 2 * 2 ** 30, "a 2 GiB container on a 512 GiB host");
+  assert.equal(readAheadBytes(memoryLimit(512 * 2 ** 30, 2 * 2 ** 30)), 128 * 2 ** 20);
+  assert.equal(memoryLimit(8 * 2 ** 30, 0), 8 * 2 ** 30, "no limit");
+  assert.equal(memoryLimit(8 * 2 ** 30, 2 ** 62), 8 * 2 ** 30, "a limit above the machine's");
 });
 
 test("the default read-ahead is 1 GiB, or a sixteenth of the machine's memory when that is less", () => {

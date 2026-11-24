@@ -15,7 +15,7 @@
 import { parseArgs } from "node:util";
 import { calculateCost } from "@earendil-works/pi-ai";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
-import { parseHome, type ReadFailure } from "./home.js";
+import { MOST_THREADS, parseHome, type ReadFailure } from "./home.js";
 import { type CalculateCost, catalogOf } from "./price.js";
 import { SOURCES, type Source } from "./readers/index.js";
 
@@ -24,10 +24,10 @@ const USAGE = `usage: agentrun-import <home> [--sources ${SOURCES.join(",")}] [-
 const UNITS: Record<string, number> = { "": 1, k: 2 ** 10, m: 2 ** 20, g: 2 ** 30 };
 
 /** A flag's whole number (with a unit when `units`), or a usage error. */
-function wholeOf(flag: string, value: string, least: number, units = false): number {
+function wholeOf(flag: string, value: string, least: number, units = false, most = Number.MAX_SAFE_INTEGER): number {
   const match = (units ? /^(\d+)([kmg]?)$/i : /^(\d+)()$/).exec(value.trim());
   const n = match ? Number(match[1]) * UNITS[match[2]!.toLowerCase()]! : Number.NaN;
-  if (!Number.isSafeInteger(n) || n < least) usage(`${flag}: a whole number of at least ${least}${units ? " (k, m or g after it for KiB, MiB, GiB)" : ""}, not ${value}`);
+  if (!Number.isSafeInteger(n) || n < least || n > most) usage(`${flag}: a whole number ${most < Number.MAX_SAFE_INTEGER ? `from ${least} to ${most}` : `of at least ${least}`}${units ? " (k, m or g after it for KiB, MiB, GiB)" : ""}, not ${value}`);
   return n;
 }
 
@@ -59,7 +59,7 @@ async function main(): Promise<void> {
   const sources = values.sources === undefined ? SOURCES : values.sources.split(",").map((name) => name.trim());
   const unknown = sources.filter((name) => !(SOURCES as readonly string[]).includes(name));
   if (unknown.length || !sources.length) usage(`unknown source: ${unknown.join(", ") || "(none)"}`);
-  const threads = values.threads === undefined ? undefined : wholeOf("--threads", values.threads, 1);
+  const threads = values.threads === undefined ? undefined : wholeOf("--threads", values.threads, 1, false, MOST_THREADS);
   const readAhead = values["read-ahead"] === undefined ? undefined : wholeOf("--read-ahead", values["read-ahead"], 0, true);
   const failures: ReadFailure[] = [];
   const sessions = await parseHome(positionals[0]!, { sources: sources as Source[], catalog: catalogOf(builtinModels().getModels()), calculateCost: calculateCost as unknown as CalculateCost, failures, ...(threads === undefined ? {} : { threads }), ...(readAhead === undefined ? {} : { readAhead }) });

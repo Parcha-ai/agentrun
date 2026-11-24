@@ -84,7 +84,7 @@ export type ParseOptions = {
   /** Threads that read the sources' files ahead, largest first, without a state and with the registry's readers (default:
    *  the cores this process may run on, at most 8: past that the largest files set the time, and each worker costs its
    *  heap). Each read is kept only when it is the one parseHome would make in order; 1 reads every file in order on this
-   *  thread. */
+   *  thread. At most MOST_THREADS (64). */
   threads?: number;
   /** With threads, a cap on the bytes of finished reads made ahead of the one being taken that may wait (default
    *  readAheadBytes(): 1 GiB, or a sixteenth of the machine's memory when less); at it, the threads read only the file
@@ -164,6 +164,10 @@ class Inexact extends Error {}
 
 /** The default threads' ceiling (ParseOptions.threads). */
 const MAX_THREADS = 8;
+
+/** The most threads parseHome takes: each is a worker with a heap of its own, and past the cores the largest files set
+ *  the time anyway. More is refused before any worker starts. */
+export const MOST_THREADS = 64;
 
 /** Each model string once, by index: a request names its model as an index into it. */
 type Models = { names: string[]; index: Map<string, number> };
@@ -278,7 +282,7 @@ type Part = { locator: Locator; read: Compact };
 
 /** Every session of `sources` under `home`, as totals, sorted by key. */
 export async function parseHome(home: string, { sources = SOURCES, readers = READERS, state, catalog, calculateCost, env, failures, requests, threads = Math.min(availableParallelism(), MAX_THREADS), readAhead = readAheadBytes(), workerOldMb = OLD_MB }: ParseOptions = {}): Promise<SessionTotals[]> {
-  if (!Number.isSafeInteger(threads) || threads < 1) throw new RangeError(`threads: a whole number of at least 1, not ${threads}`);
+  if (!Number.isSafeInteger(threads) || threads < 1 || threads > MOST_THREADS) throw new RangeError(`threads: a whole number from 1 to ${MOST_THREADS}, not ${threads}`);
   if (!(readAhead >= 0)) throw new RangeError(`readAhead: a number of bytes, 0 or more, not ${readAhead}`);
   if (!Number.isSafeInteger(workerOldMb) || workerOldMb < 1) throw new RangeError(`workerOldMb: a whole number of MB, at least 1, not ${workerOldMb}`);
   const pool = !state && readers === READERS && threads > 1 ? new ReadPool(threads, readAhead, workerOldMb) : undefined;
