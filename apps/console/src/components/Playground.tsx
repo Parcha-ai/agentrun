@@ -3,7 +3,7 @@ import { nativeReadinessOf } from "@/lib/native";
 import { backendSdkLabel, backendSdkOf } from "@/lib/backendSdk";
 import { ToolBlockers } from "@/components/ToolBlockers";
 import { ArrowRight, Copy, Eye, EyeOff, Play } from "lucide-react";
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { type ReactNode, useEffect, useId, useMemo, useRef, useState } from "react";
 import { FieldInput, FieldIssues } from "@/components/FieldInput";
 import { FilePicker, type UploadLimits, useAttachments } from "@/components/FilePicker";
 import { Button } from "@/components/ui/button";
@@ -36,6 +36,10 @@ export type PlaygroundProps = {
   efforts: string[];
   origin: string;
   agentId?: string;
+  /** What goes first on the request row (the page's operation picker), so the agent sits beside it on one row. */
+  lead?: ReactNode;
+  /** A notice under that row (no model to run on yet). */
+  notice?: ReactNode;
   onAgent?: (id: string) => void;
   /** Sends the request; resolves with what the server answered. */
   onSend?: (agentId: string, body: StartBody, key: string) => Promise<StartResult>;
@@ -52,7 +56,7 @@ export type PlaygroundProps = {
 
 /** The hosted console's API playground for starting a run: the request on the left (a form, or its JSON), the same
  *  request as code on the right, and the server's answer, with a way into the run it started. */
-export function Playground({ agents, revisions = [], efforts, origin, agentId: initialAgent, onAgent, onSend, onOpenRun, result: initialResult = null, live, limits, upload = sendUpload, removeUpload }: PlaygroundProps) {
+export function Playground({ lead, notice, agents, revisions = [], efforts, origin, agentId: initialAgent, onAgent, onSend, onOpenRun, result: initialResult = null, live, limits, upload = sendUpload, removeUpload }: PlaygroundProps) {
   const [agentId, setAgentId] = useState(initialAgent ?? agents[0]?.agent_id ?? "");
   // The selection follows the list and the page's choice: an agent that left the list (archived) is not kept.
   useEffect(() => {
@@ -158,17 +162,21 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
     if (r.status >= 200 && r.status < 300) attachments.clear();
   };
   const placeholder = !json ? `The run's ${form ? "message" : "first message"}, e.g. Summarize the standup: we ship Friday.` : kind === "workflow" ? '{ "subject": "...", "body": "..." }' : "The agent's input, as JSON";
-  if (!agents.length) return <section aria-label="Request" className="space-y-4 p-5 md:p-8"><h2 className="text-lg font-semibold">Start a run</h2><p className="text-body text-muted-foreground">Connect an existing native agent or create an agent before starting a run.</p><a href="#/agents/connect" className="block text-body underline underline-offset-2">Connect agent</a><a href="#/agents/new" className="block text-body underline underline-offset-2">Create an agent</a><a href="#/templates" className="block text-body underline underline-offset-2">Browse templates</a><dl className="space-y-2">{Object.entries(NOTES).map(([name, note]) => <div key={name}><dt className="font-mono text-body">{name}</dt><dd className="text-small text-muted-foreground">{note}</dd></div>)}</dl><code className="text-small">/v2/agents/{"{agent_id}"}/runs</code></section>;
+  if (!agents.length) return <>{lead && <div className="flex shrink-0 flex-wrap items-center gap-3 border-b px-5 py-3 md:px-6">{lead}</div>}{notice}<section aria-label="Request" className="space-y-4 p-5 md:p-8"><h2 className="text-lg font-semibold">Start a run</h2><p className="text-body text-muted-foreground">Connect an existing native agent or create an agent before starting a run.</p><a href="#/agents/connect" className="block text-body underline underline-offset-2">Connect agent</a><a href="#/agents/new" className="block text-body underline underline-offset-2">Create an agent</a><a href="#/templates" className="block text-body underline underline-offset-2">Browse templates</a><dl className="space-y-2">{Object.entries(NOTES).map(([name, note]) => <div key={name}><dt className="font-mono text-body">{name}</dt><dd className="text-small text-muted-foreground">{note}</dd></div>)}</dl><code className="text-small">/v2/agents/{"{agent_id}"}/runs</code></section></>;
   return (
     <div className="flex h-full min-h-0 flex-1 flex-col overflow-hidden">
       <div aria-label="Playground agent" className="flex shrink-0 flex-wrap items-center gap-3 border-b px-5 py-3 md:px-6">
+        {lead}
         <div className="flex min-w-0 items-center gap-2 text-small">
           <label htmlFor="playground-agent" className="caps text-muted-foreground">Agent</label>
-          <Picker id="playground-agent" label="Agent" value={agentId} onChange={(id) => { setAgentId(id); setRevision(""); onAgent?.(id); }}
-            options={agentsByName(agents).map((a) => ({ value: a.agent_id, label: a.definition.name }))} className="w-56 max-w-[60vw]" />
+          {/* As wide as its longest agent's name (steady), so a name is shown whole where the row has the room; on a phone
+              it is held to part of the window and cuts the name with an ellipsis. */}
+          <Picker id="playground-agent" label="Agent" steady value={agentId} onChange={(id) => { setAgentId(id); setRevision(""); onAgent?.(id); }}
+            options={agentsByName(agents).map((a) => ({ value: a.agent_id, label: a.definition.name }))} className="max-w-[60vw]" />
         </div>
-        {sdk ? <span className="font-mono text-small">{backendSdkLabel(sdk)} · Your backend</span> : <span className="font-mono text-small"><span className="text-primary-text">POST</span> <span className="text-muted-foreground">/v2/agents/{agentId || "{agent_id}"}/runs</span></span>}
+        {sdk ? <span className="font-mono text-small">{backendSdkLabel(sdk)} · Your backend</span> : <span className="min-w-0 break-all font-mono text-small">{!lead && <><span className="text-primary-text">POST</span> </>}<span className="text-muted-foreground">/v2/agents/{agentId || "{agent_id}"}/runs</span></span>}
       </div>
+      {notice}
       {/* Two columns only when the window is wide AND tall enough: a short one folds to one panel (short:), full width.
           With the code panel folded, one column at any size. Where the two stood side by side, the button that shows
           the panel again floats where the one that hid it was, at the top right, over the Request header's free end;
@@ -265,7 +273,7 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
                 <Button size="icon" variant="outline" aria-label="Copy code" onClick={() => void navigator.clipboard?.writeText(code)}><Copy aria-hidden /></Button>
               </div>
               <pre tabIndex={0} aria-label="The request as code" className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-words px-5 py-5 font-mono text-small leading-[1.8] md:px-6">{code}</pre>
-              <footer className={cn(FOOT, "text-small text-muted-foreground")}>The same request from your code: set AGENTRUN_API_KEY in your environment.</footer>
+              <footer className={cn(FOOT, "text-small text-muted-foreground")}>The same request from your code: set AGENTRUN_API_KEY in your environment. Create a key under <a className="underline" href="#/settings/api-keys">Settings → AgentRun API keys</a>.</footer>
             </>
           ) : result && (
             <>

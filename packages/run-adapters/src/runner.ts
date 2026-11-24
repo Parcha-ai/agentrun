@@ -219,6 +219,8 @@ export interface ModelPortOptions {
   noteReturned?: (note: string) => void;
   /** The port ends the attempt (the turn limit, the host's refusal, a cost it could not record): the error it throws. */
   stop?: (reason: "turn_limit" | "refused" | "model_error", message?: string, code?: string) => Error;
+  /** The clock a request's record is stamped with (`at`, when it left), in ms since the epoch (default: Date.now). */
+  now?: () => number;
 }
 
 /** A session's booking of paid model requests: the adapter's model port, and what it has counted. */
@@ -523,7 +525,9 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
     const localRequest = !!verdict && "localRequest" in verdict && verdict.localRequest === true;
     // A paid tool call (ModelRequest.paid) says so on its record (`paid`), so a later process that books it cut knows its
     // hold is its fee as admitted, never a bound on what its provider charged (bookCut).
-    await write([{ kind: RUNNER_RECORDS.request, data: { turn, model, ...(paid ? { paid: true as const } : {}), ...(hold === undefined ? {} : { heldUsd: hold }), ...(onPlan ? { plan: true as const } : {}), ...(freeRequest ? { freeRequest: true as const } : {}), ...(localRequest ? { localRequest: true as const } : {}), ...(side ? { side } : {}), ...(host === undefined ? {} : { host }), ...(paid?.call === undefined ? {} : { call: paid.call }), ...(paid?.charged_by === undefined ? {} : { charged_by: paid.charged_by }), ...(paid?.tool === undefined ? {} : { tool: paid.tool }), ...(paid?.tag === undefined ? {} : { tag: paid.tag }), ...(paid?.owed ? { owed: true as const } : {}), ...(paid?.hold ? { hold: true as const } : {}), ...(paid?.ref === undefined ? {} : { ref: paid.ref }), ...(paid?.reported ? { reported: true as const } : {}) } }]);
+    // `at`: when it left, so a reader shows a request still in flight from its start (a run page's live row), and
+    // `inputTokensMax`, the input it was admitted with, beside it.
+    await write([{ kind: RUNNER_RECORDS.request, data: { turn, model, at: new Date((options.now ?? Date.now)()).toISOString(), ...(inputTokensMax === undefined ? {} : { inputTokensMax }), ...(paid ? { paid: true as const } : {}), ...(hold === undefined ? {} : { heldUsd: hold }), ...(onPlan ? { plan: true as const } : {}), ...(freeRequest ? { freeRequest: true as const } : {}), ...(localRequest ? { localRequest: true as const } : {}), ...(side ? { side } : {}), ...(host === undefined ? {} : { host }), ...(paid?.call === undefined ? {} : { call: paid.call }), ...(paid?.charged_by === undefined ? {} : { charged_by: paid.charged_by }), ...(paid?.tool === undefined ? {} : { tool: paid.tool }), ...(paid?.tag === undefined ? {} : { tag: paid.tag }), ...(paid?.owed ? { owed: true as const } : {}), ...(paid?.hold ? { hold: true as const } : {}), ...(paid?.ref === undefined ? {} : { ref: paid.ref }), ...(paid?.reported ? { reported: true as const } : {}) } }]);
     turns = turn;
     if (host !== undefined) hosts.set(turn, host);
     if (hold !== undefined) held.set(turn, hold);

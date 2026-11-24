@@ -737,7 +737,7 @@ export type Run = {
   computer?: {
     kind: "sandbox" | "desktop" | "phone" | "browser";
     provider: string;
-    state: "starting" | "ready" | "taken_over" | "ended" | "failed";
+    state: "starting" | "ready" | "taken_over" | "released" | "ended" | "failed";
     why?: string;
     held?: {
       state: "starting" | "waiting" | "started" | "ended" | "released";
@@ -953,6 +953,14 @@ export type TimelinePage = {
   final: boolean;
   cost: Cost;
   poll_after_ms?: number;
+  in_flight?: Array<{
+    kind: "model" | "tool";
+    name: string;
+    started_at: string | null;
+    tool_use_id?: string;
+    for_tool?: string;
+    input_tokens_max?: number;
+  }>;
 };
 
 export type TimelineRow = {
@@ -1104,6 +1112,7 @@ export type Capabilities = {
       billing: "proxy" | "plan";
     };
     available: boolean;
+    ready_models: Array<string>;
     free_models: Array<{
       id: string;
       context_window: number;
@@ -1264,6 +1273,7 @@ export type Features = {
     routes: boolean;
     at_rest: "sealed";
     harnesses: Array<string>;
+    kept: Array<string>;
   };
   mcp_client?: {
     transports: Array<"streamable-http">;
@@ -1277,6 +1287,11 @@ export type Features = {
     events: Array<"run.needs_input" | "run.ended" | "trigger.failed">;
     signing: "standard-webhooks/v1";
     at_rest: "sealed";
+  };
+  api_keys?: {
+    routes: boolean;
+    limit: number;
+    at_rest: "hashed";
   };
   slack?: {
     routes: boolean;
@@ -1959,12 +1974,12 @@ export type GetAgentPackageResponse = {
   sha256: string;
   report: {
     blocked: Array<{
-      kind: "mcp_server" | "trigger" | "pin" | "tool_setting" | "tool_policy" | "computer" | "paired_computer" | "sign_in" | "learning" | "input_schema" | "budget" | "package";
+      kind: "mcp_server" | "trigger" | "pin" | "tool_setting" | "tool_policy" | "computer" | "paired_computer" | "sign_in" | "learning" | "secrets" | "input_schema" | "budget" | "package";
       name: string;
       reason: string;
     }>;
     remade: Array<{
-      kind: "mcp_server" | "trigger" | "pin" | "tool_setting" | "tool_policy" | "computer" | "paired_computer" | "sign_in" | "learning" | "input_schema" | "budget" | "package";
+      kind: "mcp_server" | "trigger" | "pin" | "tool_setting" | "tool_policy" | "computer" | "paired_computer" | "sign_in" | "learning" | "secrets" | "input_schema" | "budget" | "package";
       name: string;
       reason: string;
     }>;
@@ -2174,6 +2189,20 @@ export type VerifyNativeResponse = {
       target_id: string;
     };
   };
+};
+
+/** The API keys made for this server's apps; never a key (GET /settings/api-keys). */
+export type ListApiKeysResponse = {
+  keys: Array<{
+    id: string;
+    name: string;
+    created_at: string;
+    last_used_at: string | null;
+    secret: SecretMeta;
+  }>;
+  limit: number;
+  refused?: string;
+  unreadable?: Array<string>;
 };
 
 /** The runs waiting and held, the live runners and the recent hand-backs (GET /capacity). */
@@ -2634,8 +2663,14 @@ export type ListHarnessKeysResponse = {
   harnesses: Array<{
     id: string;
     label: string;
+    named: boolean;
     keys: Array<SecretMeta>;
+    kept: Array<SecretMeta>;
     ready: boolean;
+    reenter: Array<{
+      name: string;
+      why: "recipe_changed" | "seal_key_changed" | "file_unreadable";
+    }>;
   }>;
 };
 
@@ -2735,6 +2770,7 @@ export type GetLearningCostResponse = {
     hand_backs: {
       ran: number;
       back: number;
+      cut: number;
     } | null;
     withheld: {
       unknown: number;
@@ -2959,6 +2995,19 @@ export type ConnectGitHubResponse = {
   state: string;
 };
 
+/** Make an API key, shown once (POST /settings/api-keys). */
+export type CreateApiKeyBody = {
+  name: string;
+};
+export type CreateApiKeyResponse = {
+  id: string;
+  name: string;
+  created_at: string;
+  last_used_at: string | null;
+  secret: SecretMeta;
+  api_key: string;
+};
+
 /** A code that pairs a person's own computer with this server (POST /computers/pairings). */
 export type CreatePairingResponse = {
   id: string;
@@ -3164,6 +3213,7 @@ export type FinishChatGPTSignInResponse = {
   expires_at?: string;
   models?: Array<string>;
   problem?: string;
+  hint?: string;
 };
 
 /** This server's calendar: its host, name and time zone, never its address (GET /settings/calendar). */
@@ -3183,6 +3233,7 @@ export type GetChatGPTSignInResponse = {
   expires_at?: string;
   models?: Array<string>;
   problem?: string;
+  hint?: string;
 };
 
 /** Claude Code's login on this machine: on or off, and what its CLI says of it (GET /settings/claude-login). */
@@ -3387,6 +3438,17 @@ export type ListComposioEventsResponse = {
   }>;
 };
 
+/** List the toolkits Composio offers, for the console's toolkit picker; stores nothing (POST /settings/mcp-servers/composio/toolkits). Its body's string values are secrets: each copy is cut from the answer, and a refusal keeps only its code. */
+export type ListComposioToolkitsBody = {
+  api_key: string;
+};
+export type ListComposioToolkitsResponse = {
+  toolkits: Array<{
+    slug: string;
+    name: string;
+  }>;
+};
+
 /** List the actions of a Composio toolkit, for the console's picker; stores nothing (POST /settings/mcp-servers/composio/tools). Its body's string values are secrets: each copy is cut from the answer, and a refusal keeps only its code. */
 export type ListComposioToolsBody = {
   api_key: string;
@@ -3542,6 +3604,27 @@ export type ListGitHubRepositoriesResponse = {
     account: string;
     why: string;
   }>;
+};
+
+/** The marketplace's templates: every package on marketplace.agentrun.ai, each with the package here that it is (GET /marketplace/templates). */
+export type ListMarketplaceTemplatesResponse = {
+  url: string | null;
+  state: "read" | "stale" | "unreachable" | "off";
+  read_at: string | null;
+  templates: Array<{
+    name: string;
+    title: string;
+    tags: Array<string>;
+    needs: Array<string>;
+    page_url: string;
+    summary?: string;
+    description?: string;
+    category?: "engineering" | "security" | "sales" | "marketing" | "research" | "finance" | "operations" | "compliance" | "personal";
+    harness?: Array<string>;
+    source?: string;
+    here?: string;
+  }>;
+  problem?: string;
 };
 
 /** The names of the MCP servers saved here, and nothing else of them (GET /settings/mcp-server-names). */
@@ -3785,6 +3868,8 @@ export type RestoreSuggestionResponse = {
   };
 };
 
+/** Revoke an API key; it opens nothing from now on (DELETE /settings/api-keys/{api_key_id}). */
+
 /** Rotate the Composio project's webhook subscription's secret, and keep the new one (POST /settings/mcp-servers/{name}/composio/rotate-secret). */
 export type RotateComposioSecretResponse = {
   rotated: true;
@@ -3855,6 +3940,11 @@ export type SaveComposioServerResponse = {
     listed_at: string;
     updated_at: string;
     secret?: SecretMeta;
+    composio_account?: {
+      state: "connected" | "pending" | "expired" | "none" | "unknown";
+      labels?: Array<string>;
+      checked_at: string;
+    };
   };
   connect_url?: string;
   not_served?: Array<string>;
@@ -4221,6 +4311,11 @@ export type GetMcpServerResponse = {
   listed_at: string;
   updated_at: string;
   secret?: SecretMeta;
+  composio_account?: {
+    state: "connected" | "pending" | "expired" | "none" | "unknown";
+    labels?: Array<string>;
+    checked_at: string;
+  };
 };
 
 /** The remote MCP servers saved here, with their tools; never a credential (GET /settings/mcp-servers). */
@@ -4268,6 +4363,11 @@ export type ListMcpServersResponse = {
     listed_at: string;
     updated_at: string;
     secret?: SecretMeta;
+    composio_account?: {
+      state: "connected" | "pending" | "expired" | "none" | "unknown";
+      labels?: Array<string>;
+      checked_at: string;
+    };
   }>;
 };
 
@@ -4363,6 +4463,11 @@ export type RefreshMcpServerResponse = {
     listed_at: string;
     updated_at: string;
     secret?: SecretMeta;
+    composio_account?: {
+      state: "connected" | "pending" | "expired" | "none" | "unknown";
+      labels?: Array<string>;
+      checked_at: string;
+    };
   };
 };
 
@@ -4420,6 +4525,11 @@ export type SaveMcpServerResponse = {
   listed_at: string;
   updated_at: string;
   secret?: SecretMeta;
+  composio_account?: {
+    state: "connected" | "pending" | "expired" | "none" | "unknown";
+    labels?: Array<string>;
+    checked_at: string;
+  };
   composio?: {
     removed: boolean;
     note: string;
@@ -7171,6 +7281,7 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   unarchiveAgent: {"method":"POST","path":"/agents/{agent_id}/unarchive","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   updateDefinition: {"method":"PUT","path":"/agents/{agent_id}/definition","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":["If-Match"],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":true},
   verifyNative: {"method":"POST","path":"/agents/{agent_id}/native/verify","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  listApiKeys: {"method":"GET","path":"/settings/api-keys","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getCapacity: {"method":"GET","path":"/capacity","pathParams":[],"multiSegment":[],"query":["window"],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   completeCliLearningRun: {"method":"POST","path":"/cli-learning/runs/{run_id}/complete","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":["Idempotency-Key"],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   enrollCliLearning: {"method":"POST","path":"/cli-learning/connections","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
@@ -7212,6 +7323,7 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   listLearnedWorkflowRevisions: {"method":"GET","path":"/agents/{agent_id}/learning/workflows/{name}/revisions","pathParams":["agent_id","name"],"multiSegment":[],"query":["limit"],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   putLearningCorrections: {"method":"PUT","path":"/agents/{agent_id}/learning/corrections","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":["If-Match"],"body":{"required":true,"types":["text/markdown","text/plain","application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":true},
   connectGitHub: {"method":"POST","path":"/integrations/github/connect","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":false,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  createApiKey: {"method":"POST","path":"/settings/api-keys","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   createPairing: {"method":"POST","path":"/computers/pairings","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   createSuggestedAgent: {"method":"POST","path":"/suggestions/{suggestion_id}/create","pathParams":["suggestion_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":false,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   deleteCalendar: {"method":"DELETE","path":"/settings/calendar","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"none","secret":false,"publicFields":[],"tagged":false},
@@ -7235,17 +7347,20 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   gitHubCallback: {"method":"GET","path":"/integrations/github/callback","pathParams":[],"multiSegment":[],"query":["code","state"],"headers":[],"body":null,"answer":"none","secret":false,"publicFields":[],"tagged":false},
   gitHubInstalled: {"method":"GET","path":"/integrations/github/installed","pathParams":[],"multiSegment":[],"query":["installation_id","setup_action","state"],"headers":[],"body":null,"answer":"none","secret":false,"publicFields":[],"tagged":false},
   listComposioEvents: {"method":"GET","path":"/settings/mcp-servers/{name}/composio/events","pathParams":["name"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  listComposioToolkits: {"method":"POST","path":"/settings/mcp-servers/composio/toolkits","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":true,"publicFields":[],"tagged":false},
   listComposioTools: {"method":"POST","path":"/settings/mcp-servers/composio/tools","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":true,"publicFields":["toolkit"],"tagged":false},
   listComposioTriggers: {"method":"GET","path":"/settings/mcp-servers/{name}/composio/triggers","pathParams":["name"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   listComputerChoices: {"method":"GET","path":"/computers/{provider}/choices","pathParams":["provider"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   listComputers: {"method":"GET","path":"/computers","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   listGitHubRepositories: {"method":"GET","path":"/integrations/github/repositories","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  listMarketplaceTemplates: {"method":"GET","path":"/marketplace/templates","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   listMcpServerNames: {"method":"GET","path":"/settings/mcp-server-names","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   listRunningComputers: {"method":"GET","path":"/computers/running","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   listSuggestions: {"method":"GET","path":"/suggestions","pathParams":[],"multiSegment":[],"query":["repo","status"],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   putWorkspaceArchil: {"method":"PUT","path":"/workspace/archil","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   receiveHook_composio: {"method":"POST","path":"/hooks/composio/{hook}","pathParams":["hook"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["*/*"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   restoreSuggestion: {"method":"POST","path":"/suggestions/{suggestion_id}/restore","pathParams":["suggestion_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  revokeApiKey: {"method":"DELETE","path":"/settings/api-keys/{api_key_id}","pathParams":["api_key_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"none","secret":false,"publicFields":[],"tagged":false},
   rotateComposioSecret: {"method":"POST","path":"/settings/mcp-servers/{name}/composio/rotate-secret","pathParams":["name"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   saveCalendar: {"method":"PUT","path":"/settings/calendar","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   saveComposioServer: {"method":"PUT","path":"/settings/mcp-servers/{name}/composio","pathParams":["name"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":true,"publicFields":["toolkit","tools.[]","user_id"],"tagged":false},
@@ -7407,6 +7522,10 @@ export function resources(call: Call) {
       /** Check native CLI and sign-in without a paid model call (POST /agents/{agent_id}/native/verify). */
       verifyNative: (agentId: string, options?: RequestOptions): Promise<VerifyNativeResponse> => call("verifyNative", [agentId], undefined, undefined, options),
     },
+    apiKeys: {
+      /** The API keys made for this server's apps; never a key (GET /settings/api-keys). */
+      list: (options?: RequestOptions): Promise<ListApiKeysResponse> => call("listApiKeys", [], undefined, undefined, options),
+    },
     capabilities: {
       /** The runs waiting and held, the live runners and the recent hand-backs (GET /capacity). */
       getCapacity: (params?: GetCapacityParams, options?: RequestOptions): Promise<GetCapacityResponse> => call("getCapacity", [], undefined, params, options),
@@ -7502,6 +7621,8 @@ export function resources(call: Call) {
       writeCorrections: (agentId: string, body: PutLearningCorrectionsBody | RawBody, params: PutLearningCorrectionsParams, options?: BodyOptions): Promise<Tagged<PutLearningCorrectionsResponse>> => call("putLearningCorrections", [agentId], body, params, options),
     },
     local: {
+      /** Make an API key, shown once (POST /settings/api-keys). */
+      createApiKey: (body: CreateApiKeyBody, options?: RequestOptions): Promise<CreateApiKeyResponse> => call("createApiKey", [], body, undefined, options),
       /** A code that pairs a person's own computer with this server (POST /computers/pairings). */
       createPairing: (options?: RequestOptions): Promise<CreatePairingResponse> => call("createPairing", [], undefined, undefined, options),
       /** Create a suggested agent: a branch with its package and client, the agent made here, and a pull request (POST /suggestions/{suggestion_id}/create). */
@@ -7544,6 +7665,8 @@ export function resources(call: Call) {
       getWorkspaceArchil: (options?: RequestOptions): Promise<GetWorkspaceArchilResponse> => call("getWorkspaceArchil", [], undefined, undefined, options),
       /** List a saved Composio server's toolkit's events, for a composio trigger (GET /settings/mcp-servers/{name}/composio/events). */
       listComposioEvents: (name: string, options?: RequestOptions): Promise<ListComposioEventsResponse> => call("listComposioEvents", [name], undefined, undefined, options),
+      /** List the toolkits Composio offers, for the console's toolkit picker; stores nothing (POST /settings/mcp-servers/composio/toolkits). */
+      listComposioToolkits: (body: ListComposioToolkitsBody, options?: RequestOptions): Promise<ListComposioToolkitsResponse> => call("listComposioToolkits", [], body, undefined, options),
       /** List the actions of a Composio toolkit, for the console's picker; stores nothing (POST /settings/mcp-servers/composio/tools). */
       listComposioTools: (body: ListComposioToolsBody, options?: RequestOptions): Promise<ListComposioToolsResponse> => call("listComposioTools", [], body, undefined, options),
       /** A saved Composio server's triggers, each with its instance's state on Composio (GET /settings/mcp-servers/{name}/composio/triggers). */
@@ -7554,6 +7677,8 @@ export function resources(call: Call) {
       listComputers: (options?: RequestOptions): Promise<ListComputersResponse> => call("listComputers", [], undefined, undefined, options),
       /** The repositories this server's GitHub App is installed on (GET /integrations/github/repositories). */
       listGitHubRepositories: (options?: RequestOptions): Promise<ListGitHubRepositoriesResponse> => call("listGitHubRepositories", [], undefined, undefined, options),
+      /** The marketplace's templates: every package on marketplace.agentrun.ai, each with the package here that it is (GET /marketplace/templates). */
+      listMarketplaceTemplates: (options?: RequestOptions): Promise<ListMarketplaceTemplatesResponse> => call("listMarketplaceTemplates", [], undefined, undefined, options),
       /** The names of the MCP servers saved here, and nothing else of them (GET /settings/mcp-server-names). */
       listMcpServerNames: (options?: RequestOptions): Promise<ListMcpServerNamesResponse> => call("listMcpServerNames", [], undefined, undefined, options),
       /** Every run still going that has a computer (GET /computers/running). */
@@ -7566,6 +7691,8 @@ export function resources(call: Call) {
       receiveHookComposio: (hook: string, body: RawBody, options?: BodyOptions): Promise<ReceiveHookComposioResponse> => call("receiveHook_composio", [hook], body, undefined, options),
       /** Bring a discarded suggestion back (an undo) (POST /suggestions/{suggestion_id}/restore). */
       restoreSuggestion: (suggestionId: string, options?: RequestOptions): Promise<RestoreSuggestionResponse> => call("restoreSuggestion", [suggestionId], undefined, undefined, options),
+      /** Revoke an API key; it opens nothing from now on (DELETE /settings/api-keys/{api_key_id}). */
+      revokeApiKey: (apiKeyId: string, options?: RequestOptions): Promise<void> => call("revokeApiKey", [apiKeyId], undefined, undefined, options),
       /** Rotate the Composio project's webhook subscription's secret, and keep the new one (POST /settings/mcp-servers/{name}/composio/rotate-secret). */
       rotateComposioSecret: (name: string, options?: RequestOptions): Promise<RotateComposioSecretResponse> => call("rotateComposioSecret", [name], undefined, undefined, options),
       /** Save this server's calendar, its iCal address sealed (PUT /settings/calendar). */

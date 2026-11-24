@@ -15,15 +15,18 @@ const ANTHROPIC_SAVED = `not-a-secret-${"anthropic-saved"}`;
 const OPENROUTER_SAVED = `not-a-secret-${"openrouter-saved"}`;
 const LAUNCHER_TOKEN = `not-a-secret-${"launcher-anthropic-token"}`;
 const LAUNCHER_AWS = `not-a-secret-${"launcher-aws-id"}`;
+const MONID_SAVED = `not-a-secret-${"monid-saved"}`;
+const PARALLEL_SAVED = `not-a-secret-${"parallel-saved"}`;
 
 // No host model setting or model key from this process reaches the routes below.
 for (const name of Object.keys(process.env)) if (/^(AGENT_MODEL|ANTHROPIC_|OPENAI_|OPENROUTER_|AWS_)/.test(name)) delete process.env[name];
 
 const { openSqliteStore } = await import("../dist/store/sqlite/store.js");
-const { claimSecrets, withModelKeys } = await import("../dist/runner/claim-secrets.js");
+const { claimSecrets, withModelKeys, withoutModelKeys } = await import("../dist/runner/claim-secrets.js");
 const { putSealedKey } = await import("../dist/server-keys.js");
 const { routeOf } = await import("../dist/runner/model-route.js");
-const { modelAskOf, PI_WIRES } = await import("../dist/runner/adapter-run-spec.js");
+const { graderRouteOf, modelAskOf, PI_WIRES } = await import("../dist/runner/adapter-run-spec.js");
+const { heldRedactor, secretRedactor } = await import("../dist/runner/redact.js");
 
 const KEY = randomBytes(32);
 
@@ -129,4 +132,40 @@ test("a provider's key present with no value where AgentRun started (-e NAME, an
   assert.equal(env.ANTHROPIC_API_KEY, ANTHROPIC_SAVED);
   const route = await routeOf(modelAskOf(launch.model, undefined), env, "default", PI_WIRES);
   assert.equal(await route.provider.credential(), ANTHROPIC_SAVED, "the route sends the saved key, not an empty one");
+});
+
+// A claim's model keys reach its model routes by name alone (claimModelEnv), never as plain values of the tools'
+// environment: a spread of it, its JSON or a spawn given it (Node builds a child's environment from its enumerable keys)
+// carries none. Its tool keys and decision keys stay plain values, which its tools read and hand on.
+test("a claim lays the run's model key readable by name and never enumerable; its tool and decision keys stay plain values", async (t) => {
+  const store = await storeWith(t, { OPENAI_API_KEY: OPENAI_SAVED, MONID_API_KEY: MONID_SAVED, PARALLEL_API_KEY: PARALLEL_SAVED });
+  const launch = { plane: { web_search: "parallel", web_fetch: "parallel" }, model: { provider: "openai", modelId: "gpt-6.1-sol" } };
+  const claimed = await claimSecrets({ store, sealKey: KEY, env: {} }, { kind: "agentic", body: { tools: ["monid:faux/person/enrich", "web_search"] } }, launch);
+  assert.equal(claimed.OPENAI_API_KEY, OPENAI_SAVED, "the pinned model's key is opened, read by name");
+  assert.deepEqual(["MONID_API_KEY", "PARALLEL_API_KEY"].filter((name) => Object.keys(claimed).includes(name)), ["MONID_API_KEY", "PARALLEL_API_KEY"], "the tool key and the decision key are plain values");
+  assert.deepEqual([{ ...claimed }.MONID_API_KEY, { ...claimed }.PARALLEL_API_KEY], [MONID_SAVED, PARALLEL_SAVED], "a spread carries them");
+  assert.equal(Object.keys(claimed).includes("OPENAI_API_KEY"), false, "the model key is not enumerable");
+  assert.equal(JSON.stringify({ ...claimed }).includes(OPENAI_SAVED), false, "a spread or the JSON of the tools' environment carries no model key");
+  const route = await routeOf(modelAskOf(launch.model, undefined), withModelKeys({}, claimed), "default", PI_WIRES);
+  assert.equal(await route.provider.credential(), OPENAI_SAVED, "the route still sends it");
+  assert.equal(withoutModelKeys(claimed).OPENAI_API_KEY, undefined, "a run with its own key still has it dropped");
+  assert.equal(claimed.MONID_API_KEY, MONID_SAVED, "and keeps its tool key");
+});
+
+test("a run pinned to OpenRouter's model holds OpenRouter's key, a decision provider's name too, not enumerable where no decision of the run needs it", async (t) => {
+  const store = await storeWith(t, { OPENROUTER_API_KEY: OPENROUTER_SAVED, MONID_API_KEY: MONID_SAVED });
+  const launch = { plane: {}, model: { provider: "openrouter", modelId: "anthropic/claude-sonnet-5.5" } };
+  const claimed = await claimSecrets({ store, sealKey: KEY, env: {} }, { kind: "agentic", body: { tools: ["monid:faux/person/enrich"] } }, launch);
+  assert.equal(claimed.OPENROUTER_API_KEY, OPENROUTER_SAVED, "opened, read by name");
+  assert.deepEqual(Object.keys(claimed).filter((name) => name === "OPENROUTER_API_KEY" || name === "MONID_API_KEY"), ["MONID_API_KEY"], "the tool key enumerates, the model key does not");
+});
+
+test("a grader's route reads the claim's model key by name, with no saved key beside it", async (t) => {
+  const store = await storeWith(t, { OPENAI_API_KEY: OPENAI_SAVED });
+  const claimed = await claimSecrets({ store, sealKey: KEY, env: {} }, { kind: "agentic", body: { tools: [] } }, { plane: {}, model: { provider: "openai", modelId: "gpt-6.1-sol" } });
+  let seen;
+  // No seal key: graderRouteOf opens no saved key here, so the claim's is the one its route can read.
+  const deps = { store: { sealedKeys: { get: async () => undefined } }, sealKey: undefined, env: {}, routeOf: async (_model, env) => ((seen = env.OPENAI_API_KEY), { model: "openai/gpt-6.1-sol" }) };
+  await graderRouteOf({ modelTiers: { fast: "openai/gpt-6.1-sol" } }, false, undefined, claimed, heldRedactor(secretRedactor([])), () => {}, deps);
+  assert.equal(seen, OPENAI_SAVED, "the grader's route env holds the claim's model key");
 });

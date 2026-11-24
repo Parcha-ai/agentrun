@@ -8,7 +8,7 @@ import { isDeepStrictEqual } from "node:util";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { CAPS, type EntryLike, isMessageRow, type TimelineEvent } from "./timeline/index.js";
 import { runLink } from "./console-links.js";
-import { redacted, redactedAnswer, redactedOutput, withoutLoopback } from "./key-refusal.js";
+import { redacted, redactedAnswer, redactedOutput, withheldWhole, withoutLoopback } from "./key-refusal.js";
 import { structuredAnswer } from "./answer-json.js";
 import { isObject } from "./validate.js";
 import { currentLearning, holdsForOk, type ItemStatus, type Learning, learningView, LEARNING_LABEL, secretsShown, shortOf, type Shown } from "./learning.js";
@@ -83,6 +83,9 @@ export interface ViewDeps {
   readonly origin: string;
   readonly serverSecrets: () => string[];
   readonly signIns?: SignInReader;
+  /** The server's seal key, which opens what a run's caller handed it while its launch holds it (run-cut.ts runCutValues);
+   *  undefined when it has none, and a run that holds some is then withheld. */
+  readonly sealKey: Buffer | undefined;
   /** The server's clock (ms), for the claim-lease check that decides a run is live; defaults to Date.now. The server
    *  passes the same clock the store uses, so a test on a moved clock reads a fresh claim as live. */
   readonly now?: () => number;
@@ -400,7 +403,7 @@ async function storeRunIn(store: Store, runId: string, deps: ViewDeps, cut: Awai
   // Its final answer whole (store-reads/journal.ts wholeAnswers), as main served a run's answer: a row's cut is no answer's.
   // A run that ended reads settled, and its usage row says its cost ("Cost: …"), never what it has cost so far. One
   // looking back is still going: its look-back's rows come yet.
-  const timelineOptions = { settled: terminal && !lookingBack, ended: terminal && !lookingBack, redact: (text: string) => redacted(text, values) };
+  const timelineOptions = { settled: terminal && !lookingBack, ended: terminal && !lookingBack, redact: (text: string) => redacted(text, values), holds: (text: string) => withheldWhole(text, values) };
   // Rendered from the records read above, so its usage row and the cost's `plan` (bookedSpend over the same entries) are
   // of one read.
   const timeline = withAsks(await wholeAnswers(store, runId, context, await runTimeline(store, runId, context, timelineOptions, records), timelineOptions, wholeAnswerFor(values), since));
@@ -938,7 +941,7 @@ export type RunStated = { readonly kind: string; readonly revision: string; read
 
 /** A run's live moment from the store (momentOf), for the one acceptance each act a run takes reads. A run no runner holds
  *  (ended, or running with no live claim) reads live false. */
-export async function momentOverStore(store: Store, runId: string, deps: ViewDeps = { origin: "", serverSecrets: () => [] }): Promise<RunMoment | undefined> {
+export async function momentOverStore(store: Store, runId: string, deps: ViewDeps = { origin: "", serverSecrets: () => [], sealKey: undefined }): Promise<RunMoment | undefined> {
   const run = await storeRunOf(store, runId, deps);
   if (!run) return undefined;
   // What is archived of it: its agent (whose archive holds its runs too, so it is said first: unarchiving the run alone would

@@ -1,5 +1,5 @@
 import { Textarea } from "@/components/ui/field";
-import { Check, ChevronDown, Code, Copy, MousePointer2, X } from "lucide-react";
+import { ArrowUpRight, Check, ChevronDown, Code, Copy, MousePointer2, X } from "lucide-react";
 import { useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { Button, buttonVariants } from "@/components/ui/button";
@@ -118,7 +118,9 @@ export function CodingAgentAction({ label, prompt, playgroundHref, playgroundLab
     items[next]?.focus();
   };
   const itemStyle = "flex w-full items-center gap-2 px-3 py-2 text-left text-body hover:bg-accent focus:bg-accent focus:outline-none";
-  const content = <>{compact && compactIcon ? compactIcon : <CodingAgentIcon agent={agent} />}{compact ? <span className="sr-only">{copied ? "Copied" : label}</span> : copied ? "Copied" : label}</>;
+  // The trailing arrow says the main action leaves the console for another app, as other such actions here do.
+  const opensApp = !!href && !disabled && !compact && !copied;
+  const content = <>{compact && compactIcon ? compactIcon : <CodingAgentIcon agent={agent} />}{compact ? <span className="sr-only">{copied ? "Copied" : label}</span> : copied ? "Copied" : label}{opensApp && <ArrowUpRight aria-hidden />}</>;
   const actionTitle = compact ? `${label} · ${title}` : title;
   // One edge and focus ring belong to the whole control; its two actions stay independently operable.
   const actionClass = `h-full !rounded-none border-0 bg-transparent text-inherit hover:bg-transparent focus-visible:bg-transparent focus-visible:outline-none ${compact ? "px-2" : size === "lg" ? "pl-5 pr-1.5" : size === "md" ? "pl-4 pr-1" : "pl-3 pr-1"}`;

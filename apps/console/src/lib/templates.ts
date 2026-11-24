@@ -5,25 +5,25 @@ import { keeper } from "./idempotency";
 // Mission Control's first-run templates: one click makes the agent (once) and runs it, so a first look at the console
 // is an agent at work in seconds. Each shows the product doing something different, and needs no key beyond a model.
 
-export type Template = { id: string; name: string; description: string; instructions: string; tools: string[]; input: string; shows: string };
+export type Template = { id: string; name: string; description: string; instructions: string; tools: string[]; input: string };
 
 export const TEMPLATES: readonly Template[] = [
   {
-    id: "hello", name: "Hello, AgentRun", shows: "Writes a file, then answers",
+    id: "hello", name: "Hello, AgentRun",
     description: "A first agent: writes hello.md and answers in one line.",
     instructions: "You are a friendly first agent on this machine. Do what the person asks, briefly and plainly.",
     tools: ["write"],
     input: "Write hello.md listing three things you could help me with on this machine, then answer in one line.",
   },
   {
-    id: "web", name: "Summarize a web page", shows: "Reads the web, then sums it up",
+    id: "web", name: "Summarize a web page",
     description: "Reads a public web page and sums it up in three bullets.",
     instructions: "Read the page you are given and summarize it in three short bullets, then name the one thing worth remembering.",
     tools: ["web_fetch"],
     input: "Summarize https://en.wikipedia.org/wiki/Hacker_News in three bullets.",
   },
   {
-    id: "plan", name: "Plan a task", shows: "Thinks it through, no tools",
+    id: "plan", name: "Plan a task",
     description: "Turns a goal into steps, risks and a first move.",
     instructions: "Turn the goal you are given into a short plan: the steps in order, the main risks, and what to do first. Keep it to one screen.",
     tools: [],
