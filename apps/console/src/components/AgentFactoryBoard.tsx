@@ -8,6 +8,8 @@ import { when } from "@/lib/format";
 export type FactoryCard = {
   id: string;
   runId: string;
+  /** What a person reads for the session's identity ("run 9644d8ab", "child 24"); `id` stays whole for the key. */
+  ref: string;
   agentName: string;
   title: string;
   lane: "waiting" | "working" | "attention" | "unknown";
@@ -78,7 +80,6 @@ export function AgentFactoryBoard({ cards, review, loading, refreshing, error, u
   const shownReview = review.filter(matches);
   const filtered = repository !== "all" || control !== "all";
   const clearFilters = () => { setRepository("all"); setControl("all"); };
-  const needsYou = cards.filter((card) => card.lane === "attention").length;
 
   return (
     <div className="mx-auto max-w-page-wide space-y-6 p-5 md:p-8">
@@ -101,12 +102,10 @@ export function AgentFactoryBoard({ cards, review, loading, refreshing, error, u
       {!available && loading && <div role="status" className="flex items-center gap-3 py-8 text-body"><Spinner /> Loading agent sessions</div>}
 
       {available && <>
-        <section aria-label="Loaded active session totals" className="border-y py-4">
-          <div className="flex flex-wrap items-baseline justify-between gap-3">
-            <p className="font-mono text-body"><strong className="text-figure font-semibold">{cards.length}</strong> active sessions loaded</p>
-            <p className="font-mono text-small text-muted-foreground">Loaded totals · filters apply to cards below</p>
-          </div>
-          <dl className="mt-4 grid grid-cols-2 gap-4 md:grid-cols-4">
+        {/* The loaded sessions counted once, on one row: each lane's own header counts the cards a filter leaves in it. */}
+        <section aria-label="Loaded active session totals" className="flex flex-wrap items-baseline gap-x-8 gap-y-2 border-y py-3">
+          <p className="font-mono text-body"><strong className="text-figure font-semibold">{cards.length}</strong> active sessions loaded</p>
+          <dl className="flex flex-wrap items-baseline gap-x-6 gap-y-1">
             {LANES.map((lane) => <div key={lane.id} className="flex items-baseline gap-2">
               <dt className="text-small text-muted-foreground">{lane.label}</dt>
               <dd className="order-first font-mono text-lg">{cards.filter((card) => card.lane === lane.id).length}</dd>
@@ -121,12 +120,11 @@ export function AgentFactoryBoard({ cards, review, loading, refreshing, error, u
             <Field label="Repository"><Picker label="Repository" small value={repository} onChange={setRepository} options={options.repositories} className="w-full sm:w-60" /></Field>
             <Field label="Control"><Picker label="Control" small value={control} onChange={setControl} options={options.controls} className="w-full sm:w-48" /></Field>
           </div>
-          {filtered && <Button size="sm" onClick={clearFilters}>Clear filters</Button>}
-        </div>
-
-        <div className="flex flex-wrap justify-between gap-3 font-mono text-small text-muted-foreground">
-          <p aria-label="Matching sessions" aria-live="polite">{shown.length} of {cards.length} loaded active sessions match</p>
-          <p>{needsYou} active {needsYou === 1 ? "session needs" : "sessions need"} you · {cards.filter((card) => card.lane === "unknown").length} with unknown activity</p>
+          {/* Said only while a filter narrows the cards: the totals above stay those of every loaded session. */}
+          <div className="flex flex-wrap items-center gap-3" aria-live="polite">
+            {filtered && <p aria-label="Matching sessions" className="font-mono text-small text-muted-foreground">{shown.length} of {cards.length} loaded active sessions match</p>}
+            {filtered && <Button size="sm" onClick={clearFilters}>Clear filters</Button>}
+          </div>
         </div>
 
         {!cards.length && <Banner>{hasMore ? "No active sessions in the loaded results. Load more to check further results." : "No active sessions reported."}</Banner>}
@@ -170,36 +168,37 @@ export function AgentFactoryBoard({ cards, review, loading, refreshing, error, u
   );
 }
 
+/** One session: who works, on what, where it runs and which session it is, its state, then its repository and its
+ *  last activity and cost. The whole run id is in the link and on the label's hover, never a line of its own. */
 function SessionCard({ card, tone }: { card: FactoryCard; tone: ChipTone }) {
   return (
-    <article className="min-w-0 space-y-3 border bg-card p-4">
+    <article className="min-w-0 space-y-2 border bg-card p-4">
       <h3 className="min-w-0">
-        <a href={`#/runs/${encodeURIComponent(card.runId)}`} className="block break-words text-left text-lead font-semibold underline underline-offset-2 hover:text-primary-text">
-          {card.agentName}<span className="mt-1 block text-body font-normal">{card.title}</span>
+        <a href={`#/runs/${encodeURIComponent(card.runId)}`} className="block break-words text-left hover:text-primary-text">
+          {/* A child is named by the task its parent gave it, which can run long: two lines here, whole on hover. */}
+          <span className="line-clamp-2 text-prose font-semibold underline underline-offset-2" title={card.agentName}>{card.agentName}</span>
+          <span className="mt-1 line-clamp-2 text-body font-normal" title={card.title}>{card.title}</span>
         </a>
       </h3>
-      <p className="break-all font-mono text-label text-muted-foreground">{card.id}</p>
-      <p className="break-words text-small text-muted-foreground">{card.sourceLabel}</p>
+      <p className="break-words font-mono text-small text-muted-foreground">{card.sourceLabel} · <span title={card.id}>{card.ref}</span></p>
       <div className="flex min-w-0 flex-wrap gap-2">
         <Chip tone={tone} label title={card.stateLabel}>{card.stateLabel}</Chip>
         <Chip label title={card.controlLabel}>{card.controlLabel}</Chip>
       </div>
       {card.reason && <p className="break-words text-body">{card.reason}</p>}
       {card.parentLabel && <p className="break-words text-small text-muted-foreground">Parent: {card.parentLabel}</p>}
-      <div className="space-y-2 border-t pt-3">
-        <p className="break-words font-mono text-small text-muted-foreground">{card.repo ?? "Repository not reported"}</p>
-        {card.githubLinks.length > 0 && <ul className="flex flex-wrap gap-x-3 gap-y-2">
-          {card.githubLinks.map((link) => <li key={link.url} className="min-w-0">
-            <a href={link.url} target="_blank" rel="noopener noreferrer" className="inline-flex max-w-full items-center gap-1 text-small underline underline-offset-2 hover:text-primary-text">
-              <span className="min-w-0 break-all">{link.label}</span><ArrowUpRight className="size-3 shrink-0" aria-hidden /><span className="sr-only"> (opens in a new tab)</span>
-            </a>
-          </li>)}
-        </ul>}
-      </div>
-      <div className="space-y-1 border-t pt-3 text-small text-muted-foreground">
-        <p>{validTime(card.activityAt) ? <>Last activity <time dateTime={card.activityAt}>{when(card.activityAt)}</time></> : "Activity time not reported"}</p>
-        <p className="break-words font-mono">{card.costLabel}</p>
-      </div>
+      {/* The first link is the repository itself, so its name is written once. */}
+      {card.githubLinks.length > 0 ? <ul className="flex flex-wrap gap-x-3 gap-y-1">
+        {card.githubLinks.map((link) => <li key={link.url} className="min-w-0">
+          <a href={link.url} target="_blank" rel="noopener noreferrer" className="inline-flex max-w-full items-center gap-1 text-small underline underline-offset-2 hover:text-primary-text">
+            <span className="min-w-0 break-all">{link.label}</span><ArrowUpRight className="size-3 shrink-0" aria-hidden /><span className="sr-only"> (opens in a new tab)</span>
+          </a>
+        </li>)}
+      </ul> : <p className="break-words text-small text-muted-foreground">{card.repo ?? "Repository not reported"}</p>}
+      <p className="flex flex-wrap gap-x-3 text-small text-muted-foreground">
+        <span>{validTime(card.activityAt) ? <>Last activity <time dateTime={card.activityAt}>{when(card.activityAt)}</time></> : "Activity time not reported"}</span>
+        <span className="break-words font-mono">{card.costLabel}</span>
+      </p>
     </article>
   );
 }

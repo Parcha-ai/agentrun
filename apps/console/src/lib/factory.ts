@@ -1,6 +1,6 @@
 import type { FactoryCard } from "@/components/AgentFactoryBoard";
 import type { Client } from "./client";
-import { cost, runEnded, runTitle } from "./format";
+import { cost, runEnded, runLabel, runTitle } from "./format";
 import { isEscalated, NO_MESSAGES, runState } from "./runState";
 import type { FactoryRun, FactoryScope } from "./v2";
 
@@ -102,11 +102,14 @@ export function factoryCards(runs: readonly FactoryRun[], agentName: (id: string
       : run.status === "working" && run.state === "waiting" ? "Waiting"
       : state.label;
     const source = factory.source === "native" ? `Native · ${factory.runtime}` : factory.source === "sdk" ? `SDK · ${factory.runtime}` : factory.runtime;
+    // A run no runner holds (queued, or waiting for its person) has no connection to report on, so its card says nothing
+    // of one. Only a source that could report its freshness and does not (an SDK's, a connector the server does not
+    // know) says so.
     const observation = sourceOffline ? `Source ${factory.observation.status}; last reported state: ${state.label.toLowerCase()}.`
-      : factory.observation.status === "unreported" ? "Connection freshness is not reported by this source."
+      : factory.observation.status === "unreported" && factory.observation.basis !== "runner" ? "Connection freshness is not reported by this source."
       : null;
     const card: FactoryCard = {
-      id: run.run_id, runId: run.run_id, agentName: agentName(run.agent_id) || run.agent_id,
+      id: run.run_id, runId: run.run_id, ref: `run ${runLabel(run.run_id)}`, agentName: agentName(run.agent_id) || run.agent_id,
       title: runTitle(run), lane, stateLabel: label, sourceLabel: source,
       controlLabel: factory.control === "managed" ? "Managed" : "Observed",
       ...github(run), activityAt: factory.last_activity_at,
@@ -117,8 +120,8 @@ export function factoryCards(runs: readonly FactoryRun[], agentName: (id: string
     if (!review) for (const child of factory.children) {
       if (child.status !== "active") continue;
       cards.push({
-        ...card, id: `${run.run_id}:child:${child.id}`, agentName: child.label || `Child ${child.id}`,
-        title: "Reported child agent", parentLabel: `${card.agentName} · ${run.run_id}`,
+        ...card, id: `${run.run_id}:child:${child.id}`, ref: `child ${child.conversation_id}`, agentName: child.label || `Child ${child.conversation_id}`,
+        title: "Reported child agent", parentLabel: `${card.agentName} · ${runLabel(run.run_id)}`,
         lane: sourceOffline ? "unknown" : "working", stateLabel: sourceOffline ? "Activity unknown" : "Reported active",
         // A parent report is not a child's heartbeat, price, permission or GitHub delivery claim.
         activityAt: null, costLabel: "Cost not separately reported", controlLabel: "Observed",

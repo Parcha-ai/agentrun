@@ -8,7 +8,7 @@ import { optionsOf, pick, picker } from "@/test/picker";
 
 const AT = "2026-11-22T09:30:00.000Z";
 const card = (id: string, lane: FactoryCard["lane"], over: Partial<FactoryCard> = {}): FactoryCard => ({
-  id, runId: id, agentName: "Builder", title: `Work for ${id}`, lane,
+  id, runId: id, ref: id, agentName: "Builder", title: `Work for ${id}`, lane,
   stateLabel: lane, sourceLabel: "Codex", controlLabel: "Managed", repo: "example/console",
   githubLinks: [], activityAt: AT, reason: null, costLabel: "Cost not reported", ...over,
 });
@@ -74,6 +74,23 @@ describe("Agent Factory board", () => {
     expect(children[0].textContent).toContain("child-a");
     expect(children[1].textContent).toContain("child-b");
     for (const child of children) expect(child.querySelector('a[href="#/runs/parent%2Frun"]')).not.toBeNull();
+  });
+
+  it("names a session by its short label and writes its repository once; the loaded sessions are counted once until a filter narrows them", async () => {
+    const whole = "01a20ee0-b5a2-7000-b6d1-1ed9964844d8";
+    const { host, lane } = mount({ cards: [card(whole, "working", { ref: "run 964844d8", title: "Review the change", githubLinks: [
+      { label: "example/console", url: "https://github.com/example/console" }, { label: "PR #8", url: "https://github.com/example/console/pull/8" },
+    ] })], review: [] });
+    const article = lane("working").querySelector("article")!;
+    expect(article.textContent).toContain("run 964844d8");
+    expect(article.textContent).not.toContain(whole);
+    expect(article.querySelector(`a[href="#/runs/${whole}"]`)).not.toBeNull();
+    expect(article.textContent!.split("example/console")).toHaveLength(2);
+    // No filter: the totals say it once, and no second line repeats them.
+    expect(host.querySelector('[aria-label="Matching sessions"]')).toBeNull();
+    expect(host.textContent).not.toContain("with unknown activity");
+    await pick(picker(host, "Repository")!, "repo:example/console");
+    expect(host.querySelector('[aria-label="Matching sessions"]')?.textContent).toBe("1 of 1 loaded active sessions match");
   });
 
   it("filters both active and ended runs without changing the explicitly loaded totals", async () => {

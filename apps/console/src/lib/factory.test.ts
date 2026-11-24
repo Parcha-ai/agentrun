@@ -35,6 +35,28 @@ describe("factory session projection", () => {
     expect(cards[5].reason).toContain("Source offline");
   });
 
+  it("says nothing of connection freshness for a run no runner holds: a queued run, and one that waits for its person", () => {
+    // The server reads such a run as runner-observed and unreported: there is no connection to report on, so the card
+    // keeps the agent's own words whole.
+    const unheld = { ...FACTORY, observation: { basis: "runner", status: "unreported", last_seen_at: null } } satisfies NonNullable<Run["factory"]>;
+    const [queued, asking] = factoryCards([
+      run("queued", { status: "queued", factory: unheld }),
+      run("asking", { status: "input_required", state: "waiting", pending: { kind: "question", question: "Which scope?", asked_at: "2026-11-21T10:00:00Z" }, factory: unheld }),
+    ], name);
+    expect(queued.reason).toBeNull();
+    expect(asking.reason).toBe("Which scope?");
+  });
+
+  it("names a session by its run's short label, a child by its conversation, and the child's parent by the same short label", () => {
+    const id = "01a20ee0-b5a2-7000-b6d1-1ed9964844d8";
+    const [parent, child] = factoryCards([run(id, { factory: { ...FACTORY, children: [{ id: `${id}:conversation:24`, conversation_id: 24, parent_call_id: "call-1", status: "active", label: "Tester" }] } })], name);
+    expect(parent.ref).toBe("run 964844d8");
+    expect(child.ref).toBe("child 24");
+    expect(child.parentLabel).toBe("Same agent · 964844d8");
+    // The whole ids stay on the cards for the link and the key.
+    expect([parent.runId, child.runId, child.id]).toEqual([id, id, `${id}:child:${id}:conversation:24`]);
+  });
+
   it("reports SDK freshness as unavailable, without treating quiet activity as stale or granting control", () => {
     const [card] = factoryCards([run("sdk", { factory: { ...FACTORY, source: "sdk", runtime: "codex-sdk", control: "observed", observation: { basis: "unreported", status: "unreported", last_seen_at: null }, last_activity_at: null } })], name);
     expect(card).toMatchObject({ lane: "working", controlLabel: "Observed", activityAt: null });

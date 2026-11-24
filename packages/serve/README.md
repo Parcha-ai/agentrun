@@ -4040,7 +4040,7 @@ server's own origin, under a CSP that allows that origin only, but for the provi
   server-run agent and without a model-provider key. Its introduction is dismissible. Connect agent and Query use
   the coding-agent selector; the page refreshes when you return from your coding agent.
 - **Agent Factory** (`#/factory`): a kanban of sessions reported to this server, including parallel runs of one agent,
-  reported active child conversations, active learning workers, and sessions without a repository. Waiting, Working, Needs you and Unknown
+  reported active child conversations, an audit's shadow run while it runs, and sessions without a repository. Waiting, Working, Needs you and Unknown
   describe execution; a completed run does not prove that its GitHub change passed checks or merged. Cards open the
   existing run viewer for activity and supported controls. GitHub links come from launch or trusted trigger provenance.
   Native connector health and missing SDK freshness are explicit; observed sessions do not acquire controls here.
