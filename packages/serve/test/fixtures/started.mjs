@@ -44,8 +44,34 @@ export function within(promise, ms, what, seen) {
   return Promise.race([promise, late]).finally(() => clearTimeout(timer));
 }
 
-/** The processes left in `child`'s group, and those holding its stderr's other end, on Linux: "" elsewhere. Node's
- *  stdio "pipe" is a socket pair, whose other end `ss` names by this end's inode (its peer). */
+/** Each thread of `pid`, one line each: its id, name, state, the kernel function it sleeps in (wchan) and the system
+ *  call it is in, by number and first arguments ("running" when in none). A command that printed its last line and
+ *  never exited shows here where it waits: Node's MainThread in a write, a futex (a lock, or a thread it joins at exit)
+ *  or a poll, and what each libuv-worker and V8Worker is doing meanwhile. The test's process is the command's
+ *  ancestor, so ptrace scope 1 lets it read a thread's system call; a field it can't read shows why. */
+function threadsOf(pid) {
+  const field = (path) => {
+    try {
+      return readFileSync(path, "utf8").trim() || "-";
+    } catch (error) {
+      return `(${error.code})`;
+    }
+  };
+  try {
+    return readdirSync(`/proc/${pid}/task`).map((tid) => {
+      const at = `/proc/${pid}/task/${tid}`;
+      const stat = field(`${at}/stat`);
+      const syscall = field(`${at}/syscall`).split(" ");
+      return `  thread ${tid} ${field(`${at}/comm`)} ${stat.slice(stat.lastIndexOf(")") + 2).split(" ")[0]} wchan ${field(`${at}/wchan`)} syscall ${syscall.slice(0, 3).join(" ")}`;
+    });
+  } catch {
+    return [];
+  }
+}
+
+/** The processes left in `child`'s group, each with its threads (threadsOf), and those holding its stderr's other end,
+ *  on Linux: "" elsewhere. Node's stdio "pipe" is a socket pair, whose other end `ss` names by this end's inode (its
+ *  peer). */
 function holders(child) {
   try {
     readdirSync("/proc/self/fd");
@@ -75,7 +101,7 @@ function holders(child) {
         // A cmdline read can block on its process's memory lock: read only the ones listed.
         if (!inGroup && !holding.has(pid)) continue;
         const line = `${pid} ppid ${ppid} pgrp ${pgrp} ${state} ${readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0").join(" ").trim().slice(0, 200)}`;
-        if (inGroup) group.push(line);
+        if (inGroup) group.push(line, ...threadsOf(pid));
         if (holding.has(pid)) held.push(line);
       } catch {
         // Gone, or not ours to read.

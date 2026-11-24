@@ -611,7 +611,8 @@ export interface ModelProxyOptions {
    *  after the client's, so the client can neither set nor override them, and before the credential's. Checked when the
    *  proxy starts (`hostHeaderProblems`). */
   headers?: Readonly<Record<string, string>>;
-  /** For tests: the fetch the proxy forwards with. */
+  /** The fetch the proxy forwards with: the host's route for a model it translates onto the wire (a test's recorder,
+   *  too); absent, the network. */
   fetch?: typeof fetch;
   /** Told, with CONTENT_FILTERED, once an answer the provider stopped on its content filter has been passed and booked
    *  (`ProviderPolicy.filtered`): the harness halts the turn with it, before its client asks for the answer again. */

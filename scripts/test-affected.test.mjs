@@ -5,7 +5,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { SMOKE, readTestSets, scan, select } from './test-affected.mjs';
+import { SMOKE, ownFolders, readTestSets, scan, select } from './test-affected.mjs';
 
 const selector = fileURLToPath(new URL('./test-affected.mjs', import.meta.url));
 const repo = fileURLToPath(new URL('..', import.meta.url));
@@ -119,11 +119,32 @@ test('a source file run by a built path is picked by the tests that name its pat
   assert.deepEqual(result.suites[0].why['test/spawns.test.mjs'][0].chain, ['packages/a/test/spawns.test.mjs', 'packages/a/src/sub/deep.ts']);
 });
 
-test('a fixture read by a built path is picked by the tests that name it, as a fallback', (t) => {
+test('a fixture read by a built path is picked by the tests that name it, as a fallback; a test naming a file of that name under other folders is not', (t) => {
   const root = fixture(t);
+  // The fixture's basename after folders that are not its own, with a computed part between them or without: another file.
+  writeFileSync(join(root, 'packages/a/test/elsewhere.test.mjs'), "import { readFileSync } from 'node:fs';\nconst name = 'x';\nreadFileSync(`vendor/${name}/data.json`);\n// upstream/fixtures/data.json\n");
   const { files, result } = picked(root, ['packages/a/test/fixtures/data.json']);
   assert.deepEqual(files, { 'packages/a/test/reads.test.mjs': ['fallback'] });
   assert.deepEqual(result.suites[0].why['test/reads.test.mjs'][0].chain, ['packages/a/test/reads.test.mjs', 'packages/a/test/fixtures/data.json']);
+});
+
+test("the folders written before a file's name are its own, computed or impossible to place; a folder of another name is another file's", () => {
+  const folders = ['packages', 'a', 'test', 'fixtures'];
+  for (const before of ['', "join(here, '", 'see fixtures/', 'a/test/fixtures/', '/work/repo/packages/a/test/fixtures/', './', '../', '../fixtures/', '`${dir}/', 'test/${kind}/', "dir + '/"]) {
+    assert.equal(ownFolders(before, folders), true, JSON.stringify(before));
+  }
+  for (const before of ['other/', '../other/', 'upstream/fixtures/', 'vendor/${name}/', 'b/test/fixtures/', '(spec/fixtures/']) {
+    assert.equal(ownFolders(before, folders), false, JSON.stringify(before));
+  }
+  assert.equal(ownFolders('docs/', []), true, 'a file at the root: more folders written than it has cannot be placed');
+  // A computed part may stand for several folders: fixtures/${dir}/ names test/fixtures/nested/deep/ when dir is nested/deep.
+  const deep = [...folders, 'nested', 'deep'];
+  for (const before of ['fixtures/${dir}/', 'test/fixtures/${dir}/', 'a/${path}/', '${base}/nested/deep/']) {
+    assert.equal(ownFolders(before, deep), true, JSON.stringify(before));
+  }
+  for (const before of ['other/${dir}/', 'fixtures/${dir}/other/', 'b/test/${dir}/']) {
+    assert.equal(ownFolders(before, deep), false, JSON.stringify(before));
+  }
 });
 
 test('a type-only import picks nothing; a code file no test reaches picks the package\'s tests that import by a computed path', (t) => {

@@ -110,7 +110,9 @@ export function recipeEntryOf(options: RecipeEntryOptions): HarnessEntry {
         recipe: (launch) => acpRecipeFor(recipe, binary, release, options.route(launch.env), { vars: options.vars(), model: launch.model }),
         proxy: (launch) => {
           const hostEnv = recipe.model.billing === "proxy" ? (recipe.model.hostEnv ?? "ANTHROPIC_HOST") : "ANTHROPIC_HOST";
-          const messagesProxy = acp.gooseProxy({ model: launch.model, provider: launch.provider, price: launch.price, log: launch.log, ...(options.fetch ? { fetch: options.fetch } : {}) });
+          // The check's recorder, else the route's own fetch for a model it translates (ModuleLaunch.fetch), else the network.
+          const forward = options.fetch ?? launch.fetch;
+          const messagesProxy = acp.gooseProxy({ model: launch.model, provider: launch.provider, price: launch.price, log: launch.log, ...(forward ? { fetch: forward } : {}) });
           return async (session) => {
             // The proxy's own address, under the recipe's variable, beside the key that opens it alone (never a provider's).
             const started = await messagesProxy(session);

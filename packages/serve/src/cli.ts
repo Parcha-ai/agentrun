@@ -49,6 +49,7 @@ const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--
        agentrun-serve runner --check --heartbeat --data DIR [--name NAME]
        agentrun-serve store-schema [--data DIR]
        agentrun-serve store-schema --build
+       agentrun-serve scrub RUN [--data DIR] [--json]
        agentrun-serve native discover|connect --project PATH [--runtime claude-code|codex] [--agent NAME|--profile NAME] [--url URL] [--data DIR] [--no-sync]
 
   --data DIR        the agent store and its runs (default ~/.local/share/agentrun/agents); the token is DIR/.token, mode 0600
@@ -152,6 +153,14 @@ on it: for a deploy's check before it starts a build, which must not be older th
 nothing (no lock, no migration). The store is the server's: AGENTRUN_STORE_URL's Postgres, else SQLite in --data. Exit 0
 once read, 1 when the store could not be read, 2 for bad arguments. --build reads no store and prints only the versions
 this build knows. A running server says the same in GET /v2/capabilities (store_schema).
+
+\`agentrun-serve scrub RUN\` counts what a share of run RUN would cut, read from the data directory's store: an imported
+session or a run this server ran, the server stopped or running. It reads the text a share would carry (the run's title,
+result, error and review, its Timeline as served, a workflow's graph, its agent's name), each cut as the server serves it,
+and counts the scrubber's cuts in it by rule and by kind, then says how many cuts a share would make and how many of them
+you could restore. It prints counts only, never a value or any piece of one; --json prints the same as JSON. It writes
+nothing. Exit 0 once counted, 1 when the run is withheld (its held values can't be read here: nothing is counted), 2 for
+bad arguments or a run the store does not hold.
 
 \`agentrun-serve eval-template DIR\` runs a template package's eval cases (all, or each --case) as real runs of its agent
 and grades each run with the case's graders (templates/README.md, "Running the evals"). By default on a server of its
@@ -431,6 +440,11 @@ if (process.argv[2] === "store-schema") {
   process.exit(await storeSchemaMain(process.argv.slice(3), defaultData(), USAGE));
 }
 
+if (process.argv[2] === "scrub") {
+  const { scrubMain } = await import("./scrub-command.js");
+  process.exit(await scrubMain(process.argv.slice(3), commandUsage));
+}
+
 if (process.argv[2] === "import") {
   const { importCommand } = await import("./import.js");
   process.exit(await importCommand(process.argv.slice(3), USAGE));
@@ -551,7 +565,7 @@ try {
   process.exit(1);
 }
 if (early) console.log(`Starting ${publicUrl ?? urlOf(early, values.listen ?? DEFAULT_HOST)}/ (warming: health says so and the API answers 503 until the server is ready)`);
-const [{ fauxEnvOf, startServe }, { besideRunnerOptions, besideStopping, runnerBeside }, { startedWith }, { canOpen }] = await Promise.all([import("./server.js"), import("./runner/beside.js"), import("./adapters.js"), import("./host.js")]);
+const [{ fauxEnvOf, startServe }, { besideRunnerOptions, besideStopping, runnerBeside }, { earlierDataRefusal, startedWith }, { canOpen }] = await Promise.all([import("./server.js"), import("./runner/beside.js"), import("./adapters.js"), import("./host.js")]);
 // How it was started, for the hints that start it again (adapters.ts npxLine): itself and its runs read it.
 Object.assign(process.env, startedWith({ ...(values.port !== undefined ? { port: values.port } : {}), open: values.open === true }));
 let serve: Serve;
@@ -588,7 +602,9 @@ try {
     ...(values["no-runner"] ? { runnerApart: true } : {}),
   });
 } catch (error) {
-  console.error(`agentrun-serve: ${(error as Error).message}`);
+  // A data directory an earlier version wrote, refused on a start `npx @parcha/agentrun` made: the ways on as that command
+  // (adapters.ts earlierDataRefusal). Any other start keeps the refusal's own words.
+  console.error(`agentrun-serve: ${earlierDataRefusal(error, data, process.env) ?? (error as Error).message}`);
   process.exit(1);
 }
 // The start launches one runner beside the server on the same data dir (design: "server and runner"): it claims and runs
@@ -615,7 +631,7 @@ if (!values["no-runner"] && askedAt === undefined) {
     // separate runners refuse it in words). Its runs reach an MCP server on loopback only when this server is a local
     // install (Serve.localInstall).
     // Each run a process of its own, as a user of its own where the image's helper can switch (run-child-host.ts).
-    runnerProc = await runnerBeside(data, { loops, loopsTold, drainMs, env: besideRunEnv(process.env, fauxEnvOf(serveOptions)), janitor: true, ownProcesses: true, hub: serve.attachHub, dial: serve.dial, mcpLoopback: serve.localInstall, mcpOwn: serve.own, onRunEnded: telemetry.runEnded });
+    runnerProc = await runnerBeside(data, { loops, loopsTold, drainMs, env: besideRunEnv(process.env, fauxEnvOf(serveOptions)), janitor: true, ownProcesses: true, hub: serve.attachHub, dial: serve.dial, mcpLoopback: serve.localInstall, mcpOwn: serve.own, ollamaHost: serve.ollamaHost, onRunEnded: telemetry.runEnded });
   } catch (error) {
     // A run isolation the runner cannot give (run-child-host.ts runIsolationOf) is said, and the server serves on with no
     // runner, as the runner subcommand stays up claiming nothing (runner/main.ts): a platform that restarts a stopped
