@@ -720,7 +720,11 @@ export async function runBench(options: RunOptions): Promise<Result[]> {
 	let next = 0;
 	let fatal: unknown;
 	const worker = async () => {
-		while (next < jobs.length && !signal.aborted && fatal === undefined) {
+		for (;;) {
+			// A turn of the event loop before each job. A fake episode never waits on I/O, so without it the CLI's SIGINT
+			// handler, which aborts `signal`, could not run until every job had run.
+			await new Promise((resolve) => setImmediate(resolve));
+			if (next >= jobs.length || signal.aborted || fatal !== undefined) return;
 			const job = jobs[next++] as (typeof jobs)[number];
 			const resolved = resolveTask(job.task, job.seed);
 			const unrun = (n: number, outcome: "infra" | "refused", why: string, phase?: Result["phase"]): Result => ({ bench, run: "-", ...jobOf(job.task, job.seed, job.arm), attempt: n, outcome, scored: false, rerun: false, why, ...(phase ? { phase } : {}), steps: 0, tool_calls: 0, exec_calls: 0, wall_s: 0, routes: {}, stale: 0, noop: 0, verified: 0, acts: 0 });
