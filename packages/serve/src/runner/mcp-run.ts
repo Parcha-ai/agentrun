@@ -20,7 +20,7 @@ import { wireName } from "../catalog.js";
 import { mcpGateway, type McpGatewayOptions } from "../mcp-gateway.js";
 import { falBills, meterNamed, publicMedia } from "../fal-price.js";
 import { FAUX_ENV } from "../model.js";
-import { fetchOptions } from "../web-fetch-direct.js";
+import { fetchOptions } from "../web-run.js";
 import { fakeSaveOptions, type WebFake } from "../web-fake.js";
 import type { SaveSlots } from "../web-save.js";
 import { dialAt, mcpServerAt, type OAuthNetwork, systemNetwork } from "../mcp-oauth.js";

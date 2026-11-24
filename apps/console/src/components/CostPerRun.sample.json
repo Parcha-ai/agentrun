@@ -982,7 +982,8 @@
   "times_cheaper": 7.7,
   "hand_backs": {
    "ran": 59,
-   "back": 3
+   "back": 3,
+   "cut": 0
   },
   "withheld": null,
   "replay": {

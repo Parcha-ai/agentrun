@@ -8,7 +8,8 @@
 // image. Every name resolves there as the fake says, and every connection the proxy makes reaches the fake's origin on
 // the proxy container's own loopback. The proxy's code is this package's own build, bound read-only as in production.
 // Needs `npm run build` and `npm run build:daemon` first. Every container and volume this file makes carries this run's
-// label and is removed in the after hook.
+// label and is removed in the after hook. The egress bridge its first create makes stays, as the provider leaves it: it
+// is shared by every proxy on the host, another run's included.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
@@ -103,7 +104,7 @@ describe("a Docker computer whose network is an allowlist", { skip: LIVE ? false
 		for (const computer of made) for (const volume of egressOf(computer).volumes) execFileSync("docker", ["volume", "rm", "--force", volume], { stdio: "ignore" });
 	});
 
-	it("reads the allowlist back from Docker in network(), list() and attach(); the computer has no network, and its proxy is hardened and on the bridge alone", async () => {
+	it("reads the allowlist back from Docker in network(), list() and attach(); the computer has no network, and its proxy is hardened and on the provider's egress bridge alone, with no traffic between containers on it", async () => {
 		assert.deepEqual(await provider.network(ref), { ok: true, value: { allow: ALLOW } });
 		const listed = await provider.list({ [RUN_LABEL]: run });
 		assert.deepEqual(listed.ok && listed.value.map((info) => [info.ref.name, info.network]), [[ref.name, { allow: ALLOW }]], "the proxy is never listed as a computer");
@@ -114,7 +115,10 @@ describe("a Docker computer whose network is an allowlist", { skip: LIVE ? false
 		assert.equal(computer.HostConfig.NetworkMode, "none");
 		assert.deepEqual(Object.keys(computer.NetworkSettings.Networks), ["none"]);
 		const proxy = JSON.parse(docker("inspect", "--format", "{{json .}}", `${ref.name}-egress`));
-		assert.equal(proxy.HostConfig.NetworkMode, "bridge");
+		assert.equal(proxy.HostConfig.NetworkMode, "agentrun-egress");
+		assert.deepEqual(Object.keys(proxy.NetworkSettings.Networks), ["agentrun-egress"]);
+		const network = JSON.parse(docker("network", "inspect", "--format", "{{json .}}", "agentrun-egress"));
+		assert.deepEqual([network.Driver, network.Scope, network.Internal, network.Options["com.docker.network.bridge.enable_icc"]], ["bridge", "local", false, "false"]);
 		assert.deepEqual(proxy.HostConfig.CapDrop, ["ALL"]);
 		assert.equal(proxy.HostConfig.ReadonlyRootfs, true);
 		assert.equal(proxy.HostConfig.Privileged, false);
@@ -158,10 +162,10 @@ describe("a Docker computer whose network is an allowlist", { skip: LIVE ? false
 		}
 	});
 
-	it("a program that ignores the proxy reaches nothing: no route to a public address, the Docker bridge's gateway, or the proxy container", async () => {
-		const bridge = JSON.parse(docker("network", "inspect", "--format", "{{json .IPAM.Config}}", "bridge"));
+	it("a program that ignores the proxy reaches nothing: no route to a public address, the egress bridge's gateway, or the proxy container", async () => {
+		const bridge = JSON.parse(docker("network", "inspect", "--format", "{{json .IPAM.Config}}", "agentrun-egress"));
 		const gateway = bridge.find((config) => config.Gateway)?.Gateway;
-		const proxyAddress = docker("inspect", "--format", "{{.NetworkSettings.Networks.bridge.IPAddress}}", `${ref.name}-egress`).trim();
+		const proxyAddress = docker("inspect", "--format", '{{(index .NetworkSettings.Networks "agentrun-egress").IPAddress}}', `${ref.name}-egress`).trim();
 		const targets = ["93.184.215.14:443", "8.8.8.8:53", ...(gateway ? [`${gateway}:22`] : []), ...(proxyAddress ? [`${proxyAddress}:3128`] : [])];
 		const probe = await inComputer(connection, ["/opt/agentrun/computerd", "probe", ...targets.flatMap((target) => ["--connect", target])]);
 		assert.equal(probe.exitCode, 0, probe.err);

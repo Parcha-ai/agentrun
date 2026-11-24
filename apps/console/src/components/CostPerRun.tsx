@@ -6,7 +6,7 @@ import type { Client } from "@/lib/client";
 import { type Block, blockSizeOf, blocksOf, gutterFor, jobsOf, level, nearest, PATHS, pathOf, pct, plotted, type Point, rollingMean, runTicks, spread, timesOf, usd, windowOf, yTopOf } from "@/lib/costPerRun";
 import { when } from "@/lib/format";
 import { cn } from "@/lib/utils";
-import { counted, handBacksOf, type Marker, MARKER_LETTER, MARKER_WORDS, markersOf, replayLine, WITHHELD_NEXT, withheldWords } from "@/lib/learningLoop";
+import { counted, cutWords, handBacksOf, type Marker, MARKER_LETTER, MARKER_WORDS, markersOf, replayLine, WITHHELD_NEXT, withheldWords } from "@/lib/learningLoop";
 import type { CostRun, LearningCost, Promotion } from "@/lib/v2";
 
 // An agent's cost per run, run after run (GET /v2/agents/{id}/learning/cost): every run's all-in $ (its own cost and what
@@ -166,7 +166,7 @@ export function CostChart({ data, on, width: fixed, promotions = [], execution =
   const cheaper = s.times_cheaper !== null ? `${timesOf(s.times_cheaper)} cheaper` : null;
   // The headline: the server's own figure, which never flatters learning (before: the agent's own $ a run, learning left
   // out; after the takeover: all-in, learning kept in), and how often the workflow handed the run back since.
-  const backWords = back ? `${pct(back.back, back.ran)} handed back since` : null;
+  const backWords = back ? `${pct(back.back, back.ran)} handed back since${cutWords(back.cut)}` : null;
   // The after side is the runs a learned workflow served (never its replays), said with its count; with none priced yet,
   // the headline says so in words, never a figure.
   const afterWords = s.after ? `${level(s.after.mean_usd)} all-in over ${servedWord(s.after.runs)} after` : s.takeover && s.after_state === "cost_unknown" ? "no served run's cost known yet" : null;

@@ -101,6 +101,31 @@ function capOf(options: PublicFetchOptions): number {
   return maxBytes;
 }
 
+type Lookup = (host: string) => Promise<string[]>;
+const systemLookup: Lookup = async (host) => (await dns.lookup(host, { all: true })).map((a) => a.address);
+
+/** One hop's checks before it is dialled: its name is not a local one, every address it resolves to is public, and its
+ *  port is 80 or 443. Answers the addresses, the first of which the hop dials; throws the refusal otherwise. */
+async function hopAddresses(target: URL, lookup: Lookup, signal: AbortSignal | undefined): Promise<string[]> {
+  const host = target.hostname.replace(/^\[|\]$/g, "");
+  // Trailing dots name the same host (WHATWG keeps them): the name checks read the host without any.
+  const name = host.replace(/\.+$/, "");
+  if (name === "localhost" || name.endsWith(".localhost") || name.endsWith(".local") || name.endsWith(".internal")) throw refusedError(`refused: ${host} is not a public host`);
+  const addresses = net.isIP(host) ? [host] : await untilAborted(() => lookup(host), signal);
+  if (!addresses.length || addresses.some(isPrivateAddress)) throw refusedError(`refused: ${host} is not a public host`);
+  if (!PORTS.has(target.port)) throw refusedError(`refused: port ${target.port} is not 80 or 443`);
+  signal?.throwIfAborted();
+  return addresses;
+}
+
+/** Whether publicFetch's first hop would be dialled for `url`: http(s), and hopAddresses' checks, with nothing sent.
+ *  Resolves when it passes; throws publicFetch's own refusal when it does not. */
+export async function publicCheck(url: string, options: { lookup?: Lookup; signal?: AbortSignal } = {}): Promise<void> {
+  const target = new URL(url);
+  if (!/^https?:$/.test(target.protocol)) throw refusedError(`refused: ${target.protocol} is not http(s)`);
+  await hopAddresses(target, options.lookup ?? systemLookup, options.signal);
+}
+
 /**
  * The hop loop both answers share: `url` fetched from a public host, following at most 5 redirects, each hop resolved,
  * checked and dialled at the address checked, asking for `accept`. The answer that ends the redirects goes to `answer`,
@@ -108,19 +133,14 @@ function capOf(options: PublicFetchOptions): number {
  * returns or throws.
  */
 async function publicHops<T>(url: string, options: PublicFetchOptions, accept: string, answer: (res: Response, target: URL) => Promise<T>): Promise<T> {
-  const lookup = options.lookup ?? (async (host: string) => (await dns.lookup(host, { all: true })).map((a) => a.address));
+  const lookup = options.lookup ?? systemLookup;
   const request = options.fetchImpl ?? ((target, init) => undiciFetch(target, init as never) as unknown as Promise<Response>);
   const [scheme, schemeName] = options.httpsOnly ? ([/^https:$/, "https"] as const) : ([/^https?:$/, "http(s)"] as const);
   const most = options.maxRedirects ?? MAX_REDIRECTS;
   let target = new URL(url);
   if (!scheme.test(target.protocol)) throw refusedError(`refused: ${target.protocol} is not ${schemeName}`);
   for (let hop = 0; ; hop += 1) {
-    const host = target.hostname.replace(/^\[|\]$/g, "");
-    if (host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local") || host.endsWith(".internal")) throw refusedError(`refused: ${host} is not a public host`);
-    const addresses = net.isIP(host) ? [host] : await untilAborted(() => lookup(host), options.signal);
-    if (!addresses.length || addresses.some(isPrivateAddress)) throw refusedError(`refused: ${host} is not a public host`);
-    if (!PORTS.has(target.port)) throw refusedError(`refused: port ${target.port} is not 80 or 443`);
-    options.signal?.throwIfAborted();
+    const addresses = await hopAddresses(target, lookup, options.signal);
     const dispatcher = new Agent({ connect: { lookup: pinnedLookup(addresses[0]!) } });
     let res: Response | undefined;
     try {

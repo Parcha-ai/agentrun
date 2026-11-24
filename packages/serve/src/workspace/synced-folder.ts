@@ -124,10 +124,9 @@ export type HeldFolder = { folder?: FolderSync };
 export async function holdSynced(store: FolderStore, client: ComputerClient, stored: StoredFolder, signal?: AbortSignal): Promise<FolderSync> {
   const folder = new FolderSync(client, store);
   const options = signal ? { signal } : {};
-  // An empty folder has nothing to push (no tar), its listing is the baseline all the same.
-  const empty = stored.entries.length === 0 && Object.keys(stored.meta.links).length === 0;
-  const held = empty ? await folder.baseline(options) : await folder.push(tarEntries(store, stored), options);
-  if (!held.ok) throw new Error(empty ? `the run's folder pushed into the computer could not be listed: ${held.error.message}` : `the run's folder ${held.error.message}`);
+  // An empty folder is an empty tar, as conformance pushes it.
+  const held = await folder.push(tarEntries(store, stored), options);
+  if (!held.ok) throw new Error(`the run's folder ${held.error.message}`);
   for (const path of stored.linkObjects) {
     const removed = await store.remove(path, "file");
     if (!removed.ok) throw new Error(`the link ${JSON.stringify(path)} an exec made on the run's disk could not be removed from it: ${removed.error.message}`);

@@ -16,8 +16,10 @@ import { createHash } from "node:crypto";
 import type { PublicFetchOptions } from "@parcha/pi-browser";
 import type { McpKeys, McpMeter, McpQuote } from "./mcp-gateway.js";
 import { mediaSeconds, voiceSeconds } from "./media-duration.js";
-import { usd } from "./paid-calls.js";
 import { SAVE_MAX_BYTES, type SaveSlots, SERVER_SLOTS } from "./web-save.js";
+
+/** In whole millionths of a dollar, so a sum of prices is the price. */
+const usd = (dollars: number) => Math.round(dollars * 1e6) / 1e6;
 
 /** The host of fal's hosted MCP server (its key endpoint /mcp and its sign-in endpoint /mcp-relay). */
 export const FAL_MCP_HOST = "mcp.fal.ai";

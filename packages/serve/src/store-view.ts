@@ -8,7 +8,7 @@ import { isDeepStrictEqual } from "node:util";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { CAPS, type EntryLike, isMessageRow, type TimelineEvent } from "./timeline/index.js";
 import { runLink } from "./console-links.js";
-import { redacted, redactedAnswer, redactedOutput, withoutLoopback } from "./key-refusal.js";
+import { redacted, redactedAnswer, redactedOutput, withheldWhole, withoutLoopback } from "./key-refusal.js";
 import { structuredAnswer } from "./answer-json.js";
 import { isObject } from "./validate.js";
 import { currentLearning, holdsForOk, type ItemStatus, type Learning, learningView, LEARNING_LABEL, secretsShown, shortOf, type Shown } from "./learning.js";
@@ -400,7 +400,7 @@ async function storeRunIn(store: Store, runId: string, deps: ViewDeps, cut: Awai
   // Its final answer whole (store-reads/journal.ts wholeAnswers), as main served a run's answer: a row's cut is no answer's.
   // A run that ended reads settled, and its usage row says its cost ("Cost: …"), never what it has cost so far. One
   // looking back is still going: its look-back's rows come yet.
-  const timelineOptions = { settled: terminal && !lookingBack, ended: terminal && !lookingBack, redact: (text: string) => redacted(text, values) };
+  const timelineOptions = { settled: terminal && !lookingBack, ended: terminal && !lookingBack, redact: (text: string) => redacted(text, values), holds: (text: string) => withheldWhole(text, values) };
   // Rendered from the records read above, so its usage row and the cost's `plan` (bookedSpend over the same entries) are
   // of one read.
   const timeline = withAsks(await wholeAnswers(store, runId, context, await runTimeline(store, runId, context, timelineOptions, records), timelineOptions, wholeAnswerFor(values), since));
@@ -742,7 +742,7 @@ async function viewOfRun(store: Store, runId: string, deps: ViewDeps, run: Store
 
   const finalAnswer = row.kind === "workflow" || unshown ? null : answerOf(run.rows) ?? row.summary ?? null;
   // A workflow run's output, as its end kept it; an agentic run's, its final answer's structured part when its agent has
-  // an output schema and the answer's last fenced json block meets it (storeRunOf's `structured`), else none. Served as
+  // an output schema and the answer's json block (answer-json.ts jsonBlockOf) meets it (storeRunOf's `structured`), else none. Served as
   // runs.ts serves it (servedOutput): each string in it cut of the values the run holds, its shape kept; none while the
   // run's sign-in can't be read back.
   const ownOutput = row.kind === "workflow" ? output : status === "completed" && structured && "value" in structured ? structured.value : null;

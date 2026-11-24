@@ -1,8 +1,9 @@
-// A web tool's request to Parallel (its search, web-search.ts; its extract, web-fetch.ts), booked as a monid endpoint's
+// A web tool's request to Parallel (its search and its extract, @parcha/agentrun-web), booked as a monid endpoint's
 // call is (monid.ts): on the run's one ledger (the kernel cap's paid tool calls, RunTools), admitted at the request's price
 // before it is sent (refused unsent in the cap's words when the cap does not hold it) and settled after at what it
 // charged. A charge is the run's cost, a line of its own on its timeline and /usage's `tools` meter. Every request goes
-// through the run's one Parallel client's `post` (web-fetch.ts), which books it here by the endpoint it asks.
+// through the run's one Parallel client's `post` (the run's Web, web-run.ts webOf), which books it here at the fee web's
+// fees.ts prices it at. PaidRefused is web's, so web's client reads a refusal as its own.
 // Parallel's answers report what they used as SKU counts, never an amount, so each request is booked at Parallel's
 // published price, an estimate: its price on a 2xx; nothing on a 4xx other than a 408 (Parallel refused it before any
 // work); and its price on a 408, a 5xx or a request that failed or was stopped after it was sent, which Parallel may
@@ -17,53 +18,8 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import type { Context } from "@earendil-works/chord/context";
 import type { Refusal } from "@parcha/agentrun-kernel";
 import type { ToolExecutionApi, ToolRegistration } from "@earendil-works/pi-durable";
+import { type Fee, PaidRefused } from "@parcha/agentrun-web";
 import { SPEND_CAP_REACHED } from "./cap.js";
-
-/** The modes Parallel's Search API is priced in here; a request in any other mode (or naming none) has no price. */
-export type ParallelSearchMode = "turbo" | "fast" | "basic" | "advanced";
-/** Parallel's published prices (https://docs.parallel.ai/resources/pricing, read 2026-11-20). Search, by the request's
- *  `mode`: `turbo` or `fast` $1 per 1,000 requests, `basic` or `advanced` $5 per 1,000, each with 10 results included,
- *  and each result past those 10 $1 per 1,000. Extract: $1 per 1,000 URLs. */
-export const PARALLEL_SEARCH_MODE_USD: Readonly<Record<ParallelSearchMode, number>> = Object.freeze({ turbo: 0.001, fast: 0.001, basic: 0.005, advanced: 0.005 });
-/** A `fast` search's price: the mode the web tools search in (web-search.ts). */
-export const PARALLEL_SEARCH_USD = 0.001;
-export const PARALLEL_SEARCH_RESULT_USD = 0.001;
-export const PARALLEL_SEARCH_INCLUDED = 10;
-export const PARALLEL_EXTRACT_USD = 0.001;
-
-/** One paid request: `name` in the cap's refusal, `tool` and `by` on its records, `usd` its price, `basis` why. */
-export type Fee = { name: string; by: string; usd: number; basis: string };
-
-/** In whole millionths of a dollar, so a sum of prices is the price. */
-export const usd = (dollars: number) => Math.round(dollars * 1e6) / 1e6;
-
-const isSearchMode = (mode: unknown): mode is ParallelSearchMode => typeof mode === "string" && Object.hasOwn(PARALLEL_SEARCH_MODE_USD, mode);
-
-/** A search in `mode` for `n` results: the mode's price (PARALLEL_SEARCH_MODE_USD), and $0.001 for each past the 10 it
- *  includes. The web tools search `fast`: $0.001. */
-export const parallelSearchFee = (n: number, mode: ParallelSearchMode = "fast"): Fee => {
-  const more = Math.max(0, n - PARALLEL_SEARCH_INCLUDED);
-  return { name: "Parallel's search", by: "parallel", usd: usd(PARALLEL_SEARCH_MODE_USD[mode] + PARALLEL_SEARCH_RESULT_USD * more), basis: more ? `Parallel's list price for a ${mode} search of ${n} results` : `Parallel's list price for a ${mode} search` };
-};
-/** An extract of `urls` URLs (the web tools ask one at a time). */
-export const parallelExtractFee = (urls = 1): Fee => ({ name: "Parallel's extract", by: "parallel", usd: usd(PARALLEL_EXTRACT_USD * urls), basis: urls === 1 ? "Parallel's list price for one URL" : `Parallel's list price for ${urls} URLs` });
-
-/** The fee of a request to Parallel's `url` with `body`: its search's, by its `mode` and the results it asks for (10 by
- *  default), or its extract's, by the URLs; undefined for an endpoint the web tools do not ask, and for a search whose
- *  mode has no price here (one naming none, or one Parallel added since): never $0, never another mode's price. */
-export function parallelFeeOf(url: string, body: unknown): Fee | undefined {
-  const path = URL.parse(url)?.pathname;
-  const asked = (body ?? {}) as { mode?: unknown; advanced_settings?: { max_results?: unknown }; urls?: unknown };
-  if (path === "/v1/search") return isSearchMode(asked.mode) ? parallelSearchFee(typeof asked.advanced_settings?.max_results === "number" ? asked.advanced_settings.max_results : PARALLEL_SEARCH_INCLUDED, asked.mode) : undefined;
-  if (path === "/v1/extract") return parallelExtractFee(Array.isArray(asked.urls) ? Math.max(1, asked.urls.length) : 1);
-  return undefined;
-}
-
-/** A paid request the run's cap refused, whose hold could not be kept, or that has no run's ledger to book it on:
- *  nothing was sent. Its message is the refusal, in the cap's words. */
-export class PaidRefused extends Error {
-  override readonly name = "PaidRefused";
-}
 
 /** Where a paid request is booked: the call it is booked under, and the run's one ledger. */
 export type Ledger = {

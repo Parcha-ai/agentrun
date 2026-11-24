@@ -1,5 +1,5 @@
 // Demo mode, from Settings → Demo: the console fills with the sample story, says so on every page, lets the person
-// approve a waiting call, refuses a picked file in the page, and asks the server for nothing but the session and its catalogue; turned off, the console is
+// approve a waiting call and grade its answer, attach a file in the page, and asks the server for nothing but the session and its catalogue; turned off, the console is
 // the server's again (here: a new server, with no agents).
 import { check } from "../harness.mjs";
 
@@ -20,13 +20,19 @@ export default {
     await page.getByRole("button", { name: "Allow once" }).click();
     await page.getByText("You allowed email_send. It ran.").waitFor();
     await page.getByText(/^Full refund, no return for Mara Ellison/).first().waitFor();
+    // The run's grade is taken as the server takes one, and kept beside the run.
+    await page.getByRole("button", { name: "Right", exact: true }).click();
+    await page.getByText("Graded right", { exact: true }).waitFor();
+    check((await page.getByText(/Your grade wasn't taken/).count()) === 0, "demo mode refused the run's grade");
 
     await page.goto(`${base}/#/agents`);
     await page.getByText("9 agents").waitFor();
-    // A file picked in the playground is refused in the page: its bytes never reach the server's /v2/files.
+    // A file picked in the playground is attached as an upload would be, and kept in the page: its bytes never reach the
+    // server's /v2/files.
     await page.goto(`${base}/#/playground`);
     await page.getByLabel("Pick files").setInputFiles({ name: "notes.md", mimeType: "text/markdown", buffer: Buffer.from("# Notes\n") });
-    await page.getByRole("alert").getByText(/^notes\.md: Demo mode shows sample data/).waitFor();
+    await page.getByRole("list", { name: "Attached files" }).getByText("notes.md").waitFor();
+    await page.getByRole("button", { name: "Remove notes.md" }).waitFor();
     await page.goto(`${base}/#/`);
     await page.getByText("Weekly risk brief").first().waitFor();
 

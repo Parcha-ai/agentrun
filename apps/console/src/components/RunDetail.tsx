@@ -1,6 +1,6 @@
 import { CliLearningRun } from "@/components/CliLearningRun";
 import { cliRunOf, cliRunLabel } from "@/lib/cliLearning";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ApprovalCard } from "@/components/ApprovalCard";
 import { Composer } from "@/components/Composer";
 import { BudgetPaused, capWords, leastCap, NeedsYou, RaiseCap, suggestedCap } from "@/components/NeedsYou";
@@ -22,7 +22,9 @@ import { tabPanelProps, Tabs } from "@/components/ui/tabs";
 import { APPROVAL_ROW, approvalOf } from "@/lib/approval";
 import { askedAt, askOf, computerRefusal } from "@/lib/computerAsk";
 import { runEnded } from "@/lib/format";
-import { BY_THE_MINUTE } from "@/lib/computers";
+import { stepCall, videoSteps } from "@/lib/runVideo";
+import { callSpanIds } from "@/lib/trace";
+import { BY_THE_MINUTE, providerOf } from "@/lib/computers";
 import { type LearningDiff, type RunLearningResultData, learningSteps } from "@/lib/learning";
 import { isEscalated, type MessageFeatures, type RunView, runState } from "@/lib/runState";
 import { cn } from "@/lib/utils";
@@ -208,7 +210,7 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
   useEffect(() => {
     if (!machine || !BY_THE_MINUTE.has(machine.kind) || !readComputers) return;
     let alive = true;
-    readComputers().then((c) => { if (alive) setMetered(!!c.kinds.find((k) => k.kind === machine.kind)?.providers.find((p) => p.id === machine.provider)?.metered); }).catch(() => {});
+    readComputers().then((c) => { if (alive) setMetered(!!providerOf(c.kinds, machine.kind, machine.provider)?.metered); }).catch(() => {});
     return () => { alive = false; };
   }, [machine?.kind, machine?.provider]); // eslint-disable-line react-hooks/exhaustive-deps
   // The agent's ask at its computer: its card above the tabs' content, and the page moves to the Screen tab once per ask.
@@ -242,6 +244,29 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
 
   // The run moved: its rows as held are another array each time a page added, dropped or changed one (a charge folded
   // into a call's own row changes it and adds none), so the Dev tools tab reads its trace again by that, never by a count.
+  // A call and the recording made while it ran name each other. From a recording's step, the Dev tools tab opens the call.
+  // From a call's panel, the Screen tab plays the recording from the call's time: offered once the run is over, when its
+  // Screen tab plays its recordings (while it can open its computer the tab shows that live), and for a call that is a
+  // step of a finished recording (lib/runVideo's videoSteps, the steps the recording lists). A call is known by its span
+  // in the trace, never by its call id alone, which two conversations may share and one may use twice (callSpanIds).
+  const [openCall, setOpenCall] = useState<{ span: string; n: number } | undefined>(undefined);
+  const [seek, setSeek] = useState<{ path: string; at: number; n: number } | undefined>(undefined);
+  const spanOf = useMemo(() => callSpanIds(rows), [rows]);
+  const onVideo = useMemo(() => {
+    const places = new Map<string, { path: string; at: number }>();
+    if (!view.final || !fileUrl) return places;
+    for (const recording of run.recordings ?? []) {
+      if (!recording.finished) continue;
+      for (const { step, at } of videoSteps(rows, recording)) { const span = stepCall(step) ? spanOf.get(step.row.id) : undefined; if (span && !places.has(span)) places.set(span, { path: recording.path, at }); }
+    }
+    return places;
+  }, [rows, spanOf, run.recordings, view.final, fileUrl]);
+  const recorded = (spanId: string) => {
+    const place = onVideo.get(spanId);
+    return place && hasScreen ? () => { setSeek((last) => ({ ...place, n: (last?.n ?? 0) + 1 })); setTab("screen"); } : undefined;
+  };
+  const openInTrace = readTrace ? (rowId: string) => { const span = spanOf.get(rowId); if (!span) return; setOpenCall((last) => ({ span, n: (last?.n ?? 0) + 1 })); setTab("trace"); } : undefined;
+
   const moved = useRef({ rows, times: 0 });
   if (moved.current.rows !== rows) moved.current = { rows, times: moved.current.times + 1 };
   // A run paused at its cap shows its raise form under the banner; the header's Raise the cap goes there (one form, not two).
@@ -264,11 +289,11 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
     // On a short screen (a phone on its side) the page scrolls as a whole, in <main>: the header, the tabs and the composer
     // keep their own heights and the tab body takes what it needs, instead of what is left of 390 px (nothing).
     <div className="flex h-full min-h-0 flex-col short:h-auto">
-      <RunHeader run={run} agentName={agentName} actions={actions} costText={costText} raiseBelow={bannerRaise ? toBannerRaise : undefined} />
+      <RunHeader run={run} agentName={agentName} actions={actions} costText={costText} raiseBelow={bannerRaise ? toBannerRaise : undefined} readUsage={readUsage} />
       <Tabs id="run-views" label="Run views" value={tab} onChange={(value) => setTab(value as Tab)} tabs={tabs.map(([id, label]) => ({ id, label }))} />
       {tab === "graph" ? <div {...tabPanelProps("run-views", tab)} className="min-h-0 flex-1 short:min-h-96">{graphView}</div>
         // The Dev tools tab is a page of data: it fills the width and scrolls in its own panes.
-        : tab === "trace" && readTrace ? <RunTrace run={run} read={readTrace} readUsage={readUsage} version={`${moved.current.times}:${run.status}:${run.ended_at ?? ""}`} live={view.live} panel={tabPanelProps("run-views", tab)} {...traceAt} />
+        : tab === "trace" && readTrace ? <RunTrace run={run} read={readTrace} readUsage={readUsage} version={`${moved.current.times}:${run.status}:${run.ended_at ?? ""}`} live={view.live} panel={tabPanelProps("run-views", tab)} openCall={openCall} recorded={recorded} {...traceAt} />
         : <div {...tabPanelProps("run-views", tab)} data-scroll-pane className="min-h-0 flex-1 overflow-auto short:flex-none short:overflow-visible">
         {/* The reading column, then the Screen tab's panel in a box of its own: it is wider than the column when the
             run's steps sit beside its screen. A column with nothing in it takes no room above the panel. */}
@@ -307,7 +332,7 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
           {tab === "files" && <RunFiles files={files} onOpen={show} showHidden={showHidden} onShowHidden={setShowHidden} />}
         </div>
           {tab === "screen" && hasScreen && <ScreenPanel runId={run.run_id} screen={screen} machine={machine} opens={screenOpens} followUp={view.canMessage && view.messageMode === "follow_up"} metered={metered} waitsFor={run.status === "input_required" && run.pending?.kind !== "stopped" ? run.pending?.kind : undefined} keptUntil={run.status === "input_required" ? keptUntil : undefined}
-            onTake={onTakeOver ? take : undefined} onHand={onHandBack ? () => hand() : undefined} recordings={run.recordings} fileUrl={fileUrl} rows={rows} working={view.live} />}
+            onTake={onTakeOver ? take : undefined} onHand={onHandBack ? () => hand() : undefined} recordings={run.recordings} fileUrl={fileUrl} rows={rows} working={view.live} onOpenCall={openInTrace} seek={seek} />}
         </div>
       </div>}
       {native && <p className="border-t px-5 py-4 text-small text-muted-foreground md:px-8">Native sessions cannot receive steering or follow-up messages. <a href={`#/playground?agent=${encodeURIComponent(run.agent_id)}`} className="underline underline-offset-2">Start a new native run</a> for another task.</p>}
