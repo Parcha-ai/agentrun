@@ -37,3 +37,12 @@ test("a tool call is in flight until its result row; both kinds oldest first, an
   assert.notEqual(both.key, inFlightOf([], tools).key);
   assert.equal(inFlightOf([], []).key, "");
 });
+
+test("a tool call's result ends only the call of its own conversation: two sessions may number their calls alike", () => {
+  const rows = [
+    { kind: "tool_use", tool_name: "read_file", tool_use_id: "1", conversation_id: 2, timestamp: "2026-11-23T22:48:30.000Z" },
+    { kind: "tool_result", tool_name: "read_file", tool_use_id: "1", conversation_id: 2, timestamp: "2026-11-23T22:48:31.000Z" },
+    { kind: "tool_use", tool_name: "bash", tool_use_id: "1", conversation_id: 3, timestamp: "2026-11-23T22:48:32.000Z" },
+  ];
+  assert.deepEqual(toolsInFlight(rows), [{ kind: "tool", name: "bash", started_at: "2026-11-23T22:48:32.000Z", tool_use_id: "1" }]);
+});

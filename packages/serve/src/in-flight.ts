@@ -40,10 +40,13 @@ export function modelsInFlight(entries: readonly EntryLike[]): InFlight[] {
   return out;
 }
 
-/** The tool calls a run made and has not had back: each `tool_use` row with no `tool_result` row of its id. */
+/** The tool calls a run made and has not had back: each `tool_use` row with no `tool_result` row of its id in its
+ *  conversation. A call's id is its session's own (an ACP agent may number its calls from 1), so two sessions' calls can
+ *  share one. */
 export function toolsInFlight(rows: readonly TimelineEvent[]): InFlight[] {
-  const returned = new Set(rows.filter((r) => r.kind === "tool_result" && r.tool_use_id).map((r) => r.tool_use_id!));
-  return rows.filter((r) => r.kind === "tool_use" && r.tool_use_id && !returned.has(r.tool_use_id))
+  const callKey = (r: TimelineEvent) => `${r.conversation_id ?? 0}:${r.tool_use_id}`;
+  const returned = new Set(rows.filter((r) => r.kind === "tool_result" && r.tool_use_id).map(callKey));
+  return rows.filter((r) => r.kind === "tool_use" && r.tool_use_id && !returned.has(callKey(r)))
     .map((r) => ({ kind: "tool" as const, name: r.tool_name ?? "tool", started_at: r.timestamp || null, tool_use_id: r.tool_use_id! }));
 }
 
