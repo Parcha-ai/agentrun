@@ -1366,22 +1366,25 @@ test("the server's stop waits a short while for a sign-in past its code's exchan
     // Its answer is cut off by the stop: what it says is not the test's.
     server.api("POST", "/settings/chatgpt/sign-in/finish", { redirect_url: callbackFor(started.body.authorize_url) }).catch(() => undefined);
   };
-  const hung = (promise, ms) => Promise.race([promise.then(() => "ended"), new Promise((resolve) => setTimeout(() => resolve("hung"), ms))]);
-  // Its model list answers while the stop waits: the sign-in is kept, and the next server reads it signed in.
-  const first = await serve(t, { faux: undefined, runner: false, harnesses: false });
+  // Its model list answers while the stop waits (a wait no test machine outruns, planCloseMs): the sign-in is kept, and
+  // the next server reads it signed in.
+  const first = await serve(t, { faux: undefined, runner: false, harnesses: false, planCloseMs: 600_000 });
   await finishing(first);
   await until(() => openai.modelLists === 1, "the sign-in's code was exchanged, and its models are being listed");
-  const stopping = first.stop();
-  assert.equal(await hung(stopping, 300), "hung", "the stop waits for the sign-in its model list holds");
+  let ended = false;
+  const stopping = first.stop().then(() => (ended = true));
+  // A floor only: a stop that waits is still waiting, however slow the machine.
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.equal(ended, false, "the stop waits for the sign-in its model list holds");
   release();
   await stopping;
-  const again = await serve(t, { data: first.data, faux: undefined, runner: false, harnesses: false });
+  const again = await serve(t, { data: first.data, faux: undefined, runner: false, harnesses: false, planCloseMs: 50 });
   assert.equal((await again.api("GET", "/settings/chatgpt")).body.state, "signed_in", "kept before the store closed");
-  // Its model list never answers: the stop gives up on it after its short wait.
+  // Its model list never answers: the stop gives up on it after its wait, and ends (the test's timeout bounds it).
   openai.holdModels = new Promise((resolve) => (release = resolve));
   await finishing(again);
   await until(() => openai.modelLists === 2, "the second sign-in's models are being listed");
-  assert.equal(await hung(again.stop(), 15_000), "ended", "the stop ends with the sign-in still out");
+  await again.stop();
 });
 
 test("normal server shutdown releases a pending ChatGPT callback without signing out the saved plan", { timeout: 30_000 }, async (t) => {

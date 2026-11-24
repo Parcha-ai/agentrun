@@ -281,10 +281,10 @@ const REFUSED_SWEEP_MS = 2_000;
 /** How long the server's stop waits for a ChatGPT sign-in it cancelled to end (ChatGPTPlan.close): one past its code's
  *  exchange saves its row before the store closes; one OpenAI holds longer does not hold the stop. */
 const PLAN_CLOSE_MS = 2_000;
-/** The ChatGPT sign-ins `plan` cancels, ended, or PLAN_CLOSE_MS gone. */
-const planClosed = (plan: ChatGPTPlan): Promise<void> => {
+/** The ChatGPT sign-ins `plan` cancels, ended, or `ms` gone. */
+const planClosed = (plan: ChatGPTPlan, ms: number): Promise<void> => {
   let timer: NodeJS.Timeout | undefined;
-  return Promise.race([plan.close(), new Promise<void>((done) => (timer = setTimeout(done, PLAN_CLOSE_MS)))]).finally(() => clearTimeout(timer));
+  return Promise.race([plan.close(), new Promise<void>((done) => (timer = setTimeout(done, ms)))]).finally(() => clearTimeout(timer));
 };
 const PAGE_ROWS = 500;
 const FILE_LIST_CAP = 2_000;
@@ -475,6 +475,8 @@ export type ServeOptions = {
   /** For tests: the attach socket's liveness timing (computer-attach.ts AttachTiming), a relayed dial's included; the
    *  protocol's by default. */
   attachTiming?: AttachTiming;
+  /** For tests: how long the stop waits for a ChatGPT sign-in it cancelled to end (PLAN_CLOSE_MS by default). */
+  planCloseMs?: number;
   /** The most runs at once (default: AGENTRUN_MAX_RUNS, else as many pi runs as this host's memory holds: host.ts),
    *  beside the memory each run's harness reserves; over either, 429. */
   maxRuns?: number;
@@ -1516,7 +1518,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // where it is signed in. A sign-in, a sign-out or an expiry it sees makes the reading again, as a key's save does.
   const plan = new ChatGPTPlan({ store, sealKey: seal.key, log: (fields) => (log ? log(logLine("chatgpt", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("chatgpt", fields)}\n`)), changed: () => keysChanged() });
   await plan.load();
-  stops.push(() => planClosed(plan));
+  stops.push(() => planClosed(plan, options.planCloseMs ?? PLAN_CLOSE_MS));
   // Claude Code's login on this machine (claude-login.ts): env carries where it is while the owner has it on, so
   // claude-agent's model checks see a model without a key. Unset, its switch follows the listen address: there on
   // loopback, off past it. A setting kept where the mode is now off or refused goes first.
@@ -6743,7 +6745,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     clearInterval(localSourceTimer);
     // Cancel a pending ChatGPT callback without signing out or changing the saved credential. One past its code's
     // exchange is waited for a short while (planClosed), so its row lands before the store closes.
-    const planStopped = planClosed(plan);
+    const planStopped = planClosed(plan, options.planCloseMs ?? PLAN_CLOSE_MS);
     // The CLI's sign-in still waiting for its browser ends with the server, which forgets it: left running, its CLI would
     // keep the browser's callback port from the next server's sign-in. Awaited until its process is gone.
     const signInStopped = claudeSignIns.close();
