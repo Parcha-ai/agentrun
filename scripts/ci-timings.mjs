@@ -1,7 +1,7 @@
 // Rewrites scripts/ci-timings.json, the weights scripts/ci-plan.mjs shards by, from CI job logs (GitHub-hosted runners).
 //   node scripts/ci-timings.mjs <job log>...
 // A log is a job's raw log (`gh api repos/<owner>/<repo>/actions/jobs/<id>/logs`): test shards and pi parts, from runs
-// on GitHub's runners (pull requests run every job there). For each suite a log runs, it reads node --test's TAP or spec
+// on GitHub's runners (a push to main runs every job, and every test, there). For each suite a log runs, it reads node --test's TAP or spec
 // reporter (each top-level test's time, credited to the file that declares a test of that name) or vitest's per-file
 // lines, and the suite's wall time (node --test's closing duration_ms, vitest's Duration); for a pi part, each
 // workspace's type-check. It writes the median over the logs of each file's seconds, each suite's file total over its wall time

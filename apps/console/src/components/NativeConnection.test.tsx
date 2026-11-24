@@ -60,3 +60,27 @@ it("offers remote connection without scanning the server's project files or clai
   expect(host.querySelector<HTMLInputElement>('input[name="remote-connection-intent"][value="live"]')?.checked).toBe(true);
   expect(host.textContent).not.toContain("run AgentRun locally there and open its console");
 });
+
+it("leaves the connection method's tabs alone on their line, with this server's hand-off in its section's heading row", async () => {
+  const v2 = createClient({ fetch: (async (url) => {
+    if (new URL(String(url), "https://console.example.test").pathname === "/v2/connectors") return json({ connectors: [] });
+    throw new Error(String(url));
+  }) as typeof fetch });
+  const host = document.body.appendChild(document.createElement("div")); root = createRoot(host);
+  await act(async () => root.render(createElement(NativeConnections, { v2, go: () => {} })));
+  // On this server the hand-off heads the section it belongs to, in its title's row, which wraps: as Another machine's does.
+  const title = [...host.querySelectorAll('section[aria-label="Discover native setups"] h2')].find((h) => h.textContent === "Discover on this server")!;
+  const row = title.parentElement!;
+  expect(row.querySelector(':scope > [role="group"][aria-label$=" options"]')).not.toBeNull();
+  expect(row.className.split(" ")).toEqual(expect.arrayContaining(["flex", "flex-wrap", "items-center", "gap-3"]));
+  expect(host.querySelectorAll('[role="group"][aria-label$=" options"]')).toHaveLength(1);
+  // The tabs and a button are both inline boxes. Side by side with no row around them they share one line: they touch,
+  // and the shorter one sits on the text's baseline instead of an edge. So no tab puts an inline control beside the tabs.
+  const inline = (el: Element | null) => !!el && el.className.split(" ").includes("inline-flex");
+  for (const source of ["server", "remote", "observe"]) {
+    await act(async () => host.querySelector<HTMLInputElement>(`input[type="radio"][value="${source}"]`)!.click());
+    const tabs = host.querySelector('[role="radiogroup"][aria-label="Connection method"]')!;
+    expect(inline(tabs.previousElementSibling), `${source}: an inline control before the tabs`).toBe(false);
+    expect(inline(tabs.nextElementSibling), `${source}: an inline control after the tabs`).toBe(false);
+  }
+});

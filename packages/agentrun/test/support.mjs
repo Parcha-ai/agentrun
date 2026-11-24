@@ -12,6 +12,9 @@ const BIN = new URL("../bin/agentrun.mjs", import.meta.url).pathname;
 const SERVE = new URL("../../serve/dist/cli.js", import.meta.url).pathname;
 /** What a test's CLI never takes from the environment the tests run in: an address, a key, a model or boxes. */
 const DROPPED = ["AGENTRUN_BASE_URL", "AGENTRUN_API_KEY", "AGENTRUN_TOKEN", "AGENTRUN_CLOUD_URL", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY", "PARALLEL_API_KEY", "AGENT_MODEL", "AGENTRUN_BOXES"];
+// No test asks an Ollama this machine may run: serve's switch (ollama-provider.ts OLLAMA_OFF_ENV), read from the process's
+// own environment, which every server and command a test starts with process.env inherits.
+process.env.AGENTRUN_SERVE_FAUX_NO_OLLAMA = "1";
 
 /** An address where no server answers: a listener of the test's own, open until the test ends, that reads each request
  *  and closes the connection without a response, so Node's fetch fails with the cause UND_ERR_SOCKET ("other side
