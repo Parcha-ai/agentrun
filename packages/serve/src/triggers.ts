@@ -1148,7 +1148,8 @@ export class Triggers {
    *  next safe point, within the bound per (trigger, run): a clock's firings coalesce to one waiting message, a pushed
    *  source's or a run now's keep each, up to DUE_KEPT; past it the firing is skipped in words. A target run that is gone
    *  or purged (its row kept as a tombstone: Runs.purge) turns the trigger off at once, the firing skipped and no failure
-   *  counted: read before the message, and again when the message fails, for a purge that landed in between. */
+   *  counted: read before the message, and again when the message fails, for a purge that landed in between. The run read
+   *  is the one `trigger` named when it was read; a trigger edited since keeps its state (runDeleted). */
   private async send(trigger: Trigger, firing: FiringRow): Promise<void> {
     if (trigger.target.kind !== "message_run") return;
     const { target } = trigger;
@@ -1167,11 +1168,13 @@ export class Triggers {
     await this.store.triggers.settle(trigger.id, firing.key, { status: "sent", runId: target.run_id }, { reset: true });
   }
 
-  /** A message_run trigger whose run is gone or purged: turned off (source_unreadable), its firing skipped, no failure
-   *  counted. */
+  /** A message_run firing whose run, as `trigger` named it when read, is gone or purged: the firing skipped, no failure
+   *  counted, and the trigger turned off (source_unreadable) only while it is still that read, compared in the store's
+   *  statement (its updatedAt and its target): one edited or moved to another run meanwhile is left as it is. */
   private async runDeleted(trigger: Trigger, firing: FiringRow): Promise<void> {
-    await this.store.triggers.update(trigger.id, { enabled: false, nextAt: null, disabled: { at: iso(this.clock.now()), reason: "source_unreadable", detail: RUN_DELETED } });
+    const off = await this.store.triggers.update(trigger.id, { enabled: false, nextAt: null, disabled: { at: iso(this.clock.now()), reason: "source_unreadable", detail: RUN_DELETED } }, undefined, { ifUpdatedAt: trigger.updatedAt, ifTarget: trigger.target });
     await this.store.triggers.settle(trigger.id, firing.key, { status: "skipped", reason: RUN_DELETED });
+    if (!off) return;
     this.deps.say({ condition: "trigger_source_unreadable", trigger: trigger.id, error: RUN_DELETED });
     await this.offThere([trigger]);
   }
