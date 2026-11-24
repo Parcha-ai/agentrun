@@ -10,7 +10,7 @@ import { schemaProblems } from "./schema-support.mjs";
 import { agent, serve } from "./support.mjs";
 
 const { decideCheck, NEVER_WORD_FOR_WORD, replayView } = await import("../dist/runner/promotion.js");
-const { answersPair, forgetRunCopies, promotionsOf, recordPromotion, sameAnswer } = await import("../dist/learn/promote.js");
+const { answersPair, forgetRunCopies, knownAnswerText, promotionsOf, recordPromotion, sameAnswer } = await import("../dist/learn/promote.js");
 const { learningSettingIssue, learningSettingOf, loopOf } = await import("../dist/learning-setting.js");
 const { secretsShown } = await import("../dist/learning.js");
 const { learningSettingForBody } = await import("../dist/store/agent-body.js");
@@ -72,11 +72,14 @@ test("a connected agent's turns counted before per-field tallies existed: each f
   assert.deepEqual([answer.n, answer.workflow_right, held.stored.check.alone, held.stored.check.agreed], [20, 11, 20, 11]);
 });
 
+/** The known answer of a row whose agent said AGENT and whose grade expects `expected`: AGENT with the grade's keys
+ *  written over it, as JSON. */
+const correctedText = (expected) => JSON.stringify({ ...AGENT, ...expected });
 /** `read`'s rows graded: the agent's answer marked wrong (`correct`), `expected` the right one, and, with `compared`, the
- *  fast model's verdict on the draft and `against` (the expected answer's text unless given). */
-const gradedRead = (read, expected, compared, against) => ({ ...read, rows: read.rows.map((row) => ({ ...row, correct: false, expected, ...(compared ? { compared: { grader: "fast-model", pair: answersPair(row.answer, against?.(row) ?? JSON.stringify(expected)), ...compared } } : {}) })) });
+ *  fast model's verdict on the draft and `against` (the corrected answer's text, correctedText, unless given). */
+const gradedRead = (read, expected, compared, against) => ({ ...read, rows: read.rows.map((row) => ({ ...row, correct: false, expected, ...(compared ? { compared: { grader: "fast-model", pair: answersPair(row.answer, against?.(row) ?? correctedText(expected)), ...compared } } : {}) })) });
 
-test("graded inputs with no agree_on: one field, the whole answer, judged against the grade's expected answer as a whole: equal, else the fast model's verdict on the draft and that answer", async () => {
+test("graded inputs with no agree_on: one field, the whole answer, judged against the agent's answer with the grade's expected keys written over it: equal, else the fast model's verdict on the draft and that answer", async () => {
   const expected = { mcc: "7832", riskTier: "low" };
   const known = JSON.stringify(expected);
   // Right on mcc, another decision on riskTier: the whole answer differs from the expected one.
@@ -93,13 +96,61 @@ test("graded inputs with no agree_on: one field, the whole answer, judged agains
   assert.equal(same.record.decided, "promote", `the same decisions as the expected answer by the fast model's verdict: ${same.record.reason}`);
   assert.deepEqual(same.stored.check.fields.answer.by, { grade: { n: 5, workflow_right: 5, agent_right: 0, pass: true } });
 
-  const equal = await decide({}, gradedRead(readOf(() => draftSays(expected)), expected));
-  assert.equal(equal.record.decided, "promote", `equal to the expected answer, no model asked: ${equal.record.reason}`);
+  const equal = await decide({}, gradedRead(readOf(() => draftSays({ ...AGENT, ...expected })), expected));
+  assert.equal(equal.record.decided, "promote", `equal to the corrected answer, no model asked: ${equal.record.reason}`);
 
-  // A verdict on the draft and the agent's answer says nothing of the expected one: the pair differs, as with none.
-  const agents = await decide({}, gradedRead(readOf(() => draftSays(DRAFT)), expected, { same: true }, (row) => row.agent));
-  assert.equal(agents.record.decided, "hold", agents.record.reason);
-  assert.equal(agents.stored.check.fields.answer.workflow_right, 0);
+  // The expected keys alone leave out the rest of the agent's answer: another answer, with no verdict saying otherwise.
+  const bare = await decide({}, gradedRead(readOf(() => draftSays(expected)), expected));
+  assert.equal(bare.record.decided, "hold", bare.record.reason);
+
+  // A verdict on the draft and the expected answer alone, or the agent's as written, says nothing of the corrected one:
+  // the pair differs, as with none.
+  for (const against of [() => known, (row) => row.agent]) {
+    const other = await decide({}, gradedRead(readOf(() => draftSays(DRAFT)), expected, { same: true }, against));
+    assert.equal(other.record.decided, "hold", other.record.reason);
+    assert.equal(other.stored.check.fields.answer.workflow_right, 0);
+  }
+});
+
+/** A check's read of 5 inputs graded as in Greptile's case: the agent said `agent`, its grade expects `expected` and
+ *  says it was wrong, and the draft said `draft`, with the fast model's verdict `compared` on the draft and `against`. */
+const partialRead = (agent, expected, draft, compared, against) => {
+  const rows = Array.from({ length: 5 }, (_, i) => ({ of: `r-${i}`, input: `{"question":"Question ${i}"}`, agent, outcome: "answered", answer: draft, correct: false, expected, ...(compared ? { compared: { grader: "fast-model", pair: answersPair(draft, against), ...compared } } : {}) }));
+  return { rows, cost: 0, outcomes: { answered: 5, handed_back: 0, skipped_write: 0, failed: 0 }, unstarted: 0 };
+};
+
+test("a partial grade (the agent said 42 with a note, the grade expects 41): a draft of 41 with the note is right and serves; one that drops the note differs unless the fast model says the same decision; one that keeps 42 is wrong", async () => {
+  const agentSaid = '{"answer":42,"note":"checked"}';
+  const expected = { answer: 41 };
+  const corrected = '{"answer":41,"note":"checked"}';
+  const right = await decide({}, partialRead(agentSaid, expected, corrected));
+  assert.equal(right.record.decided, "promote", right.record.reason);
+  assert.deepEqual(right.stored.check.fields.answer.by, { grade: { n: 5, workflow_right: 5, agent_right: 0, pass: true } });
+
+  const dropped = await decide({}, partialRead(agentSaid, expected, '{"answer":41}'));
+  assert.equal(dropped.record.decided, "hold", dropped.record.reason);
+  assert.deepEqual(dropped.stored.check.disagreements[0].expected, [{ field: "answer", known: "grade", value: JSON.stringify(expected) }], "the recompile is shown the grade's own expected answer, the part the owner gave");
+  const sameDecision = await decide({}, partialRead(agentSaid, expected, '{"answer":41}', { same: true }, corrected));
+  assert.equal(sameDecision.record.decided, "promote", `the fast model's verdict on the draft and the corrected answer: ${sameDecision.record.reason}`);
+
+  const kept = await decide({}, partialRead(agentSaid, expected, agentSaid));
+  assert.equal(kept.record.decided, "hold", kept.record.reason);
+  assert.equal(kept.stored.check.fields.answer.workflow_right, 0);
+  assert.equal(knownAnswerText(agentSaid, expected), corrected, "the agent's answer with the grade's keys written over it");
+});
+
+test("the known answer falls back to the grade's expected answer whole when it or the agent's answer is no JSON object; own keys only, `__proto__` never copied", async () => {
+  const expected = { answer: 41 };
+  for (const agentSaid of ["The answer is 42.", "[42]", "42", "null", null]) assert.equal(knownAnswerText(agentSaid, expected), '{"answer":41}', `agent ${agentSaid}`);
+  assert.equal(knownAnswerText('{"answer":42}', "41"), '"41"', "an expected answer that is text is the known answer whole");
+  assert.equal(knownAnswerText('{"answer":42}', [41]), "[41]");
+  assert.equal(knownAnswerText(agentSays({ answer: 42, note: "checked" }), expected), '{"answer":41,"note":"checked"}', "the agent's json fence is its answer");
+  assert.equal(knownAnswerText('{"__proto__":{"polluted":true},"answer":42}', JSON.parse('{"__proto__":{"also":true},"answer":41}')), '{"answer":41}');
+  assert.equal({}.polluted ?? {}.also, undefined, "no prototype changed");
+
+  // Judged whole: an agent whose answer is prose, and a draft that says the expected answer alone.
+  const prose = await decide({}, partialRead("The answer is 42.", expected, '{"answer":41}'));
+  assert.equal(prose.record.decided, "promote", prose.record.reason);
 });
 
 test("a purged run leaves no key or value of its grade's expected answer anywhere in the promotion record: its fields, reasons and disagreements", async () => {

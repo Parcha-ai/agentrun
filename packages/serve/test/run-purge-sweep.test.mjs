@@ -168,10 +168,13 @@ test(`a purged run leaves no copy of what it was given or did (${STORE}): one se
   const draft = `Draft of ${word}`;
   const agentAnswer = `Kept ${word}.`;
   const bar = { compile_after: 2, agree_min: 0.9, alone_min: 0.5, attempt: 1 };
-  // Its grade's expected answer, the sentinel a key of it and in its value: the check judges the draft against it whole.
+  // Its grade's expected answer, the sentinel a key of it and in its value, written over the agent's answer (a JSON
+  // object here): the check judges the draft against that corrected answer whole.
   const expected = { [word]: `It is ${word}.` };
+  const agentJson = JSON.stringify({ note: agentAnswer });
+  const corrected = JSON.stringify({ note: agentAnswer, ...expected });
   const rows = [
-    { of: gone, input: `Keep ${word} everywhere.`, agent: agentAnswer, outcome: "answered", answer: draft, correct: false, expected, compared: { same: false, grader: "faux-fast", differs_on: `whether it says ${word}`, pair: answersPair(draft, JSON.stringify(expected)) } },
+    { of: gone, input: `Keep ${word} everywhere.`, agent: agentJson, outcome: "answered", answer: draft, correct: false, expected, compared: { same: false, grader: "faux-fast", differs_on: `whether it says ${word}`, pair: answersPair(draft, corrected) } },
     { of: kept.body.run_id, input: "What is six times seven?", agent: "The answer is 42.", outcome: "answered", answer: "The answer is 42." },
   ];
   const decided = await decideCheck({ store, agentId: "calc", log: () => {}, shown: async () => ({ text: (text) => text }) }, "flow", "d-check", bar, { rows, cost: 0.02, outcomes: { answered: 2, handed_back: 0, failed: 0, skipped_write: 0 }, unstarted: 0 }, (was) => was === undefined, {});
