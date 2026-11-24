@@ -89,6 +89,14 @@ test('recipeProblems refuses the title tie without an announces field: the tie a
   assert.deepEqual(recipeProblems({ ...base, announces: { tool: 'rawInput.toolName', server: 'rawInput.providerIdentifier', args: 'rawInput.args' }, quirks: { permissionTie: 'title' } }), []);
 });
 
+test("recipeProblems refuses an announces path outside the update's _meta and rawInput: one through its title, id, kind or status would let a title name a call again", () => {
+  // Before: any dotted path loaded, so `{ "tool": "title" }` named a call by a title of exactly `agentrun__write`.
+  const base = { id: 'x', command: BINARY, declares: { load: true, mcp: 'http' }, billing: { kind: 'proxy' } };
+  for (const said of [{ tool: 'title' }, { tool: 'title.text' }, { tool: 'toolCallId' }, { tool: 'rawInput.toolName', server: 'kind' }, { tool: 'rawInput.toolName', args: 'status' }]) {
+    assert.match(recipeProblems({ ...base, announces: said }).join(' '), /announces is/, JSON.stringify(said));
+  }
+});
+
 test("its announces field names a call by Goose 1.59.2's _meta.goose.toolCall.toolName (`agentrun__<tool>`, the name the model calls), never by its title", () => {
   // Goose's tool_call carries the tool's prefixed name in _meta (goose-acp conversion.rs goose_tool_call_meta); its title
   // is for people (`agentrun: write · proof.txt`) and is never read.

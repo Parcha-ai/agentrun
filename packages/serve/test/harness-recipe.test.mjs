@@ -159,6 +159,15 @@ test("the loader refuses a recipe with the title tie and no announces field, in 
   assert.deepEqual(parseRecipe(JSON.stringify(recipeOf(undefined, TIED))).quirks, { permissionTie: "title" }, "with the field it loads");
 });
 
+test("the loader refuses an announces path outside the update's _meta and rawInput: one through its title, id, kind or status would let a title name a call again", () => {
+  // Before: any dotted path loaded, so `{ "tool": "title" }` named a call by a title of exactly `agentrun__write`.
+  for (const said of [{ tool: "title" }, { tool: "title.text" }, { tool: "toolCallId" }, { tool: "rawInput.toolName", server: "kind" }, { tool: "rawInput.toolName", args: "status" }]) {
+    const refused = refusalOf(recipeOf(undefined, { announces: said }));
+    assert.equal(refused.code, RECIPE_CODES.invalid, JSON.stringify(said));
+    assert.match(refused.message, /announces is \{ "tool"/, JSON.stringify(said));
+  }
+});
+
 // One recipe per rule, each breaking it alone, with the code it is refused by.
 const BROKEN = [
   ["rule 1, own keys only: a key the server holds for a model provider", RECIPE_CODES.keys, () => recipeOf(undefined, { keys: ["OPENROUTER_API_KEY"] })],
