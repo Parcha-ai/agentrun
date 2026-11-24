@@ -70,7 +70,7 @@ async function readOnce(url: unknown, { parallel, firecrawl, order, guard, check
         const read = await firecrawl.read(sent.href, options.signal);
         if (typeof read !== "string") {
           turn("firecrawl-keyless", read);
-          // A second scrub behind the client's own, kept on purpose: a client that forgets to clear a url leaks nothing here.
+          // A second scrub behind the client's own, kept on purpose: it covers a url the client did not clear and has not cut.
           return { ...read, url: withoutCredentials(read.url), via: "firecrawl-keyless" };
         }
         firecrawlSaid = withoutUserinfo(read);
@@ -86,7 +86,7 @@ async function readOnce(url: unknown, { parallel, firecrawl, order, guard, check
         const read = await parallel.read(sent.href, options.signal);
         if (typeof read !== "string") {
           turn("parallel", read);
-          // A second scrub behind the client's own, kept on purpose: a client that forgets to clear a url leaks nothing here.
+          // A second scrub behind the client's own, kept on purpose: it covers a url the client did not clear and has not cut.
           return { ...read, url: withoutCredentials(read.url), via: "parallel" };
         }
         why = withoutUserinfo(read);
@@ -97,7 +97,7 @@ async function readOnce(url: unknown, { parallel, firecrawl, order, guard, check
       turn("direct", direct);
       // Why Firecrawl gave no page goes to the log, never to the model (the page is the direct fetch's); never the URL.
       if (firecrawlSaid !== undefined) log?.("web_fetch_firecrawl_failed", { said: firecrawlSaid.slice(0, 300), direct: direct.ok ? "read" : "failed" });
-      // A second scrub behind the client's own, kept on purpose: a client that forgets to clear a url leaks nothing here.
+      // A second scrub behind readDirect's own, kept on purpose: it covers a url readDirect did not clear and has not cut.
       return { ...direct, url: withoutCredentials(direct.url), via: "direct", ...(why ? { parallel: why } : {}) };
     }
   }
