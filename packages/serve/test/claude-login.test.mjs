@@ -17,7 +17,7 @@ import { CLAUDE_LOGIN_ENV, CLAUDE_LOGIN_SETTING, claudeLoginOf, claudeLoginSwitc
 import { ClaudeSignIns } from "../dist/claude-sign-in.js";
 import { MODEL_KEYS, hostModel } from "../dist/model.js";
 import { providerFor } from "../dist/provider.js";
-import { agent, follow, secretWritePath, serve, withEnv } from "./support.mjs";
+import { agent, FAUX, follow, secretWritePath, serve, withEnv } from "./support.mjs";
 
 secretWritePath(["GET", "PUT", "DELETE"], /^\/settings\/claude-login$/);
 secretWritePath(["POST"], /^\/settings\/claude-login\/login$/);
@@ -818,14 +818,18 @@ const claudeAgentIn = (harnesses) => harnesses.find((offer) => offer.id === "cla
 
 // A turn-on finds the offers' inputs changed and probes them. A turn-off that lands meanwhile finds the offers held made
 // from its own inputs (the turn-on's probe has not landed). The turn-on's probe, landing after it, must not put back
-// offers made from the login being on.
+// offers made from the login being on. Both reds run on a faux server: a server that asks Ollama (no faux, no model
+// gateway) probes again at the capabilities read itself whenever the offers held are not made from the inputs read now
+// (ollamaNow), so there a late probe's offers are replaced before any read shows them; on any other server they stand
+// until the next change. The held check answers ON_REASON, so the offers the turn-on's probe lands are told apart.
 const PROBE_WHY = "a probe from before the turn-off landed after it and put back an offer made from the login being on";
+const ON_REASON = "made from the login being on";
 test("a turn-off that lands while the turn-on's probe of the offers is still out leaves claude-agent needing a key once that probe ends", { timeout: 60_000 }, async (t) => {
-  const { api, harnesses } = await heldServer(t);
+  const { api, harnesses } = await heldServer(t, { faux: FAUX });
   const before = await harnesses();
-  assert.equal(claudeAgentIn(before).available, false, "no key and the login off: claude-agent runs nothing");
+  assert.notEqual(claudeAgentIn(before).reason, ON_REASON, "the held check's reason is in no offer before its probe");
 
-  const probe = held.hold((env) => claudeLoginOf(env) !== undefined);
+  const probe = held.hold((env) => claudeLoginOf(env) !== undefined, ON_REASON);
   t.after(() => probe.release());
   const turningOn = api("PUT", "/settings/claude-login", { only_me: true });
   await probe.reached;
@@ -836,20 +840,20 @@ test("a turn-off that lands while the turn-on's probe of the offers is still out
   assert.equal(off.status, 200, JSON.stringify(off.body));
   assert.equal(off.body.state, "off");
   const after = await harnesses();
-  assert.equal(claudeAgentIn(after).available, false, `${PROBE_WHY}: ${JSON.stringify(claudeAgentIn(after))}`);
+  assert.notEqual(claudeAgentIn(after).reason, ON_REASON, `${PROBE_WHY}: ${JSON.stringify(claudeAgentIn(after))}`);
   assert.deepEqual(after, before, `${PROBE_WHY}: the offers are not the starting state's`);
-  assert.equal((await api("GET", "/capabilities")).body.models.ready, false, "no key and the login off: no model runs here");
 });
 
 // The same for any two changes whose second lands back on the inputs the offers held were made from: a model key saved
 // (its probe held), then deleted. OpenAI's key is not checked against OpenAI as it is saved (key-check.ts NOT_CHECKED),
-// so nothing here reaches the network.
+// so nothing here reaches the network. Faux, and the held check answering KEY_REASON, as above.
 const KEY_WHY = "a probe from before the key's delete landed after it and put back offers made from the key being saved";
+const KEY_REASON = "made from the key being saved";
 test("a model key deleted while its save's probe of the offers is still out leaves the starting state's offers once that probe ends", { timeout: 60_000 }, async (t) => {
-  const { api, harnesses } = await heldServer(t);
+  const { api, harnesses } = await heldServer(t, { faux: FAUX });
   const before = await harnesses();
 
-  const probe = held.hold((env) => env.OPENAI_API_KEY !== undefined);
+  const probe = held.hold((env) => env.OPENAI_API_KEY !== undefined, KEY_REASON);
   t.after(() => probe.release());
   const saving = api("PUT", "/settings/tool-keys/openai", { values: { OPENAI_API_KEY: "not-a-secret-openai-key" } });
   await probe.reached;
@@ -859,8 +863,8 @@ test("a model key deleted while its save's probe of the offers is still out leav
   assert.equal(saved.status, 204, JSON.stringify(saved.body));
   assert.equal(deleted.status, 204, JSON.stringify(deleted.body));
   const after = await harnesses();
+  assert.notEqual(claudeAgentIn(after).reason, KEY_REASON, `${KEY_WHY}: ${JSON.stringify(claudeAgentIn(after))}`);
   assert.deepEqual(after, before, KEY_WHY);
-  assert.equal(claudeAgentIn(after).available, false, "no key and the login off: claude-agent runs nothing");
 });
 
 // A plan-billed recipe (harness-recipe.ts) for the harness keys' route alone: never installed, never run.

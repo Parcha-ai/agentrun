@@ -8,13 +8,14 @@ let held;
 let fact;
 
 /** Holds the next claude-agent check asked on an environment `matches` accepts: `reached` resolves once that check waits,
- *  and `release()` lets it go on. */
-exports.hold = (matches) => {
+ *  and `release()` lets it go on. Given `reason`, that check alone then answers that claude-agent does not run here, for
+ *  `reason`, so the offers its probe lands are told apart from any other probe's. */
+exports.hold = (matches, reason) => {
   let reach;
   let release;
   const reached = new Promise((resolve) => { reach = resolve; });
   const released = new Promise((resolve) => { release = resolve; });
-  held = { matches, reach, released };
+  held = { matches, reason, reach, released };
   return { reached, release };
 };
 
@@ -34,6 +35,7 @@ exports.entries = (builtins) => {
           held = undefined;
           hold.reach();
           await hold.released;
+          if (hold.reason !== undefined) return { reason: hold.reason };
         }
         return fact === undefined ? builtin.refusal(env, given, options) : { reason: fact };
       },
