@@ -36,7 +36,7 @@ import { DECISION_PROVIDER_KEYS } from "../tool-plane.js";
 import { learningEndOfRun } from "./learning-end.js";
 import { cutDeep, runnerSecrets } from "./redact.js";
 import { storeSecrets } from "./store-secrets.js";
-import { FAUX_ENV, GATEWAY_KEY_ENV } from "../model.js";
+import { FAUX_ENV, FAUX_PROVIDER, GATEWAY_KEY_ENV } from "../model.js";
 import { SAVED_GATEWAY_ENV, savedGatewayIn } from "../model-gateway.js";
 import { FAUX_VENDOR_API_ENV } from "../tools.js";
 import { withinCarried } from "../paid-calls.js";
@@ -836,6 +836,7 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
           ...deps.computerDeps, mode, workspace: ws.workspace, sealKey,
           recordings: { folder: recordingsFolder(deps.data, run.agentId, claim.runId), say: (words: string) => say?.(cut(words)) },
           hadComputer: async () => (await ask.hadComputer()) === true,
+          ...(typeof ask.turnedOff === "string" ? { turnedOff: ask.turnedOff } : {}),
           ...(ask.signal instanceof AbortSignal ? { signal: ask.signal } : {}),
           ...(made ? { revokeMount: () => made.revoke(), inheritMount: () => made.inherit() } : {}),
           ...(typeof ask.onImageWait === "function" ? { onImageWait: ask.onImageWait } : {}),
@@ -1185,11 +1186,13 @@ function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, loopDep
           throw new ClaimRefused("project_mode_fidelity: This runner rewrites local project file permissions for per-user isolation. A moved project needs a destination that preserves its original permissions.");
         }
         const savedGateway = savedGatewayIn(claimEnv);
-        // The run's own keys: those its claim opens (claim-secrets.ts), the one list its loop in this process read.
+        // The run's own keys: those its claim opens (claim-secrets.ts), the one list its loop in this process read. Its model
+        // keys are its pinned model's (claimSecrets scopes them by the launch's model), the one its route sends: never the
+        // host's default's now, where its revision names no model and a key saved since moved that default.
         const claimed = await claimSecrets({ store: deps.store, sealKey: deps.sealKey, env: claimEnv, redact: loopDeps.redact }, revisionRow as never, launch, claim.runId);
-        // With them, its revision's own model's (a launch pinned at its start to another model, a --faux start's, is still
-        // handed its agent's model's key, as a run's own process was handed it before: run-secrets.ts secretsFor).
-        const ofRevision = await claimSecrets({ store: deps.store, sealKey: deps.sealKey, env: claimEnv, redact: loopDeps.redact }, revisionRow as never, { ...(launch.plane ? { plane: launch.plane } : {}) });
+        // A --faux start alone is pinned to the faux model (model.ts chooseModel), which stands in for its revision's and
+        // sends no key: its process is handed its revision's model's key with them, as a run of that model is handed it.
+        const ofRevision: NodeJS.ProcessEnv = launch.model?.provider === FAUX_PROVIDER ? await claimSecrets({ store: deps.store, sealKey: deps.sealKey, env: claimEnv, redact: loopDeps.redact }, revisionRow as never, { ...(launch.plane ? { plane: launch.plane } : {}) }) : {};
         // A run that holds a model key of its own (model_key, its launch's) spends that key alone: its process is handed
         // none of the server's model keys, as its spec drops them from its tools' (claim-secrets.ts withoutModelKeys).
         // Copies: the runner's own reads (heldFor's `claimed`: what the run's learning must never keep) stay whole.

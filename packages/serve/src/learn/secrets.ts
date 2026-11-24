@@ -103,6 +103,10 @@ function derivedOf(values: readonly string[]): Needles {
   return derived;
 }
 
+/** What the matcher looks for of `values` (derivedOf, cached by array): the scrubber's held rule (secret-rules.ts) cuts
+ *  each form, hex and folded identifier in place with redact/match.ts cutSpans. */
+export const heldNeedles = (values: readonly string[]): Needles => derivedOf(values);
+
 /** A value shorter than this matches too much text by chance to be refused. */
 export const MIN_SECRET = 8;
 

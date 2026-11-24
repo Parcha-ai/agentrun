@@ -7,7 +7,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { DockerProvider } from "../dist/docker.js";
 import { EGRESS_IMAGE, sweep } from "../dist/index.js";
-import { allowed, CODE_DIR, container, egressVolume, fakeDocker, idOf, LOCAL, PACKAGE_JSON, proxyReport, valuesOf } from "./fake-docker.mjs";
+import { allowed, CODE_DIR, container, egressNetwork, egressVolume, fakeDocker, idOf, LOCAL, PACKAGE_JSON, proxyReport, valuesOf } from "./fake-docker.mjs";
 
 const ALLOW = ["pypi.org", "*.pythonhosted.org", "93.184.215.0/24"];
 const SPEC = { image: "debian:bookworm-slim", lifetimeMs: 600_000, network: { allow: ALLOW } };
@@ -64,13 +64,18 @@ test("check() takes an allowlist of names and CIDRs, and refuses one that is emp
 	assert.deepEqual(calls(), []);
 });
 
-test("create() with an allowlist makes the volume, starts the proxy and waits for its ready line, then runs the computer with no network, the volume read-only, the proxy variables and init's relay", async () => {
-	const { provider, calls, names, volumeNames } = fakeDocker();
+test("create() with an allowlist makes the egress bridge, the volume, starts the proxy on that bridge and waits for its ready line, then runs the computer with no network, the volume read-only, the proxy variables and init's relay", async () => {
+	const { provider, calls, names, volumeNames, networkNames } = fakeDocker();
 	const made = await provider.create({ ...SPEC, labels: { team: "a" } }, req());
 	assert.equal(made.ok, true, JSON.stringify(made));
 	const { name } = made.value;
 	const volume = `${name}-egress`;
-	assert.deepEqual(calls().map((args) => args.slice(0, 2).join(" ")), ["info --format", "context inspect", "image inspect", "image inspect", "volume create", "run --detach", `logs ${volume}`, "run --detach", "inspect --type", "inspect --type", "exec -i"]);
+	assert.deepEqual(calls().map((args) => args.slice(0, 2).join(" ")), ["info --format", "context inspect", "image inspect", "image inspect", "network inspect", "network create", "network inspect", "volume create", "run --detach", `logs ${volume}`, "run --detach", "inspect --type", "inspect --type", "exec -i"]);
+	// The proxies share one bridge of the provider's own, made by the first create, with no traffic between containers on
+	// it: a proxy is never on Docker's default bridge, where any container on the host reaches it and spoofs its gateway.
+	assert.deepEqual(calls()[4], ["network", "inspect", "--format", "{{json .}}", "agentrun-egress"]);
+	assert.deepEqual(calls()[5], ["network", "create", "--driver", "bridge", "--opt", "com.docker.network.bridge.enable_icc=false", "--label", "agentrun.computer.egress-network=1", "agentrun-egress"]);
+	assert.deepEqual(networkNames(), ["agentrun-egress"]);
 	assert.deepEqual(calls()[1], ["context", "inspect", "--format", "{{json .Endpoints.docker.Host}}"], "where the docker CLI's daemon is, as the CLI itself resolves it");
 	// Both images are on the host before anything is made: the computer's, then the proxy's.
 	assert.deepEqual(calls().slice(2, 4), [["image", "inspect", "--format", "{{.Id}}", "debian:bookworm-slim"], ["image", "inspect", "--format", "{{.Id}}", EGRESS_IMAGE]]);
@@ -82,7 +87,7 @@ test("create() with an allowlist makes the volume, starts the proxy and waits fo
 	// and the create's attempt, as the computer and the proxy do, so a failed create removes only what it made.
 	const attempt = valuesOf(computer, "--label").find((label) => label.startsWith("agentrun.computer.attempt="));
 	assert.match(attempt ?? "", /^agentrun\.computer\.attempt=[0-9a-f-]{36}$/);
-	assert.deepEqual(calls()[4], [
+	assert.deepEqual(calls()[7], [
 		"volume", "create", "--driver", "local", "--opt", "type=tmpfs", "--opt", "device=tmpfs", "--opt", `o=size=1m,uid=${uid},gid=${gid},mode=0700`,
 		"--label", `agentrun.computer.egress=${name}`, "--label", `agentrun.computer.deadline=${deadline}`, "--label", "team=a", "--label", attempt, volume,
 	]);
@@ -92,7 +97,7 @@ test("create() with an allowlist makes the volume, starts the proxy and waits fo
 		"--user", DEFAULT_USER, "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--ipc", "private", "--cgroupns", "private",
 		"--pids-limit", "64", "--memory", "256m", "--memory-swap", "256m", "--cpu-period", "100000", "--cpu-quota", "50000", "--ulimit", "nofile=1024:1024",
 		"--log-driver", "json-file", "--log-opt", "max-size=1m", "--log-opt", "max-file=2",
-		"--network", "bridge",
+		"--network", "agentrun-egress",
 		"--mount", `type=volume,src=${volume},dst=/egress`,
 		"--mount", `type=bind,src=${CODE_DIR},dst=/code/docker,readonly`,
 		"--mount", `type=bind,src=${PACKAGE_JSON},dst=/code/package.json,readonly`,
@@ -139,7 +144,7 @@ test("create() with open runs the computer on no network of Docker's, through an
 	assert.ok(proxy, "open starts an egress proxy");
 	assert.deepEqual(valuesOf(proxy, "--open"), ["public"]);
 	assert.equal(proxy.includes("--allow"), false, "open is never a list");
-	assert.deepEqual(valuesOf(proxy, "--network"), ["bridge"], "the proxy alone is on Docker's network");
+	assert.deepEqual(valuesOf(proxy, "--network"), ["agentrun-egress"], "the proxy alone is on a network: the provider's egress bridge");
 	const computer = computerRunOf(calls());
 	assert.deepEqual(valuesOf(computer, "--network"), ["none"], "the computer itself has no network: no bridge");
 	assert.deepEqual(valuesOf(computer, "--mount").at(-1), `type=volume,src=${volume},dst=/opt/agentrun/egress,readonly`);
@@ -161,6 +166,50 @@ test("a hint that reads \"--open\" is a hint: an allowlist whose proxy carries i
 	assert.equal(made.ok, true, JSON.stringify(made));
 	assert.deepEqual(valuesOf(proxyRunOf(calls()), "--hint"), ["--open"]);
 	assert.deepEqual(await provider.network(made.value), { ok: true, value: { allow: ALLOW } });
+});
+
+const networkCalls = (calls) => calls.filter((args) => args[0] === "network").map((args) => args.slice(0, 2).join(" "));
+
+test("create() reuses the egress bridge a create before it made: one inspect, no create; a second computer's proxy joins the same bridge", async () => {
+	const { provider, calls, networkNames } = fakeDocker({ networks: [egressNetwork()] });
+	const first = await provider.create(SPEC, req());
+	assert.equal(first.ok, true, JSON.stringify(first));
+	assert.deepEqual(networkCalls(calls()), ["network inspect"]);
+	const second = await provider.create({ ...SPEC, network: "open" }, req());
+	assert.equal(second.ok, true, JSON.stringify(second));
+	assert.deepEqual(networkCalls(calls()), ["network inspect", "network inspect"]);
+	assert.deepEqual(runs(calls()).filter((args) => valuesOf(args, "--entrypoint")[0] === "node").map((args) => valuesOf(args, "--network")), [["agentrun-egress"], ["agentrun-egress"]]);
+	assert.deepEqual(networkNames(), ["agentrun-egress"]);
+});
+
+test("create() refuses in words, making nothing, when a network of the egress bridge's name is not the one this provider makes", async () => {
+	const cases = [
+		[{ Options: {} }, /has com\.docker\.network\.bridge\.enable_icc nothing, not "false"/],
+		[{ Options: { "com.docker.network.bridge.enable_icc": "true" } }, /has com\.docker\.network\.bridge\.enable_icc "true", not "false"/],
+		[{ Labels: {} }, /does not carry the label agentrun\.computer\.egress-network=1/],
+		[{ Internal: true }, /is internal, so no proxy on it reaches the internet/],
+		[{ Driver: "overlay", Scope: "swarm" }, /has driver "overlay" and scope "swarm", not a local bridge/],
+	];
+	for (const [patch, words] of cases) {
+		const { provider, calls, names, volumeNames, networkNames } = fakeDocker({ networks: [egressNetwork(patch)] });
+		const made = await provider.create(SPEC, req());
+		assert.equal(made.ok, false, JSON.stringify(patch));
+		assert.equal(made.error.code, "refused", JSON.stringify(patch));
+		assert.match(made.error.message, words, JSON.stringify(patch));
+		assert.match(made.error.message, /^the Docker network agentrun-egress .*: it is not the one this provider makes for its egress proxies; remove it \(docker network rm agentrun-egress\) and create again$/);
+		assert.deepEqual(networkCalls(calls()), ["network inspect"], "the network is read, never changed");
+		assert.deepEqual(runs(calls()), [], JSON.stringify(patch));
+		assert.deepEqual([names(), volumeNames(), networkNames()], [[], [], ["agentrun-egress"]], JSON.stringify(patch));
+	}
+});
+
+test("create() that finds no egress bridge, and whose own create of it Docker refuses as another create's made it, reads that one back and goes on", async () => {
+	const { provider, calls, networkNames } = fakeDocker({ networks: [egressNetwork({ Late: true })] });
+	const made = await provider.create(SPEC, req());
+	assert.equal(made.ok, true, JSON.stringify(made));
+	assert.deepEqual(networkCalls(calls()), ["network inspect", "network create", "network inspect"]);
+	assert.deepEqual(networkNames(), ["agentrun-egress"]);
+	assert.deepEqual(valuesOf(proxyRunOf(calls()), "--network"), ["agentrun-egress"]);
 });
 
 test("a computer on a network of Docker's (the bridge) reads back as one this provider never makes: open is only through the egress proxy", async () => {
@@ -522,6 +571,9 @@ test("a proxy that is gone, or that is not as create makes one, reads back other
 		[null, /egress proxy computer-0000000000aa-egress is gone/],
 		[{ HostConfig: { Privileged: true } }, /privileged/],
 		[{ HostConfig: { NetworkMode: "host" } }, /network mode host/],
+		// Docker's default bridge, where every container on the host may reach the proxy: what this provider made before.
+		[{ HostConfig: { NetworkMode: "bridge" }, NetworkSettings: { Networks: { bridge: {} } } }, /is on Docker's default bridge: an earlier release of this provider made it there, before the egress bridge agentrun-egress; delete the computer and create it again$/],
+		[{ NetworkSettings: { Networks: { "agentrun-egress": {}, bridge: {} } } }, /networks agentrun-egress, bridge, not the provider's bridge/],
 		[{ HostConfig: { CapDrop: [] } }, /capabilities/],
 		[{ HostConfig: { SecurityOpt: [] } }, /no-new-privileges/],
 		[{ Config: { User: "0:0" } }, /runs as 0:0, not the computer's 1000:1000/],
@@ -561,6 +613,23 @@ test("a proxy that is gone, or that is not as create makes one, reads back other
 		assert.equal(typeof read.value.other, "string", `${JSON.stringify(proxy)}: ${JSON.stringify(read.value)}`);
 		assert.match(read.value.other, words, JSON.stringify(proxy));
 	}
+});
+
+test("attach() refuses an allowlist computer whose proxy an earlier release put on Docker's default bridge, saying so and what to do; release(delete) still removes it all", async () => {
+	const seeded = allowed({ name: A, allow: ALLOW });
+	const [, made] = seeded.containers;
+	made.HostConfig = { ...made.HostConfig, NetworkMode: "bridge" };
+	made.NetworkSettings = { ...made.NetworkSettings, Networks: { bridge: {} } };
+	const { provider, names, volumeNames } = fakeDocker(seeded);
+	const attached = await provider.attach({ id: A });
+	assert.equal(attached.ok, false);
+	assert.equal(attached.error.code, "refused");
+	// The network first; the egress volume and relay a network read back as other doesn't declare follow it as drift.
+	const first = `the computer ${A} does not match this provider, so attach refuses it and it is left as it is: network: network allow, but its egress proxy ${A}-egress is on Docker's default bridge: an earlier release of this provider made it there, before the egress bridge agentrun-egress; delete the computer and create it again; `;
+	assert.ok(attached.error.message.startsWith(first), attached.error.message);
+	const released = await provider.release(ref(A), "delete");
+	assert.equal(released.ok, true, JSON.stringify(released));
+	assert.deepEqual([names(), volumeNames()], [[], []]);
 });
 
 /** A regular expression's source that matches `text` as it is. */

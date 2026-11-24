@@ -142,7 +142,7 @@ const FREE_OR_AGAIN = "a Free ChatGPT plan may be the reason; with a paid plan, 
 const TIMED_OUT = "The sign-in timed out before OpenAI sent the code back: start it again.";
 /** The words for OpenAI's refusal `code` at its sign-in page: fixed words, never the code. Anything on this machine can
  *  send the loopback callback an `error` while a sign-in waits, so the code goes to the log alone. */
-const deniedWords = (code: string): string => (tag(code) === WORKSPACE_DENIED ? ADMIN_OFF : `ChatGPT did not sign you in: ${FREE_OR_AGAIN}`);
+const deniedWords = (code: string): string => (code === WORKSPACE_DENIED ? ADMIN_OFF : `ChatGPT did not sign you in: ${FREE_OR_AGAIN}`);
 
 /** Why a sign-in past its browser step ended without signing in, from what pi-ai's flow or keep threw: `reason` for the
  *  log (OpenAI's status and error code, a missing field's name, a network error's code; never a token or a code) and
@@ -161,7 +161,8 @@ export function signInFailure(error: unknown): { reason: string; words: string }
   // The workspace's refusal first: OpenAI's description of it may name the plan's scope.
   if (code === WORKSPACE_DENIED) return { reason, words: ADMIN_OFF };
   if (message.includes(DIRECT_SCOPE)) return { reason: "no_direct_scope", words: PLAN_NOT_USABLE };
-  if (notKept) return { reason: `not_saved${tag((cause as { code?: unknown })?.code) ? `_${tag((cause as { code?: unknown }).code)}` : ""}`, words: "OpenAI signed you in, but this server could not save the sign-in: start it again. The server's log says why." };
+  const unsaved = notKept ? tag((cause as { code?: unknown })?.code) : "";
+  if (notKept) return { reason: `not_saved${unsaved ? `_${unsaved}` : ""}`, words: "OpenAI signed you in, but this server could not save the sign-in: start it again. The server's log says why." };
   if (denied) return { reason, words: deniedWords(code) };
   if (refused) return { reason, words: `OpenAI refused the sign-in: ${FREE_OR_AGAIN}` };
   const unread = /token response (?:has invalid (\w+)|did not contain an (ID token)|must be an object)/.exec(message);
@@ -212,8 +213,15 @@ export class ChatGPTPlan implements PlanReader {
   /** Why the last sign-in ended without signing in (signInFailure's words past its browser step, or its timeout), until a
    *  sign-in starts, finishes or a sign-out. A cancelled one leaves none. */
   #problem: string | undefined;
-  /** Set when the server's change callback failed after a sign-in was saved; cleared once it takes (changeAgain). */
+  /** Set when the server's change callback failed (tellChanged); cleared once one that started after it takes. */
   #changeOwed = false;
+  /** Moved on by each change callback that fails: one that takes clears what is owed only if none failed since it began,
+   *  so a change that read an earlier sign-in never clears a later one's. */
+  #failedChanges = 0;
+  /** The server's read in flight (refresh), which a read while it is out waits for. */
+  #refreshing: Promise<void> | undefined;
+  /** The ends of the sign-ins cancelled and not yet ended (close waits for them). */
+  readonly #ending = new Set<Promise<void>>();
   readonly #watchers = new Set<(tokens: string[]) => void>();
   readonly #deps: ChatGPTPlanDeps;
   constructor(deps: ChatGPTPlanDeps) {
@@ -324,6 +332,9 @@ export class ChatGPTPlan implements PlanReader {
     this.#pending = undefined;
     clearTimeout(pending.timer);
     pending.abort.abort();
+    const ended = pending.result.then(() => undefined, () => undefined);
+    this.#ending.add(ended);
+    void ended.then(() => this.#ending.delete(ended));
   }
 
   /** Ends the sign-in waiting past its 10 minutes: a cancel, which says nothing by itself, that says it timed out. One
@@ -366,7 +377,7 @@ export class ChatGPTPlan implements PlanReader {
     // Pending until the credential is kept or dropped, so a sign-out meanwhile cancels it (keep's epoch).
     const result = login.then((credential) => {
       if (this.#pending?.abort === abort) this.#pending.answered = true;
-      return this.keep(credential as Credential, epoch).catch((error: unknown) => {
+      return this.keep(credential as Credential, epoch, settle).catch((error: unknown) => {
         throw new NotKept("not kept", { cause: error });
       });
     }).finally(settle);
@@ -405,13 +416,16 @@ export class ChatGPTPlan implements PlanReader {
     }
     if (url.origin !== REDIRECT.origin || url.pathname !== REDIRECT.pathname) throw new PlanSignInRefused(shape);
     const error = url.searchParams.get("error");
-    if (error) throw new PlanSignInRefused(deniedWords(error));
+    if (error) throw new PlanSignInRefused(deniedWords(tag(error)));
     if (url.searchParams.get("state") !== pending.state) throw new PlanSignInRefused("That address is from another sign-in: paste the one from the sign-in you started last, or start again.");
     if (!url.searchParams.get("code") || !url.searchParams.get("client_id")) throw new PlanSignInRefused(`That address has no sign-in code in it. ${shape}`);
     pending.paste(url.href);
     try {
       await pending.result;
     } catch (error) {
+      // Cancelled while its code's exchange was out (a newer start, a sign-out, the 10 minutes): the log has no line of
+      // it, so the words say what the view says, or that it was cancelled.
+      if (pending.abort.signal.aborted) throw new PlanSignInRefused(this.#problem ?? "That sign-in was replaced or signed out: start it again.");
       throw new PlanSignInRefused(signInFailure(error).words);
     }
     return this.view();
@@ -421,7 +435,7 @@ export class ChatGPTPlan implements PlanReader {
    *  sign-in since then wins: the credential is dropped, never written, and revoked at OpenAI. A sign-in it takes the place
    *  of is revoked first, then replaced only while the row still holds it (a renewal of it that wrote back meanwhile is
    *  read, revoked and replaced in turn), so no earlier pair is left alive. */
-  private async keep(credential: Credential, epoch: number): Promise<void> {
+  private async keep(credential: Credential, epoch: number, saved?: () => void): Promise<void> {
     if (credential.scopes && !credential.scopes.includes(DIRECT_SCOPE)) throw new Error(`the grant did not include ${DIRECT_SCOPE}`);
     this.hold(credential);
     const models = await this.listModels(credential.access);
@@ -447,28 +461,40 @@ export class ChatGPTPlan implements PlanReader {
     this.#snapshot = row;
     this.#problem = undefined;
     this.#deps.log?.({ chatgpt: "signed_in", ...(previousRevoked === undefined ? {} : { previous_revoked: String(previousRevoked) }) });
-    // Saved: what the server does with the change after it is not the sign-in's to fail. One it failed to take is owed,
-    // and taken again at its next read (changeAgain).
+    // Saved: no longer waiting, so it reads signed in while the server takes the change (`saved`, the sign-in's settle).
+    saved?.();
+    await this.tellChanged();
+  }
+
+  /** Tells the server the sign-in changed (its change callback: env read again, the listings relisted, the offers
+   *  probed). What the server does with it is not the change's to fail: a failure is owed, said in the log (once: not
+   *  again for `again`, a retry of one owed), and taken again at the server's next read (refresh). */
+  private async tellChanged(again = false): Promise<void> {
+    const failed = this.#failedChanges;
     try {
       await this.#deps.changed?.();
-      this.#changeOwed = false;
+      if (this.#failedChanges === failed) this.#changeOwed = false;
     } catch (error) {
+      this.#failedChanges += 1;
       this.#changeOwed = true;
+      if (again) return;
       const code = (error as { code?: unknown })?.code;
-      this.#deps.log?.({ chatgpt: "changed_failed", reason: String(typeof code === "string" ? code : (error as Error)?.name ?? "error").replace(/[^A-Za-z0-9_]/g, "").slice(0, 40) || "error" });
+      this.#deps.log?.({ chatgpt: "changed_failed", reason: tag(typeof code === "string" ? code : (error as Error)?.name) || "error" });
     }
   }
 
-  /** Takes again a sign-in's change the server failed to take (changed_failed), at the server's read of the sign-in, so
-   *  what it offers does not wait for a restart. Nothing when none is owed; a failure again stays owed, said once. */
-  async changeAgain(): Promise<void> {
-    if (!this.#changeOwed) return;
-    try {
-      await this.#deps.changed?.();
-      this.#changeOwed = false;
-    } catch {
-      // Owed still: the next read takes it again.
-    }
+  /** The sign-in as the store holds it now, read at the server's read of it: a runner may have renewed it, found it
+   *  expired, or another server signed in or out. A change is told to the server, and so is one it failed to take, so
+   *  what it offers does not wait for a restart. One at a time: a read while one is out waits for that one (the console
+   *  polls, and each change relists and probes). */
+  refresh(): Promise<void> {
+    // Cleared in a reaction, never inside the function: a read that throws at once would run a `finally` there before
+    // the assignment, and leave a settled promise in flight for good.
+    return (this.#refreshing ??= (async () => {
+      const was = this.state;
+      if ((await this.load()).state !== was) await this.tellChanged();
+      else if (this.#changeOwed) await this.tellChanged(true);
+    })().finally(() => (this.#refreshing = undefined)));
   }
 
   /** The plan's models from OpenAI's list (GET /v1/models with the token), those of the current families; the fallback
@@ -568,7 +594,7 @@ export class ChatGPTPlan implements PlanReader {
       if (await this.swap(bytes, expired)) {
         this.#snapshot = expired;
         this.#deps.log?.({ chatgpt: "expired" });
-        await this.#deps.changed?.();
+        await this.tellChanged();
         throw new PlanUnavailable(EXPIRED);
       }
       return this.adopt();
@@ -625,7 +651,7 @@ export class ChatGPTPlan implements PlanReader {
     }
     this.#snapshot = undefined;
     this.#deps.log?.({ chatgpt: "signed_out", revoked: String(revoked) });
-    await this.#deps.changed?.();
+    await this.tellChanged();
     return { revoked };
   }
 
@@ -644,9 +670,11 @@ export class ChatGPTPlan implements PlanReader {
     }
   }
 
-  /** Stops the sign-in waiting, at the server's close. */
-  close(): void {
+  /** Stops the sign-in waiting, at the server's close. Resolves once every sign-in cancelled (by this, a newer start, a
+   *  sign-out or its 10 minutes) has ended, whatever its end said in the log. */
+  close(): Promise<void> {
     this.cancel();
+    return Promise.all([...this.#ending]).then(() => undefined);
   }
 }
 

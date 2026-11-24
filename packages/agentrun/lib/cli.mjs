@@ -70,7 +70,8 @@ const HELP = () => {
     "The server: --base-url, else AGENTRUN_BASE_URL, else base_url in $XDG_CONFIG_HOME/agentrun/config.json, else the",
     "server started on this machine with the data directory (--data, default ~/.agentrun); /v2 is added to an address",
     "whose path holds none, its path prefix kept. The token: AGENTRUN_API_KEY, else api_key in the config file (for",
-    "the same address, with or without /v2), else that server's own; it is never a flag and never printed. agentrun login",
+    "the same address, with or without /v2), else that server's own (its .token file, or AGENTRUN_TOKEN for one started",
+    "with its token there; AGENTRUN_TOKEN goes to no other address); it is never a flag and never printed. agentrun login",
     "--base-url URL checks a token read from stdin and writes the config file (0600), or on a terminal signs in with a",
     "device code when the server offers one; agentrun login --to URL (or cloud) signs in with a device code when the",
     "server offers one, else reads the token from stdin; agentrun logout removes it.",
@@ -201,8 +202,12 @@ function targetOf(values, env) {
   const isLocal = base === local;
   if (isLocal && record && !alive(record.pid)) throw new Exit(3, stale);
   if (!token && isLocal) {
-    if (record && !record.token_file) throw new Exit(4, `The server recorded in ${recordFile} was started with its token in AGENTRUN_TOKEN; set AGENTRUN_API_KEY to it.`);
-    token = privateFile(join(data, ".token"))?.trim();
+    // A server started with its token in AGENTRUN_TOKEN (no .token file): the variable is that server's token, and only
+    // here, on its own address, is it sent; another address takes AGENTRUN_API_KEY or the token kept for it.
+    if (record && !record.token_file) {
+      token = env.AGENTRUN_TOKEN;
+      if (!token) throw new Exit(4, `The server recorded in ${recordFile} was started with its token in AGENTRUN_TOKEN; set AGENTRUN_API_KEY (or AGENTRUN_TOKEN) to it.`);
+    } else token = privateFile(join(data, ".token"))?.trim();
   }
   if (!token) {
     throw new Exit(4, isLocal
