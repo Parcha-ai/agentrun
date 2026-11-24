@@ -7,10 +7,10 @@ import { missesOf, type Pages, type Readers, type WebLog, type WebPage, webFetch
 import { type Fee, type Pay, unmetered } from "./fees.js";
 import type { Guard, GuardOptions } from "./guard.js";
 import { clip, type Page, type Part, partProblem, URL_MAX } from "./page.js";
-import { type NativeSearch, type ProviderRun, readerOf } from "./provider.js";
+import { holdingWords, type NativeSearch, type ProviderRun, readerOf } from "./provider.js";
 import type { Words } from "./providers/mcp.js";
 import { type FetchProvider, type KeyedProvider, type ProviderId, providerOf, type ProviderSettings, type SearchProvider, serves, settingsProblemsOf } from "./providers/registry.js";
-import { type Breaker, breakers, fitSearch, withKeyBreaker, QUERY_MAX, type Search, type SearchBounds, searchArgs, searchInTurn, searchText, type Try } from "./search.js";
+import { type Breaker, breakers, fitSearch, type Holding, withKeyBreaker, QUERY_MAX, type Search, type SearchBounds, searchArgs, searchInTurn, searchText, type Try } from "./search.js";
 
 /** What an answer took and cost. `out` is the answer as the model reads it; `cache` is "hit" when a fetch came from the
  *  run's pages. */
@@ -64,10 +64,32 @@ export type SearchOptions = { n?: number; signal?: AbortSignal; breakers?: (name
 export type FetchOptions = Part & GuardOptions & { task?: string; lookingFor?: string };
 /** `sift`, only when a decider is given: what it did, for the model to read. */
 export type Sift = { sift?: string };
+/** A provider a Web's tool asks: its id, how it is reached (`keyed`, on the run's key; `unkeyed`, a keyed provider the
+ *  run holds no key for, so never sent; `keyless`, a service's free use; `none`, neither: the model provider's own search
+ *  or the guarded direct fetch), and what holds it now (the tool's breaker, else its key's), if anything. */
+export type Destination = { id: ProviderId; access: "keyed" | "unkeyed" | "keyless" | "none"; held?: Holding };
+/** Each tool's providers, in the order it asks them. */
+export type Destinations = { search: Destination[]; fetch: Destination[] };
+/** `destinations`: where each tool goes now (Destinations), for a run's start line; never a key. */
 export type Web = {
   search(query: string, options?: SearchOptions): Promise<{ answer: Search & Sift; receipt: Receipt }>;
   fetch(url: unknown, options?: FetchOptions): Promise<{ answer: ((WebPage | Page) & Sift) | FoundPage; receipt: Receipt }>;
+  destinations(): Destinations;
 };
+
+/** One tool's destinations in words: each id, how it is reached, and what holds it ("none" for an empty order). */
+const toolWords = (order: readonly Destination[]): string =>
+  order.map(({ id, access, held }) => {
+    const notes = [...(access === "none" ? [] : [access === "unkeyed" ? "keyed, no key" : access]), ...(held ? [holdingWords(held)] : [])];
+    return notes.length ? `${id} (${notes.join(", ")})` : id;
+  }).join(" > ") || "none";
+/** Each tool's destinations in words, for a log line's fields. */
+export const destinationsWords = ({ search, fetch }: Destinations): { search: string; fetch: string } => ({ search: toolWords(search), fetch: toolWords(fetch) });
+/** Both tools' destinations on one line: "search: …; fetch: …". */
+export function destinationsLine(destinations: Destinations): string {
+  const { search, fetch } = destinationsWords(destinations);
+  return `search: ${search}; fetch: ${fetch}`;
+}
 
 /** The fees of the requests sent within one call. */
 const feesOfCall = new AsyncLocalStorage<Fee[]>();
@@ -118,7 +140,16 @@ export function createWeb(config: WebConfig): Web {
   let readers: Readers | undefined;
   const readersOf = (): Readers => (readers ??= Object.fromEntries(config.order.fetch.map((id) => [id, readerOf(runOf(id), withKeyBreaker(fetchBreakers(id), keyBreakers(id)))])));
 
+  const destinationOf = (id: ProviderId, own: (name: string) => Breaker): Destination => {
+    const provider = providerOf(id);
+    const keyed = (config.keys as Partial<Record<string, string>> | undefined)?.[id] !== undefined;
+    const access = provider.key ? (keyed ? "keyed" : "unkeyed") : provider.keyless ? "keyless" : "none";
+    const held = withKeyBreaker(own(id), keyBreakers(id)).holding();
+    return { id, access, ...(held ? { held } : {}) };
+  };
+
   return {
+    destinations: () => ({ search: config.order.search.map((id) => destinationOf(id, runBreakers)), fetch: config.order.fetch.map((id) => destinationOf(id, fetchBreakers)) }),
     async search(query, { n, signal, breakers: given, keyLimits = given ? "call" : "web", task } = {}) {
       const ownOf = given ?? runBreakers;
       const breakerOf = (name: string) => withKeyBreaker(ownOf(name), keyLimits === "web" ? keyBreakers(name) : ownOf(`${name} key`));
