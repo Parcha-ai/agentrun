@@ -1,6 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-// The export route's golden bundle (serve's run-export test checks it): synthetic, a planted value of every kind cut.
-import golden from "../../../../packages/serve/test/fixtures/run-export/golden.json";
+import { golden } from "./golden.fixture";
 import type { ShareBundle, ShareSource } from "./bundle";
 import { SharePage } from "./SharePage";
 import { ShareView } from "./ShareView";
@@ -11,7 +10,7 @@ const meta: Meta<typeof ShareView> = { title: "Share page", component: ShareView
 export default meta;
 type Story = StoryObj<typeof ShareView>;
 
-const bundle = golden as unknown as ShareBundle;
+const bundle: ShareBundle = golden;
 const noop = () => {};
 const restoredOne: ShareBundle = {
   ...bundle,
