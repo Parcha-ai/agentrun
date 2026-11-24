@@ -12,7 +12,7 @@
 import type { OwnCalls } from "@parcha/agentrun-kernel";
 import type { DriveContext, SessionState } from "./host/kernel.js";
 import type { ResultBudget, SessionMachine } from "./host/process.js";
-import { boundResult, failureText, openTurn, recoveryNote, recoverySystemNote, recoveryUserTurn, toolKey, transcriptOf } from "./host/process.js";
+import { boundKey, boundResult, failureText, openTurn, recoveryNote, recoverySystemNote, recoveryUserTurn, toolKey, transcriptOf } from "./host/process.js";
 // cycle with harness.ts: read repairOutput only inside functions, never at module top level (pinned by "code mode and the harness
 // load in either order and the repair reads repairOutput"). A host loads harness.js first, so at that point none of its const bindings is set.
 import { repairOutput } from "./harness.js";
@@ -123,10 +123,14 @@ const failedText = (error: Parameters<typeof failureText>[0] | undefined): strin
 function factOf(state: SessionState, rolled: ReturnType<typeof completedNested>, tie: { callId: string; tool?: string }, told: ReadonlyMap<string, NestedFact["told"]> = new Map()): NestedFact {
   const e = state.effects.get(toolKey(tie.callId));
   const status = told.get(tie.callId);
+  // The bridge's record of the cut it handed Codex, if it cut the result: what settle compares the two records on.
+  const cut = state.effects.get(boundKey(tie.callId));
+  const bound = cut?.status === "completed" ? (cut.output as { kept?: unknown; whole?: unknown } | null) : undefined;
+  const lengths = bound && typeof bound.kept === "number" && typeof bound.whole === "number" ? { bound: { kept: bound.kept, whole: bound.whole } } : {};
   return {
     callId: tie.callId,
     tool: e ? e.name.replace(/^tool\./, "") : (rolled.get(tie.callId)?.tool ?? tie.tool ?? "a tool"),
-    ...(e ? { store: { status: e.status === "completed" ? "completed" : e.status === "failed" ? "failed" : "started", text: e.status === "failed" ? failedText(e.error) : outputTextOf(e.output), ...(e.status === "completed" ? sentOf(e.output) : {}), ...(e.error?.interrupted ? { interrupted: true } : {}) } as NonNullable<NestedFact["store"]> } : {}),
+    ...(e ? { store: { status: e.status === "completed" ? "completed" : e.status === "failed" ? "failed" : "started", text: e.status === "failed" ? failedText(e.error) : outputTextOf(e.output), ...(e.status === "completed" ? sentOf(e.output) : {}), ...(e.error?.interrupted ? { interrupted: true } : {}), ...lengths } as NonNullable<NestedFact["store"]> } : {}),
     ...(rolled.has(tie.callId) ? { rollout: rolled.get(tie.callId)! } : {}),
     ...(status ? { told: status } : {}),
     ...(state.effects.get(parkedKey(tie.callId))?.status === "completed" ? { parked: true as const } : {}),

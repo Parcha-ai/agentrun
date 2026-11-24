@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { HOST_RESULT_MAX_CHARS } from '@parcha/agentrun-kernel';
 import { openDrive } from '@parcha/agentrun-kernel/kernel';
-import { boundOf, boundResult, RESULT_ALWAYS_WHOLE_CHARS, RESULT_CHARS_PER_TOKEN, RESULT_WINDOW_SHARE, resultMaxChars, toolBridge } from '@parcha/agentrun-kernel/process';
+import { boundResult, RESULT_ALWAYS_WHOLE_CHARS, RESULT_CHARS_PER_TOKEN, RESULT_WINDOW_SHARE, resultMaxChars, toolBridge } from '@parcha/agentrun-kernel/process';
 import { memorySessionStore } from '@parcha/agentrun-kernel/testing';
 
 const SMALL = { contextWindow: 16_384 };
@@ -113,14 +113,6 @@ test('bounding a bound changes nothing: a cut or a refusal, bound again under it
   }
   assert.ok(boundResult('r'.repeat(RESULT_ALWAYS_WHOLE_CHARS + 1), { contextWindow: 100 }).truncated, 'past the floor a tiny window still refuses');
   assert.deepEqual(boundResult('r'.repeat(RESULT_ALWAYS_WHOLE_CHARS), { contextWindow: 100 }), { text: 'r'.repeat(RESULT_ALWAYS_WHOLE_CHARS) }, 'a result no longer than a refusal is whole');
-});
-
-test('boundOf tells a bound of a text from a cut of another', () => {
-  const whole = 'b'.repeat(40_000) + 'B'.repeat(200_000);
-  for (const budget of [undefined, SMALL, { contextWindow: 100 }]) assert.equal(boundOf(boundResult(whole, budget).text, whole), true, JSON.stringify(budget));
-  assert.equal(boundOf(whole, whole), true, 'the text itself');
-  assert.equal(boundOf(boundResult(`${whole}x`, SMALL).text, whole), false, "another text's cut");
-  assert.equal(boundOf(whole.slice(0, 1_000), whole), false, 'a cut with no note');
 });
 
 /** A drive on a fresh session. */

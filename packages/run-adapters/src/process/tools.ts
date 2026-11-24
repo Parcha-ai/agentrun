@@ -3,6 +3,7 @@
 // Changed by Parcha, and AgentRun's own since the port from upstream froze on 2026-11-07.
 import { type DriveContext, EffectFailure, type EffectError, type HostTool, hostToolIO, type ReplayPolicy, type ToolOutput } from '../kernel/index.js';
 import { type GateAnswer, type GateCall, HOST_RESULT_MAX_CHARS, type HostTool as AdapterTool, type JsonValue, type NestedCalls, type ToolImage } from '../types.js';
+import { TurnBudget } from './turn-budget.js';
 
 /**
  * The tool bridge: `HostTool`s as a harness-neutral list a port maps onto its
@@ -19,8 +20,10 @@ import { type GateAnswer, type GateCall, HOST_RESULT_MAX_CHARS, type HostTool as
  *
  * Every result a harness gets passes here, so here it is held to the bound:
  * HOST_RESULT_MAX_CHARS, or less where the harness passes its model's context
- * window (`ToolBridgeOptions.budget`, `resultMaxChars`). A longer text keeps its
- * start and says where it was cut (`boundResult`), the call's record keeping it whole.
+ * window (`ToolBridgeOptions.budget`, `resultMaxChars`), and, with the budget's turn
+ * (`ResultBudget.turn`), to the call's share of what the window has left this turn.
+ * A longer text keeps its start and says where it was cut (`boundResult`), the
+ * call's record keeping it whole; the cut is recorded by its lengths (`boundKey`).
  */
 
 /** What a call returns to the harness. */
@@ -77,7 +80,7 @@ export interface ToolBridgeOptions {
   /** How much of a partial output an interrupted result quotes. Default 2000 characters. */
   partialChars?: number;
   /** What the harness's model can take of one result (its context window): every result is held to `resultMaxChars` of
-   *  it. Absent: HOST_RESULT_MAX_CHARS alone. */
+   *  it, and, with its turn, a call the model made to its share of what the turn has left. Absent: HOST_RESULT_MAX_CHARS alone. */
   budget?: ResultBudget;
 }
 
@@ -100,6 +103,22 @@ export class Mutex {
 
 /** The memo key of a tool call. */
 export const toolKey = (callId: string) => `tool:${callId}`;
+
+/** The key of the record of a call's cut (`ResultBound`): written when the bridge hands a call's result cut or refused. */
+export const boundKey = (callId: string) => `bound:${callId}`;
+
+/** How a call's result was cut, as recorded (`boundKey`): the characters of it kept (0 for a refusal), its whole length,
+ *  and the bound it was held to, from which the same cut is made again. */
+export interface ResultBound {
+  kept: number;
+  whole: number;
+  max: number;
+}
+
+const isBound = (value: unknown): value is ResultBound => {
+  const v = value as Partial<ResultBound> | null;
+  return typeof v === 'object' && v !== null && [v.kept, v.whole, v.max].every((n) => typeof n === 'number' && Number.isSafeInteger(n) && n >= 0);
+};
 
 /** A call the gate parked: held, never answered here, until `signal` is aborted (the run parked and this process lets
  *  go of it); then it rejects, so the harness is never handed a result for it. */
@@ -137,6 +156,26 @@ export function toolBridge(ctx: DriveContext, tools: HostTool[], options: ToolBr
   const mutex = new Mutex();
   const serial = options.serial ?? true;
   const live = options.live ?? true;
+  const turn = options.budget?.turn;
+  // What every request carries of the bridge's tools (their schemas), for a turn whose answer the host never reads.
+  turn?.fixed('tools', JSON.stringify(tools.filter((t) => !t.deferred).map((t) => ({ name: t.name, description: t.description, input_schema: t.inputSchema }))));
+  /**
+   * `whole` as call `callId`'s result reaches the harness: held to the budget's bound, and, for a call the model made
+   * (not one nested in a tool's), to its claim on the turn. A cut is recorded by its lengths (`boundKey`), once; a call
+   * whose cut is recorded is cut again by that record, so a replay hands the harness what the first run did.
+   */
+  const deliver = async (callId: string, whole: string, nested?: true): Promise<{ text: string; truncated?: true }> => {
+    const key = boundKey(callId);
+    const recorded = ctx.state().effects.get(key);
+    const known = recorded?.status === 'completed' && isBound(recorded.output) ? recorded.output : undefined;
+    const claims = known || nested ? undefined : turn;
+    if (claims) await claims.ready();
+    const max = known ? known.max : Math.min(resultMaxChars(options.budget), claims ? claims.claim(callId, options.budget?.contextWindow) : HOST_RESULT_MAX_CHARS);
+    const { text, truncated, bound } = boundTo(whole, max);
+    claims?.settle(callId, text.length);
+    if (bound && !known) await ctx.effect(key, { name: 'bound', replay: 'safe', input: null }, async () => bound);
+    return truncated ? { text, truncated } : { text };
+  };
   // Each tool's run by name, outside the mutex: a nested call runs inside the call that made it, which holds the mutex.
   const runs = new Map<string, (args: unknown, callId: string, signal?: AbortSignal, nested?: true) => Promise<ToolResult>>();
   /** The session's tools as calls nested in `outer` (NestedCalls): each through its own run, gate first, keyed
@@ -189,13 +228,19 @@ export function toolBridge(ctx: DriveContext, tools: HostTool[], options: ToolBr
         );
         // A tool answers in text, or in text with images (a screenshot) and its value: they come back as recorded.
         const { text: whole, images, structured } = typeof output === 'object' && output !== null ? (output as ToolOutput) : { text: String(output), images: undefined, structured: undefined };
-        // The bound uses the window the harness passed (MUTATION: dropping `options.budget` here fails the bridge's 16k test).
-        const { text, truncated } = boundResult(String(whole), options.budget);
+        const { text, truncated } = await deliver(callId, String(whole), nested);
         if (fresh && live) ctx.live({ type: 'tool_end', name: tool.name, callId, result: text, ...(truncated ? { truncated } : {}) });
         return { text, isError: false, ...(images?.length ? { images } : {}), ...(structured !== undefined ? { structured } : {}), ...(truncated ? { truncated } : {}) };
       } catch (err) {
         if (err instanceof EffectFailure) {
-          const { text, truncated } = boundResult(failureText(err.error, options.partialChars), options.budget);
+          let bounded: { text: string; truncated?: true };
+          try {
+            bounded = await deliver(callId, failureText(err.error, options.partialChars), nested);
+          } catch (error) {
+            ctx.halt?.(error);
+            throw error;
+          }
+          const { text, truncated } = bounded;
           if (fresh && live) ctx.live({ type: 'tool_end', name: tool.name, callId, isError: true, result: text, ...(truncated ? { truncated } : {}) });
           return { text, isError: true, ...(err.error.interrupted ? { interrupted: true } : {}), ...(truncated ? { truncated } : {}) };
         }
@@ -221,12 +266,12 @@ export function toolBridge(ctx: DriveContext, tools: HostTool[], options: ToolBr
           ctx.halt?.(err);
           throw err;
         }
-        const { text, truncated } = boundResult(err instanceof Error ? err.message : String(err), options.budget);
+        const { text, truncated } = await deliver(callId, err instanceof Error ? err.message : String(err), nested);
         if (live) ctx.live({ type: 'tool_end', name: tool.name, callId, isError: true, result: text, ...(truncated ? { truncated } : {}) });
         return { text, isError: true, ...(truncated ? { truncated } : {}) };
       }
       const { text: whole, images, structured } = typeof output === 'object' && output !== null ? output : { text: String(output), images: undefined, structured: undefined };
-      const { text, truncated } = boundResult(String(whole), options.budget);
+      const { text, truncated } = await deliver(callId, String(whole), nested);
       if (live) ctx.live({ type: 'tool_end', name: tool.name, callId, result: text, ...(truncated ? { truncated } : {}) });
       return { text, isError: false, ...(images?.length ? { images } : {}), ...(structured !== undefined ? { structured } : {}), ...(truncated ? { truncated } : {}) };
     };
@@ -274,6 +319,8 @@ export interface ResultBudget {
   /** Tokens of the window each request spends before any tool result (its system prompt, its tool list), when the
    *  harness knows them. Default 0: the share below leaves room for them. */
   baseInputTokens?: number;
+  /** The session's turn budget (turn-budget.ts): what the window has left this turn, which a bridge's calls share. */
+  turn?: TurnBudget;
 }
 
 /** The most of a model's context window one tool result may take: a quarter, so a turn has room for its prompt, a few
@@ -303,13 +350,14 @@ export function resultMaxChars(budget?: ResultBudget): number {
   if (typeof window !== 'number' || !Number.isFinite(window) || window <= 0) return HOST_RESULT_MAX_CHARS;
   const base = budget?.baseInputTokens;
   const room = Math.max(0, window - (typeof base === 'number' && Number.isFinite(base) && base > 0 ? base : 0));
-  // The bound uses the passed window (MUTATION: returning HOST_RESULT_MAX_CHARS here fails every 16k-window test).
   return Math.min(HOST_RESULT_MAX_CHARS, Math.floor(room * RESULT_WINDOW_SHARE * RESULT_CHARS_PER_TOKEN));
 }
 
-/** A harness's `resultBudget` option for a model of `contextWindow`, or none when no window is known (the host's bound
- *  alone): what each adapter spreads into its harness's options, the session's window or its own. */
-export const windowBudget = (contextWindow: number | undefined): { resultBudget?: ResultBudget } => (contextWindow ? { resultBudget: { contextWindow } } : {});
+/** A harness's `resultBudget` option for a model of `contextWindow`, with the session's turn budget (its fixed text,
+ *  `system`, counted while no answer is read), or none when no window is known (the host's bound alone): what each
+ *  adapter spreads into its harness's options, the session's window or its own. Its `turn` is what the adapter hands
+ *  the session's model proxy (ModelProxyOptions.turn), which reads each answer's facts into it. */
+export const windowBudget = (contextWindow: number | undefined, system: readonly string[] = []): { resultBudget?: ResultBudget } => (contextWindow ? { resultBudget: { contextWindow, turn: new TurnBudget(system) } } : {});
 
 /** The line a cut result ends with: the host's bound's, as it always read, or the window's, which says why and how to go on. */
 function cutNote(kept: number, total: number, windowed: boolean): string {
@@ -334,31 +382,20 @@ function refusedNote(total: number, max: number): string {
  * original oversized text is never returned. `truncated` when cut or refused.
  */
 export function boundResult(text: string, budget?: ResultBudget): { text: string; truncated?: true } {
-  const max = resultMaxChars(budget);
+  const { text: bounded, truncated } = boundTo(text, resultMaxChars(budget));
+  return truncated ? { text: bounded, truncated } : { text: bounded };
+}
+
+/** `text` held to `max` characters as `boundResult` holds it to its budget's bound, with how it was cut (`ResultBound`)
+ *  when it was. The window's note wherever `max` is under HOST_RESULT_MAX_CHARS. */
+export function boundTo(text: string, max: number): { text: string; truncated?: true; bound?: ResultBound } {
   if (text.length <= max || text.length <= RESULT_ALWAYS_WHOLE_CHARS) return { text };
   const windowed = max < HOST_RESULT_MAX_CHARS;
   // The note's own length counted at the bound: what is kept is never longer than that, so neither is its note.
   let kept = max - cutNote(max, text.length, windowed).length;
-  if (kept < RESULT_LEAST_KEPT_CHARS) return { text: refusedNote(text.length, max), truncated: true };
+  if (kept < RESULT_LEAST_KEPT_CHARS) return { text: refusedNote(text.length, max), truncated: true, bound: { kept: 0, whole: text.length, max } };
   if ((text.charCodeAt(kept - 1) & 0xfc00) === 0xd800 && (text.charCodeAt(kept) & 0xfc00) === 0xdc00) kept -= 1;
-  return { text: `${text.slice(0, kept)}${cutNote(kept, text.length, windowed)}`, truncated: true };
-}
-
-/**
- * Whether `text` is `whole` as some bound left it (boundResult's, under any budget): `whole` itself, its start with a cut
- * note of `whole`'s length, or the refusal of a result that long. A harness that compares a call's two records (the
- * store's whole result, what its model was handed) reads them as one this way, without knowing the budget it ran under.
- */
-export function boundOf(text: string, whole: string): boolean {
-  if (text === whole) return true;
-  // The note is the text's last line: matched at its end, so a note-like line inside the result is never read as it.
-  const cut = /\n\[(?:cut at|kept) (\d+) of (\d+) characters(?:\]|: [^\n]*\])$/.exec(text);
-  if (cut && Number(cut[2]) === whole.length) {
-    const kept = Number(cut[1]);
-    return [true, false].some((windowed) => text === `${whole.slice(0, kept)}${cutNote(kept, whole.length, windowed)}`);
-  }
-  const refused = /^\[not shown: this result is (\d+) characters, .* at most (\d+) characters of a tool result\./.exec(text);
-  return refused !== null && Number(refused[1]) === whole.length && text === refusedNote(whole.length, Number(refused[2]));
+  return { text: `${text.slice(0, kept)}${cutNote(kept, text.length, windowed)}`, truncated: true, bound: { kept, whole: text.length, max } };
 }
 
 /** At most `max` characters, with a marker when cut. */

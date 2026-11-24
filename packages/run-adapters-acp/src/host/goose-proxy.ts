@@ -339,6 +339,7 @@ export function gooseProxy(options: GooseProxyOptions): AcpProxy {
     const proxy = await startModelProxy({
       policy: goosePolicy({ model: options.model, tools: session.tools, ...(options.maxOutputTokens ? { maxOutputTokens: options.maxOutputTokens } : {}), ...(options.provider.auth ? { auth: options.provider.auth } : {}) }),
       hooks: session.models,
+      ...(session.turn ? { turn: session.turn } : {}),
       model: options.model,
       origin: options.provider.origin,
       credential: async () => (await options.provider.credential()) ?? "",

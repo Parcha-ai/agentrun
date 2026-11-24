@@ -12,7 +12,7 @@
 // `exec` anyway makes two live, and then a nested call cannot be told from the other's.
 import { HOST_RESULT_MAX_CHARS } from "@parcha/agentrun-kernel";
 import type { DriveContext } from "@parcha/agentrun-kernel/kernel";
-import { boundOf, boundResult, resultMaxChars, type ResultBudget } from "./host/process.js";
+import { boundResult, resultMaxChars, type ResultBudget } from "./host/process.js";
 import { parseLine } from "./rollout.js";
 
 /** The id Codex gives a host tool called from a code-mode script. */
@@ -140,7 +140,7 @@ export interface NestedFact {
   callId: string;
   tool: string;
   /** The session's own record (the effect of `tool:<id>`): none when the call never started. */
-  store?: { status: "completed" | "failed" | "started"; text?: string; interrupted?: boolean; /** What a script's nested call was sent for a tool with a value (scriptAnswer: the value as JSON, its images' data in it), which the rollout holds instead of `text`. */ sent?: string };
+  store?: { status: "completed" | "failed" | "started"; text?: string; interrupted?: boolean; /** What a script's nested call was sent for a tool with a value (scriptAnswer: the value as JSON, its images' data in it), which the rollout holds instead of `text`. */ sent?: string; /** How the bridge cut the result it handed Codex (its record, `boundKey`): the characters kept and the whole length. */ bound?: { kept: number; whole: number } };
   /** What the harness's recovery note of the same turn calls it (the kernel's one rule, process/recovery.ts): `retryable` is a
    *  safe tool's call that a crash cut off, which the note tells the model is safe to repeat. */
   told?: "completed" | "failed" | "interrupted" | "retryable" | "running";
@@ -166,17 +166,24 @@ export const markParked = (ctx: DriveContext, callId: string): Promise<unknown> 
 /** What a nested call came to. A call the host parked is `parked`, whatever else holds: it never ran. Else the store's record first, the rollout's completion second: both complete and agreeing, or
  *  one of them, is that outcome; both complete and disagreeing, or a call that started and has no end in either, is
  *  interrupted (its effect is unknown), and a failure the store marks interrupted is interrupted. They agree when the
- *  rollout holds what the bridge handed Codex for the stored text: the store's text held to its bound (`boundOf`: the
- *  host's, or the model window's the bridge ran under, which this is never told), since the store keeps a result whole
- *  and Codex got its cut; or the stored text itself, as a session written before that bound holds it in both records. */
+ *  rollout holds what the bridge handed Codex for the stored text: the stored text itself; or, where the bridge recorded
+ *  its cut (`store.bound`), a text that starts with the stored text's kept characters, the stored text as long as the
+ *  record says, compared on those lengths and never on the cut's note, whose words are free to change; or the stored
+ *  text cut at the host's bound, as a session written before the record (a release before it) holds it. Any other cut
+ *  with no record is no proof the two are one call's. */
 export function settle(fact: NestedFact): Settled {
   if (fact.parked) return { kind: "parked" };
   const { store, rollout } = fact;
   const stored = store?.status === "completed" ? ({ kind: "completed", text: store.text ?? "" } as const) : store?.status === "failed" && !store.interrupted ? ({ kind: "failed", text: store.text ?? "" } as const) : undefined;
   const rolled = rollout ? ({ kind: rollout.ok ? "completed" : "failed", text: rollout.text } as const) : undefined;
-  if (stored && rolled) return stored.kind === rolled.kind && (boundOf(rolled.text, stored.text) || (store?.sent !== undefined && rolled.text === store.sent)) ? stored : { kind: "interrupted" };
+  if (stored && rolled) return stored.kind === rolled.kind && (rolled.text === stored.text || cutOf(rolled.text, stored.text, store?.bound) || rolled.text === boundResult(stored.text).text || (store?.sent !== undefined && rolled.text === store.sent)) ? stored : { kind: "interrupted" };
   return stored ?? rolled ?? { kind: "interrupted" };
 }
+
+/** Whether `text` is the cut of `whole` the bridge recorded (`bound`): `whole` as long as the record says, and `text`
+ *  starting with its kept characters. */
+const cutOf = (text: string, whole: string, bound: { kept: number; whole: number } | undefined): boolean =>
+  bound !== undefined && whole.length === bound.whole && bound.kept <= whole.length && text.startsWith(whole.slice(0, bound.kept));
 
 /** The most a recovered script's output holds (a cut-off `exec`'s, or the `wait` on its cell): one result at the host's bound, as
  *  the script was handed it, and the words that tell each call's outcome around it. It stands in for the script's own output,
@@ -191,7 +198,6 @@ export const EXEC_RECOVERY_MAX_CHARS = HOST_RESULT_MAX_CHARS + 2_000;
  *  since the output is one tool result the model reads. */
 export function recoveryMaxChars(budget?: ResultBudget): number {
   const max = resultMaxChars(budget);
-  // The recovered output takes the window's bound (MUTATION: returning EXEC_RECOVERY_MAX_CHARS here fails the 16k recovery tests).
   return max < HOST_RESULT_MAX_CHARS ? max : EXEC_RECOVERY_MAX_CHARS;
 }
 

@@ -196,6 +196,9 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
       const hostName = (name: string) => hostNames.get(name) ?? name;
       const effort = spec.effort ?? spec.thinking;
       const window = spec.contextWindow ?? options.contextWindow;
+      // Each tool result held to the model's share of the window, and a turn's results to what it has left, which the
+      // session's model proxy reads from each answer (its turn).
+      const budget = windowBudget(window, spec.system);
       // The live search runs inside a model request, where no call reaches the gate: it is offered only while the host's
       // web_search setting allows it, read before each request (a deny or ask set mid-run drops it from the next one).
       const searchAllowed = options.webSearch && io.permission ? async () => (await io.permission!("web_search")) === "allow" : undefined;
@@ -235,7 +238,7 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
         // The window the host knows (the session's, from its catalog; else this adapter's). Only with neither is Codex told
         // 272,000, a guess at a large OpenAI model's, and then no tool result is held to it: the host's bound alone.
         contextWindow: window ?? 272_000,
-        ...windowBudget(window),
+        ...budget,
         ...(options.log ? { log: options.log } : {}),
         ...(options.standIn ? { test: { command: options.standIn.command, args: options.standIn.args ?? [] } } : {}),
         machine: {
@@ -252,6 +255,7 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
             ...(options.webSearch ? { webSearch: options.webSearch, ...(searchAllowed ? { searchAllowed } : {}) } : {}),
             proxy: {
               hooks: io.models,
+              ...(budget.resultBudget?.turn ? { turn: budget.resultBudget.turn } : {}),
               tools: tools.map((t) => codexToolName(t.name)),
               ...(options.log ? { log: options.log } : {}),
               ...(options.price ? { price: options.price } : {}),

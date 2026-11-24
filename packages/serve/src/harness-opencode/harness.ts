@@ -310,6 +310,8 @@ export function openCodeHarness(options: OpenCodeHarnessOptions, control?: (driv
     const proxy = await startModelProxy({
       policy: openCodePolicy({ model: options.model, tools: options.tools.map((t) => t.name), ...(options.maxOutputTokens ? { maxOutputTokens: options.maxOutputTokens } : {}), onCall: (call) => calls.add(call) }),
       hooks,
+      // The turn budget the bridge's calls share: the proxy opens it with each answer's facts.
+      ...(options.resultBudget?.turn ? { turn: options.resultBudget.turn } : {}),
       model: options.model,
       origin: options.provider.origin,
       credential: async () => (await options.provider.credential()) ?? "",

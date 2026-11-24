@@ -395,6 +395,9 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
       const tools: HostTool[] = skills.length ? [...spec.tools, hostedTool(io, readSkillFileTool(join(dir, "plugin", "skills"), skills.map((skill) => ({ name: skill.name, files: Object.keys(skill.files) }))))] : spec.tools;
 
       const calls = new CallsInFlight();
+      // Each tool result held to the model's share of its window (the session's, else this adapter's; none: the host's
+      // bound), and a turn's results to what the window has left, which the session's model proxy reads from each answer.
+      const budget = windowBudget(spec.contextWindow ?? options.contextWindow, spec.system);
       // The CLI's own tools offered to the model: Skill only when the session has skills, WebSearch only when it is on.
       const builtins = [...(skills.length ? ["Skill"] : []), ...(webSearch ? ["WebSearch"] : [])];
       const acquire = localMachine({
@@ -405,6 +408,7 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
         // On a login, no proxy: the CLI calls Anthropic itself.
         ...(provider ? { proxy: {
           hooks: io.models,
+          ...(budget.resultBudget?.turn ? { turn: budget.resultBudget.turn } : {}),
           tools: tools.map((t) => t.name),
           ...(builtins.length ? { builtins } : {}),
           ...(webSearch ? { webSearch: true, ...(options.webSearchAllowance !== undefined ? { webSearchAllowance: options.webSearchAllowance } : {}) } : {}),
@@ -431,8 +435,7 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
         },
         tools: tools.map((tool) => claudeTool(tool, io, maxImageBytes, calls)),
         ...(spec.deferCatalog === undefined ? {} : { deferCatalog: spec.deferCatalog }),
-        // Each tool result held to the model's share of its window: the session's, else this adapter's (none: the host's bound).
-        ...windowBudget(spec.contextWindow ?? options.contextWindow),
+        ...budget,
         builtins: false,
         // Off by name too, besides tools: []: the pinned CLI's tools that neither the harness's allowlist nor its off list
         // decide (test/tool-off.test.mjs pins the CLI's whole tool set against these lists), but WebSearch when it is on.

@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { toolSchemaProblems } from "@parcha/agentrun-kernel";
 import type { AdapterEvent, AdapterSession, AgentAdapter, GateCall, ModelPort, TurnStatus } from "@parcha/agentrun-kernel";
 import { abortedOutcome, openDrive, pendingSubmissions, SessionHalt, type Drive } from "@parcha/agentrun-kernel/kernel";
-import { bridgeTool, recoveryNote, settleTurn, transcriptOf, windowBudget } from "@parcha/agentrun-kernel/process";
+import { bridgeTool, recoveryNote, settleTurn, transcriptOf, type TurnBudget, windowBudget } from "@parcha/agentrun-kernel/process";
 import { serialWriter, type ParentWatch } from "@parcha/agentrun-kernel/host";
 import { acpHarness, sentSubmissions, type DriveControl } from "./harness.js";
 import { recipeProblems, type AcpRecipe } from "./recipe.js";
@@ -59,6 +59,8 @@ export interface AcpProxySession {
   readonly tools: readonly string[];
   /** Ends the agent's drive: its turn ends failed in `reason`'s words. */
   halt(reason: unknown): void;
+  /** The session's turn budget (ResultBudget.turn): a proxy opens it with each answer's facts (ModelProxyOptions.turn). */
+  readonly turn?: TurnBudget;
 }
 
 /** A proxy for one agent process: the variables that point it at the proxy, and the proxy's close. */
@@ -110,18 +112,21 @@ export function acpAdapter(options: AcpAdapterOptions): AgentAdapter {
       if (!dir) throw new Error("acp: a session needs a private directory: the host lends one (io.dir), or pass sessionsDir");
       const instructions = spec.system.join("\n\n");
       let control: DriveControl | undefined;
+      // Each tool result held to the model's share of its window (the session's, else this adapter's; none: the host's
+      // bound), and a turn's results to what it has left, which a proxy reads from each answer.
+      const budget = windowBudget(spec.contextWindow ?? options.contextWindow, spec.system);
+      const turn = budget.resultBudget?.turn;
       const harness = acpHarness({
         recipe,
         tools: spec.tools.map((tool) => bridgeTool(tool)),
-        // Each tool result held to the model's share of its window: the session's, else this adapter's (none: the host's bound).
-        ...windowBudget(spec.contextWindow ?? options.contextWindow),
+        ...budget,
         ...(instructions ? { instructions } : {}),
         dir,
         ...(io.cwd ? { cwd: io.cwd } : {}),
         ...(options.confine ? { confine: options.confine } : {}),
         ...(options.parentWatch ? { parentWatch: options.parentWatch } : {}),
         ...(options.env ? { env: options.env } : {}),
-        ...(options.proxy ? { proxy: (drive: { halt(reason: unknown): void }) => options.proxy!({ models: io.models, tools: spec.tools.map((tool) => tool.name), halt: drive.halt }) } : {}),
+        ...(options.proxy ? { proxy: (drive: { halt(reason: unknown): void }) => options.proxy!({ models: io.models, tools: spec.tools.map((tool) => tool.name), halt: drive.halt, ...(turn ? { turn } : {}) }) } : {}),
         ...(options.beforeStart ? { beforeStart: options.beforeStart } : {}),
         ...(options.callIdWaitMs !== undefined ? { callIdWaitMs: options.callIdWaitMs } : {}),
         ...(options.startMs !== undefined ? { startMs: options.startMs } : {}),

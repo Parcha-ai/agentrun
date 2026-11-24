@@ -183,7 +183,7 @@ export function openCodeAdapter(options: OpenCodeAdapterOptions): AgentAdapter {
         // The window the host knows (the session's, from its catalog; else this adapter's). Only with neither is OpenCode
         // told 272,000, a guess, and then no tool result is held to it: the host's bound alone.
         contextWindow: window ?? 272_000,
-        ...windowBudget(window),
+        ...windowBudget(window, spec.system),
         ...(options.eventConnectMs ? { eventConnectMs: options.eventConnectMs } : {}),
         ...(options.log ? { log: options.log } : {}),
         ...(options.fetch ? { fetch: options.fetch } : {}),

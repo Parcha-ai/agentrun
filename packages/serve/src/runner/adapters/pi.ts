@@ -18,7 +18,7 @@ import { anthropicPolicy, withWebSearches } from "@parcha/agentrun-harness-claud
 import { type AdapterSession, type AgentAdapter, HOST_RESULT_MAX_CHARS, type HostTool, type NestedCalls, type SessionIO, type SessionSpec, type ToolImage, type TurnStatus, type Wire } from "@parcha/agentrun-kernel";
 import { conversationLabel, type ModelProxy, NATIVE_SEARCH_USD, type ProviderPolicy, startModelProxy } from "@parcha/agentrun-kernel/host";
 import { INTERRUPTED_TEXT } from "@parcha/agentrun-kernel/kernel";
-import { boundResult, resultMaxChars } from "@parcha/agentrun-kernel/process";
+import { boundTo, resultMaxChars, TurnBudget } from "@parcha/agentrun-kernel/process";
 import { randomBytes } from "node:crypto";
 import { DEFAULT_HARNESS } from "../../harness.js";
 import { durableWait } from "../../workflow/pi-versions.js";
@@ -382,7 +382,17 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
   // session's, from its catalog), or a tier's (its route's). None: the host's bound alone holds each result.
   const tierWindows = new Map(tiers.each.map(([tier, route]) => [tierProvider(tier), route.contextWindow] as const));
   const windowOf = (ref: { readonly provider: string } | undefined): number | undefined => (ref === undefined || ref.provider === PROVIDER ? spec.contextWindow : tierWindows.get(ref.provider));
-  const tools = [...spec.tools.filter((tool) => !owned.has(tool.name)).map((tool) => piTool(tool, io, (callId) => (io.gate ? (passed.has(callId) ? 0 : 1) : undefined), touched, nestedRefusals, windowOf)), ...(options.tools ?? [])];
+  // Each conversation's turn budget (the kernel's): what its model's window has left for the results of the calls its
+  // last answer made, which those calls share. pi reports each answer's facts (afterResponse); with none yet, the
+  // session's system text, counted, is what the context holds.
+  const turns = new Map<string, TurnBudget>();
+  const turnOf = (conversationId: unknown): TurnBudget => {
+    const key = String(conversationId);
+    let turn = turns.get(key);
+    if (!turn) turns.set(key, (turn = new TurnBudget(spec.system)));
+    return turn;
+  };
+  const tools = [...spec.tools.filter((tool) => !owned.has(tool.name)).map((tool) => piTool(tool, io, (callId) => (io.gate ? (passed.has(callId) ? 0 : 1) : undefined), touched, nestedRefusals, windowOf, turnOf)), ...(options.tools ?? [])];
   // A refused call's words (the gate's deny, main's), by call: its result is those words alone, as main gives them.
   const refusals = refusalWords();
   const extension = defineExtension({
@@ -417,18 +427,24 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
         // held to the kernel's bound for the conversation's model (boundPiResult): every tool's, a host tool's and a
         // pi-native one's (web_fetch, web_search, the browser's, a subagent's) alike, as every bridged harness's tool
         // bridge holds each result. This hook runs on every result pi's tool task writes, so no result reaches the model
-        // around it (MUTATION: returning `result` unbounded here fails the native tool's 16k test).
+        // around it. A call the model made (not one nested in a tool's) is held to its share of its turn as well.
         afterTool: async (call, result, api, hookContext: Context) => {
           const refused = refusals.resultOf(call.id, result, call.parent !== undefined);
           if (refused) return refused as never;
           const agent = (await api.snapshot(AgentDoc, api.conversationId, hookContext).catch(() => undefined)) as { readonly model?: { readonly provider: string } } | undefined;
-          return boundPiResult(result, windowOf(agent?.model)) as never;
+          return (await boundPiResult(result, windowOf(agent?.model), call.parent === undefined ? { turn: turnOf(api.conversationId), callId: call.id } : undefined)) as never;
         },
       }),
       // An answer's cost is the runner's booking of its request, never pi's $0 for a model it has no price for: set on
       // the answer before pi stores it, so the answer, pi.usage and the live timeline carry it; unknown stays unknown.
       hook(GenerationTask, {
         afterResponse: async (message, api, hookContext: Context) => {
+          // The turn's facts, for its calls' results: the input its request held (cached input included), the answer's
+          // output, and the calls it made.
+          const usage = message.usage as { input?: number; output?: number; cacheRead?: number; cacheWrite?: number } | undefined;
+          const held = usage ? (usage.input ?? 0) + (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0) : 0;
+          const calls = Array.isArray(message.content) ? message.content.filter((part) => (part as { type?: string }).type === "toolCall").length : undefined;
+          turnOf(api.conversationId).open({ ...(held > 0 ? { inputTokens: held, outputTokens: usage?.output ?? 0 } : {}), ...(calls === undefined ? {} : { calls }) });
           if (!io.bookedCost) return;
           // The conversation that asked, by the id pi sends with each of its requests (its pi.provider document's), as
           // the session's client names it to the proxy (port-models.ts sessionApi).
@@ -624,17 +640,28 @@ function piNested(api: ToolExecutionApi, context: Context, touched: ReadonlySet<
 
 /**
  * `result` with its text held to the kernel's bound for a model of `contextWindow` (boundResult: the window's share, under
- * HOST_RESULT_MAX_CHARS; none known, that bound alone), as every bridged harness's tool bridge holds a result: within it,
+ * HOST_RESULT_MAX_CHARS; none known, that bound alone), as every bridged harness's tool bridge holds a result, and, for a
+ * call the model made (`claim`), to the call's share of what its turn has left (the kernel's TurnBudget): within it,
  * undefined (the result stands as it is); past it, its text parts as one text cut at the bound with its note, or refused
  * in words for a window too small for any cut, its images kept after it. Never the oversized text.
  */
-export function boundPiResult<R extends { readonly output?: readonly { readonly type: string; readonly text?: string }[] }>(result: R, contextWindow: number | undefined): R | undefined {
+export async function boundPiResult<R extends { readonly output?: readonly { readonly type: string; readonly text?: string }[] }>(result: R, contextWindow: number | undefined, claim?: { readonly turn: TurnBudget; readonly callId: string }): Promise<R | undefined> {
   const parts = result.output;
   if (!parts) return undefined;
   const whole = parts.map((part) => (part.type === "text" ? (part.text ?? "") : "")).join("");
-  const { text, truncated } = boundResult(whole, contextWindow === undefined ? undefined : { contextWindow });
+  const { text, truncated } = boundTo(whole, await maxOf(contextWindow, claim));
+  claim?.turn.settle(claim.callId, text.length);
   if (!truncated) return undefined;
   return { ...result, output: [{ type: "text", text }, ...parts.filter((part) => part.type !== "text")] } as unknown as R;
+}
+
+/** The most characters a result reaches a model of `contextWindow` with: the window's share (resultMaxChars), and, for a
+ *  call the model made (`claim`), its claim on its turn, the same figure each time it is asked in one turn. */
+async function maxOf(contextWindow: number | undefined, claim?: { readonly turn: TurnBudget; readonly callId: string }): Promise<number> {
+  const max = resultMaxChars(contextWindow === undefined ? undefined : { contextWindow });
+  if (!claim || contextWindow === undefined) return max;
+  await claim.turn.ready();
+  return Math.min(max, claim.turn.claim(claim.callId, contextWindow));
 }
 
 /** The line a tool's live output ends with where boundedProgress stopped passing it on. */
@@ -653,7 +680,7 @@ export function boundedProgress(forward: (chunk: string) => void, max: number): 
   let stopped = false;
   return (chunk) => {
     if (stopped) return;
-    // Only within the room (MUTATION: passing every chunk on here fails test/pi-progress-bound.test.mjs's 16k test).
+    // Only within the room.
     if (sent + chunk.length <= room) {
       sent += chunk.length;
       forward(chunk);
@@ -674,7 +701,7 @@ export function boundedProgress(forward: (chunk: string) => void, max: number): 
  *  which a file read sizes an image by), and pi's output stream (the running tool's live slot); and its attempt
  *  (`attemptOf`: above 0 for a call the gate did not pass in this session, pi's rerun after a crash). Exported for the
  *  test of what its tool streams to pi (test/pi-tool-progress.test.mjs); the session builds it (sessionOn). */
-export function piTool(tool: HostTool, io: PiSessionIO, attemptOf: (callId: string) => number | undefined = () => undefined, touched: Set<string> = new Set(), nestedRefusals: ReadonlyMap<string, string> = new Map(), windowOf: (ref: { readonly provider: string } | undefined) => number | undefined = () => undefined) {
+export function piTool(tool: HostTool, io: PiSessionIO, attemptOf: (callId: string) => number | undefined = () => undefined, touched: Set<string> = new Set(), nestedRefusals: ReadonlyMap<string, string> = new Map(), windowOf: (ref: { readonly provider: string } | undefined) => number | undefined = () => undefined, turnOf?: (conversationId: unknown) => TurnBudget) {
   return defineTool({
     name: tool.name,
     description: tool.description,
@@ -692,20 +719,21 @@ export function piTool(tool: HostTool, io: PiSessionIO, attemptOf: (callId: stri
       const ref = (await api.agent(toolContext)).model;
       const model = ref === undefined ? undefined : api.models.getModel(ref.provider, ref.modelId);
       const window = windowOf(ref);
-      const budget = window === undefined ? undefined : { contextWindow: window };
+      // A call the model made claims its share of its turn (a nested call's result goes to the tool that made it).
+      const claim = turnOf && !api.callId.includes("/") ? { turn: turnOf(api.conversationId), callId: api.callId } : undefined;
+      const max = await maxOf(window, claim);
       const answer = await tool.call(args ?? {}, {
         callId: api.callId, signal: toolContext.abortSignal ?? io.signal,
         ...(model ? { model } : {}),
         // What the tool streams is what pi's slot keeps, and the result pi writes without its hooks (past its restart
-        // limit) is that text: held to the same bound as the answer (boundedProgress; MUTATION: handing the tool
-        // `(chunk) => api.output(chunk)` here fails test/pi-tool-progress.test.mjs).
-        output: boundedProgress((chunk) => api.output(chunk), resultMaxChars(budget)),
+        // limit) is that text: held to the same bound as the answer (boundedProgress).
+        output: boundedProgress((chunk) => api.output(chunk), max),
         ...(attempt === undefined ? {} : { attempt }),
         ...(tool.nests ? { nested: piNested(api, toolContext, touched, nestedRefusals, io.nestedEnded) } : {}),
       });
       // The answer's text within the bound for the calling agent's model (its window, when the host knows it), as the
       // tool bridge holds a bridged harness's; the host's record of the call (its tool_end) carries the same text.
-      const { text, truncated } = boundResult(answer.text, budget);
+      const { text, truncated } = boundTo(answer.text, max);
       io.onEvent({ type: "tool_end", callId: api.callId, name: tool.name, isError: Boolean(answer.isError), result: text, ...(truncated ? { truncated } : {}) });
       const images = (answer.images ?? []).map((image) => ({ type: "image" as const, data: image.data, mimeType: image.mimeType }));
       // A nested call's (its id `<callId>/<key>`) value in the result's details (which the model never reads), recorded
