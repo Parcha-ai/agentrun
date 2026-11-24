@@ -126,6 +126,25 @@ test('the system note is the shared note, word for word: each call by name, id a
   assert.equal(recoverySystemNote(drive.state()), EXPECTED_NO_CALLS_NOTE, 'an open turn with no call');
 });
 
+test("a call made inside a call whose output the transcript holds is told as done there, never as if its own result were shown", async () => {
+  const { openDrive } = await import('@parcha/agentrun-kernel/kernel');
+  const { placeSubmissions, toolBridge } = await import('@parcha/agentrun-kernel/process');
+  const { recoverySystemNote } = await import('../dist/harness.js');
+  const store = memorySessionStore();
+  const drive = await openDrive({ writer: await store.open('inside'), signal: new AbortController().signal });
+  await drive.submit({ id: 's1', kind: 'prompt', text: 'Run the script.' });
+  await placeSubmissions(drive, [drive.pending()[0]]);
+  const read = { name: 'read_page', description: 'read_page', inputSchema: { type: 'object' }, replay: 'safe', execute: async () => 'page text' };
+  const bridge = toolBridge(drive, [read], { live: false });
+  // A codemode script's nested call (`<tool_use id>/<key>`) and a call of the model's own, both completed.
+  await bridge.call('read_page', {}, 'toolu_script/k1');
+  await bridge.call('read_page', {}, 'toolu_own');
+  const note = recoverySystemNote(drive.state(), new Set(['toolu_script', 'toolu_own']));
+  assert.match(note, /- read_page, call toolu_own: completed\. Its result is in the conversation above: use it, do not run the call again\./);
+  assert.match(note, /- read_page, call toolu_script\/k1: completed inside call toolu_script, whose output is in the conversation above \(it may not include this call's result\)\. Its effect is done: do not run it again\./);
+  assert.doesNotMatch(note, /toolu_script\/k1: completed\. Its result is in the conversation/, 'a script returns what it chooses, not each call\'s result');
+});
+
 test("the fake's snapshot rule is the real CLI's, case by case, as measured (Agent SDK 0.3.286)", () => {
   // Each case: the launches of one session, [append, snapshot], and the append each request carried on the wire.
   const cases = [

@@ -158,3 +158,8 @@ export async function resumeDanglingCalls(ctx: DriveContext, bridge: ToolBridge,
   });
   await store.flush();
 }
+
+/** The tool uses whose result the transcript holds, by id: what the model reads when the CLI loads it. */
+export function answeredCalls(lines: readonly TranscriptLine[]): Set<string> {
+  return new Set(lines.filter((line) => line.isSidechain !== true).flatMap((line) => toolResultIds(line)));
+}
