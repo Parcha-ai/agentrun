@@ -6,18 +6,22 @@
 // AGENTRUN_CLAUDE_CODE_LOGIN=off, where claude-agent runs on the model keys as it does without it.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { constants, existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
+import { constants, existsSync, mkdirSync, openSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { mkdtemp } from "node:fs/promises";
-import { hostname, tmpdir } from "node:os";
+import { createRequire, syncBuiltinESMExports } from "node:module";
+import { homedir, hostname, tmpdir } from "node:os";
 import { delimiter, dirname, join, relative } from "node:path";
 import { test } from "node:test";
-import { CLAUDE_LOGIN_ENV, claudeLoginSwitchedOff, envAtPlace, LOGIN_SIGNED_OUT, loginAt, loginForRun, turnOnBody, whyNotOneOwner, withClaudeLogin } from "../dist/claude-login.js";
+import * as claude from "@parcha/agentrun-harness-claude";
+import { CLAUDE_LOGIN_ENV, CLAUDE_LOGIN_SETTING, claudeLoginOf, claudeLoginSwitchedOff, claudeLoginView, envAtPlace, LOGIN_SIGNED_OUT, LOGIN_UNKNOWN, loginAt, loginBeforeRun, loginForRun, settingFor, startLoginHere, turnOffClaudeLogin, turnOnBody, turnOnClaudeLogin, whyNotOneOwner, withClaudeLogin } from "../dist/claude-login.js";
+import { ClaudeSignIns } from "../dist/claude-sign-in.js";
 import { MODEL_KEYS, hostModel } from "../dist/model.js";
 import { providerFor } from "../dist/provider.js";
-import { agent, follow, secretWritePath, serve, withEnv } from "./support.mjs";
+import { agent, FAUX, follow, secretWritePath, serve, withEnv } from "./support.mjs";
 
 secretWritePath(["GET", "PUT", "DELETE"], /^\/settings\/claude-login$/);
 secretWritePath(["POST"], /^\/settings\/claude-login\/login$/);
+secretWritePath(["PUT", "DELETE"], /^\/settings\/harness-keys\/[^/]+\/[^/]+$/);
 
 const MODEL_VARS = ["AGENT_MODEL_BASE_URL", "AGENT_MODEL", "AGENT_MODEL_FAST", "AGENT_MODEL_STRONG", "AGENT_MODEL_API_KEY", "AGENT_MODEL_GATEWAY_IDS", "AGENTRUN_SERVE_DEFAULT_MODEL", "ANTHROPIC_BASE_URL", "OPENAI_BASE_URL", "CLAUDE_CODE_OAUTH_TOKEN", CLAUDE_LOGIN_ENV, ...MODEL_KEYS.map((row) => row.field)];
 const OPERATIONS = [["GET", "/settings/claude-login", "getClaudeLogin"], ["PUT", "/settings/claude-login", "turnOnClaudeLogin"], ["DELETE", "/settings/claude-login", "turnOffClaudeLogin"], ["POST", "/settings/claude-login/login", "startClaudeLogin"]];
@@ -188,11 +192,15 @@ test("AGENTRUN_CLAUDE_CODE_LOGIN=off: every route is 404 by name, a saved turn-o
   assert.equal(provider.login, undefined);
   assert.equal(await provider.credential(), "not-a-secret");
   assert.equal(hostModel(env, "default", "claude-agent"), hostModel({ ANTHROPIC_API_KEY: "not-a-secret" }, "default", "claude-agent"));
-  const saved = { get: async () => ({ v: 1, place: "agentrun", host: hostname(), only_me: true }) };
-  assert.equal(await loginForRun(saved, "/data", env, "claude-agent", { mode: "runner" }), undefined);
-  // On, a runner place goes on the login and a sandbox place on the keys.
-  assert.deepEqual(await loginForRun(saved, "/data", {}, "claude-agent", { mode: "runner" }), { dir: "/data/claude-login", profiles: "/data/claude-login/anthropic" });
-  assert.equal(await loginForRun(saved, "/data", {}, "claude-agent", { mode: "sandbox", box: "e2b" }), undefined);
+  // Turned on over a data folder of the test's own, as the owner's turn-on saves it.
+  const own = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-login-saved-"));
+  t.after(() => rmSync(own, { recursive: true, force: true }));
+  const row = settingFor("agentrun", own);
+  const saved = { get: async () => row };
+  assert.equal(await loginForRun(saved, own, env, "claude-agent", { mode: "runner" }), undefined);
+  // On, a runner place goes on the login (with the person's home, the env's HOME) and a sandbox place on the keys.
+  assert.deepEqual(await loginForRun(saved, own, { HOME: "/u/p" }, "claude-agent", { mode: "runner" }), { dir: join(own, "claude-login"), profiles: join(own, "claude-login", "anthropic"), userHome: "/u/p" });
+  assert.equal(await loginForRun(saved, own, {}, "claude-agent", { mode: "sandbox", box: "e2b" }), undefined);
 });
 
 test("Claude Code's login on this machine on: claude-agent's Anthropic models go on it with no key and no port; other harnesses and named gateway or OpenRouter models keep their keys", () => {
@@ -202,6 +210,9 @@ test("Claude Code's login on this machine on: claude-agent's Anthropic models go
   assert.deepEqual(onLogin.login, at);
   assert.equal(onLogin.billing, "plan");
   assert.equal(onLogin.priceModel.provider, "claude-login");
+  // Anthropic's own models go on the login, an OpenRouter one (Anthropic's included) on its key, and a revision naming
+  // none gets Anthropic's: the console's No model bar copies this rule (its lib/claudeLogin.ts loginServes), so a change
+  // here changes it there.
   assert.equal(providerFor("anthropic-messages", env, { provider: "openrouter", modelId: "anthropic/claude-haiku-5.5" }, "claude-agent").login, undefined);
   assert.equal(providerFor("anthropic-messages", env, { provider: "anthropic", modelId: "claude-haiku-5-5" }, "opencode").login, undefined);
   assert.equal(hostModel(env, "default", "claude-agent"), "anthropic/claude-sonnet-5-5");
@@ -338,8 +349,13 @@ test("Open the CLI's sign-in here signs the CLI in at the login's own folder: th
   assert.equal(view.account?.email, "person@example.com", JSON.stringify(view));
   assert.equal(view.folder, login);
   assert.equal(view.sign_in?.state, "signed_in", JSON.stringify(view.sign_in));
-  // The sign-in and every status check asked about the same folder.
-  for (const call of fake.calls()) assert.deepEqual([call.argv, call.config, call.secure], [call.argv, login, login]);
+  // The sign-in and every status check asked about the same folder: the sign-in with it as its config dir, each status
+  // check on a copy of its account file outside it (the CLI rewrites the one in its config dir on start).
+  for (const call of fake.calls()) {
+    assert.equal(call.secure, login, JSON.stringify(call));
+    if (call.argv === "auth status --json") assert.ok(call.config && relative(login, call.config).startsWith(".."), JSON.stringify(call));
+    else assert.equal(call.config, login, JSON.stringify(call));
+  }
 });
 
 test("a sign-in no browser answers within its limit is ended and says so, apart from any other end", { timeout: 120_000 }, async (t) => {
@@ -400,9 +416,27 @@ test("a sign-in that waits for the browser ends with the server's stop, which wa
   assert.equal(alive(pid), false, "the server's stop ended the sign-in that waited");
 });
 
+test("a turn-on that moves the login to another place ends a sign-in that waits, which signed in at the old place; one that keeps the place leaves it waiting", { timeout: 120_000 }, async (t) => {
+  const { api, fake } = await signInServer(t, "wait");
+  assert.equal((await api("PUT", "/settings/claude-login", { only_me: true, place: "agentrun" })).status, 200);
+  assert.equal((await api("POST", "/settings/claude-login/login")).body.sign_in?.state, "waiting");
+  await until(() => fake.pids().length === 1, "the sign-in waits");
+  const [pid] = fake.pids();
+  // The same place again: the sign-in still signs in where the login is.
+  const same = (await api("PUT", "/settings/claude-login", { only_me: true, place: "agentrun" })).body;
+  assert.equal(same.sign_in?.state, "waiting", JSON.stringify(same.sign_in));
+  assert.equal(alive(pid), true, "a turn-on at the same place left the sign-in waiting");
+  // Another place: the waiting CLI would sign in at the old one, so the PUT ends it and answers once it is gone.
+  const moved = (await api("PUT", "/settings/claude-login", { only_me: true, place: "machine" })).body;
+  assert.equal(moved.place, "machine");
+  assert.equal(alive(pid), false, "the turn-on that moved the login ended the sign-in that waited at the old place");
+  assert.equal(moved.sign_in, undefined, JSON.stringify(moved.sign_in));
+  assert.notEqual((await api("GET", "/settings/claude-login")).body.sign_in?.state, "waiting");
+});
+
 test("this machine's login is the folder the CLI uses: CLAUDE_CONFIG_DIR when the server has it as an absolute path, else ~/.claude; the view names it", { timeout: 120_000 }, async (t) => {
   assert.equal(loginAt("machine", "/d", { HOME: "/u/p" }).dir, "/u/p/.claude");
-  assert.deepEqual(loginAt("machine", "/d", { HOME: "/u/p", CLAUDE_CONFIG_DIR: "/u/p/elsewhere" }), { dir: "/u/p/elsewhere", profiles: "/u/p/.config/anthropic", shared: true });
+  assert.deepEqual(loginAt("machine", "/d", { HOME: "/u/p", CLAUDE_CONFIG_DIR: "/u/p/elsewhere" }), { dir: "/u/p/elsewhere", profiles: "/u/p/.config/anthropic", userHome: "/u/p" });
   assert.equal(loginAt("machine", "/d", { HOME: "/u/p", CLAUDE_CONFIG_DIR: "elsewhere" }).dir, "/u/p/.claude", "a relative one is read against a working directory the server does not share");
   assert.equal(loginAt("agentrun", "/d", { HOME: "/u/p", CLAUDE_CONFIG_DIR: "/u/p/elsewhere" }).dir, "/d/claude-login", "AgentRun's own login is in its data");
 
@@ -443,7 +477,7 @@ test("this machine's login on the CLI's default folder is asked as the person's 
   assert.equal(on.account?.email, "person@example.com", JSON.stringify(on));
   assert.equal(on.folder, join(home, ".claude"));
   // The line a person runs is their own claude's, so what it signs in is what AgentRun then reads: it clears both folder
-  // variables, which their terminal may export while the server has neither.
+  // variables, which their terminal may export while the server has neither, under env, which any shell runs.
   assert.equal(on.command, `env -u CLAUDE_CONFIG_DIR -u CLAUDE_SECURESTORAGE_CONFIG_DIR ANTHROPIC_CONFIG_DIR=${join(home, ".config", "anthropic")} ${fake.cli} auth login`);
   // The status check runs in their home on a copy of ~/.claude.json (its own config dir, outside the home, which the
   // CLI's startup writes then reach in place of theirs), with the tokens where a run reads them: on macOS an empty
@@ -455,8 +489,9 @@ test("this machine's login on the CLI's default folder is asked as the person's 
     assert.ok(call.config && relative(home, call.config).startsWith(".."), JSON.stringify(call));
     assert.equal(call.secure, process.platform === "darwin" ? "" : join(home, ".claude"), JSON.stringify(call));
   }
-  // The login carries the person's home only on the default folder: that is what tells its variables apart.
-  assert.deepEqual(loginAt("machine", "/d", { HOME: "/u/p" }), { dir: "/u/p/.claude", profiles: "/u/p/.config/anthropic", home: "/u/p", shared: true });
+  // The login carries `home` only on the default folder: that is what tells its variables apart. Every login carries the
+  // person's home as `userHome`, where the status check, the sign-in and a run on macOS run.
+  assert.deepEqual(loginAt("machine", "/d", { HOME: "/u/p" }), { dir: "/u/p/.claude", profiles: "/u/p/.config/anthropic", home: "/u/p", userHome: "/u/p" });
   assert.equal(loginAt("machine", "/d", { HOME: "/u/p", CLAUDE_CONFIG_DIR: "/u/p/elsewhere" }).home, undefined);
 });
 
@@ -473,4 +508,673 @@ test("Open the CLI's sign-in here on the CLI's default folder signs in where the
   assert.equal(view.account?.email, "person@example.com", JSON.stringify(view));
   const signIn = fake.calls().find((call) => call.argv === "auth login --claudeai");
   assert.deepEqual([signIn?.configSet, signIn?.secureSet, signIn?.home], ["", "", home], JSON.stringify(signIn));
+});
+
+// The person's own claude with CLAUDE_SECURESTORAGE_CONFIG_DIR set keeps its tokens in that folder (on macOS the Keychain
+// item named with its hash); set and empty, in ~/.claude (on macOS the item with no suffix). The account stays where the
+// config dir says. "This machine" on a server started with it is asked and signed in so, and a run reaches the same tokens.
+test("this machine's login honours CLAUDE_SECURESTORAGE_CONFIG_DIR in the server's environment as the person's own claude does: the status check, the sign-in, the shown line and a run name its credentials there, and the view says so", { timeout: 120_000 }, async (t) => {
+  const profiles = "/u/p/.config/anthropic";
+  const at = (vars) => loginAt("machine", "/d", { HOME: "/u/p", ...vars });
+  // The CLI's default folder, its credentials elsewhere.
+  const own = at({ CLAUDE_SECURESTORAGE_CONFIG_DIR: "/u/p/secure" });
+  for (const platform of ["darwin", "linux"]) {
+    assert.deepEqual(claude.claudeSignInEnv(own, platform), { HOME: "/u/p", CLAUDE_SECURESTORAGE_CONFIG_DIR: "/u/p/secure", ANTHROPIC_CONFIG_DIR: profiles }, platform);
+    assert.deepEqual(claude.claudeLoginEnv(own, platform), { CLAUDE_SECURESTORAGE_CONFIG_DIR: "/u/p/secure", ANTHROPIC_CONFIG_DIR: profiles }, platform);
+  }
+  // Set and empty: on macOS empty still (the item with no suffix); elsewhere the folder it means, ~/.claude, absolute,
+  // since a status check or a run has a home of its own.
+  const empty = at({ CLAUDE_SECURESTORAGE_CONFIG_DIR: "" });
+  assert.deepEqual(claude.claudeSignInEnv(empty, "darwin"), { HOME: "/u/p", CLAUDE_SECURESTORAGE_CONFIG_DIR: "", ANTHROPIC_CONFIG_DIR: profiles });
+  assert.deepEqual(claude.claudeLoginEnv(empty, "darwin"), { CLAUDE_SECURESTORAGE_CONFIG_DIR: "", ANTHROPIC_CONFIG_DIR: profiles });
+  assert.deepEqual(claude.claudeSignInEnv(empty, "linux"), { HOME: "/u/p", CLAUDE_SECURESTORAGE_CONFIG_DIR: "/u/p/.claude", ANTHROPIC_CONFIG_DIR: profiles });
+  assert.deepEqual(claude.claudeLoginEnv(empty, "linux"), { CLAUDE_SECURESTORAGE_CONFIG_DIR: "/u/p/.claude", ANTHROPIC_CONFIG_DIR: profiles });
+  // A CLAUDE_CONFIG_DIR folder: the account there, the credentials where the variable says.
+  const folder = at({ CLAUDE_CONFIG_DIR: "/u/p/elsewhere", CLAUDE_SECURESTORAGE_CONFIG_DIR: "/u/p/secure" });
+  for (const platform of ["darwin", "linux"]) {
+    assert.deepEqual(claude.claudeSignInEnv(folder, platform), { CLAUDE_CONFIG_DIR: "/u/p/elsewhere", CLAUDE_SECURESTORAGE_CONFIG_DIR: "/u/p/secure", ANTHROPIC_CONFIG_DIR: profiles }, platform);
+    assert.deepEqual(claude.claudeLoginEnv(folder, platform), { CLAUDE_SECURESTORAGE_CONFIG_DIR: "/u/p/secure", ANTHROPIC_CONFIG_DIR: profiles }, platform);
+  }
+  const folderEmpty = at({ CLAUDE_CONFIG_DIR: "/u/p/elsewhere", CLAUDE_SECURESTORAGE_CONFIG_DIR: "" });
+  assert.deepEqual(claude.claudeSignInEnv(folderEmpty, "darwin"), { CLAUDE_CONFIG_DIR: "/u/p/elsewhere", CLAUDE_SECURESTORAGE_CONFIG_DIR: "", ANTHROPIC_CONFIG_DIR: profiles });
+  assert.deepEqual(claude.claudeSignInEnv(folderEmpty, "linux"), { CLAUDE_CONFIG_DIR: "/u/p/elsewhere", CLAUDE_SECURESTORAGE_CONFIG_DIR: "/u/p/.claude", ANTHROPIC_CONFIG_DIR: profiles });
+  assert.deepEqual(claude.claudeLoginEnv(folderEmpty, "darwin"), { CLAUDE_SECURESTORAGE_CONFIG_DIR: "", ANTHROPIC_CONFIG_DIR: profiles });
+  // A relative one is not taken, as with CLAUDE_CONFIG_DIR; AgentRun's own login never reads it.
+  assert.deepEqual(claude.claudeSignInEnv(at({ CLAUDE_SECURESTORAGE_CONFIG_DIR: "secure" }), "linux"), { HOME: "/u/p", ANTHROPIC_CONFIG_DIR: profiles });
+  assert.deepEqual(loginAt("agentrun", "/d", { HOME: "/u/p", CLAUDE_SECURESTORAGE_CONFIG_DIR: "/u/p/secure" }), { dir: "/d/claude-login", profiles: "/d/claude-login/anthropic", userHome: "/u/p" });
+
+  // A server started with it: the view names it, and the sign-in and every status check keep the tokens there.
+  const secure = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-secure-dir-"));
+  const { api, fake, home } = await signInServer(t, "sign", {}, { CLAUDE_SECURESTORAGE_CONFIG_DIR: secure });
+  const before = (await api("GET", "/settings/claude-login")).body;
+  assert.deepEqual(before.machine, { folder: join(home, ".claude"), source: "default", credentials: secure }, JSON.stringify(before));
+  const on = (await api("PUT", "/settings/claude-login", { only_me: true, place: "machine" })).body;
+  assert.equal(on.state, "signed_out", JSON.stringify(on));
+  assert.equal(on.command, `env -u CLAUDE_CONFIG_DIR CLAUDE_SECURESTORAGE_CONFIG_DIR=${secure} ANTHROPIC_CONFIG_DIR=${join(home, ".config", "anthropic")} ${fake.cli} auth login`);
+  assert.equal((await api("POST", "/settings/claude-login/login")).status, 200);
+  await until(() => existsSync(fake.ended), "the CLI's sign-in ended");
+  assert.ok(existsSync(join(secure, ".credentials.json")), "the sign-in kept the tokens where the person's own claude with that variable does");
+  assert.ok(existsSync(join(home, ".claude.json")), "and the account where it keeps it with no CLAUDE_CONFIG_DIR");
+  const view = await signInSettled(api);
+  assert.equal(view.state, "signed_in", JSON.stringify(view));
+  // The sign-in runs with no config dir; each status check on a copy of the account file outside the home. Both name the
+  // credentials where the variable says.
+  for (const call of fake.calls()) {
+    const status = call.argv === "auth status --json";
+    assert.deepEqual([call.configSet, call.secure, call.home], [status ? "set" : "", secure, home], JSON.stringify(call));
+    if (status) assert.ok(call.config && relative(home, call.config).startsWith(".."), JSON.stringify(call));
+  }
+});
+
+// Which machine a login was turned on for. A laptop's hostname moves with its network (one name at home, another at the
+// office), so a name never says it; the data folder stays where it is.
+
+/** `os.hostname()` answers `name` for the rest of test `t`, in the server this process runs too: its import of node:os is
+ *  a live binding, which syncBuiltinESMExports moves to the stub, and back after the test. */
+function hostnameAs(t, name) {
+  const os = createRequire(import.meta.url)("node:os");
+  const real = os.hostname;
+  os.hostname = () => name;
+  syncBuiltinESMExports();
+  t.after(() => {
+    os.hostname = real;
+    syncBuiltinESMExports();
+  });
+}
+
+test("a login turned on here still reads as this machine's after the machine's hostname changes, as a laptop's does with its network: runs here go on it, never on a key that is not there", { timeout: 120_000 }, async (t) => {
+  const fake = await fakeCli(t);
+  withEnv(t, { PATH: `${dirname(fake.cli)}${delimiter}${process.env.PATH}` }, MODEL_VARS);
+  const { api, data, store } = await serve(t, { faux: undefined, harnesses: false, runner: false });
+  assert.equal((await api("PUT", "/settings/claude-login", { only_me: true })).body.state, "signed_out");
+  hostnameAs(t, `not-${hostname()}`);
+  const view = (await api("GET", "/settings/claude-login")).body;
+  assert.equal(view.state, "signed_out", `the login turned on here reads as another machine's under a new hostname: ${JSON.stringify(view)}`);
+  assert.deepEqual(await loginForRun(store.settings, data, {}, "claude-agent", { mode: "runner" }), loginAt("agentrun", data, {}), "a run here goes on the login under a new hostname");
+});
+
+test("two data folders are two machines: each gets an id of its own, and a login turned on over one reads as another machine's from the other", async (t) => {
+  const [one, two] = await Promise.all(["one", "two"].map((name) => mkdtemp(join(process.env.TMPDIR ?? tmpdir(), `claude-login-machine-${name}-`))));
+  t.after(() => {
+    for (const data of [one, two]) rmSync(data, { recursive: true, force: true });
+  });
+  const row = settingFor("agentrun", one);
+  const saved = { get: async () => row };
+  assert.deepEqual(await loginForRun(saved, one, {}, "claude-agent", { mode: "runner" }), loginAt("agentrun", one, {}), "the data folder it was turned on over runs on it");
+  assert.equal(await loginForRun(saved, two, {}, "claude-agent", { mode: "runner" }), undefined, "a login turned on over another data folder reads as another machine's");
+  const ids = [one, two].map((data) => readFileSync(join(data, "machine-id"), "utf8").trim());
+  for (const id of ids) assert.match(id, /^[0-9a-f]{32}$/);
+  assert.notEqual(ids[0], ids[1]);
+});
+
+// The start route (POST /settings/claude-login/login, startLoginHere) is the third reader of the machine id, beside the
+// view and a run's loginForRun: a sign-in started for another machine's login would sign this machine's CLI in to a
+// login no run here reads.
+test("the CLI's sign-in is refused for a login turned on over another data folder (another machine's id): no CLI starts, and the answer says to sign in there; over its own data folder it starts", async (t) => {
+  const [one, two] = await Promise.all(["one", "two"].map((name) => mkdtemp(join(process.env.TMPDIR ?? tmpdir(), `claude-login-start-${name}-`))));
+  const signIns = new ClaudeSignIns();
+  t.after(async () => {
+    await signIns.close();
+    for (const data of [one, two]) rmSync(data, { recursive: true, force: true });
+  });
+  const pinned = join(two, "claude");
+  writeFileSync(pinned, "", { mode: 0o755 });
+  const setting = settingFor("agentrun", one);
+  const started = [];
+  const depsOver = (data) => ({
+    signIns,
+    settings: { get: async (key) => (key === CLAUDE_LOGIN_SETTING ? setting : undefined), put: async () => {}, remove: async () => {} },
+    data,
+    env: { HOME: data, PATH: "/usr/bin:/bin" },
+    pinned: async () => pinned,
+    refused: () => undefined,
+    sameMachine: true,
+    claude: async () => ({
+      claudeLoginCommand: () => "claude auth login",
+      claudeLoginStatus: async () => ({ signedIn: false, method: "none" }),
+      // A stand-in sign-in that waits until it is stopped.
+      startClaudeLogin: (cli, login) => {
+        started.push({ cli, dir: login.dir });
+        let end;
+        const ended = new Promise((resolve) => { end = resolve; });
+        return { ended, stop: () => end({ end: "stopped" }) };
+      },
+    }),
+    changed: async () => {},
+  });
+  const other = depsOver(two);
+  assert.equal((await claudeLoginView(other)).state, "other_machine", "the view reads it as another machine's");
+  await assert.rejects(startLoginHere(other), (error) => {
+    assert.equal(error.code, "agent_not_runnable");
+    assert.equal(error.message, "It was turned on for another machine: sign in there.");
+    return true;
+  });
+  assert.deepEqual(started, [], "no CLI's sign-in started for another machine's login");
+  // The same request over the data folder it was turned on over starts the CLI's sign-in.
+  const own = await startLoginHere(depsOver(one));
+  assert.equal(own.sign_in?.state, "waiting", JSON.stringify(own));
+  assert.deepEqual(started, [{ cli: pinned, dir: join(one, "claude-login") }]);
+});
+
+/** A gate a test holds a call at: `wait` resolves once `open()` is called. */
+function latch() {
+  let open;
+  const wait = new Promise((resolve) => { open = resolve; });
+  return { wait, open };
+}
+
+/** Whether `promise` settles while the event loop turns 20 times. The stand-ins below answer at once, with no I/O, so a
+ *  call nothing holds settles within the first turn, and one waiting on a held call does not settle at all. */
+async function settlesNow(promise) {
+  let settled = false;
+  promise.then(() => { settled = true; }, () => { settled = true; });
+  for (let i = 0; i < 20 && !settled; i++) await new Promise((resolve) => setImmediate(resolve));
+  return settled;
+}
+
+/** The login routes over stand-ins, for test `t`: the setting in `rows`, turned on at AgentRun's own folder; the pinned
+ *  CLI a file; each sign-in's CLI a stand-in that waits until it is stopped (`started`: the folder each one signs in at,
+ *  and whether it was stopped). `deps(over)`: the routes' deps with `over` laid on them. `stale(keeps)`: the sign-ins
+ *  still waiting at a folder other than `keeps` (undefined: every one still waiting). */
+async function loginRig(t) {
+  const data = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-login-race-"));
+  const signIns = new ClaudeSignIns();
+  t.after(async () => {
+    await signIns.close();
+    rmSync(data, { recursive: true, force: true });
+  });
+  const pinned = join(data, "claude");
+  writeFileSync(pinned, "", { mode: 0o755 });
+  const env = { HOME: data, PATH: "/usr/bin:/bin" };
+  const rows = new Map([[CLAUDE_LOGIN_SETTING, settingFor("agentrun", data)]]);
+  const settings = { get: async (key) => rows.get(key) ?? null, put: async (key, value) => void rows.set(key, value), remove: async (key) => void rows.delete(key) };
+  const started = [];
+  const cli = {
+    claudeLoginCommand: () => "claude auth login",
+    claudeLoginStatus: async () => ({ signedIn: false, method: "none" }),
+    startClaudeLogin: (_cli, login) => {
+      const one = { dir: login.dir, stopped: false };
+      started.push(one);
+      let end;
+      const ended = new Promise((resolve) => { end = resolve; });
+      return { ended, stop: () => { one.stopped = true; end({ end: "stopped" }); } };
+    },
+  };
+  const deps = (over) => ({ signIns, settings, data, env, pinned: async () => pinned, refused: () => undefined, turn: (work) => work(), sameMachine: true, claude: async () => cli, saved: () => {}, changed: async () => {}, ...over });
+  const stale = (keeps) => started.filter((one) => !one.stopped && one.dir !== keeps);
+  return { data, env, rows, settings, started, signIns, pinned, deps, stale };
+}
+
+// A sign-in reads the setting, then looks up the CLI, then starts it. A move of the login or a turn-off that lands in
+// between must not leave that sign-in waiting with what it read before: at a place the login no longer reads, or for a
+// login that is off, holding the browser's callback port. Here the sign-in is held inside that gap (its lookup of the
+// pinned CLI waits on the test), and the change is asked while it is held. Where nothing holds the change, it answers
+// inside the gap; where the change waits its turn behind the sign-in on the sign-ins' queue (ClaudeSignIns.serial), it
+// cannot answer first, and the sign-in is let go then. Either way, once both have answered no sign-in may wait at the
+// old place.
+const RACE_CHANGES = [
+  ["a turn-on that moves the login to the other place", (deps) => turnOnClaudeLogin(deps, { only_me: true, place: "machine" }), "machine"],
+  ["a turn-off", (deps) => turnOffClaudeLogin(deps), undefined],
+];
+for (const [change, ask, place] of RACE_CHANGES) {
+  test(`${change}, asked while a sign-in's start is between its read of the setting and the CLI's start, leaves no sign-in waiting with the setting it read`, { timeout: 10_000 }, async (t) => {
+    const rig = await loginRig(t);
+    // The pause point: the sign-in's first lookup of the pinned CLI, after its read of the setting and before its start.
+    const inGap = latch();
+    const gap = latch();
+    let held = false;
+    const pressed = startLoginHere(rig.deps({ pinned: async () => { if (!held) { held = true; inGap.open(); await gap.wait; } return rig.pinned; } }));
+    await inGap.wait;
+    // The change's own request: the same sign-ins, seen through a wrapper that says when it asks for a turn (the one way
+    // to start or end a sign-in), so a change that asks for one any way is let through and never waits on the held
+    // sign-in here.
+    const waits = latch();
+    const watched = { view: () => rig.signIns.view(), serial: (work) => { waits.open(); return rig.signIns.serial(work); }, close: () => rig.signIns.close() };
+    const changing = ask(rig.deps({ signIns: watched }));
+    const first = await Promise.race([changing.then(() => "answered inside the gap"), waits.wait.then(() => "waited its turn")]);
+    gap.open();
+    const [, answer] = await Promise.all([pressed, changing]);
+    assert.equal(answer.state, place === undefined ? "off" : "signed_out", JSON.stringify(answer));
+    assert.equal(rig.rows.get(CLAUDE_LOGIN_SETTING)?.place, place, "the change was saved");
+    const keeps = place === undefined ? undefined : loginAt(place, rig.data, rig.env).dir;
+    assert.deepEqual(rig.stale(keeps), [], `${change} (it ${first}): a sign-in still waits where the login no longer is`);
+    assert.ok(rig.started.length >= 1, "the sign-in started");
+  });
+}
+
+// A change first ends the sign-in that waits, then saves. A start pressed between the two must not run there: it would
+// read the setting the change is replacing and leave its CLI waiting at the old place, or for a login that is off. Here
+// the change is held between its stop and its save (its write of the setting waits on the test), a start is pressed
+// while it is held, and the change is let go. The stop and the save are one turn on the sign-ins' queue, so the start
+// waits for the save and starts on what it saved: at the new place, or refused once the login is off.
+const SAVE_GAP_WHY = "a sign-in started between the change's stop and its save still waits where the login no longer is";
+for (const [change, ask, place] of RACE_CHANGES) {
+  test(`${change}, with a start pressed between its stop of the waiting sign-in and its save, leaves no sign-in waiting with the setting it replaced`, { timeout: 10_000 }, async (t) => {
+    const rig = await loginRig(t);
+    assert.equal((await startLoginHere(rig.deps())).sign_in?.state, "waiting", "a sign-in waits at AgentRun's own folder before the change");
+    // The pause point: the change's write of the setting, after its stop.
+    const atSave = latch();
+    const save = latch();
+    const held = (write) => async (...args) => { atSave.open(); await save.wait; return write(...args); };
+    const changing = ask(rig.deps({ settings: { ...rig.settings, put: held(rig.settings.put), remove: held(rig.settings.remove) } }));
+    await atSave.wait;
+    const pressing = startLoginHere(rig.deps());
+    const ran = await settlesNow(pressing);
+    save.open();
+    const [changed, pressed] = await Promise.allSettled([changing, pressing]);
+    const keeps = place === undefined ? undefined : loginAt(place, rig.data, rig.env).dir;
+    const during = ran ? "the start ran while the save was held" : "the start waited for the save";
+    assert.deepEqual(rig.stale(keeps), [], `${change} (${during}): ${SAVE_GAP_WHY}`);
+    assert.equal(changed.status, "fulfilled", String(changed.reason));
+    assert.equal(rig.rows.get(CLAUDE_LOGIN_SETTING)?.place, place, "the change was saved");
+    assert.equal(rig.started[0].stopped, true, "the change ended the sign-in that waited before it");
+    if (place === undefined) {
+      assert.equal(pressed.status, "rejected", "a start pressed during a turn-off is refused once it lands");
+      assert.equal(pressed.reason.message, "Turn on Claude Code's login on this machine first.");
+    } else {
+      assert.equal(pressed.status, "fulfilled", String(pressed.reason));
+      assert.deepEqual(rig.started.filter((one) => !one.stopped).map((one) => one.dir), [keeps], "the start pressed during the change signs in where the change saved");
+    }
+  });
+}
+
+// A change's turn holds the sign-ins' queue only while it stops and saves, and hands the server the login it saved
+// (`saved`) inside it, so two changes never leave the server's copy out of order. The server's reread of the keys after
+// it (`changed`: the runs' listings, what a revision needs, the harnesses' offers) can take seconds; a sign-in pressed
+// meanwhile goes on at once, on what the change saved.
+const REREAD_WHY = "a sign-in pressed while the change reread the keys waited for that reread";
+for (const [change, ask, place] of RACE_CHANGES) {
+  test(`${change} hands the server the login it saved inside its turn and rereads the keys after it: a start pressed during the reread is not held by it`, { timeout: 10_000 }, async (t) => {
+    const rig = await loginRig(t);
+    const told = [];
+    const atReread = latch();
+    const reread = latch();
+    const changing = ask(rig.deps({ saved: (login) => void told.push(["saved", login?.dir]), changed: async () => { told.push(["changed"]); atReread.open(); await reread.wait; } }));
+    await atReread.wait;
+    const pressing = startLoginHere(rig.deps());
+    const ran = await settlesNow(pressing);
+    reread.open();
+    const [changed, pressed] = await Promise.allSettled([changing, pressing]);
+    assert.ok(ran, `${change}: ${REREAD_WHY}`);
+    assert.equal(changed.status, "fulfilled", String(changed.reason));
+    const keeps = place === undefined ? undefined : loginAt(place, rig.data, rig.env).dir;
+    assert.deepEqual(told, [["saved", keeps], ["changed"]], "the server is handed the saved login, then rereads the keys");
+    if (place === undefined) assert.equal(pressed.reason?.message, "Turn on Claude Code's login on this machine first.");
+    else assert.deepEqual(rig.started.filter((one) => !one.stopped).map((one) => one.dir), [keeps], "the start signs in where the change saved");
+  });
+}
+
+// The server probes the harnesses' offers again after a change of what they are made from (keysChanged), and the probe
+// can take seconds. The rereads of two changes can overlap, as a login change's runs after its turn. Whatever lands last
+// must be offers made from what the server reads then. The probe is held at claude-agent's check by a test harness table
+// (fixtures/held-offers.cjs), with no timers: the test lets it go once the other change has answered, and a change
+// answers only once the probe it started has landed. `probes(why)` counts the probes from the server's log lines.
+const HELD_TABLE = createRequire(import.meta.url).resolve("./fixtures/held-offers.cjs");
+const held = createRequire(import.meta.url)(HELD_TABLE);
+
+/** A server on the held table for test `t`: the fake CLI on PATH, no model key, and `options` laid on it. `harnesses()`: its capabilities' harnesses now; `probes(why)`: how many probes of the offers it
+ *  has made for `why`. */
+async function heldServer(t, options = {}) {
+  const fake = await fakeCli(t);
+  withEnv(t, { PATH: `${dirname(fake.cli)}${delimiter}${process.env.PATH}` }, MODEL_VARS);
+  t.after(() => held.answer(undefined));
+  const lines = [];
+  const server = await serve(t, { faux: undefined, harnesses: false, runner: false, harnessTable: HELD_TABLE, log: (line) => void lines.push(line), ...options });
+  const harnesses = async () => (await server.api("GET", "/capabilities")).body.harnesses;
+  const probes = (why) => lines.filter((line) => line.includes(" event=harness_offers ") && line.includes(` why=${why} `)).length;
+  return { ...server, harnesses, probes };
+}
+const claudeAgentIn = (harnesses) => harnesses.find((offer) => offer.id === "claude-agent");
+
+// A turn-on finds the offers' inputs changed and probes them. A turn-off that lands meanwhile finds the offers held made
+// from its own inputs (the turn-on's probe has not landed). The turn-on's probe, landing after it, must not put back
+// offers made from the login being on. Both reds run on a faux server: a server that asks Ollama (no faux, no model
+// gateway) probes again at the capabilities read itself whenever the offers held are not made from the inputs read now
+// (ollamaNow), so there a late probe's offers are replaced before any read shows them; on any other server they stand
+// until the next change. The held check answers ON_REASON, so the offers the turn-on's probe lands are told apart.
+const PROBE_WHY = "a probe from before the turn-off landed after it and put back an offer made from the login being on";
+const ON_REASON = "made from the login being on";
+test("a turn-off that lands while the turn-on's probe of the offers is still out leaves claude-agent needing a key once that probe ends", { timeout: 60_000 }, async (t) => {
+  const { api, harnesses } = await heldServer(t, { faux: FAUX });
+  const before = await harnesses();
+  assert.notEqual(claudeAgentIn(before).reason, ON_REASON, "the held check's reason is in no offer before its probe");
+
+  const probe = held.hold((env) => claudeLoginOf(env) !== undefined, ON_REASON);
+  t.after(() => probe.release());
+  const turningOn = api("PUT", "/settings/claude-login", { only_me: true });
+  await probe.reached;
+  const off = await api("DELETE", "/settings/claude-login");
+  probe.release();
+  const on = await turningOn;
+  assert.equal(on.status, 200, JSON.stringify(on.body));
+  assert.equal(off.status, 200, JSON.stringify(off.body));
+  assert.equal(off.body.state, "off");
+  const after = await harnesses();
+  assert.notEqual(claudeAgentIn(after).reason, ON_REASON, `${PROBE_WHY}: ${JSON.stringify(claudeAgentIn(after))}`);
+  assert.deepEqual(after, before, `${PROBE_WHY}: the offers are not the starting state's`);
+});
+
+// The same for any two changes whose second lands back on the inputs the offers held were made from: a model key saved
+// (its probe held), then deleted. OpenAI's key is not checked against OpenAI as it is saved (key-check.ts NOT_CHECKED),
+// so nothing here reaches the network. Faux, and the held check answering KEY_REASON, as above.
+const KEY_WHY = "a probe from before the key's delete landed after it and put back offers made from the key being saved";
+const KEY_REASON = "made from the key being saved";
+test("a model key deleted while its save's probe of the offers is still out leaves the starting state's offers once that probe ends", { timeout: 60_000 }, async (t) => {
+  const { api, harnesses } = await heldServer(t, { faux: FAUX });
+  const before = await harnesses();
+
+  const probe = held.hold((env) => env.OPENAI_API_KEY !== undefined, KEY_REASON);
+  t.after(() => probe.release());
+  const saving = api("PUT", "/settings/tool-keys/openai", { values: { OPENAI_API_KEY: "fake-test-key" } });
+  await probe.reached;
+  const deleted = await api("DELETE", "/settings/tool-keys/openai");
+  probe.release();
+  const saved = await saving;
+  assert.equal(saved.status, 204, JSON.stringify(saved.body));
+  assert.equal(deleted.status, 204, JSON.stringify(deleted.body));
+  const after = await harnesses();
+  assert.notEqual(claudeAgentIn(after).reason, KEY_REASON, `${KEY_WHY}: ${JSON.stringify(claudeAgentIn(after))}`);
+  assert.deepEqual(after, before, KEY_WHY);
+});
+
+// A plan-billed recipe (harness-recipe.ts) for the harness keys' route alone: never installed, never run.
+async function planRecipeFile(t) {
+  const { archivePlatform } = await import("../dist/harness-archive.js");
+  const dir = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-login-recipe-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const file = join(dir, "recipe.json");
+  writeFileSync(file, `${JSON.stringify({
+    id: "model-agent",
+    label: "Model Agent",
+    release: { registry: "model-agent", version: "1.0.0", archives: { [archivePlatform()]: { url: "https://releases.example.invalid/model-agent-1.0.0.tar.bz2", format: "tar.bz2", sha256: "0".repeat(64), cmd: "./agent" } } },
+    env: { MODEL_AGENT_MODE: "plan", MODEL_AGENT_VENDOR: "127.0.0.1:9", MODEL_AGENT_MODEL: "vendor-model" },
+    model: { billing: "plan", maxTurns: 8, maxToolCalls: 8, hosts: ["127.0.0.1:9"] },
+    files: { ".config/model-agent/settings.json": "{\"telemetry\": false}\n" },
+    state: [".model-agent/sessions"],
+    declares: { load: true, mcp: "http" },
+    keys: ["MODEL_AGENT_API_KEY"],
+  }, null, 2)}\n`);
+  return file;
+}
+
+// A tool key is none of the offers' inputs (offersEnvOf), so while the offers held are current its save or delete starts
+// no probe. A probe it finds out, made from the inputs read now (a harness key's, which may find newer facts), must land:
+// a tool key's change then never drops it. While the offers held are behind the inputs (a turn-on's probe still out), a
+// tool key's change probes too and drops that probe; the offers still end made from the inputs read now. This test holds
+// the first case only. The facts here are the held table's: claude-agent's check answers FACT from the harness key's save on.
+const FACT = "the probe after the harness key's save found this";
+const TOOL_KEY_PROBED = "a tool key's change, which changes none of the offers' inputs, started a probe of the offers";
+const FACT_WHY = "a tool key's change while a probe made from the inputs read now was out dropped that probe: the facts it found never landed";
+test("while the offers held are current, a tool key's change starts no probe of the offers, and one made while a probe from the inputs read now is out leaves that probe's facts standing once it lands", { timeout: 60_000 }, async (t) => {
+  const { api, harnesses, probes } = await heldServer(t, { harnessRecipes: [await planRecipeFile(t)] });
+  assert.equal((await api("DELETE", "/settings/tool-keys/typesafe")).status, 204);
+  assert.equal(probes("key"), 0, `${TOOL_KEY_PROBED} with no probe out`);
+  assert.notEqual(claudeAgentIn(await harnesses()).reason, FACT);
+
+  held.answer(FACT);
+  const probe = held.hold(() => true);
+  t.after(() => probe.release());
+  const saving = api("PUT", "/settings/harness-keys/model-agent/MODEL_AGENT_API_KEY", { value: "not-a-secret-harness-key" });
+  await probe.reached;
+  const deleted = await api("DELETE", "/settings/tool-keys/typesafe");
+  probe.release();
+  const saved = await saving;
+  assert.equal(saved.status, 204, JSON.stringify(saved.body));
+  assert.equal(deleted.status, 204, JSON.stringify(deleted.body));
+  const offer = claudeAgentIn(await harnesses());
+  assert.equal(offer.reason, FACT, `${FACT_WHY}: ${JSON.stringify(offer)}`);
+  assert.equal(probes("key"), 0, `${TOOL_KEY_PROBED} while one made from the inputs read now was out`);
+});
+
+// A turn starts or ends the sign-in through its own `turn`. A start or stop of the sign-ins' own beside it would be a
+// turn of its own, so one called inside a turn would wait for that turn to end, for ever, and the server's stop (which
+// waits for the sign-ins' close) with it. The sign-ins offer none: their queue (serial), the view and the server's close.
+test("the sign-ins start and end a sign-in only in a turn on their queue: they offer no start or stop of their own, which a turn calling it would wait on for ever", () => {
+  assert.deepEqual(Object.getOwnPropertyNames(ClaudeSignIns.prototype).sort(), ["close", "constructor", "serial", "view"], "the sign-ins offer a start or stop beside a turn's, which one called inside a turn waits on for ever");
+  // A class field is the instance's own, not the prototype's: the one the sign-ins have is their limit.
+  assert.deepEqual(Object.keys(new ClaudeSignIns()), ["limitMs"], "the sign-ins offer a start or stop beside a turn's, which one called inside a turn waits on for ever");
+});
+
+test("the machine's id is a file of the owner's alone (0600) in the data folder, kept across a restart, so the login stays this machine's; a setting saved with a hostname and no id reads as another machine's until turned on again", { timeout: 180_000 }, async (t) => {
+  const fake = await fakeCli(t);
+  withEnv(t, { PATH: `${dirname(fake.cli)}${delimiter}${process.env.PATH}` }, MODEL_VARS);
+  const first = await serve(t, { faux: undefined, harnesses: false, runner: false });
+  assert.equal((await first.api("PUT", "/settings/claude-login", { only_me: true })).body.state, "signed_out");
+  const file = join(first.data, "machine-id");
+  const id = readFileSync(file, "utf8");
+  assert.match(id.trim(), /^[0-9a-f]{32}$/);
+  if (process.platform !== "win32") assert.equal((statSync(file).mode & 0o777).toString(8), "600", "the id file is the owner's alone");
+  await first.stop();
+
+  const second = await serve(t, { faux: undefined, harnesses: false, runner: false, data: first.data });
+  assert.equal((await second.api("GET", "/settings/claude-login")).body.state, "signed_out", "the next start on the same data reads the login as this machine's");
+  assert.equal(readFileSync(file, "utf8"), id, "the next start keeps the id it finds");
+  // A row a server before the id saved names its machine by hostname alone: another machine's, until turned on again.
+  await second.store.settings.put("claude_login", { v: 1, place: "agentrun", host: hostname(), only_me: true });
+  assert.equal((await second.api("GET", "/settings/claude-login")).body.state, "other_machine");
+  assert.equal((await second.api("PUT", "/settings/claude-login", { only_me: true })).body.state, "signed_out", "turned on again, it is this machine's");
+  assert.equal(readFileSync(file, "utf8"), id);
+});
+
+// The person's home: the status check, the sign-in and a run on macOS all run in it. It is read once, where the login is
+// made (loginAt: the server's HOME when absolute, else os.homedir()), and every use takes it from the login, so a server
+// handed an env whose HOME is not os.homedir()'s answer runs them all in one home.
+test("the person's home is read once, where the login is made: with the server's HOME apart from os.homedir(), the status check, the sign-in and a run's status check all run in that HOME, on AgentRun's own folder and on a CLAUDE_CONFIG_DIR folder", { skip: process.platform === "win32" ? "a sh stand-in CLI" : false, timeout: 120_000 }, async (t) => {
+  const fake = await fakeCli(t);
+  const person = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-login-person-"));
+  assert.notEqual(person, homedir(), "the server's HOME is not os.homedir()'s answer");
+  const folder = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-config-dir-"));
+  const signIns = new ClaudeSignIns();
+  t.after(() => signIns.close());
+  for (const [place, extra] of [["agentrun", {}], ["machine", { CLAUDE_CONFIG_DIR: folder }]]) {
+    const data = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-login-data-"));
+    const env = { HOME: person, PATH: `${dirname(fake.cli)}${delimiter}${process.env.PATH}`, ...extra };
+    const rows = new Map([[CLAUDE_LOGIN_SETTING, settingFor(place, data)]]);
+    const settings = { get: async (key) => rows.get(key) ?? null, put: async (key, value) => void rows.set(key, value), remove: async (key) => void rows.delete(key) };
+    const deps = { signIns, settings, data, env, pinned: async () => undefined, refused: () => undefined, sameMachine: true, claude: async () => claude, changed: async () => {} };
+    const from = fake.calls().length;
+    assert.equal((await claudeLoginView(deps)).state, "signed_out", place);
+    await startLoginHere(deps);
+    await until(() => fake.calls().slice(from).some((call) => call.argv === "auth login --claudeai"), `${place}: the CLI's sign-in started`);
+    // A run's status check, as the run spec asks it (cli-run-spec.ts), on the login loginForRun gives the run.
+    const login = await loginForRun(settings, data, env, "claude-agent", { mode: "runner" });
+    assert.ok(login, `${place}: a run here goes on the login`);
+    await claude.claudeLoginStatus(fake.cli, login, { path: env.PATH });
+    const calls = fake.calls().slice(from).filter((call) => call.argv.startsWith("auth "));
+    assert.ok(calls.some((call) => call.argv === "auth status --json") && calls.some((call) => call.argv === "auth login --claudeai"), JSON.stringify(calls));
+    for (const call of calls) assert.equal(call.home, person, `${place}: ${call.argv} runs in the server's HOME: ${JSON.stringify(call)}`);
+  }
+});
+
+// A status check copies the account file into a folder of its own in the temporary folder and removes it when it ends;
+// a server killed outright (SIGKILL) mid-check runs no `finally`, and leaves the folder with the copy in it.
+test("a status check's folder that a killed server left in the temporary folder is removed when a server starts, once older than twice a check's limit; a fresh one, which another server's live check may hold, stays", { skip: process.platform === "win32" ? "no uid" : false, timeout: 120_000 }, async (t) => {
+  const tmp = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-status-sweep-"));
+  const folder = (name) => {
+    const path = join(tmp, name);
+    mkdirSync(join(path, "config"), { recursive: true, mode: 0o700 });
+    writeFileSync(join(path, "config", ".claude.json"), "{}\n", { mode: 0o600 });
+    return path;
+  };
+  const stale = folder("agentrun-claude-status-Ab12Cd");
+  const fresh = folder("agentrun-claude-status-Ef34Gh");
+  const past = new Date(Date.now() - 10 * 60_000);
+  utimesSync(stale, past, past);
+  withEnv(t, { TMPDIR: tmp }, MODEL_VARS);
+  await serve(t, { faux: undefined, harnesses: false, runner: false });
+  assert.equal(existsSync(stale), false, "the stale folder, with the copy in it, is gone once the server has started");
+  assert.ok(existsSync(join(fresh, "config", ".claude.json")), "the fresh folder stays");
+});
+
+// A Claude-plan run's login check on a loaded host (loginBeforeRun). The status checks here are stand-ins: a check the
+// CLI outlasted throws as the harness's does (claudeLoginStatus: `code` "timed_out", its limit, its words).
+const timedOut = () => Object.assign(new Error("the claude CLI gave no login status: the check timed out after 15 s"), { code: "timed_out", limitMs: 15_000 });
+const SAID_IN = { signedIn: true, method: "claude.ai" };
+const SAID_OUT = { signedIn: false, method: "none" };
+
+/** A stand-in status check that answers `answers` in turn (an Error is thrown) and counts how often it was asked. */
+function statusOf(...answers) {
+  let calls = 0;
+  const status = async () => {
+    const said = answers[Math.min(calls++, answers.length - 1)];
+    if (said instanceof Error) throw said;
+    return said;
+  };
+  return { status, calls: () => calls };
+}
+
+/** A login of its own, so no test's earlier answer is another's. */
+async function ownLogin() {
+  const dir = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-login-check-"));
+  return { dir: join(dir, "claude-login"), profiles: join(dir, "claude-login", "anthropic"), userHome: dir };
+}
+
+/** A clock that reads `start` plus what `at(ms)` last set. */
+function clock(start) {
+  let now = start;
+  return { now: () => now, at: (ms) => { now = start + ms; } };
+}
+
+/** Asserts `error` is the run's refusal for a login whose CLI could not say, in words that name the timeout. */
+const unknownByTimeout = (error) => {
+  assert.ok(error.message.startsWith(LOGIN_UNKNOWN), error.message);
+  assert.match(error.message, /timed out after 15 s/, "the words say the check timed out, and after how long");
+  return true;
+};
+
+test("a Claude-plan run whose login check times out once asks again, and goes on when that answer is signed in", async () => {
+  const login = await ownLogin();
+  const fake = statusOf(timedOut(), SAID_IN);
+  await loginBeforeRun(login, "claude", fake.status);
+  assert.equal(fake.calls(), 2, "status was asked twice");
+});
+
+test("a Claude-plan run whose login check times out twice goes on when the same login answered signed in 2 minutes before in this server", async () => {
+  const login = await ownLogin();
+  const time = clock(1_000_000);
+  await loginBeforeRun(login, "claude", statusOf(SAID_IN).status, { now: time.now });
+  time.at(2 * 60_000);
+  const fake = statusOf(timedOut(), timedOut());
+  await loginBeforeRun(login, "claude", fake.status, { now: time.now });
+  assert.equal(fake.calls(), 2, "asked twice before the earlier answer is taken");
+});
+
+test("a Claude-plan run whose login check times out twice is refused with LOGIN_UNKNOWN, in words that name the timeout, when the login never answered signed in here, answered 11 minutes ago, or only another login did", async () => {
+  const never = await ownLogin();
+  const first = statusOf(timedOut(), timedOut());
+  await assert.rejects(loginBeforeRun(never, "claude", first.status), unknownByTimeout);
+  assert.equal(first.calls(), 2, "no earlier answer: asked twice, then refused");
+
+  const old = await ownLogin();
+  const time = clock(1_000_000);
+  await loginBeforeRun(old, "claude", statusOf(SAID_IN).status, { now: time.now });
+  time.at(11 * 60_000);
+  const stale = statusOf(timedOut(), timedOut());
+  await assert.rejects(loginBeforeRun(old, "claude", stale.status, { now: time.now }), unknownByTimeout);
+  assert.equal(stale.calls(), 2, "an answer 11 minutes old: asked twice, then refused");
+
+  // Another login (another folder) answered signed in a minute before: that answer is not this login's.
+  const other = await ownLogin();
+  time.at(0);
+  await loginBeforeRun(other, "claude", statusOf(SAID_IN).status, { now: time.now });
+  time.at(60_000);
+  const fresh = await ownLogin();
+  await assert.rejects(loginBeforeRun(fresh, "claude", statusOf(timedOut(), timedOut()).status, { now: time.now }), unknownByTimeout);
+  // The same folder with its credentials kept apart is another login too.
+  await assert.rejects(loginBeforeRun({ ...other, secure: join(other.userHome, "elsewhere") }, "claude", statusOf(timedOut(), timedOut()).status, { now: time.now }), unknownByTimeout);
+});
+
+test("a signed-out answer is never asked again nor overridden by an earlier signed-in one: the run is refused at once with LOGIN_SIGNED_OUT, and that earlier answer is gone, so a timeout after it is refused", async () => {
+  const login = await ownLogin();
+  const time = clock(1_000_000);
+  await loginBeforeRun(login, "claude", statusOf(SAID_IN).status, { now: time.now });
+  time.at(60_000);
+  const slow = statusOf(timedOut(), timedOut());
+  await loginBeforeRun(login, "claude", slow.status, { now: time.now });
+  assert.equal(slow.calls(), 2, "two timeouts a minute after a signed-in answer: the run goes on");
+
+  time.at(2 * 60_000);
+  const out = statusOf(SAID_OUT, SAID_IN);
+  await assert.rejects(loginBeforeRun(login, "claude", out.status, { now: time.now }), (error) => {
+    assert.equal(error.message, LOGIN_SIGNED_OUT);
+    return true;
+  });
+  assert.equal(out.calls(), 1, "a signed-out answer is the answer: status asked once");
+
+  time.at(3 * 60_000);
+  await assert.rejects(loginBeforeRun(login, "claude", statusOf(timedOut(), timedOut()).status, { now: time.now }), unknownByTimeout);
+});
+
+test("the Settings view feeds the same answer: after it read the login signed in, a run whose two checks time out goes on; after it read signed out, one is refused; a check that times out there reads unknown and is asked once", async () => {
+  const data = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-login-view-"));
+  const pinned = join(data, "claude");
+  writeFileSync(pinned, "", { mode: 0o755 });
+  const setting = settingFor("agentrun", data);
+  let said = SAID_IN;
+  let asked = 0;
+  const deps = {
+    signIns: { view: () => undefined },
+    settings: { get: async (key) => (key === CLAUDE_LOGIN_SETTING ? setting : undefined), put: async () => {}, remove: async () => {} },
+    data,
+    env: { HOME: data, PATH: "/usr/bin:/bin" },
+    pinned: async () => pinned,
+    refused: () => undefined,
+    sameMachine: false,
+    claude: async () => ({
+      claudeLoginCommand: () => "claude auth login",
+      claudeLoginStatus: async () => {
+        asked++;
+        if (said instanceof Error) throw said;
+        return said;
+      },
+    }),
+    changed: async () => {},
+  };
+  const login = loginAt("agentrun", data, deps.env);
+
+  assert.equal((await claudeLoginView(deps)).state, "signed_in");
+  const slow = statusOf(timedOut(), timedOut());
+  await loginBeforeRun(login, pinned, slow.status);
+  assert.equal(slow.calls(), 2, "the run asked twice, then took the view's answer");
+
+  said = SAID_OUT;
+  assert.equal((await claudeLoginView(deps)).state, "signed_out");
+  await assert.rejects(loginBeforeRun(login, pinned, statusOf(timedOut(), timedOut()).status), unknownByTimeout);
+
+  said = timedOut();
+  asked = 0;
+  assert.equal((await claudeLoginView(deps)).state, "unknown", "a timeout in the view reads unknown");
+  assert.equal(asked, 1, "the view never asks again: a person waits on it");
+});
+
+test("only a check that gave no answer is asked again or goes on by an earlier signed-in answer: a CLI that is not there, or any other failure, refuses the run at once with LOGIN_UNKNOWN in its own words", async () => {
+  const login = await ownLogin();
+  const time = clock(1_000_000);
+  await loginBeforeRun(login, "claude", statusOf(SAID_IN).status, { now: time.now });
+  time.at(60_000);
+
+  const missing = Object.assign(new Error("spawn claude ENOENT"), { code: "ENOENT", errno: -2, syscall: "spawn claude", path: "claude" });
+  const gone = statusOf(missing, SAID_IN);
+  await assert.rejects(loginBeforeRun(login, "claude", gone.status, { now: time.now }), (error) => {
+    assert.equal(error.message, `${LOGIN_UNKNOWN}: spawn claude ENOENT`);
+    return true;
+  });
+  assert.equal(gone.calls(), 1, "a CLI that is not there: status asked once, and the signed-in answer a minute before does not stand in");
+
+  const broken = statusOf(new Error("EACCES: permission denied, open '.claude.json'"), SAID_IN);
+  await assert.rejects(loginBeforeRun(login, "claude", broken.status, { now: time.now }), (error) => {
+    assert.equal(error.message, `${LOGIN_UNKNOWN}: EACCES: permission denied, open '.claude.json'`);
+    return true;
+  });
+  assert.equal(broken.calls(), 1, "an error with no code: status asked once");
+
+  // A CLI that answered, in time, nothing that reads as a status gave no answer too, as the harness says by its code.
+  const noStatus = () => Object.assign(new Error("the claude CLI gave no login status"), { code: "no_status" });
+  const garbled = statusOf(noStatus(), SAID_IN);
+  await loginBeforeRun(login, "claude", garbled.status, { now: time.now });
+  assert.equal(garbled.calls(), 2, "no status once, then signed in: asked twice, and the run goes on");
+  time.at(2 * 60_000);
+  const twice = statusOf(noStatus(), noStatus());
+  await loginBeforeRun(login, "claude", twice.status, { now: time.now });
+  assert.equal(twice.calls(), 2, "no status twice, a minute after a signed-in answer: the run goes on by it");
 });
