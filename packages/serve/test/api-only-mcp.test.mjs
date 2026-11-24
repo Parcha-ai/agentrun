@@ -43,8 +43,6 @@ const ACCOUNT_A = "ca_alice_gmail_0001";
 const MCP_ACCOUNTS = { [USER_A]: [ACCOUNT_A] };
 const CALL = 'Call mcp__mail__add with {"a":2,"b":3}';
 const SAVE = { api_key_env: KEY_ENV, toolkit: "gmail", tools: ["add"], user_id: "per_run" };
-// A Composio user of the token's own, for a save that is not per_run (the preset's default user is refused it).
-const TOKEN_USER = "token-user-0001";
 
 /** A server (API-only unless `full`) beside a fake Composio whose key is KEY (`fake`: more of its options), and the log. */
 async function setup(t, { full = false, fake = {} } = {}) {
@@ -341,14 +339,14 @@ test("API-only: the token's Composio save over an auth config a server the owner
   assert.equal(config?.made, true, "the owner's server made its auth config here");
   // Named: refused in the save's own words, naming the owner's server, before anything is sent.
   let from = s.composio.calls.length;
-  const named = await s.token("PUT", "/settings/mcp-servers/notes/composio", { ...SAVE, user_id: TOKEN_USER, auth_config_id: config.id });
+  const named = await s.token("PUT", "/settings/mcp-servers/notes/composio", { ...SAVE, user_id: "agentrun", auth_config_id: config.id });
   assert.equal(named.status, 403, JSON.stringify(named.body));
   assert.match(named.body.error?.message, new RegExp(`auth config ${config.id}.*owner's MCP server mail`), named.body.error?.message);
   assert.deepEqual(s.composio.calls.slice(from), [], "nothing reached Composio");
   // Found: the toolkit's managed auth config Composio answers is the one the owner's server stands on, so the save is
   // refused once that is known, in the same words, before anything is made at Composio; nothing of the owner's is removed.
   from = s.composio.calls.length;
-  const found = await s.token("PUT", "/settings/mcp-servers/notes/composio", { ...SAVE, user_id: TOKEN_USER });
+  const found = await s.token("PUT", "/settings/mcp-servers/notes/composio", { ...SAVE, user_id: "agentrun" });
   assert.equal(found.status, 403, JSON.stringify(found.body));
   assert.match(found.body.error?.message, new RegExp(`auth config ${config.id}.*owner`), found.body.error?.message);
   const sent = s.composio.calls.slice(from);
@@ -365,14 +363,14 @@ test("API-only: the token's Composio save over an auth config a server the owner
   assert.deepEqual((await store.settings.get(composioMadeKey("notes"))).auth_config, { id: config.id, made: false }, "the token's second server uses it, and made none");
 });
 
-// An ACTIVE connected account at Composio that no record here names: the toolkit's managed auth config already holds an
-// account for the user the save names (the fake's `active`), whatever stands, or doesn't, beside it in the store.
+// An ACTIVE connected account at Composio that no record here names: the toolkit's managed auth config already holds the
+// default user's account (the fake's `active`), whatever stands, or doesn't, beside it in the store.
 const OWNERS_CONFIG = "ac_owners_managed";
 const OWNERS_ACCOUNT = { authConfigs: { gmail: [{ id: OWNERS_CONFIG, is_composio_managed: true, status: "ENABLED" }] }, active: ["gmail"] };
 const ACCOUNT_SHAPES = [
   // The owner's Composio server saved by hand through the generic save: a row at a Composio MCP address, no record.
   ["the owner's server saved by hand at its Composio address (no record)", async (s) => {
-    await s.server.store.mcp.put({ name: "owners-mail", url: `${s.composio.mcpOrigin}/v3/mcp/srv_owners/mcp?user_id=${TOKEN_USER}`, auth: "none", tools: [ADD_TOOL], sealed: null });
+    await s.server.store.mcp.put({ name: "owners-mail", url: `${s.composio.mcpOrigin}/v3/mcp/srv_owners/mcp?user_id=agentrun`, auth: "none", tools: [ADD_TOOL], sealed: null });
   }],
   // Connected in Composio's dashboard: no row here at all. (An account the owner kept after deleting its server reads the
   // same here: the delete removed the row and its records, and Composio still has the account.)
@@ -380,7 +378,7 @@ const ACCOUNT_SHAPES = [
   // A preset save from before its made-record: the owner's row recorded as a Composio server of the toolkit, no made-record.
   ["the owner's preset server saved before its made-record (source record alone)", async (s) => {
     const { storedSource } = await import("../dist/mcp-sources.js");
-    await s.server.store.mcp.put({ name: "owners-mail", url: `${s.composio.mcpOrigin}/v3/mcp/srv_owners/mcp?user_id=${TOKEN_USER}`, auth: "none", tools: [ADD_TOOL], sealed: null });
+    await s.server.store.mcp.put({ name: "owners-mail", url: `${s.composio.mcpOrigin}/v3/mcp/srv_owners/mcp?user_id=agentrun`, auth: "none", tools: [ADD_TOOL], sealed: null });
     const row = await s.server.store.mcp.server("owners-mail");
     await s.server.store.settings.put(mcpSourceKey("owners-mail"), storedSource({ source: "composio", toolkit: "gmail" }, row, false, false));
   }],
@@ -391,9 +389,9 @@ for (const [shape, arrange] of ACCOUNT_SHAPES) {
     const s = await setup(t, { fake: OWNERS_ACCOUNT });
     await arrange(s);
     const from = s.composio.calls.length;
-    const res = await s.token("PUT", "/settings/mcp-servers/notes/composio", { ...SAVE, user_id: TOKEN_USER });
+    const res = await s.token("PUT", "/settings/mcp-servers/notes/composio", { ...SAVE, user_id: "agentrun" });
     assert.equal(res.status, 403, JSON.stringify(res.body));
-    assert.match(res.body.error?.message, new RegExp(`user_id ${TOKEN_USER} already has a connected account here that no server the API token saved holds as one it connected.*Name a user_id of the token's own`), res.body.error?.message);
+    assert.match(res.body.error?.message, /user_id agentrun already has a connected account here that no server the API token saved holds as one it connected.*Name a user_id of the token's own/, res.body.error?.message);
     assert.deepEqual(s.composio.calls.slice(from).filter((call) => call.method !== "GET"), [], "nothing made or removed at Composio");
     assert.deepEqual(s.composio.mcpIds, [], "no MCP server made");
     assert.equal(await s.server.store.mcp.server("notes"), undefined, "no server saved");
@@ -402,49 +400,78 @@ for (const [shape, arrange] of ACCOUNT_SHAPES) {
   });
 }
 
-test("API-only: the token's Composio save that names no user_id, or the preset's default one, is 422 under user_id before anything reaches Composio: Composio picks the account at each call by user and auth config, and the default user is the owner's too", async (t) => {
+/** The Composio users the calls name: the account lookup's `user_ids`, generate's `user_ids`, the connect link's `user_id`. */
+const usersSent = (calls) => calls.flatMap((call) => [call.query?.user_ids, call.body?.user_id, ...(Array.isArray(call.body?.user_ids) ? call.body.user_ids : [])]).filter((user) => user !== undefined);
+
+for (const [given, as] of [["ops", "agentrun.token.ops"], [undefined, "agentrun.token.agentrun"]]) {
+  test(`API-only: the token's Composio save ${given ? `naming the user_id ${given}` : "naming no user_id"} reaches Composio as ${as}, never as the bare user, and its server and record are ${as}'s`, async (t) => {
+    withEnv(t, { [KEY_ENV]: KEY });
+    const s = await setup(t);
+    const saved = await s.token("PUT", "/settings/mcp-servers/notes/composio", { ...SAVE, user_id: given });
+    assert.equal(saved.status, 200, JSON.stringify(saved.body));
+    // The account lookup, generate and the connect link, each as the token's namespaced user; no call names the bare one.
+    assert.deepEqual(usersSent(s.composio.calls), [as, as, as], "the user each call names");
+    assert.equal(new URL((await s.server.store.mcp.server("notes")).url).searchParams.get("user_id"), as, "the saved address calls as it");
+    assert.equal((await s.server.store.settings.get(composioMadeKey("notes"))).user, as, "the record stands on it");
+  });
+}
+
+test("the owner's Composio save naming a user_id in the API token's namespace (agentrun.token.) is 422 under user_id, nothing sent to Composio", async (t) => {
   withEnv(t, { [KEY_ENV]: KEY });
-  const s = await setup(t);
-  for (const body of [{ ...SAVE, user_id: undefined }, { ...SAVE, user_id: "agentrun" }]) {
-    const res = await s.token("PUT", "/settings/mcp-servers/notes/composio", body);
-    assert.equal(res.status, 422, JSON.stringify(res.body));
-    assert.deepEqual(res.body.error?.fields?.map((issue) => [issue.field, issue.reason]), [["user_id", "not_allowed"]], JSON.stringify(res.body));
-    assert.match(res.body.error?.fields?.[0]?.message, /the Composio preset's shared default user.*Name a user_id of the token's own/, res.body.error?.fields?.[0]?.message);
-  }
+  const s = await setup(t, { full: true });
+  const res = await asOwner(s.server)("PUT", "/settings/mcp-servers/mail/composio", { ...SAVE, user_id: "agentrun.token.x" });
+  assert.equal(res.status, 422, JSON.stringify(res.body));
+  assert.deepEqual(res.body.error?.fields?.map((issue) => [issue.field, issue.reason]), [["user_id", "not_allowed"]], JSON.stringify(res.body));
   assert.deepEqual(s.composio.calls, [], "nothing sent to Composio");
-  assert.equal(await s.server.store.mcp.server("notes"), undefined, "no server saved");
+  assert.equal(await s.server.store.mcp.server("mail"), undefined, "no server saved");
 });
 
 test("API-only: the token's Composio save checks every ACTIVE account Composio lists for its user under the auth config, not the first: its own (made here) then one no record names is 403, nothing made", async (t) => {
   withEnv(t, { [KEY_ENV]: KEY });
   const accounts = {};
   const s = await setup(t, { fake: { accounts } });
-  assert.equal((await s.token("PUT", "/settings/mcp-servers/mail/composio", { ...SAVE, user_id: TOKEN_USER })).status, 200);
+  assert.equal((await s.token("PUT", "/settings/mcp-servers/mail/composio", { ...SAVE, user_id: "agentrun" })).status, 200);
   const mine = await s.server.store.settings.get(composioMadeKey("mail"));
   const [{ id: linked }] = mine.accounts;
   // The token's own account finished its link, and another ACTIVE account came up for the same user and config after it.
   accounts.gmail = [{ status: "ACTIVE", auth_config: mine.auth_config.id, id: linked }, { status: "ACTIVE", auth_config: mine.auth_config.id, id: "ca_unrecorded_0001" }];
   const from = s.composio.calls.length;
-  const res = await s.token("PUT", "/settings/mcp-servers/notes/composio", { ...SAVE, user_id: TOKEN_USER });
+  const res = await s.token("PUT", "/settings/mcp-servers/notes/composio", { ...SAVE, user_id: "agentrun" });
   assert.equal(res.status, 403, JSON.stringify(res.body));
-  assert.match(res.body.error?.message, new RegExp(`user_id ${TOKEN_USER} already has a connected account here.*Name a user_id of the token's own`), res.body.error?.message);
+  assert.match(res.body.error?.message, /user_id agentrun already has a connected account here.*Name a user_id of the token's own/, res.body.error?.message);
   assert.deepEqual(s.composio.calls.slice(from).filter((call) => call.method !== "GET"), [], "nothing made or removed at Composio");
   assert.equal(await s.server.store.mcp.server("notes"), undefined, "no server saved");
   assert.deepEqual(await s.server.store.settings.get(composioMadeKey("mail")), mine, "the first server's record is unchanged");
+});
+
+test("API-only: the token's re-save of a server saved before its user was namespaced (its record on the bare user) deletes at Composio the account that server's link made, which no other server stands on, and records the new user's", async (t) => {
+  withEnv(t, { [KEY_ENV]: KEY });
+  const s = await setup(t);
+  assert.equal((await s.token("PUT", "/settings/mcp-servers/mail/composio", { ...SAVE, user_id: "agentrun" })).status, 200);
+  // What a 0.1.0-beta.56 token save wrote: the same record, on the bare user.
+  const record = await s.server.store.settings.get(composioMadeKey("mail"));
+  const [{ id: old, made }] = record.accounts;
+  assert.equal(made, true, "its link made the account");
+  await s.server.store.settings.put(composioMadeKey("mail"), { ...record, user: "agentrun" });
+  const from = s.composio.calls.length;
+  const again = await s.token("PUT", "/settings/mcp-servers/mail/composio", { ...SAVE, user_id: "agentrun" });
+  assert.equal(again.status, 200, JSON.stringify(again.body));
+  assert.deepEqual(s.composio.calls.slice(from).filter((call) => call.method === "DELETE" && call.path === `/api/v3/connected_accounts/${old}`).length, 1, "the bare user's account is deleted at Composio");
+  assert.equal((await s.server.store.settings.get(composioMadeKey("mail"))).accounts.some((account) => account.id === old), false, "the new record doesn't hold it");
 });
 
 test("API-only: an account the token's own earlier save connected (its record holds the id) still backs the token's second save for that user (200), found with no connect link, and the first server's record is unchanged", async (t) => {
   withEnv(t, { [KEY_ENV]: KEY });
   const accounts = {};
   const s = await setup(t, { fake: { accounts } });
-  const first = await s.token("PUT", "/settings/mcp-servers/mail/composio", { ...SAVE, user_id: TOKEN_USER });
+  const first = await s.token("PUT", "/settings/mcp-servers/mail/composio", { ...SAVE, user_id: "agentrun" });
   assert.equal(first.status, 200, JSON.stringify(first.body));
   const mine = await s.server.store.settings.get(composioMadeKey("mail"));
   assert.equal(mine.accounts.length, 1, JSON.stringify(mine));
   const [{ id: linked }] = mine.accounts;
   // The person finished the connect link: the account it started is ACTIVE under the auth config the first save made.
   accounts.gmail = [{ status: "ACTIVE", auth_config: mine.auth_config.id, id: linked }];
-  const second = await s.token("PUT", "/settings/mcp-servers/notes/composio", { ...SAVE, user_id: TOKEN_USER });
+  const second = await s.token("PUT", "/settings/mcp-servers/notes/composio", { ...SAVE, user_id: "agentrun" });
   assert.equal(second.status, 200, JSON.stringify(second.body));
   assert.equal(second.body.connect_url, undefined, "no connect link: the account is ACTIVE");
   // Found, and still marked made here, as the first server's record says (composio-made.ts madeToWrite): a delete hands it on.
@@ -457,15 +484,15 @@ test("API-only: a server the token saved before the account rule, whose record h
   const s = await setup(t, { fake: OWNERS_ACCOUNT });
   const { storedSource } = await import("../dist/mcp-sources.js");
   // What such a save wrote: the token's row, its source marked the token's, and the owner's account recorded as found.
-  await s.server.store.mcp.put({ name: "mail", url: `${s.composio.mcpOrigin}/v3/mcp/srv_tokens/mcp?user_id=${TOKEN_USER}`, auth: "headers", tools: [ADD_TOOL], sealed: null });
+  await s.server.store.mcp.put({ name: "mail", url: `${s.composio.mcpOrigin}/v3/mcp/srv_tokens/mcp?user_id=agentrun`, auth: "headers", tools: [ADD_TOOL], sealed: null });
   const row = await s.server.store.mcp.server("mail");
   await s.server.store.settings.put(mcpSourceKey("mail"), storedSource({ source: "composio", toolkit: "gmail" }, row, false, true));
-  const old = storedMade({ user: TOKEN_USER, auth_config: { id: OWNERS_CONFIG, made: false }, accounts: [{ id: "ca_fake_gmail", made: false }], key_env: KEY_ENV }, row);
+  const old = storedMade({ user: "agentrun", auth_config: { id: OWNERS_CONFIG, made: false }, accounts: [{ id: "ca_fake_gmail", made: false }], key_env: KEY_ENV }, row);
   await s.server.store.settings.put(composioMadeKey("mail"), old);
   const from = s.composio.calls.length;
-  const res = await s.token("PUT", "/settings/mcp-servers/notes/composio", { ...SAVE, user_id: TOKEN_USER });
+  const res = await s.token("PUT", "/settings/mcp-servers/notes/composio", { ...SAVE, user_id: "agentrun" });
   assert.equal(res.status, 403, JSON.stringify(res.body));
-  assert.match(res.body.error?.message, new RegExp(`user_id ${TOKEN_USER} already has a connected account here.*Name a user_id of the token's own`), res.body.error?.message);
+  assert.match(res.body.error?.message, /user_id agentrun already has a connected account here.*Name a user_id of the token's own/, res.body.error?.message);
   assert.deepEqual(s.composio.calls.slice(from).filter((call) => call.method !== "GET"), [], "nothing made or removed at Composio");
   assert.deepEqual(s.composio.mcpIds, [], "no MCP server made");
   assert.equal(await s.server.store.mcp.server("notes"), undefined, "no server saved");
