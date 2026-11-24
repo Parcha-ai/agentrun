@@ -514,6 +514,30 @@ test("a Docker sandbox's park names the runner that claimed it and its incarnati
   await resumed.release();
 });
 
+test("a kept Docker sandbox its provider refuses to attach again (its proxy made before the egress bridge) is replaced: the run goes on, and its timeline says why in the provider's words", async () => {
+  const one = await server(SANDBOX);
+  await (await one.claim(3, {}, { holder: RUNNER_A })).park("approval");
+  const words =
+    "the computer c1 does not match this provider, so attach refuses it and it is left as it is: network: network allow, but its egress proxy c1-egress is on Docker's default bridge: an earlier release of this provider made it there, before the egress bridge agentrun-egress; delete the computer and create it again";
+  const attach = one.account.provider.attach;
+  one.account.provider.attach = async (ref, context) => {
+    if (ref.id !== "c1") return attach(ref, context);
+    one.account.calls.push(["attach", ref.id]);
+    return { ok: false, error: { code: "refused", message: words } };
+  };
+  one.clock.now = T0 + 60_000;
+  const said = [];
+  const resumed = await one.claim(5, { hadComputer: async () => true, onConnected: (phase) => void said.push(phase) }, { holder: RUNNER_A });
+  assert.ok(one.account.calls.some(([verb, id]) => verb === "attach" && id === "c1"), "the kept one was tried");
+  assert.deepEqual(creates(one.account), ["c1", "c2"], "a new sandbox");
+  assert.deepEqual(deletes(one.account), ["c1"], "the refused one deleted as an older claim's");
+  assert.equal(resumed.computer?.kind, "sandbox", "the claim gave the run a computer, never failed");
+  assert.deepEqual(resumed.replaced, { kind: "sandbox", folderKept: false, refused: words });
+  assert.equal(said.length, 1, "said once");
+  assert.equal(computerReadyWords(said[0]), `The sandbox is ready: Linux (amd64), from Docker. The sandbox kept before could not be taken back: ${words}. It's a new sandbox: the one before is gone, with what was on it.`);
+  await resumed.release();
+});
+
 test("a phone harness kept at its park is not pinned: its row names no runner, and another runner's resume attaches the same phone", async () => {
   const one = await server({ setting: { kind: "phone", provider: "phone-harness" }, groups: PHONE_GROUPS, machine: "android", keys: { PHONE_HARNESS_API_KEY: "fake-test-key" } });
   const first = await one.claim(3, {}, { holder: RUNNER_A });
