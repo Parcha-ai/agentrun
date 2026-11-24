@@ -4,7 +4,7 @@
 // table (fixtures/fake-network.mjs) and each provider's send a stub: no socket leaves the machine, no real key.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { createWeb, firecrawlFetch, firecrawlScrape, parallelExtract, webFetchText } from "../dist/index.js";
+import { createWeb, firecrawlFetch, firecrawlScrape, parallelExtract, URL_MAX, webFetchText } from "../dist/index.js";
 import { answers, firecrawlServer } from "./fixtures/fake-firecrawl.mjs";
 import { network } from "./fixtures/fake-network.mjs";
 import { fetchPage, guard, readDirect, webFetch } from "./support.mjs";
@@ -176,8 +176,37 @@ test("the URL asked, holding a user name and password: every page web_fetch give
   pages.none = (await fetched({ parallel, order: ["parallel"] }, asked)).page;
   pages.stopped = (await fetched({ order: ["direct"], signal: AbortSignal.abort() }, asked)).page;
   pages["part refused"] = (await createWeb({ order: { search: [], fetch: ["direct"] }, guard }).fetch(asked, { maxChars: 1 })).answer;
-  assert.deepEqual(Object.entries(pages).map(([row, page]) => [row, page.ok, page.via]), [["direct", false, "direct"], ["none", false, "none"], ["stopped", false, "stopped"], ["part refused", false, undefined]], "no page was read");
+  // The root's own direct reads, called as a library is: the page each refuses with names the URL without them too.
+  pages.fetchPage = await fetchPage(asked, network());
+  pages.readDirect = await readDirect(asked, network());
+  assert.deepEqual(Object.entries(pages).map(([row, page]) => [row, page.ok, page.via]), [["direct", false, "direct"], ["none", false, "none"], ["stopped", false, "stopped"], ["part refused", false, undefined], ["fetchPage", false, undefined], ["readDirect", false, undefined]], "no page was read");
   const leaks = Object.entries(pages).flatMap(([row, page]) => leaking({ [`${row}: the page`]: page, [`${row}: the text the model reads`]: webFetchText(page) }));
   assert.deepEqual(leaks, [], `no part of them in: ${leaks.join("; ")}`);
   assert.deepEqual(Object.entries(pages).map(([row, page]) => [row, page.url]), Object.keys(pages).map((row) => [row, PUBLIC]), "the url of each page, without them");
+});
+
+// A provider names the URL it ended at, and its client cuts that url at URL_MAX. A password running past the cut leaves
+// no "@" for a later scrub to find, and the cut url no longer parses: each client clears them before its cut.
+test("a provider's page url whose password runs past where a url is cut: Firecrawl's scrape, Parallel's extract and the page web_fetch returns name it without any part of them", async (t) => {
+  const landed = credentialed("landed").replace("not-a-secret", `not-a-secret${"x".repeat(URL_MAX)}`);
+  assert.ok(landed.indexOf("not-a-secret") < URL_MAX && landed.indexOf("@") > URL_MAX, "the cut of the url ends inside them");
+  const scraped = { markdown: "# Landed\n\nRead after a redirect.", metadata: { title: "Landed", url: landed, sourceURL: landed, statusCode: 200 } };
+  const fc = await firecrawlServer(t, (name) => (name === "firecrawl_scrape" ? { content: [{ type: "text", text: JSON.stringify(scraped) }] } : answers(name)));
+  const extract = async () => new Response(JSON.stringify({ results: [{ url: landed, title: "Landed", full_content: "Read after a redirect." }] }), { status: 200, headers: { "content-type": "application/json" } });
+  const rows = [
+    ["firecrawl-keyless", "firecrawlScrape", { firecrawl: firecrawlFetch({ endpoint: fc.url }) }, () => firecrawlScrape(PUBLIC, { endpoint: fc.url })],
+    ["parallel", "parallelExtract", { parallel: parallelExtract("not-a-secret", extract) }, () => parallelExtract("not-a-secret", extract).read(PUBLIC)],
+  ];
+  const urls = [];
+  const leaks = [];
+  for (const [provider, client, given, own] of rows) {
+    const read = await fetched({ ...given, order: [provider, "direct"] });
+    assert.deepEqual([read.page.ok, read.page.via], [true, provider], `${provider}: the provider read the page`);
+    const page = await own();
+    assert.equal(page.ok, true, `${client}: a page`);
+    leaks.push(...leaking({ ...places(provider, read), [`${client}: the url`]: page.url }));
+    urls.push([provider, read.page.url], [client, page.url]);
+  }
+  assert.deepEqual(leaks, [], `no part of them in: ${leaks.join("; ")}`);
+  assert.deepEqual(urls, rows.flatMap(([provider, client]) => [[provider, `${PUBLIC}landed`], [client, `${PUBLIC}landed`]]), "the url of each page, without them");
 });
