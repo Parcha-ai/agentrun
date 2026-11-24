@@ -23,7 +23,7 @@ const { MAX_RESTARTS } = await import("../dist/runner/conformance/harness.js");
 const { callsOf, journalRecords } = await import("../dist/runner/journal-reader.js");
 const { replayOf } = await import("../dist/tool-list.js");
 const { webFetchTool } = await import("../dist/web-fetch.js");
-const { FAUX_WEB_ENV } = await import("../dist/web-fetch-direct.js");
+const { FAUX_WEB_ENV } = await import("../dist/web-run.js");
 const { FAUX_ENV } = await import("../dist/model.js");
 
 // A lease no stall of a loaded machine runs out: the claim is lost only where the case loses it, at the deadline on the

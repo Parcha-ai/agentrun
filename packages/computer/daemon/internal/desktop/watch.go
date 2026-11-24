@@ -190,9 +190,9 @@ func (d *Display) watch(ctx context.Context, raw json.RawMessage) (any, error) {
 			}
 		}
 		region := w.take()
-		cursor, changed, at, err := d.look(w, region)
+		cursor, changed, at, err := d.look(ctx, w, region)
 		if err != nil {
-			// Not read (the display went): the next look reads it.
+			// Not read (the display went, or the watch was cancelled): the next look reads it.
 			w.damaged(region)
 			return nil, err
 		}
@@ -239,16 +239,16 @@ func pause(ctx context.Context, d time.Duration, wake chan struct{}) error {
 // look reads the region of the screen into the watch's copy (the whole screen on the first read, or once its size
 // changed) and where the pointer is; an empty region reads no pixels. changed says whether a pixel of the copy changed;
 // at is when it read. It does not hold the display: GetGeometry, GetImage and QueryPointer each answer, with their error
-// if they fail, so a batch holding the display meanwhile still reads its own errors alone.
-func (d *Display) look(w *watching, region image.Rectangle) (cursor [2]int, changed bool, at time.Time, err error) {
+// if they fail, so a batch holding the display meanwhile still reads its own errors alone. Each waits until ctx ends.
+func (d *Display) look(ctx context.Context, w *watching, region image.Rectangle) (cursor [2]int, changed bool, at time.Time, err error) {
 	at = time.Now()
 	c, err := d.connection()
 	if err != nil {
 		return cursor, false, at, err
 	}
-	width, height, err := c.RootSize()
+	width, height, err := c.RootSize(ctx)
 	if err != nil {
-		return cursor, false, at, d.gone(c, err)
+		return cursor, false, at, d.failed(ctx, c, "screen.watch", err)
 	}
 	whole := image.Rect(0, 0, width, height)
 	if w.screen == nil || w.screen.Bounds() != whole {
@@ -259,14 +259,14 @@ func (d *Display) look(w *watching, region image.Rectangle) (cursor [2]int, chan
 	if !region.Empty() {
 		// The cap counts from the read's start, so the read and the frame's encode are inside the gap, not added to it.
 		started := time.Now()
-		if img, err = c.GetImage(region.Min.X, region.Min.Y, region.Dx(), region.Dy()); err != nil {
-			return cursor, false, at, d.gone(c, err)
+		if img, err = c.GetImage(ctx, region.Min.X, region.Min.Y, region.Dx(), region.Dy()); err != nil {
+			return cursor, false, at, d.failed(ctx, c, "screen.watch", err)
 		}
 		w.read = started
 	}
-	x, y, err := c.QueryPointer()
+	x, y, err := c.QueryPointer(ctx)
 	if err != nil {
-		return cursor, false, at, d.gone(c, err)
+		return cursor, false, at, d.failed(ctx, c, "screen.watch", err)
 	}
 	w.width, w.height = width, height
 	switch {

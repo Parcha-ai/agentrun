@@ -164,8 +164,10 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
       <div aria-label="Playground agent" className="flex shrink-0 flex-wrap items-center gap-3 border-b px-5 py-3 md:px-6">
         <div className="flex min-w-0 items-center gap-2 text-small">
           <label htmlFor="playground-agent" className="caps text-muted-foreground">Agent</label>
-          <Picker id="playground-agent" label="Agent" value={agentId} onChange={(id) => { setAgentId(id); setRevision(""); onAgent?.(id); }}
-            options={agentsByName(agents).map((a) => ({ value: a.agent_id, label: a.definition.name }))} className="w-56 max-w-[60vw]" />
+          {/* As wide as its longest agent's name (steady), so a name is shown whole where the row has the room; on a phone
+              it is held to part of the window and cuts the name with an ellipsis. */}
+          <Picker id="playground-agent" label="Agent" steady value={agentId} onChange={(id) => { setAgentId(id); setRevision(""); onAgent?.(id); }}
+            options={agentsByName(agents).map((a) => ({ value: a.agent_id, label: a.definition.name }))} className="max-w-[60vw]" />
         </div>
         {sdk ? <span className="font-mono text-small">{backendSdkLabel(sdk)} · Your backend</span> : <span className="font-mono text-small"><span className="text-primary-text">POST</span> <span className="text-muted-foreground">/v2/agents/{agentId || "{agent_id}"}/runs</span></span>}
       </div>
@@ -265,7 +267,7 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
                 <Button size="icon" variant="outline" aria-label="Copy code" onClick={() => void navigator.clipboard?.writeText(code)}><Copy aria-hidden /></Button>
               </div>
               <pre tabIndex={0} aria-label="The request as code" className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-words px-5 py-5 font-mono text-small leading-[1.8] md:px-6">{code}</pre>
-              <footer className={cn(FOOT, "text-small text-muted-foreground")}>The same request from your code: set AGENTRUN_API_KEY in your environment.</footer>
+              <footer className={cn(FOOT, "text-small text-muted-foreground")}>The same request from your code: set AGENTRUN_API_KEY in your environment. Create a key under <a className="underline" href="#/settings/api-keys">Settings → AgentRun API keys</a>.</footer>
             </>
           ) : result && (
             <>

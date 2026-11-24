@@ -107,6 +107,8 @@ export const ERROR_STATUS = {
   // (run-child-host.ts runIsolationOf), in the runner's words and their fix. Not retryable: it stays so until the runner
   // is started again as the words say.
   runner_refused: 503,
+  // POST /settings/api-keys (api-keys.ts) while the server keeps as many API keys as it takes: one is revoked first.
+  api_keys_full: 409,
 } as const;
 
 export type ErrorCode = keyof typeof ERROR_STATUS;
