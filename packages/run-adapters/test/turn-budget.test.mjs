@@ -47,6 +47,8 @@ test('a 16k window, 4,000 tokens held, four parallel 10k results: together they 
     if (serial) for (const c of calls) results.push(await c());
     const total = contextAfter(4_100, results);
     assert.ok(total <= WINDOW, `${total} tokens after the results, past the ${WINDOW}-token window (serial ${serial})`);
+    const reserve = Math.floor(WINDOW * processExports.ANSWER_RESERVE_SHARE);
+    assert.ok(total <= WINDOW - reserve, `${total} tokens after the results: the ${reserve} kept for the model's answer are not left (serial ${serial})`);
     for (const r of results) assertCut(r, 10_000);
     const lengths = results.map((r) => r.text.length);
     assert.ok(Math.max(...lengths) - Math.min(...lengths) < 200, `an even split: ${lengths}`);
