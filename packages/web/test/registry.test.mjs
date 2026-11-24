@@ -58,23 +58,25 @@ test("a keyed provider made with no key sends nothing: its search and its read e
   }
 });
 
-test("a reader is held while its breaker holds, and a failed read's limit trips it", async () => {
+test("a reader is held while its breaker holds, typed by the limit's kind, and a failed read's limit trips it", async () => {
   let now = 0;
   const breaker = web.searchBreaker(() => now);
   let reads = 0;
   const reader = web.readerOf({ read: async () => (reads++, { error: "the provider is out of quota", limit: { kind: "quota" } }) }, breaker);
   assert.equal(reader.held(), undefined, "it starts unheld");
   assert.deepEqual(await reader.read("https://example.com/", {}), { error: "the provider is out of quota", limit: { kind: "quota" } });
-  assert.equal(reader.held(), "not tried: held by its limit");
+  const quota = { class: "quota", code: "HELD", message: "not tried: held by its limit" };
+  assert.deepEqual(reader.held(), quota);
   now += 3_600_000;
-  assert.equal(reader.held(), "not tried: held by its limit", "a quota naming no reset holds for the run");
+  assert.deepEqual(reader.held(), quota, "a quota naming no reset holds for the run");
   const rate = web.readerOf({ read: async () => ({ error: "busy", limit: { kind: "rate", retryAfter: "10" } }) }, web.searchBreaker(() => now));
   await rate.read("https://example.com/", {});
-  assert.equal(rate.held(), "not tried: held by its limit", "within a rate limit's wait");
+  assert.deepEqual(rate.held(), { class: "rate", code: "HELD", message: "not tried: held by its limit" }, "within a rate limit's wait");
   now += 10_000;
   assert.equal(rate.held(), undefined, "past it");
-  const unready = web.readerOf({ read: async () => ({ error: "x" }), unready: () => "not tried: no key" }, web.searchBreaker(() => 0));
-  assert.equal(unready.held(), "not tried: no key", "unready is said ahead of the breaker");
+  const noKey = { class: "refused", code: "NO_KEY", message: "not tried: no key" };
+  const unready = web.readerOf({ read: async () => ({ error: "x" }), unready: () => noKey }, web.searchBreaker(() => 0));
+  assert.deepEqual(unready.held(), noKey, "unready is said ahead of the breaker");
   assert.equal(reads, 1);
   assert.throws(() => web.readerOf({}, breaker), /readerOf: the provider has no read/);
 });

@@ -468,12 +468,22 @@
     {
      "provider": "parallel",
      "outcome": "error",
-     "error": "not tried: the URL did not pass the public-host guard"
+     "error": "not tried: the URL did not pass the public-host guard",
+     "failure": {
+      "class": "refused",
+      "code": "GUARD",
+      "message": "not tried: the URL did not pass the public-host guard"
+     }
     },
     {
      "provider": "direct",
      "outcome": "error",
-     "error": "refused: evil.example is not a public host"
+     "error": "refused: evil.example is not a public host",
+     "failure": {
+      "class": "refused",
+      "code": "GUARD",
+      "message": "refused: evil.example is not a public host"
+     }
     }
    ],
    "classifier": {
