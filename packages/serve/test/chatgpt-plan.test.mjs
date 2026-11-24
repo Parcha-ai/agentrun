@@ -114,6 +114,8 @@ function fakeOpenAI(t) {
       if (o.modelsDelayMs) await new Promise((resolve) => setTimeout(resolve, o.modelsDelayMs));
       // `holdModels`: a promise the model list waits on before it answers, so a test acts while it is out.
       if (o.holdModels) await o.holdModels;
+      // `modelsStatus`: the list answered with that status (a fault at OpenAI), no list read.
+      if (o.modelsStatus) return Response.json({ error: { message: "unavailable" } }, { status: o.modelsStatus });
       if (!liveAccess(request))return Response.json({ error: { message: "bad token" } }, { status: 401 });
       return Response.json({ object: "list", data: ["gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-luna", "text-embedding-3-small"].map((id) => ({ id, object: "model" })) });
     }
@@ -842,6 +844,64 @@ test("a replaced sign-in whose revocation OpenAI doesn't confirm stays in the ro
   assert.equal(openai.revocationsOf(third.refresh), 1);
   assert.equal(openai.revocationsOf(second.refresh), 2, "the carried pair is revoked by the sign-out");
   assert.equal(openai.live.size, 0, "nothing left alive at OpenAI");
+});
+
+/** A sign-in kept and cut off before it settled, sealed as the row in `store`: a new pair, its models unlisted, carrying
+ *  `old` (retired). Its credential. */
+async function seatUnsettled(store, sealKey, old) {
+  const { putSealedKey } = await import("../dist/server-keys.js");
+  const credential = await seatRow(store, sealKey);
+  await putSealedKey(store, sealKey, PLAN_ROW, JSON.stringify({ v: 1, state: "signed_in", credential, models: ["gpt-6.1-sol"], unlisted: true, retired: [old] }));
+  return credential;
+}
+
+test("a runner's reader of the plan (planReaderOf, at each claim) never settles what a sign-in left, though its store has settings: no model list, no revocation, the row untouched", { timeout: 30_000 }, async (t) => {
+  const openai = fakeOpenAI(t);
+  const { planReaderOf } = await import("../dist/chatgpt-plan.js");
+  // A runner's store is the whole Store: it has settings, as the server's does.
+  const store = mapStore();
+  const sealKey = randomBytes(32);
+  const old = await seatRow(store, sealKey);
+  await seatUnsettled(store, sealKey, old);
+  const before = Buffer.from(store.sealed.get(PLAN_ROW));
+  const reader = await planReaderOf(store, sealKey);
+  assert.equal(reader.view().state, "signed_in");
+  // close() waits for a settle out: whatever this reader would settle is done once it resolves.
+  await reader.close();
+  assert.equal(openai.revocationsOf(old.refresh), 0, "a runner sends no refresh token to OpenAI's revocation endpoint");
+  assert.equal(openai.modelLists, 0, "a runner lists no models");
+  assert.ok(Buffer.from(store.sealed.get(PLAN_ROW)).equals(before), "the row is the server's to settle");
+});
+
+test("each pair the row carries joins the redaction list as it is read, as its own pair does", { timeout: 30_000 }, async (t) => {
+  fakeOpenAI(t);
+  const { ChatGPTPlan } = await import("../dist/chatgpt-plan.js");
+  const store = mapStore();
+  const sealKey = randomBytes(32);
+  const old = await seatRow(store, sealKey);
+  const current = await seatUnsettled(store, sealKey, old);
+  const plan = new ChatGPTPlan({ store, sealKey });
+  t.after(() => plan.close());
+  const held = new Set();
+  plan.watch((tokens) => tokens.forEach((token) => held.add(token)));
+  await plan.load();
+  for (const token of [current.access, current.refresh, old.access, old.refresh]) assert.ok(held.has(token), "held for redaction");
+});
+
+test("a sign-in whose models OpenAI doesn't list keeps the fallback list, still marked unlisted", { timeout: 30_000 }, async (t) => {
+  const openai = fakeOpenAI(t);
+  const { ChatGPTPlan } = await import("../dist/chatgpt-plan.js");
+  const store = mapStore();
+  const sealKey = randomBytes(32);
+  const plan = new ChatGPTPlan({ store, sealKey });
+  t.after(() => plan.close());
+  openai.modelsStatus = 503;
+  const { authorize_url } = await plan.startSignIn();
+  assert.equal((await plan.finishSignIn(callbackFor(authorize_url))).state, "signed_in");
+  assert.equal(openai.modelLists, 1);
+  const row = await openRow(store, sealKey);
+  assert.equal(row.unlisted, true, "OpenAI's list was never read");
+  assert.deepEqual(plan.view().models, row.models);
 });
 
 /** The browser's return to this machine: the sign-in tab, on its loopback callback. The page it shows. */
