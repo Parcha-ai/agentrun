@@ -92,6 +92,13 @@ const WINDOWS = {
   "dot-up/npm": `..\\nodejs\\npm.cmd config set //r/:_authToken ${PW}`,
 };
 
+/** Text that starts like a quoted drive path and holds a JSON string's escapes, its quote closed or left open: a path
+ *  read keeps `\t` and `\n` as written, the escape read blanks them, and main's scrubber cut what the escape read cuts. */
+const PATH_GUESSES = {
+  "json-string/mysql": `{"t":"Q:\\tmysql --password\\n${PW}"}`,
+  "unclosed/mysql": `"Q:\\tmysql --password\\n${PW}`,
+};
+
 /** Every row: { id, class, text }. The ids are stable: expected.json is keyed by them. */
 export function corpus() {
   const rows = [];
@@ -110,6 +117,7 @@ export function corpus() {
   });
   REVIEWED.forEach((text, r) => rows.push({ id: `reviewed/${r}`, class: "reviewed", text }));
   for (const [path, text] of Object.entries(WINDOWS)) rows.push({ id: `windows/${path}`, class: "windows", text });
+  for (const [path, text] of Object.entries(PATH_GUESSES)) rows.push({ id: `windows-guess/${path}`, class: "windows-guess", text });
   return rows;
 }
 

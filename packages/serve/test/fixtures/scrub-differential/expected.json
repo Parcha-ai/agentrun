@@ -4095,6 +4095,34 @@
   "windows/dot-up/npm": {
    "raw": [],
    "json": []
+  },
+  "windows-guess/json-string/mysql": {
+   "raw": [
+    [
+     28,
+     41
+    ]
+   ],
+   "json": [
+    [
+     55,
+     69
+    ]
+   ]
+  },
+  "windows-guess/unclosed/mysql": {
+   "raw": [
+    [
+     23,
+     36
+    ]
+   ],
+   "json": [
+    [
+     48,
+     62
+    ]
+   ]
   }
  }
 }

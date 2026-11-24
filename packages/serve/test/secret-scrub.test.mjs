@@ -2493,7 +2493,7 @@ test("XCI: pemBlocks reads a BEGIN line's end itself: a private-key span that is
   assert.deepEqual(pemBlocks(long, [[0, long.indexOf("\n")]], lineBounds(long)).map(({ start, end }) => [start, end]), [[0, long.length]]);
 });
 
-test("XCII: a command's quoted part holds its shell operators (Greptile P1 on 683391d4fd): a quoted `&`, `;` or `|` no longer ends redis-cli, docker login, mysql, npm set or curl before its password", async () => {
+test("XCII: a command's quoted part holds its shell operators (Greptile P1 on 683391d4fd): a quoted `&`, `;` or `|` no longer ends redis-cli, docker login, mysql, npm set or curl before its password", async (t) => {
   for (const [text, after] of [
     ["redis-cli -a 'Copper&lumen9' ping", " ping"],
     ['redis-cli -h cache -a "Copper;lumen9" ping', " ping"],
@@ -2524,10 +2524,44 @@ test("XCII: a command's quoted part holds its shell operators (Greptile P1 on 68
       assert.ok(perChar <= 8, `${id} on ${unit.slice(0, 20)}: ${perChar.toFixed(2)} reads a character`);
     }
   }
-  // And in CPU time, every rule's whole work: under 2 s at 2 MB each, as before the lexer.
-  for (const unit of [`mysql -u r -p'${"a&".repeat(300)}' db `, `redis-cli -a "${'\\"'.repeat(400)} `, `curl -u "u:${"p;".repeat(300)}" -H 'a`, "redis-cli '\"".repeat(40), `docker login -p "${"\\".repeat(500)}`, "npm set x ", "mysql ${a ${b ${c ", "redis-cli -h o'neil -a x 'y' "]) {
-    for (const [id, ms] of Object.entries(await rulesAlone(["mysql-password", "password-flag", "curl-user", "secret-assign"], repeatTo(unit, 2_000_000)))) {
-      assert.ok(ms < 2_000, `${id} on ${unit.slice(0, 20)}: ${Math.round(ms)} ms`);
+  // And their CPU grows with the text no faster than the text: each rule's whole work (its name scan, word values, the
+  // text scan) on 2 MB against the same rule on 500 KB, timed in the same call, at most GROWTH times (four times the
+  // text: a linear rule takes about 4, a quadratic one 16). A ratio of two runs in one call needs no absolute ceiling,
+  // which the clock's spread across runs of the same code crosses. FLOOR_MS keeps a rule that does next to nothing at
+  // 500 KB from dividing by noise. XCV's units (curl-user) and a path's options (`npm -x config -x`, pathEnd) are read
+  // here too. A unit with a rule over its bound is timed once more, all its rules, and each rule keeps its lower ratio (the clock is
+  // not exact).
+  const [GROWTH, FLOOR_MS] = [8, 20];
+  /** The growth comparator: `big` (ms at 2 MB) at most GROWTH times the larger of `small` (ms at 500 KB) and FLOOR_MS. */
+  const growthHolds = (label, small, big) => {
+    const ratio = big / Math.max(small, FLOOR_MS);
+    assert.ok(ratio <= GROWTH, `${label}: ${Math.round(small)} ms at 500 KB, ${Math.round(big)} ms at 2 MB, ${ratio.toFixed(2)} x (at most ${GROWTH})`);
+  };
+  // A control on the comparator, fixed timings: four times passes, sixteen times (a quadratic's) fails on its words.
+  growthHolds("control 20/80", 20, 80);
+  assert.throws(() => growthHolds("control 20/320", 20, 320), /control 20\/320: 20 ms at 500 KB, 320 ms at 2 MB, 16\.00 x \(at most/, "the growth check let 16 x through");
+  const grows = async (ids, unit) => {
+    const [small, big] = [await rulesAlone(ids, repeatTo(unit, 500_000)), await rulesAlone(ids, repeatTo(unit, 2_000_000))];
+    return Object.fromEntries(ids.map((id) => [id, { small: small[id], big: big[id], ratio: big[id] / Math.max(small[id], FLOOR_MS) }]));
+  };
+  const every = ["mysql-password", "password-flag", "curl-user", "secret-assign"];
+  const units = [
+    ...[`mysql -u r -p'${"a&".repeat(300)}' db `, `redis-cli -a "${'\\"'.repeat(400)} `, `curl -u "u:${"p;".repeat(300)}" -H 'a`, "redis-cli '\"".repeat(40), `docker login -p "${"\\".repeat(500)}`, "npm set x ", "mysql ${a ${b ${c ", "redis-cli -h o'neil -a x 'y' "].map((unit) => [unit, every]),
+    ...['curl -H "$(curl $(curl $(date)))" -u a:b ', 'curl "$(', "curl $(((((( -u a:b ", "curl \x60 -u a:b ", 'curl "\x60$(" -u a:b '].map((unit) => [unit, ["curl-user"]]),
+    ["npm -x config -x ", ["secret-assign"]],
+  ];
+  for (const [unit, ids] of units) {
+    const first = await grows(ids, unit);
+    let grew = first;
+    if (ids.some((id) => grew[id].ratio > GROWTH)) {
+      const again = await grows(ids, unit);
+      grew = Object.fromEntries(ids.map((id) => [id, again[id].ratio < grew[id].ratio ? again[id] : grew[id]]));
+    }
+    for (const id of ids) {
+      const { small, big, ratio } = grew[id];
+      const retimed = grew !== first ? `\tunit retimed; first ${first[id].small.toFixed(1)}/${first[id].big.toFixed(1)} ms, ${first[id].ratio.toFixed(2)} x` : "";
+      t.diagnostic(`XCII\tgrowth\t${id}\t${small.toFixed(1)} ms at 500 KB\t${big.toFixed(1)} ms at 2 MB\t${ratio.toFixed(2)} x\t${JSON.stringify(unit.slice(0, 28))}${retimed}`);
+      growthHolds(`${id} on ${unit.slice(0, 20)}`, small, big);
     }
   }
 });
@@ -2558,8 +2592,9 @@ test("XCV: curl reads on past a substitution, its contents left out (Greptile P1
   await kept('curl -u "admin:$(cat ~/.pw)" https://x.io');
   await kept("curl -H \"X: $(date https://x.io\n-u a:b");
   // curl-user alone reads nested, unclosed and repeated substitutions linear by count: at most 8 reads a character.
-  // Their CPU is bounded relatively in XCIX (each unit against main's span scan, timed in the same call): an absolute
-  // ceiling here sat inside the clock's spread across runs of the same code, so it bounded nothing.
+  // Their CPU is bounded relatively: in XCIX against main's span scan, and in XCII at 2 MB against 500 KB, each timed in
+  // the same call. An absolute ceiling here sat inside the clock's spread across runs of the same code, so it bounded
+  // nothing.
   for (const unit of ['curl -H "$(curl $(curl $(date)))" -u a:b ', 'curl "$(', "curl $(((((( -u a:b ", "curl \x60 -u a:b ", 'curl "\x60$(" -u a:b ']) {
     const { "curl-user": perChar } = await rulesRead(["curl-user"], repeatTo(unit, 512 * 1024));
     assert.ok(perChar <= 8, `${unit.slice(0, 20)}: ${perChar.toFixed(2)} reads a character`);
@@ -2742,7 +2777,7 @@ test("CII: the lexer read takes options between `config` and `set`, a login's gl
     `"C:\\Program Files\\Docker\\docker.EXE" login -u bot -p ${pw} r.io`,
     `Docker.exe login -u bot -p ${pw} r.io`,
     `MYSQL.EXE -h db -p${pw} app`,
-    `redis-cli.Exe -a ${pw} ping`,
+    `REDIS-CLI.EXE -a ${pw} ping`,
     `npm.bat config set //r/:_authToken ${pw}`,
     `npm.ps1 config set //r/:_authToken ${pw}`,
   ]) {
@@ -2754,6 +2789,20 @@ test("CII: the lexer read takes options between `config` and `set`, a login's gl
   }
 });
 
+test("CIII: a Windows path read never leaves what the escape read cuts, and a quoted drive path ends at its closing quote", async () => {
+  const pw = ["Copper9", "lumen9"].join("");
+  // A JSON string that starts like a drive and holds escapes, closed or left open: the path read keeps `\t` and `\n` as
+  // written, so `--password` meets a backslash. The escape read beside it (every escape blanked, as main reads it) meets
+  // blanks and cuts.
+  for (const text of [`{"t":"Q:\\tmysql --password\\n${pw}"}`, `"Q:\\tmysql --password\\n${pw}`]) {
+    for (const wrap of FOUR_WRAPS) await gone(wrap(text), [pw]);
+  }
+  // A quote left open is no quoted path: the `\n` after the password stays an escape, so the value ends at it and the
+  // next line's word stays.
+  const out = await gone(`echo 'C:\\x; redis-cli -a ${pw}\\nINFO done`, [pw]);
+  assert.ok(out.text.endsWith("\\nINFO done"), `the value ran on: ${JSON.stringify(out.text)}`);
+});
+
 test("XCIX: the shipped readers at 512 KB: at most 8 counted reads a character over the lexer test's units, 12 where a command is named inside the quotes of an unclosed construct, and each unit's rule CPU bounded against main's span scan for that rule, timed in the same call", async (t) => {
   const ruleOf = (unit) => (unit.startsWith("curl") ? "curl-user" : unit.startsWith("mysql") ? "mysql-password" : unit.startsWith("npm") ? "secret-assign" : "password-flag");
   const units = [
@@ -2761,7 +2810,7 @@ test("XCIX: the shipped readers at 512 KB: at most 8 counted reads a character o
     `mysql -u r -p'${"a&".repeat(300)}' db `, `redis-cli -a "${'\\"'.repeat(400)} `, `curl -u "u:${"p;".repeat(300)}" -H 'a`, "redis-cli '\"".repeat(40), `docker login -p "${"\\".repeat(500)}`,
     'curl "', "curl '", "curl $(", "curl \x60", "curl $'", "curl ${", "curl <(", "curl $((", "curl $( $( ", 'curl "$(\x60',
     "curl $( $(a) ", 'curl "$(echo "b") ', "curl ${a:-${b} ", "curl -s $(cat f; curl -s x $(date -u +%H:%MZ) ", "curl $(a; ", 'curl "$(a; ', "curl $(a $(b); ",
-    "npm set x ", "mysql ${a ${b ${c ", "redis-cli -h o'neil -a x 'y' ",
+    "npm set x ", "mysql ${a ${b ${c ", "redis-cli -h o'neil -a x 'y' ", "npm -x config -x ",
   ];
   // CPU beside the count: the count sees the lexer only, the time sees the rule's whole work. The yardstick is main's
   // span scan, timed in the same call on the same text: a unit's rule may take at most SCAN_TIMES the larger of its
