@@ -41,13 +41,14 @@ const jwtOf = (claims) => [part({ alg: "none", typ: "JWT" }), part(claims), rand
  *  200 and kept in `offHost`, never sent. */
 function fakeOpenAI(t) {
   const real = globalThis.fetch;
-  const o = { expiresIn: 3600, refuse: false, issued: [], codes: 0, refreshes: 0, responses: [], other: [], revoked: [], live: new Set(), spent: new Set(), revokeStatus: 200, revocationEndpoint: "https://auth.openai.com/oauth/revoke", keys: new Set(), reply: "Forty-two.", offHost: [] };
+  const o = { expiresIn: 3600, refuse: false, issued: [], codes: 0, modelLists: 0, refreshes: 0, responses: [], other: [], revoked: [], live: new Set(), spent: new Set(), revokeStatus: 200, revocationEndpoint: "https://auth.openai.com/oauth/revoke", keys: new Set(), reply: "Forty-two.", offHost: [] };
   o.revocationsOf = (token) => o.revoked.filter((revoked) => revoked.token === token).length;
   const issue = () => {
     const tokens = { access: jwtOf({ "https://api.openai.com/profile": { email: "person@example.com" }, "https://api.openai.com/auth": { chatgpt_plan_type: "plus" }, jti: randomUUID() }), refresh: `fake-${randomBytes(16).toString("hex")}`, id: jwtOf({ email: "person@example.com" }) };
     o.issued.push(tokens);
     o.live.add(tokens.refresh);
-    return Response.json({ access_token: tokens.access, refresh_token: tokens.refresh, id_token: tokens.id, expires_in: o.expiresIn, scope: SCOPE, token_type: "Bearer" });
+    // `scope`: the grant's scope when OpenAI grants less than was asked (SCOPE by default).
+    return Response.json({ access_token: tokens.access, refresh_token: tokens.refresh, id_token: tokens.id, expires_in: o.expiresIn, scope: o.scope ?? SCOPE, token_type: "Bearer" });
   };
   const refused = (error) => Response.json({ error, error_description: "refused by the fake" }, { status: 400 });
   const liveAccess = (request) => o.issued.some((tokens) => request.headers.get("authorization") === `Bearer ${tokens.access}`) || [...o.keys].some((key) => request.headers.get("authorization") === `Bearer ${key}`);
@@ -65,6 +66,10 @@ function fakeOpenAI(t) {
       if (form.get("resource") !== "https://api.openai.com/v1" || form.get("client_id") !== CLIENT) return refused("invalid_request");
       if (form.get("grant_type") === "authorization_code") {
         o.codes += 1;
+        // `codeRefusal`: the code's exchange refused with this error code and status 403, as a workspace's policy does.
+        if (o.codeRefusal) return Response.json({ error: o.codeRefusal, error_description: o.codeRefusalDescription ?? "refused by the fake" }, { status: 403 });
+        // `holdCodes`: the code's exchange is never answered; it ends only when its sender aborts it.
+        if (o.holdCodes) await new Promise((_, reject) => request.signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true }));
         if (form.get("code") !== "fake-code" || form.get("redirect_uri") !== CALLBACK || !form.get("code_verifier")) return refused("invalid_grant");
         return issue();
       }
@@ -105,6 +110,7 @@ function fakeOpenAI(t) {
       return new Response(null, { status: 200 });
     }
     if (url.href === "https://api.openai.com/v1/models" && request.method === "GET") {
+      o.modelLists += 1;
       if (o.modelsDelayMs) await new Promise((resolve) => setTimeout(resolve, o.modelsDelayMs));
       if (!liveAccess(request))return Response.json({ error: { message: "bad token" } }, { status: 401 });
       return Response.json({ object: "list", data: ["gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-luna", "text-embedding-3-small"].map((id) => ({ id, object: "model" })) });
@@ -534,10 +540,8 @@ test("a sign-out while a sign-in is finishing (its model list still out) wins: t
   const { authorize_url } = await plan.startSignIn();
   const finishing = plan.finishSignIn(callbackFor(authorize_url));
   finishing.catch(() => undefined);
-  const started = Date.now();
-  while (openai.codes === 0 && Date.now() - started < 5_000) await new Promise((resolve) => setTimeout(resolve, 10));
-  assert.equal(openai.codes, 1, "the sign-in's code was exchanged");
-  await new Promise((resolve) => setTimeout(resolve, 50));
+  await until(() => openai.modelLists === 1, "the sign-in's code was exchanged, and its models are being listed");
+  assert.equal(openai.codes, 1);
   await plan.signOut();
   await finishing.catch(() => undefined);
   assert.equal(sealed.get(PLAN_ROW), undefined, "the sign-out's removal stands: no sign-in row written after it");
@@ -636,10 +640,8 @@ test("a sign-out while a sign-in is finishing says revoked false when OpenAI doe
   const { authorize_url } = await plan.startSignIn();
   const finishing = plan.finishSignIn(callbackFor(authorize_url));
   finishing.catch(() => undefined);
-  const started = Date.now();
-  while (openai.codes === 0 && Date.now() - started < 5_000) await new Promise((resolve) => setTimeout(resolve, 10));
-  assert.equal(openai.codes, 1, "the sign-in's code was exchanged");
-  await new Promise((resolve) => setTimeout(resolve, 50));
+  await until(() => openai.modelLists === 1, "the sign-in's code was exchanged, and its models are being listed");
+  assert.equal(openai.codes, 1);
   const { revoked } = await plan.signOut();
   await finishing.catch(() => undefined);
   assert.equal(store.sealed.get(PLAN_ROW), undefined, "no sign-in row written after the sign-out");
@@ -733,6 +735,432 @@ test("a second sign-in revokes the first before it takes its place", { timeout: 
   assert.equal(openai.revocationsOf(first.refresh), 1, "the first sign-in is revoked");
   assert.equal(openai.revocationsOf(second.refresh), 0, "the second is kept");
   assert.equal(await plan.token(), second.access);
+});
+
+/** The browser's return to this machine: the sign-in tab, on its loopback callback. The page it shows. */
+async function browserReturns(authorizeUrl, options) {
+  const url = new URL(callbackFor(authorizeUrl, options));
+  url.hostname = CALLBACK_HOST;
+  const page = await fetch(url);
+  return { status: page.status, text: await page.text() };
+}
+
+test("the browser's return on this machine finishes the sign-in by itself: no paste, signed in with the plan's models", { timeout: 30_000 }, async (t) => {
+  const openai = fakeOpenAI(t);
+  const { ChatGPTPlan } = await import("../dist/chatgpt-plan.js");
+  const plan = new ChatGPTPlan({ store: mapStore(), sealKey: randomBytes(32) });
+  t.after(() => plan.close());
+  const { authorize_url } = await plan.startSignIn();
+  assert.equal((await browserReturns(authorize_url)).status, 200);
+  await until(() => plan.view().state !== "pending", "the sign-in ends");
+  assert.equal(plan.view().state, "signed_in");
+  assert.equal(openai.codes, 1);
+});
+
+test("through the server: the sign-in started on the API and finished by the browser's return reads signed in on the API", { timeout: 60_000 }, async (t) => {
+  withEnv(t, {}, MODEL_VARS);
+  fakeOpenAI(t);
+  const { api } = await serve(t, { faux: undefined });
+  const started = await api("POST", "/settings/chatgpt/sign-in");
+  assert.equal(started.status, 200);
+  assert.equal((await browserReturns(started.body.authorize_url)).status, 200);
+  // The browser's page answers before the code's exchange: the sign-in reads pending until that ends (the test's timeout
+  // bounds it), then signed in.
+  let view;
+  while ((view = (await api("GET", "/settings/chatgpt")).body).state === "pending") await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(view.state, "signed_in", JSON.stringify(view));
+});
+
+test("a browser's return whose code OpenAI refuses says why, in the view and the log, instead of reading not signed in", { timeout: 30_000 }, async (t) => {
+  const openai = fakeOpenAI(t);
+  const { ChatGPTPlan } = await import("../dist/chatgpt-plan.js");
+  const logged = [];
+  const plan = new ChatGPTPlan({ store: mapStore(), sealKey: randomBytes(32), log: (fields) => logged.push(fields) });
+  t.after(() => plan.close());
+  const { authorize_url } = await plan.startSignIn();
+  // The tab says it is done (pi-ai's page, before the code is exchanged); OpenAI's token endpoint then refuses the code.
+  assert.equal((await browserReturns(authorize_url, { code: "spent-code" })).status, 200);
+  await until(() => plan.view().state !== "pending", "the sign-in ends");
+  assert.equal(openai.codes, 1, "the code went to OpenAI");
+  const view = plan.view();
+  assert.equal(view.state, "signed_out");
+  assert.match(view.problem ?? "", /OpenAI refused the sign-in/);
+  assert.deepEqual(logged, [{ chatgpt: "sign_in_failed", reason: "token_400_invalid_grant" }]);
+  assert.doesNotMatch(JSON.stringify(logged), /spent-code/, "no code in the log");
+  // A new sign-in clears it.
+  await plan.startSignIn();
+  assert.equal(plan.view().problem, undefined);
+});
+
+/** A plan over a fresh store whose log lines land in `logged`, closed after the test. */
+async function loggedPlan(t) {
+  const { ChatGPTPlan } = await import("../dist/chatgpt-plan.js");
+  const logged = [];
+  const plan = new ChatGPTPlan({ store: mapStore(), sealKey: randomBytes(32), log: (fields) => logged.push(fields) });
+  t.after(() => plan.close());
+  return { plan, logged };
+}
+
+/** The browser's return with OpenAI's `error` in place of a code, for the sign-in whose link is `authorizeUrl`. */
+async function browserReturnsRefused(authorizeUrl, error) {
+  const url = new URL(`${CALLBACK}?${new URLSearchParams({ error, state: new URL(authorizeUrl).searchParams.get("state") })}`);
+  url.hostname = CALLBACK_HOST;
+  const page = await fetch(url);
+  await page.text();
+  return page.status;
+}
+
+const ADMIN_OFF = /^Your ChatGPT workspace's admin has turned off open-source apps \(External access → OSS → Use ChatGPT plan\)/;
+// Never that Free can't be used (OpenAI changes plan access): that it may be the reason. A refusal at the sign-in page in
+// fixed words: its code is whatever reached the loopback, anyone's to choose.
+const DID_NOT = "ChatGPT did not sign you in: a Free ChatGPT plan may be the reason; with a paid plan, start it again.";
+
+test("a refusal's code that anything on this machine can send the loopback is logged, never shown: the view and a paste say fixed words", { timeout: 30_000 }, async (t) => {
+  fakeOpenAI(t);
+  const { plan, logged } = await loggedPlan(t);
+  const first = await plan.startSignIn();
+  await browserReturnsRefused(first.authorize_url, "Call_admin_now");
+  await until(() => plan.view().state !== "pending", "the sign-in ends");
+  assert.equal(plan.view().problem, DID_NOT);
+  assert.deepEqual(logged, [{ chatgpt: "sign_in_failed", reason: "authorize_Call_admin_now" }]);
+  const second = await plan.startSignIn();
+  const pasted = `${CALLBACK}?${new URLSearchParams({ error: "Call_admin_now", state: new URL(second.authorize_url).searchParams.get("state") })}`;
+  await assert.rejects(plan.finishSignIn(pasted), (error) => error.message === DID_NOT);
+});
+
+test("a workspace's refusal wins over OpenAI's description naming the plan's scope: the admin's words", { timeout: 30_000 }, async (t) => {
+  const openai = fakeOpenAI(t);
+  const { plan, logged } = await loggedPlan(t);
+  openai.codeRefusal = "3p_delegated_access_policy_denied";
+  openai.codeRefusalDescription = "Workspace policy does not allow chatgpt.tokens.use.direct";
+  const { authorize_url } = await plan.startSignIn();
+  await browserReturns(authorize_url);
+  await until(() => plan.view().state !== "pending", "the sign-in ends");
+  assert.match(plan.view().problem ?? "", ADMIN_OFF);
+  assert.deepEqual(logged, [{ chatgpt: "sign_in_failed", reason: "token_403_3p_delegated_access_policy_denied" }]);
+});
+
+test("a workspace whose admin turned off open-source apps says so, whether OpenAI refuses at the sign-in page or at the code", { timeout: 30_000 }, async (t) => {
+  const openai = fakeOpenAI(t);
+  const { plan, logged } = await loggedPlan(t);
+  // OpenAI sends the browser back with its refusal.
+  const first = await plan.startSignIn();
+  await browserReturnsRefused(first.authorize_url, "3p_delegated_access_policy_denied");
+  await until(() => plan.view().state !== "pending", "the sign-in ends");
+  assert.match(plan.view().problem ?? "", ADMIN_OFF);
+  assert.equal(openai.codes, 0, "no code to exchange");
+  // OpenAI refuses the code's exchange with it.
+  openai.codeRefusal = "3p_delegated_access_policy_denied";
+  const second = await plan.startSignIn();
+  await browserReturns(second.authorize_url);
+  await until(() => plan.view().state !== "pending", "the sign-in ends");
+  assert.match(plan.view().problem ?? "", ADMIN_OFF);
+  assert.deepEqual(logged, [{ chatgpt: "sign_in_failed", reason: "authorize_3p_delegated_access_policy_denied" }, { chatgpt: "sign_in_failed", reason: "token_403_3p_delegated_access_policy_denied" }]);
+  // A pasted address that carries the refusal is refused in the same words.
+  const third = await plan.startSignIn();
+  const pasted = `${CALLBACK}?${new URLSearchParams({ error: "3p_delegated_access_policy_denied", state: new URL(third.authorize_url).searchParams.get("state") })}`;
+  await assert.rejects(plan.finishSignIn(pasted), (error) => ADMIN_OFF.test(error.message));
+});
+
+test("a ChatGPT plan that can't be used here says so: a grant without the plan's use, and every refusal that could be a Free plan's", { timeout: 30_000 }, async (t) => {
+  const openai = fakeOpenAI(t);
+  const { plan, logged } = await loggedPlan(t);
+  // OpenAI signs the account in but grants no use of its plan by apps.
+  openai.scope = "openid profile email offline_access resource.invoke";
+  const first = await plan.startSignIn();
+  await browserReturns(first.authorize_url);
+  await until(() => plan.view().state !== "pending", "the sign-in ends");
+  assert.equal(plan.view().problem, "This ChatGPT plan can't be used here: OpenAI's sign-in gave AgentRun no use of it. Free plans usually can't; sign in with a paid one.");
+  // A refusal at the sign-in page, or of the code, whose reason OpenAI does not name: it says what it knows.
+  const second = await plan.startSignIn();
+  await browserReturnsRefused(second.authorize_url, "access_denied");
+  await until(() => plan.view().state !== "pending", "the sign-in ends");
+  assert.equal(plan.view().problem, DID_NOT);
+  openai.scope = undefined;
+  const third = await plan.startSignIn();
+  await browserReturns(third.authorize_url, { code: "spent-code" });
+  await until(() => plan.view().state !== "pending", "the sign-in ends");
+  assert.equal(plan.view().problem, "OpenAI refused the sign-in: a Free ChatGPT plan may be the reason; with a paid plan, start it again.");
+  assert.deepEqual(logged.map((fields) => fields.reason), ["no_direct_scope", "authorize_access_denied", "token_400_invalid_grant"]);
+});
+
+test("a sign-in saved whose change callback then fails reads signed in, with no problem and no sign_in_failed; the change is owed and taken again at the server's next read (refresh) until it takes", { timeout: 30_000 }, async (t) => {
+  fakeOpenAI(t);
+  const { ChatGPTPlan } = await import("../dist/chatgpt-plan.js");
+  const logged = [];
+  let fails = 2;
+  let calls = 0;
+  const changed = async () => {
+    calls += 1;
+    if (fails-- > 0) throw Object.assign(new Error("relist failed"), { code: "SQLITE_BUSY" });
+  };
+  const plan = new ChatGPTPlan({ store: mapStore(), sealKey: randomBytes(32), log: (fields) => logged.push(fields), changed });
+  t.after(() => plan.close());
+  const { authorize_url } = await plan.startSignIn();
+  assert.equal((await plan.finishSignIn(callbackFor(authorize_url))).state, "signed_in");
+  assert.equal(plan.view().problem, undefined);
+  assert.deepEqual(logged.map((fields) => fields.chatgpt), ["signed_in", "changed_failed"]);
+  assert.equal(logged[1].reason, "SQLITE_BUSY");
+  // The server's next read takes it again; failing again, it stays owed, said once.
+  await plan.refresh();
+  assert.equal(calls, 2);
+  await plan.refresh();
+  assert.equal(calls, 3, "taken at last");
+  await plan.refresh();
+  assert.equal(calls, 3, "nothing owed once it took");
+  assert.equal(logged.length, 2);
+});
+
+test("reads at once take an owed change once: a second read waits for the change in flight instead of starting its own", { timeout: 30_000 }, async (t) => {
+  fakeOpenAI(t);
+  const { ChatGPTPlan } = await import("../dist/chatgpt-plan.js");
+  let calls = 0;
+  let release;
+  const changed = async () => {
+    calls += 1;
+    if (calls === 1) throw Object.assign(new Error("relist failed"), { code: "SQLITE_BUSY" });
+    await new Promise((resolve) => (release = resolve));
+  };
+  const plan = new ChatGPTPlan({ store: mapStore(), sealKey: randomBytes(32), log: () => {}, changed });
+  t.after(() => plan.close());
+  const { authorize_url } = await plan.startSignIn();
+  await plan.finishSignIn(callbackFor(authorize_url));
+  assert.equal(calls, 1, "owed");
+  // Two reads (GET /capabilities and GET /settings/chatgpt, say) while the change is out: one change runs.
+  let settled = 0;
+  const reads = [plan.refresh(), plan.refresh()].map((read) => read.then(() => (settled += 1)));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(calls, 2, "one change in flight, not one per read");
+  assert.equal(settled, 0, "each read waits for it");
+  release();
+  await Promise.all(reads);
+  await plan.refresh();
+  assert.equal(calls, 2, "taken: nothing owed");
+});
+
+test("a change callback that throws at once, not in a promise, is still taken again at the next read", { timeout: 30_000 }, async (t) => {
+  fakeOpenAI(t);
+  const { ChatGPTPlan } = await import("../dist/chatgpt-plan.js");
+  let calls = 0;
+  const changed = () => {
+    calls += 1;
+    if (calls <= 2) throw Object.assign(new Error("relist failed"), { code: "SQLITE_BUSY" });
+  };
+  const plan = new ChatGPTPlan({ store: mapStore(), sealKey: randomBytes(32), log: () => {}, changed });
+  t.after(() => plan.close());
+  const { authorize_url } = await plan.startSignIn();
+  await plan.finishSignIn(callbackFor(authorize_url));
+  await plan.refresh();
+  assert.equal(calls, 2, "taken again, and failed again");
+  await plan.refresh();
+  assert.equal(calls, 3, "a failed retry leaves no change in flight behind it");
+  await plan.refresh();
+  assert.equal(calls, 3, "taken: nothing owed");
+});
+
+test("a change that started before a later one failed does not clear it: the later sign-in's change is still owed", { timeout: 30_000 }, async (t) => {
+  fakeOpenAI(t);
+  const { ChatGPTPlan } = await import("../dist/chatgpt-plan.js");
+  let calls = 0;
+  let release;
+  const changed = async () => {
+    calls += 1;
+    // 1: the first sign-in's change fails. 2: the read's retry, held. 3: the second sign-in's change fails.
+    if (calls === 1 || calls === 3) throw Object.assign(new Error("relist failed"), { code: "SQLITE_BUSY" });
+    if (calls === 2) await new Promise((resolve) => (release = resolve));
+  };
+  const plan = new ChatGPTPlan({ store: mapStore(), sealKey: randomBytes(32), log: () => {}, changed });
+  t.after(() => plan.close());
+  const first = await plan.startSignIn();
+  await plan.finishSignIn(callbackFor(first.authorize_url));
+  const retry = plan.refresh();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(calls, 2, "the retry is out");
+  const second = await plan.startSignIn();
+  await plan.finishSignIn(callbackFor(second.authorize_url));
+  assert.equal(calls, 3, "the second sign-in's change failed");
+  // The retry read the first sign-in: its success is not the second's.
+  release();
+  await retry;
+  await plan.refresh();
+  assert.equal(calls, 4, "the second sign-in's change is taken at the next read");
+});
+
+test("a change of state the server reads (another server signed out) is told once for reads at once", { timeout: 30_000 }, async (t) => {
+  fakeOpenAI(t);
+  const { ChatGPTPlan } = await import("../dist/chatgpt-plan.js");
+  const store = mapStore();
+  const sealKey = randomBytes(32);
+  let calls = 0;
+  let hold = false;
+  const held = [];
+  const changed = async () => {
+    calls += 1;
+    if (hold) await new Promise((resolve) => held.push(resolve));
+  };
+  const plan = new ChatGPTPlan({ store, sealKey, log: () => {}, changed });
+  t.after(() => plan.close());
+  const { authorize_url } = await plan.startSignIn();
+  await plan.finishSignIn(callbackFor(authorize_url));
+  assert.equal(calls, 1);
+  // Another server on the same store signs out: this one's reads see it.
+  const other = new ChatGPTPlan({ store, sealKey });
+  t.after(() => other.close());
+  await other.signOut();
+  hold = true;
+  const reads = [plan.refresh(), plan.refresh(), plan.refresh()];
+  while (!held.length) await new Promise((resolve) => setImmediate(resolve));
+  hold = false;
+  for (const resolve of held) resolve();
+  await Promise.all(reads);
+  assert.equal(calls, 2, "one change for three reads at once");
+  assert.equal(plan.state, "signed_out");
+});
+
+test("a change of state the server reads whose change callback fails is owed, said, and taken at the next read", { timeout: 30_000 }, async (t) => {
+  fakeOpenAI(t);
+  const { ChatGPTPlan } = await import("../dist/chatgpt-plan.js");
+  const store = mapStore();
+  const sealKey = randomBytes(32);
+  const logged = [];
+  let calls = 0;
+  let fail = false;
+  const changed = async () => {
+    calls += 1;
+    if (fail) throw Object.assign(new Error("relist failed"), { code: "SQLITE_BUSY" });
+  };
+  const plan = new ChatGPTPlan({ store, sealKey, log: (fields) => logged.push(fields), changed });
+  t.after(() => plan.close());
+  await plan.load();
+  // Signed in by another server on the same store, and this server's change of it fails: it is owed, not lost.
+  const other = new ChatGPTPlan({ store, sealKey });
+  t.after(() => other.close());
+  const { authorize_url } = await other.startSignIn();
+  await other.finishSignIn(callbackFor(authorize_url));
+  fail = true;
+  await plan.refresh();
+  assert.equal(calls, 1);
+  assert.equal(plan.state, "signed_in");
+  assert.deepEqual(logged, [{ chatgpt: "changed_failed", reason: "SQLITE_BUSY" }]);
+  fail = false;
+  await plan.refresh();
+  assert.equal(calls, 2, "the failed change of state is taken at the next read");
+  await plan.refresh();
+  assert.equal(calls, 2, "and then nothing is owed");
+});
+
+test("a sign-out whose change callback fails still answers: the sign-in is gone, and the change is owed", { timeout: 30_000 }, async (t) => {
+  fakeOpenAI(t);
+  const { ChatGPTPlan } = await import("../dist/chatgpt-plan.js");
+  const logged = [];
+  let calls = 0;
+  const changed = async () => {
+    calls += 1;
+    if (calls === 2) throw Object.assign(new Error("relist failed"), { code: "SQLITE_BUSY" });
+  };
+  const plan = new ChatGPTPlan({ store: mapStore(), sealKey: randomBytes(32), log: (fields) => logged.push(fields), changed });
+  t.after(() => plan.close());
+  const { authorize_url } = await plan.startSignIn();
+  await plan.finishSignIn(callbackFor(authorize_url));
+  assert.deepEqual(await plan.signOut(), { revoked: true });
+  assert.equal(plan.state, "signed_out");
+  assert.deepEqual(logged.map((fields) => fields.chatgpt), ["signed_in", "signed_out", "changed_failed"]);
+  await plan.refresh();
+  assert.equal(calls, 3, "taken at the next read");
+});
+
+const TIMED_OUT = "The sign-in timed out before OpenAI sent the code back: start it again.";
+
+test("a sign-in whose code OpenAI answered never times out: saved, with the server's change still out at the 10 minutes, it reads signed in with no problem", { timeout: 30_000 }, async (t) => {
+  fakeOpenAI(t);
+  const { ChatGPTPlan } = await import("../dist/chatgpt-plan.js");
+  const logged = [];
+  const clock = { now: Date.now() };
+  let release;
+  const held = new Promise((resolve) => (release = resolve));
+  let asked = false;
+  const plan = new ChatGPTPlan({ store: mapStore(), sealKey: randomBytes(32), log: (fields) => logged.push(fields), now: () => clock.now, changed: async () => { asked = true; await held; } });
+  t.after(() => { release(); plan.close(); });
+  const { authorize_url } = await plan.startSignIn();
+  assert.equal((await browserReturns(authorize_url)).status, 200);
+  await until(() => asked, "the sign-in is saved and the server's change is out");
+  assert.equal(plan.view().state, "signed_in", "saved: it reads signed in while the server's change is out");
+  clock.now += 10 * 60_000 + 1;
+  assert.equal(plan.view().problem, undefined, "no timeout once OpenAI answered");
+  assert.equal(plan.view().state, "signed_in");
+  release();
+  await until(() => plan.view().state === "signed_in", "the sign-in ends signed in");
+  assert.equal(plan.view().problem, undefined);
+  assert.deepEqual(logged.map((fields) => fields.chatgpt), ["signed_in"]);
+});
+
+test("a sign-in that waits out its 10 minutes says it timed out, in the view and the log, whether a read or its timer ends it, its code's exchange cut off included; a cancel says nothing", { timeout: 30_000 }, async (t) => {
+  const openai = fakeOpenAI(t);
+  const { ChatGPTPlan } = await import("../dist/chatgpt-plan.js");
+  const logged = [];
+  const clock = { now: Date.now() };
+  const plan = new ChatGPTPlan({ store: mapStore(), sealKey: randomBytes(32), log: (fields) => logged.push(fields), now: () => clock.now });
+  t.after(() => plan.close());
+  // A read past its end ends it.
+  await plan.startSignIn();
+  clock.now += 10 * 60_000 + 1;
+  assert.deepEqual(plan.view(), { state: "signed_out", problem: TIMED_OUT });
+  await plan.close();
+  assert.deepEqual(logged, [{ chatgpt: "sign_in_failed", reason: "timed_out" }], "said once: the aborted login's end adds nothing");
+  // Its timer ends it with no read.
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  await plan.startSignIn();
+  assert.equal(plan.view().problem, undefined, "a new start clears it");
+  t.mock.timers.tick(10 * 60_000);
+  t.mock.timers.reset();
+  assert.deepEqual(plan.view(), { state: "signed_out", problem: TIMED_OUT });
+  assert.equal(logged.length, 2);
+  // The browser returns just before the end, and its code's exchange is still out when the wait ends: the abort cuts it
+  // off after the tab said the sign-in completed, and it says the same.
+  openai.holdCodes = true;
+  const late = await plan.startSignIn();
+  assert.equal((await browserReturns(late.authorize_url)).status, 200);
+  await until(() => openai.codes === 1, "the code's exchange is out");
+  clock.now += 10 * 60_000 + 1;
+  assert.deepEqual(plan.view(), { state: "signed_out", problem: TIMED_OUT });
+  await plan.close();
+  openai.holdCodes = false;
+  assert.deepEqual(logged.map((fields) => fields.reason), ["timed_out", "timed_out", "timed_out"], "the cut-off exchange adds no line of its own");
+  // A newer start, a sign-out and the server's close cancel one: no problem, no line.
+  await plan.startSignIn();
+  await plan.startSignIn();
+  await plan.signOut();
+  assert.equal(plan.view().problem, undefined);
+  await plan.startSignIn();
+  await plan.close();
+  assert.equal(plan.view().problem, undefined);
+  assert.deepEqual(logged.map((fields) => fields.chatgpt), ["sign_in_failed", "sign_in_failed", "sign_in_failed", "signed_out"]);
+});
+
+test("a paste whose code's exchange a sign-out or the 10 minutes cut off answers why, as the view does, never that the log says why", { timeout: 30_000 }, async (t) => {
+  const openai = fakeOpenAI(t);
+  const { ChatGPTPlan } = await import("../dist/chatgpt-plan.js");
+  const logged = [];
+  const clock = { now: Date.now() };
+  const plan = new ChatGPTPlan({ store: mapStore(), sealKey: randomBytes(32), log: (fields) => logged.push(fields), now: () => clock.now });
+  t.after(() => plan.close());
+  openai.holdCodes = true;
+  // A sign-out cuts it off: no line in the log, so the words point at none.
+  const first = await plan.startSignIn();
+  const cut = plan.finishSignIn(callbackFor(first.authorize_url));
+  cut.catch(() => undefined);
+  await until(() => openai.codes === 1, "the code's exchange is out");
+  await plan.signOut();
+  await assert.rejects(cut, (error) => error.message === "That sign-in was replaced or signed out: start it again.");
+  // The 10 minutes cut it off: the paste says what the view says.
+  const second = await plan.startSignIn();
+  const late = plan.finishSignIn(callbackFor(second.authorize_url));
+  late.catch(() => undefined);
+  await until(() => openai.codes === 2, "the code's exchange is out");
+  clock.now += 10 * 60_000 + 1;
+  assert.deepEqual(plan.view(), { state: "signed_out", problem: TIMED_OUT });
+  await assert.rejects(late, (error) => error.message === TIMED_OUT);
+  assert.deepEqual(logged.map((fields) => fields.reason ?? fields.chatgpt), ["signed_out", "timed_out"]);
 });
 
 test("a sign-in waiting listens for its loopback callback on this test process's own loopback address (pi-ai's PI_OAUTH_CALLBACK_HOST), port 1455", { timeout: 30_000 }, async (t) => {

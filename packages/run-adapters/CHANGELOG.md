@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+## 0.1.0-beta.55 (2026-11-23)
+
+- The server lists the models of this machine's Ollama itself, as `ollama/<tag>` on pi, with no key and no gateway. Start Ollama and its models are in capabilities, the Model picker and pi's free models within half a minute, with no restart. `OLLAMA_HOST` says where it listens, read as the ollama CLI reads it (plain http to loopback alone). Unset, it is 127.0.0.1:11434 only on one owner's own server on their own machine (the rule `--harness-sign-in` starts under); a shared server asks Ollama only where `OLLAMA_HOST` names it. A refused `OLLAMA_HOST` is said once in the server's log, never its value. Requests go to Ollama's own `/api/chat` with `num_ctx` the least of 65,536, the model's trained context and `OLLAMA_CONTEXT_LENGTH` when it is set. A model without the `tools` capability takes its tools as text. They cost $0 and never count toward `AGENTRUN_FREE_MODEL_REQUESTS`, and the console shows no request limit for them. With no model key held, pi's default is the first Ollama model that calls tools; any key wins. A down or stuck Ollama lists nothing and stalls nothing. <!-- changes/ollama-provider.md -->
+  - On upgrade: a server with no model key and Ollama running now starts the runs it refused before, on Ollama's first model that calls tools. On a server with an OpenRouter key, Ollama's models head pi's `free_models`, before OpenRouter's free ones. Pulling a model can change the no-key default, and a saved agent that names no model follows it: name the model to pin it.
+  - `agentrun service install --env OLLAMA_HOST=<host:port>` gives the service an Ollama off its default address. A service that reaches Ollama through `AGENT_MODEL_BASE_URL` keeps working as before; under a gateway, Ollama is never asked.
+  - A run's page names the model it ran on, a run on the host default included, read from its `tokens` usage line: "qwen3:8b · local (Ollama)" for an Ollama model.
+  - A run that names no model, on the host's Ollama default, no longer stays refused once that tag is removed from Ollama. Past the listing's half minute, a tag that no longer answers lists Ollama again once, and the run goes to the next model that calls tools, or gets the no-model words. An agent that names `ollama/<tag>` keeps it.
+  - A model without the `thinking` capability whose answer opens with `<think>` has that part as thinking up to `</think>`, so the tags stay out of the answer.
+  - `CapModel.local` marks a model on the host's own machine: free, and never counted toward the server's free-model limit (`limitedFree`). An agent's own `max_requests` still counts its requests, beside the run's other free ones, so a run on Ollama stops there.
+  - Capabilities show pi as available only when a run started now has a model: a key, the gateway's model, the ChatGPT plan, the faux model, or an Ollama model that calls tools. An Ollama whose models take no tools keeps them in the picker, but pi reads not available. With no model, pi's words name Ollama first where the server asks one: "No model yet: start Ollama and pull a model with tools, or add a model key in Settings → Model keys". A shared server with no `OLLAMA_HOST` asks no Ollama, so its words name a key alone. A key saved or an Ollama started later turns it available with no restart.
+- A run on your Claude or ChatGPT plan counts each plan request once in its cost's `plan` even when its booking was written twice, its spend cap no longer reads a plan request in flight as not priced, and a workflow decision on such a run is charged what its provider charged instead of being counted as the plan's at $0. A decision on a run on a free model whose charge was lost now reads as unknown, never as a known $0. <!-- changes/plan-cost-once.md -->
+
+  This applies to new runs only. Decisions already booked as the plan's at $0 stay $0, and so does a decision marked the plan's before the deploy that a resumed run cuts after it: nothing is backfilled.
+
+  Some decisions with no cap on a plan run now read as unknown (`cost.usd` null) where they read $0 before. Unknown is the correct reading: their provider charged them and the charge was not said.
+
 ## 0.1.0-beta.53 (2026-11-22)
 
 - A harness recipe now covers an outside agent's release as its vendor ships it (Google's agy CLI among them), and the owner's own sign-in, made by the agent itself: <!-- changes/recipes-outside-harness.md -->

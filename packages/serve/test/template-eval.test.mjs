@@ -138,7 +138,9 @@ test("a case whose answer meets a grader of every type passes, each llm grader a
   assert.match(targeted, /<target field="summary" untrusted>\nSUMMARY-MARKER all fine\n<\/target>/);
   for (const input of [plain, targeted]) {
     assert.doesNotMatch(input, /BAD-MARKER|summary-marker"|answer\.schema\.json|passes a grader of every type/);
-    assert.match(input, /<tool-calls untrusted>\n1\. write \{"path":"notes\/out\.md","content":"the team's notes\\n"\} -> success: Successfully wrote to notes\/out\.md\n/);
+    // The file the run wrote, whole ahead of its calls, and the call that wrote it pointing there.
+    assert.match(input, /<files untrusted>\n[^]*<file path="notes\/out\.md" bytes="17">\nthe team's notes\n\n<\/file>\n[^]*<\/files>\n\n<tool-calls untrusted>\n/);
+    assert.match(input, /<tool-calls untrusted>\n1\. write \{"path":"notes\/out\.md","content":"the team's notes\\n"\} -> success \[the file notes\/out\.md is in <files>, whole unless marked cut\]: Successfully wrote to notes\/out\.md\n/);
   }
   assert.ok(!plain.includes("SUMMARY-MARKER\".") && !targeted.includes("GOOD-MARKER\"."), "one rubric each");
 });
@@ -891,6 +893,25 @@ test("graders read the answer as written: the last fenced json block, a target f
   assert.equal(fakeAnswer(fixture, "get", { tags: ["a"], id: "7", more: 1 }).content[0].text, "seven", "every listed argument equal, others ignored");
   assert.equal(fakeAnswer(fixture, "get", { id: "7", tags: ["a", "b"] }).content[0].text, "none");
   assert.equal(fakeAnswer(fixture, "nope", {}).isError, true);
+});
+
+test("an answer that is one JSON object and nothing else is its json block: for the output, a target and a grader's verdict", () => {
+  const schema = { type: "object", required: ["verdict"], properties: { verdict: { type: "string" } } };
+  assert.deepEqual(structuredAnswer('{"verdict": "good"}', schema), { value: { verdict: "good" } });
+  assert.deepEqual(structuredAnswer('\n  {"verdict": "good"}\n', schema), { value: { verdict: "good" } }, "trimmed");
+  // Not one JSON object alone: prose around it, an array, two objects, or no JSON. Each is still no block.
+  for (const answer of ['Here it is: {"verdict": "good"}', '[{"verdict": "good"}]', '{"verdict": "good"}\n{"verdict": "bad"}', "good"]) {
+    assert.deepEqual(structuredAnswer(answer, schema), { why: "the answer has no fenced json block" }, answer);
+  }
+  // A fenced block is read as before, and an answer with one is never read whole.
+  assert.deepEqual(structuredAnswer('Done.\n```json\n{"verdict": "fenced"}\n```', schema), { value: { verdict: "fenced" } });
+  const record = (answer) => ({ answer, calls: [], mcpCalls: [], files: [] });
+  const regex = { file: "r.md", type: "regex", pattern: "^## Upgrading", flags: "m", expect: "match", target: "draft.text" };
+  assert.equal(gradeDeterministic(regex, record('{"draft": {"text": "x\\n## Upgrading\\n"}}'), []).pass, true, "a target in a bare object");
+  assert.match(gradeDeterministic(regex, record('So {"draft": {"text": "## Upgrading"}}'), []).reason, /has no fenced json block/);
+  // A grader's verdict as one object whose reason holds braces: read whole, as the run's answer is.
+  assert.deepEqual(verdictOf('{"pass": false, "reason": "the {date} field is empty"}'), { pass: false, reason: "the {date} field is empty" });
+  assert.equal(verdictOf('{"pass": "no", "reason": "a {b}"}'), undefined, "an object that is no verdict");
 });
 
 test("the output check agrees with ajv on the shipped packages' output schemas", () => {
