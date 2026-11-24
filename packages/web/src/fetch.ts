@@ -50,7 +50,7 @@ async function passes(url: unknown, guard: Guard | undefined, options: GuardOpti
 /** `url`, a page's, with no user name or password: cleared as a URL where it parses (a URL drops a tab or a newline in
  *  them and encodes a space, where withoutUserinfo, reading free text, stops), else withoutUserinfo's. A provider that
  *  followed a redirect names the URL it ended at, which may hold them. */
-function withoutCredentials(url: string): string {
+export function withoutCredentials(url: string): string {
   const parsed = URL.parse(url);
   if (!parsed) return withoutUserinfo(url);
   if (!parsed.username && !parsed.password) return url;
@@ -110,7 +110,7 @@ async function readOnce(url: unknown, { parallel, firecrawl, order, guard, check
       return { ...direct, url: withoutCredentials(direct.url), via: "direct", ...(why ? { parallel: why } : {}) };
     }
   }
-  return { ok: false, url: typeof url === "string" ? clip(url, URL_MAX) : "", status: 0, title: "", text: "", links: [], error: "no provider in the order read the page, and it holds no direct fetch", via: "none", ...(why ? { parallel: why } : {}) };
+  return { ok: false, url: typeof url === "string" ? clip(withoutCredentials(url), URL_MAX) : "", status: 0, title: "", text: "", links: [], error: "no provider in the order read the page, and it holds no direct fetch", via: "none", ...(why ? { parallel: why } : {}) };
 }
 
 /** The reads that have ended: only these leave `pages` past its bound (trim). */
@@ -133,7 +133,7 @@ function trim(pages: Pages): void {
 function untilStopped(url: unknown, reading: Promise<WebRead | WebUnread>, signal?: AbortSignal): Promise<WebRead | WebUnread> {
   if (!signal) return reading;
   // No page came for this call, by any path: never "direct", which says the host was fetched.
-  const stopped = (): WebUnread => ({ ok: false, url: typeof url === "string" ? clip(url, URL_MAX) : "", status: 0, title: "", text: "", links: [], error: "the call was stopped before the page arrived", via: "stopped" });
+  const stopped = (): WebUnread => ({ ok: false, url: typeof url === "string" ? clip(withoutCredentials(url), URL_MAX) : "", status: 0, title: "", text: "", links: [], error: "the call was stopped before the page arrived", via: "stopped" });
   if (signal.aborted) return Promise.resolve(stopped());
   return new Promise((resolve, reject) => {
     const onStop = () => resolve(stopped());
