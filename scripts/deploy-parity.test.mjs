@@ -79,7 +79,8 @@ test("the same agent on two hosts is [] once each host's ids, times, links, plac
 
 test("the description holds every field a deploy carries, by its portable name", () => {
   const { fields } = describeAgent(pair().readA());
-  assert.deepEqual(Object.keys(fields).sort(), ["approvals", "budget", "checkout", "computer", "description", "effort", "harness", "input_schema", "instructions", "learning", "mcp_tools", "model", "model_tiers", "name", "output_schema", "secrets", "skills", "tool_settings", "tools", "triggers"]);
+  // Every field a deploy carries but checkout, which this agent does not set (a field not set is absent, as in JSON).
+  assert.deepEqual(Object.keys(fields).sort(), ["approvals", "budget", "computer", "description", "effort", "harness", "input_schema", "instructions", "learning", "mcp_tools", "model", "model_tiers", "name", "output_schema", "secrets", "skills", "tool_settings", "tools", "triggers"]);
   assert.deepEqual(fields.harness, "codex");
   assert.deepEqual(fields.effort, "high");
   assert.deepEqual(fields.tools, { "monid:apollo/people/match": null, read: null, web_fetch: null });
