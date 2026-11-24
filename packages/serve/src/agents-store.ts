@@ -20,7 +20,7 @@ import {
   type ModelTiers, type RevisionComputer, type RevisionPlace, type RevisionRow, type Store, StoreConstraint, type TemplatePackage, type ToolSettings, type WorkflowBody,
 } from "./store/index.js";
 import { canonicalToolSettings, settingsIssues, type ToolSettingsMap } from "./tool-plane.js";
-import { computerOfPlace, type PlaceView, settingOfDefinition } from "./computer-setting.js";
+import { settingOfDefinition } from "./computer-setting.js";
 import { type DefinitionBody, type Json, skillIssues, skillNames } from "./validate.js";
 
 const ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
@@ -438,6 +438,9 @@ export const etagOf = (entry: AgentEntry) => `"${entry.revision?.id ?? "none"}"`
 export function definitionOf(agent: AgentRow, revision: RevisionRow, version: number): Json {
   const body = revision.body as Body;
   const common = { ...(body.maxCostUsd !== undefined ? { max_cost_usd: body.maxCostUsd } : {}), ...(body.maxRequests !== undefined ? { max_requests: body.maxRequests } : {}) };
+  // A revision saved before the computer setting keeps its place alone; one that names neither has no computer here
+  // (the host's default applies).
+  const computer = settingOfDefinition(body)?.computer;
   const kindBody = revision.kind === "agentic"
     ? { instructions: (body as AgenticBody).instructions, ...((body as AgenticBody).model ? { model: (body as AgenticBody).model } : {}), ...((body as AgenticBody).modelTiers ? { model_tiers: (body as AgenticBody).modelTiers } : {}), ...((body as AgenticBody).thinking ? { thinking: (body as AgenticBody).thinking } : {}), ...(learningSettingForBody(body) !== undefined ? { learning: learningSettingForBody(body) } : {}), ...((body as AgenticBody).inputSchema !== undefined ? { input_schema: (body as AgenticBody).inputSchema } : {}), ...((body as AgenticBody).outputSchema !== undefined ? { output_schema: (body as AgenticBody).outputSchema } : {}), ...((body as AgenticBody).checkout !== undefined ? { checkout: (body as AgenticBody).checkout } : {}), ...common }
     : { workflow: (body as WorkflowBody).workflow, ...common };
@@ -454,9 +457,7 @@ export function definitionOf(agent: AgentRow, revision: RevisionRow, version: nu
     approvals: approvalsOf((body as { approvals?: unknown }).approvals),
     harness: harnessOfBody(body),
     ...(body.place ? { place: body.place } : {}),
-    // A revision's computer as the API shows it: its own, else the one its place says (a revision saved before the
-    // setting keeps its place alone); none when it names neither (the host's default applies).
-    ...(body.computer ? { computer: body.computer } : body.place ? { computer: computerOfPlace(body.place as PlaceView) } : {}),
+    ...(computer ? { computer } : {}),
     skills: skillNames(Object.keys(body.skills ?? {})),
     tools: body.tools,
     ...(body.toolSettings ? { tool_settings: body.toolSettings } : {}),
