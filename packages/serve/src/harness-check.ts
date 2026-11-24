@@ -53,7 +53,8 @@ export interface HarnessCheckOptions {
   /** The most the check may spend, USD. */
   capUsd?: number;
   platform?: string;
-  /** For tests: the fetch the model proxy forwards with. */
+  /** For tests: the network the model proxy forwards to, under the check's recorder. A model the route translates goes
+   *  through the route's own fetch instead, as on a server. */
   fetch?: typeof fetch;
   /** Each step as it happens, a line of words. */
   say?: (line: string) => void;
@@ -239,7 +240,7 @@ async function checkRun(options: HarnessCheckOptions, held: string[]): Promise<H
     needs = { model: ref, models: await providerModels(env) };
   }
 
-  // The session: the check's tools, its gate, its egress proxy, the recording fetch.
+  // The session: the check's tools, its gate, its egress proxy, its recorder.
   const nonce = randomBytes(6).toString("hex");
   const echoed: unknown[] = [];
   const deniedRan: unknown[] = [];
@@ -256,8 +257,9 @@ async function checkRun(options: HarnessCheckOptions, held: string[]): Promise<H
     return answer === "allow" ? ("allow" as const) : { deny: "harness-check refuses this call on purpose" };
   };
   const forwarded: { method: string; path: string; tools: string[]; text: string }[] = [];
-  const forward = options.fetch ?? fetch;
-  const recording: typeof fetch = async (input, init) => {
+  // The recorder wraps the hop the proxy forwards with: the route's own fetch for a model it translates (an Ollama
+  // model), else the network (options.fetch in tests). So a check on such a model runs the route a server's run takes.
+  const record = (next: typeof fetch | undefined): typeof fetch => async (input, init) => {
     const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
     const text = bodyText(init?.body);
     let toolNames: string[] = [];
@@ -268,7 +270,7 @@ async function checkRun(options: HarnessCheckOptions, held: string[]): Promise<H
       // Not JSON: no tools.
     }
     forwarded.push({ method: init?.method ?? "GET", path: url.pathname, tools: toolNames, text });
-    return forward(input, init);
+    return (next ?? options.fetch ?? fetch)(input, init);
   };
   const logs: { message: string; [field: string]: unknown }[] = [];
   const log = (message: string, fields?: Record<string, unknown>) => void logs.push({ message, ...(fields ?? {}) });
@@ -298,8 +300,8 @@ async function checkRun(options: HarnessCheckOptions, held: string[]): Promise<H
     if (tree !== treePin.sha256) throw new Error(`${ARCHIVE_CODES.binary}: the files beside ${command} changed after the check began (tree sha256 ${tree ?? "(unreadable)"})`);
   };
   // The recipe's entry as a server builds it (harness-recipe-entry.ts), on this check's route, log, variables (its egress
-  // proxy) and recording fetch.
-  const entry = recipeEntryOf({ recipe, binary, release, route: () => route, beforeStart, vars: () => childVars, fetch: recording, log });
+  // proxy) and recorder.
+  const entry = recipeEntryOf({ recipe, binary, release, route: () => route, beforeStart, vars: () => childVars, record, log });
   const planNeeds: AdapterNeeds = { model: { provider: recipe.id, modelId: planModel ?? "default" }, models: { getModel: () => undefined } };
   const adapterFor = async (): Promise<AgentAdapter> => entry.adapter!(hostEnv, needs ?? planNeeds);
   // The first runner's adapter is made before any turn, so a model this server can't run is refused before the agent

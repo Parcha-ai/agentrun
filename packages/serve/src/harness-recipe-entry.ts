@@ -81,7 +81,7 @@ export function acpRecipeFor(recipe: Recipe, binary: string, release: RecipeArch
 
 /** What recipeEntryOf builds `recipe`'s entry from: its installed `binary` and `release`, the route of each start (it
  *  may throw a HarnessUnavailable), the check before each start, and what harness-check adds (its log, its variables,
- *  the fetch its model proxy records with). `missing` and `hidden` are a server's (recipeServerEntry). */
+ *  the recorder its model proxy forwards through). `missing` and `hidden` are a server's (recipeServerEntry). */
 export interface RecipeEntryOptions extends AcpEntryHost {
   readonly recipe: Recipe;
   readonly binary: string;
@@ -91,7 +91,10 @@ export interface RecipeEntryOptions extends AcpEntryHost {
   beforeStart(command: string): Promise<void>;
   /** The variables beside the recipe's env at each start: the egress proxy's (harness-egress.ts egressVars). */
   vars(): Readonly<Record<string, string>>;
-  readonly fetch?: typeof fetch;
+  /** harness-check's recorder, over the next hop the proxy forwards with: the route's own fetch for a model it translates
+   *  (ModuleLaunch.fetch), undefined for the network. Whatever it returns is what the proxy forwards with, so a check
+   *  runs the hop a server's run takes. */
+  readonly record?: (next: typeof fetch | undefined) => typeof fetch;
   missing?(env: NodeJS.ProcessEnv): Promise<string | undefined>;
   hidden?(env: NodeJS.ProcessEnv): string | undefined;
 }
@@ -112,8 +115,9 @@ export function recipeEntryOf(options: RecipeEntryOptions): HarnessEntry {
         recipe: (launch) => acpRecipeFor(recipe, binary, release, options.route(launch.env), { vars: options.vars(), model: launch.model }),
         proxy: (launch) => {
           const hostEnv = recipe.model.billing === "proxy" ? (recipe.model.hostEnv ?? "ANTHROPIC_HOST") : "ANTHROPIC_HOST";
-          // The check's recorder, else the route's own fetch for a model it translates (ModuleLaunch.fetch), else the network.
-          const forward = options.fetch ?? launch.fetch;
+          // The route's own fetch for a model it translates (ModuleLaunch.fetch), else the network; under harness-check, its
+          // recorder over that hop.
+          const forward = options.record ? options.record(launch.fetch) : launch.fetch;
           const messagesProxy = acp.gooseProxy({ model: launch.model, provider: launch.provider, price: launch.price, log: launch.log, ...(forward ? { fetch: forward } : {}) });
           return async (session) => {
             // The proxy's own address, under the recipe's variable, beside the key that opens it alone (never a provider's).
