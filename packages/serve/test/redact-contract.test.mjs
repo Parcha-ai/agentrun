@@ -393,6 +393,32 @@ const CASES = [
     hides: [CUT_KEY.slice(16, 24)],
     exact: { redactedAnswer: "[redacted]", redactedCall: "[redacted]", runFile: "[redacted]" },
   },
+  // The same, with padding the matcher reads as nothing between the head and the run's end: the tail read counts
+  // characters as the views see them, so the padding never pushes the head out of it. With no held value in the text,
+  // the same layout shows, the run as "[redacted]" (control).
+  ...[[ZWSP.repeat(300), "zero-width spaces"], [SHY.repeat(300), "soft hyphens"], [`${String.fromCharCode(92)}n`.repeat(300), "\\n escapes"], ["%E2%80%8B".repeat(300), "%E2%80%8B"]].flatMap(([pad, what]) => [
+    {
+      name: `a held value whose head is glued to the end of a run too long to read, then ${what}, its rest past a line break, withholds the text`,
+      text: `the key: ${"z".repeat(9000)}${CUT_KEY.slice(0, 16)}${pad}\n${CUT_KEY.slice(16)} end`,
+      values: [CUT_KEY],
+      hides: [CUT_KEY.slice(16, 24)],
+      exact: { redactedAnswer: "[redacted]", redactedCall: "[redacted]", runFile: "[redacted]" },
+    },
+    {
+      name: `a run too long to read ending in ${what}, with no held value in the text, shows with the run as "[redacted]" (control)`,
+      text: `the key: ${"z".repeat(9000)}${CUT_KEY.slice(0, 16)}${pad}\n${CUT_KEY.slice(16)} end`,
+      values: [SPLIT],
+      hides: [],
+      exact: { redactedAnswer: `the key: [redacted]\n${CUT_KEY.slice(16)} end`, redactedCall: `the key: [redacted]\n${CUT_KEY.slice(16)} end` },
+    },
+  ]),
+  {
+    name: "a held value whose head is glued to the end of a run too long to read, then padding longer than a piece, withholds the text",
+    text: `the key: ${"z".repeat(9000)}${CUT_KEY.slice(0, 16)}${ZWSP.repeat(9000)}\n${CUT_KEY.slice(16)} end`,
+    values: [CUT_KEY],
+    hides: [CUT_KEY.slice(16, 24)],
+    exact: { redactedAnswer: "[redacted]", redactedCall: "[redacted]", runFile: "[redacted]" },
+  },
   (() => {
     const { lines, pem } = fakePem(6);
     return {
