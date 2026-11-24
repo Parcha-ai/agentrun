@@ -20,8 +20,10 @@ test("a port is below the host's ephemeral range wherever it starts: under a ran
 });
 
 test("two thousand ports handed out in one process are all different, so no test is handed an address an earlier one listed or bound", async () => {
+  // A range from 32768 leaves 12,768 candidates (20000-32767) wherever this host's range starts; one from 10240 would
+  // leave only 1,000, fewer than this test asks for.
   const ports = [];
-  for (let i = 0; i < 2000; i++) ports.push(await freePort());
+  for (let i = 0; i < 2000; i++) ports.push(await freePort({ low: 32768 }));
   const twice = ports.filter((port, at) => ports.indexOf(port) !== at);
   assert.deepEqual(twice, [], "a port handed out twice");
 });
