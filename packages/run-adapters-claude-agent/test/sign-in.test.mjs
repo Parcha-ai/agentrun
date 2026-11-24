@@ -97,6 +97,28 @@ test('a sign-in says how it ended: signed in (exit 0), ended without signing in 
   assert.equal(claude.CLAUDE_SIGN_IN_MS, 10 * 60_000, 'the limit is 10 minutes unless a caller says otherwise');
 });
 
+// A CLI that is there and executable, but whose first line names an interpreter that is not (a script whose runtime was
+// removed, or one on no PATH the sign-in gets), never starts either: under the parent watch its watch reports the failed
+// exec only as an exit code of its own, which must not read as the sign-in's own exit. The sign-in fails at its start,
+// in words that name the interpreter, under every watch.
+const NO_INTERPRETER = '/nonexistent/agentrun-no-such-interpreter';
+const NO_PROGRAM = 'agentrun-no-such-program';
+for (const watch of ['pdeathsig', 'shim']) {
+  const skip = watch === 'pdeathsig' && parentWatchHere() !== 'pdeathsig' ? 'no setpriv with --pdeathsig here' : false;
+  test(`a sign-in whose CLI names an interpreter that is not there fails at its start in words that name it, not as an exit of the CLI (${watch})`, { skip, timeout: 30_000 }, async () => {
+    const dir = scratch();
+    const direct = join(dir, 'claude');
+    writeFileSync(direct, `#!${NO_INTERPRETER}\n`, { mode: 0o755 });
+    const viaEnv = join(dir, 'claude-env');
+    writeFileSync(viaEnv, `#!/usr/bin/env ${NO_PROGRAM}\n`, { mode: 0o755 });
+    for (const [cli, named] of [[direct, NO_INTERPRETER], [viaEnv, NO_PROGRAM]]) {
+      const ended = await claude.startClaudeLogin(cli, login(), { watch, path: '/usr/bin:/bin' }).ended;
+      assert.equal(ended.end, 'failed', `a CLI whose interpreter (${named}) is not there read as a sign-in that ran: ${JSON.stringify(ended)}`);
+      assert.ok(ended.message.includes(named), `the failure's words do not name the interpreter ${named}: ${ended.message}`);
+    }
+  });
+}
+
 // A server that is SIGKILLed (the OOM killer, say) runs no stop and no limit timer, so a sign-in it started must die
 // with it: started under ./host's parent watch (@parcha/agentrun-kernel/host parentWatched), as a session's CLI is. The
 // process table is read from /proc, so this runs on Linux.
