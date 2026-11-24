@@ -1,0 +1,5 @@
+---
+packages: @parcha/agentrun-serve
+kind: fix
+---
+The runner's hold of Claude Code's refresh lock on AgentRun's own login folder, where each run is a user of its own, is steadier. A runner whose new lock is gone at its first touch (another holder took it) waits for that holder and takes its renewal, instead of failing the ask. A runner whose read of its own lock or `.takeover` directory fails on release (an I/O error, not the lock gone) reads it once more and removes it while it is still its own, instead of leaving it for the 60 s stale time. A failed read of the lock just before or after the renewal is sent is logged as `lock_unread`, no longer as `lock_lost`, which now means only that another holder took the lock. And a run that is a process of its own no longer reads the login's setting again at its start: it runs on the login only if its claim read it on, so turning the login on or off just after such a run is claimed never moves it onto a login its claim did not check, or off one it did.

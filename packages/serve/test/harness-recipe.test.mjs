@@ -1018,9 +1018,9 @@ test("where each run is a user of its own, a run on a recipe's harness is refuse
     assert.match(error.message, /AGENTRUN_RUN_USER=same/);
     return true;
   });
-  assert.equal(await host.staysInRunner(deps, "model-agent", launch, "run-own", { kind: "process", why: "AGENTRUN_RUN_USER=same" }), false);
+  assert.equal((await host.staysInRunner(deps, "model-agent", launch, "run-own", { kind: "process", why: "AGENTRUN_RUN_USER=same" })).stays, false);
   // A built-in harness on the same table is never refused by it.
-  assert.equal(await host.staysInRunner(deps, "pi", launch, "run-own", { kind: "uid", helper: "/nonexistent/agentrun-runas", first: 0, slots: 1 }), false);
+  assert.equal((await host.staysInRunner(deps, "pi", launch, "run-own", { kind: "uid", helper: "/nonexistent/agentrun-runas", first: 0, slots: 1 })).stays, false);
 });
 
 test("a run no person started (a schedule's, a trigger's) on a plan-billed recipe is refused at its claim on every path, even on its owner's own machine, until every key is saved for its harness: it runs on those keys, never the owner's sign-in", async (t) => {
@@ -1045,7 +1045,7 @@ test("a run no person started (a schedule's, a trigger's) on a plan-billed recip
   await assert.rejects(loops.refuseRecipeTriggerRun(deps, "model-agent", scheduled), refusedFor);
   assert.match(host.RECIPE_SIGN_IN_PERSON_ONLY, /Settings → Harness keys \(\/#\/settings\/harness-keys\)/);
   // A person's run is not, nor a scheduled run on a proxy-billed recipe (the model proxy) or a built-in harness.
-  assert.equal(await host.staysInRunner(deps, "model-agent", person, "run-own", sameUser), false);
+  assert.equal((await host.staysInRunner(deps, "model-agent", person, "run-own", sameUser)).stays, false);
   const proxied = harnessRecipesEnv([await recipeFile(t, recipeOf())], data, { signIn: true });
   await loops.refuseRecipeTriggerRun({ ...deps, env: proxied }, "model-agent", scheduled);
   await loops.refuseRecipeTriggerRun(deps, "pi", scheduled);
@@ -1058,7 +1058,7 @@ test("a run no person started (a schedule's, a trigger's) on a plan-billed recip
   const saved = new HarnessKeysOverStore(real, seal, planRecipesOf(own), data);
   await saved.save(saved.recipe("model-agent"), "MODEL_AGENT_GEMINI_API_KEY", { value: "saved-test-key" });
   await loops.refuseRecipeTriggerRun(deps, "model-agent", scheduled);
-  assert.equal(await host.staysInRunner(deps, "model-agent", scheduled, "run-nightly", sameUser), false);
+  assert.equal((await host.staysInRunner(deps, "model-agent", scheduled, "run-nightly", sameUser)).stays, false);
 });
 
 test("--harness-sign-in starts only one owner's own server on their own machine: loopback with no public address, the SQLite store in its data directory, its runs beside it as its own user, an owner and one token; anything else refuses the start in words", async (t) => {

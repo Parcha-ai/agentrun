@@ -68,6 +68,7 @@ import { learnedTiers, learnsWorkflows, mcpReachOf, type AdapterSpecDeps } from 
 import { createDispatchLoop } from "./dispatch.js";
 import { refuseRecipeTriggerRun, resolveRunnerLoop, withSavedGatewayDeps } from "./harness-loops.js";
 import { isWorkflowRevision } from "./workflow-loop.js";
+import type { ClaudeAgentLogin } from "@parcha/agentrun-harness-claude";
 import { loginForRun } from "../claude-login.js";
 import { agentRunLogin, loginRunnerInProcess, loginTokensFor } from "../claude-login-token.js";
 import type { Held, HeldComputerAsk } from "./held.js";
@@ -594,6 +595,9 @@ interface ClaimReads {
   readonly signal?: AbortSignal;
   /** The runner's presence incarnation (LoopDeps.incarnation): with the claim's runner, who keeps a computer a park pins. */
   readonly incarnation?: string;
+  /** The Claude login the claim read for this run (staysInRunner), handed down as it was read: the run's one read of the
+   *  login's setting, so a turn-on after its claim never moves it onto a login its claim did not check. */
+  readonly login: ClaudeAgentLogin | undefined;
 }
 
 /** The email tools a revision may grant. */
@@ -736,8 +740,8 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
     // as the runner writes it (runner.ts fenced), from what it stages and from its rows, as the run's own tool keys are.
     claudeLogin: async () => {
       if (await runKeyed()) return undefined;
-      const harness = launch.harness ?? (revision.body as { harness?: string }).harness;
-      const at = await loginForRun(store.settings, deps.data, deps.env ?? {}, harness, launch.place);
+      // The login its claim read (staysInRunner), never a second read of the setting.
+      const at = reads.login;
       if (!at || !agentRunLogin(at, deps.data)) return undefined;
       const carry = cut.carry;
       if (!carry) throw new ClaimRefused("This runner has no redactor that can cut the login's token from what its run writes, so it hands none.");
@@ -1085,29 +1089,34 @@ export { RECIPE_SIGN_IN_PERSON_ONLY } from "./harness-loops.js";
  *  never the folder; it is refused at its claim (ClaimRefused, in words) on this machine's own login (machineFolder), and
  *  while a `process` runner on the same data folder is live (its CLI renews the folder's login itself). A run its caller
  *  handed a model key (model_key) runs on that key and never on the login (cli-run-spec.ts), so it is a process of its
- *  own like any other. */
-export async function staysInRunner(deps: Pick<AdapterSpecDeps, "store" | "data" | "env" | "sealKey">, harness: string, launch: RunLaunch, runId: string, isolation: RunIsolation): Promise<boolean> {
+ *  own like any other. A run that is a process of its own is handed the login this claim read (`login`, ClaimReads):
+ *  the one read of the login's setting for its start, so a turn-on landing after it never puts the run on a login whose
+ *  refusals here it was never checked against. */
+export type ClaimPlace = { readonly stays: true } | { readonly stays: false; readonly login: ClaudeAgentLogin | undefined };
+export async function staysInRunner(deps: Pick<AdapterSpecDeps, "store" | "data" | "env" | "sealKey">, harness: string, launch: RunLaunch, runId: string, isolation: RunIsolation): Promise<ClaimPlace> {
   // A recipe's harness reads its install, its check's note and its owner's sign-in, each the server user's alone: never
   // opened to a slot's user (the sign-in least of all), so where each run is a user of its own it is refused here. And a
   // plan-billed one's run that no person started (a schedule's, a trigger's) never runs on its owner's sign-in: only on
   // keys saved for its harness.
   if (isolation.kind === "uid" && recipeHarness(deps.env ?? {}, harness)) throw new ClaimRefused(RECIPE_NEEDS_SERVER_USER);
   await refuseRecipeTriggerRun(deps, harness, launch);
-  if (runsInRunner(harness, launch)) return true;
+  if (runsInRunner(harness, launch)) return STAYS;
   if (launch.documents !== undefined) {
     const run = await deps.store.runs.get(runId);
     const revision = run ? await deps.store.agents.revision(run.revisionId) : undefined;
-    if (revision && isWorkflowRevision(revision)) return true;
+    if (revision && isWorkflowRevision(revision)) return STAYS;
   }
   const login = await loginForRun(deps.store.settings, deps.data, deps.env ?? {}, harness, launch.place);
-  if (login === undefined) return false;
-  if ((await openRunModelKey({ store: deps.store, sealKey: deps.sealKey }, runId)) !== undefined) return false;
-  if (isolation.kind !== "uid") return true;
+  if (login === undefined) return OFF_LOGIN;
+  if ((await openRunModelKey({ store: deps.store, sealKey: deps.sealKey }, runId)) !== undefined) return OFF_LOGIN;
+  if (isolation.kind !== "uid") return STAYS;
   if (!agentRunLogin(login, deps.data)) throw new ClaimRefused(LOGIN_MACHINE_NEEDS_SERVER_USER);
   const other = await loginRunnerInProcess(deps.data, deps.store.runners);
   if (other !== undefined) throw new ClaimRefused(loginRunnerInProcessWords(other));
-  return false;
+  return { stays: false, login };
 }
+const STAYS: ClaimPlace = { stays: true };
+const OFF_LOGIN: ClaimPlace = { stays: false, login: undefined };
 
 /** The runner's loop factory where each run is a process of its own: a ChildLoop per claim, but for a run that stays in
  *  the runner (staysInRunner). */
@@ -1115,11 +1124,15 @@ export function childLoops(options: ChildLoopsOptions): LoopFactory {
   // Each slot locked on the data directory too: another runner on it whose range overlaps this one's never runs a run
   // on a slot this one holds.
   const slots = options.isolation.kind === "uid" ? new Slots(options.isolation.first, options.isolation.slots, slotLocks(options.deps.data)) : undefined;
-  const own: LoopFactory = (loopDeps) => childLoop(options, slots, loopDeps);
   const here = resolveRunnerLoop(options.deps);
   return createDispatchLoop({
     launchOf: (runId) => options.deps.store.runs.launch(runId),
-    resolve: async (harness, launch, runId) => ((await staysInRunner(options.deps, harness, launch, runId, options.isolation)) ? here(harness, launch, runId) : own),
+    resolve: async (harness, launch, runId) => {
+      const place = await staysInRunner(options.deps, harness, launch, runId, options.isolation);
+      if (place.stays) return here(harness, launch, runId);
+      const own: LoopFactory = (loopDeps) => childLoop(options, slots, loopDeps, place.login);
+      return own;
+    },
   });
 }
 
@@ -1154,7 +1167,8 @@ export function runChannel(socket: Duplex, onClose: (why: Error) => void, gate: 
   return channel;
 }
 
-function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, loopDeps: LoopDeps): Loop {
+/** `login`: the Claude login this run's claim read (staysInRunner), the one its runner hands the run (ClaimReads). */
+function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, loopDeps: LoopDeps, login: ClaudeAgentLogin | undefined): Loop {
   const { deps, isolation } = options;
   const cut: RunnerCut = loopDeps.redact ?? ((text: string) => text);
   const log = (line: string) => options.log(cut(line));
@@ -1263,7 +1277,7 @@ function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, loopDep
         const tops = runTops(deps.data, runRow.agentId, claim.runId);
         // The run's pieced writes (big-writes.ts): let go when its channel ends, or at the claim's release.
         const bigs = runBigWrites();
-        const heldSide = heldFor({ ...deps, env: claimEnv }, { claim, run: runRow, launch, revision, claimed: gatewayKey ? withGatewayKey(claimed, gatewayKey) : claimed, signal: loopDeps.signal, ...(loopDeps.incarnation ? { incarnation: loopDeps.incarnation } : {}) }, cut, log, bigs);
+        const heldSide = heldFor({ ...deps, env: claimEnv }, { claim, run: runRow, launch, revision, claimed: gatewayKey ? withGatewayKey(claimed, gatewayKey) : claimed, signal: loopDeps.signal, login, ...(loopDeps.incarnation ? { incarnation: loopDeps.incarnation } : {}) }, cut, log, bigs);
         try {
           let extra: Record<string, string> = {};
           let argv = [...(options.argv ?? childArgv())];
