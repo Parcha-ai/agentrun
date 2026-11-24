@@ -47,7 +47,7 @@ const { childLoops, heldFor } = await import("../dist/runner/run-child-host.js")
 const { launchBody } = await import("../dist/run-launch.js");
 const { saveGateway } = await import("../dist/model-gateway.js");
 const { claudeOf, codexOf, opencodeOf, CODEX_STANDIN_ENV, OPENCODE_STANDIN_ENV } = await import("../dist/adapters.js");
-const { openSqliteStore } = await import("../dist/store/index.js");
+const { openSqliteStore, sealMcpCredential } = await import("../dist/store/index.js");
 const { blockersOf } = await import("../dist/runnable.js");
 const { startModelProxy } = await import("@parcha/agentrun-kernel/host");
 
@@ -168,8 +168,10 @@ const loadedSdk = async (version) => ({ sdk: { query() {} }, sdkVersion: version
 /** A claim of an opencode run of the revision model `openai/gpt-6.1-sol` on a runner with no model key, its spec built as
  *  the runner builds a CLI harness's (cli-run-spec.ts cliRunSpecFromLaunch) on the opencode stand-in and no computer (a
  *  runner place). `hold`: the launch's; `extra`: more of its launch (a replay's); `host`: more of the runner's environment,
- *  and the runner's model route (`routeOf`, which a CLI run's own model never takes). Resolves to the spec; rejects as the
- *  claim fails. */
+ *  and the runner's model route (`routeOf`, which a CLI run's own model never takes); `host.body`, more of the revision's
+ *  body (its grants), `host.mcpPin`, the pin its save made, `host.before`, called with the server's store before the run
+ *  is made (a test saves an MCP server there), and `host.redact`, the runner's one redactor as the loop hands it. Resolves
+ *  to the spec; rejects as the claim fails. */
 async function cliClaim(t, hold, extra = {}, host = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "held-model-key-cli-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
@@ -183,7 +185,8 @@ async function cliClaim(t, hold, extra = {}, host = {}) {
     await server.close().catch(() => {});
     rmSync(dir, { recursive: true, force: true });
   });
-  await server.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", harness: "opencode", model: "openai/gpt-6.1-sol", tools: ["read"] } });
+  await host.before?.(server);
+  await server.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", harness: "opencode", model: "openai/gpt-6.1-sol", tools: ["read"], ...host.body }, ...(host.mcpPin ? { mcpPin: host.mcpPin } : {}) });
   const launch = { input: { content: "Do the task." }, title: "t", place: { mode: "runner" }, harness: "opencode", ...(hold ? { hold } : {}), ...extra };
   await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: launch });
   await server.flush?.();
@@ -193,7 +196,7 @@ async function cliClaim(t, hold, extra = {}, host = {}) {
   harness = await Harness.open(store.journal(claim), { models: () => models, registry, onReport: () => {} }, ctx);
   const env = { ...host.env, [OPENCODE_STANDIN_ENV]: JSON.stringify({ command: process.execPath, args: [] }), PATH: process.env.PATH };
   const deps = { env, data: dir, journal: (c) => store.journal(c), store, sealKey: SEAL_KEY, routeOf: host.routeOf ?? (async () => assert.fail("a CLI run takes no pi route")), computerForClaim: async () => ({ release: async () => {} }) };
-  built = await cliRunSpecFromLaunch(launch, { harness, registry, setModels: (given) => (models = given) }, deps, claim);
+  built = await cliRunSpecFromLaunch(launch, { harness, registry, setModels: (given) => (models = given), ...(host.redact ? { redact: host.redact } : {}) }, deps, claim);
   return built;
 }
 
@@ -635,6 +638,89 @@ test("CLI (cli-run-spec), end of run: a held opencode run its model kept from ru
   assert.equal(typeof unheld.endOfRun, "function", "the run not held, learning, carries its end-of-run step, as before");
   const spec = await cliClaim(t, { minutes: 5, refused: REFUSAL }, { learning: LEARNS }).catch((error) => assert.fail(`a held learning opencode run opens its claim: ${error.message}`));
   assert.equal(spec.endOfRun, null, "a held run its model kept from running carries no end-of-run step, though it learns, and says none (null)");
+});
+
+/** fal's hosted MCP server, saved with its key (a test's: never a real one), and the pin a save of a revision granted its
+ *  run_model makes: what a claim of such a run opens, under the runner's seal key, into its memory. */
+const FAL_URL = "https://mcp.fal.ai/mcp";
+const FAL_KEY = "not-a-secret-held-fal-key";
+const FAL_GRANT = "mcp:fal/run_model";
+const FAL_TOOL = { name: "run_model", description: "Run a fal model.", inputSchema: { type: "object", properties: { endpoint_id: { type: "string" } } } };
+const FAL_PIN = { fal: { url: FAL_URL, meter: "fal", tools: [FAL_TOOL] } };
+const saveFal = (server) => server.mcp.put({ name: "fal", url: FAL_URL, auth: "headers", tools: [{ name: FAL_TOOL.name, description: FAL_TOOL.description, input_schema: FAL_TOOL.inputSchema }], sealed: sealMcpCredential(SEAL_KEY, "fal", { type: "headers", headers: { authorization: `Key ${FAL_KEY}` } }, FAL_URL) });
+/** The runner's one redactor as the loop hands it, keeping each value a claim hands it (hold): every credential the claim
+ *  opened, as it opened it. */
+const keeping = (kept) => Object.assign((text) => text, { hold: (values) => void kept.push(...values) });
+const falOpened = (kept) => kept.some((value) => value.includes(FAL_KEY));
+
+test("pi (adapter-run-spec), MCP: a held run its model kept from running, granted a fal tool, opens no MCP credential at its claim and carries no MCP; the same run not held opens fal's key and carries its tool", async (t) => {
+  withEnv(t, {}, KEYLESS);
+  const root = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "held-model-key-mcp-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const body = { model: MODEL, computer: PHONE, tools: [FAL_GRANT] };
+  const before = async (server) => {
+    await saveFal(server);
+    await server.agents.pinOnce("rev-1", FAL_PIN);
+  };
+  const unheldKept = [];
+  const { spec: unheld } = await specFor(t, { body, launch: { model: undefined }, before, redact: keeping(unheldKept), computer: phoneOn(root) });
+  t.after(() => unheld.release?.());
+  assert.ok(falOpened(unheldKept), "the run not held opens fal's key at its claim, as before: it joins the run's redactor");
+  assert.deepEqual(unheld.mcp?.tools.map((tool) => tool.name), ["mcp__fal__run_model"], "and carries fal's tool");
+  const heldKept = [];
+  const { spec } = await specFor(t, { body, launch: { model: undefined, hold: { minutes: 5, refused: REFUSAL } }, before, redact: keeping(heldKept), computer: phoneOn(root) })
+    .catch((error) => assert.fail(`a held run its model kept from running opens its claim: ${error.message}`));
+  t.after(() => spec.release?.());
+  assert.deepEqual(heldKept, [], "a held run its model kept from running opens no MCP credential, fal's included: nothing can call one (its start is refused, its provider refuses every request), so its claim holds none");
+  assert.equal(spec.mcp, undefined, "and its spec carries no MCP");
+  assert.deepEqual(spec.held, { minutes: 5 }, "its claim still holds the computer for its owner");
+});
+
+test("CLI (cli-run-spec), MCP: a held opencode run its model kept from running, granted a fal tool, opens no MCP credential at its claim and carries no MCP; the same run not held opens fal's key and carries its tool", async (t) => {
+  withEnv(t, {}, KEYLESS);
+  const host = { body: { tools: ["read", FAL_GRANT] }, mcpPin: FAL_PIN, before: saveFal };
+  const unheldKept = [];
+  // The control's host holds opencode's key (the test's host model key), so the claim that is not held opens.
+  const unheld = await cliClaim(t, undefined, {}, { ...host, env: { OPENAI_API_KEY: HOST_MODEL_KEY }, redact: keeping(unheldKept) });
+  assert.ok(falOpened(unheldKept), "the run not held opens fal's key at its claim, as before: it joins the run's redactor");
+  assert.deepEqual(unheld.mcp?.tools.map((tool) => tool.name), ["mcp__fal__run_model"], "and carries fal's tool");
+  const heldKept = [];
+  const spec = await cliClaim(t, { minutes: 5, refused: REFUSAL }, {}, { ...host, redact: keeping(heldKept) }).catch((error) => assert.fail(`a held opencode run its model kept from running opens its claim: ${error.message}`));
+  assert.deepEqual(heldKept, [], "a held run its model kept from running opens no MCP credential, fal's included: nothing can call one (its start is refused, its provider refuses every request), so its claim holds none");
+  assert.equal(spec.mcp, undefined, "and its spec carries no MCP");
+});
+
+test("per-run process (run-child-host heldFor), MCP: the runner opens no MCP credential for a held run its model kept from running, fal's included, whatever its process asks; the same run not held is answered fal's tool", async (t) => {
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "held-model-key-mcp-seam-"));
+  const store = await openSqliteStore({ dataDir: dir, role: "server" });
+  const releases = [];
+  t.after(async () => {
+    for (const release of releases) await release().catch(() => {});
+    await store.close().catch(() => {});
+    rmSync(dir, { recursive: true, force: true });
+  });
+  await saveFal(store);
+  const revision = { kind: "agentic", body: { instructions: "Answer.", model: MODEL, tools: [FAL_GRANT] } };
+  await store.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", ...revision, mcpPin: FAL_PIN });
+  // The saved servers the runner reads to open a credential (getMcpServer), by name.
+  const read = [];
+  const server = store.mcp.server.bind(store.mcp);
+  store.mcp.server = async (name) => (read.push(name), server(name));
+  const launch = { input: { content: "Do the task." }, title: "t", place: { mode: "runner" }, harness: "pi" };
+  const seam = async (runId, hold) => {
+    await store.runs.create({ id: runId, agentId: "agent-1", revisionId: "rev-1" }, { body: { ...launch, ...hold } });
+    const made = heldFor({ store, sealKey: SEAL_KEY, env: {}, data: dir }, { claim: { runId, epoch: 1 }, run: { agentId: "agent-1", revisionId: "rev-1", signInHanded: null }, launch: { ...launch, ...hold }, revision, claimed: {} }, (text) => text, () => {});
+    releases.push(() => made.release());
+    return made.held;
+  };
+  const appendRoot = async () => {};
+  const unheld = await (await seam("run-1", {})).mcp({ appendRoot });
+  assert.deepEqual(unheld?.tools.map((tool) => tool.catalog), [FAL_GRANT], "a run not held is answered fal's tool, as before");
+  assert.ok(read.includes("fal"), "its credential opened from fal's saved row");
+  read.length = 0;
+  const held = await (await seam("run-2", { hold: { minutes: 5, refused: REFUSAL } })).mcp({ appendRoot });
+  assert.equal(held, undefined, "a held run its model kept from running is answered no MCP, though its process asks: nothing can call it");
+  assert.deepEqual(read, [], "and the runner reads no saved server for it: no MCP credential is opened, fal's included");
 });
 
 test("pi: the stand-in route refuses every model request in the create's words, verbatim, and sends none", async (t) => {
