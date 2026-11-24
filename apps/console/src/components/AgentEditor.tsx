@@ -211,7 +211,9 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
   // The built-in tools offered: a call-only one to a workflow, or to an agent that names it.
   const offeredTools = caps.tools.filter((t) => workflow || !t.call_only || f.tools?.includes(t.name));
   // The built-in tools a filter keeps: what the Tools step draws and counts, one rule for both.
-  const builtIns = (query: string) => offeredTools.filter((t) => matchesFilter(query, t.name, t.blurb, t.summary));
+  // ask_person first: the one tool that lets the agent stop and ask you, which Tool approvals below is not.
+  const builtIns = (query: string) => offeredTools.filter((t) => matchesFilter(query, t.name, t.blurb, t.summary))
+    .sort((a, b) => Number(b.name === "ask_person") - Number(a.name === "ask_person"));
   const toolCount = (query: string) => builtIns(query).length
     + (caps.mcp && !workflow ? mcpShownCount(mcpServers ?? null, f.tools ?? [], query) : 0)
     + (!workflow ? monidCards(f.tools ?? [], monidSeen, query).length : 0);
@@ -301,7 +303,7 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
   return (
     <div className="flex h-full min-h-0 flex-col">
       <header className={cn(pageToolbarClass, "flex-wrap gap-3 px-5 md:px-8")}>
-        <Button size="icon" variant="ghost" aria-label="Back to agents" onClick={onBack}><ArrowLeft aria-hidden /></Button>
+        <Button size="icon" variant="ghost" aria-label="Back" title="Back" onClick={onBack}><ArrowLeft aria-hidden /></Button>
         <h1 className="min-w-0 flex-1 truncate font-mono text-xl font-semibold" title={creating ? undefined : d!.name}>{creating ? "New agent" : d!.name}</h1>
         <CodingAgentAction label="Use your agent" prompt={sourceOwned && agent
           ? editAgentPrompt(location.origin, agent.agent_id, !!d?.native, sdk, cli?.runtime)
@@ -474,17 +476,19 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
                   // about to be what it sent, so every change is kept: the save's answer drops it only if it equals what was sent.
                   onChange={(next) => (!saving && same(next, d?.tool_settings ?? {}) ? setF(({ tool_settings: _gone, ...rest }) => rest) : set({ tool_settings: next }))} />
               )}
-              {/* The agent's approvals (definition.approvals): whether a call its gate says ask waits for you. */}
+              {/* The agent's tool approvals (definition.approvals): whether a tool set to ask waits for your OK. Questions are not
+                  this: the agent asks you one only through ask_person, a tool of its own (first in Tools). */}
               {!workflow && !starting && (
-                <fieldset aria-label="Approvals" className="space-y-2">
-                  <legend className="caps text-small font-semibold">Approvals</legend>
-                  {([["ask", "Ask me", "A call whose permission is ask waits for your answer."], ["never", "Never ask (run unattended)", "For an agent that runs on a trigger, with no one there to answer."]] as const).map(([value, label, note]) => (
+                <fieldset aria-label="Tool approvals" className="space-y-2">
+                  <legend className="caps text-small font-semibold">Tool approvals</legend>
+                  {([["ask", "Ask me", "A tool set to ask waits for your OK before it runs."], ["never", "Never ask (run unattended)", "For an agent that runs on a trigger, with no one there to answer."]] as const).map(([value, label, note]) => (
                     <label key={value} className={cn("flex items-start gap-3 border px-3 py-2.5", approvals === value && "border-foreground")}>
                       <input type="radio" name="approvals" value={value} className="mt-1 accent-primary" checked={approvals === value} disabled={saving} onChange={() => set({ approvals: value })} />
                       <span><span className="font-mono text-body">{label}</span><span className="block text-small text-muted-foreground">{note}</span></span>
                     </label>
                   ))}
                   {approvals === "never" && <p className="text-small text-warning-text">{NEVER_ASK_LINE}</p>}
+                  <p className="text-small text-muted-foreground" data-approvals-not-questions>These are about tools, not questions: the agent asks you a question only with ask_person, in Tools.</p>
                 </fieldset>
               )}
               <Field group label="Skills" note="Skill files are saved with each revision and kept as they are by an edit.">
