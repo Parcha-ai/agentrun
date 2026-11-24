@@ -1,8 +1,10 @@
 // A held value split across two strings of a JSON text, where each string alone holds half of it: a call's result of any
 // tool (its rows and the text a grader reads of it), a call's arguments (tool_input, and the grader's prompt built from
-// them), a web call's property name and value. Each withholds what holds it, never showing a half.
+// them), a web call's property name and value, a workflow's output in its graph. Each withholds what holds it, never
+// showing a half.
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { servedGraphView } from "../dist/graph-served.js";
 import { redacted, redactedCall, withheldWhole } from "../dist/key-refusal.js";
 import { callsOf, graderInput } from "../dist/template-eval.js";
 import { CALL_RESULT_CHARS, scrubUrls, timelineOf } from "../dist/timeline/index.js";
@@ -101,4 +103,34 @@ test("graderInput: the prompt built from a run whose calls split a held value ho
 test("a held value split across a web call's property name and its value withholds the call's result", () => {
   const text = JSON.stringify({ query: "q", results: [{ url: "https://h.example/a", title: "t", [HEAD]: `${REST} more` }] });
   assert.equal(rowOf(rowsOf("web_search", { query: "q" }, text), "tool_result").tool_result_text, "[redacted]");
+});
+
+// A workflow run's graph (graph-served.ts servedGraphView): each part (a call, a decision) and each other top-level field
+// of the view is read whole, as its JSON, so a held value split across two top-level fields of a call's output, a
+// decision's state or a field of the view withholds that part or field; the run's own facts pass as they are. A held
+// value whole in one field is cut in place there, and the part keeps its shape (control).
+const graphOf = (output, state, later) => ({
+  read_at: "2026-11-24T00:00:00.000Z",
+  run: { id: "run-1", agent: "a1", revision: "r1", status: "completed", paused: false, startedAt: "2026-11-24T00:00:00.000Z", endedAt: null },
+  nodes: {},
+  decisions: [{ id: "d1", status: "done", state }],
+  effects: [{ tool: "llm", status: "done", output }],
+  later,
+});
+
+test("the graph: a held value split across two top-level fields of a call's output, a decision's state or a field shows no half", () => {
+  const split = { summary: `echo ${HEAD}`, detail: `${REST} more` };
+  const view = graphOf(split, split, split);
+  const shown = servedGraphView(view, SECRETS);
+  assert.deepEqual(shows(JSON.stringify(shown)), []);
+  assert.deepEqual(shown.run, view.run);
+});
+
+test("the graph: a held value whole in one field of a call's output is cut in place, the part keeping its shape (control)", () => {
+  const whole = { summary: `see ${KEY}`, detail: "ok" };
+  const shown = servedGraphView(graphOf(whole, whole, whole), SECRETS);
+  const cut = { summary: "see [redacted]", detail: "ok" };
+  assert.deepEqual(shown.effects, [{ tool: "llm", status: "done", output: cut }]);
+  assert.deepEqual(shown.decisions, [{ id: "d1", status: "done", state: cut }]);
+  assert.deepEqual(shown.later, cut);
 });
