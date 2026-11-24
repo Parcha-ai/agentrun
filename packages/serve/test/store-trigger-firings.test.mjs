@@ -99,10 +99,11 @@ test("active runs: the trigger's started firings whose run has not ended", async
     await store.triggers.record("trg-1", [due(`fir-${n}`)]);
     await store.triggers.fire({ triggerId: "trg-1", key: `fir-${n}` }, { id: `run-${n}`, agentId: "agent-1", revisionId: "rev-1" });
   }
-  assert.equal(await store.triggers.activeRuns("trg-1", Date.now()), 3);
+  assert.equal((await store.triggers.activeKeys("trg-1", Date.now())).length, 3);
   const claim = await store.claim("run-2", "runner-a", { leaseMs: 60_000 });
   await store.runs.update(claim, { state: "ended" });
-  assert.equal(await store.triggers.activeRuns("trg-1", Date.now()), 2, "an ended run is not active");
+  assert.equal((await store.triggers.activeKeys("trg-1", Date.now())).length, 2, "an ended run is not active");
+  assert.deepEqual((await store.triggers.activeKeys("trg-1", Date.now())).sort(), ["fir-1", "fir-3"], "the keys of the firings counted");
   assert.equal((await store.triggers.firing("trg-1", "fir-1")).status, "started", "fire moved the due firing to started");
 });
 
@@ -156,4 +157,45 @@ test("a firing its launch hook's host took with no run keeps its start_by (never
   await store.triggers.record("trg-1", [due("fir-skip")]);
   const skipped = await store.triggers.settle("trg-1", "fir-skip", { status: "skipped", reason: "x", startBy });
   assert.deepEqual([skipped.firing.startBy, skipped.firing.retryAt], [null, null]);
+});
+
+test("a settle with noRun is written only while the firing has no run, beside `from`: one a release failed meanwhile, or another run started, is left as it is", async (t) => {
+  const { store } = await withTrigger(t);
+  await store.triggers.record("trg-1", [due("fir-sent", "webhook"), due("fir-released", "webhook"), due("fir-ran", "webhook")]);
+  for (const key of ["fir-sent", "fir-released", "fir-ran"]) await store.triggers.settle("trg-1", key, { status: "sent", reason: "handed", keepAttrs: true, startBy: T0 + 600_000 }, { reset: true });
+  await store.triggers.settle("trg-1", "fir-released", { status: "failed", error: { code: "host_released", message: "Failed at launch." }, from: "sent" });
+  for (const id of ["run-1", "run-2", "run-3"]) await store.runs.create({ id, agentId: "agent-1", revisionId: "rev-1" });
+  await store.triggers.settle("trg-1", "fir-ran", { status: "started", runId: "run-3" });
+  const start = (key, from, runId) => store.triggers.settle("trg-1", key, { status: "started", runId, from, noRun: true }, { reset: true });
+
+  assert.equal(await start("fir-released", "sent", "run-1"), undefined, "released meanwhile: not written");
+  const released = await store.triggers.firing("trg-1", "fir-released");
+  assert.deepEqual([released.status, released.runId, released.error?.code], ["failed", null, "host_released"]);
+  assert.equal(await start("fir-ran", "started", "run-2"), undefined, "a firing with a run keeps it");
+  assert.equal((await store.triggers.firing("trg-1", "fir-ran")).runId, "run-3");
+  const started = await start("fir-sent", "sent", "run-1");
+  assert.deepEqual([started?.firing.status, started?.firing.runId], ["started", "run-1"], "sent with no run: written");
+});
+
+test("a settle with holdsAt is written only while the firing holds its trigger's room at that time: sent with no run and its start_by not passed; else nothing is written", async (t) => {
+  const { store } = await withTrigger(t);
+  const startBy = T0 + 600_000;
+  await store.triggers.record("trg-1", [due("fir-held", "webhook", { attrs: { event: "push" } }), due("fir-due")]);
+  await store.triggers.settle("trg-1", "fir-held", { status: "sent", reason: "handed", keepAttrs: true, startBy }, { reset: true });
+  const pushOut = (key, at) => store.triggers.settle("trg-1", key, { status: "sent", reason: "handed", keepAttrs: true, startBy: at + 60_000, from: "sent", holdsAt: at });
+
+  assert.equal(await pushOut("fir-held", startBy + 1), undefined, "past its start_by it holds nothing: not written");
+  assert.equal((await store.triggers.firing("trg-1", "fir-held")).startBy, startBy, "its start_by as it was");
+  assert.equal(await pushOut("fir-due", startBy), undefined, "a due firing holds no room");
+  assert.equal((await store.triggers.firing("trg-1", "fir-due")).status, "due");
+
+  const pushed = await pushOut("fir-held", startBy);
+  assert.deepEqual([pushed?.firing.status, pushed?.firing.startBy, pushed?.firing.reason, pushed?.firing.attrs], ["sent", startBy + 60_000, "handed", { event: "push" }], "at its start_by it still holds: its start_by pushed out, its reason and attrs kept");
+  assert.equal((await store.triggers.activeKeys("trg-1", startBy + 30_000)).length, 1, "it holds the room through the new start_by");
+  assert.deepEqual(await store.triggers.activeKeys("trg-1", startBy + 30_000), ["fir-held"], "a held firing's key is among them");
+
+  await store.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1", origin: { key: "fir-held" } });
+  await store.triggers.settle("trg-1", "fir-held", { status: "started", runId: "run-1" });
+  assert.equal(await pushOut("fir-held", startBy), undefined, "a started firing holds by its run, never by a start_by");
+  assert.deepEqual([(await store.triggers.firing("trg-1", "fir-held")).status, (await store.triggers.firing("trg-1", "fir-held")).runId], ["started", "run-1"]);
 });

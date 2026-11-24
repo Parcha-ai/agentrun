@@ -15,7 +15,7 @@ import type { Context } from "@earendil-works/chord/context";
 import { stopRunWith } from "../paid-calls.js";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { defineExtension, type Extension, ROOT_CONVERSATION_ID, type ToolExecutionApi, type ToolRegistration } from "@earendil-works/pi-durable";
-import { type CapModel, type CapRefused, checkRaise, followUpOf, freeRequestLimitOf, parkOf, planCapModel } from "@parcha/agentrun-kernel/kernel/cap";
+import { type CapModel, type CapRefused, checkRaise, followUpOf, freeRequestLimitOf, maxRequestsOf, parkOf, planCapModel } from "@parcha/agentrun-kernel/kernel/cap";
 import { inspectWorkflow, type Workflow } from "@parcha/agentrun-dsl";
 import type { AdapterFacts, BeforeRequest, HostTool, NestedCalls, Refusal, SessionSpec, Wire } from "@parcha/agentrun-kernel";
 import { factsOf } from "../harness-table.js";
@@ -262,7 +262,7 @@ export function capModelOf(route: ModelRoute): CapModel {
       }
     : null;
   // The cap reads a request's provider overhead by the route's own wire (providerInputOverhead).
-  return { id: route.model, api: route.provider.api, price, outputCeiling: route.outputCeiling ?? null };
+  return { id: route.model, api: route.provider.api, price, outputCeiling: route.outputCeiling ?? null, ...(route.local ? { local: true } : {}) };
 }
 
 /** Particle requests are never automatically replayed after an uncertain failure. Retry is a harness-wide setting,
@@ -578,7 +578,9 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // ends the one a park kept, its mount with it, before the run's tools touch its folder (turnedOff).
   const offAlready = await computerTurnedOff(deps.journal(claim), context);
   const computer = await deps.computerForClaim(
-    { runId: claim.runId, epoch: claim.epoch, claim, agentId: runRow.agentId, revisionId: runRow.revisionId, place: launch.place },
+    // The runner holding the claim (its name, its presence incarnation): a computer a park keeps that only it can reach
+    // again is pinned to it.
+    { runId: claim.runId, epoch: claim.epoch, claim, agentId: runRow.agentId, revisionId: runRow.revisionId, place: launch.place, ...(run.incarnation ? { holder: { runner: claim.runner, incarnation: run.incarnation } } : {}) },
     deps.store,
     // revokeMount removes the run's Archil mount credential when the computer is released (and if a start fails after a mint);
     // the run's end revokes it too (below), so it goes on every outcome even when no computer is made. Idempotent. What
@@ -732,6 +734,8 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     ...(besideOf ? { beside: besideOf } : {}),
     // The most requests on free models it makes, capped or not (AGENTRUN_FREE_MODEL_REQUESTS, or the agent's lower max_requests).
     freeRequests: freeRequestLimitOf(deps.env, body.maxRequests),
+    // The agent's own limit alone, which a local model's requests count toward too (run-cap.ts maxRequests).
+    ...(maxRequestsOf(body.maxRequests) === undefined ? {} : { maxRequests: maxRequestsOf(body.maxRequests) }),
   };
   // The run's cap figure and what a refusal does to it (parkOf, with the kernel's raise rule): present only when the run
   // has a cap. A park names the cap the loop holds the run to then (a raise's, else this one).

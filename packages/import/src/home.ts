@@ -7,6 +7,9 @@ import { type CalculateCost, type Catalog, builtinCatalog, priceRequests } from 
 import { childrenOf, inOrder, type Readers, readerOf, sessionLocators } from "./read.js";
 import { type Env, type Locator, locatorKey, type SessionRead } from "./reader.js";
 import { READERS, SOURCES, type Source } from "./readers/index.js";
+import { addAll, addRecord, dropOwner, isRecordIndex, locatorNumber, ownerOf, type RecordIndex, recordIndex } from "./record-index.js";
+import { packed, packInto } from "./record-key.js";
+import type { Usage } from "./types.js";
 import { addTokens, noTokens, type Tokens } from "./usage.js";
 
 export type SessionTotals = {
@@ -36,14 +39,15 @@ export type SessionTotals = {
 /** What parseHome keeps between passes, when handed one: each locator's cursor (its reader's own), the records each
  *  source has read with the locator that read each first, and which locators found a record another read first, so a
  *  second pass reads only what was written since. It holds no session text (its reads are turns: false: counts, ids and
- *  paths alone), so it can be kept with v8.serialize. Its contents are the package's; `read` is the last pass's bytes. */
+ *  paths alone), so it can be kept with v8.serialize. Its contents are the package's; `read` is the last pass's bytes. A
+ *  source's part kept by an earlier version of another shape is set aside, and that source read again from its start. */
 export type HomeState = { read?: number; sources?: Partial<Record<string, SourceState>> };
 
 /** One source's part of a HomeState. */
 type SourceState = {
   cursors: Map<string, unknown>;
-  /** Each record read (the reader's "u:"/"m:" keys), with the locator (locatorKey) that read it first: the one it counts in. */
-  owners: Map<string, string>;
+  /** Each record read (the reader's "u:"/"m:" keys, packed: packInto), with the locator (locatorKey) that read it first: the one it counts in. */
+  owners: RecordIndex;
   /** For each locator, the locators whose records it found already read (its copies' owners). */
   copied: Map<string, Set<string>>;
 };
@@ -64,7 +68,15 @@ export type ParseOptions = {
   /** Where each locator its reader could not read goes (unopenable, an I/O error midway); the rest are totalled. Without
    *  it, parseHome throws ReadFailures instead: an unreadable file is never taken for an empty one. */
   failures?: ReadFailure[];
+  /** Called with each session as it is totalled: its totals, and its requests (its subagents' with them, each once) with
+   *  their times and models, text-free as the totals are. `started`: the time (ms) of the first request of the session's
+   *  own files (not its subagents'), absent when it has none. For a caller that buckets the same numbers (wrapped.ts). */
+  requests?: (totals: SessionTotals, requests: readonly SessionRequest[], started: number | undefined) => void;
 };
+
+/** One model request of a session: when (ms), by which model ("provider/model", the session's when the request names none),
+ *  and its tokens where the source counted them. */
+export type SessionRequest = { at: number; model?: string; usage?: Usage };
 
 /** A locator its reader could not read: its key (as SessionTotals'), its file, and the reader's error. */
 export type ReadFailure = { key: string; file: string; source: string; error: unknown };
@@ -85,18 +97,92 @@ const keyOf = (home: string, { file, id }: Locator): { key: string; file: string
   return { key: createHash("sha256").update(id === undefined ? path : `${path}#${id}`).digest("hex"), file: path };
 };
 
-type Part = { locator: Locator; read: SessionRead };
+/** What a total takes of one session a read found, and no more: its session's counts and ids, and each request's model
+ *  and tokens, packed. A whole SessionRead holds every request as objects (its calls, uuids, key, effort); a source of
+ *  millions of requests held so until its totals are taken outgrows the heap. */
+type Compact = {
+  session: Pick<SessionRead["session"], "id" | "child" | "parent" | "users" | "copies" | "costUsd" | "model">;
+  /** Each request's model (its own, else the session's), as its index in the pass's Models; -1 for none. */
+  models: Int32Array;
+  /** Each request's tokens, USAGE_FIELDS numbers a request, in order; HAS_* says which it has. */
+  usage: Float64Array;
+  /** Each request's HAS_* bits. */
+  has: Uint8Array;
+  /** Each request's time (ms), for the requests sink. */
+  at: Float64Array;
+};
+
+const USAGE_FIELDS = 6;
+const HAS_USAGE = 1;
+const HAS_LONG = 2;
+const HAS_REASONING = 4;
+
+/** Each model string once, by index: a request names its model as an index into it. */
+type Models = { names: string[]; index: Map<string, number> };
+
+/** `read` as a total takes it (Compact), each request's model the one totalsOf prices it at. */
+function compact(read: SessionRead, models: Models): Compact {
+  const { id, child, parent, users, copies, costUsd, model } = read.session;
+  const n = read.requests.length;
+  const out: Compact = { session: { id, child, users, copies, ...(parent !== undefined ? { parent } : {}), ...(costUsd !== undefined ? { costUsd } : {}), ...(model !== undefined ? { model } : {}) }, models: new Int32Array(n), usage: new Float64Array(n * USAGE_FIELDS), has: new Uint8Array(n), at: new Float64Array(n) };
+  for (let i = 0; i < n; i += 1) {
+    const request = read.requests[i]!;
+    out.at[i] = request.at;
+    const name = request.model ?? model;
+    let at = -1;
+    if (name !== undefined) {
+      at = models.index.get(name) ?? -1;
+      if (at === -1) models.index.set(name, (at = models.names.push(name) - 1));
+    }
+    out.models[i] = at;
+    const { usage } = request;
+    if (!usage) continue;
+    const o = i * USAGE_FIELDS;
+    out.usage[o] = usage.input;
+    out.usage[o + 1] = usage.output;
+    out.usage[o + 2] = usage.cacheRead;
+    out.usage[o + 3] = usage.cacheWrite;
+    let has = HAS_USAGE;
+    if (usage.cacheWrite1h !== undefined) {
+      out.usage[o + 4] = usage.cacheWrite1h;
+      has |= HAS_LONG;
+    }
+    if (usage.reasoning !== undefined) {
+      out.usage[o + 5] = usage.reasoning;
+      has |= HAS_REASONING;
+    }
+    out.has[i] = has;
+  }
+  return out;
+}
+
+/** The i-th request of `read` as priceRequests and the requests sink take it. */
+function requestAt(read: Compact, i: number, models: Models): SessionRequest {
+  const index = read.models[i]!;
+  const model = index === -1 ? undefined : models.names[index];
+  const request: SessionRequest = { at: read.at[i]!, ...(model !== undefined ? { model } : {}) };
+  const has = read.has[i]!;
+  if (!(has & HAS_USAGE)) return request;
+  const o = i * USAGE_FIELDS;
+  const usage: Usage = { input: read.usage[o]!, output: read.usage[o + 1]!, cacheRead: read.usage[o + 2]!, cacheWrite: read.usage[o + 3]! };
+  if (has & HAS_LONG) usage.cacheWrite1h = read.usage[o + 4]!;
+  if (has & HAS_REASONING) usage.reasoning = read.usage[o + 5]!;
+  return { ...request, usage };
+}
+
+type Part = { locator: Locator; read: Compact };
 
 /** Every session of `sources` under `home`, as totals, sorted by key. */
-export async function parseHome(home: string, { sources = SOURCES, readers = READERS, state, catalog, calculateCost, env, failures }: ParseOptions = {}): Promise<SessionTotals[]> {
+export async function parseHome(home: string, { sources = SOURCES, readers = READERS, state, catalog, calculateCost, env, failures, requests }: ParseOptions = {}): Promise<SessionTotals[]> {
   let prices: Promise<Catalog | undefined> | undefined;
   const priceWith = () => (catalog === false ? Promise.resolve(undefined) : catalog ? Promise.resolve(catalog) : (prices ??= builtinCatalog()));
   const out: SessionTotals[] = [];
   const failed: ReadFailure[] = [];
   if (state) state.read = 0;
   for (const source of sources) {
-    const { tops, children, unread } = await readSource(home, source, readers, env, state);
-    out.push(...(await totalsOf(home, source, tops, children, priceWith, calculateCost)));
+    const models: Models = { names: [], index: new Map() };
+    const { tops, children, unread } = await readSource(home, source, readers, env, state, models);
+    out.push(...(await totalsOf(home, source, tops, children, models, priceWith, calculateCost, requests)));
     failed.push(...unread.map(({ locator, error }) => ({ key: keyOf(home, locator).key, file: locator.file, source, error })));
   }
   if (failed.length && !failures) throw new ReadFailures(failed);
@@ -110,7 +196,7 @@ export async function parseHome(home: string, { sources = SOURCES, readers = REA
  *  gone, when its reader could not go on from its cursor (a new inode, truncated, rewritten), or when a locator holding a
  *  copy now comes before the one its record counts in (an append moved an older file after its resumed copy, a new file
  *  sorts before one it shares records with). A change of order among locators that share no record reads nothing again. */
-async function readSource(home: string, source: string, readers: Readers, env: Env | undefined, state: HomeState | undefined): Promise<{ tops: Part[]; children: (Part & { of: Locator })[]; unread: { locator: Locator; error: unknown }[] }> {
+async function readSource(home: string, source: string, readers: Readers, env: Env | undefined, state: HomeState | undefined, models: Models): Promise<{ tops: Part[]; children: (Part & { of: Locator })[]; unread: { locator: Locator; error: unknown }[] }> {
   const reader = readerOf(source, readers);
   const listed = await inOrder(await sessionLocators(home, source, { ...(env ? { env } : {}), readers }), source, readers);
   const childList = await childrenOf(home, source, { ...(env ? { env } : {}), readers });
@@ -120,9 +206,11 @@ async function readSource(home: string, source: string, readers: Readers, env: E
   const outOfOrder = (kept: SourceState) => [...kept.copied].some(([key, owners]) => [...owners].some((owner) => place.get(owner)! > place.get(key)!));
   for (let pass = 0; ; pass += 1) {
     let kept = state ? (state.sources ??= {})[source] : undefined;
-    if (kept && ([...kept.cursors.keys()].some((key) => !place.has(key)) || outOfOrder(kept))) kept = undefined;
-    if (state && !kept) kept = state.sources![source] = { cursors: new Map(), owners: new Map(), copied: new Map() };
-    const { owners, copied } = kept ?? { owners: new Map<string, string>(), copied: new Map<string, Set<string>>() };
+    // A source's state of another shape (an earlier version's, its records in a Map) is set aside like one whose files
+    // changed: the source is read from its start and its state rebuilt.
+    if (kept && (!isRecordIndex(kept.owners) || [...kept.cursors.keys()].some((key) => !place.has(key)) || outOfOrder(kept))) kept = undefined;
+    if (state && !kept) kept = state.sources![source] = { cursors: new Map(), owners: recordIndex(), copied: new Map() };
+    const { owners, copied } = kept ?? { owners: recordIndex(), copied: new Map<string, Set<string>>() };
     let restarted = false;
     const unread: { locator: Locator; error: unknown }[] = [];
     const read = async (locator: Locator): Promise<SessionRead[]> => {
@@ -131,17 +219,25 @@ async function readSource(home: string, source: string, readers: Readers, env: E
       // The records read so far, as the reader asks for them, each new one this locator's, each found one noted. Both are
       // staged and kept only when the read succeeds: a read that fails partway leaves no record owned that no cursor
       // holds, which a retry would take for a copy.
-      const mine = new Map<string, string>();
+      // Records are held by their packed keys (packInto): a reader asks has, then add, of one record, packed once.
+      const me = locatorNumber(owners, key);
+      const mine = recordIndex(64);
       const found = new Set<string>();
+      let asked: string | undefined;
+      const at = packed();
+      const pack = (record: string) => (record === asked ? at : ((asked = record), packInto(record, at)));
       const seen = {
         has: (record: string) => {
-          const owner = owners.get(record) ?? mine.get(record);
-          if (owner === undefined) return false;
-          if (owner !== key) found.add(owner);
+          pack(record);
+          let owner = ownerOf(owners, at);
+          if (owner === -1) owner = ownerOf(mine, at);
+          if (owner === -1) return false;
+          if (owner !== me) found.add(owners.locators[owner]!);
           return true;
         },
         add(record: string) {
-          if (!owners.has(record) && !mine.has(record)) mine.set(record, key);
+          pack(record);
+          if (ownerOf(owners, at) === -1) addRecord(mine, at, me);
           return this;
         },
       } as Set<string>;
@@ -152,13 +248,13 @@ async function readSource(home: string, source: string, readers: Readers, env: E
         // copy) skipped them, though the fresh pass counts them there: the source is read again.
         if (kept && cursor !== undefined) {
           kept.cursors.delete(key);
-          for (const [record, owner] of owners) if (owner === key) owners.delete(record);
+          dropOwner(owners, me);
           copied.delete(key);
           if ([...copied.values()].some((owners) => owners.has(key))) restarted = true;
         }
         return [];
       }
-      for (const [record, owner] of mine) owners.set(record, owner);
+      addAll(owners, mine);
       if (found.size) for (const owner of found) (copied.get(key) ?? copied.set(key, new Set()).get(key)!).add(owner);
       if (cursor !== undefined && !result.resumed) restarted = true;
       if (state) state.read! += result.read;
@@ -166,9 +262,10 @@ async function readSource(home: string, source: string, readers: Readers, env: E
       return result.sessions;
     };
     const tops: Part[] = [];
-    for (const { locator } of listed) for (const session of await read(locator)) tops.push({ locator: session.locator, read: session });
+    // Each locator's sessions packed as soon as they are read: only one locator's requests are ever held whole.
+    for (const { locator } of listed) for (const session of await read(locator)) tops.push({ locator: session.locator, read: compact(session, models) });
     const children: (Part & { of: Locator })[] = [];
-    for (const { locator, of } of childList) for (const session of await read(locator)) children.push({ locator: session.locator, read: session, of });
+    for (const { locator, of } of childList) for (const session of await read(locator)) children.push({ locator: session.locator, read: compact(session, models), of });
     // A locator its reader could not go on in, or a copy this pass found whose record counts after it: read the source
     // again, from nothing.
     if (pass > 0 || !kept || !(restarted || outOfOrder(kept))) return { tops, children, unread };
@@ -176,7 +273,7 @@ async function readSource(home: string, source: string, readers: Readers, env: E
   }
 }
 
-async function totalsOf(home: string, source: string, tops: Part[], children: (Part & { of: Locator })[], priceWith: () => Promise<Catalog | undefined>, calculateCost: CalculateCost | undefined): Promise<SessionTotals[]> {
+async function totalsOf(home: string, source: string, tops: Part[], children: (Part & { of: Locator })[], models: Models, priceWith: () => Promise<Catalog | undefined>, calculateCost: CalculateCost | undefined, sink?: ParseOptions["requests"]): Promise<SessionTotals[]> {
   // Sessions by id, their locators in the import's order; one naming its parent (a Codex subagent's thread) is the
   // parent's, as is each one beside a session's (Claude Code's subagents).
   const sessions = new Map<string, { parts: Part[]; children: Part[]; untied?: true }>();
@@ -217,12 +314,13 @@ async function totalsOf(home: string, source: string, tops: Part[], children: (P
   for (const { parts, children: subagents, untied } of sessions.values()) {
     // A session whose every file holds only records an earlier file holds (copies) is no session: its records count where
     // they were first read. serve's import leaves such a file out the same way.
-    if (parts.every(({ read }) => read.session.copies > 0 && read.session.users === 0 && read.requests.length === 0) && subagents.length === 0) continue;
+    if (parts.every(({ read }) => read.session.copies > 0 && read.session.users === 0 && read.models.length === 0) && subagents.length === 0) continue;
     const first = parts[0]!;
     const tokens = noTokens();
     let reasoning = 0;
     let calls = 0;
-    const requests = [...parts, ...subagents].flatMap(({ read }) => read.requests.map((request) => ({ model: request.model ?? read.session.model, usage: request.usage })));
+    const requests: SessionRequest[] = [];
+    for (const { read } of [...parts, ...subagents]) for (let i = 0; i < read.models.length; i += 1) requests.push(requestAt(read, i, models));
     for (const { usage } of requests) {
       calls += 1;
       if (!usage) continue;
@@ -238,7 +336,7 @@ async function totalsOf(home: string, source: string, tops: Part[], children: (P
       cost = catalog ? await priceRequests(requests, catalog, calculateCost) : undefined;
     }
     const { key, file } = keyOf(home, first.locator);
-    out.push({
+    const totals: SessionTotals = {
       key,
       file,
       source,
@@ -251,7 +349,12 @@ async function totalsOf(home: string, source: string, tops: Part[], children: (P
       turns: untied || parts.every(({ read }) => read.session.child) ? 0 : parts.reduce((n, { read }) => n + read.session.users, 0),
       calls,
       subagents: subagents.length,
-    });
+    };
+    out.push(totals);
+    if (sink) {
+      const times = parts.flatMap(({ read }) => Array.from(read.at)).filter(Number.isFinite);
+      sink(totals, requests, times.reduce<number | undefined>((least, at) => (least === undefined || at < least ? at : least), undefined));
+    }
   }
   return out;
 }

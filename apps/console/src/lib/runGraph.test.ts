@@ -1,6 +1,6 @@
 import { workflowGraph } from "@dsl/graph";
 import { describe, expect, it } from "vitest";
-import { BATCH_MID, batchPausedRun, batchRunAt, kybRun } from "@/fixtures/dwf/runs";
+import { BATCH_MID, batchPausedRun, batchRunAt, kybRun } from "@/demo/dwf/runs";
 import { itemCounts, itemLabel, itemOutcome, itemStates, type RunGraph, runMarks, toneOf, usd, verdictOf } from "./runGraph";
 
 const MAP = "/root/steps/0";
