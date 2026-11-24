@@ -105,6 +105,7 @@ import { monidForClaim, type MonidFake, withMonid } from "./monid-run.js";
 import { verifyPlacedProject, movedSkillFiles } from "../source-sync/claim.js";
 import { projectCheckpointForRun } from "./project-checkpoint.js";
 import { sourceAuxiliaryAdmitter } from "../source-sync/auxiliary.js";
+import { routeTrace } from "../otel/genai.js";
 
 /** What a claim gives the shared computerForClaim: the run, its epoch, the claim itself (a live view's row is fenced on it
  *  and names its runner), its revision, its place and any computer choice. */
@@ -311,6 +312,14 @@ export function modelRetryOf(routes: Iterable<Pick<ModelRoute, "like">>): Pick<A
 const SUBAGENT_ROUTE = "subagent-";
 const subagentRoute = (tier: SubagentTier): string => `${SUBAGENT_ROUTE}${tier}`;
 const isSubagentRoute = (key: string): boolean => key.startsWith(SUBAGENT_ROUTE);
+
+/** A model route as the run's GenAI trace names it: its provider, the host its requests go to, its model. A route that
+ *  translates its model's requests (its own `fetch`) is named by its upstream's host (ModelRoute.upstreamOrigin), never
+ *  its proxy's placeholder origin; one whose upstream is unknown names no host. */
+export const traceOfRoute = (route: ModelRoute) => {
+  const origin = route.fetch ? route.upstreamOrigin : route.provider.origin;
+  return routeTrace({ ...(route.named ? { named: route.named } : {}), ...(origin ? { origin } : {}), model: route.model });
+};
 
 /** The model a replay run's or an audit shadow's grader runs on (graderRouteOf): the revision's modelTiers.fast, else
  *  `env`'s fast tier (AGENT_MODEL_FAST); undefined when there is neither, or the revision names agree_on (no grader). */
@@ -998,6 +1007,11 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     // The answer's schema: a miss is asked again once (adapter-loop.ts, the output contract's retry).
     ...(body.outputSchema !== undefined ? { outputSchema: body.outputSchema } : {}),
     ...(cap ? { cap } : {}),
+    // Its routes, as its GenAI trace names them (otel/genai.ts): the session's, and each tier's by its name.
+    trace: {
+      ...traceOfRoute(route),
+      routes: new Map([...tierRoutes].map(([tier, routed]) => [tier, traceOfRoute(routed)])),
+    },
     // The run's MCP for a harness with its own client (mcp-run.ts), with its monid endpoints beside it (monid-run.ts):
     // the catalog tools the session mounts; absent when none.
     ...(catalog ? { mcp: catalog } : {}),

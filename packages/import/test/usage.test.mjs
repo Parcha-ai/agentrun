@@ -2,7 +2,7 @@
 // counts below are worked by hand.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { normalizeUsage, parseHome, priceRequests, readSession } from "../dist/index.js";
+import { normalizeUsage, otelUsage, parseHome, priceRequests, readSession } from "../dist/index.js";
 import { codexAnswer, codexContext, codexFile, codexMeta, codexTokens, codexUser, openaiUsage, tempHome, writeJsonl } from "./fixtures.mjs";
 
 test("Anthropic: input_tokens already leaves the cache out; the 1h part of the cache write is its own bucket", () => {
@@ -32,6 +32,30 @@ test("pi: already split, taken as written", () => {
   assert.deepEqual(normalizeUsage("pi", { input: 10, output: 20, cacheRead: 30, cacheWrite: 40, cacheWrite1h: 15 }), { input: 10, output: 20, cacheRead: 30, cacheWrite: 40, cacheWrite1h: 15 });
   // A 1h part over the whole write is dropped, never trusted.
   assert.deepEqual(normalizeUsage("pi", { input: 1, output: 2, cacheRead: 0, cacheWrite: 4, cacheWrite1h: 9 }), { input: 1, output: 2, cacheRead: 0, cacheWrite: 4 });
+});
+
+test("OpenRouter: prompt_tokens holds its cached and cache-written tokens, so input is the difference; reasoning is a subset of completion_tokens", () => {
+  // 2000 in: 1500 read from the cache, 100 written to it, 400 neither. 300 out, 120 of them reasoning: output stays 300.
+  const raw = { prompt_tokens: 2000, completion_tokens: 300, total_tokens: 2300, prompt_tokens_details: { cached_tokens: 1500, cache_write_tokens: 100 }, completion_tokens_details: { reasoning_tokens: 120 } };
+  assert.deepEqual(normalizeUsage("openrouter", raw), { input: 400, output: 300, cacheRead: 1500, cacheWrite: 100, reasoning: 120 });
+  // No details at all: nothing cached, no reasoning named.
+  assert.deepEqual(normalizeUsage("openrouter", { prompt_tokens: 10, completion_tokens: 4 }), { input: 10, output: 4, cacheRead: 0, cacheWrite: 0 });
+  // A cache count over the prompt is no usage at all.
+  assert.equal(normalizeUsage("openrouter", { prompt_tokens: 10, completion_tokens: 4, prompt_tokens_details: { cached_tokens: 11 } }), undefined);
+  // A reasoning count over the completion is dropped, never trusted.
+  assert.deepEqual(normalizeUsage("openrouter", { prompt_tokens: 10, completion_tokens: 4, completion_tokens_details: { reasoning_tokens: 9 } }), { input: 10, output: 4, cacheRead: 0, cacheWrite: 0 });
+});
+
+test("otelUsage: a trace's input holds the cache (input + cacheRead + cacheWrite); every other count as it was", () => {
+  // Anthropic's 100 uncached + 2000 read + 300 written: 2400 in on the span, the cache counts beside it unchanged.
+  const anthropic = normalizeUsage("anthropic", { input_tokens: 100, output_tokens: 50, cache_read_input_tokens: 2000, cache_creation_input_tokens: 300 });
+  assert.deepEqual(otelUsage(anthropic), { input: 2400, output: 50, cacheRead: 2000, cacheWrite: 300 });
+  // OpenAI's input_tokens already held its cache: the round trip gives back its own 1500, with the reasoning kept.
+  assert.deepEqual(otelUsage(normalizeUsage("openai", openaiUsage(1500, 1200, 400, 250))), { input: 1500, output: 400, cacheRead: 1200, cacheWrite: 0, reasoning: 250 });
+  // OpenRouter's prompt_tokens the same: 2000 back.
+  assert.deepEqual(otelUsage(normalizeUsage("openrouter", { prompt_tokens: 2000, completion_tokens: 300, prompt_tokens_details: { cached_tokens: 1500, cache_write_tokens: 100 } })), { input: 2000, output: 300, cacheRead: 1500, cacheWrite: 100 });
+  // pi's split figures: summed.
+  assert.deepEqual(otelUsage(normalizeUsage("pi", { input: 10, output: 20, cacheRead: 30, cacheWrite: 40 })), { input: 80, output: 20, cacheRead: 30, cacheWrite: 40 });
 });
 
 test("unknown or broken counts: undefined, never zeros", () => {
