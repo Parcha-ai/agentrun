@@ -61,8 +61,11 @@ export type PlanState = "signed_out" | "pending" | "signed_in" | "expired";
 export type PlanView = { state: PlanState; email?: string; plan?: string; authorize_url?: string; expires_at?: string; models?: string[]; problem?: string };
 
 type Credential = { type: "oauth"; access: string; refresh: string; expires: number; clientId: string; scopes?: string[] };
-/** The sealed row. `lease`: a renewal in flight, its holder and its end (ms, on the store's clock). */
-type Row = { v: 1; state: "signed_in" | "expired"; credential: Credential; email?: string; plan?: string; models: string[]; lease?: { holder: string; until: number } };
+/** The sealed row. `lease`: a renewal in flight, its holder and its end (ms, on the store's clock). A sign-in is saved
+ *  before anything slow (keep), and what it leaves is in the row until done (settle): `unlisted`, its models are the
+ *  fallback list until OpenAI's list is read; `retired`, the pairs of the sign-ins it replaced, until OpenAI confirms
+ *  their revocation. */
+type Row = { v: 1; state: "signed_in" | "expired"; credential: Credential; email?: string; plan?: string; models: string[]; unlisted?: true; retired?: Credential[]; lease?: { holder: string; until: number } };
 
 /** The words a run or a request gets when there is no plan token to send. */
 export const SIGNED_OUT = "This server is not signed in to ChatGPT: sign in under Settings → Model keys, or name a model on a key.";
@@ -228,6 +231,10 @@ export class ChatGPTPlan implements PlanReader {
   #failedChanges = 0;
   /** The server's read in flight (refresh), which a read while it is out waits for. */
   #refreshing: Promise<void> | undefined;
+  /** The last settle queued (settle): each waits for the one before it. */
+  #settling: Promise<boolean | undefined> | undefined;
+  /** Whether this plan was loaded once: the server's first load settles what a stop left in the row. */
+  #loaded = false;
   /** The ends of the sign-ins cancelled and not yet ended (close waits for them). */
   readonly #ending = new Set<Promise<void>>();
   readonly #watchers = new Set<(tokens: string[]) => void>();
@@ -334,6 +341,9 @@ export class ChatGPTPlan implements PlanReader {
   /** Reads the sealed row into the state a reader sees. Returns this. */
   async load(): Promise<this> {
     await this.readTaken();
+    // The server's start: a sign-in a stop cut off after its save is finished here, out of the start's way.
+    if (!this.#loaded) void this.settle();
+    this.#loaded = true;
     return this;
   }
 
@@ -461,38 +471,83 @@ export class ChatGPTPlan implements PlanReader {
   }
 
   /** A credential from the sign-in started at `epoch`, checked and sealed with what a view shows. A sign-out or a newer
-   *  sign-in since then wins: the credential is dropped, never written, and revoked at OpenAI. A sign-in it takes the place
-   *  of is revoked first, then replaced only while the row still holds it (a renewal of it that wrote back meanwhile is
-   *  read, revoked and replaced in turn), so no earlier pair is left alive. */
+   *  sign-in since then wins: the credential is dropped, never written, and revoked at OpenAI. It is saved before anything
+   *  slow, so a stop that cuts it off never leaves its pair live at OpenAI and saved nowhere: a sign-in it takes the place
+   *  of rides in the row (`retired`, with any it carried) until it is revoked, and its models are listed after (settle).
+   *  The row is replaced only while it still holds what was read (a renewal that wrote back meanwhile is read and carried
+   *  in turn), so no earlier pair is left alive and unsaved. */
   private async keep(credential: Credential, epoch: number, saved?: () => void): Promise<void> {
     if (credential.scopes && !credential.scopes.includes(DIRECT_SCOPE)) throw new Error(`the grant did not include ${DIRECT_SCOPE}`);
     this.hold(credential);
-    const models = await this.listModels(credential.access);
-    const row: Row = { v: 1, state: "signed_in", credential, ...whoOf(credential.access), models };
-    let previousRevoked: boolean | undefined;
+    let row: Row;
     for (;;) {
       if (epoch !== this.#epoch) {
         if (!(await this.revoke(credential))) this.#droppedUnconfirmed = true;
         return;
       }
       const was = await this.#deps.store.sealedKeys.get(CHATGPT_PLAN_ROW);
+      const previous = was === undefined ? undefined : this.open(was);
+      const retired = [...(previous?.retired ?? []), ...(previous && previous.credential.refresh !== credential.refresh ? [previous.credential] : [])];
+      row = { v: 1, state: "signed_in", credential, ...whoOf(credential.access), models: [...PLAN_FALLBACK_MODELS], unlisted: true, ...(retired.length ? { retired } : {}) };
+      if (epoch !== this.#epoch) continue;
       if (was === undefined) {
         // No row to compare against: only the server signs in, and nothing else makes the row (a runner's renewal
         // replaces one only while it holds its lease), so a plain write.
         await putSealedKey(this.#deps.store, this.#deps.sealKey, CHATGPT_PLAN_ROW, JSON.stringify(row));
         break;
       }
-      const previous = this.open(was);
-      if (previous && previous.credential.refresh !== credential.refresh) previousRevoked = await this.revoke(previous.credential);
-      if (epoch !== this.#epoch) continue;
       if (await this.swap(was, row)) break;
     }
     this.wrote(row);
     this.#problem = undefined;
-    this.#deps.log?.({ chatgpt: "signed_in", ...(previousRevoked === undefined ? {} : { previous_revoked: String(previousRevoked) }) });
-    // Saved: no longer waiting, so it reads signed in while the server takes the change (`saved`, the sign-in's settle).
+    this.#deps.log?.({ chatgpt: "signed_in" });
+    // Saved: no longer waiting, so it reads signed in while it settles and the server takes the change (`saved`, the
+    // sign-in's settle).
     saved?.();
+    const previousRevoked = await this.settle();
+    if (previousRevoked !== undefined) this.#deps.log?.({ chatgpt: "previous_revoked", revoked: String(previousRevoked) });
     await this.tellChanged();
+  }
+
+  /** What a saved sign-in leaves (keep), done: its models listed (`unlisted`), and each pair it carries (`retired`)
+   *  revoked at OpenAI and dropped from the row once OpenAI confirms it. Whether every carried pair was confirmed; none
+   *  when the row carried none. The server's alone (it holds the store's settings: a runner never signs in), one at a
+   *  time. The row is written only while it holds what was read and no renewal's lease is live (a renewal writes back
+   *  over the row it leased, and carries these fields); what is left stays for the server's next start (load). Never
+   *  throws. */
+  private settle(): Promise<boolean | undefined> {
+    if (!this.#deps.store.settings) return Promise.resolve(undefined);
+    const run = (this.#settling ?? Promise.resolve(undefined)).then(() => this.settleOnce()).catch(() => undefined);
+    this.#settling = run;
+    void run.then(() => (this.#settling === run ? (this.#settling = undefined) : undefined));
+    return run;
+  }
+
+  private async settleOnce(): Promise<boolean | undefined> {
+    const read = await this.readSealed();
+    if (!read || (!read.row.unlisted && !read.row.retired?.length)) return undefined;
+    const signedIn = read.row.credential.refresh;
+    const models = read.row.unlisted && read.row.state === "signed_in" ? await this.listModels(read.row.credential.access) : undefined;
+    const confirmed = new Set<string>();
+    for (const old of read.row.retired ?? []) if (await this.revoke(old)) confirmed.add(old.refresh);
+    const allConfirmed = read.row.retired?.length ? confirmed.size === read.row.retired.length : undefined;
+    for (;;) {
+      const now = await this.readSealed();
+      // Signed out meanwhile: the sign-out revoked what the row held.
+      if (!now) return allConfirmed;
+      if (now.row.lease && now.row.lease.until > (await this.storeNow())) return allConfirmed;
+      const { unlisted, retired: carried, ...rest } = now.row;
+      const retired = (carried ?? []).filter((old) => !confirmed.has(old.refresh));
+      // The models listed are this sign-in's: a newer sign-in's row lists its own.
+      const listed = unlisted && models && now.row.credential.refresh === signedIn;
+      const next: Row = { ...rest, ...(listed ? { models } : unlisted ? { unlisted } : {}), ...(retired.length ? { retired } : {}) };
+      if (!listed && retired.length === (carried ?? []).length) return allConfirmed;
+      const bytes = await this.swap(now.bytes, next);
+      if (bytes) {
+        this.wrote(next);
+        return allConfirmed;
+      }
+    }
   }
 
   /** Tells the server the sign-in changed (its change callback: env read again, the listings relisted, the offers
@@ -672,7 +727,10 @@ export class ChatGPTPlan implements PlanReader {
       if (!(await this.#deps.store.sealedKeys.removeIf(CHATGPT_PLAN_ROW, bytes))) continue;
       // A row that does not open (sealed under another key) is removed, its tokens beyond reach to revoke.
       const removed = row ? (await this.revoke(row.credential)) && !renewing : false;
-      revoked = revoked && removed;
+      // The pairs of the sign-ins it replaced that it still carries (keep, settle) go with it.
+      let carried = true;
+      for (const old of row?.retired ?? []) carried = (await this.revoke(old)) && carried;
+      revoked = revoked && removed && carried;
       break;
     }
     this.wrote(undefined);
@@ -700,7 +758,9 @@ export class ChatGPTPlan implements PlanReader {
    *  sign-out or its 10 minutes) has ended, whatever its end said in the log. */
   close(): Promise<void> {
     this.cancel();
-    return Promise.all([...this.#ending]).then(() => undefined);
+    // A settle out (the start's, a kept sign-in's) is waited for too: the server's stop bounds the wait (planClosed), and
+    // what it cuts off stays in the row for the next start.
+    return Promise.all([...this.#ending, this.#settling]).then(() => undefined);
   }
 }
 
