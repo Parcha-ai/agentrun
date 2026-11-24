@@ -31,10 +31,15 @@ function eachString(value: unknown, each: (text: string) => string): unknown {
   if (Array.isArray(value)) return value.map((item) => eachString(item, each));
   if (!isObj(value)) return value;
   const out: Obj = {};
+  const next = new Map<string, number>();
   for (const [key, item] of Object.entries(value)) {
     const once = each(key);
     let name = once;
-    for (let n = 2; (namesTried.count++, Object.hasOwn(out, name)); n++) name = `${once} (${n})`;
+    // Each name's count goes on from its last free number: no name is taken back, so every number below it is still taken.
+    for (let n = next.get(once) ?? 2; (namesTried.count++, Object.hasOwn(out, name)); n++) {
+      name = `${once} (${n})`;
+      next.set(once, n + 1);
+    }
     Object.defineProperty(out, name, { value: eachString(item, each), enumerable: true, writable: true, configurable: true });
   }
   return out;
