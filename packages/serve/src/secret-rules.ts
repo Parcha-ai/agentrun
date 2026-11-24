@@ -645,7 +645,9 @@ type CommandRead = {
   readonly after?: (text: string, words: readonly Word[]) => number;
 };
 
-/** The most words of options subcommandAt passes over between a path's words (`npm config --global set`). */
+/** The most words of options subcommandAt passes over between a path's words (`npm config --global set`). Without it
+ *  each `config` walks on to the end of its command's read: a constant factor (the read is capped), but about 30 times
+ *  the words looked at on `npm -x config -x ` repeated (lexCount.passed, secret-scrub CVI). */
 const PATH_GAP = 8;
 /** Where a subcommand's words end in a program's arguments (`login`; `set`, `config set`), or -1. Options before it
  *  are passed over (`docker --config ~/.docker login`, `docker -D login`): a word starting with `-` and the word after
@@ -666,6 +668,7 @@ const subcommandAt =
       for (const name of path.slice(1)) {
         let value = false;
         for (let gap = 0; j < words.length && at(j) !== name; gap++) {
+          lexCount.passed++;
           if (gap >= PATH_GAP) return -1;
           const word = at(j);
           if (word.startsWith("-")) value = !word.includes("=");

@@ -65,9 +65,10 @@ export function commandLimit(named: number, max: number, to: number): number {
 export type Lexed = { readonly tokens: readonly Token[]; readonly end: number; readonly subs: readonly (readonly [number, number])[]; readonly reads: number };
 
 /** Characters read by lex and its closer searches, over every call: the counted guard's measure (shell-lex.test.mjs);
- *  and the most words secret-rules' commandWords held at once, handed out and not yet let go (secret-scrub.test.mjs).
- *  Tests' measures: nothing reads them to decide (each Lexed carries its own `reads`). */
-export const lexCount = { read: 0, held: 0 };
+ *  the most words secret-rules' commandWords held at once, handed out and not yet let go; and the words its
+ *  subcommandAt looked at between a path's words (secret-scrub.test.mjs). Tests' measures: nothing reads them to decide
+ *  (each Lexed carries its own `reads`). */
+export const lexCount = { read: 0, held: 0, passed: 0 };
 
 /** How deep constructs nest before the next one is read as a character. */
 export const NEST_MAX = 4;

@@ -2828,6 +2828,19 @@ test("CIV: the command readers hold one command's words at a time, however long 
   }
 });
 
+test("CVI: a subcommand read passes over at most PATH_GAP option words between `config` and `set`: on `npm -x config -x ` at 512 KB, at most 4 words looked at a character", async () => {
+  // Every `config` here is an option's value, so each one is tried as the start of `config set` and walks the options
+  // after it. Bounded by PATH_GAP: 0.73 words a character (measured, lexCount.passed). Unbounded, each walk runs to the
+  // end of its command's read: 20.7 a character, constant in the text's size (the read is capped), so a time bound
+  // catches it only sometimes and this count always.
+  const { lexCount } = await import("../dist/shell-lex.js");
+  const text = repeatTo("npm -x config -x ", 512 * 1024);
+  lexCount.passed = 0;
+  await rulesRead(["secret-assign"], text);
+  const perChar = lexCount.passed / text.length;
+  assert.ok(perChar <= 4, `secret-assign on "npm -x config -x " at 512 KB: ${perChar.toFixed(2)} words passed over a character, past 4`);
+});
+
 test("XCIX: the shipped readers at 512 KB: at most 8 counted reads a character over the lexer test's units, 12 where a command is named inside the quotes of an unclosed construct, and each unit's rule CPU bounded against main's span scan for that rule, timed in the same call", async (t) => {
   const ruleOf = (unit) => (unit.startsWith("curl") ? "curl-user" : unit.startsWith("mysql") ? "mysql-password" : unit.startsWith("npm") ? "secret-assign" : "password-flag");
   const units = [
