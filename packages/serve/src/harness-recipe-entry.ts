@@ -125,7 +125,8 @@ export function recipeEntryOf(options: RecipeEntryOptions): HarnessEntry {
       }, host)
     : acpEntryOf({
         facts: { ...acp.cursorFacts, id: recipe.id, label: recipe.label },
-        recipe: (launch) => acpRecipeFor(recipe, binary, release, options.route(launch.env, launch.probe === true), { vars: options.vars(), model: launch.model }),
+        // A held run its model kept from running never starts its agent: it reads no route, and is laid no key.
+        recipe: (launch) => acpRecipeFor(recipe, binary, release, launch.held ? { on: "keys" } : options.route(launch.env, launch.probe === true), { vars: options.vars(), model: launch.model }),
         beforeStart: options.beforeStart,
         ...checks,
         ...(options.hidden ? { hidden: options.hidden } : {}),

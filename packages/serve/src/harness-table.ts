@@ -374,6 +374,9 @@ export type PlanLaunch = Omit<ModuleLaunch, "provider" | "price" | "skills"> & {
    *  check), never to start its agent: a recipe's route reads its server's listing then, and only what a claim laid when
    *  its agent starts (harness-recipe-entry.ts). */
   readonly probe?: boolean;
+  /** Set for a held run its model kept from running (AdapterNeeds.heldRefusal): its agent never starts, so a recipe's
+   *  route reads no key for it (harness-recipe-entry.ts). */
+  readonly held?: boolean;
 };
 
 /** What serve gives acpEntryOf for an ACP agent billed to its owner's plan (its facts' wire `plan`): Cursor's entry and
@@ -407,10 +410,14 @@ function acpPlanEntryOf(options: AcpPlanEntryOptions, host: AcpEntryHost = {}): 
     if (!acp) throw new HarnessUnavailable(`${label} needs the ACP adapter (${ACP_PACKAGE}) beside this server`);
     if (needs.model.provider !== id) throw new HarnessUnavailable(`${label} runs ${label}'s models, named ${prefix}<model-id>; the run's model is ${needs.model.provider}/${needs.model.modelId}.`);
     const log = host.log ?? harnessLog(id, env);
+    // A held run its model kept from running never starts its agent: its route reads no key (PlanLaunch.held), its recipe
+    // names none, and its start is refused in its create's words.
+    const held = needs.heldRefusal;
     try {
-      const recipe = await ownKeysOnly(facts, await options.recipe({ model: needs.model.modelId, log, ...(needs.confine ? { confine: needs.confine } : {}), env, ...(probe ? { probe } : {}) }));
+      const recipe = await ownKeysOnly(facts, await options.recipe({ model: needs.model.modelId, log, ...(needs.confine ? { confine: needs.confine } : {}), env, ...(probe ? { probe } : {}), ...(held !== undefined ? { held: true } : {}) }));
+      const beforeStart = held !== undefined ? async () => { throw new HarnessUnavailable(held); } : options.beforeStart;
       // Its keys (recipe.keys) are read from the run's environment, which holds its own (ownKeys: run-secrets.ts keysFor).
-      return acp.acpAdapter({ recipe, ...(options.beforeStart ? { beforeStart: options.beforeStart } : {}), ...(needs.confine ? { confine: needs.confine } : {}), env, log });
+      return acp.acpAdapter({ recipe: held !== undefined ? { ...recipe, keys: [] } : recipe, ...(beforeStart ? { beforeStart } : {}), ...(needs.confine ? { confine: needs.confine } : {}), env, log });
     } catch (error) {
       if (error instanceof HarnessUnavailable) throw error;
       throw new HarnessUnavailable((error as Error).message, fixOf(facts, error));

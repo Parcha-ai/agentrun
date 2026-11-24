@@ -809,9 +809,10 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
     // harness is a plan-billed recipe on this runner's table, and never another harness's. Opened for the recipe file
     // the process loaded (`digest`), never the one this runner's table read at its start: a file swapped for another
     // vendor's under the same id since then runs its own binary, and a key bound to the first file never opens for it.
+    // None for a held run its model kept from running: its agent never starts.
     harnessKeys: async (digest) => {
       const harness = launch.harness ?? (revision.body as { harness?: string }).harness;
-      const recipe = harness === undefined ? undefined : planRecipeOf(deps.env, harness);
+      const recipe = harness === undefined || modelRefused ? undefined : planRecipeOf(deps.env, harness);
       return recipe?.keys.length && typeof digest === "string" ? openHarnessKeys(store, sealKey, { ...recipe, digest }) : {};
     },
     liveViewerPut: (handover) => putLiveViewer(store, sealKey, claim, handover),
