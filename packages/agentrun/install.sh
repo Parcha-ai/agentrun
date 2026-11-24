@@ -690,11 +690,22 @@ vps_install_docker() {
   say "Installed Docker Engine $engine"
 }
 
+# A server that has just booted may still be running cloud-init's, apt-daily's or unattended-upgrades' apt. dpkg's lock
+# is waited for once (DPkg::Lock::Timeout): a dpkg still stuck after it stops the install. Every other lock apt-get could
+# not get, which that option does not cover (the archives' an install takes, the lists' an update takes), by trying
+# again, for 600 s as well. Under LC_ALL=C, so the words matched are apt's English ones on a server set to any language.
 vps_apt() {
-  if ! DEBIAN_FRONTEND=noninteractive apt-get -y -qq -o Dpkg::Use-Pty=0 "$@" > "$work/apt.log" 2>&1; then
+  apt_waited=0
+  until LC_ALL=C DEBIAN_FRONTEND=noninteractive apt-get -y -qq -o Dpkg::Use-Pty=0 -o DPkg::Lock::Timeout=600 "$@" > "$work/apt.log" 2>&1; do
+    if [ "$apt_waited" -lt 600 ] && grep 'Could not get lock' "$work/apt.log" | grep -qv '/var/lib/dpkg/'; then
+      [ "$apt_waited" -gt 0 ] || say "Waiting for the apt-get another process is running ..."
+      sleep 5
+      apt_waited=$((apt_waited + 5))
+      continue
+    fi
     tail -n 20 "$work/apt.log" >&2
     fail "apt-get $* failed (its last lines are above)"
-  fi
+  done
 }
 
 # Compose reads the shell's variables before .env: those it reads here come from .env alone, and its files from here.

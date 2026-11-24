@@ -102,7 +102,8 @@ export function redactWords(words: string): string {
 			.replace(/\b(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+/gi, "[a secret]")
 			// A secret-named parameter, its name with a prefix or suffix too: api_key=, access_token=, client_secret=.
 			.replace(/\b[\w-]*(?:token|password|passwd|secret|key|jwt|auth|code|signingKey|credential)[\w-]*=[^\s&"';,]+/gi, "[a secret]")
-			.replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9._-]*/g, "[a secret]")
+			// A token from the first "eyJ" of its run, glued to a word ("id_eyJ...") too.
+			.replace(/eyJ(?<!eyJ[A-Za-z0-9_-]*?eyJ)[A-Za-z0-9_-]+\.[A-Za-z0-9._-]*/g, "[a secret]")
 			.replace(/\b(?:sk|pk|rk)-[A-Za-z0-9_-]{8,}/g, "[a secret]")
 			.replace(/\bgh[pousr]_[A-Za-z0-9]{16,}/g, "[a secret]")
 			.replace(/\b(?:sk|pk|pck|ph|tok|pw|jwt)_[A-Za-z0-9_-]{6,}/g, "[a secret]")

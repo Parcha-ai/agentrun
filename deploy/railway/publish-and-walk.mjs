@@ -373,10 +373,17 @@ async function walk(client, { workspaceId, template, step, firstRun, times }) {
     environmentId = edges(project.environments)[0]?.id;
     serviceId = edges(project.services).find((s) => s.name === service.name)?.id;
     if (!environmentId || !serviceId) throw new Error(`the walk's project has no service named ${service.name}`);
+    // The deployment last seen, so a wait that runs out says where it stopped: QUEUED or INITIALIZING (Railway never
+    // started it), BUILDING (the image pull), DEPLOYING (the health check), or none listed.
+    let seen;
     const deployment = await until(client, "the service's deploy succeeded", 20 * 60_000, 10_000, async () => {
       const d = edges((await client.call("Deployments", { input: { projectId, environmentId, serviceId } })).deployments)[0];
+      seen = d;
       if (d && ["FAILED", "CRASHED", "REMOVED", "SKIPPED"].includes(d.status)) throw new Error(`the service's deploy ended ${d.status} (deployment ${d.id}); its last log lines:\n${await lastLines(client, d.id)}`);
       return d?.status === "SUCCESS" ? d : undefined;
+    }).catch(async (error) => {
+      if (!/: not within \d+ s$/.test(error.message)) throw error;
+      throw new Error(seen ? `${error.message}: deployment ${seen.id} was still ${seen.status}; its last log lines:\n${await lastLines(client, seen.id)}` : `${error.message}: Railway listed no deployment for the service`);
     });
     times.deployed = Date.now();
     step.pass("deploy succeeded", `deployment ${deployment.id}: SUCCESS, after Railway's health check on ${service.deploy.healthcheckPath}, ${minutes(times.deployed - times.clicked)} after the deploy started`);
