@@ -118,9 +118,11 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
   const [showCode, setShowCode] = useState(() => !(typeof window !== "undefined" && typeof window.matchMedia === "function") || window.matchMedia("(min-width: 1024px) and (min-height: 501px)").matches);
   const codePanel = useId();
   const [result, setResult] = useState<StartResult | null>(initialResult);
-  // The agent and revision of the request `result` answered (a result given at the start is the first agent's). Its
-  // refusal, and the move it offers, are that agent's: said only while that agent is picked, and the move made on it.
-  const [asked, setAsked] = useState<{ agentId: string; revision: string } | null>(initialResult ? { agentId, revision: "" } : null);
+  // The agent and revision of the request `result` answered (a result given at the start is the first agent's), and the
+  // answer's number, one per answer. Its refusal, and the move it offers, are that agent's: said only while that agent is
+  // picked, and the move made on it. Each answer gets an offer of its own, by its number.
+  const [asked, setAsked] = useState<{ agentId: string; revision: string; answer: number } | null>(initialResult ? { agentId, revision: "", answer: 0 } : null);
+  const answers = useRef(0);
   const pickedNow = useRef(agentId);
   pickedNow.current = agentId;
   // The move to the runner, on the refused agent. A revision picked for it is the boxed one the request was refused on
@@ -178,7 +180,7 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
     setSending(true);
     const request = { agentId, revision };
     const r = await submitStart(keys, agentId, built.body, onSend);
-    setSending(false); setResult(r); setAsked(request); setPane("response"); setShowCode(true);
+    setSending(false); setResult(r); setAsked({ ...request, answer: ++answers.current }); setPane("response"); setShowCode(true);
     // The run has its own copies: the next request starts with none picked.
     if (r.status >= 200 && r.status < 300) attachments.clear();
   };
@@ -302,7 +304,7 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
                   The run did not start: {refusal.message}{refusal.box ? <span className="text-muted-foreground"> (box: {refusal.box})</span> : null}
                   <ToolBlockers agentId={agentId} details={refusal.details} />
                   {/* A fresh offer for each answer: one taken before is not shown as taken for the next. */}
-                  <RunnerOffer key={`${refusal.asked.agentId}:${result.ms}:${refusal.message}`} details={refusal.details} onMove={moveToRunner && (() => moveToRunner(refusal.asked.agentId))} />
+                  <RunnerOffer key={`${refusal.asked.agentId}:${refusal.asked.answer}`} details={refusal.details} onMove={moveToRunner && (() => moveToRunner(refusal.asked.agentId))} />
                   {refusal.more.length > 0 && <span className="mt-1 block">{refusal.more.map((f) => <span key={`${f.field}:${f.message}`} className="block">{f.field}: {f.message}</span>)}</span>}
                 </p>
               )}
