@@ -157,7 +157,7 @@ describe("the playground's Edit agent, the Model field", () => {
 describe("Build's blank agent", () => {
   it("still opens the playground's Create an agent", async () => {
     host = document.body.appendChild(document.createElement("div")); root = createRoot(host);
-    await act(async () => root!.render(createElement(BuildAgent, { origin, v2: { listTemplates: async () => ({ templates: [] }) } })));
+    await act(async () => root!.render(createElement(BuildAgent, { origin, v2: { listTemplates: async () => ({ templates: [] }), listMarketplaceTemplates: async () => ({ url: null, state: "off" as const, read_at: null, templates: [] }) } })));
     const href = [...host.querySelectorAll("a")].find((a) => a.textContent === "start from a blank agent")!.getAttribute("href")!;
     expect(href.startsWith("#/playground?operation=create-agent")).toBe(true);
     expect(href).toBe(agentDraftHref(briefAgentDraft("")));

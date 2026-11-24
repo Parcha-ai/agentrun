@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Banner } from "@/components/ui/banner";
 import { Checkbox, Input } from "@/components/ui/field";
 import { type Client, ClientError } from "@/lib/client";
-import { githubFormAction, type GitHubReturn, githubReturnWords } from "@/lib/github";
+import { githubFormAction, githubOrgOf, type GitHubReturn, githubReturnWords } from "@/lib/github";
 import { takeReturn } from "@/lib/suggestions";
 import { httpHref } from "@/lib/safeUrl";
 import { cn } from "@/lib/utils";
@@ -63,10 +63,13 @@ export function GitHubPage({ v2, returned }: { v2: Client; returned?: GitHubRetu
 
   const connect = async () => {
     if (starting.current) return;
+    // A pasted github.com address or @name is its login; anything else is said here, and nothing is sent.
+    const typed = githubOrgOf(org);
+    if (typed.problem) { setSaid(typed.problem); return; }
     starting.current = true;
     setBusy(true); setSaid(null); setOpenAt(null); setDisconnected(null);
     try {
-      const start = await v2.connectGitHub(org.trim() || undefined, write ? "write" : undefined);
+      const start = await v2.connectGitHub(typed.org, write ? "write" : undefined);
       const action = githubFormAction(start.action, httpHref);
       if (!action) { setSaid("GitHub's address didn't look right, so nothing was sent."); starting.current = false; setBusy(false); return; }
       // The manifest alone: `action` carries the state.

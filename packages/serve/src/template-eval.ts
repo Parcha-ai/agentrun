@@ -3,7 +3,8 @@
 // Everything goes through the v2 API alone, on an in-process server over a temp data directory by default (an eval never
 // touches the owner's server) or on one named by its address and token. Per case: a fake MCP server per `mcp` fixture,
 // saved under its name with no credential and recording every call; the package applied with the case's parameters and
-// grants, a fresh agent per run, its learning seeded from the case's corrections; one run per `runs` with the prompt's body as
+// grants, a fresh agent per run, its learning seeded from the case's corrections and its work folder from the case's
+// files; one run per `runs` with the prompt's body as
 // its input and the case's cap, on the case's clock when it sets one (`now`), waited for; then its answer, its tool calls (its timeline read with calls=whole, each
 // call's arguments and its output whole, to CALL_RESULT_CHARS, through the run's redaction, and the fakes' own logs) and its files, graded, and held to the package's output schema when it declares one (outputVerdict,
 // the server's own verdict). Every grader is deterministic but `llm`, which is itself a run on the same
@@ -44,6 +45,7 @@ import { WEB_SEARCH_TOOL } from "./web-search.js";
 import { dayIn, serverZone } from "./environment.js";
 import { instantOf } from "./trigger-adapter.js";
 import { applyBodyOf, compiled, filledPins, filledSource, onServerName, onServers, type Package, packageView, readPackage } from "./templates.js";
+import { INPUTS_DIR } from "./uploads.js";
 import { inputIssues, inputSchemaOf, isObject, type Json, MODEL_REF } from "./validate.js";
 
 /** What a grader run is told, whatever the rubric: blind, strict, and its verdict as one JSON block. */
@@ -75,7 +77,7 @@ export const EVAL_HARNESSES = "agentrun-eval-harnesses";
 export const ON_DATA_WITH_SERVER = "--on-data is the data folder of the eval's own server, and --server names another server: give one of them";
 
 const PROMPT_FIELDS = ["description", "runs", "max_cost_usd", "input"];
-const CASE_FIELDS = ["parameters", "grants", "mcp", "web", "monid", "learning", "now", "email", "calendar", "feed", "previous"];
+const CASE_FIELDS = ["parameters", "grants", "mcp", "web", "monid", "learning", "now", "email", "calendar", "feed", "previous", "files"];
 const GRADER_FIELDS: Record<string, string[]> = {
   llm: ["type", "target"],
   regex: ["type", "pattern", "flags", "expect", "target"],
@@ -93,7 +95,7 @@ const LOOPBACK = "127.0.0.1"; // key-gate: loopback-rule each fake MCP server li
 const LOOPBACK_HOST = /^(?:127\.\d+\.\d+\.\d+|localhost|\[::1\])$/; // key-gate: loopback-rule a server on this machine reaches the fakes
 
 /** A case's fields that the eval's own runner alone binds (EvalFakes), each with what it does: a named server refuses them. */
-const OWN_SERVER_FAKES: readonly (readonly ["web" | "now" | "monid" | "email" | "calendar" | "feed" | "previous", string])[] = [["web", "web fakes the web tools"], ["now", "now sets its runs' clock"], ["monid", "monid fakes the package's monid endpoints"], ["email", "email fakes the server's email account"], ["calendar", "calendar fakes the server's calendar"], ["feed", "feed fakes the package's feeds"], ["previous", "previous seeds the case's earlier runs in the server's store"]];
+const OWN_SERVER_FAKES: readonly (readonly ["web" | "now" | "monid" | "email" | "calendar" | "feed" | "previous" | "files", string])[] = [["web", "web fakes the web tools"], ["now", "now sets its runs' clock"], ["monid", "monid fakes the package's monid endpoints"], ["email", "email fakes the server's email account"], ["calendar", "calendar fakes the server's calendar"], ["feed", "feed fakes the package's feeds"], ["previous", "previous seeds the case's earlier runs in the server's store"], ["files", "files seeds its runs' work folders"]];
 
 /** A case's run input: its prompt's body as content (none when empty), then its typed fields. */
 export const runInput = (content: string, fields?: Json): Json => ({ ...(content ? { content } : {}), ...fields });
@@ -109,9 +111,13 @@ export type Grader = (
   /** An email case's layouts this grader grades the runs of; absent, every run. */
   layouts?: Layout[];
 };
-/** One answer of a fake tool: taken when every argument `when` lists equals the call's; `when` a list, when any one of
- *  its entries does (one answer for each spelling of a call: a file by `sha` or by `ref`, say). */
+/** One answer of a fake tool: taken when every argument `when` lists equals the call's, or, listed as `{"$pattern":
+ *  <regex>}`, is a string the regex matches whole; `when` a list, when any one of its entries does (one answer for each
+ *  spelling of a call: a file by `sha` or by `ref`, say). */
 type Answer = { when: Json | Json[]; result: Json };
+/** The regex a `when` value matches by, when it is `{"$pattern": <regex>}` and nothing else: anchored here, so a key
+ *  made of a run's random stem (ns-k7m2p9qa-voice-cold-open) matches whole, never by a prefix the author left open. */
+const patternOf = (value: unknown): RegExp | undefined => (isObject(value) && Object.keys(value).length === 1 && typeof value.$pattern === "string" ? new RegExp(`^(?:${value.$pattern})$`) : undefined);
 /** A fake code search: the call's `query` argument searched over `files` (GitHub's code search syntax, read loosely: bare
  *  and quoted terms every one of which a file holds, /.../ terms read as literal text (a backslash before punctuation
  *  dropped), never as a regular expression, so no query can stall the eval, NOT before a term or a qualifier, and the
@@ -157,6 +163,9 @@ export type EvalCase = {
   /** The case's previous runs (eval-previous.ts): each run's agent gets them seeded as completed runs of the package's
    *  schedule trigger, which then starts the run as it would, handing it the last one's result. */
   previous?: PreviousFixture;
+  /** The files each run's work folder holds before its first turn (`files:`, a path in the folder to its text): the eval's
+   *  own runner writes them at the claim (EvalFakes.files), so a case can start where an earlier run left off. */
+  files?: Record<string, string>;
 };
 
 /** Cases that do not check: every problem, each naming its file. */
@@ -218,6 +227,27 @@ function fixtureOf(text: string, name: string, at: string, bad: (message: string
     if (!ok || !MCP_TOOL_NAME.test(tool)) {
       bad(`${at}: tools.${tool} is {description, input: an object's JSON Schema, answers: [{when: {...} or [{...}, ...], result: an MCP tool result}], default?: a result, search?: {query: the argument's name, files: [{path, text}], limit?, note?}}`);
       continue;
+    }
+    // A `when` value that names $pattern is a regex over the call's argument: one that is no string, does not compile, or
+    // sits beside another key would be compared by equality and match nothing, so it fails here, not as a silent miss.
+    for (const [i, answer] of (answers as Answer[]).entries()) {
+      const whens = Array.isArray(answer.when) ? answer.when.map((when, j) => [`[${j}]`, when] as const) : [["", answer.when] as const];
+      for (const [j, when] of whens) {
+        for (const [key, value] of Object.entries(when as Json)) {
+          if (!isObject(value) || !Object.hasOwn(value, "$pattern")) continue;
+          const where = `${at}: tools.${tool}.answers[${i}].when${j}.${key}`;
+          const others = Object.keys(value).filter((name) => name !== "$pattern");
+          if (others.length) bad(`${where}: a {"$pattern": ...} value holds no other key, and this one holds ${others.join(", ")}`);
+          else if (typeof value.$pattern !== "string") bad(`${where}: $pattern is a regular expression's source, a string`);
+          else {
+            try {
+              new RegExp(value.$pattern);
+            } catch (error) {
+              bad(`${where}: its $pattern does not compile: ${(error as Error).message}`);
+            }
+          }
+        }
+      }
     }
     tools[tool] = { description: spec.description as string, input: spec.input as Json, answers: answers as Answer[], ...(isObject(spec.default) ? { default: spec.default } : {}), ...(isObject(spec.search) ? { search: spec.search as FakeSearch } : {}) };
   }
@@ -503,6 +533,24 @@ export function readCases(dir: string, names?: readonly string[]): { pkg: Packag
       // Its run is the trigger's, on the trigger's input and cap: the prompt gives neither.
       if (body || fields || f.max_cost_usd !== undefined) bad(`${at}/prompt.md: a previous case's run is started by the package's schedule trigger, on the trigger's input and cap: its prompt.md holds description and runs alone`);
     }
+    // The case's files: each run's work folder holds them before its first turn, as a run that resumes finds what the run
+    // before it left (a keys file, say). Text only, each path in the folder and outside inputs/, which the server fills
+    // with the run's uploads and its message.
+    let files: Record<string, string> | undefined;
+    if (c.files !== undefined) {
+      if (!isObject(c.files)) bad(`${at}/case.yaml: files is a mapping of a path in the run's work folder to the text that file starts with`);
+      else {
+        files = {};
+        for (const [path, text] of Object.entries(c.files)) {
+          const shown = JSON.stringify(path);
+          if (!path || path.startsWith("/") || /[\\\0]/.test(path) || path.split("/").some((part) => part === "" || part === "." || part === "..")) bad(`${at}/case.yaml: files: ${shown} is not a path in the run's work folder (relative, with no empty, . or .. segment)`);
+          else if (path.split("/")[0] === INPUTS_DIR) bad(`${at}/case.yaml: files: ${shown} is under ${INPUTS_DIR}/, where the server puts the run's uploads and its message`);
+          else if (typeof text !== "string") bad(`${at}/case.yaml: files: ${shown} is the file's text, a string`);
+          // An own property, so a path such as __proto__ is a file, never the object's prototype.
+          else Object.defineProperty(files, path, { value: text, writable: true, enumerable: true, configurable: true });
+        }
+      }
+    }
     let learning: string | undefined;
     if (c.learning !== undefined) {
       const file = inside(root, c.learning, "file");
@@ -529,7 +577,7 @@ export function readCases(dir: string, names?: readonly string[]): { pkg: Packag
     cases.push({
       name, description: typeof f.description === "string" ? f.description : "", runs: typeof f.runs === "number" ? f.runs : 1,
       ...(typeof f.max_cost_usd === "number" ? { maxCostUsd: f.max_cost_usd } : {}), input: body, ...(fields ? { fields } : {}),
-      parameters, grants, mcp, ...(web ? { web } : {}), ...(monid ? { monid } : {}), ...(learning !== undefined ? { learning } : {}), graders, ...(typeof c.now === "string" ? { now: c.now } : {}), ...(email ? { email } : {}), ...(calendar ? { calendar } : {}), ...(feed ? { feed } : {}), ...(previous ? { previous } : {}),
+      parameters, grants, mcp, ...(web ? { web } : {}), ...(monid ? { monid } : {}), ...(learning !== undefined ? { learning } : {}), graders, ...(typeof c.now === "string" ? { now: c.now } : {}), ...(email ? { email } : {}), ...(calendar ? { calendar } : {}), ...(feed ? { feed } : {}), ...(previous ? { previous } : {}), ...(files ? { files } : {}),
     });
   }
   if (problems.length) throw new CaseError(dir, problems);
@@ -541,8 +589,10 @@ export function readCases(dir: string, names?: readonly string[]): { pkg: Packag
 /** A call a run made: from its timeline (`tool`, its gate name, a preview of its input, its `arguments` through the run's
  *  redaction, and the head of its `result`) or, for a faked MCP tool, from the fake's own log (`arguments` whole). */
 export type ToolCall = { tool: string; name?: string; preview?: string | null; status?: string | null; result?: string | null; arguments?: Json };
-/** A file a run left in its work folder: its path, its size in bytes and, for a text file read whole, its text. */
-export type FinalFile = { path: string; bytes: number; text?: string };
+/** A file a run left in its work folder, as a grader is told of it: its name (its path under the run's cut, the listing's
+ *  `name`; absent from a server that doesn't cut its listing's names, when the file is shown by no name, never its path),
+ *  its size in bytes and, for a text file read whole, its text. */
+export type FinalFile = { name?: string; bytes: number; text?: string };
 /** What a run left, for its graders. */
 export type RunRecord = {
   /** The run's final answer, or "" when it has none. */
@@ -586,7 +636,11 @@ const carries = (call: unknown, args: unknown): boolean => (isObject(args) ? isO
 export function fakeAnswer(fixture: McpFixture, tool: string, args: Json): Json {
   const spec = fixture.tools[tool];
   if (!spec) return { isError: true, content: [{ type: "text", text: `The fake ${fixture.server} has no tool ${tool}.` }] };
-  const matches = (when: Json) => Object.entries(when).every(([key, value]) => Object.hasOwn(args, key) && same(args[key], value));
+  const matches = (when: Json) => Object.entries(when).every(([key, value]) => {
+    if (!Object.hasOwn(args, key)) return false;
+    const pattern = patternOf(value);
+    return pattern ? typeof args[key] === "string" && pattern.test(args[key]) : same(args[key], value);
+  });
   const hit = spec.answers.find((answer) => (Array.isArray(answer.when) ? answer.when.some(matches) : matches(answer.when)));
   if (hit) return hit.result;
   if (spec.search && typeof args[spec.search.query] === "string") return { content: [{ type: "text", text: searched(spec.search, args[spec.search.query] as string) }] };
@@ -726,8 +780,8 @@ export function graderInput(grader: Extract<Grader, { type: "llm" }>, input: str
   const lines = run.calls.map((call, i) => {
     const head = `${i + 1}. ${call.tool}${call.arguments ? ` ${JSON.stringify(call.arguments)}` : call.preview ? ` (${call.preview})` : ""}${call.status ? ` -> ${call.status}` : ""}`;
     const result = call.result ?? "";
-    const named = texts.filter((file) => head.includes(file.path) || result.includes(file.path)).sort((a, b) => b.path.length - a.path.length)[0];
-    return { head: named ? `${head} [the file ${named.path} is in <files>, whole unless marked cut]` : head, result, tool: call.name ?? call.tool };
+    const named = texts.flatMap((file) => (file.name !== undefined && (head.includes(file.name) || result.includes(file.name)) ? [file.name] : [])).sort((a, b) => b.length - a.length)[0];
+    return { head: named ? `${head} [the file ${named} is in <files>, whole unless marked cut]` : head, result, tool: call.name ?? call.tool };
   });
   // Each call a fake MCP server received, its arguments whole in its log: they are the part a cut may take.
   const mcpLines = run.mcpCalls.map((call, i) => ({ head: `${i + 1}. ${call.tool}`, result: JSON.stringify(call.arguments ?? {}) }));
@@ -822,12 +876,13 @@ function middle(text: string, keep: number): string {
 /** A run's final files in at most `room` characters: each text file in a <file> block, whole when they all fit; else each
  *  text past a length L keeps its head and tail with its middle cut and marked, L the longest that fits (so the largest
  *  is cut first); else every text left out. A file with no text (media, a binary, one past what was read) is named with
- *  its size on a last line, cut to the room when even that passes it. */
+ *  its size on a last line, cut to the room when even that passes it. Each file is named by its cut name alone: one with
+ *  none is in a block with no path, or counted. */
 export function fitFiles(files: readonly FinalFile[], room: number): string {
-  const block = (file: FinalFile, text: string) => `<file path="${file.path}" bytes="${file.bytes}">\n${text}\n</file>`;
+  const block = (file: FinalFile, text: string) => `<file${file.name === undefined ? "" : ` path="${file.name}"`} bytes="${file.bytes}">\n${text}\n</file>`;
   const texts = files.filter((file): file is FinalFile & { text: string } => file.text !== undefined);
   const others = files.filter((file) => file.text === undefined);
-  const named = others.length ? [`Not shown (not text, or past what a grader is given), by path and size in bytes: ${others.map((file) => `${file.path} (${file.bytes})`).join(", ")}`] : [];
+  const named = others.length ? [`Not shown (not text, or past what a grader is given), by path and size in bytes: ${namesOf(others)}`] : [];
   const whole = [...texts.map((file) => block(file, file.text)), ...named].join("\n");
   if (whole.length <= room) return whole;
   const LONG = saidCut("each long file keeps its head and tail, its middle cut where marked");
@@ -841,8 +896,17 @@ export function fitFiles(files: readonly FinalFile[], room: number): string {
     }
     return [LONG, ...texts.map((file) => block(file, middle(file.text, low))), ...named].join("\n");
   }
-  const list = [saidCut("every file's text is left out"), `By path and size in bytes: ${files.map((file) => `${file.path} (${file.bytes})`).join(", ")}`].join("\n");
+  const list = [saidCut("every file's text is left out"), `By path and size in bytes: ${namesOf(files)}`].join("\n");
   return list.length <= room ? list : room < 4 ? "" : `${list.slice(0, room - 4)} ...`;
+}
+
+/** Files by their cut names and sizes, "a.mp4 (9000000), b.txt (5)", and those with no name counted after them: a file is
+ *  never named to a grader by anything but its cut name. */
+function namesOf(files: readonly FinalFile[]): string {
+  const named = files.flatMap((file) => (file.name === undefined ? [] : [`${file.name} (${file.bytes})`]));
+  const unnamed = files.length - named.length;
+  const count = unnamed ? `${unnamed} file${unnamed === 1 ? "" : "s"} not named (this server doesn't cut file names)` : "";
+  return named.length && count ? `${named.join(", ")}; and ${count}` : named.length ? named.join(", ") : count;
 }
 
 /** A grader run's answer read as its verdict: its json block's (jsonBlockOf), else the last flat JSON object's, {pass, reason}. */
@@ -965,9 +1029,10 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 /** How long the run read that asks whether a runner holds a queued run may take. */
 export const CLAIM_READ_TIMEOUT_MS = 10_000;
 /** Whether a runner holds the run now (the run read's `claim`); undefined when the read fails, takes over
- *  CLAIM_READ_TIMEOUT_MS or is stopped by `signal` (the eval's stop): not known, so never a reason to cancel the run. */
-async function heldNow(api: Api, runId: string, signal?: AbortSignal): Promise<boolean | undefined> {
-  const timeout = AbortSignal.timeout(CLAIM_READ_TIMEOUT_MS);
+ *  CLAIM_READ_TIMEOUT_MS, runs past the run's `deadline` or is stopped by `signal` (the eval's stop): not known, so never
+ *  a reason to cancel the run. Its bound ends at the deadline, so a read that stalls never puts the cancel past it. */
+async function heldNow(api: Api, runId: string, deadline: number, signal?: AbortSignal): Promise<boolean | undefined> {
+  const timeout = AbortSignal.timeout(Math.max(0, Math.min(CLAIM_READ_TIMEOUT_MS, deadline - Date.now())));
   const read = await api("GET", `/runs/${runId}`, undefined, {}, { signal: signal ? AbortSignal.any([signal, timeout]) : timeout }).catch(() => undefined);
   return read?.status === 200 && isObject(read.body) ? isObject(read.body.claim) : undefined;
 }
@@ -982,8 +1047,8 @@ async function waitRun(api: Api, runId: string, deadline: number, signal?: Abort
   // left to the whole deadline. A run's view reads queued until its first rows show, held or not (a slow start on a busy
   // machine), so a queued page past the bound asks the run read whether a runner holds it now: one does, and the bound
   // starts again from now, so a run a runner keeps holding is waited for to its own deadline. A read that doesn't answer
-  // (failed, stalled past its bound, or stopped) says neither: it is asked again at the next page, and the stop and the
-  // deadline still end the wait.
+  // (failed, stalled past its bound or the deadline, or stopped) says neither: it is asked again at the next page, and
+  // the stop and the deadline still end the wait.
   let queuedUntil = started + queueTimeoutMs;
   for (;;) {
     if (signal?.aborted) {
@@ -1005,14 +1070,15 @@ async function waitRun(api: Api, runId: string, deadline: number, signal?: Abort
       return { status, rows, waiting: typeof waiting?.summary === "string" ? waiting.summary : "it waits on a person" };
     }
     if (status === "queued" && Date.now() > queuedUntil) {
-      const held = await heldNow(api, runId, signal);
+      const held = await heldNow(api, runId, deadline, signal);
       if (held === true) queuedUntil = Date.now() + queueTimeoutMs;
       else if (held === false) {
         await api("POST", `/runs/${runId}/cancel`, {}).catch(() => undefined);
         return { status: "timed_out", rows, why: `the run stayed queued for ${Math.round(queueTimeoutMs / 1000)} s with no runner holding it, and it was cancelled` };
       }
     }
-    if (Date.now() > deadline) {
+    // At the deadline, not only past it: the claim read's bound ends at the deadline, and may end in its very millisecond.
+    if (Date.now() >= deadline) {
       await api("POST", `/runs/${runId}/cancel`, {});
       return { status: "timed_out", rows, why: `the run took longer than ${Math.round((deadline - started) / 1000)} s (state ${String(page.state)} when the wait gave up) and was cancelled` };
     }
@@ -1038,17 +1104,18 @@ export function callsOf(rows: readonly Json[], harness: string, toolkits: Readon
   });
 }
 
-/** A file of a run's work folder as its listing names it: its size, its type (null for an extension the server does not
- *  type) and whether the server could read it. */
-export type Listed = { path: string; bytes: number; type: string | null; unreadable: boolean };
-/** Every file of a run's work folder (the files route, page by page). */
+/** A file of a run's work folder as its listing names it: its path (for this eval's own reads, never a grader's prompt),
+ *  its name under the run's cut (the listing's `name`, absent from a server that doesn't cut it), its size, its type
+ *  (null for an extension the server does not type) and whether the server could read it. */
+export type Listed = { path: string; name?: string; bytes: number; type: string | null; unreadable: boolean };
+/** Every file of a run's work folder (the files route, page by page), each with its name under the run's cut (`?cut=run`). */
 async function filesOf(api: Api, runId: string): Promise<Listed[]> {
   const files: Listed[] = [];
   for (let cursor: string | null = null; ; ) {
-    const page = await api("GET", `/runs/${runId}/files${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`);
+    const page = await api("GET", `/runs/${runId}/files?cut=run${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`);
     if (page.status !== 200 || !isObject(page.body)) return files;
     for (const file of (page.body.files as Json[] | undefined) ?? []) {
-      if (typeof file.path === "string") files.push({ path: file.path, bytes: typeof file.size_bytes === "number" ? file.size_bytes : 0, type: typeof file.content_type === "string" ? file.content_type : null, unreadable: file.unreadable === true });
+      if (typeof file.path === "string") files.push({ path: file.path, ...(typeof file.name === "string" ? { name: file.name } : {}), bytes: typeof file.size_bytes === "number" ? file.size_bytes : 0, type: typeof file.content_type === "string" ? file.content_type : null, unreadable: file.unreadable === true });
     }
     cursor = typeof page.body.next_cursor === "string" ? page.body.next_cursor : null;
     if (!cursor) return files;
@@ -1093,7 +1160,8 @@ export async function finalFilesOf(api: Api, runId: string, listed: readonly Lis
     texts.set(file.path, read.body);
     left -= bytes;
   }
-  return listed.map((file) => ({ path: file.path, bytes: file.bytes, ...(texts.has(file.path) ? { text: texts.get(file.path)! } : {}) }));
+  // Each by its cut name alone: its path is for the reads above, never a grader.
+  return listed.map((file) => ({ ...(file.name !== undefined ? { name: file.name } : {}), bytes: file.bytes, ...(texts.has(file.path) ? { text: texts.get(file.path)! } : {}) }));
 }
 
 /** Each path a file_exists grader names that the run's work folder holds, read one by one (GET /runs/{id}/files/{path}):
@@ -1594,7 +1662,7 @@ async function runOnce(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[
   }
   stopped();
   // The case's fakes, for this run's agent alone, before its run can be claimed.
-  ctx.fakes.set(agentId, { ...(one.web !== undefined ? { web: one.web } : {}), ...(one.now !== undefined ? { now: new Date(instantOf(one.now)!) } : {}), ...(one.monid !== undefined ? { monid: one.monid } : {}), ...(mail ? { email: { imap: mail.faux.imap, smtp: mail.faux.smtp, kind: mail.layout } } : {}) });
+  ctx.fakes.set(agentId, { ...(one.web !== undefined ? { web: one.web } : {}), ...(one.now !== undefined ? { now: new Date(instantOf(one.now)!) } : {}), ...(one.monid !== undefined ? { monid: one.monid } : {}), ...(mail ? { email: { imap: mail.faux.imap, smtp: mail.faux.smtp, kind: mail.layout } } : {}), ...(one.files ? { files: one.files } : {}) });
   let runId: string;
   let fired: Fired | undefined;
   if (via !== undefined && kept) {

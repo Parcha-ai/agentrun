@@ -26,6 +26,7 @@ __all__ = [
     "AgentTemplate",
     "AgentToolsItem",
     "AgentsResource",
+    "ApiKeysResource",
     "ApplyTemplateBody",
     "ApplyTemplateBodyOverrides",
     "ApplyTemplateResponse",
@@ -121,6 +122,8 @@ __all__ = [
     "CostTokens",
     "CreateAgentBody",
     "CreateAgentResponse",
+    "CreateApiKeyBody",
+    "CreateApiKeyResponse",
     "CreateFileBody",
     "CreateFileResponse",
     "CreateInlineRunBody",
@@ -337,6 +340,7 @@ __all__ = [
     "ExternalRef",
     "Features",
     "FeaturesAgents",
+    "FeaturesApiKeys",
     "FeaturesArchive",
     "FeaturesBrowserLive",
     "FeaturesComputers",
@@ -411,6 +415,8 @@ __all__ = [
     "GetChatGPTSignInResponse",
     "GetClaudeLoginResponse",
     "GetClaudeLoginResponseAccount",
+    "GetClaudeLoginResponseMachine",
+    "GetClaudeLoginResponseSignIn",
     "GetCliLearningRunResponse",
     "GetEmailAccountResponse",
     "GetEmailAccountResponseImap",
@@ -449,6 +455,7 @@ __all__ = [
     "GetMcpPrivateHostsResponse",
     "GetMcpServerResponse",
     "GetMcpServerResponseAuth",
+    "GetMcpServerResponseComposioAccount",
     "GetMcpServerResponseOauth",
     "GetMcpServerResponseToolsItem",
     "GetModelGatewayResponse",
@@ -663,10 +670,15 @@ __all__ = [
     "LimitsMaxCostUsd",
     "ListAgentsResponse",
     "ListAllRunsResponse",
+    "ListApiKeysResponse",
+    "ListApiKeysResponseKeysItem",
     "ListCliLearningResponse",
     "ListCliLearningResponseConnectionsItem",
     "ListComposioEventsResponse",
     "ListComposioEventsResponseEventsItem",
+    "ListComposioToolkitsBody",
+    "ListComposioToolkitsResponse",
+    "ListComposioToolkitsResponseToolkitsItem",
     "ListComposioToolsBody",
     "ListComposioToolsResponse",
     "ListComposioToolsResponseToolsItem",
@@ -696,6 +708,7 @@ __all__ = [
     "ListGitHubRepositoriesResponseUnreadItem",
     "ListHarnessKeysResponse",
     "ListHarnessKeysResponseHarnessesItem",
+    "ListHarnessKeysResponseHarnessesItemReenterItem",
     "ListHomeFilesResponse",
     "ListHomeFilesResponseFilesItem1",
     "ListHomeFilesResponseFilesItem2",
@@ -733,10 +746,13 @@ __all__ = [
     "ListLearningPromotionsResponseServingItemChampionNodesItem",
     "ListLearningPromotionsResponseServingItemChampionNodesItemChecksItem",
     "ListLearningPromotionsResponseServingItemCheck",
+    "ListMarketplaceTemplatesResponse",
+    "ListMarketplaceTemplatesResponseTemplatesItem",
     "ListMcpServerNamesResponse",
     "ListMcpServersResponse",
     "ListMcpServersResponseServersItem",
     "ListMcpServersResponseServersItemAuth",
+    "ListMcpServersResponseServersItemComposioAccount",
     "ListMcpServersResponseServersItemOauth",
     "ListMcpServersResponseServersItemToolsItem",
     "ListRemoteConnectorsResponse",
@@ -917,6 +933,7 @@ __all__ = [
     "RefreshMcpServerResponse",
     "RefreshMcpServerResponseServer",
     "RefreshMcpServerResponseServerAuth",
+    "RefreshMcpServerResponseServerComposioAccount",
     "RefreshMcpServerResponseServerOauth",
     "RefreshMcpServerResponseServerToolsItem",
     "Region",
@@ -928,6 +945,9 @@ __all__ = [
     "ReleaseRunComputerBody",
     "ReleaseRunComputerResponse",
     "ReleaseRunComputerResponseHeld",
+    "ReleaseTriggerFiringBody",
+    "ReleaseTriggerFiringResponse",
+    "ReleaseTriggerFiringResponseError",
     "RemoteCommandEventsBody",
     "RemoteCommandEventsResponse",
     "RequestAction",
@@ -1049,6 +1069,7 @@ __all__ = [
     "SaveComposioServerResponseComposio",
     "SaveComposioServerResponseServer",
     "SaveComposioServerResponseServerAuth",
+    "SaveComposioServerResponseServerComposioAccount",
     "SaveComposioServerResponseServerOauth",
     "SaveComposioServerResponseServerToolsItem",
     "SaveComputerKeysBody",
@@ -1069,6 +1090,7 @@ __all__ = [
     "SaveMcpServerResponse",
     "SaveMcpServerResponseAuth",
     "SaveMcpServerResponseComposio",
+    "SaveMcpServerResponseComposioAccount",
     "SaveMcpServerResponseOauth",
     "SaveMcpServerResponseToolsItem",
     "SaveModelGatewayBody",
@@ -1125,6 +1147,8 @@ __all__ = [
     "StartChatGPTSignInResponse",
     "StartClaudeLoginResponse",
     "StartClaudeLoginResponseAccount",
+    "StartClaudeLoginResponseMachine",
+    "StartClaudeLoginResponseSignIn",
     "StartCliLearningRunBody",
     "StartCliLearningRunResponse",
     "StartCliLearningRunResponseLearning",
@@ -1171,6 +1195,7 @@ __all__ = [
     "TestWorkspaceArchilResponseObject2",
     "TimelineKind",
     "TimelinePage",
+    "TimelinePageInFlightItem",
     "TimelineRow",
     "TimelineRowComputerCallsItem",
     "TimelineRowComputerCallsItemStepsItem",
@@ -1185,9 +1210,13 @@ __all__ = [
     "TriggersResource",
     "TurnOffClaudeLoginResponse",
     "TurnOffClaudeLoginResponseAccount",
+    "TurnOffClaudeLoginResponseMachine",
+    "TurnOffClaudeLoginResponseSignIn",
     "TurnOnClaudeLoginBody",
     "TurnOnClaudeLoginResponse",
     "TurnOnClaudeLoginResponseAccount",
+    "TurnOnClaudeLoginResponseMachine",
+    "TurnOnClaudeLoginResponseSignIn",
     "UnarchiveAgentResponse",
     "UnarchiveRunResponse",
     "UpdateDefinitionBody",
@@ -3039,13 +3068,13 @@ class GetAgentPackageResponseReport(TypedDict):
 
 
 class GetAgentPackageResponseReportBlockedItem(TypedDict):
-    kind: Literal["mcp_server", "trigger", "pin", "tool_setting", "tool_policy", "computer", "paired_computer", "sign_in", "learning", "input_schema", "budget", "package"]
+    kind: Literal["mcp_server", "trigger", "pin", "tool_setting", "tool_policy", "computer", "paired_computer", "sign_in", "learning", "secrets", "input_schema", "budget", "package"]
     name: str
     reason: str
 
 
 class GetAgentPackageResponseReportRemadeItem(TypedDict):
-    kind: Literal["mcp_server", "trigger", "pin", "tool_setting", "tool_policy", "computer", "paired_computer", "sign_in", "learning", "input_schema", "budget", "package"]
+    kind: Literal["mcp_server", "trigger", "pin", "tool_setting", "tool_policy", "computer", "paired_computer", "sign_in", "learning", "secrets", "input_schema", "budget", "package"]
     name: str
     reason: str
 
@@ -3672,6 +3701,24 @@ class VerifyNativeResponseNativeRemote(TypedDict):
     target_id: str
 
 
+class _ListApiKeysResponseRequired(TypedDict):
+    keys: list[ListApiKeysResponseKeysItem]
+    limit: int
+
+
+class ListApiKeysResponse(_ListApiKeysResponseRequired, total=False):
+    refused: str
+    unreadable: list[str]
+
+
+class ListApiKeysResponseKeysItem(TypedDict):
+    id: str
+    name: str
+    created_at: str
+    last_used_at: str | None
+    secret: SecretMeta
+
+
 class GetCapacityResponse(TypedDict):
     at: str
     runs: GetCapacityResponseRuns
@@ -4282,8 +4329,16 @@ class ListHarnessKeysResponse(TypedDict):
 class ListHarnessKeysResponseHarnessesItem(TypedDict):
     id: str
     label: str
+    named: bool
     keys: list[SecretMeta]
+    kept: list[SecretMeta]
     ready: bool
+    reenter: list[ListHarnessKeysResponseHarnessesItemReenterItem]
+
+
+class ListHarnessKeysResponseHarnessesItemReenterItem(TypedDict):
+    name: str
+    why: Literal["recipe_changed", "seal_key_changed", "file_unreadable"]
 
 
 class ListHomeFilesResponse(TypedDict):
@@ -4400,6 +4455,7 @@ class GetLearningCostResponseSummaryAfter(TypedDict):
 class GetLearningCostResponseSummaryHandBacks(TypedDict):
     ran: int
     back: int
+    cut: int
 
 
 class GetLearningCostResponseSummaryWithheld(TypedDict):
@@ -4668,6 +4724,19 @@ class ConnectGitHubResponse(TypedDict):
     state: str
 
 
+class CreateApiKeyBody(TypedDict):
+    name: str
+
+
+class CreateApiKeyResponse(TypedDict):
+    id: str
+    name: str
+    created_at: str
+    last_used_at: str | None
+    secret: SecretMeta
+    api_key: str
+
+
 class CreatePairingResponse(TypedDict):
     id: str
     code: str
@@ -4919,6 +4988,7 @@ class FinishChatGPTSignInResponse(_FinishChatGPTSignInResponseRequired, total=Fa
     expires_at: str
     models: list[str]
     problem: str
+    hint: str
 
 
 class GetCalendarResponse(TypedDict):
@@ -4939,6 +5009,7 @@ class GetChatGPTSignInResponse(_GetChatGPTSignInResponseRequired, total=False):
     expires_at: str
     models: list[str]
     problem: str
+    hint: str
 
 
 class _GetClaudeLoginResponseRequired(TypedDict):
@@ -4946,11 +5017,14 @@ class _GetClaudeLoginResponseRequired(TypedDict):
     place: Literal["agentrun", "machine"]
     command: str
     can_start: bool
+    folder: str
+    machine: GetClaudeLoginResponseMachine
 
 
 class GetClaudeLoginResponse(_GetClaudeLoginResponseRequired, total=False):
     refused: str
     account: GetClaudeLoginResponseAccount
+    sign_in: GetClaudeLoginResponseSignIn
 
 
 class GetClaudeLoginResponseAccount(TypedDict, total=False):
@@ -4958,6 +5032,28 @@ class GetClaudeLoginResponseAccount(TypedDict, total=False):
     email: str
     organization: str
     plan: str
+
+
+class _GetClaudeLoginResponseMachineRequired(TypedDict):
+    folder: str
+    source: Literal["CLAUDE_CONFIG_DIR", "default"]
+
+
+class GetClaudeLoginResponseMachine(_GetClaudeLoginResponseMachineRequired, total=False):
+    credentials: str
+
+
+class _GetClaudeLoginResponseSignInRequired(TypedDict):
+    state: Literal["waiting", "signed_in", "timed_out", "failed", "not_started"]
+    started_at: str
+    limit_ms: int
+
+
+class GetClaudeLoginResponseSignIn(_GetClaudeLoginResponseSignInRequired, total=False):
+    ended_at: str
+    exit_code: int
+    signal: str
+    error: str
 
 
 class GetEmailAccountResponse(TypedDict):
@@ -5162,6 +5258,19 @@ class _ListComposioEventsResponseEventsItemRequired(TypedDict):
 
 class ListComposioEventsResponseEventsItem(_ListComposioEventsResponseEventsItemRequired, total=False):
     instructions: str
+
+
+class ListComposioToolkitsBody(TypedDict):
+    api_key: str
+
+
+class ListComposioToolkitsResponse(TypedDict):
+    toolkits: list[ListComposioToolkitsResponseToolkitsItem]
+
+
+class ListComposioToolkitsResponseToolkitsItem(TypedDict):
+    slug: str
+    name: str
 
 
 class ListComposioToolsBody(TypedDict):
@@ -5375,6 +5484,34 @@ class ListGitHubRepositoriesResponseUnreadItem(TypedDict):
     why: str
 
 
+class _ListMarketplaceTemplatesResponseRequired(TypedDict):
+    url: str | None
+    state: Literal["read", "stale", "unreachable", "off"]
+    read_at: str | None
+    templates: list[ListMarketplaceTemplatesResponseTemplatesItem]
+
+
+class ListMarketplaceTemplatesResponse(_ListMarketplaceTemplatesResponseRequired, total=False):
+    problem: str
+
+
+class _ListMarketplaceTemplatesResponseTemplatesItemRequired(TypedDict):
+    name: str
+    title: str
+    tags: list[str]
+    needs: list[str]
+    page_url: str
+
+
+class ListMarketplaceTemplatesResponseTemplatesItem(_ListMarketplaceTemplatesResponseTemplatesItemRequired, total=False):
+    summary: str
+    description: str
+    category: Literal["engineering", "security", "sales", "marketing", "research", "finance", "operations", "compliance", "personal"]
+    harness: list[str]
+    source: str
+    here: str
+
+
 class ListMcpServerNamesResponse(TypedDict):
     names: list[str]
 
@@ -5560,7 +5697,7 @@ class RunPlace2(TypedDict):
 class _RunComputerRequired(TypedDict):
     kind: Literal["sandbox", "desktop", "phone", "browser"]
     provider: str
-    state: Literal["starting", "ready", "taken_over", "ended", "failed"]
+    state: Literal["starting", "ready", "taken_over", "released", "ended", "failed"]
 
 
 class RunComputer(_RunComputerRequired, total=False):
@@ -6057,6 +6194,7 @@ class SaveComposioServerResponseServer(_SaveComposioServerResponseServerRequired
     prices: dict[str, float]
     not_metered: list[str]
     secret: SecretMeta
+    composio_account: SaveComposioServerResponseServerComposioAccount
 
 
 class _SaveComposioServerResponseServerAuthRequired(TypedDict):
@@ -6098,6 +6236,15 @@ class SaveComposioServerResponseServerToolsItem(_SaveComposioServerResponseServe
     fallback_allow_reads: Literal[True]
     default_permission: Literal["allow", "ask", "deny"]
     permissions: list[Literal["allow", "ask", "deny"]]
+
+
+class _SaveComposioServerResponseServerComposioAccountRequired(TypedDict):
+    state: Literal["connected", "pending", "expired", "none", "unknown"]
+    checked_at: str
+
+
+class SaveComposioServerResponseServerComposioAccount(_SaveComposioServerResponseServerComposioAccountRequired, total=False):
+    labels: list[str]
 
 
 class SaveComposioServerResponseComposio(TypedDict):
@@ -6279,11 +6426,14 @@ class _StartClaudeLoginResponseRequired(TypedDict):
     place: Literal["agentrun", "machine"]
     command: str
     can_start: bool
+    folder: str
+    machine: StartClaudeLoginResponseMachine
 
 
 class StartClaudeLoginResponse(_StartClaudeLoginResponseRequired, total=False):
     refused: str
     account: StartClaudeLoginResponseAccount
+    sign_in: StartClaudeLoginResponseSignIn
 
 
 class StartClaudeLoginResponseAccount(TypedDict, total=False):
@@ -6291,6 +6441,28 @@ class StartClaudeLoginResponseAccount(TypedDict, total=False):
     email: str
     organization: str
     plan: str
+
+
+class _StartClaudeLoginResponseMachineRequired(TypedDict):
+    folder: str
+    source: Literal["CLAUDE_CONFIG_DIR", "default"]
+
+
+class StartClaudeLoginResponseMachine(_StartClaudeLoginResponseMachineRequired, total=False):
+    credentials: str
+
+
+class _StartClaudeLoginResponseSignInRequired(TypedDict):
+    state: Literal["waiting", "signed_in", "timed_out", "failed", "not_started"]
+    started_at: str
+    limit_ms: int
+
+
+class StartClaudeLoginResponseSignIn(_StartClaudeLoginResponseSignInRequired, total=False):
+    ended_at: str
+    exit_code: int
+    signal: str
+    error: str
 
 
 class _StartMcpOAuthBodyRequired(TypedDict):
@@ -6401,11 +6573,14 @@ class _TurnOffClaudeLoginResponseRequired(TypedDict):
     place: Literal["agentrun", "machine"]
     command: str
     can_start: bool
+    folder: str
+    machine: TurnOffClaudeLoginResponseMachine
 
 
 class TurnOffClaudeLoginResponse(_TurnOffClaudeLoginResponseRequired, total=False):
     refused: str
     account: TurnOffClaudeLoginResponseAccount
+    sign_in: TurnOffClaudeLoginResponseSignIn
 
 
 class TurnOffClaudeLoginResponseAccount(TypedDict, total=False):
@@ -6413,6 +6588,28 @@ class TurnOffClaudeLoginResponseAccount(TypedDict, total=False):
     email: str
     organization: str
     plan: str
+
+
+class _TurnOffClaudeLoginResponseMachineRequired(TypedDict):
+    folder: str
+    source: Literal["CLAUDE_CONFIG_DIR", "default"]
+
+
+class TurnOffClaudeLoginResponseMachine(_TurnOffClaudeLoginResponseMachineRequired, total=False):
+    credentials: str
+
+
+class _TurnOffClaudeLoginResponseSignInRequired(TypedDict):
+    state: Literal["waiting", "signed_in", "timed_out", "failed", "not_started"]
+    started_at: str
+    limit_ms: int
+
+
+class TurnOffClaudeLoginResponseSignIn(_TurnOffClaudeLoginResponseSignInRequired, total=False):
+    ended_at: str
+    exit_code: int
+    signal: str
+    error: str
 
 
 class _TurnOnClaudeLoginBodyRequired(TypedDict):
@@ -6428,11 +6625,14 @@ class _TurnOnClaudeLoginResponseRequired(TypedDict):
     place: Literal["agentrun", "machine"]
     command: str
     can_start: bool
+    folder: str
+    machine: TurnOnClaudeLoginResponseMachine
 
 
 class TurnOnClaudeLoginResponse(_TurnOnClaudeLoginResponseRequired, total=False):
     refused: str
     account: TurnOnClaudeLoginResponseAccount
+    sign_in: TurnOnClaudeLoginResponseSignIn
 
 
 class TurnOnClaudeLoginResponseAccount(TypedDict, total=False):
@@ -6440,6 +6640,28 @@ class TurnOnClaudeLoginResponseAccount(TypedDict, total=False):
     email: str
     organization: str
     plan: str
+
+
+class _TurnOnClaudeLoginResponseMachineRequired(TypedDict):
+    folder: str
+    source: Literal["CLAUDE_CONFIG_DIR", "default"]
+
+
+class TurnOnClaudeLoginResponseMachine(_TurnOnClaudeLoginResponseMachineRequired, total=False):
+    credentials: str
+
+
+class _TurnOnClaudeLoginResponseSignInRequired(TypedDict):
+    state: Literal["waiting", "signed_in", "timed_out", "failed", "not_started"]
+    started_at: str
+    limit_ms: int
+
+
+class TurnOnClaudeLoginResponseSignIn(_TurnOnClaudeLoginResponseSignInRequired, total=False):
+    ended_at: str
+    exit_code: int
+    signal: str
+    error: str
 
 
 class DeleteMcpServerResponse(TypedDict):
@@ -6472,6 +6694,7 @@ class GetMcpServerResponse(_GetMcpServerResponseRequired, total=False):
     prices: dict[str, float]
     not_metered: list[str]
     secret: SecretMeta
+    composio_account: GetMcpServerResponseComposioAccount
 
 
 class _GetMcpServerResponseAuthRequired(TypedDict):
@@ -6515,6 +6738,15 @@ class GetMcpServerResponseToolsItem(_GetMcpServerResponseToolsItemRequired, tota
     permissions: list[Literal["allow", "ask", "deny"]]
 
 
+class _GetMcpServerResponseComposioAccountRequired(TypedDict):
+    state: Literal["connected", "pending", "expired", "none", "unknown"]
+    checked_at: str
+
+
+class GetMcpServerResponseComposioAccount(_GetMcpServerResponseComposioAccountRequired, total=False):
+    labels: list[str]
+
+
 class ListMcpServersResponse(TypedDict):
     servers: list[ListMcpServersResponseServersItem]
 
@@ -6539,6 +6771,7 @@ class ListMcpServersResponseServersItem(_ListMcpServersResponseServersItemRequir
     prices: dict[str, float]
     not_metered: list[str]
     secret: SecretMeta
+    composio_account: ListMcpServersResponseServersItemComposioAccount
 
 
 class _ListMcpServersResponseServersItemAuthRequired(TypedDict):
@@ -6580,6 +6813,15 @@ class ListMcpServersResponseServersItemToolsItem(_ListMcpServersResponseServersI
     fallback_allow_reads: Literal[True]
     default_permission: Literal["allow", "ask", "deny"]
     permissions: list[Literal["allow", "ask", "deny"]]
+
+
+class _ListMcpServersResponseServersItemComposioAccountRequired(TypedDict):
+    state: Literal["connected", "pending", "expired", "none", "unknown"]
+    checked_at: str
+
+
+class ListMcpServersResponseServersItemComposioAccount(_ListMcpServersResponseServersItemComposioAccountRequired, total=False):
+    labels: list[str]
 
 
 McpOAuthClientResponse: TypeAlias = "dict[str, Any]"
@@ -6673,6 +6915,7 @@ class RefreshMcpServerResponseServer(_RefreshMcpServerResponseServerRequired, to
     prices: dict[str, float]
     not_metered: list[str]
     secret: SecretMeta
+    composio_account: RefreshMcpServerResponseServerComposioAccount
 
 
 class _RefreshMcpServerResponseServerAuthRequired(TypedDict):
@@ -6716,6 +6959,15 @@ class RefreshMcpServerResponseServerToolsItem(_RefreshMcpServerResponseServerToo
     permissions: list[Literal["allow", "ask", "deny"]]
 
 
+class _RefreshMcpServerResponseServerComposioAccountRequired(TypedDict):
+    state: Literal["connected", "pending", "expired", "none", "unknown"]
+    checked_at: str
+
+
+class RefreshMcpServerResponseServerComposioAccount(_RefreshMcpServerResponseServerComposioAccountRequired, total=False):
+    labels: list[str]
+
+
 class _SaveMcpServerBodyRequired(TypedDict):
     url: str
 
@@ -6755,6 +7007,7 @@ class SaveMcpServerResponse(_SaveMcpServerResponseRequired, total=False):
     prices: dict[str, float]
     not_metered: list[str]
     secret: SecretMeta
+    composio_account: SaveMcpServerResponseComposioAccount
     composio: SaveMcpServerResponseComposio
 
 
@@ -6797,6 +7050,15 @@ class SaveMcpServerResponseToolsItem(_SaveMcpServerResponseToolsItemRequired, to
     fallback_allow_reads: Literal[True]
     default_permission: Literal["allow", "ask", "deny"]
     permissions: list[Literal["allow", "ask", "deny"]]
+
+
+class _SaveMcpServerResponseComposioAccountRequired(TypedDict):
+    state: Literal["connected", "pending", "expired", "none", "unknown"]
+    checked_at: str
+
+
+class SaveMcpServerResponseComposioAccount(_SaveMcpServerResponseComposioAccountRequired, total=False):
+    labels: list[str]
 
 
 class SaveMcpServerResponseComposio(TypedDict):
@@ -7086,6 +7348,7 @@ class _RunFileRequired(TypedDict):
 class RunFile(_RunFileRequired, total=False):
     content_type: str | None
     unreadable: Literal[True]
+    name: str
 
 
 GetRunResponse: TypeAlias = "Run"
@@ -7466,6 +7729,7 @@ class _TimelinePageRequired(TypedDict):
 
 class TimelinePage(_TimelinePageRequired, total=False):
     poll_after_ms: int
+    in_flight: list[TimelinePageInFlightItem]
 
 
 class _TimelineRowRequired(TypedDict):
@@ -7581,6 +7845,18 @@ class TimelineRowLearning(TypedDict):
     state: Literal["seeded", "reflecting", "merged", "dropped"]
     reason: Literal["seed_failed", "no_budget", "unknown_cost", "cancelled", "crashed", "reflect_failed", "empty", "checker", "use", "reset"] | None
     detail: str | None
+
+
+class _TimelinePageInFlightItemRequired(TypedDict):
+    kind: Literal["model", "tool"]
+    name: str
+    started_at: str | None
+
+
+class TimelinePageInFlightItem(_TimelinePageInFlightItemRequired, total=False):
+    tool_use_id: str
+    for_tool: str
+    input_tokens_max: int
 
 
 class GetRunTraceResponse(TypedDict):
@@ -7972,6 +8248,7 @@ class Features(_FeaturesRequired, total=False):
     mcp_client: FeaturesMcpClient
     tool_permissions: bool
     webhooks: FeaturesWebhooks
+    api_keys: FeaturesApiKeys
     slack: FeaturesSlack
     triggers: FeaturesTriggers
     sdk_runs: FeaturesSdkRuns
@@ -8054,6 +8331,7 @@ class FeaturesHarnessKeys(TypedDict):
     routes: bool
     at_rest: Literal["sealed"]
     harnesses: list[str]
+    kept: list[str]
 
 
 class FeaturesMcpClient(TypedDict):
@@ -8061,6 +8339,7 @@ class FeaturesMcpClient(TypedDict):
     auth: list[Literal["none", "bearer", "headers", "oauth", "github_app", "per_run"]]
     at_rest: Literal["sealed"]
     harnesses: list[str]
+    composio_per_run: bool
 
 
 class FeaturesWebhooks(TypedDict):
@@ -8068,6 +8347,12 @@ class FeaturesWebhooks(TypedDict):
     events: list[Literal["run.needs_input", "run.ended", "trigger.failed"]]
     signing: Literal["standard-webhooks/v1"]
     at_rest: Literal["sealed"]
+
+
+class FeaturesApiKeys(TypedDict):
+    routes: bool
+    limit: int
+    at_rest: Literal["hashed"]
 
 
 class FeaturesSlack(TypedDict):
@@ -8199,6 +8484,7 @@ class _CapabilitiesHarnessesItemRequired(TypedDict):
     label: str
     promises: CapabilitiesHarnessesItemPromises
     available: bool
+    ready_models: list[str]
     free_models: list[CapabilitiesHarnessesItemFreeModelsItem]
     models: list[str]
     run_memory_mib: int
@@ -10506,6 +10792,34 @@ class ListTriggersResponseTriggersItemLastCheck(TypedDict):
     message: str
 
 
+class ReleaseTriggerFiringBody(TypedDict):
+    error: str
+
+
+class _ReleaseTriggerFiringResponseRequired(TypedDict):
+    key: str
+    by: Literal["schedule", "email", "feed", "manual", "webhook", "github", "composio"]
+    nominal_at: str
+    status: Literal["due", "started", "sent", "skipped", "failed", "missed"]
+    at: str
+    run_id: str | None
+    reason: str | None
+    error: ReleaseTriggerFiringResponseError | None
+
+
+class ReleaseTriggerFiringResponse(_ReleaseTriggerFiringResponseRequired, total=False):
+    count: int
+    attempts: int
+    retry_at: str
+    start_by: str
+    catch_up: Literal[True]
+
+
+class ReleaseTriggerFiringResponseError(TypedDict):
+    code: str
+    message: str
+
+
 class _RotateTriggerSecretResponseRequired(TypedDict):
     secret: SecretMeta
 
@@ -11284,6 +11598,7 @@ OPERATIONS: dict[str, Operation] = {
     "unarchiveAgent": Operation(method="POST", path="/agents/{agent_id}/unarchive", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "updateDefinition": Operation(method="PUT", path="/agents/{agent_id}/definition", path_params=("agent_id",), multi_segment=(), query=(), headers=("If-Match",), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=True),
     "verifyNative": Operation(method="POST", path="/agents/{agent_id}/native/verify", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "listApiKeys": Operation(method="GET", path="/settings/api-keys", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getCapacity": Operation(method="GET", path="/capacity", path_params=(), multi_segment=(), query=("window",), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "completeCliLearningRun": Operation(method="POST", path="/cli-learning/runs/{run_id}/complete", path_params=("run_id",), multi_segment=(), query=(), headers=("Idempotency-Key",), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "enrollCliLearning": Operation(method="POST", path="/cli-learning/connections", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
@@ -11325,6 +11640,7 @@ OPERATIONS: dict[str, Operation] = {
     "listLearnedWorkflowRevisions": Operation(method="GET", path="/agents/{agent_id}/learning/workflows/{name}/revisions", path_params=("agent_id", "name"), multi_segment=(), query=("limit",), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "putLearningCorrections": Operation(method="PUT", path="/agents/{agent_id}/learning/corrections", path_params=("agent_id",), multi_segment=(), query=(), headers=("If-Match",), body=OperationBody(required=True, types=("text/markdown", "text/plain", "application/json")), answer="json", secret=False, public_fields=(), tagged=True),
     "connectGitHub": Operation(method="POST", path="/integrations/github/connect", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=False, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
+    "createApiKey": Operation(method="POST", path="/settings/api-keys", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "createPairing": Operation(method="POST", path="/computers/pairings", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "createSuggestedAgent": Operation(method="POST", path="/suggestions/{suggestion_id}/create", path_params=("suggestion_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=False, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "deleteCalendar": Operation(method="DELETE", path="/settings/calendar", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="none", secret=False, public_fields=(), tagged=False),
@@ -11348,17 +11664,20 @@ OPERATIONS: dict[str, Operation] = {
     "gitHubCallback": Operation(method="GET", path="/integrations/github/callback", path_params=(), multi_segment=(), query=("code", "state"), headers=(), body=None, answer="none", secret=False, public_fields=(), tagged=False),
     "gitHubInstalled": Operation(method="GET", path="/integrations/github/installed", path_params=(), multi_segment=(), query=("installation_id", "setup_action", "state"), headers=(), body=None, answer="none", secret=False, public_fields=(), tagged=False),
     "listComposioEvents": Operation(method="GET", path="/settings/mcp-servers/{name}/composio/events", path_params=("name",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "listComposioToolkits": Operation(method="POST", path="/settings/mcp-servers/composio/toolkits", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=True, public_fields=(), tagged=False),
     "listComposioTools": Operation(method="POST", path="/settings/mcp-servers/composio/tools", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=True, public_fields=("toolkit",), tagged=False),
     "listComposioTriggers": Operation(method="GET", path="/settings/mcp-servers/{name}/composio/triggers", path_params=("name",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "listComputerChoices": Operation(method="GET", path="/computers/{provider}/choices", path_params=("provider",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "listComputers": Operation(method="GET", path="/computers", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "listGitHubRepositories": Operation(method="GET", path="/integrations/github/repositories", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "listMarketplaceTemplates": Operation(method="GET", path="/marketplace/templates", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "listMcpServerNames": Operation(method="GET", path="/settings/mcp-server-names", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "listRunningComputers": Operation(method="GET", path="/computers/running", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "listSuggestions": Operation(method="GET", path="/suggestions", path_params=(), multi_segment=(), query=("repo", "status"), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "putWorkspaceArchil": Operation(method="PUT", path="/workspace/archil", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "receiveHook_composio": Operation(method="POST", path="/hooks/composio/{hook}", path_params=("hook",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("*/*",)), answer="json", secret=False, public_fields=(), tagged=False),
     "restoreSuggestion": Operation(method="POST", path="/suggestions/{suggestion_id}/restore", path_params=("suggestion_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "revokeApiKey": Operation(method="DELETE", path="/settings/api-keys/{api_key_id}", path_params=("api_key_id",), multi_segment=(), query=(), headers=(), body=None, answer="none", secret=False, public_fields=(), tagged=False),
     "rotateComposioSecret": Operation(method="POST", path="/settings/mcp-servers/{name}/composio/rotate-secret", path_params=("name",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "saveCalendar": Operation(method="PUT", path="/settings/calendar", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "saveComposioServer": Operation(method="PUT", path="/settings/mcp-servers/{name}/composio", path_params=("name",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=True, public_fields=("toolkit", "tools.[]", "user_id"), tagged=False),
@@ -11396,7 +11715,7 @@ OPERATIONS: dict[str, Operation] = {
     "createInlineRun": Operation(method="POST", path="/runs", path_params=(), multi_segment=(), query=(), headers=("Idempotency-Key",), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "createRunComputerViewer": Operation(method="POST", path="/runs/{run_id}/computer/viewer", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=False, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "deleteRun": Operation(method="DELETE", path="/runs/{run_id}", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=None, answer="none", secret=False, public_fields=(), tagged=False),
-    "listRunFiles": Operation(method="GET", path="/runs/{run_id}/files", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "listRunFiles": Operation(method="GET", path="/runs/{run_id}/files", path_params=("run_id",), multi_segment=(), query=("cut",), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getRun": Operation(method="GET", path="/runs/{run_id}", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "gradeRun": Operation(method="PUT", path="/runs/{run_id}/grade", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "getRunGraph": Operation(method="GET", path="/runs/{run_id}/graph", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
@@ -11448,6 +11767,7 @@ OPERATIONS: dict[str, Operation] = {
     "listTriggerFirings": Operation(method="GET", path="/triggers/{trigger_id}/firings", path_params=("trigger_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getTrigger": Operation(method="GET", path="/triggers/{trigger_id}", path_params=("trigger_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "listTriggers": Operation(method="GET", path="/triggers", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "releaseTriggerFiring": Operation(method="POST", path="/triggers/{trigger_id}/firings/{firing_id}/release", path_params=("trigger_id", "firing_id"), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "rotateTriggerSecret": Operation(method="POST", path="/triggers/{trigger_id}/secret", path_params=("trigger_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=True, public_fields=(), tagged=False),
     "updateTrigger": Operation(method="PATCH", path="/triggers/{trigger_id}", path_params=("trigger_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "getUsage": Operation(method="GET", path="/usage", path_params=(), multi_segment=(), query=("from", "to", "group_by"), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
@@ -11569,6 +11889,14 @@ class AgentsResource(Group):
     def verify_native(self, agent_id: str, *, timeout: float | None = None) -> VerifyNativeResponse:
         """Check native CLI and sign-in without a paid model call (POST /agents/{agent_id}/native/verify)."""
         return self._call("verifyNative", (agent_id,), None, None, timeout=timeout)
+
+
+class ApiKeysResource(Group):
+    """client.api_keys: one method per operation."""
+
+    def list(self, *, timeout: float | None = None) -> ListApiKeysResponse:
+        """The API keys made for this server's apps; never a key (GET /settings/api-keys)."""
+        return self._call("listApiKeys", (), None, None, timeout=timeout)
 
 
 class CapabilitiesResource(Group):
@@ -11766,6 +12094,10 @@ class LearningResource(Group):
 class LocalResource(Group):
     """client.local: one method per operation."""
 
+    def create_api_key(self, body: CreateApiKeyBody, *, timeout: float | None = None) -> CreateApiKeyResponse:
+        """Make an API key, shown once (POST /settings/api-keys)."""
+        return self._call("createApiKey", (), body, None, timeout=timeout)
+
     def create_pairing(self, *, timeout: float | None = None) -> CreatePairingResponse:
         """A code that pairs a person's own computer with this server (POST /computers/pairings)."""
         return self._call("createPairing", (), None, None, timeout=timeout)
@@ -11850,6 +12182,10 @@ class LocalResource(Group):
         """List a saved Composio server's toolkit's events, for a composio trigger (GET /settings/mcp-servers/{name}/composio/events)."""
         return self._call("listComposioEvents", (name,), None, None, timeout=timeout)
 
+    def list_composio_toolkits(self, body: ListComposioToolkitsBody, *, timeout: float | None = None) -> ListComposioToolkitsResponse:
+        """List the toolkits Composio offers, for the console's toolkit picker; stores nothing (POST /settings/mcp-servers/composio/toolkits). Its body's string values are secrets: each copy is cut from the answer, and a refusal keeps only its code."""
+        return self._call("listComposioToolkits", (), body, None, timeout=timeout)
+
     def list_composio_tools(self, body: ListComposioToolsBody, *, timeout: float | None = None) -> ListComposioToolsResponse:
         """List the actions of a Composio toolkit, for the console's picker; stores nothing (POST /settings/mcp-servers/composio/tools). Its body's string values are secrets: each copy is cut from the answer, and a refusal keeps only its code."""
         return self._call("listComposioTools", (), body, None, timeout=timeout)
@@ -11869,6 +12205,10 @@ class LocalResource(Group):
     def list_git_hub_repositories(self, *, timeout: float | None = None) -> ListGitHubRepositoriesResponse:
         """The repositories this server's GitHub App is installed on (GET /integrations/github/repositories)."""
         return self._call("listGitHubRepositories", (), None, None, timeout=timeout)
+
+    def list_marketplace_templates(self, *, timeout: float | None = None) -> ListMarketplaceTemplatesResponse:
+        """The marketplace's templates: every package on marketplace.agentrun.ai, each with the package here that it is (GET /marketplace/templates)."""
+        return self._call("listMarketplaceTemplates", (), None, None, timeout=timeout)
 
     def list_mcp_server_names(self, *, timeout: float | None = None) -> ListMcpServerNamesResponse:
         """The names of the MCP servers saved here, and nothing else of them (GET /settings/mcp-server-names)."""
@@ -11893,6 +12233,10 @@ class LocalResource(Group):
     def restore_suggestion(self, suggestion_id: str, *, timeout: float | None = None) -> RestoreSuggestionResponse:
         """Bring a discarded suggestion back (an undo) (POST /suggestions/{suggestion_id}/restore)."""
         return self._call("restoreSuggestion", (suggestion_id,), None, None, timeout=timeout)
+
+    def revoke_api_key(self, api_key_id: str, *, timeout: float | None = None) -> None:
+        """Revoke an API key; it opens nothing from now on (DELETE /settings/api-keys/{api_key_id})."""
+        return self._call("revokeApiKey", (api_key_id,), None, None, timeout=timeout)
 
     def rotate_composio_secret(self, name: str, *, timeout: float | None = None) -> RotateComposioSecretResponse:
         """Rotate the Composio project's webhook subscription's secret, and keep the new one (POST /settings/mcp-servers/{name}/composio/rotate-secret)."""
@@ -12054,9 +12398,9 @@ class RunsResource(Group):
         """Purge a run's content and keep its cost (DELETE /runs/{run_id})."""
         return self._call("deleteRun", (run_id,), None, None, timeout=timeout)
 
-    def files(self, run_id: str, *, timeout: float | None = None) -> ListRunFilesResponse:
+    def files(self, run_id: str, *, cut: Literal["run"] | None = None, timeout: float | None = None) -> ListRunFilesResponse:
         """The files the run wrote (GET /runs/{run_id}/files)."""
-        return self._call("listRunFiles", (run_id,), None, None, timeout=timeout)
+        return self._call("listRunFiles", (run_id,), None, {"cut": cut}, timeout=timeout)
 
     def get(self, run_id: str, *, timeout: float | None = None) -> GetRunResponse:
         """One run (GET /runs/{run_id})."""
@@ -12290,6 +12634,10 @@ class TriggersResource(Group):
         """The triggers: schedules and signed webhooks that start an agent's capped runs or message a run (GET /triggers)."""
         return self._call("listTriggers", (), None, None, timeout=timeout)
 
+    def release_firing(self, trigger_id: str, firing_id: str, body: ReleaseTriggerFiringBody, *, timeout: float | None = None) -> ReleaseTriggerFiringResponse:
+        """The launch hook's host releases a firing it took and will start no run for (POST /triggers/{trigger_id}/firings/{firing_id}/release)."""
+        return self._call("releaseTriggerFiring", (trigger_id, firing_id), body, None, timeout=timeout)
+
     def rotate_secret(self, trigger_id: str, *, timeout: float | None = None) -> RotateTriggerSecretResponse:
         """A webhook trigger's new secret, shown once; the old one signs nothing from now on (POST /triggers/{trigger_id}/secret). Its body's string values are secrets: each copy is cut from the answer, and a refusal keeps only its code."""
         return self._call("rotateTriggerSecret", (trigger_id,), None, None, timeout=timeout)
@@ -12343,6 +12691,7 @@ class Resources:
     """The resource groups, each operation a method that sends it through `call`. `runs` is the client's own: RunsResource with the methods it writes by hand."""
 
     agents: AgentsResource
+    api_keys: ApiKeysResource
     capabilities: CapabilitiesResource
     cli_learning: CliLearningResource
     connectors: ConnectorsResource
@@ -12367,6 +12716,7 @@ class Resources:
     def __init__(self, call: Call) -> None:
         self._operation = call
         self.agents = AgentsResource(call)
+        self.api_keys = ApiKeysResource(call)
         self.capabilities = CapabilitiesResource(call)
         self.cli_learning = CliLearningResource(call)
         self.connectors = ConnectorsResource(call)

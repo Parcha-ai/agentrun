@@ -7,7 +7,8 @@ import { type CalculateCost, type Catalog, builtinCatalog, priceRequests } from 
 import { childrenOf, inOrder, type Readers, readerOf, sessionLocators } from "./read.js";
 import { type Env, type Locator, locatorKey, type SessionRead } from "./reader.js";
 import { READERS, SOURCES, type Source } from "./readers/index.js";
-import { addAll, addRecord, dropOwner, isRecordIndex, locatorNumber, ownerOf, type RecordIndex, recordIndex } from "./record-index.js";
+import { AT, HAS_LONG, HAS_REASONING, HAS_USAGE, STRIDE, USAGE_FIELDS } from "./counts.js";
+import { addAll, addRecord, dropOwner, locatorNumber, ownerOf, type RecordIndex, recordIndex } from "./record-index.js";
 import { packed, packInto } from "./record-key.js";
 import type { Usage } from "./types.js";
 import { addTokens, noTokens, type Tokens } from "./usage.js";
@@ -38,10 +39,14 @@ export type SessionTotals = {
 
 /** What parseHome keeps between passes, when handed one: each locator's cursor (its reader's own), the records each
  *  source has read with the locator that read each first, and which locators found a record another read first, so a
- *  second pass reads only what was written since. It holds no session text (its reads are turns: false: counts, ids and
- *  paths alone), so it can be kept with v8.serialize. Its contents are the package's; `read` is the last pass's bytes. A
- *  source's part kept by an earlier version of another shape is set aside, and that source read again from its start. */
-export type HomeState = { read?: number; sources?: Partial<Record<string, SourceState>> };
+ *  second pass reads only what was written since. It holds no session text (its reads are turns: false and totals: counts,
+ *  ids and paths alone, each request as its model, usage and time), so it can be kept with v8.serialize. Its contents are the
+ *  package's; `read` is the last pass's bytes, `version` the shape's. A state of another version (or of none, an earlier
+ *  one's) is set aside, and every source read again from its start. */
+export type HomeState = { version?: number; read?: number; sources?: Partial<Record<string, SourceState>> };
+
+/** The shape of the HomeState this version keeps: a state of any other is set aside. */
+const STATE_VERSION = 1;
 
 /** One source's part of a HomeState. */
 type SourceState = {
@@ -112,17 +117,38 @@ type Compact = {
   at: Float64Array;
 };
 
-const USAGE_FIELDS = 6;
-const HAS_USAGE = 1;
-const HAS_LONG = 2;
-const HAS_REASONING = 4;
-
 /** Each model string once, by index: a request names its model as an index into it. */
 type Models = { names: string[]; index: Map<string, number> };
 
 /** `read` as a total takes it (Compact), each request's model the one totalsOf prices it at. */
 function compact(read: SessionRead, models: Models): Compact {
   const { id, child, parent, users, copies, costUsd, model } = read.session;
+  const { counts } = read;
+  if (counts) {
+    // A totals read's requests, as read: each one's model mapped to the pass's (its own, else the session's).
+    const intern = (name: string | undefined): number => {
+      if (name === undefined) return -1;
+      let at = models.index.get(name);
+      if (at === undefined) models.index.set(name, (at = models.names.push(name) - 1));
+      return at;
+    };
+    const names = counts.models.map(intern);
+    const fallback = intern(model);
+    // Each request's usage numbers, and apart from them its time (counts' stride is STRIDE, the time at AT).
+    const usage = new Float64Array(counts.n * USAGE_FIELDS);
+    const at = new Float64Array(counts.n);
+    for (let i = 0; i < counts.n; i += 1) {
+      usage.set(counts.values.subarray(i * STRIDE, i * STRIDE + USAGE_FIELDS), i * USAGE_FIELDS);
+      at[i] = counts.values[i * STRIDE + AT]!;
+    }
+    return {
+      session: { id, child, users, copies, ...(parent !== undefined ? { parent } : {}), ...(costUsd !== undefined ? { costUsd } : {}), ...(model !== undefined ? { model } : {}) },
+      models: counts.model.slice(0, counts.n).map((at) => (at === -1 ? fallback : names[at]!)),
+      usage,
+      has: counts.has.slice(0, counts.n),
+      at,
+    };
+  }
   const n = read.requests.length;
   const out: Compact = { session: { id, child, users, copies, ...(parent !== undefined ? { parent } : {}), ...(costUsd !== undefined ? { costUsd } : {}), ...(model !== undefined ? { model } : {}) }, models: new Int32Array(n), usage: new Float64Array(n * USAGE_FIELDS), has: new Uint8Array(n), at: new Float64Array(n) };
   for (let i = 0; i < n; i += 1) {
@@ -178,7 +204,13 @@ export async function parseHome(home: string, { sources = SOURCES, readers = REA
   const priceWith = () => (catalog === false ? Promise.resolve(undefined) : catalog ? Promise.resolve(catalog) : (prices ??= builtinCatalog()));
   const out: SessionTotals[] = [];
   const failed: ReadFailure[] = [];
-  if (state) state.read = 0;
+  if (state) {
+    if (state.version !== STATE_VERSION) {
+      state.version = STATE_VERSION;
+      state.sources = {};
+    }
+    state.read = 0;
+  }
   for (const source of sources) {
     const models: Models = { names: [], index: new Map() };
     const { tops, children, unread } = await readSource(home, source, readers, env, state, models);
@@ -206,9 +238,9 @@ async function readSource(home: string, source: string, readers: Readers, env: E
   const outOfOrder = (kept: SourceState) => [...kept.copied].some(([key, owners]) => [...owners].some((owner) => place.get(owner)! > place.get(key)!));
   for (let pass = 0; ; pass += 1) {
     let kept = state ? (state.sources ??= {})[source] : undefined;
-    // A source's state of another shape (an earlier version's, its records in a Map) is set aside like one whose files
-    // changed: the source is read from its start and its state rebuilt.
-    if (kept && (!isRecordIndex(kept.owners) || [...kept.cursors.keys()].some((key) => !place.has(key)) || outOfOrder(kept))) kept = undefined;
+    // A source's state whose files changed so (a locator gone, a copy now before its record's) is set aside: the source is
+    // read from its start and its state rebuilt.
+    if (kept && ([...kept.cursors.keys()].some((key) => !place.has(key)) || outOfOrder(kept))) kept = undefined;
     if (state && !kept) kept = state.sources![source] = { cursors: new Map(), owners: recordIndex(), copied: new Map() };
     const { owners, copied } = kept ?? { owners: recordIndex(), copied: new Map<string, Set<string>>() };
     let restarted = false;
@@ -219,16 +251,14 @@ async function readSource(home: string, source: string, readers: Readers, env: E
       // The records read so far, as the reader asks for them, each new one this locator's, each found one noted. Both are
       // staged and kept only when the read succeeds: a read that fails partway leaves no record owned that no cursor
       // holds, which a retry would take for a copy.
-      // Records are held by their packed keys (packInto): a reader asks has, then add, of one record, packed once.
+      // Records are held by their packed keys (packInto), each packed as it is asked for.
       const me = locatorNumber(owners, key);
       const mine = recordIndex(64);
       const found = new Set<string>();
-      let asked: string | undefined;
       const at = packed();
-      const pack = (record: string) => (record === asked ? at : ((asked = record), packInto(record, at)));
       const seen = {
         has: (record: string) => {
-          pack(record);
+          packInto(record, at);
           let owner = ownerOf(owners, at);
           if (owner === -1) owner = ownerOf(mine, at);
           if (owner === -1) return false;
@@ -236,12 +266,12 @@ async function readSource(home: string, source: string, readers: Readers, env: E
           return true;
         },
         add(record: string) {
-          pack(record);
+          packInto(record, at);
           if (ownerOf(owners, at) === -1) addRecord(mine, at, me);
           return this;
         },
       } as Set<string>;
-      const result = await reader.read(locator, cursor, { turns: false, seen }).catch((error: unknown) => void unread.push({ locator, error }));
+      const result = await reader.read(locator, cursor, { turns: false, totals: true, seen }).catch((error: unknown) => void unread.push({ locator, error }));
       if (!result) {
         // A locator read before that cannot be read now gives up its cursor and the records it held, as a fresh pass
         // would hold none of them: the next pass reads it from its start. A locator that found them already read (a
@@ -262,7 +292,9 @@ async function readSource(home: string, source: string, readers: Readers, env: E
       return result.sessions;
     };
     const tops: Part[] = [];
-    // Each locator's sessions packed as soon as they are read: only one locator's requests are ever held whole.
+    // Each locator's sessions packed as soon as they are read. A totals read gives each request's counts alone, and its
+    // cursor, kept in a state between passes, holds those too: no request is held as an object, by a pass or a state. A
+    // reader with no totals read gives its requests whole: only one locator's are held so at a time.
     for (const { locator } of listed) for (const session of await read(locator)) tops.push({ locator: session.locator, read: compact(session, models) });
     const children: (Part & { of: Locator })[] = [];
     for (const { locator, of } of childList) for (const session of await read(locator)) children.push({ locator: session.locator, read: compact(session, models), of });
