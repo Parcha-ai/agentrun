@@ -65,8 +65,8 @@ export async function claimSecrets(deps: ClaimSecretsDeps & { readonly redact: H
   // The key of a gateway saved in the console (model-gateway.ts) stays on the run environment its model routes read, never
   // on the tools': it is read there by name alone (claimModelEnv), as a run's own model key is.
   const savedGateway = savedGatewayIn(deps.env ?? {});
-  // A model key is laid as withModelKeys lays a route's, never enumerable (deletable, for withoutModelKeys); a tool key is a
-  // plain value, which its tools read and hand on.
+  // A model key is never enumerable, as withModelKeys lays a route's, but unlike a route's it stays writable and deletable
+  // (withoutModelKeys drops it); a tool key is a plain value, which its tools read and hand on.
   for (const name of keysFor(scoped, working)) if (working[name] !== undefined && !(savedGateway && name === GATEWAY_KEY_ENV)) Object.defineProperty(env, name, { value: working[name], enumerable: !MODEL_KEY_NAMES.includes(name), writable: true, configurable: true });
   const decision = decisionKeysFor(working, { providers: needs.decisionProviders, parallelWeb: launch.plane ? handsParallel(launch.plane) : false });
   // A decision key is a plain value, as before, under a model key's name too (OpenRouter's, which Jev's nodes use).
