@@ -350,7 +350,8 @@ const moduleEntryOf = (facts: AdapterFacts, adapter: (launch: ModuleLaunch) => A
   Object.freeze({ ...adapterEntry(facts, moduleAdapter(facts, adapter, missing ? { missing } : {}, host), extra), runner: ON_TABLE });
 
 /** serve's one debug switch for the ACP adapter, AGENTRUN_LOG=debug: it logs each call the agent announces, by its ids
- *  and names only (run-adapters-acp's AcpHarnessOptions.debug). */
+ *  and names only (run-adapters-acp's AcpHarnessOptions.debug). Spread wherever serve builds an ACP adapter: the
+ *  proxy-billed entry's, the plan-billed entry's and the built-in Goose's (gooseLaunch). */
 const acpDebug = (): { debug?: true } => (process.env.AGENTRUN_LOG === "debug" ? { debug: true } : {});
 
 /** A proxy-billed ACP agent's whole entry, moduleEntryOf over serve's own ACP adapter: a module's (HarnessModuleKit.acpEntry,
@@ -494,6 +495,7 @@ async function gooseLaunch(launch: ModuleLaunch): Promise<AgentAdapter> {
     binary: found.binary, sha256: found.sha256, model: launch.model, provider: launch.provider, price: launch.price, log: launch.log,
     ...(launch.confine ? { confine: launch.confine } : {}),
     ...(launch.fetch ? { fetch: launch.fetch } : {}),
+    ...acpDebug(),
   });
 }
 
