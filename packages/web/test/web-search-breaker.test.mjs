@@ -53,7 +53,7 @@ test("the breaker read against a fake clock: a rate limit's wait passes at its e
 test("a wait past 15 minutes is a spent count with its reset (keyless Exa's 429 naming 65,796 s): off and unasked until the wait ends, then asked again; the call says unavailable, never to try again", () => {
   let now = Date.parse("2026-11-24T05:43:24Z");
   const limited = { error: RATE_LIMITED };
-  const daily = webSearch.exaLimitOf({ error: RATE_LIMITED, limit: "rate_limited", retryAfterS: 65_796 });
+  const daily = exaLimitOf({ error: RATE_LIMITED, limit: "rate_limited", retryAfterS: 65_796 });
   const breaker = webSearch.searchBreaker(() => now);
   assert.deepEqual(breaker.read({ answer: limited, limit: daily }), { error: UNAVAILABLE });
   assert.deepEqual([breaker.off(), breaker.held()?.error], [true, UNAVAILABLE]);
