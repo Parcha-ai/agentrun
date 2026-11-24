@@ -1305,7 +1305,8 @@ export class Triggers {
   /** The run the host starts through the API for a firing the launch hook handed it (RunCreate `trigger_firing`),
    *  written by `start` from the firing's key (the run's origin key, so the firing finds it), the trigger, input origin
    *  and title its own start would give the run, and the target and previous-result flag it starts on (the policy's
-   *  start, as drive's); then the firing started with it (handedRan). Or the run already started under that key,
+   *  start, as drive's). `start` starts the firing in the run's own write (store.runs.create `firing`), which throws
+   *  FiringMoved once the firing has moved since its room was checked. Or the run already started under that key,
    *  `replayed`. Refused, in words, unless this server has the hook and the firing, of a start_run trigger on `agentId`,
    *  may start now (startRoom). */
   async handedStart(given: unknown, agentId: string, start: (firing: HandedStart) => Promise<{ run_id: string }>): Promise<{ run_id: string; replayed: boolean }> {
@@ -1356,21 +1357,7 @@ export class Triggers {
         throw error;
       }
       room.ran(run);
-      try {
-        // The run's write started the firing (store.runs.create `firing`): said here. One a start wrote without it is
-        // started by handedRan, which says so. A firing released before that (a run written apart from it, by a server
-        // from before the one write, that a release beat to the firing) stays released: the run is answered, never
-        // refused, since it exists, and the log says it ran after the release.
-        if (!(await this.handedRan(triggerId, key, run.run_id))) {
-          const now = await this.store.triggers.firing(triggerId, key);
-          this.deps.say({ condition: now && released(now) ? "trigger_run_after_release" : "trigger_fired", trigger: triggerId, firing: key, run: run.run_id });
-        }
-      } catch (error) {
-        // Its run is written but the firing's start is not: the firing's next turn starts it with the run under its key,
-        // so the run is counted while it works.
-        void this.inTurn(triggerId, key);
-        throw error;
-      }
+      this.deps.say({ condition: "trigger_fired", trigger: triggerId, firing: key, run: run.run_id });
       return { run_id: run.run_id, replayed: false };
     } finally {
       // No run written: a start_by this start pushed out goes back, so a host's failed starts never extend its window.
