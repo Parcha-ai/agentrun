@@ -435,6 +435,111 @@ export function messagesFetch(models: PiModels, target: PiModel, redact: Redact 
   }) as unknown as typeof fetch;
 }
 
+/** The bytes of a request a token count answers per token (forMessagesClients' count_tokens). */
+const COUNT_BYTES_PER_TOKEN = 4;
+/** Whether a request asks Messages' token count (its path's last segment, any query after it). */
+const countsTokens = (url: unknown): boolean => /\/count_tokens(?:\?|$)/.test(String(url));
+
+/** Why a Messages `tool_choice` that forces a call is refused (its 400's words), else undefined: the model behind the
+ *  route (Ollama's chat) takes no tool choice, so a call forced by "any" or by a tool's name cannot be kept. "auto",
+ *  "none" and none at all are taken; any other type is refused too. */
+function forcedChoice(choice: unknown): string | undefined {
+  if (choice === undefined || choice === null) return undefined;
+  const plain = typeof choice === "object" && !Array.isArray(choice) ? (choice as { type?: unknown; name?: unknown }) : undefined;
+  const type = plain ? plain.type : choice;
+  if (type === "auto" || type === "none") return undefined;
+  const unkept = 'is not taken on this model\'s route: the model here cannot be made to call a tool, so send "auto"';
+  if (type === "any") return `tool_choice "any" ${unkept}`;
+  if (type === "tool") return `tool_choice naming the tool ${String(plain?.name ?? "(none)")} ${unkept}`;
+  return `tool_choice ${JSON.stringify(type ?? "(no type)")} is not taken on this model's route: "auto" and "none" only`;
+}
+
+/** `route` (a translated route's fetch, which streams every answer, as pi-ai asks) for any Messages client on the wire it
+ *  translates onto, which asks two things pi-ai never does. Its token count (POST /v1/messages/count_tokens, free, asked
+ *  beside its turns) is answered here and never run on the model, which has no count of its own: the body's bytes over
+ *  four (COUNT_BYTES_PER_TOKEN), a bound for its context, not a price. A request with no `stream: true` (a side request)
+ *  gets its answer whole, one JSON message as Messages writes it, joined from the stream (wholeOf). A tool_choice that
+ *  forces a call is refused with a 400 before the model is asked (forcedChoice). */
+export function forMessagesClients(route: typeof fetch): typeof fetch {
+  return (async (url: Parameters<typeof fetch>[0], init: Parameters<typeof fetch>[1] = {}) => {
+    const body = String(init.body ?? "");
+    if (countsTokens(url)) return Response.json({ input_tokens: Math.ceil(new TextEncoder().encode(body).length / COUNT_BYTES_PER_TOKEN) });
+    const read = (() => {
+      try {
+        return JSON.parse(body || "{}") as { stream?: unknown; tool_choice?: unknown };
+      } catch {
+        return undefined;
+      }
+    })();
+    const refused = forcedChoice(read?.tool_choice);
+    if (refused) return messagesError(refused, 400, "invalid_request_error");
+    const streamed = read === undefined || read.stream === true;
+    const answer = await route(url, init);
+    return streamed || answer.status !== 200 ? answer : wholeOf(await answer.text());
+  }) as typeof fetch;
+}
+
+/** The route's translation onto each wire it translates a model onto (wires.ts TRANSLATED), by wire: what a harness's
+ *  proxy on that wire forwards with for `model` (`provider/model-id`), made on `env`. Anthropic's Messages: the route's
+ *  own Messages fetch (messagesFetch), as a Messages client asks it (forMessagesClients). provider.ts routedProvider reads
+ *  it; a wire with no entry has no translation, whatever TRANSLATED says. */
+export const TRANSLATORS: Readonly<Partial<Record<Wire, (model: string, env: NodeJS.ProcessEnv) => Promise<typeof fetch>>>> = Object.freeze({
+  "anthropic-messages": async (model: string, env: NodeJS.ProcessEnv) => forMessagesClients((await routeOf(model, env)).fetch!),
+});
+
+type StreamBlock = { type: string; text?: string; thinking?: string; signature?: string; input?: unknown; [key: string]: unknown };
+
+/** One Messages answer whole, from the events of its stream (`sse`): the message_start's message, each block joined from
+ *  its deltas (a tool call's input parsed from its pieces), the last message_delta's stop and usage over the start's. An
+ *  error event answers as Messages writes an error, at 500, with its words; so does a stream a part of which is not JSON. */
+function wholeOf(sse: string): Response {
+  try {
+    return wholeRead(sse);
+  } catch {
+    // A part that does not read (a data line not JSON, a tool call's input cut short) is said as an error event is.
+    return messagesError("The model's answer could not be read whole: a part of it is not JSON.");
+  }
+}
+
+/** A Messages error answer: `words` its message, 500 api_error unless said otherwise. */
+const messagesError = (words: string, status = 500, type = "api_error"): Response => Response.json({ type: "error", error: { type, message: words } }, { status });
+
+/** wholeOf's reading, which throws on a part that is not JSON. */
+function wholeRead(sse: string): Response {
+  let message: Record<string, unknown> = {};
+  const blocks: StreamBlock[] = [];
+  const pieces = new Map<number, string>();
+  for (const frame of sse.split(/\n\n/)) {
+    const lines = frame.split("\n");
+    const kind = lines.find((line) => line.startsWith("event: "))?.slice("event: ".length);
+    const data = lines.filter((line) => line.startsWith("data: ")).map((line) => line.slice("data: ".length)).join("\n");
+    if (!kind || !data) continue;
+    if (kind === "error") {
+      let words = data;
+      try {
+        const said = JSON.parse(data) as { error?: { message?: unknown }; message?: unknown };
+        words = String(said.error?.message ?? said.message ?? data);
+      } catch {
+        // Its words alone (sendWords), not JSON.
+      }
+      return messagesError(words);
+    }
+    const event = JSON.parse(data) as { index?: number; message?: Record<string, unknown>; content_block?: StreamBlock; delta?: Record<string, unknown>; usage?: Record<string, unknown> };
+    const at = event.index ?? -1;
+    if (kind === "message_start") message = { ...event.message };
+    else if (kind === "content_block_start" && event.content_block) blocks[at] = { ...event.content_block };
+    else if (kind === "content_block_delta" && blocks[at] && event.delta) {
+      const { type, text, thinking, signature, partial_json: piece } = event.delta as { type?: string; text?: string; thinking?: string; signature?: string; partial_json?: string };
+      if (type === "text_delta") blocks[at].text = (blocks[at].text ?? "") + (text ?? "");
+      else if (type === "thinking_delta") blocks[at].thinking = (blocks[at].thinking ?? "") + (thinking ?? "");
+      else if (type === "signature_delta") blocks[at].signature = signature ?? "";
+      else if (type === "input_json_delta") pieces.set(at, (pieces.get(at) ?? "") + (piece ?? ""));
+    } else if (kind === "message_delta") message = { ...message, ...(event.delta ?? {}), usage: { ...((message.usage as object | undefined) ?? {}), ...(event.usage ?? {}) } };
+  }
+  for (const [at, piece] of pieces) if (blocks[at] && piece) blocks[at].input = JSON.parse(piece) as unknown;
+  return Response.json({ ...message, content: blocks.filter(Boolean) });
+}
+
 /** pi-ai's stop reason as Messages says it. */
 const stopReasonOf = (reason: string | undefined): string => (reason === "toolUse" ? "tool_use" : reason === "length" ? "max_tokens" : "end_turn");
 

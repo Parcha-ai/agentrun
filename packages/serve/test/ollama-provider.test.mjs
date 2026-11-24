@@ -1,17 +1,20 @@
 // Ollama as a model provider (ollama-provider.ts): its models listed live from the Ollama on this machine (OLLAMA_HOST,
 // read as the ollama CLI reads it, else 127.0.0.1:11434), each request on its native /api/chat with options.num_ctx the
 // model's trained context up to 64k, every time. A model whose /api/show capabilities name `tools` takes them natively;
-// any other takes them as text on the runner's translated route. Pi alone runs them, at $0, and their requests never
-// count toward the free-model limit (CapModel.local). With no key, the first Ollama model that calls tools is the
+// any other takes them as text on the runner's translated route. Pi runs them, and so does every harness on Anthropic's
+// Messages, on the same translation (messages-wire-ollama.test.mjs), at $0, and their requests never count toward the
+// free-model limit (CapModel.local). With no key, the first Ollama model that calls tools is the
 // default; any key wins. All against a fake Ollama on loopback (fixtures/fake-ollama.mjs), which counts only its own
 // three paths; no real Ollama is asked.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { closedPort, fakeOllama, SYNTH_MODELS } from "./fixtures/fake-ollama.mjs";
-import { agent, follow, journalOf, serve, withEnv } from "./support.mjs";
+import { messagesModule, MESSAGES_MODULE } from "./fixtures/messages-module.mjs";
+import { agent, follow, journalOf, scratch, serve, withEnv } from "./support.mjs";
 
 const { chooseModel, hostModel, providerModels, runModels } = await import("../dist/model.js");
 const { routeOf } = await import("../dist/runner/model-route.js");
+const { factsOf, HARNESS_MODULES_ENV } = await import("../dist/harness-table.js");
 const { listOllama, ollamaAsking, ollamaBase, ollamaClock, ollamaModels, OLLAMA_NUM_CTX, OLLAMA_TTL_MS } = await import("../dist/ollama-provider.js");
 
 // The suites turn every Ollama off (support.mjs, OLLAMA_OFF_ENV); this file asks its own fakes alone.
@@ -297,11 +300,14 @@ test("a run on the host default books the Ollama model it ran on: its usage line
   assert.deepEqual(lines.map((line) => [line.provider, line.model, line.requests, line.usd]), [["ollama", TOOLS, 1, 0]], "provider/model is the id the console labels: ollama/<tag>");
 });
 
-test("with no key and Ollama up, the default is the first Ollama model that calls tools, listed in the picker and its free models; any key wins", { timeout: 120_000 }, async (t) => {
+test("with no key and Ollama up, the default is the first Ollama model that calls tools, listed in the picker and its free models, on pi and on every harness of the wire the route translates them onto (Anthropic's Messages: a harness module's too); any key wins", { timeout: 120_000 }, async (t) => {
   withEnv(t, {}, KEYS);
   const ollama = await fakeOllama(t);
+  // A harness module on Anthropic's Messages beside the built-ins: offered as they are, by its wire alone.
+  const module = messagesModule(await scratch(t));
+  const modules = { [HARNESS_MODULES_ENV]: JSON.stringify([module]) };
   withEnv(t, { OLLAMA_HOST: ollama.host });
-  const { api } = await serve(t, { faux: undefined });
+  const { api } = await serve(t, { faux: undefined, harnessModules: [module] });
   const caps = (await api("GET", "/capabilities")).body;
   assert.equal(caps.models.default, `ollama/${TOOLS}`, JSON.stringify(caps.models));
   assert.equal(caps.models.ready, true);
@@ -312,10 +318,24 @@ test("with no key and Ollama up, the default is the first Ollama model that call
     assert.ok(pi.free_models.some((model) => model.id === id), `${id} in pi's free models`);
   }
   assert.equal(pi.free_models.find((model) => model.id === `ollama/${PLAIN}`).context_window, 40_960);
-  for (const harness of caps.harnesses.filter((h) => h.id !== "pi")) {
-    assert.ok(!(harness.models ?? []).some((id) => id.startsWith("ollama/")), `${harness.id} never runs pi's local models`);
+  // Every other harness by its wire, never by its id: on Anthropic's Messages, the same models, free models and default as
+  // pi; on any other, none of them.
+  const onMessages = caps.harnesses.filter((h) => h.id !== "pi" && factsOf(modules, h.id)?.wire === "anthropic-messages");
+  assert.ok(onMessages.length >= 2 && onMessages.some((h) => h.id === MESSAGES_MODULE), `the harnesses on Messages, the module's among them: ${onMessages.map((h) => h.id)}`);
+  for (const harness of onMessages) {
+    assert.equal(harness.available, true, `${harness.id}: ${harness.reason}`);
+    for (const id of [`ollama/${PLAIN}`, `ollama/${TOOLS}`]) {
+      assert.ok(harness.models.includes(id), `${id} in ${harness.id}'s models: ${harness.models}`);
+      assert.ok(harness.free_models.some((model) => model.id === id), `${id} in ${harness.id}'s free models: ${JSON.stringify(harness.free_models)}`);
+    }
+    assert.equal(harness.default_model, `ollama/${TOOLS}`, `${harness.id}'s default`);
+    assert.equal(hostModel({ OLLAMA_HOST: ollama.host, ...modules }, "default", harness.id), `ollama/${TOOLS}`, `${harness.id}: the host's default`);
+  }
+  for (const harness of caps.harnesses.filter((h) => h.id !== "pi" && !onMessages.includes(h))) {
+    assert.ok(!(harness.models ?? []).some((id) => id.startsWith("ollama/")), `${harness.id}, on ${factsOf(modules, harness.id)?.wire}, never runs an Ollama model`);
     assert.ok(!String(harness.default_model ?? "").startsWith("ollama/"), `${harness.id} has no local default`);
-    assert.equal(hostModel({ OLLAMA_HOST: ollama.host }, "default", harness.id), undefined, `${harness.id}: its facts run no Ollama model, so the host gives it none`);
+    assert.deepEqual(harness.free_models ?? [], [], `${harness.id} has no free models`);
+    assert.equal(hostModel({ OLLAMA_HOST: ollama.host, ...modules }, "default", harness.id), undefined, `${harness.id}: its wire takes no Ollama model, so the host gives it none`);
   }
   assert.equal(hostModel({ OLLAMA_HOST: ollama.host }, "default", "pi"), `ollama/${TOOLS}`);
 
