@@ -5083,6 +5083,12 @@ export const COMMANDS = [
 // takes its body from the command line, and what it prints has the body's values cut, its public fields kept.
 export const SECRET_ROUTES = [
   {
+    "operationId": "listComposioToolkits",
+    "method": "POST",
+    "path": "/settings/mcp-servers/composio/toolkits",
+    "publicFields": []
+  },
+  {
     "operationId": "listComposioTools",
     "method": "POST",
     "path": "/settings/mcp-servers/composio/tools",

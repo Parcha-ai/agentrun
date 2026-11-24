@@ -10,6 +10,7 @@ import { ClientError } from "@/lib/client";
 import { ANALYTICS, statsWith } from "./AgentAnalytics.sample";
 import type { Run } from "@/lib/v2";
 import type { Upload } from "@/lib/uploads";
+import type { NativeBinding } from "@/lib/native";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 const runsOf = (slug: string) => recorded<{ runs: Run[] }>(`agent.${slug}.runs`).body.runs;
@@ -258,6 +259,14 @@ describe("AgentPage overview and run workspace", () => {
     const summary = page.host.querySelector('button[aria-controls*="agent-facts"]')!.textContent!;
     expect(summary).not.toContain("[object Object]");
     expect(summary).toContain("Pi");
+  });
+
+  it("a native agent's one-line summary names its runtime in words, not as the icon it is drawn with", async () => {
+    const native: NativeBinding = { runtime: "claude-code", project: "/workspace/app", selector: { kind: "project" }, machine_id: "workstation", version: null, model: null, fingerprint: "abc", configuration: [], skills: [], mcp_servers: [], state: "ready", issues: [], connected: true, capabilities: { launch: true, learning: false, workflows: false, approval: "native", usage: true } };
+    const base = agentFixture("invoice-checker");
+    const page = await open({ ...base, runs: { count: 0, live: 0 }, definition: { ...base.definition, native } }, { runs: [] });
+    const summary = page.host.querySelector('button[aria-controls*="agent-facts"]')!.textContent!;
+    expect(summary).toBe(`Ready to run · 0 · Claude Code · Native default · Project default · workstation · rev ${base.definition.version} of ${base.revisions}`);
   });
 
   it("preserves archival scope and makes no Run action for archived agents", async () => {
