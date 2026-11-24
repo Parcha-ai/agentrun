@@ -11,8 +11,17 @@ const TOOLS = new Set(['look_up', 'check_echo', 'lookup', 'write']);
 /** goose.json's and cursor.json's announces fields. */
 const GOOSE = Object.freeze({ tool: '_meta.goose.toolCall.toolName' });
 const CURSOR = Object.freeze({ tool: 'rawInput.toolName', server: 'rawInput.providerIdentifier', args: 'rawInput.args' });
-/** A tool_call as Goose 1.59.2 sends it: titled for people, named in `_meta.goose.toolCall.toolName`. */
-const gooseCall = (toolCallId, toolName, rawInput, kind = 'other') => ({ toolCallId, title: toolName.replace(/__/, ': ').replace(/_/g, ' '), kind, rawInput, _meta: { goose: { toolCall: { toolName } } } });
+/** A tool_call as Goose 1.59.2 sends it: titled for people, named in `_meta.goose.toolCall`, whose shape is copied from
+ *  goose-acp's goose_tool_call_meta (conversion.rs:65-91 at v1.59.2): `toolName` is the name the model called
+ *  (`agentrun__look_up`), `extensionName` the part before `__`, left out when the name has none. Only the first
+ *  tool_call carries it; its permission request and later updates do not. */
+const gooseCall = (toolCallId, toolName, rawInput, kind = 'other') => ({
+  toolCallId,
+  title: toolName.replace(/__/, ': ').replace(/_/g, ' '),
+  kind,
+  rawInput,
+  _meta: { goose: { toolCall: { toolName, ...(toolName.includes('__') ? { extensionName: toolName.split('__')[0] } : {}) } } },
+});
 
 test("ourTool reads a name, `agentrun__<tool>`, and Cursor's own title, `agentrun-<tool>: <tool>`; nothing else", () => {
   assert.equal(ourTool({ title: 'agentrun__look_up' }, TOOLS), 'look_up');

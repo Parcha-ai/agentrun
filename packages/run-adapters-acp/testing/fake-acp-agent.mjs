@@ -121,8 +121,10 @@ const pgid = (() => {
 said({ type: "start", env: Object.keys(process.env).sort(), home, cwd: process.cwd(), pgid, ...(config.cursorDirs ? { cursorDir, deniesWrite } : {}) });
 const titleOf = (tool) => (style === "cursor" ? `agentrun-${tool}: ${tool}` : style === "goose-1.59" ? `agentrun: ${tool.replace(/_/g, " ")}${config.titleSummary ? ` · ${config.titleSummary}` : ""}` : `agentrun__${tool}`);
 const late = style === "cursor" && config.announce !== "early";
-/** Goose's field naming a tool_call's tool (goose-acp conversion.rs, goose_tool_call_meta); Cursor sends none. */
-const gooseMeta = (toolName) => (style === "cursor" ? {} : { _meta: { goose: { toolCall: { toolName, extensionName: toolName.split("__")[0] } } } });
+/** Goose's field naming a tool_call's tool, on its first tool_call only, in the shape goose-acp's goose_tool_call_meta
+ *  builds (conversion.rs:65-91 at v1.59.2): `toolName` the name the model called, `extensionName` the part before `__`
+ *  (left out when there is none). Its permission request carries no _meta. Cursor sends none. */
+const gooseMeta = (toolName) => (style === "cursor" ? {} : { _meta: { goose: { toolCall: { toolName, ...(toolName.includes("__") ? { extensionName: toolName.split("__")[0] } : {}) } } } });
 const models = config.models ? { currentModelId: config.models[0].modelId, availableModels: config.models } : undefined;
 /** The credential Cursor derives from its key, in its private HOME: here the key's sha256, never the key. */
 function writeAuth() {

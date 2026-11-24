@@ -139,3 +139,27 @@ test("on Cursor's tie, a native read titled `agentrun__write` is never announced
   assert.throws(() => readFileSync(nativeLog, 'utf8'), /ENOENT/, 'the read never ran');
   assert.equal(ran, 0);
 });
+
+test("Goose's permission request carries no _meta: one for a call its tool_call announced as agentrun__write is tied only by its toolCallId, and with no tie on Goose's recipe it is never answered allow_once; the host's gate decides it", async (t) => {
+  // Goose 1.59.2 puts _meta.goose.toolCall on the first tool_call alone (conversion.rs:65-91, built in
+  // build_initial_tool_call); its session/request_permission's toolCall has none. The recipe's announces field names the
+  // call through CallIds, by its id; Goose's recipe declares no title tie, so the request still goes to the gate.
+  const dir = scratch();
+  const recipe = fakeRecipe(dir, { script: [{ call: 'write', args: { path: 'proof.txt', content: 'x' } }, { sayLastResult: true }], style: 'goose-1.59', askMcp: true }, { allowFile: undefined });
+  assert.deepEqual(recipe.announces, { tool: '_meta.goose.toolCall.toolName' });
+  assert.equal(recipe.quirks?.permissionTie, undefined);
+  const asked = [];
+  let ran = 0;
+  const { session } = await openSession(t, recipe, {
+    tools: [tool('write', () => ((ran += 1), 'wrote'))],
+    gate: async (call) => (asked.push(call), { deny: 'the gate decides' }),
+  });
+  await session.send('go');
+  assert.equal((await session.turnEnd()).status, 'completed');
+  const permissions = fakeEvents(recipe).filter((e) => e.type === 'permission');
+  assert.deepEqual(permissions.map((e) => e.toolCallId), ['call_0'], 'one request, for the call the tool_call announced');
+  assert.notEqual(permissions[0].kind, 'allow_once', 'never answered from the announcement');
+  assert.equal(permissions[0].kind, 'reject_once', "the gate's deny");
+  assert.equal(asked.length, 1, "the host's gate was asked once, about the request");
+  assert.equal(ran, 0, 'refused at the protocol, so the call never ran');
+});
