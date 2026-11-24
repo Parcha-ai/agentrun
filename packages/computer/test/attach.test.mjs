@@ -197,29 +197,43 @@ test("a run's connection outlives a redial: gone while the computer is away; the
 	driver.close();
 });
 
-test("the subprotocol serve answers a driver's upgrade with: the first it asked for of this protocol's major, at any minor; none of another major or shape", async () => {
+test("the subprotocol serve answers a driver's upgrade with: its own when asked for it, else the first it asked for at 0.2 or a later 0.x; none of 0.1, another major or shape", async () => {
 	const { attachSubprotocolOf } = await import("../dist/index.js");
 	assert.equal(ATTACH_SUBPROTOCOL, "agentrun.computer.0.2");
 	assert.equal(attachSubprotocolOf(["agentrun.computer.0.2"]), "agentrun.computer.0.2");
-	for (const minor of ["agentrun.computer.0.1", "agentrun.computer.0.3"]) assert.equal(attachSubprotocolOf([minor]), minor, "answered with the one it asked for");
+	assert.equal(attachSubprotocolOf(["agentrun.computer.0.3"]), "agentrun.computer.0.3", "answered with the one it asked for");
+	assert.equal(attachSubprotocolOf(["agentrun.computer.0.3", "agentrun.computer.0.2"]), "agentrun.computer.0.2", "the server's own, which says what it speaks");
 	assert.equal(attachSubprotocolOf(["agentrun.computer.1.0", "agentrun.computer.0.3"]), "agentrun.computer.0.3", "the first that works");
-	for (const asked of [[], ["agentrun.computer.1.0"], ["agentrun.computer.0.2.0"], ["agentrun.computer."], ["other.0.2"], ["0.2"]]) assert.equal(attachSubprotocolOf(asked), undefined, JSON.stringify(asked));
+	for (const asked of [[], ["agentrun.computer.0.1"], ["agentrun.computer.1.0"], ["agentrun.computer.0.2.0"], ["agentrun.computer."], ["other.0.2"], ["0.2"]]) assert.equal(attachSubprotocolOf(asked), undefined, JSON.stringify(asked));
 });
 
-test("a driver one protocol minor apart pairs and attaches: a minor step only adds, and its hello's groups say what it has", async () => {
-	for (const protocol of ["0.1", "0.3"]) {
-		class Minor extends Mac {
-			hello() {
-				return { ...super.hello(), protocol };
-			}
+test("a driver a protocol minor ahead pairs and attaches: a minor step only adds, and its hello's groups say what it has", async () => {
+	class Minor extends Mac {
+		hello() {
+			return { ...super.hello(), protocol: "0.3" };
 		}
-		const hub = new AttachHub();
-		const driver = new Minor();
-		const { accepted } = await dial(hub, pairedFor(new Mac()), driver);
-		assert.equal(accepted.ok, true, `${protocol}: ${accepted.error?.message}`);
-		assert.equal(hub.online("c-1"), true, protocol);
-		driver.close();
 	}
+	const hub = new AttachHub();
+	const driver = new Minor();
+	const { accepted } = await dial(hub, pairedFor(new Mac()), driver);
+	assert.equal(accepted.ok, true, accepted.error?.message);
+	assert.equal(hub.online("c-1"), true);
+	driver.close();
+});
+
+test("a 0.1 driver, from before 0.2 replaced apps.ui_tree with ui, is closed with protocol and told to update the driver: never attached without its UI tools", async () => {
+	class Old extends Mac {
+		hello() {
+			return { ...super.hello(), protocol: "0.1" };
+		}
+	}
+	const hub = new AttachHub();
+	const old = await dial(hub, pairedFor(new Mac()), new Old());
+	assert.equal(old.accepted.ok, false);
+	assert.equal(old.serve.closed.code, ATTACH_CLOSE.protocol);
+	assert.match(old.accepted.error.message, /^Test Mac's driver \S+ speaks protocol 0\.1, and this server 0\.2: update the driver on Test Mac \(the download is on the console's Computers page\)$/);
+	assert.equal(redials(old.serve.closed.code), false, "it stops dialing until it is updated");
+	assert.equal(hub.online("c-1"), false);
 });
 
 test("a hello that is not what the computer paired as is closed: another kind with mismatch, another protocol with protocol", async () => {

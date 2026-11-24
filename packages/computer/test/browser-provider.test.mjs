@@ -482,6 +482,17 @@ test("browserbase: behind a gateway that fronts the sessions' sockets (BROWSERBA
 	assert.equal(throughGateway("wss://connect.browserbase.com/?x=1", "not a url"), "wss://connect.browserbase.com/?x=1", "a gateway that is no URL moves none");
 });
 
+test("browserbase: a sessions' gateway (BROWSERBASE_CONNECT_BASE_URL) is wss or https, as the session's signed URL rides it: another, loopback included, is refused in words, and one that is no URL is refused without echoing it", async () => {
+	const fake = fakeBrowserbase();
+	const wss = await VENDORS.browserbase.make(fake, { env: { BROWSERBASE_CONNECT_BASE_URL: "wss://proxy.example/ws" } });
+	const ref = value(await wss.create(spec()), "create");
+	assert.equal(value(await wss.connect(ref), "connect").cdp.url, `wss://proxy.example/ws/${ref.id}?signingKey=SECRET-${ref.id}`);
+	for (const [base, scheme] of [["ws://proxy.example/ws", "ws:"], ["http://proxy.example/ws", "http:"], ["http://127.0.0.1:9/ws", "http:"]]) {
+		await assert.rejects(VENDORS.browserbase.make(fake, { env: { BROWSERBASE_CONNECT_BASE_URL: base } }), { message: `BROWSERBASE_CONNECT_BASE_URL must be wss or https, so a session's signed URL never crosses in the clear: ${scheme}` }, base);
+	}
+	await assert.rejects(VENDORS.browserbase.make(fake, { env: { BROWSERBASE_CONNECT_BASE_URL: "proxy.internal/ws?token=gw-secret" } }), { message: "BROWSERBASE_CONNECT_BASE_URL is not a URL" });
+});
+
 test("a browser provider's descriptor declares its profiles exactly where its built provider keeps them, with the settle window the provider declares", async () => {
 	const { DESCRIPTORS } = await import("../dist/descriptors/index.js");
 	const browsers = DESCRIPTORS.filter((descriptor) => descriptor.capabilities.some((one) => one.kind === "browser") && descriptor.keys.some((key) => key.required));

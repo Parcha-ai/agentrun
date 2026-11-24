@@ -1033,15 +1033,18 @@ test("connect checks hello against the provider: one that drifted is refused; a 
 	assert.equal(connected.hello.version, VERSION);
 	await connected.close();
 	const m = only(fake);
-	// A daemon of another version, older or newer, and a daemon one protocol major ahead are each refused.
+	// A daemon of another version, older or newer, a daemon one protocol major ahead, and a 0.1 daemon (before 0.2
+	// replaced apps.ui_tree with ui) are each refused.
 	m.box.helloPatch = { version: "0.0.0-other" };
 	const older = await provider.connect(ref);
 	assert.equal(older.error?.code, "refused");
 	assert.match(older.error.message, new RegExp(`hello: the daemon reports version "?0\\.0\\.0-other"?, expected ${VERSION.replaceAll(".", "\\.")}`));
-	m.box.helloPatch = { protocol: "1.0" };
-	const ahead = await provider.connect(ref);
-	assert.equal(ahead.error?.code, "refused");
-	assert.match(ahead.error.message, /hello: the daemon speaks protocol 1\.0, expected protocol 0\.x \(major 0\)/);
+	for (const protocol of ["1.0", "0.1"]) {
+		m.box.helloPatch = { protocol };
+		const other = await provider.connect(ref);
+		assert.equal(other.error?.code, "refused", protocol);
+		assert.match(other.error.message, new RegExp(`hello: the daemon speaks protocol ${protocol.replace(".", "\\.")}, and this provider 0\\.2`));
+	}
 	m.state = "stopped";
 	assert.equal((await provider.connect(ref)).error?.code, "refused");
 });
