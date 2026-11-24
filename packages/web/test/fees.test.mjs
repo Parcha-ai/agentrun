@@ -43,18 +43,23 @@ test("an extract is $1 per 1,000 URLs; an endpoint the web tools do not ask has 
 // Exa's and Firecrawl's list prices, read 2026-11-24 (https://exa.ai/pricing; https://www.firecrawl.dev/pricing, at the
 // key's Standard plan: $99 a month for 100,000 credits), worked out by hand.
 
-test("an Exa search is its type's price per request, 10 results included, $0.001 each past them, and $0.001 a result for each content asked", () => {
+// Exa's own cost report (costDollars, 2026-11-24 06:47Z) bills a search's text and highlights at nothing: auto with text,
+// with text and highlights, or with neither, 3 results, $0.007 each; 12 results $0.009. Its pricing page's $1 per 1,000
+// pages for each content is a contents request's; a search's AI page summaries are $1 per 1,000 pages.
+test("an Exa search is its type's price per request, 10 results included, $0.001 each past them; its text and highlights are in that price, a summary $0.001 a result", () => {
   const body = (type, numResults, contents) => ({ query: "q", ...(type ? { type } : {}), ...(numResults ? { numResults } : {}), ...(contents ? { contents } : {}) });
   assert.equal(exaFeeOf("/search", body("auto")).usd, 0.007, "auto, 10 results, no contents");
   assert.equal(exaFeeOf("/search", body(undefined)).usd, 0.007, "no type is Exa's auto");
-  assert.equal(exaFeeOf("/search", body("fast", 3, { highlights: { maxCharacters: 3_000 } })).usd, 0.01);
-  assert.equal(exaFeeOf("/search", body("instant", 10, { text: { maxCharacters: 500 } })).usd, 0.014);
-  assert.equal(exaFeeOf("/search", body("lite", 10, { highlights: true })).usd, 0.014);
-  assert.equal(exaFeeOf("/search", body("deep", 25, { highlights: {}, text: {} })).usd, 0.077, "$0.012, 15 more results, 25 results' text and highlights");
+  assert.equal(exaFeeOf("/search", body("fast", 3, { highlights: { maxCharacters: 3_000 } })).usd, 0.007);
+  assert.equal(exaFeeOf("/search", body("instant", 10, { text: { maxCharacters: 500 } })).usd, 0.004);
+  assert.equal(exaFeeOf("/search", body("lite", 10, { highlights: true })).usd, 0.004);
+  assert.equal(exaFeeOf("/search", body("auto", 12, { highlights: {} })).usd, 0.009, "as Exa's own cost report billed it");
+  assert.equal(exaFeeOf("/search", body("deep", 25, { highlights: {}, text: {} })).usd, 0.027, "$0.012 and 15 more results");
+  assert.equal(exaFeeOf("/search", body("auto", 3, { summary: { query: "q" } })).usd, 0.01, "3 results' summaries at $0.001");
   assert.equal(exaFeeOf("/search", body("deep-lite")).usd, 0.012);
   assert.equal(exaFeeOf("/search", body("deep-reasoning")).usd, 0.015);
   assert.equal(exaFeeOf("/search", body("neural")), undefined, "a type with no price here: never $0, never another's price");
-  assert.equal(exaFeeOf("/search", body("auto", 3, { highlights: false })).usd, 0.007, "a content set false is not asked");
+  assert.equal(exaFeeOf("/search", body("auto", 3, { summary: false })).usd, 0.007, "a summary set false is not asked");
 });
 
 test("an Exa contents request is $0.001 a URL for each content asked; an endpoint the web tools do not ask has no fee", () => {

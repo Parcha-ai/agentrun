@@ -40,8 +40,8 @@ test("a search is one paid request to Exa's /search on the run's key: auto, the 
     { url: "https://second.example/gadgets", title: "Gadgets", snippet: "A second result." },
   ] }, "highlights joined, links as their text, a hit with no URL dropped");
   assert.deepEqual([receipt.provider, receipt.tries.map((one) => [one.provider, one.outcome])], ["exa", [["exa", "ok"]]]);
-  assert.deepEqual(fees.map((fee) => [fee.name, fee.by, fee.usd]), [["Exa's search", "exa", 0.01]], "$0.007 an auto search, $0.001 each result's highlights");
-  assert.equal(receipt.cost.usd, 0.01);
+  assert.deepEqual(fees.map((fee) => [fee.name, fee.by, fee.usd]), [["Exa's search", "exa", 0.007]], "$0.007 an auto search, its highlights in that price");
+  assert.equal(receipt.cost.usd, 0.007);
   keyless("search", answer, receipt, logs);
 });
 
@@ -51,7 +51,7 @@ test("Exa's settings shape the request and its fee: type, text or highlights and
   const { answer } = await w.search("widgets");
   assert.deepEqual(exa.got[0].body, { query: "widgets", type: "instant", numResults: 10, includeDomains: ["first.example"], excludeDomains: ["spam.example"], category: "news", contents: { text: { maxCharacters: 500 }, maxAgeHours: 24 } });
   assert.deepEqual(answer.results, [{ url: "https://first.example/widgets", title: "Widgets", snippet: "Whole text of the page." }]);
-  assert.deepEqual(fees.map((fee) => fee.usd), [0.014], "$0.004 an instant search, $0.001 each of 10 results' text");
+  assert.deepEqual(fees.map((fee) => fee.usd), [0.004], "$0.004 an instant search, its text in that price");
 });
 
 test("settings Exa does not take are refused when the Web is made, never sent", () => {
