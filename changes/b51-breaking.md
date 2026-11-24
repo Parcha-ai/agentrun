@@ -1,0 +1,12 @@
+---
+packages: @parcha/agentrun-serve, @parcha/agentrun-kernel, @parcha/agentrun-harness-claude, @parcha/agentrun-harness-acp
+kind: breaking
+---
+Ollama models run only on a harness that forwards the route, an output schema beside tools on Ollama is refused, and an ACP agent's permission requests for AgentRun's tools are no longer answered from their titles. What to change on upgrade:
+- A harness module on Messages or Responses that should keep running Ollama models must forward its model requests with the `fetch` its launch hands it (`ModuleLaunch.fetch`, given to `startModelProxy`'s `fetch`) and set `forwardsRoute: true` in its facts. Without the fact it is offered no Ollama model, and a run of it that names one is refused before it starts.
+- A claude-agent node with an output schema on an Ollama model now stops with a 400 `invalid_request_error`, since Claude Code sends its tools on every turn and Ollama can't hold an answer to a format and also call tools. Drop the schema, or run the node on a model with a key.
+- A recipe for an agent that asks permission before every tool call needs an `allowFile` in a form its agent reads, or the title tie (`quirks.permissionTie: "title"`). Without either, every request for an AgentRun tool goes to the host's gate as the agent's own call, and its runs stop there.
+- Goose's offer promises `tool_gate: "config"` (was `"permission"`): its calls of AgentRun's tools are held by its permission file and the host's gate at the MCP call.
+- `agentrun harness-check` fails `mcp_tool` for an agent that asks permission for `check_echo` on a recipe with neither field. A recipe whose check passed before can fail its next one.
+- `examples/harness-recipe/antigravity.json` declares neither field. Whether agy asks permission for AgentRun's tools is unverified (it has not been through `harness-check`), and there is no `allowFile` form for agy yet: if it asks, its runs stop at the gate.
+- The exported test helper `fakeAgentRecipe` (`@parcha/agentrun-harness-acp/testing`) now gives its recipe an `allowFile` (style "goose", the default) or the title tie (style "cursor"), as each shipped recipe does. A suite that relied on the fake asking for AgentRun's tools and being answered from the title gets neither by default.
