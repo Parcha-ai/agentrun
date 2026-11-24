@@ -572,6 +572,53 @@ const CASES = [
       },
     ];
   })(),
+  // A held JSON value's string is held by its key's name, its separators dropped and lowered: one that names a secret,
+  // a password, a token, a private value, a credential or an API key, or ends in "key" (an AWS secret access key, an STS
+  // session token, a webhook's signing secret, a one-line private key), but none that names a public thing (an id, a
+  // URI or URL, a type, an email, an endpoint, an expiry), a public key, or a token that is no secret (a page's, the
+  // next page's, a token's type). A JWK's private members (d, p, q, dp, dq, qi, k) are held beside its "kty" only. Each printed alone
+  // (`jq -r`) is cut, or shows.
+  ...(() => {
+    const made = (name) => ["made", "up", name, "R2mTq8Vx7kPz"].join("-");
+    const held = {
+      Credentials: { AccessKeyId: "MADEUPACCESSKEYID0001", SecretAccessKey: made("secret-access-key"), SessionToken: made("session-token"), Expiration: "2026-11-24T12:00:00Z" },
+      aws_secret_access_key: made("aws-secret"),
+      secret_key: made("secret-key"),
+      signing_secret: made("signing"),
+      private_key: made("ed25519-seed"),
+      public_key: made("ed25519-public"),
+      okp: { kty: "OKP", crv: "Ed25519", x: made("okp-public-x"), d: made("okp-d") },
+      oct: { kty: "oct", k: made("oct-k") },
+      rsa: { kty: "RSA", n: made("rsa-public-n"), e: "AQAB", d: made("rsa-d"), p: made("rsa-p"), q: made("rsa-q"), dp: made("rsa-dp"), dq: made("rsa-dq"), qi: made("rsa-qi") },
+      client_id: "123456789012-madeupclientid.apps.googleusercontent.com",
+      token_uri: "https://oauth2.googleapis.com/token",
+      page_token: made("page-token"),
+      next_token: made("next-token"),
+      token_type: "urn:ietf:params:oauth:token-type:access_token",
+      notes: { d: made("no-kty-d") },
+    };
+    const value = JSON.stringify(held);
+    const all = (shown) => Object.fromEntries(Object.keys(ENTRIES).map((name) => [name, shown]));
+    const at = (path) => path.split(".").reduce((node, key) => node[key], held);
+    const cut = ["Credentials.SecretAccessKey", "Credentials.SessionToken", "aws_secret_access_key", "secret_key", "signing_secret", "private_key", "okp.d", "oct.k", "rsa.d", "rsa.p", "rsa.q", "rsa.dp", "rsa.dq", "rsa.qi"];
+    const shown = ["Credentials.AccessKeyId", "client_id", "token_uri", "page_token", "next_token", "token_type", "public_key", "okp.x", "rsa.n", "notes.d"];
+    return [
+      ...cut.map((path) => ({
+        name: `a held JSON value's ${path}, printed alone, is cut`,
+        text: `$ jq -r .${path} held.json\n${at(path)}\n`,
+        values: [value],
+        hides: [at(path).slice(-12)],
+        exact: all(`$ jq -r .${path} held.json\n[redacted]\n`),
+      })),
+      ...shown.map((path) => ({
+        name: `a held JSON value's ${path}, printed alone, shows (control)`,
+        text: `$ jq -r .${path} held.json\n${at(path)}\n`,
+        values: [value],
+        hides: [],
+        exact: all(`$ jq -r .${path} held.json\n${at(path)}\n`),
+      })),
+    ];
+  })(),
   // An array's items have no key: a one-line string in an array is not held by the key the array is under, only by
   // the line-break rule.
   ...(() => {
