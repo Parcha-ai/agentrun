@@ -266,6 +266,7 @@ async function ledger(t, seen) {
   };
   const servedBy = { path: "workflow", workflow: "answer", workflow_digest: DIGEST };
   for (const id of ["ledger", "pricey"]) assert.equal((await api("POST", "/agents", agent(id, { learning: { compile_after: 2 } }))).status, 201);
+  await landWorkflows(store, "ledger", [{ name: "answer", description: "Answers a question as a number; use when the person asks for the answer", workflow: FLOW }]);
 
   await ended("ledger", "run-01", 1, 1, { path: "agent" });
   await ended("ledger", "run-02", 2, 1.3, { path: "agent" }, { rows: await compileRound("run-02", "ledger", at(2), { kept: true }) });
