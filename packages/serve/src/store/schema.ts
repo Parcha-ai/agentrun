@@ -232,9 +232,10 @@ export const RUN_ATTEMPTS = `CREATE TABLE IF NOT EXISTS run_attempts (
 /** The learning ledger (learn/ledger.ts): one row a run, written by each patch that leaves the run ended (applyRunPatch,
  *  in that patch's transaction) and by a healed cost: who answered it (`path`, null when its end named none), the
  *  revision that ran it, why it was not served alone, the job's own $ and its rounds' look-back, and whether its cost is
- *  known (`cost`). Kept when its run is purged (its cost is); gone with the run's delete. Figures only, no run text. In
- *  STORE_DDL, and made at a server open on a store an earlier build of this version made: a run that ended before it has
- *  no row, and its reader records it from its run row (store-reads/learning.ts). */
+ *  known (`cost`), and the end it was written for (`at`: the run's ended_at). Gone with the run's purge or delete (its
+ *  cost stays on the run's tombstone). Figures only, no run text. In STORE_DDL, and made at a server open on a store an
+ *  earlier build of this version made: a run that ended before it has no row, and one a runner of that build ended again
+ *  has a row for an earlier end; its reader records it from its run row either way (store-reads/learning.ts). */
 export const LEARNING_LEDGER = `CREATE TABLE IF NOT EXISTS learning_ledger (
     run_id TEXT PRIMARY KEY,
     agent_id TEXT NOT NULL,
@@ -251,7 +252,8 @@ export const LEARNING_LEDGER = `CREATE TABLE IF NOT EXISTS learning_ledger (
 export const LEARNING_LEDGER_AGENT = "CREATE INDEX IF NOT EXISTS learning_ledger_agent ON learning_ledger (agent_id)";
 /** Each learning cost, by the revision it is for (learn/ledger.ts SpendRow): a compile turn (`round`, the round that asked
  *  it), a check's replay run or an audit's shadow run (round 0, `of_run` the run it audits), with its $ (null: unknown).
- *  Written with its run's ledger row, replaced whole each time. */
+ *  Written with its run's ledger row, replaced whole each time; gone with its run's purge or delete, and with the purge
+ *  or delete of the run it audits. */
 export const LEARNING_SPEND = `CREATE TABLE IF NOT EXISTS learning_spend (
     run_id TEXT NOT NULL,
     kind TEXT NOT NULL CHECK (kind IN ('compile', 'check', 'audit')),

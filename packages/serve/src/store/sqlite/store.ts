@@ -688,6 +688,13 @@ export function storeOver(connection: StoreConnection, now: () => number, file?:
  *  start's scrub: short, since every other request of the store's connection queues behind it. */
 const PURGE_CHECKPOINT_BUSY_MS = 20;
 
+/** Run `runId`'s learning ledger (learn/ledger.ts), gone: its row, each spend row it booked, and an audit's spend row of
+ *  it (its shadow's, of_run). What a run's purge (Runs.purge) and its delete (Runs.remove) both drop. */
+async function dropLedger(tx: SqliteExecutor, runId: string): Promise<void> {
+  await tx.run("DELETE FROM learning_ledger WHERE run_id = ?", runId);
+  await tx.run("DELETE FROM learning_spend WHERE run_id = ? OR of_run = ?", runId, runId);
+}
+
 /** A run's content in every table that keeps it by the run's id, gone: what a run's purge (Runs.purge) and its delete
  *  (Runs.remove) both drop. A table added for a run's content goes here, so neither path leaves it behind. */
 async function dropRunContent(tx: SqliteExecutor, runId: string): Promise<void> {
@@ -1617,6 +1624,9 @@ class SqliteStore implements Store {
             const state = (JSON.parse(row.proposal) as { state?: unknown } | null)?.state;
             await tx.run("UPDATE learning_proposals SET turn = '{}', proposal = ? WHERE run_id = ? AND round = ?", json(typeof state === "string" ? { state } : {}), runId, row.round);
           }
+          // Its ledger row and every spend row it booked or that audits it, as a remove takes them: what it cost stays on its
+          // tombstone (cost_usd, the metrics' figures), which the readers of money (usage, stats) read; no series shows it.
+          await dropLedger(tx, runId);
           // Its row's content, its metrics cut to their figures and names (tombstoneMetrics), with what its spend's readers
           // read from its journal folded in. Its outcome stays: a code (RunOutcome), never words.
           const metrics = tombstoneMetrics(run.metrics === null ? null : JSON.parse(run.metrics), kept);
@@ -1634,10 +1644,8 @@ class SqliteStore implements Store {
           if (!(FINAL_STATES as readonly string[]).includes(run.state)) throw new StoreConstraint(`run ${runId} is ${run.state}: only a final run is removed`);
           await dropRunContent(tx, runId);
           await tx.run("DELETE FROM learning_proposals WHERE run_id = ?", runId);
-          // Its ledger row and the spend it booked, which a purge keeps (figures, no words). An audit's spend of it stays
-          // its shadow run's, which no series reads once the run it audits is gone.
-          await tx.run("DELETE FROM learning_ledger WHERE run_id = ?", runId);
-          await tx.run("DELETE FROM learning_spend WHERE run_id = ?", runId);
+          // Its ledger row and every spend row it booked or that audits it, as a purge takes them.
+          await dropLedger(tx, runId);
           // Its computers' usage, which a purge keeps (figures, no words).
           await tx.run("DELETE FROM computer_intervals WHERE run_id = ?", runId);
           await tx.run("DELETE FROM runs WHERE id = ?", runId);
@@ -2043,24 +2051,35 @@ class SqliteStore implements Store {
           return kept?.state === "proposed" ? [] : [{ agentId: row.agent_id, at: row.created_at, costUsd: 0 }];
         });
       },
-      ledger: async (agentId, runId) => {
-        type LedgerRecord = { run_id: string; agent_id: string; started_at: number | string; path: string | null; workflow: string | null; digest: string | null; not_served: string | null; job_usd: number | null; look_back_usd: number | null; cost: string };
-        type SpendRecord = { run_id: string; kind: string; round: number | string; agent_id: string; of_run: string | null; workflow: string | null; digest: string | null; usd: number | null };
-        const one = runId === undefined ? { sql: "", params: [] } : { sql: " AND run_id = ?", params: [runId] };
-        const spendOne = runId === undefined ? { sql: "", params: [] } : { sql: " AND (run_id = ? OR of_run = ?)", params: [runId, runId] };
-        const [rows, spend] = await Promise.all([
-          db.all<LedgerRecord>(`SELECT run_id, agent_id, started_at, path, workflow, digest, not_served, job_usd, look_back_usd, cost FROM learning_ledger WHERE agent_id = ?${one.sql} ORDER BY started_at, run_id`, agentId, ...one.params),
-          db.all<SpendRecord>(`SELECT run_id, kind, round, agent_id, of_run, workflow, digest, usd FROM learning_spend WHERE agent_id = ?${spendOne.sql} ORDER BY run_id, kind, round`, agentId, ...spendOne.params),
-        ]);
+      ledger: async (agentId, runIds) => {
+        // One statement over both tables (a UNION ALL, each row marked by its table): one snapshot on either database, so
+        // an end committed between two reads never mixes its row with another end's spend.
+        type Part = { part: "row" | "spend"; run_id: string; agent_id: string; started_at: number | string | null; path: string | null; workflow: string | null; digest: string | null; not_served: string | null; job_usd: number | null; look_back_usd: number | null; cost: string | null; at: number | string | null; kind: string | null; round: number | string | null; of_run: string | null; usd: number | null };
+        if (runIds !== undefined && runIds.length === 0) return { rows: [], spend: [] };
+        const list = runIds === undefined ? "" : runIds.map(() => "?").join(", ");
+        const rowsOf = runIds === undefined ? { sql: "", params: [] } : { sql: ` AND run_id IN (${list})`, params: [...runIds] };
+        const spendOf = runIds === undefined ? { sql: "", params: [] } : { sql: ` AND (run_id IN (${list}) OR of_run IN (${list}))`, params: [...runIds, ...runIds] };
+        const text = "CAST(NULL AS TEXT)", whole = "CAST(NULL AS BIGINT)", usd = "CAST(NULL AS DOUBLE PRECISION)";
+        const parts = await db.all<Part>(
+          `SELECT 'row' AS part, run_id, agent_id, started_at, path, workflow, digest, not_served, job_usd, look_back_usd, cost, at, ${text} AS kind, ${whole} AS round, ${text} AS of_run, ${usd} AS usd
+             FROM learning_ledger WHERE agent_id = ?${rowsOf.sql}
+           UNION ALL
+           SELECT 'spend' AS part, run_id, agent_id, ${whole}, ${text}, workflow, digest, ${text}, ${usd}, ${usd}, ${text}, ${whole}, kind, round, of_run, usd
+             FROM learning_spend WHERE agent_id = ?${spendOf.sql}`,
+          agentId, ...rowsOf.params, agentId, ...spendOf.params,
+        );
         const usdOf = (value: number | null) => (value === null ? null : Number(value));
+        const rows = parts.filter((one) => one.part === "row").map((row): LedgerRow & { at: number } => ({
+          runId: row.run_id, agentId: row.agent_id, startedAt: Number(row.started_at), path: row.path as LedgerRow["path"], workflow: row.workflow, digest: row.digest,
+          notServed: row.not_served as LedgerRow["notServed"], jobUsd: usdOf(row.job_usd), lookBackUsd: usdOf(row.look_back_usd), cost: row.cost as LedgerRow["cost"], at: Number(row.at),
+        }));
+        const spend = parts.filter((one) => one.part === "spend").map((row): SpendRow => ({
+          runId: row.run_id, round: Number(row.round), agentId: row.agent_id, kind: row.kind as SpendRow["kind"], ofRun: row.of_run, workflow: row.workflow, digest: row.digest, usd: usdOf(row.usd),
+        }));
+        const byText = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
         return {
-          rows: rows.map((row): LedgerRow => ({
-            runId: row.run_id, agentId: row.agent_id, startedAt: Number(row.started_at), path: row.path as LedgerRow["path"], workflow: row.workflow, digest: row.digest,
-            notServed: row.not_served as LedgerRow["notServed"], jobUsd: usdOf(row.job_usd), lookBackUsd: usdOf(row.look_back_usd), cost: row.cost as LedgerRow["cost"],
-          })),
-          spend: spend.map((row): SpendRow => ({
-            runId: row.run_id, round: Number(row.round), agentId: row.agent_id, kind: row.kind as SpendRow["kind"], ofRun: row.of_run, workflow: row.workflow, digest: row.digest, usd: usdOf(row.usd),
-          })),
+          rows: rows.sort((a, b) => a.startedAt - b.startedAt || byText(a.runId, b.runId)),
+          spend: spend.sort((a, b) => byText(a.runId, b.runId) || byText(a.kind, b.kind) || a.round - b.round),
         };
       },
     };

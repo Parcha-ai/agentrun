@@ -982,7 +982,7 @@ const lookedBack = (past, lookBackOf) => past.map((run) => ({
 
 test("money rule, all-in: a workflow whose runs are cheap but whose learning pushes its all-in over the agent's by hand stops running first", async (t) => {
   // Served runs at $0.1 each, by hand $0.2: under the line on their own cost; each served run's learning books $0.4, so
-  // all-in they cost $0.5 a run. The by-hand side is the cost page's before, the job's own: the by-hand runs' learning
+  // all-in they cost $0.5 a run. The by-hand side is the job's own over the same runs: the by-hand runs' learning
   // ($0.05 each) is left out of it, as it is there (one baseline).
   const past = pastRuns({ servedUsd: 0.1, byHandUsd: 0.2 });
   const keptBefore = lookedBack(past, (run) => (run.metrics.path === "agent" ? 0.05 : 0.4));
@@ -990,7 +990,7 @@ test("money rule, all-in: a workflow whose runs are cheap but whose learning pus
   assert.equal(row.metrics?.path, "agent", `the agent took the run: ${JSON.stringify(row.metrics)}`);
   assert.equal(gateway.requests.filter(isNode).length, 0, "the workflow never ran");
   const revise = entries.findLast((entry) => entry.kind === WORKFLOW_FIRST)?.data;
-  assert.deepEqual([revise?.outcome, revise?.served_usd, revise?.by_hand_usd, revise?.runs], ["needs_revision", 0.5, 0.2, COST_WINDOW], "served all-in, by hand the cost page's before");
+  assert.deepEqual([revise?.outcome, revise?.served_usd, revise?.by_hand_usd, revise?.runs], ["needs_revision", 0.5, 0.2, COST_WINDOW], "served all-in, by hand the job's own");
   assert.ok(logs.some((line) => /answer cost \$0\.5 a run over its last 10 served runs, at or over \$0\.2 by hand \(served all-in, by hand the job's own/.test(line)), JSON.stringify(logs));
 });
 
@@ -1022,7 +1022,7 @@ test("money rule: under the by-hand cost, a new digest, fewer than 10 served run
   }
 });
 
-test("costLineOf: the newest 10 served runs at the digest against the by-hand side as given (the cost page's before: one baseline)", () => {
+test("costLineOf: the newest 10 served runs at the digest against the by-hand side as given (one baseline, over the same runs)", () => {
   const at = Date.UTC(2026, 10, 12);
   const run = (i, metrics, allInUsd) => ({ metrics, allInUsd, startedAt: at - i * 60_000 });
   const served = (i, usd, extra = {}) => run(i, { path: i % 2 ? "workflow" : "handed_back", workflow: "answer", workflow_digest: "d", ...extra }, usd);
@@ -1166,7 +1166,7 @@ test("a claim that dies after the workflow handed the job back: the next claim s
   assert.match(textOf(firstAgent.body), /Your learned workflow `answer` ran first on this job and handed it back to you/, "the agent's first input is the handback, not the bare job");
 });
 
-test("the cost page and the launch's money rule read one history: every run since the reset, the cost page's before as the by-hand side", async (t) => {
+test("the cost page and the launch's money rule read one window: the newest runs since the reset, both sides over the same runs", async (t) => {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-workflow-first-cost-"));
   const store = await openSqliteStore({ dataDir: dir, role: "server" });
   t.after(async () => {

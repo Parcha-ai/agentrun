@@ -14,8 +14,8 @@
 // serves while its all-in cost a run over its last COST_WINDOW served runs at its digest stays under the agent's by-hand
 // cost. Both are the cost page's own (store-reads/learning.ts, over learn/ledger.ts summarize): the served side reads a
 // run's all-in (its booked cost, the workflow and any handback's agent work together, and every learning round booked
-// for it), and the by-hand cost is the page's `before`, the job's own cost of the agent's runs before a learned workflow
-// first served (learning-cost.ts byHandSide), so a compile turn is never by hand: it is its revision's spend. A run
+// for it), and the by-hand cost is the job's own cost of the agent's runs on its own path among the same runs (its newest
+// PAST_RUNS on no named disk since its learning's reset), so a compile turn is never by hand: it is its revision's spend. A run
 // whose cost is unknown is left out of its side's mean and counted, never read as 0. Over that line it stops running
 // first: the agent takes the run, the run's journal keeps why with the two numbers (WORKFLOW_FIRST, outcome
 // needs_revision), and the agent's cost per run shows it stopped. The stop asks for no compile. A new revision of it (a
@@ -85,12 +85,16 @@ export interface Revise {
 export type PastRun = { readonly metrics: unknown; readonly allInUsd: number | null; readonly startedAt: number };
 /** A mean over `runs` runs, rounded to 1e-6. */
 type Mean = { readonly runs: number; readonly mean_usd: number };
-/** What the money rule reads of the agent (store-reads/learning.ts pastRunsOverStore): its runs since its learning's
- *  reset (`runs`, any order), and the by-hand cost, the cost page's own (`by_hand`: its summary's `before`, learning
- *  left out, learning-cost.ts byHandSide) with the by-hand runs it left out for an unknown cost (`by_hand_unknown`). */
+/** What the money rule reads of the agent (store-reads/learning.ts pastRunsOf): of its newest PAST_RUNS runs on no named
+ *  disk, those since its learning's reset (`runs`, any order), and the by-hand cost over those same runs (`by_hand`: the
+ *  mean job's own $ of the ones on the `agent` path, learning left out) with the by-hand runs it left out for an unknown
+ *  cost (`by_hand_unknown`). */
 export type PastRuns = { readonly runs: readonly PastRun[]; readonly by_hand: Mean | null; readonly by_hand_unknown: number };
 /** No runs read: nothing to stop. */
 export const NO_PAST_RUNS: PastRuns = { runs: [], by_hand: null, by_hand_unknown: 0 };
+/** How many of the agent's newest runs on no named disk the money rule reads, both sides (store-reads/learning.ts
+ *  pastRunsOf): a launch's read is bounded whatever the agent's history, and the cost page reads the same window. */
+export const PAST_RUNS = 500;
 
 const SERVED: readonly unknown[] = ["workflow", "handed_back"];
 const usd = (value: number) => Math.round(value * 1e6) / 1e6;
@@ -99,8 +103,8 @@ const pathFields = (metrics: unknown) => (isObject(metrics as Json) ? (metrics a
 
 /** The money rule's two sides for workflow `name` at `digest`, over the agent's runs (`past`): `served`, the mean all-in
  *  of its newest COST_WINDOW runs served first at that digest (path workflow or handed_back) whose all-in is known (the
- *  cost page's `after` side reads the same figure); `by_hand`, the cost page's `before` as given (one baseline, never a
- *  second one here); `unknown_runs`, the runs either side would have read that it left out for an unknown cost (the cost
+ *  cost page's `after` side reads the same figure); `by_hand`, as given (PastRuns: the job's own $ over the same runs,
+ *  never a second baseline here); `unknown_runs`, the runs either side would have read that it left out for an unknown cost (the cost
  *  page's rule: left out and counted). */
 export function costLineOf(past: PastRuns, name: string, digest: string): { served: Mean | { runs: 0; mean_usd: null }; by_hand: Mean | null; unknown_runs: number } {
   const newest = [...past.runs].sort((a, b) => b.startedAt - a.startedAt);
@@ -276,7 +280,12 @@ export async function workflowFirstOf(kind: string, workflows: readonly LearnedW
   const digest = workflowDigest(chosen);
   const serve = { ...champion, serve: { name: chosen.name, digest, ...(promotion !== undefined ? { promotion } : {}), input: launch.input as Record<string, unknown>, revision: launch.learning.seed, ...(outputSchema !== undefined ? { outputSchema } : {}) } };
   if (!past) return serve;
-  const line = costLineOf(await past().catch(() => NO_PAST_RUNS), chosen.name, digest);
+  // Runs it can't read stop nothing: the run is served unchecked, and the log says so.
+  const read = await past().catch((error: unknown) => {
+    log?.(`workflow-first: the money rule could not read the agent's past runs (${error instanceof Error ? error.message : String(error)}); ${chosen.name} serves this run unchecked`);
+    return NO_PAST_RUNS;
+  });
+  const line = costLineOf(read, chosen.name, digest);
   if (line.served.runs < COST_WINDOW) return serve;
   if (line.by_hand === null) {
     log?.(`workflow-first: no by-hand cost to hold ${chosen.name} to (no run of known cost on the agent's path before a learned workflow first served); it runs first`);
@@ -285,7 +294,7 @@ export async function workflowFirstOf(kind: string, workflows: readonly LearnedW
   if (!overLine(line)) return serve;
   const revise = { workflow: chosen.name, digest, served_usd: line.served.mean_usd!, by_hand_usd: line.by_hand.mean_usd, runs: line.served.runs, revision: launch.learning.seed, ...(outputSchema !== undefined ? { outputSchema } : {}) };
   const unknown = line.unknown_runs ? ` (${line.unknown_runs} run${line.unknown_runs === 1 ? "" : "s"} of unknown cost left out)` : "";
-  log?.(`workflow-first: ${chosen.name} cost $${revise.served_usd} a run over its last ${revise.runs} served runs, at or over $${revise.by_hand_usd} by hand (served all-in, by hand the job's own, as the cost page's before)${unknown}; it does not run first until a new revision of it; the agent takes this run`);
+  log?.(`workflow-first: ${chosen.name} cost $${revise.served_usd} a run over its last ${revise.runs} served runs, at or over $${revise.by_hand_usd} by hand (served all-in, by hand the job's own, over the same runs)${unknown}; it does not run first until a new revision of it; the agent takes this run`);
   return { ...champion, revise };
 }
 
