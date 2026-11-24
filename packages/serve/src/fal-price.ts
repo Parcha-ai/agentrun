@@ -558,19 +558,43 @@ export function falKeys(run: string): McpKeys {
 /** A fal server's meter: fal's unit prices read through the gateway's `ask`, kept per endpoint for PRICE_TTL_MS.
  *  `media` reads an input media file (none: such a job is unpriceable); `now`, the clock. */
 export function falMeter({ media, now = Date.now }: { media?: MediaReader; now?: () => number } = {}): McpMeter {
+  type Read = { unitPrice: number; unit: string; at: number } | { why: string };
   const prices = new Map<string, { unitPrice: number; unit: string; at: number }>();
-  const unitPrice = async (endpoint: string, ask: Parameters<McpMeter["quote"]>[2]): Promise<{ unitPrice: number; unit: string; at: number } | { why: string }> => {
-    const kept = prices.get(endpoint);
-    if (kept && now() - kept.at < PRICE_TTL_MS) return kept;
-    const answer = await ask("get_pricing", { endpoint_id: endpoint });
+  /** The reads under way, by endpoint: calls sent together share one get_pricing call rather than each sending its own. */
+  const reading = new Map<string, Promise<Read>>();
+  const readPrice = async (endpoint: string, ask: Parameters<McpMeter["quote"]>[2]): Promise<Read> => {
     const unread = (why: string) => ({ why: `fal's price for ${endpoint} could not be read (its get_pricing ${why})` });
+    // get_pricing reads a price and runs no job: an error or no answer is asked once more, never kept as the price.
+    let answer = await ask("get_pricing", { endpoint_id: endpoint });
+    if (!answer || answer.isError === true) answer = await ask("get_pricing", { endpoint_id: endpoint });
     if (!answer) return unread("did not answer");
     if (answer.isError === true) return unread("answered an error");
     const price = priceIn(bodyOf(answer), endpoint);
     if (!price) return unread("lists no USD price for it");
+    // fal bills its jobs: a rate of $0 is no price, so the job is unpriceable (refused under a cap, booked as unknown).
+    if (price.unitPrice === 0) return unread(`states $0 per ${oneOf(price.unit)} for it, which is no price`);
     const read = { ...price, at: now() };
     prices.set(endpoint, read);
     return read;
+  };
+  const unitPrice = async (endpoint: string, ask: Parameters<McpMeter["quote"]>[2]): Promise<Read> => {
+    const kept = prices.get(endpoint);
+    if (kept && now() - kept.at < PRICE_TTL_MS) return kept;
+    const shared = reading.get(endpoint);
+    if (shared) {
+      try {
+        return await shared;
+      } catch {
+        // The call that sent it failed (its own abort): this one reads with its own ask.
+      }
+    }
+    const read = readPrice(endpoint, ask);
+    reading.set(endpoint, read);
+    try {
+      return await read;
+    } finally {
+      if (reading.get(endpoint) === read) reading.delete(endpoint);
+    }
   };
   /** The longest of the media at `urls`, in seconds by `measure`, or the URL whose length could not be read. */
   const longest = async (urls: readonly string[], signal: AbortSignal, read?: MediaRead, measure: (bytes: Uint8Array) => number | undefined = mediaSeconds): Promise<number | { unread: string }> => {
@@ -605,8 +629,17 @@ export function falMeter({ media, now = Date.now }: { media?: MediaReader; now?:
     if ("unknown" in units) return { job, why: units.unknown };
     const step = price.unit === "seconds" || price.unit === "minutes" ? BILLING_STEP.get(job.endpoint) : undefined;
     if (step) units = { units: roundedUp(units.units, price.unit, step), from: `${units.from}, in whole ${step === 60 ? "minutes" : "seconds"}` };
-    const rated = price.unitPrice * rate.ratio + rate.perUnitUsd;
-    const words = [`fal's price for ${job.endpoint}: $${price.unitPrice} per ${oneOf(price.unit)}`, ...rate.words, `× ${shown(units.units)} (${units.from})`].join(" ");
+    // The ratios were decided against get_pricing's rate as it stood (page.base). When fal states another, the scaled
+    // rate can fall under what its model page bills this tier, and the hold and the booking (the same unitPrice) with it:
+    // the job is held at the higher of the two.
+    const scaled = price.unitPrice * rate.ratio;
+    const base = RATE_TIERS.get(job.endpoint)?.base;
+    // The tier's rate on the model page: the ratio was decided as that rate over base (rateOf).
+    const page = base === undefined ? undefined : usd(base * rate.ratio);
+    const moved = base !== undefined && page !== undefined && price.unitPrice !== base && page > scaled;
+    const rated = (moved ? page : scaled) + rate.perUnitUsd;
+    const drift = moved ? [`(get_pricing states $${price.unitPrice}, not the $${base} its rates were decided at: held at the model page's $${page} per ${oneOf(price.unit)})`] : [];
+    const words = [`fal's price for ${job.endpoint}: $${price.unitPrice} per ${oneOf(price.unit)}`, ...rate.words, ...drift, `× ${shown(units.units)} (${units.from})`].join(" ");
     return { job, holdUsd: usd(rated * units.units), unitPrice: rated, unit: price.unit, at: price.at, words, ...(step ? { step } : {}) };
   };
   return {
