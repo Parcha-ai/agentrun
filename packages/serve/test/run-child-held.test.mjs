@@ -9,7 +9,7 @@
 // stand-in for it is gone. No key, no network: a fake GitHub on loopback, dummy keys.
 import assert from "node:assert/strict";
 import { generateKeyPairSync, randomBytes } from "node:crypto";
-import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -340,6 +340,55 @@ test("where runs have users of their own, a run's login is read once, at its cla
   await store.settings.remove("claude_login");
   const kept = await host.heldFor(deps, { ...reads, login: claimedOn.login }, heldRedactor(keepText), () => {}).held.claudeLogin();
   assert.equal(typeof kept?.token, "function", "a run claimed on the login is handed its reader, as its claim read it");
+});
+
+test("the runner's reader of the login (held claudeLogin) says each renewal's outcome on the runner's own log, in the server's log line under event claude_login: a post with no answer, one Anthropic refuses and a renewal whose save fails, each by its words alone, no line holding a token or the login file's text", async (t) => {
+  const { heldRedactor, keepText } = await import("../dist/runner/redact.js");
+  const { store } = await storeOn(t);
+  const data = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "held-login-log-"));
+  t.after(() => rmSync(data, { recursive: true, force: true }));
+  await store.settings.put("claude_login", { v: 1, place: "agentrun", host: hostname(), only_me: true });
+  const dir = join(data, "claude-login");
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const file = join(dir, ".credentials.json");
+  const value = (what) => `not-a-secret-login-${what}-${randomBytes(6).toString("hex")}`;
+  const textOf = (accessToken, refreshToken) => JSON.stringify({ claudeAiOauth: { accessToken, refreshToken, expiresAt: Date.now() + 60_000, scopes: ["user:inference"], subscriptionType: null, rateLimitTier: null } });
+  const first = { access: value("access"), refresh: value("refresh") };
+  const second = { access: value("access-2"), refresh: value("refresh-2") };
+  const renewed = { access: value("renewed"), refresh: value("renewed-refresh") };
+  writeFileSync(file, textOf(first.access, first.refresh), { mode: 0o600 });
+  const launch = { input: { content: "Hello." }, harness: "claude-agent", place: { mode: "runner" } };
+  const { login: claimedLogin } = await host.staysInRunner({ store, sealKey: KEY, env: {}, data }, "claude-agent", launch, "run-own", PER_RUN_USERS);
+  const reads = { claim: { runId: "run-own", epoch: 1 }, run: { agentId: "agent-own", revisionId: "rev-own", signInHanded: null }, launch, revision: { kind: "agentic", body: { harness: "claude-agent" } }, claimed: {}, login: claimedLogin };
+  const lines = [];
+  const login = await host.heldFor({ store, sealKey: KEY, env: {}, data }, reads, heldRedactor(keepText), (line) => void lines.push(line)).held.claudeLogin();
+  assert.ok(login, "a run on AgentRun's own login folder is handed its reader");
+  const real = globalThis.fetch;
+  t.after(() => (globalThis.fetch = real));
+  // Near its end, the renewal's post gets no answer; then Anthropic refuses its refresh token for good.
+  globalThis.fetch = async () => {
+    throw new Error(`no answer, the request held ${first.refresh}`);
+  };
+  await assert.rejects(login.token(), /less than 5 minutes/);
+  globalThis.fetch = async () => new Response(JSON.stringify({ error: "invalid_grant", error_description: `refused ${first.refresh}` }), { status: 400, headers: { "content-type": "application/json" } });
+  await assert.rejects(login.token(), /less than 5 minutes/);
+  // Signed in again; the login's file is reached through a link now, which the runner never replaces: the renewal lands
+  // and its save fails, so its pair is held.
+  const elsewhere = join(data, "credentials-elsewhere.json");
+  writeFileSync(elsewhere, textOf(second.access, second.refresh), { mode: 0o600 });
+  rmSync(file);
+  symlinkSync(elsewhere, file);
+  globalThis.fetch = async () => new Response(JSON.stringify({ access_token: renewed.access, refresh_token: renewed.refresh, expires_in: 3600 }), { status: 200, headers: { "content-type": "application/json" } });
+  assert.equal(await login.token(), renewed.access, "renewed, its save failed: the held token is handed");
+  const said = lines.filter((line) => /(^| )event=claude_login( |$)/.test(line));
+  const has = (...words) => said.some((line) => words.every((word) => line.split(" ").includes(word)));
+  assert.ok(has("claude_login=renew_failed", "reason=network"), `the runner's log says the renewal whose post got no answer: ${JSON.stringify(lines)}`);
+  assert.ok(has("claude_login=renew_refused", "status=400", "error=invalid_grant"), `the runner's log says the renewal Anthropic refused, by its status and error code: ${JSON.stringify(lines)}`);
+  assert.ok(has("claude_login=renewed", "saved=no", "reason=held"), `the runner's log says the renewal whose save failed: ${JSON.stringify(lines)}`);
+  for (const line of lines) {
+    for (const secret of [first.access, first.refresh, second.access, second.refresh, renewed.access, renewed.refresh]) assert.ok(!line.includes(secret), `no token in the runner's log: ${line}`);
+    for (const text of [textOf(first.access, first.refresh), readFileSync(elsewhere, "utf8")]) assert.ok(!line.includes(text), `no file text in the runner's log: ${line}`);
+  }
 });
 
 test("the install a run's process asks for is readable by every user and writable by none, an install from before installs were shared too", { skip: process.getuid?.() === 0 && "root reads every folder" }, async (t) => {
