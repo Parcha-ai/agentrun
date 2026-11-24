@@ -115,6 +115,22 @@ const usd = (lines: Fee[]) => Math.round(lines.reduce((sum, fee) => sum + fee.us
 const outOf = (text: string) => ({ bytes: Buffer.byteLength(text), chars: text.length });
 const unjudged = { wall: { verdict: "unjudged" }, injection: "unjudged" } as const;
 
+/** `shared`, a guard check another call started, or as soon as `signal` stops this call, the page left unjudged as a
+ *  stopped check leaves it (code "aborted"). The shared check is not stopped: another call may still need it. */
+function guardUntilStopped(shared: Promise<PageGuard>, signal?: AbortSignal): Promise<PageGuard> {
+  if (!signal) return shared;
+  const stopped = (): PageGuard => ({ wall: { verdict: "unjudged", error: { code: "aborted", message: String((signal.reason as Error)?.message ?? signal.reason).slice(0, 500) } }, injection: "unjudged" });
+  if (signal.aborted) return Promise.resolve(stopped());
+  return new Promise((resolve, reject) => {
+    const onStop = () => resolve(stopped());
+    signal.addEventListener("abort", onStop, { once: true });
+    shared.then(
+      (guard) => (signal.removeEventListener("abort", onStop), resolve(guard)),
+      (error: unknown) => (signal.removeEventListener("abort", onStop), reject(error)),
+    );
+  });
+}
+
 export function createWeb(config: WebConfig): Web {
   const problems = settingsProblemsOf(config.settings);
   if (problems.length) throw new Error(`web settings: ${problems.join("; ")}`);
@@ -128,7 +144,8 @@ export function createWeb(config: WebConfig): Web {
   const pageVerdicts = new WeakMap<WebRead, Promise<PageGuard>>();
   const guardOf = (decider: WebDecider, url: string, read: WebRead, step: StepOptions): Promise<PageGuard> => {
     const known = pageVerdicts.get(read);
-    if (known) return known;
+    // A later caller waits on the check another started only until its own signal stops it; the check goes on.
+    if (known) return guardUntilStopped(known, step.signal);
     const asked = guardPage(decider, url, read, step);
     pageVerdicts.set(read, asked);
     void asked.then((verdict) => verdict.wall.error && pageVerdicts.delete(read));
