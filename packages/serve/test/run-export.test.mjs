@@ -25,7 +25,7 @@ const planted = (salt = "") => ({
   pg: `Pw${hex(`pg${salt}`, 18)}`, // label (PGPASSWORD=)
   user: `qa${hex(`user${salt}`, 6)}`, // personal (a home path's user)
   email: `qa.${hex(`email${salt}`, 8)}@mailbox-synthetic.zz`, // personal
-  ip: salt ? "10.20.30.42" : "10.20.30.41", // personal (a private address)
+  ip: salt ? "10.20.30.42" : "10.20.30.41", // key-gate: denylist a private literal the scrubber cuts (personal)
   envValue: `envdump${hex(`env${salt}`, 12)}`, // in a dump
 });
 const PLANTED = planted();
@@ -331,7 +331,7 @@ const DUMP_CALLS = [
   ["Read ~/.pgpass", "Read", { file_path: "~/.pgpass" }, CTX_PGPASS, "credential-file"],
   ["Read ~/.netrc", "Read", { file_path: "~/.netrc" }, `machine api.sample-host.zz login svc password ${CTX_PW}`, "credential-file"],
   ["Read .env", "Read", { file_path: ".env" }, CTX_ENV, "env-file"],
-  ["Read ~/.ssh/id_ed25519", "Read", { file_path: "~/.ssh/id_ed25519" }, `Host build\n  HostName 10.0.0.1\n  User svc\n  # seed ${CTX_PW}`, "ssh-file"],
+  ["Read ~/.ssh/id_ed25519", "Read", { file_path: "~/.ssh/id_ed25519" }, `Host build\n  HostName 10.0.0.1\n  User svc\n  # seed ${CTX_PW}`, "ssh-file"], // key-gate: denylist a private literal in the ssh config the scrubber cuts as one dump
   ["Bash cat ~/.pgpass", "Bash", { command: "cat ~/.pgpass", description: "Show the pgpass file" }, CTX_PGPASS, "credential-file"],
   ["Bash env | sort", "Bash", { command: "env | sort", description: "List the environment" }, CTX_ENV, "env-dump"],
   ["bash -lc printenv", "shell", { command: ["bash", "-lc", "printenv"] }, CTX_ENV, "env-dump"],
