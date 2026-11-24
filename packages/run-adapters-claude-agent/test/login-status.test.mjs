@@ -11,6 +11,7 @@ import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync, writeSync } from 'node:fs';
+import { createRequire, syncBuiltinESMExports } from 'node:module';
 import { createServer } from 'node:net';
 import { homedir, tmpdir } from 'node:os';
 import { isAbsolute, join, relative } from 'node:path';
@@ -748,4 +749,45 @@ test("an account file that is a link to a device that never ends (/dev/zero), or
   const fake = fakeCli();
   assert.deepEqual(await claude.claudeLoginStatus(fake.cli, login), OUT);
   assert.deepEqual(JSON.parse(copyText(fake.seen()[0])), { numStartups: 4 }, 'a link to a regular file is copied as that file');
+});
+
+// After the CLI exits, the check waits at most a second for its output, which a process it started may hold. A server's
+// event loop can be held up past that second (a busy server) while the answer already sits in the pipe: the check must
+// still read it. The hold is this test's: the CLI's exit is followed, before the loop goes on, by a block that tells the
+// process holding the CLI's output to write the answer, and lasts until it has and the drain's second is past due. So
+// the answer is in the pipe, unread, when the loop next runs its timers.
+test("a status check whose event loop is held up past the drain's second just after its CLI exited still reads the answer the pipe holds by then", { skip: process.platform === 'win32' ? 'a sh stand-in CLI' : false, timeout: 30_000 }, async (t) => {
+  const { login } = defaultLogin();
+  const dir = scratch();
+  const [cli, go, wrote] = ['claude', 'go', 'wrote'].map((name) => join(dir, name));
+  writeFileSync(cli, [
+    '#!/bin/sh',
+    // The process holding the CLI's output writes the answer once the test says go, and ends.
+    `(while [ ! -e '${go}' ]; do sleep 0.05; done; printf '%s' '${SIGNED_OUT}'; : > '${wrote}') &`,
+    'exit 1',
+    '',
+  ].join('\n'), { mode: 0o755 });
+  t.after(() => writeFileSync(go, ''));
+  const childProcess = createRequire(import.meta.url)('node:child_process');
+  const real = childProcess.spawn;
+  childProcess.spawn = function spawnHeld(command, ...rest) {
+    const child = real.call(this, command, ...rest);
+    if (command === cli) {
+      // Queued from the exit's first listener, so it runs once every listener has (the check's drain is armed by then).
+      child.once('exit', () => process.nextTick(() => {
+        writeFileSync(go, '');
+        const start = performance.now();
+        while ((!existsSync(wrote) || performance.now() - start < 1_500) && performance.now() - start < 10_000);
+      }));
+    }
+    return child;
+  };
+  syncBuiltinESMExports();
+  t.after(() => {
+    childProcess.spawn = real;
+    syncBuiltinESMExports();
+  });
+  const outcome = await claude.claudeLoginStatus(cli, login, { timeoutMs: 5_000 }).then((value) => ({ value }), (error) => ({ error: error.code ?? error.message }));
+  assert.ok(existsSync(wrote), 'the process holding the output wrote the answer while the loop was held up');
+  assert.deepEqual(outcome, { value: OUT }, 'the answer the pipe held when the held-up loop went on was dropped: the drain gave up on it unread');
 });
