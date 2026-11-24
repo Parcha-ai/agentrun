@@ -57,15 +57,17 @@ export function targetInputOf(d: { content: string } & InputDraft, issues: Recor
   if (shape?.kind === "fields") {
     if (shape.form.contentRequired && !d.content.trim()) issues["target.input"] = "Say what each run is asked.";
     const owned = new Set(shape.form.fields.filter(([k]) => !Object.hasOwn(read, k) || fieldShows(read[k])).map(([k]) => k));
-    const kept = Object.fromEntries(Object.entries(read).filter(([k]) => k !== "content" && !owned.has(k)));
     const typed = d.values ?? fieldStartText(shape.form);
+    // A stored value no field can show stays as stored until its field is typed in: a required field left empty would
+    // otherwise go as "", [] or false in its place.
+    const kept = Object.fromEntries(Object.entries(read).filter(([k]) => k !== "content" && !owned.has(k) && !typed[k]));
     // A field still as it was read sends its value as stored: its text is a list one item a line, trimmed, with blank
     // items and an empty optional value left out, so rebuilding the value from the text could change it (["a\nb", ""]
     // would go back as ["a", "b"]). So does a message left as read.
     const asRead = inputText(read);
     const untouched = Object.fromEntries([...owned].filter((k) => Object.hasOwn(asRead, k) && typed[k] === asRead[k]).map((k) => [k, read[k]]));
     const message = typeof read.content === "string" && d.content === read.content ? { content: read.content } : {};
-    return { ...kept, ...inputOf(shape.form, d.content, typed), ...untouched, ...message };
+    return { ...inputOf(shape.form, d.content, typed), ...kept, ...untouched, ...message };
   }
   if (!d.content.trim()) issues["target.input"] = "Say what each run is asked.";
   return { ...read, content: d.content };
