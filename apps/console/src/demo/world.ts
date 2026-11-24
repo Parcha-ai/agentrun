@@ -26,6 +26,8 @@ export function hex(name: string, length = 40): string {
 
 type Held = {
   story: RunStory;
+  /** The model at start: later agent saves and restores do not rewrite run history. */
+  model: string;
   start: number;
   beats: Beat[] | null;
   answers: GateAnswer[];
@@ -112,7 +114,7 @@ export function createWorld({ opened = Date.now(), clock = () => Date.now() }: {
       if (!p.pending) break;
       answers.push({ at: p.lastAt + a.afterMs, ...(a.text === undefined ? {} : { text: a.text }), ...(a.decision ? { decision: a.decision } : {}) });
     }
-    const h: Held = { story, start, beats, answers };
+    const h: Held = { story, model: agent.model, start, beats, answers };
     held.set(story.id, h);
     return h;
   };
@@ -862,8 +864,8 @@ export function createWorld({ opened = Date.now(), clock = () => Date.now() }: {
     run: (id: string) => (held.has(id) ? viewOf(held.get(id)!) : null),
     rows: (id: string) => (held.has(id) ? rowsOf(held.get(id)!) : null),
     graph: (id: string) => (held.has(id) ? graphOf(held.get(id)!, clock()) : null),
-    trace: (id: string): RunTrace | null => { const h = held.get(id); if (!h) return null; const run = viewOf(h); return traceOf(id, rowsOf(h), agents.get(h.story.agent)!.model, run.cost.usd ?? 0, Math.max(requestsOf(h.beats ?? []), 1)); },
-    usage: (id: string): RunUsage | null => { const h = held.get(id); return h ? usageOf(viewOf(h), agents.get(h.story.agent)!.model) : null; },
+    trace: (id: string): RunTrace | null => { const h = held.get(id); if (!h) return null; const run = viewOf(h); return traceOf(id, rowsOf(h), h.model, run.cost.usd ?? 0, Math.max(requestsOf(h.beats ?? []), 1)); },
+    usage: (id: string): RunUsage | null => { const h = held.get(id); return h ? usageOf(viewOf(h), h.model) : null; },
     files: (id: string) => (held.has(id) ? filesOf(held.get(id)!) : null),
     runLearning: (id: string) => (held.has(id) ? runLearningOf(held.get(id)!) : undefined),
     stats: statsOver,

@@ -131,6 +131,24 @@ describe("demo mode's backend", () => {
     expect(asked).toEqual([]);
   });
 
+  it.each(["save", "restore"] as const)("keeps past run model labels when an agent revision changes through %s", async action => {
+    const { v2, now } = demo();
+    const first = await v2.createAgent({ definition: { version: 1, name: "Model history", instructions: "Review.", harness: "pi", model: "first/model-one", skills: [], tools: [] } });
+    const second = await v2.updateDefinition(first.agent_id, { definition: { ...first.definition, model: "second/model-two" } }, first.home_etag);
+    const { run } = await v2.startRun(first.agent_id, { input: { content: "Review." } }, "historical-model");
+    now.ms += 60_000;
+    const usage = await v2.runUsage(run.run_id), trace = await v2.runTrace(run.run_id);
+    expect(usage.lines).toEqual(expect.arrayContaining([expect.objectContaining({ provider: "second", model: "model-two" })]));
+    expect(trace.spans).toEqual(expect.arrayContaining([expect.objectContaining({ kind: "model", name: "model-two" })]));
+    if (action === "restore") await v2.setCurrent(first.agent_id, first.revision!);
+    else await v2.updateDefinition(first.agent_id, { definition: { ...second.agent.definition, model: "third/model-three" } }, second.etag);
+    expect(await v2.runUsage(run.run_id)).toEqual(usage);
+    expect(await v2.runTrace(run.run_id)).toEqual(trace);
+    const next = await v2.startRun(first.agent_id, { input: { content: "Review again." } }, "next-model");
+    now.ms += 60_000;
+    expect((await v2.runUsage(next.run.run_id)).lines).toEqual(expect.arrayContaining([expect.objectContaining(action === "restore" ? { provider: "first", model: "model-one" } : { provider: "third", model: "model-three" })]));
+  });
+
   it("lists connected Claude Code and Codex agents beside the server's own, ready to run", async () => {
     const agents = (await demo().v2.listAgents()).agents.filter((a) => a.definition.native);
     expect(agents.map((a) => [a.definition.name, a.definition.native?.runtime, a.native_status?.state])).toEqual([["Architect", "claude-code", "ready"], ["Code reviewer", "codex", "ready"]]);
