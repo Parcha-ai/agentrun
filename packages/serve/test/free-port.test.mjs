@@ -3,7 +3,7 @@
 // or is probing, and a listen error other than "in use" said as itself. fakeOllama's own listen says its error too.
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { createServer } from "node:net";
+import { createServer, Server } from "node:net";
 import { test } from "node:test";
 import { fakeOllama } from "./fixtures/fake-ollama.mjs";
 import { ephemeralLow, freePort } from "./fixtures/ports.mjs";
@@ -52,23 +52,52 @@ test("a port in use is passed over: under a range from 1025 the one candidate is
   }
 });
 
-test("two freePort calls at once never get the same port: under a range from 1026 with 1025 held, one call is handed 1024 and the other fails by name", async (t) => {
-  // Held here, or already held by something else on this machine: either way it is in use when it is tried.
+test("two freePort calls at once never get the same port, and a port found in use is released: with H held and H+1 free, the call that starts at H+1 is handed it, the one that starts at H another, and H once it is free", async (t) => {
+  // A free pair found now in a range no other test here asks for (from 15000: 14000-14999), not fixed ports, so a port
+  // something on this machine holds is never read as a helper bug.
+  const low = 15000;
+  const from = 14000;
   const holder = createServer();
-  const held = await new Promise((resolve) => {
-    holder.once("error", () => resolve(false));
-    holder.listen(1025, "127.0.0.1", () => resolve(true));
-  });
-  t.after(() => held && new Promise((resolve) => holder.close(resolve)));
-  // The first call starts at 1025 and finds it in use; the second starts at 1024. The first then reaches 1024 while the
-  // second's probe of it has closed: only a port claimed before its probe keeps the first off it.
-  const starts = [0.75, 0.25];
+  let held;
+  for (let port = from; port < low - 2 && held === undefined; port++) {
+    if (!(await listenOn(holder, port))) continue;
+    if (await bindsNow(port + 1)) held = port;
+    else await closeServer(holder);
+  }
+  assert.ok(held !== undefined, `no two free neighbouring ports in ${from}-${low - 2} on this host`);
+  t.after(() => closeServer(holder));
+  const next = held + 1;
+  const at = (port) => (port - from + 0.5) / (low - from);
+  const starts = [at(held), at(next)];
   t.mock.method(Math, "random", () => starts.shift());
-  const settled = await Promise.allSettled([freePort({ low: 1026 }), freePort({ low: 1026 })]);
-  const handed = settled.filter((s) => s.status === "fulfilled").map((s) => s.value);
-  assert.deepEqual(handed, [1024], "the ports handed out");
-  const refused = settled.filter((s) => s.status === "rejected").map((s) => String(s.reason));
-  assert.deepEqual(refused, ["Error: no free port below the ephemeral range: none in 1024-1025 (it starts at 1026)"], "the call refused");
+  // The first call starts at H, finds it in use and moves on to H+1; the second starts at H+1. The second claims H+1
+  // before its first await, so the first finds it claimed whatever order the probes settle in, and moves on again. A
+  // helper that claims a port only after probing it hands H+1 to both.
+  const [first, second] = await Promise.all([freePort({ low }), freePort({ low })]);
+  assert.ok(second === next && first !== next && first !== held, `the ports handed out: ${first} and ${second}, with ${held} held and ${next} free`);
+  await closeServer(holder);
+  starts.push(at(held));
+  assert.equal(await freePort({ low }), held, `the port found in use (${held}) is handed out once it is free`);
+});
+
+test("a port whose probe fails with another error is released: the call rejects with that error, and the next call is handed the port", async (t) => {
+  // A free port found now in a range no other test here asks for (from 16000: 15000-15999).
+  const low = 16000;
+  const from = 15000;
+  let port = from;
+  while (port < low && !(await bindsNow(port))) port++;
+  assert.ok(port < low, `no free port in ${from}-${low - 1} on this host`);
+  const at = (candidate) => (candidate - from + 0.5) / (low - from);
+  const starts = [at(port), at(port)];
+  t.mock.method(Math, "random", () => starts.shift());
+  // Every listen fails with an error that is not "in use" until the mock is restored.
+  const listen = t.mock.method(Server.prototype, "listen", function () {
+    process.nextTick(() => this.emit("error", Object.assign(new Error("a listen that fails"), { code: "EMOCKED" })));
+    return this;
+  });
+  await assert.rejects(freePort({ low }), { code: "EMOCKED" });
+  listen.mock.restore();
+  assert.equal(await freePort({ low }), port, `the port whose probe failed (${port}) is handed out by the next call`);
 });
 
 test("a fake Ollama asked for a port another listener holds rejects with EADDRINUSE instead of an uncaught error", async (t) => {
@@ -84,4 +113,29 @@ function nonlocalBind() {
   } catch (error) {
     return `unread (${error.code ?? error.message})`;
   }
+}
+
+/** Listens `server` on `port` at 127.0.0.1: true once it listens, false when the port is in use, any other error rejected. */
+function listenOn(server, port) {
+  return new Promise((resolve, reject) => {
+    const failed = (error) => (error.code === "EADDRINUSE" ? resolve(false) : reject(error));
+    server.once("error", failed);
+    server.listen(port, "127.0.0.1", () => {
+      server.off("error", failed);
+      resolve(true);
+    });
+  });
+}
+
+/** Whether `port` binds on 127.0.0.1 now, the probe closed at once. */
+async function bindsNow(port) {
+  const probe = createServer();
+  if (!(await listenOn(probe, port))) return false;
+  await closeServer(probe);
+  return true;
+}
+
+/** Closes `server` if it listens; resolves either way. */
+function closeServer(server) {
+  return new Promise((resolve) => (server.listening ? server.close(() => resolve()) : resolve()));
 }
