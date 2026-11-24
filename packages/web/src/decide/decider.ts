@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import type { Fee } from "../fees.js";
 import type { Hit } from "../search.js";
 import { codeOf, costOf, costTogether } from "./failure.js";
+import { PASSAGES_MAX } from "./passages.js";
 
 /** What a provider said of one item: p(needed), or null where it refused the question. What is done with it is the
  *  step's (search.ts, fetch.ts), never the decider's. */
@@ -120,8 +121,13 @@ export function judgeRequest(url: string, task: string, passages: readonly strin
 /** The most bytes of state one request carries: within the least any provider takes (Parallel's 96,000), so every
  *  provider is sent the same states. */
 export const STATE_BUDGET_BYTES = 90_000;
-/** The most questions one request asks: within the fewest any provider takes (Parallel's 100). */
+/** The most questions one request asks: within the fewest any provider takes (Parallel's 100). A judge request asks
+ *  at most PASSAGES_MAX, as many passages as a part has: a request of looking_for's FIND_CHUNKS_MAX chunks is large
+ *  enough that a proxy may send it to a backend that refuses it (the lab's sends one to Vertex, which refuses
+ *  structured outputs for partner models). */
 export const QUESTIONS_PER_REQUEST = 100;
+/** The most requests of one ask in flight at once. */
+export const REQUESTS_AT_ONCE = 4;
 
 const stateBytes = (request: DecisionAsk) => Buffer.byteLength(JSON.stringify(request.state));
 const fits = (request: DecisionAsk) => stateBytes(request) <= STATE_BUDGET_BYTES;
@@ -148,20 +154,23 @@ function trimmedSearch(query: string, hits: readonly Hit[], task: string | undef
   return { hits: cut(fitting), trimmed: { snippets: hits.filter((hit) => hit.snippet.length > fitting).length, to_chars: fitting } };
 }
 
-/** `items` asked in order in as few requests as each fit the budget and QUESTIONS_PER_REQUEST: an item over the budget
+/** `items` asked in order in as few requests as each fit the budget and `most` questions: an item over the budget
  *  alone is asked alone. */
-function requestsOf<T>(items: readonly T[], request: (items: readonly T[], first: number) => DecisionAsk): DecisionAsk[] {
+function requestsOf<T>(items: readonly T[], request: (items: readonly T[], first: number) => DecisionAsk, most = QUESTIONS_PER_REQUEST): DecisionAsk[] {
   const whole = request(items, 1);
-  if (items.length <= QUESTIONS_PER_REQUEST && fits(whole)) return [whole];
+  if (items.length <= most && fits(whole)) return [whole];
   const requests: DecisionAsk[] = [];
   for (let start = 0; start < items.length; ) {
     let end = start + 1;
-    while (end < items.length && end - start < QUESTIONS_PER_REQUEST && fits(request(items.slice(start, end + 1), start + 1))) end++;
+    while (end < items.length && end - start < most && fits(request(items.slice(start, end + 1), start + 1))) end++;
     requests.push(request(items.slice(start, end), start + 1));
     start = end;
   }
   return requests;
 }
+
+/** Two requests' verdicts as one ask's: the first's model and temperature, the rest in order and summed. */
+const together = (a: Verdicts, b: Verdicts): Verdicts => ({ ...a, verdicts: [...a.verdicts, ...b.verdicts], tokens: tokensTogether(a.tokens, b.tokens), cost: costTogether(a.cost, b.cost), questions_sha256: [...a.questions_sha256, ...b.questions_sha256] });
 
 function tokensTogether(a: Tokens | null, b: Tokens | null): Tokens | null {
   if (!a || !b) return null;
@@ -239,21 +248,32 @@ export function deciderFrom(provider: DecisionAsker, options: DeciderOptions): W
     if (ids.length && verdicts.every((verdict) => verdict === null)) throw new DecideError("refused", `${provider.id} refused every question`, cost.usd, cost.basis);
     return { verdicts, ...meta };
   };
-  // Asked one after another, each through ctx.pay; a failure after the first carries what the requests before it cost.
+  // Asked REQUESTS_AT_ONCE at a time, each through ctx.pay, and merged in order. After a failure no more are sent; once
+  // those in flight settle, the ask fails with the first failed request's code, at what every request cost.
   const askAll = async (requests: DecisionAsk[], ctx: DecideContext): Promise<Verdicts> => {
-    let got: Verdicts | undefined;
-    for (const [i, request] of requests.entries()) {
-      try {
-        const next = await ask(request, ctx);
-        got = got ? { ...got, verdicts: [...got.verdicts, ...next.verdicts], tokens: tokensTogether(got.tokens, next.tokens), cost: costTogether(got.cost, next.cost), questions_sha256: [...got.questions_sha256, ...next.questions_sha256] } : next;
-      } catch (thrown) {
-        if (!got) throw thrown;
-        const cost = costTogether(got.cost, costOf(thrown));
-        const message = thrown instanceof Error ? thrown.message : String(thrown);
-        throw new DecideError(codeOf(thrown), `request ${i + 1} of ${requests.length}: ${message}`, cost.usd, cost.basis);
+    const got: Verdicts[] = [];
+    const failures: { i: number; thrown: unknown }[] = [];
+    let next = 0;
+    const work = async () => {
+      while (next < requests.length && !failures.length && !ctx.signal.aborted) {
+        const i = next++;
+        try {
+          got[i] = await ask(requests[i]!, ctx);
+        } catch (thrown) {
+          failures.push({ i, thrown });
+        }
       }
+    };
+    await Promise.all(Array.from({ length: Math.min(REQUESTS_AT_ONCE, requests.length) }, work));
+    if (!failures.length) {
+      ctx.signal.throwIfAborted();
+      return got.reduce(together);
     }
-    return got!;
+    const first = failures.reduce((a, b) => (b.i < a.i ? b : a));
+    if (requests.length === 1) throw first.thrown;
+    const cost = [...got.filter(Boolean).map((one) => one.cost), ...failures.map(({ thrown }) => costOf(thrown))].reduce(costTogether);
+    const message = first.thrown instanceof Error ? first.thrown.message : String(first.thrown);
+    throw new DecideError(codeOf(first.thrown), `request ${first.i + 1} of ${requests.length}: ${message}`, cost.usd, cost.basis);
   };
   return {
     id: provider.id,
@@ -262,7 +282,7 @@ export function deciderFrom(provider: DecisionAsker, options: DeciderOptions): W
       const got = await askAll(requestsOf(sent, (some, first) => siftRequest(query, some, task, first)), ctx);
       return trimmed ? { ...got, trimmed } : got;
     },
-    judge: (url, task, passages, ctx) => askAll(requestsOf(passages, (some, first) => judgeRequest(url, task, some, first)), ctx),
+    judge: (url, task, passages, ctx) => askAll(requestsOf(passages, (some, first) => judgeRequest(url, task, some, first), PASSAGES_MAX), ctx),
     async guard(url, status, text, ctx) {
       const { answerOf, meta, cost } = await send(pageGuardRequest(url, status, text), ctx, `${provider.id}'s page guard`);
       const wall = answerOf("wall", choiceOf);
