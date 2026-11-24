@@ -38,13 +38,15 @@
 // machine gone where it is, as when it deletes it itself. Once it is gone (its row stale
 // for RUNNER_STALE_MS, a new incarnation) or refusing claims, any runner claims the run; a claim that then can't reach
 // the machine says why: its runner is gone (computerLostWords), or it is there and ends it (computerHeldWords). A
-// refusing runner is still there (store KEPT_PREFIX): the claim that could
-// not reach its machine puts the row back marked ending (restoreKept: the claim goes on on a new machine, so that one is
+// refusing runner is still there (store KEPT_PREFIX). The claim that could not reach the machine puts the row back
+// marked ending, whatever it then reads of that runner (restoreKept: the claim goes on on a new machine, so that one is
 // the run's no more and no claim takes it back), and no janitor but that runner's ends a row pinned to a runner still
-// there (sweepKept): that runner's own timer (endKept finishes a row so marked) or janitor does. No park writes over a row
-// pinned to another runner still there (keepKept): it keeps nothing then, and its machine goes as at the run's end, so no
-// machine is ever left with no row and no runner to end it. A machine any runner reaches by its id (an exec vendor's
-// sandbox, a phone) is not pinned, and moves.
+// there (sweepKept): that runner's own timer (endKept finishes a row so marked) or janitor does; once it is gone, any
+// janitor does. No park writes over a row pinned to another runner still there (keepKept): it keeps nothing then, and
+// its machine goes as at the run's end. So a machine a claim took and could not reach, or a park did not keep, is not
+// left with no row and no runner to end it, short of the claim's process dying between its take and its give-back. A
+// machine any runner reaches by its id (an exec vendor's sandbox, a phone)
+// is not pinned, and moves.
 import { type ComputerProvider, connectOf, type MountKind, type ProviderEntry } from "@parcha/agentrun-computer";
 import { type Claim, FINAL_STATES, KEPT_PREFIX, RUNNER_STALE_MS, type Runners, type Settings, type Store } from "../store/index.js";
 
@@ -259,11 +261,11 @@ export async function takeKept(settings: Pick<KeptSettings, "removeIf">, runId: 
   return settings.removeIf(keptKeyOf(runId), kept);
 }
 
-/** Puts `kept` back on `runId`'s row after a claim took it (takeKept) and could not reach its machine, while the runner
- *  it is pinned to is still there, marked ending: the claim goes on on a new machine, so no claim takes that one back as
- *  the run's (nor does the claim rule pin the run to it), and that runner's end at its time (endKept, which finishes a row
- *  its park wrote that reads ending) or its janitor's next pass deletes it. Only while the key has no row: nothing written
- *  since is replaced. True when the row reads so after. */
+/** Puts `kept` back on `runId`'s row after a claim took it (takeKept) and could not reach its machine, pinned to another
+ *  runner, marked ending, whether that runner is there or not: the claim goes on on a new machine, so no claim takes that
+ *  one back as the run's (nor does the claim rule pin the run to it). That runner's end at its time (endKept, which
+ *  finishes a row its park wrote that reads ending) or its janitor's next pass deletes it; once it is gone, any janitor's
+ *  pass does. Only while the key has no row: nothing written since is replaced. True when the row reads so after. */
 export async function restoreKept(settings: Pick<KeptSettings, "putIfAbsent">, runId: string, kept: Kept): Promise<boolean> {
   const row = rowOf(kept, "ending");
   return JSON.stringify(await settings.putIfAbsent(keptKeyOf(runId), row)) === JSON.stringify(row);

@@ -1052,21 +1052,19 @@ export async function computerForClaim(
       const settings = store.settings;
       /** Whether this claim took the row off (takeKept) and has not given it back. */
       let took = false;
-      // Taken and not reached here: while the runner it is pinned to is still there (heldElsewhere: refusing claims or
-      // not), the row goes back as that runner's park wrote it, marked ending (restoreKept): this claim goes on on a new
-      // machine, so no claim takes that one back as the run's, and that runner's own end at its time (endKept finishes a
-      // row so marked) or its janitor's still finds it and deletes the machine. A row left off would leave the machine
-      // running with nothing to end it.
-      // Once that runner is gone, the row stays off: the machine went with it, or its host's janitor ends it. A failed
-      // read of who is there puts it back: any janitor ends a row whose runner is gone. True when that runner was there,
-      // false when it was gone, for the new one's words (Replaced.elsewhere, lost); undefined when who is there was never
-      // read (the row not taken, or not pinned elsewhere), and the words name neither.
+      // Taken and not reached here: the row goes back as that runner's park wrote it, marked ending (restoreKept),
+      // whoever is there: this claim goes on on a new machine, so no claim takes that one back as the run's. A runner
+      // still there (refusing claims or not, or one whose word was only late) ends it at its time (endKept finishes a row
+      // so marked) or at its janitor's pass; once it is gone, any janitor's pass does. A row left off would leave the
+      // machine running with nothing to end it, so the give-back reads nothing first. Then who is there is read for the
+      // new one's words alone (Replaced.elsewhere, lost): true when that runner is there (or the read failed), false when
+      // it is gone; undefined when who is there was never read (the row not taken, or not pinned elsewhere), and the
+      // words name neither.
       const giveBack = async (): Promise<boolean | undefined> => {
         if (!took || !elsewhere) return undefined;
         took = false;
-        const there = await heldElsewhere({ ...(store.runners ? { runners: store.runners } : {}), ...(launch.holder ? { self: launch.holder } : {}) })(record);
-        if (there) await restoreKept(settings, launch.runId, record).catch(() => false);
-        return there;
+        await restoreKept(settings, launch.runId, record).catch(() => false);
+        return heldElsewhere({ ...(store.runners ? { runners: store.runners } : {}), ...(launch.holder ? { self: launch.holder } : {}) })(record);
       };
       try {
         // Its end begun before its time: a claim that could not reach it went on on a new machine and gave its row back so,
