@@ -74,7 +74,7 @@ import { bookedSpend, cliModelWorked, cliRunMetrics, costBasisOf, endCostOf, run
 import { journalEntries } from "./journal-reader.js";
 import { hashedMcpOf, piShaped } from "../store-reads/journal.js";
 import { replayCallsOver } from "./promotion.js";
-import { learnedFirstWhereHeld } from "./learned-first.js";
+import { type LearnedFirst, learnedFirstWhereHeld } from "./learned-first.js";
 import { pathMetrics } from "./workflow-first.js";
 import { AUDIT_PARKED, withAudit } from "./audit.js";
 import { compareEndOfRun, GRADER, withGrader } from "./compare-end.js";
@@ -672,11 +672,14 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   const audits = { store: deps.store, agentId: runRow.agentId, revisionId: runRow.revisionId, context, log, folder: learningFolder, shown, sealKey: deps.sealKey, spendOff, admitAuxiliary };
   // A replay run's or a shadow's grader (runner/compare-end.ts), on a proxy of its own beside the CLI session's, as pi's
   // is (adapter-run-spec.ts graderRouteOf), reached through the session's port while it is up. None: compared whole.
-  const graderRoute = launch.replay || launch.audit ? await graderRouteOf(body as { learning?: unknown }, keyed, runKey, claimed, cut, log, deps, [held, cut], claim) : undefined;
+  // None for a held run its model kept from running, whose model runs nowhere.
+  const graderRoute = (launch.replay || launch.audit) && heldRefusal === undefined ? await graderRouteOf(body as { learning?: unknown }, keyed, runKey, claimed, cut, log, deps, [held, cut], claim) : undefined;
   if (graderRoute) tierRoutes.set(GRADER as Tier, graderRoute);
   // Each step writes the store or reads another run (runner/learned-first.ts): in a run's own process its runner takes
-  // them (held.ts learnedFirst), over the workflows it reads at the claim's seed itself.
-  const learned = await learnedFirstWhereHeld(deps, { agentId: runRow.agentId, runId: claim.runId, revisionId: runRow.revisionId, kind: revision.kind, outputSchema: (revision.body as { outputSchema?: unknown }).outputSchema, launch, context, log, folder: learningFolder, shown, spendOff, admitAuxiliary }, seedLaid?.workflows ?? []);
+  // them (held.ts learnedFirst), over the workflows it reads at the claim's seed itself. A held run its model kept from
+  // running takes none of them, as on pi: it settles no audit and starts no replay run, starts on no workflow, and its
+  // tool runs none (so no learned tier is routed, below).
+  const learned: LearnedFirst = heldRefusal === undefined ? await learnedFirstWhereHeld(deps, { agentId: runRow.agentId, runId: claim.runId, revisionId: runRow.revisionId, kind: revision.kind, outputSchema: (revision.body as { outputSchema?: unknown }).outputSchema, launch, context, log, folder: learningFolder, shown, spendOff, admitAuxiliary }, seedLaid?.workflows ?? []) : { choice: {}, workflows: [] };
   const firstChoice = learned.choice;
   // A replay run's call nodes: reads live through a cache seeded from the graded run's recorded calls, writes only ever
   // answered from that recording (runner/promotion.ts replayCallsOver, learn/replay-calls.ts).
