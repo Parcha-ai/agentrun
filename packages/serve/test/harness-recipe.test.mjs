@@ -150,6 +150,15 @@ test("the loader passes a recipe's announces field through to the adapter's reci
   }
 });
 
+test("the loader refuses a recipe with the title tie and no announces field, in words that say the tie needs it", () => {
+  // Before: it loaded, and its tie could never fire: every request for our tools went to the gate.
+  const refused = refusalOf(recipeOf(undefined, { allowFile: undefined, quirks: { permissionTie: "title" } }));
+  assert.equal(refused.code, RECIPE_CODES.invalid, refused.message);
+  assert.deepEqual([...new Set(refused.codes)], [RECIPE_CODES.invalid], refused.message);
+  assert.match(refused.message, /title tie .*needs announces/);
+  assert.deepEqual(parseRecipe(JSON.stringify(recipeOf(undefined, TIED))).quirks, { permissionTie: "title" }, "with the field it loads");
+});
+
 // One recipe per rule, each breaking it alone, with the code it is refused by.
 const BROKEN = [
   ["rule 1, own keys only: a key the server holds for a model provider", RECIPE_CODES.keys, () => recipeOf(undefined, { keys: ["OPENROUTER_API_KEY"] })],

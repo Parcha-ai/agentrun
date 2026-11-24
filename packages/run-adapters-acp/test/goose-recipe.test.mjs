@@ -54,7 +54,7 @@ test("its allowFile is Goose's permission file, in Goose's own form, and it decl
 
 test('recipeProblems refuses an allowFile outside HOME, one in a form no agent reads, one at a path the recipe also writes, and a title tie other than "title"', () => {
   const base = { id: 'x', command: BINARY, declares: { load: true, mcp: 'http' }, billing: { kind: 'proxy' } };
-  assert.deepEqual(recipeProblems({ ...base, allowFile: { path: '.config/goose/permission.yaml', form: 'goose-permission' }, quirks: { permissionTie: 'title' } }), []);
+  assert.deepEqual(recipeProblems({ ...base, allowFile: { path: '.config/goose/permission.yaml', form: 'goose-permission' }, announces: { tool: '_meta.goose.toolCall.toolName' }, quirks: { permissionTie: 'title' } }), []);
   assert.match(recipeProblems({ ...base, allowFile: { path: '/etc/goose/permission.yaml', form: 'goose-permission' } }).join(' '), /allowFile .*inside the private HOME/);
   assert.match(recipeProblems({ ...base, allowFile: { path: '.config/goose/permission.yaml', form: 'yaml' } }).join(' '), /allowFile .*form/);
   assert.match(recipeProblems({ ...base, allowFile: { path: '.config/goose/permission.yaml' } }).join(' '), /allowFile .*form/);
@@ -80,6 +80,13 @@ test('a recipe that could not run is refused: a relative binary, a model that is
 test('the package ships its recipes', () => {
   const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
   assert.ok(pkg.files.includes('recipes'));
+});
+
+test('recipeProblems refuses the title tie without an announces field: the tie answers only a request for a call that field named, so without it the tie never fires', () => {
+  // Before: both loaded, and every request for our tools then went to the gate, parked or denied.
+  const base = { id: 'x', command: BINARY, declares: { load: true, mcp: 'http' }, billing: { kind: 'proxy' } };
+  assert.match(recipeProblems({ ...base, quirks: { permissionTie: 'title' } }).join(' '), /title tie .*needs announces/);
+  assert.deepEqual(recipeProblems({ ...base, announces: { tool: 'rawInput.toolName', server: 'rawInput.providerIdentifier', args: 'rawInput.args' }, quirks: { permissionTie: 'title' } }), []);
 });
 
 test("its announces field names a call by Goose 1.59.2's _meta.goose.toolCall.toolName (`agentrun__<tool>`, the name the model calls), never by its title", () => {
