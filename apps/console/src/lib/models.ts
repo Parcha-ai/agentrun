@@ -38,7 +38,7 @@ export function runModel(usage: Pick<RunUsage, "lines"> | undefined): string | u
 /** A harness as capabilities offer it: its default model, and whether this server runs it (`available` false, with
  *  the server's `reason`, when it doesn't). `needs`, on one that runs nothing here for want of a key: what would give it a
  *  model (`key`, a model key; `chatgpt`, the ChatGPT sign-in). */
-export type HarnessInfo = { id: string; default_model?: string | null; models?: readonly string[]; free_models?: readonly FreeModel[]; available?: boolean; reason?: string; needs?: readonly string[] };
+export type HarnessInfo = { id: string; default_model?: string | null; models?: readonly string[]; ready_models?: readonly string[]; free_models?: readonly FreeModel[]; available?: boolean; reason?: string; needs?: readonly string[] };
 /** A model the server says runs at $0 (`harnesses[].free_models`: its catalog price is all zeros), with its context window
  *  in tokens. */
 export type FreeModel = { id: string; context_window: number };
@@ -78,3 +78,17 @@ export function harnessDefault(harness: string, harnesses: readonly HarnessInfo[
 export const NO_DEFAULT = "No default for this harness yet: add a model key in Settings → Model keys, or choose a model here.";
 /** The agent page's Model fact for an agent that names no model on a harness with no default here: the same fix. */
 export const NO_MODEL_YET = "none yet: add a model key in Settings → Model keys";
+
+/** The models of `models` a run takes now, their provider connected here (`harnesses[].ready_models`), or null from a
+ *  server that does not say (one before it): then every offered model is listed, as before. */
+export function harnessReady(harness: string, harnesses: readonly HarnessInfo[] | undefined): readonly string[] | null {
+  return harnesses?.find((h) => h.id === harness)?.ready_models ?? null;
+}
+
+/** A model's provider as people name it, from its id's first part (`anthropic/claude-…` → Anthropic). One not here is its
+ *  first part as it is. */
+const PROVIDERS: Record<string, string> = {
+  anthropic: "Anthropic", openai: "OpenAI", openrouter: "OpenRouter", google: "Google", gemini: "Google", mistral: "Mistral",
+  ollama: "Ollama", particle: "Particle", xai: "xAI", deepseek: "DeepSeek", groq: "Groq", faux: "Test model",
+};
+export const providerLabel = (model: string): string => { const first = model.split("/")[0] ?? model; return PROVIDERS[first] ?? first; };

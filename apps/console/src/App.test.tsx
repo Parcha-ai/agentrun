@@ -580,6 +580,23 @@ describe("App, the agents' names", () => {
     expect(crumb()).not.toContain(made.agent_id);
   });
 
+  it("puts Start a run's agent beside the operation on one row, and names the path once", async () => {
+    const [first] = agentsList();
+    server({ active: [first] });
+    const { host, until } = await open("#/playground");
+    const agent = () => host.querySelector('button[aria-haspopup="listbox"][aria-label="Agent"]');
+    await until(() => !!agent());
+    const row = host.querySelector<HTMLElement>('[aria-label="Playground agent"]')!;
+    expect(host.querySelectorAll("#api-operation"), "one operation picker").toHaveLength(1);
+    expect(row.contains(host.querySelector("#api-operation")), "on the agent's row").toBe(true);
+    expect(row.contains(agent())).toBe(true);
+    expect(row.textContent!.match(/\/v2\/agents\//g), "the path once, with the agent's id").toHaveLength(1);
+    expect(row.textContent).toContain(`/v2/agents/${first.agent_id}/runs`);
+    await act(async () => { location.hash = "#/playground?operation=list-runs"; });
+    await until(() => !host.querySelector('[aria-label="Playground agent"]'));
+    expect(host.querySelectorAll("#api-operation"), "another operation keeps the page's row").toHaveLength(1);
+  });
+
   it("updates the Playground target when its URL changes and never substitutes a missing agent", async () => {
     const [first, second] = agentsList();
     server({ active: [first, second] });
