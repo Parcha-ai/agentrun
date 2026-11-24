@@ -158,11 +158,17 @@ export {
 export { type WrittenLink, linksOf, linksWritten, TRAILING, trimmed, wholeUrl } from "./text-urls.js";
 export {
   type ChoiceQuestion,
+  type Cost,
+  type DecideContext,
   type DeciderOptions,
   type DecisionAsk,
   type DecisionAsker,
   type DecisionPrice,
   type NoulQuestion,
+  type PageAnswers,
+  type Tokens,
+  type Verdict,
+  type Verdicts,
   type Wall,
   type WebDecider,
   deciderFrom,
@@ -176,7 +182,7 @@ export {
   STATE_BUDGET_BYTES,
   WALLS,
 } from "./decide/decider.js";
-export { type FoundChunk, type FoundPage, FIND_CHUNKS_MAX, FOUND_CHUNKS, judgePart, LEFT_OUT } from "./decide/fetch.js";
+export { type FetchAnswer, type FoundChunk, type FoundPage, FIND_CHUNKS_MAX, FOUND_CHUNKS, judgePart, LEFT_OUT } from "./decide/fetch.js";
 export { type InjectionVerdict, type WallVerdict, INJECTION_THRESHOLD, WALL_THRESHOLD } from "./decide/page-guard.js";
 export { PASSAGES_MAX, passagesOf } from "./decide/passages.js";
 export { DECIDE_MS, decisionPay, type DecisionRecord, type Scored, type Sift, type StepOptions, THRESHOLD } from "./decide/record.js";
