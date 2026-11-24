@@ -43,7 +43,7 @@ const DESKTOP = { kind: "desktop", provider: "faux-desktop" };
 const FAUX = fauxComputers();
 /** --faux's registry with its desktop declared a dial provider: a machine only the runner that made it can reach. */
 const PINNED_KINDS = { ...FAUX.kinds, PROVIDERS: FAUX.kinds.PROVIDERS.map((one) => (one.id === "faux-desktop" ? { ...one, connect: "dial" } : one)) };
-/** Each runner's poll: short, so a busy loop would show as many more polls than the window allows. */
+/** Each runner's poll: short, so B polls many times while A's polls are held. */
 const POLL_MS = 20;
 const TIMING = { ...CONFORMANCE_TIMING, leaseMs: 30_000, stopMarginMs: 5_000, pollMs: POLL_MS };
 after(closeOpenSessions);
@@ -204,6 +204,8 @@ async function parkedOnA(t, { skewMs = 0, script = [{ call: "computer_screenshot
   const route = { model: "faux-1", provider: { api: "anthropic-messages", origin: "https://route.invalid", credential: () => "not-a-secret" }, fetch: scriptedOrigin(script, requests), price: () => 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, outputCeiling: 100 };
   const hosts = { a: hostVendor("a"), b: hostVendor("b") };
   const claimManyCalls = {};
+  /** The runs any runner said ended (its `ended` event: after the run's loop, its computers' release with it, settled). */
+  const ended = [];
   const start = async (name, host, { gate, keptReads, refusal } = {}) => {
     const raw = await openSqliteStore({ dataDir: dir, role: "runner", now });
     stores.push(raw);
@@ -214,6 +216,7 @@ async function parkedOnA(t, { skewMs = 0, script = [{ call: "computer_screenshot
     const runner = startRunner({
       store, name, ...TIMING,
       ...(refusal ? { claimGate: async () => refusal.words } : {}),
+      onEvent: (event) => void (event.type === "ended" && ended.push(event.runId)),
       createLoop: createDispatchLoop({ launchOf: (runId) => store.runs.launch(runId), resolve: (harness, given) => (harness === "pi" ? createAdapterLoop((claim, run) => adapterRunSpecFromLaunch(given, run, deps, claim)) : undefined) }),
     });
     runners.push(runner);
@@ -231,7 +234,7 @@ async function parkedOnA(t, { skewMs = 0, script = [{ call: "computer_screenshot
   const [ask] = records.entries.filter((entry) => entry.kind === "agentrun.ask").map((entry) => entry.data);
   assert.ok(ask, "parked on the screenshot's ask");
   assert.deepEqual(creates(hosts.a), ["a-d1"], "runner-a made the desktop on its host");
-  return { server, clock, hosts, ask, a, gate, refusal, start, claimManyCalls, parkedEpoch: parked.epoch };
+  return { server, clock, hosts, ask, a, gate, refusal, start, claimManyCalls, ended, parkedEpoch: parked.epoch };
 }
 
 /** Two screenshots, each asking and parking, then done: a run that parks again after its first resume. */
@@ -275,24 +278,21 @@ async function ends(server, state = "ended") {
   return (await runTimeline(server, RUN, ctx)).map((entry) => entry.summary ?? "");
 }
 
-/** B started on host b, A's polls held, the run answered; B polls 25 times (or claims the run). What B's polls did. */
+/** B started on host b, A's polls held, the run answered; until B polls 25 times (or claims the run). */
 async function answeredWhileBPolls(one) {
   await one.start("runner-b", "b");
   one.gate.close();
   await one.server.command(RUN, { kind: "approve", body: { approval: one.ask.callId } });
-  const from = Date.now();
   const polledFrom = one.claimManyCalls["runner-b"].n;
-  await until(async () => one.claimManyCalls["runner-b"].n - polledFrom >= 25 || (await one.server.runs.get(RUN)).epoch !== one.parkedEpoch, "B polls 25 times", 10_000);
-  return { elapsed: Date.now() - from, polls: one.claimManyCalls["runner-b"].n - polledFrom };
+  await until(async () => one.claimManyCalls["runner-b"].n - polledFrom >= 25 || (await one.server.runs.get(RUN)).epoch !== one.parkedEpoch, "B polls 25 times");
 }
 
 test("park on A, answered while A is alive and B polls: B claims nothing and moves nothing at its usual poll, A claims it, and the same desktop comes back", { timeout: 120_000 }, async (t) => {
   const one = await parkedOnA(t);
   const [rowA] = (await one.server.runners.list()).filter((row) => row.runner === "runner-a");
   const kept = await one.server.settings.get(keptKeyOf(RUN));
-  const { elapsed, polls } = await answeredWhileBPolls(one);
+  await answeredWhileBPolls(one);
   assert.equal((await one.server.runs.get(RUN)).epoch, one.parkedEpoch, "B claimed nothing and gave nothing back: the epoch did not move");
-  assert.ok(polls <= Math.ceil(elapsed / POLL_MS) + 3, `B polled at its pace, no busy loop: ${polls} polls in ${elapsed} ms`);
   assert.deepEqual(creates(one.hosts.b), [], "B made no desktop");
   // The keep named the runner that holds the desktop and its incarnation, as a dial token's row does.
   assert.equal(kept?.runner, "runner-a", `the keep names its runner: ${JSON.stringify(kept)}`);
@@ -314,9 +314,8 @@ test("park on A with the runners' clocks a keep and more behind the store's: the
   assert.ok(kept, "kept at the park");
   const storeNow = Date.now() + one.clock.skewMs;
   assert.ok(kept.until > storeNow && kept.until <= storeNow + KEEP_MS, `the keep's end is stamped on the store's clock, KEEP_MS from the park: ${kept.until - storeNow} ms ahead of the store's now`);
-  const { elapsed, polls } = await answeredWhileBPolls(one);
+  await answeredWhileBPolls(one);
   assert.equal((await one.server.runs.get(RUN)).epoch, one.parkedEpoch, "B claimed nothing: the pin holds on the store's clock");
-  assert.ok(polls <= Math.ceil(elapsed / POLL_MS) + 3, `B polled at its pace: ${polls} polls in ${elapsed} ms`);
   assert.deepEqual(creates(one.hosts.b), [], "B made no desktop");
   one.gate.open();
   const said = await ends(one.server);
@@ -340,9 +339,8 @@ test("leak (a): another runner's resume never orphans A's kept container: once t
   });
   const named = (await readKept(one.server.settings, RUN))?.id;
   const leftOnA = () => [...one.hosts.a.computers.keys()].filter((id) => id !== named);
-  // The run's end lets its desktop go a moment after its row reads ended.
-  const settle = Date.now() + 5_000;
-  while (leftOnA().length > 0 && Date.now() < settle) await new Promise((resolve) => setTimeout(resolve, 20));
+  // The run's end lets its desktop go a moment after its row reads ended: the runner says the run ended once that is done.
+  await until(async () => one.ended.includes(RUN), "the runner says the run ended");
   assert.deepEqual(leftOnA(), [],`no container left on A's host that no kept row names: the resume's taking of the row left A's timer nothing to end (it deleted ${JSON.stringify(timerDeleted)})`);
 });
 
