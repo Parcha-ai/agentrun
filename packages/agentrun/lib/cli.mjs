@@ -165,8 +165,6 @@ function baseOf(given, where) {
 
 const isBase = (url) => checkedBase(url) !== undefined;
 
-/** Where the request goes and the token it carries. A token goes only with the address it came with: the local
- *  server's own token is never sent to another server. The local token is DIR/.token, whatever the record says. */
 /** The token of the server on this machine whose data directory is `data` and whose record is `record`: one started with
  *  its token in AGENTRUN_TOKEN (its record names no token file) takes AGENTRUN_API_KEY, else AGENTRUN_TOKEN, and is
  *  refused (exit 4) when neither is set; else the directory's private .token. Undefined when that file is not there.
@@ -180,6 +178,8 @@ function localToken({ data, record, env }) {
   return privateFile(join(data, ".token"))?.trim() || undefined;
 }
 
+/** Where the request goes and the token it carries. A token goes only with the address it came with: the local
+ *  server's own token is never sent to another server. The local token is localToken's. */
 function targetOf(values, env) {
   const data = resolve(values.data ?? join(homedir(), ".agentrun"));
   const configFile = join(env.XDG_CONFIG_HOME || join(homedir(), ".config"), "agentrun", "config.json");

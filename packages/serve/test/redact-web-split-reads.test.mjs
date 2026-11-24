@@ -9,7 +9,8 @@ import { commitWrites } from "@earendil-works/pi-durable/testing";
 import { redacted, redactedAnswer, redactedCall, withheldWhole } from "../dist/key-refusal.js";
 import { answersCut } from "../dist/runner/adapter-run-spec.js";
 import { secretRedactor } from "../dist/runner/redact.js";
-import { CALL_RESULT_CHARS, namesTried, scrubUrls, timelineOf, webCut, webShownOf } from "../dist/timeline/index.js";
+import { CALL_RESULT_CHARS, scrubUrls, timelineOf, webCut, webShownOf } from "../dist/timeline/index.js";
+import { namesTried } from "../dist/timeline/web-calls.js";
 import { assistant, call, result, user } from "./timeline-lib-support.mjs";
 import { storeOn, T0 } from "./store-helpers.mjs";
 

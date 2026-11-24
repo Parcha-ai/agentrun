@@ -31,14 +31,14 @@ function eachString(value: unknown, each: (text: string) => string): unknown {
   if (Array.isArray(value)) return value.map((item) => eachString(item, each));
   if (!isObj(value)) return value;
   const out: Obj = {};
-  const next = new Map<string, number>();
+  let next: Map<string, number> | undefined;
   for (const [key, item] of Object.entries(value)) {
     const once = each(key);
     let name = once;
     // Each name's count goes on from its last free number: no name is taken back, so every number below it is still taken.
-    for (let n = next.get(once) ?? 2; (namesTried.count++, Object.hasOwn(out, name)); n++) {
+    for (let n = next?.get(once) ?? 2; (namesTried.count++, Object.hasOwn(out, name)); n++) {
       name = `${once} (${n})`;
-      next.set(once, n + 1);
+      (next ??= new Map()).set(once, n + 1);
     }
     Object.defineProperty(out, name, { value: eachString(item, each), enumerable: true, writable: true, configurable: true });
   }
@@ -93,7 +93,9 @@ function webRead(tool: string, text: string): { read: Obj; end: number } | undef
 /** Whether `text`, a web call's output, is withheld whole: `holds` (key-refusal.ts withheldWhole) finds a held value in
  *  its JSON's strings joined by line breaks (false for an output that is not a web call's JSON). They are read in the
  *  order the output is written back in (stringsOf) and, where that differs, in the order it was written (writtenStrings).
- *  Every reader asks this first: the runner before it stores the answer (answersCut), a timeline before its row shows. */
+ *  Every reader asks this first: the runner before it stores the answer (answersCut), a timeline before its row shows.
+ *  Each string is cut on its own wherever the output is shown, and no view joins across the JSON's punctuation between
+ *  two strings, so a held value split across two of them is found only here. */
 export function webHeld(tool: string, text: string, holds: WebHolds): boolean {
   const web = webRead(tool, text);
   return web ? heldIn(web, text, holds) : false;
