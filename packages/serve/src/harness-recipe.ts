@@ -340,6 +340,7 @@ export function recipeProblems(parsed: unknown): { code: RecipeCode; words: stri
     if (!isPlain(said) || Object.keys(said).some((k) => k !== "tool" && k !== "server" && k !== "args") || !path(said.tool) || (said.server !== undefined && !path(said.server)) || (said.args !== undefined && !path(said.args))) say(RECIPE_CODES.invalid, 'announces is { "tool": a dotted path in the agent\'s tool_call (`_meta.goose.toolCall.toolName`), "server"?: one, "args"?: one }');
   }
   if (r.quirks !== undefined && (!isPlain(r.quirks) || Object.keys(r.quirks).some((k) => k !== "mcpCall" && k !== "permissionTie") || (r.quirks.mcpCall !== undefined && r.quirks.mcpCall !== "match" && r.quirks.mcpCall !== "mint") || (r.quirks.permissionTie !== undefined && r.quirks.permissionTie !== "title"))) say(RECIPE_CODES.invalid, 'quirks is { "mcpCall": "match" or "mint", "permissionTie": "title" }');
+  else if (isPlain(r.quirks) && r.quirks.permissionTie === "title" && r.announces === undefined) say(RECIPE_CODES.invalid, "the title tie (quirks.permissionTie) needs announces: it answers only a request for a call that field named");
   if (r.description !== undefined && typeof r.description !== "string") say(RECIPE_CODES.invalid, "description is a string");
   return problems;
 }

@@ -158,6 +158,7 @@ export function recipeProblems(recipe: AcpRecipe): string[] {
   }
   const quirks = recipe.quirks as { mcpCall?: unknown; permissionTie?: unknown } | undefined;
   if (quirks?.permissionTie !== undefined && quirks.permissionTie !== "title") problems.push(`the quirk permissionTie ${JSON.stringify(quirks.permissionTie)} is not "title"`);
+  if (quirks?.permissionTie === "title" && recipe.announces === undefined) problems.push("the title tie (quirks.permissionTie) needs announces: it answers only a request for a call that field named");
   const reserved = Object.keys(recipe.env ?? {}).filter((name) => RESERVED_ENV.has(name));
   if (reserved.length) problems.push(`the env names ${reserved.join(", ")}, which the adapter sets`);
   const launching = Object.keys(recipe.env ?? {}).filter((name) => !RESERVED_ENV.has(name) && launchEnv(name));
