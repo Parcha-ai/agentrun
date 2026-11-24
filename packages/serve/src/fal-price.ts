@@ -560,8 +560,9 @@ export function falKeys(run: string): McpKeys {
 export function falMeter({ media, now = Date.now }: { media?: MediaReader; now?: () => number } = {}): McpMeter {
   type Read = { unitPrice: number; unit: string; at: number } | { why: string };
   const prices = new Map<string, { unitPrice: number; unit: string; at: number }>();
-  /** The reads under way, by endpoint: calls sent together share one get_pricing call rather than each sending its own. */
-  const reading = new Map<string, Promise<Read>>();
+  /** The reads under way, by endpoint: calls sent together share one get_pricing call rather than each sending its own.
+   *  `signal` is the signal of the call that sent it. */
+  const reading = new Map<string, { read: Promise<Read>; signal: AbortSignal }>();
   const readPrice = async (endpoint: string, ask: Parameters<McpMeter["quote"]>[2]): Promise<Read> => {
     const unread = (why: string) => ({ why: `fal's price for ${endpoint} could not be read (its get_pricing ${why})` });
     // get_pricing reads a price and runs no job: an error or no answer is asked once more, never kept as the price.
@@ -577,23 +578,28 @@ export function falMeter({ media, now = Date.now }: { media?: MediaReader; now?:
     prices.set(endpoint, read);
     return read;
   };
-  const unitPrice = async (endpoint: string, ask: Parameters<McpMeter["quote"]>[2]): Promise<Read> => {
-    const kept = prices.get(endpoint);
-    if (kept && now() - kept.at < PRICE_TTL_MS) return kept;
-    const shared = reading.get(endpoint);
-    if (shared) {
+  const unitPrice = async (endpoint: string, ask: Parameters<McpMeter["quote"]>[2], signal: AbortSignal): Promise<Read> => {
+    for (;;) {
+      const kept = prices.get(endpoint);
+      if (kept && now() - kept.at < PRICE_TTL_MS) return kept;
+      const shared = reading.get(endpoint);
+      if (!shared) break;
       try {
-        return await shared;
+        const read = await shared.read;
+        // A read whose call stopped (its deadline, its run's abort) got no answer from fal, which says nothing of the
+        // price: a call still live reads again, with its own ask. A read that failed while its call was live stands.
+        if (!("why" in read) || !shared.signal.aborted || signal.aborted) return read;
       } catch {
-        // The call that sent it failed (its own abort): this one reads with its own ask.
+        // The call that sent it threw: this one reads with its own ask.
       }
+      if (reading.get(endpoint) === shared) reading.delete(endpoint);
     }
-    const read = readPrice(endpoint, ask);
-    reading.set(endpoint, read);
+    const mine = { read: readPrice(endpoint, ask), signal };
+    reading.set(endpoint, mine);
     try {
-      return await read;
+      return await mine.read;
     } finally {
-      if (reading.get(endpoint) === read) reading.delete(endpoint);
+      if (reading.get(endpoint) === mine) reading.delete(endpoint);
     }
   };
   /** The longest of the media at `urls`, in seconds by `measure`, or the URL whose length could not be read. */
@@ -609,7 +615,7 @@ export function falMeter({ media, now = Date.now }: { media?: MediaReader; now?:
   };
   const quoteJob = async (job: FalJob, ask: Parameters<McpMeter["quote"]>[2], signal: AbortSignal): Promise<Priced | Unpriced> => {
     if (!job.endpoint) return { job, why: "this job names no endpoint_id to price" };
-    const price = await unitPrice(job.endpoint, ask);
+    const price = await unitPrice(job.endpoint, ask, signal);
     if ("why" in price) return { job, why: price.why };
     // The rate its settings are billed at, before any media is read for a job that can't be priced.
     const rate = rateOf(job.endpoint, price.unit, job.input);
