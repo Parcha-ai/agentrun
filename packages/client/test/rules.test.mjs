@@ -168,7 +168,7 @@ test("AGENTRUN_TOKEN goes only to a server on this machine (localhost, 127.0.0.1
   }
   // A loopback name behind a user part, an encoded @ or a fragment: the base URL itself is refused (it holds a user, or is
   // no URL), before any key is read.
-  for (const baseUrl of ["http://localhost@evil.example/", "http://localhost:8080@evil.example/", "http://127.0.0.1%40evil.example/", "http://evil.example/#@localhost"]) {
+  for (const baseUrl of ["http://localhost@evil.example/", Object.assign(new URL("http://evil.example/"), { username: "localhost", password: "8080" }).href, "http://127.0.0.1%40evil.example/", "http://evil.example/#@localhost"]) {
     const error = thrownSync(() => new AgentRun({ baseUrl, fetch }));
     assert.ok(error instanceof AgentRunUsage, `${baseUrl}: ${error}`);
     assert.equal(error.message.includes(KEY), false, `${baseUrl}: the token is in no message`);

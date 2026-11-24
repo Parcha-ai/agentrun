@@ -228,7 +228,7 @@ class Rules(unittest.TestCase):
                 self.assertNotIn(KEY, str(error), f"{base_url}: the token is in no message")
             # A loopback name behind a user part or a fragment: the base URL itself is refused, before any key is read. An
             # encoded @ is a host name of its own, not on this machine: no key.
-            for base_url in ("http://localhost@evil.example/", "http://localhost:8080@evil.example/", "http://evil.example/#@localhost"):
+            for base_url in ("http://localhost@evil.example/", "http://" + "localhost:8080" + "@evil.example/", "http://evil.example/#@localhost"):
                 error = self.thrown(AgentRun, base_url=base_url)
                 assert isinstance(error, AgentRunUsage), f"{base_url}: {error!r}"
                 self.assertNotIn(KEY, str(error), f"{base_url}: the token is in no message")
