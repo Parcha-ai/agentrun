@@ -152,9 +152,13 @@ describe("starting a race: one inline run per lane", () => {
   });
 
   it("a new race's label is a label value the server takes, and two races get two labels", () => {
-    const a = newRaceLabel(new Date("2026-11-23T10:04:00Z"), () => "1f2e3d4c-0000-4000-8000-000000000000");
-    expect(a).toBe("20261123-1004-1f2e");
+    const at = new Date("2026-11-23T10:04:00Z");
+    const a = newRaceLabel(at, () => "1f2e3d4c-5b6a-4000-8000-000000000000");
+    expect(a).toBe("20261123-1004-1f2e3d4c5b6a");
     expect(a).toMatch(/^[A-Za-z0-9-]{1,256}$/);
+    // Two races opened in the same minute whose random parts share their first characters still get two labels: 48
+    // random bits (a UUID's first 12 hex digits, before its version digit), so their runs never meet on one race page.
+    expect(newRaceLabel(at, () => "1f2e9999-0000-4000-8000-000000000000")).not.toBe(newRaceLabel(at, () => "1f2e3d4c-0000-4000-8000-000000000000"));
     expect(newRaceLabel()).not.toBe(newRaceLabel());
   });
 });
