@@ -176,8 +176,9 @@ Budget per task: 100 computer steps (OSWorld's longest setting), $3 of model, 90
 run on E2B (Sonnet about $0.04 an episode, at most $0.19 for 28 steps; Terra about $0.016; E2B under $2 for about
 120 desktops of 1 to 2 minutes) scaled for OSWorld tasks being several times longer: Sonnet $0.10 to $0.30 an
 episode, Terra $0.03 to $0.08. Three seeds, two arms, 20 tasks: 120 episodes, about $8 to $23 of model; $3 to $6 of judge
-(`--grade auto` grades the infeasible task and every failed episode, say 60 at $0.05 to $0.10 each); and about $3 to
-$6 of E2B for the 60 verify desktops and 120 run desktops: $14 to $35 in all.
+(`--grade auto` grades the infeasible task and every failed episode, say 60 at $0.05 to $0.10 each); and about $4 to
+$8 of E2B for 240 desktops before retries: verify opens one for its null pass and one for its oracle pass on each of
+the 60 task-seed pairs (120), and the run opens 120. $15 to $37 in all.
 
 Worst case: serve's $3 hold caps each attempt, not each episode. With `--retries 2`, an attempt that ends infra after
 its agent ran gets a fresh serve run and a fresh $3, so the bound is about 3 × 120 × $3 = $1,080 of model, plus the
