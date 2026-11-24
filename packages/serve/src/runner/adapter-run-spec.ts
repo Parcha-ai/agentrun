@@ -137,6 +137,8 @@ export interface ClaimComputer {
   release(): Promise<void>;
   /** The release at the run's park, which keeps the computer it `keeps` (computer-for-claim.ts ClaimComputer.park). */
   park?(): Promise<boolean>;
+  /** The park's keep written before the run's timeline says it (computer-for-claim.ts ClaimComputer.keepRow). */
+  keepRow?(): Promise<boolean>;
 }
 /** The one shared claim-time computer every spec takes (computer-for-claim.ts), passed in by the runner: the composer's
  *  (workspace/computer-deps.ts computerDepsFrom), or a test's stand-in. */
@@ -968,8 +970,9 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     // The run's Archil mount credential is revoked at its end on every outcome, even with no computer (the computer's
     // release revokes it too; revoke is idempotent, so a second call is a no-op). A run that minted none revokes nothing.
     // At a park, a desktop or a phone is kept for the resume instead (spec-holds.ts SpecHolds.release `parked`), its mount
-    // credential with it, and the run's timeline is told so.
-    ...(computer.keeps ? { keptWords: computerKeptWords(computer.keeps) } : {}),
+    // credential with it, and the run's timeline is told so once its row is written (keep: a park that keeps nothing
+    // says nothing of a keep).
+    ...(computer.keeps ? { keptWords: computerKeptWords(computer.keeps), ...(computer.keepRow ? { keep: () => computer.keepRow!() } : {}) } : {}),
     release: (how) => holds.release(how),
     ...(movedProject ? { projectCheckpoint: projectCheckpointForRun({ store: deps.store, agentId: runRow.agentId, claim, launch, tools, computer,
       workspace: { data: deps.data, sealKey: deps.sealKey, env: deps.env, control: { ...deps.mountControl, ...(deps.makeArchilDisk ? { makeDisk: deps.makeArchilDisk } : {}) } },

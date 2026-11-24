@@ -428,7 +428,8 @@ is gone, any runner claims it, starts a new one, and the timeline says `The desk
 is gone.` While that runner is there but not claiming (it refuses claims, or its word is late), any runner claims it too;
 one that can't reach the machine starts a new one, leaves the kept machine to that runner to end, and the timeline says
 `The desktop wasn't kept: another runner kept it and couldn't take the run, so that runner ends it.` A later park of
-that run keeps nothing while that runner's row stands. `agentrun-serve runner --check --data DIR --name N`
+that run keeps nothing while that runner's row stands, and the timeline says a park kept the machine only once its row
+is written. `agentrun-serve runner --check --data DIR --name N`
 (or `AGENTRUN_RUNNER_NAME=N` in place of `--name`) checks the runner's environment by name (its store, its seal key,
 every run-facing name its server holds, a forwarder on loopback) and whether the runner named `N` has a fresh
 heartbeat: it exits 0 when both hold, 1 when either does not, and 2 when no name is given. `--check --env` checks the

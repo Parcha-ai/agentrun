@@ -854,7 +854,10 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
         const { syncProject: _sync, ...exposed } = got as ClaimComputer;
         return { ...exposed, ...(exposed.computer ? { computer: projectGate.capability(exposed.computer) } : {}),
           release: (...args: Parameters<ClaimComputer["release"]>) => cleanProject(() => exposed.release(...args)),
-          ...(exposed.park ? { park: (...args: Parameters<NonNullable<ClaimComputer["park"]>>) => cleanProject(() => exposed.park!(...args)) } : {}) };
+          ...(exposed.park ? { park: (...args: Parameters<NonNullable<ClaimComputer["park"]>>) => cleanProject(() => exposed.park!(...args)) } : {}),
+          // The park's keep written ahead of it lands the folder's delta first, so it waits for the project's work as the
+          // park does.
+          ...(exposed.keepRow ? { keepRow: () => cleanProject(() => exposed.keepRow!()) } : {}) };
       }
       return got;
     }),
