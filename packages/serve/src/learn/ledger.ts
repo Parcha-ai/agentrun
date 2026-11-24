@@ -109,8 +109,9 @@ export function lookedOf(proposals: readonly unknown[], rowUsd: number | null): 
  *  compile turn), oldest first: the revision each drafted (its digest only when no draft failed its checks), none for a
  *  round that asked no turn. A turn that kept no draft (the cap stopped it, or a stop or fault ended the step after a
  *  claim asked it) drafted no revision: its workflow and digest are null. */
-function compilesIn(rounds: readonly { readonly round: number; readonly proposal: unknown }[]): { round: number; workflow: string | null; digest: string | null; usd: number | null }[] {
-  return rounds.flatMap(({ round, proposal }) => {
+type Compiled = { round: number; workflow: string | null; digest: string | null; usd: number | null };
+function compilesIn(rounds: readonly { readonly round: number; readonly proposal: unknown }[]): Compiled[] {
+  return rounds.flatMap(({ round, proposal }): Compiled[] => {
     const kept = objectOf(proposal);
     const usd = "look_back_usd" in kept ? usdOrNull(kept.look_back_usd) : 0;
     const compiled = objectOf(kept.compiled);
