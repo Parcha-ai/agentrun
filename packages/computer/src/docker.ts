@@ -615,7 +615,10 @@ export class DockerProvider implements ComputerProvider {
 		const lifetimeFrom = Date.now();
 		const deadline = new Date(lifetimeFrom + runLifetimeMs(spec)).toISOString();
 		if (allow !== undefined) {
-			// The proxy first, ready before the computer exists: a computer never runs with a network it cannot reach.
+			// The egress bridge first: one of its name this provider did not make is refused before anything is made.
+			const network = await this.#egressNetwork(signal);
+			if (!network.ok) return fail(network.error.code, network.error.message);
+			// The proxy next, ready before the computer exists: a computer never runs with a network it cannot reach.
 			const started = await this.#startEgress(name, user, deadline, allow, spec.labels ?? {}, attempt, signal);
 			if (!started.ok) {
 				// Another create of this request, in another process, runs its proxy: what it makes is the request's.
@@ -791,8 +794,6 @@ export class DockerProvider implements ComputerProvider {
 	 */
 	async #startEgress(name: string, user: string, deadline: string, allow: string[] | "open", specLabels: Record<string, string>, attempt: string, signal?: AbortSignal): Promise<Result<void>> {
 		const proxy = egressNameOf(name);
-		const network = await this.#egressNetwork(signal);
-		if (!network.ok) return network;
 		// The proxy and its volume carry the create's attempt too: its cleanup removes only what it made.
 		const labels = { ...specLabels, [ATTEMPT_LABEL]: attempt };
 		const volume = await this.#run(egressVolumeArgs(name, user, deadline, labels), signal);
