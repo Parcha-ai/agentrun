@@ -1144,11 +1144,11 @@ describe("the Screen tab's recording has the run's steps beside it", () => {
   // The run's trace, as far as these cases read it: its two computer calls, by the ids their timeline rows carry.
   const call = (id: string, startedAt: string, status: "ok" | "failed") => ({ id: `t:0:${id}`, kind: "tool", parent_id: null, name: "computer_act", agent_label: null, started_at: startedAt, ended_at: startedAt, status, stop_reason: null, tokens: null, usd: null, charged: false, decision: false, not_metered: false, tool_use_id: id, input_preview: null, result_preview: null, result_size_bytes: null });
   const TRACE = { run_id: RUN, model_requests: "priced", dropped: 0, spans: [call("c1", at(4), "ok"), call("c2", at(31), "failed"), call("c9", at(205), "ok")] };
-  async function traced(run: Run, rows: TimelineRow[], tab: "screen" | "trace" = "screen") {
+  async function traced(run: Run, rows: TimelineRow[], tab: "screen" | "trace" = "screen", trace: typeof TRACE = TRACE) {
     const host = document.body.appendChild(document.createElement("div"));
     root = createRoot(host);
     await act(async () => {
-      root!.render(createElement(RunDetail, { run, agentName: "rec", messages: messageFeatures, harnessSteers: true, rows, files: [], actions: {}, readComputer: async () => ({ state: "none", kind: "desktop", hold: "agent", session: "closed" }), computerEvery: 20, tab, fileUrl: URL_OF, readTrace: async () => TRACE } as never));
+      root!.render(createElement(RunDetail, { run, agentName: "rec", messages: messageFeatures, harnessSteers: true, rows, files: [], actions: {}, readComputer: async () => ({ state: "none", kind: "desktop", hold: "agent", session: "closed" }), computerEvery: 20, tab, fileUrl: URL_OF, readTrace: async () => trace } as never));
     });
     await settle();
     const tabNow = () => host.querySelector('[role=tab][aria-selected="true"]')!.textContent;
@@ -1214,6 +1214,33 @@ describe("the Screen tab's recording has the run's steps beside it", () => {
     await press(button("Show on the recording"));
     await act(async () => { host.querySelector("video")!.dispatchEvent(new Event("loadedmetadata")); });
     expect(host.querySelector("video")!.currentTime).toBe(42);
+  });
+
+  it("a step clicked is the step marked and opened, though the player says a time a hair before the one it was sent to", async () => {
+    // Two calls 60 ms apart, at times the timeline keeps to the millisecond: their results at 3.963 s and 4.023 s.
+    const ms = (n: number) => new Date(Date.parse("2026-11-05T09:00:00Z") + n).toISOString();
+    const rows = [...ROWS.slice(0, 2),
+      row("tool_use", "computer_act", ms(3400), { tool_name: "computer_act", tool_use_id: "k1" }),
+      row("tool_result", "Acted on the page: ok", ms(3963), { tool_name: "computer_act", tool_use_id: "k1", tool_status: "success" }),
+      row("tool_use", "computer_act", ms(3970), { tool_name: "computer_act", tool_use_id: "k2" }),
+      row("tool_result", "Read the page: ok", ms(4023), { tool_name: "computer_act", tool_use_id: "k2", tool_status: "success" })];
+    const p = await traced(recorded([rec("recordings/desk.mp4")]), rows, "screen", { ...TRACE, spans: [call("k1", ms(3400), "ok"), call("k2", ms(3970), "ok")] });
+    // Chrome keeps a video's time in whole microseconds and cuts the rest: sent to 4.023 s, it says 4.022999.
+    const chrome = (video: HTMLVideoElement) => { let t = 0; Object.defineProperty(video, "currentTime", { configurable: true, get: () => t, set: (v: number) => { t = Math.floor(v * 1e6) / 1e6; } }); };
+    const current = () => p.steps().filter((b) => b.getAttribute("aria-current") === "step").map((b) => b.textContent);
+    chrome(p.video());
+    await p.press(p.steps().find((b) => b.textContent === "0:04Computer actRead the page"));
+    expect(p.video().currentTime).toBe(4.022999);
+    await act(async () => { p.video().dispatchEvent(new Event("seeked")); });
+    expect(current()).toEqual(["0:04Computer actRead the page"]);
+    await p.press(p.toDevTools());
+    expect(p.callPanel()!.textContent).toContain("Spant:0:k2");
+    // And back: the recording shown from the call's details is at that call's step, not the one before.
+    await p.press(p.toRecording());
+    chrome(p.video());
+    await act(async () => { p.video().dispatchEvent(new Event("loadedmetadata")); p.video().dispatchEvent(new Event("seeked")); });
+    expect(p.video().currentTime).toBe(4.022999);
+    expect(current()).toEqual(["0:04Computer actRead the page"]);
   });
 
   it("brings a call opened from the recording into view, as one opened from the table is", async () => {
