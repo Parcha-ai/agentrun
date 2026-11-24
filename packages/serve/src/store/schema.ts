@@ -510,8 +510,11 @@ export const STORE_DDL: readonly string[] = [
   // Triggers (module E's), their scopes (rows only while enabled), firings, conversations and adapter settings. A trigger's
   // firings are one table: its history (shown 1, the newest HISTORY_KEPT), the due queue, and the keys kept only for their
   // day (shown 0: a run now's or a delivery's, an ignored delivery's included). A due firing keeps its next try in
-  // retry_at under the engine's one backoff table, or waits for its trigger's room (waits_on: the run it waits behind).
-  // max_active_runs: the most of the trigger's started runs not yet ended (a JOIN on runs), none past it.
+  // retry_at under the engine's one backoff table, or waits for its trigger's room (waits_on: what it waits behind, a run's
+  // id, or a firing's key while the trigger has no run yet and a firing its launch hook's host took, or one mid-hand,
+  // holds the room). retry_at also keeps a sent firing's start_by: the time until which that host may start its run.
+  // max_active_runs: the most of the trigger's runs in progress (started and not yet ended, a JOIN on runs, or a sent
+  // firing with no run inside its start_by), none past it.
   `CREATE TABLE IF NOT EXISTS triggers (
     id TEXT PRIMARY KEY,
     agent_id TEXT NOT NULL REFERENCES agents (id),
