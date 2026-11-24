@@ -335,6 +335,10 @@ const ACP_PROMISES: HarnessPromises = Object.freeze({ resume: "load", tool_gate:
 /** As ACP_PROMISES, with a resume by a new session given the conversation so far: a module's ACP agent's, unless it
  *  says "load" (AcpEntryOptions.resume). */
 const ACP_RESTART_PROMISES: HarnessPromises = Object.freeze({ ...ACP_PROMISES, resume: "restart" });
+/** Goose's: as ACP_PROMISES, its tool calls held by its config. Its recipe's allowFile (Goose's permission file, written at
+ *  each start) allows each tool of the run by name, so Goose asks nothing for a call of ours and the host's gate is asked at
+ *  the MCP call. */
+const GOOSE_PROMISES: HarnessPromises = Object.freeze({ ...ACP_PROMISES, tool_gate: "config" });
 
 /** The code a module's ACP entry is refused by at its first launch when it promises resume "load" and its recipe
  *  declares no session/load (AcpEntryOptions.resume). */
@@ -563,7 +567,7 @@ const BUILTIN: Readonly<Record<HarnessId, HarnessEntry>> = Object.freeze({
         if ("missing" in found) throw gooseRefused(found.missing);
         return undefined;
       },
-      promises: ACP_PROMISES,
+      promises: GOOSE_PROMISES,
       hidden: gooseHidden,
     }),
   } : {}),
