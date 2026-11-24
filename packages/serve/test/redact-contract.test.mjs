@@ -772,10 +772,19 @@ const adversarial = (size) => {
     f("%41"), f("%e9"), f("a+"), f(`${B}n`), f(`${B}${B}n`), f(`${B}u0041`), f(`${B}${B}u0041`), f(`${B}${B}u004`),
     f(`${B}t${B}"${B}/${B}${B}${B}r${B}b${B}f`), f(`${B}${B}${B}"${B}${B}t${B}${B}${B}${B}`),
     f(String.fromCharCode(0xe9)), f(`a${String.fromCharCode(0x301)}`), f(ZWSP), f(SHY), f(`a${SHY}b${ZWSP}`),
+    // The stacked decoders, each kind back to back and mixed; character references, whole and cut short; precomposed
+    // letters and letters each with a combining mark, for the decomposing squeeze.
+    f(`%41${B}u0041&#65;+`), f(`&#65;`), f(`&#x1F600;`), f(`&#`), f(`&#1234567`), f(String.fromCharCode(0x179)), f(`Z${String.fromCharCode(0x301, 0x327)}`),
+    // The join view: strings, names and values, empty strings, a lone quote, escaped quotes, JSON written in a string,
+    // a name with no value, and runs between JSON's punctuation.
+    f('"a",'), f('{"k":"v"},'), f('"",'), f('"'), f(`${B}"`), `"${fill(`[${B}"a${B}",${B}"b${B}"],`, size - 1)}`, f('":'), f('"a"   '), f("a,"),
   ];
   return [
     ...[...shapes, ...views].map((text) => ({ text, values: [CUT_KEY] })),
     { text: f(`${DENSE} `), values: [DENSE] },
+    // A held value found in every string of a JSON text, each find cut in place: the join view moves each cut to where
+    // its string stands in the join, its cursor passing each cut once a pass.
+    { text: f(`"${DENSE}",`), values: [DENSE] },
     { text: f(`${TWO_LINES.join("\n")}\n`), values: [TWO_LINES.join("\n")] },
     { text: f(`${"z".repeat(9000)}${LONG.slice(0, 16)} `), values: [LONG] },
   ];
@@ -854,18 +863,24 @@ test("adversarial texts: the characters the shape scanners visit are at most a f
 // - the shapes, sought over the text and over its cut, and each run read: 128, the shapes' own bound (the test above);
 // - planCut's finds: the text lowered (1), each form and the hex searched (2 each, a find and the text before it: 16),
 //   the folded search (4), the finds merged (1): about 21;
-// - one whole-text check: whether each of the three decoding views is read (3); four views at most, each built in 9
-//   reads (its special characters found, its blanks, its non-ASCII stretches squeezed twice, its cover) and the JSON
-//   view in 23 (two levels of escapes read per character decoded), then each searched for 7 plain needles, the hex and
-//   the fold, lowered and flattened (21 each): about 137; planCut runs two (the text with its cuts, then the cut text,
-//   at most 10/8 as long): about 308;
-// - so planCut is about 458; an answer adds its pieces' ends and joins (10), heldIn's check of what it returns (10/8 of
-//   a check: 171), of the pieces as they came (137), and its shape pass (64): about 840.
+// - one whole-text check: whether each of the three decoding views is read (3); four views at most: the squeezed one
+//   built in 9 reads (its special characters found, its blanks, its non-ASCII stretches squeezed twice, its cover), the
+//   two stacked decoding views (one with "+") in 23 each (two levels of escapes read per character decoded), and the
+//   join view, which reads the text as JSON first (3: at level 0, again at level 1 inside a string, and the whitespace
+//   after a string), writes its join (2: each character in it at most twice, values then all, or names then all) and
+//   builds a decoding view over that join (46); then each searched for 7 plain needles, the hex and the fold, lowered
+//   and flattened (21 each, 42 over the join): about 214; planCut runs two (the text with its cuts, then the cut text,
+//   at most 10/8 as long): about 482;
+// - so planCut is about 632; an answer adds its pieces' ends and joins (10), heldIn's check of what it returns (10/8 of
+//   a check: 268), of the pieces as they came (214), and its shape pass (64): about 1,190.
 // A held value of two lines adds its three parts as forms and plain needles (about 30 more). A held value of k long
 // lines adds k + 1 of each: its work grows with k, linear in the text all the same.
-// 1024 is that, rounded up to a power of two. A stage that read again from the start at each find passes the text once
-// per find: a held value found every 9 characters is found 14,563 times in 128 KiB.
-const WORK = 1024;
+// 2048 is that, rounded up to a power of two (the most any reader visits here is far less: the bound counts every view
+// read for every text). A stage that read again from the start at each find passes the text once per find: a held
+// value found every 9 characters is found 14,563 times in 128 KiB, and one in every string of a JSON text (every 11
+// characters) 47,662 times in 512 KiB, which a join that passed the cuts from the first at each string reads about 2.3
+// billion times over.
+const WORK = 2048;
 
 test("adversarial texts: the characters the whole pipeline visits are at most WORK per character, at 128 KiB and 512 KiB", async (t) => {
   const { scanned } = await import("../dist/redact/match.js");
