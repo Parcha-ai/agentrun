@@ -610,12 +610,16 @@ export function shapeKinds(text: string, shapes: readonly Shape[]): string[] {
  *  - `folds`: a hex identifier's digits, found in any case with one separator ("-", "_", ":", ".") allowed between any
  *    two, and cut in place;
  *  - `plain`: what the whole-text check looks for in each squeezed view (with `hexes` in it lowered, `folds` in it
- *    folded). */
+ *    folded);
+ *  - `joined`: a held value that holds a "," or a ":", squeezed, with them gone: what the whole-text check also looks
+ *    for in the join view alone, which drops JSON's punctuation between strings, so a value JSON split there
+ *    ({"alice":"<rest>"}, two strings of an array) reads as itself. */
 export type Needles = {
   readonly forms: readonly string[];
   readonly hexes: readonly string[];
   readonly folds: readonly string[];
   readonly plain: readonly string[];
+  readonly joined?: readonly string[];
 };
 
 /** Adds each place `needle` stands in `hay` to `out`, overlapping places too. */
@@ -1202,7 +1206,7 @@ function holdsIn(view: string, covered: readonly Span[] | undefined, needles: re
 
 /** Whether `text` holds a held value in a form the cut does not find as it stands: split by whitespace, percent or
  *  form encoded, an NFKC variant, its hex in any case, a hex identifier folded (`fold`), split across two strings of a
- *  JSON text (joinView). With `cuts`, a value whose
+ *  JSON text (joinView), or split there at its own "," or ":" (`joined`). With `cuts`, a value whose
  *  every character the view read comes from inside the cuts is not held: it is cut in place. */
 export function holds(text: string, needles: Needles, { fold = true, cuts }: { fold?: boolean; cuts?: readonly Span[] } = {}): boolean {
   const folds = fold ? needles.folds : [];
@@ -1213,6 +1217,7 @@ export function holds(text: string, needles: Needles, { fold = true, cuts }: { f
     const view = spec.join ? joinView(text, spec, cuts) : viewOf(text, spec, cuts);
     const covered = cuts ? view.covered : undefined;
     if (holdsIn(view.text, covered, needles.plain)) return true;
+    if (spec.join && needles.joined?.length && holdsIn(view.text, covered, needles.joined)) return true;
     if (!needles.hexes.length && !folds.length) continue;
     scanned.chars += view.text.length;
     const lower = { text: asciiLower(view.text), covered: view.covered };
