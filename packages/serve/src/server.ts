@@ -1554,23 +1554,26 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // What the offers held now were made from (offersInputs), and the latest probe: one a later probe overtook is dropped.
   let offersFrom: readonly (string | undefined)[] | undefined;
   let probes = 0;
-  // What the latest probe is made from, once it has read it, until it lands: none while no probe is out. A probe that
-  // failed never lands and leaves this at the inputs it read: a later change with those inputs reuses the offers held
-  // when they are made from them, and a change with any other inputs probes again.
+  // What the latest probe is made from, once it has read it, until it lands or fails: none while no probe is out. A
+  // probe that fails never lands; when it is the latest, it clears this as it fails, so no probe is out after it.
   let probing: readonly (string | undefined)[] | undefined;
   const probe = async (why: string) => {
     const mine = ++probes;
     probing = undefined;
-    // The Ollama listing the offers are made from is read before they are, so the first capabilities do not remake them.
-    if (asksOllama(env)) await ollamaModels(env);
-    const from = offersInputs(env);
-    if (mine === probes) probing = from;
-    const started = performance.now();
-    const next = await harnessOffers(offersEnvOf(env));
-    log?.(logLine("harness_offers", { why, ms: Math.round(performance.now() - started) }));
-    if (mine !== probes) return;
-    [offers, offersFrom, probing] = [next, from, undefined];
-    recompose();
+    try {
+      // The Ollama listing the offers are made from is read before they are, so the first capabilities do not remake them.
+      if (asksOllama(env)) await ollamaModels(env);
+      const from = offersInputs(env);
+      if (mine === probes) probing = from;
+      const started = performance.now();
+      const next = await harnessOffers(offersEnvOf(env));
+      log?.(logLine("harness_offers", { why, ms: Math.round(performance.now() - started) }));
+      if (mine !== probes) return;
+      [offers, offersFrom] = [next, from];
+      recompose();
+    } finally {
+      if (mine === probes) probing = undefined;
+    }
   };
   /** Whether `a` and `b` are the same offers' inputs (offersInputs). */
   const sameInputs = (a: readonly (string | undefined)[], b: readonly (string | undefined)[]): boolean => a.length === b.length && a.every((value, i) => value === b[i]);
