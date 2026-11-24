@@ -5,6 +5,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { firecrawlFetch, parallelExtract, webFetchText } from "../dist/index.js";
+import { answers, firecrawlServer } from "./fixtures/fake-firecrawl.mjs";
 import { network } from "./fixtures/fake-network.mjs";
 import { webFetch } from "./support.mjs";
 
@@ -59,4 +60,25 @@ test("an error a provider gives that quotes a URL with a user name and password 
     leaks.push(...leaking(places(provider, read)));
   }
   assert.deepEqual(leaks, [], `no part of them in: ${leaks.join("; ")}`);
+});
+
+test("a provider's page whose url, after a redirect, holds a user name and password: the page web_fetch returns and the text the model reads name it without them", async (t) => {
+  const landed = credentialed("landed");
+  const scraped = { markdown: "# Landed\n\nRead after a redirect.", metadata: { title: "Landed", url: landed, sourceURL: landed, statusCode: 200 } };
+  const fc = await firecrawlServer(t, (name) => (name === "firecrawl_scrape" ? { content: [{ type: "text", text: JSON.stringify(scraped) }] } : answers(name)));
+  const extract = async () => new Response(JSON.stringify({ results: [{ url: landed, title: "Landed", full_content: "Read after a redirect." }] }), { status: 200, headers: { "content-type": "application/json" } });
+  const rows = [
+    ["firecrawl-keyless", { firecrawl: firecrawlFetch({ endpoint: fc.url }) }],
+    ["parallel", { parallel: parallelExtract("not-a-secret", extract) }],
+  ];
+  const urls = [];
+  const leaks = [];
+  for (const [provider, client] of rows) {
+    const read = await fetched({ ...client, order: [provider, "direct"] });
+    assert.deepEqual([read.page.ok, read.page.via, turns(read.tries)], [true, provider, [[provider, "ok"]]], `${provider}: the provider read the page`);
+    urls.push([provider, read.page.url]);
+    leaks.push(...leaking(places(provider, read)));
+  }
+  assert.deepEqual(leaks, [], `no part of them in: ${leaks.join("; ")}`);
+  assert.deepEqual(urls, rows.map(([provider]) => [provider, `${PUBLIC}landed`]), "the url of each page, without them");
 });
