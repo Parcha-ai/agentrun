@@ -55,6 +55,7 @@ import { HANDOVER_WAITING, type HandoverAnswered } from "./runner/journal-kinds.
 import type { LiveHandover, LiveViewerStore } from "./browser-live.js";
 import { provenFor, type RunnerLive } from "./live-reach.js";
 import { clearWaitEnded, markWaitEnded } from "./browser-wait-ended.js";
+import { clearBrowserHeld, markBrowserHeld } from "./browser-hold.js";
 import type { Claim, Store } from "./store/store.js";
 import { type RunSignIn, runSignIn, verifyRunSignIn } from "./sign-ins-store.js";
 import { held } from "./runner/held.js";
@@ -521,6 +522,12 @@ const browserTool: ToolEntry = {
       waitEnded: (at, why) => {
         if (host.store && host.claim) void markWaitEnded(host.store.settings, host.claim.runId, { at: new Date(at).toISOString(), why }, host.claim.epoch).catch(() => undefined);
       },
+      // Who drives the browser, for the run read's computer state (browser-hold.ts): one settings row while a take is live.
+      held: (tag, on, at) => {
+        if (!host.store || !host.claim) return;
+        const { runId, epoch } = host.claim;
+        void (on ? markBrowserHeld(host.store.settings, runId, { session: tag, at: new Date(at).toISOString() }, epoch) : clearBrowserHeld(host.store.settings, runId, epoch, tag)).catch(() => undefined);
+      },
       note: async (kind, data) => {
         // A hand-over's waiting entry, on the runner: the row says the run waits on the person in its browser from that
         // commit (the server tells run.needs_input by it), and no more from its answer's, whoever writes it.
@@ -606,7 +613,11 @@ const browserTool: ToolEntry = {
       if (change === "released") await sessionEnded((row as unknown as { session: Parameters<typeof sessionEnded>[0] }).session, (row as unknown as { conversationId: number }).conversationId);
       await recordSession(row.session.tag, change === "released" ? null : row.session.resourceId);
       // A session that opens, whatever let the last one go: the Screen tab's ended state goes (browser-wait-ended.ts).
-      if (change === "launched" && host.store && host.claim) await clearWaitEnded(host.store.settings, host.claim.runId, host.claim.epoch).catch(() => undefined);
+      if (change === "launched" && host.store && host.claim) {
+        await clearWaitEnded(host.store.settings, host.claim.runId, host.claim.epoch).catch(() => undefined);
+        // A new session has no take yet: a take an earlier process never ended (a crash) is not in force.
+        await clearBrowserHeld(host.store.settings, host.claim.runId, host.claim.epoch).catch(() => undefined);
+      }
       await saved?.(row, change);
       await onSession(row, change);
     };

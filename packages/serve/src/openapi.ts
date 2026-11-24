@@ -1247,7 +1247,7 @@ const RUN_COMPUTER = {
   ...closedWith({
     kind: { enum: ["sandbox", "desktop", "phone", "browser"] },
     provider: { type: "string" },
-    state: { enum: ["starting", "ready", "taken_over", "released", "ended", "failed"], description: "`taken_over` while the owner holds the run's desktop or phone (POST /runs/{run_id}/computer/take-over); `released` while the run waits on its person with its computer let go: stopped, or parked on a question or an approval with no desktop, phone or sandbox kept for its resume; the run's next turn starts a new one; `failed` when the run could not have its computer (error code `computer_unavailable`)." },
+    state: { enum: ["starting", "ready", "taken_over", "released", "ended", "failed"], description: "`taken_over` while the owner holds the run's desktop or phone (POST /runs/{run_id}/computer/take-over), or its browser (Take over in the browser's live view); `released` while the run waits on its person with its computer let go: stopped, or parked on a question or an approval with no desktop, phone or sandbox kept for its resume; the run's next turn starts a new one; `failed` when the run could not have its computer (error code `computer_unavailable`)." },
   }, {
     why: { type: "string", description: "With `failed`: the server's words, naming the setting to fill." },
     held: {

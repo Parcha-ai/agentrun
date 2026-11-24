@@ -25,6 +25,7 @@ import { isFenced, type RunnerStore } from "./store-port.js";
 import { FINAL_STATES, type RunState } from "../store/store.js";
 import { Unanswered } from "../store/postgres/connection.js";
 import { clearWaitEnded } from "../browser-wait-ended.js";
+import { clearBrowserHeld } from "../browser-hold.js";
 import { keptBy, readKept } from "../workspace/computer-kept.js";
 import { cutDeep, heldRedactor, processSecretRedactor, type Redact } from "./redact.js";
 import { type LiveTickerOptions, withLiveTicker } from "./live-ticker.js";
@@ -628,6 +629,8 @@ export function startRunner(options: RunnerOptions): Runner {
     }
     // An ended run's Screen has no ended-while-waiting state to keep (browser-wait-ended.ts): its row goes with the end.
     if (store.settings) await clearWaitEnded(store.settings, claim.runId, claim.epoch).catch(() => undefined);
+    // Nor a take of its browser (browser-hold.ts).
+    if (store.settings) await clearBrowserHeld(store.settings, claim.runId, claim.epoch).catch(() => undefined);
   };
 
   /** Ends the run under `claim` stopped on its untaken `stop` (or cancel) row (endRun). False when that end may withdraw a
@@ -779,6 +782,7 @@ export function startRunner(options: RunnerOptions): Runner {
         }
         // The run's end (a normal completion among them) leaves no browser-released message behind for a follow-up (browser-wait-ended.ts).
         if (store.settings) await clearWaitEnded(store.settings, claim.runId, claim.epoch).catch(() => undefined);
+        if (store.settings) await clearBrowserHeld(store.settings, claim.runId, claim.epoch).catch(() => undefined);
       }
       await store.flush();
       // A loop that ended interrupted with no stop asked of it (its Session closed itself) is released with a backoff that
