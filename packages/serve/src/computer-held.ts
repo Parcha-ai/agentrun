@@ -12,7 +12,9 @@
 // A held run's create does not refuse it for its model (no key for it here, its harness refusing it, no price under a
 // cap): a benchmark that only calls the computer and lets it go never needs one. Those words ride its launch (hold.refused),
 // and its start and every message are refused in them (heldRefused), so its agent never runs; its computer still takes
-// calls until the release or the lapse. Every other blocker still refuses the create.
+// calls until the release or the lapse. Its claim chooses no model and reads no key, on pi and on every CLI harness: its
+// provider is a stand-in that refuses every model request in those words, sending none (provider.ts heldRefusedProvider),
+// so a host with no key for it holds the computer all the same. Every other blocker still refuses the create.
 //
 // Like the take-over (computer-commands.ts), it runs over the one store: the server writes command rows, the run's
 // runner applies them to the computer it holds (runner/held-run.ts), and commits what came of each to the run's journal.

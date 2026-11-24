@@ -25,7 +25,8 @@ import type { installForClaim, installSettled } from "../harness-install.js";
 import type { LiveHandover, LiveViewerStore } from "../browser-live.js";
 import { dropLiveViewer, putLiveViewer } from "../browser-live.js";
 import { liveForRun, type RunnerLive, runnerLiveOf } from "../live-reach.js";
-import { llmTiers, nodeTiers, type PinnedModel, type Tier, thinkingLevel, TIERS, tierModelOf, workflowNodes } from "../model.js";
+import { llmTiers, type ModelRef, nodeTiers, type PinnedModel, type Tier, thinkingLevel, TIERS, tierModelOf, workflowNodes } from "../model.js";
+import { heldRefusedProvider } from "../provider.js";
 import { firstMessage, inputMessage, messageText } from "../run-manifest.js";
 import { learningStartOf, seedFailed, type RunLaunch } from "../run-launch.js";
 import type { Store } from "../store/store.js";
@@ -263,6 +264,23 @@ export function capModelOf(route: ModelRoute): CapModel {
     : null;
   // The cap reads a request's provider overhead by the route's own wire (providerInputOverhead).
   return { id: route.model, api: route.provider.api, price, outputCeiling: route.outputCeiling ?? null, ...(route.local ? { local: true } : {}) };
+}
+
+/** The model of a held run its model kept from running at its create (run-launch.ts hold.refused): as its start pinned
+ *  it, else as its revision names it (`provider/model-id`). Nothing chooses it and nothing prices it. */
+export function heldModelOf(pinned: ModelRef | undefined, ref: string | undefined): ModelRef {
+  if (pinned) return pinned;
+  const at = ref?.indexOf("/") ?? -1;
+  return ref && at > 0 ? { provider: ref.slice(0, at), modelId: ref.slice(at + 1) } : { provider: "none", modelId: ref ?? "none" };
+}
+
+/** The route of a held run its model kept from running at its create (run-launch.ts hold.refused): its provider is the
+ *  stand-in (provider.ts heldRefusedProvider), so a host with no key for its model still opens its claim and holds its
+ *  computer. Its agent never starts (its start and every message are refused in `why`, its create's words:
+ *  computer-held.ts), and a request that reached its proxy anyway is refused in them too, and never sent. */
+export function heldRefusedRoute(model: ModelRef, why: string): ModelRoute {
+  const { origin, credential } = heldRefusedProvider(model, why);
+  return { model: model.modelId, named: `${model.provider}/${model.modelId}`, provider: { api: "anthropic-messages", origin, credential }, price: () => null, unpriced: true, outputCeiling: null };
 }
 
 /** Particle requests are never automatically replayed after an uncertain failure. Retry is a harness-wide setting,
@@ -629,7 +647,10 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // The route reads its model's key from the runner's environment, else the one the claim opened from the store: a key
   // saved in Settings → Model keys runs the next run with no restart (withModelKeys). A run with its own key: that key.
   const modelEnv = claimModelEnv(deps.env, toolEnv, runKey, claim);
-  const route = await deps.routeOf(modelAskOf(launch.model, body.model), modelEnv, "default", PI_WIRES, undefined, cut);
+  // A held run its model kept from running at its create is never routed: its claim holds the computer alone, its key
+  // never read, so one saved since runs a new run, never this one (heldRefusedRoute).
+  const heldRefusal = launch.hold?.refused?.message;
+  const route = heldRefusal !== undefined ? heldRefusedRoute(heldModelOf(launch.model, body.model), heldRefusal) : await deps.routeOf(modelAskOf(launch.model, body.model), modelEnv, "default", PI_WIRES, undefined, cut);
   await planBeforeRun(modelEnv, route.provider.plan ? { provider: PLAN_PROVIDER } : undefined);
   // The run's models of other tiers, for its learned workflows' nodes of a tier (learnedTierRoutes, filled once the seed's
   // lay chose the workflows, below): read when the session opens (pi.ts options.tiers), each on a proxy of its own.

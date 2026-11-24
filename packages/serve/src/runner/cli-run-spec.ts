@@ -54,7 +54,7 @@ import { settingOfDefinition } from "../computer-setting.js";
 import { computerKeptWords, computerReadyWords, computerReplacedNote, computerStartingWords, imageWaitWords } from "../workspace/computer-deps.js";
 import { computerTurnedOff, hadComputer, recordComputerOff } from "./computer-journal.js";
 import { type AdapterRun, type AdapterRunSpec, hostLifecycle, type RunCapConfig } from "./adapter-loop.js";
-import { adapterRunGate, type AdapterSpecDeps, answersCut, buildToolHost, capModelOf as capModelOfRoute, claimLiveAt, graderRouteOf, hostToolCtxOf, type LearnedTier, learnedTierRoutes, learnedTiers, learnedWorkflowHostTool, learnsWorkflows, mcpReachOf, modelAskOf, PI_WIRES, webHostTools } from "./adapter-run-spec.js";
+import { adapterRunGate, type AdapterSpecDeps, answersCut, buildToolHost, capModelOf as capModelOfRoute, claimLiveAt, graderRouteOf, heldModelOf, hostToolCtxOf, type LearnedTier, learnedTierRoutes, learnedTiers, learnedWorkflowHostTool, learnsWorkflows, mcpReachOf, modelAskOf, PI_WIRES, webHostTools } from "./adapter-run-spec.js";
 import { openTierProxies, type TierProxies } from "./adapters/pi.js";
 import type { ModelRoute } from "./model-route.js";
 import { signInReads } from "../sign-ins-store.js";
@@ -122,6 +122,13 @@ async function modelsOf(entry: HarnessEntry, env: NodeJS.ProcessEnv, ref: string
   const chosen = await runModels(env, ref, ["default"], entry.id);
   if (!chosen.model) throw new Error(`${entry.id} has no model here.`);
   return { model: chosen.model, models: chosen.models as unknown as AdapterNeeds["models"], unpriced: chosen.unpriced };
+}
+
+/** A held run's model, its model refused at its create (hold.refused): named as its start or revision named it
+ *  (heldModelOf), chosen by nothing, in no catalog, unpriced. */
+function heldChoice(pinned: ModelRef | undefined, ref: string | undefined): Awaited<ReturnType<typeof modelsOf>> {
+  const model = heldModelOf(pinned, ref);
+  return { model, models: { getModel: () => undefined }, unpriced: new Set([model.modelId]) };
 }
 
 /** A harness's facts for a run on `model`: on a model the route translates onto its wire (an Ollama model), its own tool
@@ -513,9 +520,14 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     else if (!personStarted(launch)) throw new ClaimRefused(RECIPE_SIGN_IN_PERSON_ONLY);
     else personOnly = RECIPE_TURN_PERSON_ONLY;
   }
-  const chosen = await modelsOf(entry, env, modelAskOf(launch.model, body.model));
-  await planBeforeRun(env, chosen.model);
-  if (login && entry.priceModel(env, chosen.model).provider === CLAUDE_LOGIN_PROVIDER) {
+  // A held run its model kept from running at its create (hold.refused) chooses no model here and reads no key, plan or
+  // login for it: its adapter's provider is the stand-in that refuses every request in the create's words (adapters.ts
+  // providerOf), so its claim holds the computer on a host with no key for its model, and a key saved since runs a new
+  // run, never this one.
+  const heldRefusal = launch.hold?.refused?.message;
+  const chosen = heldRefusal !== undefined ? heldChoice(launch.model, body.model) : await modelsOf(entry, env, modelAskOf(launch.model, body.model));
+  if (heldRefusal === undefined) await planBeforeRun(env, chosen.model);
+  if (login && heldRefusal === undefined && entry.priceModel(env, chosen.model).provider === CLAUDE_LOGIN_PROVIDER) {
     const claude = await import("@parcha/agentrun-harness-claude");
     await loginBeforeRun(login, loginCli(claudeCliIn(installDirOf(deps.data, name!), claude.claudeAgentPlatform()), env), (cli, at) => claude.claudeLoginStatus(cli, at, env.PATH ? { path: env.PATH } : {}));
   }
@@ -529,7 +541,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // A run's own process reads no trigger's row: its runner answers the zone (held.ts runZone).
   const seam = deps.sealKey ? undefined : runnerSeam();
   const zone = seam ? await seam.runZone() : await runZone(deps.store, launch.inputOrigin);
-  const built =await entry.adapter(env, { zone, model: chosen.model, models: chosen.models, unpriced: chosen.unpriced, ...(confine ? { confine } : {}), ...(native.length ? { skills: native } : {}), ...(now ? { now: () => now } : {}) });
+  const built =await entry.adapter(env, { zone, model: chosen.model, models: chosen.models, unpriced: chosen.unpriced, ...(heldRefusal !== undefined ? { heldRefusal } : {}), ...(confine ? { confine } : {}), ...(native.length ? { skills: native } : {}), ...(now ? { now: () => now } : {}) });
   // The harness's own session options, its private directory and its working directory (SessionIO's dir and cwd, which
   // every CLI adapter reads), set on its open here, so the loop lends the session nothing of its own. A turn that ends on
   // the CLI's own error names the harness first, as main words it (harness-app.ts: `<harness>: <error>`), so the run's
