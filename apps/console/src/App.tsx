@@ -781,10 +781,12 @@ function ConsolePage({ v2, onSignedOut, demo = false }: ConsoleProps) {
   // the server's default place for a revision with a shell tool, else the runner). Not known (the server's places not
   // read yet), the bar stays.
   const runPlace = runDefinition && selectedAgent ? runsWhere({ kind: selectedAgent.kind, definition: runDefinition as Agent["definition"] }, placesOf(caps))?.place : undefined;
-  // With no agent picked (a Playground with no agents, one whose agents are still being read, and every other page, which
-  // reads none) there is no run to read: a login on and signed in is a model an agent on Claude Agent runs on, so the
-  // bar goes there too.
-  const onClaudeLogin = claudeSignedIn && caps?.models?.needs !== "model" && (!selectedAgent || (runDefinition?.harness === LOGIN_HARNESS && runPlace?.mode === "runner"));
+  // The bar renders only in the Playground. With no agent picked there (no agents yet, or the agents still being read)
+  // there is no run to read, only where a first agent would run: the new-agent form puts it on the server's default
+  // place (newAgentPlace). So the bar goes only when that place is the runner, where a first agent on Claude Agent runs
+  // on the login; on a box, or with the places not read yet, it stays, for every harness.
+  const noAgentOnRunner = placesOf(caps)?.defaultPlace.mode === "runner";
+  const onClaudeLogin = claudeSignedIn && caps?.models?.needs !== "model" && (!selectedAgent ? noAgentOnRunner : (runDefinition?.harness === LOGIN_HARNESS && runPlace?.mode === "runner"));
   const playgroundTarget = where.operation ? where.playgroundAgent : pick ?? where.playgroundAgent;
   return (
     <ScheduleNames.Provider value={scheduleNames}>
