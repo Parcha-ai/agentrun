@@ -27,22 +27,37 @@ async function shared(t, at) {
   return { ...opened, clocks };
 }
 
-/** The store's triggers with its next `n` settle calls failing, as a store that does not answer. */
-function failing(store, gate) {
-  const triggers = new Proxy(store.triggers, {
-    get(target, key) {
-      const value = Reflect.get(target, key, target);
+/** `store` with each method named in `triggers` (or `agents`) going through the test's hand on it: `hand(call, ...args)`
+ *  in the method's place, `call()` the store's own method on those args. */
+function through(store, { triggers = {}, agents } = {}) {
+  const wrap = (target, hands) => new Proxy(target, {
+    get(on, name) {
+      const value = Reflect.get(on, name, on);
       if (typeof value !== "function") return value;
-      return (...args) => {
-        if (key === "settle" && gate.settle > 0) {
-          gate.settle -= 1;
-          return Promise.reject(new Error("the store did not answer"));
-        }
-        return value.apply(target, args);
-      };
+      const hand = hands[name];
+      return hand ? (...args) => hand(() => value.apply(on, args), ...args) : value.bind(on);
     },
   });
-  return { ...store, triggers, runs: store.runs };
+  return { ...store, triggers: wrap(store.triggers, triggers), ...(agents ? { agents: wrap(store.agents, agents) } : {}), runs: store.runs };
+}
+
+/** A hand for `through` that adds one to `trap[name]` once each call answers while `when()` holds: by the test's next look
+ *  the engine's code after that read has run. */
+function tally(trap, name, when) {
+  return (read) => (when() ? read().then((answer) => ((trap[name] += 1), answer)) : read());
+}
+
+/** The store's triggers with its next `gate.settle` settle calls failing, as a store that does not answer. */
+function failing(store, gate) {
+  return through(store, {
+    triggers: {
+      settle: (write) => {
+        if (gate.settle <= 0) return write();
+        gate.settle -= 1;
+        return Promise.reject(new Error("the store did not answer"));
+      },
+    },
+  });
 }
 
 /** An engine on `on`'s store (a new store when none), started; its start dep puts the run in the store as the run port
@@ -582,25 +597,22 @@ for (const [write, answer, on] of [["sent", 204, "runOf"], ["failed", 400, "runO
     }
     return found;
   };
-  const watched = new Proxy(opened.store.triggers, {
-    get(target, name) {
-      const value = Reflect.get(target, name, target);
-      if (typeof value !== "function") return value;
-      if (name === "firing") return async (...args) => {
-        const row = await value.apply(target, args);
-        if (on === "firing" && at.read && !at.landed) await land(args[1]);
+  const watched = through(opened.store, {
+    triggers: {
+      firing: async (read, id, key) => {
+        const row = await read();
+        if (on === "firing" && at.read && !at.landed) await land(key);
         return row;
-      };
-      if (name === "settle") return async (...args) => {
-        const settled = await value.apply(target, args);
-        if (at.landed) writes.push(args[2]);
+      },
+      settle: async (write, id, key, change) => {
+        const settled = await write();
+        if (at.landed) writes.push(change);
         return settled;
-      };
-      return value.bind(target);
+      },
     },
   });
   const { triggers } = await engine(t, {
-    store: { ...opened.store, triggers: watched, runs: opened.store.runs },
+    store: watched,
     runOf,
     notify: (failed) => (told.push(failed.firing_key), "queued"),
     launchHook: { url: `http://127.0.0.1:${host.address().port}/agentrun/firings`, secret: mintSecret() },
@@ -927,20 +939,18 @@ test("with max_active_runs 1, a firing started between a host start's trigger re
     await on.store.runs.create({ id: "run-a", agentId: "a", revisionId: "rev-a", origin: { key } });
     await on.store.triggers.settle(id, key, { status: "started", runId: "run-a" }, { reset: true });
   };
-  const triggersOf = new Proxy(on.store.triggers, {
-    get(target, name) {
-      const value = Reflect.get(target, name, target);
-      if (name !== "activeKeys" || typeof value !== "function") return value;
-      return async (...args) => {
+  const counted = through(on.store, {
+    triggers: {
+      activeKeys: async (count) => {
         if (trap.armed) {
           trap.armed = false;
           await elsewhere(trap.id, trap.key);
         }
-        return value.apply(target, args);
-      };
+        return count();
+      },
     },
   });
-  const { store, triggers } = await engine(t, { launchHook: host.launchHook, store: { ...on.store, triggers: triggersOf, runs: on.store.runs }, ...storeReads(on) }, { on });
+  const { store, triggers } = await engine(t, { launchHook: host.launchHook, store: counted, ...storeReads(on) }, { on });
   const made = await triggers.create({ ...hookBody, max_active_runs: 1 });
   const a = await timedOut(triggers, store, host, made.id, "evt-a");
   const b = await timedOut(triggers, store, host, made.id, "evt-b");
@@ -995,26 +1005,19 @@ async function midStartRetry(t, body, before) {
   const on = await shared(t, "2026-06-01T00:00:00Z");
   const host = await heldHost(t);
   const trap = { a: null, watching: false, aReads: 0, waiting: 0, pending: 0, selfWaits: 0 };
-  const counted = (name, result) => {
-    if (name === "waiting") trap.waiting += 1;
-    if (name === "pending") trap.pending += 1;
-    return result;
-  };
-  const triggersOf = new Proxy(on.store.triggers, {
-    get(target, name) {
-      const value = Reflect.get(target, name, target);
-      if (typeof value !== "function") return value;
-      return (...args) => {
-        if (name === "settle" && trap.a && args[1] === trap.a && args[2]?.waitsOn === trap.a) trap.selfWaits += 1;
-        const out = value.apply(target, args);
-        if (!trap.watching) return out;
-        // Counted once answered: the engine's code after the read has run by the test's next look.
-        if (name === "firing" && args[1] === trap.a) return out.then((row) => ((trap.aReads += 1), row));
-        return name === "waiting" || name === "pending" ? out.then((rows) => counted(name, rows)) : out;
-      };
+  const watching = () => trap.watching;
+  const counted = through(on.store, {
+    triggers: {
+      settle: (write, id, key, change) => {
+        if (trap.a && key === trap.a && change?.waitsOn === trap.a) trap.selfWaits += 1;
+        return write();
+      },
+      firing: (read, id, key) => (trap.watching && key === trap.a ? tally(trap, "aReads", watching)(read) : read()),
+      waiting: tally(trap, "waiting", watching),
+      pending: tally(trap, "pending", watching),
     },
   });
-  const { clock, store, triggers } = await engine(t, { launchHook: host.launchHook, store: { ...on.store, triggers: triggersOf, runs: on.store.runs }, statusOf: async () => "working" }, { on });
+  const { clock, store, triggers } = await engine(t, { launchHook: host.launchHook, store: counted, statusOf: async () => "working" }, { on });
   const made = await triggers.create(body);
   await before?.({ triggers, store, host, made });
   const a = await timedOut(triggers, store, host, made.id, "evt-a");
@@ -1074,30 +1077,25 @@ test("a tick while a firing's host start is writing its run leaves the firing to
   // waits at `gate` until the test lets it read.
   const trap = { a: null, watching: false, aCalls: 0, waiting: 0, pending: 0 };
   const gate = { entered: false, read: held() };
-  const triggersOf = new Proxy(on.store.triggers, {
-    get(target, name) {
-      const value = Reflect.get(target, name, target);
-      if (typeof value !== "function") return value;
-      return (...args) => {
-        if (trap.watching && name === "firing" && args[1] === trap.a) trap.aCalls += 1;
-        const out = value.apply(target, args);
-        if (!trap.watching || (name !== "waiting" && name !== "pending")) return out;
-        return out.then((rows) => ((trap[name] += 1), rows));
-      };
+  const watching = () => trap.watching;
+  const counted = through(on.store, {
+    triggers: {
+      firing: (read, id, key) => {
+        if (trap.watching && key === trap.a) trap.aCalls += 1;
+        return read();
+      },
+      waiting: tally(trap, "waiting", watching),
+      pending: tally(trap, "pending", watching),
     },
-  });
-  const agentsOf = new Proxy(on.store.agents, {
-    get(target, name) {
-      const value = Reflect.get(target, name, target);
-      if (typeof value !== "function") return value;
-      return (...args) => {
-        if (name !== "get" || !trap.watching || gate.entered) return value.apply(target, args);
+    agents: {
+      get: (read) => {
+        if (!trap.watching || gate.entered) return read();
         gate.entered = true;
-        return gate.read.promise.then(() => value.apply(target, args));
-      };
+        return gate.read.promise.then(read);
+      },
     },
   });
-  const { clock, store, triggers } = await engine(t, { launchHook: host.launchHook, store: { ...on.store, triggers: triggersOf, agents: agentsOf, runs: on.store.runs } }, { on });
+  const { clock, store, triggers } = await engine(t, { launchHook: host.launchHook, store: counted }, { on });
   const made = await triggers.create(hookBody);
   const a = await timedOut(triggers, store, host, made.id, "evt-a");
   trap.a = a;
@@ -1132,21 +1130,17 @@ async function driveReadBeforeStart(t, between) {
   const gate = { armed: false, entered: false, answer: held() };
   const trap = { a: null, watching: false, waiting: 0, pending: 0, settles: 0 };
   const queued = [];
-  const triggersOf = new Proxy(on.store.triggers, {
-    get(target, name) {
-      const value = Reflect.get(target, name, target);
-      if (typeof value !== "function") return value;
-      return (...args) => {
-        const out = value.apply(target, args);
-        if (name === "settle" && trap.watching && args[1] === trap.a) return out.then((row) => ((trap.settles += 1), row));
-        if (!gate.armed || (name !== "waiting" && name !== "pending")) return out;
-        return out.then((rows) => ((trap[name] += 1), rows));
-      };
+  const armedGate = () => gate.armed;
+  const counted = through(on.store, {
+    triggers: {
+      settle: (write, id, key) => (trap.watching && key === trap.a ? tally(trap, "settles", () => true)(write) : write()),
+      waiting: tally(trap, "waiting", armedGate),
+      pending: tally(trap, "pending", armedGate),
     },
   });
   const { clock, store, triggers } = await engine(t, {
     launchHook: host.launchHook,
-    store: { ...on.store, triggers: triggersOf, runs: on.store.runs },
+    store: counted,
     // The server's lookup of a run under a firing's key: the first once `gate` is armed (the drive's) reads, then
     // answers what it read when the test lets it.
     runOf: async (key) => {
@@ -1569,14 +1563,7 @@ test("a trigger's adapter settings go before its row, on a DELETE and on an agen
 
 /** `store` with each of its firing writes going through `settle(write, change)`: the test's hold on it. */
 function settledThrough(store, settle) {
-  const triggers = new Proxy(store.triggers, {
-    get(target, name) {
-      const value = Reflect.get(target, name, target);
-      if (typeof value !== "function") return value;
-      return name === "settle" ? (...args) => settle(() => value.apply(target, args), args[2]) : value.bind(target);
-    },
-  });
-  return { ...store, triggers, runs: store.runs };
+  return through(store, { triggers: { settle: (write, id, key, change) => settle(write, change) } });
 }
 /** Firing evt-a of a max_active_runs 1 webhook trigger, its host's hook answered 2xx with no run (sent), on an engine each
  *  of whose firing writes goes through `settle` (the test's hold on it). A release writes after its room check, so a
