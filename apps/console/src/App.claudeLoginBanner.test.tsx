@@ -26,8 +26,9 @@ const settle = async () => { for (let i = 0; i < 40; i++) await act(async () => 
 
 async function open(login: unknown, caps: unknown = CAPS, agents: Agent[] = [CLAUDE_AGENT]) {
   let reads = 0;
-  vi.stubGlobal("fetch", async (url: string) => {
+  vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
     const path = new URL(url, "http://serve.test").pathname;
+    if (init?.method === "POST" && path.startsWith("/v2/agents/") && path.endsWith("/runs")) return json(422, { error: { code: "scripted_refusal", message: "Scripted refusal", retryable: false } });
     if (path === "/v2/auth/session") return json(200, { accounts: false, secrets_writable: true });
     if (path === "/v2/capabilities") return json(200, caps);
     if (path === "/v2/settings/claude-login") { reads++; return json(200, login); }
@@ -85,5 +86,22 @@ describe("the Playground's No model bar and Claude Code's login on this machine"
     await go("#/playground");
     expect(page.reads(), "back from Settings, the login is read again").toBeGreaterThan(inSettings);
     expect(page.bar()?.textContent ?? null).toBeNull();
+  });
+
+  it("the login is read again after a run starts in the Playground, refused or not, since a run checks it", async () => {
+    const page = await open(SIGNED_IN);
+    const before = page.reads();
+    const message = page.host.querySelector<HTMLTextAreaElement>('section[aria-label="Request"] textarea');
+    expect(message, "the Playground's request box").not.toBeNull();
+    act(() => {
+      Object.getOwnPropertyDescriptor(Object.getPrototypeOf(message!), "value")!.set!.call(message!, "Answer this.");
+      message!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const send = [...page.host.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.trim() === "Send request");
+    expect(send, "the Send request button").toBeDefined();
+    await act(async () => send!.click());
+    await settle();
+    expect(page.host.textContent).toContain("Scripted refusal");
+    expect(page.reads(), "a run started, and the login was not read again").toBeGreaterThan(before);
   });
 });
