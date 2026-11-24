@@ -391,9 +391,9 @@ test("a request after the first that fails keeps the step from running, at what 
     const decide = provider.decide;
     provider.decide = async (request, ctx) => (asked.length ? (asked.push({ request, ctx }), Promise.reject(failure)) : decide(request, ctx));
     const { classifier } = await judgePart(priced(provider), PUBLIC, { ok: true, url: PUBLIC, text: passages.join("") }, { task: TASK });
+    assert.ok(Number(/^request 2 of (\d+): /.exec(classifier.error.message)?.[1]) > REQUESTS_AT_ONCE, `the page makes more requests than go at once: ${classifier.error.message}`);
     // The first REQUESTS_AT_ONCE go out together: request 1 answers, 2 to 4 fail, and no more are sent.
     assert.deepEqual([classifier.ran, classifier.requests, classifier.error.code, classifier.cost, classifier.questions_sha256], [false, REQUESTS_AT_ONCE, failure.code, cost, []]);
-    assert.match(classifier.error.message, /^request 2 of \d+: /);
   }
 });
 
