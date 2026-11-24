@@ -447,7 +447,7 @@ AGENTRUN_WEBHOOK_PRIVATE_TARGETS=1 to allow it, only on a machine you alone use`
 | `AGENTRUN_PRIVATE_HOSTS` | Bounds the private-network hosts an owner may allow an MCP server or a calendar on (Settings → MCP servers): `none` allows none (and only an empty list can be saved), or a comma list of address ranges (`10.20.0.0/16,fd12:3456::/32`) every listed host's address must also fall in. Loopback, link-local (cloud metadata) and this machine's addresses stay refused whatever it says. A value that is neither reads as `none` | unset: the owner's list holds | On a server or runner many customers share, an owner's list would reach the operator's own private network: set `none` there, on the server and on each runner (each process holds to its own) |
 | `AGENTRUN_BOX_ALLOW` | The hosts a run's computer may reach: a comma list, or `none` ([A run in a Docker box](#a-run-in-a-docker-box)) | the package registries and GitHub | A run's network is the operator's policy, not a caller's |
 | `AGENTRUN_BOX_CPUS`, `AGENTRUN_BOX_MEMORY`, `AGENTRUN_BOX_PIDS` | A Docker computer's size ([Computers](#computers)) | 2 CPUs, 4 GiB, 1,024 processes | The machine's capacity is the operator's |
-| `AGENTRUN_MCP_TOKEN_ORIGINS` | The exact origins an [API-only](#api-only) server's token may save a `per_run` MCP server at: `https://host[:port]` entries, plus one loopback origin (http on `127.0.0.1` or `[::1]`, with its port) that counts only with `AGENTRUN_MCP_ALLOW_LOOPBACK=1` | none | Where the token's saved servers may be reached is the operator's, never the token's: each run's start checks it again, and each runner checks its own at each claim, so set the same list there. It holds only servers the token saved on the API-only server: one the token saved while the server served the full API is not checked against it (see [API-only](#api-only)) |
+| `AGENTRUN_MCP_TOKEN_ORIGINS` | The exact origins an [API-only](#api-only) server's token may save a `per_run` MCP server at: `https://host[:port]` entries, plus one loopback origin (http on `127.0.0.1` or `[::1]`, with its port) that counts only with `AGENTRUN_MCP_ALLOW_LOOPBACK=1` | none | Where the token's saved servers may be reached is the operator's, never the token's: each run's start checks it again, and each runner checks its own at each claim, so set the same list there. It holds only servers the token saved on the API-only server: one the token saved while the server served the full API is not checked against it (see [API-only](#api-only)). `GET /v2/capabilities` shows the token only whether it is set, which keeps the list from being read in one call; it is no secret, since the token can still test an origin it guesses by saving a server there |
 
 On a server the installer runs as a service, `agentrun service install --env AGENTRUN_MCP_ALLOW_LOOPBACK=1 --env
 AGENTRUN_WEBHOOK_PRIVATE_TARGETS=1` saves the two yes-or-no switches in the service and restarts it; `--env KEY=` takes
@@ -3500,12 +3500,19 @@ serves these routes alone:
     refused with `412` leaves it the token's), as does the owner's sign-in on it, and one that lands while the token's
     is under way wins: the token's is `412`. The token's Composio save never uses an auth config a server the owner
     saved uses: an `auth_config_id` naming one is `403`, and so is the save when the toolkit's own auth config, as
-    Composio answers it, is that one, before anything is made at Composio. An `auth_config_id` naming one that another
+    Composio answers it, is that one, before anything is made at Composio; both say so in the same words. An
+    `auth_config_id` Composio answers under another id (another letter case, say) is `422` under it. Nor does it stand on
+    a connected account the token did not connect: when Composio already has an ACTIVE account for the save's `user_id`
+    under its auth config, the save is `403` before anything is made, unless a server the token saved holds that account
+    (one its own connect link started). That covers accounts no record here names: one the owner connected in Composio's
+    dashboard, kept after deleting a server, or used by a server saved by hand. Name a `user_id` of the token's own. A
+    `per_run` save names no user, so this never applies to it. An `auth_config_id` naming one that another
     server the token saved made is used, and that server's record still says it made it, so only its delete removes the
     auth config at Composio, or, while this server still uses it, hands it to this one, whose delete then removes it.
     Over a server the token saved, whose address only its origin shows, the owner's sign-in, save and preview take its
     full URL: one that sends back the shown address is `422` under `url`, and nothing is sent, so the owner's credential
-    goes only to an address the owner named.
+    goes only to an address the owner named. The token chose that address, so its own save (and, on the full server,
+    its own preview) still takes the shown one for it.
 
   The names route above is the listing: there is no list or read of a server's address, auth or tools here. The
   preview, refresh, sign-in, Composio tool listing and every other MCP settings route stay refused. On the full
