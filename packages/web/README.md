@@ -40,7 +40,7 @@ const page = await web.fetch("https://example.org/", { offset: 0, maxChars: 20_0
 Each call returns its `answer` and a `receipt`, `{ op, asked, provider, tries, classifier, wall, injection, out, cost,
 cache?, unsifted? }`. `tries` lists every provider asked, with its outcome. `cost` holds the fees of the requests sent.
 `classifier` is `"off"` unless a decider is given (below); `wall` and `injection` are `"unjudged"` unless the page
-guard judged the page (below).
+guard (`pageGuard`) judged the page (below).
 
 ## The classifier step
 
@@ -99,7 +99,8 @@ const { answer, receipt } = await web.search("widgets delaware", { n: 5, task: "
   place in the page. It is empty when the step did not run. `tokens` are the provider's
   when it reports them, else counted on the request by `count`, else null. `temperature_sent` and `temperature_applied` (true, false or "unknown") are what
   the provider says its request carried; one that says nothing sent none.
-- The page guard: in a run with a decider, each page a fetch reads is asked about once a run (`pageGuardRequest`: its
+- The page guard (`pageGuard: true`, off unless set; it asks the run's decider, so it throws without one): each page a
+  fetch reads is asked about once a run (`pageGuardRequest`: its
   URL, status and first `GUARD_CHARS`, 16,000 characters; the same two questions, in pi-browser's page classifier's
   words, for every page). `wall` is a choice between `content` and the `WALLS` (login wall, paywall, CAPTCHA, error
   page, ...); `injection` asks whether the text holds instructions addressed to an AI reader. The receipt's `wall` is

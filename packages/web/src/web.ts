@@ -26,7 +26,7 @@ export type Receipt = {
   provider: ProviderId | null;
   tries: Try[];
   classifier: "off" | DecisionRecord;
-  /** The page guard's verdicts on a fetched page, in a run with a decider; "unjudged" otherwise. */
+  /** The page guard's verdicts on a fetched page, when `pageGuard` is on; "unjudged" otherwise. */
   wall: WallVerdict;
   injection: InjectionVerdict;
   out: { bytes: number; chars: number };
@@ -56,6 +56,9 @@ export type WebConfig = {
   /** How a search's results reach the model once the decider has scored them ("drop" by default); checked when the
    *  web is made. */
   policy?: DecidePolicy;
+  /** The page guard: with a decider, each page a fetch reads is asked once a run whether it is a wall or holds
+   *  instructions addressed to an AI reader. Off unless true; true without a decider throws. */
+  pageGuard?: boolean;
 };
 /** `breakers`: the search breakers this call reads and trips (default the Web's own). `task`: what the caller needs,
  *  which a decider judges against (a search without one is judged on its query). */
@@ -85,15 +88,17 @@ const failedWith = (error: string, limit: Searched["limit"]): Searched => ({ ans
 export function createWeb(config: WebConfig): Web {
   const now = config.now ?? Date.now;
   const policy = policyOf(config.policy);
+  if (config.pageGuard !== undefined && typeof config.pageGuard !== "boolean") throw new TypeError(`pageGuard must be true or false (it was ${JSON.stringify(config.pageGuard)})`);
+  if (config.pageGuard && !config.decider) throw new TypeError("pageGuard needs a decider: the page guard asks the run's decider about each page");
   /** The page guard's verdict on each page the run read, by the URL asked for: a page is asked about once a run, and
    *  again after a guard that failed. */
-  const guarded = new Map<string, Promise<PageGuard>>();
+  const pageVerdicts = new Map<string, Promise<PageGuard>>();
   const guardOf = (decider: WebDecider, url: string, read: WebRead, step: StepOptions): Promise<PageGuard> => {
-    const known = guarded.get(url);
+    const known = pageVerdicts.get(url);
     if (known) return known;
     const asked = guardPage(decider, url, read, step);
-    guarded.set(url, asked);
-    void asked.then((verdict) => verdict.wall.error && guarded.delete(url));
+    pageVerdicts.set(url, asked);
+    void asked.then((verdict) => verdict.wall.error && pageVerdicts.delete(url));
     return asked;
   };
   /** A receipt's `unsifted`, only in a run with a classifier. */
@@ -199,7 +204,7 @@ export function createWeb(config: WebConfig): Web {
         classifier = found.classifier;
       } else if (need && whole.ok && whole.text) answer = notApplied("no classifier in this run");
       else if (config.decider) ({ answer, classifier } = await judgePart(config.decider, asked, part, { task, ...step }));
-      const guard = config.decider && whole.ok && whole.text ? await guardOf(config.decider, asked, whole, step) : undefined;
+      const guard = config.pageGuard && config.decider && whole.ok && whole.text ? await guardOf(config.decider, asked, whole, step) : undefined;
       if (guard?.warning) answer = { ...answer, warning: guard.warning };
       const receipt: Receipt = { op: "fetch", asked, provider, tries, classifier, ...(guard ? { wall: guard.wall, injection: guard.injection } : unjudged), out: outOf(webFetchText(answer)), cost: { usd: usd(lines), lines }, ...(cached ? { cache: "hit" as const } : {}), ...unsifted(() => webFetchText(part)) };
       return { answer, receipt };
