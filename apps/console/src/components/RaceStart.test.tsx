@@ -21,11 +21,12 @@ const HARNESSES = [
   { id: "codex", available: true, default_model: "openai/gpt-6.1-sol", models: ["openai/gpt-6.1-sol"] },
   { id: "opencode", available: false, reason: "No key here.", default_model: null, models: [] },
 ];
-// The tools this server runs (capabilities `tools`): a lane gets a new agent's, by its harness and the server's place.
+// The tools this server runs (capabilities `tools`), as a server offers them: the shell is pi's alone (an adapter harness
+// gets the host tools only). A lane gets a new agent's, by its harness and the server's default place.
 const TOOLS = toolOffers([
   { name: "read", available: true, harnesses: ["pi", "codex"] },
   { name: "write", available: true, harnesses: ["pi", "codex"] },
-  { name: "bash", available: true, sandbox_only: true, harnesses: ["pi", "codex"] },
+  { name: "bash", available: true, sandbox_only: true, harnesses: ["pi"] },
   { name: "web_search", available: true, harnesses: ["pi"] },
 ]);
 const BOXED: Places = { modes: ["runner", "sandbox"], boxes: [{ id: "local", available: true }], defaultPlace: { mode: "sandbox", box: "local" } };
@@ -80,15 +81,16 @@ describe("RaceStart", () => {
     expect(went).toEqual([`#/races/${LABEL}`]);
   });
 
-  it("on a server with a box, every lane runs in it, with the shell a new agent gets there", async () => {
+  it("on a server with a box by default, pi's lane gets the shell a new pi agent gets there, and no lane names a place: the server puts each where it puts that agent", async () => {
     const { host, sent } = mount(started, BOXED);
     await type(host, TASK);
     await act(async () => { button(host, "Start the race")!.click(); });
     await settle();
-    expect(sent.map((s) => (s.body.definition as Record<string, unknown>))).toEqual([
-      expect.objectContaining({ harness: "pi", tools: ["read", "write", "bash", "web_search"], computer: { kind: "sandbox", provider: "local" } }),
-      expect.objectContaining({ harness: "codex", tools: ["read", "write", "bash"], computer: { kind: "sandbox", provider: "local" } }),
-    ]);
+    const definitions = sent.map((s) => s.body.definition as Record<string, unknown>);
+    expect(definitions.map((d) => [d.harness, d.tools])).toEqual([["pi", ["read", "write", "bash", "web_search"]], ["codex", ["read", "write"]]]);
+    // With a computer named, codex's lane would be put in the box, where a new codex agent never runs (no shell), and a
+    // Claude Code login (the runner's alone) could not run a claude-agent lane.
+    for (const d of definitions) expect(Object.keys(d).filter((k) => k === "computer" || k === "place"), String(d.harness)).toEqual([]);
   });
 
   it("a lane the server refuses says why in its own place; the others start, and Start again sends only that lane, under the key it had", async () => {
