@@ -1,7 +1,8 @@
-import { ArrowUpRight, RefreshCw } from "lucide-react";
+import { ArrowUpRight, Factory, RefreshCw } from "lucide-react";
 import { useId, useState } from "react";
-import { Banner, Button, Chip, Field, Picker, Spinner, type ChipTone, type PickerOption } from "@/components/ui";
+import { Banner, Button, Chip, Field, pageTitleClass, pageToolbarClass, Picker, Spinner, type ChipTone, type PickerOption } from "@/components/ui";
 import { when } from "@/lib/format";
+import { cn } from "@/lib/utils";
 
 /** A projection of a reported run. The board neither guesses a role from task text nor grants controls to its source.
  *  GitHub URLs are validated by the projection before they reach this presentational component. */
@@ -82,16 +83,14 @@ export function AgentFactoryBoard({ cards, review, loading, refreshing, error, u
   const clearFilters = () => { setRepository("all"); setControl("all"); };
 
   return (
-    <div className="mx-auto max-w-page-wide space-y-6 p-5 md:p-8">
-      <header className="flex flex-wrap items-start justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-semibold">Agent Factory</h1>
-          <p className="mt-2 text-lead text-muted-foreground">Sessions reported to this AgentRun server, with ended runs needing attention below.</p>
-        </div>
-        <Button size="sm" onClick={onRefresh} disabled={busy} aria-busy={busy}>
-          {busy ? <Spinner /> : <RefreshCw aria-hidden />} {busy ? "Refreshing" : "Refresh"}
-        </Button>
+    // The page's frame is every list page's (Mission Control, Runs, Triggers): a bar with the place's icon and name in
+    // caps and its action at the right, then the content.
+    <section className="flex min-h-full flex-col" aria-label="Agent Factory">
+      <header className={cn(pageToolbarClass, "flex-wrap justify-between gap-2 px-5 md:px-6")}>
+        <h1 className={pageTitleClass}><Factory className="size-4" aria-hidden />Agent Factory</h1>
+        <Button className="ml-auto" size="icon" aria-label="Refresh Agent Factory" disabled={busy} aria-busy={busy} onClick={onRefresh}><RefreshCw className="size-4" aria-hidden /></Button>
       </header>
+      <div className="mx-auto w-full max-w-page-wide space-y-6 p-5 md:p-8">
 
       {error && <Banner tone="error" title={hasSnapshot ? "Could not refresh Agent Factory" : "Could not load Agent Factory"}
         actions={<Button size="xs" onClick={onRefresh} disabled={busy}>Try again</Button>}>
@@ -102,8 +101,9 @@ export function AgentFactoryBoard({ cards, review, loading, refreshing, error, u
       {!available && loading && <div role="status" className="flex items-center gap-3 py-8 text-body"><Spinner /> Loading agent sessions</div>}
 
       {available && <>
-        {/* The loaded sessions counted once, on one row: each lane's own header counts the cards a filter leaves in it. */}
-        <section aria-label="Loaded active session totals" className="flex flex-wrap items-baseline gap-x-8 gap-y-2 border-y py-3">
+        {/* The loaded sessions counted once, on one row: each lane's own header counts the cards a filter leaves in it.
+            While a filter narrows the cards, how many of them match is said at the row's end, on the same baseline. */}
+        <section aria-label="Loaded active session totals" className="flex flex-wrap items-baseline gap-x-8 gap-y-2 border-b pb-4">
           <p className="font-mono text-body"><strong className="text-figure font-semibold">{cards.length}</strong> active sessions loaded</p>
           <dl className="flex flex-wrap items-baseline gap-x-6 gap-y-1">
             {LANES.map((lane) => <div key={lane.id} className="flex items-baseline gap-2">
@@ -111,6 +111,9 @@ export function AgentFactoryBoard({ cards, review, loading, refreshing, error, u
               <dd className="order-first font-mono text-lg">{cards.filter((card) => card.lane === lane.id).length}</dd>
             </div>)}
           </dl>
+          <div className="ml-auto" aria-live="polite">
+            {filtered && <p aria-label="Matching sessions" className="font-mono text-small text-muted-foreground">{shown.length} of {cards.length} loaded active sessions match</p>}
+          </div>
         </section>
 
         {hasMore && <Banner tone="info" title="Partial coverage">More sessions may be available. Counts and filters cover only the sessions loaded so far.</Banner>}
@@ -120,11 +123,7 @@ export function AgentFactoryBoard({ cards, review, loading, refreshing, error, u
             <Field label="Repository"><Picker label="Repository" small value={repository} onChange={setRepository} options={options.repositories} className="w-full sm:w-60" /></Field>
             <Field label="Control"><Picker label="Control" small value={control} onChange={setControl} options={options.controls} className="w-full sm:w-48" /></Field>
           </div>
-          {/* Said only while a filter narrows the cards: the totals above stay those of every loaded session. */}
-          <div className="flex flex-wrap items-center gap-3" aria-live="polite">
-            {filtered && <p aria-label="Matching sessions" className="font-mono text-small text-muted-foreground">{shown.length} of {cards.length} loaded active sessions match</p>}
-            {filtered && <Button size="sm" onClick={clearFilters}>Clear filters</Button>}
-          </div>
+          {filtered && <Button size="sm" onClick={clearFilters}>Clear filters</Button>}
         </div>
 
         {!cards.length && <Banner>{hasMore ? "No active sessions in the loaded results. Load more to check further results." : "No active sessions reported."}</Banner>}
@@ -164,7 +163,8 @@ export function AgentFactoryBoard({ cards, review, loading, refreshing, error, u
           <p>{validTime(updatedAt) ? <>Last successful refresh <time dateTime={updatedAt}>{when(updatedAt)}</time>{error ? " · stale" : ""}</> : "Refresh time not reported"}</p>
         </footer>
       </>}
-    </div>
+      </div>
+    </section>
   );
 }
 

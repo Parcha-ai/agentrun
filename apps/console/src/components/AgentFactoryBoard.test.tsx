@@ -2,6 +2,7 @@ import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentFactoryBoard, type AgentFactoryBoardProps, type FactoryCard } from "./AgentFactoryBoard";
+import { pageTitleClass, pageToolbarClass } from "@/components/ui";
 import { optionsOf, pick, picker } from "@/test/picker";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -31,10 +32,28 @@ function mount(over: Partial<AgentFactoryBoardProps> = {}) {
   render();
   const button = (text: string) => [...host.querySelectorAll("button")].find((b) => b.textContent?.trim() === text)!;
   const lane = (name: string) => host.querySelector(`[data-factory-lane="${name}"]`)!;
-  return { host, props, render, button, lane };
+  /** The top bar's Refresh: an icon, named for a screen reader. */
+  const refresh = () => host.querySelector<HTMLButtonElement>('header button[aria-label="Refresh Agent Factory"]')!;
+  return { host, props, render, button, lane, refresh };
 }
 
 describe("Agent Factory board", () => {
+  it("frames the page as the console's other pages do: its name in the top bar after its icon, and Refresh as the bar's action", () => {
+    const { host, refresh } = mount();
+    const bar = host.querySelector("header")!;
+    for (const name of pageToolbarClass.split(" ")) expect(bar.classList.contains(name), name).toBe(true);
+    const title = bar.querySelector("h1")!;
+    expect(title.textContent).toBe("Agent Factory");
+    for (const name of pageTitleClass.split(" ")) expect(title.classList.contains(name), name).toBe(true);
+    expect(title.querySelector("svg[aria-hidden]")).not.toBeNull();
+    expect(host.querySelectorAll("h1")).toHaveLength(1);
+    expect(bar.contains(refresh())).toBe(true);
+    expect(refresh().textContent).toBe("");
+    // No sentence under the bar: the totals are the page's first line, as a list is on the other pages.
+    expect(host.textContent).not.toContain("Sessions reported to this AgentRun server");
+    expect(host.querySelector("header + div")?.firstElementChild?.getAttribute("aria-label")).toBe("Loaded active session totals");
+  });
+
   it("shows every supplied active session in its reported lane and keeps terminal review separate", () => {
     const { host, lane } = mount();
     expect(host.querySelector('[aria-label="Loaded active session totals"]')?.textContent).toContain("4 active sessions loaded");
@@ -90,7 +109,8 @@ describe("Agent Factory board", () => {
     expect(host.querySelector('[aria-label="Matching sessions"]')).toBeNull();
     expect(host.textContent).not.toContain("with unknown activity");
     await pick(picker(host, "Repository")!, "repo:example/console");
-    expect(host.querySelector('[aria-label="Matching sessions"]')?.textContent).toBe("1 of 1 loaded active sessions match");
+    // The filter's result is said in the totals' own row, beside what it is a part of.
+    expect(host.querySelector('[aria-label="Loaded active session totals"] [aria-label="Matching sessions"]')?.textContent).toBe("1 of 1 loaded active sessions match");
   });
 
   it("filters both active and ended runs without changing the explicitly loaded totals", async () => {
@@ -119,15 +139,16 @@ describe("Agent Factory board", () => {
   });
 
   it("marks partial coverage and offers further reads without implying the loaded set is complete", async () => {
-    const { host, props, button, render } = mount({ hasMore: true });
+    const { host, props, button, render, refresh } = mount({ hasMore: true });
     expect(host.textContent).toContain("Partial coverage");
     expect(host.textContent).toContain("More sessions may be available");
     expect(host.textContent).not.toContain("All active agents");
-    await act(async () => { button("Load more").click(); button("Refresh").click(); });
+    await act(async () => { button("Load more").click(); refresh().click(); });
     expect(props.onLoadMore).toHaveBeenCalledTimes(1);
     expect(props.onRefresh).toHaveBeenCalledTimes(1);
     render({ refreshing: true });
-    expect(button("Refreshing").disabled).toBe(true);
+    expect(refresh().disabled).toBe(true);
+    expect(refresh().getAttribute("aria-busy")).toBe("true");
     expect(button("Load more").disabled).toBe(true);
     expect(host.querySelectorAll("article")).toHaveLength(5);
   });

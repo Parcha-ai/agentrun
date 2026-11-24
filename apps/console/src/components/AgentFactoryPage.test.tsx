@@ -55,7 +55,7 @@ describe("Agent Factory page", () => {
     }) as typeof fetch });
     const el = host();await act(async () => root!.render(createElement(AgentFactoryPage, { v2, agentName })));await settle();
     fail = true;
-    const refresh = [...el.querySelectorAll("button")].find((b) => b.textContent?.trim() === "Refresh")!;
+    const refresh = el.querySelector<HTMLButtonElement>('button[aria-label="Refresh Agent Factory"]')!;
     await act(async () => refresh.click());await settle();
     expect(el.textContent).toContain("Task held");
     expect(el.querySelector('[role="alert"]')?.textContent).toContain("counts may be stale");
@@ -71,7 +71,7 @@ describe("Agent Factory page", () => {
     }) as typeof fetch });
     const el = host();await act(async () => root!.render(createElement(AgentFactoryPage, { v2, agentName })));await settle();
     transition = true;
-    await act(async () => [...el.querySelectorAll("button")].find((b) => b.textContent?.trim() === "Refresh")!.click());await settle();
+    await act(async () => el.querySelector<HTMLButtonElement>('button[aria-label="Refresh Agent Factory"]')!.click());await settle();
     expect(el.textContent).toContain("Task moving");
     expect(el.querySelector('[role="alert"]')?.textContent).toContain("counts may be stale");
   });
