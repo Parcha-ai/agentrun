@@ -803,16 +803,25 @@ const HELD_TABLE = createRequire(import.meta.url).resolve("./fixtures/held-offer
 const held = createRequire(import.meta.url)(HELD_TABLE);
 
 /** A server on the held table for test `t`: the fake CLI on PATH, no model key, and `options` laid on it. `harnesses()`: its capabilities' harnesses now; `probes(why)`: how many probes of the offers it
- *  has made for `why`. */
+ *  has made for `why`; `logged(event)`: resolves once the server has logged a line of `event`. */
 async function heldServer(t, options = {}) {
   const fake = await fakeCli(t);
   withEnv(t, { PATH: `${dirname(fake.cli)}${delimiter}${process.env.PATH}` }, MODEL_VARS);
   t.after(() => held.answer(undefined));
   const lines = [];
-  const server = await serve(t, { faux: undefined, harnesses: false, runner: false, harnessTable: HELD_TABLE, log: (line) => void lines.push(line), ...options });
+  const waiting = [];
+  const log = (line) => {
+    lines.push(line);
+    for (const wait of waiting) if (line.includes(` event=${wait.event} `)) wait.resolve();
+  };
+  const server = await serve(t, { faux: undefined, harnesses: false, runner: false, harnessTable: HELD_TABLE, log, ...options });
   const harnesses = async () => (await server.api("GET", "/capabilities")).body.harnesses;
   const probes = (why) => lines.filter((line) => line.includes(" event=harness_offers ") && line.includes(` why=${why} `)).length;
-  return { ...server, harnesses, probes };
+  const logged = (event) => new Promise((resolve) => {
+    if (lines.some((line) => line.includes(` event=${event} `))) resolve();
+    else waiting.push({ event, resolve });
+  });
+  return { ...server, harnesses, probes, logged };
 }
 const claudeAgentIn = (harnesses) => harnesses.find((offer) => offer.id === "claude-agent");
 
@@ -917,6 +926,58 @@ test("while the offers held are current and no probe from other inputs is out, a
   const offer = claudeAgentIn(await harnesses());
   assert.equal(offer.reason, FACT, `${FACT_WHY}: ${JSON.stringify(offer)}`);
   assert.equal(probes("key"), 0, `${TOOL_KEY_PROBED} while one made from the inputs read now was out`);
+});
+
+// The held offers behind the inputs: a turn-on's probe is out (held), made from the inputs a tool key's change reads.
+// The change waits for that probe to land (its harness_offers_wait line), starts none, and drops none: the offers end as
+// that probe found them. The turn-on's probe is a change's (why=key) too, so one probe for `key` is the turn-on's alone.
+const WAITED_WHY = "a tool key's change while the probe out was made from the inputs read now dropped that probe: the offers it found never landed";
+test("while the offers held are behind the inputs and the probe out was made from the inputs read now, a tool key's change waits for that probe, starts none and drops none", { timeout: 60_000 }, async (t) => {
+  const { api, harnesses, probes, logged } = await heldServer(t, { faux: FAUX });
+  const probe = held.hold((env) => claudeLoginOf(env) !== undefined, ON_REASON);
+  t.after(() => probe.release());
+  const turningOn = api("PUT", "/settings/claude-login", { only_me: true });
+  await probe.reached;
+  const deleting = api("DELETE", "/settings/tool-keys/typesafe");
+  // Waiting, the change logs that it waits; not waiting, it answers on its own.
+  await Promise.race([logged("harness_offers_wait"), deleting]);
+  probe.release();
+  const [on, deleted] = await Promise.all([turningOn, deleting]);
+  assert.equal(on.status, 200, JSON.stringify(on.body));
+  assert.equal(deleted.status, 204, JSON.stringify(deleted.body));
+  assert.equal(probes("key"), 1, `${TOOL_KEY_PROBED} while the probe out was made from the inputs read now`);
+  const offer = claudeAgentIn(await harnesses());
+  assert.equal(offer.reason, ON_REASON, `${WAITED_WHY}: ${JSON.stringify(offer)}`);
+});
+
+// A probe that fails never lands. When it was the latest one, no probe is out after it, so a change back to the inputs
+// the offers held were made from reuses them and starts none. A model key saved (its probe held, then failing) and
+// deleted. A failed probe logs no harness_offers line, so the delete's would be the only one for `key`.
+const FAILED = new Error("the probe of the offers failed here");
+test("after the latest probe of the offers fails, a change back to the inputs the offers held were made from starts no probe", { timeout: 60_000 }, async (t) => {
+  const { api, harnesses, probes } = await heldServer(t, { faux: FAUX });
+  const before = await harnesses();
+  const probe = held.hold((env) => env.OPENAI_API_KEY !== undefined, FAILED);
+  t.after(() => probe.release());
+  const saving = api("PUT", "/settings/tool-keys/openai", { values: { OPENAI_API_KEY: "fake-test-key" } });
+  await probe.reached;
+  probe.release();
+  const saved = await saving;
+  assert.equal(saved.status, 500, `the save's probe failed, so the save fails: ${JSON.stringify(saved.body)}`);
+  const deleted = await api("DELETE", "/settings/tool-keys/openai");
+  assert.equal(deleted.status, 204, JSON.stringify(deleted.body));
+  assert.equal(probes("key"), 0, "a change back to the inputs the offers held were made from probed again after the latest probe out had failed");
+  assert.deepEqual(await harnesses(), before, "the offers are not the starting state's");
+});
+
+// A hold no check took is dropped as it is released, so a test that ends before its held check runs leaves no hold for
+// the next server's checks.
+const UNTAKEN = "the reason of a hold released before any check took it";
+test("a hold of the held table released before any check took it holds and answers no later check", { timeout: 60_000 }, async (t) => {
+  held.hold(() => true, UNTAKEN).release();
+  const { harnesses } = await heldServer(t, { faux: FAUX });
+  const offer = claudeAgentIn(await harnesses());
+  assert.notEqual(offer.reason, UNTAKEN, `a hold released before any check took it answered the next server's first check: ${JSON.stringify(offer)}`);
 });
 
 // A turn starts or ends the sign-in through its own `turn`. A start or stop of the sign-ins' own beside it would be a
