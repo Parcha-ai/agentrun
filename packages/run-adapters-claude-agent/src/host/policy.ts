@@ -155,24 +155,25 @@ function blocks(content: unknown, where: string, inResult = false, references?: 
   }
 }
 
-/** The pinned CLI's date lines, read from the machine's clock in its own local time: its session context's and its `date`
- *  attachment's "Today's date is 2026-11-24.", and on a later day "Today's date is now 2026-11-25. ...". The CLI has no
- *  setting for its date (test/case-clock.test.mjs fails if a CLI bump words these differently). */
+/** The pinned CLI's date lines, read from the machine's clock in its own local time: "Today's date is 2026-11-24.", and on
+ *  a later day "Today's date is now 2026-11-25. ...". The CLI has no setting for its date (test/case-clock.test.mjs fails
+ *  if a CLI bump words these differently, or moves them). */
 const CLI_DATE = /\bToday's date is (now )?\d{4}-\d{2}-\d{2}\./g;
 
 /** `text` with each of the CLI's date lines saying `day`. */
 const onDay = (text: string, day: string): string => text.replace(CLI_DATE, (_line, now: string | undefined) => `Today's date is ${now ?? ""}${day}.`);
 
-/** A message's or the system prompt's content with the CLI's date lines in its own text (the string, or a `text` block)
- *  saying `day`. A tool result is never changed: what a file, page or command returned reaches the model as it was. */
-function contentOnDay(content: unknown, day: string): unknown {
-  if (typeof content === "string") return onDay(content, day);
-  if (!Array.isArray(content)) return content;
-  return content.map((block) => (isPlain(block) && block.type === "text" && typeof block.text === "string" ? { ...block, text: onDay(block.text, day) } : block));
+/** A message with the CLI's date lines saying `day`, when it is one of the CLI's own: a `system` message among the
+ *  messages, where the pinned CLI puts its environment note and the date at its end. Every other message (the person's
+ *  words, the app's tool results, the model's replies) and the system prompt (the app's instructions) are never changed, so
+ *  a date someone wrote, quoted or read reaches the model as it was. */
+function messageOnDay(message: unknown, day: string): unknown {
+  if (!isPlain(message) || message.role !== "system") return message;
+  const content = message.content;
+  if (typeof content === "string") return { ...message, content: onDay(content, day) };
+  if (!Array.isArray(content)) return message;
+  return { ...message, content: content.map((block) => (isPlain(block) && block.type === "text" && typeof block.text === "string" ? { ...block, text: onDay(block.text, day) } : block)) };
 }
-
-/** A message with the CLI's date lines saying `day` (contentOnDay). */
-const messageOnDay = (message: unknown, day: string): unknown => (isPlain(message) && "content" in message ? { ...message, content: contentOnDay(message.content, day) } : message);
 
 /** A message with the CLI's note of its own image file left out of each tool result that holds the image itself: the
  *  note names a path in the session's directory, which differs between a session and its resumption, and says nothing
@@ -335,16 +336,11 @@ export function applyAnthropic(body: unknown, route: ProxyRoute, options: Anthro
   if (isPlain(choice) && choice.type === "tool" && !chosen) refuse(403, "tool_choice names a tool this session does not have");
   const small = options.smallModel ?? options.model;
   if (body.model !== options.model && body.model !== small) refuse(403, "the model is not this session's");
-  // On a set clock, the CLI's date lines say its day, in the messages and the system prompt alike (the host's own side
-  // requests carry none of the CLI's lines, and are left as they are).
+  // On a set clock, the CLI's date lines say its day, in its own system messages only (messageOnDay). The host's own side
+  // requests carry none of the CLI's lines, and are left as they are.
   const day = context.host === undefined ? options.day?.() : undefined;
   const messages = (body.messages as unknown[]).map(withoutImageNotes);
-  const out: Record<string, unknown> = {
-    ...body,
-    messages: day === undefined ? messages : messages.map((m) => messageOnDay(m, day)),
-    ...(day !== undefined && body.system !== undefined ? { system: contentOnDay(body.system, day) } : {}),
-    ...(tools === undefined ? {} : { tools }),
-  };
+  const out: Record<string, unknown> = { ...body, messages: day === undefined ? messages : messages.map((m) => messageOnDay(m, day)), ...(tools === undefined ? {} : { tools }) };
   if (count) return out;
   // A main-model request that would not think is said, never passed silently (it is still forwarded: the CLI decides
   // its own requests, and this is the record that one went without reasoning).
