@@ -1,6 +1,7 @@
 // web_search's one answer shape (Search), its bounds, and searchInTurn: a call asks its backends in order, each behind
-// a breaker of its own. A quota answer turns a backend off for the breaker's life; a rate limit holds it for the wait it
-// named (60 s when none, 15 min at most). A backend that fails or is held passes the call to the next.
+// a breaker of its own. A quota answer turns a backend off until the reset it names, else for the breaker's life; a rate
+// limit holds it for the wait it named (60 s when none), and one naming a wait past 15 minutes turns it off for that
+// wait. A backend that fails, is held or is off passes the call to the next.
 
 export const QUERY_MAX = 200;
 export const RESULTS_MAX = 25;
@@ -12,24 +13,25 @@ export const ANSWER_MAX = 4_000;
 /** The most characters a search's answer takes, its citing line included: about RESULTS_MAX results with whole snippets,
  *  under the host's result bound (HOST_RESULT_MAX_CHARS), which the host-bounds test holds it to. */
 export const SEARCH_MAX_CHARS = 100_000;
-/** What every later web_search call of a run answers once its provider said the run is out of quota (a Limit of kind
- *  quota): the provider is not asked again in that run. */
+/** What a web_search call answers while its provider is off (offUntil): it is not asked until its limit resets, if in
+ *  this run at all. */
 export const SEARCH_UNAVAILABLE = "search is unavailable for the rest of this run; answer from what you have";
 /** What a call answers while a rate limit's wait holds, `seconds` of it left. */
 export const searchBusy = (seconds: number): string => `search is busy; try again in ${seconds} s, or answer from what you have`;
 /** The wait a rate limit holds a run's search for when no Retry-After reaches here. */
 const DEFAULT_WAIT_MS = 60_000;
-/** The longest wait a Retry-After holds a run's search for: 15 minutes. A provider naming hours, or a date far off (a
- *  clock that is wrong), would stop a long run's search as a quota answer does; past 15 minutes the next call asks. */
+/** The longest wait a rate limit holds a run's search for: 15 minutes. A wait named past it is a spent count with its
+ *  reset (keyless Exa's daily count answers a 429 naming the hours to midnight): the provider is off until then. */
 const MAX_WAIT_MS = 15 * 60_000;
 
 export type Hit = { url: string; title: string; snippet: string; published?: string };
 export type Search = { provider: "native" | "firecrawl-keyless" | "exa-keyless" | "parallel"; query: string; results: Hit[]; text?: string; omitted?: number } | { error: string };
-/** What a provider's failure said of the run's search: out of quota, or rate-limited, with the wait it named as it
- *  handed it back (a Retry-After header's value, delta-seconds or an HTTP date, or Exa's seconds). `repeatIsQuota`, the
+/** What a provider's failure said of the run's search: out of quota (until the reset `retryAfter` names, if it names
+ *  one), or rate-limited, with the wait it named as it handed it back (a Retry-After header's value, delta-seconds or an
+ *  HTTP date, or Exa's seconds). `repeatIsQuota`, the
  *  server's mark on keyless Exa's limit naming no wait alone (exaLimitOf): Exa answers its daily count running out as
  *  that limit, so the same answer again once a wait has passed is that count (searchBreaker). */
-export type Limit = { kind: "quota" } | { kind: "rate"; retryAfter?: string | number; repeatIsQuota?: true };
+export type Limit = { kind: "quota"; retryAfter?: string | number } | { kind: "rate"; retryAfter?: string | number; repeatIsQuota?: true };
 /** A Search, and the limit its provider answered, if any: the run's breaker reads `limit` (searchBreaker), the model the
  *  Search alone. */
 export type Searched = { answer: Search; limit?: Limit };
@@ -43,46 +45,60 @@ export function retryAfterMs(retryAfter: string | number | undefined, nowMs: num
 }
 
 /** The wait a breaker holds for `retryAfter` (retryAfterMs): none named, 60 s; a date already passed, none; never more
- *  than 15 minutes (MAX_WAIT_MS). */
+ *  than 15 minutes (MAX_WAIT_MS: a longer one turns its provider off, offUntil). */
 export function waitOf(retryAfter: string | number | undefined, nowMs: number): number {
   const ms = retryAfterMs(retryAfter, nowMs);
   return ms === undefined ? DEFAULT_WAIT_MS : Math.min(Math.max(ms, 0), MAX_WAIT_MS);
 }
 
+/** When `limit`, met at `nowMs`, turns its provider off: the time it may be asked again (Infinity: not in the breaker's
+ *  life), or undefined when the limit only holds it for a wait (waitOf). A quota is off until the reset it names, else
+ *  for good; a rate limit naming a wait past MAX_WAIT_MS is off until that wait ends. */
+export function offUntil(limit: Limit, nowMs: number): number | undefined {
+  const ms = retryAfterMs(limit.retryAfter, nowMs);
+  if (limit.kind === "quota") return ms === undefined ? Number.POSITIVE_INFINITY : nowMs + Math.max(ms, 0);
+  return ms !== undefined && ms > MAX_WAIT_MS ? nowMs + ms : undefined;
+}
+
 /** A breaker on one backend, read at `now`. `held`: what a call answers unsent while it holds (SEARCH_UNAVAILABLE once
- *  off, searchBusy for the seconds left of a wait). `read` takes a search and its limit: a quota answer turns it off; a
- *  rate limit opens a wait, never shrinking one already open; a repeatIsQuota limit after an earlier one whose wait has
+ *  off, searchBusy for the seconds left of a wait). `read` takes a search and its limit: a quota answer, or a rate limit
+ *  naming a wait past 15 minutes, turns it off (offUntil); a shorter rate limit opens a wait, never shrinking one
+ *  already open; a repeatIsQuota limit after an earlier one whose wait has
  *  passed, with no success between, is a quota answer and the call answers SEARCH_UNAVAILABLE. */
 export type Breaker = { held(): Search | undefined; read(searched: Searched): Search; off(): boolean; left(): number };
 /** `ms` of a wait as searchBusy's seconds: rounded up, at least 1. */
 const busyFor = (ms: number): Search => ({ error: searchBusy(Math.max(1, Math.ceil(ms / 1_000))) });
 export function searchBreaker(now: () => number = Date.now): Breaker {
-  let off = false;
+  // Off while the clock is before it.
+  let offTill = 0;
   let until = 0;
   // A marked rate limit (keyless Exa's) has opened a wait in this run, with no search succeeding since.
   let marked = false;
+  const off = () => now() < offTill;
   return {
     held() {
-      if (off) return { error: SEARCH_UNAVAILABLE };
+      if (off()) return { error: SEARCH_UNAVAILABLE };
       const left = until - now();
       return left > 0 ? busyFor(left) : undefined;
     },
-    off: () => off,
+    off,
     left: () => Math.max(0, until - now()),
     read({ answer, limit }) {
       if (!("error" in answer)) marked = false;
-      if (limit?.kind === "quota") off = true;
-      else if (limit) {
-        const at = now();
-        // The call that turns search off answers so itself, never its limit's "try again" words.
-        if (limit.repeatIsQuota && marked && at >= until) {
-          off = true;
-          return { error: SEARCH_UNAVAILABLE };
-        } else {
-          if (limit.repeatIsQuota) marked = true;
-          until = Math.max(until, at + waitOf(limit.retryAfter, at));
-        }
+      if (!limit) return answer;
+      const at = now();
+      const till = offUntil(limit, at);
+      // The call that turns search off for a rate limit answers so itself, never its limit's "try again" words.
+      if (till !== undefined) {
+        offTill = Math.max(offTill, till);
+        return limit.kind === "quota" ? answer : { error: SEARCH_UNAVAILABLE };
       }
+      if (limit.kind === "rate" && limit.repeatIsQuota && marked && at >= until) {
+        offTill = Number.POSITIVE_INFINITY;
+        return { error: SEARCH_UNAVAILABLE };
+      }
+      if (limit.kind === "rate" && limit.repeatIsQuota) marked = true;
+      until = Math.max(until, at + waitOf(limit.retryAfter, at));
       return answer;
     },
   };
