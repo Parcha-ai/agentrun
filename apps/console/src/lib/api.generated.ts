@@ -620,12 +620,14 @@ export interface components {
       routes: boolean;
       at_rest: "sealed";
       harnesses: string[];
+      kept: string[];
     };
     mcp_client?: {
       transports: "streamable-http"[];
       auth: ("none" | "bearer" | "headers" | "oauth" | "github_app" | "per_run")[];
       at_rest: "sealed";
       harnesses: string[];
+      composio_per_run: boolean;
     };
     tool_permissions?: boolean;
     webhooks?: {
@@ -3083,6 +3085,11 @@ export interface operations {
       listed_at: string;
       updated_at: string;
       secret?: components["SecretMeta"];
+      composio_account?: {
+        state: "connected" | "pending" | "expired" | "none" | "unknown";
+        labels?: string[];
+        checked_at: string;
+      };
     };
   };
   getModelGateway: {
@@ -4510,6 +4517,17 @@ export interface operations {
       }[];
     };
   };
+  listComposioToolkits: {
+    body: {
+      api_key: string;
+    };
+    answer: {
+      toolkits: {
+        slug: string;
+        name: string;
+      }[];
+    };
+  };
   listComposioTools: {
     body: {
       api_key: string;
@@ -4684,8 +4702,14 @@ export interface operations {
       harnesses: {
         id: string;
         label: string;
+        named: boolean;
         keys: components["SecretMeta"][];
+        kept: components["SecretMeta"][];
         ready: boolean;
+        reenter: {
+          name: string;
+          why: "recipe_changed" | "seal_key_changed" | "file_unreadable";
+        }[];
       }[];
     };
   };
@@ -5026,6 +5050,11 @@ export interface operations {
         listed_at: string;
         updated_at: string;
         secret?: components["SecretMeta"];
+        composio_account?: {
+          state: "connected" | "pending" | "expired" | "none" | "unknown";
+          labels?: string[];
+          checked_at: string;
+        };
       }[];
     };
   };
@@ -6097,6 +6126,11 @@ export interface operations {
         listed_at: string;
         updated_at: string;
         secret?: components["SecretMeta"];
+        composio_account?: {
+          state: "connected" | "pending" | "expired" | "none" | "unknown";
+          labels?: string[];
+          checked_at: string;
+        };
       };
     };
   };
@@ -6484,6 +6518,11 @@ export interface operations {
         listed_at: string;
         updated_at: string;
         secret?: components["SecretMeta"];
+        composio_account?: {
+          state: "connected" | "pending" | "expired" | "none" | "unknown";
+          labels?: string[];
+          checked_at: string;
+        };
       };
       connect_url?: string;
       not_served?: string[];
@@ -6628,6 +6667,11 @@ export interface operations {
       listed_at: string;
       updated_at: string;
       secret?: components["SecretMeta"];
+      composio_account?: {
+        state: "connected" | "pending" | "expired" | "none" | "unknown";
+        labels?: string[];
+        checked_at: string;
+      };
       composio?: {
         removed: boolean;
         note: string;

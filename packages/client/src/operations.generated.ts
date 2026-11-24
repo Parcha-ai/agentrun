@@ -1273,12 +1273,14 @@ export type Features = {
     routes: boolean;
     at_rest: "sealed";
     harnesses: Array<string>;
+    kept: Array<string>;
   };
   mcp_client?: {
     transports: Array<"streamable-http">;
     auth: Array<"none" | "bearer" | "headers" | "oauth" | "github_app" | "per_run">;
     at_rest: "sealed";
     harnesses: Array<string>;
+    composio_per_run: boolean;
   };
   tool_permissions?: boolean;
   webhooks?: {
@@ -2662,8 +2664,14 @@ export type ListHarnessKeysResponse = {
   harnesses: Array<{
     id: string;
     label: string;
+    named: boolean;
     keys: Array<SecretMeta>;
+    kept: Array<SecretMeta>;
     ready: boolean;
+    reenter: Array<{
+      name: string;
+      why: "recipe_changed" | "seal_key_changed" | "file_unreadable";
+    }>;
   }>;
 };
 
@@ -3432,6 +3440,17 @@ export type ListComposioEventsResponse = {
   }>;
 };
 
+/** List the toolkits Composio offers, for the console's toolkit picker; stores nothing (POST /settings/mcp-servers/composio/toolkits). Its body's string values are secrets: each copy is cut from the answer, and a refusal keeps only its code. */
+export type ListComposioToolkitsBody = {
+  api_key: string;
+};
+export type ListComposioToolkitsResponse = {
+  toolkits: Array<{
+    slug: string;
+    name: string;
+  }>;
+};
+
 /** List the actions of a Composio toolkit, for the console's picker; stores nothing (POST /settings/mcp-servers/composio/tools). Its body's string values are secrets: each copy is cut from the answer, and a refusal keeps only its code. */
 export type ListComposioToolsBody = {
   api_key: string;
@@ -3923,6 +3942,11 @@ export type SaveComposioServerResponse = {
     listed_at: string;
     updated_at: string;
     secret?: SecretMeta;
+    composio_account?: {
+      state: "connected" | "pending" | "expired" | "none" | "unknown";
+      labels?: Array<string>;
+      checked_at: string;
+    };
   };
   connect_url?: string;
   not_served?: Array<string>;
@@ -4292,6 +4316,11 @@ export type GetMcpServerResponse = {
   listed_at: string;
   updated_at: string;
   secret?: SecretMeta;
+  composio_account?: {
+    state: "connected" | "pending" | "expired" | "none" | "unknown";
+    labels?: Array<string>;
+    checked_at: string;
+  };
 };
 
 /** The remote MCP servers saved here, with their tools; never a credential (GET /settings/mcp-servers). */
@@ -4339,6 +4368,11 @@ export type ListMcpServersResponse = {
     listed_at: string;
     updated_at: string;
     secret?: SecretMeta;
+    composio_account?: {
+      state: "connected" | "pending" | "expired" | "none" | "unknown";
+      labels?: Array<string>;
+      checked_at: string;
+    };
   }>;
 };
 
@@ -4434,6 +4468,11 @@ export type RefreshMcpServerResponse = {
     listed_at: string;
     updated_at: string;
     secret?: SecretMeta;
+    composio_account?: {
+      state: "connected" | "pending" | "expired" | "none" | "unknown";
+      labels?: Array<string>;
+      checked_at: string;
+    };
   };
 };
 
@@ -4491,6 +4530,11 @@ export type SaveMcpServerResponse = {
   listed_at: string;
   updated_at: string;
   secret?: SecretMeta;
+  composio_account?: {
+    state: "connected" | "pending" | "expired" | "none" | "unknown";
+    labels?: Array<string>;
+    checked_at: string;
+  };
   composio?: {
     removed: boolean;
     note: string;
@@ -7308,6 +7352,7 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   gitHubCallback: {"method":"GET","path":"/integrations/github/callback","pathParams":[],"multiSegment":[],"query":["code","state"],"headers":[],"body":null,"answer":"none","secret":false,"publicFields":[],"tagged":false},
   gitHubInstalled: {"method":"GET","path":"/integrations/github/installed","pathParams":[],"multiSegment":[],"query":["installation_id","setup_action","state"],"headers":[],"body":null,"answer":"none","secret":false,"publicFields":[],"tagged":false},
   listComposioEvents: {"method":"GET","path":"/settings/mcp-servers/{name}/composio/events","pathParams":["name"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  listComposioToolkits: {"method":"POST","path":"/settings/mcp-servers/composio/toolkits","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":true,"publicFields":[],"tagged":false},
   listComposioTools: {"method":"POST","path":"/settings/mcp-servers/composio/tools","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":true,"publicFields":["toolkit"],"tagged":false},
   listComposioTriggers: {"method":"GET","path":"/settings/mcp-servers/{name}/composio/triggers","pathParams":["name"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   listComputerChoices: {"method":"GET","path":"/computers/{provider}/choices","pathParams":["provider"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
@@ -7625,6 +7670,8 @@ export function resources(call: Call) {
       getWorkspaceArchil: (options?: RequestOptions): Promise<GetWorkspaceArchilResponse> => call("getWorkspaceArchil", [], undefined, undefined, options),
       /** List a saved Composio server's toolkit's events, for a composio trigger (GET /settings/mcp-servers/{name}/composio/events). */
       listComposioEvents: (name: string, options?: RequestOptions): Promise<ListComposioEventsResponse> => call("listComposioEvents", [name], undefined, undefined, options),
+      /** List the toolkits Composio offers, for the console's toolkit picker; stores nothing (POST /settings/mcp-servers/composio/toolkits). */
+      listComposioToolkits: (body: ListComposioToolkitsBody, options?: RequestOptions): Promise<ListComposioToolkitsResponse> => call("listComposioToolkits", [], body, undefined, options),
       /** List the actions of a Composio toolkit, for the console's picker; stores nothing (POST /settings/mcp-servers/composio/tools). */
       listComposioTools: (body: ListComposioToolsBody, options?: RequestOptions): Promise<ListComposioToolsResponse> => call("listComposioTools", [], body, undefined, options),
       /** A saved Composio server's triggers, each with its instance's state on Composio (GET /settings/mcp-servers/{name}/composio/triggers). */

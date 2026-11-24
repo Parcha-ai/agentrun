@@ -252,12 +252,12 @@ if (process.argv[2] === "install-harness") {
     const data = resolve(values.data ?? defaultData());
     try {
       const { recipe, file } = loadRecipe(values.recipe);
-      const said = { downloaded: "the archive is downloaded and its sha256 matches the recipe", unpacked: "unpacked", verified: "the binary's sha256 is checked" } as const;
+      const said = { downloaded: "the archive is downloaded and its sha256 matches the recipe", unpacked: "unpacked", verified: "its files are checked" } as const;
       const { version, installed, binary, pinnedBy } = await installRecipe(recipe, file, data, { onStep: (step) => console.error(`${recipe.label}: ${said[step]}`) });
-      const held = { recipe: "the recipe's pin", "first-seen": "the first sha256 an earlier install recorded", recorded: "its sha256 recorded now, as the first one; a later binary that differs is refused" }[pinnedBy];
+      const held = { recipe: "the recipe's tree pin", "first-seen": "the tree an earlier install recorded", recorded: "their tree recorded now, as the first one; a later binary or file beside it that differs is refused" }[pinnedBy];
       console.log(installed === "already"
-        ? `${recipe.label} ${version} is installed in ${dirname(binary)} (already: the pinned binary is there, so nothing was downloaded; held to ${held}).`
-        : `${recipe.label} ${version} is installed in ${dirname(binary)} (now; the binary held to ${held}). Check it with: ${recipeCheckLine(file, data)} --model PROVIDER/MODEL`);
+        ? `${recipe.label} ${version} is installed in ${dirname(binary)} (already: the pinned files are there, so nothing was downloaded; held to ${held}).`
+        : `${recipe.label} ${version} is installed in ${dirname(binary)} (now; the binary and every file beside it held to ${held}). Check it with: ${recipeCheckLine(file, data)} --model PROVIDER/MODEL`);
       process.exit(0);
     } catch (error) {
       if (!(error instanceof ArchiveInstallFailed) && !(error instanceof RecipeRefused)) throw error;

@@ -57,6 +57,7 @@ import { routeOf } from "./model-route.js";
 import { RUN_PROCESS_MIB, runnerMemory } from "./memory-claim.js";
 import { childLoops, isolationLoops, type RunIsolation, RunIsolationRefused, runIsolationOf } from "./run-child-host.js";
 import { sweepEndedScratch } from "./scratch-sweep.js";
+import { runCensus } from "../run-census.js";
 import { RUNNER_LOOPS, RUNNER_RENEW_EVERY_MS, runnerName, startRunner, type Runner, type RunnerEvent, type RunnerMemory } from "./runner.js";
 import { keepPresence, type Presence } from "./presence.js";
 import { diskFreeGate } from "./disk-free.js";
@@ -151,8 +152,10 @@ export async function openRunnerStore(dataDir: string, env: NodeJS.ProcessEnv, w
 /** The runner's own secrets, which a run never gets, not even in the runner's in-process environment: the server's
  *  tokens (the token and the token list) and API key, the seal key (the runner holds it as its sealKey), the store's connection (its URL holds a
  *  database password), the launch hook's signing secret (the server's alone), and the Composio account key, which the
- *  runner's claim alone reads (composio-made.ts composioEnvKey) and sends only as a granted Composio server's MCP header. */
-const RUNNER_ONLY = (name: string): boolean => name === "AGENTRUN_TOKEN" || name === "AGENTRUN_TOKENS" || name === "AGENTRUN_API_KEY" || name === SEAL_KEY_ENV || name === LAUNCH_HOOK_SECRET_ENV || name === COMPOSIO_KEY_ENV || name.startsWith("AGENTRUN_STORE_");
+ *  runner's claim alone reads (composio-made.ts composioEnvKey) and sends only as a granted Composio server's MCP header.
+ *  And every OpenTelemetry setting (OTEL_*: OTEL_EXPORTER_OTLP_HEADERS holds a backend's key): a run's process is handed
+ *  them on its pipe (secrets.ts OTEL_PAIR), never in an environment, so no harness, tool or computer of a run has them. */
+const RUNNER_ONLY = (name: string): boolean => name === "AGENTRUN_TOKEN" || name === "AGENTRUN_TOKENS" || name === "AGENTRUN_API_KEY" || name === SEAL_KEY_ENV || name === LAUNCH_HOOK_SECRET_ENV || name === COMPOSIO_KEY_ENV || name.startsWith("AGENTRUN_STORE_") || name.startsWith("OTEL_");
 
 /** A run's environment as the runner hands its loops (AdapterSpecDeps.env): this process's, less the runner's own
  *  secrets, with every other secret the launcher's pipe handed it (a model key, a tool key, a box key) readable by name
@@ -332,6 +335,8 @@ export async function startRunnerProcess(options: RunnerProcessOptions): Promise
       createLoop,
       name,
       presence,
+      // Each end counts where in the run's files what its caller handed it sits, as the server reads them.
+      census: runCensus(store, { data: options.dataDir, sealKey: seal.key, env }),
       ...(options.loops ? { loops: options.loops } : {}),
       ...(options.drainMs ? { drainMs: options.drainMs } : {}),
       memory,
