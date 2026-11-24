@@ -732,6 +732,53 @@ test("a park on a claim that lost the run keeps nothing and marks nothing: runne
   assert.deepEqual(deletes(none.one.account), ["c2", "c1"], "runner-b's sandbox at its release, runner-a's at its park");
 });
 
+// The keeper's end (endKept) holds the row as its park wrote it. Another claim that went on without the machine may have
+// marked it ending since (restoreKept, keepKept): the end still finishes it, reading it ending. A row taken since, or
+// written over, is another claim's: the end deletes nothing.
+test("a keeper's end at its time finishes its row marked ending by another claim since its park, and leaves a row taken or written over since", async () => {
+  const key = keptKeyOf("run-1");
+  const kept = { provider: "docker", kind: "sandbox", id: "c1", name: "c1", epoch: 3, until: T0 + KEEP_MS, folder: "bind", ...RUNNER_A };
+  const ends = (store, ended) => endKept(store.settings, "run-1", kept, async () => void ended.push(kept.id));
+
+  const marked = memoryStore();
+  const written = await writeKept(marked.settings, "run-1", kept);
+  await marked.settings.put(key, { ...written, ending: true });
+  const ended = [];
+  assert.equal(await ends(marked, ended), true, "the end finds its row marked ending, and finishes it");
+  assert.deepEqual(ended, ["c1"], "its machine deleted");
+  assert.equal(JSON.stringify(await marked.settings.get(key)), JSON.stringify({ ...written, ended: true }), "its row reads ended");
+
+  const taken = memoryStore();
+  const none = [];
+  assert.equal(await ends(taken, none), false, "a row taken since: the end deletes nothing");
+  const over = memoryStore();
+  await writeKept(over.settings, "run-1", { ...kept, id: "c2", name: "c2", epoch: 5 });
+  assert.equal(await ends(over, none), false, "a row another park wrote since: the end deletes nothing");
+  assert.deepEqual(none, []);
+  assert.equal((await readKept(over.settings, "run-1")).id, "c2", "that row stands");
+});
+
+// A keep row written ahead of the park's timeline line (keepRow), for a park that never followed (the line's commit
+// refused: a lost claim), goes at the claim's release with its machine, only while it reads as written.
+test("a keep row written for a park that never followed is taken off at the claim's release, with its machine; a row changed since is left", async () => {
+  const key = keptKeyOf("run-1");
+  const one = await server(SANDBOX);
+  const a = await one.claim(3, {}, { holder: RUNNER_A });
+  assert.equal(await a.keepRow(), true, "the keep row written");
+  assert.equal((await readKept(one.store.settings, "run-1"))?.id, "c1");
+  await a.release();
+  assert.equal(await one.store.settings.get(key), undefined, "its row taken off: no row names a machine that is gone");
+  assert.deepEqual(deletes(one.account), ["c1"], "its machine went with the release");
+
+  const two = await server(SANDBOX);
+  const b = await two.claim(3, {}, { holder: RUNNER_A });
+  assert.equal(await b.keepRow(), true);
+  const changed = { ...(await two.store.settings.get(key)), ending: true };
+  await two.store.settings.put(key, changed);
+  await b.release();
+  assert.equal(JSON.stringify(await two.store.settings.get(key)), JSON.stringify(changed), "a row changed since is left");
+});
+
 test("a phone harness kept at its park is not pinned: its row names no runner, and another runner's resume attaches the same phone", async () => {
   const one = await server({ setting: { kind: "phone", provider: "phone-harness" }, groups: PHONE_GROUPS, machine: "android", keys: { PHONE_HARNESS_API_KEY: "fake-test-key" } });
   const first = await one.claim(3, {}, { holder: RUNNER_A });
