@@ -5359,6 +5359,8 @@ class ListComputersResponsePairedItem(TypedDict):
     online: bool
     held_by_run: str | None
     held_until: str | None
+    held_on: str | None
+    hold_note: str | None
     pairing: str
     created_at: str
     seen_at: str | None

@@ -1126,7 +1126,7 @@ const COMPUTER_PROVIDER_GPU = closedWith({
   why: { type: "string", description: "Why a run on this server cannot have its GPUs: its GPU computers take no mount of this server's folder mode." },
 });
 /** `runs_refused` of a provider in Settings → Computers (computers.ts ProviderView; attached-computers.ts dialApartWords). */
-const PROVIDER_RUNS_REFUSED = { type: ["string", "null"], description: "On a server whose runner runs in a process of its own (`--no-runner`; the image's default `server-and-runner`), why no run here can use this provider's computers, and the one-line fix: start the image with the server options alone, without `server-and-runner`. Said for a provider whose machines dial this server (Fly Machines and Cloudflare), whose sockets the server's process takes and its runner never reaches, unless a runner of its relays their dials now (it knows the server's public address, AGENTRUN_PUBLIC_URL, and the server relays each machine's socket to it); and for a paired computer, always. Its test (POST /computers/{provider}/test) fails in the same words. Null where this server's runs can use it." };
+const PROVIDER_RUNS_REFUSED = { type: ["string", "null"], description: "On a server whose runner runs in a process of its own (`--no-runner`; the image's default `server-and-runner`), why no run here can use this provider's computers, and the one-line fix: start the image with the server options alone, without `server-and-runner`. Said for a provider whose machines dial this server (Fly Machines and Cloudflare), whose sockets the server's process takes and its runner never reaches, unless a runner of its relays their dials now (it knows the server's public address, AGENTRUN_PUBLIC_URL, and the server relays each machine's socket to it). Its test (POST /computers/{provider}/test) fails in the same words. Null where this server's runs can use it." };
 /** A provider in Settings → Computers (computers.ts ProviderView). */
 const COMPUTER_PROVIDER = closedWith({
   id: { type: "string", description: "The provider's id, as an agent's `computer.provider` names it (PUT /computers/{provider}/keys)." },
@@ -1152,7 +1152,7 @@ const COMPUTER_PROVIDER = closedWith({
   },
 });
 /** `runs_refused` of a pairing code, the pair answer and a paired computer (attached-computers.ts RUNNER_APART_WORDS). */
-const RUNS_REFUSED = { type: ["string", "null"], description: "On a server whose runner runs in a process of its own (`--no-runner`; the image's default `server-and-runner`), why no run here can use a paired computer, and the one-line fix: start the image with the server options alone, without `server-and-runner`. A computer still pairs and attaches. Null where this server's runs can use it." };
+const RUNS_REFUSED = { type: ["string", "null"], description: "On a server whose runner runs in a process of its own (`--no-runner`; the image's default `server-and-runner`), why no run here can use a paired computer, and the fix: give the runner AGENTRUN_PUBLIC_URL (this server's public address), so the server relays a paired computer's socket to the runner whose run holds it, or start the image with the server options alone, without `server-and-runner`. Said only while no runner relays; null once one does. A computer still pairs and attaches. Null where this server's runs can use it." };
 /** A paired computer in GET /computers' `paired` (computer-attach.ts PairedView). */
 const PAIRED_COMPUTER = closed({
   id: { type: "string", description: "Its id: an agent's `computer.provider` names it (`{kind: \"desktop\", provider: <id>}`), and DELETE /computers/{computer_id} removes it." },
@@ -1169,9 +1169,11 @@ const PAIRED_COMPUTER = closed({
   groups: { type: "array", items: { type: "string" }, description: "The capability groups its driver offers: its live hello's while it is attached, else its last hello's. A run uses only these." },
   features: { type: "object", additionalProperties: { oneOf: [{ const: true }, closed({ off: { type: "string", description: "Why it is off here, in words a person can act on." } })] }, description: "What its groups can and cannot do on it, by feature name (true, or off with why), as its driver says it: live while attached, else as paired." },
   driver: { type: "string", description: "Its driver's build: its live hello's while it is attached, else the one it last said." },
-  online: { type: "boolean", description: "Whether its driver is attached to this server now." },
-  held_by_run: { type: ["string", "null"], description: "The run that holds it now; null when none does." },
+  online: { type: "boolean", description: "Whether its driver is attached now: to this server, or to a runner the server relays its socket to." },
+  held_by_run: { type: ["string", "null"], description: "The run that holds it now, on this server or on a runner the server relays it to; null when none does." },
   held_until: { type: ["string", "null"], format: "date-time", description: "When the holding run's hold ends, released or not: the run's lifetime. Past it the run's connections close and the next run may claim it, and the computer stays attached. Null when no run holds it." },
+  held_on: { type: ["string", "null"], description: "The runner whose run holds it, where the server relays its socket to a runner: the computer's dials go there while the run holds it, and come back to this server when the hold ends. Null when it is attached to this server." },
+  hold_note: { type: ["string", "null"], description: "The server's note of why its last relay to a runner was refused or dropped (the runner restarted, or the run's runner is gone, and it comes back to this server at its next dial), or that it is attached nowhere and its driver must be opened, in words naming what to do. Null when nothing is wrong." },
   pairing: { type: "string", description: "The pairing (POST /computers/pairings' `id`) whose code paired it." },
   created_at: { type: "string", format: "date-time", description: "When it was paired." },
   seen_at: { type: ["string", "null"], format: "date-time", description: "When it last attached; null before its first." },

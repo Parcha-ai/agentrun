@@ -29,7 +29,7 @@ import { isNativeRuntime, NATIVE_RUNTIME_FACTS } from "./native/runtimes.js";
 import { connectNative, launchNative, updateNative, verifyConnection } from "./native/connection.js";
 // The /v2 API over the agent store in a data directory: the contract agentrun.v2/0, served on loopback with a bearer
 // token.
-import { createHash, createHmac, randomBytes } from "node:crypto";
+import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
 import { chmod, lstat, mkdir, readFile, realpath, rename, stat, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { Duplex } from "node:stream";
@@ -159,6 +159,7 @@ import { ServerLockHeldError, takeServerLock } from "./server-lock.js";
 import { recordDataRoot } from "./runner/disk-free.js";
 import { recordRunEnv, runFacingNames } from "./runner/runner-check.js";
 import { DRAIN_TIMEOUT } from "./runner/beside.js";
+import { runnerName } from "./runner/runner.js";
 import { analyticsFilter, analyticsView, statsView } from "./stats.js";
 import { keptReads, within, WRAPPED_WAIT_MS, wrappedView } from "./wrapped.js";
 import { type CostBasis, joinedBasis } from "./runner/metrics.js";
@@ -231,6 +232,7 @@ import { mintViewerCredential, VIEWER_PARAM, viewerCookie, viewerCredentialFor, 
 import { ATTACH_PATH, AttachHub, type HostedDial, PROVIDERS as COMPUTER_PROVIDERS, SETTING_KINDS, servingRefusals } from "@parcha/agentrun-computer";
 import { type AttachTiming, createAttachRoutes, liveRelays, pairedView } from "./computer-attach.js";
 import { pairedRefusal, withPaired } from "./workspace/attached-computers.js";
+import { PAIRED_ROUTE_MS, readRoute } from "./workspace/paired-route.js";
 import { COMPUTER_TOOLS, hostToolDefs } from "@parcha/agentrun-kernel/kernel";
 import { freeModelRequestsOf } from "@parcha/agentrun-kernel/kernel/cap";
 import { archilRoute, type ArchilRoutesOptions, createArchilRoutes, liveRunsOnDisk } from "./archil-routes.js";
@@ -469,8 +471,9 @@ export type ServeOptions = {
    *  LISTER_IDLE_MS). `Infinity`: it builds only when Serve.listingSettled asks, so a test reads what a list builds alone. */
   listerIdleMs?: number;
   /** No runner beside this server in its process (the CLI's --no-runner, the image's server-and-runner): a paired
-   *  computer's socket is held here, where no run reaches it, so a pairing code, the pair answer and each paired computer
-   *  say so and how to start the server instead (attached-computers.ts RUNNER_APART_WORDS). */
+   *  computer's socket is held here while no run holds it, and relayed to the runner that holds a run of it
+   *  (workspace/paired-route.ts); while no runner relays, a pairing code, the pair answer and each paired computer say no
+   *  run reaches it, and what to do instead (attached-computers.ts RUNNER_APART_WORDS). */
   runnerApart?: boolean;
   /** For tests: the attach socket's liveness timing (computer-attach.ts AttachTiming), a relayed dial's included; the
    *  protocol's by default. */
@@ -591,6 +594,11 @@ export type Serve = { url: string; baseUrl: string; port: number; token: string;
   /** The live sockets of the computers paired with this server (computer-attach.ts): a runner beside the server in this
    *  process takes it (runner/beside.ts), so its runs can use them. */
   attachHub: AttachHub;
+  /** The name and incarnation the runner beside this server in its process runs under (runner/beside.ts), new at each
+   *  start: its run's route of a paired box names them, and this server's attach routes read such a route as this hub's
+   *  (computer-attach.ts beside), so the box stays here for the run and a runner apart's take for another run is
+   *  refused meanwhile. */
+  beside: { readonly runner: string; readonly incarnation: string };
   /** What a dial provider's create takes of this server (HostedProvider's dial): the address its machines dial
    *  (AGENTRUN_PUBLIC_URL, absent without one), the tokens it mints for them (computer-attach.ts machineTokens) and the
    *  hub their sockets land in. The runner beside the server hands it to its remote providers (runner/beside.ts). */
@@ -1423,6 +1431,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // which the runner beside the server shares (Serve.attachHub), so one process holds them. A second server on this
   // store is refused above (its owner lock).
   const attachHub = new AttachHub();
+  // The runner beside this server, as its run's route of a paired box names it (Serve.beside): a new name and
+  // incarnation at each start, so a route an earlier start's runner left names a runner that is gone, and goes stale.
+  const beside = { runner: runnerName(), incarnation: randomUUID() };
   // The data root's own lock, once the store is held (so a deploy on Postgres waits at the store's owner lock first): the
   // store's lock holds one store, but the data root also holds what the server writes beside it (its token, its seal key,
   // uploads, harness installs, learning folders), which two servers on two stores (two Postgres schemas, or SQLite and
@@ -1465,12 +1476,26 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // the proxy's proof under the seal key (live-reach.ts); any other host is never dialled. A hosted machine a runner in a
   // process of its own made is relayed to that runner's attach listener the same way (dial-relay.ts).
   const reach = liveReachOf(process.env, seal.key);
+  // A runner in a process of its own that relays its dials (dial-relay.ts): one whose attach listener said it is there
+  // within PRESENCE_STALE_MS on the store's clock (liveRelays), at a host this server dials.
+  const relayedNow = async (): Promise<boolean> => (await liveRelays(store.runners)).some((row) => dialHost(row.host, reach) !== undefined);
+  const attachLog = (event: string, fields: Record<string, string>) => (log ? log(logLine(event, fields)) : void process.stderr.write(`agentrun-serve: ${logLine(event, fields)}\n`));
   const attach = createAttachRoutes({
-    store, hub: attachHub, machinesOnly: options.apiOnly === true, runnerApart: options.runnerApart === true,
+    store, hub: attachHub, machinesOnly: options.apiOnly === true, runnerApart: options.runnerApart === true, relayed: relayedNow,
     relay: { runners: store.runners, reach },
+    beside,
     ...(options.attachTiming ? { timing: options.attachTiming } : {}),
-    log: (event, fields) => (log ? log(logLine(event, fields)) : void process.stderr.write(`agentrun-serve: ${logLine(event, fields)}\n`)),
+    log: attachLog,
   });
+  // A paired computer's socket goes where its route says (workspace/paired-route.ts): the tick moves a socket in the
+  // wrong place, every PAIRED_ROUTE_MS. A runner apart takes a route whether this server's own runner runs beside it or
+  // not (its runners on other hosts, AGENTRUN_RUNNER_HOSTS), so the tick runs on both. It does nothing while no computer
+  // is paired; with a runner beside it, nothing past its one read of the routes while no route row is there and no box
+  // is relayed (computer-attach.ts tick).
+  const routeTick = options.apiOnly !== true
+    ? setInterval(() => void attach.tick().catch((error: unknown) => attachLog("computer_route_tick_failed", { error: error instanceof Error ? error.message : String(error) })), PAIRED_ROUTE_MS)
+    : undefined;
+  routeTick?.unref();
   // This server's own key on every environment it reads its secrets from, so a reader opens what this store holds with the
   // key checked against it, never another data directory's that this process booted too (secrets.ts holds one made key).
   const own = (env: NodeJS.ProcessEnv): NodeJS.ProcessEnv => withSealKey(env, seal.text);
@@ -1860,11 +1885,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // A provider's key set where the server starts is one of its secrets, held off process.env (secrets.ts): read by name
     // from what the server was started with, as computerReady below reads it.
     store, sealKey, tools: kindTools, mode: folderModeOf(store, process.env), env: withSecrets(process.env, "own"),
-    paired: { rows: () => store.pairedComputers.list(), viewOf: (row, serves) => pairedView(row, attachHub, serves, options.runnerApart === true) },
+    // Each with its route (who holds it, on which runner, and why a route was refused), and online while relayed.
+    paired: { rows: () => store.pairedComputers.list(), viewOf: async (row, serves, runsRefused) => pairedView(row, attachHub, serves, runsRefused, await readRoute(store.settings, row.id), attach.relayedTo(row.id) !== undefined) },
     runnerApart: options.runnerApart === true,
-    // A runner in a process of its own that relays its dials (dial-relay.ts): one whose attach listener said it is there
-    // within PRESENCE_STALE_MS on the store's clock (liveRelays), at a host this server dials.
-    relayed: async () => (await liveRelays(store.runners)).some((row) => dialHost(row.host, reach) !== undefined),
+    relayed: relayedNow,
     ...(options.faux
       // --faux's providers stand in for every vendor's, a local one's daemon included.
       ? { kinds: fauxOf().kinds, factories: fauxOf().factories, keyTable: fauxOf().keyTable }
@@ -1890,11 +1914,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   /** A key as the runner reads it: the secrets this process was started with (withSecrets "own"), else the saved one. */
   const runnerKeys = () => keyReader(store, sealKey, own(withSecrets(process.env, "own")));
   // A paired computer is one more provider of the registry (workspace/attached-computers.ts), ready while its driver is
-  // attached to this process's hub.
+  // attached: to this process's hub, or relayed to the runner that holds a run of it.
   const computerReady = async (setting: { kind: string; provider?: string; image?: string; gpu?: { type: string; count: number } }) => {
     const paired = await store.pairedComputers.list();
     const row = paired.find((one) => one.id === setting.provider);
-    const offline = row ? pairedRefusal(row, attachHub) : undefined;
+    const offline = row ? pairedRefusal(row, { online: (id) => attachHub.online(id) || attach.relayedTo(id) !== undefined }) : undefined;
     if (offline) return { refused: offline };
     return computerReadiness(setting, await modeNow(), withPaired(claimRegistry(), paired), runnerKeys(), dockerAnswers, boxAllow, (provider) => (Object.hasOwn(hostWhy, provider) ? hostWhy[provider] : undefined));
   };
@@ -7016,6 +7040,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     await slack.close();
     // An upgraded socket is no connection closeAllConnections ends, and server.close waits for it.
     viewers.close();
+    clearInterval(routeTick);
     await attach.close();
     await new Promise((done) => (server.close(done), server.closeAllConnections()));
     // No request is left to use a key: its last-use writes end before the store they write to closes.
@@ -7055,6 +7080,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     ...(consoleSessions ? { launchCode: consoleSessions.code } : {}),
     boxesLine: boxesLine(boxOffers, enabledBoxes(env), boxAllow, boxesByDefault(env)),
     attachHub,
+    beside,
     dial: { ...(options.publicUrl ? { url: options.publicUrl.replace(/\/+$/, "") } : {}), tokens: attach.machineTokens, hub: attachHub },
     localInstall,
     ollamaHost,
