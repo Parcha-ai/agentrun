@@ -729,18 +729,24 @@ export function graderInput(grader: Extract<Grader, { type: "llm" }>, input: str
     ...(run.mailbox ? [`<mailbox-after untrusted>\nThe run's email account was a fake mailbox (layout ${run.mailbox.after.layout}). What the run left in it:\n${mailboxText(run.mailbox.after)}\n</mailbox-after>`] : []),
   ];
   // The files the run left, ahead of its calls. A call shows a file's bytes only in its arguments or its output, each cut
-  // where the timeline cuts it (a string of its arguments and its output each at CALL_RESULT_CHARS, each
-  // ending "..."), and a cut call reads to a grader as a run that did less than its file holds.
+  // where the timeline cuts it (its arguments' names and values at CALL_RESULT_CHARS in all, its output at as many), and
+  // a cut call reads to a grader as a run that did less than its file holds.
   const files = run.finalFiles ?? [];
   const texts = files.filter((file) => file.text !== undefined);
   // Each call with its arguments (else its input's preview), its status and its output's head; a call that names a file
-  // shown whole says where it is.
-  const lines = run.calls.map((call, i) => {
-    const head = `${i + 1}. ${call.tool}${call.arguments ? ` ${JSON.stringify(call.arguments)}` : call.preview ? ` (${call.preview})` : ""}${call.status ? ` -> ${call.status}` : ""}`;
+  // shown whole says where it is. A string argument a shown file holds whole (a write's content) is cut at FILE_ARG_CHARS
+  // there, so the grader's room never holds those bytes twice.
+  const calls = run.calls.map((call, i) => {
+    const args = call.arguments ? JSON.stringify(inFiles(call.arguments, texts)) : undefined;
+    const tail = call.status ? ` -> ${call.status}` : "";
     const result = call.result ?? "";
-    const named = texts.flatMap((file) => (file.name !== undefined && (head.includes(file.name) || result.includes(file.name)) ? [file.name] : [])).sort((a, b) => b.length - a.length)[0];
-    return { head: named ? `${head} [the file ${named} is in <files>, whole unless marked cut]` : head, result, tool: call.name ?? call.tool };
+    const whole = `${i + 1}. ${call.tool}${args !== undefined ? ` ${args}` : call.preview ? ` (${call.preview})` : ""}${tail}`;
+    const named = texts.flatMap((file) => (file.name !== undefined && (whole.includes(file.name) || result.includes(file.name)) ? [file.name] : [])).sort((a, b) => b.length - a.length)[0];
+    const pointer = named ? ` [the file ${named} is in <files>, whole unless marked cut]` : "";
+    const head = (shown: string | undefined) => `${i + 1}. ${call.tool}${shown !== undefined ? ` ${shown}` : call.preview ? ` (${call.preview})` : ""}${tail}${pointer}`;
+    return { args, head, result, tool: call.name ?? call.tool };
   });
+  const lines = calls.map((call) => ({ head: call.head(call.args), result: call.result, tool: call.tool }));
   // Each call a fake MCP server received, its arguments as the run's timeline shows them (RunRecord.mcpCalls, under the
   // run's cut; never the fake's own log): they are the part a cut of this prompt may take.
   const mcpLines = run.mcpCalls.map((call, i) => ({ head: `${i + 1}. ${call.tool}`, result: call.arguments !== undefined ? JSON.stringify(call.arguments) : (call.preview ?? "{}") }));
@@ -760,7 +766,39 @@ export function graderInput(grader: Extract<Grader, { type: "llm" }>, input: str
   const left = room - (shownFiles === undefined ? 0 : shownFiles.length);
   const mcpRoom = callsWhole + mcpWhole <= left ? mcpWhole : Math.floor((left * mcpWhole) / Math.max(1, callsWhole + mcpWhole));
   const after = mcpLines.length ? [wrapMcp(fitCalls(mcpLines, mcpRoom, "argument list"))] : [];
-  return [...before, ...(shownFiles === undefined ? [] : [wrapFiles(shownFiles)]), wrap(lines.length ? fitCalls(lines, left - mcpRoom) : "(none)"), ...linked, ...after].join("\n\n");
+  // The calls' arguments take at most half their room (fitArgs), so a call with long arguments never leaves the others
+  // without their results.
+  const callsRoom = left - mcpRoom;
+  const kept = fitArgs(calls.map((call) => call.args), Math.floor(callsRoom / 2));
+  const fitted = kept === undefined ? lines : calls.map((call, i) => ({ head: call.head(kept[i]), result: call.result, tool: call.tool }));
+  return [...before, ...(shownFiles === undefined ? [] : [wrapFiles(shownFiles)]), wrap(fitted.length ? fitCalls(fitted, callsRoom) : "(none)"), ...linked, ...after].join("\n\n");
+}
+
+/** How much of a write's content a grader's call line shows when a file in <files> holds it whole. */
+const FILE_ARG_CHARS = 2000;
+
+/** A call's arguments with each string past FILE_ARG_CHARS that a shown file's text holds whole cut there, ending "...":
+ *  <files> shows it, and the call's pointer says so. */
+function inFiles(value: unknown, texts: readonly FinalFile[]): unknown {
+  if (typeof value === "string") return value.length > FILE_ARG_CHARS && texts.some((file) => file.text?.includes(value)) ? `${value.slice(0, FILE_ARG_CHARS - 3)}...` : value;
+  if (Array.isArray(value)) return value.map((item) => inFiles(item, texts));
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, inFiles(item, texts)]));
+}
+
+/** Each call's arguments (their JSON, none for a call with none) in at most `room` characters in all: undefined when they
+ *  fit whole; else each past a length L keeps its first two thirds and last third of L with its middle cut and marked
+ *  (middle), L the longest that fits, so the longest are cut first. */
+export function fitArgs(args: readonly (string | undefined)[], room: number): (string | undefined)[] | undefined {
+  const sizeOf = (keep: number) => args.reduce((sum, text) => sum + (text === undefined ? 0 : text.length > keep ? keep + 40 : text.length), 0);
+  if (sizeOf(Number.MAX_SAFE_INTEGER) <= room) return undefined;
+  let [low, top] = [0, Math.max(0, ...args.map((text) => text?.length ?? 0))];
+  while (low < top) {
+    const mid = Math.ceil((low + top) / 2);
+    if (sizeOf(mid) <= room) low = mid;
+    else top = mid - 1;
+  }
+  return args.map((text) => (text === undefined ? text : middle(text, low)));
 }
 
 /** A grader's calls, one line each (`head`, then `: <result>`), in at most `room` characters: whole when they fit; else
