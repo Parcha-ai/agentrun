@@ -251,3 +251,17 @@ test("a fetch call brings no guard of its own: one passed with the call (a check
   assert.deepEqual(asked, [], "the call's guard is never asked");
   assert.deepEqual(await f.asked(), { firecrawl: 0, exa: 0, parallel: 0, native: 0, dialled: 0 });
 });
+
+// WHATWG reads a backslash in an http URL as a slash, so the guard checks public.example; a parser that does not would
+// read "public.example\" as a user name and evil.example (a private address here) as the host.
+test("a provider is sent the URL the guard checked, as parsed, never the string as asked", async (t) => {
+  const f = await fakes(t, (name) => (name === "firecrawl_scrape" ? refusal("KEYLESS_QUOTA_EXHAUSTED") : undefined));
+  const w = web.createWeb({ ...f.config, keys: { parallel: CANARY }, order: { search: [], fetch: ["firecrawl-keyless", "parallel"] } });
+  const asked = "http://public.example\\@evil.example/";
+  const checked = "http://public.example/@evil.example/";
+  assert.equal(new URL(asked).href, checked);
+  await w.fetch(asked);
+  assert.deepEqual(f.fc.toolCalls().map((one) => one.body.params.arguments.url), [checked], "Firecrawl is sent the parsed URL");
+  const extracts = (await lines(process.env.AGENTRUN_TEST_FAUX_PARALLEL_CALLS)).filter((call) => call.urls);
+  assert.deepEqual(extracts.map((call) => call.urls), [[checked]], "Parallel is sent the parsed URL");
+});
