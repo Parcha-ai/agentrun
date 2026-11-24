@@ -86,10 +86,11 @@ test("a held value split where a call's read stops, its rest past JSON's one-cha
   // them: the read past the stop counts each as the character it decodes to, whitespace as nothing. Counted as their
   // raw characters (2 or 3 each), 300 of them are more than the read past the stop reads, and the rest is never read.
   // The views drop characters that render as nothing too: a zero-width space or a soft hyphen, written as it is, counts
-  // as nothing, so 500 of them (more than the read reads at one each) never hide the rest either.
+  // as nothing, so 500 of them (more than the read reads at one each) never hide the rest either. Nor do 400 of them
+  // percent-encoded (%E2%80%8B): the percent view decodes each to a zero-width space and drops it.
   const B = String.fromCharCode(92);
   const [ZWSP, SHY] = [0x200b, 0xad].map((code) => String.fromCharCode(code));
-  for (const pad of [`${B}n`.repeat(300), `${B}t`.repeat(300), `${B}r`.repeat(300), `${B}r${B}n`.repeat(150), `${B}${B}n`.repeat(300), `${B}${B}t${B}${B}r`.repeat(150), ZWSP.repeat(500), SHY.repeat(500)]) {
+  for (const pad of [`${B}n`.repeat(300), `${B}t`.repeat(300), `${B}r`.repeat(300), `${B}r${B}n`.repeat(150), `${B}${B}n`.repeat(300), `${B}${B}t${B}${B}r`.repeat(150), ZWSP.repeat(500), SHY.repeat(500), "%E2%80%8B".repeat(400)]) {
     const text = `${"y ".repeat(59_940)}${HEAD}\n${pad}${REST}${"z".repeat(9000)} end`;
     const shown = redactedCall(text, [KEY], CALL_RESULT_CHARS).slice(0, CALL_RESULT_CHARS);
     assert.ok(!shown.includes(HEAD.slice(0, 8)), `${pad.slice(0, 6)}: ${shown.slice(-60)}`);
