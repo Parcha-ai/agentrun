@@ -4,7 +4,7 @@
 // count, a file name, a duration, another service's status) is no refused key, and the error is left as it is.
 import { DEFAULT_HARNESS } from "./harness.js";
 import { harnessOf } from "./harness-table.js";
-import { cutSecrets, endsInScheme, redactSecrets, secretShapes, valueLeft, valueMatcher } from "./learn/secrets.js";
+import { cutSecrets, endsInScheme, foldsHeld, redactSecrets, secretShapes, valueLeft, valueMatcher } from "./learn/secrets.js";
 import { hostModel, MODEL_KEYS } from "./model.js";
 import { modelWire, openRouterOnly, WIRES } from "./provider.js";
 import { jsonEscapeAt, scanned, squeeze, type Span } from "./redact/match.js";
@@ -165,6 +165,7 @@ type Read = { text: string; cuts: readonly Span[] };
  *  Each piece is redacted, then shown as `show` makes it: `out` is what the pieces show, the pass reads them unshown. */
 function inPieces(text: string, secrets: readonly string[], enough = Number.POSITIVE_INFINITY, show: (piece: string) => string = (piece) => piece): { out: string; seen: Seen; short: boolean } {
   const hold = 6 * secrets.reduce((most, value) => Math.max(most, value.length), 0) + 16;
+  const fold = foldsHeld(secrets);
   const out: string[] = [];
   const shapes: string[] = [];
   const reads: Read[] = [];
@@ -185,7 +186,7 @@ function inPieces(text: string, secrets: readonly string[], enough = Number.POSI
         shapes.splice(run.at);
         reads.splice(run.at);
       }
-      const head = peek(text, start, hold);
+      const head = peek(text, start, hold, fold);
       if (head === undefined) unread = true;
       else {
         shapes.push(`${redactSecrets(head, secrets, Buffer.byteLength(head))}[redacted]`);
@@ -218,7 +219,7 @@ function inPieces(text: string, secrets: readonly string[], enough = Number.POSI
     const space = run ? text.slice(from, from + ANSWER_PIECE).search(/\s/) : 0;
     scanned.chars += space < 0 ? Math.min(ANSWER_PIECE, text.length - from) : space + 1;
     const runTo = from + (space < 0 ? ANSWER_PIECE : space);
-    const ahead = peek(text, from, hold);
+    const ahead = peek(text, from, hold, fold);
     if (ahead === undefined) unread = true;
     else {
       const rest = runTo > from + ahead.length ? text.slice(from, runTo) : ahead;
@@ -245,11 +246,13 @@ function inPieces(text: string, secrets: readonly string[], enough = Number.POSI
  *  whitespace in it one space. The matcher reads "+" as a space and decodes percent-encoded bytes and JSON's escapes
  *  (one level and two, as the JSON view reads them), so a "+", an encoded byte and an escape that decodes to whitespace
  *  count no more than whitespace does, and any other escape counts as what the view keeps of the character it decodes
- *  to. A character that renders as nothing (a zero-width space, a soft hyphen) counts as nothing too: the views drop it.
- *  Padding of any of them never hides the rest of a value split before it. Undefined, so the caller withholds the text,
- *  when that takes more than a piece of text (a run of whitespace counted as one): no redaction pass reads more than a
- *  piece. */
-function peek(text: string, from: number, count: number): string | undefined {
+ *  to. A character that renders as nothing (a zero-width space, a soft hyphen) or a combining mark counts as nothing
+ *  too: the views drop it. So does a quote or JSON's punctuation ("{", "}", "[", "]", ",", ":"), which the join view
+ *  drops between a text's strings, and, with `fold` (a held value folds: learn/secrets.ts foldsHeld), a separator ("-",
+ *  "_", ":", "."), which the fold view drops. Padding of any of them never hides the rest of a value split before it.
+ *  Undefined, so the caller withholds the text, when that takes more than a piece of text (a run of whitespace counted
+ *  as one): no redaction pass reads more than a piece. */
+function peek(text: string, from: number, count: number, fold: boolean): string | undefined {
   const parts: string[] = [];
   let span = 0;
   let found = 0;
@@ -262,13 +265,13 @@ function peek(text: string, from: number, count: number): string | undefined {
       span++;
     } else {
       while (end - at <= ANSWER_PIECE && text[end] === "%" && HEX_PAIR.test(text.slice(end + 1, end + 3))) end += 3;
-      if (end > at) found += squeeze(Buffer.from(text.slice(at, end).replaceAll("%", ""), "hex").toString("utf8")).length;
+      if (end > at) found += kept(Buffer.from(text.slice(at, end).replaceAll("%", ""), "hex").toString("utf8"), fold);
       else if (text[at] === "\\" && (escape = jsonEscapeAt(text, at)) !== undefined) {
         end = escape.end;
-        found += squeeze(escape.char).length;
+        found += kept(escape.char, fold);
       } else {
         end = at + 1;
-        if (text[at] !== "+") found += squeeze(text[at]!).length;
+        if (text[at] !== "+") found += kept(text[at]!, fold);
       }
       parts.push(text.slice(at, end));
       span += end - at;
@@ -282,6 +285,17 @@ function peek(text: string, from: number, count: number): string | undefined {
 }
 const SPACES = /\s+/y;
 const HEX_PAIR = /^[0-9A-Fa-f]{2}$/;
+/** What every view drops between a text's strings: a quote and JSON's punctuation (the join view). */
+const JOIN_DROPS = new Set(['"', "{", "}", "[", "]", ",", ":"]);
+/** What the fold view drops: the separators of a hex identifier. */
+const FOLD_DROPS = new Set(["-", "_", ":", "."]);
+/** How many characters the views keep of `chars` at the least (peek): squeezed, less each the join view drops, and,
+ *  with `fold`, each the fold view drops. */
+function kept(chars: string, fold: boolean): number {
+  let count = 0;
+  for (const char of squeeze(chars)) if (!JOIN_DROPS.has(char) && !(fold && FOLD_DROPS.has(char))) count += char.length;
+  return count;
+}
 
 /** Where the piece of `text` read from `from` ends: at its last whitespace before ANSWER_PIECE characters; with none, at
  *  runCut's place, else at the next whitespace (a run read as one, or unread past ANSWER_PIECE). */

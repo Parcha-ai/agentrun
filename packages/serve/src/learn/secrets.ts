@@ -60,6 +60,13 @@ export function valueLeft(text: string, values: readonly string[], cuts?: readon
   return holds(text, needles, { cuts: cuts ?? cutSpans(text, needles, SECRET_SHAPES) });
 }
 
+/** Whether any of `values` holds a hex identifier the matcher finds folded (its separators "-", "_", ":" and "."
+ *  dropped, however many stand in a row): a reader that counts what the views keep of a text counts each separator as
+ *  nothing then (key-refusal.ts peek). */
+export function foldsHeld(values: readonly string[]): boolean {
+  return derivedOf(values).folds.length > 0;
+}
+
 /** redactSecrets over `shapes`, each found in place (redact/match.ts planCut). */
 function redactWith(text: string, values: readonly string[], max: number, shapes: readonly Shape[]): string {
   if (Buffer.byteLength(text) > max) return "[redacted]";
