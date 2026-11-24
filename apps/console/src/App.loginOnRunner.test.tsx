@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import type { Agent } from "@/lib/agentForm";
 import { SERVED_AGENT } from "@/test/agent";
+import { picker, pick } from "@/test/picker";
 
 // A run of an agent on Claude Agent in a box, refused for its model while Claude Code's login on this machine is on: the
 // login runs agents on the runner only, so serve says so and sets details.login_on_runner. The Playground then offers to
@@ -30,31 +31,48 @@ const BOXED: Agent = {
   ...SERVED_AGENT, agent_id: "boxed", kind: "agentic", revision: "r1", revisions: 1, archived_at: null,
   definition: { version: 1, name: "Boxed", instructions: "Answer.", harness: "claude-agent", skills: [], tools: ["bash", "read"], place: { mode: "sandbox", box: "docker" }, computer: { kind: "sandbox", provider: "docker" } } as Agent["definition"],
 };
-const RUNNER_ONLY = "No model yet for claude-agent: add an OpenRouter or Anthropic key in Settings → Model keys. Claude Code's login on this machine runs agents on the runner only, and this agent runs in the docker box: move it to the runner to run it on the login, or add a key.";
+// A second agent on Claude Agent in the same box, picked after BOXED's run was refused.
+const OTHER: Agent = { ...BOXED, agent_id: "other", revision: "o1", definition: { ...BOXED.definition, name: "Other" } };
+const RUNNER_ONLY ="No model yet for claude-agent: add an OpenRouter or Anthropic key in Settings → Model keys. Claude Code's login on this machine runs agents on the runner only, and this agent runs in the docker box: move it to the runner to run it on the login, or add a key.";
 const MOVE = "Move it to the runner";
 
 const settle = async () => { for (let i = 0; i < 40; i++) await act(async () => { await new Promise((r) => setTimeout(r, 10)); }); };
 
-/** The Playground on BOXED, whose run is refused with `details`; `saved` holds each definition save the page sent. */
-async function open(details: Record<string, unknown>) {
-  const saved: { body: { definition: Record<string, unknown>; note?: string }; ifMatch: string | null }[] = [];
+/** The Playground on BOXED (OTHER beside it), whose runs are refused with `details`, its request naming `revision` when
+ *  given; `saved` holds each definition save the page sent and its agent, `runs` each run request's agent and body. A
+ *  save makes the next revision the agent's current one, as serve does. */
+async function open(details: Record<string, unknown>, { revision }: { revision?: string } = {}) {
+  const saved: { agent: string; body: { definition: Record<string, unknown>; note?: string }; ifMatch: string | null }[] = [];
+  const runs: { agent: string; body: Record<string, unknown> }[] = [];
+  const agents: Record<string, Agent> = { boxed: BOXED, other: OTHER };
+  // BOXED's revisions are r1, r2, …; OTHER's o1, o2, ….
+  const revisionId = (a: Agent, version: number) => `${a.agent_id === "boxed" ? "r" : "o"}${version}`;
+  const revisionsOf = (a: Agent) => Array.from({ length: a.revisions }, (_, i) => a.revisions - i)
+    .map((version) => ({ revision: revisionId(a, version), version, current: version === a.revisions, note: null, created_at: "2026-11-24T00:00:00.000Z", kind: "edit", definition: a.definition }));
   vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
     const path = new URL(url, "http://serve.test").pathname;
     const method = init?.method ?? "GET";
-    if (method === "POST" && path === "/v2/agents/boxed/runs") return json(409, { error: { code: "agent_not_runnable", message: RUNNER_ONLY, retryable: false, details } });
-    if (method === "PUT" && path === "/v2/agents/boxed/definition") {
-      const body = JSON.parse(String(init?.body));
-      saved.push({ body, ifMatch: new Headers(init?.headers).get("if-match") });
-      return json(200, { ...BOXED, revision: "r2", revisions: 2, definition: { ...body.definition, place: { mode: "runner" } } }, { etag: "\"r2\"" });
+    const id = /^\/v2\/agents\/([^/]+)/.exec(path)?.[1];
+    const agent = id ? agents[id] : undefined;
+    if (method === "POST" && agent && path === `/v2/agents/${id}/runs`) {
+      runs.push({ agent: id!, body: JSON.parse(String(init?.body)) });
+      return json(409, { error: { code: "agent_not_runnable", message: RUNNER_ONLY, retryable: false, details } });
     }
-    if (path === "/v2/agents/boxed") return json(200, BOXED, { etag: "\"r1\"" });
+    if (method === "PUT" && agent && path === `/v2/agents/${id}/definition`) {
+      const body = JSON.parse(String(init?.body));
+      saved.push({ agent: id!, body, ifMatch: new Headers(init?.headers).get("if-match") });
+      const next = { ...agent, revision: revisionId(agent, agent.revisions + 1), revisions: agent.revisions + 1, definition: { ...body.definition, place: { mode: "runner" } } } as Agent;
+      agents[id!] = next;
+      return json(200, next, { etag: `"${next.revision}"` });
+    }
+    if (agent && path === `/v2/agents/${id}/revisions`) return json(200, { revisions: revisionsOf(agent), next_cursor: null });
+    if (agent && path === `/v2/agents/${id}`) return json(200, agent, { etag: `"${agent.revision}"` });
     if (path === "/v2/auth/session") return json(200, { accounts: false, secrets_writable: true });
     if (path === "/v2/capabilities") return json(200, CAPS);
     if (path === "/v2/settings/claude-login") return json(200, SIGNED_IN);
     if (path === "/v2/settings/chatgpt") return json(200, { state: "signed_out" });
     if (path === "/v2/settings/tool-keys") return json(200, { keys: [], reenter: null });
-    if (path === "/v2/runs" || path === "/v2/agents") return json(200, { runs: [], agents: [BOXED], next_cursor: null });
-    if (path.startsWith("/v2/agents/") && path.endsWith("/revisions")) return json(200, { revisions: [], next_cursor: null });
+    if (path === "/v2/runs" || path === "/v2/agents") return json(200, { runs: [], agents: Object.values(agents), next_cursor: null });
     return json(404, { error: { code: "not_found", message: path, retryable: false } });
   });
   location.hash = "#/playground";
@@ -62,18 +80,23 @@ async function open(details: Record<string, unknown>) {
   root = createRoot(host);
   act(() => root!.render(createElement(App)));
   await settle();
-  const message = host.querySelector<HTMLTextAreaElement>('section[aria-label="Request"] textarea');
-  expect(message, "the Playground's request box").not.toBeNull();
+  const request = host.querySelector<HTMLElement>('section[aria-label="Request"]');
+  const message = request?.querySelector<HTMLTextAreaElement>("textarea");
+  expect(message, "the Playground's request box").toBeTruthy();
   act(() => {
     Object.getOwnPropertyDescriptor(Object.getPrototypeOf(message!), "value")!.set!.call(message!, "Answer this.");
     message!.dispatchEvent(new Event("input", { bubbles: true }));
   });
-  const send = [...host.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.trim() === "Send request");
-  await act(async () => send!.click());
-  await settle();
+  if (revision) await pick(picker(request!, "Revision")!, revision);
+  const send = async () => {
+    await act(async () => [...host.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.trim() === "Send request")!.click());
+    await settle();
+  };
+  await send();
   expect(host.textContent).toContain("runs agents on the runner only");
   const move = () => [...host.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.trim() === MOVE);
-  return { host, saved, move };
+  const agentPicker = () => picker(host.querySelector('[aria-label="Playground agent"]')!, "Agent")!;
+  return { host, request: request!, saved, runs, move, send, agentPicker };
 }
 
 describe("the Playground's offer to move an agent in a box to the runner, where Claude Code's login runs it", () => {
@@ -92,6 +115,24 @@ describe("the Playground's offer to move an agent in a box to the runner, where 
     expect(ifMatch, "the save is made on the version read").toBe("\"r1\"");
     expect(page.host.textContent).toContain("Moved to the runner");
     expect(page.move(), "the offer stays after the move").toBeUndefined();
+  });
+
+  it("the offer is the refused agent's: with another agent picked, a click (if anything is offered) leaves that agent unsaved, and the move saves the refused agent only", async () => {
+    const page = await open({ unbound: [], missing: {}, login_on_runner: true });
+    await pick(page.agentPicker(), "other");
+    const offered = page.move();
+    if (offered) {
+      await act(async () => offered.click());
+      await settle();
+    }
+    expect(page.saved.map((s) => s.agent), "a click under the refusal of boxed saved other, the agent picked since, which was never refused").not.toContain("other");
+    expect(page.host.textContent, "the refusal of boxed is still said with other picked").not.toContain("runs agents on the runner only");
+    await pick(page.agentPicker(), "boxed");
+    const move = page.move();
+    expect(move, "boxed picked again: its refusal offers the move").toBeDefined();
+    await act(async () => move!.click());
+    await settle();
+    expect(page.saved.map((s) => s.agent)).toEqual(["boxed"]);
   });
 
   it("a refusal without details.login_on_runner offers no move", async () => {
