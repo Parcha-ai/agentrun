@@ -330,6 +330,16 @@ const released = (firing: FiringRow): boolean => firing.status === "failed" && f
 /** A 422 not_due on `field` (a release's `firing_id`, a host start's `trigger_firing.firing_id`) in `message`'s words,
  *  with `details` for a host to match (RUN_STARTED, HOST_RELEASED) when given. */
 const notDue = (field: string, message: string, details?: Record<string, string>) => new ApiError("input_invalid", message, { fields: [{ field, reason: "not_due", message }], ...(details ? { details } : {}) });
+/** `work` once every work queued under `id` in `queue` before it has settled; the entry is removed once idle. */
+function inLine<T>(queue: Map<string, Promise<void>>, id: string, work: () => Promise<T>): Promise<T> {
+  const done = (queue.get(id) ?? Promise.resolve()).then(work);
+  const turn = done.then(() => undefined, () => undefined);
+  queue.set(id, turn);
+  void turn.then(() => {
+    if (queue.get(id) === turn) queue.delete(id);
+  });
+  return done;
+}
 /** The refusal of a host start of firing `firing`, which its host released: its words, and `details.reason`
  *  HOST_RELEASED. */
 const releasedRefusal = (firing: FiringRow) => notDue("trigger_firing.firing_id", `Firing ${firing.key} starts no run: its host released it: ${firing.error?.message ?? ""}`, { reason: HOST_RELEASED });
@@ -837,25 +847,13 @@ export class Triggers {
    *  slow: the source edit lands while the target's check waits). One racing a removal writes its row while the row is
    *  there, or finds it gone (not_found): the store's update changes no row a delete took. */
   private one<T>(id: string, work: () => Promise<T>): Promise<T> {
-    const done = (this.edits.get(id) ?? Promise.resolve()).then(work);
-    const turn = done.then(() => undefined, () => undefined);
-    this.edits.set(id, turn);
-    void turn.then(() => {
-      if (this.edits.get(id) === turn) this.edits.delete(id);
-    });
-    return done;
+    return inLine(this.edits, id, work);
   }
 
   /** `check` on trigger `triggerId` once every room check of it asked before has settled (checks). A check reads the store
    *  and holds what it found (hold, a start_by pushed out); it never waits on a hook or a start. */
   private checked<T>(triggerId: string, check: () => Promise<T>): Promise<T> {
-    const done = (this.checks.get(triggerId) ?? Promise.resolve()).then(check);
-    const turn = done.then(() => undefined, () => undefined);
-    this.checks.set(triggerId, turn);
-    void turn.then(() => {
-      if (this.checks.get(triggerId) === turn) this.checks.delete(triggerId);
-    });
-    return done;
+    return inLine(this.checks, triggerId, check);
   }
 
   /** Firing `key` of `triggerId` held mid-hand (handing) until the returned release, counted: held while any of its
@@ -1318,51 +1316,54 @@ export class Triggers {
     const { trigger_id: triggerId, firing_id: key } = given;
     if (typeof triggerId !== "string" || !ID.test(triggerId)) throw refused("wrong_type", "trigger_id is the trigger's id, as the launch hook sent it.", "trigger_firing.trigger_id");
     if (typeof key !== "string" || !/^fir_[0-9a-f]{32}$/.test(key)) throw refused("wrong_type", "firing_id is the firing's id, as the launch hook sent it.", "trigger_firing.firing_id");
-    const trigger = await this.find(triggerId);
-    if (!trigger || trigger.target.kind !== "start_run" || trigger.target.agent_id !== agentId) throw refused("not_found", `This agent has no trigger ${triggerId} that starts its runs.`, "trigger_firing.trigger_id");
-    const firing = await this.store.triggers.firing(triggerId, key);
-    if (!firing) throw refused("not_found", `Trigger ${triggerId} has no firing ${key}.`, "trigger_firing.firing_id");
-    // The run already under its key is its run. A stop between that run's write and handedRan left the firing sent with
-    // no run, so a repeated start starts the firing with it.
-    const prior = await this.deps.runOf(key);
-    if (prior) {
-      await this.handedRan(triggerId, key, prior.run_id);
-      return { run_id: prior.run_id, replayed: true };
-    }
-    const room = await this.checked(triggerId, () => this.startRoom(trigger, key));
-    // Its start_by moved under the check (its run started meanwhile, by another start of it): read again from the top.
-    if (!room) return this.handedStart(given, agentId, start);
-    if ("replay" in room) {
-      await this.handedRan(triggerId, key, room.replay);
-      return { run_id: room.replay, replayed: true };
-    }
-    if ("follow" in room) {
-      // Another start of the firing on this server is writing its run: that run is this start's answer. One that wrote
-      // none leaves this start to try on its own.
-      const run = await room.follow;
-      return run ? { run_id: run.run_id, replayed: true } : this.handedStart(given, agentId, start);
-    }
-    let run: { run_id: string } | undefined;
-    try {
-      const attrs = room.firing.attrs as Record<string, string> | null | undefined;
-      try {
-        run = await start({
-          key, trigger: { id: triggerId, firing_key: key, name: trigger.name, ...(attrs && Object.keys(attrs).length ? { attrs } : {}) }, from: this.originOf(trigger), title: this.titleOf(trigger, room.firing),
-          target: trigger.target, previous: carriesPrevious(this.adapter(trigger.source)),
-        });
-      } catch (error) {
-        // The run's write found the firing moved since its room was checked (its host released it):
-        // nothing was written, and the start is refused in words that say what it is now.
-        if (error instanceof FiringMoved) throw await this.movedRefusal(triggerId, key);
-        throw error;
+    // Read again from the top when its start_by moved under the check (its run started meanwhile, by another start of
+    // it), or another start of it on this server it followed wrote no run.
+    for (;;) {
+      const trigger = await this.find(triggerId);
+      if (!trigger || trigger.target.kind !== "start_run" || trigger.target.agent_id !== agentId) throw refused("not_found", `This agent has no trigger ${triggerId} that starts its runs.`, "trigger_firing.trigger_id");
+      const firing = await this.store.triggers.firing(triggerId, key);
+      if (!firing) throw refused("not_found", `Trigger ${triggerId} has no firing ${key}.`, "trigger_firing.firing_id");
+      // The run already under its key is its run. A stop between that run's write and handedRan left the firing sent with
+      // no run, so a repeated start starts the firing with it.
+      const prior = await this.deps.runOf(key);
+      if (prior) {
+        await this.handedRan(triggerId, key, prior.run_id);
+        return { run_id: prior.run_id, replayed: true };
       }
-      room.ran(run);
-      this.deps.say({ condition: "trigger_fired", trigger: triggerId, firing: key, run: run.run_id });
-      return { run_id: run.run_id, replayed: false };
-    } finally {
-      // No run written: a start_by this start pushed out goes back, so a host's failed starts never extend its window.
-      if (!run && room.pushed) await this.unpush(triggerId, key, room.firing.reason, room.pushed);
-      room.release();
+      const room = await this.checked(triggerId, () => this.startRoom(trigger, key));
+      if (!room) continue;
+      if ("replay" in room) {
+        await this.handedRan(triggerId, key, room.replay);
+        return { run_id: room.replay, replayed: true };
+      }
+      if ("follow" in room) {
+        // Another start of the firing on this server is writing its run: that run is this start's answer.
+        const followed = await room.follow;
+        if (followed) return { run_id: followed.run_id, replayed: true };
+        continue;
+      }
+      let run: { run_id: string } | undefined;
+      try {
+        const attrs = room.firing.attrs as Record<string, string> | null | undefined;
+        try {
+          run = await start({
+            key, trigger: { id: triggerId, firing_key: key, name: trigger.name, ...(attrs && Object.keys(attrs).length ? { attrs } : {}) }, from: this.originOf(trigger), title: this.titleOf(trigger, room.firing),
+            target: trigger.target, previous: carriesPrevious(this.adapter(trigger.source)),
+          });
+        } catch (error) {
+          // The run's write found the firing moved since its room was checked (its host released it): nothing was
+          // written, and the start is refused in words that say what it is now.
+          if (error instanceof FiringMoved) throw await this.movedRefusal(triggerId, key);
+          throw error;
+        }
+        room.ran(run);
+        this.deps.say({ condition: "trigger_fired", trigger: triggerId, firing: key, run: run.run_id });
+        return { run_id: run.run_id, replayed: false };
+      } finally {
+        // No run written: a start_by this start pushed out goes back, so a host's failed starts never extend its window.
+        if (!run && room.pushed) await this.unpush(triggerId, key, room.firing.reason, room.pushed);
+        room.release();
+      }
     }
   }
 
