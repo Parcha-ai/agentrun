@@ -111,14 +111,14 @@ describe("Settings → MCP servers: a Composio server's account", () => {
     expect(said.textContent).toContain("person@example.com, work@example.com");
   });
   it.each([
-    ["pending", "not connected"],
-    ["expired", "connection expired"],
-    ["none", "no account connected"],
-    ["unknown", "account unknown"],
-  ] as const)("a %s account says %s", async (state, words) => {
+    ["pending", "text-warning-text"],
+    ["expired", "text-warning-text"],
+    ["none", "text-warning-text"],
+    ["unknown", "text-muted-foreground"],
+  ] as const)("a %s account shows as a chip of %s", async (state, tone) => {
     const p = await open(server([saved({ composio_account: { state, checked_at: checked } })]).v2);
     expect(account(p.host)?.dataset.composioAccount).toBe(state);
-    expect(account(p.host)?.textContent).toContain(words);
+    expect(account(p.host)?.firstElementChild?.classList.contains(tone), "the chip's tone").toBe(true);
   });
   it("a server whose read says nothing of an account (a no-auth toolkit, a per-run one, or never refreshed) shows none", async () => {
     const p = await open(server([saved()]).v2);

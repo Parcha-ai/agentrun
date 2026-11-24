@@ -158,6 +158,15 @@ test("several connected accounts: refused, naming each with when it was made, an
   assert.equal((await s.api("GET", "/triggers")).body.triggers.length, 0);
 });
 
+test("an account Composio answers as another user's is never the one a trigger runs as: with no account of the server's user, it is refused as not connected, and nothing is made", async (t) => {
+  // A Composio that answers every user's accounts under the config, whatever user_ids names.
+  const s = await setup(t, { connected: false, composio: { ignoreUserIds: true, accounts: { github: [{ id: "ca_someone_github", user: "someone-else", status: "ACTIVE", auth_config: "ac_managed", created_at: "2026-11-10T08:00:00.000Z" }] } } });
+  const res = await s.api("POST", "/triggers", issueTrigger());
+  assert.equal(res.body.error?.code, "composio_not_connected", JSON.stringify(res.body));
+  assert.deepEqual(upsertedAs(s.composio), [], "no trigger instance runs as another user's account");
+  assert.equal((await s.api("GET", "/triggers")).body.triggers.length, 0);
+});
+
 // A server saved with auth_config_id stands on that config: its MCP server serves only the accounts under it, so its
 // triggers run as one of those, and its connect link is made under it. The user here has a GitHub account under the
 // managed config too, which that server never serves.

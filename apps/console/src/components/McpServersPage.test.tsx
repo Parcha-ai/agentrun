@@ -38,20 +38,25 @@ const refusal = (status: number, code: string, message: string, extra: Record<st
 const PRIVATE_HOSTS = "/v2/settings/mcp-servers/oauth/private-hosts";
 /** The server's own callback (its AGENTRUN_PUBLIC_URL), on another address than the page's: the words name this one. */
 const CALLBACK = "https://agents.example.test/v2/settings/mcp-servers/oauth/callback";
-/** A server: GET the list answers `lists` in turn (the last again after); every other request is `answer`'s. */
+/** A server: GET the list answers `lists` in turn (the last again after); every other request is `answer`'s. As fetch
+ *  does, a request whose signal aborts rejects at once, answered or not; each request's signal is kept (`signals`). */
 function server(lists: McpServer[][], answer: (call: Sent) => Response | Promise<Response> | undefined = () => undefined) {
   const calls: Sent[] = [];
+  const signals: (AbortSignal | undefined)[] = [];
   let read = 0;
   const fetch = (async (url: string, init?: RequestInit) => {
     const call: Sent = { method: init?.method ?? "GET", path: String(url), ...(init?.body ? { body: JSON.parse(String(init.body)) } : {}) };
     calls.push(call);
+    signals.push(init?.signal ?? undefined);
     const own = answer(call);
+    const signal = init?.signal;
+    if (own && signal) return Promise.race([own, new Promise<never>((_, refuse) => signal.addEventListener("abort", () => refuse(new DOMException("The request was aborted.", "AbortError")), { once: true }))]);
     if (own) return own;
     if (call.method === "GET" && call.path === "/v2/settings/mcp-servers") return json(200, { servers: lists[Math.min(read++, lists.length - 1)] });
     if (call.method === "GET" && call.path === PRIVATE_HOSTS) return json(200, { hosts: [] });
     return json(404, { error: { code: "not_found", message: call.path, retryable: false } });
   }) as typeof globalThis.fetch;
-  return { v2: createClient({ fetch }), calls, writes: () => calls.filter((c) => c.method !== "GET") };
+  return { v2: createClient({ fetch }), calls, signals, writes: () => calls.filter((c) => c.method !== "GET") };
 }
 
 let root: ReturnType<typeof createRoot> | undefined;
@@ -434,11 +439,8 @@ describe("Settings → MCP servers, the saved ones", () => {
     const p = await open(s.v2);
     const account = () => p.row("gmail").querySelector<HTMLElement>("[data-composio-account]");
     expect(account()?.dataset.composioAccount).toBe("pending");
-    expect(account()?.textContent).toContain("not connected");
-    expect(account()?.textContent).toContain("connect it on Composio, then Refresh");
     await p.click(/^Refresh$/, p.row("gmail"));
     expect(account()?.dataset.composioAccount).toBe("connected");
-    expect(account()?.textContent).toContain("connected");
     expect(account()?.textContent).toContain("person@example.com");
   });
 
@@ -838,14 +840,43 @@ describe("Settings → MCP servers, the Composio preset", () => {
     expect(document.body.innerHTML).not.toContain(KEY);
   });
 
-  it("says a refused toolkit list in its words, and Load actions waits for a toolkit", async () => {
-    const s = server([[]], (c) => (c.path === TOOLKITS_PATH ? refusal(422, "input_invalid", "Composio refused the API key while listing the toolkits: check it in Composio's dashboard.", { fields: [{ field: "api_key", reason: "refused", message: "Composio refused the API key while listing the toolkits: check it in Composio's dashboard." }] }) : answer(c)));
+  it("a typed slug still loads actions after the list failed", async () => {
+    const s = server([[]], (c) => (c.path === TOOLKITS_PATH ? refusal(424, "upstream_failed", "Composio did not answer while listing the toolkits: no toolkit was listed.") : answer(c)));
     const p = await open(s.v2);
     await p.click(/^Add from Composio$/);
     await p.type("composio-key", KEY);
     await p.click(/^Load toolkits$/);
-    expect(p.host.querySelector('[role="alert"]')?.textContent).toContain("Composio refused the API key while listing the toolkits");
-    expect(p.button(/^Load actions$/)?.disabled).toBe(true);
+    expect(p.host.querySelector('[role="alert"]')?.textContent).toContain("Composio did not answer while listing the toolkits");
+    await p.type("composio-toolkit", "github");
+    await p.click(/^Load actions$/);
+    expect(s.writes().at(-1)).toEqual({ method: "POST", path: TOOLS_PATH, body: { api_key: KEY, toolkit: "github" } });
+    expect(p.text()).toContain("Star a repo");
+  });
+
+  it("a toolkit the list leaves out is typed as its slug, and its actions load", async () => {
+    const s = server([[]], answer);
+    const p = await open(s.v2);
+    await p.click(/^Add from Composio$/);
+    await p.type("composio-key", KEY);
+    await p.click(/^Load toolkits$/);
+    expect((await optionsOf(picker(p.host, "Toolkit")!)).map((o) => o.value)).not.toContain("linear");
+    await p.click(/^Not listed\? Type its slug$/);
+    await p.type("composio-toolkit", "linear");
+    await p.click(/^Load actions$/);
+    expect(s.writes().at(-1)).toEqual({ method: "POST", path: TOOLS_PATH, body: { api_key: KEY, toolkit: "linear" } });
+  });
+
+  it("Cancel stays open while a load runs, and aborts it", async () => {
+    const s = server([[]], (c) => (c.path === TOOLKITS_PATH ? new Promise<Response>(() => undefined) : answer(c)));
+    const p = await open(s.v2);
+    await p.click(/^Add from Composio$/);
+    await p.type("composio-key", KEY);
+    await p.click(/^Load toolkits$/);
+    expect(p.button(/^Load toolkits$/)?.disabled, "the load is under way").toBe(true);
+    expect(p.button(/^Cancel$/)?.disabled).toBe(false);
+    await p.click(/^Cancel$/);
+    expect(s.signals[s.calls.findIndex((c) => c.path === TOOLKITS_PATH)]?.aborted, "the list's request is aborted").toBe(true);
+    expect(p.host.querySelector('form[aria-label="Add from Composio"]'), "the form is closed").toBeNull();
   });
 
   it("drops a toolkit list asked with a key since edited, and an edit of the key clears the list and the toolkit picked from it", async () => {
@@ -861,6 +892,9 @@ describe("Settings → MCP servers, the Composio preset", () => {
     await p.type("composio-key", KEY);
     await p.click(/^Load toolkits$/);
     await p.type("composio-key", NEW_KEY);
+    await p.settle();
+    expect(s.signals[s.calls.findIndex((c) => c.path === TOOLKITS_PATH)]?.aborted, "the key's edit aborts the list asked with the key before").toBe(true);
+    expect(p.button(/^Load toolkits$/)?.disabled, "and the form is free at once").toBe(false);
     await act(async () => { late(await json(200, { toolkits: TOOLKITS })); });
     await p.settle();
     expect(p.host.querySelector("[data-toolkits-loaded]"), "the list asked with the earlier key never shows").toBeNull();
