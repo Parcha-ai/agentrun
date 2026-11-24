@@ -1,6 +1,6 @@
 // An llm grader reads the files a run left whole, ahead of its calls (template-eval.ts graderInput, fitFiles). A call
-// shows a file only in its arguments or its output, each cut where the timeline cuts it: a write's content at 2,000
-// characters, ending "...". Graded on its calls alone, a run whose 2,888-byte timestamps file was whole read to its
+// shows a file only in its arguments or its output. Its calls show a write's content cut at 2,000 characters, ending
+// "...", when the file is in <files> (so the grader's room never holds those bytes twice). Graded on its calls alone, a run whose 2,888-byte timestamps file was whole read to its
 // grader as a run that wrote less, and failed (a release-film eval). The package's agent and its grader are played by
 // fixtures/faux-template-eval.mjs, whose grader reads a file's text from its <file> block alone. The eval reads each file
 // under the run's own cut, on the server (GET /runs/{id}/files/{path}?cut=run), each read bounded, within a budget in
@@ -51,6 +51,7 @@ test("a run whose final file is past what its write call shows still grades PASS
   const calls = input.slice(input.indexOf("<tool-calls untrusted>"));
   assert.doesNotMatch(calls, /END-OF-VOICEOVER/);
   assert.match(calls, /\.\.\.".*\[the file media\/voiceover-timestamps\.json is in <files>, whole unless marked cut\]/);
+  assert.equal(input.split("END-OF-VOICEOVER").length - 1, 1, "the file's bytes are in the grader's input once");
   assert.ok(input.indexOf("<files untrusted>") < input.indexOf("<tool-calls untrusted>"));
   assert.ok(input.includes(`<file path="media/voiceover-timestamps.json" bytes="${Buffer.byteLength(TIMESTAMPS) + 1}">\n${TIMESTAMPS}\n\n</file>`), input);
   // A held value the run wrote to a file never reaches a grader: cut from the file as from the call.
@@ -96,6 +97,41 @@ test("a run with no files read gets the grader input it got before", () => {
   const before = graderInput(GRADER, "Write it.", { answer: "done", calls, mcpCalls: [], files: [] });
   assert.doesNotMatch(before, /<files/);
   assert.match(before, /<answer untrusted>\ndone\n<\/answer>\n\n<tool-calls untrusted>\n1\. read/);
+});
+
+test("a write whose file is in <files> shows its content cut at 2,000 in the call, with the pointer; another stays whole", () => {
+  const file = { name: "out.md", bytes: 5_006, text: `${"c".repeat(5_000)}TAILMK` };
+  const calls = [
+    { tool: "write", arguments: { path: "out.md", content: file.text }, status: "ok", result: "wrote out.md" },
+    { tool: "write", arguments: { path: "other.md", content: `${"d".repeat(5_000)}OTHERTAIL` }, status: "ok", result: "wrote other.md" },
+  ];
+  const input = graderInput(GRADER, "Write it.", record(calls, [file]));
+  const shown = input.slice(input.indexOf("<tool-calls untrusted>"));
+  assert.equal(input.split("TAILMK").length - 1, 1, "the file's bytes are in the grader's input once, in <files>");
+  assert.ok(input.indexOf("TAILMK") < input.indexOf("<tool-calls untrusted>"));
+  assert.match(shown, /1\. write \{"path":"out\.md","content":"c{1997}\.\.\."\} -> ok \[the file out\.md is in <files>, whole unless marked cut\]: wrote out\.md/);
+  assert.ok(shown.includes(JSON.stringify(calls[1].arguments)), "a write no shown file holds is whole");
+});
+
+test("the calls' arguments take at most half their room, each cut marked in place, so every call keeps its result", () => {
+  const calls = Array.from({ length: 3 }, (_, i) => ({ tool: "create_issue", arguments: { body: `${"a".repeat(100_000)}END${i}` }, status: "ok", result: `${"r".repeat(5_000)}R${i}` }));
+  const input = graderInput(GRADER, "File them.", record(calls, []));
+  assert.ok(input.length <= GRADER_PROMPT_MAX, String(input.length));
+  const shown = input.slice(input.indexOf("<tool-calls untrusted>"), input.indexOf("</tool-calls>"));
+  for (const [i, call] of calls.entries()) {
+    assert.ok(shown.includes(` -> ok: ${call.result}\n`), `call ${i + 1}'s result is whole`);
+    assert.match(shown, new RegExp(`${i + 1}\\. create_issue \\{"body":"a+ \\[\\.\\.\\. \\d+ characters cut \\.\\.\\.\\] a+END${i}"\\} -> ok: `));
+  }
+  const heads = shown.split("\n").filter((line) => /^\d+\. /.test(line)).map((line) => line.slice(0, line.indexOf(" -> ok: ")));
+  assert.equal(heads.length, 3);
+  assert.ok(heads.reduce((sum, head) => sum + head.length, 0) <= GRADER_PROMPT_MAX / 2, String(heads.map((head) => head.length)));
+});
+
+test("a long argument stays whole when the calls fit", () => {
+  const calls = [{ tool: "create_issue", arguments: { title: "Release notes", body: `${"b".repeat(30_000)}BODYEND` }, status: "ok", result: "created #12" }];
+  const input = graderInput(GRADER, "File it.", record(calls, []));
+  assert.ok(input.includes(`1. create_issue ${JSON.stringify(calls[0].arguments)} -> ok: created #12`));
+  assert.doesNotMatch(input, /characters cut/);
 });
 
 /** A server for finalFilesOf's reads, answering each `?cut=run` path as `answers` says: `stall` sends its head and a
