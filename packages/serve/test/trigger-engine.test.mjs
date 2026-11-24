@@ -1793,7 +1793,9 @@ test("a host start whose start_by push finds the firing moved, because its run w
   // Its check read the firing sent with no run and holds its push: the firing's run is written and starts it meanwhile.
   await store.runs.create({ id: "run-b", agentId: "a", revisionId: "rev-a", origin: { key }, firing: { triggerId: id, key } });
   go.resolve();
-  assert.deepEqual(await start, { run_id: "run-b", replayed: true });
+  // A refusal is compared as a value, so a start that refuses instead of reading again fails on this assertion.
+  const answer = await start.then((ok) => ok, (error) => ({ refused: error?.code, reason: error?.extra?.fields?.[0]?.reason }));
+  assert.deepEqual(answer, { run_id: "run-b", replayed: true });
   const row = await store.triggers.firing(id, key);
   assert.deepEqual([row.status, row.runId], ["started", "run-b"], JSON.stringify(row));
 });
@@ -1894,7 +1896,7 @@ test("two releases that land while the engine is still writing its hook's 2xx bo
 });
 
 // The hook's try ends with no 2xx while a release waits on its turn: an answer the engine retries, or no answer in time.
-for (const [what, endTry] of [["answers 503", (host) => host.open[0].writeHead(503).end()], ["is cut at its timeout", (host) => host.bounds[0].abort()]]) test(`a release that lands while the launch hook is still open waits for the engine's turn, and when the hook ${what} the firing stays due on its retry and the release is refused not_due as not handed yet: a firing the engine tries again is never released`, async (t) => {
+for (const [what, endTry] of [["answers 503", (host) => host.open[0].writeHead(503).end()], ["is cut at its timeout", (host) => host.bounds[0].abort()]]) test(`a release that lands while the launch hook is still open waits for the engine's turn, and when the hook ${what} the firing stays due on its retry and the release is refused not_due as not handed yet: a firing the engine tries again is never released`, { timeout: 30_000 }, async (t) => {
   const host = await heldHost(t);
   const said = [];
   const told = [];
