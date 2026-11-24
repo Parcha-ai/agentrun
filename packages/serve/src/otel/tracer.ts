@@ -185,7 +185,7 @@ function saidOf(env: NodeJS.ProcessEnv, given?: (line: string) => void): (line: 
 }
 
 async function made(env: NodeJS.ProcessEnv, test?: TracingTest): Promise<GenAiTracing> {
-  const [api, sdk, resources, semconv] = await Promise.all([import("@opentelemetry/api"), import("@opentelemetry/sdk-trace"), import("@opentelemetry/resources"), import("@opentelemetry/semantic-conventions")]);
+  const [api, sdk, resources] = await Promise.all([import("@opentelemetry/api"), import("@opentelemetry/sdk-trace"), import("@opentelemetry/resources")]);
   const log = saidOf(env, test?.log);
   const exporter = safeExporter(test?.exporter ?? new (await import("@opentelemetry/exporter-trace-otlp-http")).OTLPTraceExporter(exporterConfig(env)), log);
   // The next root span's trace id (the run's), taken by the one startSpan that asks for it: startSpan is synchronous.
@@ -201,8 +201,9 @@ async function made(env: NodeJS.ProcessEnv, test?: TracingTest): Promise<GenAiTr
   // The operator's resource attributes over ours, read from `env` (a test's, or the runner's).
   const named = env.OTEL_SERVICE_NAME?.trim();
   const resource = resources.defaultResource()
-    .merge(resources.resourceFromAttributes({ [semconv.ATTR_SERVICE_NAME]: "agentrun", [semconv.ATTR_SERVICE_VERSION]: serveVersion() }))
-    .merge(resources.resourceFromAttributes({ ...keyValues(env.OTEL_RESOURCE_ATTRIBUTES), ...(named ? { [semconv.ATTR_SERVICE_NAME]: named } : {}) }));
+    // The resource's names as the spec writes them: no module is loaded for two strings.
+    .merge(resources.resourceFromAttributes({ "service.name": "agentrun", "service.version": serveVersion() }))
+    .merge(resources.resourceFromAttributes({ ...keyValues(env.OTEL_RESOURCE_ATTRIBUTES), ...(named ? { "service.name": named } : {}) }));
   const provider: TracerProvider = new sdk.TracerProvider({
     resource,
     idGenerator,
