@@ -79,7 +79,7 @@ test("a file that is not UTF-8, or holds a hidden character, is refused", () => 
 });
 
 // Secret-shaped literals are built from parts, so this file holds none.
-const SHAPED = { "AWS access key id": ["AK", "IA", "ABCDEFGHIJKLMNOP"].join(""), "GitHub token": ["gh", "p_", "a1B2".repeat(9)].join(""), "sk- key": ["s", "k-", "Zx9".repeat(10)].join("") };
+const SHAPED = { "AWS access key id": ["AK", "IA", "ABCDEFGHIJKLMNOP"].join(""), "GitHub token": ["gh", "p_", "a1B2".repeat(9)].join(""), "sk- key": ["s", "k-", "Zx9".repeat(10)].join(""), "AgentRun API key": ["ar", "_key_", "Zx9".repeat(15)].join("") };
 const VALUE = ["s3cret", "store", "pass", "7731"].join("-");
 
 test("text shaped like a secret, or a value the host holds, is refused in a draft or its name, plain or encoded, and never printed", () => {

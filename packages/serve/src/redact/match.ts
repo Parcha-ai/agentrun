@@ -512,6 +512,32 @@ const URL_CREDENTIAL: Shape = {
   },
 };
 
+const isUpper = (code: number) => code >= 65 && code <= 90;
+/** An API key made in this server's console (api-keys.ts): `ar_key_` and its 32 random bytes in base64url, 43
+ *  characters or more to the end of that run, so a key glued to more of its characters is cut whole. The server keeps
+ *  no copy of such a key (only a keyed hash), so its shape is the one way it is found in a text, and it is found
+ *  whatever stands before it: after a word's character too (the `n` of a line break as JSON text writes it, a name
+ *  glued to it). What tells a key from a long name that only holds the prefix's letters (`similar_key_for_the_...`) is
+ *  in the run itself: a capital or a digit, which 32 random bytes all but always hold and a snake_case name does not.
+ *  A start inside a run already read ends where that run ends and holds no more of it, so it is not read again. */
+const AGENTRUN_API_KEY: Shape = {
+  kind: "AgentRun API key",
+  prefixes: ["ar_key_"],
+  scan(text, at, prefix) {
+    const from = at + prefix.length;
+    let end = from;
+    let mixed = false;
+    for (; end < text.length; end++) {
+      const code = text.charCodeAt(end);
+      if (!PART(code)) break;
+      mixed ||= isDigit(code) || isUpper(code);
+    }
+    scanned.chars += end - from + 1;
+    const next = end - (prefix.length - 1);
+    return end - from >= 43 && mixed ? { start: at, end, next } : none(next);
+  },
+};
+
 /** Text shaped like a secret, by kind. The same shapes the Pi learning loop's guard refuses. */
 export const SECRET_SHAPES: readonly Shape[] = [
   prefixFixed("AWS access key id", ["AKIA", "ASIA"], only(UPPER + DIGIT), 16),
@@ -520,6 +546,7 @@ export const SECRET_SHAPES: readonly Shape[] = [
   prefixRun("GitHub token", ["ghp_", "gho_", "ghu_", "ghs_", "ghr_"], ALNUM_CLASS, 30),
   prefixRun("GitHub token", ["github_pat_"], WORD, 20),
   prefixRun("sk- key", ["sk-"], PART, 20, (text, at) => at === 0 || !ALNUM_CLASS(text.charCodeAt(at - 1))),
+  AGENTRUN_API_KEY,
   prefixRun("Slack token", [..."abposre"].map((kind) => `xox${kind}-`).concat("xapp-"), only(`${ALNUM}-`), 10),
   JWT,
   WEBHOOK_SECRET,

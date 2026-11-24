@@ -42,6 +42,8 @@ const SHAPES = [
   /(?:AKIA|ASIA)[0-9A-Z]{16}/, /AIza[0-9A-Za-z_-]{35}/, /-----BEGIN[ A-Z0-9]{0,64}PRIVATE KEY[ A-Z0-9]{0,64}-----/,
   /gh[pousr]_[A-Za-z0-9]{30,16384}|github_pat_[A-Za-z0-9_]{20,16384}/, /(?<![A-Za-z0-9])sk-[A-Za-z0-9_-]{20,16384}/,
   /xox[abposre]-[A-Za-z0-9-]{10,16384}|xapp-[A-Za-z0-9-]{10,16384}/,
+  // A key made in the console (api-keys.ts): 43 or more of its characters to the run's end, a capital or a digit among them.
+  /ar_key_(?=[A-Za-z0-9_-]{0,16384}[A-Z0-9])[A-Za-z0-9_-]{43,16384}/,
   /eyJ(?<!eyJ[A-Za-z0-9_-]{0,16384}?eyJ)[A-Za-z0-9_-]{8,16384}\.eyJ[A-Za-z0-9_-]{8,16384}\.[A-Za-z0-9_-]{8,16384}/,
   /whsec_[A-Za-z0-9+/]{24,16384}={0,2}/,
   /:\/\/[^\s/?#@:]{1,256}:[^\s/?#@]{0,1024}@/,
@@ -82,6 +84,23 @@ test("over 3,000 random texts of the shapes' own pieces, what is redacted is wha
     const text = Array.from({ length: 4 + Math.floor(random() * 60) }, () => PIECES[Math.floor(random() * PIECES.length)]).join("");
     assert.equal(redactSecrets(text, [], 1 << 20), reference(text), JSON.stringify(text));
   }
+});
+
+test("over 3,000 random texts of an API key's pieces, what is redacted is what reading from every character redacts", () => {
+  // The prefix whole and in parts; runs long enough to make a key and too short, with a capital or a digit and with
+  // neither (a name); and what ends a run or stands before one.
+  const PIECES = ["ar_key_", "ar_key_", "ar_key_", "ar_", "key_", "ar", "_", "-", "abcdefgh", "abcdefghijklmnopqrstuvwxyz_abcdefghijklmnopqrstuvwxyz", "abcdefghijklmnopqrstuvwxyz_abcdefghijklmnopqrstuvwxyz", "abcdefgh01234567", "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefg", "x9", "a", "a", "Z", " ", " ", "=", ".", "/", "\"", "Bearer "];
+  let seed = 20261124;
+  const random = () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648);
+  let cut = 0;
+  for (let i = 0; i < 3011; i++) {
+    const text = Array.from({ length: 2 + Math.floor(random() * 14) }, () => PIECES[Math.floor(random() * PIECES.length)]).join("");
+    const want = reference(text);
+    assert.equal(redactSecrets(text, [], 1 << 20), want, JSON.stringify(text));
+    if (want !== text) cut++;
+  }
+  // Both happen often: a text with a key in it, and one that only resembles one (a short run, a run of lower case alone).
+  assert.ok(cut > 300 && cut < 2700, `${cut} of 3011 texts were cut`);
 });
 
 test("a JWT whose parts are near the 16384 bound is redacted whole, not only its first 4096 characters", () => {
