@@ -67,7 +67,7 @@ import { APPROVAL_ROW, ARGS_PREVIEW_BYTES, MAX_PIN_ARGS, MAX_PIN_CHOICES, PERMIS
 import { BROWSER_VENDOR_IDS, DECISION_PROVIDER_KEYS, KIND_KEYS, MAX_PIN_TEXT, permissionsOf, type Pickable, PICKABLE, PROVIDERS } from "./tool-plane.js";
 import { tableTools } from "./tool-list.js";
 import { SECRET_META_SCHEMA } from "./secret-writes.js";
-import { LABEL_KEY, MAX_LABEL_VALUE, MAX_LABELS } from "./run-labels.js";
+import { MAX_LABEL_VALUE, MAX_LABELS, RUN_LABELS } from "./run-labels.js";
 import { COST_BASES } from "./runner/metrics.js";
 import { BASH_POLICIES } from "./bash-read-only.js";
 // The modules that own the computer and Archil key writes: loading the document loads their secret-write predicates
@@ -80,14 +80,6 @@ import { DAEMON_FETCHES_PER_MINUTE, PAIR_TRIES_PER_MINUTE, PAIRED_NAME_MAX } fro
 
 type Json = Record<string, unknown>;
 
-/** runlabels/1: a run's labels, given at its start and served on every read of it (run-labels.ts). */
-const RUN_LABELS: Json = {
-  type: "object",
-  maxProperties: MAX_LABELS,
-  propertyNames: { pattern: LABEL_KEY.source },
-  additionalProperties: { type: "string", minLength: 1, maxLength: MAX_LABEL_VALUE },
-  "x-agentrun-serve": "runlabels/1",
-};
 /** runlabels/1: GET /runs' and GET /agents/{agent_id}/runs' filter on a run's labels. */
 const LABEL_PARAMETER: Json = {
   name: "label", in: "query", required: false,
@@ -3813,7 +3805,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
     model_key: RUN_MODEL_KEY,
     keys: RUN_TOOL_KEYS,
     mcp_auth: { ...MCP_RUN_AUTH, description: `${MCP_RUN_AUTH.description as string} Each names a saved MCP server that takes that shape: headers for one whose \`auth.type\` is per_run, a binding for a per-run Composio server (422 at \`mcp_auth.<server>\` otherwise, and at the binding's field for a malformed user or account, no run made). Sealed into the run's launch for its life, read at each claim, and erased by the write that ends it; never in its saved body, its timeline, its view or an Idempotency-Key's fingerprint (a retry with a new credential answers the first request's run).` },
-    labels: { ...RUN_LABELS, description: `The caller's own labels for the run: at most ${MAX_LABELS} keys, each 1 to 63 letters, digits, \`.\`, \`_\`, \`-\` or \`/\` starting with a letter or a digit; each value text of 1 to ${MAX_LABEL_VALUE} characters with no control character. Kept on the run as given, served on every read of it (\`labels\` on Run and RunSummary) and matched by GET /runs' \`label\`; set once, at the start. The server reads nothing else from them: put no secret in one. Another shape is 422 under \`labels\` or \`labels.<key>\`. Absent: none.` },
+    labels: { ...RUN_LABELS, description: `The caller's own labels for the run: at most ${MAX_LABELS} keys, each 1 to 63 letters, digits, \`.\`, \`_\`, \`-\` or \`/\` starting with a letter or a digit; each value text of 1 to ${MAX_LABEL_VALUE} characters with no control character. Kept on the run as given, served on every read of it (\`labels\` on Run and RunSummary) and matched by GET /runs' \`label\`; set once, at the start. The server reads nothing else from them: put no secret in one (a value holding one this server keeps is refused). Another shape, or a secret, is 422 under \`labels\` or \`labels.<key>\`. Absent: none.` },
     workflow_first: {
       type: "boolean",
       description: "Whether a run of an agent that learns may start on one of its learned workflows. On (absent or true), a run whose input fits exactly one active learned workflow (its input schema has a required field, and the run's input passes it) runs that workflow first, with no turn of the agent's model: its answer is the run's answer, and if it hands the job back (it escalates, a step fails), the same run goes on with the agent, given what the workflow found. The run keeps which path it took: `workflow`, `handed_back` or `agent`. false: the agent takes the run from its first turn.",
@@ -3904,6 +3896,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
     },
     trigger: RUN_TRIGGER,
     audit_of: { ...NULL_STRING, description: "On the run read: a shadow run's served run. A run a promoted learned workflow answered alone (path `workflow`; a run it handed back is never drawn) may be audited (the agent definition's `learning.audit_every`): its shadow, the same agent on the same input with learning off, started at the served run's end and capped at what the served run's cap left, is no row of any run list and sends no webhook, and its cost is in the served run's `cost.learning_usd` and `cost.all_in_usd` (null while the shadow is queued or running: never $0), never in its `cost.usd`, and in the agent's learning cost (GET /agents/{agent_id}/learning/audits). Null for any other run.", "x-agentrun-serve": "promotion/1" },
+    sign_in_warning: { type: "string", description: "A run its owner started on a harness recipe billed to its vendor's plan, on a server started with --harness-sign-in: the run goes on the owner's own sign-in, and this is the one line `agentrun harness sign-in` says first, that the vendor's terms may not cover use through AgentRun (with their address where the recipe names it). The console's run page shows it. Absent on every other run.", "x-agentrun-serve": "signinwarning/1" },
     ...RUN_PATH,
   },
   InputIssue: {
@@ -4381,6 +4374,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
         title: { type: "boolean", description: "An SDK run's start takes `title`." },
         labels: { type: "boolean", description: "An SDK run's start takes `labels`, as RunCreate.labels." },
         max_open_s: { type: "integer", description: "The longest an SDK run takes evidence and its completion, in seconds after its start: each events batch keeps it open an hour more, up to this. Not how long one nobody sends to stays open: a run that gets no events batch closes an hour after its start, and fails as not completed before its deadline." },
+        max_open_per_agent: { type: "integer", description: "The most SDK runs one agent holds open at once: a start past it is 429 rate_limited until one completes, is cancelled or its inbox closes. Absent from an earlier server's answer." },
       },
       description: "Backend SDK runs: what their start takes, and how long one may stay open.",
       "x-agentrun-serve": "sdk/1",

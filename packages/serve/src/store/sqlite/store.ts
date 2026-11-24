@@ -1340,7 +1340,7 @@ class SqliteStore implements Store {
     };
 
     this.runs = {
-      create: async ({ id, agentId, revisionId, origin, labels, expectedCurrent, settingsGuards, startedAt, firing }, launch) => {
+      create: async ({ id, agentId, revisionId, origin, labels, expectedCurrent, settingsGuards, firing }, launch) => {
         // sign_in_handed is not written here: the runner writes it at its claim (runs.update under the epoch fence).
         const insert = `INSERT INTO runs (id, agent_id, revision_id, state, epoch, labels, disk, started_at) VALUES (?, ?, ?, 'queued', 0, ?, ?, ?) RETURNING ${RUN_COLUMNS}`;
         const labelled = labelsColumn(labels);
@@ -1360,7 +1360,7 @@ class SqliteStore implements Store {
             const source = await tx.get<{ purged_at: number | null }>("SELECT purged_at FROM runs WHERE id = ?", of);
             if (source && source.purged_at !== null) throw new RunPurged(of, id);
           }
-          const row = await tx.get<RunRecord>(insert, id, agentId, revisionId, labelled, launchDiskOf(launch), startedAt ?? at);
+          const row = await tx.get<RunRecord>(insert, id, agentId, revisionId, labelled, launchDiskOf(launch), at);
           if (origin) await tx.run("INSERT INTO run_origins (key, run_id, fingerprint, created_at) VALUES (?, ?, ?, ?)", origin.key, id, origin.fingerprint ?? null, at);
           if (launch) await writeLaunch(tx, id, launch, at);
           if (firing) await startFiring(tx, firing, id, at);
@@ -1467,6 +1467,20 @@ class SqliteStore implements Store {
           agentId,
         );
         return { count: Number(row?.count ?? 0), live: Number(row?.live ?? 0) };
+      },
+      openSdk: async (agentId, limit) => {
+        if (!Number.isSafeInteger(limit) || limit < 1) throw new TypeError("openSdk requires a positive safe integer limit");
+        // One read whatever the number of live runs, each inbox found by its key and two members of it read, never decoded
+        // here (megabytes of replay): on Postgres through its readable copy, so an escaped NUL in a replay never fails it.
+        const inbox = readableJson(d, "inbox.value");
+        const [row] = await db.all<{ n: number }>(
+          `SELECT COUNT(*) AS n FROM (SELECT 1 FROM runs LEFT JOIN settings inbox ON inbox.key = 'sdk-run:' || runs.id
+             WHERE runs.agent_id = ? AND runs.state IN ('queued', 'running', 'parked') AND runs.${NOT_A_LEARNING_RUN} AND runs.purged_at IS NULL
+               AND (inbox.value IS NULL OR (${d.jsonText(inbox, ["completion"])} IS NULL AND ${d.jsonText(inbox, ["closed"])} IS NULL))
+             LIMIT ?) holding`,
+          agentId, limit,
+        );
+        return Number(row?.n ?? 0);
       },
       // The rows whose listing is behind, by the three ways one falls behind, each over its own partial index.
       behind: async ({ limit, offset = 0 }) => {

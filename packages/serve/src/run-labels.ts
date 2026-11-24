@@ -4,6 +4,7 @@
 // them otherwise: they are the caller's way to find its runs again (its own ids for a run, a job, a tenant). They are no
 // place for a secret: every read of the run serves them as given.
 import { ApiError, type InputIssue } from "./errors.js";
+import { redacted } from "./key-refusal.js";
 import type { RunLabels } from "./store/store.js";
 
 /** At most this many labels on a run. */
@@ -21,6 +22,16 @@ const CONTROL = /[\u0000-\u001f\u007f]/;
  *  decode: kept on a run, it would fail every later label search that scans that run. */
 export const LONE_SURROGATE = /[\ud800-\udfff]/u;
 
+/** runlabels/1: a run's labels as the API documents them, in RunCreate, Run and an SDK run's start alike (openapi.ts,
+ *  sdk/schema.ts). */
+export const RUN_LABELS: Record<string, unknown> = {
+  type: "object",
+  maxProperties: MAX_LABELS,
+  propertyNames: { pattern: LABEL_KEY.source },
+  additionalProperties: { type: "string", minLength: 1, maxLength: MAX_LABEL_VALUE },
+  "x-agentrun-serve": "runlabels/1",
+};
+
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
 /** Why a value is not a label's, or undefined when it is one. */
@@ -34,20 +45,28 @@ function valueProblem(value: unknown): string | undefined {
 }
 
 /** A create body's `labels`, field by field: an object of at most MAX_LABELS keys, each matching LABEL_KEY, each value text
- *  of 1 to MAX_LABEL_VALUE characters with no control character. Absent is none. */
-export function labelsIssues(labels: unknown): InputIssue[] {
+ *  of 1 to MAX_LABEL_VALUE characters with no control character, and no key or value holding one of `secrets` (every read of the
+ *  run serves its labels as given, so one is refused, never kept). Absent is none. One rule for every run's start: an
+ *  agent's, an inline one's and an SDK run's. */
+export function labelsIssues(labels: unknown, secrets: readonly string[]): InputIssue[] {
   if (labels === undefined) return [];
   if (!isObject(labels)) return [{ field: "labels", reason: "wrong_type", message: "labels is an object of text values: {\"<key>\": \"<value>\"}" }];
   const issues: InputIssue[] = [];
   const keys = Object.keys(labels);
   if (keys.length > MAX_LABELS) issues.push({ field: "labels", reason: "too_many", message: `labels holds at most ${MAX_LABELS} keys; it holds ${keys.length}.` });
   for (const key of keys) {
+    // A key is served as given too: one that holds a secret is refused first, by no name (the field would repeat it).
+    if (redacted(key, secrets) !== key) {
+      issues.push({ field: "labels", reason: "not_allowed", message: "A label's key holds a value this server keeps secret, and every read of the run serves its labels as given: keep credentials out of labels." });
+      continue;
+    }
     if (!LABEL_KEY.test(key)) {
       issues.push({ field: `labels.${key}`, reason: "bad_format", message: `A label's key is 1 to 63 letters, digits, '.', '_', '-' or '/', starting with a letter or a digit: ${JSON.stringify(key)} is not one.` });
       continue;
     }
     const problem = valueProblem(labels[key]);
     if (problem) issues.push({ field: `labels.${key}`, reason: typeof labels[key] === "string" ? "bad_format" : "wrong_type", message: `labels.${key} ${problem}.` });
+    else if (redacted(labels[key] as string, secrets) !== labels[key]) issues.push({ field: `labels.${key}`, reason: "not_allowed", message: `labels.${key} holds a value this server keeps secret, and every read of the run serves its labels as given: keep credentials out of labels.` });
   }
   return issues;
 }

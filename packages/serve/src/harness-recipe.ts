@@ -3,12 +3,12 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { isAbsolute, join, normalize, resolve, sep } from "node:path";
 import { HARNESS_ID_PATTERN, RESERVED_HARNESS_IDS } from "./harness.js";
-import { ARCHIVE_FORMATS, type ArchiveFormat, type ArchiveInstallOptions, archivePlatform, type ArchiveRelease, installArchive } from "./harness-archive.js";
+import { ARCHIVE_CODES, ARCHIVE_FORMATS, type ArchiveFormat, type ArchiveInstallOptions, archivePlatform, type ArchiveRelease, digestOf, installArchive } from "./harness-archive.js";
 import { BUILTIN_HARNESS_IDS } from "./harness-table.js";
 import { commandData } from "./harness-owned.js";
 import { harnessesOf, installDirOf, shellWord } from "./harness-install.js";
 import { ENV_NAME, KEY_NAME, launchEnv } from "@parcha/agentrun-kernel";
-import { acpPackage } from "./acp-package.js";
+import { ACP_PACKAGE, acpPackage } from "./acp-package.js";
 import { keyShaped, SECRET_SEGMENTS } from "./secret-name.js";
 import { SECRET_NAMES } from "./secrets.js";
 
@@ -410,6 +410,44 @@ export function pinnedTree(data: string, recipe: Recipe, release: RecipeArchive,
   return recorded ? { sha256: recorded, by: "first-seen" } : undefined;
 }
 
+/** The words for a recipe with no release for `platform` (this machine's when none is named). */
+export const noRelease = (recipe: Recipe, platform: string | undefined): string => `${recipe.label} ${recipe.release.version} has no release for ${platform ?? `${process.platform}-${process.arch}`}`;
+
+/** A pin of the install: the recipe's digest, else the first one its install recorded. */
+export type InstallPin = { readonly sha256: string; readonly by: "recipe" | "first-seen" };
+/** The recipe's install on `data` for `platform` as every reader finds it (a harness-check, a sign-in, a server's entry):
+ *  its release, binary, folder and both pins; or why there is none to run, in words that end with `line`, the command
+ *  that installs it. Nothing is digested here (pinsHold digests). */
+export function installedPins(data: string, recipe: Recipe, platform: string | undefined, line: string):
+  | { readonly release: RecipeArchive; readonly platform: string; readonly binary: string; readonly installed: string; readonly pin: InstallPin; readonly tree: InstallPin }
+  | { readonly code: string; readonly words: string } {
+  const release = releaseFor(recipe, platform);
+  if (!platform || !release) return { code: "HARNESS_PLATFORM_UNSUPPORTED", words: noRelease(recipe, platform) };
+  const binary = recipeBinaryOf(data, recipe, release);
+  const installed = installDirOf(data, recipe.id);
+  const pin = pinnedDigest(data, recipe, release, platform);
+  if (!existsSync(binary) || !pin) return { code: "HARNESS_NOT_INSTALLED", words: `${recipe.label} ${recipe.release.version} is not installed in ${installed}. Install it with: ${line}` };
+  // Every file beside the binary (a launcher's code, a server's sidecar) is pinned too: one installed before trees were
+  // recorded is installed again, so nothing in it runs unpinned.
+  const tree = pinnedTree(data, recipe, release, platform);
+  if (!tree) return { code: "HARNESS_NOT_INSTALLED", words: `${recipe.label} ${recipe.release.version}'s files beside its binary were never recorded by its install, so they cannot be checked. Install it again with: ${line}` };
+  return { release, platform, binary, installed, pin, tree };
+}
+
+/** Throws unless `binary` and every file in `installed` are the pinned ones now (digested here): ARCHIVE_CODES.binary for
+ *  a file that differs, HARNESS_NOT_INSTALLED with no ACP adapter to digest the tree. The one check a harness-check, a
+ *  sign-in and each start of a recipe's agent make. Returns the binary's sha256 it found (the check's report counts them). */
+export async function pinsHold(binary: string, installed: string, pin: InstallPin, tree: InstallPin, line: string): Promise<string> {
+  const whose = (p: InstallPin) => (p.by === "recipe" ? "the recipe pins" : "its first install recorded");
+  const found = await digestOf(binary).catch(() => undefined);
+  if (found !== pin.sha256) throw new Error(`${ARCHIVE_CODES.binary}: ${binary} has sha256 ${found ?? "(unreadable)"}, and ${whose(pin)} ${pin.sha256}. Install it again with: ${line}`);
+  const acp = acpPackage();
+  if (!acp) throw new Error(`HARNESS_NOT_INSTALLED: the ACP adapter (${ACP_PACKAGE}) beside this server is not installed, so the files beside the binary cannot be checked`);
+  const files = await acp.treeDigest(installed).catch(() => undefined);
+  if (files !== tree.sha256) throw new Error(`${ARCHIVE_CODES.binary}: ${installed} has the tree sha256 ${files ?? "(unreadable)"}, and ${whose(tree)} ${tree.sha256}. Install it again with: ${line}`);
+  return found;
+}
+
 /** The folder the agent keeps its owner's sign-in in (given by signIn.homeArg on `agentrun harness sign-in` and on every
  *  run on that sign-in): `<data>/harnesses/<id>.sign-in`, 0700, beside the install and never inside it (a reinstall keeps
  *  the sign-in). The agent alone writes and reads what is in it: AgentRun hands it the path, and never lists, opens,
@@ -430,7 +468,7 @@ export const signedIn = (data: string, recipe: Recipe): boolean => recipe.signIn
 
 /** What a passing harness-check proved, by digest: the recipe file, the binary and every file beside it, on `platform`. A
  *  server runs the recipe only while all three are still these (harness-recipe-entry.ts). */
-export type RecipeChecked = { readonly recipe: string; readonly binary: string; readonly tree: string; readonly version: string; readonly platform: string };
+export type RecipeChecked = { readonly recipe: string; readonly binary: string; readonly tree: string; readonly platform: string };
 
 /** AgentRun's own note of the last harness-check that passed for the recipe `id` on `data`: `<data>/harnesses/<id>.checked`,
  *  beside the install and never in it. */
@@ -439,14 +477,14 @@ export const checkedNoteOf = (data: string, id: string): string => join(harnesse
 /** Writes the note of a passing check (checkedNoteOf), over the one before it: open to its owner alone. */
 export function writeChecked(data: string, id: string, checked: RecipeChecked): void {
   mkdirSync(harnessesOf(data), { recursive: true, mode: 0o700 });
-  writeFileSync(checkedNoteOf(data, id), `${JSON.stringify({ ...checked, at: new Date().toISOString() })}\n`, { mode: 0o600 });
+  writeFileSync(checkedNoteOf(data, id), `${JSON.stringify(checked)}\n`, { mode: 0o600 });
 }
 
 /** The note of the last check that passed for `id` on `data`, or undefined where there is none or it is not one. */
 export function checkedOf(data: string, id: string): RecipeChecked | undefined {
   try {
     const note = JSON.parse(readFileSync(checkedNoteOf(data, id), "utf8")) as Partial<Record<keyof RecipeChecked, unknown>>;
-    const fields = ["recipe", "binary", "tree", "version", "platform"] as const;
+    const fields = ["recipe", "binary", "tree", "platform"] as const;
     return fields.every((field) => typeof note[field] === "string") ? (Object.fromEntries(fields.map((field) => [field, note[field]])) as RecipeChecked) : undefined;
   } catch {
     return undefined;

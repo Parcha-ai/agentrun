@@ -10,12 +10,14 @@ import type { Claim, RunOrigin, Store, SettingsGuard } from "../store/store.js";
 import type { AgentEntry } from "../agents-store.js";
 import { uuidv7 } from "../ids.js";
 import { launchBody, type RunLaunch } from "../run-launch.js";
-import { learningStartFor, type StartDeps } from "../runs-over-store.js";
+import { learningStartFor, runTitle, type StartDeps } from "../runs-over-store.js";
+import { instantOf } from "../trigger-adapter.js";
 import { labelsIssues, labelsOf } from "../run-labels.js";
 import { chooseWorkflows, type LearnedWorkflow, learningFolderOf, seedAt, secretsShown, withAgentRepo } from "../learning.js";
 import { INSTRUCTION_EVIDENCE_BYTES } from "../native/instructions.js";
 import { CLI_POLICY_BYTES } from "../cli-learning/policy.js";
 import { refuseWhileNoRunner } from "../runner/presence.js";
+import { serialBy } from "../files.js";
 import { secretRedactor } from "../runner/redact.js";
 import { redactedOutput } from "../key-refusal.js";
 import { decodedStrings, draftProblems } from "../learn/workflow-draft.js";
@@ -100,8 +102,24 @@ export const SDK_MAX_OPEN_MS = 86_400_000;
 /** A start's `started_at`: at most this far ahead of the server's clock, at most this far behind it. */
 const STARTED_SKEW_MS = 60_000,
   STARTED_BACK_MS = 7 * 86_400_000;
-const TITLE_LIMIT = 200;
-const RFC3339 = /^(\d{4})-(\d{2})-(\d{2})[Tt](\d{2}):(\d{2}):(\d{2})(\.\d+)?(?:[Zz]|([+-])(\d{2}):(\d{2}))$/;
+/** At most this many SDK runs of one agent open at once. An open run holds one of the runner's loops until it completes
+ *  or its inbox closes (up to SDK_MAX_OPEN_MS while its batches keep coming), so without a cap one token's heartbeats
+ *  could hold every loop for a day while every other start queued. A cap, not a park: the loop's wait stays as it is. */
+export const SDK_OPEN_PER_AGENT = 8;
+/** Each agent's SDK starts, admitted one at a time: the open count is read and the run made in one turn, so starts sent at
+ *  once never pass the cap together. The queue is this process's: two servers on one shared Postgres store each admit up
+ *  to SDK_OPEN_PER_AGENT, so the cap holds per process. */
+const sdkStarts = new Map<string, Promise<unknown>>();
+const overCap = () => new ApiError("rate_limited", `This agent has ${SDK_OPEN_PER_AGENT} SDK runs open, the most it holds at once: complete or cancel one, or let its inbox close, then start again.`);
+/** Whether agent `agentId` holds SDK_OPEN_PER_AGENT open SDK runs: runs still going whose inbox has no completion and is
+ *  not closed. A run whose task completed holds no slot while its runner has yet to end it or it still learns
+ *  (learningEndOfRun), as the refusal's words promise. The live count answers alone below the cap; at it, the store counts
+ *  the open runs in one read that stops at the cap (Runs.openSdk; a run with no inbox yet counts as open), however many
+ *  completed runs still go. */
+export async function capFull(store: Pick<Store, "runs">, agentId: string): Promise<boolean> {
+  if ((await store.runs.counts(agentId)).live < SDK_OPEN_PER_AGENT) return false;
+  return (await store.runs.openSdk(agentId, SDK_OPEN_PER_AGENT)) >= SDK_OPEN_PER_AGENT;
+}
 const TEXT_LIMIT = 128_000,
   BATCH_LIMIT = 256_000,
   TOTAL_LIMIT = 4_000_000;
@@ -135,20 +153,10 @@ const usageOf = (value: unknown): SdkUsage | undefined => {
   }
   return result;
 };
-/** An RFC 3339 date-time as epoch ms, or undefined when it is not one (a field out of range included). */
-function rfc3339(value: string): number | undefined {
-  const m = RFC3339.exec(value);
-  if (!m) return undefined;
-  const [y, mo, d, h, mi, s] = m.slice(1, 7).map(Number) as [number, number, number, number, number, number];
-  const day = new Date(Date.UTC(y, mo - 1, d));
-  if (day.getUTCFullYear() !== y || day.getUTCMonth() !== mo - 1 || day.getUTCDate() !== d || h > 23 || mi > 59 || s > 59) return undefined;
-  if (m[8] && (Number(m[9]) > 23 || Number(m[10]) > 59)) return undefined;
-  const offset = m[8] ? (m[8] === "-" ? -1 : 1) * (Number(m[9]) * 60 + Number(m[10])) * 60_000 : 0;
-  return Date.UTC(y, mo - 1, d, h, mi, s, Math.floor(Number(`0${m[7] ?? ""}`) * 1000)) - offset;
-}
-/** A start's `started_at` as epoch ms: its form only, refused when it is not an RFC 3339 date-time. */
+/** A start's `started_at` as epoch ms: its form only (a trigger's instants' parser), refused when it is not an RFC 3339
+ *  date-time. */
 const rfc3339Of = (value: unknown): number =>
-  (typeof value === "string" ? rfc3339(value) : undefined) ?? refuse("started_at must be an RFC 3339 date-time, such as 2026-01-02T03:04:05Z.");
+  instantOf(value) ?? refuse("started_at must be an RFC 3339 date-time, such as 2026-01-02T03:04:05Z.");
 /** A new start's `started_at` against the server's clock at `now`: when the backend began the task, if before this request.
  *  The run's `created_at` takes it. Never applied to a retry of a start already made (its receipt is returned first). */
 const startedWithin = (at: number, now: number): number => {
@@ -297,14 +305,12 @@ export class SdkRuns {
     // Its form is checked now; its distance from the clock only for a new start, below: a retry of a start that was made
     // (its origin and fingerprint kept) gets its receipt however late it comes.
     const reportedAt = body.started_at === undefined ? undefined : rfc3339Of(body.started_at);
-    const title = body.title === undefined ? undefined : text(body.title, "title").trim().replace(/\s+/g, " ");
-    if (title !== undefined && ([...title].length < 1 || [...title].length > TITLE_LIMIT))
-      refuse(`title must be text of 1 to ${TITLE_LIMIT} characters.`);
-    const labelIssues = labelsIssues(body.labels);
+    // The title is every run's (runTitle, below): cut, never refused for its length; only one with no words is refused.
+    const title = body.title === undefined ? undefined : text(body.title, "title");
+    if (title !== undefined && !title.trim()) refuse("title must hold at least one character that is not whitespace.");
+    const labelIssues = labelsIssues(body.labels, this.secrets());
     if (labelIssues.length) throw invalid(labelIssues);
     const labels = labelsOf(body.labels);
-    if (labels && canonical(this.clean(labels)) !== canonical(labels))
-      refuse("A label contains a protected value; keep credentials in the backend.");
     if (origin) {
       const known = await this.store.runOfOrigin(origin.key);
       if (known) {
@@ -313,6 +319,9 @@ export class SdkRuns {
         return this.receipt(known.runId, consoleOrigin);
       }
     }
+    // Refused early, before the work a start does, where the cap is plainly full; the count that holds is admit's, below.
+    const full = async () => !cli && (await capFull(this.store, entry.agent.id));
+    if (await full()) throw overCap();
     const startedAt = reportedAt === undefined ? undefined : startedWithin(reportedAt, Date.now());
     const cleanedInput = this.clean({ input }).input;
     const pinned = await deps.pinnedOf(entry, {});
@@ -351,6 +360,8 @@ export class SdkRuns {
     }
     const revision = entry.revision;
     const admit = async (): Promise<string> => {
+      // In the agent's start queue (sdkStarts): no other start of it makes a run between this count and this run's.
+      if (await full()) throw overCap();
       // The reset deletes the agent's learning in this queue after setting its watermark (learning-reset.ts): a seed
       // read at or before it is of learning the reset deleted, so the start is refused, to start again on a new seed.
       const reset = learning ? await resetAtOf(this.store.settings, entry.agent.id) : undefined;
@@ -369,8 +380,11 @@ export class SdkRuns {
       const workflows = check ? [] : selected.workflows;
       const launch: RunLaunch = {
         input: { content: cleanedInput },
-        title: title === undefined ? cleanedInput.trim().replace(/\s+/g, " ").slice(0, 80) : this.clean({ title }).title,
+        title: runTitle(title ?? cleanedInput, this.secrets()),
         place: { mode: "runner" },
+        // The time the backend reports it began, served as the run's created_at; the run's own start column stays its
+        // arrival, which the claim queue, the learning reset window, the hold cadence and the audits order by.
+        ...(startedAt !== undefined ? { startedAt } : {}),
         ...(cli ? {
           harness: "cli",
           cli_learning: { ...cli, instructions: cleaned.instructions, policy_complete: cli.policy_complete && cleaned.instructions === instructions, ...(cleaned.model ? { model: cleaned.model } : {}) },
@@ -394,7 +408,7 @@ export class SdkRuns {
           ...(cli && cleanedInput !== input ? { evidence_incomplete: true } : {}),
         } satisfies SdkInbox);
         await this.store.runs.create(
-          { id: runId, agentId: entry.agent.id, revisionId: revision.id, ...(cli ? { expectedCurrent, settingsGuards: sourceGuards } : {}), ...(origin ? { origin } : {}), ...(labels ? { labels } : {}), ...(startedAt !== undefined ? { startedAt } : {}) },
+          { id: runId, agentId: entry.agent.id, revisionId: revision.id, ...(cli ? { expectedCurrent, settingsGuards: sourceGuards } : {}), ...(origin ? { origin } : {}), ...(labels ? { labels } : {}) },
           { body: launchBody(launch) },
         );
       } catch (error) {
@@ -423,7 +437,9 @@ export class SdkRuns {
     // agent's learning deletes it in: either the reset comes first, and the seed read before it is refused above, or this
     // run's row is made first, and the reset refuses while it goes (409 learning_busy). No check of a draft the reset
     // deleted is reserved, and no run starts on it.
-    const runId = learning ? await withAgentRepo(this.data, entry.agent.id, admit) : await admit();
+    // An SDK start is admitted in its agent's start queue too, outside the learning one (nothing takes them the other way).
+    const admitted = () => (learning ? withAgentRepo(this.data, entry.agent.id, admit) : admit());
+    const runId = cli ? await admitted() : await serialBy(sdkStarts, entry.agent.id, admitted);
     return this.receipt(runId, consoleOrigin);
   }
   async receipt(runId: string, consoleOrigin: string) {

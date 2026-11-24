@@ -5458,6 +5458,7 @@ class Run(_RunRequired, total=False):
     imported_from: RunImportedFrom | None
     trigger: RunTrigger | None
     audit_of: str | None
+    sign_in_warning: str
     path: Literal["agent", "handed_back", "workflow", "replay", "audit"] | None
     workflow: RunWorkflow | None
 
@@ -8196,11 +8197,15 @@ class FeaturesTriggersWebhook(TypedDict):
     at_rest: Literal["sealed"]
 
 
-class FeaturesSdkRuns(TypedDict):
+class _FeaturesSdkRunsRequired(TypedDict):
     started_at: bool
     title: bool
     labels: bool
     max_open_s: int
+
+
+class FeaturesSdkRuns(_FeaturesSdkRunsRequired, total=False):
+    max_open_per_agent: int
 
 
 class Region(TypedDict):

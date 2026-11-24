@@ -301,6 +301,12 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
         <div className="mx-auto w-full max-w-4xl space-y-6 px-5 empty:hidden md:px-8">
           {native && <NativeRun native={native} agentId={run.agent_id} />}
           {cli && <CliLearningRun cli={cli} ended={view.final} />}
+          {/* A person's run on a recipe billed to its vendor's plan, on the owner's own sign-in: the vendor's terms line the
+              terminal's sign-in says first, said again where the run was started (the run's read, sign_in_warning). */}
+          {run.sign_in_warning && (
+            <section className="border border-warning/50 bg-card p-4" aria-label="On your own sign-in"><p className="caps text-label text-warning-text">On your own sign-in</p>
+              <p className="mt-2 text-lead">{run.sign_in_warning}</p></section>
+          )}
           {run.status === "failed" && run.error && <RunError error={run.error} title={isEscalated(run.status, run.error) ? "The run escalated" : undefined} />}
           {run.status === "cancelled" && (
             <section className="border border-border-strong/60 p-4"><p className="caps text-label text-muted-foreground">Cancelled</p>

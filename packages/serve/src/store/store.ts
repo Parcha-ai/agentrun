@@ -964,13 +964,14 @@ export interface Runs {
    *  reads it in the same transaction: made from a purged run, it is refused (RunPurged), nothing written.
    *  `expectedCurrent` checks the agent's current revision under its lock (RevisionMoved on mismatch); this is separate
    *  from the pinned revisionId. Settings guards are locked before the agent. Refusal writes no run, origin or launch.
-   *  `startedAt` (ms) is when the run began, for one reported after it began elsewhere (a backend SDK run's
-   *  `started_at`); absent, now. With `firing` (a launch hook's host starting the firing it was handed), that firing is
-   *  started with the run in the same transaction, its trigger's last run and failure streak as a started firing's
-   *  are, only while it has no run and is still due or sent with a start_by: any other (released, failed, settled) is
-   *  refused (FiringMoved), and nothing is written. */
+   *  The run's started_at is always now, its arrival: the claim queue, learning's reset window, the hold cadence and the
+   *  audits order by it. A time a caller reports (an SDK start's `started_at`) rides the launch (RunLaunch.startedAt).
+   *  With `firing` (a launch hook's host starting the firing it was handed), that firing is started with the run in the
+   *  same transaction, its trigger's last run and failure streak as a started firing's are, only while it has no run and
+   *  is still due or sent with a start_by: any other (released, failed, settled) is refused (FiringMoved), and nothing is
+   *  written. */
   create(run:{ id: string; agentId: string; revisionId: string; origin?: RunOrigin; labels?: RunLabels;
-    expectedCurrent?: string | null; settingsGuards?: readonly SettingsGuard[]; startedAt?: number; firing?: { triggerId: string; key: string } }, launch?: RunLaunchInput): Promise<RunRow>;
+    expectedCurrent?: string | null; settingsGuards?: readonly SettingsGuard[]; firing?: { triggerId: string; key: string } }, launch?: RunLaunchInput): Promise<RunRow>;
   /** A run whose agent is given inline and mapped to a source system by `agent.ref` and `revision.version`. In one
    *  transaction: the agent (one per `ref`, written on its first run, its name and description brought up to the version
    *  whose first use this is) and the revision (one per `version`, made current on its first use) are written or read, then
@@ -1031,6 +1032,10 @@ export interface Runs {
    *  (`live`: queued, running or parked, or an agentic run a person stopped, which a message continues). A built-in learning
    *  run and an audit's shadow run are none of them. */
   counts(agentId: string): Promise<{ readonly count: number; readonly live: number }>;
+  /** How many of agent `agentId`'s runs hold an SDK slot (sdk/runs.ts capFull), counted in one read that stops at `limit`:
+   *  runs queued, running or parked (as `list` takes them) whose SDK inbox (the `sdk-run:<id>` setting) is missing, or
+   *  holds neither a completion nor a close. A run whose task completed holds none while it still goes. */
+  openSdk(agentId: string, limit: number): Promise<number>;
   /** Up to `limit` runs whose listing is behind, the runs no runner holds first, then newest first: built never, or before
    *  the latest write that moved what the run's view shows (listing_mark < list_mark), or built while a runner held it and
    *  that claim has run out on the store's clock, or past the time it goes stale by the clock (listing_until). `mark`:

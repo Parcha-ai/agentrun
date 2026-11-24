@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -907,12 +907,24 @@ test("AgentRun never reads, refreshes or sends an agent's sign-in, and has no us
   assert.doesNotMatch(readFileSync(join(serve, "harness-check.ts"), "utf8"), /(readdir|readFile|createReadStream|opendir|stat)\w*\([^)]*signInHome/, "the check hands the folder's path on and reads nothing in it");
 });
 
+test("the install's pins are found and checked in one place (harness-recipe.ts installedPins, pinsHold): a check, a sign-in and a server's entry call it, and none reads a pin or digests a file itself", () => {
+  const serve = new URL("../src/", import.meta.url).pathname;
+  for (const name of ["harness-check.ts", "harness-sign-in.ts", "harness-recipe-entry.ts"]) {
+    const text = readFileSync(join(serve, name), "utf8");
+    assert.match(text, /\binstalledPins\(/, `${name} finds the install with installedPins`);
+    assert.match(text, /\bpinsHold\(/, `${name} checks it with pinsHold`);
+    assert.doesNotMatch(text, /\b(pinnedDigest|pinnedTree|digestOf|treeDigest)\(/, `${name} keeps no copy of the pin check`);
+    assert.doesNotMatch(text, /has no release for/, `${name} keeps no copy of the platform refusal`);
+  }
+});
+
 /** The note a passing check writes (harness-recipe.ts writeChecked), written here for the install as it now is. */
 async function noteChecked(data, file) {
-  const { pinnedDigest, pinnedTree, releaseFor, writeChecked } = await import("../dist/harness-recipe.js");
+  const { installedPins, writeChecked } = await import("../dist/harness-recipe.js");
   const { recipe, sha256: recipeSha } = loadRecipe(file);
-  const at = releaseFor(recipe, PLATFORM);
-  writeChecked(data, recipe.id, { recipe: recipeSha, binary: pinnedDigest(data, recipe, at, PLATFORM).sha256, tree: pinnedTree(data, recipe, at, PLATFORM).sha256, version: recipe.release.version, platform: PLATFORM });
+  const pins = installedPins(data, recipe, PLATFORM, "agentrun harness install");
+  assert.ok(!("code" in pins), JSON.stringify(pins));
+  writeChecked(data, recipe.id, { recipe: recipeSha, binary: pins.pin.sha256, tree: pins.tree.sha256, platform: PLATFORM });
 }
 
 test("a server takes a recipe it names only once its install is checked: hidden until then, by the code and the command that fix it, and a plan-billed one on keys saved for its harness, never the shell's", { timeout: 60_000 }, async (t) => {
@@ -1023,29 +1035,42 @@ test("where each run is a user of its own, a run on a recipe's harness is refuse
   assert.equal(await host.staysInRunner(deps, "pi", launch, "run-own", { kind: "uid", helper: "/nonexistent/agentrun-runas", first: 0, slots: 1 }), false);
 });
 
-test("a run no person started (a schedule's, a trigger's) on a plan-billed recipe is refused at its claim on every path, even on its owner's own machine, until every key is saved for its harness: it runs on those keys, never the owner's sign-in", async (t) => {
+test("a run with no record of who started it (a schedule's, a trigger's, a learned workflow's audit shadow or replay, a start no owner's session or token made) on a plan-billed recipe is refused at its claim on every path, even on its owner's own machine, until every key is saved for its harness: it runs on those keys, never the owner's sign-in", async (t) => {
   const [host, loops, { harnessRecipesEnv }] = await Promise.all([import("../dist/runner/run-child-host.js"), import("../dist/runner/harness-loops.js"), import("../dist/harness-table.js")]);
   const data = join(await scratch(t), "agents");
   const own = harnessRecipesEnv([await recipeFile(t, signingIn({ url: "http://127.0.0.1:9" }))], data, { signIn: true });
   const { store: real } = await storeOn(t);
   const store = { settings: { get: async () => null }, sealedKeys: real.sealedKeys };
   const deps = { data, env: own, sealKey: Buffer.alloc(32), store };
-  const person = { input: {}, place: { mode: "runner" } };
-  const scheduled = { ...person, trigger: { triggerId: "trg_nightly", firingId: "fir_1" } };
+  // A person's run: the owner's request made it (POST /agents/{id}/runs under their password session or the server's
+  // token), which its launch says (startedBy). Every run the runner or a trigger makes says nothing.
+  const unmarked = { input: {}, place: { mode: "runner" } };
+  const person = { ...unmarked, startedBy: "token" };
+  const scheduled = { ...unmarked, trigger: { triggerId: "trg_nightly", firingId: "fir_1" } };
+  // The runner's own audit of a person's run (runner/audit.ts): its shadow copies the harness, sets `audit`, no trigger.
+  const shadow = { ...unmarked, audit: { of: "run-1", workflow: "w", digest: "d" } };
+  const replay = { ...unmarked, replay: { of: "run-1", workflow: "w", digest: "d" } };
+  // A trigger's run with a startedBy (none is made so; a damaged body could say it) is still no person's.
+  const markedTrigger = { ...scheduled, startedBy: "token" };
+  const noPerson = [[scheduled, "run-nightly"], [shadow, "run-audit"], [replay, "run-replay"], [unmarked, "run-unmarked"], [markedTrigger, "run-marked-trigger"]];
   const sameUser = { kind: "process", why: "AGENTRUN_RUN_USER=same" };
   const refusedFor = (error) => {
     assert.equal(error.name, "ClaimRefused", error.stack);
     assert.equal(error.message, host.RECIPE_SIGN_IN_PERSON_ONLY);
-    assert.match(error.message, /never on its owner's own sign-in/);
+    assert.match(error.message, /^This run carries no record of who started it .*on its owner's own sign-in only for a run its owner started/);
     return true;
   };
-  await assert.rejects(host.staysInRunner(deps, "model-agent", scheduled, "run-nightly", sameUser), refusedFor);
-  // The runner's own dispatch (no process of its own per run) refuses it too, before any loop is made.
-  await assert.rejects(loops.resolveRunnerLoop(deps)("model-agent", scheduled, "run-nightly"), refusedFor);
-  await assert.rejects(loops.refuseRecipeTriggerRun(deps, "model-agent", scheduled), refusedFor);
+  for (const [launch, id] of noPerson) {
+    await assert.rejects(host.staysInRunner(deps, "model-agent", launch, id, sameUser), refusedFor, id);
+    // The runner's own dispatch (no process of its own per run) refuses it too, before any loop is made.
+    await assert.rejects(loops.resolveRunnerLoop(deps)("model-agent", launch, id), refusedFor, id);
+    await assert.rejects(loops.refuseRecipeTriggerRun(deps, "model-agent", launch), refusedFor, id);
+  }
   assert.match(host.RECIPE_SIGN_IN_PERSON_ONLY, /Settings → Harness keys \(\/#\/settings\/harness-keys\)/);
-  // A person's run is not, nor a scheduled run on a proxy-billed recipe (the model proxy) or a built-in harness.
+  // A person's run is not, under the owner's session or the token, nor a scheduled run on a proxy-billed recipe (the
+  // model proxy) or a built-in harness.
   assert.equal(await host.staysInRunner(deps, "model-agent", person, "run-own", sameUser), false);
+  await loops.refuseRecipeTriggerRun(deps, "model-agent", { ...unmarked, startedBy: "owner_session" });
   const proxied = harnessRecipesEnv([await recipeFile(t, recipeOf())], data, { signIn: true });
   await loops.refuseRecipeTriggerRun({ ...deps, env: proxied }, "model-agent", scheduled);
   await loops.refuseRecipeTriggerRun(deps, "pi", scheduled);
@@ -1054,21 +1079,38 @@ test("a run no person started (a schedule's, a trigger's) on a plan-billed recip
   const other = new HarnessKeysOverStore(real, seal, [{ id: "other-agent", label: "Other", keys: ["MODEL_AGENT_GEMINI_API_KEY"] }], data);
   await other.save(other.recipe("other-agent"), "MODEL_AGENT_GEMINI_API_KEY", { value: "saved-test-key" });
   await assert.rejects(loops.refuseRecipeTriggerRun(deps, "model-agent", scheduled), refusedFor);
-  // With every key saved for its harness, it runs, on every path.
+  // With every key saved for its harness, each of them runs, on every path: on those keys (the keys route alone).
   const saved = new HarnessKeysOverStore(real, seal, planRecipesOf(own), data);
   await saved.save(saved.recipe("model-agent"), "MODEL_AGENT_GEMINI_API_KEY", { value: "saved-test-key" });
-  await loops.refuseRecipeTriggerRun(deps, "model-agent", scheduled);
-  assert.equal(await host.staysInRunner(deps, "model-agent", scheduled, "run-nightly", sameUser), false);
+  for (const [launch, id] of noPerson) {
+    await loops.refuseRecipeTriggerRun(deps, "model-agent", launch);
+    assert.equal(await host.staysInRunner(deps, "model-agent", launch, id, sameUser), false, id);
+  }
+});
+
+test("only the owner's request marks a run as theirs: a start under the token or the owner's password session says who in its launch, a trigger's run and the runner's own say nothing, and a stored mark reads back", async () => {
+  const { launchBody, readLaunchBody } = await import("../dist/run-launch.js");
+  const base = { input: {}, title: "t", place: { mode: "runner" } };
+  for (const by of ["token", "owner_session"]) assert.equal(readLaunchBody(launchBody({ ...base, startedBy: by })).startedBy, by);
+  assert.equal(readLaunchBody(launchBody(base)).startedBy, undefined);
+  assert.equal(readLaunchBody({ ...launchBody(base), started_by: "someone" }).startedBy, undefined, "only the two marks read back");
+  // The one rule (run-launch.ts personStarted): a mark, and no trigger, audit or replay.
+  const { personStarted } = await import("../dist/run-launch.js");
+  assert.equal(personStarted({ ...base, startedBy: "token" }), true);
+  assert.equal(personStarted(base), false, "no record of who started it");
+  for (const over of [{ trigger: { triggerId: "t", firingId: "f" } }, { audit: { of: "r" } }, { replay: { of: "r" } }]) assert.equal(personStarted({ ...base, startedBy: "token", ...over }), false, JSON.stringify(over));
 });
 
 test("--harness-sign-in starts only one owner's own server on their own machine: loopback with no public address, the SQLite store in its data directory, its runs beside it as its own user, an owner and one token; anything else refuses the start in words", async (t) => {
   const { harnessSignInRefusal, HARNESS_SIGN_IN_NOT_LOCAL, startServe } = await import("../dist/server.js");
   const { runsAsOwnUser } = await import("../dist/runner/run-child-host.js");
   const data = join(await scratch(t), "agents");
-  assert.equal(harnessSignInRefusal({}, data, true), undefined, "the default start: 127.0.0.1, SQLite, a runner beside it");
-  assert.equal(harnessSignInRefusal({ host: "localhost" }, data, true), undefined);
-  assert.equal(harnessSignInRefusal({ token: "x" }, data, true), undefined, "AGENTRUN_TOKEN alone is one token");
-  assert.equal(harnessSignInRefusal({ tokens: [{ id: "a", token: "x" }] }, data, true), undefined, "a one-entry AGENTRUN_TOKENS is one token");
+  // The owner's account (accounts on, the CLI's default): the one person whose session or token starts a run on the sign-in.
+  const owned = { accounts: true };
+  assert.equal(harnessSignInRefusal(owned, data, true), undefined, "the default start: 127.0.0.1, SQLite, a runner beside it, its owner's account");
+  assert.equal(harnessSignInRefusal({ ...owned, host: "localhost" }, data, true), undefined);
+  assert.equal(harnessSignInRefusal({ ...owned, token: "x" }, data, true), undefined, "AGENTRUN_TOKEN alone is one token");
+  assert.equal(harnessSignInRefusal({ ...owned, tokens: [{ id: "a", token: "x" }] }, data, true), undefined, "a one-entry AGENTRUN_TOKENS is one token");
   const cases = [
     [{ host: "0.0.0.0" }, true, /listens on 0\.0\.0\.0, past loopback/],
     [{ publicUrl: "https://agents.example.invalid" }, true, /has a public address/],
@@ -1078,8 +1120,11 @@ test("--harness-sign-in starts only one owner's own server on their own machine:
     [{ tokens: [{ id: "a", token: "x" }, { id: "b", token: "y" }] }, true, /takes 2 API tokens/],
     // AGENTRUN_TOKEN beside a one-entry AGENTRUN_TOKENS: the server takes both (acceptedTokens), so two people could start runs.
     [{ token: "x", tokens: [{ id: "a", token: "y" }] }, true, /takes 2 API tokens/],
+    // Accounts off (AGENTRUN_ACCOUNTS=0): no owner's account, so whoever opens its console link starts runs.
+    [{ accounts: false }, true, /has no owner's account \(AGENTRUN_ACCOUNTS=0\)/],
   ];
-  for (const [options, ownUser, words] of cases) {
+  for (const [over, ownUser, words] of cases) {
+    const options = { ...owned, ...over };
     const refused = harnessSignInRefusal(options, data, ownUser);
     assert.match(refused ?? "", new RegExp(`^${HARNESS_SIGN_IN_NOT_LOCAL}: `), JSON.stringify(options));
     assert.match(refused, words);
@@ -1101,6 +1146,19 @@ test("--harness-sign-in starts only one owner's own server on their own machine:
   assert.equal(runsAsOwnUser({}, process.execPath), false, "a helper is there: each run a user of its own");
   // And the start itself refuses, before it serves anything.
   await assert.rejects(startServe({ data, port: 0, host: "0.0.0.0", harnessSignIn: true }), new RegExp(`${HARNESS_SIGN_IN_NOT_LOCAL}: .*past loopback`));
+});
+
+test("accounts off (AGENTRUN_ACCOUNTS=0) refuses --harness-sign-in alone: the machine is still its owner's own, so the Ollama at the default address stays its model", async (t) => {
+  const { harnessSignInRefusal, whyNotOwnMachine } = await import("../dist/server.js");
+  const { ollamaHostOf } = await import("../dist/ollama-provider.js");
+  const data = join(await scratch(t), "agents");
+  for (const accounts of [false, undefined]) {
+    assert.deepEqual(whyNotOwnMachine({ accounts }, data, true), [], `accounts ${accounts}: one owner's own machine`);
+    assert.equal(ollamaHostOf({}, whyNotOwnMachine({ accounts }, data, true).length === 0), "127.0.0.1:11434", `accounts ${accounts}: the default address`);
+    assert.match(harnessSignInRefusal({ accounts }, data, true) ?? "", /has no owner's account \(AGENTRUN_ACCOUNTS=0\)/, `accounts ${accounts}: the sign-in refused`);
+  }
+  assert.deepEqual(whyNotOwnMachine({ accounts: true }, data, true), []);
+  assert.equal(harnessSignInRefusal({ accounts: true }, data, true), undefined);
 });
 
 test("a server started with --harness-recipe says so in the store, so a runner apart without the recipe fails its check", async (t) => {
@@ -1132,7 +1190,8 @@ test("a server its owner starts with --harness-sign-in on their own machine runs
   assert.equal(sharedCopy.origin.messages().length, 0, "the vendor heard nothing from a shared server");
   const before = origin.messages().length;
 
-  const { api } = await serve(t, { data, harnessRecipes: [file], harnessSignIn: true });
+  // Its owner's account on (the CLI's default; accounts off is refused at the start), and the run started with its token.
+  const { api } = await serve(t, { data, harnessRecipes: [file], harnessSignIn: true, accounts: true });
   const offer = (await api("GET", "/capabilities")).body.harnesses.find((each) => each.id === "model-agent");
   assert.deepEqual([offer?.label, offer?.available, offer?.promises?.billing], ["Model Agent", true, "plan"], JSON.stringify(offer));
   const started = await startRun(api, "on-sign-in", "Reply with the word ready.", { harness: "model-agent", model: "model-agent/default" });
@@ -1141,6 +1200,13 @@ test("a server its owner starts with --harness-sign-in on their own machine runs
   const heard = origin.messages().slice(before);
   assert.ok(heard.length >= 1, "the run's turn reached the vendor");
   assert.ok(heard.every((r) => r.headers["x-api-key"] === TOKEN), "on the owner's sign-in, read by the agent from its own folder");
+  // The one line the terminal's sign-in says first is on the run too, for a run started from the console or the API: its
+  // read's sign_in_warning, which the run's page shows. A run on keys (the shared server's) has none.
+  const { signInWarning } = await import("../dist/harness-sign-in.js");
+  const read = (await api("GET", `/runs/${started.run_id}`)).body;
+  assert.equal(read.sign_in_warning, signInWarning("Model Agent", undefined), JSON.stringify(read));
+  assert.match(read.sign_in_warning, /vendor's terms may not cover use through AgentRun/);
+  if (keysFirst.run_id) assert.equal((await shared.api("GET", `/runs/${keysFirst.run_id}`)).body.sign_in_warning, undefined);
   // A trigger never sends a turn into a person's run on the sign-in: a schedule's or a webhook's message_run to it is refused.
   const poke = await api("POST", "/triggers", { name: "poke", source: { kind: "webhook" }, target: { kind: "message_run", run_id: started.run_id, input: { content: "A new event came in." } } });
   assert.equal(poke.status, 422, JSON.stringify(poke.body));
@@ -1153,11 +1219,46 @@ test("a server its owner starts with --harness-sign-in on their own machine runs
   });
   assert.equal((await signIn(elsewhere.file, elsewhere.data)).status, 0);
   await noteChecked(elsewhere.data, elsewhere.file);
-  const second = await serve(t, { data: elsewhere.data, harnessRecipes: [elsewhere.file], harnessSignIn: true });
+  const second = await serve(t, { data: elsewhere.data, harnessRecipes: [elsewhere.file], harnessSignIn: true, accounts: true });
   const refused = await startRun(second.api, "elsewhere", "Reply with the word ready.", { harness: "model-agent", model: "model-agent/default" });
   const ended = await follow(second.api, refused.run_id, ["completed", "failed"], { deadlineMs: 120_000 });
   assert.equal(ended.last.status, "failed", JSON.stringify(ended.last));
   assert.equal(elsewhere.origin.messages().length, 0, "the vendor heard nothing: its host is not one the recipe names");
+});
+
+test("an agent on its owner's sign-in that prints its token as it dies leaves it nowhere the server keeps or serves: not its timeline, its run's read or error, its log, nor the store", { skip: linux, timeout: 180_000 }, async (t) => {
+  // The vendor CLI that echoes its credential on an auth failure (leak-key), on the server route: no cut knows the
+  // sign-in's token, so the route drops what the agent prints (stderr "none") and the run fails in words of its own.
+  const leaking = await installed(t, (o) => signingIn(o, { env: { MODEL_AGENT_MODE: "leak-key" } }));
+  assert.equal((await signIn(leaking.file, leaking.data)).status, 0);
+  await noteChecked(leaking.data, leaking.file);
+  const logs = [];
+  const server = await serve(t, { data: leaking.data, harnessRecipes: [leaking.file], harnessSignIn: true, accounts: true, log: (line) => logs.push(line) });
+  const run = await startRun(server.api, "leaks", "Reply with the word ready.", { harness: "model-agent", model: "model-agent/default" });
+  const followed = await follow(server.api, run.run_id, ["completed", "failed"], { deadlineMs: 120_000 });
+  assert.equal(followed.last.status, "failed", JSON.stringify(followed.last));
+  const read = (await server.api("GET", `/runs/${run.run_id}`)).body;
+  assert.equal(read.status, "failed", JSON.stringify(read));
+  // The store and its write-ahead log, where a write not yet checkpointed sits.
+  const bytes = Buffer.concat(["store.sqlite", "store.sqlite-wal"].map((name) => join(leaking.data, name)).filter((file) => existsSync(file)).map((file) => readFileSync(file)));
+  assert.ok(bytes.length > 0, "the store was read");
+  const where = [
+    ["every timeline page", JSON.stringify(followed.pages)],
+    ["the run's read", JSON.stringify(read)],
+    ["its error", JSON.stringify(read.error)],
+    ["the server's log", logs.join("\n")],
+    ["the store's bytes", bytes.toString("latin1")],
+  ];
+  for (const [place, text] of where) assert.ok(!text.includes(TOKEN), `the sign-in's token is not in ${place}`);
+  // Nor any file in the data directory but the sign-in's own folder: the run's folder, its recordings, its logs.
+  const home = SIGN_IN_HOME(leaking.data);
+  const files = readdirSync(leaking.data, { recursive: true, withFileTypes: true })
+    .filter((entry) => entry.isFile())
+    .map((entry) => join(entry.parentPath, entry.name))
+    .filter((file) => file !== home && !file.startsWith(`${home}/`));
+  assert.ok(files.some((file) => file.includes(`${run.run_id}`)), `the run's own files were scanned: ${files.length} files`);
+  const holding = files.filter((file) => readFileSync(file).toString("latin1").includes(TOKEN));
+  assert.deepEqual(holding.map((file) => file.slice(leaking.data.length)), [], "the sign-in's token is in no file of the data directory but its own folder");
 });
 
 /** The owner's session and the API token, each as a request to `server`'s /v2. */
@@ -1282,7 +1383,7 @@ test("a run no person started (a scheduled run, a learned workflow's audit shado
   const { data, file, origin } = await installed(t, (o) => signingIn(o));
   assert.equal((await signIn(file, data)).status, 0);
   await noteChecked(data, file);
-  const server = await serve(t, { data, harnessRecipes: [file], harnessSignIn: true });
+  const server = await serve(t, { data, harnessRecipes: [file], harnessSignIn: true, accounts: true });
   // A person's run goes on the sign-in: its agent and revision are the schedule's.
   const person = await startRun(server.api, "nightly", "Reply with the word ready.", { harness: "model-agent", model: "model-agent/default" });
   const ran = await follow(server.api, person.run_id, ["completed", "failed"], { deadlineMs: 120_000 });
@@ -1305,7 +1406,7 @@ test("a run no person started (a scheduled run, a learned workflow's audit shado
     const { last } = await follow(server.api, id, ["completed", "failed"], { deadlineMs: 120_000 });
     const read = (await server.api("GET", `/runs/${id}`)).body;
     assert.equal(last.status, "failed", `${kind}: ${JSON.stringify(read)}`);
-    assert.match(JSON.stringify(read), /never on its owner's own sign-in/, kind);
+    assert.match(JSON.stringify(read), /runs on its owner's own sign-in only for a run its owner started/, kind);
     assert.equal(origin.messages().length, before, `${kind}: the vendor heard nothing, no turn went on the sign-in`);
   }
 });
@@ -1378,7 +1479,7 @@ test("a trigger's message never runs in a session its claim started on its owner
   const { data, file, origin } = await installed(t, (o) => signingIn(o), step);
   assert.equal((await signIn(file, data)).status, 0);
   await noteChecked(data, file);
-  const server = await serve(t, { data, harnessRecipes: [file], harnessSignIn: true });
+  const server = await serve(t, { data, harnessRecipes: [file], harnessSignIn: true, accounts: true });
   const { owner } = await asOwnerAndToken(server);
   assert.equal((await server.api("POST", "/agents", agent("held", { harness: "model-agent", model: "model-agent/default" }))).status, 201);
   const run = (await server.api("POST", "/agents/held/runs", { input: { content: "Hold the answer until told." }, max_cost_usd: 1 })).body;
@@ -1387,9 +1488,14 @@ test("a trigger's message never runs in a session its claim started on its owner
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
   assert.ok(origin.messages().every((r) => r.headers["x-api-key"] === TOKEN), "the person's turn on the owner's sign-in");
+  // A person's run on the sign-in carries its warning (store-view.ts signInWarningOf, run-launch.ts personStarted).
+  assert.match((await server.api("GET", `/runs/${run.run_id}`)).body.sign_in_warning ?? "", /vendor's terms may not cover use through AgentRun/);
 
   // Its harness's key saved now: a trigger's message to the run is no longer refused where it is made.
   assert.equal((await owner("PUT", "/settings/harness-keys/model-agent/MODEL_AGENT_GEMINI_API_KEY", { value: plantedValue("harness-vendor-key") })).status, 204);
+  // And a person's run started now goes on that key, not the sign-in: no warning.
+  const onKeys = (await server.api("POST", "/agents/held/runs", { input: { content: "Reply with the word ready." }, max_cost_usd: 1 })).body;
+  assert.equal((await server.api("GET", `/runs/${onKeys.run_id}`)).body.sign_in_warning, undefined, "a run on keys carries no sign-in warning");
   const made = await server.api("POST", "/triggers", { name: "poke", source: { kind: "webhook" }, target: { kind: "message_run", run_id: run.run_id, input: { content: "A new event came in." } } });
   assert.equal(made.status, 201, JSON.stringify(made.body));
   const body = '{"ticket":8}';

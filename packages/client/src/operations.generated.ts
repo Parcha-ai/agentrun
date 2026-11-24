@@ -814,6 +814,7 @@ export type Run = {
     firing_key: string;
   } | null;
   audit_of?: string | null;
+  sign_in_warning?: string;
   path?: "agent" | "handed_back" | "workflow" | "replay" | "audit" | null;
   workflow?: {
     name: string | null;
@@ -1306,6 +1307,7 @@ export type Features = {
     title: boolean;
     labels: boolean;
     max_open_s: number;
+    max_open_per_agent?: number;
   };
 };
 

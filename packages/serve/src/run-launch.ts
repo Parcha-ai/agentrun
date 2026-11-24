@@ -17,6 +17,10 @@ import { ID, isObject, type Json } from "./validate.js";
 import type { Place } from "./workspace/place.js";
 import { relativeSegments } from "./workspace/paths.js";
 
+/** Who of the owner started a run (RunLaunch.startedBy). */
+export type StartedBy = "owner_session" | "token";
+const STARTED_BY: readonly string[] = ["owner_session", "token"];
+
 /** What a run is launched with: everything its runner needs to build the run's spec at its claim, nothing derived later.
  *  The server writes it once at start; the runner reads it at each claim (its claim rebuilds the run from the store, this
  *  body included). `harness` picks the loop's adapter (absent, the revision's harness is used); `input` is the start
@@ -83,6 +87,15 @@ export interface RunLaunch {
   readonly audit?: Replay;
   /** The trigger and firing that started the run, or none for a person's run. */
   readonly trigger?: RunTrigger;
+  /** The owner's own request that started the run: under the API token (`token`) or the owner's signed-in session
+   *  (`owner_session`), stamped by the start routes alone (runs-over-store.ts startRun, startInline) from the request.
+   *  Absent wherever there is no such record: a schedule's or trigger's run, a learned workflow's audit shadow or replay,
+   *  a start from the console of a server with no owner's account, and an imported run or one made before launches kept
+   *  it. A plan-billed recipe runs on its owner's sign-in only for a run that carries it (personStarted). */
+  readonly startedBy?: StartedBy;
+  /** When the caller says the run started (an SDK start's `started_at`, ms), served as the run's created_at; the run's
+   *  row keeps when it arrived. Absent: created_at is the arrival. */
+  readonly startedAt?: number;
   /** Who the first message is from, when not the person: kept only through the fail-safe below. */
   readonly inputOrigin?: MessageOrigin;
   /** A run that re-asks its agent after it ends (a trigger's follow-up). */
@@ -207,6 +220,8 @@ export function launchBody(launch: RunLaunch): Json {
     ...(launch.replay ? { replay: { of: launch.replay.of, workflow: launch.replay.workflow, digest: launch.replay.digest } } : {}),
     ...(launch.audit ? { audit: { of: launch.audit.of, workflow: launch.audit.workflow, digest: launch.audit.digest } } : {}),
     ...(launch.trigger ? { trigger: launch.trigger } : {}),
+    ...(launch.startedBy ? { started_by: launch.startedBy } : {}),
+    ...(launch.startedAt !== undefined ? { started_at: launch.startedAt } : {}),
     ...(launch.inputOrigin ? { input_origin: launch.inputOrigin } : {}),
     ...(launch.followUp ? { follow_up: true } : {}),
     ...(launch.archilDisk ? { archil_disk: { disk_id: launch.archilDisk.diskId, kind: launch.archilDisk.kind } } : {}),
@@ -236,11 +251,14 @@ export function launchOnItsDisk(launch: RunLaunch): RunLaunch {
   return { ...launch, learning: { seed: null, section: "", seedFailed: "other_disk", ...(noWorkflows ? { noWorkflows } : {}), ...(model ? { model } : {}), ...(use ? { use } : {}) } };
 }
 
-/** Whether a person started the run: no trigger fired it (a schedule's, a webhook's, a trigger's turn into a run), and it
+/** Whether the owner is on record as starting the run: its launch carries startedBy (their request made it, under the
+ *  token or their password session), no trigger fired it (a schedule's, a webhook's, a trigger's turn into a run), and it
  *  is no learned workflow's audit shadow (runner/audit.ts) or replay (runner/promotion.ts), which the server starts
- *  itself. Only such a run goes on its owner's own sign-in (runner/harness-loops.ts, cli-run-spec.ts). */
-export const personStarted = (launch: Pick<RunLaunch, "trigger" | "audit" | "replay">): boolean =>
-  launch.trigger === undefined && launch.audit === undefined && launch.replay === undefined;
+ *  itself. An imported run or one from before launches kept the record is not. The one rule for who goes on the owner's
+ *  own sign-in: only such a run does (runner/harness-loops.ts, run-child-host.ts, cli-run-spec.ts), and only such a run
+ *  carries sign_in_warning (store-view.ts). */
+export const personStarted = (launch: Pick<RunLaunch, "startedBy" | "trigger" | "audit" | "replay">): boolean =>
+  launch.startedBy !== undefined && launch.trigger === undefined && launch.audit === undefined && launch.replay === undefined;
 
 /** A launch body read back into a `RunLaunch`, with the input-origin fail-safe applied through the body's own trigger, or
  *  undefined when the body is not one (not an object, or it names no place: a damaged or hand-edited body). */
@@ -280,6 +298,8 @@ export function readLaunchBody(stored: unknown): RunLaunch | undefined {
     ...(readReplay(stored.replay) ? { replay: readReplay(stored.replay)! } : {}),
     ...(readReplay(stored.audit) ? { audit: readReplay(stored.audit)! } : {}),
     ...(trigger ? { trigger } : {}),
+    ...(typeof stored.started_by === "string" && STARTED_BY.includes(stored.started_by) ? { startedBy: stored.started_by as StartedBy } : {}),
+    ...(typeof stored.started_at === "number" && Number.isFinite(stored.started_at) ? { startedAt: stored.started_at } : {}),
     ...(inputOrigin ? { inputOrigin } : {}),
     ...(stored.follow_up === true ? { followUp: true } : {}),
     ...(archilDisk ? { archilDisk } : {}),
