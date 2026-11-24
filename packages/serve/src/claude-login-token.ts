@@ -777,15 +777,12 @@ export function loginTokensFor(login: ClaudeAgentLogin, log: (fields: Record<str
   return reader;
 }
 
-/** The words a run's own process fails in when its runner hands it no reader of the login (a claim this runner does not
- *  put on AgentRun's own login folder). */
-export const LOGIN_NOT_HANDED = "This run's runner handed it no Claude Code login: it runs each run as a user of its own and hands such a run only AgentRun's own login folder's token. Switch to that folder under Settings → Model keys, set AGENTRUN_RUN_USER=same, or give the run a model_key.";
-
 /** A run's own process's login (held.ts claudeLogin's reader): each token it reads held by `hold` (the run's redactors)
  *  and this process's own (secrets.ts holdSecret) before the run's CLI is handed it, and a token Anthropic refused told
- *  to the runner, which renews it at the next ask. No reader: refused in words, never a silent switch to a model key. */
-export function heldTokenLogin(reader: { token(): Promise<string>; refused?(sent: string): Promise<void> } | undefined, hold: (values: string[]) => void): ClaudeLoginToken {
-  if (!reader) throw new Error(LOGIN_NOT_HANDED);
+ *  to the runner, which renews it at the next ask. A process its runner hands no reader runs on no login (cli-run-spec.ts):
+ *  its claim read the login as off for it, or its run brought its own model key; a claim it may not run on the login is
+ *  refused at the claim, in that claim's words (run-child-host.ts staysInRunner). */
+export function heldTokenLogin(reader: { token(): Promise<string>; refused?(sent: string): Promise<void> }, hold: (values: string[]) => void): ClaudeLoginToken {
   return {
     token: async () => {
       const token = await reader.token();

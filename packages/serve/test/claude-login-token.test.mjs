@@ -1576,6 +1576,102 @@ test("a renewal whose save fails to read the login's file (an I/O error, not the
   assert.deepEqual(listing(login.dir), [".credentials.json"], "no temp file or lock left");
 });
 
+/** The refresh locks' file operations for `login`, its older lock beside the folder never made (the CLI goes on without
+ *  it), each read of its lock in the folder counted (`reads.n`) and failed (EIO) while `fails(n)` holds. */
+function lockReads(login, fails) {
+  const [current, legacy] = [join(login.dir, ".oauth_refresh.lock"), `${realpathSync(login.dir)}.lock`];
+  const reads = { n: 0, failed: [] };
+  const lockFs = {
+    mkdir: (path) => (path === legacy ? notWritable(path) : fsp.mkdir(path)),
+    stat: async (path) => {
+      if (path === current && fails(++reads.n)) {
+        reads.failed.push(reads.n);
+        throw ioError(path);
+      }
+      return fsp.stat(path);
+    },
+    utimes: (path, atime, mtime) => fsp.utimes(path, atime, mtime),
+    rm: (path, options) => fsp.rm(path, options),
+  };
+  return { current, reads, lockFs };
+}
+
+test("a held pair's save whose read of its lock fails for a reason other than the lock being gone writes nothing under it: the pair stays held, said as an unread lock, and the next ask saves it", { timeout: 20_000 }, async (t) => {
+  assert.equal(typeof tokens.renewLogin, "function", "the runner's renewal (renewLogin)");
+  const { data, login } = loginFolder(t);
+  const start = 1_900_000_000_000;
+  const file = join(login.dir, ".credentials.json");
+  const old = { access: fake("access-old"), refresh: fake("refresh-old") };
+  const next = { access: fake("access-new"), refresh: fake("refresh-new") };
+  const oldText = JSON.stringify({ claudeAiOauth: oauthOf(old.access, start + 60_000, old.refresh) });
+  // The first save fails (the file reached through a link, which the runner never replaces): the renewed pair is held.
+  const elsewhere = join(data, "credentials-elsewhere.json");
+  writeFileSync(elsewhere, oldText, { mode: 0o600 });
+  symlinkSync(elsewhere, file);
+  const endpoint = await rotatingEndpoint(t, new Map([[old.refresh, next]]));
+  // Armed for the next ask: its reads of the lock are the read back once made (1), the save's check before its write (2,
+  // failed once: EIO) and the release's (3).
+  let armed = false;
+  const { current, reads, lockFs } = lockReads(login, (n) => armed && n === 2);
+  const lines = [];
+  const renew = tokens.renewLogin({ fetch: endpoint.fetch, now: () => start, log: (fields) => lines.push(fields), lockFs, lockUpdateMs: 60_000, lockWaitMs: 1_000 });
+  const reader = new tokens.LoginTokens({ login, now: () => start, renew });
+  assert.equal(await reader.token(), next.access, "renewed, its save failed: the pair is held");
+  rmSync(file);
+  writeWhole(file, oldText);
+  armed = true;
+  reads.n = 0;
+  assert.equal(await reader.token(), next.access, "the held token is handed");
+  assert.deepEqual(reads.failed, [2], "the save's check of its lock failed once");
+  assert.equal(readFileSync(file, "utf8"), oldText, "a save whose read of its lock failed (EIO) writes nothing under it: the file keeps its old pair");
+  assert.deepEqual(lines.filter((fields) => fields.reason === "lock_unread"), [{ claude_login: "renewed", saved: "no", reason: "lock_unread" }], "said as an unread lock, never as one lost");
+  assert.ok(!existsSync(current), "its lock is released");
+  armed = false;
+  assert.equal(await reader.token(), next.access);
+  assert.equal(JSON.parse(readFileSync(file, "utf8")).claudeAiOauth.refreshToken, next.refresh, "the next ask saved the held pair");
+  assert.equal(endpoint.posts.length, 1, "nothing posted after the one renewal");
+});
+
+test("a read of the lock that fails for a reason other than the lock being gone, in the holder's check after its post, is said as an unread lock at that place, never as a lock lost: the answer is written back and the lock released", { timeout: 20_000 }, async (t) => {
+  assert.equal(typeof tokens.renewLogin, "function", "the runner's renewal (renewLogin)");
+  const { login, write } = loginFolder(t);
+  const now = 1_900_000_000_000;
+  const old = { access: fake("access-old"), refresh: fake("refresh-old") };
+  const next = { access: fake("access-new"), refresh: fake("refresh-new") };
+  write(oauthOf(old.access, now + 60_000, old.refresh));
+  const endpoint = await rotatingEndpoint(t, new Map([[old.refresh, next]]));
+  // The holder's reads of its lock: the read back once made (1), the check before the post (2), the check after it (3,
+  // failed once: EIO) and the release's (4). No heartbeat reads it meanwhile.
+  const { current, reads, lockFs } = lockReads(login, (n) => n === 3);
+  const lines = [];
+  const renew = tokens.renewLogin({ fetch: endpoint.fetch, now: () => now, log: (fields) => lines.push(fields), lockFs, lockUpdateMs: 60_000, lockWaitMs: 1_000 });
+  assert.equal(await new tokens.LoginTokens({ login, now: () => now, renew }).token(), next.access, "the renewal is handed");
+  assert.deepEqual(reads.failed, [3], "the check after the post failed to read the lock once");
+  assert.deepEqual(lines.filter((fields) => fields.at === "after_post"), [{ claude_login: "lock_unread", at: "after_post" }], "a read that failed (EIO) in the check after the post is said as an unread lock, never as the lock lost: no other holder took it");
+  assert.equal(JSON.parse(readFileSync(join(login.dir, ".credentials.json"), "utf8")).claudeAiOauth.refreshToken, next.refresh, "the answer written back");
+  assert.equal(endpoint.posts.length, 1, "posted once");
+  assert.ok(!existsSync(current), "its lock is released");
+});
+
+test("a holder's release whose two reads of its lock both fail (not the lock gone) never removes it: a lock it cannot read may be another holder's, so it is left for the 60 s stale time", { timeout: 20_000 }, async (t) => {
+  assert.equal(typeof tokens.renewLogin, "function", "the runner's renewal (renewLogin)");
+  const { login, write } = loginFolder(t);
+  const now = 1_900_000_000_000;
+  const old = { access: fake("access-old"), refresh: fake("refresh-old") };
+  const next = { access: fake("access-new"), refresh: fake("refresh-new") };
+  write(oauthOf(old.access, now + 60_000, old.refresh));
+  const endpoint = await rotatingEndpoint(t, new Map([[old.refresh, next]]));
+  // The holder's reads of its lock: the read back (1), the checks before and after the post (2, 3), then the release's
+  // two reads (4, 5), both failed (EIO).
+  const { current, reads, lockFs } = lockReads(login, (n) => n >= 4);
+  const removed = [];
+  const watched = { ...lockFs, rm: (path, options) => (removed.push(path), fsp.rm(path, options)) };
+  const renew = tokens.renewLogin({ fetch: endpoint.fetch, now: () => now, lockFs: watched, lockUpdateMs: 60_000, lockWaitMs: 1_000 });
+  assert.equal(await new tokens.LoginTokens({ login, now: () => now, renew }).token(), next.access, "the renewal is handed");
+  assert.deepEqual(reads.failed, [4, 5], "both of the release's reads failed");
+  assert.ok(!removed.includes(current) && existsSync(current), "a release whose two reads of the lock failed (EIO) never removes it: left for the stale time");
+});
+
 test("a renewal Anthropic refuses (400 invalid_grant) or that fails (a 5xx) refuses the ask in LOGIN_RUNNING_OUT's words, posts once for that ask and never again on its own as the clock goes on, and leaves the file byte for byte as it was; a refresh token refused as invalid_grant is never posted again", async (t) => {
   assert.equal(typeof tokens.LoginTokens, "function", "the runner has a reader of the login's access token");
   for (const [why, answer, nextAskPosts] of [
@@ -1837,7 +1933,7 @@ test("every value the runner reads from the login is held for redaction, and eac
   assert.ok(held.includes(access) && held.includes(refresh), "the access and the refresh token are this process's secrets, cut from what it writes");
 });
 
-test("a run's own process holds each token its runner hands before its CLI has it, tells its runner a token Anthropic refused, and with no reader handed it is refused in words, never moved to a model key", async (t) => {
+test("a run's own process holds each token its runner hands before its CLI has it, and tells its runner a token Anthropic refused", async (t) => {
   assert.equal(typeof tokens.heldTokenLogin, "function", "a run's own process wraps its runner's reader (claude-login-token.ts heldTokenLogin)");
   const handed = fake("access-handed");
   const redacted = [];
@@ -1849,12 +1945,6 @@ test("a run's own process holds each token its runner hands before its CLI has i
   assert.deepEqual(Object.keys(login), ["token", "refused"], "a reader alone: no folder, no refresh token");
   await login.refused(handed);
   assert.deepEqual(told, [handed], "the refused token told to the runner, which renews it");
-  assert.throws(() => tokens.heldTokenLogin(undefined, () => {}), (error) => {
-    assert.equal(error.message, tokens.LOGIN_NOT_HANDED);
-    assert.match(error.message, /AGENTRUN_RUN_USER=same/);
-    assert.match(error.message, /model_key/);
-    return true;
-  });
 });
 
 test("the pinned CLI's own write of a login (credentials-cli-2.1.286.json) reads: its access token, to its end; within the margin it is renewed with the login's own client id and scopes", async (t) => {
