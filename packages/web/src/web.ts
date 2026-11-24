@@ -11,7 +11,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { type WebLog, type FetchProvider, type Pages, type WebPage, webFetch, webFetchText } from "./fetch.js";
 import { type Fee, type Pay, unmetered } from "./fees.js";
 import type { Guard } from "./guard.js";
-import type { Part } from "./page.js";
+import { clip, type Page, type Part, partProblem, URL_MAX } from "./page.js";
 import { type ExaLimited, exaLimitOf, exaSearch } from "./providers/exa-keyless.js";
 import { type FirecrawlFailed, firecrawlFetch, firecrawlSearch, type KeylessFetch } from "./providers/firecrawl-keyless.js";
 import type { Words } from "./providers/mcp.js";
@@ -111,7 +111,7 @@ export type SearchOptions = { n?: number; signal?: AbortSignal };
 export type FetchOptions = Part & { signal?: AbortSignal };
 export type Web = {
   search(query: string, options?: SearchOptions): Promise<{ answer: Search; receipt: Receipt }>;
-  fetch(url: string, options?: FetchOptions): Promise<{ answer: WebPage; receipt: Receipt }>;
+  fetch(url: string, options?: FetchOptions): Promise<{ answer: WebPage | Page; receipt: Receipt }>;
 };
 
 /** The fees of the requests sent within one call. */
@@ -155,15 +155,22 @@ export function createWeb(config: WebConfig): Web {
     async fetch(url, { offset, maxChars, signal } = {}) {
       const lines: Fee[] = [];
       const tries: Try[] = [];
+      // A part a call may not ask for is refused before anything is fetched, as serve's fetchFor refuses it.
+      const problem = partProblem({ offset, maxChars });
+      if (problem) {
+        const refused: Page = { ok: false, url: clip(url, URL_MAX), status: 0, title: "", text: "", links: [], error: problem };
+        return { answer: refused, receipt: { op: "fetch", asked: url, provider: null, tries, ...judged, out: outOf(webFetchText(refused)), cost: { usd: 0, lines } } };
+      }
       const cached = pages.has(url);
       const log: WebLog = (event, fields) => {
         if (event === "web_fetch_firecrawl_failed") tries.push({ provider: "firecrawl-keyless", outcome: "error", ...(fields.said ? { error: fields.said } : {}) });
         config.log?.(event, fields);
       };
       const order = config.order.fetch;
-      const answer = await feesOfCall.run(lines, () =>
+      const extract = order.includes("parallel") ? parallelOf() : null;
+      const page = await feesOfCall.run(lines, () =>
         webFetch(url, {
-          parallel: order.includes("parallel") ? parallelOf() : null,
+          parallel: extract,
           firecrawl: order.includes("firecrawl-keyless") ? firecrawlOf() : null,
           pages,
           order,
@@ -175,6 +182,8 @@ export function createWeb(config: WebConfig): Web {
           log,
         }),
       );
+      // Parallel in the order with no key: the page says so beside it, as serve's fetchFor says it.
+      const answer: WebPage = order.includes("parallel") && !extract ? { ...page, parallel: "not tried: this run holds no Parallel key" } : page;
       if (!cached) {
         if (answer.parallel) tries.push({ provider: "parallel", outcome: "error", error: answer.parallel });
         if (answer.via !== "stopped" && answer.via !== "none") tries.push({ provider: answer.via, outcome: answer.ok ? "ok" : "error", ...(answer.ok ? {} : { error: answer.refused ?? answer.error ?? "" }) });
