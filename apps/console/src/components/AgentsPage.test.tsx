@@ -102,9 +102,9 @@ describe("AgentEditPage, a new agent from a starter", () => {
     const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
     const button = (label: RegExp) => [...host.querySelectorAll("button")].find((b) => label.test((b.textContent ?? "").trim()));
     act(() => root!.render(page(null)));
-    await act(async () => { button(/Settings/)!.click(); });
+    await act(async () => { button(/Model & runtime/)!.click(); });
     await pick(picker(host, "Runtime")!, choice);
-    await act(async () => { button(/Context/)!.click(); });
+    await act(async () => { button(/General/)!.click(); });
     await act(async () => {
       const name = host.querySelector<HTMLInputElement>('input[placeholder="e.g., Invoice checker"]')!;
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(name, "Gambling check");
@@ -176,15 +176,15 @@ describe("AgentEditPage, a new agent", () => {
 });
 
 describe("AgentsPage's coding-agent handoff", () => {
-  it("offers Build an agent and the native connect dropdown without opening a legacy editor", async () => {
+  it("offers direct connection setup and a primary New agent editor action", async () => {
     const host = document.body.appendChild(document.createElement("div")); root = createRoot(host);
     const v2 = { listAgents: async () => ({ agents: [], next_cursor: null }) };
     await act(async () => root!.render(createElement(AgentsPage, { v2: v2 as never, archived: false, go: () => {} })));
-    const button = (label: string) => [...host.querySelectorAll("button")].find((control) => control.textContent === label);
-    expect(button("Build an agent")).toBeDefined(); expect(button("Connect your agents")).toBeDefined(); expect(button("New agent")).toBeUndefined();
-    await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Choose coding agent for Connect your agents"]')!.click());
-    expect(document.querySelector('[role="menu"]')?.textContent).toContain("Claude Code CLI");
-    expect(document.querySelector('[role="menu"]')?.textContent).toContain("Codex app");
-    expect(document.querySelector('[role="menu"] a')?.getAttribute("href")).toBe("#/agents/connect");
+    const links = [...host.querySelectorAll("header a")];
+    expect(links.map(link => [link.textContent?.trim(), link.getAttribute("href")])).toEqual([
+      ["Connect agent", "#/agents/connect"], ["New agent", "#/agents/new?editor=true"],
+    ]);
+    expect(links[1].className).toContain("bg-primary/10");
+    expect(host.querySelector('header [aria-haspopup="menu"]')).toBeNull();
   });
 });

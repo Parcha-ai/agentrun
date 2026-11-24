@@ -1,5 +1,5 @@
 import { cliLearningOf } from "@/lib/cliLearning";
-import { Archive, ArchiveRestore, ArrowLeft, ArrowRight, BookOpen, Brain, Check, Eye, FileText, History, Monitor, Settings, TriangleAlert, Workflow, Wrench } from "lucide-react";
+import { Archive, ArchiveRestore, ArrowLeft, BookOpen, Brain, Eye, FileText, History, Monitor, Settings, TriangleAlert, Workflow, Wrench } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { LearningField } from "@/components/LearningSwitch";
 import { MonidGrants, monidCards } from "@/components/MonidGrants";
@@ -104,28 +104,28 @@ function workflowIssues(problem: SaveProblem | null, workflow: boolean): { path:
   return mine.length ? mine : workflow ? [{ path: "", message: problem.message }] : null;
 }
 
-/** The section that shows a definition's field; creation keeps tools and skills together. */
-function stepOfField(field: string, creating: boolean): Step | undefined {
-  if (field === "skills" || field.startsWith("skills.")) return creating ? "tools" : "skills";
+/** The section that shows a definition's field; creation and editing share the same sections. */
+function stepOfField(field: string): Step | undefined {
+  if (field === "skills" || field.startsWith("skills.")) return "skills";
   const name = /^definition\.([a-z_]+)/.exec(field)?.[1];
   if (!name) return undefined;
   if (["name", "description", "instructions"].includes(name)) return "context";
   if (["tools", "tool_settings", "approvals"].includes(name)) return "tools";
-  if (name === "skills") return creating ? "tools" : "skills";
+  if (name === "skills") return "skills";
   if (["harness", "thinking", "model", "max_cost_usd"].includes(name)) return "settings";
-  if (name === "learning") return creating ? "settings" : "learning";
+  if (name === "learning") return "learning";
   if (["place", "computer"].includes(name)) return "computer";
   if (name === "workflow") return "workflow";
   return undefined;
 }
 
 const STEPS: { id: Step; label: string; note: string; Icon: typeof FileText }[] = [
-  { id: "context", label: "Context", note: "Name, description and instructions", Icon: FileText },
+  { id: "context", label: "General", note: "Name, description and instructions", Icon: FileText },
   { id: "workflow", label: "Workflow", note: "Its graph and its JSON", Icon: Workflow },
   { id: "computer", label: "Computer", note: "Where it runs and what it drives", Icon: Monitor },
-  { id: "tools", label: "Tools & skills", note: "What this agent can do", Icon: Wrench },
+  { id: "tools", label: "Tools", note: "What this agent can do", Icon: Wrench },
   { id: "skills", label: "Skills", note: "Skill files saved with this revision", Icon: BookOpen },
-  { id: "settings", label: "Settings", note: "Runtime, model and spending", Icon: Settings },
+  { id: "settings", label: "Model & runtime", note: "Runtime, model and spending", Icon: Settings },
   { id: "learning", label: "Learning", note: "Corrections and reusable workflows", Icon: Brain },
   { id: "history", label: "History", note: "Revisions and the current one", Icon: History },
 ];
@@ -259,8 +259,7 @@ export function AgentEditor({ agent, revisions = [], skillFiles, skillFilesError
   // `revisions` counts them; the current one is the agent's `revision`, which can be an earlier one after "Make current".
   const current = revisions.find((r) => r.revision === agent?.revision) ?? revisions.find((r) => r.current);
   // The Computer step is an agentic agent's (a workflow runs on the runner), on a server that lists where runs can go.
-  const steps = STEPS.filter((s) => !(creating && (s.id === "history" || s.id === "skills" || s.id === "learning")) && (s.id !== "workflow" || workflow) && !(starting && s.id === "tools") && (s.id !== "computer" || (!workflow && !starting && !!(caps.computers || caps.places))) && (s.id !== "learning" || (!workflow && !starting && !!caps.learning)))
-    .map((s) => creating ? s : { ...s, label: s.id === "context" ? "General" : s.id === "tools" ? "Tools" : s.id === "settings" ? "Model & runtime" : s.label });
+  const steps = STEPS.filter((s) => !(creating && s.id === "history") && (s.id !== "workflow" || workflow) && !(starting && (s.id === "tools" || s.id === "skills")) && (s.id !== "computer" || (!workflow && !starting && !!(caps.computers || caps.places))) && (s.id !== "learning" || (!workflow && !starting && !!caps.learning)));
   // A step this agent or server has none of (the Computer step on a server that lists no places) opens the first one.
   const step: Step = steps.some((s) => s.id === chosen) ? chosen : steps[0]!.id;
   const at = steps.findIndex((s) => s.id === step);
@@ -338,7 +337,7 @@ export function AgentEditor({ agent, revisions = [], skillFiles, skillFilesError
       <header className={cn(pageToolbarClass, "flex-wrap gap-3 px-5 md:px-8")}>
         {!embedded && <><Button size="icon" variant="ghost" aria-label="Back" title="Back" onClick={onBack}><ArrowLeft aria-hidden /></Button>
         <h1 className="min-w-0 flex-1 truncate font-mono text-xl font-semibold" title={creating ? undefined : d!.name}>{creating ? "New agent" : d!.name}</h1></>}
-        {!embedded && <CodingAgentAction label="Use your agent" prompt={editPrompt} />}
+        {!embedded && <CodingAgentAction label={creating ? "Use coding agent" : "Use your agent"} prompt={editPrompt} />}
         {/* Metadata can wrap under a standalone editor's name; Archive stays at the right edge. */}
         {agent && (
           <div className={cn("flex min-w-0 flex-1 flex-wrap items-center gap-3", !embedded && "basis-full sm:basis-auto")} role="group" aria-label="About this agent">
@@ -368,7 +367,7 @@ export function AgentEditor({ agent, revisions = [], skillFiles, skillFilesError
               <ul className="mt-2 space-y-1 font-mono text-small">
                 {g.lines.map((w, i) => {
                   // The step a line's field is on, as a link to it (the raw field on hover); a field no step shows, as is.
-                  const at = steps.find((s) => s.id === stepOfField(w.field, creating));
+                  const at = steps.find((s) => s.id === stepOfField(w.field));
                   return <li key={`${w.field}:${i}`}>{at ? <button type="button" title={w.field} onClick={() => goTo(at.id)} className="text-muted-foreground underline underline-offset-2 hover:text-foreground">{at.label}</button> : <span className="text-muted-foreground">{w.field}</span>} {w.message}</li>;
                 })}
               </ul>
@@ -377,24 +376,7 @@ export function AgentEditor({ agent, revisions = [], skillFiles, skillFilesError
         </div>
       )}
       <div className="flex min-h-0 flex-1 flex-col md:flex-row">
-        {creating ? <ol className={cn("relative flex shrink-0 gap-1 overflow-x-auto border-b p-3 md:flex-col md:gap-0 md:border-b-0 md:border-r md:p-4", step === "workflow" ? "md:w-[76px]" : "md:w-[240px]")}>
-          {steps.map((s, i) => (
-            <li key={s.id} className="shrink-0">
-              <button type="button" aria-current={step === s.id ? "step" : undefined} onClick={() => goTo(s.id)}
-                className={cn("flex w-full items-start gap-3 border-l-2 px-3 py-2.5 text-left font-mono", step === s.id ? "border-l-foreground bg-foreground/5" : "border-l-transparent text-muted-foreground hover:text-foreground")}>
-                <span className={cn("inline-flex size-6 shrink-0 items-center justify-center border text-label font-semibold", step === s.id ? "border-foreground bg-foreground text-background" : i < at ? "border-border-strong" : "border-border")}>
-                  {i < at ? <Check className="size-3" aria-hidden /> : i + 1}
-                </span>
-                <span className={cn("hidden min-w-0", step !== "workflow" && "md:block")} title={step === "workflow" ? s.label : undefined}>
-                  <span className="caps flex items-center gap-1.5 text-small"><s.Icon className="size-3.5" aria-hidden /> {s.label}</span>
-                  <span className="mt-0.5 block text-label text-muted-foreground">{s.note}</span>
-                </span>
-                {/* Below md the rail is a row across the top: step numbers only, so it fits a phone; the step's name heads the step. */}
-                <span className="sr-only md:hidden">{s.label}</span>
-              </button>
-            </li>
-          ))}
-        </ol> : <nav aria-label="Agent settings sections" className="shrink-0 border-b px-5 py-3 md:min-h-0 md:w-sidebar md:overflow-y-auto md:border-b-0 md:border-r md:p-4">
+        <nav aria-label="Agent settings sections" className="shrink-0 border-b px-5 py-3 md:min-h-0 md:w-sidebar md:overflow-y-auto md:border-b-0 md:border-r md:p-4">
           <div className="md:hidden">
             <Picker label="Settings section" value={step} onChange={(value) => goTo(value as Step)} options={steps.map((s) => ({ value: s.id, label: s.label }))} className="w-full" />
           </div>
@@ -408,9 +390,8 @@ export function AgentEditor({ agent, revisions = [], skillFiles, skillFilesError
               </NavItem>
             </li>)}
           </ul>
-        </nav>}
+        </nav>
         <section className="min-h-0 min-w-0 flex-1 overflow-auto px-5 py-6 md:px-10">
-          {creating && <p className="caps text-label text-muted-foreground">Step {at + 1}</p>}
           <h2 className="mb-6 border-b pb-4 text-lg font-semibold">{steps[at].label}</h2>
 
           <fieldset disabled={creating && saving} className="m-0 min-w-0 border-0 p-0">
@@ -515,7 +496,6 @@ export function AgentEditor({ agent, revisions = [], skillFiles, skillFilesError
                   <p className="text-small text-muted-foreground" data-approvals-not-questions>These are about tools, not questions: the agent asks you a question only with ask_person, in Tools.</p>
                 </fieldset>
               )}
-              {creating && skillsField}
             </div>
           )}
 
@@ -576,7 +556,6 @@ export function AgentEditor({ agent, revisions = [], skillFiles, skillFilesError
                   </div>
                 </SettingsSection>
               )}
-              {creating && learningSettings}
             </div>
           )}
 
@@ -611,11 +590,9 @@ export function AgentEditor({ agent, revisions = [], skillFiles, skillFilesError
           </fieldset>
         </section>
       </div>
-      <footer className="flex flex-wrap items-center gap-3 border-t px-5 py-3 md:px-8">
-        {creating && <Button size="sm" variant="ghost" disabled={at === 0} onClick={() => goTo(steps[at - 1].id)}><ArrowLeft aria-hidden /> Previous</Button>}
-        {step !== "history" && <Input value={note} onChange={(e) => setNote(e.target.value)} placeholder={creating ? "" : "What changed (a note on this revision)"} aria-label="Revision note" className={cn("h-9 min-w-0 flex-1", creating && "invisible")} />}
+      <footer className="flex flex-wrap items-center justify-end gap-3 border-t px-5 py-3 md:px-8">
+        {!creating && step !== "history" && <Input value={note} onChange={(e) => setNote(e.target.value)} placeholder="What changed (a note on this revision)" aria-label="Revision note" className="h-9 min-w-0 flex-1" />}
         {step === "history" && <span className="flex-1" />}
-        {creating && at < steps.length - 1 && <Button size="sm" onClick={() => goTo(steps[at + 1].id)}>Next <ArrowRight aria-hidden /></Button>}
         {/* Off with nothing to save, saying which revision is saved (the served current one); on with an edit. */}
         {!viewing && <Button ref={saveButton} size="sm" variant="solid" onClick={save} disabled={!onSave || saving || (!creating && !dirty) || !f.name?.trim() || (!workflow && !starting && !f.instructions?.trim())}>{creating ? (saving ? "Creating…" : "Create") : saving ? "Saving…" : dirty ? "Save revision" : current ? `Saved · rev ${current.version}` : "Saved"}</Button>}
         {/* Why Create is off, under it: what the form still needs. A name is the person's own (it is fixed at creation), so

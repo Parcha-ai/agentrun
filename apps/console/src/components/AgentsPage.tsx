@@ -9,7 +9,8 @@ import { backendSdkOf } from "@/lib/backendSdk";
 import { editAgentPrompt } from "@/lib/codingAgentPrompts";
 import { useObservations } from "@/lib/observations";
 import { AgentsList } from "@/components/AgentsList";
-import { ConnectExistingAgents } from "@/components/NativeConnections";
+import { buttonVariants } from "@/components/ui/button";
+import { Plug } from "lucide-react";
 import { type Agent, createBody, editBody, saveError } from "@/lib/agentForm";
 import { allPages, type Client, ClientError } from "@/lib/client";
 import { useMcpServers } from "@/lib/useMcpServers";
@@ -41,7 +42,7 @@ export function AgentsPage({ v2, archived, go, learning }: { v2: Client; archive
   }, [v2, archived]); // eslint-disable-line react-hooks/exhaustive-deps
   return (
     <AgentsList observations={observations} agents={agents} archived={archived} onArchivedChange={(on) => go(on ? "#/agents?archived=true" : "#/agents")} error={error} learning={learning}
-      handoff={<ConnectExistingAgents />}
+      handoff={<a href="#/agents/connect" className={buttonVariants({ size: "sm" })}><Plug aria-hidden />Connect agent</a>}
       actions={{
         onOpen: (id) => go(agentHash(id)),
         onEdit: (id) => go(agentHash(id, "settings")),

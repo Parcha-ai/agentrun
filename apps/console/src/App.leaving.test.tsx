@@ -232,7 +232,7 @@ describe("App, leaving the agent editor with nothing unsaved", () => {
 
   it("opens the blank editor from Agents without creating an agent", async () => {
     const page = await open("#/agents");
-    const blank = () => [...page.host.querySelectorAll("a")].find((link) => link.textContent?.trim() === "Open editor");
+    const blank = () => [...page.host.querySelectorAll("a")].find((link) => link.textContent?.trim() === "New agent");
     await page.wait(() => !!blank(), "the blank editor link");
     await page.click(blank());
     await page.wait(() => !!page.host.querySelector('#agent-name'), "the new agent form");

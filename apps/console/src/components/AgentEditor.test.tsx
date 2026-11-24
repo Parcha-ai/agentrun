@@ -64,7 +64,7 @@ describe("AgentEditor, an agent with no web tool on purpose", () => {
 });
 
 // On a phone (375 px) the name gets the row: the kind chip and revision count sit in their own row under it,
-// and the settings picker names the current section. New agents keep the numbered creation rail.
+// and the settings picker names the current section. New agents use the same sections.
 describe("AgentEditor, on a narrow screen", () => {
   const agent = { ...SERVED_AGENT, agent_id: "qa", kind: "agentic" as const, revision: "r1", revisions: 3, archived_at: null, definition: { version: 1, name: "QA pi", instructions: "Answer.", harness: "pi", skills: [], tools: ["read"] } };
   it("keeps the badges together and the named Archive icon at the right of the header", () => {
@@ -95,17 +95,17 @@ describe("AgentEditor, on a narrow screen", () => {
     expect(menu?.querySelector('[aria-current="step"], .lucide-check')).toBeNull();
     expect(host.textContent).not.toMatch(/Step \d/);
   });
-  it("keeps a new agent's numbered creation steps and its navigation controls", () => {
-    const html = renderToStaticMarkup(createElement(AgentEditor, { agent: null, caps, step: "context" }));
-    const rail = html.slice(html.indexOf("<ol"), html.indexOf("</ol>"));
-    const narrow = [...rail.matchAll(/<span class="([^"]*md:hidden[^"]*)">([^<]*)<\/span>/g)];
-    expect(narrow.map((m) => m[2])).toEqual(["Context", "Tools &amp; skills", "Settings"]);
-    for (const m of narrow) expect(m[1].split(" ")).toContain("sr-only");
-    expect(html).toContain('aria-current="step"');
-    expect(html).toContain("Step 1");
-    expect(html).toContain("Previous");
-    expect(html).toContain("Next");
-    expect(html).not.toContain('aria-label="Agent settings sections"');
+  it("uses the settings sections for a new agent without a numbered wizard", () => {
+    const host = document.createElement("div");
+    host.innerHTML = renderToStaticMarkup(createElement(AgentEditor, { agent: null, caps: { ...caps, learning: "on" }, step: "context" }));
+    const nav = host.querySelector('nav[aria-label="Agent settings sections"]');
+    expect(nav?.querySelector('button[aria-label="Settings section"]')?.textContent).toBe("General");
+    expect([...nav!.querySelectorAll("ul button")].map(b => b.textContent?.trim())).toEqual([
+      "GeneralName, description and instructions", "ToolsWhat this agent can do", "SkillsSkill files saved with this revision", "Model & runtimeRuntime, model and spending", "LearningCorrections and reusable workflows",
+    ]);
+    expect(host.querySelector('[aria-current="step"]')).toBeNull();
+    expect(host.textContent).not.toMatch(/Step \d|Previous|Next/);
+    expect(host.querySelector('input[aria-label="Revision note"]')).toBeNull();
   });
 });
 
@@ -145,9 +145,8 @@ describe("AgentEditor, tools a person chose by hand", () => {
     const withModule = { ...both, harnesses: [...both.harnesses, { id: "own", label: "Own", available: true }], tools: both.tools.map((t) => ({ ...t, harnesses: onModule(t.harnesses) })), mcpHarnesses: ["pi", "claude-agent", "codex", "opencode", "own"] };
     const { host, click, checked, done } = await setup({ agent: null, caps: withModule, step: "tools" });
     const picked = checked();
-    // ask_person first: the tool that lets the agent stop and ask you, apart from Tool approvals.
     expect(picked).toEqual(["ask_person", "read", "write", "web_fetch"]);
-    click([...host.querySelectorAll("button")].find((b) => /Settings/.test(b.textContent ?? "")));
+    click([...host.querySelectorAll("button")].find((b) => /Model & runtime/.test(b.textContent ?? "")));
     await pick(picker(host, "Runtime")!, "own");
     click([...host.querySelectorAll("button")].find((b) => /Tools/.test(b.textContent ?? "")));
     expect(checked()).toEqual(picked);
@@ -161,12 +160,12 @@ describe("AgentEditor, tools a person chose by hand", () => {
     click(fetchBox);
     const picked = checked();
     expect(picked).not.toContain("web_fetch");
-    click([...host.querySelectorAll("button")].find((b) => /Settings/.test(b.textContent ?? "")));
+    click([...host.querySelectorAll("button")].find((b) => /Model & runtime/.test(b.textContent ?? "")));
     await pick(picker(host, "Runtime")!, "codex");
     click([...host.querySelectorAll("button")].find((b) => /Tools/.test(b.textContent ?? "")));
     // codex runs only the file tools here (no `harnesses` served: the server's own rule): ask_person comes off.
     expect(checked()).toEqual(picked.filter((t) => t !== "ask_person"));
-    click([...host.querySelectorAll("button")].find((b) => /Settings/.test(b.textContent ?? "")));
+    click([...host.querySelectorAll("button")].find((b) => /Model & runtime/.test(b.textContent ?? "")));
     await pick(picker(host, "Runtime")!, "pi");
     click([...host.querySelectorAll("button")].find((b) => /Tools/.test(b.textContent ?? "")));
     expect(checked()).toEqual(picked);
@@ -211,7 +210,7 @@ describe("AgentEditor, a new decision agent", () => {
     await pick(picker(host, "Runtime")!, DECISION);
     expect(picker(host, "Thinking")).toBeNull();
     expect(button(/Tools/)).toBeUndefined();
-    click(button(/Context/));
+    click(button(/General/));
     expect(host.querySelector("textarea")).toBeNull();
     expect(host.textContent).toContain("Workflow step");
     type(host.querySelector('input[placeholder="e.g., Invoice checker"]'), "Gambling check");
@@ -252,7 +251,7 @@ describe("AgentEditor, a new decision agent", () => {
     expect(picker(host, "Thinking")).toBeNull();
     expect(picker(host, "Model")).toBeNull();
     expect(button(/Tools/)).toBeUndefined();
-    click(button(/Context/));
+    click(button(/General/));
     expect(host.querySelector("textarea")).toBeNull();
     expect(host.textContent).toContain("paste a workflow's JSON over it, in the Workflow step");
     type(host.querySelector('input[placeholder="e.g., Invoice checker"]'), "Next steps");
@@ -294,11 +293,11 @@ describe("AgentEditor, card grids in a narrow pane", () => {
   const classOf = (html: string, marker: RegExp) => marker.exec(html)?.[1]?.split(" ") ?? [];
   it("lays the tool cards out by a minimum column width, not two columns from sm up", () => {
     const html = renderToStaticMarkup(createElement(AgentEditor, { agent: null, caps, step: "tools" }));
-    const cls = classOf(html, /<ul class="([^"]*)"/);
+    const cls = classOf(html.slice(html.indexOf("<fieldset")), /<ul class="([^"]*)"/);
     expect(cls).toContain("grid-cols-[repeat(auto-fill,minmax(min(100%,18rem),1fr))]");
     expect(cls).not.toContain("sm:grid-cols-2");
   });
-  it("groups Runtime, Model and Thinking before separate Spending and Learning sections during creation", () => {
+  it("groups Runtime, Model and Thinking before Spending, with Learning in its own navigation section during creation", () => {
     const host = document.createElement("div");
     host.innerHTML = renderToStaticMarkup(createElement(AgentEditor, { agent: null, caps: { ...caps, learning: "on" }, step: "settings" }));
     const runtime = picker(host, "Runtime")!;
@@ -306,8 +305,9 @@ describe("AgentEditor, card grids in a narrow pane", () => {
     const thinking = picker(host, "Thinking")!;
     const cap = host.querySelector("#agent-max-cost")!;
     const runtimeSection = runtime.closest("section")!;
-    const learning = host.querySelector('[role="switch"][aria-labelledby="learning-switch"]')!;
-    expect([runtimeSection, cap.closest("section")!, learning.closest("section")!].map(section => section.querySelector("h2")?.textContent)).toEqual(["Runtime & model", "Spending", "Learning from runs"]);
+    const learning = host.querySelector('[role="switch"][aria-labelledby="learning-switch"]');
+    expect(learning).toBeNull();
+    expect([runtimeSection, cap.closest("section")!].map(section => section.querySelector("h2")?.textContent)).toEqual(["Runtime & model", "Spending"]);
     expect(runtimeSection.contains(model)).toBe(true);
     expect(runtimeSection.contains(thinking)).toBe(true);
     expect(runtimeSection.contains(cap)).toBe(false);
@@ -315,7 +315,6 @@ describe("AgentEditor, card grids in a narrow pane", () => {
     expect(model.compareDocumentPosition(thinking) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(thinking.compareDocumentPosition(cap) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(cap.closest("section")?.contains(learning)).toBe(false);
-    expect(cap.compareDocumentPosition(learning) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect([...host.querySelectorAll("[class]")].some(element => /(?:^|[ :])columns-/.test(element.className))).toBe(false);
   });
 });

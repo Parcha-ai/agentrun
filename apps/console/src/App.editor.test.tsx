@@ -102,9 +102,9 @@ it("opens creation from the Agents toolbar and keeps Templates accessible withou
   expect(agents.parentElement).toBe(entryButton(nav, "Templates")?.parentElement);
   expect(agents.parentElement).toBe(entryButton(nav, "Runs")?.parentElement);
   const toolbar = host.querySelector("h1")!.closest("header")!;
-  expect(entryButton(toolbar, "Choose coding agent for Connect agent")).toBeTruthy();
-  expect(entryButton(toolbar, "Choose coding agent for Build an agent")).toBeTruthy();
-  const editor = [...toolbar.querySelectorAll("a")].find(link => link.textContent?.trim() === "Open editor")!;
+  expect([...toolbar.querySelectorAll("a")].map(a => a.textContent?.trim())).toEqual(["Connect agent", "New agent"]);
+  expect(toolbar.querySelector('[aria-haspopup="menu"]')).toBeNull();
+  const editor = [...toolbar.querySelectorAll("a")].find(link => link.textContent?.trim() === "New agent")!;
   expect(editor?.getAttribute("href")).toBe("#/agents/new?editor=true");
   await act(async () => editor.click());
   await waitForEntry(() => !!host.querySelector("#agent-name"));

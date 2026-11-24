@@ -7,7 +7,7 @@ import { type Agent, type AgentFields, createBody, editBody } from "@/lib/agentF
 import { SERVED_AGENT } from "@/test/agent";
 import { pick, picker } from "@/test/picker";
 
-// Learning is its own settings section for an existing agent; creation keeps it in the Settings step.
+// Learning is its own settings section during both creation and editing.
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const tools = [{ name: "read", available: true, harnesses: ["pi", "claude-agent", "codex", "opencode"] }, { name: "write", available: true, harnesses: ["pi", "claude-agent", "codex", "opencode"] }];
@@ -23,7 +23,7 @@ function mount(agent: Agent | null, c: EditorCaps, props: Partial<EditorProps> =
   const saves: AgentFields[] = [];
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
-  act(() => root!.render(createElement(AgentEditor, { agent, caps: c, step: agent ? "learning" : "settings", onSave: async (f) => { saves.push(f); return null; }, ...props })));
+  act(() => root!.render(createElement(AgentEditor, { agent, caps: c, step: "learning", onSave: async (f) => { saves.push(f); return null; }, ...props })));
   const sw = () => host.querySelector('[role="switch"]') as HTMLButtonElement | null;
   const click = async (el: Element) => { await act(async () => { (el as HTMLElement).click(); }); };
   const save = async () => click([...host.querySelectorAll("button")].find((b) => /^(Save revision|Create)$/.test(b.textContent ?? ""))!);
@@ -133,12 +133,14 @@ describe("AgentEditor, Learning settings navigation", () => {
     }
   });
 
-  it("keeps creation learning reachable in Settings and hides it for a workflow starter", async () => {
+  it("keeps creation learning in its own section and hides it for a workflow starter", async () => {
     const e = mount(null, caps("on"));
     expect(e.sw()).toBeTruthy();
+    await pick(picker(e.host, "Settings section")!, "settings");
     await pick(picker(e.host, "Runtime")!, "starter:workflow");
     expect(e.sw()).toBeNull();
     await pick(picker(e.host, "Runtime")!, "pi");
+    await pick(picker(e.host, "Settings section")!, "learning");
     expect(e.sw()).toBeTruthy();
   });
 });

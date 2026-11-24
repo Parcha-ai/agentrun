@@ -112,7 +112,7 @@ describe("the agent editor's composite field groups", () => {
   it.each([WORKFLOW, DECISION])("names the new %s starter explanation instead of labelling a nonexistent input", async (harness) => {
     const { host } = await open({ step: "settings", caps: { ...editorCaps, decisionProvider: "jev" } });
     await pick(picker(host, "Runtime")!, harness);
-    await act(async () => { [...host.querySelectorAll("button")].find((button) => button.textContent?.includes("Context"))!.click(); });
+    await act(async () => { [...host.querySelectorAll("button")].find((button) => button.textContent?.includes("General"))!.click(); });
     const group = namedGroup(host, "Workflow");
     expect(group.textContent).toContain(harness === DECISION ? "A decision agent is a workflow" : "A workflow agent starts from a one-step workflow");
     expect(group.querySelector("label")).toBeNull();

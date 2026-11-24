@@ -2,7 +2,7 @@ import { cliLearningOf, cliLearningLabel } from "@/lib/cliLearning";
 import { ConnectedAgentCard } from "@/components/ObservedSessions";
 import type { ObservationRead } from "@/lib/observations";
 import { agentInventory } from "@/lib/agentInventory";
-import { Archive, FileText, Settings, Bot, Brain, History, Pencil, Play, Search, Workflow } from "lucide-react";
+import { Archive, Plus, Settings, Bot, Brain, History, Pencil, Play, Search, Workflow } from "lucide-react";
 import { type ReactNode, useState } from "react";
 import { ListSkeleton } from "@/components/Skeleton";
 import { Button, buttonVariants } from "@/components/ui/button";
@@ -20,7 +20,7 @@ import { cn } from "@/lib/utils";
 import { workflowShape } from "@/lib/workflowDoc";
 import { CodingAgentAction } from "@/components/CodingAgentAction";
 import { newAgentEditorHref } from "@/lib/agentEditorRoute";
-import { buildAgentPrompt, editAgentPrompt, runAgentPrompt } from "@/lib/codingAgentPrompts";
+import { editAgentPrompt, runAgentPrompt } from "@/lib/codingAgentPrompts";
 import { pageTitleClass, pageToolbarClass } from "@/components/ui/toolbar";
 
 export type AgentsListActions = { onOpen?: (id: string) => void; onEdit?: (id: string) => void; onNew?: () => void; onRuns?: (id: string) => void; onLearning?: (id: string) => void };
@@ -39,7 +39,7 @@ export function AgentsList({ agents, archived = false, onArchivedChange, actions
     <section className="flex min-h-full flex-col">
       <header className={cn(pageToolbarClass, "flex-wrap justify-between gap-3 px-5")}>
         <h1 className={pageTitleClass}><Brain className="size-4" aria-hidden />{archived ? "Archived agents" : "Agents"}</h1>
-        <div className="ml-auto flex flex-wrap items-center justify-end gap-2">{handoff}{!archived && <a href={newAgentEditorHref()} className={buttonVariants({ size: "sm" })}><FileText aria-hidden />Open editor</a>}{!archived && <CodingAgentAction variant="primary" label="Build an agent" prompt={buildAgentPrompt(location.origin)} playgroundHref="#/playground?operation=create-agent" />}</div>
+        <div className="ml-auto flex flex-wrap items-center justify-end gap-2">{handoff}{!archived && <a href={newAgentEditorHref()} className={buttonVariants({ size: "sm", variant: "primary" })}><Plus aria-hidden />New agent</a>}</div>
       </header>
       <div className="p-5 md:p-6">
       <div className="mb-5 flex flex-wrap items-center gap-3">
@@ -66,7 +66,7 @@ export function AgentsList({ agents, archived = false, onArchivedChange, actions
       {!count && !incomplete && (
           <div className="border px-4 py-16 text-center">
             <p className="font-mono text-body text-muted-foreground">{q ? "No agent matches." : archived ? "No archived agents." : "No agents yet."}</p>
-            {!q && !archived && <p className="mt-4 text-lead text-muted-foreground">Connect an existing agent or build one using the actions above. You can also <a className="text-primary-text underline underline-offset-4" href="#/templates">start from a template</a>.</p>}
+            {!q && !archived && <p className="mt-4 text-lead text-muted-foreground">Create an agent or connect one you already use. You can also <a className="text-primary-text underline underline-offset-4" href="#/templates">start from a template</a>.</p>}
           </div>
       )}
       </div>

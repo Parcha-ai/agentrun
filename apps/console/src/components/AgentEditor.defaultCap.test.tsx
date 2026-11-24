@@ -127,7 +127,7 @@ describe("AgentEditor, the agent's default spend cap per run", () => {
     const { host, fill, type, button, save } = mount({ agent: null, step: "context", onSave: async (fields: Record<string, unknown>) => { sent = fields; return null; } });
     fill(host.querySelector<HTMLInputElement>('input[placeholder="e.g., Invoice checker"]'), "Capped");
     fill(host.querySelector("textarea"), "Check.");
-    act(() => { button(/Settings/)!.click(); });
+    act(() => { button(/Model & runtime/)!.click(); });
     type("0.75");
     await save();
     expect(sent).toMatchObject({ max_cost_usd: 0.75 });

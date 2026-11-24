@@ -43,7 +43,7 @@ describe("the Tools step's monid row", () => {
     act(() => root!.render(createElement(AgentEditPage, { v2: createClient({ fetch }), caps: CAPS, agentId: null, go: () => {} })));
     await settle();
     await type(host.querySelector("#agent-name") as HTMLInputElement, "Searcher");
-    await act(async () => { button(host, /Tools & skills/).click(); });
+    await act(async () => { button(host, /Tools/).click(); });
     const row = host.querySelector('[aria-label="monid endpoints"]') as HTMLElement;
     expect(row).not.toBeNull();
     await type(row.querySelector('input[aria-label="monid grant"]') as HTMLInputElement, "monid:keenable/v1/search");

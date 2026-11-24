@@ -86,7 +86,7 @@ describe("AgentEditor: a harness switch keeps no tool the new harness can't run"
     const t = mount(null, "tools");
     // A new agent starts with pi's tools; unticking read by hand marks the tools as the person's own.
     await act(async () => { t.host.querySelector<HTMLInputElement>('input[type="checkbox"][value="read"]')!.click(); });
-    t.step("Settings");
+    t.step("Model & runtime");
     await t.pick("claude-agent");
     expect(t.notice()!.textContent).toContain("ask_person: Runs on Pi here, not on Claude");
     await t.pick("pi");
