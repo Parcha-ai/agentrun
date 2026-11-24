@@ -149,7 +149,7 @@ test("a server with an API key made in the console does not read the machine's f
   const set = await call(server.port, { method: "POST", path: "/v2/setup", headers: { "content-type": "application/json", origin }, body: { password: "not-a-secret" } });
   assert.equal(set.status, 201, set.text);
   const cookie = cookieOf(set);
-  const page = async (method, path, body) => (await call(server.port, { method, path: `/v2${path}`, headers: { cookie, origin, ...(body === undefined ? {} : { "content-type": "application/json" }) }, body }));
+  const page = async (method, path, body) => (await call(server.port, { method, path: `/v2${path}`, headers: { cookie, origin, ...(method === "GET" ? {} : { "content-type": "application/json" }) }, body }));
   const made = await page("POST", "/settings/api-keys", { name: "an app" });
   assert.equal(made.status, 201, made.text);
   const byKey = await server.api("GET", "/wrapped?year=2026", undefined, { authorization: `Bearer ${made.json.api_key}` });
