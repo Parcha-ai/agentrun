@@ -550,7 +550,7 @@ export class ChatGPTPlan implements PlanReader {
       const retired = (carried ?? []).filter((old) => !confirmed.has(old.refresh));
       // The models listed are this sign-in's: a newer sign-in's row lists its own.
       const listed = Boolean(unlisted && models && now.row.credential.refresh === signedIn);
-      const next: Row = { ...rest, ...(listed ? { models } : unlisted ? { unlisted } : {}), ...(retired.length ? { retired } : {}) };
+      const next: Row = { ...rest, ...(listed && models ? { models } : unlisted ? { unlisted } : {}), ...(retired.length ? { retired } : {}) };
       if (!listed && retired.length === (carried ?? []).length) return done;
       const bytes = await this.swap(now.bytes, next);
       if (bytes) {
