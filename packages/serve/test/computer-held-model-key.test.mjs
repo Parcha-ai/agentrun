@@ -24,6 +24,7 @@ import { test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { createRegistry, Harness } from "@earendil-works/pi-durable";
+import { readBackOf } from "@parcha/agentrun-computer";
 import { MODEL_KEYS } from "../dist/model.js";
 import { specFor } from "./runner-spec-support.mjs";
 import { agent, scratch, serve, withEnv } from "./support.mjs";
@@ -59,21 +60,26 @@ const PHONE = { kind: "phone", provider: "phone-harness" };
 /** A run's own key for a model gateway, a test's: never a real one. */
 const GATEWAY_KEY = "not-a-secret-held-gateway-key";
 
-/** The runner's claim-time computer (computerForClaim): the fake computer on `root` as a sandbox, with an event once a
- *  claim asked for it and once it was let go, and the computers it opened (`opened`), counted. */
-function claimSeam(root) {
-  const box = fakeComputer(root);
+/** The runner's claim-time computer (computerForClaim): the fake computer as a sandbox over the run's own folder (Mode 1,
+ *  a bind of it, as Docker's mount is: workspace-fake-processes.mjs sandboxForClaim), its mount checked with the computer
+ *  module's readBackOf, as every real claim's is; with an event once a claim asked for it and once it was let go, and
+ *  the computers it opened (`opened`), counted. `box`: the claim's computer, once a claim made it. */
+function claimSeam() {
   let claim;
   let release;
   const claimed = new Promise((resolve) => (claim = resolve));
   const released = new Promise((resolve) => (release = resolve));
   const count = { opened: 0 };
-  const computerForClaim = async () => {
+  const seam = { box: undefined, claimed, released, count };
+  seam.computerForClaim = async (_launch, _store, deps) => {
+    const spec = await deps.workspace.mountSpec();
+    if (spec?.kind !== "bind") throw new Error(`the fake sandbox binds a folder of this machine (Mode 1), not ${JSON.stringify(spec)}`);
+    seam.box = fakeComputer(spec.path);
     count.opened += 1;
     claim();
-    return { computer: { kind: "sandbox", computer: box, hello: HELLO }, release: async () => release() };
+    return { computer: { kind: "sandbox", computer: seam.box, hello: HELLO, check: { readBackOf } }, release: async () => release() };
   };
-  return { box, claimed, released, computerForClaim, count };
+  return seam;
 }
 
 /** A keyless server with its runner on the seam's computer, and a fake `docker` first on PATH for the create's check.
@@ -170,9 +176,7 @@ async function cliClaim(t, hold) {
 }
 
 test("served, no model key: a held run opens and holds its computer, its start and messages are refused in the create's own words, and its release lets the computer go", async (t) => {
-  const root = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "held-model-key-"));
-  t.after(() => rmSync(root, { recursive: true, force: true }));
-  const seam = claimSeam(root);
+  const seam = claimSeam();
   const { api } = await keylessServer(t, seam);
   const saved = await api("POST", "/agents", agent("bench", { model: MODEL, computer: SANDBOX }));
   assert.equal(saved.status, 201, `a save does not check the model's key: ${JSON.stringify(saved.body)}`);
@@ -272,9 +276,7 @@ test("create (prepareLaunch): a held run whose model was refused resolves no mod
 });
 
 test("served, a model gateway with no key here: a held run whose model was refused at its create is still refused 422 model_key_required, in the words any run there gets, and no computer is opened", async (t) => {
-  const root = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "held-model-key-gw-"));
-  t.after(() => rmSync(root, { recursive: true, force: true }));
-  const seam = claimSeam(root);
+  const seam = claimSeam();
   // A gateway on loopback that nothing listens on: nothing here asks it. No price is set, so its model has none.
   withEnv(t, {}, ["AGENT_MODEL_PRICE"]);
   const { api } = await keylessServer(t, seam, { AGENT_MODEL_BASE_URL: "http://127.0.0.1:9" });
