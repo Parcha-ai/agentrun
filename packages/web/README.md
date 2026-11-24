@@ -40,3 +40,18 @@ provider asked, with its outcome. `cost` holds the fees of the requests sent. `c
 The pieces `createWeb` is built from are exported too: `searchWith`, `searchInTurn` and `breakers` for search,
 `webFetch` and `webFetchText` for fetch, `fetchPage` for one direct read, the providers, and the Parallel prices in
 `fees`, and `linksOf`, the links a page's text holds.
+
+## Known differences from serve's composition
+
+AgentRun's server composes these pieces itself rather than calling `createWeb`. Its `test/web-composition.test.mjs`
+drives both on the same fakes, the same clock and the same steps, for every search and fetch order the server has, and
+holds them to the same answers, providers reached, `tries` and breaker holds. Four differences stand by design:
+
+- The server fits a search's answer to the model (its `fitSearch`) in the tool. `createWeb`'s answer is unfitted; the
+  test compares the server's answer with `fitSearch` of `createWeb`'s.
+- The server's fetch-side Firecrawl breaker reads `Date.now`. `createWeb`'s reads `now` from `WebConfig`. Under a real
+  clock they are the same.
+- The server keeps its breakers and its page cache per tool binding and per run's environment. `createWeb` keeps them
+  per `Web`.
+- The server's words for a tool plane that is unavailable, and for an order that names no provider in its faux mode,
+  are the server's alone: `createWeb` has neither case.

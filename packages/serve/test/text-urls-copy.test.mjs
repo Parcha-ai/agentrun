@@ -1,6 +1,8 @@
 // Serve's text-urls.ts, the timeline scrub's URL reading that the console compiles from source, holds the same URL tail
 // block as @parcha/agentrun-web's text-urls.ts, which a fetched page's links and the link check read: where a URL ends
 // and what tail is not its own. A URL the timeline scrubs ends where the same URL a page holds or an answer cites does.
+// This is the pattern check-direction's CONSOLE_SERVE names (scripts/check-direction.mjs), "a copy plus a text-reading
+// drift test": a file the console compiles from source imports nothing, so it holds a copy, and this test reads both.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
