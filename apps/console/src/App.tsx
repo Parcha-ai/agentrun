@@ -60,7 +60,7 @@ import { stepsBack, trackHistory } from "@/lib/back";
 import { holdsMove } from "@/lib/useUnsavedChangesGuard";
 import { allPages, type Capabilities, ClientError, createClient, type ImportOffer, type ImportState, problemOf, type RunsFilter } from "@/lib/client";
 import { chatGPTView } from "@/lib/chatgpt";
-import { claudeLoginView } from "@/lib/claudeLogin";
+import { claudeLoginView, LOGIN_HARNESS } from "@/lib/claudeLogin";
 import { createConnection } from "@/lib/connection";
 import type { ChatGPTView } from "@/lib/v2";
 import { appendRuns, keeper, keepersByRun, sendOnce, uuid } from "@/lib/idempotency";
@@ -694,6 +694,8 @@ function ConsolePage({ v2, onSignedOut, demo = false }: ConsoleProps) {
     setRevs([]);
     if (pick) allPages((cursor) => v2.listRevisions(pick, cursor), (p) => p.revisions).then((r) => { if (n === revsAsked.current) setRevs(r); }).catch(() => {});
   }, [v2, pick]);
+  // Runs the Playground started: the Claude login is read again after each (claudeSignedIn below).
+  const [runsStarted, setRunsStarted] = useState(0);
   const send = async (agentId: string, body: Parameters<typeof v2.startRun>[1], key: string): Promise<StartResult> => {
     const t0 = performance.now();
     try {
@@ -701,6 +703,8 @@ function ConsolePage({ v2, onSignedOut, demo = false }: ConsoleProps) {
       return { status: r.status, ms: Math.round(performance.now() - t0), body: r.run, runId: r.run.run_id };
     } catch (e) {
       return startFailure(e, Math.round(performance.now() - t0));
+    } finally {
+      setRunsStarted((n) => n + 1);
     }
   };
   const efforts = ((caps as unknown as { features?: { efforts?: string[] } } | null)?.features?.efforts) ?? [];
@@ -734,17 +738,21 @@ function ConsolePage({ v2, onSignedOut, demo = false }: ConsoleProps) {
     v2.chatGPT().then((body) => { if (live) setPlan(chatGPTView(body)); }, () => { if (live) setPlan(null); });
     return () => { live = false; };
   }, [v2, modelsReady]);
-  // Claude Code's login on this machine, read each time no model is ready on a server whose routes for it answer
-  // (features.claude_login), and again on each move between pages, so a sign-in finished in Settings shows. On and signed
-  // in, Claude Agent runs on it: that is a model, and the bar goes.
+  // Claude Code's login on this machine, read while no model is ready on a server whose routes for it answer
+  // (features.claude_login): once, again on leaving Settings, so a sign-in finished there shows (Settings' own row reads
+  // it while there), and after a run starts. Each read runs `claude auth status` on the server, so a move between other
+  // pages reads nothing. On and signed in, Claude Agent runs on it: for an agent on that harness it is a model, and the
+  // bar goes; an agent on another harness still has none.
   const claudeLoginRoutes = caps?.features?.claude_login === true;
+  const inSettings = where.section === "settings";
   const [claudeSignedIn, setClaudeSignedIn] = useState(false);
   useEffect(() => {
     if (modelsReady !== false || !claudeLoginRoutes) { setClaudeSignedIn(false); return; }
+    if (inSettings) return;
     let live = true;
     v2.claudeLogin().then((body) => { if (live) setClaudeSignedIn(claudeLoginView(body)?.state === "signed_in"); }, () => { if (live) setClaudeSignedIn(false); });
     return () => { live = false; };
-  }, [v2, modelsReady, claudeLoginRoutes, where.section]);
+  }, [v2, modelsReady, claudeLoginRoutes, inSettings, runsStarted]);
   // The first screen's card stays from a sign-in's start until the person is done with OpenAI's words on usage, though the
   // server has its model by then.
   const [planShown, setPlanShown] = useState(false);
@@ -832,7 +840,7 @@ function ConsolePage({ v2, onSignedOut, demo = false }: ConsoleProps) {
               <span className="min-w-0 break-all font-mono text-small text-muted-foreground">{where.operation === "apply-template" ? `/v2/templates/${where.template ? encodeURIComponent(where.template) : "{template}"}/apply` : where.operation === "list-runs" ? (where.playgroundAgent ? `/v2/agents/${where.playgroundAgent}/runs` : "/v2/runs") : where.operation === "create-agent" ? "/v2/agents" : where.operation === "edit-agent" ? `/v2/agents/${where.playgroundAgent ?? "{agent_id}"}/definition` : "/v2/agents/{agent_id}/runs"}</span>
             </div>
             {where.operation === "apply-template" ? <div className="min-h-0 flex-1 overflow-auto"><TemplatesPage key={where.template ?? ""} v2={v2} name={where.template} go={go} playground draft={where.draft} /></div> : where.operation === "list-runs" ? <RunsRequest key={`list:${where.playgroundAgent ?? ""}:${where.status ?? ""}:${where.archived ?? false}`} v2={v2} origin={location.origin} agentId={where.playgroundAgent} filter={{ status: where.status, archived: where.archived }} /> : where.operation ? <AgentRequest key={`${where.operation}:${where.playgroundAgent ?? ""}:${where.draft ?? ""}`} v2={v2} operation={where.operation} origin={location.origin} agentId={where.playgroundAgent} draft={where.draft} harnesses={editorCaps.harnesses} routePrefix={c?.models?.route_prefix} /> : <>
-              {!externalPlayground && caps?.models?.ready === false && !(claudeSignedIn && caps.models.needs !== "model") && <NoModelBanner needs={caps.models.needs} source={caps.models.source} model={caps.models.default} settings={caps.features?.tool_keys?.routes === true && caps.features.tool_keys.at_rest === "sealed"} chatgpt={plan?.state === "signed_out" || plan?.state === "expired"} />}
+              {!externalPlayground && caps?.models?.ready === false && !(claudeSignedIn && caps.models.needs !== "model" && selectedDefinition?.harness === LOGIN_HARNESS) && <NoModelBanner needs={caps.models.needs} source={caps.models.source} model={caps.models.default} settings={caps.features?.tool_keys?.routes === true && caps.features.tool_keys.at_rest === "sealed"} chatgpt={plan?.state === "signed_out" || plan?.state === "expired"} />}
               {startError && <div className="m-8 border p-4" role="alert"><p className="text-lead text-destructive-text">The agents could not be read: {startError}</p><Button size="sm" className="mt-3" type="button" onClick={() => setRetry((n) => n + 1)}>Try again</Button></div>}
               {agents && <Playground agents={agents.filter((a) => !a.archived_at)} revisions={revs} efforts={efforts} origin={location.origin} agentId={pick ?? undefined} onAgent={setPick} onSend={send} limits={caps?.limits} {...(demo ? { upload: demoUpload } : {})} removeUpload={v2.deleteUpload} onOpenRun={(id) => go(`#/runs/${encodeURIComponent(id)}`)}
                 live={(id) => <LiveRun key={id} v2={v2} runId={id} caps={caps} agentName={agentName} />} />}

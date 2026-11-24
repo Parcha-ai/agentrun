@@ -2,6 +2,8 @@ import type { ClaudeLoginView } from "@/lib/v2";
 
 /** The row's name, and the mode's, in the words AgentRun uses for it: Claude Code is Anthropic's CLI, never ours. */
 export const LOGIN_ROW = "Use Claude Code's login on this machine";
+/** The harness that runs on the login (Claude Agent): an agent on it has a model while the login reads signed in. */
+export const LOGIN_HARNESS = "claude-agent";
 /** What the mode does, under the row's name. */
 export const LOGIN_RUNS = "Claude Agent runs on your Claude plan through the Claude Code CLI on this server's machine. The CLI keeps the login and calls Anthropic itself; AgentRun only asks it whether it is signed in.";
 /** The owner's word, asked before it turns on. */
