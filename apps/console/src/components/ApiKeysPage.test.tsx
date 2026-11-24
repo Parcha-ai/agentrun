@@ -162,7 +162,7 @@ describe("Settings → AgentRun API keys", () => {
 
   it("at the server's limit, says so and makes none", async () => {
     const page = await open(server({ keys: [key()], limit: 1 }).v2);
-    expect(page.host.textContent).toContain("This server keeps at most 1 keys.");
+    expect(page.host.textContent).toContain("This server keeps at most 1 key. Revoke one you no longer use to make another.");
     expect(page.input().disabled).toBe(true);
     expect(page.button(/^Make key$/)!.disabled).toBe(true);
   });

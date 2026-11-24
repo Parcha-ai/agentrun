@@ -87,7 +87,7 @@ export function ApiKeysPage({ v2, writable, whyNot = "sign_in", origin }: { v2: 
         <div className={settingsIntroClass}>
           <p className="caps text-label text-muted-foreground">Settings</p>
           <h1 className="mt-1 text-2xl font-semibold">AgentRun API keys</h1>
-          <p className="mt-2 text-lead text-muted-foreground">Keys your apps send to call this server: its API under <span className="font-mono">/v2</span> and its MCP endpoint. An app sends one as <span className="font-mono">Authorization: Bearer &lt;key&gt;</span>. To save a model or tool provider's key instead, open <a className="underline" href="#/settings/keys">API Keys</a>.</p>
+          <p className="mt-2 text-lead text-muted-foreground">Keys your apps send to call this server: its API under <span className="font-mono">/v2</span> and its MCP endpoint. An app sends one as <span className="font-mono">Authorization: Bearer &lt;key&gt;</span>. To save a model or tool provider's key instead, open <a className="whitespace-nowrap underline" href="#/settings/keys">API Keys</a>.</p>
         </div>
         <div className={settingsBodyClass}>
           {problem && <RunError error={problem.error} title={problem.title} />}
@@ -102,8 +102,8 @@ export function ApiKeysPage({ v2, writable, whyNot = "sign_in", origin }: { v2: 
               <div className="mt-2 flex min-w-0 flex-wrap items-center gap-2"><code className="min-w-0 break-all font-mono text-body">{made.api_key}</code><CopyButton text={made.api_key} label="Copy key" /></div>
               <p className="mt-3 text-body text-muted-foreground">Keep it in your app's secrets, never in a repository. This server never shows it again: if it is lost, revoke it and make another.</p>
               <p className="mt-3 text-body text-muted-foreground">As environment variables, for an app that reads them:</p>
-              <div className="mt-2 flex min-w-0 flex-wrap items-start gap-2">
-                <pre className="min-w-0 flex-1 overflow-x-auto border bg-card p-3 font-mono text-small" aria-label="Environment variables">{envLines(origin, made.api_key)}</pre>
+              <div className="mt-2 flex min-w-0 flex-col items-start gap-2 sm:flex-row">
+                <pre className="w-full min-w-0 overflow-x-auto border bg-card p-3 font-mono text-small sm:w-auto sm:flex-1" aria-label="Environment variables">{envLines(origin, made.api_key)}</pre>
                 <CopyButton text={envLines(origin, made.api_key)} label="Copy both" />
               </div>
               <Button type="button" variant="outline" className="mt-3" onClick={() => setMade(null)}>Done</Button>
@@ -113,13 +113,13 @@ export function ApiKeysPage({ v2, writable, whyNot = "sign_in", origin }: { v2: 
             <form className="border bg-card p-4" onSubmit={create} aria-label="Make an API key">
               {!writable && <p role="status" className="mb-3 text-body text-muted-foreground">{WHY_NOT_WORDS[whyNot]}</p>}
               {refused && <p role="status" className="mb-3 text-body text-warning-text">{refused}</p>}
-              {full && <p role="status" className="mb-3 text-body text-warning-text">This server keeps at most {limit} keys. Revoke one you no longer use to make another.</p>}
-              <Field label="Name" hint="What the key is for: the app or the person that will hold it.">
-                <Input name="name" required maxLength={NAME_MAX} autoComplete="off" placeholder="For example: billing app" value={name} disabled={!writable || full || !!refused} onChange={(e) => setName(e.target.value)} />
+              {full && <p role="status" className="mb-3 text-body text-warning-text">This server keeps at most {limit} {limit === 1 ? "key" : "keys"}. Revoke one you no longer use to make another.</p>}
+              <Field label="Name" note="What the key is for: the app or the person that will hold it.">
+                <div className="flex flex-wrap gap-2">
+                  <Input name="name" required maxLength={NAME_MAX} autoComplete="off" placeholder="For example: billing app" value={name} disabled={!writable || full || !!refused} onChange={(e) => setName(e.target.value)} className="min-w-56 flex-1" />
+                  <Button type="submit" variant="primary" disabled={busy || !writable || full || !!refused || !name.trim()}>Make key</Button>
+                </div>
               </Field>
-              <div className="mt-3 flex flex-wrap justify-end gap-2">
-                <Button type="submit" variant="primary" disabled={busy || !writable || full || !!refused || !name.trim()}>Make key</Button>
-              </div>
             </form>
           </SettingsSection>
           <SettingsSection label="Keys" title={limit === null ? "Keys" : `Keys · ${keys.length} of ${limit}`} note={<p>A token this server was started with (<span className="font-mono">AGENTRUN_TOKEN</span>) is set in its environment and is not listed here.</p>}>
@@ -129,13 +129,20 @@ export function ApiKeysPage({ v2, writable, whyNot = "sign_in", origin }: { v2: 
                 <ul className="border">
                   {keys.map((key) => (
                     <li key={key.id} className="border-b px-4 py-3 text-body last:border-b-0">
-                      <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
-                        <KeyRound className="size-4 shrink-0 text-muted-foreground" aria-hidden />
-                        <span className="min-w-0 flex-1 basis-40 break-words font-semibold">{key.name}</span>
-                        <span className="text-small text-muted-foreground">Made {when(key.created_at)}</span>
-                        <span className="text-small text-muted-foreground">{key.last_used_at ? `Last used ${when(key.last_used_at)}` : "Never used"}</span>
-                        {writable && revoking !== key.id && (
-                          <Button ref={(node) => { if (node) revokeButtons.current.set(key.id, node); else revokeButtons.current.delete(key.id); }} type="button" variant="outline" size="sm" disabled={busy} aria-label={`Revoke ${key.name}`} onClick={() => setRevoking(key.id)}>Revoke</Button>
+                      {/* The name over its dates on a narrow screen; from `lg`, the name and then each date in a column of
+                          its own, so the dates line up down the list. Revoke stays at the row's right at every width. */}
+                      <div className="flex items-center gap-3">
+                        <KeyRound className="mt-0.5 size-4 shrink-0 self-start text-muted-foreground lg:mt-0 lg:self-center" aria-hidden />
+                        <div className="min-w-0 flex-1 lg:flex lg:items-center lg:gap-4">
+                          <span className="block min-w-0 break-words font-semibold lg:flex-1">{key.name}</span>
+                          <span className="mt-1 flex flex-wrap gap-x-4 gap-y-0.5 text-small text-muted-foreground lg:mt-0 lg:shrink-0 lg:flex-nowrap">
+                            <span className="lg:w-36">Made {when(key.created_at)}</span>
+                            <span className="lg:w-40">{key.last_used_at ? `Last used ${when(key.last_used_at)}` : "Never used"}</span>
+                          </span>
+                        </div>
+                        {/* Kept in its place while its question is open, so the row's dates stay in their columns. */}
+                        {writable && (
+                          <Button ref={(node) => { if (node) revokeButtons.current.set(key.id, node); else revokeButtons.current.delete(key.id); }} type="button" variant="outline" size="sm" className="shrink-0" disabled={busy || revoking === key.id} aria-label={`Revoke ${key.name}`} onClick={() => setRevoking(key.id)}>Revoke</Button>
                         )}
                       </div>
                       {revoking === key.id && (
