@@ -1364,6 +1364,7 @@ export class Triggers {
           // started by handedRan, which says so. A firing released before that (a run written apart from it, by a server
           // from before the one write, that a release beat to the firing) stays released: the run is answered, never
           // refused, since it exists, and the log says it ran after the release.
+          // Not dead: it keeps this start in `starting` until its firing reads started, so a concurrent host start waits on it and replays its run instead of a not_due.
           if (!(await this.handedRan(triggerId, key, run.run_id))) {
             const now = await this.store.triggers.firing(triggerId, key);
             this.deps.say({ condition: now && released(now) ? "trigger_run_after_release" : "trigger_fired", trigger: triggerId, firing: key, run: run.run_id });
