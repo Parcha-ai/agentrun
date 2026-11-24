@@ -4,10 +4,10 @@
 // table (fixtures/fake-network.mjs) and each provider's send a stub: no socket leaves the machine, no real key.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { firecrawlFetch, firecrawlScrape, parallelExtract, webFetchText } from "../dist/index.js";
+import { createWeb, firecrawlFetch, firecrawlScrape, parallelExtract, webFetchText } from "../dist/index.js";
 import { answers, firecrawlServer } from "./fixtures/fake-firecrawl.mjs";
 import { network } from "./fixtures/fake-network.mjs";
-import { fetchPage, readDirect, webFetch } from "./support.mjs";
+import { fetchPage, guard, readDirect, webFetch } from "./support.mjs";
 
 const PUBLIC = "http://public.example/";
 
@@ -35,11 +35,11 @@ const failing = (words) => async () => { throw new TypeError(words); };
 const leaking = (where) => Object.entries(where).filter(([, what]) => /web-user|not-a-secr|a-secret/.test(typeof what === "string" ? what : JSON.stringify(what))).map(([at]) => at);
 const turns = (tries) => tries.map((one) => [one.provider, one.outcome]);
 
-/** web_fetch of PUBLIC with `given` (a client, the order): the page, the receipt's turns and the log. */
-async function fetched(given) {
+/** web_fetch of `url` (PUBLIC by default) with `given` (a client, the order): the page, the receipt's turns and the log. */
+async function fetched(given, url = PUBLIC) {
   const tries = [];
   const logs = [];
-  const page = await webFetch(PUBLIC, { ...network(), ...given, tried: (one) => tries.push(one), log: (event, fields) => logs.push({ event, fields }) });
+  const page = await webFetch(url, { ...network(), ...given, tried: (one) => tries.push(one), log: (event, fields) => logs.push({ event, fields }) });
   return { page, tries, logs };
 }
 /** Where a fetch by `provider` could quote them: the receipt's turns, the page, the text the model reads, the log. */
@@ -163,4 +163,21 @@ test("a URL whose password holds an unencoded at sign: Firecrawl's scrape and Pa
   const leaks = [...leaking(said), ...leaking(places("parallel", read))];
   assert.deepEqual(leaks, [], `no part of them in: ${leaks.join("; ")}`);
   assert.deepEqual([said.firecrawlScrape.error, said.parallelExtract, read.page.url], ["Firecrawl's fetch failed: http://public.example/", "failed: http://public.example/", "http://public.example:99999/landed"], "each names the URL without them");
+});
+
+// The URL a call asks for is the model's own. While it holds a user name or password it is never fetched or sent (the
+// guard's check and readDirect refuse it), and every page that answers it names it without them, whichever path gave
+// the page: the direct fetch's refusal, no provider in the order, a stopped call, a part the call may not ask for.
+test("the URL asked, holding a user name and password: every page web_fetch gives for it, fetched directly, read by no provider, stopped or refused for its part, names it without them", async () => {
+  const asked = credentialed();
+  const parallel = { live: () => true, read: async () => "asked", post: async () => { throw new Error("not posted"); } };
+  const pages = {};
+  pages.direct = (await fetched({ order: ["direct"] }, asked)).page;
+  pages.none = (await fetched({ parallel, order: ["parallel"] }, asked)).page;
+  pages.stopped = (await fetched({ order: ["direct"], signal: AbortSignal.abort() }, asked)).page;
+  pages["part refused"] = (await createWeb({ order: { search: [], fetch: ["direct"] }, guard }).fetch(asked, { maxChars: 1 })).answer;
+  assert.deepEqual(Object.entries(pages).map(([row, page]) => [row, page.ok, page.via]), [["direct", false, "direct"], ["none", false, "none"], ["stopped", false, "stopped"], ["part refused", false, undefined]], "no page was read");
+  const leaks = Object.entries(pages).flatMap(([row, page]) => leaking({ [`${row}: the page`]: page, [`${row}: the text the model reads`]: webFetchText(page) }));
+  assert.deepEqual(leaks, [], `no part of them in: ${leaks.join("; ")}`);
+  assert.deepEqual(Object.entries(pages).map(([row, page]) => [row, page.url]), Object.keys(pages).map((row) => [row, PUBLIC]), "the url of each page, without them");
 });
