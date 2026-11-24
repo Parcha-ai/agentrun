@@ -98,9 +98,12 @@ export const placeOfComputer = (computer: Computer): Place => (computer.kind ===
 
 /** What an edit sets to put an agent on `computer`: the computer, the place it is, and, on the runner, the agent's `tools`
  *  without those that run only in a box (`sandbox_only` in the server's `offered` tools: bash and its background tools).
- *  The agent's Computer step and the Playground's move to the runner both make this edit. */
-export function computerFields(computer: Computer, tools: readonly string[], offered: readonly { name: string; sandbox_only?: true }[]): { computer: Computer; place: Place; tools?: string[] } {
+ *  The agent's Computer step and the Playground's move to the runner both make this edit. With no tools offered (the
+ *  capabilities not read yet, or their read failed) which tools run only in a box is unknown, so an edit to the runner
+ *  of an agent with tools is null: the caller changes nothing and says why. */
+export function computerFields(computer: Computer, tools: readonly string[], offered: readonly { name: string; sandbox_only?: true }[]): { computer: Computer; place: Place; tools?: string[] } | null {
   const place = placeOfComputer(computer);
+  if (place.mode === "runner" && tools.length && !offered.length) return null;
   const sandboxOnly = new Set(offered.filter((tool) => tool.sandbox_only).map((tool) => tool.name));
   return { computer, place, ...(place.mode === "runner" ? { tools: tools.filter((tool) => !sandboxOnly.has(tool)) } : {}) };
 }

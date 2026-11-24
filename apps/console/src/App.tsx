@@ -487,7 +487,9 @@ function ConsolePage({ v2, onSignedOut, demo = false }: ConsoleProps) {
   // with no capabilities at all, never hidden for the rest of the visit by one failed read; the race form says so, with
   // Try again, rather than loading for ever.
   const [capsFailed, setCapsFailed] = useState(false);
-  const readCaps = () => { const n = ++capsAsked.current; return v2.capabilities().then((x) => { if (n === capsAsked.current) { setCaps(x); setCapsFailed(false); } return true; }, () => { if (n === capsAsked.current) setCapsFailed(true); return false; }); };
+  // `fetchCaps` answers what it read, null when the read failed, for a caller that needs them now (the move to the runner).
+  const fetchCaps = () => { const n = ++capsAsked.current; return v2.capabilities().then((x) => { if (n === capsAsked.current) { setCaps(x); setCapsFailed(false); } return x; }, () => { if (n === capsAsked.current) setCapsFailed(true); return null; }); };
+  const readCaps = () => fetchCaps().then((x) => x !== null);
   useEffect(() => { readCaps(); }, [v2]); // eslint-disable-line react-hooks/exhaustive-deps
   // The agents' names, every page of the active ones and of the archived: read at the start, and again each time a runs
   // view, Mission Control or Triggers opens (the list, one agent's runs, a run's page, a trigger's page), so an agent made
@@ -734,10 +736,16 @@ function ConsolePage({ v2, onSignedOut, demo = false }: ConsoleProps) {
   // on: the agent read now, saved with the edit its Computer step makes for a runner pick (computerFields), on the
   // version read, and the agents and the picked agent's revisions read again so the bar, the revision picker and the next
   // run see it there. An agent the edit leaves as it is (on the runner already: a second click, or a move made elsewhere)
-  // is not saved again. Answers the revision the agent runs now and the box-only tools the move dropped.
+  // is not saved again. Answers the revision the agent runs now and the box-only tools the move dropped. Which tools run
+  // only in a box is the capabilities' word: taken before they answered, or after their read failed, the move reads them
+  // itself, and when that read fails too it saves nothing and says so.
   const moveToRunner = async (agentId: string): Promise<MovedToRunner> => {
     const { agent, etag } = await v2.getAgent(agentId);
-    const { unchanged, ...body } = editBody(agent, computerFields({ kind: "none" }, agent.definition.tools ?? [], editorCaps.tools), "Moved to the runner, where Claude Code's login on this machine runs it");
+    const tools = agent.definition.tools ?? [];
+    const fields = computerFields({ kind: "none" }, tools, editorCaps.tools)
+      ?? computerFields({ kind: "none" }, tools, toolOffers((await fetchCaps() as unknown as { tools?: unknown } | null)?.tools));
+    if (!fields) throw new Error("the server's tools could not be read, so which of them run only in a box is unknown. Try again.");
+    const { unchanged, ...body } = editBody(agent, fields, "Moved to the runner, where Claude Code's login on this machine runs it");
     if (unchanged) return { revision: agent.revision, saved: false, dropped: [] };
     const kept = new Set(body.definition.tools ?? []);
     const dropped = (agent.definition.tools ?? []).filter((tool) => !kept.has(tool));
