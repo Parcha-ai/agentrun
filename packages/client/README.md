@@ -47,7 +47,9 @@ import { AgentRun } from "@parcha/agentrun-client";
 const client = new AgentRun({ baseUrl: "https://agentrun.example.com/v2", apiKey: process.env.AGENTRUN_API_KEY });
 ```
 
-`baseUrl` defaults to `AGENTRUN_BASE_URL` and `apiKey` to `AGENTRUN_API_KEY`. The base URL must be http or https with no
+`baseUrl` defaults to `AGENTRUN_BASE_URL` and `apiKey` to `AGENTRUN_API_KEY`, else `AGENTRUN_TOKEN`. The base URL is the
+server's address with or without `/v2`: as the CLI takes it, `/v2` is added when its path holds no `v2` segment, a path
+prefix kept. It must be http or https with no
 query, fragment, user or password, and the key must be a valid header value; both are checked here, before any request. The
 client reads no file: finding the server started on this machine (its data directory and the address it records there) is
 the CLI's job (`npx @parcha/agentrun`), not this package's. Other options: `timeoutMs` for one try of a request (default
