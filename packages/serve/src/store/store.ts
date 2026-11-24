@@ -1119,8 +1119,9 @@ export interface Runs {
   failUnclaimed(summary: string): Promise<string[]>;
   /** The runs a runner may claim, oldest first: queued; parked with an untaken command or its wake_at passed; running with
    *  no runner (released at a runner's shutdown: it stays running, a run that started keeps that fact) or its claim run
-   *  out. */
-  claimable(options?: { limit?: number }): Promise<string[]>;
+   *  out. A parked run whose computer is kept for another runner that is still there (its pin, KEPT_PREFIX) is that
+   *  runner's alone: with `runner`, the claimer, such a run is left out; without it every run is counted. */
+  claimable(options?: { limit?: number; runner?: string }): Promise<string[]>;
   /** The epoch a runner's claim holds run `runId` at now, judged by the store's own clock (the one claims are stamped
    *  and fenced by), never a reader's; undefined when no claim holds it (none, released, or run out) or there is no
    *  such run. */
@@ -1612,6 +1613,15 @@ export interface RunCapacity {
 /** How long a runner's row is kept once it stopped saying it is there (a runner that died without its close): its next
  *  put removes every row older than this. */
 export const RUNNER_ROWS_KEPT_MS = 24 * 60 * 60_000;
+
+/** How old a runner's row can be and still count as there, on the store's clock (runner/presence.ts PRESENCE_STALE_MS:
+ *  three renewals missed). The claim rule reads it for a kept computer's pin. */
+export const RUNNER_STALE_MS = 30_000;
+
+/** The settings key prefix of the computers kept at a run's park, one row per run (workspace/computer-kept.ts). A row
+ *  whose computer is pinned to the runner that kept it (its `runner` and `incarnation`) holds the run for that runner in
+ *  the claim rule, while that runner is there under that incarnation and the keep lasts. */
+export const KEPT_PREFIX = "computer_kept:";
 
 /** Every runner's word that it is there (runner/presence.ts). */
 export interface Runners {

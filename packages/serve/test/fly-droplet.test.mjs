@@ -77,6 +77,7 @@ test("fly.toml holds no secret: the token and the seal key are Fly secrets", () 
 // its environment, the secrets imported) in $FAKE, outside the script's directories, so the test can see the values the
 // script made. `--json` answers in flyctl's shapes: `secrets list` an array of {name, digest, status}
 // (internal/command/secrets/list.go), `volumes list` an array of fly-go's Volume ({id, name, state, region, ...}).
+// FAKE_VOLUMES=Name: the volumes list with its key spelled `Name`.
 // FAKE_LIST: `fails` (an empty list on stdout, but exit 1: only the exit status says it failed), `stderr` (the names on stderr, nothing on stdout, exit 0), `table` (a table on stdout) or `Name` (the JSON list, its key spelled `Name`: a flyctl whose shape changed).
 const FAKE_FLY = String.raw`#!/bin/sh
 printf '%s\n' "$*" >> "$FAKE/argv.log"
@@ -86,7 +87,8 @@ case $1 in
   apps) [ "$2" = create ] && : > "$FAKE/app"; exit 0 ;;
   volumes)
     if [ -f "$FAKE/volume" ]; then
-      printf '[\n  {\n    "id": "vol_1",\n    "name": "agentrun_data",\n    "state": "created",\n    "size_gb": 10,\n    "region": "%s",\n    "attached_machine_id": "m_1"\n  }\n]\n' "$(cat "$FAKE/volume")"
+      key=name; [ "$FAKE_VOLUMES" != Name ] || key=Name
+      printf '[\n  {\n    "id": "vol_1",\n    "%s": "agentrun_data",\n    "state": "created",\n    "size_gb": 10,\n    "region": "%s",\n    "attached_machine_id": "m_1"\n  }\n]\n' "$key" "$(cat "$FAKE/volume")"
     else
       printf '[]\n'
     fi
@@ -212,6 +214,18 @@ test("a run with no region deploys where the volume is; one naming another regio
   assert.deepEqual(made((await argv()).slice(calls)), [], "no deploy");
   // The volume the script looks for is the one fly.toml mounts.
   assert.match(await readFile(LAUNCH, "utf8"), new RegExp(`"name":"${[fly.mounts].flat()[0].source}"`));
+});
+
+// A volumes list whose entries name theirs another way (a flyctl that spells it "Name") would read as no volume: a run
+// naming another region would then deploy there, on a new, empty volume, and one naming none would deploy to iad.
+test("a volumes list launch.sh can't read stops it before any deploy, so no run lands on a new, empty volume", async (t) => {
+  const { launch, argv } = await stage(t);
+  await launch(["my-agents", "fra"]);
+  for (const args of [["my-agents", "iad"], ["my-agents"]]) {
+    const calls = (await argv()).length;
+    await assert.rejects(launch(args, { env: { FAKE_VOLUMES: "Name" } }), /volumes/, args.join(" "));
+    assert.deepEqual(made((await argv()).slice(calls)), [], `${args.join(" ")}: no deploy`);
+  }
 });
 
 test("launch.sh refuses an app name Fly would not take, before it calls fly", async (t) => {

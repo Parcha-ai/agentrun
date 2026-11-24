@@ -24,6 +24,8 @@ export function network(onDial = () => undefined) {
       dialled.push(url.href);
       onDial(url.href);
       if (url.href === "http://public.example/") return new Response(PAGE, { status: 200, headers: { "content-type": "text/html; charset=utf-8" } });
+      // The same page under a run's own name, so a test can tell which run dialled it.
+      if (/^http:\/\/public\.example\/\?run=[\w-]+$/.test(url.href)) return new Response(PAGE, { status: 200, headers: { "content-type": "text/html; charset=utf-8" } });
       if (url.href === "http://public.example/notes.txt") return new Response("Plain notes.", { status: 200, headers: { "content-type": "text/plain" } });
       if (url.href === "http://public.example/image.png") return new Response(new Uint8Array([137, 80, 78, 71]), { status: 200, headers: { "content-type": "image/png" } });
       if (url.href === "http://redirect.example/") return new Response(null, { status: 302, headers: { location: "http://127.0.0.1:9421/v1/models" } });

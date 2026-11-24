@@ -1,7 +1,9 @@
-// install.sh --vps installs Docker with apt-get on a server that has just booted, where cloud-init or unattended-upgrades
-// may hold apt's locks for minutes (a Droplet whose user data runs the installer starts it on first boot). vps_apt waits
-// for them: dpkg's lock through DPkg::Lock::Timeout, and the package lists' lock, which that option does not cover, by
-// trying again while apt-get says it could not get a lock. Any other failure stops the install at once, as before.
+// install.sh --vps installs Docker with apt-get on a server that has just booted, where cloud-init, apt-daily or
+// unattended-upgrades may hold apt's locks for minutes (a Droplet whose user data runs the installer starts it on first
+// boot). vps_apt waits for them: dpkg's lock through DPkg::Lock::Timeout, and every other lock apt-get could not get (the
+// archives' that `install` takes, the lists' that `update` takes), which that option does not cover, by trying again.
+// apt-get runs under LC_ALL=C, so its words are the ones matched on a server set to another language. Any other failure
+// stops the install at once, as before.
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -13,20 +15,26 @@ import { promisify } from "node:util";
 const INSTALL = new URL("../install.sh", import.meta.url);
 const vpsApt = /^vps_apt\(\) \{\n[\s\S]*?\n\}\n/m.exec(await readFile(INSTALL, "utf8"))?.[0];
 
-// A stand-in apt-get: it logs its arguments, says it could not get the lock at $LOCK (run: the lists' unless named) for its first
-// $LOCKED calls, then exits $THEN (0, or 100 with another error).
+// A stand-in apt-get on a server set to German: it logs its arguments, says it could not get the lock at $LOCK for its
+// first $LOCKED calls (in English only under LC_ALL=C, as apt does), then exits $THEN (0, or 100 with another error).
 const APT = String.raw`#!/bin/sh
 printf '%s\n' "$*" >> "$FAKE/calls"
 n=$(wc -l < "$FAKE/calls")
 if [ "$n" -le "$LOCKED" ]; then
-  echo "E: Could not get lock $LOCK. It is held by process 812 (apt-get)" >&2
+  if [ "$LC_ALL" = C ]; then
+    echo "E: Could not get lock $LOCK. It is held by process 812 (apt-get)" >&2
+  else
+    echo "E: Sperre $LOCK konnte nicht erlangt werden. Sie wird von Prozess 812 (apt-get) gehalten." >&2
+  fi
   exit 100
 fi
 [ "$THEN" = 0 ] || echo "E: Unable to locate package docker-ce" >&2
 exit "$THEN"
 `;
 
-async function run(t, { locked, then, lock = "/var/lib/apt/lists/lock" }) {
+const ARCHIVES = "/var/cache/apt/archives/lock";
+
+async function run(t, { locked, then, lock = ARCHIVES, verb = "install docker-ce" }) {
   const dir = await mkdtemp(join(tmpdir(), "vps-apt-"));
   t.after(() => rm(dir, { recursive: true, force: true }));
   await writeFile(join(dir, "apt-get"), APT);
@@ -34,10 +42,10 @@ async function run(t, { locked, then, lock = "/var/lib/apt/lists/lock" }) {
   await chmod(join(dir, "apt-get"), 0o755);
   await chmod(join(dir, "sleep"), 0o755);
   await writeFile(join(dir, "calls"), "");
-  const script = `set -u\nwork=${dir}\nsay() { printf '%s\\n' "$*"; }\nfail() { printf 'agentrun install: %s\\n' "$*" >&2; exit 1; }\n${vpsApt}vps_apt install docker-ce\n`;
+  const script = `set -u\nwork=${dir}\nsay() { printf '%s\\n' "$*"; }\nfail() { printf 'agentrun install: %s\\n' "$*" >&2; exit 1; }\n${vpsApt}vps_apt ${verb}\n`;
   await writeFile(join(dir, "script.sh"), script);
   const result = await promisify(execFile)("sh", [join(dir, "script.sh")], {
-    env: { PATH: `${dir}:${process.env.PATH}`, FAKE: dir, LOCKED: String(locked), THEN: String(then), LOCK: lock },
+    env: { PATH: `${dir}:${process.env.PATH}`, FAKE: dir, LOCKED: String(locked), THEN: String(then), LOCK: lock, LANG: "de_DE.UTF-8" },
   }).then((r) => ({ code: 0, ...r }), (e) => ({ code: e.code, stdout: e.stdout, stderr: e.stderr }));
   const calls = (await readFile(join(dir, "calls"), "utf8")).trim().split("\n").filter(Boolean);
   return { ...result, calls };
@@ -45,7 +53,9 @@ async function run(t, { locked, then, lock = "/var/lib/apt/lists/lock" }) {
 
 test("install.sh has vps_apt", () => assert.ok(vpsApt, "vps_apt() { ... } in install.sh"));
 
-test("vps_apt waits out apt's locks: every apt-get it runs waits up to 600 s for dpkg's lock, and a lists lock is tried again", async (t) => {
+// apt-daily's download-only run on first boot holds the archives' lock and not dpkg's: `apt-get install` takes it with a
+// plain lock call that DPkg::Lock::Timeout does not cover, so it is refused at once.
+test("vps_apt waits out apt's locks on a server set to another language: the archives' lock an install is refused is tried again, and every apt-get waits up to 600 s for dpkg's", async (t) => {
   const { code, calls, stdout, stderr } = await run(t, { locked: 2, then: 0 });
   assert.equal(code, 0, stderr);
   assert.equal(calls.length, 3, "two tries refused a lock, the third ran");
@@ -54,6 +64,12 @@ test("vps_apt waits out apt's locks: every apt-get it runs waits up to 600 s for
     assert.match(call, /(^| )-o DPkg::Lock::Timeout=600( |$)/, call);
     assert.match(call, / install docker-ce$/, call);
   }
+});
+
+test("vps_apt tries the package lists' lock again, which `apt-get update` takes", async (t) => {
+  const { code, calls, stderr } = await run(t, { locked: 1, then: 0, lock: "/var/lib/apt/lists/lock", verb: "update" });
+  assert.equal(code, 0, stderr);
+  assert.equal(calls.length, 2);
 });
 
 test("vps_apt stops at once, with apt-get's last lines, on any failure but a lock", async (t) => {
@@ -66,10 +82,12 @@ test("vps_apt stops at once, with apt-get's last lines, on any failure but a loc
 
 // DPkg::Lock::Timeout=600 has already waited for dpkg's lock when apt-get says it could not get it: one more try per 5 s
 // would hold a stuck dpkg (an unattended-upgrades that hangs on first boot) for 120 more of those waits, about 20 hours.
-test("vps_apt stops on dpkg's lock, which apt-get has already waited 600 s for, and tries only the lists' lock again", async (t) => {
-  const { code, calls, stderr } = await run(t, { locked: 5, then: 0, lock: "/var/lib/dpkg/lock-frontend" });
-  assert.equal(code, 1);
-  assert.equal(calls.length, 1, "not tried again: its own wait was the 600 s");
-  assert.match(stderr, /Could not get lock \/var\/lib\/dpkg\/lock-frontend/);
-  assert.match(stderr, /agentrun install: apt-get install docker-ce failed/);
+test("vps_apt stops on dpkg's lock, which apt-get has already waited 600 s for", async (t) => {
+  for (const lock of ["/var/lib/dpkg/lock-frontend", "/var/lib/dpkg/lock"]) {
+    const { code, calls, stderr } = await run(t, { locked: 5, then: 0, lock });
+    assert.equal(code, 1, lock);
+    assert.equal(calls.length, 1, `${lock}: not tried again, its own wait was the 600 s`);
+    assert.ok(stderr.includes(`Could not get lock ${lock}`), stderr);
+    assert.match(stderr, /agentrun install: apt-get install docker-ce failed/);
+  }
 });
