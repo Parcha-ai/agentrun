@@ -136,9 +136,20 @@ function watchedStore(store, gate = { shut: false }, calls = { n: 0, claimed: []
         calls.n += 1;
         const n = calls.n;
         if (gate.shut) await gate.opened;
-        const claims = await value.apply(target, args);
-        if (claims.length > 0) calls.claimed.push({ n, runIds: claims.map((claim) => claim.runId) });
-        return claims;
+        // Past the gate, the claim reads the store when its transaction gets the writer: on a loaded machine, after the
+        // gate shut. Counted in `gate.inFlight` until it answers; `gate.reading`, when set, is a store that slow.
+        const reading = (async () => {
+          await gate.reading?.();
+          return value.apply(target, args);
+        })();
+        gate.inFlight?.add(reading);
+        try {
+          const claims = await reading;
+          if (claims.length > 0) calls.claimed.push({ n, runIds: claims.map((claim) => claim.runId) });
+          return claims;
+        } finally {
+          gate.inFlight?.delete(reading);
+        }
       };
     },
   });
@@ -152,10 +163,13 @@ function watchedStore(store, gate = { shut: false }, calls = { n: 0, claimed: []
   });
 }
 
-/** A gate that starts open: close() holds every claimMany behind it until open(). */
+/** A gate that starts open: close() holds every claimMany asked after it until open(), and resolves once every claim
+ *  already past it has answered. A poll that passed the gate just before it shut reads the store when its transaction
+ *  gets the writer, so on a loaded machine it could read what the test writes next (an answer, a stop) and claim the run
+ *  while A's polls were meant to be held. */
 function claimGate() {
-  const gate = { shut: false, opened: Promise.resolve() };
-  gate.close = () => {
+  const gate = { shut: false, opened: Promise.resolve(), inFlight: new Set(), reading: undefined };
+  gate.close = async () => {
     let open;
     gate.opened = new Promise((resolve) => (open = resolve));
     gate.open = () => {
@@ -163,6 +177,7 @@ function claimGate() {
       open();
     };
     gate.shut = true;
+    await Promise.allSettled([...gate.inFlight]);
   };
   return gate;
 }
@@ -231,10 +246,12 @@ async function ends(server, state = "ended") {
   return (await runTimeline(server, RUN, ctx)).map((entry) => entry.summary ?? "");
 }
 
-/** B started on host b, A's polls held, the run answered; B polls 25 times (or claims the run). What B's polls did. */
-async function answeredWhileBPolls(one) {
+/** B started on host b, A's polls held, the run answered; B polls 25 times (or claims the run). What B's polls did. With
+ *  `aReading`, the gate shuts while a claim of A's is past it, reading the store. */
+async function answeredWhileBPolls(one, { aReading = false } = {}) {
   await one.start("runner-b", "b");
-  one.gate.close();
+  if (aReading) await until(() => one.gate.inFlight.size > 0, "a claim of A's reading the store");
+  await one.gate.close();
   await one.server.command(RUN, { kind: "approve", body: { approval: one.ask.callId } });
   const from = Date.now();
   const polledFrom = one.claimManyCalls["runner-b"].n;
@@ -260,6 +277,25 @@ test("park on A, answered while A is alive and B polls: B claims nothing and mov
   assert.deepEqual(creates(one.hosts.b), [], "nothing on B's host");
   assert.equal(said.filter((summary) => summary.endsWith(SAME)).length, 1, `the resume said it is the same one: ${JSON.stringify(said)}`);
   assert.deepEqual(said.filter((summary) => summary.includes(NEW)), [], "never called a new one");
+});
+
+test("park on A, answered while a claim of A's that passed the gate before it shut is still reading the store: that claim takes nothing, B claims nothing, and A claims it once its polls go on", { timeout: 120_000 }, async (t) => {
+  const one = await parkedOnA(t);
+  // A store slow under A, as on a loaded machine: each claim of A's past the gate reads only once the answer has landed,
+  // or after a second. The gate shuts while one of them is reading.
+  const answered = async () => (await one.server.commands(RUN, 0)).some((row) => row.kind === "approve");
+  one.gate.reading = () => until(answered, "the answer", 1_000).catch(() => {});
+  const aClaims = one.claimManyCalls["runner-a"].claimed.length;
+  await answeredWhileBPolls(one, { aReading: true });
+  one.gate.reading = undefined;
+  assert.equal((await one.server.runs.get(RUN)).epoch, one.parkedEpoch, "nothing claimed the run while A's polls were held: the epoch did not move");
+  assert.equal(one.claimManyCalls["runner-a"].claimed.length, aClaims, "A's claim in flight as the gate shut took nothing");
+  assert.deepEqual(creates(one.hosts.b), [], "B made no desktop");
+
+  one.gate.open();
+  const said = await ends(one.server);
+  assert.deepEqual(creates(one.hosts.a), ["a-d1"], "the same desktop: no create at the resume");
+  assert.equal(said.filter((summary) => summary.endsWith(SAME)).length, 1, `the resume said it is the same one: ${JSON.stringify(said)}`);
 });
 
 test("leak (a): another runner's resume never orphans A's kept container: once the run ends, A's timer's end finds every machine on A's host gone or still named by its row", { timeout: 120_000 }, async (t) => {
@@ -305,7 +341,7 @@ test("a stop of a parked run pinned to a live runner whose loops are full ends w
   const [rowA] = (await one.server.runners.list()).filter((row) => row.runner === "runner-a");
   await one.start("runner-b", "b");
   // A's loops full: its polls claim nothing while the gate is shut (as a runner with no free loop claims nothing).
-  one.gate.close();
+  await one.gate.close();
   await one.server.command(RUN, { kind: "stop" });
   const polledFrom = one.claimManyCalls["runner-b"].n;
   // A person's stop never waits on the pin: the poll B had in flight when it landed, or B's next, claims the run.
@@ -347,7 +383,7 @@ test("a stop of a parked run pinned to a live runner, claimed by another runner 
   // started on that failure would read the row again in its claim's computer, take it and try A's machine on B's host.
   const keptReads = { fail: 1, failed: 0 };
   await one.start("runner-b", "b", { keptReads });
-  one.gate.close();
+  await one.gate.close();
   await one.server.command(RUN, { kind: "stop" });
   const ended = await until(async () => {
     const row = await one.server.runs.get(RUN);
