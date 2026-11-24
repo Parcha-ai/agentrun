@@ -340,6 +340,11 @@ export interface ConformanceOptions {
 	 * computer, is refused, in words.
 	 */
 	kind?: ComputerSettingKind;
+	/**
+	 * The run's id, which every computer it makes carries as agentrun.conformance: the one the live sweep's --before
+	 * minted, so its --after deletes this run's computers and no other's (12 hex characters). Default a fresh one.
+	 */
+	run?: string;
 	signal?: AbortSignal;
 	/** The cases to run; default casesFor the provider's machine kind: a browser's own cases, else every case of the suite. */
 	cases?: Case[];

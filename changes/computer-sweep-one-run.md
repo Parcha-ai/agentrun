@@ -1,0 +1,5 @@
+---
+packages: @parcha/agentrun-computer
+kind: breaking
+---
+The live sweep around a conformance run now deletes only that run's computers. `dist/conformance/sweep.js --before <file>` mints a run id, records it in the before file and prints it (`{"recorded":n,"file":...,"run":"<id>"}`). Give that id to the run with the conformance CLI's new `--run <id>` (`runConformance`'s `run` option), and `--after <file>` deletes only new computers whose `agentrun.conformance` label is that id. Before, `--after` deleted every new computer carrying the label with any value, so when two runs overlapped on one account, the first run's `--after` deleted the second run's live computers. Breaking: `--after` refuses, with exit 2 and nothing listed or deleted, a before file that names no run (one recorded before this change); record it again with `--before`. A run started without `--run` gets a fresh id of its own, and `--after` leaves its computers alone, counted in `leftAlone`. The run's own sweep at its end still removes them. `sweepMachines` takes a required `run`.

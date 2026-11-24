@@ -1387,11 +1387,13 @@ A live run is wrapped in the one sweep, with the same settings (it needs no live
 
 ```sh
 node packages/computer/dist/conformance/sweep.js --provider modal --before /tmp/modal-before.json
-AGENTRUN_COMPUTER_LIVE_MODAL=1 npm run test:modal -w @parcha/agentrun-computer
+AGENTRUN_COMPUTER_LIVE_MODAL=1 npm run conformance -w @parcha/agentrun-computer -- --provider modal --run "$(node -p 'require("/tmp/modal-before.json").run')"
 node packages/computer/dist/conformance/sweep.js --provider modal --after /tmp/modal-before.json
 ```
 
-Its output is `{"swept":n,"gone":m,"stillThere":[ids],"leftAlone":k}`, as for every provider on the adapter. The before
+`--after` deletes only the computers of the run the before file minted, the one `--run` names ([PROVIDERS.md](PROVIDERS.md),
+"The live sweep"). `npm run test:modal` runs the suite under its own run id, so it is no run this sweep wraps: its
+runner and its after hook delete what it made. Its output is `{"swept":n,"gone":m,"stillThere":[ids],"leftAlone":k}`, as for every provider on the adapter. The before
 file records where it listed, the app and the server (`sweepScope`), and `--after` refuses, exit 2, before it lists
 anything, a file of another app or server, or one that names none: every computer there would read as new.
 
@@ -1680,10 +1682,12 @@ The live sweep is the shared one, `dist/conformance/sweep.js --provider daytona 
 
 ```sh
 node packages/computer/dist/conformance/sweep.js --provider daytona --before /tmp/daytona-before.json   # before the run
+npm run conformance -w @parcha/agentrun-computer -- --provider daytona --run "$(node -p 'require("/tmp/daytona-before.json").run')"
 node packages/computer/dist/conformance/sweep.js --provider daytona --after /tmp/daytona-before.json    # after it
 ```
 
-It prints `{"swept":n,"gone":m,"stillThere":[ids],"leftAlone":k}` (`gone` was `notFound`). A conformance run of
+`--after` deletes only the computers of the run `--run` names, the id `--before` minted, so another run on the same
+account keeps its computers. It prints `{"swept":n,"gone":m,"stillThere":[ids],"leftAlone":k}` (`gone` was `notFound`). A conformance run of
 Daytona also sweeps its own label through the host at its end (the report's `cleanup.sweep`).
 
 ### Daytona on dial
@@ -2858,7 +2862,7 @@ alone (see [Init, the socket and the bridge](#init-the-socket-and-the-bridge)): 
 ```sh
 AGENTRUN_COMPUTER_LIVE_BOXD=1 COMPUTER_BOXD_API_KEY=... npm run conformance -w @parcha/agentrun-computer -- --provider boxd
 AGENTRUN_COMPUTER_LIVE_BOXD=1 COMPUTER_BOXD_API_KEY=... npm run test:boxd -w @parcha/agentrun-computer
-node packages/computer/dist/conformance/sweep.js --provider boxd --before /tmp/boxd-before.json   # then --after
+node packages/computer/dist/conformance/sweep.js --provider boxd --before /tmp/boxd-before.json   # the run's --run is its "run"; then --after
 ```
 
 The conformance module, `dist/conformance/boxd.js`, checks `AGENTRUN_COMPUTER_LIVE_BOXD=1` before it reads anything
@@ -2927,7 +2931,7 @@ What smol cloud refuses or this host works around:
 ```sh
 AGENTRUN_COMPUTER_LIVE_SMOLCLOUD=1 COMPUTER_SMOLCLOUD_API_KEY=... \
   npm run conformance -w @parcha/agentrun-computer -- --provider smolcloud --long --concurrency 4
-node packages/computer/dist/conformance/sweep.js --provider smolcloud --before /tmp/smolcloud-before.json   # then --after
+node packages/computer/dist/conformance/sweep.js --provider smolcloud --before /tmp/smolcloud-before.json   # the run's --run is its "run"; then --after
 ```
 
 The conformance module, `dist/conformance/smolcloud.js`, checks `AGENTRUN_COMPUTER_LIVE_SMOLCLOUD=1` first, then reads
@@ -3031,7 +3035,7 @@ AGENTRUN_COMPUTER_LIVE_GROUNDBOX=1 COMPUTER_GROUNDBOX_API_KEY=... \
   npm run conformance -w @parcha/agentrun-computer -- --provider groundbox --long
 AGENTRUN_COMPUTER_LIVE_GROUNDBOX=1 COMPUTER_GROUNDBOX_API_KEY=... COMPUTER_GROUNDBOX_KIND=desktop \
   npm run conformance -w @parcha/agentrun-computer -- --provider groundbox --kind desktop --long --fixture <computerd-fixture for linux/amd64>
-node packages/computer/dist/conformance/sweep.js --provider groundbox --before /tmp/groundbox-before.json   # then --after
+node packages/computer/dist/conformance/sweep.js --provider groundbox --before /tmp/groundbox-before.json   # the run's --run is its "run"; then --after
 ```
 
 The conformance module, `dist/conformance/groundbox.js`, checks `AGENTRUN_COMPUTER_LIVE_GROUNDBOX=1` first, then reads
@@ -3069,8 +3073,12 @@ A provider for another vendor passes the same suite as Docker's, with one comman
 
 ```sh
 npm run conformance -w @parcha/agentrun-computer -- --provider docker            # or modal, daytona: any registry id
-npm run conformance -w @parcha/agentrun-computer -- --provider ./my-provider.js [--image debian:bookworm-slim] [--only exec,files] [--fixture <path>] [--long] [--concurrency <n>] [--json]
+npm run conformance -w @parcha/agentrun-computer -- --provider ./my-provider.js [--image debian:bookworm-slim] [--only exec,files] [--fixture <path>] [--long] [--concurrency <n>] [--run <id>] [--json]
 ```
+
+`--run <id>` (`run` in `runConformance`'s options) is the run's id, which every computer it makes carries as
+`agentrun.conformance`: the one the live sweep's `--before` printed, so its `--after` deletes this run's computers and no
+other's ([PROVIDERS.md](PROVIDERS.md), "The live sweep"). Without it, the run mints a fresh one.
 
 ```text
 computer conformance · docker · linux, daemon pid1 · computerd 0.1.0-beta.30 linux/amd64

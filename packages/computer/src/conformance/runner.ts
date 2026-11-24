@@ -29,6 +29,9 @@ import {
 
 /** The label every computer of a run carries, with the run's id. */
 export const RUN_LABEL = "agentrun.conformance";
+/** A run's id: 12 hex characters, minted by the run itself or by the live sweep's --before (sweep.ts) for the run it wraps. */
+export const RUN_ID = /^[0-9a-f]{12}$/;
+export const newRunId = (): string => randomBytes(6).toString("hex");
 /** The lifetime a run's computers ask for, at most the provider's own cap: a metered phone's cap is its hard stop. */
 const LIFETIME_MS = 30 * 60_000;
 const GROUP_NAMES: ReadonlySet<string> = new Set(GROUPS);
@@ -110,7 +113,8 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 	if (kindProblem !== undefined) throw new TypeError(kindProblem);
 	const fetcher = options.fetch ?? ((url: string, init?: { signal?: AbortSignal; method?: string }) => fetch(url, init));
 	const dialer = options.cdp ?? dialCdp;
-	const run = randomBytes(6).toString("hex");
+	if (options.run !== undefined && !RUN_ID.test(options.run)) throw new TypeError(`options.run is a run id the live sweep's --before mints, 12 hex characters; got ${JSON.stringify(options.run)}`);
+	const run = options.run ?? newRunId();
 	const runLabels = { [RUN_LABEL]: run };
 	const capabilities = provider.capabilities();
 	// A provider of the shape before groups declares none, so its kind-consistent case fails in words, not the run.
@@ -712,7 +716,7 @@ async function cleanup(
 		if (host !== undefined && typeof host.list === "function") {
 			const { sweepMachines } = await import("./sweep.js");
 			const said: string[] = [];
-			const swept = await within(sweepMachines(host, { labels, waitMs: ms, onWords: (words) => said.push(words) }), ms * 2, "the sweep of the run's machines");
+			const swept = await within(sweepMachines(host, { labels, run: labels[RUN_LABEL] as string, waitMs: ms, onWords: (words) => said.push(words) }), ms * 2, "the sweep of the run's machines");
 			report.cleanup.errors.push(...said.map((words) => `sweep: ${words}`));
 			if (!swept.ok) report.cleanup.errors.push(`sweep: ${swept.error.code}: ${swept.error.message}`);
 			else {
