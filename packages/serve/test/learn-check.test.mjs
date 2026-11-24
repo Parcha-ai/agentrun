@@ -176,6 +176,25 @@ test("a bank account, IBAN, routing or sort-code number beside its word is a sec
   }
 });
 
+// "ABA" is a routing number's word only standing alone: "aba" right before nine digits, as a run id's last part can
+// start ("run-aba592512040"), is part of a word, no routing number, and learning prints it as it is.
+test("a run id ending in \"aba\" and nine digits is no routing number; ABA or routing beside nine digits still is", async () => {
+  const { learnedSecretShapes, redactLearned } = await import("../dist/learn/secrets.js");
+  for (const text of ["Replayed run-aba592512040 from the store.", "run-aba592512040", "Replayed run-ABA592512040 from the store."]) {
+    assert.deepEqual(learnedSecretShapes(text), [], `no secret: ${text}`);
+    assert.equal(redactLearned(text, []), text);
+  }
+  // Controls: the word alone, then a space, a "#" or "number:", and nine digits, is still a routing number, cut.
+  for (const [text, cut] of [
+    ["Pay by ABA 123456789 today.", "Pay by [redacted] today."],
+    ["Wire ABA#123456789 now.", "Wire [redacted] now."],
+    ["The routing number: 123456789 is theirs.", "The [redacted] is theirs."],
+  ]) {
+    assert.deepEqual(learnedSecretShapes(text), ["routing number"], text);
+    assert.equal(redactLearned(text, []), cut);
+  }
+});
+
 // A name refused for a bank's number is cut of it where learning prints and serves it: the problem as printed
 // (printable, what a run's learning keeps and serves) and a learning read (secretsShown). A run's own view keeps an
 // account number (secretShapes leaves it): only learning cuts it.
