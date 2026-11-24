@@ -124,11 +124,13 @@ generated file is right, and the document is the bug.
 
 ## Versioning
 
-`hello` carries `protocol`, this protocol's version, apart from the daemon's own `version`. The rule is exact match: a
-provider hands out a computer only when its `hello` names the provider's protocol version and its daemon version,
-character for character. AgentRun puts the daemon in every computer, so a daemon of any other version is one it didn't
-put there. An attached driver is the one exception: only the protocol version must match
-([`attach.md`](attach.md#versions)).
+`hello` carries `protocol`, this protocol's version, apart from the daemon's own `version`. A protocol version is
+`<major>.<minor>`. Two sides work together when the majors match, whatever the minors: a minor step only adds (a method,
+an optional field, a group), and `hello`'s groups and features say what each side has. Another major, a version of
+another shape, or none is refused. The daemon's own version is exact: a provider hands out a computer only when its
+`hello` names the provider's daemon version, character for character. AgentRun puts the daemon in every computer, so a
+daemon of any other version is one it didn't put there. An attached driver is the one exception: its own version may be
+any ([`attach.md`](attach.md#versions)).
 
 **0.2** adds the `ui` group (`ui.observe`, `ui.act`), `hello.screen` and `hello.features`, the error kind `stale`,
 `apps.launch`'s `url` and `background`, and the limits the new methods need. Its one break: the `apps.ui_tree` group and

@@ -26,7 +26,7 @@
 import { createHash, randomBytes, randomInt } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
-import { ATTACH_CLOSE, ATTACH_HEARTBEAT_MS, ATTACH_IDLE_MS, ATTACH_PATH, ATTACH_SUBPROTOCOL, type AttachHub, type AttachSocket, type ComputerKind, type ComputerOs, type HelloResult, helloProblem, hostedDaemonPath, MAX_LINE_BYTES, type MachineTokens, mintedComputer, newMachineToken, type PairedComputer, PAIRING_CODE_PATTERN, PAIRING_CODE_TTL_MS, RUN_LABEL } from "@parcha/agentrun-computer";
+import { ATTACH_CLOSE, ATTACH_HEARTBEAT_MS, ATTACH_IDLE_MS, ATTACH_PATH, ATTACH_SUBPROTOCOL, type AttachHub, attachSubprotocolOf, type AttachSocket, type ComputerKind, type ComputerOs, type HelloResult, helloProblem, hostedDaemonPath, MAX_LINE_BYTES, type MachineTokens, mintedComputer, newMachineToken, type PairedComputer, PAIRING_CODE_PATTERN, PAIRING_CODE_TTL_MS, RUN_LABEL } from "@parcha/agentrun-computer";
 import { WebSocket, WebSocketServer } from "ws";
 import { ApiError, type InputIssue, invalid } from "./errors.js";
 import { dialHost, LIVE_PROOF_HEADER, type LiveReach, relayProof } from "./live-reach.js";
@@ -167,7 +167,8 @@ export function pairBodyOf(body: unknown): { code: string; name: string; hello: 
 }
 
 /** Why a driver's hello may not pair here, in the version rule's words (attach.ts helloMismatch), or undefined: its
- *  protocol version must be this server's. The code stays good, for the driver once it is updated. */
+ *  protocol version must be of this server's major (helloProblem). The code stays good, for the driver once it is
+ *  updated. */
 export function pairRefusal(name: string, hello: HelloResult): string | undefined {
   const problem = helloProblem(hello.protocol, "server");
   if (!problem) return undefined;
@@ -382,7 +383,7 @@ export function createAttachRoutes(options: AttachRoutesOptions) {
   const fetches = new MinuteLimit(DAEMON_FETCHES_PER_MINUTE, undefined, now);
   const sockets = new Set<WebSocket>();
   let closing = false;
-  const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_LINE_BYTES, clientTracking: false, handleProtocols: () => ATTACH_SUBPROTOCOL });
+  const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_LINE_BYTES, clientTracking: false, handleProtocols: (asked) => attachSubprotocolOf([...asked]) ?? false });
 
   /** POST /v2/computers/pairings: a new code, good once until it expires. The store keeps its hash. */
   async function createPairing(): Promise<{ id: string; code: string; expires_at: string; runs_refused: string | null }> {
@@ -543,8 +544,8 @@ export function createAttachRoutes(options: AttachRoutesOptions) {
   }
 
   /** GET /v2/computers/attach's upgrade: the token's paired computer or minted machine, then the protocol, then the hub's
-   *  hello. A refusal is an HTTP answer before the upgrade (401 for a token neither has good, 426 for another protocol
-   *  version). A minted machine's socket goes to the hub under its name. */
+   *  hello. A refusal is an HTTP answer before the upgrade (401 for a token neither has good, 426 when no
+   *  subprotocol it asks for is of this protocol's major). A minted machine's socket goes to the hub under its name. */
   function upgrade(req: IncomingMessage, socket: Duplex, head: Buffer, deny: (status: string, words?: string, headers?: Record<string, string>) => void): void {
     void (async () => {
       if (closing) return deny("503 Service Unavailable", "this server is stopping");
@@ -557,7 +558,7 @@ export function createAttachRoutes(options: AttachRoutesOptions) {
       const dialer = row !== undefined ? pairedDialer(row) : machine !== undefined && (relayed || takes(machine)) ? machineDialer(machine) : undefined;
       if (dialer === undefined) return deny("401 Unauthorized", options.machinesOnly ? MACHINE_TOKEN_REFUSED : TOKEN_REFUSED, { "www-authenticate": "Bearer" });
       const asked = String(req.headers["sec-websocket-protocol"] ?? "").split(",").map((one) => one.trim()).filter(Boolean);
-      if (!asked.includes(ATTACH_SUBPROTOCOL)) {
+      if (attachSubprotocolOf(asked) === undefined) {
         return deny("426 Upgrade Required", `this server speaks ${ATTACH_SUBPROTOCOL}, and the driver asked for ${asked.join(", ") || "no subprotocol"}: update whichever is older`, { "sec-websocket-protocol": ATTACH_SUBPROTOCOL });
       }
       if (socket.destroyed || closing) return void socket.destroy();

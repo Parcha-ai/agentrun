@@ -99,8 +99,8 @@ export function probeNotes(probe: ProbeReport, network: NetworkSpec | NetworkPol
 /** Every way hello differs from what the provider expects. */
 export function helloDrift(hello: HelloResult | null | undefined, expected: HelloExpected): string[] {
 	const found: string[] = [];
-	// Exact match (spec/computer/README.md, "Versioning"): the provider ships its daemon, so another protocol version or
-	// daemon version, older or newer, is another wire (helloProblem). Its words here are the drift list's own.
+	// spec/computer/README.md, "Versioning": another protocol major is another wire (helloProblem), and the daemon's own
+	// version, which pins the build the provider ships, must match exactly. Their words here are the drift list's own.
 	if (helloProblem(hello?.protocol, "provider")) {
 		found.push(`hello: the daemon speaks protocol ${text(hello?.protocol)}, expected exactly ${PROTOCOL_VERSION}`);
 	}

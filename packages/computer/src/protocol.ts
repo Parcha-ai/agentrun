@@ -69,12 +69,15 @@ export const PROVIDER_GROUPS: readonly Group[] = ["cdp", "stream", "downloads"];
 export const PROTOCOL_VERSION = "0.2";
 
 /**
- * Why a hello's protocol version is not this one, or undefined: it must be PROTOCOL_VERSION exactly, older or newer
- * alike, and a hello that names none is refused too. Every place that reads a hello asks this one check. The words,
- * after whoever answered: "speaks protocol <its>, and this <side> <ours>", `side` naming the reader (server, provider).
+ * Why a hello's protocol version does not work with this one, or undefined. A "<major>.<minor>" with this major works,
+ * whatever its minor: a minor step only adds, and hello's groups and features say what the other side has. Another
+ * major, a version in another shape, and a hello that names none are refused. Every place that reads a hello asks this
+ * one check. The words, after whoever answered: "speaks protocol <its>, and this <side> <ours>", `side` naming the
+ * reader (server, provider).
  */
 export function helloProblem(protocol: unknown, side: string): string | undefined {
-	if (protocol === PROTOCOL_VERSION) return undefined;
+	const major = typeof protocol === "string" ? /^(\d+)\.\d+$/.exec(protocol)?.[1] : undefined;
+	if (major !== undefined && major === PROTOCOL_VERSION.split(".")[0]) return undefined;
 	return `speaks protocol ${String(protocol)}, and this ${side} ${PROTOCOL_VERSION}`;
 }
 

@@ -53,7 +53,7 @@ The person installs the driver (Computerd.app on a Mac), and its first run asks 
 - `name` is what the person calls the machine, which they can edit before sending. The app suggests the OS's own
   computer name.
 - `hello` is the driver's own, as it would answer it, so the server records what it pairs: kind, os, groups and
-  features. A `hello` of another protocol version is refused with the words of [the version rule](#versions), and the
+  features. A `hello` of another protocol major is refused with the words of [the version rule](#versions), and the
   code stays good.
 
 ### 3. The server issues the credential
@@ -211,15 +211,18 @@ protocol version) wait for a person; any other exit dials again.
 
 A person's installed app updates on its own schedule, so it can lag the server. The rule:
 
-- **The protocol version must be the server's.** The subprotocol a driver asks for, and the `protocol` in its `hello`,
-  name the protocol version it speaks. A driver of another version is refused: at the upgrade when the subprotocol
-  differs, else at `hello`, with close code `4426` and words that say what to do. An older driver gets "update the
+- **The protocol's major must be the server's.** The subprotocol a driver asks for (`agentrun.computer.<protocol>`), and
+  the `protocol` in its `hello`, name the protocol version it speaks. One of the server's major at any minor works: a
+  minor step only adds, and the driver's `hello` groups and features say what it has. The server answers the upgrade
+  with the subprotocol the driver asked for. A driver of another major, or a version of another shape, is refused: at
+  the upgrade when no subprotocol it asks for works, else at `hello`, with close code `4426` and words that say what to
+  do. An older driver gets "update the
   driver on Ada's MacBook Pro (the download is on the console's Computers page)": the server names no OS and no
   driver app, so the words read the same for every computer, and a driver may add its own way to update when it
   shows them. A newer driver than the server gets "the server is older: it is updated by whoever runs it". The app
   shows these words and stops dialing until it is updated, then dials again on its own.
-- **Within one protocol version, any build is accepted.** A newer or older patch of the driver (0.2.0, 0.2.3) is the
-  same wire. The server records the build each `hello` names and shows it on the Computers page.
+- **Within one protocol major, any build is accepted.** A newer or older build of the driver (0.2.0, 0.2.3, or one
+  speaking 0.3) is the same wire, with more or less of it. The server records the build each `hello` names and shows it on the Computers page.
 - **The daemon version check does not apply.** A copied `computerd` must be exactly the provider's version, because
   the provider puts it there and replaces a drifted one. An attached driver is the person's own app, which the provider
   cannot replace, so `attachedProvider`'s `version` is the version of the driver's live `hello`. The drift check then
@@ -256,7 +259,7 @@ A person's installed app updates on its own schedule, so it can lag the server. 
 | `4401` | Its token is unknown or revoked. | Stops: the person pairs it again. |
 | `4408` | Nothing heard for 60 s. | Dials again. |
 | `4409` | The same computer dialed again. | Dials again (the newer socket is already up). |
-| `4426` | It speaks another protocol version ([Versions](#versions)), or its `hello` lacks a group its kind needs. | Stops: the person updates the driver. |
+| `4426` | It speaks another protocol major ([Versions](#versions)), or its `hello` lacks a group its kind needs. | Stops: the person updates the driver. |
 
 Any other code, or a drop with none (`1006`), is redialed. A driver waits 1 s before its first redial, doubling each
 time to at most 60 s, less up to a fifth at random so a fleet that lost the server together does not return together

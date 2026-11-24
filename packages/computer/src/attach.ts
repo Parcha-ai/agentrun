@@ -30,8 +30,17 @@ export function attachEgressOf(text: string): string {
 	if (!ATTACH_EGRESS.test(text)) throw new Error(`the attach egress is <IPv4 relay>:<port>, such as 192.0.2.40:18443, a port from 1 to 65535; not ${JSON.stringify(text)}`);
 	return text;
 }
-/** The WebSocket subprotocol a driver asks for: the protocol version it speaks. Serve answers with it or refuses. */
-export const ATTACH_SUBPROTOCOL = `agentrun.computer.${PROTOCOL_VERSION}`;
+const SUBPROTOCOL_PREFIX = "agentrun.computer.";
+/** The WebSocket subprotocol a driver asks for: the protocol version it speaks. */
+export const ATTACH_SUBPROTOCOL = `${SUBPROTOCOL_PREFIX}${PROTOCOL_VERSION}`;
+
+/**
+ * The subprotocol of those a driver asked for that serve answers with: the first naming a protocol version that works
+ * with this one (helloProblem: this major, any minor), or undefined, and serve refuses the upgrade.
+ */
+export function attachSubprotocolOf(asked: readonly string[]): string | undefined {
+	return asked.find((one) => one.startsWith(SUBPROTOCOL_PREFIX) && helloProblem(one.slice(SUBPROTOCOL_PREFIX.length), "server") === undefined);
+}
 /** Each side pings this often (WebSocket ping frames, not JSON-RPC), so a NAT keeps the path open. */
 export const ATTACH_HEARTBEAT_MS = 20_000;
 /** A side that hears nothing, not even a pong, for this long closes the socket with ATTACH_CLOSE.idle. */
@@ -62,7 +71,7 @@ export const ATTACH_CLOSE = {
 	idle: 4408,
 	/** The same computer dialed again; the older socket is closed. */
 	replaced: 4409,
-	/** The driver speaks another protocol version, or its hello lacks a group its kind needs (kindServed): update it. */
+	/** The driver speaks another protocol major, or its hello lacks a group its kind needs (kindServed): update it. */
 	protocol: 4426,
 } as const;
 
@@ -244,7 +253,8 @@ function laterProtocol(a: string, b: string): boolean {
 }
 
 /**
- * Why a hello may not stand for a paired computer, or undefined. The protocol version must be the server's; the
+ * Why a hello may not stand for a paired computer, or undefined. The protocol version must work with the server's
+ * (helloProblem: its major, any minor); the
  * driver's own version may be any: a person's installed app updates on its own schedule, and the server cannot
  * replace it the way a provider replaces a copied daemon.
  */
