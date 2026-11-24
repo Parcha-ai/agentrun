@@ -115,7 +115,8 @@ test("a port whose probe fails with another error is released: the call rejects 
   listen.mock.restore();
   const said = got.error ? `${got.error.code ?? "no code"}: ${got.error.message}` : `no error, port ${got.port} handed out`;
   assert.equal(got.error?.code, "EMOCKED", `the probe's own error (EMOCKED) is passed up, not read as in use: the call ended with ${said}`);
-  assert.equal(await freePort({ low }), port, `the port whose probe failed (${port}) is handed out by the next call`);
+  const again = await freePort({ low }).then((port) => ({ port }), (error) => ({ error }));
+  assert.equal(again.port, port, `the port whose probe failed (${port}) is handed out by the next call: it ended with ${again.error?.message ?? `port ${again.port}`}`);
 });
 
 test("a fake Ollama asked for a port another listener holds rejects with EADDRINUSE instead of an uncaught error", async (t) => {
