@@ -37,14 +37,14 @@ import { modelKeyRequired, serverKeyMissing } from "./run-model-key.js";
 import { type ApprovalDecision, raiseFollowUpId, type RunMoment } from "./run-view.js";
 import { sendCommand } from "./runner/commands.js";
 import { refuseWhileNoRunner } from "./runner/presence.js";
-import { RevisionMoved, AgentDeleting, AgentPurged, AgentArchived, AnswerTaken, ExternalBodyConflict, type LaunchSealed, type NewRevision, type RevisionRow, RunFinal, type RunOrigin, type RunRow, type Store, StoreConstraint, StoreLaunchMissing } from "./store/index.js";
+import { RevisionMoved, AgentDeleting, AgentPurged, AgentArchived, AnswerTaken, ExternalBodyConflict, FiringMoved, type LaunchSealed, type NewRevision, type RevisionRow, RunFinal, type RunOrigin, type RunRow, type Store, StoreConstraint, StoreLaunchMissing } from "./store/index.js";
 import { canonical } from "./store/agent-body.js";
 import { sourceSyncOf } from "./source-sync/types.js";
 import { toolingOf } from "./tools.js";
 import { type Plane, planeFor, type ToolSettingsMap } from "./tool-plane.js";
 import { declaredKeys, undeclaredKeys, withCarried } from "./run-keys.js";
 import type { RunTrigger } from "./triggers.js";
-import { clip } from "./web-fetch-direct.js";
+import { clip } from "@parcha/agentrun-web";
 import { isObject, type Json } from "./validate.js";
 
 /** The store slice these writers need: the run rows, its commands, and the origin read a retry makes. */
@@ -514,6 +514,8 @@ export interface StartOptions {
   readonly from?: MessageOrigin;
   /** The names of the tool keys the run carries (`keys`, run-keys.ts; their values go only into `sealed`). */
   readonly keys?: readonly string[];
+  /** The firing the run starts, in the run's own write (store.runs.create `firing`): a launch hook's host's start. */
+  readonly firing?: { triggerId: string; key: string };
 }
 
 /** A no-op redactor, when the server gives none: no secret is cut (the switch wires the real shown for a learning run). */
@@ -555,7 +557,7 @@ export async function learningStartFor(deps: StartDeps, entry: AgentEntry, revis
  *  (store.runs.create), which a runner reads at its claim. No process, no door, no setup file: where the run runs is the
  *  runner's. Under `origin`, a key that already started a run gets that run (the store's one-run-per-key), so a retry never
  *  starts a second. */
-export async function startRun(store: Store, deps: StartDeps, entry: AgentEntry, body: Json, { trigger, origin, capped = false, from, title, sealed, keys }: StartOptions = {}): Promise<RunRow> {
+export async function startRun(store: Store, deps: StartDeps, entry: AgentEntry, body: Json, { trigger, origin, capped = false, from, title, sealed, keys, firing }: StartOptions = {}): Promise<RunRow> {
   if (sourceSyncOf(entry.revision?.body)) {
     // Re-delivery of a firing that already admitted a run is not a new start and needs no new project preparation.
     if (origin) {
@@ -577,7 +579,7 @@ export async function startRun(store: Store, deps: StartDeps, entry: AgentEntry,
   const runId = (deps.newRunId ?? uuidv7)();
   try {
     const labels = labelsOf(body.labels);
-    return await withHeldFiles(store, deps, runId, entry.agent.id, revision, launch, (launch) => store.runs.create({ id: runId, agentId: entry.agent.id, revisionId: revision.id, expectedCurrent: entry.agent.currentRevision, ...(origin ? { origin } : {}), ...(labels ? { labels } : {}) }, { body: launchBody(launch), ...(sealed ? { sealed: sealed(runId, launch, revision.kind) } : {}) }));
+    return await withHeldFiles(store, deps, runId, entry.agent.id, revision, launch, (launch) => store.runs.create({ id: runId, agentId: entry.agent.id, revisionId: revision.id, expectedCurrent: entry.agent.currentRevision, ...(origin ? { origin } : {}), ...(labels ? { labels } : {}), ...(firing ? { firing } : {}) }, { body: launchBody(launch), ...(sealed ? { sealed: sealed(runId, launch, revision.kind) } : {}) }));
   } catch (error) {
     if (error instanceof RevisionMoved) throw new ApiError("precondition_failed", "The agent changed while this run was prepared. Start again using its current setup.");
     // Only another writer of the store got here first under the same origin key: its run is the one asked for.
@@ -647,8 +649,10 @@ export async function withHeldFiles(store: Pick<Store, "runs">, deps: Pick<Start
         if (row.agentId === agentId && row.revisionId === revision.id && kept && canonical(kept.body) === canonical(launchBody(prepared))) { if (ownership) await ownership.settled(); else await admitted?.(); return row; }
       } else knownAbsent = true;
     } catch { /* preserve preparation until the admission can be resolved */ }
+    // A refusal the store gave in the run's own transaction (a host start whose firing was released meanwhile: FiringMoved)
+    // wrote nothing, so the run never exists and its preparation goes.
     if (knownAbsent && (error instanceof StoreConstraint || error instanceof RevisionMoved || error instanceof AgentDeleting
-      || error instanceof AgentPurged || error instanceof AgentArchived || error instanceof ExternalBodyConflict || error instanceof ApiError)) await undo(true);
+      || error instanceof AgentPurged || error instanceof AgentArchived || error instanceof ExternalBodyConflict || error instanceof FiringMoved || error instanceof ApiError)) await undo(true);
     throw error;
   }
 }

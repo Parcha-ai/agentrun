@@ -3,8 +3,8 @@
 // agent's own (`definition.tool_settings`) over the server's (`PUT /v2/settings/tools`), optional; (2) the native tool:
 // the harness's own (claude-agent's WebSearch), or on pi one request to the run's own model provider with its hosted
 // search (hosted-search.ts); (3) for web_search, Parallel where the server holds its key (env or saved, which then bills
-// it); (4) the keyless fallback: Firecrawl's public keyless MCP endpoint (firecrawl-keyless.ts), with Exa's
-// (exa-keyless.ts) behind it. web_fetch has no (2): its `auto` is the guarded direct fetch where the server holds a
+// it); (4) the keyless fallback: Firecrawl's public keyless MCP endpoint (@parcha/agentrun-web providers/firecrawl-keyless.ts), with Exa's
+// (providers/exa-keyless.ts) behind it. web_fetch has no (2): its `auto` is the guarded direct fetch where the server holds a
 // Parallel key (as before keyless Firecrawl), else keyless Firecrawl with the guarded direct fetch behind it, and
 // Parallel's extract is a pick. Through Firecrawl web_fetch sends each URL to a third party, and its `why` says so; a URL
 // the public-host guard refuses never goes (web-fetch.ts). On claude-agent `auto` skips (2):
@@ -34,6 +34,7 @@ import { DEFAULT_HARNESS, HARNESSES, type HarnessId } from "./harness.js";
 import type { AdapterFacts } from "@parcha/agentrun-kernel";
 import { factsOf as tableFactsOf, harnessOf } from "./harness-table.js";
 import { viaOpenRouter, wireOf } from "./provider.js";
+import { routedId } from "./wires.js";
 import { savedIn } from "./secrets.js";
 import { hostModel } from "./model.js";
 import { NEEDS_A_COMPUTER, NO_SHELL, type ShellPlace } from "@parcha/agentrun-kernel/kernel";
@@ -216,7 +217,8 @@ export const ownSearchViaOpenRouter = (env: NodeJS.ProcessEnv, harness: string, 
 function noNative(input: ResolveInput): { id: string; why: string } | undefined {
   // Native, where there is one: a harness's own (its facts' webSearch), else pi's, which asks Anthropic's or OpenAI's. A
   // harness's own search goes with its request on its wire, except on OpenRouter (which runs no harness's own search, nor
-  // counts its searches), behind serve's gateway on the wire it serves (no known hosted search), or under a spend cap
+  // counts its searches), on a model the route translates onto its wire (wires.ts routed: the route asks that model, which
+  // has no provider-hosted tool, so the harness's own search is never sent), behind serve's gateway on the wire it serves (no known hosted search), or under a spend cap
   // (cappedOwn: per-use fees the cap cannot reserve yet, its request's bound holding the pages' input tokens, not the
   // fees; or a request with no input bound). A harness with none (OpenCode, whose proxy policy refuses a
   // provider-hosted tool) has none at all. Where there is none, `native` is unavailable, and `auto` goes to Parallel on
@@ -225,6 +227,7 @@ function noNative(input: ResolveInput): { id: string; why: string } | undefined 
   const { facts } = input;
   if (facts) {
     if (!facts.webSearch) return { id: `${input.harness}, whose model requests carry no provider-hosted tool`, why: `${facts.label}'s model requests carry no provider-hosted tool` };
+    if (input.model && routedId(facts.wire, input.model)) return { id: `${input.harness} on a model the route translates`, why: `${facts.label}'s own search does not run on a model the route translates` };
     if (input.openRouter) return { id: `${input.harness} on OpenRouter`, why: `through OpenRouter ${facts.label}'s own search is not run, and its searches are not counted to price` };
     if (input.gateway && wireOf(facts.wire)?.gateway) return { id: `${input.harness} behind a gateway`, why: `behind a gateway ${facts.label} has no own search` };
     return input.capped ? cappedOwn(input.harness, facts.label, facts.webSearch) : undefined;
@@ -270,9 +273,10 @@ export function explainCapability(capability: Pickable, input: ResolveInput): { 
   const none = without ?? (asks ? { id: input.harness, why: "under ask the harness's own search cannot wait for a person's approval" } : undefined);
   if (chosen === "native") return none === undefined ? { resolves: "native", why: nativeWhy(input) } : { resolves: `unavailable: no native search for ${none.id}`, why: `no native search for ${none.id}` };
   // `auto` skips a harness's own search that has per-use fees (its facts' `native`: the provider's search tool), an
-  // explicit pick (`native`): Parallel on the server's key, else keyless Firecrawl.
+  // explicit pick (`native`): Parallel on the server's key, else keyless Firecrawl. Where that search does not run at all
+  // (noNative), auto says why not instead.
   const { facts } = input;
-  if (facts?.webSearch === "native") return input.parallelKey ? { resolves: "parallel", why: key } : { resolves: "firecrawl-keyless", why: `${FIRECRAWL_SEARCH}; ${facts.label}'s own search is an explicit pick` };
+  if (facts?.webSearch === "native" && without === undefined) return input.parallelKey ? { resolves: "parallel", why: key } : { resolves: "firecrawl-keyless", why: `${FIRECRAWL_SEARCH}; ${facts.label}'s own search is an explicit pick` };
   if (none === undefined) return { resolves: "native", why: nativeWhy(input) };
   return input.parallelKey ? { resolves: "parallel", why: `${none.why}; ${key}` } : { resolves: "firecrawl-keyless", why: `${none.why}; ${FIRECRAWL_SEARCH}` };
 }

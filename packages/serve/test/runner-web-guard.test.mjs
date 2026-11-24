@@ -60,7 +60,8 @@ async function loopbackTrap(t) {
     res.end("reached");
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  t.after(() => new Promise((resolve) => server.close(resolve)));
+  // A prober's held connection would keep close waiting.
+  t.after(() => new Promise((resolve) => (server.closeAllConnections(), server.close(resolve))));
   return { url: `http://127.0.0.1:${server.address().port}${path}`, hits: () => hits };
 }
 

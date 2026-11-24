@@ -17,6 +17,7 @@ import { after, before, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import { AttachHub, helloMismatch, mintedComputer } from "../dist/index.js";
 import { desktopOf, startDisplay } from "../dist/desktop.js";
+import { computerdListening } from "./computerd-listening.mjs";
 
 const ARCH = { x64: "amd64", arm64: "arm64" }[process.arch];
 const DAEMON = fileURLToPath(new URL(`../dist/computerd-linux-${ARCH}`, import.meta.url));
@@ -86,10 +87,7 @@ describe("a dial desktop against computerd and Xvfb on this host", { skip }, () 
 		const deadline = new Date(Date.now() + 10 * 60_000).toISOString();
 		init = spawn("unshare", ["-Ur", DAEMON, "init", "--deadline", deadline, "--window-manager"], { env: { PATH: process.env.PATH, AGENTRUN_COMPUTERD_SOCKET: socket, DISPLAY: display }, stdio: ["ignore", "ignore", "pipe"] });
 		init.stderr.on("data", (chunk) => (stderr += chunk));
-		for (let tries = 0; !existsSync(socket); tries++) {
-			assert.ok(tries < 200 && init.exitCode === null, `computerd's init did not listen at ${socket}: ${stderr}`);
-			await new Promise((resolve) => setTimeout(resolve, 25));
-		}
+		await computerdListening(socket, init, () => stderr);
 	});
 
 	after(async () => {

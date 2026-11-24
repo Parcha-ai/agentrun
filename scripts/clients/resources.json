@@ -112,6 +112,7 @@
     "fireTrigger": ["triggers", "fire"],
     "listTriggerFirings": ["triggers", "firings"],
     "rotateTriggerSecret": ["triggers", "rotate-secret"],
+    "releaseTriggerFiring": ["triggers", "release-firing"],
     "listTemplates": ["template", "list"],
     "getTemplate": ["template", "get"],
     "applyTemplate": ["template", "apply"],
@@ -146,6 +147,7 @@
     "redeliverSlack": ["slack", "redeliver"],
     "createQuote": ["quotes", "create"],
     "getUsage": ["usage"],
-    "getStats": ["stats"]
+    "getStats": ["stats"],
+    "getWrapped": ["wrapped"]
   }
 }
