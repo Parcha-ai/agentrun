@@ -2683,12 +2683,12 @@ export interface operations {
       sha256: string;
       report: {
         blocked: {
-          kind: "mcp_server" | "trigger" | "pin" | "tool_setting" | "tool_policy" | "computer" | "paired_computer" | "sign_in" | "learning" | "input_schema" | "budget" | "package";
+          kind: "mcp_server" | "trigger" | "pin" | "tool_setting" | "tool_policy" | "computer" | "paired_computer" | "sign_in" | "learning" | "secrets" | "input_schema" | "budget" | "package";
           name: string;
           reason: string;
         }[];
         remade: {
-          kind: "mcp_server" | "trigger" | "pin" | "tool_setting" | "tool_policy" | "computer" | "paired_computer" | "sign_in" | "learning" | "input_schema" | "budget" | "package";
+          kind: "mcp_server" | "trigger" | "pin" | "tool_setting" | "tool_policy" | "computer" | "paired_computer" | "sign_in" | "learning" | "secrets" | "input_schema" | "budget" | "package";
           name: string;
           reason: string;
         }[];
@@ -2934,6 +2934,7 @@ export interface operations {
         hand_backs: {
           ran: number;
           back: number;
+          cut: number;
         } | null;
         withheld: {
           unknown: number;

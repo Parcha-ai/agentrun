@@ -156,7 +156,7 @@ test("keyless Exa past its daily count, a 429 naming a wait of 65,796 s (Exa's a
   const f = await fakes(t);
   process.env.AGENTRUN_TEST_FAUX_EXA = "429:65796,ok";
   const w = web.createWeb({ ...f.config, order: { search: ["exa-keyless"], fetch: [] } });
-  const unavailable = (answer) => assert.deepEqual(answer, { error: web.SEARCH_UNAVAILABLE });
+  const unavailable = (answer) => assert.deepEqual(answer, { error: SEARCH_UNAVAILABLE });
   await run(f, w, [
     { query: "widgets", at: 0, asks: ["exa-keyless"], tries: [["exa-keyless", "error"]], by: null, check: unavailable },
     { query: "gadgets", at: 16 * 60_000, asks: [], tries: [["exa-keyless", "held"]], by: null, check: unavailable },
@@ -445,7 +445,8 @@ test("a fetch stopped while the guard checks its URL for Parallel: the receipt i
 
 test("the package's root entry is its named API: none of the internals it is built from", async () => {
   const names = Object.keys(await import("../dist/index.js"));
-  const internal = ["sleep", "callTool", "textBlocks", "MAX_BYTES", "PROTOCOL", "TIMEOUT_MS", "retryAfterMs", "waitOf", "searchBusy", "partOfRead", "markdownRead", "isRefused"];
-  assert.deepEqual(internal.filter((name) => names.includes(name)), []);
-  for (const name of ["createWeb", "webFetch", "webFetchText", "fetchPage", "searchInTurn", "breakers", "linksOf", "parallelExtract", "parallelSearched", "exaSearch", "firecrawlSearch", "firecrawlScrape", "firecrawlFetch", "PaidRefused"]) assert.ok(names.includes(name), name);
+  // What the root is built from, and the words and codes its answers carry (SEARCH_UNAVAILABLE, HELD_CODE): none is API.
+  const internal = ["sleep", "callTool", "textBlocks", "MAX_BYTES", "PROTOCOL", "TIMEOUT_MS", "retryAfterMs", "waitOf", "searchBusy", "partOfRead", "markdownRead", "isRefused", "SEARCH_UNAVAILABLE", "HELD_CODE"];
+  assert.deepEqual(internal.filter((name) => names.includes(name)), [], "an internal on the root");
+  for (const name of ["createWeb", "webFetch", "webFetchText", "fetchPage", "askedUrl", "searchInTurn", "breakers", "linksOf", "parallelExtract", "parallelSearched", "exaSearch", "firecrawlSearch", "firecrawlScrape", "firecrawlFetch", "PaidRefused", "readerOf", "parallelReads", "searchBreaker", "holdingWords"]) assert.ok(names.includes(name), name);
 });

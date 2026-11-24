@@ -123,8 +123,15 @@ describe("the story", () => {
   });
   it("the unsure stage's rate is the summary's, over every run since the takeover, not the runs the read listed", () => {
     const runs = [run(1, "workflow"), run(2, "workflow")];
-    const stages = storyOf({ ...base, runs: 2, cost: cost({ takeover: { n: 1, run_id: "r1" }, after: { runs: 2, mean_usd: 0.1 }, hand_backs: { ran: 40, back: 30 } }, runs) });
+    const stages = storyOf({ ...base, runs: 2, cost: cost({ takeover: { n: 1, run_id: "r1" }, after: { runs: 2, mean_usd: 0.1 }, hand_backs: { ran: 40, back: 30, cut: 0 } }, runs) });
     expect(stages.find((s) => s.key === "unsure")?.value).toBe("75% handed back");
+  });
+  it("the unsure stage reads the workflow's own hand-backs: a run a restart cut mid-call is said apart, never unsure", () => {
+    const runs = [run(1, "workflow"), run(2, "handed_back")];
+    const unsure = (hand_backs: { ran: number; back: number; cut: number }) => storyOf({ ...base, runs: 2, cost: cost({ takeover: { n: 1, run_id: "r1" }, after: { runs: 2, mean_usd: 0.1 }, hand_backs }, runs) }).find((s) => s.key === "unsure")!;
+    expect([unsure({ ran: 10, back: 1, cut: 2 }).value, unsure({ ran: 10, back: 1, cut: 2 }).detail, unsure({ ran: 10, back: 1, cut: 2 }).state]).toEqual(["10% handed back", "of 10 runs it ran first; 2 cut by a restart", "watch"]);
+    expect(unsure({ ran: 4, back: 0, cut: 4 })).toMatchObject({ value: "0% handed back", detail: "of 4 runs it ran first; 4 cut by a restart", state: "watch" });
+    expect(unsure({ ran: 10, back: 1, cut: 0 }).detail).toBe("of 10 runs it ran first");
   });
   it("with nothing yet, says what happens next at each stage", () => {
     const stages = storyOf(base);
@@ -163,7 +170,7 @@ describe("the story", () => {
     const runs = [run(1, "agent"), run(2, "workflow"), run(3, "handed_back"), run(4, "workflow")];
     const loop = { agent: "a", completed_runs: 0, compiles: [{ run_id: "r1", round: 1, at: at(1), workflow: "sort-invoice", attempts: [{ ok: true, errors: [] }], digest: "a".repeat(16), promoted: true, draft_errors: [], withheld: false }], } as LearningLoop;
     const stages = storyOf({ ...base, corrections: 3,runs: 4, workflows: [{ name: "sort-invoice", status: "serving" }], loop, promotions: [record({})],
-      cost: cost({ takeover: { n: 2, run_id: "r2" }, before: { runs: 1, mean_usd: 0.89 }, after: { runs: 25, mean_usd: 0.127 }, times_cheaper: 7, hand_backs: { ran: 3, back: 1 } }, runs) });
+      cost: cost({ takeover: { n: 2, run_id: "r2" }, before: { runs: 1, mean_usd: 0.89 }, after: { runs: 25, mean_usd: 0.127 }, times_cheaper: 7, hand_backs: { ran: 3, back: 1, cut: 0 } }, runs) });
     expect(stages.map((s) => [s.key, s.value, s.state])).toEqual([
       ["corrections", "3 corrections", "done"], ["compiled", "sort-invoice", "done"], ["took_over", "Run 2", "done"], ["cheaper", "7.0x cheaper", "done"], ["unsure", "33% handed back", "warn"],
     ]);
@@ -172,14 +179,15 @@ describe("the story", () => {
   // A cleared check says what happened (it passed the agreement check: N of M agreed, against its bar), never "at the
   // same accuracy" (#3064 review: an 80% bar is no equal accuracy); else the ratio alone and why accuracy is not claimed.
   // A ratio whose runs' cost isn't all known is no ratio: the sentence says why.
-  const took = { takeover: { n: 2, run_id: "r2" }, before: { runs: 18, mean_usd: 0.89 }, after: { runs: 59, mean_usd: 0.127 }, hand_backs: { ran: 59, back: 3 } };
+  const took = { takeover: { n: 2, run_id: "r2" }, before: { runs: 18, mean_usd: 0.89 }, after: { runs: 59, mean_usd: 0.127 }, hand_backs: { ran: 59, back: 3, cut: 0 } };
   const cheaper = (over: Partial<LearningCost["summary"]>) => storyOf({ ...base, corrections: 3, runs: 80, cost: cost({ ...took, ...over }) }).find((s) => s.key === "cheaper")!;
   const passed = (agreed: number, alone: number, n = alone) => ({ n, workflow_pct: Math.round((agreed / alone) * 1000) / 10, agent_pct: 100, cleared: true, agreed, alone, agree_min: 0.8 });
   it("with a cleared check: N times cheaper, the agreement check it passed (N of M agreed, its bar) and what it served under it, never the same accuracy", () => {
     const stage = cheaper({ times_cheaper: 7, replay: passed(32, 40) });
     expect([stage.value, stage.detail, stage.state]).toEqual(["7.0x cheaper", "Passed the agreement check: 32 of 40 agreed (bar 80%) · served 59 runs, handed back 3", "done"]);
     expect(`${stage.value} ${stage.detail}`).not.toMatch(/same accuracy|as accurate/);
-    expect(cheaper({ times_cheaper: 6.6, replay: passed(17, 20), hand_backs: { ran: 1, back: 0 } })).toMatchObject({ value: "6.6x cheaper", detail: "Passed the agreement check: 17 of 20 agreed (bar 80%) · served 1 run, handed back 0" });
+    expect(cheaper({ times_cheaper: 6.6, replay: passed(17, 20), hand_backs: { ran: 1, back: 0, cut: 0 } })).toMatchObject({ value: "6.6x cheaper", detail: "Passed the agreement check: 17 of 20 agreed (bar 80%) · served 1 run, handed back 0" });
+    expect(cheaper({ times_cheaper: 6.6, replay: passed(17, 20), hand_backs: { ran: 59, back: 3, cut: 2 } }).detail).toBe("Passed the agreement check: 17 of 20 agreed (bar 80%) · served 59 runs, handed back 3; 2 cut by a restart");
     expect(cheaper({ times_cheaper: 1.3, replay: { ...passed(9, 10, 12), agree_min: 0.9 } })).toMatchObject({ value: "1.3x cheaper", detail: "Passed the agreement check: 9 of 10 agreed (bar 90%) · served 59 runs, handed back 3" });
   });
   it("one ratio: the strip says the server's times_cheaper as the cost chart does (timesOf), never rounded to a whole 'about'", () => {

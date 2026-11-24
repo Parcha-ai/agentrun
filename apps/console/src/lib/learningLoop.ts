@@ -56,8 +56,10 @@ export function markersOf(runs: readonly CostRun[], records: readonly Promotion[
 export const counted = (r: CostRun) => r.path !== "replay";
 
 /** How often the workflow handed the run back since it took over: the server's count over every run since (the cost
- *  summary's `hand_backs`), never the latest runs a read lists. Null before a takeover or with none since. */
-export const handBacksOf = (cost: Pick<LearningCost, "summary"> | null): { ran: number; back: number } | null =>
+ *  summary's `hand_backs`), never the latest runs a read lists. `back` counts only the hand-backs the workflow made
+ *  itself; `cut`, the runs a restart cut mid-call (handed back too, no judgment of the workflow's). Null before a
+ *  takeover or with none since. */
+export const handBacksOf = (cost: Pick<LearningCost, "summary"> | null): { ran: number; back: number; cut: number } | null =>
   cost?.summary.hand_backs?.ran ? cost.summary.hand_backs : null;
 
 /** The newest promotion record of one revision (`workflow` at `digest`): what it is now. */
@@ -201,10 +203,15 @@ export function storyOf(input: {
     stages.push({ key: "cheaper", title: "Cheaper", value: "Not yet", detail: "no served runs yet: once a workflow takes over, the all-in cost of the runs it serves against before (replays are checks, not served runs)", state: "later" });
   }
   if (back) {
-    stages.push({ key: "unsure", title: "Unsure", value: `${Math.round((back.back / back.ran) * 100)}% handed back`, detail: `of ${back.ran} runs it ran first`, state: back.back / back.ran > 0.25 ? "warn" : "watch" });
+    // Unsure is the workflow's own hand-backs (`back`): a run a restart cut mid-call is said apart, never as unsure.
+    stages.push({ key: "unsure", title: "Unsure", value: `${Math.round((back.back / back.ran) * 100)}% handed back`, detail: `of ${back.ran} runs it ran first${cutWords(back.cut)}`, state: back.back / back.ran > 0.25 ? "warn" : "watch" });
   }
   return stages;
 }
+
+/** The served runs a restart cut mid-call (the cost summary's `hand_backs.cut`), after a count: "; 2 cut by a restart",
+ *  or nothing with none. */
+export const cutWords = (cut: number): string => (cut > 0 ? `; ${cut} cut by a restart` : "");
 
 /** Why the cost summary has no times-cheaper figure (its `withheld`): "3 runs' cost unknown, 1 known only as at most". */
 export function withheldWords(w: { unknown: number; at_most: number }): string {
@@ -224,7 +231,7 @@ function cheaperClaim(s: LearningCost["summary"], ratio: number): { value: strin
   const r = s.replay;
   const scored = r ? `workflow ${Math.round(r.workflow_pct)}% vs agent ${Math.round(r.agent_pct)}% on ${r.n} inputs` : "";
   if (r?.cleared) {
-    const served = s.hand_backs ? ` · served ${s.hand_backs.ran} ${s.hand_backs.ran === 1 ? "run" : "runs"}, handed back ${s.hand_backs.back}` : "";
+    const served = s.hand_backs ? ` · served ${s.hand_backs.ran} ${s.hand_backs.ran === 1 ? "run" : "runs"}, handed back ${s.hand_backs.back}${cutWords(s.hand_backs.cut)}` : "";
     return { value: `${n} cheaper`, detail: `Passed the agreement check: ${r.agreed} of ${r.alone} agreed (bar ${Math.round(r.agree_min * 100)}%)${served}` };
   }
   return { value: `${n} cheaper`, detail: `accuracy not claimed: ${r ? `its check was below the bar (${scored})` : "no check yet"}` };

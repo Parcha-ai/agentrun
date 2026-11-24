@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { publicCheck, publicFetch, readPage } from "@parcha/pi-browser";
 import * as web from "../dist/index.js";
+import { SEARCH_UNAVAILABLE } from "../dist/search.js";
 import { EXA_CANARY, EXA_HITS, exaPage, exaResults, exaUnread, keyedServer, ok, refused } from "./fixtures/fake-keyed.mjs";
 import { network } from "./fixtures/fake-network.mjs";
 
@@ -73,7 +74,7 @@ test("Exa's limits, read by status: a 429 holds it for its Retry-After, a 402 (c
   assert.deepEqual(spent.receipt.tries.map((one) => [one.provider, one.outcome, one.limit]), [["exa", "error", { kind: "quota" }]]);
   clock.now += 3_600_000;
   const off = await w.search("sprockets");
-  assert.deepEqual(off.answer, { error: web.SEARCH_UNAVAILABLE });
+  assert.deepEqual(off.answer, { error: SEARCH_UNAVAILABLE });
   assert.equal(exa.got.length, 2, "off for the run");
 });
 

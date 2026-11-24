@@ -76,6 +76,7 @@ async function readOnce(url: unknown, { readers, order, guard, checkMs, options,
       for (const miss of logged) log?.(miss.event, { said: miss.said, direct: read.ok ? "read" : "failed" });
       tries.push({ provider: id, outcome: read.ok ? "ok" : "error", ...(read.ok ? {} : { error: read.refused ?? read.error ?? "" }), ...(failure ? { failure } : {}) });
       // A second scrub behind readDirect's own, kept on purpose: it covers a url readDirect did not clear and has not cut.
+      // No test reaches it: readDirect clears every url it names, the URL asked and the one its fetch ended at alike.
       return { ...read, url: withoutCredentials(read.url), via: id, ...said };
     }
     // A provider is sent the URL the guard checked, as parsed (passes), or not asked, saying why in readDirect's words.

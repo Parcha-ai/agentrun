@@ -2,7 +2,7 @@
 // answer from the fixture, in the tools' own shapes and through the guarded paths' own checks. Only the eval's own
 // in-process runner binds it (runner/beside.ts), so no other server's runs ever see a fake.
 import { GUARD, RATE_LIMITED } from "./web-run.js";
-import { clip, type Hit, type Page, type Part, partProblem, type Search, searchArgs, snippetOf, TITLE_CAP, URL_MAX, webFetch, type WebPage } from "@parcha/agentrun-web";
+import { askedUrl, clip, type Hit, type Page, type Part, partProblem, type Search, searchArgs, snippetOf, TITLE_CAP, webFetch, type WebPage } from "@parcha/agentrun-web";
 import type { Plane } from "./tool-plane.js";
 import type { PublicFetchOptions } from "@parcha/pi-browser";
 
@@ -89,7 +89,7 @@ export function fakeSearch(fake: WebFake, args: Record<string, unknown>, provide
  *  fetch's own path with the fake standing in for the network. */
 export async function fakeFetch(fake: WebFake, url: unknown, part: Part & { signal?: AbortSignal } = {}): Promise<WebPage | Page> {
   const problem = partProblem(part);
-  if (problem) return { ok: false, url: typeof url === "string" ? clip(url, URL_MAX) : "", status: 0, title: "", text: "", links: [], error: problem };
+  if (problem) return { ok: false, url: askedUrl(url), status: 0, title: "", text: "", links: [], error: problem };
   const answer = fake === "unavailable" ? undefined : (fake.fetch.answers.find((one) => one.url === url) ?? fake.fetch.default);
   const page = await webFetch(url, {
     ...part,
