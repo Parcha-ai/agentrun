@@ -387,9 +387,9 @@ async function sourceOf({ values, args, env, io, cli, releases }, fail) {
     return { kind: "folder", dir, lock: { ...lock, write }, files: () => readFolder(dir, fail) };
   }
   if (/[\\/]/.test(given) || given.startsWith(".")) throw fail(2, `${given} is not a folder: deploy takes a package folder or an agent id of this install.`);
-  // The install the agent is on: --base-url, else as every command finds it; never with AGENTRUN_API_KEY or its stand-in
-  // AGENTRUN_TOKEN, which are the target's token here.
-  const source = remote(cli, values, { ...env, AGENTRUN_API_KEY: "", AGENTRUN_TOKEN: "" }, io, undefined);
+  // The install the agent is on: --base-url, else as every command finds it; never with AGENTRUN_API_KEY, which is the
+  // target's token here.
+  const source = remote(cli, values, { ...env, AGENTRUN_API_KEY: "" }, io, undefined);
   const lock = installLock(env, cli, source.base, given);
   releases.push(lock.hold());
   return {
@@ -618,7 +618,7 @@ const ending = (work) => async (ctx) => {
 
 const SOURCE = ["SOURCE", "a package folder (default: the current one), or an agent id of this install (its export)"];
 const TO = ["--to URL", "where: cloud (the hosted AgentRun; AGENTRUN_CLOUD_URL overrides its address), or an AgentRun's address; left out after the first deploy, the lock's target (a folder's, only where this CLI deployed it, or cloud)"];
-const TOKEN = "The target's token: AGENTRUN_API_KEY, else api_key in the CLI config for that address, else AGENTRUN_TOKEN. An install agent's own install is --base-url, else as every command finds it.";
+const TOKEN = "The target's token: AGENTRUN_API_KEY, else api_key in the CLI config for that address. An install agent's own install is --base-url, else as every command finds it.";
 
 export const DEPLOY = {
   command: ["deploy"],
