@@ -12,6 +12,8 @@
 //          `agentrun: <tool, its underscores as spaces>`);
 //   titleSummary: with style "goose-1.59", the summary Goose 1.59.2 writes after such a title for a call whose
 //                 arguments it summarizes (a path): `agentrun: <tool> · <titleSummary>`;
+//   (styles "goose" and "goose-1.59" read $HOME/.config/goose/permission.yaml at start, as Goose 1.59.2's permission
+//   manager does, here as JSON: a call of a tool its `user.always_allow` names, `agentrun__<tool>`, is never asked about;)
 //   askMcp: ask permission before an MCP call (default: by style); askNative: the native kinds that ask;
 //   nativeLog: a file each native call that runs appends its title to;
 //   countFile: a file each event (new, load, prompt, cancel, mcp, permission) is appended to, one JSON line;
@@ -78,6 +80,16 @@ const deniesWrite = (() => {
   }
 })();
 const EDITS = new Set(["edit", "delete", "move"]);
+/** The tools Goose's permission file lets run unasked (styles goose and goose-1.59), by their exact names. */
+const alwaysAllowed = (() => {
+  if (style === "cursor") return new Set();
+  try {
+    const allowed = JSON.parse(readFileSync(join(home, ".config", "goose", "permission.yaml"), "utf8"))?.user?.always_allow;
+    return new Set(Array.isArray(allowed) ? allowed : []);
+  } catch {
+    return new Set();
+  }
+})();
 
 const said = (event) => config.countFile && appendFileSync(config.countFile, `${JSON.stringify({ at: Date.now(), pid: process.pid, ...event })}\n`);
 const save = (session) => {
@@ -271,7 +283,7 @@ async function takeTurn(client, session, prompt, signal) {
         await notify({ sessionUpdate: "tool_call_update", toolCallId: id, title: `agentrun: ${s.call}`, rawInput: { providerIdentifier: "agentrun", toolName: s.call, args } });
         await notify({ sessionUpdate: "tool_call_update", toolCallId: id, status: "in_progress" });
       } else await notify({ sessionUpdate: "tool_call", ...update });
-      if (askMcp && !(await permitted(client, session, late ? { toolCallId: id, title: titleOf(s.call), kind: "other", status: "pending" } : update))) {
+      if (askMcp && !alwaysAllowed.has(`agentrun__${s.call}`) && !(await permitted(client, session, late ? { toolCallId: id, title: titleOf(s.call), kind: "other", status: "pending" } : update))) {
         if (signal.aborted) return { stopReason: "cancelled" };
         entry.status = "failed";
         entry.result = "the client refused the call";
