@@ -1167,6 +1167,11 @@ function statusOf(...answers) {
   return { status, calls: () => calls };
 }
 
+/** The data folder these checks keep their answers in, one for them all, so another login's answer is there to be told
+ *  apart. */
+const ANSWERS = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-login-answers-"));
+test.after(() => rmSync(ANSWERS, { recursive: true, force: true }));
+
 /** A login of its own, so no test's earlier answer is another's. */
 async function ownLogin() {
   const dir = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-login-check-"));
@@ -1189,64 +1194,64 @@ const unknownByTimeout = (error) => {
 test("a Claude-plan run whose login check times out once asks again, and goes on when that answer is signed in", async () => {
   const login = await ownLogin();
   const fake = statusOf(timedOut(), SAID_IN);
-  await loginBeforeRun(login, "claude", fake.status);
+  await loginBeforeRun(login, "claude", fake.status, { data: ANSWERS });
   assert.equal(fake.calls(), 2, "status was asked twice");
 });
 
 test("a Claude-plan run whose login check times out twice goes on when the same login answered signed in 2 minutes before in this server", async () => {
   const login = await ownLogin();
   const time = clock(1_000_000);
-  await loginBeforeRun(login, "claude", statusOf(SAID_IN).status, { now: time.now });
+  await loginBeforeRun(login, "claude", statusOf(SAID_IN).status, { data: ANSWERS, now: time.now });
   time.at(2 * 60_000);
   const fake = statusOf(timedOut(), timedOut());
-  await loginBeforeRun(login, "claude", fake.status, { now: time.now });
+  await loginBeforeRun(login, "claude", fake.status, { data: ANSWERS, now: time.now });
   assert.equal(fake.calls(), 2, "asked twice before the earlier answer is taken");
 });
 
 test("a Claude-plan run whose login check times out twice is refused with LOGIN_UNKNOWN, in words that name the timeout, when the login never answered signed in here, answered 11 minutes ago, or only another login did", async () => {
   const never = await ownLogin();
   const first = statusOf(timedOut(), timedOut());
-  await assert.rejects(loginBeforeRun(never, "claude", first.status), unknownByTimeout);
+  await assert.rejects(loginBeforeRun(never, "claude", first.status, { data: ANSWERS }), unknownByTimeout);
   assert.equal(first.calls(), 2, "no earlier answer: asked twice, then refused");
 
   const old = await ownLogin();
   const time = clock(1_000_000);
-  await loginBeforeRun(old, "claude", statusOf(SAID_IN).status, { now: time.now });
+  await loginBeforeRun(old, "claude", statusOf(SAID_IN).status, { data: ANSWERS, now: time.now });
   time.at(11 * 60_000);
   const stale = statusOf(timedOut(), timedOut());
-  await assert.rejects(loginBeforeRun(old, "claude", stale.status, { now: time.now }), unknownByTimeout);
+  await assert.rejects(loginBeforeRun(old, "claude", stale.status, { data: ANSWERS, now: time.now }), unknownByTimeout);
   assert.equal(stale.calls(), 2, "an answer 11 minutes old: asked twice, then refused");
 
   // Another login (another folder) answered signed in a minute before: that answer is not this login's.
   const other = await ownLogin();
   time.at(0);
-  await loginBeforeRun(other, "claude", statusOf(SAID_IN).status, { now: time.now });
+  await loginBeforeRun(other, "claude", statusOf(SAID_IN).status, { data: ANSWERS, now: time.now });
   time.at(60_000);
   const fresh = await ownLogin();
-  await assert.rejects(loginBeforeRun(fresh, "claude", statusOf(timedOut(), timedOut()).status, { now: time.now }), unknownByTimeout);
+  await assert.rejects(loginBeforeRun(fresh, "claude", statusOf(timedOut(), timedOut()).status, { data: ANSWERS, now: time.now }), unknownByTimeout);
   // The same folder with its credentials kept apart is another login too.
-  await assert.rejects(loginBeforeRun({ ...other, secure: join(other.userHome, "elsewhere") }, "claude", statusOf(timedOut(), timedOut()).status, { now: time.now }), unknownByTimeout);
+  await assert.rejects(loginBeforeRun({ ...other, secure: join(other.userHome, "elsewhere") }, "claude", statusOf(timedOut(), timedOut()).status, { data: ANSWERS, now: time.now }), unknownByTimeout);
 });
 
 test("a signed-out answer is never asked again nor overridden by an earlier signed-in one: the run is refused at once with LOGIN_SIGNED_OUT, and that earlier answer is gone, so a timeout after it is refused", async () => {
   const login = await ownLogin();
   const time = clock(1_000_000);
-  await loginBeforeRun(login, "claude", statusOf(SAID_IN).status, { now: time.now });
+  await loginBeforeRun(login, "claude", statusOf(SAID_IN).status, { data: ANSWERS, now: time.now });
   time.at(60_000);
   const slow = statusOf(timedOut(), timedOut());
-  await loginBeforeRun(login, "claude", slow.status, { now: time.now });
+  await loginBeforeRun(login, "claude", slow.status, { data: ANSWERS, now: time.now });
   assert.equal(slow.calls(), 2, "two timeouts a minute after a signed-in answer: the run goes on");
 
   time.at(2 * 60_000);
   const out = statusOf(SAID_OUT, SAID_IN);
-  await assert.rejects(loginBeforeRun(login, "claude", out.status, { now: time.now }), (error) => {
+  await assert.rejects(loginBeforeRun(login, "claude", out.status, { data: ANSWERS, now: time.now }), (error) => {
     assert.equal(error.message, LOGIN_SIGNED_OUT);
     return true;
   });
   assert.equal(out.calls(), 1, "a signed-out answer is the answer: status asked once");
 
   time.at(3 * 60_000);
-  await assert.rejects(loginBeforeRun(login, "claude", statusOf(timedOut(), timedOut()).status, { now: time.now }), unknownByTimeout);
+  await assert.rejects(loginBeforeRun(login, "claude", statusOf(timedOut(), timedOut()).status, { data: ANSWERS, now: time.now }), unknownByTimeout);
 });
 
 test("the Settings view feeds the same answer: after it read the login signed in, a run whose two checks time out goes on; after it read signed out, one is refused; a check that times out there reads unknown and is asked once", async () => {
@@ -1278,12 +1283,12 @@ test("the Settings view feeds the same answer: after it read the login signed in
 
   assert.equal((await claudeLoginView(deps)).state, "signed_in");
   const slow = statusOf(timedOut(), timedOut());
-  await loginBeforeRun(login, pinned, slow.status);
+  await loginBeforeRun(login, pinned, slow.status, { data });
   assert.equal(slow.calls(), 2, "the run asked twice, then took the view's answer");
 
   said = SAID_OUT;
   assert.equal((await claudeLoginView(deps)).state, "signed_out");
-  await assert.rejects(loginBeforeRun(login, pinned, statusOf(timedOut(), timedOut()).status), unknownByTimeout);
+  await assert.rejects(loginBeforeRun(login, pinned, statusOf(timedOut(), timedOut()).status, { data }), unknownByTimeout);
 
   said = timedOut();
   asked = 0;
@@ -1291,22 +1296,75 @@ test("the Settings view feeds the same answer: after it read the login signed in
   assert.equal(asked, 1, "the view never asks again: a person waits on it");
 });
 
+// The server and its runner can be two processes on one machine and one data folder (`agentrun-serve --no-runner` beside
+// `agentrun-serve runner --data`): the Settings view's answer is the server's, a run's check is the runner's. So the
+// answer is kept in the data folder, and a runner process that never asked itself takes it. Another data folder is
+// another machine's (machineId): its runner takes none. A signed-out answer in the view removes it.
+const RUNNER_CHECK = `
+const [dist, data, login] = process.argv.slice(1);
+const { loginBeforeRun } = await import(dist);
+const timedOut = () => Object.assign(new Error("the claude CLI gave no login status: the check timed out after 15 s"), { code: "timed_out", limitMs: 15000 });
+try {
+  await loginBeforeRun(JSON.parse(login), "claude", async () => { throw timedOut(); }, { data });
+  process.stdout.write("went on");
+} catch (error) {
+  process.stdout.write(error.message);
+}`;
+/** A run's check of `login` in a runner process of its own on `data`, whose two status checks time out: "went on", or the
+ *  refusal's words. */
+function runnerCheck(data, login) {
+  const env = { ...process.env };
+  delete env.NODE_TEST_CONTEXT;
+  const ran = spawnSync(process.execPath, ["--input-type=module", "-e", RUNNER_CHECK, new URL("../dist/claude-login.js", import.meta.url).href, data, JSON.stringify(login)], { env, encoding: "utf8", timeout: 60_000 });
+  assert.equal(ran.status, 0, ran.stderr);
+  return ran.stdout;
+}
+test("a runner in a process of its own on the same data folder takes the Settings view's signed-in answer when its two checks time out; one on another data folder does not, and a signed-out answer in the view takes it away", async (t) => {
+  const data = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-login-shared-"));
+  const elsewhere = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-login-elsewhere-"));
+  t.after(() => [data, elsewhere].forEach((dir) => rmSync(dir, { recursive: true, force: true })));
+  const pinned = join(data, "claude");
+  writeFileSync(pinned, "", { mode: 0o755 });
+  const setting = settingFor("agentrun", data);
+  let said = SAID_IN;
+  const deps = {
+    signIns: { view: () => undefined },
+    settings: { get: async (key) => (key === CLAUDE_LOGIN_SETTING ? setting : undefined), put: async () => {}, remove: async () => {} },
+    data,
+    env: { HOME: data, PATH: "/usr/bin:/bin" },
+    pinned: async () => pinned,
+    refused: undefined,
+    sameMachine: false,
+    claude: async () => ({ claudeLoginCommand: () => "claude auth login", claudeLoginStatus: async () => said }),
+    changed: async () => {},
+  };
+  const login = loginAt("agentrun", data, deps.env);
+
+  assert.equal((await claudeLoginView(deps)).state, "signed_in");
+  assert.equal(runnerCheck(data, login), "went on", "a runner process on the same data folder refused a run right after the Settings view read the login signed in: the answer never reached it");
+  assert.ok(runnerCheck(elsewhere, login).startsWith(LOGIN_UNKNOWN), "a runner on another data folder, another machine's, took this one's answer");
+
+  said = SAID_OUT;
+  assert.equal((await claudeLoginView(deps)).state, "signed_out");
+  assert.ok(runnerCheck(data, login).startsWith(LOGIN_UNKNOWN), "a runner process took a signed-in answer the Settings view had since read signed out");
+});
+
 test("only a check that gave no answer is asked again or goes on by an earlier signed-in answer: a CLI that is not there, or any other failure, refuses the run at once with LOGIN_UNKNOWN in its own words", async () => {
   const login = await ownLogin();
   const time = clock(1_000_000);
-  await loginBeforeRun(login, "claude", statusOf(SAID_IN).status, { now: time.now });
+  await loginBeforeRun(login, "claude", statusOf(SAID_IN).status, { data: ANSWERS, now: time.now });
   time.at(60_000);
 
   const missing = Object.assign(new Error("spawn claude ENOENT"), { code: "ENOENT", errno: -2, syscall: "spawn claude", path: "claude" });
   const gone = statusOf(missing, SAID_IN);
-  await assert.rejects(loginBeforeRun(login, "claude", gone.status, { now: time.now }), (error) => {
+  await assert.rejects(loginBeforeRun(login, "claude", gone.status, { data: ANSWERS, now: time.now }), (error) => {
     assert.equal(error.message, `${LOGIN_UNKNOWN}: spawn claude ENOENT`);
     return true;
   });
   assert.equal(gone.calls(), 1, "a CLI that is not there: status asked once, and the signed-in answer a minute before does not stand in");
 
   const broken = statusOf(new Error("EACCES: permission denied, open '.claude.json'"), SAID_IN);
-  await assert.rejects(loginBeforeRun(login, "claude", broken.status, { now: time.now }), (error) => {
+  await assert.rejects(loginBeforeRun(login, "claude", broken.status, { data: ANSWERS, now: time.now }), (error) => {
     assert.equal(error.message, `${LOGIN_UNKNOWN}: EACCES: permission denied, open '.claude.json'`);
     return true;
   });
@@ -1315,10 +1373,10 @@ test("only a check that gave no answer is asked again or goes on by an earlier s
   // A CLI that answered, in time, nothing that reads as a status gave no answer too, as the harness says by its code.
   const noStatus = () => Object.assign(new Error("the claude CLI gave no login status"), { code: "no_status" });
   const garbled = statusOf(noStatus(), SAID_IN);
-  await loginBeforeRun(login, "claude", garbled.status, { now: time.now });
+  await loginBeforeRun(login, "claude", garbled.status, { data: ANSWERS, now: time.now });
   assert.equal(garbled.calls(), 2, "no status once, then signed in: asked twice, and the run goes on");
   time.at(2 * 60_000);
   const twice = statusOf(noStatus(), noStatus());
-  await loginBeforeRun(login, "claude", twice.status, { now: time.now });
+  await loginBeforeRun(login, "claude", twice.status, { data: ANSWERS, now: time.now });
   assert.equal(twice.calls(), 2, "no status twice, a minute after a signed-in answer: the run goes on by it");
 });
