@@ -81,7 +81,9 @@ export interface Held {
    *  out and its launch's payload names the pull request. Its mint makes a token of that repository alone, contents
    *  read, whatever the process names; its MCP mints on the runner (mcp). */
   githubAppAccess(): Promise<GithubAppAccessAt | undefined>;
-  /** Every saved model key, for a run whose routes have no revision to scope them by (a subagent's tiers, a grade). */
+  /** Every saved model key, for a run whose routes have no revision to scope them by (a subagent's tiers, a learning run's
+ *  grade, an SDK run's); a replay's or an audit's grader gets its fast model's provider's key alone, none when its revision
+ *  names agree_on or has no fast model. */
   savedModelKeys(): Promise<Record<string, string>>;
   /** The model keys the host's models of `tiers` need (claim-secrets.ts tierModelKeys), the plan's reader with them: of
    *  the tiers the claim's learned workflows name, as the runner chose them (learnedFirst), alone. */

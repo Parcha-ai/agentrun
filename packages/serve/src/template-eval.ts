@@ -3,7 +3,8 @@
 // Everything goes through the v2 API alone, on an in-process server over a temp data directory by default (an eval never
 // touches the owner's server) or on one named by its address and token. Per case: a fake MCP server per `mcp` fixture,
 // saved under its name with no credential and recording every call; the package applied with the case's parameters and
-// grants, a fresh agent per run, its learning seeded from the case's corrections; one run per `runs` with the prompt's body as
+// grants, a fresh agent per run, its learning seeded from the case's corrections and its work folder from the case's
+// files; one run per `runs` with the prompt's body as
 // its input and the case's cap, on the case's clock when it sets one (`now`), waited for; then its answer, its tool calls (its timeline read with calls=whole, each
 // call's arguments and its output whole, to CALL_RESULT_CHARS, through the run's redaction, and the fakes' own logs) and its files, graded, and held to the package's output schema when it declares one (outputVerdict,
 // the server's own verdict). Every grader is deterministic but `llm`, which is itself a run on the same
@@ -44,6 +45,7 @@ import { WEB_SEARCH_TOOL } from "./web-search.js";
 import { dayIn, serverZone } from "./environment.js";
 import { instantOf } from "./trigger-adapter.js";
 import { applyBodyOf, compiled, filledPins, filledSource, onServerName, onServers, type Package, packageView, readPackage } from "./templates.js";
+import { INPUTS_DIR } from "./uploads.js";
 import { inputIssues, inputSchemaOf, isObject, type Json, MODEL_REF } from "./validate.js";
 
 /** What a grader run is told, whatever the rubric: blind, strict, and its verdict as one JSON block. */
@@ -75,7 +77,7 @@ export const EVAL_HARNESSES = "agentrun-eval-harnesses";
 export const ON_DATA_WITH_SERVER = "--on-data is the data folder of the eval's own server, and --server names another server: give one of them";
 
 const PROMPT_FIELDS = ["description", "runs", "max_cost_usd", "input"];
-const CASE_FIELDS = ["parameters", "grants", "mcp", "web", "monid", "learning", "now", "email", "calendar", "feed", "previous"];
+const CASE_FIELDS = ["parameters", "grants", "mcp", "web", "monid", "learning", "now", "email", "calendar", "feed", "previous", "files"];
 const GRADER_FIELDS: Record<string, string[]> = {
   llm: ["type", "target"],
   regex: ["type", "pattern", "flags", "expect", "target"],
@@ -93,7 +95,7 @@ const LOOPBACK = "127.0.0.1"; // key-gate: loopback-rule each fake MCP server li
 const LOOPBACK_HOST = /^(?:127\.\d+\.\d+\.\d+|localhost|\[::1\])$/; // key-gate: loopback-rule a server on this machine reaches the fakes
 
 /** A case's fields that the eval's own runner alone binds (EvalFakes), each with what it does: a named server refuses them. */
-const OWN_SERVER_FAKES: readonly (readonly ["web" | "now" | "monid" | "email" | "calendar" | "feed" | "previous", string])[] = [["web", "web fakes the web tools"], ["now", "now sets its runs' clock"], ["monid", "monid fakes the package's monid endpoints"], ["email", "email fakes the server's email account"], ["calendar", "calendar fakes the server's calendar"], ["feed", "feed fakes the package's feeds"], ["previous", "previous seeds the case's earlier runs in the server's store"]];
+const OWN_SERVER_FAKES: readonly (readonly ["web" | "now" | "monid" | "email" | "calendar" | "feed" | "previous" | "files", string])[] = [["web", "web fakes the web tools"], ["now", "now sets its runs' clock"], ["monid", "monid fakes the package's monid endpoints"], ["email", "email fakes the server's email account"], ["calendar", "calendar fakes the server's calendar"], ["feed", "feed fakes the package's feeds"], ["previous", "previous seeds the case's earlier runs in the server's store"], ["files", "files seeds its runs' work folders"]];
 
 /** A case's run input: its prompt's body as content (none when empty), then its typed fields. */
 export const runInput = (content: string, fields?: Json): Json => ({ ...(content ? { content } : {}), ...fields });
@@ -109,9 +111,13 @@ export type Grader = (
   /** An email case's layouts this grader grades the runs of; absent, every run. */
   layouts?: Layout[];
 };
-/** One answer of a fake tool: taken when every argument `when` lists equals the call's; `when` a list, when any one of
- *  its entries does (one answer for each spelling of a call: a file by `sha` or by `ref`, say). */
+/** One answer of a fake tool: taken when every argument `when` lists equals the call's, or, listed as `{"$pattern":
+ *  <regex>}`, is a string the regex matches whole; `when` a list, when any one of its entries does (one answer for each
+ *  spelling of a call: a file by `sha` or by `ref`, say). */
 type Answer = { when: Json | Json[]; result: Json };
+/** The regex a `when` value matches by, when it is `{"$pattern": <regex>}` and nothing else: anchored here, so a key
+ *  made of a run's random stem (ns-k7m2p9qa-voice-cold-open) matches whole, never by a prefix the author left open. */
+const patternOf = (value: unknown): RegExp | undefined => (isObject(value) && Object.keys(value).length === 1 && typeof value.$pattern === "string" ? new RegExp(`^(?:${value.$pattern})$`) : undefined);
 /** A fake code search: the call's `query` argument searched over `files` (GitHub's code search syntax, read loosely: bare
  *  and quoted terms every one of which a file holds, /.../ terms read as literal text (a backslash before punctuation
  *  dropped), never as a regular expression, so no query can stall the eval, NOT before a term or a qualifier, and the
@@ -157,6 +163,9 @@ export type EvalCase = {
   /** The case's previous runs (eval-previous.ts): each run's agent gets them seeded as completed runs of the package's
    *  schedule trigger, which then starts the run as it would, handing it the last one's result. */
   previous?: PreviousFixture;
+  /** The files each run's work folder holds before its first turn (`files:`, a path in the folder to its text): the eval's
+   *  own runner writes them at the claim (EvalFakes.files), so a case can start where an earlier run left off. */
+  files?: Record<string, string>;
 };
 
 /** Cases that do not check: every problem, each naming its file. */
@@ -218,6 +227,27 @@ function fixtureOf(text: string, name: string, at: string, bad: (message: string
     if (!ok || !MCP_TOOL_NAME.test(tool)) {
       bad(`${at}: tools.${tool} is {description, input: an object's JSON Schema, answers: [{when: {...} or [{...}, ...], result: an MCP tool result}], default?: a result, search?: {query: the argument's name, files: [{path, text}], limit?, note?}}`);
       continue;
+    }
+    // A `when` value that names $pattern is a regex over the call's argument: one that is no string, does not compile, or
+    // sits beside another key would be compared by equality and match nothing, so it fails here, not as a silent miss.
+    for (const [i, answer] of (answers as Answer[]).entries()) {
+      const whens = Array.isArray(answer.when) ? answer.when.map((when, j) => [`[${j}]`, when] as const) : [["", answer.when] as const];
+      for (const [j, when] of whens) {
+        for (const [key, value] of Object.entries(when as Json)) {
+          if (!isObject(value) || !Object.hasOwn(value, "$pattern")) continue;
+          const where = `${at}: tools.${tool}.answers[${i}].when${j}.${key}`;
+          const others = Object.keys(value).filter((name) => name !== "$pattern");
+          if (others.length) bad(`${where}: a {"$pattern": ...} value holds no other key, and this one holds ${others.join(", ")}`);
+          else if (typeof value.$pattern !== "string") bad(`${where}: $pattern is a regular expression's source, a string`);
+          else {
+            try {
+              new RegExp(value.$pattern);
+            } catch (error) {
+              bad(`${where}: its $pattern does not compile: ${(error as Error).message}`);
+            }
+          }
+        }
+      }
     }
     tools[tool] = { description: spec.description as string, input: spec.input as Json, answers: answers as Answer[], ...(isObject(spec.default) ? { default: spec.default } : {}), ...(isObject(spec.search) ? { search: spec.search as FakeSearch } : {}) };
   }
@@ -503,6 +533,24 @@ export function readCases(dir: string, names?: readonly string[]): { pkg: Packag
       // Its run is the trigger's, on the trigger's input and cap: the prompt gives neither.
       if (body || fields || f.max_cost_usd !== undefined) bad(`${at}/prompt.md: a previous case's run is started by the package's schedule trigger, on the trigger's input and cap: its prompt.md holds description and runs alone`);
     }
+    // The case's files: each run's work folder holds them before its first turn, as a run that resumes finds what the run
+    // before it left (a keys file, say). Text only, each path in the folder and outside inputs/, which the server fills
+    // with the run's uploads and its message.
+    let files: Record<string, string> | undefined;
+    if (c.files !== undefined) {
+      if (!isObject(c.files)) bad(`${at}/case.yaml: files is a mapping of a path in the run's work folder to the text that file starts with`);
+      else {
+        files = {};
+        for (const [path, text] of Object.entries(c.files)) {
+          const shown = JSON.stringify(path);
+          if (!path || path.startsWith("/") || /[\\\0]/.test(path) || path.split("/").some((part) => part === "" || part === "." || part === "..")) bad(`${at}/case.yaml: files: ${shown} is not a path in the run's work folder (relative, with no empty, . or .. segment)`);
+          else if (path.split("/")[0] === INPUTS_DIR) bad(`${at}/case.yaml: files: ${shown} is under ${INPUTS_DIR}/, where the server puts the run's uploads and its message`);
+          else if (typeof text !== "string") bad(`${at}/case.yaml: files: ${shown} is the file's text, a string`);
+          // An own property, so a path such as __proto__ is a file, never the object's prototype.
+          else Object.defineProperty(files, path, { value: text, writable: true, enumerable: true, configurable: true });
+        }
+      }
+    }
     let learning: string | undefined;
     if (c.learning !== undefined) {
       const file = inside(root, c.learning, "file");
@@ -529,7 +577,7 @@ export function readCases(dir: string, names?: readonly string[]): { pkg: Packag
     cases.push({
       name, description: typeof f.description === "string" ? f.description : "", runs: typeof f.runs === "number" ? f.runs : 1,
       ...(typeof f.max_cost_usd === "number" ? { maxCostUsd: f.max_cost_usd } : {}), input: body, ...(fields ? { fields } : {}),
-      parameters, grants, mcp, ...(web ? { web } : {}), ...(monid ? { monid } : {}), ...(learning !== undefined ? { learning } : {}), graders, ...(typeof c.now === "string" ? { now: c.now } : {}), ...(email ? { email } : {}), ...(calendar ? { calendar } : {}), ...(feed ? { feed } : {}), ...(previous ? { previous } : {}),
+      parameters, grants, mcp, ...(web ? { web } : {}), ...(monid ? { monid } : {}), ...(learning !== undefined ? { learning } : {}), graders, ...(typeof c.now === "string" ? { now: c.now } : {}), ...(email ? { email } : {}), ...(calendar ? { calendar } : {}), ...(feed ? { feed } : {}), ...(previous ? { previous } : {}), ...(files ? { files } : {}),
     });
   }
   if (problems.length) throw new CaseError(dir, problems);
@@ -588,7 +636,11 @@ const carries = (call: unknown, args: unknown): boolean => (isObject(args) ? isO
 export function fakeAnswer(fixture: McpFixture, tool: string, args: Json): Json {
   const spec = fixture.tools[tool];
   if (!spec) return { isError: true, content: [{ type: "text", text: `The fake ${fixture.server} has no tool ${tool}.` }] };
-  const matches = (when: Json) => Object.entries(when).every(([key, value]) => Object.hasOwn(args, key) && same(args[key], value));
+  const matches = (when: Json) => Object.entries(when).every(([key, value]) => {
+    if (!Object.hasOwn(args, key)) return false;
+    const pattern = patternOf(value);
+    return pattern ? typeof args[key] === "string" && pattern.test(args[key]) : same(args[key], value);
+  });
   const hit = spec.answers.find((answer) => (Array.isArray(answer.when) ? answer.when.some(matches) : matches(answer.when)));
   if (hit) return hit.result;
   if (spec.search && typeof args[spec.search.query] === "string") return { content: [{ type: "text", text: searched(spec.search, args[spec.search.query] as string) }] };
@@ -1608,7 +1660,7 @@ async function runOnce(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[
   }
   stopped();
   // The case's fakes, for this run's agent alone, before its run can be claimed.
-  ctx.fakes.set(agentId, { ...(one.web !== undefined ? { web: one.web } : {}), ...(one.now !== undefined ? { now: new Date(instantOf(one.now)!) } : {}), ...(one.monid !== undefined ? { monid: one.monid } : {}), ...(mail ? { email: { imap: mail.faux.imap, smtp: mail.faux.smtp, kind: mail.layout } } : {}) });
+  ctx.fakes.set(agentId, { ...(one.web !== undefined ? { web: one.web } : {}), ...(one.now !== undefined ? { now: new Date(instantOf(one.now)!) } : {}), ...(one.monid !== undefined ? { monid: one.monid } : {}), ...(mail ? { email: { imap: mail.faux.imap, smtp: mail.faux.smtp, kind: mail.layout } } : {}), ...(one.files ? { files: one.files } : {}) });
   let runId: string;
   let fired: Fired | undefined;
   if (via !== undefined && kept) {

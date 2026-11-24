@@ -7,6 +7,7 @@
 // (runner/mcp-claim.ts), including the OAuth token refresh. So this server-side registry has NO headers()/headersForRun()
 // and does NO token refresh: it is the owner's create/preview/save/refresh(tools)/remove and the OAuth sign-in, and nothing
 // a run's launch calls.
+import { offApiOnlyMcpOrigins } from "./mcp-api-only-origins.js";
 import { ApiError, invalid, type InputIssue } from "./errors.js";
 import {
   type Auth, authOf, canonical, credentialInQuery, credentialInQueryWords, credentialMissing, type HeaderMap, savedOrGiven, shownUrl, type Listed, listServer, marked, MAX_OAUTH_VALUE_BYTES, type McpPrices,
@@ -257,6 +258,9 @@ export class McpServersOverStore {
   async pinListing(name: string, stop?: AbortSignal): Promise<{ url: string; tools: (McpTool & { grantable?: false; reason?: string })[]; prices: McpPrices; toolkit: string | null } | undefined> {
     const row = await this.store.mcp.server(name);
     if (!row) return undefined;
+    // A per_run server the API token saved at an origin no longer on the API-only list: refused before it is listed.
+    const off = await offApiOnlyMcpOrigins(this.store, name, row);
+    if (off) throw new ApiError("agent_not_runnable", off);
     const { toolkit } = await this.sourceOf(row);
     const url = new URL(row.url);
     const pinned = (tools: McpTool[]) => {
