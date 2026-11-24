@@ -985,6 +985,41 @@ test("a runner that died mid-takeover never wedges the lock: the takeover marks 
   assert.deepEqual(listing(data), ["claude-login"], "and none beside it");
 });
 
+test("a runner's takeover mark is removed only while it is still that runner's: one another runner made in its place, after clearing it as dead while this runner stalled, is left to it, and the renewal posts once", { timeout: 20_000 }, async (t) => {
+  assert.equal(typeof tokens.renewLogin, "function", "the runner's renewal (renewLogin)");
+  const { login, write } = loginFolder(t);
+  const now = 1_900_000_000_000;
+  const old = { access: fake("access-old"), refresh: fake("refresh-old") };
+  const next = { access: fake("access-new"), refresh: fake("refresh-new") };
+  write(oauthOf(old.access, now + 60_000, old.refresh));
+  const [current, legacy] = [join(login.dir, ".oauth_refresh.lock"), `${realpathSync(login.dir)}.lock`];
+  const mark = `${current}.takeover`;
+  const endpoint = await rotatingEndpoint(t, new Map([[old.refresh, next]]));
+  /** The other runner's mark: a whole second away from any mtime the runner's own mark has. */
+  let theirs;
+  const lockFs = {
+    mkdir: (path) => (path === legacy ? notWritable(path) : fsp.mkdir(path)),
+    stat: (path) => fsp.stat(path),
+    // The runner stalls as it sets its new lock's mtime, inside its takeover, past the stale time: another runner finds
+    // its mark dead, removes it and makes its own, which it holds while this runner goes on.
+    utimes: async (path, atime, mtime) => {
+      await fsp.utimes(path, atime, mtime);
+      if (path !== current || theirs) return;
+      theirs = new Date(Math.ceil(Date.now() / 1000) * 1000 + 2_000);
+      rmSync(mark, { recursive: true });
+      mkdirSync(mark);
+      utimesSync(mark, theirs, theirs);
+    },
+    rm: (path, options) => fsp.rm(path, options),
+  };
+  const renew = tokens.renewLogin({ fetch: endpoint.fetch, now: () => now, lockFs, lockUpdateMs: 60_000 });
+  const outcome = await new tokens.LoginTokens({ login, now: () => now, renew }).token().then((token) => ({ token }), (error) => ({ error }));
+  assert.ok(theirs, "the other runner made its mark while the runner was inside its takeover");
+  assert.ok(existsSync(mark) && statSync(mark).mtimeMs === theirs.getTime(), "the other runner's live mark is still there: a runner's release removes only the mark it made itself");
+  assert.equal(endpoint.posts.filter((post) => post.body.refresh_token === old.refresh).length, 1, "the refresh token is posted once");
+  assert.equal(outcome.token, next.access, "the renewal is handed");
+});
+
 test("a holder's heartbeat keeps the lock only by the mtime it set: one another holder sets on the same directory between the heartbeat's touch and its next read marks the lock lost, and nothing is posted under it", { timeout: 20_000 }, async (t) => {
   assert.equal(typeof tokens.renewLogin, "function", "the runner's renewal (renewLogin)");
   const { login, write } = loginFolder(t);

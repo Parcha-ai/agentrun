@@ -374,27 +374,29 @@ const ownRead = (read: LockIdentity, kept: { readonly dev: number; readonly ino:
 /** Beside each lock, the runners' takeover mark: a directory `<lock>.takeover`, never inside the lock. */
 const TAKEOVER_MARK = ".takeover";
 
-/** Takes the runners' takeover mark beside lock `path`: true once made here, false while another runner holds it. A
- *  mark lasts a few file operations, so one older than lockStaleMs is a crashed (or 60 s stalled) runner's: it is
- *  removed only while a second read shows the same directory with the same mtime, then made again. Left open: two
- *  runners clearing one such mark at once, one's removal landing after the other made it again; that needs a crash
- *  mid-takeover and that race on top, and the lock then still has the CLI's rules and the own-mtime read back. */
-async function takeoverMark(path: string, fs: LockFs): Promise<boolean> {
+/** Takes the runners' takeover mark beside lock `path`: the mark made here, as read just after its mkdir (lockDirectory
+ *  removes it only while a read shows that same directory and mtime), or none while another runner holds it. A mark
+ *  lasts a few file operations, so one older than lockStaleMs is a crashed (or 60 s stalled) runner's: it is removed
+ *  only while a second read shows the same directory with the same mtime, then made again. Left open, each a read-to-rm
+ *  gap needing a crash or 60 s stall mid-takeover with a race on top: two runners clearing one dead mark at once, one's
+ *  removal landing after the other made it again; and a stalled runner's own release, its read showing its mark just
+ *  before another runner clears it and makes its own. The lock then still has the CLI's rules and the own-mtime read. */
+async function takeoverMark(path: string, fs: LockFs): Promise<LockIdentity | undefined> {
   const mark = `${path}${TAKEOVER_MARK}`;
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       await fs.mkdir(mark);
-      return true;
+      return await fs.stat(mark).catch(() => undefined);
     } catch (error) {
       if ((error as NodeJS.ErrnoException)?.code !== "EEXIST") throw error;
     }
-    const seen = await fs.stat(mark).catch(() => undefined);
-    if (!seen) continue;
-    if (Date.now() - seen.mtimeMs <= loginRefresh.lockStaleMs) return false;
+    const found = await fs.stat(mark).catch(() => undefined);
+    if (!found) continue;
+    if (Date.now() - found.mtimeMs <= loginRefresh.lockStaleMs) return undefined;
     const again = await fs.stat(mark).catch(() => undefined);
-    if (again && sameLock(again, seen)) await fs.rm(mark, { recursive: true, force: true }).catch(() => undefined);
+    if (again && sameLock(again, found)) await fs.rm(mark, { recursive: true, force: true }).catch(() => undefined);
   }
-  return false;
+  return undefined;
 }
 
 /** A refresh lock this process took: whether it is still its own, and its release. */
@@ -448,13 +450,18 @@ async function makeLock(path: string, fs: LockFs): Promise<OwnLock | undefined> 
  *  proper-lockfile's rules, a takeover's late removal included (the second lock, beside the folder, keeps the two from
  *  both posting where it can be made). */
 async function lockDirectory(path: string, fs: LockFs, updateMs: number): Promise<HeldLock | undefined> {
+  const markPath = `${path}${TAKEOVER_MARK}`;
+  const mark = await takeoverMark(path, fs);
   // Another runner makes, takes over or reads back this lock now: as good as held.
-  if (!(await takeoverMark(path, fs))) return undefined;
+  if (!mark) return undefined;
   let made: OwnLock | undefined;
   try {
     made = await makeLock(path, fs);
   } finally {
-    await fs.rm(`${path}${TAKEOVER_MARK}`, { recursive: true, force: true }).catch(() => undefined);
+    // Only the mark made here: one another runner made after clearing this one as dead (this runner stalled past the
+    // stale time) is that runner's.
+    const still = await fs.stat(markPath).catch(() => undefined);
+    if (still && sameLock(still, mark)) await fs.rm(markPath, { recursive: true, force: true }).catch(() => undefined);
   }
   if (!made) return undefined;
   let mine = made;
