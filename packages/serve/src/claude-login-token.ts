@@ -365,9 +365,12 @@ export function renewLogin(options: RenewLoginOptions = {}): Renew {
     if (read?.oauth.accessToken !== seen) return undefined;
     const refresh = read.oauth.refreshToken;
     if (typeof refresh !== "string" || refresh === "") throw new Error("the login holds no refresh token");
-    if (dead.has(refresh)) throw new Error("the login's refresh token is spent or was refused for good");
+    // A renewal in flight on this refresh token is joined first: one Anthropic answered with a new refresh token has
+    // marked this one spent (postRefresh) before its save writes the new pair, and an ask that read the file in between
+    // is handed that pair. The spent check stops only a new request.
     let flight = flights.get(refresh);
     if (!flight) {
+      if (dead.has(refresh)) throw new Error("the login's refresh token is spent or was refused for good");
       flight = renewUnderLock(login.dir, file, seen, refresh, options).finally(() => flights.delete(refresh));
       flights.set(refresh, flight);
     }
