@@ -165,9 +165,10 @@ const CONTROLS = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g;
 /** A Windows path from its drive, written as typed (one backslash a separator, never `C:\\`: that is a path a JSON
  *  string holds, its backslashes escapes the next view decodes), through every character a path holds. */
 const DRIVE_PATH = /(?<![A-Za-z0-9])[A-Za-z]:\\(?!\\)[^\s"'\x60<>|]{0,4096}/g;
-/** The same inside quotes, blanks and all, to the closing quote or the line's end (`"C:\Program Files\Redis\redis-cli.exe"`:
- *  `\R` and `\r` there are separators, and a blank does not end the path). */
-const QUOTED_DRIVE_PATH = /(?<=["'])[A-Za-z]:\\(?!\\)[^"'\n]{0,4096}/g;
+/** The same inside quotes, blanks and all, up to a closing quote on its line (`"C:\Program Files\Redis\redis-cli.exe"`:
+ *  `\R` and `\r` there are separators, and a blank does not end the path). A quote left open is no path: its escapes
+ *  are read as escapes, so a value never runs on through a kept `\n`. */
+const QUOTED_DRIVE_PATH = /(?<=["'])[A-Za-z]:\\(?!\\)[^"'\n]{0,4096}(?=["'])/g;
 /** A relative Windows path (`.\redis-cli.exe`, `..\bin\npm.cmd`), as written: its backslashes are separators too. */
 const DOT_PATH = /(?<![^\s"'=(])\.{1,2}\\(?!\\)[^\s"'\x60<>|]{0,4096}/g;
 /** The spans of `text` that are Windows paths (DRIVE_PATH, QUOTED_DRIVE_PATH, DOT_PATH), merged and sorted. */
@@ -258,7 +259,7 @@ function decodeOnce(text: string): { out: string; escapes: [number, number][]; a
  *  there a backslash is the path's separator, read as written: the next view decodes it), and each control character a
  *  blank. So no value starts on an escape's letter
  *  (`\tgit@...` reads a blank and `git@...`) and none runs through one. */
-function blanked(text: string, escapes: readonly (readonly [number, number])[], delimiters: readonly number[] = []): { text: string; escapes: (readonly [number, number])[] } {
+function blanked(text: string, escapes: readonly (readonly [number, number])[], delimiters: readonly number[] = [], paths = true): { text: string; escapes: (readonly [number, number])[] } {
   let plain = text.replace(CONTROLS, " ");
   if (delimiters.length) {
     const chars = plain.split("");
@@ -266,7 +267,7 @@ function blanked(text: string, escapes: readonly (readonly [number, number])[], 
     plain = chars.join("");
   }
   if (!escapes.length) return { text: plain, escapes: [] };
-  const drives = windowsPaths(text);
+  const drives = paths ? windowsPaths(text) : [];
   const parts: string[] = [];
   const cut: (readonly [number, number])[] = [];
   let from = 0;
@@ -311,6 +312,13 @@ export function viewsOf(text: string): View[] {
     const quotes = quotesOf(source).filter((quote) => !inherited.has(quote));
     const strings = pairQuotes(source, quotes).map(([open, close]): StringSpan => [quotes[open]!, quotes[close]!]);
     views.push({ text: read.text, source, depth, escapes: read.escapes, at, delimiters, decodedStrings, strings });
+    // A Windows path is a guess from the text: where one kept an escape as written, the same level read the way main's
+    // scrubber reads it, every escape blanked, stands beside it. The rules read both and the cuts are their union, so
+    // a path read never leaves a value the blanked reading cuts (`{"t":"Q:\tmysql --password\nCopper9lumen9"}`).
+    if (read.escapes.length < next.escapes.length) {
+      const plain = blanked(source, next.escapes, delimiters, false);
+      views.push({ text: plain.text, source, depth, escapes: plain.escapes, at, delimiters, decodedStrings, strings });
+    }
     if (!next.escapes.length || depth === VIEW_DEPTH) break;
     const outer = at;
     at = (offset) => outer(next.at(offset));
@@ -611,7 +619,7 @@ const SUBSTITUTION_DEPTH = 4;
  *  names files without case; a bare name keeps its case (`Docker login` in prose names no command). A subcommand
  *  (`login`, `set`) is no name: the reader takes it from the command's words (subcommandAt). `names` is plain names
  *  joined by `|` (letters and `-`), so each letter maps to its two cases as written. */
-const shellName =(names: string): string => {
+const shellName = (names: string): string => {
   const extension = String.raw`\.(?:[eE][xX][eE]|[cC][mM][dD]|[bB][aA][tT]|[pP][sS]1)`;
   const anyCase = [...names].map((c) => (c >= "a" && c <= "z" ? `[${c}${c.toUpperCase()}]` : c)).join("");
   const name = String.raw`(?:(?:${names})(?:${extension})?|(?:${anyCase})${extension})`;
