@@ -9,7 +9,9 @@
 //    moment the host's spawning thread exits: libuv spawns from the event loop's thread, the main one, so a worker
 //    thread's exit does not trigger it. The signal survives the exec, as the child is not set-user-ID.
 //  - elsewhere (macOS, or no setpriv): `node parent-watch.js <host pid> -- <child>`, a shim that runs the child and
-//    kills it when the shim is reparented, checked four times a second.
+//    kills it when the shim is reparented, checked four times a second. A host's kill of the shim (SIGKILL) reaches
+//    the shim alone, so the shim kills a child that outlasts a TERM it passed on, 2 s later, before a host that waits
+//    longer than that to kill could leave the child running unwatched.
 // The watch goes INSIDE the host's confinement (the machine applies its confine prefix to the watched command): the
 // kernel clears a parent-death signal when credentials change, so it is set after any switch of user the prefix makes.
 // The child's environment is the machine's: the watch adds nothing to it.

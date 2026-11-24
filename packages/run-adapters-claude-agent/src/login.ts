@@ -344,7 +344,8 @@ export async function claudeLoginStatus(cli: string, login: ClaudeAgentLogin, op
 
 /** How long the CLI's own sign-in waits for its browser before it is ended. */
 export const SIGN_IN_MS = 10 * 60_000;
-/** After asking an ending sign-in to stop, how long before it is killed. */
+/** After asking an ending sign-in to stop, how long before it is killed. Longer than the parent-watch shim's own grace
+ *  (2 s): under the shim this kill reaches the shim alone, which has killed a CLI that outlasted the TERM by then. */
 const SIGN_IN_KILL_MS = 5_000;
 
 /** How a sign-in ended: the CLI exited by itself (`exited`: `code` 0 when it signed in, or the signal that ended it),
