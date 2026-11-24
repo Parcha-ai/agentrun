@@ -13,7 +13,7 @@ import { homedir, hostname, tmpdir } from "node:os";
 import { delimiter, dirname, join, relative } from "node:path";
 import { test } from "node:test";
 import * as claude from "@parcha/agentrun-harness-claude";
-import { CLAUDE_LOGIN_ENV, CLAUDE_LOGIN_SETTING, claudeLoginSwitchedOff, claudeLoginView, envAtPlace, LOGIN_SIGNED_OUT, LOGIN_UNKNOWN, loginAt, loginBeforeRun, loginForRun, settingFor, startLoginHere, turnOffClaudeLogin, turnOnBody, turnOnClaudeLogin, whyNotOneOwner, withClaudeLogin } from "../dist/claude-login.js";
+import { CLAUDE_LOGIN_ENV, CLAUDE_LOGIN_SETTING, claudeLoginOf, claudeLoginSwitchedOff, claudeLoginView, envAtPlace, LOGIN_SIGNED_OUT, LOGIN_UNKNOWN, loginAt, loginBeforeRun, loginForRun, settingFor, startLoginHere, turnOffClaudeLogin, turnOnBody, turnOnClaudeLogin, whyNotOneOwner, withClaudeLogin } from "../dist/claude-login.js";
 import { ClaudeSignIns } from "../dist/claude-sign-in.js";
 import { MODEL_KEYS, hostModel } from "../dist/model.js";
 import { providerFor } from "../dist/provider.js";
@@ -792,6 +792,36 @@ for (const [change, ask, place] of RACE_CHANGES) {
     else assert.deepEqual(rig.started.filter((one) => !one.stopped).map((one) => one.dir), [keeps], "the start signs in where the change saved");
   });
 }
+
+// The rereads of two login changes can overlap, as each runs after its turn. A turn-on finds the offers' inputs changed
+// and probes the offers again, which can take seconds. A turn-off that lands meanwhile finds the offers held made from
+// its own inputs (the turn-on's probe has not landed) and keeps them. The turn-on's probe, landing after that, must not
+// put back offers made from the login being on. Here that probe is held at claude-agent's check (fixtures/held-offers.cjs)
+// while the turn-off runs to its answer, then let go; the turn-on answers only once its probe has landed.
+const PROBE_WHY = "a probe from before the turn-off landed after it and put back an offer made from the login being on";
+test("a turn-off that lands while the turn-on's probe of the offers is still out leaves claude-agent needing a key once that probe ends", { timeout: 60_000 }, async (t) => {
+  const table = createRequire(import.meta.url).resolve("./fixtures/held-offers.cjs");
+  const held = createRequire(import.meta.url)(table);
+  const fake = await fakeCli(t);
+  withEnv(t, { PATH: `${dirname(fake.cli)}${delimiter}${process.env.PATH}` }, MODEL_VARS);
+  const { api } = await serve(t, { faux: undefined, harnesses: false, runner: false, harnessTable: table });
+  assert.equal((await offerOf(api)).available, false, "no key and the login off: claude-agent runs nothing");
+
+  const probe = held.hold((env) => claudeLoginOf(env) !== undefined);
+  t.after(() => probe.release());
+  const turningOn = api("PUT", "/settings/claude-login", { only_me: true });
+  await probe.reached;
+  const off = await api("DELETE", "/settings/claude-login");
+  probe.release();
+  const on = await turningOn;
+  assert.equal(on.status, 200, JSON.stringify(on.body));
+  assert.equal(off.status, 200, JSON.stringify(off.body));
+  assert.equal(off.body.state, "off");
+  const caps = (await api("GET", "/capabilities")).body;
+  const offer = caps.harnesses.find((one) => one.id === "claude-agent");
+  assert.equal(offer.available, false, `${PROBE_WHY}: ${JSON.stringify(offer)}`);
+  assert.equal(caps.models.ready, false, "no key and the login off: no model runs here");
+});
 
 // A turn starts or ends the sign-in through its own `turn`. A start or stop of the sign-ins' own beside it would be a
 // turn of its own, so one called inside a turn would wait for that turn to end, for ever, and the server's stop (which
