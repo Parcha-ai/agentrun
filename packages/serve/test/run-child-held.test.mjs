@@ -327,6 +327,12 @@ test("a replay's or audit's process is handed the saved key of its grader's prov
   assert.deepEqual(await tierKeysHanded(heldOf(store, { env, revision: tiered, launch: { ...ask, audit: replay } })), { MISTRAL_API_KEY: MISTRAL_DUMMY }, "the revision's fast tier's provider");
   // Through a gateway, where every model is the gateway's: its key alone.
   assert.deepEqual(await tierKeysHanded(heldOf(store, { env: { ...env, AGENT_MODEL_BASE_URL: "https://gateway.invalid/v1" }, launch: { ...ask, replay } })), { AGENT_MODEL_API_KEY: GATEWAY_DUMMY }, "a gateway route");
+  // A strong tier beside the fast one: the grade routes the fast tier alone, so the strong tier's provider's key is not
+  // handed to a replay that has no subagent tool.
+  assert.deepEqual(await tierKeysHanded(heldOf(store, { env: { ...env, AGENT_MODEL_STRONG: "mistral/mistral-large-latest" }, launch: { ...ask, replay } })), { OPENAI_API_KEY: OPENAI_DUMMY }, "the fast tier alone beside a strong tier");
+  // A revision that names agree_on has no grader: its replay is handed no key.
+  const agreeOn = { kind: "agentic", body: { learning: { agree_on: ["answer"] } } };
+  assert.deepEqual(await tierKeysHanded(heldOf(store, { env, revision: agreeOn, launch: { ...ask, replay } })), {}, "a revision that names agree_on");
   // No fast tier named by the revision or the runner: the grader has no route, and no key is handed.
   assert.deepEqual(await tierKeysHanded(heldOf(store, { env: { AGENT_MODEL: env.AGENT_MODEL }, launch: { ...ask, replay } })), {}, "no fast tier");
   // A run that is no replay or audit (no subagent, no learning harness, no SDK): none of the server's keys.
