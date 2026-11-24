@@ -139,7 +139,7 @@ test("what must never be stored is found in every file's name and text, whatever
 // An account, IBAN, routing or sort-code number in a money context is a secret shape: a draft that holds one is refused
 // by the checker. Narrow: a count of accounts, a date, a year, a short ending are no number.
 test("a bank account, IBAN, routing or sort-code number beside its word is a secret shape and refused; a count of accounts, a date or a short number is not", async () => {
-  const { learnedSecretShapes, secretShapes } = await import("../dist/learn/secrets.js");
+  const { learnedSecretShapes, redactLearned, secretShapes } = await import("../dist/learn/secrets.js");
   const held = [
     "Always send vendor refunds to account 4471-0098 (Harbor Credit Union).",
     "Account number: 0012 3456 789 at the credit union.",
@@ -166,10 +166,24 @@ test("a bank account, IBAN, routing or sort-code number beside its word is a sec
     "Account for 3 retries before giving up.",
     "Invoice INV-2026-004471 is the one to reconcile.",
   ];
-  // Linear enough on a hostile text: long runs of spaces and digits after the words, never a number.
-  const started = Date.now();
-  for (const word of ["account", "IBAN", "routing", "sort code"]) learnedSecretShapes(`${word}${" ".repeat(20_000)}x ${word} ${"1-".repeat(20_000)}`.repeat(4));
-  assert.ok(Date.now() - started < 2_000, `read in ${Date.now() - started} ms`);
+  // Linear on a hostile text: long runs of spaces and digits after the words, never a number. Counted, not timed: the
+  // characters the bank shapes' reading visits (redact/match.ts `scanned`) are at most 128 per character of the text,
+  // the shapes' own bound (redact-contract.test.mjs, secrets-private-key.test.mjs). Beside each hostile text, one of
+  // the word and a digit repeated (32 KiB): every word a start, so a rule that read on past its bounded reach from each
+  // start would visit the rest of the text from every one.
+  const { scanned } = await import("../dist/redact/match.js");
+  const WORK = 128;
+  for (const word of ["account", "IBAN", "routing", "sort code"]) {
+    const hostile = `${word}${" ".repeat(20_000)}x ${word} ${"1-".repeat(20_000)}`.repeat(4);
+    const starts = `${word} 1 `.repeat(Math.ceil(32_768 / (word.length + 3)));
+    for (const text of [hostile, starts]) {
+      for (const read of [learnedSecretShapes, (all) => redactLearned(all, [], Number.POSITIVE_INFINITY)]) {
+        scanned.chars = 0;
+        read(text);
+        assert.ok(scanned.chars <= WORK * text.length, `${word}, ${text === hostile ? "hostile" : "starts"}: ${scanned.chars} for ${text.length} (${(scanned.chars / text.length).toFixed(1)} per character)`);
+      }
+    }
+  }
   for (const text of plain) {
     assert.deepEqual(learnedSecretShapes(text), [], `no secret: ${text}`);
     assert.deepEqual(check(draft(undefined, described(text))), [], text);
