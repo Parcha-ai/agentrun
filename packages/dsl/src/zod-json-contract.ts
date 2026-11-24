@@ -1,8 +1,8 @@
 import { isRecord } from "./record.js";
 
 /** Zod documents _zod.def as the traversal interface for schema tools:
- * https://zod.dev/packages/core. Keep this dependency-free and fail closed on new
- * constructs: the JSON interpreter cannot execute a schema library's parser hooks. */
+ * https://zod.dev/packages/core. Keep this free of any schema library's code (it reads Zod's documented `_zod.def`,
+ * never Zod itself) and fail closed on new constructs: the JSON interpreter cannot execute a schema library's parser hooks. */
 const TYPES = new Set([
   "string", "number", "boolean", "null", "literal", "enum", "object", "array",
   "tuple", "record", "union", "intersection", "optional", "nullable", "nonoptional",

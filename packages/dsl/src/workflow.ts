@@ -547,13 +547,13 @@ function predicateShapeErrors(pred: { predicate: string; path?: string; values?:
     // A page path that is the quotes, or holds them, or sits inside them, finds every quote in itself.
     else if (path) for (const page of pages as string[]) if (pathsOverlap(page, path)) out.push(`quote_missing reads its quotes as a page: pages names "${page}", which overlaps path "${path}"`);
   }
-  if (pred.predicate === "not" && (!isRecord(pred.of))) out.push(`not needs "of", one mechanical predicate`);
+  if (pred.predicate === "not" && !isRecord(pred.of)) out.push(`not needs "of", one mechanical predicate`);
   if (pred.predicate === "ask") {
     if (typeof pred.instructions !== "string" || !pred.instructions.trim()) out.push("ask needs instructions (the yes/no question)");
     // A yes/no gate sits above the fence: at 0.5 or below it would hold on an answer that is not a
     // yes, and a dry run's synthesized 0.5 could satisfy it.
     if (pred.gte !== undefined && !(typeof pred.gte === "number" && pred.gte > 0.5 && pred.gte <= 1)) out.push("ask.gte must be in (0.5, 1]");
-    if (pred.state !== undefined && (!isRecord(pred.state))) out.push("ask.state must be an object map");
+    if (pred.state !== undefined && !isRecord(pred.state)) out.push("ask.state must be an object map");
     for (const problem of decisionFieldProblems(pred as unknown as Record<string, unknown>)) out.push(`ask.${problem}`);
     // Without a state the question sees the whole workflow state, which a token may sit in: only a given state is checked.
     if (pred.state !== undefined) for (const token of unusedImageTokens((pred as { images?: unknown }).images, [pred.state, pred.instructions, (pred as { criteria?: unknown }).criteria])) out.push(`ask.images token ${JSON.stringify(token)} appears in neither its state nor its question`);
@@ -1350,14 +1350,14 @@ export function validateWorkflow(workflow: Workflow, opts?: ValidateWorkflowOpti
         if (!(CALL_TRANSPORTS as readonly string[]).includes(String(node.via))) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${label}): via must be tool|executor|shell`);
         if (node.via === "tool") {
           if (!node.tool?.trim()) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${label}): via tool needs a tool address`);
-          if (node.args !== undefined && (!isRecord(node.args))) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${label}): args must be an object`);
+          if (node.args !== undefined && !isRecord(node.args)) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${label}): args must be an object`);
           for (const key of ["code", "input", "command", "env"] as const) if (node[key] !== undefined) fail("NODE_KEY_UNKNOWN", ptrOf(path), `${path} (${label}): ${key} is not a via tool field`);
         }
         if (node.via === "executor") {
           if (!node.code?.trim()) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${label}): via executor needs a code body`);
           if (!/\breturn\b/.test(String(node.code || ""))) fail("CODE_INVALID", ptrOf(path), `${path} (${label}): the executor body must return its JSON result`);
           if (/\b(require|process|fetch|eval|Function|import)\s*\(?/.test(String(node.code || ""))) fail("CODE_INVALID", ptrOf(path), `${path} (${label}): the executor body may use only tools and input (no require/process/fetch/eval/import)`);
-          if (node.input !== undefined && (!isRecord(node.input))) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${label}): input must be an object`);
+          if (node.input !== undefined && !isRecord(node.input)) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${label}): input must be an object`);
           for (const key of ["tool", "args", "command", "env"] as const) if (node[key] !== undefined) fail("NODE_KEY_UNKNOWN", ptrOf(path), `${path} (${label}): ${key} is not a via executor field`);
         }
         if (node.via === "shell") {
@@ -1480,12 +1480,12 @@ export function validateWorkflow(workflow: Workflow, opts?: ValidateWorkflowOpti
         let cursor: any = subtree;
         let standDown = false;
         for (const segment of segments.slice(1)) {
-          if (!cursor || typeof cursor !== "object" || typeof cursor === "function" || Array.isArray(cursor)) { standDown = true; break; }
+          if (!isRecord(cursor)) { standDown = true; break; }
           if (Object.prototype.hasOwnProperty.call(cursor, "") || Object.prototype.hasOwnProperty.call(cursor, "undefined")) { standDown = true; break; }
           if (!(segment in cursor)) { standDown = true; break; }
           cursor = cursor[segment];
         }
-        if (standDown || !cursor || typeof cursor !== "object" || typeof cursor === "function" || Array.isArray(cursor)) continue;
+        if (standDown || !isRecord(cursor)) continue;
         if (Object.prototype.hasOwnProperty.call(cursor, "") || Object.prototype.hasOwnProperty.call(cursor, "undefined")) continue;
         const missing = required.filter((key) => !(key in cursor));
         if (!missing.length) { bestMissing = null; break; }
@@ -3097,7 +3097,7 @@ function compileVerifier(workflow: Workflow, node: WorkflowNode & { verify: Veri
   const outSchema = workflow.schemas[(node as { out?: string }).out ?? ""] as Record<string, unknown> | undefined;
   const review = async (candidate: unknown) => {
     if (drives.length >= maxDrives) throw new WorkflowVerificationError(node.label, candidate, drives, `exhausted ${maxDrives} review attempts`);
-    const sub = (isRecord(candidate)) ? { ...candidate } : {};
+    const sub = isRecord(candidate) ? { ...candidate } : {};
     if (outSchema) normalizeStringNullsForSchema(sub, outSchema);
     const asked = interpolateValue({ ...(clause.state ?? {}), submission: "{submission}" }, { ...state, submission: sub, ...(node.as ? { [node.as]: sub } : {}) }, node.label);
     const drive = drives.length + 1;

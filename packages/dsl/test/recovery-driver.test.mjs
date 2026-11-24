@@ -12,7 +12,7 @@ import { runWorkflow, DecisionProviderError, judgeFromProvider } from '@parcha/a
 // The driver measures an effect's durable attempt clock with Date.now(), and the interpreter its deadline with
 // performance.now(). A test that needs either to pass holds both clocks and moves them itself.
 const holdClocks = (t) => { let now = 0; t.mock.method(performance, 'now', () => now); t.mock.timers.enable({ apis: ['Date'], now: Date.now() }); return { advance: (ms) => { now += ms; t.mock.timers.tick(ms); } }; };
-import { openRecovery, withRecovery, memoryStore, openJournal, workspaceFiles, recoveryBinding, recoveryBound, RecoveryError, nodeAt, frozenStepId, FROZEN_SNAPSHOT_SCHEMA } from '@parcha/agentrun-dsl/recovery';
+import { openRecovery, withRecovery, memoryStore, openJournal, workspaceFiles, recoveryBinding, recoveryBound, bindingDigests, RecoveryError, nodeAt, frozenStepId, FROZEN_SNAPSHOT_SCHEMA } from '@parcha/agentrun-dsl/recovery';
 
 const scratch = mkdtempSync(join(tmpdir(), 'agentrun-recovery-driver-'));
 after(() => rmSync(scratch, { recursive: true, force: true }));
@@ -835,6 +835,7 @@ test('a run is bound to its workflow and to what the host binds beside it; a vie
   const workflow = doc([tool('lookup')]); const bind = { config: { question: 'first', budget: 5 }, cwd: 'workspace' };
   const store = memoryStore(); let driver = await open(store, workflow, { bind });
   assert.deepEqual([driver.binding === recoveryBinding(workflow, bind), driver.binding === recoveryBinding(workflow)], [true, false]);
+  assert.deepEqual(Object.keys(bindingDigests({ tools: ['a', 'b'] })), ['tools'], 'a part that is a list is one input, not one per item');
   await driver.close();
   await assert.rejects(open(store, workflow, { bind: { ...bind, config: { question: 'second', budget: 5 } } }), (error) => {
     fault('RUN_STORE_BINDING_MISMATCH', 'Run store binding mismatch: config.question changed since the run was bound')(error);
