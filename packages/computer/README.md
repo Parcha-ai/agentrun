@@ -1054,6 +1054,13 @@ const made = await docker.create({ image: image.value, lifetimeMs: 600_000, netw
   image (`DEFAULT_DOCKER_IMAGE`): `python:3.12-slim` pinned by its index digest (`DOCKER_BASE`), with git, curl,
   nodejs, npm, ripgrep and socat from apt. `docker.image({ signal?, timeoutMs?, onWait? })` is `ensureImage` of it with the
   provider's docker CLI. A source that is neither throws at construction, in words.
+- **The docker CLI gets only what it reads.** Every docker call the provider makes (`dockerArch`, `ensureImage`, the
+  provider's own) is started with the names of this process's environment docker reads, and none of the rest: PATH,
+  HOME, TMPDIR, `DOCKER_HOST`, `DOCKER_CONTEXT`, `DOCKER_CONFIG` and Docker's TLS, API and buildx settings, ssh's agent
+  socket and the proxy, for a daemon that is not local, and the places a pull's credential helper
+  (`docker-credential-<name>` on PATH) reads: the Secret Service's bus, pass's store and GnuPG home, a cloud profile,
+  region, config or credential file. No key passes, so a helper that reads a key from the environment
+  (`AWS_SECRET_ACCESS_KEY`) reads it from a file or a profile instead.
 - **The image is an option only; there is no env name for it.** Another image is named with the `image` option, to
   `new DockerProvider(...)` or to `create({ image: { image: "..." } })`. The library reads no environment (see
   [Settings](#settings)), and Docker's conformance module reads no image name either: a `COMPUTER_DOCKER_IMAGE` in its

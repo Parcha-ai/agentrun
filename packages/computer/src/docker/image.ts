@@ -19,6 +19,7 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { failFor, ok, type Result, vendorFail } from "../result.js";
+import { dockerEnv } from "./env.js";
 
 /** This module's failures: one with code vendor names Docker. */
 const fail = failFor("docker");
@@ -246,7 +247,7 @@ async function fly(docker: string, source: Source, timeoutMs: number, flight: Om
 /** `docker` with args, the input on its stdin, killed with SIGKILL when the signal aborts. */
 function run(docker: string, args: string[], signal: AbortSignal, late: () => boolean, input?: string): Promise<Answer> {
 	return new Promise((resolve) => {
-		const child = execFile(docker, args, { encoding: "utf8", signal, killSignal: "SIGKILL", maxBuffer: 32 * 1024 * 1024 }, (error, stdout, stderr) => {
+		const child = execFile(docker, args, { env: dockerEnv(), encoding: "utf8", signal, killSignal: "SIGKILL", maxBuffer: 32 * 1024 * 1024 }, (error, stdout, stderr) => {
 			if (error === null) return resolve({ code: 0, stdout, stderr });
 			const failed = error as NodeJS.ErrnoException & { code?: number | string };
 			const code = signal.aborted ? (late() ? "timeout" : "aborted") : typeof failed.code === "number" ? failed.code : (failed.code ?? failed.name);
