@@ -734,8 +734,8 @@ export function graderInput(grader: Extract<Grader, { type: "llm" }>, input: str
   const files = run.finalFiles ?? [];
   const texts = files.filter((file) => file.text !== undefined);
   // Each call with its arguments (else its input's preview), its status and its output's head; a call that names a file
-  // says where it is. A string argument `held` names (one <files> shows whole: a write's content) is cut at
-  // FILE_ARG_CHARS there, so the grader's room never holds those bytes twice.
+  // says where it is. A string argument `held` names (a write's content, whose head and tail <files> shows: shows) is
+  // cut at FILE_ARG_CHARS there, so the grader's room never holds those bytes twice.
   const callsOf = (held: (text: string) => boolean) => run.calls.map((call, i) => {
     const args = call.arguments ? JSON.stringify(inFiles(call.arguments, held)) : undefined;
     const tail = call.status ? ` -> ${call.status}` : "";
@@ -761,12 +761,13 @@ export function graderInput(grader: Extract<Grader, { type: "llm" }>, input: str
   const mcpWhole = wholeOf(mcpLines);
   // The files come first: they take what they need of the room, but no more than leaves the calls a quarter of it (or
   // all they need, when that is less), so a call's result is cut before a file is. What the calls need counts each
-  // argument a file's text holds cut, as it is when <files> shows that file whole.
-  const need = wholeOf(linesOf(callsOf((text) => texts.some((file) => file.text?.includes(text)))));
+  // argument a file's text shows cut, as it is when <files> shows that file whole.
+  const need = wholeOf(linesOf(callsOf((text) => texts.some((file) => file.text !== undefined && shows(file.text, text)))));
   const shownFiles = files.length ? fitFiles(files, Math.max(0, room - Math.min(need + mcpWhole, Math.floor(room / 4)))) : undefined;
-  // An argument is cut only when <files> as shown holds it whole: one the cut of its file takes from there stays in its
-  // call, cut as fitArgs cuts it.
-  const calls = callsOf((text) => shownFiles?.includes(text) ?? false);
+  // An argument is cut only when <files> as shown shows its head and tail: a write of a whole file <files> shows cut is
+  // cut at FILE_ARG_CHARS (all fitArgs could show of it is there already), and one whose text the cut of its file takes
+  // from there (an append in its middle) stays in its call, cut as fitArgs cuts it.
+  const calls = callsOf((text) => shownFiles !== undefined && shows(shownFiles, text));
   const lines = linesOf(calls);
   const callsWhole = wholeOf(lines);
   // Both call lists share the room the rest leave, each in proportion to its whole size.
@@ -786,8 +787,15 @@ export function graderInput(grader: Extract<Grader, { type: "llm" }>, input: str
 /** How much of a write's content a grader's call line shows when a file in <files> holds it whole. */
 const FILE_ARG_CHARS = 2000;
 
-/** A call's arguments with each string past FILE_ARG_CHARS that `held` names (one <files> shows whole) cut there, ending
- *  "...", in a list or an object at any depth. */
+/** Whether `where` shows what a call's copy of `text` would: its first and last FILE_ARG_CHARS characters, a trailing
+ *  "..." (where the timeline cut it at its budget) left off. */
+function shows(where: string, text: string): boolean {
+  const bare = text.endsWith("...") ? text.slice(0, -3) : text;
+  return where.includes(bare.slice(0, FILE_ARG_CHARS)) && where.includes(bare.slice(-FILE_ARG_CHARS));
+}
+
+/** A call's arguments with each string past FILE_ARG_CHARS that `held` names (one <files> shows: shows) cut there,
+ *  ending "...", in a list or an object at any depth. */
 function inFiles(value: unknown, held: (text: string) => boolean): unknown {
   if (typeof value === "string") return value.length > FILE_ARG_CHARS && held(value) ? `${value.slice(0, FILE_ARG_CHARS - 3)}...` : value;
   if (Array.isArray(value)) return value.map((item) => inFiles(item, held));
