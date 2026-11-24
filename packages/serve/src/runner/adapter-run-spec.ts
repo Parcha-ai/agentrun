@@ -59,7 +59,7 @@ import { filesToCopy, placeRunInputs } from "../uploads.js";
 import { handedSignInReadsBack, signInReads } from "../sign-ins-store.js";
 import { UNREADABLE_SIGN_IN } from "../run-view.js";
 import { durableWait } from "../workflow/pi-versions.js";
-import { type ClaimModelKey, claimModelEnv, claimModelKey, claimSecrets, claimSpendOff, holdRunKey, keyedAtClaim, hostDecisionKeys, learnedDecisionKeys, savedModelKeys, subagentTierKeys, tierModelKeys, underClaimed, withoutModelKeys } from "./claim-secrets.js";
+import { type ClaimModelKey, claimModelEnv, claimModelKey, claimSecrets, claimSpendOff, holdRunKey, keyedAtClaim, hostDecisionKeys, learnedDecisionKeys, subagentTierKeys, tierModelKeys, underClaimed, withoutModelKeys } from "./claim-secrets.js";
 import { compareEndOfRun, GRADER, withGrader } from "./compare-end.js";
 import { agreeOnOf } from "../learning-setting.js";
 import { catalogSessionNames, type ClaimMcp, mcpWhereHeld } from "./mcp-run.js";
@@ -277,15 +277,12 @@ const SUBAGENT_ROUTE = "subagent-";
 const subagentRoute = (tier: SubagentTier): string => `${SUBAGENT_ROUTE}${tier}`;
 const isSubagentRoute = (key: string): boolean => key.startsWith(SUBAGENT_ROUTE);
 
-/** A replay run's or an audit shadow's grader route (runner/compare-end.ts): its fast model (the revision's
- *  modelTiers.fast, else AGENT_MODEL_FAST) when its revision names no agree_on, on pi's wires. A fast model may be another
- *  provider's than the run's own, whose key claimSecrets never opened: so its route reads the saved model keys
- *  (savedModelKeys: in a run's own process, its runner hands its subagent tiers' keys alone, so a fast model on another
- *  provider is reached only when the revision grants subagent; run-child-host.ts heldFor), held by the run's redactor, on
- *  the route's env alone. A run with its own model key carries that key, and no saved key is read. Its fast tier is the
- *  one routedSubagentTiers names, as the run's subagent tier routes and the runner's handed keys read it. Undefined when
- *  there is no fast model, the revision names agree_on, or no route can be made (logged: the pair is then compared
- *  whole). */
+/** A replay run's or an audit shadow's grader route (runner/compare-end.ts): on the fast tier routedSubagentTiers names
+ *  (the revision's modelTiers.fast, else AGENT_MODEL_FAST), on pi's wires, when its revision names no agree_on. Its route
+ *  reads the saved key of that tier's model alone (subagentTierKeys), held by the run's redactors, on the route's env
+ *  alone; a run with its own model key carries that key, and no saved key is read. Undefined, with nothing read, when
+ *  there is no fast tier or the revision names agree_on; undefined when no route can be made (logged: the pair is then
+ *  compared whole). */
 export async function graderRouteOf(
   body: { readonly modelTiers?: Readonly<Partial<Record<SubagentTier, string>>>; readonly learning?: unknown },
   keyed: boolean,
@@ -298,13 +295,14 @@ export async function graderRouteOf(
   claim?: Pick<Claim, "runId" | "turn" | "attempt">,
 ): Promise<ModelRoute | undefined> {
   if (agreeOnOf(body.learning)?.length) return undefined;
-  const savedKeys = keyed ? {} : await savedModelKeys({ store: deps.store, sealKey: deps.sealKey, env: deps.env });
+  const { tiers, refs } = routedSubagentTiers(body, deps.env ?? {});
+  if (!tiers.includes("fast")) return undefined;
+  const savedKeys = keyed ? {} : await subagentTierKeys({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, ["fast"], refs);
   for (const redact of new Set(holds)) holdClaimed(redact, savedKeys);
   // The claim's run, turn and attempt on its grader's requests too (request-metadata.ts): they spend on the run's cap.
   const env = claimModelEnv(deps.env, { ...savedKeys, ...claimed }, runKey, claim);
-  if (!routedSubagentTiers(body, env).tiers.includes("fast")) return undefined;
   try {
-    return await deps.routeOf(body.modelTiers?.fast, env, "fast", PI_WIRES, undefined, cut);
+    return await deps.routeOf(refs.fast, env, "fast", PI_WIRES, undefined, cut);
   } catch (error) {
     log(`learning: no grader route (${error instanceof Error ? error.message : String(error)}): the answers are compared whole`);
     return undefined;
@@ -314,10 +312,10 @@ export async function graderRouteOf(
 /** A subagent run's tier routes (runner/subagent.ts): each tier routedSubagentTiers names, on its model (the revision's
  *  modelTiers, else the host's tier variable), under its own key (subagentRoute), on a route of its own. A tier's model may
  *  be another provider's than the run's own, whose key claimSecrets never opened (it scopes the claim's keys to the run's
- *  model): so the routes read the saved model keys of those tiers' models alone (subagentTierKeys: on the runner, and in
- *  a run's own process as its runner hands them), held by the run's redactor, on the routes' env alone, never the run's
- *  tools (toolEnv). A run with its own model key carries that key, and no saved key is read. A tier no route can be made
- *  for here is in `why`, cut, and no failure of the run: a call on it answers why. */
+ *  model): so the routes read the saved model keys of those tiers' models alone (subagentTierKeys), held by the run's
+ *  redactor, on the routes' env alone, never the run's tools (toolEnv). A run with its own model key carries that key,
+ *  and no saved key is read. A tier no route can be made for here is in `why`, cut, and no failure of the run: a call on
+ *  it answers why. */
 export async function subagentTierRoutes(
   body: { readonly modelTiers?: Readonly<Partial<Record<SubagentTier, string>>> },
   keyed: boolean,

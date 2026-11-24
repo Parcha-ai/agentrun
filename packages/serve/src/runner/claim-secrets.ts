@@ -213,23 +213,20 @@ export function withModelKeys(env: NodeJS.ProcessEnv, opened: NodeJS.ProcessEnv)
   return withPlan(out, planOf(opened) ?? planOf(env));
 }
 
-/** The saved model keys of a run's subagent tiers' models (`tiers` and `refs` as subagent.ts routedSubagentTiers gives
- *  them): on the runner, tierModelKeys of those tiers, the revision's model of a tier over the host's; in a run's own
- *  process, what its runner hands (held.ts savedModelKeys), which run-child-host.ts heldFor scopes by the same tiers.
- *  So a tier's route reads the key of its own model's provider, or the gateway's, and never another provider's, in
- *  either. None for no tier. */
+/** The saved model keys of the models of a run's subagent tiers (`tiers`, `refs` as subagent.ts routedSubagentTiers
+ *  gives them; the revision's model of a tier over the host's): each model's provider's key, or the gateway's. None for
+ *  no tier. */
 export async function subagentTierKeys(deps: ClaimSecretsDeps, tiers: readonly Tier[], refs: Readonly<Partial<Record<Tier, string>>>): Promise<NodeJS.ProcessEnv> {
   if (!tiers.length) return {};
-  return deps.sealKey ? tierModelKeys(deps, tiers, refs) : savedModelKeys(deps);
+  // A run's own process holds no seal key: its runner reads them for the claim's tiers (held.ts).
+  const at = deps.sealKey ? undefined : held();
+  return at ? { ...(await at.subagentTierKeys()) } : tierModelKeys(deps, tiers, refs);
 }
 
 /** Every model key the server holds, for a model route with no revision to scope it by (an SDK run's compile turn): each
- *  by its name from `deps.env` first, then the store's sealed value, as claimSecrets reads them. In a run's own process,
- *  what its runner hands: its subagent tiers' models' keys alone (run-child-host.ts heldFor). */
+ *  by its name from `deps.env` first, then the store's sealed value, as claimSecrets reads them. */
 export async function savedModelKeys(deps: ClaimSecretsDeps): Promise<NodeJS.ProcessEnv> {
-  // A run's own process holds no seal key: what its runner hands a claim whose routes read them (held.ts savedModelKeys).
-  const at = deps.sealKey ? undefined : held();
-  const out: NodeJS.ProcessEnv = at ? { ...(await at.savedModelKeys()) } : {};
+  const out: NodeJS.ProcessEnv = {};
   for (const name of MODEL_KEY_NAMES) {
     const value = deps.env?.[name] || (deps.sealKey ? await getSealedKey(deps.store, deps.sealKey, name) : undefined);
     if (value !== undefined) out[name] = value;

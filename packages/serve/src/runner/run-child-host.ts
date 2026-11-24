@@ -761,7 +761,7 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
       };
       return { api: access.api, target: bound, mint, ...(access.revoke ? { revoke: access.revoke } : {}), ...(access.same ? { same: access.same } : {}) };
     },
-    savedModelKeys: async () => {
+    subagentTierKeys: async () => {
       // A subagent's tiers alone: an agentic run granted the subagent tool routes each tier its revision's modelTiers or
       // the host's tier variable names, and no other (adapter-run-spec.ts), so its process is handed those tiers' models'
       // keys (tierModelKeys, the revision's model of a tier over the host's): never a provider's no tier of it reaches, nor
