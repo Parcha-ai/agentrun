@@ -59,6 +59,7 @@ import { HOOK_BODY_MS } from "./push-handler.js";
 import { CATCHUP_WINDOW_S, DUE_KEPT, MAX_ACTIVE_RUNS, SEEN_KEPT, FAILURES_TO_PAUSE, FIRING_STATUSES, HISTORY_KEPT, MAX_EVERY_S, RELEASE_WORDS_MAX, SOURCE_KINDS, TARGET_KINDS } from "./triggers.js";
 import { DEFINITION_FIELDS, EXTERNAL_NAME, MODEL_REF } from "./validate.js";
 import { CATEGORIES, COMPUTER_ENTRIES, GRADER_TYPES, MODEL_TIERS } from "./templates.js";
+import { MARKETPLACE_ENV, MARKETPLACE_LIMITS, MARKETPLACE_RETRY_MS, MARKETPLACE_TTL_MS, MARKETPLACE_URL } from "./marketplace.js";
 import { EXPORT_NOTE_KINDS } from "./agent-package.js";
 import { MCP_SOURCES } from "./mcp-sources.js";
 import { NOT_SET_UP } from "./runnable.js";
@@ -1450,6 +1451,22 @@ const SUGGESTIONS_LIST = closed({
 });
 /** templates/1: template packages, listed and applied (templates.ts; the format is templates/README.md). */
 const TEMPLATE_MARK = { "x-agentrun-serve": "templates/1" };
+const MARKETPLACE_MARK = { "x-agentrun-serve": "marketplace/1" };
+/** One template on the marketplace's list (marketplace.ts MarketplaceTemplate), with the package here that it is. */
+const MARKETPLACE_TEMPLATE = closedWith({
+  name: { type: "string", pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$", maxLength: 64, description: "Its name on the marketplace: its page's last part, and its package's `name`." },
+  title: { type: "string", minLength: 1, maxLength: 120, description: "Its display name there; its name when the list gives none." },
+  tags: { type: "array", items: { type: "string", pattern: "^[a-z0-9-]{1,32}$" }, maxItems: 8, uniqueItems: true },
+  needs: { type: "array", items: { type: "string", minLength: 1, maxLength: 200 }, maxItems: 16, description: "What it requires, in the marketplace's words (\"Requires GitHub, through the AgentRun GitHub App\"): display only." },
+  page_url: { type: "string", format: "uri", description: "Its page on the marketplace, which installs it on a person's AgentRun." },
+}, {
+  summary: { type: "string", maxLength: 300, description: "Its card's one line." },
+  description: { type: "string", maxLength: 2000, description: "What it does, in full." },
+  category: { enum: [...CATEGORIES], description: "What it is for, as the marketplace files it; left out for none or one this server does not know." },
+  harness: { type: "array", items: { type: "string", pattern: HARNESS_ID_PATTERN }, maxItems: 8, uniqueItems: true, description: "Its package's harness preference list (agent.md `harness`), display only: empty for any harness. Left out when the list does not say." },
+  source: { type: "string", description: "The package an install reads (POST /templates/import `source`), as the list names it, pinned to a commit (`github:<owner>/<repo>[/<path>]@<sha>`). Left out when the list names none: its `page_url` installs it." },
+  here: { type: "string", description: "The id of the package on this server that this one is (GET /templates `id`): a bundled package, or one imported from its `source` (from its name, a bundled one first, when the list names no sources). Left out when it is not here." },
+});
 /** template-computer/1: a package's computer preference list, and what this server would pick of it. */
 const TEMPLATE_COMPUTER_MARK = { "x-agentrun-serve": "template-computer/1" };
 const NULLABLE_STRING = { type: ["string", "null"] };
@@ -3502,6 +3519,22 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       requestBody: { required: true, content: { "application/json": { schema: TEMPLATE_IMPORT } } },
       responses: { "200": json(TEMPLATE_IMPORTED, "The dry run: the package, checked, stored nowhere."), "201": json(TEMPLATE_IMPORTED, "Imported: stored and listed."), ...errors(400, 401, 413, 415, 422, 429, 500), "502": { description: "`github_failed`: GitHub refused or did not answer (its rate limit, a redirect off its hosts, the time limit, a tarball that does not read); the message says which, and whether the server read it anonymously or with its GitHub App.", headers: { "X-Request-Id": ref("headers/RequestId") }, content: { "application/json": { schema: ref("schemas/Error") } } } },
       ...TEMPLATE_MARK,
+    },
+  },
+  "/templates/marketplace": {
+    get: {
+      operationId: "listMarketplaceTemplates", tags: ["local"], summary: "The marketplace's templates: every package on marketplace.agentrun.ai, each with the package here that it is",
+      description: `The list the marketplace publishes (\`<marketplace>/search.json\`, default ${MARKETPLACE_URL}), read by this server when asked, never at its start, and kept ${MARKETPLACE_TTL_MS / 60_000} minutes; one read at a time, within ${MARKETPLACE_LIMITS.bytes >> 20} MiB, ${MARKETPLACE_LIMITS.entries} entries and ${MARKETPLACE_LIMITS.ms / 1000} s, never following a redirect. An entry without a package's name is left out, and an entry's field not of its shape is dropped. A failed read keeps the last good list (\`stale\`) and is tried again after ${MARKETPLACE_RETRY_MS / 1000} s, so this route always answers 200: \`unreachable\` with an empty list when no read has worked. Nothing on the list is imported or run: installing one is POST /templates/import with its \`source\` (or its \`page_url\`'s Install). ${MARKETPLACE_ENV}=off reads none (\`off\`, and under --faux unless ${MARKETPLACE_ENV} names an address); ${MARKETPLACE_ENV}=<https address> reads that site's list.`,
+      responses: {
+        "200": json(closedWith({
+          url: { type: ["string", "null"], description: "The marketplace read; null when this server reads none." },
+          state: { enum: ["read", "stale", "unreachable", "off"], description: `\`read\`: as read within the last ${MARKETPLACE_TTL_MS / 60_000} minutes. \`stale\`: the last read failed (\`problem\`), and this is the list as read at \`read_at\`. \`unreachable\`: no read has worked yet (\`problem\`); the list is empty. \`off\`: this server reads no marketplace.` },
+          read_at: { type: ["string", "null"], format: "date-time", description: "When the list answered was read; null with none." },
+          templates: { type: "array", items: MARKETPLACE_TEMPLATE, description: "In the marketplace's order." },
+        }, { problem: { type: "string", description: "Why the last read failed, or why the marketplace is off." } }), "The marketplace's list, as read or kept."),
+        ...errors(401, 429, 500),
+      },
+      ...MARKETPLACE_MARK,
     },
   },
   "/templates/{template}": {

@@ -209,6 +209,7 @@ import type { LaunchHook } from "./trigger-launch-hook.js";
 import { PAYLOAD_KEPT_BYTES } from "./trigger-adapter.js";
 import { applyBodyOf, choiceUnrunnable, COMPOSIO_TRIGGER_FIX, composioTriggerSkipped, COMPUTER_FIX, compiled, feedLeftEmpty, feedTriggerEmpty, githubTriggerUnconnected, githubTriggerWords, madeTriggerIssues, mcpSetUp, type McpServed, onServerName, onServers, type Package, packageDetail, packageModel, packageTiers, packageView, pickComputer, readPackages, notSetUpYet, serversFor, type ShellHere, TemplateRegistry, type TemplatesDeps } from "./templates.js";
 import { applyImported, deleteTemplate, dropRemovedUploads, importTemplate, loadImported, type TemplateImportDeps, UPLOAD_PREFIX } from "./template-import.js";
+import { hereOf, Marketplace, marketplaceUrlOf } from "./marketplace.js";
 import { templateInstallLink, templateLink, templatesLink } from "./console-links.js";
 import { GITHUB_HOSTS, IMPORT_LIMITS } from "./template-source.js";
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, type DefinitionBody, definitionBodyIssues, EXTERNAL_NAME, ID, IDEMPOTENCY_TTL_S, inputIssues, inputSchemaOf, isObject, type Json, stable, unknownFields } from "./validate.js";
@@ -533,6 +534,9 @@ export type ServeOptions = {
   /** A test's seam: the GitHub a template import reads, its API's origin and the one host it may be sent to, in place of
    *  GitHub's own (template-source.ts GITHUB_HOSTS). */
   templateImportApi?: string;
+  /** A test's seam: the marketplace whose list GET /templates/marketplace answers, its address, or null for none, in
+   *  place of AGENTRUN_MARKETPLACE's (marketplace.ts marketplaceUrlOf). */
+  marketplace?: string | null;
   /** The waits before each try again of a webhook delivery (default 5 s, 5 min, 30 min, 2 h, 5 h and 10 h: webhooks.ts RETRY_MS). */
   webhookRetryMs?: readonly number[];
   /** The bound on one webhook try, whole milliseconds under the 60 s claim it holds its message by (default 15 s:
@@ -853,6 +857,7 @@ export const ROUTES: readonly Route[] = [
   { method: "POST", pattern: /^\/triggers\/([^/]+)\/secret$/, name: "rotateTriggerSecret" },
   { method: "GET", pattern: /^\/templates$/, name: "listTemplates" },
   { method: "POST", pattern: /^\/templates\/import$/, name: "importTemplate" },
+  { method: "GET", pattern: /^\/templates\/marketplace$/, name: "listMarketplaceTemplates" },
   { method: "GET", pattern: /^\/templates\/([^/]+)$/, name: "getTemplate" },
   { method: "DELETE", pattern: /^\/templates\/([^/]+)$/, name: "deleteTemplate" },
   { method: "POST", pattern: /^\/templates\/([^/]+)\/apply$/, name: "applyTemplate" },
@@ -1380,6 +1385,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // The packages served: the bundled ones, read and checked before the start, and those imported here, which the store
   // keeps and are checked again as they load (template-import.ts). One that no longer checks is left out, said in the log.
   const registry = new TemplateRegistry(templates);
+  // The marketplace's list (marketplace.ts), read when the console or a caller asks for it, never at the start.
+  const marketplace = new Marketplace(options.marketplace !== undefined ? options.marketplace : marketplaceUrlOf(process.env, Boolean(options.faux)));
   await loadImported({ registry, store }, (id, why) => log?.(logLine("template_import_skipped", { template: id, why })));
   stopObservationRetention = await maintainObservations(new Observations(store), {
     onError: () => { process.stderr.write("agentrun-serve: observation retention failed; retrying on the next sweep\n"); },
@@ -6171,6 +6178,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const listed = registry.list();
         const pickView = await computerHere(listed);
         return send(res, 200, { templates: listed.map((pkg) => ({ ...packageView(pkg), computer_here: pickView(pkg) })) });
+      }
+      case "listMarketplaceTemplates": {
+        // The marketplace's list as read (or kept), each entry with the package here that it is, when one is.
+        const read = await marketplace.list();
+        const here = registry.list();
+        return send(res, 200, { ...read, templates: read.templates.map((entry) => { const id = hereOf(entry, here); return id ? { ...entry, here: id } : entry; }) });
       }
       case "importTemplate": {
         // Read from GitHub, or uploaded whole ({files}), and checked; a dry run answers it (200), else it is stored and

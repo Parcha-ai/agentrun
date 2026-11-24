@@ -784,6 +784,12 @@ The repositories this server's GitHub App is installed on.
 
 Route: `GET /integrations/github/repositories`.
 
+### `agentrun local list-marketplace-templates`
+
+The marketplace's templates: every package on marketplace.agentrun.ai, each with the package here that it is.
+
+Route: `GET /templates/marketplace`.
+
 ### `agentrun local list-mcp-server-names`
 
 The names of the MCP servers saved here, and nothing else of them.
