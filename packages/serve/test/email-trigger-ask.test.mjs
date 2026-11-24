@@ -131,13 +131,12 @@ test("the server's TO/CC/BCC search is a substring: Sent to data@example.com and
   faux.seed({ mailbox: "Sent", from: ADDRESS, to: ["Jim <jimbob@example.com>"], subject: "Jim", text: "Jim.", flags: ["\\Seen"] });
   await saved(ctx.api, faux);
   const runId = await scheduled(ctx, "lookalike", [send(["a@example.co"], ["bob@example.com"])]);
-  const now = await settled(ctx.api, runId);
+  asks(await settled(ctx.api, runId), `a@example.co and bob@example.com${NEVER}`);
+  assert.equal(faux.sent().length, 0);
   // The fake's search took the lookalikes (a real server's would too), and only their address headers were read.
   const commands = faux.commands();
   assert.ok(commands.some((c) => /SEARCH .*BCC "?bob@example\.com"?/i.test(c)), `searched by To, Cc and Bcc: ${commands.join(" | ")}`);
   assert.ok(commands.some((c) => /FETCH .*HEADER\.FIELDS \(TO CC BCC\)/i.test(c)), `read the hits' To, Cc and Bcc: ${commands.join(" | ")}`);
-  asks(now, `a@example.co and bob@example.com${NEVER}`);
-  assert.equal(faux.sent().length, 0);
 });
 
 test("a send to an address this run already sent to goes unasked, though the account filed no copy in Sent: one approval covers the next", { timeout: 150_000 }, async (t) => {
