@@ -89,10 +89,11 @@ test('recipeProblems refuses the title tie without an announces field: the tie a
   assert.deepEqual(recipeProblems({ ...base, announces: { tool: 'rawInput.toolName', server: 'rawInput.providerIdentifier', args: 'rawInput.args' }, quirks: { permissionTie: 'title' } }), []);
 });
 
-test("recipeProblems refuses an announces path that starts at the update's title, toolCallId, kind or status: one through them would let a title name a call again", () => {
-  // Before: any dotted path loaded, so `{ "tool": "title" }` named a call by a title of exactly `agentrun__write`.
+test("recipeProblems refuses an announces path that starts at the update's title, toolCallId, kind, status, rawOutput, content, locations or sessionUpdate: one through them would let a title or a tool's output name a call again", () => {
+  // Before: any dotted path loaded, so `{ "tool": "title" }` named a call by a title of exactly `agentrun__write`, and
+  // `{ "tool": "rawOutput.toolName" }` by a native read whose output held `toolName: "agentrun__write"`.
   const base = { id: 'x', command: BINARY, declares: { load: true, mcp: 'http' }, billing: { kind: 'proxy' } };
-  for (const said of [{ tool: 'title' }, { tool: 'title.text' }, { tool: 'toolCallId' }, { tool: 'toolCallId.x' }, { tool: 'kind.name' }, { tool: 'status' }, { tool: 'rawInput.toolName', server: 'kind' }, { tool: 'rawInput.toolName', args: 'status' }]) {
+  for (const said of [{ tool: 'title' }, { tool: 'title.text' }, { tool: 'toolCallId' }, { tool: 'toolCallId.x' }, { tool: 'kind.name' }, { tool: 'status' }, { tool: 'rawInput.toolName', server: 'kind' }, { tool: 'rawInput.toolName', args: 'status' }, { tool: 'rawOutput.toolName' }, { tool: 'rawOutput' }, { tool: 'rawInput.toolName', server: 'rawOutput.server' }, { tool: 'content.text' }, { tool: 'locations.path' }, { tool: 'sessionUpdate' }]) {
     assert.match(recipeProblems({ ...base, announces: said }).join(' '), /announces is/, JSON.stringify(said));
   }
 });
