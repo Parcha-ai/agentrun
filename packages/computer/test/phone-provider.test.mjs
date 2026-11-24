@@ -78,25 +78,47 @@ test("the API URL is https alone, loopback included, so the key never crosses in
 	assert.ok(redirects.every((redirect) => redirect === "error"), JSON.stringify(redirects));
 });
 
-test("a redirect is an answer, refused in the REST client's words: a create it meets is not uncertain, asks no recovery and keeps no key", async () => {
+test("a create answered by a redirect keeps its request key and is looked up by it", async () => {
+	const heard = [];
+	// The service acts on each call, then answers some with a redirect (a 303 after a create is the usual POST answer).
+	// fetch, told never to follow one, rejects it as undici does: "fetch failed", caused by "unexpected redirect".
+	const redirecting = (fake, redirected) => async (url, init = {}) => {
+		const call = `${init.method ?? "GET"} ${new URL(url).pathname}`;
+		heard.push(call);
+		const answer = await fake.fetch(url, init);
+		if (!redirected(call)) return answer;
+		assert.equal(init.redirect, "error", "a redirect is never followed: it would carry the key");
+		throw new TypeError("fetch failed", { cause: new Error("unexpected redirect") });
+	};
+	const made = (fake, ledger, redirected) => create({ apiKey: KEY, fetch: redirecting(fake, redirected), adb: fake.adb, ledger, now: fake.clock.now, sleep: fake.clock.sleep, phoned: PHONED_JAR });
 	const fake = fakePhoneHarness();
 	const ledger = memoryLedger();
-	const heard = [];
-	// fetch told never to follow a redirect rejects a 3xx as undici does: "fetch failed", caused by "unexpected redirect".
-	const fetch = async (url, init = {}) => {
-		heard.push(`${init.method ?? "GET"} ${new URL(url).pathname}`);
-		if (init.method === "POST") throw new TypeError("fetch failed", { cause: new Error("unexpected redirect") });
-		return fake.fetch(url, init);
-	};
-	const provider = await create({ apiKey: KEY, fetch, adb: fake.adb, ledger, now: fake.clock.now, sleep: fake.clock.sleep, phoned: PHONED_JAR });
+	const provider = await made(fake, ledger, (call) => call === "POST /sessions");
 	const created = await provider.create(SPEC, req());
-	assert.equal(created.ok, false, JSON.stringify(created));
-	assert.deepEqual([created.error.code, created.error.vendor], ["vendor", "phone-harness"]);
-	assert.match(created.error.message, /^POST \/sessions: the API answered with a redirect, which is never followed: it would carry the key$/);
-	assert.doesNotMatch(created.error.message, /could not be reached/);
-	assert.deepEqual(heard, ["POST /sessions"], "a refusal: no recovery by the Idempotency-Key");
-	assert.deepEqual(await ledger.list(), [], "and the request's key is forgotten");
+	const key = fake.requests()[0].headers["idempotency-key"];
+	assert.deepEqual(heard.slice(0, 2), ["POST /sessions", `GET /sessions/requests/${key}`], "a redirect is no refusal: the service may have made the phone, so create asks for it by the request's key");
+	assert.equal(created.ok, true, JSON.stringify(created));
+	assert.deepEqual([...fake.sessions.keys()], [created.value.id], "the phone the service made is the one create answers");
+	assert.equal(heard.filter((call) => call === "POST /sessions").length, 1, "never posted again");
+	assert.deepEqual((await ledger.list()).map((entry) => [entry.id, entry.request]), [[created.value.id, undefined]]);
 	noKey(created);
+	// The lookup meets a redirect too: create fails in the client's words for both, and the ledger keeps the key, so
+	// list() finds the phone the service made.
+	heard.length = 0;
+	const lost = fakePhoneHarness();
+	const kept = memoryLedger();
+	const both = await made(lost, kept, (call) => call === "POST /sessions" || call.startsWith("GET /sessions/requests/"));
+	const failed = await both.create(SPEC, req());
+	const lostKey = lost.requests()[0].headers["idempotency-key"];
+	assert.deepEqual(heard, ["POST /sessions", `GET /sessions/requests/${lostKey}`]);
+	assert.equal(failed.ok, false, JSON.stringify(failed));
+	assert.deepEqual([failed.error.code, failed.error.vendor], ["vendor", "phone-harness"]);
+	assert.match(
+		failed.error.message,
+		/^POST \/sessions: the API answered with a redirect, which is never followed: it would carry the key; and the service has no session for the request: GET \/sessions\/requests\/[0-9a-f]+: the API answered with a redirect, which is never followed: it would carry the key; the ledger keeps the request's key/,
+	);
+	assert.deepEqual((await kept.list()).map((entry) => entry.request), [lostKey], "the request's key is kept");
+	noKey(failed);
 });
 
 test("check() refuses in words what a cloud phone cannot be, with no call", async () => {
