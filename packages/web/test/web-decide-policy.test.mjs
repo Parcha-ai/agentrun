@@ -211,3 +211,20 @@ test("every step of the fixed sequence, run, skipped or refused, keeps the text 
   assert.deepEqual(now.map((step) => step.receipt.unsifted), plain.map((step) => step.text));
   assert.ok(plain.every((step) => !Object.hasOwn(step.receipt, "unsifted")));
 });
+
+test("the classifier's need is only what the call passed: a search's query, or its task when it gives one; a fetch's looking_for, else its task", async () => {
+  const { asked, provider } = scoringProvider();
+  const w = decideWeb({ decider: priced(provider), policy: "label", bounds: { decideMs: 30_000 } });
+  await w.search("widgets delaware", { n: 4 });
+  await w.search("widgets delaware", { n: 4, task: TASK });
+  await w.fetch(PUBLIC, { task: TASK });
+  await w.fetch(PUBLIC, { task: TASK, lookingFor: "the registry entry" });
+  await w.fetch(PUBLIC, { lookingFor: "the registry entry", offset: 100 });
+  assert.deepEqual(asked.map(({ request }) => [request.kind, request.state.query, request.state.task]), [
+    ["sift", "widgets delaware", undefined],
+    ["sift", "widgets delaware", TASK],
+    ["judge", undefined, TASK],
+    ["judge", undefined, "the registry entry"],
+    ["judge", undefined, "the registry entry"],
+  ]);
+});
