@@ -1,0 +1,82 @@
+{
+  "$schema": "../../../schema/task.schema.json",
+  "id": "osworld.57242fad",
+  "version": 1,
+  "title": "Create test.py in the editor and save it on the Desktop",
+  "split": "heldout",
+  "source": {
+    "suite": "OSWorld-Verified",
+    "id": "vs_code/57242fad-77ca-454f-b71b-f187181a9f23",
+    "revision": "0ad41bee56565efe7bb3c3a5ebc67590a1b8276f",
+    "licence": "Apache-2.0 (Copyright 2024 XLANG NLP Lab); the instruction is copied with the editor's name and the folder changed",
+    "changes": "The box has no VS Code: the instruction says Mousepad, the desktop's text editor, which setup opens on a new document, and the Desktop folder is the run's (/tmp/computer-bench-<nonce>/Desktop) instead of /home/user/Desktop. OSWorld only checked that test.py is in the folder; the agent here keeps file tools, so a second check proves Mousepad saved it (its window is titled test.py)."
+  },
+  "tags": ["osworld", "vs-code", "mousepad"],
+  "needs": {
+    "os": "linux",
+    "kind": "desktop",
+    "capabilities": [
+      { "id": "mousepad", "kind": "exec", "why": "Mousepad, and xdotool, which setup places its window with and the check reads its title with.", "argv": ["sh", "-c", "command -v mousepad && command -v xdotool"] }
+    ]
+  },
+  "setup": [
+    {
+      "method": "exec.run",
+      "why": "Make the run's folder with an empty Desktop folder.",
+      "params": { "argv": ["sh", "-c", "d=/tmp/computer-bench-{{nonce}}; rm -rf $d && mkdir -p $d/Desktop"], "timeoutMs": 20000 }
+    },
+    {
+      "method": "process.start",
+      "why": "Open Mousepad on a new, untitled document.",
+      "params": { "argv": ["sh", "-c", "export DISPLAY=:$(ls /tmp/.X11-unix | sed -n s/^X//p | head -n1); cd /tmp/computer-bench-{{nonce}} && echo $$ > /tmp/computer-bench-{{nonce}}-mousepad.pid && exec mousepad"] }
+    },
+    {
+      "method": "exec.run",
+      "why": "Wait for Mousepad's window (20 s at most), make it fill the screen, put the pointer on it and activate it: a window manager gives the keys to the window activated, and with none they go to the window under the pointer.",
+      "params": { "argv": ["sh", "-c", "export DISPLAY=:$(ls /tmp/.X11-unix | sed -n s/^X//p | head -n1); w=$(timeout 20 xdotool search --sync --onlyvisible --class mousepad | head -n1); [ -n \"$w\" ] || { echo no Mousepad window in 20 s >&2; exit 1; }; eval $(xdotool getdisplaygeometry --shell); xdotool windowmove $w 0 0 windowsize $w $WIDTH $HEIGHT; xdotool mousemove $((WIDTH / 2)) $((HEIGHT / 2)); xdotool windowactivate $w 2>/dev/null; sleep 1"], "timeoutMs": 30000 }
+    }
+  ],
+  "exec": "deny",
+  "instruction": "Please help me create a new python file named \"test.py\" via Mousepad and save it at \"/tmp/computer-bench-{{nonce}}/Desktop\".",
+  "budget": { "steps": 100, "usd": 3, "wall_s": 900 },
+  "checks": [
+    {
+      "id": "saved",
+      "kind": "file",
+      "why": "OSWorld's check: test.py is in the Desktop folder. Setup left it empty, so an agent that does nothing fails.",
+      "path": "/tmp/computer-bench-{{nonce}}/Desktop/test.py",
+      "exists": true
+    },
+    {
+      "id": "saved-in-mousepad",
+      "kind": "exec",
+      "why": "Mousepad saved it: one of Mousepad's windows is titled with test.py. The agent keeps the files group, so it could write the file with files.write and never touch Mousepad; that leaves Mousepad's window titled Untitled, and this fails.",
+      "argv": ["sh", "-c", "export DISPLAY=:$(ls /tmp/.X11-unix | sed -n s/^X//p | head -n1); m=$(xdotool search --onlyvisible --class mousepad); for w in $(xdotool search --onlyvisible --name 'test\\.py'); do printf '%s\\n' \"$m\" | grep -qx \"$w\" && exit 0; done; exit 1"],
+      "timeoutMs": 20000
+    }
+  ],
+  "teardown": [
+    {
+      "method": "exec.run",
+      "why": "Close the run's Mousepad without saving, by the pid setup kept beside the folder (a desktop may have other Mousepads open; KILL: Mousepad holds on to a changed document on TERM), and delete the run's folder and its siblings.",
+      "params": { "argv": ["sh", "-c", "for f in /tmp/computer-bench-{{nonce}}-*.pid; do [ -f \"$f\" ] && kill -9 \"$(cat \"$f\")\" 2>/dev/null; done; rm -rf /tmp/computer-bench-{{nonce}} /tmp/computer-bench-{{nonce}}-*; true"], "timeoutMs": 20000 }
+    }
+  ],
+  "oracle": [
+    {
+      "method": "input.actions",
+      "why": "Type a line of Python, then Save (Ctrl+S) opens the save dialog centred over Mousepad, under the pointer, with its name field selected: type the whole path there, pause for the field's completion, and press Enter.",
+      "params": {
+        "actions": [
+          { "type": "type", "text": "print(\"hello\")" },
+          { "type": "key", "keys": ["ctrl", "s"] },
+          { "type": "wait", "ms": 3000 },
+          { "type": "type", "text": "/tmp/computer-bench-{{nonce}}/Desktop/test.py" },
+          { "type": "wait", "ms": 1000 },
+          { "type": "key", "keys": ["enter"] },
+          { "type": "wait", "ms": 2000 }
+        ]
+      }
+    }
+  ]
+}

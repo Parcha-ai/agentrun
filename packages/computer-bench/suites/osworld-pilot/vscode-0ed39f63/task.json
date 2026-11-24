@@ -1,0 +1,80 @@
+{
+  "$schema": "../../../schema/task.schema.json",
+  "id": "osworld.0ed39f63",
+  "version": 1,
+  "title": "Change every \"text\" in the document to \"test\" in the editor",
+  "split": "heldout",
+  "source": {
+    "suite": "OSWorld-Verified",
+    "id": "vs_code/0ed39f63-6049-43d4-ba4d-5fa2fe04a951",
+    "revision": "0ad41bee56565efe7bb3c3a5ebc67590a1b8276f",
+    "licence": "Apache-2.0 (Copyright 2024 XLANG NLP Lab); the instruction is copied word for word with one sentence added, and vscode_replace_text.txt and vscode_replace_text_gold.txt are OSWorld's (from its file cache), unchanged",
+    "changes": "The box has no VS Code: the document opens in Mousepad, the desktop's text editor, on the run's Desktop folder (/tmp/computer-bench-<nonce>/Desktop) instead of /home/user/Desktop. OSWorld pressed Ctrl+S for the agent before checking; here the instruction asks the agent to save. The check compares the saved file with OSWorld's gold copy, as OSWorld did, less blank space at both ends (Mousepad may add a newline at the end)."
+  },
+  "tags": ["osworld", "vs-code", "mousepad"],
+  "needs": {
+    "os": "linux",
+    "kind": "desktop",
+    "capabilities": [
+      { "id": "mousepad", "kind": "exec", "why": "Mousepad, and xdotool, which setup places its window with.", "argv": ["sh", "-c", "command -v mousepad && command -v xdotool"] }
+    ]
+  },
+  "setup": [
+    {
+      "method": "exec.run",
+      "why": "Write OSWorld's vscode_replace_text.txt, five lines that say \"text\" (and \"texts\", \"texting\") where they mean \"test\", to the run's Desktop folder.",
+      "params": { "argv": ["sh", "-c", "d=/tmp/computer-bench-{{nonce}}; rm -rf $d && mkdir -p $d/Desktop && printf '%s' \"$1\" > $d/Desktop/vscode_replace_text.txt", "sh", "{{file:vscode_replace_text.txt}}"], "timeoutMs": 20000 }
+    },
+    {
+      "method": "process.start",
+      "why": "Open the document in Mousepad.",
+      "params": { "argv": ["sh", "-c", "export DISPLAY=:$(ls /tmp/.X11-unix | sed -n s/^X//p | head -n1); cd /tmp/computer-bench-{{nonce}}/Desktop && echo $$ > /tmp/computer-bench-{{nonce}}-mousepad.pid && exec mousepad /tmp/computer-bench-{{nonce}}/Desktop/vscode_replace_text.txt"] }
+    },
+    {
+      "method": "exec.run",
+      "why": "Wait for Mousepad's window (20 s at most), make it fill the screen, put the pointer on it and activate it: a window manager gives the keys to the window activated, and with none they go to the window under the pointer.",
+      "params": { "argv": ["sh", "-c", "export DISPLAY=:$(ls /tmp/.X11-unix | sed -n s/^X//p | head -n1); w=$(timeout 20 xdotool search --sync --onlyvisible --class mousepad | head -n1); [ -n \"$w\" ] || { echo no Mousepad window in 20 s >&2; exit 1; }; eval $(xdotool getdisplaygeometry --shell); xdotool windowmove $w 0 0 windowsize $w $WIDTH $HEIGHT; xdotool mousemove $((WIDTH / 2)) $((HEIGHT / 2)); xdotool windowactivate $w 2>/dev/null; sleep 1"], "timeoutMs": 30000 }
+    }
+  ],
+  "exec": "deny",
+  "instruction": "Please help me change all the places in this document that say \"text\" to \"test\". Save the file when you are done.",
+  "budget": { "steps": 100, "usd": 3, "wall_s": 900 },
+  "checks": [
+    {
+      "id": "replaced",
+      "kind": "file",
+      "why": "OSWorld's check: the saved document is OSWorld's gold copy, with every \"text\" (in \"texts\" and \"texting\" too) now \"test\" and nothing else changed. Setup wrote the original, so an agent that does nothing fails.",
+      "path": "/tmp/computer-bench-{{nonce}}/Desktop/vscode_replace_text.txt",
+      "text": { "equals": "{{file:vscode_replace_text_gold.txt}}" }
+    }
+  ],
+  "teardown": [
+    {
+      "method": "exec.run",
+      "why": "Close the run's Mousepad without saving, by the pid setup kept beside the folder (a desktop may have other Mousepads open; KILL: Mousepad holds on to a changed document on TERM), and delete the run's folder and its siblings.",
+      "params": { "argv": ["sh", "-c", "for f in /tmp/computer-bench-{{nonce}}-*.pid; do [ -f \"$f\" ] && kill -9 \"$(cat \"$f\")\" 2>/dev/null; done; rm -rf /tmp/computer-bench-{{nonce}} /tmp/computer-bench-{{nonce}}-*; true"], "timeoutMs": 20000 }
+    }
+  ],
+  "oracle": [
+    {
+      "method": "input.actions",
+      "why": "Select all (Ctrl+A) and type the gold copy's five lines, then Save (Ctrl+S): the file has a name, so no dialog.",
+      "params": {
+        "actions": [
+          { "type": "key", "keys": ["ctrl", "a"] },
+          { "type": "type", "text": "In order to evaluate the effectiveness of the new educational curriculum, a series of tests were designed." },
+          { "type": "key", "keys": ["enter"] },
+          { "type": "type", "text": "These tests aimed to test not only the retention of knowledge but also the ability to apply this knowledge in various scenarios." },
+          { "type": "key", "keys": ["enter"] },
+          { "type": "type", "text": "During the testing phase, it became apparent that the tests themselves were a test of patience and endurance for both students and educators." },
+          { "type": "key", "keys": ["enter"] },
+          { "type": "type", "text": "The test results would eventually reveal how well the curriculum prepared students for real-world challenges." },
+          { "type": "key", "keys": ["enter"] },
+          { "type": "type", "text": "It was a test of the system's robustness, a test of educational theories in practice, and, ultimately, a test of our commitment to quality education." },
+          { "type": "key", "keys": ["ctrl", "s"] },
+          { "type": "wait", "ms": 2000 }
+        ]
+      }
+    }
+  ]
+}

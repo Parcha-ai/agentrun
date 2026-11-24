@@ -197,6 +197,7 @@ arm, the route mix, the passes that ran a program, the failure loci, and what wa
 | [linux-desktop](suites/linux-desktop/README.md) | 10 (5 dev, 5 held out) | Mousepad, xfce4-terminal, Thunar, Firefox, and two tasks across two apps, on a Linux desktop, with or without a window manager; all ten verified live on E2B Desktop for seeds 1-3, and the eight without Thunar on Agent37 |
 | [macosworld](suites/macosworld/PORT.md) | 10 | ported from macOSWorld (CC BY-NC 4.0: by reference, none of its text) |
 | [mobileworld](suites/mobileworld/PORT.md) | 6 | ported from MobileWorld (Apache-2.0): 6 of the 8 of its 201 that port faithfully to an unrooted phone (two have no oracle the cloud phone can confirm) |
+| [osworld-pilot](suites/osworld-pilot/PORT.md) | 20 (all held out) | ported from OSWorld-Verified (Apache-2.0): 10 terminal tasks, a git push, 3 VS Code text tasks in Mousepad and 6 Chrome tasks in Firefox, on a Linux desktop; its `arms.json` is the Sonnet 5.5 against GPT-6.1 Terra pilot on E2B; verify live decides its oracles |
 
 Each suite's README says which tasks are proven only on the fake and which wait on a live run.
 
