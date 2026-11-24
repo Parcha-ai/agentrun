@@ -246,11 +246,11 @@ async function ends(server, state = "ended") {
   return (await runTimeline(server, RUN, ctx)).map((entry) => entry.summary ?? "");
 }
 
-/** B started on host b, A's polls held, the run answered; B polls 25 times (or claims the run). What B's polls did. With
- *  `aReading`, the gate shuts while a claim of A's is past it, reading the store. */
-async function answeredWhileBPolls(one, { aReading = false } = {}) {
+/** B started on host b, A's polls held, the run answered; B polls 25 times (or claims the run). What B's polls did.
+ *  `beforeClose`, when given, is awaited just before the gate shuts. */
+async function answeredWhileBPolls(one, { beforeClose } = {}) {
   await one.start("runner-b", "b");
-  if (aReading) await until(() => one.gate.inFlight.size > 0, "a claim of A's reading the store");
+  await beforeClose?.();
   await one.gate.close();
   await one.server.command(RUN, { kind: "approve", body: { approval: one.ask.callId } });
   const from = Date.now();
@@ -282,11 +282,20 @@ test("park on A, answered while A is alive and B polls: B claims nothing and mov
 test("park on A, answered while a claim of A's that passed the gate before it shut is still reading the store: that claim takes nothing, B claims nothing, and A claims it once its polls go on", { timeout: 120_000 }, async (t) => {
   const one = await parkedOnA(t);
   // A store slow under A, as on a loaded machine: each claim of A's past the gate reads only once the answer has landed,
-  // or after a second. The gate shuts while one of them is reading.
+  // or after a second (`held` counts those waiting). The gate shuts while one of them waits: a claim that passed the
+  // gate before this hook was set would not wait, so it is not enough that one is in flight.
   const answered = async () => (await one.server.commands(RUN, 0)).some((row) => row.kind === "approve");
-  one.gate.reading = () => until(answered, "the answer", 1_000).catch(() => {});
+  let held = 0;
+  one.gate.reading = async () => {
+    held += 1;
+    try {
+      await until(answered, "the answer", 1_000).catch(() => {});
+    } finally {
+      held -= 1;
+    }
+  };
   const aClaims = one.claimManyCalls["runner-a"].claimed.length;
-  await answeredWhileBPolls(one, { aReading: true });
+  await answeredWhileBPolls(one, { beforeClose: () => until(() => held > 0, "a claim of A's held in its read") });
   one.gate.reading = undefined;
   assert.equal((await one.server.runs.get(RUN)).epoch, one.parkedEpoch, "nothing claimed the run while A's polls were held: the epoch did not move");
   assert.equal(one.claimManyCalls["runner-a"].claimed.length, aClaims, "A's claim in flight as the gate shut took nothing");
