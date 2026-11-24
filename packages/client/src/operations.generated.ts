@@ -3197,6 +3197,20 @@ export type GetClaudeLoginResponse = {
     organization?: string;
     plan?: string;
   };
+  folder: string;
+  machine: {
+    folder: string;
+    source: "CLAUDE_CONFIG_DIR" | "default";
+  };
+  sign_in?: {
+    state: "waiting" | "signed_in" | "timed_out" | "failed" | "not_started";
+    started_at: string;
+    ended_at?: string;
+    limit_ms: number;
+    exit_code?: number;
+    signal?: string;
+    error?: string;
+  };
 };
 
 /** This server's email account: its address, servers and who signs in, never its password (GET /settings/email). */
@@ -3996,6 +4010,20 @@ export type StartClaudeLoginResponse = {
     organization?: string;
     plan?: string;
   };
+  folder: string;
+  machine: {
+    folder: string;
+    source: "CLAUDE_CONFIG_DIR" | "default";
+  };
+  sign_in?: {
+    state: "waiting" | "signed_in" | "timed_out" | "failed" | "not_started";
+    started_at: string;
+    ended_at?: string;
+    limit_ms: number;
+    exit_code?: number;
+    signal?: string;
+    error?: string;
+  };
 };
 
 /** Start signing in to an MCP server with OAuth: the page the owner opens (POST /settings/mcp-servers/{name}/oauth/start). Its body's string values are secrets: each copy is cut from the answer, and a refusal keeps only its code. */
@@ -4090,6 +4118,20 @@ export type TurnOffClaudeLoginResponse = {
     organization?: string;
     plan?: string;
   };
+  folder: string;
+  machine: {
+    folder: string;
+    source: "CLAUDE_CONFIG_DIR" | "default";
+  };
+  sign_in?: {
+    state: "waiting" | "signed_in" | "timed_out" | "failed" | "not_started";
+    started_at: string;
+    ended_at?: string;
+    limit_ms: number;
+    exit_code?: number;
+    signal?: string;
+    error?: string;
+  };
 };
 
 /** Turn on Claude Code's login on this machine for claude-agent's runs (PUT /settings/claude-login). */
@@ -4108,6 +4150,20 @@ export type TurnOnClaudeLoginResponse = {
     email?: string;
     organization?: string;
     plan?: string;
+  };
+  folder: string;
+  machine: {
+    folder: string;
+    source: "CLAUDE_CONFIG_DIR" | "default";
+  };
+  sign_in?: {
+    state: "waiting" | "signed_in" | "timed_out" | "failed" | "not_started";
+    started_at: string;
+    ended_at?: string;
+    limit_ms: number;
+    exit_code?: number;
+    signal?: string;
+    error?: string;
   };
 };
 
