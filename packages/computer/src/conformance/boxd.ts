@@ -1,22 +1,13 @@
 // boxd for the conformance CLI: `npm run conformance -w @parcha/agentrun-computer -- --provider boxd [--image <snapshot>]`.
 // It makes real machines, so it runs only with AGENTRUN_COMPUTER_LIVE_BOXD=1 and your own key, under
-// COMPUTER_BOXD_API_KEY. The provider reads no environment: this module reads its own COMPUTER_BOXD_* names (never
-// BOXD_API_KEY, which may hold another account's key) and passes each to create() as its option. The live switch is
-// checked first, before any other setting is read. The live sweep (sweep.ts, --provider boxd) reads the same names
-// through createHost, which needs no live switch: it makes nothing; sweepScope names the key, org and region a before
-// file must have been listed from.
-//
-// The daemon is uploaded into each machine (dist/computerd-linux-amd64, `npm run build:daemon`), so a run publishes
-// nothing. The drifted provider uploads a daemon built with Go as version <version>-drift. Every computer of a run has
-// a deadline of at most 30 minutes, and the runner sweeps the run's computers by its label when it ends.
-import { createHash } from "node:crypto";
-import { BOXD_DEFAULT_IMAGE } from "../descriptors/boxd.js";
+// COMPUTER_BOXD_API_KEY (never BOXD_API_KEY, which may hold another account's key). Every computer of a run has a
+// deadline of at most 30 minutes, and the runner sweeps the run's computers by its label when it ends.
 import { type BoxdOptions, type BoxdProvider, create } from "../boxd.js";
-import type { MachineHost } from "../host.js";
-import { buildDriftDaemon, DRIFT_VERSION } from "./drift-daemon.js";
-import { kindFrom } from "./kind.js";
+import { BOXD_DEFAULT_IMAGE } from "../descriptors/boxd.js";
+import { type Env, type HostedModuleOptions, hostedModule, keyPrint, kindFrom, preparedImage, requiredSecret, setOptions } from "./module-kit.js";
 
-/** The environment this module reads, by name, each for the option its comment names, the live switch and the run's image. */
+export { CONFORMANCE_MAX_LIFETIME_MS } from "./module-kit.js";
+
 export const BOXD_ENV = {
 	live: "AGENTRUN_COMPUTER_LIVE_BOXD",
 	/** The image every computer of the run starts from: "default" (boxd's own), or a snapshot's name; unset, a desktop's is the desktop snapshot. */
@@ -27,59 +18,41 @@ export const BOXD_ENV = {
 	org: "COMPUTER_BOXD_ORG",
 	/** region: fra, nyc, ...; default the API's home region. */
 	region: "COMPUTER_BOXD_REGION",
-	/** daemonPath: the daemon binary; default this package's dist/computerd-linux-amd64. */
+	/** daemonPath: the daemon binary. */
 	daemon: "COMPUTER_BOXD_DAEMON",
 	/** kind: linux (default) or desktop. */
 	kind: "COMPUTER_BOXD_KIND",
-	/** daemonUser: uid:gid the daemon runs as; default 2510:2510. */
+	/** daemonUser: uid:gid the daemon runs as. */
 	user: "COMPUTER_BOXD_USER",
 } as const;
 
-/** The names this module reads, under the conformance modules' common name (ConformanceModule.ENV). */
 export const ENV = BOXD_ENV;
 
 /** What this module reads from the environment: the key, and each other option whose name is set. */
 export type BoxdSettings = Pick<BoxdOptions, "apiKey" | "org" | "region" | "daemonPath" | "kind" | "daemonUser">;
 
-/**
- * The provider's options this module reads from env, each only when its name is set; throws in words without the key,
- * never echoing it. create() checks the rest.
- */
-export function settingsFromEnv(env: Record<string, string | undefined> = process.env): BoxdSettings {
-	const apiKey = env[BOXD_ENV.key];
-	if (apiKey === undefined || apiKey === "") throw new Error(`set ${BOXD_ENV.key} to a boxd API key: the conformance module reads it there and nowhere else, never from BOXD_API_KEY`);
-	const org = env[BOXD_ENV.org] || undefined;
-	const region = env[BOXD_ENV.region] || undefined;
-	const daemonPath = env[BOXD_ENV.daemon] || undefined;
-	const daemonUser = env[BOXD_ENV.user] || undefined;
-	return {
-		apiKey,
-		...(org === undefined ? {} : { org }),
-		...(region === undefined ? {} : { region }),
-		...(daemonPath === undefined ? {} : { daemonPath }),
-		...kindFrom(env, BOXD_ENV.kind),
-		...(daemonUser === undefined ? {} : { daemonUser }),
-	};
+/** The provider's options this module reads from env, each only when its name is set; throws in words without the key, never echoing it. */
+export function settingsFromEnv(env: Env = process.env): BoxdSettings {
+	const apiKey = requiredSecret(env, BOXD_ENV.key, "a boxd API key");
+	return { apiKey, ...setOptions(env, { org: BOXD_ENV.org, region: BOXD_ENV.region, daemonPath: BOXD_ENV.daemon, daemonUser: BOXD_ENV.user }), ...kindFrom(env, BOXD_ENV.kind) };
 }
 
-/** The longest lifetime a computer of a run may ask for. */
-export const CONFORMANCE_MAX_LIFETIME_MS = 30 * 60_000;
-
-/** For the run's report: what this configuration means for the suite. */
 export const conformanceNotes: string[] = [
 	"boxd: every computer is an isolated boxd machine with the egress allowlist none, no standby and no hibernation; the daemon is a child of boxd's own agent, started as a detached root command; lifetime is the janitor's, by the deadline label, capped at 30 minutes for the run; no stream() (a screen is streamed through agentrun), so screen.stream is skipped. Kind desktop (COMPUTER_BOXD_KIND=desktop) starts from agentrun-desktop-<recipe hash>, boxd's own image with Xfce's text editor added, a snapshot the run's provider finds or builds in the key's org first (prepareImage), with Xvfb on :0 started through the daemon as the tool user.",
 ];
 
-export interface BoxdModuleOptions extends Pick<BoxdOptions, "Boxd" | "daemonPath" | "timeouts"> {
-	/** Where the settings are read; default process.env. */
-	env?: Record<string, string | undefined>;
-	/** Builds this package's daemon for linux/amd64 stamped with version, and gives its path; default go build. */
-	buildDaemon?: (version: string) => Promise<string>;
-}
+export interface BoxdModuleOptions extends HostedModuleOptions, Pick<BoxdOptions, "Boxd" | "daemonPath" | "timeouts" | "onNote"> {}
 
-function live(env: Record<string, string | undefined>): void {
-	if (env[BOXD_ENV.live] !== "1") throw new Error(`the boxd conformance module makes real machines: set ${BOXD_ENV.live}=1, with your own key, to run it`);
-}
+export const { createProvider, createDriftedProvider, createHost, sweepScope } = hostedModule<BoxdModuleOptions, BoxdSettings, BoxdProvider>({
+	live: { name: BOXD_ENV.live, what: "the boxd conformance module makes real machines", whose: "your own key" },
+	settingsFromEnv,
+	create,
+	host: ["Boxd"],
+	run: ["timeouts", "onNote"],
+	runDefined: ["daemonPath"],
+	// A before file listed with another key, org or region would make every computer there read as new, so the sweep refuses it.
+	scope: ({ apiKey, org, region }) => `the boxd org ${org ?? "of the key"} in the region ${region ?? "home"}, with the key ${keyPrint(apiKey)}`,
+});
 
 /**
  * The image every computer of the run starts from: COMPUTER_BOXD_IMAGE, else boxd's own, else for kind desktop the
@@ -90,40 +63,5 @@ export async function conformanceImage(options: BoxdModuleOptions = {}, { signal
 	const named = env[BOXD_ENV.image];
 	if (named) return named;
 	if (env[BOXD_ENV.kind] !== "desktop") return BOXD_DEFAULT_IMAGE;
-	const ready = await (await createProvider(options)).prepareImage(signal ? { signal } : {});
-	if (!ready.ok) throw new Error(ready.error.message);
-	return ready.value;
-}
-
-/** The provider the CLI runs; throws in words without the live switch, or when a setting is missing or wrong. */
-export async function createProvider({ env = process.env, Boxd, daemonPath, timeouts }: BoxdModuleOptions = {}): Promise<BoxdProvider> {
-	live(env);
-	return create({ ...settingsFromEnv(env), ...(Boxd ? { Boxd } : {}), ...(daemonPath === undefined ? {} : { daemonPath }), ...(timeouts ? { timeouts } : {}), maxLifetimeMs: CONFORMANCE_MAX_LIFETIME_MS });
-}
-
-/**
- * The boxd host the live sweep (sweep.ts) lists and deletes through, from the same settings; it needs no live switch,
- * since the sweep makes nothing, and it calls nothing until the sweep does.
- */
-export async function createHost({ env = process.env, Boxd }: Pick<BoxdModuleOptions, "env" | "Boxd"> = {}): Promise<MachineHost> {
-	return (await create({ ...settingsFromEnv(env), ...(Boxd ? { Boxd } : {}) })).host;
-}
-
-/**
- * Where the sweep lists, in words: the org and region the settings name, under the key named by its sha256 prefix alone.
- * A before file listed with another key, org or region would make every computer there read as new, so the sweep
- * refuses it.
- */
-export function sweepScope({ env = process.env }: Pick<BoxdModuleOptions, "env"> = {}): string {
-	const { apiKey, org, region } = settingsFromEnv(env);
-	const key = createHash("sha256").update(apiKey, "utf8").digest("hex").slice(0, 12);
-	return `the boxd org ${org ?? "of the key"} in the region ${region ?? "home"}, with the key sha256:${key}`;
-}
-
-/** The same provider uploading a daemon that reports version <version>-drift, for the drift.version case. */
-export async function createDriftedProvider({ env = process.env, Boxd, timeouts, buildDaemon = (version) => buildDriftDaemon("amd64", version) }: BoxdModuleOptions = {}): Promise<BoxdProvider> {
-	live(env);
-	const settings = settingsFromEnv(env);
-	const daemonPath = await buildDaemon(DRIFT_VERSION);
-	return create({ ...settings, ...(Boxd ? { Boxd } : {}), ...(timeouts ? { timeouts } : {}), daemonPath, maxLifetimeMs: CONFORMANCE_MAX_LIFETIME_MS });
+	return preparedImage(await createProvider(options), signal);
 }
