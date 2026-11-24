@@ -21,7 +21,7 @@ const key = (extra: Partial<ApiKey> = {}): ApiKey => {
 type Call = { method: string; path: string; body: unknown };
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 /** A server with `state.keys`: GET lists them, POST makes one (201, with its value), DELETE revokes one. */
-function server(state: { keys: ApiKey[]; limit?: number; refused?: string; unreadable?: string[]; readsFail?: boolean; createFails?: boolean; revokeFails?: boolean }) {
+function server(state: { keys: ApiKey[]; limit?: number; refused?: string; unreadable?: string[]; readsFail?: boolean; createFails?: boolean; revokeFails?: boolean; goneElsewhere?: boolean }) {
   const calls: Call[] = [];
   const fetch = (async (url: string, init?: RequestInit) => {
     const call = { method: init?.method ?? "GET", path: String(url), body: init?.body ? JSON.parse(String(init.body)) : undefined };
@@ -39,6 +39,8 @@ function server(state: { keys: ApiKey[]; limit?: number; refused?: string; unrea
     if (one && call.method === "DELETE") {
       if (state.revokeFails) return json(500, { error: { code: "internal", message: "the store is away", retryable: true } });
       const id = decodeURIComponent(one[1]!);
+      // Revoked from another window since this page read the list: the server has no such key.
+      if (state.goneElsewhere) { state.keys = state.keys.filter((k) => k.id !== id); return json(404, { error: { code: "not_found", message: "No API key has that id: it was revoked, or never made.", retryable: false } }); }
       state.keys = state.keys.filter((k) => k.id !== id);
       state.unreadable = state.unreadable?.filter((u) => u !== id);
       return new Response(null, { status: 204 });
@@ -173,6 +175,16 @@ describe("Settings → AgentRun API keys", () => {
     expect(page.host.textContent).toContain("The key was not revoked");
     expect(page.rows()).toHaveLength(1);
     expect(document.activeElement).toBe(page.button(/^Revoke ci$/));
+  });
+
+  it("a key already revoked from another window is revoked: no error, its row goes, and the focus is on the list", async () => {
+    const { v2 } = server({ keys: [key(), key({ id: "01a20b30-b53a-7000-9abd-000000000003", name: "ci" })], goneElsewhere: true });
+    const page = await open(v2);
+    await page.click(/^Revoke ci$/);
+    await page.click(/^Revoke the key$/);
+    expect(page.host.textContent).not.toContain("The key was not revoked");
+    expect(page.rows().map((row) => row.textContent)).toEqual([expect.stringContaining("billing app")]);
+    expect(document.activeElement).toBe(page.host.querySelector('[aria-label="Keys"] [tabindex="-1"]'));
   });
 
   it("a row that is no key's is listed by its id, counts toward the limit, and Remove takes it away", async () => {

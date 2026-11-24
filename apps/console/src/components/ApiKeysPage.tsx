@@ -89,7 +89,9 @@ export function ApiKeysPage({ v2, writable, whyNot = "sign_in", origin }: { v2: 
     setRevoking(null);
     let revoked = false;
     void act("The key was not revoked", async () => {
-      await v2.revokeApiKey(key.id);
+      // A key the server no longer has (revoked from another window) is revoked: that is what was asked, so it is no
+      // failure, and the list read after it drops the row.
+      await v2.revokeApiKey(key.id).catch((e) => { if (!(e instanceof ClientError && e.code === "not_found")) throw e; });
       revoked = true;
       // The key just shown is gone with its revocation: its panel would offer a key that opens nothing.
       setMade((current) => (current?.id === key.id ? null : current));

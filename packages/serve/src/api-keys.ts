@@ -98,7 +98,8 @@ export class ApiKeys {
   }
 
   /** Reads the store's keys. A row that is no key's (another version's, or damaged) opens nothing and is said, with
-   *  how it is removed: it is not listed, and it counts toward the store's limit while it stays. */
+   *  how it is removed. It is no key in the list: the list names it by id in `unreadable`, and it counts toward the
+   *  store's limit while it stays. */
   async load(): Promise<void> {
     this.#keys.clear();
     this.#unreadable.clear();
