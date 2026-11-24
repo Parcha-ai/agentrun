@@ -120,7 +120,7 @@ test("preview agrees the protocol with a 2026-07-28 server and with a 2025 one, 
   assert.ok(legacy.log.some((entry) => entry.method === "initialize"), "the 2025 server was met with initialize");
   assert.deepEqual((await api("GET", "/settings/mcp-servers")).body, { servers: [] }, "a preview stores nothing");
   const caps = (await api("GET", "/capabilities")).body;
-  assert.deepEqual(caps.features.mcp_client, { transports: ["streamable-http"], auth: ["none", "bearer", "headers", "oauth", "github_app", "per_run"], at_rest: "sealed", harnesses: ["pi", "claude-agent", "codex", "opencode"] });
+  assert.deepEqual(caps.features.mcp_client, { transports: ["streamable-http"], auth: ["none", "bearer", "headers", "oauth", "github_app", "per_run"], at_rest: "sealed", harnesses: ["pi", "claude-agent", "codex", "opencode"], composio_per_run: true });
 });
 
 test("preview tells a server that wants a credential (bearer or OAuth), one that is not MCP, one that is down, and one that redirects apart", async (t) => {
@@ -409,4 +409,21 @@ test("the document's mcp_client.at_rest is exactly const sealed: an MCP credenti
   walk(doc);
   assert.ok(found.length > 0, "the document describes features.mcp_client");
   for (const atRest of found) assert.deepEqual(atRest, { const: "sealed" });
+});
+
+test("the document's mcp_client.composio_per_run is a required boolean marked composioperrun/1, the run binding's own mark", () => {
+  const doc = openapiDocument(() => undefined);
+  const found = [];
+  const walk = (node) => {
+    if (!node || typeof node !== "object") return;
+    if (node.properties?.mcp_client?.properties?.at_rest) found.push(node.properties.mcp_client);
+    for (const value of Object.values(node)) walk(value);
+  };
+  walk(doc);
+  assert.ok(found.length > 0, "the document describes features.mcp_client");
+  for (const client of found) {
+    assert.ok(client.required.includes("composio_per_run"), JSON.stringify(client.required));
+    assert.equal(client.properties.composio_per_run?.type, "boolean");
+    assert.equal(client.properties.composio_per_run?.["x-agentrun-serve"], doc.components.schemas.ComposioRunBinding["x-agentrun-serve"]);
+  }
 });

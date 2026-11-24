@@ -6,11 +6,11 @@ import { Button, NavItem } from "@/components/ui";
 import { cn } from "@/lib/utils";
 import { applyTheme, currentTheme, saveTheme, type Theme, THEMES } from "@/lib/theme";
 
-export type Section = "mission" | "playground" | "agents" | "runs" | "dojo" | "templates" | "suggestions" | "triggers" | "settings";
+export type Section = "mission" | "playground" | "agents" | "runs" | "dojo" | "templates" | "suggestions" | "triggers" | "wrapped" | "settings";
 
 /** Each section as the browser's tab names it. */
-const PLACES: Record<Section, string> = { mission: "Mission Control", playground: "Playground", agents: "Agents", runs: "Runs", dojo: "Dojo", templates: "Templates", suggestions: "Suggested agents", triggers: "Triggers", settings: "Settings" };
-const ROUTES: Record<Section, string> = { mission: "#/", playground: "#/playground", agents: "#/agents", runs: "#/runs", dojo: "#/dojo", templates: "#/templates", suggestions: "#/suggestions", triggers: "#/triggers", settings: "#/settings/keys" };
+const PLACES: Record<Section, string> = { mission: "Mission Control", playground: "Playground", agents: "Agents", runs: "Runs", dojo: "Dojo", templates: "Templates", suggestions: "Suggested agents", triggers: "Triggers", wrapped: "Wrapped", settings: "Settings" };
+const ROUTES: Record<Section, string> = { mission: "#/", playground: "#/playground", agents: "#/agents", runs: "#/runs", dojo: "#/dojo", templates: "#/templates", suggestions: "#/suggestions", triggers: "#/triggers", wrapped: "#/wrapped", settings: "#/settings/keys" };
 const THEME_LABEL: Record<Theme, [string, typeof Brain]> = { system: ["System", Monitor], light: ["Light", Sun], dark: ["Dark", Moon] };
 
 /** System (the OS's), Light or Dark: a pick shows at once and is kept in this browser (lib/theme). */
