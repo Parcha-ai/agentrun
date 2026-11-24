@@ -39,7 +39,7 @@ export const SCRUB_RULES_DIGEST = createHash("sha256").update(SCRUB_RULES.map((r
 export type CutRecord = { id: string; at: string; start: number; end: number; rule: string; kind: Cut["kind"]; restorable: boolean; shape: string };
 /** A restored cut: its value is in place again, at `start`-`end` of the string at `at`. */
 export type RestoredRecord = { id: string; at: string; start: number; end: number; rule: string; kind: Cut["kind"] };
-export type Omitted = { what: "file"; path: string; why: "binary" | "too_large" | "over_total" | "over_count" | "unreadable" } | { what: "files"; why: "list_truncated" } | { what: "recordings"; why: "never" };
+export type Omitted = { what: "file"; path: string; why: "binary" | "too_large" | "over_total" | "over_count" | "unreadable" } | { what: "files"; why: "list_truncated" | "uncounted" } | { what: "recordings"; why: "never" };
 
 /** A run's file the export may carry: its path, its size as listed, and its bytes up to `limit` (read only when it fits). */
 export type ExportFile = { readonly path: string; readonly size: number; readonly unreadable?: boolean; read(limit: number): Promise<Uint8Array> };
@@ -63,6 +63,10 @@ export interface ExportInput {
   readonly files: readonly ExportFile[];
   /** Whether the run's file list was cut at its cap (run-reads-over-store.ts listRunFiles `truncated`). */
   readonly filesTruncated: boolean;
+  /** Whether the run's cut is its census's (run-cut.ts `censusDigest`): its end erased what its caller handed it, so its
+   *  cut set no longer holds those values. Its census says where they sat in a file's text, never in a name, so no file is
+   *  carried or named (as listRunFiles under `cut=run` names none): `files` is never read, and `omitted` says "uncounted". */
+  readonly filesUncounted?: boolean;
   /** The run's cut set (run-cut.ts runCutValues), read after everything above. */
   readonly held: readonly string[];
   /** Cut ids to keep in place. */
@@ -139,9 +143,10 @@ function textOf(bytes: Uint8Array): string | undefined {
 
 /** The files the caps let through, path-sorted, as text; every other one in `omitted` with why. A file over a cap is never
  *  read; one read is read no further than its cap. */
-async function filesOf(files: readonly ExportFile[], truncated: boolean, caps: ExportCaps): Promise<{ carried: { path: string; content: string }[]; omitted: Omitted[] }> {
+async function filesOf(files: readonly ExportFile[], truncated: boolean, uncounted: boolean, caps: ExportCaps): Promise<{ carried: { path: string; content: string }[]; omitted: Omitted[] }> {
   const carried: { path: string; content: string }[] = [];
   const omitted: Omitted[] = [];
+  if (uncounted) return { carried, omitted: [{ what: "files", why: "uncounted" }, { what: "recordings", why: "never" }] };
   let total = 0;
   for (const file of [...files].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))) {
     const skip = (why: Extract<Omitted, { what: "file" }>["why"]) => void omitted.push({ what: "file", path: file.path, why });
@@ -150,9 +155,11 @@ async function filesOf(files: readonly ExportFile[], truncated: boolean, caps: E
     else if (total + file.size > caps.filesBytes) skip("over_total");
     else if (carried.length >= caps.files) skip("over_count");
     else {
-      const bytes = await file.read(caps.fileBytes + 1);
-      const text = textOf(bytes);
-      if (bytes.length > caps.fileBytes) skip("too_large");
+      // A file a tool made private, or swapped for a link, since it was listed is left out, as the listing leaves it.
+      const bytes = await file.read(caps.fileBytes + 1).catch(() => undefined);
+      const text = bytes && textOf(bytes);
+      if (bytes === undefined) skip("unreadable");
+      else if (bytes.length > caps.fileBytes) skip("too_large");
       else if (total + bytes.length > caps.filesBytes) skip("over_total");
       else if (text === undefined) skip("binary");
       else {
@@ -173,7 +180,7 @@ export async function exportBundle(input: ExportInput): Promise<{ body: string; 
   const caps: ExportCaps = { ...EXPORT_CAPS, ...input.caps };
   const cutPass: CutScrub = input.scrub ?? ((text, opts) => scrub(text, opts));
   const restore = new Set(input.restore);
-  const { carried, omitted } = await filesOf(input.files, input.filesTruncated, caps);
+  const { carried, omitted } = await filesOf(input.files, input.filesTruncated, input.filesUncounted === true, caps);
   const kind = String(input.view.kind);
   // What is cut: everything that came from the run. The format and source are this server's own words.
   const parts: Record<string, unknown> = {
@@ -319,7 +326,7 @@ export interface ExportReads {
   /** Agent `agentId`'s name. */
   agentName(agentId: string): Promise<string | undefined>;
   /** The run's cut set (run-cut.ts runCutValues). */
-  cut(): Promise<{ values: string[] } | "unreadable">;
+  cut(): Promise<{ values: string[]; censusDigest?: string } | "unreadable">;
 }
 
 /** Run `runId`'s bundle, gathered: its view, rows, graph (a workflow's) and files, then its cut set, read last (the cut
@@ -338,5 +345,5 @@ export async function runExport(runId: string, reads: ExportReads, options: Pick
   const name = (typeof view.agent_id === "string" ? await reads.agentName(view.agent_id) : undefined) ?? "";
   const cut = await reads.cut();
   if (cut === "unreadable") throw new ApiError("forbidden", WITHHELD_SIGN_IN);
-  return exportBundle({ runId, agent: { name }, view, rows, contexts, graph, files, filesTruncated: truncated, held: cut.values, ...options });
+  return exportBundle({ runId, agent: { name }, view, rows, contexts, graph, files, filesTruncated: truncated, filesUncounted: cut.censusDigest !== undefined, held: cut.values, ...options });
 }
