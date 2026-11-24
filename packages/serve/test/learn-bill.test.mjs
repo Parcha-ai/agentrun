@@ -295,7 +295,7 @@ test("A8: a served run whose revision's check cost is unknown reports learning_u
   assert.deepEqual([all["run-07"].learning_usd, all["run-07"].all_in_usd], [0, 0.1], "past the K-th: none of it to carry");
 });
 
-test("A8: with the promotion feed trimmed below the first promotion, the invariant and the baseline hold: an aged-out revision's spend is unattributed, the cutoff is the first served run", async (t) => {
+test("A8: with the promotion feed trimmed below the first promotion, the invariant and the baseline hold: an aged-out revision's spend stays on it at the default K, the cutoff is the first served run", async (t) => {
   const kept = await splitStore(t);
   const wholeCost = await agentCostOverStore(kept, "agent-1");
   const whole = wholeCost.bill;
@@ -307,10 +307,12 @@ test("A8: with the promotion feed trimmed below the first promotion, the invaria
   assert.deepEqual(cost.summary.before, wholeSummary.before, "the agent runs before the first served run, as with the feed whole");
   assert.deepEqual(cost.summary.before, { runs: 3, mean_usd: 1 }, "run-08, by hand after the served runs, is no part of it");
   assert.deepEqual([wholeSummary.takeover, cost.summary.takeover], [{ n: 4, run_id: "run-04" }, { n: 4, run_id: "run-04" }], "from the first served run");
-  assert.deepEqual(cost.bill.revisions.map((one) => one.digest), ["e".repeat(16)]);
-  assert.equal(cost.bill.unattributed_usd, 1.1, "C's compile and check, and run-03's failed compile, carried by no run");
+  // C's spend is its own whatever the feed keeps (learn/ledger.ts summarize): no record names it, so it is spread over
+  // its first COMPILE_AFTER_DEFAULT (20) served runs, the four it served carrying $0.045 each of its $0.90.
+  assert.deepEqual(cost.bill.revisions.map((one) => [one.digest, one.k, one.served, one.attributed_usd, one.unattributed_usd, one.state]), [["e".repeat(16), 20, 0, 0, 0, "stopped"], [C, 20, 4, 0.18, 0.72, "checking"]]);
+  assert.equal(cost.bill.unattributed_usd, 0.92, "what C's four served runs have not carried, and run-03's failed compile");
   const all = await v2Of(store, cost.bill);
-  assert.deepEqual([all["run-04"].learning_usd, all["run-02"].learning_usd], [0, 0]);
+  assert.deepEqual([all["run-04"].learning_usd, all["run-02"].learning_usd], [0.045, 0]);
 });
 
 test("the bill's holds: each at its run of the whole series, placed by the server whatever the runs listed", async (t) => {

@@ -12,6 +12,7 @@ import type { Context } from "@earendil-works/chord/context";
 import type { Storage, StorageWrite } from "@earendil-works/pi-durable";
 import type { JournalPage } from "./journal/storage.js";
 import type { MonidPinBody } from "./agent-body.js";
+import type { LedgerRow, SpendRow } from "../learn/ledger.js";
 
 /** A run's state. queued: a row, no runner yet. running: a runner holds the claim. parked: waiting for a person (an
  *  approval, a raised cap) with no claim held; a command row or its wake_at makes it claimable again. ended, stopped and
@@ -465,6 +466,10 @@ export interface Learning {
    *  before it was proposed ended when it was kept; a proposal ended when its learning run ended (ended or failed), whose
    *  row keeps the grade's spend as its cost. One still waiting for its grade is none of them. */
   spend(window: { from: number; to: number }): Promise<LearningSpend[]>;
+  /** Agent `agentId`'s ledger (learn/ledger.ts), in two reads: every run's row its end recorded (a purged run's is kept;
+   *  readers leave it out as they leave the run out), and every spend row. With `runId`, that run's row alone and the
+   *  spend rows it booked or that audit it. Written only beside a run's end (applyRunPatch). */
+  ledger(agentId: string, runId?: string): Promise<{ rows: LedgerRow[]; spend: SpendRow[] }>;
 }
 
 /** One run's learning end as GET /usage's learning meter counts it (Learning.spend). */
