@@ -639,6 +639,161 @@ test("a holder never marks its own live lock lost: the check after its post and 
   assert.deepEqual([saved.accessToken, saved.refreshToken], [next.access, next.refresh], "the answer written back");
 });
 
+/** A point in a test: one runner's lock step waits on `reached`, and another's step calls `reach`. */
+function point() {
+  let reach;
+  const reached = new Promise((resolve) => (reach = resolve));
+  return { reach, reached };
+}
+
+/** A mkdir refused as in a folder its holder may not write: the older lock beside the login's folder cannot be made
+ *  there, and every holder goes on with the lock in the folder alone, as the pinned CLI does. */
+const notWritable = (path) => Promise.reject(Object.assign(new Error(`EACCES: permission denied, mkdir '${path}'`), { code: "EACCES" }));
+
+test("two runners that take one stale lock over at once never both hold it: the runner whose new lock the other's delayed removal took finds it another's and never posts, so the login's refresh token is posted once and both hand the one renewal", { timeout: 20_000 }, async (t) => {
+  assert.equal(typeof tokens.renewLogin, "function", "the runner's renewal (renewLogin)");
+  // The second runner as another process: the module loaded again, with its own renewals in flight and its own memory.
+  const second = await import("../dist/claude-login-token.js?second-runner").catch(() => ({}));
+  assert.equal(typeof second.renewLogin, "function", "a second runner's renewal");
+  const { login, write } = loginFolder(t);
+  const now = 1_900_000_000_000;
+  const old = { access: fake("access-old"), refresh: fake("refresh-old") };
+  const next = { access: fake("access-new"), refresh: fake("refresh-new") };
+  write(oauthOf(old.access, now + 60_000, old.refresh));
+  const [current, legacy] = [join(login.dir, ".oauth_refresh.lock"), `${realpathSync(login.dir)}.lock`];
+  // The wall clock the locks are timed on, the test's. A dead holder's lock, past the 60 s stale time.
+  const wall = Date.now();
+  let clock = wall;
+  t.mock.method(Date, "now", () => clock);
+  mkdirSync(current);
+  const dead = new Date(wall - 61_000);
+  utimesSync(current, dead, dead);
+  const endpoint = await rotatingEndpoint(t, new Map([[old.refresh, next]]));
+  // Both runners read the dead lock before either removes it. Runner A removes it only once runner B is at its own
+  // removal; B's removal waits until A has made its lock, set its mtime and gone on to the older lock, then removes A's
+  // new lock, and B makes its own 200 ms later on the clock: within the second the old check took for one holder's
+  // mtime. A reads its lock again (its check before the post) only once B holds its own.
+  const bAtRemoval = point();
+  const aHolds = point();
+  const bHolds = point();
+  let aRemoved = false;
+  let bRemoved = false;
+  let aHeld = false;
+  const lockFsA = {
+    mkdir: (path) => {
+      if (path !== legacy) return fsp.mkdir(path);
+      aHeld = true;
+      clock = wall + 200;
+      aHolds.reach();
+      return notWritable(path);
+    },
+    stat: async (path) => {
+      if (aHeld && path === current) await bHolds.reached;
+      return fsp.stat(path);
+    },
+    utimes: (path, atime, mtime) => fsp.utimes(path, atime, mtime),
+    rm: async (path, options) => {
+      if (path === current && !aRemoved) {
+        aRemoved = true;
+        await bAtRemoval.reached;
+      }
+      return fsp.rm(path, options);
+    },
+  };
+  const lockFsB = {
+    mkdir: (path) => {
+      if (path !== legacy) return fsp.mkdir(path);
+      bHolds.reach();
+      return notWritable(path);
+    },
+    stat: (path) => fsp.stat(path),
+    utimes: (path, atime, mtime) => fsp.utimes(path, atime, mtime),
+    rm: async (path, options) => {
+      if (path === current && !bRemoved) {
+        bRemoved = true;
+        bAtRemoval.reach();
+        await aHolds.reached;
+      }
+      return fsp.rm(path, options);
+    },
+  };
+  const ask = (module, lockFs) => {
+    const renew = module.renewLogin({ fetch: endpoint.fetch, now: () => now, lockFs, lockUpdateMs: 60_000 });
+    return new module.LoginTokens({ login, now: () => now, renew }).token().then((token) => ({ token }), (error) => ({ error }));
+  };
+  const [a, b] = await Promise.all([ask(tokens, lockFsA), ask(second, lockFsB)]);
+  assert.equal(endpoint.posts.filter((post) => post.body.refresh_token === old.refresh).length, 1, "the login's refresh token is posted once: two runners that took one stale lock over at once never both hold it");
+  assert.deepEqual([aRemoved, bRemoved], [true, true], "both runners found the lock dead and removed one, B after A had made its own");
+  assert.deepEqual([a.token, b.token], [next.access, next.access], "both hand the one renewal");
+  assert.ok(!existsSync(current), "the lock is released, none left for the 60 s stale time");
+});
+
+test("a runner takes a stale lock over only while it is the lock it inspected: one another holder (the CLI) made in its place since is never removed, and the refresh token that holder posted is never posted again", { timeout: 20_000 }, async (t) => {
+  assert.equal(typeof tokens.renewLogin, "function", "the runner's renewal (renewLogin)");
+  const { login, write } = loginFolder(t);
+  const now = 1_900_000_000_000;
+  const old = { access: fake("access-old"), refresh: fake("refresh-old") };
+  const next = { access: fake("access-new"), refresh: fake("refresh-new") };
+  write(oauthOf(old.access, now + 60_000, old.refresh));
+  const [current, legacy] = [join(login.dir, ".oauth_refresh.lock"), `${realpathSync(login.dir)}.lock`];
+  mkdirSync(current);
+  const dead = new Date(Date.now() - 61_000);
+  utimesSync(current, dead, dead);
+  const endpoint = await rotatingEndpoint(t, new Map([[old.refresh, next]]));
+  // The CLI's lock, made in the dead one's place: a whole second away from any mtime the runner sets.
+  const theirs = new Date(Math.ceil(Date.now() / 1000) * 1000 + 2_000);
+  let inspected = false;
+  let theyHold = false;
+  let decide;
+  /** What the runner did once the lock it read was replaced: "waits" (it found the CLI's and left it) or "removed". */
+  const decided = new Promise((resolve) => (decide = resolve));
+  const lockFs = {
+    mkdir: async (path) => {
+      if (path === legacy) return notWritable(path);
+      try {
+        return await fsp.mkdir(path);
+      } catch (error) {
+        if (inspected && error.code === "EEXIST") decide("waits");
+        throw error;
+      }
+    },
+    // The runner's first read of the dead lock. Once it is read, and before the runner acts on it, the CLI takes that
+    // lock over as dead too (removed, made again, its own mtime set) and posts the login's refresh token under it.
+    stat: async (path) => {
+      const read = await fsp.stat(path);
+      if (path === current && !inspected) {
+        inspected = true;
+        takeOver(current, theirs);
+        theyHold = true;
+        const response = await endpoint.fetch(loginRefresh.tokenUrl ?? "https://token.invalid/v1/oauth/token", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ grant_type: "refresh_token", refresh_token: old.refresh }) });
+        await response.json();
+      }
+      return read;
+    },
+    utimes: (path, atime, mtime) => fsp.utimes(path, atime, mtime),
+    rm: async (path, options) => {
+      await fsp.rm(path, options);
+      if (path === current && theyHold) decide("removed");
+    },
+  };
+  /** The CLI writes its renewal back, then releases its lock while it is still its own. */
+  const theyWrite = () => {
+    write(oauthOf(next.access, now + 8 * HOUR, next.refresh));
+    if (existsSync(current) && statSync(current).mtimeMs === theirs.getTime()) rmSync(current, { recursive: true });
+  };
+  const renew = tokens.renewLogin({ fetch: endpoint.fetch, now: () => now, lockFs, lockUpdateMs: 60_000 });
+  const asked = new tokens.LoginTokens({ login, now: () => now, renew }).token().then((token) => ({ token }), (error) => ({ error }));
+  const how = await decided;
+  const kept = existsSync(current) && statSync(current).mtimeMs === theirs.getTime();
+  // A runner that waits takes the CLI's write when it lands; one that took the lock posts before the CLI writes.
+  if (how === "waits") theyWrite();
+  const outcome = await asked;
+  if (how !== "waits") theyWrite();
+  assert.equal(endpoint.posts.filter((post) => post.body.refresh_token === old.refresh).length, 1, "the login's refresh token is posted once, by the CLI that took the lock over after the runner read it: the runner never removes that lock nor posts under one made in its place");
+  assert.equal(kept, true, "the CLI's lock, made after the runner read the dead one, is left as it is");
+  assert.equal(outcome.token, next.access, "the runner waits for the CLI's write and hands its token");
+});
+
 test("a renewal Anthropic refuses (400 invalid_grant) or that fails (a 5xx) refuses the ask in LOGIN_RUNNING_OUT's words, posts once for that ask and never again on its own as the clock goes on, and leaves the file byte for byte as it was; a refresh token refused as invalid_grant is never posted again", async (t) => {
   assert.equal(typeof tokens.LoginTokens, "function", "the runner has a reader of the login's access token");
   for (const [why, answer, nextAskPosts] of [
