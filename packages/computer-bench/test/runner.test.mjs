@@ -19,13 +19,14 @@ test("the fake agents: right passes every fake task, wrong and null fail every t
 		const judged = result.task === "fake.settings.volume-judged";
 		const want = result.arm === "fake-right" || (judged && result.arm === "fake-wrong") ? "pass" : "fail";
 		assert.equal(result.outcome, want, `${result.task} ${result.arm} seed ${result.seed}`);
-		if (judged) assert.equal(result.queue, "the checks are not sufficient and no grader ran");
+		// Failing checks decide alone; a pass on checks that are not sufficient waits for a person when no grader ran.
+		if (judged) assert.equal(result.queue, want === "pass" ? "the checks are not sufficient and no grader ran" : undefined);
 	}
 	assert.equal(jsonl(join(s.dir, "results.jsonl")).length, results.length);
 	const bench = JSON.parse(readFileSync(join(s.dir, "bench.json"), "utf8"));
 	assert.deepEqual(bench.seeds, [1, 2]);
 	assert.equal(bench.tasks.length, 6);
-	assert.equal(jsonl(join(s.dir, "human-queue.jsonl")).length, 3 * 2, "every run of the judged task waits for a person when no grader ran");
+	assert.equal(jsonl(join(s.dir, "human-queue.jsonl")).length, 2 * 2, "every run of the judged task that passed its checks waits for a person when no grader ran");
 });
 
 test("a run's record: the header first, then every call in order, the checks, and the verdict", async () => {
@@ -408,6 +409,7 @@ test("a stop asked for while fast episodes run starts no further episode", async
 	const controller = new AbortController();
 	let asked = false;
 	const seeds = Array.from({ length: 200 }, (_, i) => i + 1);
+	const parallel = 2;
 	const results = await runBench({
 		tasks: fakeTasks("fake.files.write"),
 		arms: [arm("fake-right")],
@@ -415,7 +417,7 @@ test("a stop asked for while fast episodes run starts no further episode", async
 		backend,
 		store: store(),
 		grade: "never",
-		parallel: 2,
+		parallel,
 		signal: controller.signal,
 		onResult: () => {
 			if (asked) return;
@@ -423,8 +425,31 @@ test("a stop asked for while fast episodes run starts no further episode", async
 			setImmediate(() => controller.abort(new Error("stopped")));
 		},
 	});
-	assert.ok(results.length < seeds.length, `all ${results.length} of ${seeds.length} episodes ran: the stop could not run until the run had ended`);
+	// The first result asks for the stop; by then each worker can still end the one episode it has, and none takes another.
+	assert.ok(results.length <= 1 + parallel, `${results.length} of ${seeds.length} episodes ran, more than the first and one per worker: the stop could not run until later`);
 	assert.ok(controller.signal.aborted, "the stop ran before the run ended");
 	assert.equal(openedAfterStop, 0, "no episode was opened after the stop");
 	assert.ok(opened < seeds.length);
+});
+
+test("a stopped episode's line keeps what its driver spent: cost, steps and wall time", async () => {
+	// The stop comes while the agent runs, the way a SIGINT lands during a serve run; serve cancels the run and still
+	// answers what it cost, and the line has to carry that for a cap outside the bench to count it.
+	const controller = new AbortController();
+	const stopped = async (wire, request) => {
+		const h = helper(wire);
+		await h.observe("fake.settings");
+		controller.abort(new Error("stopped"));
+		assert.equal(request.signal.aborted, true, "the agent's signal carries the run's stop");
+		return { outcome: "budget", message: "stopped", cost_usd: 1.25 };
+	};
+	const s = store();
+	const results = await runBench({ tasks: fakeTasks("fake.settings.dark-theme"), arms: [arm("stopped")], seeds: [1], backend: fakeBackend({ agents: { stopped } }), store: s, grade: "never", signal: controller.signal });
+	assert.equal(results.length, 1);
+	const [line] = jsonl(join(s.dir, "results.jsonl"));
+	assert.equal(line.outcome, "infra");
+	assert.equal(line.why, "the bench run was stopped");
+	assert.equal(line.cost_usd, 1.25, "the cost serve answered is on the written line");
+	assert.ok(line.steps > 0, "the agent's steps are on the written line");
+	assert.equal(typeof line.wall_s, "number");
 });
