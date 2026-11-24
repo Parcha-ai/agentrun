@@ -705,6 +705,7 @@ __all__ = [
     "ListGitHubRepositoriesResponseUnreadItem",
     "ListHarnessKeysResponse",
     "ListHarnessKeysResponseHarnessesItem",
+    "ListHarnessKeysResponseHarnessesItemReenterItem",
     "ListHomeFilesResponse",
     "ListHomeFilesResponseFilesItem1",
     "ListHomeFilesResponseFilesItem2",
@@ -742,6 +743,8 @@ __all__ = [
     "ListLearningPromotionsResponseServingItemChampionNodesItem",
     "ListLearningPromotionsResponseServingItemChampionNodesItemChecksItem",
     "ListLearningPromotionsResponseServingItemCheck",
+    "ListMarketplaceTemplatesResponse",
+    "ListMarketplaceTemplatesResponseTemplatesItem",
     "ListMcpServerNamesResponse",
     "ListMcpServersResponse",
     "ListMcpServersResponseServersItem",
@@ -4319,8 +4322,16 @@ class ListHarnessKeysResponse(TypedDict):
 class ListHarnessKeysResponseHarnessesItem(TypedDict):
     id: str
     label: str
+    named: bool
     keys: list[SecretMeta]
+    kept: list[SecretMeta]
     ready: bool
+    reenter: list[ListHarnessKeysResponseHarnessesItemReenterItem]
+
+
+class ListHarnessKeysResponseHarnessesItemReenterItem(TypedDict):
+    name: str
+    why: Literal["recipe_changed", "seal_key_changed", "file_unreadable"]
 
 
 class ListHomeFilesResponse(TypedDict):
@@ -5447,6 +5458,34 @@ class ListGitHubRepositoriesResponseRepositoriesItem(_ListGitHubRepositoriesResp
 class ListGitHubRepositoriesResponseUnreadItem(TypedDict):
     account: str
     why: str
+
+
+class _ListMarketplaceTemplatesResponseRequired(TypedDict):
+    url: str | None
+    state: Literal["read", "stale", "unreachable", "off"]
+    read_at: str | None
+    templates: list[ListMarketplaceTemplatesResponseTemplatesItem]
+
+
+class ListMarketplaceTemplatesResponse(_ListMarketplaceTemplatesResponseRequired, total=False):
+    problem: str
+
+
+class _ListMarketplaceTemplatesResponseTemplatesItemRequired(TypedDict):
+    name: str
+    title: str
+    tags: list[str]
+    needs: list[str]
+    page_url: str
+
+
+class ListMarketplaceTemplatesResponseTemplatesItem(_ListMarketplaceTemplatesResponseTemplatesItemRequired, total=False):
+    summary: str
+    description: str
+    category: Literal["engineering", "security", "sales", "marketing", "research", "finance", "operations", "compliance", "personal"]
+    harness: list[str]
+    source: str
+    here: str
 
 
 class ListMcpServerNamesResponse(TypedDict):
@@ -8219,6 +8258,7 @@ class FeaturesHarnessKeys(TypedDict):
     routes: bool
     at_rest: Literal["sealed"]
     harnesses: list[str]
+    kept: list[str]
 
 
 class FeaturesMcpClient(TypedDict):
@@ -8370,6 +8410,7 @@ class _CapabilitiesHarnessesItemRequired(TypedDict):
     label: str
     promises: CapabilitiesHarnessesItemPromises
     available: bool
+    ready_models: list[str]
     free_models: list[CapabilitiesHarnessesItemFreeModelsItem]
     models: list[str]
     run_memory_mib: int
@@ -11553,6 +11594,7 @@ OPERATIONS: dict[str, Operation] = {
     "listComputerChoices": Operation(method="GET", path="/computers/{provider}/choices", path_params=("provider",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "listComputers": Operation(method="GET", path="/computers", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "listGitHubRepositories": Operation(method="GET", path="/integrations/github/repositories", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "listMarketplaceTemplates": Operation(method="GET", path="/marketplace/templates", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "listMcpServerNames": Operation(method="GET", path="/settings/mcp-server-names", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "listRunningComputers": Operation(method="GET", path="/computers/running", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "listSuggestions": Operation(method="GET", path="/suggestions", path_params=(), multi_segment=(), query=("repo", "status"), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
@@ -12083,6 +12125,10 @@ class LocalResource(Group):
     def list_git_hub_repositories(self, *, timeout: float | None = None) -> ListGitHubRepositoriesResponse:
         """The repositories this server's GitHub App is installed on (GET /integrations/github/repositories)."""
         return self._call("listGitHubRepositories", (), None, None, timeout=timeout)
+
+    def list_marketplace_templates(self, *, timeout: float | None = None) -> ListMarketplaceTemplatesResponse:
+        """The marketplace's templates: every package on marketplace.agentrun.ai, each with the package here that it is (GET /marketplace/templates)."""
+        return self._call("listMarketplaceTemplates", (), None, None, timeout=timeout)
 
     def list_mcp_server_names(self, *, timeout: float | None = None) -> ListMcpServerNamesResponse:
         """The names of the MCP servers saved here, and nothing else of them (GET /settings/mcp-server-names)."""

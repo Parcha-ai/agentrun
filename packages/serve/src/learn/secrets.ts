@@ -31,9 +31,20 @@ export const PRINT_MAX = 4096;
  *  form not found as it stands (percent encoded, split by whitespace, an NFKC variant), read in `text` as given, is
  *  redacted whole, never in part, unless every character of it is inside what the finds cut: a cut can hide part of a
  *  value, so the rest is looked for before the cut (redact/match.ts planCut). So is a text over `max` bytes (PRINT_MAX
- *  unless the caller names more), and one whose cut leaves a value or a shape. */
-export function redactSecrets(text: string, values: readonly string[], max = PRINT_MAX): string {
-  return redactWith(text, values, max, SECRET_SHAPES);
+ *  unless the caller names more), and one whose cut leaves a value or a shape. `held`: spans of `text` cut in place
+ *  beside the finds (heldSpans, of values no longer at hand). */
+export function redactSecrets(text: string, values: readonly string[], max = PRINT_MAX, held: readonly (readonly [number, number])[] = []): string {
+  return redactWith(text, values, max, SECRET_SHAPES, held);
+}
+
+/** Where redactSecrets cuts `values` in `text`, shapes left out: each span it cuts in place (UTF-16 offsets, overlapping
+ *  ones merged, in order), or "whole" when its checks over them cut the text whole (a value split by a line break,
+ *  percent encoded, an NFKC variant, read in the text as it came: redact/match.ts planCut). What a run's census keeps of
+ *  a file, never the values (run-census.ts): redactSecrets given these spans as `held` cuts the text as it would have
+ *  with the values among its own. */
+export function heldSpans(text: string, values: readonly string[]): Span[] | "whole" {
+  const cut = planCut(text, derivedOf(values), []);
+  return cut === "whole" ? "whole" : cut.spans;
 }
 
 /** `text` as redactSecrets cuts it, and of a bank's numbers beside their words too (MONEY_SHAPES): what learning prints
@@ -67,10 +78,10 @@ export function foldsHeld(values: readonly string[]): boolean {
   return derivedOf(values).folds.length > 0;
 }
 
-/** redactSecrets over `shapes`, each found in place (redact/match.ts planCut). */
-function redactWith(text: string, values: readonly string[], max: number, shapes: readonly Shape[]): string {
+/** redactSecrets over `shapes`, each found in place, and `held` spans cut beside them (redact/match.ts planCut). */
+function redactWith(text: string, values: readonly string[], max: number, shapes: readonly Shape[], held: readonly (readonly [number, number])[] = []): string {
   if (Buffer.byteLength(text) > max) return "[redacted]";
-  const cut = planCut(text, derivedOf(values), shapes);
+  const cut = planCut(text, derivedOf(values), shapes, held);
   return cut === "whole" ? "[redacted]" : cut.out;
 }
 
