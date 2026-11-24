@@ -157,7 +157,7 @@ test("waiting firings, one per trigger, are read with one store query a tick, ne
         if (typeof value !== "function") return value;
         return (...args) => {
           if (key === "waiting") reads.waiting += 1;
-          if (key === "firing" || key === "activeRuns") reads.perFiring += 1;
+          if (key === "firing" || key === "activeKeys") reads.perFiring += 1;
           return value.apply(target, args);
         };
       },

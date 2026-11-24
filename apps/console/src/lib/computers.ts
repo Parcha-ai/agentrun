@@ -1,5 +1,21 @@
+import { Globe, Monitor, Smartphone, Terminal } from "lucide-react";
 import type { Place } from "./place";
-import type { Computer, ComputerKindView } from "./v2";
+import type { Computer, ComputerHold, ComputerKindView, ComputerProvider, RunMachine } from "./v2";
+
+/** Each kind's name and what it gives a run, in the console's words. A kind the console doesn't know yet reads as its id. */
+const KIND_WORDS = {
+  none: { label: "None", gives: "The run's folder only." },
+  sandbox: { label: "Sandbox", gives: "A Linux container." },
+  desktop: { label: "Desktop", gives: "A screen, with a pointer and keys." },
+  phone: { label: "Phone", gives: "A phone's screen and its apps." },
+  browser: { label: "Browser", gives: "A browser the agent drives." },
+} satisfies Record<RunMachine["kind"] | "none", { label: string; gives: string }>;
+export const wordsOf = (kind: string): { label: string; gives: string } => (KIND_WORDS as Record<string, { label: string; gives: string }>)[kind] ?? { label: kind, gives: "" };
+/** A provider of a kind, as GET /v2/computers lists it. */
+export const providerOf = (kinds: readonly ComputerKindView[], kind: string, id: string): ComputerProvider | undefined =>
+  kinds.find((k) => k.kind === kind)?.providers.find((p) => p.id === id);
+export const KIND_ICONS = { browser: Globe, desktop: Monitor, phone: Smartphone, sandbox: Terminal } as const satisfies Record<RunMachine["kind"], unknown>;
+export const DRIVES: Record<ComputerHold, string> = { agent: "The agent drives", pending: "Yours after the agent's step", person: "You drive" };
 
 /** Whether a kind can be picked here: offered, and (but none, which needs no provider) a provider of it is ready. */
 export const pickable = (kind: ComputerKindView): boolean => kind.offered && (kind.kind === "none" || kind.providers.some((p) => p.ready));

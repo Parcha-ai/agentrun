@@ -12,7 +12,8 @@
 //   own), read with them at each admission and added to `spentUsd`, so a run and what it pays for elsewhere never pass
 //   its cap together. Unknown (null) makes the run's spend unknown.
 // - `freeRequestsMade`: the run's requests on free models so far (each runner.request marked `freeRequest`, and each
-//   admitted here not yet recorded), which the cap's ceiling on such requests reads (runCap, free.ts).
+//   admitted here not yet recorded), which the cap's ceiling on such requests reads (runCap, free.ts); and
+//   `localRequestsMade`, its requests on local models counted the same way (`localRequest`), for the agent's own limit.
 // Admissions run one at a time across the run's sessions. The priced tools' charges and holds are not here: they are the
 // host's spentUsd and heldUsd hooks (beforeRequestOf), read beside these.
 //
@@ -46,7 +47,7 @@
 // - Nothing is admitted once its signal is aborted: a step that comes, or reaches its turn, after its client went or the
 //   run stopped is refused with the signal's reason, before any read, so no call starts or is charged after a stop.
 import { type BeforeRequest, type InFlight, sessionSpendOf } from "./runner.js";
-import { freeRequestsIn } from "./kernel/cap/free.js";
+import { freeRequestsIn, localRequestsIn } from "./kernel/cap/free.js";
 import type { SessionRecord } from "./types.js";
 
 /** The run's sessions: every key it has, and each one's records. */
@@ -109,12 +110,14 @@ export function runBooking(sessions: RunSessions, before: BeforeRequest, options
       // The run's requests on free models so far, each counted once: every one whose runner.request says so, answered, in
       // flight or cut, in any session and any process, and below, each admitted here not yet recorded.
       let freeRequestsMade = 0;
+      let localRequestsMade = 0;
       const recorded = new Set<string>();
       const answered = new Set<string>();
       for (const key of await sessions.keys()) {
         const records = await sessions.read(key);
         const spend = sessionSpendOf(records);
         freeRequestsMade += freeRequestsIn(records);
+        localRequestsMade += localRequestsIn(records);
         for (const turn of spend.turns) recorded.add(idOf(key, turn));
         for (const turn of spend.answered) answered.add(idOf(key, turn));
         // Each request's figure (sessionSpendOf's), but one this booking admitted and has not seen answered: that one is
@@ -137,6 +140,7 @@ export function runBooking(sessions: RunSessions, before: BeforeRequest, options
       const under = request.paid?.under;
       for (const [id, { at, key, ...flight }] of admitted) {
         if (flight.freeRequest && !recorded.has(id)) freeRequestsMade += 1;
+        if (flight.localRequest && !recorded.has(id)) localRequestsMade += 1;
         // One that may never settle by itself (a hold-only step, an admission whose record never landed) stays: held, and
         // never waited on. So does, for a paid call, a request of the session it runs in: it may be the one that asked
         // for the call, which settles only once the call is done.
@@ -144,10 +148,11 @@ export function runBooking(sessions: RunSessions, before: BeforeRequest, options
         if (!stays) settling.add(id);
         inFlight.push(stays ? { ...flight, stays: true } : flight);
       }
-      const verdict = await before({ ...request, spentUsd, inFlight, freeRequestsMade });
+      const verdict = await before({ ...request, spentUsd, inFlight, freeRequestsMade, localRequestsMade });
       if (!(verdict && "refuse" in verdict)) {
         const holdUsd = verdict && "holdUsd" in verdict ? verdict.holdUsd : undefined;
         const freeRequest = !!verdict && "freeRequest" in verdict && verdict.freeRequest === true;
+        const localRequest = !!verdict && "localRequest" in verdict && verdict.localRequest === true;
         const outputTokensMax = verdict && "outputTokensMax" in verdict ? verdict.outputTokensMax : request.outputTokensAsked;
         admitted.set(idOf(request.key, request.turn), {
           at: Date.now(),
@@ -160,6 +165,7 @@ export function runBooking(sessions: RunSessions, before: BeforeRequest, options
           ...(request.host === undefined ? {} : { host: request.host }),
           ...(request.route === undefined ? {} : { route: request.route }),
           ...(freeRequest ? { freeRequest: true as const } : {}),
+          ...(localRequest ? { localRequest: true as const } : {}),
           // A hold-only step, or money already owed (a browser session's reserve or release, settled when its session
           // ends, not when a call answers): never waited on.
           ...(request.paid?.hold || request.paid?.owed ? { stays: true as const } : {}),
