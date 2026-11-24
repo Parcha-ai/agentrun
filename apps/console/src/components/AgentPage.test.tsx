@@ -128,16 +128,20 @@ describe("AgentPage overview and run workspace", () => {
     expect(heading.contains(overview.querySelector("[data-agent-details]"))).toBe(false);
   });
 
-  it("keeps the agent overview beside a scoped runs table, with no embedded execution composer or transcript", async () => {
+  it("keeps the agent overview beside a scoped runs table, with the run box over it and no transcript", async () => {
     const page = await open(agentFixture("invoice-checker"));
     expect(page.host.querySelector('aside[aria-label="Agent overview"] h1')?.textContent).toBe("Invoice checker");
     expect(page.host.querySelector('[aria-label="Agent workspace"] table[aria-label="Runs"]')).toBeTruthy();
-    expect(page.fact("Harness")?.textContent).toBe("pi");
+    expect(page.fact("Harness")?.textContent, "the harness by its name, not its id").toBe("Pi");
+    expect(page.fact("Harness")?.querySelector("[data-harness]")?.getAttribute("data-harness"), "with its icon").toBe("pi");
     expect(page.fact("Thinking")?.textContent).toBe("high");
     expect(page.fact("Revision")?.textContent).toBe("rev 3 of 3");
     expect(page.fact("Model")?.textContent).toBe(`${editorCaps.harnesses.find((h) => h.id === "pi")!.default_model} (default)`);
     expect(page.fact("Status")?.textContent).toBe("Active");
-    expect(page.host.querySelector('section[aria-label="Start a run"]')).toBeNull();
+    // Run it here (GRE-4832): the run box heads the workspace, over the tabs; nothing starts until Run.
+    const box = page.host.querySelector('[aria-label="Agent workspace"] [data-run-here] section[aria-label="Start a run"]');
+    expect(box).toBeTruthy();
+    expect(box!.compareDocumentPosition(page.host.querySelector('[aria-label="Agent workspace"] table[aria-label="Runs"]')!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(page.host.querySelector('section[aria-label="Latest run"]')).toBeNull();
     expect(page.timelines).not.toHaveBeenCalled();
     expect(page.starts).not.toHaveBeenCalled();
@@ -145,16 +149,33 @@ describe("AgentPage overview and run workspace", () => {
     expect(page.asked).toEqual(["agent invoice-checker", "runs invoice-checker"]);
   });
 
-  it("offers Edit and Run through the same coding menu, with operation-specific manual playground destinations", async () => {
+  it("offers Edit through the coding menu, and runs here, with the coding agent and the playground the run box's second way", async () => {
     const page = await open(agentFixture("invoice-checker"));
     await page.click("Choose coding agent for Edit agent");
     expect(document.querySelector('a[role="menuitem"]')?.getAttribute("href")).toBe("#/playground?operation=edit-agent&agent=invoice-checker");
     await page.click("Choose coding agent for Edit agent");
-    await page.click("Choose coding agent for Run agent");
-    expect(document.querySelector('a[role="menuitem"]')?.getAttribute("href")).toBe("#/playground?agent=invoice-checker");
+    // No Run hand-off in the bar: the run box runs it, and hands it over on its second line.
+    expect(page.button("Choose coding agent for Run agent")).toBeUndefined();
+    const box = page.host.querySelector('[data-run-here]')!;
+    expect([...box.querySelectorAll("button")].some((b) => b.textContent?.trim() === "Run")).toBe(true);
+    expect([...box.querySelectorAll("button")].some((b) => /Run with your coding agent/.test(b.textContent ?? ""))).toBe(true);
+    expect(box.querySelector('a[href="#/playground?agent=invoice-checker"]')?.textContent).toBe("Open in API playground");
     expect(page.starts).not.toHaveBeenCalled();
-    await page.click("Back to agents");
+    await page.click("Back");
     expect(page.went).toEqual(["#/agents"]);
+  });
+
+  it("runs an existing agent from its own page in one action: type, Run, and its run's page opens (GRE-4832)", async () => {
+    const page = await open(agentFixture("invoice-checker"));
+    page.starts.mockResolvedValue({ status: 201, run: { run_id: "run_here_1" } });
+    const box = page.host.querySelector<HTMLElement>("[data-run-here]")!;
+    const message = box.querySelector<HTMLTextAreaElement>("textarea")!;
+    await act(async () => { Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(message, "Check invoice INV-1"); message.dispatchEvent(new Event("input", { bubbles: true })); });
+    await act(async () => { [...box.querySelectorAll("button")].find((b) => b.textContent?.trim() === "Run")!.click(); });
+    for (let i = 0; i < 50 && !page.went.length; i++) await act(async () => { await new Promise((r) => setTimeout(r, 10)); });
+    expect(page.starts).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(page.starts.mock.calls[0])).toContain("Check invoice INV-1");
+    expect(page.went).toEqual(["#/runs/run_here_1"]);
   });
 
   it("links each row to the existing full run page, retaining effort, timing and partial cost", async () => {
@@ -173,7 +194,8 @@ describe("AgentPage overview and run workspace", () => {
     const page = await open(agent);
     expect(page.fact("Tools")?.textContent).toContain(agent.definition.tools[0]);
     expect(page.host.querySelector("details pre")?.textContent).toBe(agent.definition.instructions);
-    expect(page.host.querySelector("textarea")).toBeNull();
+    // The overview reads; the one box to type in is the run box's, in the workspace.
+    expect(page.host.querySelector('aside[aria-label="Agent overview"] textarea')).toBeNull();
   });
 
   it("uses server live counts and links loaded live runs, excluding imported history", async () => {
@@ -221,12 +243,12 @@ describe("AgentPage overview and run workspace", () => {
     expect(page.fact("Status")?.textContent).toBe("Archived");
     expect(page.button("Choose coding agent for Run agent")).toBeUndefined();
     expect(page.asked[1]).toMatch(/ archived$/);
-    await page.click("Choose coding agent for Query");
+    await page.click("Choose coding agent for Ask about runs");
     expect(document.querySelector('a[role="menuitem"]')?.getAttribute("href")).toContain("archived=true");
     await page.click("Copy prompt");
     expect(document.querySelector<HTMLTextAreaElement>('[aria-label="Prompt to copy"]')?.value).toContain("Current view: all statuses; archived runs.");
     await page.click("Close prompt");
-    await page.click("Back to agents");
+    await page.click("Back");
     expect(page.went).toEqual(["#/agents?archived=true"]);
   });
 });
@@ -478,7 +500,7 @@ describe("AgentPage model, capabilities and supported tabs", () => {
     const page = await open(agentFixture("invoice-checker"), { harnesses: [{ id: "pi", available: true, default_model: null }] });
     expect(page.host.querySelector('a[href="#/settings/keys"]')?.textContent).toContain("Set up models");
     expect(page.button("Choose coding agent for Edit agent").disabled).toBe(false);
-    expect(page.button("Choose coding agent for Run agent").disabled).toBe(false);
+    expect(page.host.querySelector('[data-run-here] section[aria-label="Start a run"]')).toBeTruthy();
     expect(page.rows().length).toBeGreaterThan(0);
     expect(page.starts).not.toHaveBeenCalled();
   });
@@ -523,7 +545,7 @@ describe("AgentPage model, capabilities and supported tabs", () => {
   it("explains a disabled harness while keeping its definition and history readable", async () => {
     const base = agentFixture("invoice-checker");
     const page = await open({ ...base, definition: { ...base.definition, harness: "codex" } }, { harnesses: [{ id: "codex", available: false, reason: "codex is not installed." }] });
-    expect(page.host.querySelector('[aria-label="Harness not available"]')?.textContent).toBe("codex doesn't run on this server: codex is not installed.");
+    expect(page.host.querySelector('[aria-label="Harness not available"]')?.textContent).toBe("Codex doesn't run on this server: codex is not installed.");
     expect(page.rows().length).toBeGreaterThan(0);
   });
 
@@ -534,7 +556,7 @@ describe("AgentPage model, capabilities and supported tabs", () => {
       { ...base, definition: { ...base.definition, harness: "pi", model: undefined }, run_blockers: { message: reason, fields: [{ field: "definition.model", reason: "not_set_up_here", message: reason }] } },
       { harnesses: [{ id: "pi", available: false, default_model: null, reason, needs: ["key"] }] },
     );
-    expect(page.host.querySelector('[aria-label="Harness not available"]')?.textContent).toBe(`pi doesn't run on this server: ${reason}`);
+    expect(page.host.querySelector('[aria-label="Harness not available"]')?.textContent).toBe(`Pi doesn't run on this server: ${reason}`);
     expect(page.host.querySelector('[aria-label="Runs refused"]')).toBeNull();
   });
 
@@ -546,7 +568,7 @@ describe("AgentPage model, capabilities and supported tabs", () => {
       { ...base, definition: { ...base.definition, harness: "pi", model: "anthropic/claude-sonnet-5-5" }, run_blockers: { message: own, fields: [{ field: "definition.model", reason: "not_set_up_here", message: own }] } },
       { harnesses: [{ id: "pi", available: false, default_model: null, reason, needs: ["key"] }] },
     );
-    expect(page.host.querySelector('[aria-label="Harness not available"]')?.textContent).toBe(`pi doesn't run on this server: ${reason}`);
+    expect(page.host.querySelector('[aria-label="Harness not available"]')?.textContent).toBe(`Pi doesn't run on this server: ${reason}`);
     expect(page.host.querySelector('[aria-label="Runs refused"]')?.textContent).toContain(own);
   });
 

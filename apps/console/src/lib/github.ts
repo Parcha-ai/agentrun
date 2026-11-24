@@ -28,3 +28,15 @@ export function githubFormAction(action: string, href: (u: string) => string | u
   const url = new URL(ok);
   return url.protocol === "https:" && url.hostname === "github.com" ? ok : undefined;
 }
+
+/** A GitHub login as the server takes it (github-connection.ts's LOGIN): letters, digits and single hyphens, 39 at most. */
+const LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}$/;
+/** The organization a person typed for the App, as a login: what people paste (its github.com address, with or without
+ *  https:// and a path after it, or @name) is read as its login. `org` undefined: none typed (the App is the person's
+ *  own); `problem`: what was typed is no login, said in words, and nothing is sent. */
+export function githubOrgOf(typed: string): { org?: string; problem?: string } {
+  let s = typed.trim();
+  if (!s) return {};
+  s = s.replace(/^https?:\/\//i, "").replace(/^(www\.)?github\.com\//i, "").replace(/^@/, "").split(/[/?#]/)[0]!;
+  return LOGIN.test(s) ? { org: s } : { problem: `“${typed.trim()}” isn't a GitHub organization. Enter its login, as in github.com/<login>, or leave the field empty for your own account.` };
+}

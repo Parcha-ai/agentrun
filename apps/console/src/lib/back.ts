@@ -30,7 +30,10 @@ export function stepsBack(): number {
   return n === undefined ? -1 : at - n;
 }
 
-export function goBack(fallback: string) {
+/** Every page's back arrow (the run's, the agent's, its editor's, a connected agent's) goes through here, so back is the
+ *  same everywhere: where the person came from, else the page's parent (`fallback`), opened with `go` (a page's own, so
+ *  a page that guards unsaved changes asks first). */
+export function goBack(fallback: string, go: (hash: string) => void = (hash) => { location.hash = hash; }) {
   if (at > 0) history.back();
-  else location.hash = fallback;
+  else go(fallback);
 }

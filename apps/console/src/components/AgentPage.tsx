@@ -3,8 +3,8 @@ import { cliLearningOf, cliLearningLabel } from "@/lib/cliLearning";
 import { queryPlaygroundHref } from "@/lib/playgroundRoutes";
 import { useScrollQuiet } from "@/lib/useScrollQuiet";
 import { workflowGraph } from "@dsl/graph";
-import { ArrowLeft, ArrowUpRight, Bot, ChevronRight, RefreshCw, Workflow } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { ArrowLeft, ArrowUpRight, ChevronRight, RefreshCw, Workflow } from "lucide-react";
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { AgentVersions } from "@/components/AgentVersions";
 import { AnalyticsTab, FIRST_RANGE } from "@/components/AgentAnalytics";
 import type { UploadLimits } from "@/components/FilePicker";
@@ -14,20 +14,23 @@ import { editAgentPrompt, queryRunsPrompt, runAgentPrompt } from "@/lib/codingAg
 import { AgentSkeleton, ListSkeleton } from "@/components/Skeleton";
 import { StatusBadge } from "@/components/StatusBadge";
 import { NativeAgent, NativeMutationProvider, useNativeReadiness } from "@/components/NativeAgent";
-import { nativeStateLabel } from "@/lib/native";
+import { nativeRuntimeLabel, nativeStateLabel } from "@/lib/native";
 import { backendSdkLabel, backendSdkOf } from "@/lib/backendSdk";
+import { goBack } from "@/lib/back";
+import { agentHarness, HarnessIcon, HarnessName } from "@/components/HarnessIcon";
 import { SignIns } from "@/components/SignIns";
 import { LearningTab } from "@/components/Learning";
 import { LearningChips, WaitingCount } from "@/components/LearningChips";
 import { Button } from "@/components/ui/button";
 import { Banner, Chip, Tabs, tabPanelProps } from "@/components/ui";
 import { GraphLegend, WorkflowGraph } from "@/components/WorkflowGraph";
-import { type Agent, runsWhere } from "@/lib/agentForm";
+import { type Agent, harnessLabel, runsWhere } from "@/lib/agentForm";
 import { type Client, ClientError } from "@/lib/client";
 import { cost, runEnded, soFar, when, runTitle } from "@/lib/format";
 import { waitingOf } from "@/lib/learning";
 import { appendRuns } from "@/lib/idempotency";
-import { harnessDefault, type HarnessInfo, modelLabel, NO_MODEL_YET } from "@/lib/models";
+import { freeRequestsNote, harnessDefault, type HarnessInfo, modelLabel, NO_MODEL_YET } from "@/lib/models";
+import { RunBar } from "@/components/RunBar";
 import { placeLabel, type Places } from "@/lib/place";
 import { providerLabel, resolution } from "@/lib/toolSettings";
 import { type Problem, problem } from "@/lib/problem";
@@ -68,7 +71,7 @@ export const agentHash = (id: string, view?: string) => `#/agents/${encodeURICom
 /** One agent's page (`#/agents/{id}`): its current revision's harness, model and thinking, a compact overview and a tab per thing it has. `efforts` are the server's (capabilities `features.efforts`).
  *  `learning`: the server's learning switch, undefined until its capabilities are read and null when it has none;
  *  `places`: the server's places (capabilities `places`), for where a revision that names no place runs. */
-export function AgentPage({ v2, agentId, routePrefix, harnesses, go, tab, learning, places }: { v2: Client; agentId: string; routePrefix?: string | null; harnesses?: HarnessInfo[]; efforts?: string[]; go: (hash: string) => void; tab?: string; limits?: UploadLimits; learning?: "on" | "off" | null; places?: Places | null }) {
+export function AgentPage({ v2, agentId, routePrefix, harnesses, efforts = [], go, tab, limits, learning, places }: { v2: Client; agentId: string; routePrefix?: string | null; harnesses?: HarnessInfo[]; efforts?: string[]; go: (hash: string) => void; tab?: string; limits?: UploadLimits & { free_model_requests?: number }; learning?: "on" | "off" | null; places?: Places | null }) {
   const [agent, setAgent] = useState<Agent | null>(null);
   // The agent's read failed: a 404 is an agent this server has no record of; anything else is said in words.
   const [error, setError] = useState<{ cause: unknown } | null>(null);
@@ -118,12 +121,13 @@ export function AgentPage({ v2, agentId, routePrefix, harnesses, go, tab, learni
     ? <NotHere what="agent" id={agentId} list={{ href: "#/agents", label: "Open the agents list" }} />
     : <ProblemCard problem={problem(error.cause, "the agent")} onRetry={() => setTries((n) => n + 1)} />;
   if (!agent) return <AgentSkeleton />;
-  return <AgentDetail key={agent.agent_id} agent={agent} onAgent={onAgent} onSignInsAgent={setAgent} reread={reread} onChanged={onChanged} poll={poll} afterForget={afterForget} stale={stale} v2={v2} go={go} stats={stats} analytics={analytics} places={places} routePrefix={routePrefix} harnesses={harnesses} tab={tab} learning={learning} />;
+  return <AgentDetail key={agent.agent_id} agent={agent} onAgent={onAgent} onSignInsAgent={setAgent} reread={reread} onChanged={onChanged} poll={poll} afterForget={afterForget} stale={stale} v2={v2} go={go} stats={stats} analytics={analytics} places={places} routePrefix={routePrefix} harnesses={harnesses} tab={tab} learning={learning} efforts={efforts} limits={limits} />;
 }
 
-function AgentDetail({ agent, onAgent, onSignInsAgent, reread, onChanged, poll, afterForget, stale, v2, go, stats, analytics, routePrefix, harnesses, tab, learning, places }: {
+function AgentDetail({ agent, onAgent, onSignInsAgent, reread, onChanged, poll, afterForget, stale, v2, go, stats, analytics, routePrefix, harnesses, tab, learning, places, efforts, limits }: {
   agent: Agent; onAgent: (agent: Agent) => void; onSignInsAgent: (agent: Agent) => void; reread: (quiet?: boolean, raise?: boolean) => Promise<boolean>; onChanged: () => void; poll: () => void; afterForget: () => Promise<boolean>; stale: boolean; v2: Client; go: (hash: string) => void;
   stats: Stats | null | undefined; analytics: boolean | undefined; routePrefix?: string | null; harnesses?: HarnessInfo[]; tab?: string; learning?: "on" | "off" | null; places?: Places | null;
+  efforts: string[]; limits?: UploadLimits & { free_model_requests?: number };
 }) {
   const history = useRunHistory(agent, v2, reread, () => reread(false, false));
   const [factsOpen, setFactsOpen] = useState(false);
@@ -154,7 +158,6 @@ function AgentDetail({ agent, onAgent, onSignInsAgent, reread, onChanged, poll, 
   const cli = cliLearningOf(d);
   const { native, refresh: refreshNative } = useNativeReadiness(agent, v2);
   const workflow = agent.kind === "workflow";
-  const Icon = workflow ? Workflow : Bot;
   // A workflow revision has no harness, model or thinking of its own (the server refuses them beside a workflow).
   // The model as a person reads it (the gateway's routing prefix off, the full id in a title): its own, else the default
   // the server names for this harness (capabilities' harnesses[].default_model), else none yet.
@@ -164,7 +167,9 @@ function AgentDetail({ agent, onAgent, onSignInsAgent, reread, onChanged, poll, 
     : { text: NO_MODEL_YET };
   // A harness the server can't run: why, where its Run would fail (capabilities' harnesses[].reason).
   const off = workflow || native || sdk || cli ? undefined : harnesses?.find((h) => h.id === (d.harness ?? "pi") && h.available === false);
-  const offText = off ? `${off.id} doesn't run on this server${off.reason ? `: ${off.reason}` : "."}` : undefined;
+  const offText = off ? `${harnessLabel(off.id)} doesn't run on this server${off.reason ? `: ${off.reason}` : "."}` : undefined;
+  // Run from this page: an agent this server runs (not a native, SDK or CLI one, which run where they live), not archived.
+  const runHere = !agent.archived_at && !native && !sdk && !cli;
   // Where it runs: its own place, else the server's default place for it, marked as such (#1790: resolved at each run).
   const where = runsWhere(agent, places);
   const runsLabel = `${placeLabel(where?.place)}${where?.byDefault ? " (server default)" : ""}`;
@@ -179,8 +184,8 @@ function AgentDetail({ agent, onAgent, onSignInsAgent, reread, onChanged, poll, 
   const offForKey = off?.needs?.length ? off.reason : undefined;
   const blockers = !refused ? [] : !refused.fields.length ? [refused.message]
     : refused.fields.filter((b) => !(offText && b.field === "definition.harness") && !(needsModel && b.field === "definition.model") && !(offForKey !== undefined && b.field === "definition.model" && b.message === offForKey)).map((b) => b.message);
-  const facts: [string, string, string?][] = [
-    ...(cli ? [["Runtime", cliLearningLabel(cli.runtime)], ["Model", "Reported per run"], ["Execution", "Your CLI"], ["Project", cli.project]] as [string, string, string?][] : sdk ? [["Runtime", backendSdkLabel(sdk)], ["Model", "Reported per run"], ["Execution", "Your backend"]] as [string, string, string?][] : native ? [["Runtime", native.runtime], ["Model", native.model ?? "Native default"], ["Selector", native.selector.kind === "project" ? "Project default" : native.selector.name ?? native.selector.kind], ["Machine", native.machine_id]] as [string, string, string?][] : workflow ? [] : [["Harness", d.harness ?? "pi"], ["Model", model.text, model.title], ["Thinking", d.thinking ?? "default"], ["Runs", runsLabel]] as [string, string, string?][]),
+  const facts: [string, ReactNode, string?][] = [
+    ...(cli ? [["Runtime", <HarnessName harness={cli.runtime} name={cliLearningLabel(cli.runtime)} />], ["Model", "Reported per run"], ["Execution", "Your CLI"], ["Project", cli.project]] as [string, ReactNode, string?][] : sdk ? [["Runtime", <HarnessName harness={sdk.runtime} name={backendSdkLabel(sdk)} />], ["Model", "Reported per run"], ["Execution", "Your backend"]] as [string, ReactNode, string?][] : native ? [["Runtime", <HarnessName harness={native.runtime} name={nativeRuntimeLabel(native.runtime)} />], ["Model", native.model ?? "Native default"], ["Selector", native.selector.kind === "project" ? "Project default" : native.selector.name ?? native.selector.kind], ["Machine", native.machine_id]] as [string, ReactNode, string?][] : workflow ? [] : [["Harness", <HarnessName harness={d.harness ?? "pi"} />], ["Model", model.text, model.title], ["Thinking", d.thinking ?? "default"], ["Runs", runsLabel]] as [string, ReactNode, string?][]),
     ["Revision", `rev ${d.version} of ${agent.revisions}`],
   ];
   // Until the server's capabilities are read, the Learning tab shows only on its own address, which opens it at once (a
@@ -191,18 +196,20 @@ function AgentDetail({ agent, onAgent, onSignInsAgent, reread, onChanged, poll, 
   const waiting = tab === "analytics" && analytics === undefined;
   const live = history.runs?.filter(isLiveRun) ?? [];
   const liveCount = agent.runs?.live ?? (history.runs ? `${live.length}${history.cursor ? "+" : ""}` : "—");
-  const overviewFacts: [string, string, string?][] = [["Status", agent.archived_at ? "Archived" : native ? nativeStateLabel(native) : "Active"], ["Live jobs", String(liveCount)], ...facts];
+  const overviewFacts: [string, ReactNode, string?][] = [["Status", agent.archived_at ? "Archived" : native ? nativeStateLabel(native) : "Active"], ["Live jobs", String(liveCount)], ...facts];
   return (
     <NativeMutationProvider native={native}><section className="flex h-full min-h-0 flex-col" aria-label="Agent detail">
       <header className={cn(pageToolbarClass, "flex-wrap gap-2 px-5 lg:flex-nowrap")} aria-label="Agent toolbar">
-        <Button size="icon" variant="ghost" aria-label="Back to agents" onClick={() => go(agent.archived_at ? "#/agents?archived=true" : "#/agents")}><ArrowLeft aria-hidden /></Button>
-        <Icon className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+        <Button size="icon" variant="ghost" aria-label="Back" title="Back" onClick={() => goBack(agent.archived_at ? "#/agents?archived=true" : "#/agents", go)}><ArrowLeft aria-hidden /></Button>
+        {/* The agent's runtime, as its card on the list shows it. */}
+        <span data-agent-icon className="flex shrink-0 items-center"><HarnessIcon harness={agentHarness(agent)} /></span>
         <strong className="min-w-0 truncate text-body font-semibold">{d.name}</strong>
         <div className="ml-auto flex max-w-full flex-wrap items-center justify-end gap-2">
           <Button size="icon" aria-label="Refresh agent" onClick={() => { history.refresh(); refreshNative(); }} disabled={history.reading}><RefreshCw className={cn(history.reading && "animate-spin")} aria-hidden /></Button>
           {!native && !sdk && !cli && <Button size="sm" onClick={() => go(agentHash(agent.agent_id, "edit"))}>Detailed editor</Button>}
           <CodingAgentAction label="Edit agent" prompt={editAgentPrompt(location.origin, agent.agent_id, !!native, sdk, cli?.runtime)} playgroundHref={native || sdk || cli ? undefined : `#/playground?operation=edit-agent&agent=${encodeURIComponent(agent.agent_id)}`} />
-          {!agent.archived_at && <CodingAgentAction variant="primary" label="Run agent" disabled={!!native && (!native.connected || native.state !== "ready" || !native.capabilities.launch)} prompt={runAgentPrompt(location.origin, agent.agent_id, sdk, cli?.runtime)} playgroundHref={sdk || cli ? undefined : `#/playground?agent=${encodeURIComponent(agent.agent_id)}`} />}
+          {/* An agent this server runs is run from the run box under this bar; one it doesn't (native, SDK, CLI) by hand-off. */}
+          {!agent.archived_at && !runHere && <CodingAgentAction variant="primary" label="Run agent" disabled={!!native && (!native.connected || native.state !== "ready" || !native.capabilities.launch)} prompt={runAgentPrompt(location.origin, agent.agent_id, sdk, cli?.runtime)} playgroundHref={sdk || cli ? undefined : `#/playground?agent=${encodeURIComponent(agent.agent_id)}`} />}
         </div>
       </header>
       {/* Each scrolling box reaches 16px into the space beside it: 6px of scrollbar (.scroll-quiet) and 10px between the bar
@@ -268,6 +275,10 @@ function AgentDetail({ agent, onAgent, onSignInsAgent, reread, onChanged, poll, 
           </div>
         </aside>
         <section ref={workspaceScroll} className="scroll-quiet min-w-0 lg:-ml-1 lg:-mr-4 lg:min-h-0 lg:overflow-y-auto lg:overflow-x-hidden lg:pb-6 lg:pl-1 lg:pr-2.5" aria-label="Agent workspace">
+          {/* Run it here: type, Run, and the run's page opens. Handing it to a coding agent and the API playground are the
+              run box's second line. */}
+          {runHere && <div className="mb-6" data-run-here><RunBar className="border-b-0 px-0 py-0 max-sm:py-0 md:px-0" agent={agent} efforts={efforts} v2={v2} go={go} blocked={offText} limits={limits}
+            freeNote={workflow ? null : freeRequestsNote(d.model ?? fallback, d.harness ?? "pi", harnesses, limits?.free_model_requests)} playgroundHref={`#/playground?agent=${encodeURIComponent(agent.agent_id)}`} /></div>}
           <Tabs id="agent-views" label="Agent views" value={at.id} onChange={(value) => go(agentHash(agent.agent_id, value))} tabs={tabs.map((t) => ({ id: t.id, label: <>{t.label}{t.id === "learning" && <WaitingCount n={itemsWaiting} className="ml-1.5" />}</> }))} className="mb-5 overflow-x-auto px-0 md:px-0" />
           <div {...tabPanelProps("agent-views", at.id)} aria-label={waiting ? undefined : at.label}>
             {waiting ? <ListSkeleton label="Loading the tab" rows={4} /> : <at.Body agent={agent} v2={v2} go={go} stats={stats} history={history} learning={learning} onAgent={onAgent} onChanged={onChanged} places={places} />}
@@ -359,7 +370,7 @@ function RunsTab({ agent, history }: TabProps) {
     <div className="flex flex-wrap items-center gap-3 border-b p-3">
       <ListFilter value={query} onChange={setQuery} label="Search this agent's runs" placeholder="Search runs…" shown={filtered.length} total={runs.length} className="max-w-md flex-1" />
       <span className="text-small text-muted-foreground">{runs.length}{cursor ? "+" : ""} {runs.length === 1 && !cursor ? "run" : "runs"}</span>
-      <div className="ml-auto"><CodingAgentAction label="Query" prompt={`${queryRunsPrompt(location.origin, agent.agent_id)}\nCurrent view: all statuses; ${agent.archived_at ? "archived runs" : "non-archived runs"}.`} playgroundHref={queryPlaygroundHref(agent.agent_id, { archived: !!agent.archived_at })} /></div>
+      <div className="ml-auto"><CodingAgentAction label="Ask about runs" prompt={`${queryRunsPrompt(location.origin, agent.agent_id)}\nCurrent view: all statuses; ${agent.archived_at ? "archived runs" : "non-archived runs"}.`} playgroundHref={queryPlaygroundHref(agent.agent_id, { archived: !!agent.archived_at })} /></div>
     </div>
     {runs.length ? <div className="overflow-x-auto"><table className="w-full text-left text-small" aria-label="Runs">
       <thead className="border-b bg-card text-muted-foreground"><tr>{["Status", "Run", "Started", "Duration", "Cost"].map((label) => <th key={label} className="whitespace-nowrap px-4 py-3 font-semibold">{label}</th>)}</tr></thead>

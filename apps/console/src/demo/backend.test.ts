@@ -14,6 +14,7 @@ function demo(now = { ms: OPENED }) {
     const path = new URL(String(input), "http://server.invalid").pathname;
     asked.push(`${init?.method ?? "GET"} ${path}`);
     if (path === "/v2/capabilities") return Response.json({ harnesses: [{ id: "pi", available: false, reason: "pi needs a key.", needs: ["key"], default_model: null }], models: { ready: false, needs: "key" }, tools: [{ name: "browser", available: false, reason: "it needs a key" }], secrets: [{ name: "model:OPENAI_API_KEY", set: true }], switches: { X: { on: true } }, features: { triggers: { routes: false } } });
+    if (path === "/v2/templates/marketplace") return Response.json({ url: "https://marketplace.example", state: "read", read_at: "2026-11-24T00:00:00.000Z", templates: [{ name: "kyb", title: "KYB", tags: [], needs: [], page_url: "https://marketplace.example/templates/kyb/", here: "kyb" }, { name: "ours", title: "Ours", tags: [], needs: [], page_url: "https://marketplace.example/templates/ours/", here: "ours" }, { name: "brief", title: "Brief", tags: [], needs: [], page_url: "https://marketplace.example/templates/brief/" }] });
     if (path === "/v2/templates") return Response.json({ templates: [{ id: "kyb", bundled: true, model: { tier: "balanced", choices: [{ id: "codex", label: "Codex", model: "openai/gpt-6.1-sol", harness: "codex", warning: null, note: null, secrets: [] }] } }, { id: "ours", bundled: false }] });
     return Response.json({ signed_in: true });
   });
@@ -53,6 +54,11 @@ describe("demo mode's backend", () => {
 
   it("lists only the templates the server ships with", async () => {
     expect((await demo().v2.listTemplates()).templates.map((t) => t.id)).toEqual(["kyb"]);
+  });
+
+  it("lists the marketplace's templates as the server read them, each marked here only for a template it ships with", async () => {
+    const list = await demo().v2.listMarketplaceTemplates();
+    expect(list.templates.map((t) => [t.name, t.here ?? null])).toEqual([["kyb", "kyb"], ["ours", null], ["brief", null]]);
   });
 
   it("refuses a write to the server's own settings, which demo mode hides, and sends none of it to the server", async () => {

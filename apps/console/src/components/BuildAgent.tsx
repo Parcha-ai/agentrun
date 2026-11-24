@@ -1,27 +1,26 @@
 import { fieldBoxClass, Input, Textarea } from "@/components/ui/field";
-import { ArrowRight, Code, FileText, LayoutTemplate, Radar, Search, ShieldCheck } from "lucide-react";
+import { ArrowUpRight, Search } from "lucide-react";
 import { useEffect, useId, useState } from "react";
 import { CodingAgentAction } from "./CodingAgentAction";
+import { TemplateHarnessIcon } from "./HarnessIcon";
 import { ProblemCard } from "./Problem";
-import { TemplateProvenance } from "./Templates";
+import { installHash, TemplateProvenance } from "./Templates";
+import { buttonVariants } from "./ui/button";
 import { agentDraftHref, briefAgentDraft } from "@/lib/agentDraft";
 import { applyTemplatePrompt, buildAgentPrompt } from "@/lib/codingAgentPrompts";
 import type { Client } from "@/lib/client";
 import { type Problem, problem } from "@/lib/problem";
-import { templatePlaygroundHref, titleOf } from "@/lib/templatePackages";
+import { cardTitleOf, inCatalog, templatePlaygroundHref, titleOf } from "@/lib/templatePackages";
 import { cn } from "@/lib/utils";
 import type { TemplateView } from "@/lib/v2";
 import { matchesFilter } from "@/lib/filter";
+import { marketplaceLine, marketplaceMatches, marketplaceNote, notHere, useMarketplace } from "@/lib/marketplace";
 
-const ICONS: Record<string, typeof FileText> = {
-  "code-review": Code, "inbound-lead": Search, kyb: ShieldCheck,
-  "market-monitor": Radar, "release-notes": FileText,
-};
-
-/** Build in a coding agent, or apply the same complete template in the API playground. Choosing a template never writes. */
-export function BuildAgent({ origin, v2 }: { origin: string; v2: Pick<Client, "listTemplates"> }) {
+/** Build in a coding agent, or apply the same complete template in the API playground. Choosing a template never writes.
+ *  The composer and the templates share one column, and every template card shows its action: nothing to open first.
+ *  This server's templates come first, then the marketplace's others (GRE-4834), each installed from the install page. */
+export function BuildAgent({ origin, v2 }: { origin: string; v2: Pick<Client, "listTemplates" | "listMarketplaceTemplates"> }) {
   const [brief, setBrief] = useState("");
-  const [selected, setSelected] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [packages, setPackages] = useState<TemplateView[] | null>(null);
   const [error, setError] = useState<Problem | null>(null);
@@ -38,13 +37,20 @@ export function BuildAgent({ origin, v2 }: { origin: string; v2: Pick<Client, "l
     );
     return () => { live = false; };
   }, [v2, tries]);
-  const shown = (packages ?? []).filter((template) => matchesFilter(search, titleOf(template), template.description, template.name, template.id, template.publisher));
-  return <section className="mx-auto w-full max-w-page-wide px-5 pb-20 pt-10 md:px-12 md:pt-16" aria-labelledby={`${id}-heading`}>
+  const listed = packages?.filter(inCatalog) ?? null;
+  const shown = (listed ?? []).filter((template) => matchesFilter(search, titleOf(template), template.description, template.name, template.id, template.publisher));
+  const market = useMarketplace(v2);
+  // A card the marketplace lists reads its one line there, as the marketplace's card does; else its description.
+  const lineOf = (template: TemplateView) => market.list?.templates.find((m) => m.here === template.id)?.summary ?? template.description;
+  const elsewhere = notHere(market.list);
+  const others = elsewhere.filter((template) => marketplaceMatches(search, template));
+  const note = marketplaceNote(market.list);
+  return <section className="mx-auto w-full max-w-page px-5 pb-20 pt-10 md:px-12 md:pt-16" aria-labelledby={`${id}-heading`}>
     <header className="text-center">
       <h1 id={`${id}-heading`} className="text-2xl font-semibold leading-tight tracking-tight md:text-display">What do you want to build?</h1>
       <p className="mt-3 text-base text-muted-foreground">Describe your agent, or pick a template to start from.</p>
     </header>
-    <div className="mx-auto mt-8 max-w-page">
+    <div className="mt-8">
       <div className={cn(fieldBoxClass, "!rounded-composer overflow-hidden bg-card transition-colors")} data-agent-composer>
         <label htmlFor={`${id}-brief`} className="sr-only">Describe your agent</label>
         <Textarea bare id={`${id}-brief`} value={brief} onChange={(event) => setBrief(event.target.value)} rows={3}
@@ -65,7 +71,7 @@ export function BuildAgent({ origin, v2 }: { origin: string; v2: Pick<Client, "l
       <div className="mb-5 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-baseline gap-3">
           <h2 id={`${id}-templates`} className="text-lead font-semibold">Start from a template</h2>
-          <span role="status" className="text-small text-muted-foreground">{packages === null && !error ? "Loading templates…" : packages ? `${shown.length} of ${packages.length}` : ""}</span>
+          <span role="status" className="text-small text-muted-foreground">{packages === null && !error ? "Loading templates…" : listed ? `${shown.length + others.length} of ${listed.length + elsewhere.length}` : ""}</span>
         </div>
         <div className={cn(fieldBoxClass, "flex w-full items-center gap-2 px-3 sm:w-72")}>
           <Search className="size-4 shrink-0 text-muted-foreground" aria-hidden />
@@ -73,29 +79,36 @@ export function BuildAgent({ origin, v2 }: { origin: string; v2: Pick<Client, "l
         </div>
       </div>
       {error && <ProblemCard problem={error} onRetry={() => setTries((value) => value + 1)} className="mb-5" />}
-      {packages?.length === 0 && <p className="border border-border px-5 py-10 text-center text-lead text-muted-foreground">This server has no template packages yet. Describe the agent you want to build above.</p>}
-      {packages && packages.length > 0 && !shown.length && <p role="status" className="border border-border px-5 py-10 text-center text-muted-foreground">No templates match “{search}”.</p>}
+      {listed?.length === 0 && <p className="border border-border px-5 py-10 text-center text-lead text-muted-foreground">This server has no template packages yet. Describe the agent you want to build above.</p>}
+      {listed && listed.length + elsewhere.length > 0 && !shown.length && !others.length && <p role="status" className="border border-border px-5 py-10 text-center text-muted-foreground">No templates match “{search}”.</p>}
+      {note && <p role="status" className="mb-5 text-small text-muted-foreground">{note}</p>}
       <div className="grid grid-cols-1 gap-5 md:grid-cols-2 xl:grid-cols-3">
         {shown.map((template) => {
-          const expanded = selected === template.id;
-          const Icon = ICONS[template.name] ?? LayoutTemplate;
-          const actionsId = `${id}-${encodeURIComponent(template.id)}-actions`;
           const detail = [template.skills.length ? `${template.skills.length} skill${template.skills.length === 1 ? "" : "s"}` : "Ready to configure", template.triggers.length ? `${template.triggers.length} trigger${template.triggers.length === 1 ? "" : "s"}` : ""].filter(Boolean).join(" · ");
-          return <article key={template.id} className={`flex flex-col overflow-hidden border transition-colors ${expanded ? "border-border-strong bg-card" : "border-border hover:border-border-strong"}`}>
-            <button type="button" aria-expanded={expanded} aria-controls={actionsId} aria-label={`Start with ${titleOf(template)}${template.source ? ` from ${template.id}` : ""}`}
-              className="flex min-h-48 flex-1 flex-col p-5 text-left outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
-              onClick={() => setSelected(expanded ? null : template.id)}>
-              <h3 className="text-lg font-semibold leading-snug">{titleOf(template)}</h3>
+          return <article key={template.id} aria-label={`${cardTitleOf(template)}${template.source ? ` from ${template.id}` : ""}`} className="flex flex-col border bg-card">
+            <div className="flex flex-1 flex-col p-5">
+              <div className="flex items-start gap-2"><span data-template-icon className="flex h-7 shrink-0 items-center"><TemplateHarnessIcon harness={template.harness ?? []} /></span><h3 className="text-lg font-semibold leading-snug">{cardTitleOf(template)}</h3></div>
               <TemplateProvenance t={template} />
-              <p className="mt-3 line-clamp-3 text-lead leading-relaxed text-muted-foreground">{template.description}</p>
-              <span className="mt-auto flex w-full items-center gap-2 pt-5 text-small text-muted-foreground"><Icon className="size-4" aria-hidden />{detail}<ArrowRight className="ml-auto size-3.5" aria-hidden /></span>
-            </button>
-            {expanded && <div id={actionsId} className="flex flex-wrap items-center justify-end gap-2 border-t px-4 py-4">
-              <span className="mr-auto font-mono text-small text-muted-foreground">v{template.version}</span>
-              <CodingAgentAction variant="primary" label="Use this template" prompt={applyTemplatePrompt(origin, template, brief)} playgroundHref={templatePlaygroundHref(template)} />
-            </div>}
+              <p className="mt-3 line-clamp-3 text-lead leading-relaxed text-muted-foreground">{lineOf(template)}</p>
+              <span className="mt-auto pt-5 text-small text-muted-foreground">{detail}</span>
+            </div>
+            <div className="flex justify-end border-t px-4 py-3">
+              <CodingAgentAction label="Use this template" prompt={applyTemplatePrompt(origin, template, brief)} playgroundHref={templatePlaygroundHref(template)} />
+            </div>
           </article>;
         })}
+        {packages && others.map((template) => <article key={`marketplace:${template.name}`} aria-label={`${template.title} from the marketplace`} className="flex flex-col border bg-card" data-marketplace-template={template.name}>
+          <div className="flex flex-1 flex-col p-5">
+            <div className="flex items-start gap-2"><span data-template-icon className="flex h-7 shrink-0 items-center"><TemplateHarnessIcon harness={template.harness} /></span><h3 className="text-lg font-semibold leading-snug">{template.title}</h3></div>
+            <p className="mt-3 line-clamp-3 text-lead leading-relaxed text-muted-foreground">{marketplaceLine(template)}</p>
+            <span className="mt-auto pt-5 text-small text-muted-foreground">{["From the marketplace", template.category].filter(Boolean).join(" · ")}</span>
+          </div>
+          <div className="flex justify-end border-t px-4 py-3">
+            {/* With its source, Install reads the package here first (the install page); with none, its page installs it. */}
+            {template.source ? <a href={installHash(template.source)} className={buttonVariants({ size: "sm" })}>Install</a>
+              : <a href={template.page_url} target="_blank" rel="noreferrer" className={buttonVariants({ size: "sm" })}>Install from the marketplace<ArrowUpRight aria-hidden /></a>}
+          </div>
+        </article>)}
       </div>
     </section>
     <p className="mt-10 text-center text-lead text-muted-foreground">Or <a className="text-primary-text underline underline-offset-4 hover:text-primary-text/80" href={agentDraftHref(briefAgentDraft(""))}>start from a blank agent</a>.</p>

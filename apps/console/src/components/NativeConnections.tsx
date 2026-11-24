@@ -8,7 +8,7 @@ import { type Client, problemOf } from "@/lib/client";
 import { type NativeTarget, nativeRuntimeLabel, nativeSelectorLabel, nativeStateLabel } from "@/lib/native";
 
 export function ConnectExistingAgents({ variant }: Pick<CodingAgentActionProps, "variant">) {
-  return <CodingAgentAction variant={variant} label="Connect agent" prompt={connectExistingAgentsPrompt(location.origin)} playgroundHref="#/agents/connect" playgroundLabel="Connection setup" />;
+  return <CodingAgentAction variant={variant} label="Connect your agents" prompt={connectExistingAgentsPrompt(location.origin)} playgroundHref="#/agents/connect" playgroundLabel="Connection setup" />;
 }
 
 /** Reads only the server host's explicitly selected project. It never presents browser-local discovery as possible. */
@@ -47,7 +47,7 @@ export function NativeConnections({ v2, go, initialSource = "server" }: { v2: Cl
       <h2 className="text-lg font-semibold">Observe your existing agent</h2>
       <p className="max-w-prose text-body text-muted-foreground">Connect Claude Code or Codex running locally, in Docker, or on another server. Your application continues to start and control its jobs; AgentRun receives session activity, model and token usage.</p>
       <p className="max-w-prose text-small text-muted-foreground">Observation reports activity without sending conversations or enabling learning.</p>
-      <CodingAgentAction label="Connect agent" prompt={`${connectExistingAgentsPrompt(location.origin)}\n\nI selected observation of an existing application. Preserve its current job trigger and SDK configuration; do not import or launch a replacement agent.`} />
+      <CodingAgentAction label="Connect your agents" prompt={`${connectExistingAgentsPrompt(location.origin)}\n\nI selected observation of an existing application. Preserve its current job trigger and SDK configuration; do not import or launch a replacement agent.`} />
     </section><section className="space-y-4 border bg-card p-4" aria-label="Learn from existing CLI sessions">
       <h2 className="text-lg font-semibold">Learn as you code</h2>
       <p className="max-w-prose text-body text-muted-foreground">Keep starting Codex CLI and Claude Code normally. Capture prompt windows for a selected project and deliver owner corrections on later prompts.</p>

@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { BuildAgent } from "./BuildAgent";
 import { CODING_AGENT_PREFERENCE } from "@/lib/codingAgentLinks";
 import { parseAgentDraft } from "@/lib/agentDraft";
-import type { TemplateView } from "@/lib/v2";
+import type { MarketplaceList, TemplateView } from "@/lib/v2";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 let root: Root | undefined;
@@ -20,14 +20,18 @@ const packageTemplate = (name: string): TemplateView => ({
 });
 const catalog = ["Code review", "Inbound lead", "KYB", "Market monitor", "Release notes", "My custom agent", "Another custom agent"].map(packageTemplate);
 const listTemplates = vi.fn(async () => ({ templates: catalog }));
+/** The marketplace's list: off (a server that reads none) unless a case gives one. */
+const OFF: MarketplaceList = { url: null, state: "off", read_at: null, templates: [] };
+const listMarketplaceTemplates = vi.fn(async (): Promise<MarketplaceList> => OFF);
 const mount = async () => {
   localStorage.setItem(CODING_AGENT_PREFERENCE, "codex-cli");
   Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: copied } });
   host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
-  await act(async () => root!.render(createElement(BuildAgent, { origin: "https://console.example.test", v2: { listTemplates } })));
+  await act(async () => root!.render(createElement(BuildAgent, { origin: "https://console.example.test", v2: { listTemplates, listMarketplaceTemplates } })));
 };
 const button = (text: string) => [...host.querySelectorAll("button")].find((b) => b.textContent?.trim() === text)!;
+const cardButton = (card: Element, text: string) => [...card.querySelectorAll("button")].find((b) => b.textContent?.trim() === text)!;
 const typeBrief = (value: string) => act(() => {
   const input = host.querySelector<HTMLTextAreaElement>('textarea[placeholder]')!;
   Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(input, value);
@@ -38,7 +42,7 @@ const playgroundDraft = async (label: string) => {
   const href = document.querySelector<HTMLAnchorElement>('[role="menuitem"][href^="#/playground"]')!.getAttribute("href")!;
   return parseAgentDraft(new URLSearchParams(href.split("?")[1]).get("draft"));
 };
-afterEach(() => { act(() => root?.unmount()); root = undefined; document.body.innerHTML = ""; localStorage.clear(); copied.mockClear(); listTemplates.mockReset().mockResolvedValue({ templates: catalog }); vi.unstubAllGlobals(); });
+afterEach(() => { act(() => root?.unmount()); root = undefined; document.body.innerHTML = ""; localStorage.clear(); copied.mockClear(); listTemplates.mockReset().mockResolvedValue({ templates: catalog }); listMarketplaceTemplates.mockReset().mockResolvedValue(OFF); vi.unstubAllGlobals(); });
 
 describe("Build agent page", () => {
   it("keeps same-name bundled and imported packages distinct in selection, prompt and playground, with current provenance", async () => {
@@ -49,20 +53,18 @@ describe("Build agent page", () => {
     await mount();
     const cards = host.querySelectorAll("article");
     expect(cards).toHaveLength(2);
-    await act(async () => cards[1].querySelector("button")!.click());
-    expect(host.querySelectorAll('[aria-expanded="true"]')).toHaveLength(1);
-    expect(cards[0].querySelector('[aria-expanded="true"]')).toBeNull();
+    expect(cards[1].getAttribute("aria-label")).toBe(`same-name from ${imported.id}`);
     expect(cards[1].querySelector("[data-provenance]")?.textContent).toContain(imported.sha!.slice(0, 12));
-    await act(async () => button("Use this template").click());
+    await act(async () => cardButton(cards[1], "Use this template").click());
     expect(copied.mock.calls[0][0]).toContain(JSON.stringify(imported.id));
     expect(copied.mock.calls[0][0]).toContain(imported.sha!);
     expect(copied.mock.calls[0][0]).toContain("/templates/" + encodeURIComponent(imported.id) + "/apply");
-    await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Choose coding agent for Use this template"]')!.click());
+    await act(async () => cards[1].querySelector<HTMLButtonElement>('[aria-label="Choose coding agent for Use this template"]')!.click());
     const href = document.querySelector<HTMLAnchorElement>('[role="menuitem"][href^="#/playground"]')!.getAttribute("href")!;
     expect(new URLSearchParams(href.split("?")[1]).get("template")).toBe(imported.id);
     const changed = { ...imported, sha: "abcdef0123456789abcdef0123456789abcdef01" };
     listTemplates.mockResolvedValue({ templates: [bundled, changed] });
-    await act(async () => root!.render(createElement(BuildAgent, { origin: "https://console.example.test", v2: { listTemplates } })));
+    await act(async () => root!.render(createElement(BuildAgent, { origin: "https://console.example.test", v2: { listTemplates, listMarketplaceTemplates } })));
     expect(host.querySelector("[data-provenance]")?.textContent).toContain(changed.sha!.slice(0, 12));
     expect(host.querySelector("[data-provenance]")?.textContent).not.toContain(imported.sha!.slice(0, 12));
   });
@@ -71,9 +73,17 @@ describe("Build agent page", () => {
     expect(host.querySelector("h1")?.textContent).toBe("What do you want to build?");
     expect(host.querySelector<HTMLTextAreaElement>('textarea[placeholder]')?.value).toBe("");
     expect(button("Build an agent")).toBeDefined();
-    for (const template of catalog) expect(host.querySelector(`[aria-label="Start with ${template.name}"]`)).not.toBeNull();
     expect(host.querySelectorAll("article")).toHaveLength(7);
-    expect(button("Use this template")).toBeUndefined();
+    // Every card shows its action as it opens, nothing to click first, and no version: choosing here never needs one.
+    for (const template of catalog) {
+      const card = host.querySelector(`article[aria-label="${template.name}"]`)!;
+      expect(cardButton(card, "Use this template")).toBeDefined();
+      expect(card.textContent).not.toContain("2.1.0");
+    }
+    expect(host.querySelector("article > button, article [aria-expanded]:not([aria-haspopup])")).toBeNull();
+    // The composer, its prompt and the templates share the page's one column.
+    expect([...host.querySelectorAll('[class*="max-w-page"]')].map((e) => e.tagName)).toEqual(["SECTION"]);
+    expect(host.querySelector("section")!.classList.contains("max-w-page")).toBe(true);
     expect(host.querySelector("details")?.open).toBe(false);
   });
   it("hands the brief to the chosen coding agent and the same instructions to the playground", async () => {
@@ -97,14 +107,14 @@ describe("Build agent page", () => {
     const fetch = vi.fn(); vi.stubGlobal("fetch", fetch);
     await mount();
     typeBrief("Keep the summary under 200 words.");
-    await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Start with My custom agent"]')!.click());
+    const card = host.querySelector('article[aria-label="My custom agent"]')!;
     expect(fetch).not.toHaveBeenCalled();
     expect(copied).not.toHaveBeenCalled();
-    await act(async () => button("Use this template").click());
+    await act(async () => cardButton(card, "Use this template").click());
     expect(copied.mock.calls[0][0]).toContain("/v2/templates/My%20custom%20agent/apply");
     expect(copied.mock.calls[0][0]).toContain("2.1.0");
     expect(copied.mock.calls[0][0]).toContain("Keep the summary under 200 words.");
-    await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Choose coding agent for Use this template"]')!.click());
+    await act(async () => card.querySelector<HTMLButtonElement>('[aria-label="Choose coding agent for Use this template"]')!.click());
     const href = document.querySelector<HTMLAnchorElement>('[role="menuitem"][href^="#/playground"]')!.getAttribute("href")!;
     expect(new URLSearchParams(href.split("?")[1]).get("operation")).toBe("apply-template");
     expect(new URLSearchParams(href.split("?")[1]).get("template")).toBe("My custom agent");
@@ -142,4 +152,64 @@ describe("Build agent page", () => {
     expect(host.querySelectorAll("article")).toHaveLength(7);
     expect(host.querySelector<HTMLTextAreaElement>('textarea[placeholder]')!.value).toBe("An agent that monitors my queue.");
   });
+
+  it("lists what the marketplace lists: the Suggested page's scanner is left out, and a card it lists reads its title and one line as the marketplace's card does (GRE-4834)", async () => {
+    const scout: TemplateView = { ...packageTemplate("agent-scout"), display_name: "Agent scout" };
+    const kyb: TemplateView = { ...packageTemplate("kyb"), display_name: "KYB due diligence (${parameters.risk_appetite} risk appetite)", description: "Business due diligence on one company, at length." };
+    listTemplates.mockResolvedValue({ templates: [kyb, scout] });
+    listMarketplaceTemplates.mockResolvedValue({ url: "https://marketplace.example", state: "read", read_at: "2026-11-24T00:00:00.000Z", templates: [
+      { name: "kyb", title: "KYB due diligence", summary: "Checks who owns and runs a company.", tags: [], needs: [], page_url: "https://marketplace.example/templates/kyb/", here: "kyb" },
+    ] });
+    await mount();
+    await act(async () => {});
+    const cards = [...host.querySelectorAll("article")];
+    expect(cards.map((c) => c.querySelector("h3")!.textContent)).toEqual(["KYB due diligence"]);
+    expect(cards[0]!.getAttribute("aria-label")).toBe("KYB due diligence");
+    expect(cards[0]!.textContent).toContain("Checks who owns and runs a company.");
+    expect([...host.querySelectorAll('[role="status"]')].map((s) => s.textContent)).toContain("1 of 1");
+  });
+
+  it("leads every card with its harness's icon, the one the Templates page and an agent's card show, not an icon picked per template", async () => {
+    listMarketplaceTemplates.mockResolvedValue({ url: "https://marketplace.example", state: "read", read_at: "2026-11-24T00:00:00.000Z", templates: [
+      { name: "company-brief", title: "Company research brief", tags: [], needs: [], harness: ["codex", "pi"], page_url: "https://marketplace.example/templates/company-brief/" },
+    ] });
+    await mount();
+    await act(async () => {});
+    const cards = [...host.querySelectorAll("article")];
+    const icons = cards.map((c) => c.querySelector('[data-template-icon] [role="img"]')?.getAttribute("aria-label"));
+    expect(icons).toEqual([...catalog.map(() => "Harness: Claude"), "Harness: Codex, Pi"]);
+    // Above the card's action: one icon, its harness's (the action's own button keeps its icons).
+    for (const card of cards) expect(card.firstElementChild!.querySelectorAll("svg.lucide, img").length, `${card.getAttribute("aria-label")}: one icon, its harness's`).toBe(1);
+  });
+
+  it("lists the marketplace's templates that are not here after this server's, in the count and the search, each installed from the install page or its marketplace page (GRE-4834)", async () => {
+    const source = `github:Parcha-ai/agentrun-templates/templates/company-brief@${"c".repeat(40)}`;
+    listMarketplaceTemplates.mockResolvedValue({
+      url: "https://marketplace.example", state: "read", read_at: "2026-11-24T00:00:00.000Z",
+      templates: [
+        { name: "KYB", title: "KYB", tags: [], needs: [], page_url: "https://marketplace.example/templates/kyb/", here: "KYB" },
+        { name: "company-brief", title: "Company research brief", summary: "A one-page brief on a company.", category: "research", tags: [], needs: [], page_url: "https://marketplace.example/templates/company-brief/", source },
+        { name: "vendor-outage-watch", title: "Vendor outage watch", tags: [], needs: [], page_url: "https://marketplace.example/templates/vendor-outage-watch/" },
+      ],
+    });
+    await mount();
+    await act(async () => {});
+    const cards = [...host.querySelectorAll("article")];
+    expect(cards.map((c) => c.getAttribute("aria-label")).slice(-2)).toEqual(["Company research brief from the marketplace", "Vendor outage watch from the marketplace"]);
+    expect(cards).toHaveLength(catalog.length + 2);
+    expect([...host.querySelectorAll('[role="status"]')].map((s) => s.textContent)).toContain(`${catalog.length + 2} of ${catalog.length + 2}`);
+    const brief = cards.at(-2)!;
+    expect(brief.textContent).toContain("A one-page brief on a company.");
+    expect(brief.textContent).toContain("From the marketplace · research");
+    expect(brief.querySelector("a")!.getAttribute("href")).toBe(`#/templates/install?src=${encodeURIComponent(source)}`);
+    const watch = cards.at(-1)!.querySelector("a")!;
+    expect([watch.textContent, watch.getAttribute("href"), watch.getAttribute("target")]).toEqual(["Install from the marketplace", "https://marketplace.example/templates/vendor-outage-watch/", "_blank"]);
+    await act(async () => {
+      const input = host.querySelector<HTMLInputElement>('input[aria-label="Search templates"]')!;
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "outage");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect([...host.querySelectorAll("article")].map((c) => c.getAttribute("aria-label"))).toEqual(["Vendor outage watch from the marketplace"]);
+  });
 });
+
