@@ -471,7 +471,7 @@ test("session label validation rejects unsafe metadata atomically and counts UTF
     "hidden\u202Ename", "hidden\u200Bname", "hidden\uFEFFname", "bad\ud800name",
     "/private/project", "//server/share", "//server", "project /private/path", "~/project", "C:\\project", "project\\subdir", "https://example.com", "file:///tmp/file",
     // Synthetic provider-shaped value; keep the rejection case without publishing a plausible credential literal.
-    "key sk-test", "key SK_test", "ghp_fixture", "github_pat_fixture", "xoxb-fixture", "Bearer fixture", "AKIA" + "1234567890123456",
+    "key sk-test", "key SK_test", "ghp_fixture", "github_pat_fixture", "ar_key_fixture", "xoxb-fixture", "Bearer fixture", "AKIA" + "1234567890123456",
   ];
   for (const field of ["display_name", "project_name"]) {
     const limit = field === "display_name" ? 120 : 80;

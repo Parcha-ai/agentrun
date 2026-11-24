@@ -105,6 +105,23 @@ describe("Settings → AgentRun API keys", () => {
     expect(page.host.textContent).not.toContain(MADE);
   });
 
+  it("while a new key is on the page the form makes no other: the key is shown only there, so Done comes first", async () => {
+    const { v2, calls } = server({ keys: [] });
+    const page = await open(v2);
+    await page.type("first");
+    await page.click(/^Make key$/);
+    expect(page.shown()).not.toBeNull();
+    expect(page.host.querySelector('form[aria-label="Make an API key"]')?.textContent).toContain("Copy the key above and press Done to make another.");
+    expect(page.input().disabled).toBe(true);
+    expect(page.button(/^Make key$/)!.disabled).toBe(true);
+    await page.click(/^Done$/);
+    expect(page.input().disabled).toBe(false);
+    expect(page.host.textContent).not.toContain("press Done to make another");
+    await page.type("second");
+    await page.click(/^Make key$/);
+    expect(calls.filter((c) => c.method === "POST").map((c) => (c.body as { name: string }).name)).toEqual(["first", "second"]);
+  });
+
   it("copies the key with one press", async () => {
     const writeText = vi.fn(async () => undefined);
     vi.stubGlobal("navigator", { clipboard: { writeText } });
@@ -136,6 +153,9 @@ describe("Settings → AgentRun API keys", () => {
     await page.click(/^Revoke the key$/);
     expect(calls.filter((c) => c.method === "DELETE").map((c) => c.path)).toEqual(["/v2/settings/api-keys/01a20b30-b53a-7000-9abd-000000000003"]);
     expect(page.rows().map((row) => row.textContent)).toEqual([expect.stringContaining("billing app")]);
+    // The revoked row and its buttons are gone: the focus is on the list, not lost to the page.
+    expect(document.activeElement).toBe(page.host.querySelector('[aria-label="Keys"] [tabindex="-1"]'));
+    expect(document.activeElement).not.toBe(document.body);
   });
 
   it("revoking the key just made takes its panel away: it would offer a key that opens nothing", async () => {

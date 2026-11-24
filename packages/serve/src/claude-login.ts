@@ -215,7 +215,11 @@ export type ClaudeLoginDeps = {
   data: string;
   env: Readonly<Record<string, string | undefined>>;
   pinned: () => Promise<string | undefined>;
+  /** Read when asked, never copied: the server's API keys are made and revoked while it runs (whyNotOneOwner counts them). */
   refused: string | undefined;
+  /** Runs `work` once nothing that changes `refused` is under way, and holds such changes off until it settles: the
+   *  API keys' turn (api-keys.ts inTurn). The turn-on decides and writes inside it. */
+  turn: <T>(work: () => Promise<T>) => Promise<T>;
   sameMachine: boolean;
   claude: () => Promise<ClaudeLoginCli>;
   changed: () => Promise<void>;
@@ -252,10 +256,15 @@ export async function claudeLoginView(deps: ClaudeLoginDeps): Promise<ClaudeLogi
 
 /** PUT /settings/claude-login: turned on, refused in one line where more than one person can start runs. */
 export async function turnOnClaudeLogin(deps: ClaudeLoginDeps, body: unknown): Promise<ClaudeLoginView> {
-  if (deps.refused) throw new ClaudeLoginRefused("forbidden", deps.refused);
-  const asked = turnOnBody(body);
-  if ("problem" in asked) throw new ClaudeLoginRefused("input_invalid", asked.problem);
-  await deps.settings.put(CLAUDE_LOGIN_SETTING, settingFor(asked.place, deps.data));
+  // Decided and written in one turn: a key being made or revoked has landed, or been undone, when `refused` counts the
+  // keys, and none is made until the setting is written. What follows the write (the reading again, the CLI's status)
+  // is outside the turn, so a key's revocation never waits on the CLI.
+  await deps.turn(async () => {
+    if (deps.refused) throw new ClaudeLoginRefused("forbidden", deps.refused);
+    const asked = turnOnBody(body);
+    if ("problem" in asked) throw new ClaudeLoginRefused("input_invalid", asked.problem);
+    await deps.settings.put(CLAUDE_LOGIN_SETTING, settingFor(asked.place, deps.data));
+  });
   await deps.changed();
   return claudeLoginView(deps);
 }

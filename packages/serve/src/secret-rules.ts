@@ -953,7 +953,7 @@ async function lintUrlPasswords(text: string, ctx: ScrubContext): Promise<Hit[]>
 }
 
 /** The shapes that open with a public prefix, each with the characters of the run (a blob) its prefix could sit inside
- *  (ruling X). A prefix holding `-` or `_` (sk-, ar_key_, ghp_, github_pat_, xoxb-, whsec_) and a JWT can only sit inside a
+ *  (ruling X). A prefix holding `-` or `_` (sk-, ghp_, github_pat_, xoxb-, whsec_) and a JWT can only sit inside a
  *  base64url run, so `/`, `+`, `.`, `:` and `=` stand outside one: a key in a URL's or a file's path is a key. AKIA and
  *  AIza sit inside standard base64 too: `+` is of the run, `/` is a path's separator (s3://bucket/AKIA...), and a run
  *  ends on `=`'s padding. */
@@ -967,11 +967,12 @@ const RUNS: Readonly<Record<string, { readonly before: RegExp; readonly after: R
   "google-api-key": BASE64,
   "github-token": URL_SAFE,
   "sk-key": URL_SAFE,
-  "agentrun-api-key": URL_SAFE,
   "slack-token": URL_SAFE,
   "webhook-secret": URL_SAFE,
   jwt: URL_SAFE,
 };
+// An AgentRun API key (ar_key_) has no entry: its shape reads its own run to the end and asks a capital or a digit of
+// it, so a match is a key wherever it stands, inside a longer run too. The server holds no value of one to find it by.
 const LETTER_OR_DIGIT = /[A-Za-z0-9]/;
 /** An environment variable's name and its separator glued before a key (`SLACK_xoxb-...`): a name, not a blob. */
 const ENV_NAME_RUN = /^[A-Z][A-Z0-9]{0,31}(?:_[A-Z0-9]{1,32}){0,8}_$/;

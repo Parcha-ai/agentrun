@@ -244,7 +244,7 @@ test("a saved turn-on of Claude Code's login is dropped at a start that finds an
   assert.equal((await client(server.baseUrl, made.body.api_key)("GET", "/agents")).status, 200, "the key still opens");
 });
 
-test("a server started on its owner's own sign-in makes no key and takes none made before", async (t) => {
+test("a server started on its owner's own sign-in makes no key; one made before opens nothing there, and is listed so its owner revokes it", async (t) => {
   const first = await owned(t);
   const made = await first.page("POST", "/settings/api-keys", { name: "from before the sign-in" });
   assert.equal(made.status, 201, made.text);
@@ -253,10 +253,21 @@ test("a server started on its owner's own sign-in makes no key and takes none ma
   const server = launchFor(await serve(t, { data: first.data, harnessSignIn: true, runner: false }));
   assert.equal((await client(server.baseUrl, made.body.api_key)("GET", "/agents")).status, 401, "the key made before opens nothing here");
   const listed = (await client(server.baseUrl, server.token)("GET", "/settings/api-keys")).body;
-  assert.deepEqual([listed.keys, listed.refused], [[], HARNESS_SIGN_IN_REFUSES_API_KEYS]);
+  assert.deepEqual([listed.keys.map((one) => [one.id, one.name]), listed.refused], [[[made.body.id, "from before the sign-in"]], HARNESS_SIGN_IN_REFUSES_API_KEYS], "it is listed, with why it opens nothing");
   const refused = await asOwner(server)("POST", "/settings/api-keys", { name: "an app" });
   assert.equal(refused.status, 403, JSON.stringify(refused.body));
   assert.equal(refused.body.error.message, HARNESS_SIGN_IN_REFUSES_API_KEYS);
+  // While it is there, the login that is one person's is refused by it: no key waits unseen for a later start.
+  const login = await asOwner(server)("PUT", "/settings/claude-login", { only_me: true });
+  assert.equal(login.status, 403, JSON.stringify(login.body));
+  assert.match(login.body.error.message, /^This server has an API key made for apps/);
+  // Its owner revokes it here.
+  assert.equal((await asOwner(server)("DELETE", `/settings/api-keys/${made.body.id}`)).status, 204);
+  assert.deepEqual((await client(server.baseUrl, server.token)("GET", "/settings/api-keys")).body.keys, []);
+  await server.stop();
+
+  const back = await serve(t, { data: first.data, accounts: true, runner: false });
+  assert.equal((await client(back.baseUrl, made.body.api_key)("GET", "/agents")).status, 401, "revoked while dormant, it opens nothing at a later start either");
 });
 
 test("a name is 1 to 64 characters on one line, and the body takes nothing else", async (t) => {

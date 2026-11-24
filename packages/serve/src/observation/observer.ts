@@ -158,7 +158,7 @@ const sessionLabel = (v: unknown, max: number, project = false): v is string =>
   !/\\/.test(v) && !(project && v.includes("/")) &&
   !/(?:^|[\s"'=(])(?:\/\S|~[/\\]|[A-Za-z]:[/\\]|\\\\)/.test(v) &&
   !/\b[a-z][a-z0-9+.-]*:\/\//i.test(v) &&
-  !/\bsk[-_]|ghp_|github_pat_|xox[baprs]-|\bBearer\s|AKIA[A-Z0-9]{12,}/i.test(v);
+  !/\bsk[-_]|ghp_|github_pat_|ar_key_|xox[baprs]-|\bBearer\s|AKIA[A-Z0-9]{12,}/i.test(v);
 const activities = new Set([
   "unknown",
   "working",

@@ -159,13 +159,16 @@ their signed-in session:
 - **Limit.** A server keeps at most 50 keys; the next `POST` is `409 api_keys_full` until one is revoked.
 - **One person's server.** A key is one more caller that starts runs, as a second token is. So a server with Claude
   Code's login on makes no key (`403 forbidden`, in words), and a server with a key refuses to turn that login on until
-  the key is revoked. A server started with `--harness-sign-in` makes none and takes none made before. The list says
-  why in `refused`.
+  the key is revoked. A server started with `--harness-sign-in` makes none, and a key made before opens nothing there.
+  Such a key is still listed, so its owner can revoke it, and it still refuses the login. The list says why in
+  `refused`.
 - **In the log.** A request a key opened names it by id (`api_key=<id>`), never by value.
 
 The server keeps no copy of a key, so it finds one in a text by its shape: `ar_key_` and 43 or more base64url
-characters are cut wherever a run's views, a shared transcript or a learned note would show them. A key cut short, or
-split across lines, is not found, so keep keys out of prompts and files a run reads all the same. An
+characters, a capital or a digit among them, are cut wherever a run's views, a shared transcript or a learned note
+would show them, whatever stands before them. A key cut short, or split across lines, is not found, so keep keys out
+of prompts and files a run reads all the same. A row under the keys' name in the store that is no key's (damaged, or
+another version's) opens nothing, is said in the log at the start, and is removed by `DELETE` with its id. An
 [API-only](#api-only) server has no owner and serves none of these routes, so it takes no key at all: only the tokens
 it was started with. Its capabilities say `features.api_keys.routes: false`.
 

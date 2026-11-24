@@ -1,9 +1,10 @@
 // An API key made in the console (api-keys.ts) is cut from a text by its shape: `ar_key_` and 43 or more base64url
 // characters. The server keeps only a keyed hash of such a key, so it holds no value to cut by, as it cuts its own
 // token: the shape is how a key a person pasted into a run, or a tool echoed, is found where nothing labels it (after a
-// `Bearer` scheme the bearer shape finds it too). The key is cut where it stands, alone, after a scheme or after a
-// variable's name, and one the server really makes is cut too. A word that only ends in the prefix's letters, a key cut
-// short, and the words a document says the format in are left as written.
+// `Bearer` scheme the bearer shape finds it too). The key is cut where it stands, alone, after a scheme or a variable's
+// name, and glued to a word's character too (the `n` of a line break as JSON text writes it), and one the server really
+// makes is cut. A long name that only holds the prefix's letters, a key cut short, and the words a document says the
+// format in are left as written.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -49,13 +50,26 @@ test("a key glued to more of its characters is cut whole, never cut short", () =
   assert.equal(cut(`k ${KEY}${KEY} end`), "k [redacted] end", "two back to back are one run");
 });
 
+test("a key is cut whatever stands before it: a word's character too, as a line break in JSON text leaves one", () => {
+  // A tool's output kept as JSON text: the key follows the two characters of an escaped line break, a backslash and "n".
+  const kept = JSON.stringify({ stdout: `https://agentrun.example.test\n${KEY}` });
+  assert.ok(kept.includes(`\\n${KEY}`), "the fixture holds the key right after the letter n");
+  assert.equal(cut(kept), `{"stdout":"https://agentrun.example.test\\n${CUT}"}`);
+  assert.equal(redacted(kept, ["a-value-the-server-holds"]), `{"stdout":"https://agentrun.example.test\\n${CUT}"}`, "in a run's view");
+  for (const before of ["\\t", "\\r", "x", "X_", "my_", "9", "-", "/", "=", '"']) {
+    assert.equal(cut(`${before}${KEY} end`), `${before}${CUT} end`, JSON.stringify(before));
+  }
+  assert.equal(cut(`x${PREFIX}${KEY} end`), `x${CUT} end`, "the prefix twice: the run from the first is the key's");
+});
+
 test("what only resembles a key is left as written", () => {
   const plain = [
     `the prefix is ${PREFIX} and nothing follows`,
     `${PREFIX}${BODY.slice(0, 42)} is one character short`,
     `${PREFIX}abc is cut short`,
-    `a word that ends in its letters: b${KEY}`,
-    `after an underscore it is a name: my_${KEY}`,
+    // Long names that hold the prefix's letters: all lower case, as a name is and 32 random bytes all but never are.
+    `the option simil${PREFIX}for_the_long_configuration_option_name_here_and_more is a name`,
+    `${PREFIX}${"a_long_lowercase_name_that_goes_on_and_on_and_on_x"} is a name`,
     `the pattern ^${PREFIX}[A-Za-z0-9_-]{43}$ says the format`,
     `${PREFIX}<the key> is a placeholder`,
     `${PREFIX.toUpperCase()}${BODY} is not the prefix`,

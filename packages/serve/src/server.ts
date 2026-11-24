@@ -1204,7 +1204,7 @@ function integerParam(value: string | null, name: string, max: number): number {
 }
 
 /** Why a server started on its owner's own sign-in makes no API key for an app, in one line. */
-export const HARNESS_SIGN_IN_REFUSES_API_KEYS = "This server runs on its owner's own sign-in (--harness-sign-in), which is one person's: it makes no API key for an app, and takes none made before.";
+export const HARNESS_SIGN_IN_REFUSES_API_KEYS = "This server runs on its owner's own sign-in (--harness-sign-in), which is one person's: it makes no API key for an app, and a key made before opens nothing here. Revoke the ones listed that you no longer want.";
 
 /** A start with --harness-sign-in on a server that is not one owner's own, on their own machine. */
 export const HARNESS_SIGN_IN_NOT_LOCAL = "HARNESS_SIGN_IN_NOT_LOCAL";
@@ -1529,12 +1529,17 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // The API keys made in the console (api-keys.ts), read once here: this process is the store's one server, so the keys
   // it holds are the store's. No value is kept, so none joins the server's secrets: a key in a text is cut by its shape
   // (redact/match.ts).
-  // Two servers read none, so a key made on this store before opens nothing on them and their tokens are the ones they
-  // were started with: an API-only server (api-only.ts), which has no owner and no route to list or revoke one, and one
-  // started on its owner's own sign-in (--harness-sign-in), which is one person's.
-  const apiKeys = new ApiKeys(store, seal.key, { say: (fields) => (log ? log(logLine("api_key", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("api_key", fields)}\n`)) });
+  // On two servers the keys are dormant, so a key made on this store before opens nothing there and their tokens are the
+  // ones they were started with: an API-only server (api-only.ts), which has no owner and serves none of the keys'
+  // routes, and one started on its owner's own sign-in (--harness-sign-in), which is one person's. Dormant keys are
+  // still read: the owner of the second sees and revokes them, and they count for the one-owner rule below, so none
+  // waits unseen for a start that takes keys again.
+  const apiKeys = new ApiKeys(store, seal.key, {
+    say: (fields) => (log ? log(logLine("api_key", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("api_key", fields)}\n`)),
+    dormant: options.apiOnly === true || options.harnessSignIn === true,
+  });
   stops.push(() => apiKeys.close());
-  if (!options.apiOnly && !options.harnessSignIn) await apiKeys.load();
+  await apiKeys.load();
   // A key is one more caller that starts runs, as a second token is: asked at each use, since keys are made and revoked
   // while the server runs.
   const loginRefused = () => whyNotOneOwner({ apiOnly: options.apiOnly === true, tokens: tokens.length, keys: apiKeys.count });
@@ -1542,8 +1547,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  recipe on the owner's own sign-in, and Claude Code's login on this machine while it is on, are one person's. */
   const apiKeysRefused = async (): Promise<string | undefined> =>
     options.harnessSignIn ? HARNESS_SIGN_IN_REFUSES_API_KEYS : (await claudeLoginSetting(store.settings)) ? LOGIN_REFUSES_API_KEYS : undefined;
-  // Making a key, revoking one and turning the login on each take a turn (ApiKeys.inTurn), one at a time: each decides by
-  // what the others left once their writes landed or were undone, never by a key taken out for a removal that then fails.
+  // Making a key, revoking one and turning the login on each take a turn (ApiKeys.inTurn; the login's is taken in
+  // turnOnClaudeLogin, through loginDeps' `turn`), one at a time: each decides by what the others left once their writes
+  // landed or were undone, never by a key taken out for a removal that then fails.
   await dropRefusedLogin(store.settings, loginOff ?? loginRefused(), (line) => (log ? log(logLine("claude_login", { line })) : void process.stderr.write(`agentrun-serve: ${line}\n`)));
   let claudeLogin = loginOf(await claudeLoginSetting(store.settings), data, base);
   // The model gateway saved in the console (model-gateway.ts), its key opened: laid over every reading of env, where the
@@ -1646,7 +1652,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     data,
     env: base,
     pinned: async () => claudeCliIn(installDirOf(data, LOGIN_HARNESS), (await import("@parcha/agentrun-harness-claude")).claudeAgentPlatform()),
-    refused: loginRefused(),
+    // A getter: the keys are counted when the refusal is read (inside the turn-on's turn), not when a request came.
+    get refused() { return loginRefused(); },
+    turn: (work) => apiKeys.inTurn(work),
     sameMachine: isLoopback(host) && !options.publicUrl,
     claude: () => import("@parcha/agentrun-harness-claude"),
     changed: async () => {
@@ -5750,9 +5758,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const body = found.name === "turnOnClaudeLogin" ? await bodyOf(req) : undefined;
         const deps = loginDeps();
         try {
-          // Turned on in a turn of the keys' (ApiKeys.inTurn), its refusal read then, not when the request came: a key
-          // being made or revoked has landed, or been undone, by the time the keys are counted.
-          const view = found.name === "getClaudeLogin" ? await claudeLoginView(deps) : found.name === "turnOnClaudeLogin" ? await apiKeys.inTurn(() => turnOnClaudeLogin(loginDeps(), body)) : found.name === "turnOffClaudeLogin" ? await turnOffClaudeLogin(deps) : await startLoginHere(deps);
+          const view = found.name === "getClaudeLogin" ? await claudeLoginView(deps) : found.name === "turnOnClaudeLogin" ? await turnOnClaudeLogin(deps, body) : found.name === "turnOffClaudeLogin" ? await turnOffClaudeLogin(deps) : await startLoginHere(deps);
           return send(res, 200, view, { "cache-control": "no-store" });
         } catch (error) {
           if (error instanceof ClaudeLoginRefused) throw new ApiError(error.code, error.message);

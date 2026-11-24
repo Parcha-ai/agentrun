@@ -40,6 +40,9 @@ export function ApiKeysPage({ v2, writable, whyNot = "sign_in", origin }: { v2: 
   // A new key takes the focus once the page has drawn it, so a keyboard and a screen reader land on it.
   const madeBox = useRef<HTMLElement>(null);
   const [focusMade, setFocusMade] = useState(false);
+  // A revoked key's row is gone, and its buttons with it: the focus goes to the list, never back to the page's top.
+  const listBox = useRef<HTMLDivElement>(null);
+  const [focusList, setFocusList] = useState(false);
   const asked = useRef(0);
   const load = () => {
     const n = ++asked.current;
@@ -53,6 +56,11 @@ export function ApiKeysPage({ v2, writable, whyNot = "sign_in", origin }: { v2: 
     madeBox.current?.focus();
     setFocusMade(false);
   }, [focusMade, made]);
+  useEffect(() => {
+    if (!focusList || busy) return;
+    listBox.current?.focus();
+    setFocusList(false);
+  }, [focusList, busy]);
   const act = async (title: string, work: () => Promise<unknown>) => {
     setProblem(null); setBusy(true);
     try { await work(); } catch (e) { setProblem({ title, error: apiError(e) }); } finally { setBusy(false); }
@@ -73,7 +81,8 @@ export function ApiKeysPage({ v2, writable, whyNot = "sign_in", origin }: { v2: 
     void act("The key was not revoked", async () => {
       await v2.revokeApiKey(key.id);
       // The key just shown is gone with its revocation: its panel would offer a key that opens nothing.
-      setMade((shown) => (shown?.id === key.id ? null : shown));
+      setMade((current) => (current?.id === key.id ? null : current));
+      setFocusList(true);
     });
   };
 
@@ -81,6 +90,8 @@ export function ApiKeysPage({ v2, writable, whyNot = "sign_in", origin }: { v2: 
     ? <Banner tone="error" className="m-8" actions={<Button type="button" size="xs" onClick={load}>Try again</Button>}><p className="font-mono">The API keys could not be read: {loadError.code}: {loadError.message}</p></Banner>
     : <div className={settingsPageClass}><ListSkeleton label="Loading API keys" rows={3} /></div>;
   const full = limit !== null && keys.length >= limit;
+  // A key on the page is the only showing of it: the next one is made once this one is put away (Done), never over it.
+  const shown = made !== null;
   return (
     <div className="h-full overflow-auto">
       <div className={settingsPageClass}>
@@ -114,15 +125,17 @@ export function ApiKeysPage({ v2, writable, whyNot = "sign_in", origin }: { v2: 
               {!writable && <p role="status" className="mb-3 text-body text-muted-foreground">{WHY_NOT_WORDS[whyNot]}</p>}
               {refused && <p role="status" className="mb-3 text-body text-warning-text">{refused}</p>}
               {full && <p role="status" className="mb-3 text-body text-warning-text">This server keeps at most {limit} {limit === 1 ? "key" : "keys"}. Revoke one you no longer use to make another.</p>}
+              {shown && <p role="status" className="mb-3 text-body text-muted-foreground">Copy the key above and press Done to make another.</p>}
               <Field label="Name" note="What the key is for: the app or the person that will hold it.">
                 <div className="flex flex-wrap gap-2">
-                  <Input name="name" required maxLength={NAME_MAX} autoComplete="off" placeholder="For example: billing app" value={name} disabled={!writable || full || !!refused} onChange={(e) => setName(e.target.value)} className="min-w-56 flex-1" />
-                  <Button type="submit" variant="primary" disabled={busy || !writable || full || !!refused || !name.trim()}>Make key</Button>
+                  <Input name="name" required maxLength={NAME_MAX} autoComplete="off" placeholder="For example: billing app" value={name} disabled={!writable || full || !!refused || shown} onChange={(e) => setName(e.target.value)} className="min-w-56 flex-1" />
+                  <Button type="submit" variant="primary" disabled={busy || !writable || full || !!refused || shown || !name.trim()}>Make key</Button>
                 </div>
               </Field>
             </form>
           </SettingsSection>
           <SettingsSection label="Keys" title={limit === null ? "Keys" : `Keys · ${keys.length} of ${limit}`} note={<p>A token this server was started with (<span className="font-mono">AGENTRUN_TOKEN</span>) is set in its environment and is not listed here.</p>}>
+            <div ref={listBox} tabIndex={-1} className="outline-none">
             {keys.length === 0
               ? <p className="border p-4 text-body text-muted-foreground">No key has been made yet.</p>
               : (
@@ -156,6 +169,7 @@ export function ApiKeysPage({ v2, writable, whyNot = "sign_in", origin }: { v2: 
                   ))}
                 </ul>
               )}
+            </div>
           </SettingsSection>
         </div>
       </div>

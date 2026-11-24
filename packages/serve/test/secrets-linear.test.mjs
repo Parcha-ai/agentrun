@@ -35,8 +35,8 @@ const SHAPES = [
   /(?:AKIA|ASIA)[0-9A-Z]{16}/, /AIza[0-9A-Za-z_-]{35}/, /-----BEGIN[ A-Z0-9]{0,64}PRIVATE KEY[ A-Z0-9]{0,64}-----/,
   /gh[pousr]_[A-Za-z0-9]{30,16384}|github_pat_[A-Za-z0-9_]{20,16384}/, /(?<![A-Za-z0-9])sk-[A-Za-z0-9_-]{20,16384}/,
   /xox[abposre]-[A-Za-z0-9-]{10,16384}|xapp-[A-Za-z0-9-]{10,16384}/,
-  // A key made in the console (api-keys.ts): not after a word's character, and 43 or more of its own to the run's end.
-  /(?<![A-Za-z0-9_])ar_key_[A-Za-z0-9_-]{43,16384}/,
+  // A key made in the console (api-keys.ts): 43 or more of its characters to the run's end, a capital or a digit among them.
+  /ar_key_(?=[A-Za-z0-9_-]{0,16384}[A-Z0-9])[A-Za-z0-9_-]{43,16384}/,
   /eyJ(?<!eyJ[A-Za-z0-9_-]{0,16384}?eyJ)[A-Za-z0-9_-]{8,16384}\.eyJ[A-Za-z0-9_-]{8,16384}\.[A-Za-z0-9_-]{8,16384}/,
   /whsec_[A-Za-z0-9+/]{24,16384}={0,2}/,
   /:\/\/[^\s/?#@:]{1,256}:[^\s/?#@]{0,1024}@/,
@@ -80,8 +80,9 @@ test("over 3,000 random texts of the shapes' own pieces, what is redacted is wha
 });
 
 test("over 3,000 random texts of an API key's pieces, what is redacted is what reading from every character redacts", () => {
-  // The prefix whole and in parts, runs long enough to make a key and too short, and what ends a run or stands before one.
-  const PIECES = ["ar_key_", "ar_key_", "ar_key_", "ar_", "key_", "ar", "_", "-", "abcdefgh01234567", "abcdefgh01234567", "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefg", "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefg", "x9", "a", "Z", "0", " ", " ", "=", ".", "/", "\"", "Bearer "];
+  // The prefix whole and in parts; runs long enough to make a key and too short, with a capital or a digit and with
+  // neither (a name); and what ends a run or stands before one.
+  const PIECES = ["ar_key_", "ar_key_", "ar_key_", "ar_", "key_", "ar", "_", "-", "abcdefgh", "abcdefghijklmnopqrstuvwxyz_abcdefghijklmnopqrstuvwxyz", "abcdefghijklmnopqrstuvwxyz_abcdefghijklmnopqrstuvwxyz", "abcdefgh01234567", "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefg", "x9", "a", "a", "Z", " ", " ", "=", ".", "/", "\"", "Bearer "];
   let seed = 20261124;
   const random = () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648);
   let cut = 0;
@@ -91,7 +92,7 @@ test("over 3,000 random texts of an API key's pieces, what is redacted is what r
     assert.equal(redactSecrets(text, [], 1 << 20), want, JSON.stringify(text));
     if (want !== text) cut++;
   }
-  // Both happen often: a text with a key in it, and one that only resembles one (a short run, a word before the prefix).
+  // Both happen often: a text with a key in it, and one that only resembles one (a short run, a run of lower case alone).
   assert.ok(cut > 300 && cut < 2700, `${cut} of 3011 texts were cut`);
 });
 
@@ -142,7 +143,7 @@ const ADVERSARIAL = [
   ["AWS access key id", fill("AKIA")], ["Google API key", fill("AIza")],
   ["private key block", fill("-----BEGIN ")], ["private key block", headed("-----BEGIN ", "PRIVATE KEY ")], ["private key block", headed("-----BEGIN ", "A")],
   ["GitHub token", fill("ghp_")], ["GitHub token", fill("github_pat_")], ["sk- key", fill("sk-")],
-  ["AgentRun API key", fill("ar_key_")], ["AgentRun API key", headed("ar_key_", "a")], ["AgentRun API key", fill("ar_key_ ")], ["AgentRun API key", fill(`ar_key_${"a".repeat(42)} `)],
+  ["AgentRun API key", fill("ar_key_")], ["AgentRun API key", headed("ar_key_", "a")], ["AgentRun API key", headed("ar_key_", "A")], ["AgentRun API key", fill("ar_key_ ")], ["AgentRun API key", fill(`ar_key_${"a".repeat(42)} `)], ["AgentRun API key", fill(`ar_key_${"a".repeat(60)} `)],
   ["Slack token", fill("xoxb-")], ["Slack token", fill("xapp-")],
   ["JWT", fill("eyJ")], ["JWT", fill("eyJ-")], ["JWT", headed("eyJaaaaaaaa.", "eyJ")], ["JWT", fill("eyJaaaaaaaa.")],
   // The JWT's lookbehind reads back from each "eyJ" to the one before it in its run: far apart, and each first in a run.

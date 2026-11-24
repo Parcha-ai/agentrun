@@ -10,6 +10,9 @@
 // Every presented header is compared with every key, in constant time, on two 32-byte digests, as bearerCheck compares
 // the server's tokens. One server holds a store (its owner lock), so the keys in this process are the store's.
 //
+// On a server that is one person's, or has no owner, the keys are dormant: read, listed, counted and revocable, and
+// opening nothing. A key never waits unseen for a later start to take it again.
+//
 // The server keeps no copy of a key, so it holds no value to cut a text by, as it cuts its own token. A key is found by
 // its shape instead (redact/match.ts: the prefix and 43 or more of its characters), wherever a run's views, a shared
 // transcript or a learned note would show one.
@@ -45,12 +48,15 @@ type Kept = { v: 1; id: string; name: string; mac: string; created_at: string; l
 /** A key as every read answers it: never its value, a prefix, a length or a hash. */
 export type ApiKeyView = { id: string; name: string; created_at: string; last_used_at: string | null; secret: SecretMeta };
 
-type Held = { row: Kept; mac: Buffer; usedAt: number | null; savedAt: number | null; saving: boolean };
+/** A key this process holds. `usedAt`: its last use, as the list says it. `triedAt`: when a write of its last use was
+ *  last started, kept or not, which paces the next one. */
+type Held = { row: Kept; mac: Buffer; usedAt: number | null; triedAt: number | null; saving: boolean };
 
 const ID = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const isDate = (value: unknown): value is string => typeof value === "string" && !Number.isNaN(Date.parse(value));
 const isKept = (value: unknown): value is Kept =>
   isObject(value) && value.v === 1 && typeof value.id === "string" && ID.test(value.id) && typeof value.name === "string" && typeof value.mac === "string" && /^[0-9a-f]{64}$/.test(value.mac)
-  && typeof value.created_at === "string" && (value.last_used_at === null || typeof value.last_used_at === "string");
+  && isDate(value.created_at) && (value.last_used_at === null || isDate(value.last_used_at));
 
 /** A key's secret's metadata, named api-key:<id>: made by this server at the owner's request (source console). */
 export const apiKeySecretMeta = (id: string, createdAt: string): SecretMeta => secretMeta(secretName("api-key", id), { set: true, source: "console", changedAt: createdAt });
@@ -60,6 +66,9 @@ export type ApiKeysOptions = {
   now?: () => number;
   /** Where a row that could not be read, or a last use that could not be written, is said: fields with no secret. */
   say?: (fields: Record<string, string | number>) => void;
+  /** The keys open nothing on this server (it is one person's, or has no owner): each is still read, listed, counted
+   *  and revocable, so none waits unseen for a start that takes keys again. */
+  dormant?: boolean;
 };
 
 export class ApiKeys {
@@ -67,7 +76,11 @@ export class ApiKeys {
   readonly #macKey: Buffer;
   readonly #now: () => number;
   readonly #say: (fields: Record<string, string | number>) => void;
+  readonly #dormant: boolean;
   readonly #keys = new Map<string, Held>();
+  /** The rows under the keys' prefix that are no key's, by what follows the prefix in their store key: they open
+   *  nothing, and a revocation by that id removes one (it counts toward the store's limit until then). */
+  readonly #unreadable = new Set<string>();
   readonly #writes = new Set<Promise<void>>();
   /** The turn now taken (inTurn): settled before the next one starts, whatever it did. */
   #turn: Promise<unknown> = Promise.resolve();
@@ -77,23 +90,28 @@ export class ApiKeys {
     this.#macKey = createHmac("sha256", sealKey).update("agentrun-serve api keys").digest();
     this.#now = options.now ?? Date.now;
     this.#say = options.say ?? (() => undefined);
+    this.#dormant = options.dormant === true;
   }
 
   #mac(header: string): Buffer {
     return createHmac("sha256", this.#macKey).update(header).digest();
   }
 
-  /** Reads the store's keys. A row that is no key's (another version's, or damaged) opens nothing and is said. */
+  /** Reads the store's keys. A row that is no key's (another version's, or damaged) opens nothing and is said, with
+   *  how it is removed: it is not listed, and it counts toward the store's limit while it stays. */
   async load(): Promise<void> {
     this.#keys.clear();
+    this.#unreadable.clear();
     for (const row of await this.#settings.all({ prefix: API_KEY_SETTING })) {
       const kept = row.value;
       if (!isKept(kept) || row.key !== API_KEY_SETTING + kept.id) {
-        this.#say({ condition: "api_key_unreadable", key: row.key, effect: "ignored: it opens nothing" });
+        const id = row.key.slice(API_KEY_SETTING.length);
+        this.#unreadable.add(id);
+        this.#say({ condition: "api_key_unreadable", key: row.key, effect: `ignored: it opens nothing, and counts toward the limit until DELETE /v2/settings/api-keys/${encodeURIComponent(id)} removes it` });
         continue;
       }
       const used = kept.last_used_at === null ? null : Date.parse(kept.last_used_at);
-      this.#keys.set(kept.id, { row: kept, mac: Buffer.from(kept.mac, "hex"), usedAt: used, savedAt: used, saving: false });
+      this.#keys.set(kept.id, { row: kept, mac: Buffer.from(kept.mac, "hex"), usedAt: used, triedAt: used, saving: false });
     }
   }
 
@@ -145,7 +163,7 @@ export class ApiKeys {
       const kept: Kept = { v: 1, id, name, mac: mac.toString("hex"), created_at: new Date(this.#now()).toISOString(), last_used_at: null };
       const saved = await this.#settings.putIfAbsent(API_KEY_SETTING + id, kept, { prefix: API_KEY_SETTING, limit: API_KEYS_LIMIT });
       if (saved === undefined) throw new ApiError("api_keys_full", `This server keeps at most ${API_KEYS_LIMIT} API keys. Revoke one you no longer use, then make this one.`);
-      const held: Held = { row: kept, mac, usedAt: null, savedAt: null, saving: false };
+      const held: Held = { row: kept, mac, usedAt: null, triedAt: null, saving: false };
       this.#keys.set(id, held);
       return { ...this.#view(held), api_key: value };
     });
@@ -157,6 +175,12 @@ export class ApiKeys {
   async revoke(id: string): Promise<void> {
     return this.inTurn(async () => {
       const held = this.#keys.get(id);
+      if (!held && this.#unreadable.has(id)) {
+        // A row the start could not read as a key: it opens nothing already, and its removal frees its place.
+        await this.#settings.remove(API_KEY_SETTING + id);
+        this.#unreadable.delete(id);
+        return;
+      }
       if (!held) throw new ApiError("not_found", "No API key has that id: it was revoked, or never made.");
       // Out of this process first, so a request that races the store's write is refused already.
       this.#keys.delete(id);
@@ -173,6 +197,7 @@ export class ApiKeys {
   /** The id of the key whose `Bearer` line `header` is, else undefined. Every key is compared on every call, with no
    *  early return, so the time taken says neither whether one matched nor which. A match is the key's last use. */
   used(header: string | undefined): string | undefined {
+    if (this.#dormant) return undefined;
     const given = this.#mac(String(header ?? ""));
     let found: Held | undefined;
     for (const held of this.#keys.values()) {
@@ -183,19 +208,20 @@ export class ApiKeys {
     return found?.row.id;
   }
 
-  /** Marks `held` used now, and writes it to the store when the last write is USED_EVERY_MS old. The row is replaced
-   *  only while it reads as this process last wrote it, so a write that loses to a revocation writes nothing. */
+  /** Marks `held` used now, and writes it to the store when the last try is USED_EVERY_MS old. Paced by the try, kept
+   *  or not: while the store refuses writes, a busy key costs one try and one line a minute, not one a request. The row
+   *  is replaced only while it reads as this process last wrote it, so a write that loses to a revocation writes
+   *  nothing. */
   #touch(held: Held): void {
     const now = this.#now();
     held.usedAt = now;
-    if (held.saving || (held.savedAt !== null && now - held.savedAt < USED_EVERY_MS)) return;
+    if (held.saving || (held.triedAt !== null && now - held.triedAt < USED_EVERY_MS)) return;
     held.saving = true;
+    held.triedAt = now;
     const next: Kept = { ...held.row, last_used_at: new Date(now).toISOString() };
     const write = this.#settings.replaceIf(API_KEY_SETTING + held.row.id, held.row, next)
       .then((replaced) => {
-        if (!replaced) return;
-        held.row = next;
-        held.savedAt = now;
+        if (replaced) held.row = next;
       })
       .catch((error: unknown) => this.#say({ condition: "api_key_use_not_saved", id: held.row.id, error: error instanceof Error ? error.message : String(error) }))
       .finally(() => {

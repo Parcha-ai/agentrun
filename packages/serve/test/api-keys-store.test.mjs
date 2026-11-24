@@ -15,6 +15,7 @@ import { openPostgresStore, openSqliteStore } from "../dist/store/index.js";
 import { dropSchema, freshSchema, onPostgres, PG_URL } from "./store-target.mjs";
 
 const { API_KEY_SETTING, API_KEYS_LIMIT, ApiKeys, USED_EVERY_MS } = await import("../dist/api-keys.js");
+const { CLAUDE_LOGIN_SETTING, turnOnClaudeLogin, whyNotOneOwner } = await import("../dist/claude-login.js");
 
 /** A place for one store, opened and closed by the test as a server's starts and stops would: a schema of its own on
  *  Postgres, a data directory of its own on SQLite; removed after the test. */
@@ -30,16 +31,18 @@ async function storeAt(t) {
 }
 
 /** A store of its own, and a server's start on it: the keys over it under one seal key, with a clock the test moves.
- *  `wrap`: the settings the keys write through, for a test that holds one of their writes. */
+ *  `wrap`: the settings the keys write through, for a test that holds one of their writes. `open(options)`: a start
+ *  with those options (dormant), each line it says kept in `said`. */
 async function place(t, wrap = (settings) => settings) {
   const openStore = await storeAt(t);
   const clock = { at: Date.parse("2026-11-24T12:00:00.000Z") };
   const sealKey = randomBytes(32);
-  const open = async () => {
+  const open = async (options = {}) => {
     const store = await openStore();
-    const keys = new ApiKeys({ settings: wrap(store.settings) }, sealKey, { now: () => clock.at });
+    const said = [];
+    const keys = new ApiKeys({ settings: wrap(store.settings) }, sealKey, { now: () => clock.at, say: (fields) => said.push(fields), ...options });
     await keys.load();
-    return { store, keys, stop: async () => (await keys.close(), await store.close()) };
+    return { store, keys, said, stop: async () => (await keys.close(), await store.close()) };
   };
   return { open, clock };
 }
@@ -183,6 +186,98 @@ test("a create's refusal is asked in the create's own turn, after the turn befor
   assert.deepEqual(order, ["the turn before ends", "the refusal is asked"]);
   assert.deepEqual([keys.count, (await store.settings.all({ prefix: API_KEY_SETTING })).length], [0, 0], "the refused create made nothing");
   assert.equal((await keys.create({ name: "an app" }, async () => undefined)).name, "an app", "with no refusal it is made");
+});
+
+test("the login's turn-on itself waits for a revocation under way, and is refused by the key its failed removal put back", async (t) => {
+  let fail;
+  const held = new Promise((_, reject) => (fail = reject));
+  const { open } = await place(t, (settings) => ({ ...settings, remove: async () => held }));
+  const { store, keys, stop } = await open();
+  t.after(() => stop());
+  const made = await keys.create({ name: "the last key" });
+  // The server's own wiring of the turn-on (server.ts loginDeps): its turn is the keys', and its refusal counts the keys
+  // when it is read. What a turn-on that got past the refusal would go on to is given too, so it would show.
+  const went = [];
+  const deps = {
+    turn: (work) => keys.inTurn(work),
+    get refused() { return whyNotOneOwner({ apiOnly: false, tokens: 1, keys: keys.count }); },
+    settings: { ...store.settings, put: async (...args) => (went.push("the setting was written"), store.settings.put(...args)) },
+    data: "/nonexistent", env: {}, sameMachine: true,
+    signIns: { view: () => undefined, stop: async () => undefined },
+    pinned: async () => undefined,
+    claude: async () => ({ claudeLoginCommand: () => "claude auth login" }),
+    changed: async () => void went.push("the login was read again"),
+  };
+  const revoking = keys.revoke(made.id);
+  const turning = turnOnClaudeLogin(deps, { only_me: true });
+  turning.catch(() => undefined);
+  for (let i = 0; i < 20; i++) await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(keys.count, 0, "the key is out while its removal is under way");
+  assert.deepEqual(went, [], "the turn-on has decided nothing yet");
+  fail(new Error("the store went away"));
+  await assert.rejects(revoking, /the store went away/);
+  await assert.rejects(turning, (error) => error.code === "forbidden" && /^This server has an API key made for apps/.test(error.message));
+  assert.deepEqual(went, [], "and wrote nothing");
+  assert.equal(await store.settings.get(CLAUDE_LOGIN_SETTING), undefined, "the login is not on");
+  assert.equal(keys.used(`Bearer ${made.api_key}`), made.id, "the key opens still");
+});
+
+test("a row whose dates are no dates, or that is no key's at all, is ignored and said; the list still answers, and its id removes it", async (t) => {
+  const { open } = await place(t);
+  let { store, keys, said, stop } = await open();
+  const made = await keys.create({ name: "kept" });
+  const row = await store.settings.get(`${API_KEY_SETTING}${made.id}`);
+  const damaged = "01a20b30-b53a-7000-9abd-64340ac132cb";
+  await store.settings.put(`${API_KEY_SETTING}${damaged}`, { ...row, id: damaged, last_used_at: "not a date" });
+  await store.settings.put(`${API_KEY_SETTING}not-a-key`, { v: 7 });
+  await stop();
+
+  ({ store, keys, said, stop } = await open());
+  t.after(() => stop());
+  assert.deepEqual(keys.list().keys.map((one) => one.name), ["kept"], "the list answers with the keys it could read");
+  assert.equal(keys.count, 1);
+  assert.deepEqual(said.map((line) => [line.condition, line.key]).sort(), [["api_key_unreadable", `${API_KEY_SETTING}${damaged}`], ["api_key_unreadable", `${API_KEY_SETTING}not-a-key`]]);
+  assert.ok(said.every((line) => /counts toward the limit until DELETE \/v2\/settings\/api-keys\//.test(line.effect)), "each line says how the row is removed");
+  for (const id of [damaged, "not-a-key"]) await keys.revoke(id);
+  assert.deepEqual((await store.settings.all({ prefix: API_KEY_SETTING })).map((one) => one.key), [`${API_KEY_SETTING}${made.id}`], "both rows are gone, and the key's stays");
+  await assert.rejects(keys.revoke(damaged), (error) => error.code === "not_found", "a second removal finds nothing");
+});
+
+test("while the store refuses the write of a last use, it is tried once a minute and said once a try, not at each use", async (t) => {
+  let tries = 0;
+  const { open, clock } = await place(t, (settings) => ({ ...settings, replaceIf: async () => (tries++, Promise.reject(new Error("the store is away"))) }));
+  const { keys, said, stop } = await open();
+  t.after(() => stop());
+  const made = await keys.create({ name: "busy" });
+  const start = clock.at;
+  for (const [at, expected] of [[start, 1], [start + 1, 1], [start + 1000, 1], [start + USED_EVERY_MS - 1, 1], [start + USED_EVERY_MS, 2], [start + USED_EVERY_MS + 5, 2]]) {
+    clock.at = at;
+    assert.equal(keys.used(`Bearer ${made.api_key}`), made.id, "the key opens whatever the store says");
+    await keys.close();
+    assert.equal(tries, expected, `${at - start} ms on`);
+  }
+  assert.deepEqual(said.map((line) => [line.condition, line.id, line.error]), [["api_key_use_not_saved", made.id, "the store is away"], ["api_key_use_not_saved", made.id, "the store is away"]]);
+  assert.equal(keys.list().keys[0].last_used_at, new Date(clock.at).toISOString(), "the list still says its last use");
+});
+
+test("dormant keys open nothing, and are still listed, counted and revocable", async (t) => {
+  const { open } = await place(t);
+  let { store, keys, stop } = await open();
+  const [kept, gone] = [await keys.create({ name: "kept" }), await keys.create({ name: "gone" })];
+  await stop();
+
+  ({ store, keys, stop } = await open({ dormant: true }));
+  assert.equal(keys.used(`Bearer ${kept.api_key}`), undefined, "a key opens nothing here");
+  assert.deepEqual(keys.list().keys.map((one) => [one.name, one.last_used_at]), [["kept", null], ["gone", null]], "each is listed, and none was used");
+  assert.equal(keys.count, 2, "and counted for the one-owner rule");
+  await keys.revoke(gone.id);
+  assert.equal(await store.settings.get(`${API_KEY_SETTING}${gone.id}`), undefined, "one revoked here is gone from the store");
+  await stop();
+
+  ({ store, keys, stop } = await open());
+  t.after(() => stop());
+  assert.equal(keys.used(`Bearer ${kept.api_key}`), kept.id, "at a start that takes keys the kept one opens again");
+  assert.equal(keys.used(`Bearer ${gone.api_key}`), undefined, "and the one revoked while dormant does not");
 });
 
 test("a key made under one seal key opens nothing under another", async (t) => {
