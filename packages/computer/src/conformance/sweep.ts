@@ -28,7 +28,7 @@ import type { MachineHost } from "../host.js";
 import { hostCall } from "../hosted/process.js";
 import { foundBy, listedBy, NAME_LABEL, settle } from "../hosted/provider.js";
 import { providerModule } from "../providers.js";
-import { ok, type Result } from "../result.js";
+import { fail, ok, type Result } from "../result.js";
 import { newRunId, RUN_ID, RUN_LABEL } from "./runner.js";
 
 /** What one sweep did: see the file's head. */
@@ -61,9 +61,11 @@ export interface SweepMachinesOptions {
 /**
  * The sweep over host: every machine listed with agentrun.computer=1 and `labels`, not in `before`, whose RUN_LABEL is
  * `run` is deleted and read back gone; any other is left alone and counted. A listing the vendor refused is the error,
- * with nothing deleted.
+ * with nothing deleted, as is a run that is not a run id: nothing is listed then.
  */
 export async function sweepMachines(host: MachineHost, { run, labels = {}, before = new Set(), waitMs = 60_000, pollMs = 2_000, requestMs = 30_000, listMs = 60_000, onWords = () => {} }: SweepMachinesOptions): Promise<Result<SweepCounts>> {
+	// A caller with no run (undefined) would otherwise match every machine that carries no run label.
+	if (typeof run !== "string" || !RUN_ID.test(run)) return fail("invalid", `run is a conformance run's id, 12 hex characters; got ${JSON.stringify(run)}`);
 	const listed = await foundBy(host, "the listing", { ...labels, [COMPUTER_LABEL]: "1" }, { listMs, requestMs });
 	if (!listed.ok) return listed;
 	const added = listed.value.filter((machine) => !before.has(machine.id));

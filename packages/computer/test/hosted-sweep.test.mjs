@@ -116,6 +116,20 @@ test("sweepMachines over a run's label: what the conformance runner calls at a r
 	assert.equal(fake.live().length, 1, "another run's machine is not this run's sweep's");
 });
 
+test("sweepMachines with no run, or one that is not a run id, is invalid before any list or delete: it never matches the machines that carry no run label", async () => {
+	const fake = fakeHost();
+	const unlabelled = fake.add({ labels: { ...OURS } });
+	for (const options of [{}, { run: undefined }, { run: "" }, { run: "another-run" }, { run: 7 }]) {
+		fake.calls.length = 0;
+		const swept = await sweepMachines(fake.host, { ...options, waitMs: 300, pollMs: 5 });
+		assert.equal(swept.ok, false, JSON.stringify(options));
+		assert.equal(swept.error.code, "invalid");
+		assert.match(swept.error.message, /^run is a conformance run's id, 12 hex characters; got /);
+		assert.deepEqual(fake.calls.filter(([name]) => name === "list" || name === "delete"), [], "no list, no delete");
+	}
+	assert.equal(unlabelled.deleted, false);
+});
+
 test("sweepMachines keeps to the run where the host's listing answers more machines than carry its label", async () => {
 	const fake = fakeHost();
 	const listing = fake.host.list;
