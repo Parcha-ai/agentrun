@@ -17,9 +17,9 @@ import type { PublicFetchOptions } from "@parcha/pi-browser";
 import type { McpKeys, McpMeter, McpQuote } from "./mcp-gateway.js";
 import { mediaSeconds, voiceSeconds } from "./media-duration.js";
 import { SAVE_MAX_BYTES, type SaveSlots, SERVER_SLOTS } from "./web-save.js";
+import { micro } from "./micro.js";
 
 /** In whole millionths of a dollar, so a sum of prices is the price. */
-const usd = (dollars: number) => Math.round(dollars * 1e6) / 1e6;
 
 /** The host of fal's hosted MCP server (its key endpoint /mcp and its sign-in endpoint /mcp-relay). */
 export const FAL_MCP_HOST = "mcp.fal.ai";
@@ -262,7 +262,7 @@ const NANO_BANANA_2: Tiers = {
     const thinking = settingOf(input, "thinking_level", [null, "minimal", "high"], null);
     if ("why" in thinking) return thinking;
     const added = [...(search ? [search] : []), ...(thinking.value === "high" ? [{ usd: 0.002, words: "high thinking" }] : [])];
-    return added.length ? { usd: usd(added.reduce((sum, one) => sum + one.usd, 0)), words: added.map((one) => one.words).join(" and ") } : undefined;
+    return added.length ? { usd: micro(added.reduce((sum, one) => sum + one.usd, 0)), words: added.map((one) => one.words).join(" and ") } : undefined;
   },
 };
 const KLING_PRO = kling(0.14, { off: 0.112, on: 0.168, voice: 0.196 }, 0.14);
@@ -450,7 +450,7 @@ function bodyOf(result: Record<string, unknown>): unknown {
   }
 }
 
-const shown = (n: number) => String(usd(n));
+const shown = (n: number) => String(micro(n));
 
 /** How a MediaReader reads: under `maxBytes` (lower than its own cap; never higher), with `httpsOnly` refusing http
  *  on the first hop and at every redirect, and following at most `maxRedirects` (0 to 5; default 5). */
@@ -504,7 +504,7 @@ function chargeOfJob(quote: Priced | Unpriced, item: unknown): number | null {
   if (!("holdUsd" in quote)) return null;
   const after = item.status === "completed" ? unitsAfter(quote.unit, item.result) : undefined;
   if (after === undefined) return quote.holdUsd;
-  return usd(quote.unitPrice * (quote.step ? roundedUp(after, quote.unit, quote.step) : after));
+  return micro(quote.unitPrice * (quote.step ? roundedUp(after, quote.unit, quote.step) : after));
 }
 
 /** `units` of `unit` (seconds or minutes) rounded up to a whole `step` of seconds, in `unit`. Rounded to the
@@ -523,7 +523,7 @@ const hex16 = (text: string) => createHash("sha256").update(text).digest("hex").
 /** What a run adds to each key: `.` and 16 hex. */
 const KEY_TAIL = 17;
 /** The longest submission_key an agent can send fal in a run: fal's KEY_MAX less the run's KEY_TAIL. */
-export const KEY_ROOM = KEY_MAX - KEY_TAIL;
+const KEY_ROOM = KEY_MAX - KEY_TAIL;
 
 /** The submission keys of a call of fal's `tool`: its own, and for submit_jobs each request's. */
 const keysOf = (tool: string, args: Record<string, unknown>): unknown[] => [args.submission_key, ...(tool === "submit_jobs" && Array.isArray(args.requests) ? args.requests.map((one: unknown) => (isObject(one) ? one.submission_key : undefined)) : [])];
@@ -635,12 +635,12 @@ export function falMeter({ media, now = Date.now }: { media?: MediaReader; now?:
     const scaled = price.unitPrice * rate.ratio;
     const base = RATE_TIERS.get(job.endpoint)?.base;
     // The tier's rate on the model page: the ratio was decided as that rate over base (rateOf).
-    const page = base === undefined ? undefined : usd(base * rate.ratio);
+    const page = base === undefined ? undefined : micro(base * rate.ratio);
     const moved = base !== undefined && page !== undefined && price.unitPrice !== base && page > scaled;
     const rated = (moved ? page : scaled) + rate.perUnitUsd;
     const drift = moved ? [`(get_pricing states $${price.unitPrice}, not the $${base} its rates were decided at: held at the model page's $${page} per ${oneOf(price.unit)})`] : [];
     const words = [`fal's price for ${job.endpoint}: $${price.unitPrice} per ${oneOf(price.unit)}`, ...rate.words, ...drift, `× ${shown(units.units)} (${units.from})`].join(" ");
-    return { job, holdUsd: usd(rated * units.units), unitPrice: rated, unit: price.unit, at: price.at, words, ...(step ? { step } : {}) };
+    return { job, holdUsd: micro(rated * units.units), unitPrice: rated, unit: price.unit, at: price.at, words, ...(step ? { step } : {}) };
   };
   return {
     bills: falBills,
@@ -651,7 +651,7 @@ export function falMeter({ media, now = Date.now }: { media?: MediaReader; now?:
       const priced = quotes.filter((quote): quote is Priced => "holdUsd" in quote);
       const unpriced = quotes.find((quote): quote is Unpriced => "why" in quote);
       const basis = priced.length ? `${priced.map((quote) => quote.words).join("; ")}, from get_pricing at ${new Date(Math.min(...priced.map((quote) => quote.at))).toISOString()}` : "fal's price for it could not be worked out";
-      const holdUsd = usd(priced.reduce((sum, quote) => sum + quote.holdUsd, 0));
+      const holdUsd = micro(priced.reduce((sum, quote) => sum + quote.holdUsd, 0));
       return {
         holdUsd,
         basis: unpriced && priced.length ? `${basis}; not counting what could not be priced` : basis,
@@ -672,7 +672,7 @@ export function falMeter({ media, now = Date.now }: { media?: MediaReader; now?:
             if (charge === null) return null;
             total += charge;
           }
-          return usd(total);
+          return micro(total);
         },
       };
     },
