@@ -64,9 +64,10 @@ test("the pair body: its code in its one form, a name on one line, and the drive
   assert.deepEqual(fields({ code: "K7PD-W3QX", name: "Mac" }), ["hello"]);
 });
 
-test("a hello of another protocol version is refused in words that say which side to update; the server's own pairs", () => {
+test("a hello of another major protocol version is refused in words that say which side to update; the server's own pairs, and so does one a minor step apart", () => {
   assert.equal(pairRefusal("Ada's Mac", HELLO), undefined);
-  assert.match(pairRefusal("Ada's Mac", { ...HELLO, protocol: "0.1", version: "0.1.4" }), /^Ada's Mac's driver 0\.1\.4 speaks protocol 0\.1, and this server 0\.2: update whichever is older .*then pair with the same code$/);
+  for (const protocol of ["0.1", "0.3"]) assert.equal(pairRefusal("Ada's Mac", { ...HELLO, protocol }), undefined, protocol);
+  assert.match(pairRefusal("Ada's Mac", { ...HELLO, protocol: "1.0", version: "1.0.4" }), /^Ada's Mac's driver 1\.0\.4 speaks protocol 1\.0, and this server 0\.2: update whichever is older .*then pair with the same code$/);
 });
 
 test("a close reason is cut to the 123 bytes a close frame holds, never inside a character", () => {

@@ -71,7 +71,7 @@ test("pair a computer with a code; it is listed as its hello says, offline once 
   assert.equal(pairing.status, 201, JSON.stringify(pairing.body));
   assert.match(pairing.body.code, /^[A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{4}$/);
   assert.equal((await pairDriver({ address, code: "ZZZZ-ZZZZ", name: NAME })).status, 404, "a wrong code");
-  assert.equal((await pairDriver({ address, code: pairing.body.code, name: NAME, hello: { ...DRIVER_HELLO, protocol: "0.1" } })).status, 422, "another protocol version");
+  assert.equal((await pairDriver({ address, code: pairing.body.code, name: NAME, hello: { ...DRIVER_HELLO, protocol: "1.0" } })).status, 422, "another major protocol version");
   const lacking = await pairDriver({ address, code: pairing.body.code, name: NAME, hello: { ...DRIVER_HELLO, groups: ["screen"] } });
   assert.equal(lacking.status, 422, "a hello that serves no kind");
   assert.equal(lacking.body.error.fields?.[0]?.message, `${NAME}'s driver serves no kind: it says desktop but declares no input.pointer, input.keys: update the driver on ${NAME}`);
@@ -90,7 +90,9 @@ test("pair a computer with a code; it is listed as its hello says, offline once 
   assert.deepEqual(await dial(wsUrl, {}), { open: false, status: 401 }, "no token");
   assert.deepEqual(await dial(wsUrl, { authorization: `Bearer art_${"x".repeat(43)}` }), { open: false, status: 401 }, "a token no computer has");
   assert.deepEqual(await dial(wsUrl, { authorization: `Bearer ${TOKEN}` }), { open: false, status: 401 }, "the server's own token is no computer's");
-  assert.deepEqual(await dial(wsUrl, { authorization: `Bearer ${token}` }, "agentrun.computer.0.1"), { open: false, status: 426 }, "another protocol version");
+  assert.deepEqual(await dial(wsUrl, { authorization: `Bearer ${token}` }, "agentrun.computer.1.0"), { open: false, status: 426 }, "another major protocol version");
+  // A driver one minor apart is answered with the subprotocol it asked for: a minor step only adds.
+  for (const minor of ["agentrun.computer.0.1", "agentrun.computer.0.3"]) assert.deepEqual(await dial(wsUrl, { authorization: `Bearer ${token}` }, minor), { open: true, protocol: minor }, minor);
 
   // The driver attaches: the server calls hello, and the computer is listed online as its hello says, and offered as a
   // desktop by its name and os.

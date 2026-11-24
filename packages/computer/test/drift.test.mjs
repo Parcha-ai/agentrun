@@ -354,13 +354,15 @@ test("hello: the provider's version, its kind and exactly its groups, linux, and
 	one(drift(SPEC, inspected(), { ...HELLO, version: "0.0.1" }, EXPECTED), /version 0\.0\.1/);
 });
 
-test("the protocol version rule, written once (helloProblem): exactly this version, older, newer and none refused alike, in the words every hello reader says after whoever answered", () => {
+test("the protocol version rule, written once (helloProblem): this major at any minor works; another major, another shape, a non-string and none are refused, in the words every hello reader says after whoever answered", () => {
 	const { helloProblem } = computer;
-	assert.equal(helloProblem(PROTOCOL_VERSION, "server"), undefined);
-	for (const other of ["0.1", "0.3", "1.0", `${PROTOCOL_VERSION}.0`]) assert.equal(helloProblem(other, "server"), `speaks protocol ${other}, and this server ${PROTOCOL_VERSION}`, other);
-	assert.equal(helloProblem(undefined, "provider"), `speaks protocol undefined, and this provider ${PROTOCOL_VERSION}`);
+	assert.equal(PROTOCOL_VERSION, "0.2", "the rule below is read against 0.2");
+	for (const same of ["0.2", "0.1", "0.3", "0.10"]) assert.equal(helloProblem(same, "server"), undefined, `${same}: a minor step only adds`);
+	for (const other of ["1.0", "1.2", "2", "0.2.0", "v0.2", "", "0."]) assert.equal(helloProblem(other, "server"), `speaks protocol ${other}, and this server 0.2`, other);
+	for (const other of [undefined, null, 0.2, 0, ["0", "2"]]) assert.equal(helloProblem(other, "provider"), `speaks protocol ${String(other)}, and this provider 0.2`, String(other));
 	// The drift list asks the same rule, in its own words.
-	for (const [other, said] of [["0.1", /protocol 0\.1, expected exactly/], ["0.3", /protocol 0\.3, expected exactly/], [undefined, /protocol nothing, expected exactly/]]) one(helloDrift({ ...HELLO, protocol: other }, EXPECTED), said);
+	for (const minor of ["0.1", "0.3"]) assert.deepEqual(helloDrift({ ...HELLO, protocol: minor }, EXPECTED), [], minor);
+	for (const [other, said] of [["1.0", /protocol 1\.0, expected exactly/], [undefined, /protocol nothing, expected exactly/]]) one(helloDrift({ ...HELLO, protocol: other }, EXPECTED), said);
 });
 
 test("every mismatch is listed, not only the first", () => {

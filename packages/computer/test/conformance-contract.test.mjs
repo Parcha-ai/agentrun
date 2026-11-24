@@ -135,15 +135,16 @@ test("the phone harness passes both contract cases through the runner: its PROVI
 	assert.deepEqual(bare.results.find((r) => r.id === "health.no-key-in-errors").undeclared, ["secrets"]);
 });
 
-test("helloDrift: the protocol and the daemon version match the provider's exactly, older or newer, and a hello with no protocol is refused", async () => {
+test("helloDrift: the protocol's major and the daemon version match the provider's, older or newer, and a hello with no protocol is refused", async () => {
 	const { helloDrift } = await import("../dist/drift.js");
 	assert.equal(PROTOCOL_VERSION, "0.2", "the cases below are a 0.2 provider; move them with the version");
 	const expected = { version: "1.2.3", kind: "linux", groups: ["exec", "files", "processes"] };
 	const hello = { protocol: PROTOCOL_VERSION, version: "1.2.3", os: "linux", kind: "linux", arch: "amd64", groups: ["exec", "files", "processes"] };
 	assert.deepEqual(helloDrift(hello, expected), []);
-	// A 0.3 daemon against a 0.2 provider: a minor step ahead is still another wire.
-	assert.deepEqual(helloDrift({ ...hello, protocol: "0.3" }, expected), ["hello: the daemon speaks protocol 0.3, expected exactly 0.2"]);
-	assert.deepEqual(helloDrift({ ...hello, protocol: "0.1" }, expected), ["hello: the daemon speaks protocol 0.1, expected exactly 0.2"]);
+	// A daemon a minor step either way speaks the same wire, with more or less of it: its version still pins the build.
+	assert.deepEqual(helloDrift({ ...hello, protocol: "0.3" }, expected), []);
+	assert.deepEqual(helloDrift({ ...hello, protocol: "0.1" }, expected), []);
+	assert.deepEqual(helloDrift({ ...hello, protocol: "1.0" }, expected), ["hello: the daemon speaks protocol 1.0, expected exactly 0.2"]);
 	const { protocol: _protocol, ...unversioned } = hello;
 	assert.deepEqual(helloDrift(unversioned, expected), ["hello: the daemon speaks protocol nothing, expected exactly 0.2"]);
 	// The daemon's own version: a patch either way is refused, as is a prerelease tag.
