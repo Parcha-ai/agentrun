@@ -1,6 +1,7 @@
 // Ollama models on every harness of Anthropic's Messages (claude-agent, Goose, a harness module on that wire), on the
 // runner's own translation (runner/model-route.ts), as pi runs them. The rule is data (wires.ts TRANSLATED): a model's
-// provider names the wires the route translates it onto, and a harness on one of them runs it, whatever its id. Its
+// provider names the wires the route translates it onto, and a harness on one of them that forwards with the route's fetch
+// (its forwardsRoute fact) runs it, whatever its id; one that does not say so runs none. Its
 // requests go to the route's origin with no key, through the route's fetch: native /api/chat, options.num_ctx, its tools
 // as text where it takes them so, $0, and never counted toward the free-model limit. What a Messages client asks beyond
 // pi-ai is answered in the translation: its token count, an answer not streamed, every model id it sends (its small
@@ -18,13 +19,14 @@ import { facts as claudeFacts } from "@parcha/agentrun-harness-claude/facts";
 import * as adapters from "../dist/adapters.js";
 import { fakeOllama } from "./fixtures/fake-ollama.mjs";
 import { installGoose, needsGoose } from "./fixtures/goose-installed.mjs";
-import { messagesLaunches, messagesModule, MESSAGES_MODULE } from "./fixtures/messages-module.mjs";
+import { MESSAGES_BARE, messagesLaunches, messagesModule, MESSAGES_MODULE } from "./fixtures/messages-module.mjs";
 import { agent, follow, harnessData, runDir, scratch, serve, serverLog, withEnv } from "./support.mjs";
 
 const { HarnessUnavailable, modelOn, providerFor } = await import("../dist/provider.js");
 const { harnessOf, HARNESS_MODULES_ENV } = await import("../dist/harness-table.js");
 const { routed, WIRES } = await import("../dist/wires.js");
 const { cliCapModel, factsOn } = await import("../dist/runner/cli-run-spec.js");
+const { hostModel } = await import("../dist/model.js");
 const { TOOL_PLANE_ENV } = await import("../dist/tool-plane.js");
 
 // The suites turn every Ollama off (support.mjs, OLLAMA_OFF_ENV); this file asks its own fakes alone.
@@ -81,6 +83,25 @@ test("on every harness of the wire, built-in or a module's, an Ollama model's pr
   // Behind serve's gateway every request is the gateway's: no route of serve's own, so an Ollama model is refused there.
   const gateway = { ...env, AGENT_MODEL_BASE_URL: "http://127.0.0.1:9/v1", AGENT_MODEL: "synth-gateway", AGENT_MODEL_API_KEY: "fake-test-key" };
   for (const id of ["claude-agent", MESSAGES_MODULE]) assert.throws(() => providerFor(MESSAGES, gateway, ollamaRef(TOOLS), id), (error) => error instanceof HarnessUnavailable, `${id} behind the gateway`);
+});
+
+test("a harness module on Messages that does not say it forwards the route (no forwardsRoute fact: one that ignores the fetch it is handed) runs no Ollama model: none is its default, its words say to add a key and never to start Ollama, and one named is refused before a run", async (t) => {
+  withEnv(t, {}, KEYS);
+  const ollama = await fakeOllama(t);
+  const dir = await scratch(t);
+  const modules = [messagesModule(dir), messagesModule(dir, { id: MESSAGES_BARE, forwardsRoute: false })];
+  const env = { OLLAMA_HOST: ollama.host, AGENTRUN_SERVE_DATA: await scratch(t), [HARNESS_MODULES_ENV]: JSON.stringify(modules) };
+  const tag = `ollama/${TOOLS}`;
+  // The module that says so, beside it: the same Ollama, the same listing, its default.
+  assert.equal(harnessOf(env, MESSAGES_MODULE).runs(env, tag), true);
+  assert.deepEqual((await modelOn(MESSAGES, env, undefined, MESSAGES_MODULE)).model, ollamaRef(TOOLS));
+  // Before: every harness on the wire ran a model the route translates, whether it forwards with the route's fetch or not.
+  assert.equal(harnessOf(env, MESSAGES_BARE).runs(env, tag), false, "no Ollama model is offered to it");
+  assert.equal(hostModel(env, "default", MESSAGES_BARE), undefined, "nor taken as its default");
+  const { model, why } = await modelOn(MESSAGES, env, undefined, MESSAGES_BARE);
+  assert.equal(model, undefined, JSON.stringify(model));
+  assert.match(why, /^No model yet for messages-bare: add an OpenRouter or Anthropic key/, why);
+  assert.throws(() => providerFor(MESSAGES, env, ollamaRef(TOOLS), MESSAGES_BARE), (error) => error instanceof HarnessUnavailable && /runs Anthropic models; the run's model is ollama\//.test(error.message), "named, it gets no route it would not use");
 });
 
 test("a harness module on Messages is handed the route's fetch: its requests reach the fake's /api/chat with num_ctx, its tools native on a tools model and as text on one without", async (t) => {
