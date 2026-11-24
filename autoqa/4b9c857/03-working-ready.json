@@ -1,0 +1,31 @@
+{
+  "run_A": {
+    "id": "01a20ebd-d77e-7000-9077-9929549504e6",
+    "status": "working",
+    "computer": {
+      "kind": "desktop",
+      "provider": "faux-desktop",
+      "state": "ready"
+    }
+  },
+  "computers_running": [
+    {
+      "run_id": "01a20ebd-d78f-7000-a59b-16a9094f038e",
+      "computer": {
+        "kind": "desktop",
+        "provider": "faux-desktop",
+        "state": "ready"
+      },
+      "status": "working"
+    },
+    {
+      "run_id": "01a20ebd-d77e-7000-9077-9929549504e6",
+      "computer": {
+        "kind": "desktop",
+        "provider": "faux-desktop",
+        "state": "ready"
+      },
+      "status": "working"
+    }
+  ]
+}

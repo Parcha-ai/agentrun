@@ -1,0 +1,49 @@
+[
+  {
+    "id": 1,
+    "what": "health",
+    "result": "PASS"
+  },
+  {
+    "id": 2,
+    "what": "OpenAPI computer.state enum has released",
+    "result": "PASS"
+  },
+  {
+    "id": 3,
+    "what": "working run: computer ready, listed in GET /v2/computers/running",
+    "result": "PASS"
+  },
+  {
+    "id": 4,
+    "what": "UI Running now lists the working runs",
+    "result": "PASS"
+  },
+  {
+    "id": 5,
+    "what": "UI Screen tab: viewer takes no focus on load; Tab leaves it while the agent drives",
+    "result": "PASS",
+    "note": "after the viewer: div[aria-label=The run's steps][role=region] 06:07 PMPhaseRecording the desktop's scr"
+  },
+  {
+    "id": 6,
+    "what": "stopped run: computer released, not listed",
+    "result": "PASS"
+  },
+  {
+    "id": 7,
+    "what": "parked run (question, no keep under --faux): computer released, not listed",
+    "result": "PASS"
+  },
+  {
+    "id": 8,
+    "what": "UI Running now empty once the desktop is released",
+    "result": "PASS"
+  },
+  {
+    "id": 9,
+    "what": "recordings: run's computers in the order they started; header carries the start",
+    "result": "PASS",
+    "note": "faux-desktop-1@2026-11-24T18:07:32.000Z, faux-desktop-3@2026-11-24T18:07:36.000Z"
+  }
+]

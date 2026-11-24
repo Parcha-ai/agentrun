@@ -1,0 +1,2 @@
+GET /v2/openapi.json -> 200
+match: "enum":["starting","ready","taken_over","released","ended","failed"]

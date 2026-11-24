@@ -1,0 +1,14 @@
+{
+  "run_A": {
+    "id": "01a20ebd-d77e-7000-9077-9929549504e6",
+    "status": "input_required",
+    "computer": {
+      "kind": "desktop",
+      "provider": "faux-desktop",
+      "state": "released"
+    }
+  },
+  "computers_running": {
+    "runs": []
+  }
+}

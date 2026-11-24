@@ -1,0 +1,22 @@
+{
+  "run_A": "01a20ebd-d77e-7000-9077-9929549504e6",
+  "status": "completed",
+  "recordings": [
+    {
+      "path": "recordings/faux-desktop-1.mp4",
+      "computer": "faux-desktop-1",
+      "seconds": 1.5,
+      "finished": true,
+      "header_start": "2026-11-24T18:07:32.000Z",
+      "file_found": true
+    },
+    {
+      "path": "recordings/faux-desktop-3.mp4",
+      "computer": "faux-desktop-3",
+      "seconds": 0,
+      "finished": true,
+      "header_start": "2026-11-24T18:07:36.000Z",
+      "file_found": true
+    }
+  ]
+}

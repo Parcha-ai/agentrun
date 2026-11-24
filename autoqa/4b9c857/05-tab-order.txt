@@ -1,0 +1,15 @@
+focus after load: button[role=tab] Screen
+Tab sequence from the Screen tab:
+0: button[role=tab] Screen
+1: button[title=Fill the window][aria-label=Fill the window] 
+2: button Take over
+3: iframe[title=The run's screen] 
+4: iframe[title=The run's screen] 
+5: div[aria-label=The run's steps][role=region] 06:07 PMPhaseRecording the desktop's scr
+6: textarea 
+7: body Skip to the pageagent.run()agent.run() M
+8: button Skip to the page
+9: button[aria-label=AgentRun home] agent.run()
+10: button Mission Control
+11: button API playground
+12: button Agents

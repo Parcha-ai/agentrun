@@ -1,0 +1,23 @@
+{
+  "stop": {
+    "status": 200,
+    "body": {
+      "run_id": "01a20ebd-d78f-7000-a59b-16a9094f038e",
+      "stopped": true,
+      "status": "working",
+      "state": "working"
+    }
+  },
+  "run_B": {
+    "id": "01a20ebd-d78f-7000-a59b-16a9094f038e",
+    "status": "input_required",
+    "computer": {
+      "kind": "desktop",
+      "provider": "faux-desktop",
+      "state": "released"
+    }
+  },
+  "computers_running": [
+    "01a20ebd-d77e-7000-9077-9929549504e6"
+  ]
+}
