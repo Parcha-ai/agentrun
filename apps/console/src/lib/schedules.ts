@@ -41,8 +41,9 @@ export const inputText = (input: Record<string, unknown>): ParameterText =>
 
 /** The input a trigger's run is given, or what is wrong with it under `target.input`: the message alone; the message
  *  (optional when the agent's schema requires another field) and the typed fields; or, for a schema the fields can't
- *  show, the whole input as JSON, an object. An edited trigger keeps what the form doesn't show of its input as read (a
- *  key no field has, or a field's value it can't show) and sends a field or message left as read as stored. */
+ *  show, the whole input as JSON, an object. An edited trigger's input starts as read, and only a field or the message
+ *  whose text was changed is taken from the form: a key no field has, a value a field can't show, and a field the
+ *  schema now requires but the input never had all go as stored until edited, so a rename never changes the input. */
 export function targetInputOf(d: { content: string } & InputDraft, issues: Record<string, string>): Record<string, unknown> {
   const read = d.inputRead ?? {};
   const shape = d.shape;
@@ -56,19 +57,18 @@ export function targetInputOf(d: { content: string } & InputDraft, issues: Recor
   }
   if (shape?.kind === "fields") {
     if (shape.form.contentRequired && !d.content.trim()) issues["target.input"] = "Say what each run is asked.";
-    const owned = new Set(shape.form.fields.filter(([k]) => !Object.hasOwn(read, k) || fieldShows(read[k])).map(([k]) => k));
     const typed = d.values ?? fieldStartText(shape.form);
-    // A key no field has always stays as stored. A field's stored value it can't show stays until the field is typed in:
-    // a required field left empty would otherwise go as "", [] or false in its place.
-    const fields = new Set(shape.form.fields.map(([k]) => k));
-    const kept = Object.fromEntries(Object.entries(read).filter(([k]) => k !== "content" && !owned.has(k) && !(fields.has(k) && typed[k])));
-    // A field still as it was read sends its value as stored: its text is a list one item a line, trimmed, with blank
-    // items and an empty optional value left out, so rebuilding the value from the text could change it (["a\nb", ""]
-    // would go back as ["a", "b"]). So does a message left as read.
+    const fromForm = inputOf(shape.form, d.content, typed);
+    if (!d.inputRead) return fromForm;
+    // A value rebuilt from a field's text can differ from the one stored (a list's text is trimmed, its blank items
+    // dropped: ["a\nb", ""] would go back as ["a", "b"]), so only a field whose text changed is rebuilt. A field's
+    // text as read is "" for a value it can't show or none.
     const asRead = inputText(read);
-    const untouched = Object.fromEntries([...owned].filter((k) => Object.hasOwn(asRead, k) && typed[k] === asRead[k]).map((k) => [k, read[k]]));
-    const message = typeof read.content === "string" && d.content === read.content ? { content: read.content } : {};
-    return { ...inputOf(shape.form, d.content, typed), ...kept, ...untouched, ...message };
+    const input: Record<string, unknown> = { ...read };
+    const take = (k: string) => { if (Object.hasOwn(fromForm, k)) input[k] = fromForm[k]; else delete input[k]; };
+    for (const [k] of shape.form.fields) if ((typed[k] ?? "") !== (asRead[k] ?? "")) take(k);
+    if (d.content !== (typeof read.content === "string" ? read.content : "")) take("content");
+    return input;
   }
   if (!d.content.trim()) issues["target.input"] = "Say what each run is asked.";
   return { ...read, content: d.content };
