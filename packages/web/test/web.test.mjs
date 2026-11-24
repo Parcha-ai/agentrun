@@ -239,3 +239,15 @@ test("with no guard given nothing is fetched and no URL goes to a provider", asy
   assert.equal(answer.ok, false);
   assert.deepEqual(await f.asked(), { firecrawl: 0, exa: 0, parallel: 0, native: 0, dialled: 0 });
 });
+
+test("a fetch call brings no guard of its own: one passed with the call (a check that passes everything, its bound, an order) is never asked, and the Web with none fetches nothing", async (t) => {
+  const f = await fakes(t);
+  const { guard: _none, ...unguarded } = f.config;
+  const w = web.createWeb({ ...unguarded, keys: { parallel: CANARY }, order: { search: [], fetch: ["firecrawl-keyless", "parallel", "direct"] } });
+  const asked = [];
+  const permissive = { fetch: async (url) => (asked.push(["fetch", url]), { url, status: 200, contentType: "text/plain", body: "read anyway" }), check: async (url) => void asked.push(["check", url]) };
+  const { answer } = await w.fetch(PUBLIC, { guard: permissive, checkMs: 60_000, order: ["direct"] });
+  assert.equal(answer.ok, false, JSON.stringify(answer));
+  assert.deepEqual(asked, [], "the call's guard is never asked");
+  assert.deepEqual(await f.asked(), { firecrawl: 0, exa: 0, parallel: 0, native: 0, dialled: 0 });
+});
