@@ -10,7 +10,7 @@ import { clip, type Page, type Part, partProblem, URL_MAX } from "./page.js";
 import { holdingWords, type NativeSearch, type ProviderRun, readerOf } from "./provider.js";
 import type { Words } from "./providers/mcp.js";
 import { type FetchProvider, type KeyedProvider, type ProviderId, providerOf, type ProviderSettings, type SearchProvider, settingsProblemsOf } from "./providers/registry.js";
-import { type Breaker, breakers, fitSearch, type Holding, withKeyBreaker, QUERY_MAX, type Search, type SearchBounds, searchArgs, searchInTurn, searchText, type Try } from "./search.js";
+import { type Breaker, breakers, fitSearch, type Holding, type Limit, withKeyBreaker, QUERY_MAX, type Search, type SearchBounds, searchArgs, searchInTurn, searchText, type Try } from "./search.js";
 
 /** What an answer took and cost. `out` is the answer as the model reads it; `cache` is "hit" when a fetch came from the
  *  run's pages. */
@@ -46,6 +46,11 @@ export type WebConfig = {
   now?: () => number;
   bounds?: SearchBounds & { checkMs?: number; decideMs?: number };
   log?: WebLog;
+  /** Holds known before the Web is made (Hold): each holds its breaker from the start, the Web's and a call's own alike;
+   *  one already over holds nothing. */
+  holds?: readonly Hold[];
+  /** Given each limit a breaker reads that leaves it holding (Hold): the tool's, or its key's. */
+  onHold?: (hold: Hold) => void;
   /** Sifts each search's results and judges each fetched part; none: nothing is sifted, as before the step. */
   decider?: WebDecider;
   /** How a search's results reach the model once the decider has scored them ("drop" by default); checked when the
@@ -68,6 +73,9 @@ export type Sift = { sift?: string };
  *  run holds no key for, so never sent; `keyless`, a service's free use; `none`, neither: the model provider's own search
  *  or the guarded direct fetch), and what holds it now (the tool's breaker, else its key's), if anything. */
 export type Destination = { id: ProviderId; access: "keyed" | "unkeyed" | "keyless" | "none"; held?: Holding };
+/** A provider's breaker for `tool` ("key": its key's, across both tools) holding as `kind` until `until` (epoch ms;
+ *  Infinity: for the Web's life). */
+export type Hold = { provider: ProviderId; tool: "search" | "fetch" | "key"; kind: Limit["kind"]; until: number };
 /** Each tool's providers, in the order it asks them. */
 export type Destinations = { search: Destination[]; fetch: Destination[] };
 /** `destinations`: where each tool goes now (Destinations), for a run's start line; never a key. */
@@ -108,6 +116,31 @@ export function createWeb(config: WebConfig): Web {
   // Each provider's own across both tools: a quota of the whole key holds web_search and web_fetch alike.
   const keyBreakers = breakers(now);
   const pages: Pages = new Map();
+  // Each breaker takes the holds known at the start once, at its first use: the Web's, and each a call brings.
+  const seeded = new WeakSet<Breaker>();
+  const watched = (tool: Hold["tool"], provider: ProviderId, breaker: Breaker): Breaker => {
+    if (!seeded.has(breaker)) {
+      seeded.add(breaker);
+      for (const hold of config.holds ?? []) {
+        const at = now();
+        if (hold.provider !== provider || hold.tool !== tool || !(hold.until > at)) continue;
+        const limit: Limit = hold.until === Number.POSITIVE_INFINITY ? { kind: hold.kind } : { kind: hold.kind, retryAfter: (hold.until - at) / 1_000 };
+        breaker.read({ answer: { error: "held" }, limit });
+      }
+    }
+    if (!config.onHold) return breaker;
+    const onHold = config.onHold;
+    return {
+      ...breaker,
+      read(searched) {
+        const answer = breaker.read(searched);
+        const holding = searched.limit ? breaker.holding() : undefined;
+        if (holding) onHold({ provider, tool, ...holding });
+        return answer;
+      },
+    };
+  };
+  const toolBreaker = (tool: "search" | "fetch", id: ProviderId, own: Breaker, key: Breaker): Breaker => withKeyBreaker(watched(tool, id, own), watched("key", id, key));
   // A fee goes on the call's receipt once its request is sent, whatever the cap then books.
   const pay: Pay = (fee, send) => (config.pay ?? unmetered)(fee, () => (feesOfCall.getStore()?.push(fee), send()));
 
@@ -139,21 +172,21 @@ export function createWeb(config: WebConfig): Web {
   };
   let readers: Readers | undefined;
   // A provider that ends the order is made by webRead for each read, never here.
-  const readersOf = (): Readers => (readers ??= Object.fromEntries(config.order.fetch.filter((id) => !providerOf(id).fetch?.ends).map((id) => [id, readerOf(runOf(id), withKeyBreaker(fetchBreakers(id), keyBreakers(id)))])));
+  const readersOf = (): Readers => (readers ??= Object.fromEntries(config.order.fetch.filter((id) => !providerOf(id).fetch?.ends).map((id) => [id, readerOf(runOf(id), toolBreaker("fetch", id, fetchBreakers(id), keyBreakers(id)))])));
 
-  const destinationOf = (id: ProviderId, own: (name: string) => Breaker): Destination => {
+  const destinationOf = (id: ProviderId, tool: "search" | "fetch", own: (name: string) => Breaker): Destination => {
     const provider = providerOf(id);
     const keyed = (config.keys as Partial<Record<string, string>> | undefined)?.[id] !== undefined;
     const access = provider.key ? (keyed ? "keyed" : "unkeyed") : provider.keyless ? "keyless" : "none";
-    const held = withKeyBreaker(own(id), keyBreakers(id)).holding();
+    const held = toolBreaker(tool, id, own(id), keyBreakers(id)).holding();
     return { id, access, ...(held ? { held } : {}) };
   };
 
   return {
-    destinations: () => ({ search: config.order.search.map((id) => destinationOf(id, runBreakers)), fetch: config.order.fetch.map((id) => destinationOf(id, fetchBreakers)) }),
+    destinations: () => ({ search: config.order.search.map((id) => destinationOf(id, "search", runBreakers)), fetch: config.order.fetch.map((id) => destinationOf(id, "fetch", fetchBreakers)) }),
     async search(query, { n, signal, breakers: given, keyLimits = given ? "call" : "web", task } = {}) {
       const ownOf = given ?? runBreakers;
-      const breakerOf = (name: string) => withKeyBreaker(ownOf(name), keyLimits === "web" ? keyBreakers(name) : ownOf(`${name} key`));
+      const breakerOf = (name: string) => toolBreaker("search", name as ProviderId, ownOf(name), keyLimits === "web" ? keyBreakers(name) : ownOf(`${name} key`));
       const lines: Fee[] = [];
       const tries: Try[] = [];
       const ask = searchArgs({ query, ...(n === undefined ? {} : { n }) });

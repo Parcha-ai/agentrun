@@ -4216,6 +4216,15 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
           default_provider: { type: "string", description: "A tool with a provider choice: the built-in default.", "x-agentrun-serve": "providers/1" },
           resolves: { ...RESOLVES, "x-agentrun-serve": "providers/1" },
           why: { ...WHY, "x-agentrun-serve": "providers/1" },
+          held: {
+            type: "array",
+            description: "web_search and web_fetch alone, read at each answer: what holds a keyless provider the tool asks where it resolves on some harness (firecrawl-keyless, exa-keyless), for this whole server, because a run met its limit: the tool's own hold, or its key's, across both tools (`tool`: key). Each says its kind (rate-limited or out of quota), until when, and both in words. A held provider is not asked until then; the tool goes on to the next in its order (the guarded direct fetch for web_fetch). Kept in the server's memory alone: a restart forgets them. Absent when nothing holds the tool.",
+            items: {
+              type: "object", additionalProperties: false, required: ["provider", "tool", "kind", "until", "words"],
+              properties: { provider: { type: "string" }, tool: { enum: ["search", "fetch", "key"] }, kind: { enum: ["quota", "rate"] }, until: { type: "string", format: "date-time" }, words: { type: "string", examples: ["rate-limited until 12:01 UTC"] } },
+            },
+            "x-agentrun-serve": "held/1",
+          },
           permission: { ...PERMISSION, description: "The server's permission of the tool: its setting, else the owner's default.", "x-agentrun-serve": "approvals/1" },
           default_permission: { enum: [...PERMISSIONS], description: "The owner's default: allow for this server's tools, ask for a catalog tool.", "x-agentrun-serve": "approvals/1" },
           permissions: { type: "array", items: { enum: [...PERMISSIONS] }, description: "The permissions it may be set to.", "x-agentrun-serve": "approvals/1" },

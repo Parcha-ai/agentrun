@@ -9,7 +9,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { test } from "node:test";
+import { beforeEach, test } from "node:test";
 import { bookedIn } from "../dist/paid-calls.js";
 import { TOOLS } from "../dist/tools.js";
 import { TOOL_PLANE_ENV } from "../dist/tool-plane.js";
@@ -20,6 +20,10 @@ import { outcomeOf } from "../dist/timeline/labels.js";
 import { resetFauxExa } from "./fixtures/faux-exa.mjs";
 import { CANARY, resetFauxParallel } from "./fixtures/faux-parallel.mjs";
 import { FAUX, scratch, toolLedger, withEnv } from "./support.mjs";
+import { forgetHolds } from "../dist/web-holds.js";
+
+// Each case starts as on a server just started: no keyless hold a case before it met (web-holds.ts).
+beforeEach(() => forgetHolds());
 
 /** What every web_search call of a run answers once its provider said the run is out of quota. */
 const UNAVAILABLE = "search is unavailable for the rest of this run; answer from what you have";

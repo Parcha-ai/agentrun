@@ -20,6 +20,7 @@ import { registerRunErrors } from "./run-errors.js";
 import { remoteSaveSlots } from "./save-slots.js";
 import { runEnv } from "./main.js";
 import { carriedLedger } from "../paid-calls.js";
+import { reportHoldsTo } from "../web-holds.js";
 import { heldHands, type ComputerHold, type HoldAsk, type HoldEvent, type HoldState } from "../workspace/computer-hold.js";
 import type { ClaimComputer } from "../workspace/computer-for-claim.js";
 import type { AdapterSpecDeps } from "./adapter-run-spec.js";
@@ -54,6 +55,9 @@ const channel = new Channel(socket, {
   // computer's) books on the run's one ledger, as it would in the run's own process.
   context: carriedLedger,
 });
+// A keyless hold the run meets is the server's (web-holds.ts): handed to the runner, whose server keeps it. An end JSON
+// cannot carry (none named) goes as null.
+reportHoldsTo((hold) => channel.post("runner", "webHold", [{ ...hold, until: Number.isFinite(hold.until) ? hold.until : null }]));
 
 /** A journal's reads for run `runId`, each `call(read, args)` to the runner with the arguments the caller gave but its
  *  context (the runner reads with its own: run-child-host.ts readOf). */

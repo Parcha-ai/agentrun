@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { test } from "node:test";
+import { beforeEach, test } from "node:test";
 import { bookedCapSpend } from "../dist/runner/metrics.js";
 import { bookedIn } from "../dist/paid-calls.js";
 import { parallelExtract, webFetch } from "./fixtures/serve-web.mjs";
@@ -24,6 +24,10 @@ import fakeParallel, { CANARY } from "./fixtures/faux-parallel.mjs";
 import fakeExa, { EXA_LIMIT_TEXT, resetFauxExa } from "./fixtures/faux-exa.mjs";
 import { network } from "./fixtures/fake-network.mjs";
 import { FAUX, follow, journalOf, paidBookings, paidCallsOf, runDir, scratch, serve, toolLedger, withEnv } from "./support.mjs";
+import { forgetHolds } from "../dist/web-holds.js";
+
+// Each case starts as on a server just started: no keyless hold a case before it met (web-holds.ts).
+beforeEach(() => forgetHolds());
 
 const searches = { ...web, ...(await import("../dist/web-search.js")) };
 /** Parallel's search as the model reads it: parallelSearched's answer, its limit left to the breaker. */

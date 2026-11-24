@@ -77,6 +77,7 @@ import { registerRunErrors } from "./run-errors.js";
 import { exposeSaveSlots } from "./save-slots.js";
 import { type RunBigWrites, runBigWrites } from "./big-writes.js";
 import { type SaveSlots, SERVER_SLOTS } from "../web-save.js";
+import { holdsEnv, noteHold } from "../web-holds.js";
 import { launchOnItsDisk, readLaunchBody, type RunLaunch } from "../run-launch.js";
 import { SUBAGENT_TOOL } from "./subagent.js";
 import type { AlsoRow, JournalReads, Store } from "../store/store.js";
@@ -1243,7 +1244,8 @@ function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, loopDep
             argv = [isolation.helper, "run", String(slot), "--keep-fd", "3", "--keep-fd", "4", "--", ...argv];
           }
           // The saved gateway's address and models go as plain variables (childEnv), and its mark says they are the saved one.
-          const env = childEnv(claimEnv, keys, savedGateway ? { ...extra, [SAVED_GATEWAY_ENV]: "1" } : extra);
+          // The server's keyless holds now (web-holds.ts), so the run's Web starts with them: hold data alone.
+          const env = childEnv(claimEnv, keys, { ...extra, ...holdsEnv(), ...(savedGateway ? { [SAVED_GATEWAY_ENV]: "1" } : {}) });
           const [program, ...rest] = argv;
           child = spawn(program!, rest, { stdio: ["ignore", "inherit", "inherit", "pipe", "pipe"], env, detached: true });
           exited = new Promise((resolve) => {
@@ -1283,6 +1285,8 @@ function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, loopDep
                 return undefined;
               case "log":
                 return void log(String(args[0]));
+              case "webHold":
+                return void noteHold(args[0]);
               default:
                 throw new ClaimRefused(`the runner has no ${method} for a run`);
             }

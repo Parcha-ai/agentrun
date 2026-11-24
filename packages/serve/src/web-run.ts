@@ -12,6 +12,7 @@ import { FAUX_ENV } from "./model.js";
 import { paidRequest } from "./paid-calls.js";
 import { logLine } from "./print.js";
 import { planeOf } from "./tool-plane.js";
+import { activeHolds, type HeldView, heldViewOf, holdsFromEnv, reportHold } from "./web-holds.js";
 
 /** pi-browser's guard and reader, loaded at the first fetch, so a run that never fetches never loads pi-browser. */
 export const GUARD: Guard = {
@@ -64,14 +65,27 @@ const FAUX_FAKES: Readonly<Partial<Record<string, string>>> = { "firecrawl-keyle
 
 /** The search order a resolution of web_search names, under no --faux; none for one that runs no search. */
 export const searchChainOf = (resolved: string | undefined): readonly SearchProvider[] => (resolved !== undefined && Object.hasOwn(SEARCH_CHAINS, resolved) ? SEARCH_CHAINS[resolved]! : []);
+/** The fetch order a resolution of web_fetch names, under no --faux: the guarded direct fetch alone for any other. */
+export const fetchChainOf = (resolved: string | undefined): readonly FetchProvider[] => (resolved !== undefined && Object.hasOwn(FETCH_CHAINS, resolved) ? FETCH_CHAINS[resolved]! : ["direct"]);
+
+/** `tools`, GET /capabilities' (cached), each web tool with `held`, read live: the server's holds at `now` on any provider
+ *  it asks where it resolves on some harness, or on that provider's key (web-holds.ts). None held, no field. */
+export function withHeld<T extends { name: string; resolves?: Readonly<Record<string, string>> }>(tools: readonly T[], now: number = Date.now()): (T | (T & { held: HeldView[] }))[] {
+  return tools.map((tool) => {
+    const op = tool.name === "web_search" ? "search" : tool.name === "web_fetch" ? "fetch" : undefined;
+    if (!op || !tool.resolves) return tool;
+    const asked = new Set(Object.values(tool.resolves).flatMap((resolved): readonly string[] => (op === "search" ? searchChainOf(resolved) : fetchChainOf(resolved))));
+    const held = heldViewOf(op, asked, now);
+    return held.length ? { ...tool, held } : tool;
+  });
+}
 
 /** The providers each web tool asks where the run's plane resolves it. Under --faux, a keyless provider the server names
  *  no fake for is left out, so a test never reaches the network. */
 export function ordersOf(env: NodeJS.ProcessEnv): { search: SearchProvider[]; fetch: FetchProvider[] } {
   const { web_search: search, web_fetch: fetch } = planeOf(env);
   const faked = (id: string) => !env[FAUX_ENV] || FAUX_FAKES[id] === undefined || Boolean(env[FAUX_FAKES[id]!]);
-  const fetchChain = fetch !== undefined && Object.hasOwn(FETCH_CHAINS, fetch) ? FETCH_CHAINS[fetch]! : ["direct" as const];
-  return { search: searchChainOf(search).filter(faked), fetch: fetchChain.filter(faked) };
+  return { search: searchChainOf(search).filter(faked), fetch: fetchChainOf(fetch).filter(faked) };
 }
 
 /** One Web for each environment a run's calls are given (main's run process hands process.env; the runner hands each
@@ -79,8 +93,10 @@ export function ordersOf(env: NodeJS.ProcessEnv): { search: SearchProvider[]; fe
 const webs = new WeakMap<NodeJS.ProcessEnv, Web>();
 
 /** The run's Web. Each keyed provider either web tool asks has its key read here, once, from the variable its registry
- *  entry names. Made, it writes the run's one start line, web_destinations: each tool's order, keyed or keyless, and any
- *  hold known then; never a key. `bounds` applies to the Web this call makes (a test's). */
+ *  entry names. It starts with the server's keyless holds (web-holds.ts: its spawn environment's, and the server's own
+ *  where it runs in the server), and hands each hold it meets back (reportHold), each logged as web_provider_held. Made,
+ *  it writes the run's one start line, web_destinations: each tool's order, keyed or keyless, and any hold known then;
+ *  never a key. `bounds` applies to the Web this call makes (a test's). */
 export function webOf(env: NodeJS.ProcessEnv, bounds?: SearchBounds): Web {
   let web = webs.get(env);
   if (web) return web;
@@ -106,6 +122,11 @@ export function webOf(env: NodeJS.ProcessEnv, bounds?: SearchBounds): Web {
     words: { rateLimited: RATE_LIMITED },
     ...(bounds ? { bounds } : {}),
     log: (event, fields) => serverLog(logLine(event, fields)),
+    holds: [...holdsFromEnv(env), ...activeHolds()],
+    onHold: (hold) => {
+      serverLog(logLine("web_provider_held", { provider: hold.provider, tool: hold.tool, kind: hold.kind, until: Number.isFinite(hold.until) ? new Date(hold.until).toISOString() : "run" }));
+      reportHold(hold);
+    },
   });
   webs.set(env, web);
   serverLog(logLine("web_destinations", destinationsWords(web.destinations())));

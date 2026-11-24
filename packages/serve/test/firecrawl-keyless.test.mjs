@@ -8,7 +8,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { test } from "node:test";
+import { beforeEach, test } from "node:test";
 import { explainCapability, planeFor, PROVIDERS, TOOL_PLANE_ENV } from "../dist/tool-plane.js";
 import { FAUX_FIRECRAWL_ENV, ordersOf, RATE_LIMITED } from "../dist/web-run.js";
 import { firecrawlFetch, firecrawlScrape, firecrawlSearch } from "@parcha/agentrun-web";
@@ -21,6 +21,10 @@ import { firecrawlServer, FIRECRAWL_SIGNUP, PAGE, refusal, answers } from "./fix
 import { resetFauxExa } from "./fixtures/faux-exa.mjs";
 import { network } from "./fixtures/fake-network.mjs";
 import { FAUX, scratch, withEnv } from "./support.mjs";
+import { forgetHolds } from "../dist/web-holds.js";
+
+// Each case starts as on a server just started: no keyless hold a case before it met (web-holds.ts).
+beforeEach(() => forgetHolds());
 
 const fixture = (name) => new URL(`./fixtures/${name}`, import.meta.url).pathname;
 const PUBLIC = "http://public.example/";
@@ -102,7 +106,7 @@ test("a fetch is one tools/call of firecrawl_scrape with {url, formats: [markdow
 });
 
 for (const where of ["text", "structured"]) {
-  test(`KEYLESS_QUOTA_EXHAUSTED (in its ${where}): Exa answers that same call, the run's next call skips Firecrawl, and a new run asks Firecrawl again`, async (t) => {
+  test(`KEYLESS_QUOTA_EXHAUSTED (in its ${where}): Exa answers that same call, the run's next call skips Firecrawl, a new run starts held, and after a restart a new run asks Firecrawl again`, async (t) => {
     const fc = await firecrawlServer(t, (name) => (name === "firecrawl_search" ? refusal("KEYLESS_QUOTA_EXHAUSTED", { where }) : answers(name)));
     const { env, exaSearches } = await keyless(t, fc.url);
     const search = searchRun(env);
@@ -114,9 +118,12 @@ for (const where of ["text", "structured"]) {
     assert.equal(second.provider, "exa-keyless");
     assert.equal(fc.calls("firecrawl_search"), 1, "Firecrawl is off for the rest of the run: no second call reached it");
     assert.equal(await exaSearches(), 2);
-    // Another run's binding starts with its breakers closed.
-    await searchRun(env)("widgets");
-    assert.equal(fc.calls("firecrawl_search"), 2, "a new run asks Firecrawl again");
+    // The quota is the host's (web-holds.ts): a new run starts with it, until the server forgets it at a restart.
+    await searchRun({ ...env })("widgets");
+    assert.equal(fc.calls("firecrawl_search"), 1, "a new run starts held");
+    forgetHolds();
+    await searchRun({ ...env })("widgets");
+    assert.equal(fc.calls("firecrawl_search"), 2, "after a restart a new run asks Firecrawl again");
   });
 }
 
