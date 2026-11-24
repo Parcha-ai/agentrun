@@ -32,15 +32,27 @@ function firstPick(runnable: RaceHarness[], i: number): LaneChoice {
 const refused = (e: unknown): e is ClientError =>
   e instanceof ClientError && e.status >= 400 && e.status < 500 && e.code !== "http_error" && !e.code.startsWith("idempotency_");
 
-/** Makes a lane's agent, or finds it made: its id is already here only when an earlier send of this same lane made it
- *  and the answer was lost (laneStart). */
-async function laneAgent(v2: Pick<Client, "createAgent">, agent: LaneStart["agent"]): Promise<void> {
+/** Makes a lane's agent, or finds it made, and answers its first revision, the one the lane's run runs. Its id is already
+ *  here only when an earlier send of this same lane made it (laneStart), so its version 1 is that send's definition,
+ *  whatever an edit in the Agents list made current since. */
+async function laneAgent(v2: Pick<Client, "createAgent" | "listRevisions">, agent: LaneStart["agent"]): Promise<string> {
   try {
-    await v2.createAgent({ definition: agent });
+    return (await v2.createAgent({ definition: agent })).revision;
   } catch (e) {
     if (!(e instanceof ClientError && e.code === "agent_exists")) throw e;
   }
+  let cursor: string | null = null;
+  do {
+    const page: Awaited<ReturnType<Client["listRevisions"]>> = await v2.listRevisions(agent.id, cursor);
+    const first = page.revisions.find((r) => r.version === 1);
+    if (first) return first.revision;
+    cursor = page.next_cursor;
+  } while (cursor);
+  throw new Error(`${agent.id} lists no first revision`);
 }
+
+/** A lane's pick as the form numbers it: its lane, harness, model and tools. */
+const pickKey = (n: number, agent: Pick<LaneStart["agent"], "harness" | "model" | "tools">) => JSON.stringify([n, agent.harness, agent.model, agent.tools]);
 
 /** #/races/new: one task and 2 to 4 lanes, each a harness and a model this server runs. Start makes each lane an agent
  *  and starts a run of it (lib/race.ts laneStart), each run under its own Idempotency-Key, all lanes at once; a lane the
@@ -48,16 +60,27 @@ async function laneAgent(v2: Pick<Client, "createAgent">, agent: LaneStart["agen
  *  race (#/races/<label>). A second Start sends only the lanes left, each as it was sent, so no lane ever starts twice.
  *  `label`: the race's (a test's), else a new one (newRaceLabel). `tools` and `places`: capabilities' tool offers and
  *  places, which give each lane a new agent's tools and box (laneKit). */
-export function RaceStart({ v2, harnesses, tools, places, go, label: given }: { v2: Pick<Client, "createAgent" | "startRun">; harnesses: RaceHarness[]; tools: ToolOffer[]; places: Places | null; go: (to: string) => void; label?: string }) {
+export function RaceStart({ v2, harnesses, tools, places, go, label: given }: { v2: Pick<Client, "createAgent" | "listRevisions" | "startRun" | "archiveAgent">; harnesses: RaceHarness[]; tools: ToolOffer[]; places: Places | null; go: (to: string) => void; label?: string }) {
   const runnable = harnesses.filter((h) => h.available && (h.models?.length ?? 0) > 0);
   const label = useRef(given ?? newRaceLabel()).current;
   const keys = useRef(keepersByRun()).current;
-  // Each lane's harness, model and tools the form has sent, numbered in turn: the same pick is the same agent.
+  // Each pick the form has sent (pickKey), numbered in turn: the same pick is the same agent.
   const picks = useRef(new Map<string, number>()).current;
-  const pickOf = (n: number, lane: LaneChoice, kit: string[]) => {
-    const key = JSON.stringify([n, lane.harness, lane.model, kit]);
-    if (!picks.has(key)) picks.set(key, picks.size + 1);
+  const counted = useRef(0);
+  const pickOf = (key: string) => {
+    if (!picks.has(key)) picks.set(key, ++counted.current);
     return picks.get(key)!;
+  };
+  // Each lane's agent made for a run that has not started (refused): archived when the lane is removed or picked again,
+  // and its pick forgotten, so that pick sent again makes a new agent. Best effort: an agent the archive misses stays in
+  // the Agents list, archivable there.
+  const idle = useRef(new Map<number, { id: string; key: string }>()).current;
+  const letGo = (i: number) => {
+    const made = idle.get(i);
+    if (!made) return;
+    idle.delete(i);
+    picks.delete(made.key);
+    v2.archiveAgent(made.id).catch(() => {});
   };
   const [task, setTask] = useState("");
   const [cap, setCap] = useState("1");
@@ -90,13 +113,14 @@ export function RaceStart({ v2, harnesses, tools, places, go, label: given }: { 
   const left = lanes.map((_, i) => i).filter((i) => !(outcomes[i] && "run" in outcomes[i]));
   // A lane picked again after a refusal drops the refusal's words: they were about the pick it had.
   const pick = (i: number, lane: LaneChoice) => {
+    letGo(i);
     setLanes((all) => all.map((l, j) => (j === i ? lane : l)));
     setOutcomes((all) => Object.fromEntries(Object.entries(all).filter(([j]) => Number(j) !== i)));
   };
 
   const fresh = (i: number) => {
     const kit = laneKit(lanes[i].harness, tools, places);
-    return laneStart(label, i + 1, lanes[i], task.trim(), capUsd, kit, pickOf(i + 1, lanes[i], kit.tools));
+    return laneStart(label, i + 1, lanes[i], task.trim(), capUsd, kit, pickOf(pickKey(i + 1, { ...lanes[i], tools: kit.tools })));
   };
   const opened = (all: Record<number, Outcome>, count: number) => Array.from({ length: count }, (_, i) => all[i]).every((o) => o && "run" in o);
   // The last lane goes only while nothing of it may be running: never sent, or refused (a refusal started nothing). Then
@@ -105,6 +129,7 @@ export function RaceStart({ v2, harnesses, tools, places, go, label: given }: { 
   const removable = !last || "error" in last;
   const remove = () => {
     const count = lanes.length - 1;
+    letGo(count);
     const kept = Object.fromEntries(Object.entries(outcomes).filter(([j]) => Number(j) < count));
     setLanes((all) => all.slice(0, count));
     setOutcomes(kept);
@@ -120,8 +145,12 @@ export function RaceStart({ v2, harnesses, tools, places, go, label: given }: { 
       const was = outcomes[i];
       const sent = was && "unsure" in was ? was.unsure : fresh(i);
       try {
-        await laneAgent(v2, sent.agent);
-        const { run } = await v2.startRun(sent.agent.id, sent.run, keys(String(i + 1)).keyFor(sent.agent.id, sent.run));
+        const revision = await laneAgent(v2, sent.agent);
+        idle.set(i, { id: sent.agent.id, key: pickKey(i + 1, sent.agent) });
+        // Its first revision, by id: an edit made in the Agents list meanwhile never changes what this lane runs.
+        const body = { ...sent.run, revision };
+        const { run } = await v2.startRun(sent.agent.id, body, keys(String(i + 1)).keyFor(sent.agent.id, body));
+        idle.delete(i);
         return [i, { run }];
       } catch (e) {
         return [i, refused(e) ? { error: e.message } : { unsure: sent }];
