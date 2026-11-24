@@ -1,7 +1,7 @@
 // One run's web search and fetch (createWeb). The providers asked are data (WebConfig.order); everything from outside
 // comes in through the config. Every answer comes with a Receipt, which is never put in front of the model.
 import { AsyncLocalStorage } from "node:async_hooks";
-import { type WebLog, type FetchProvider, type Pages, type WebPage, type WebRead, webFetchText, webPart, webRead } from "./fetch.js";
+import { type WebLog, type FetchProvider, type Pages, type WebRead, webFetchText, webPart, webRead } from "./fetch.js";
 import { type Fee, type Pay, unmetered } from "./fees.js";
 import type { Guard, GuardOptions } from "./guard.js";
 import { clip, type Page, type Part, partProblem, URL_MAX } from "./page.js";
@@ -13,8 +13,11 @@ import { type Keyed, type KeyedFetch, keyedFetch } from "./providers/keyed.js";
 import type { Words } from "./providers/mcp.js";
 import { type Extract, parallelExtract, parallelSearched, type ParallelSettings, parallelSettingsProblems } from "./providers/parallel.js";
 import type { WebDecider } from "./decide/decider.js";
-import { type DecidePolicy, decisionPay, type DecisionRecord, findInPage, type FoundPage, guardPage, type InjectionVerdict, judgePart, type PageGuard, policyOf, siftSearch, type StepOptions, type WallVerdict } from "./decide/step.js";
-import { type Backend, type Breaker, breakers, fitSearch, type Limit, QUERY_MAX, type Search, type SearchBounds, type Searched, searchArgs, searchInTurn, searchText, type Try } from "./search.js";
+import { decideFetch, type FetchAnswer, judgePart } from "./decide/fetch.js";
+import { guardPage, type InjectionVerdict, type PageGuard, type WallVerdict } from "./decide/page-guard.js";
+import { decisionPay, type DecisionRecord, type Sift, type StepOptions } from "./decide/record.js";
+import { type DecidePolicy, policyOf, siftSearch } from "./decide/search.js";
+import { type Backend, type Breaker, breakers, fitSearch, type Limit, type Search, type SearchBounds, type Searched, searchArgs, searchInTurn, searchText, type Try } from "./search.js";
 
 export type ProviderId = "parallel" | "firecrawl-keyless" | "exa-keyless" | "exa" | "firecrawl" | "native" | "direct";
 export type SearchProvider = Exclude<ProviderId, "direct">;
@@ -78,12 +81,9 @@ export type SearchOptions = { n?: number; signal?: AbortSignal; breakers?: (name
  *  for, saying looking_for was not applied. Blank: none. */
 export type FetchOptions = Part & GuardOptions & { task?: string; lookingFor?: string };
 /** `sift`, only when a decider is given: what it did, for the model to read. */
-export type Sift = { sift?: string };
-/** The page guard's one plain line, when it judged the page a wall or found instructions addressed to an AI reader. */
-export type Warned = { warning?: string };
 export type Web = {
   search(query: string, options?: SearchOptions): Promise<{ answer: Search & Sift; receipt: Receipt }>;
-  fetch(url: unknown, options?: FetchOptions): Promise<{ answer: (((WebPage | Page) & Sift) | FoundPage) & Warned; receipt: Receipt }>;
+  fetch(url: unknown, options?: FetchOptions): Promise<{ answer: FetchAnswer; receipt: Receipt }>;
 };
 
 /** The fees of the requests sent within one call. */
@@ -110,15 +110,15 @@ export function createWeb(config: WebConfig): Web {
   const policy = policyOf(config.policy);
   if (config.pageGuard !== undefined && typeof config.pageGuard !== "boolean") throw new TypeError(`pageGuard must be true or false (it was ${JSON.stringify(config.pageGuard)})`);
   if (config.pageGuard && !config.decider) throw new TypeError("pageGuard needs a decider: the page guard asks the run's decider about each page");
-  /** The page guard's verdict on each page the run read, by the URL asked for: a page is asked about once a run, and
-   *  again after a guard that failed. */
-  const pageVerdicts = new Map<string, Promise<PageGuard>>();
+  /** The page guard's verdict on each read the run's pages hold, kept with the read: it goes when the page is evicted,
+   *  and a page read again is asked about again, as is one whose guard failed. */
+  const pageVerdicts = new WeakMap<WebRead, Promise<PageGuard>>();
   const guardOf = (decider: WebDecider, url: string, read: WebRead, step: StepOptions): Promise<PageGuard> => {
-    const known = pageVerdicts.get(url);
+    const known = pageVerdicts.get(read);
     if (known) return known;
     const asked = guardPage(decider, url, read, step);
-    pageVerdicts.set(url, asked);
-    void asked.then((verdict) => verdict.wall.error && pageVerdicts.delete(url));
+    pageVerdicts.set(read, asked);
+    void asked.then((verdict) => verdict.wall.error && pageVerdicts.delete(read));
     return asked;
   };
   /** A receipt's `unsifted`, only in a run with a classifier. */
@@ -228,24 +228,10 @@ export function createWeb(config: WebConfig): Web {
         if (part.via !== "stopped" && part.via !== "none") tries.push({ provider: part.via, outcome: part.ok ? "ok" : "error", ...(part.ok ? {} : { error: part.refused ?? part.error ?? "" }) });
       }
       const provider = part.ok && part.via !== "stopped" && part.via !== "none" ? part.via : null;
-      const step = { signal: guarded.signal, ms: config.bounds?.decideMs, pay: decisionPay(config.pay ?? unmetered, lines) };
-      // The guard is asked beside the step; its fee lines go after the step's once both have settled, in one order.
-      const guardLines: Fee[] = [];
-      const guarding = config.pageGuard && config.decider && whole.ok && whole.text ? guardOf(config.decider, asked, whole, { ...step, pay: decisionPay(config.pay ?? unmetered, guardLines) }) : undefined;
-      const need = typeof lookingFor === "string" ? clip(lookingFor.trim(), QUERY_MAX) : "";
-      const notApplied = (why: string) => ({ ...part, sift: `looking_for not applied (${why}); this part is in page order` });
-      let answer: (((WebPage | Page) & Sift) | FoundPage) & Warned = part;
-      let classifier: Receipt["classifier"] = "off";
-      if (need && whole.ok && whole.text && config.decider) {
-        const found = await findInPage(config.decider, asked, whole, need, step);
-        answer = found.answer ?? notApplied(found.classifier.error!.code);
-        classifier = found.classifier;
-      } else if (need && whole.ok && whole.text) answer = notApplied("no classifier in this run");
-      else if (config.decider) ({ answer, classifier } = await judgePart(config.decider, asked, part, { task, ...step }));
-      const guard = await guarding;
-      lines.push(...guardLines);
-      if (guard?.warning) answer = { ...answer, warning: guard.warning };
-      const receipt: Receipt = { op: "fetch", asked, provider, tries, classifier, ...(guard ? { wall: guard.wall, injection: guard.injection } : unjudged), out: outOf(webFetchText(answer)), cost: { usd: usd(lines), lines }, ...(cached ? { cache: "hit" as const } : {}), ...unsifted(() => webFetchText(part)) };
+      const { decider } = config;
+      const guard = config.pageGuard && decider && read.ok ? (options: StepOptions) => guardOf(decider, asked, read, options) : undefined;
+      const { answer, classifier, guard: verdicts } = await decideFetch(decider, asked, whole, part, { task, lookingFor, signal: guarded.signal, ms: config.bounds?.decideMs, pay: config.pay ?? unmetered, lines, guard });
+      const receipt: Receipt = { op: "fetch", asked, provider, tries, classifier, ...(verdicts ? { wall: verdicts.wall, injection: verdicts.injection } : unjudged), out: outOf(webFetchText(answer)), cost: { usd: usd(lines), lines }, ...(cached ? { cache: "hit" as const } : {}), ...unsifted(() => webFetchText(part)) };
       return { answer, receipt };
     },
   };

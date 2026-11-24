@@ -166,3 +166,16 @@ test("the guard is asked beside the step, not after it, and the fee lines go in 
   assert.match(answer.warning, /login wall/);
   assert.deepEqual(receipt.cost.lines.filter((line) => line.by === "fake").map((line) => line.name), ["fake's decision", "fake's page guard"]);
 });
+
+test("the verdict lives with the cached page: a page evicted past PAGES_HELD and read again is asked about again", async () => {
+  const { asked, web: w } = guardedWeb(CONTENT);
+  const first = `${PUBLIC}0`;
+  await w.fetch(first, { task: TASK });
+  await w.fetch(first, { task: TASK });
+  assert.equal(asked.filter(isGuard).length, 1, "held: asked once");
+  for (let n = 1; n <= web.PAGES_HELD; n++) await w.fetch(`${PUBLIC}${n}`, { task: TASK });
+  const again = await w.fetch(first, { task: TASK });
+  assert.equal(again.receipt.cache, undefined, "evicted, so read again");
+  const guards = asked.filter(isGuard).map(({ request }) => request.state.page.url);
+  assert.deepEqual([guards.length, guards.at(-1)], [web.PAGES_HELD + 2, first], "and its guard asked again");
+});

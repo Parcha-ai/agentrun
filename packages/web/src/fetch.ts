@@ -1,6 +1,6 @@
 // web_fetch's core: a page read once a run by the providers named in order, the guarded direct fetch behind them, given
 // in parts. A URL goes to a provider only once the guard's check passes it, and a read that fails is not kept.
-import type { FoundPage } from "./decide/step.js";
+import type { FoundPage } from "./decide/fetch.js";
 import type { Guard, GuardOptions } from "./guard.js";
 import { clip, HTML_READ_CHARS, PAGE_READ_MAX_CHARS, type Page, type Part, partOfRead, type Read, TIMEOUT_MS, type Unread, URL_MAX } from "./page.js";
 import { readDirect } from "./providers/direct.js";
