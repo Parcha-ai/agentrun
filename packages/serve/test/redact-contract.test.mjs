@@ -570,6 +570,25 @@ const CASES = [
       exact: Object.fromEntries(Object.keys(ENTRIES).map((name) => [name, text])),
     };
   })(),
+  // The #3626 review's escaped splits, each a named guard: a held value split by one of JSON's one-character escapes
+  // written as its two characters ("\n", "\t", "\""), a held value written as JSON's \u escapes twice (JSON in JSON),
+  // and one split by a zero-width space or a soft hyphen, as it is or escaped. Each withholds the text.
+  ...(() => {
+    const [H, R] = P24;
+    const B = String.fromCharCode(92);
+    const twice = [...P24.join("")].map((char) => `${B}${B}u${char.charCodeAt(0).toString(16).padStart(4, "0")}`).join("");
+    const all = Object.fromEntries(Object.keys(ENTRIES).map((name) => [name, "[redacted]"]));
+    return [
+      ["a held value split by JSON's \\n written as two characters", `token ${H}${B}n${R} end`],
+      ["a held value split by JSON's \\t written as two characters", `token ${H}${B}t${R} end`],
+      ["a held value split by JSON's \\\" written as two characters", `token ${H}${B}"${R} end`],
+      ["a held value written as JSON's \\u escapes twice (\\\\u005a...)", `x ${twice} y`],
+      ["a held value split by a zero-width space", `x ${H}${ZWSP}${R} y`],
+      ["a held value split by a soft hyphen", `x ${H}${SHY}${R} y`],
+      ["a held value split by an escaped zero-width space (\\u200b)", `x ${H}${B}u200b${R} y`],
+      ["a held value split by an escaped soft hyphen (\\u00ad)", `x ${H}${B}u00ad${R} y`],
+    ].map(([what, text]) => ({ name: `guard: ${what} withholds the text`, text, values: [P24.join("")], hides: [H.slice(0, 8), R.slice(0, 8)], exact: all }));
+  })(),
   // Adversarial texts of the cut read's cap: each is read once, so each comes back as its shape says.
   { name: "adversarial: eyJ x n, no dot", text: fill("eyJ"), values: [CUT_KEY], hides: [], exact: { runFile: fill("eyJ") } },
   { name: "adversarial: eyJ- x n, no dot", text: fill("eyJ-"), values: [CUT_KEY], hides: [], exact: { runFile: fill("eyJ-") } },
