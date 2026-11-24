@@ -33,14 +33,18 @@ export type WebLog = (event: string, fields: Record<string, string>) => void;
  *  fetch's receipt. */
 export type FetchTry = { provider: FetchProvider; outcome: "ok" | "error"; error?: string };
 
-/** The URL a provider is sent for `url`, as parsed (its href), so the provider reads the host the guard checked; null
- *  where it may not go: it fails readDirect's own refusals (port, the href's length, a user name or password), or the
- *  guard's check within `ms` and the caller's signal. No guard, or a check out of time, does not pass. */
-async function passes(url: string, guard: Guard | undefined, options: GuardOptions, ms: number): Promise<string | null> {
-  const target = URL.parse(url);
-  if (!guard || !target || !PORTS.has(target.port) || target.href.length > URL_MAX || target.username || target.password) return null;
+/** The URL a provider is sent for `url`, as parsed (its `href`), so the provider reads the host the guard checked; or
+ *  `why` it may not go: readDirect's own refusals, in its words (not a URL, the href's length, the port, a user name or
+ *  password), no guard, or the guard's check failing within `ms` and the caller's signal (a check out of time too). */
+async function passes(url: unknown, guard: Guard | undefined, options: GuardOptions, ms: number): Promise<{ href: string } | { why: string }> {
+  const target = typeof url === "string" ? URL.parse(url) : null;
+  if (!target) return { why: "url is not an absolute URL" };
+  if (target.href.length > URL_MAX) return { why: `url is longer than ${URL_MAX.toLocaleString("en-US")} characters` };
+  if (!PORTS.has(target.port)) return { why: `port ${target.port} is not 80 or 443` };
+  if (target.username || target.password) return { why: "the URL holds a user name or password" };
+  if (!guard) return { why: "no public-host guard was given" };
   const signal = AbortSignal.any([AbortSignal.timeout(ms), ...(options.signal ? [options.signal] : [])]);
-  return guard.check(target.href, { ...(options.lookup ? { lookup: options.lookup } : {}), signal }).then(() => target.href, () => null);
+  return guard.check(target.href, { ...(options.lookup ? { lookup: options.lookup } : {}), signal }).then(() => ({ href: target.href }), () => ({ why: "the URL did not pass the public-host guard" }));
 }
 
 /** What one read is given: the provider clients, the order they are asked in, the guard, the check's bound, the log,
@@ -59,20 +63,21 @@ async function readOnce(url: unknown, { parallel, firecrawl, order, guard, check
     tried?.(typeof read === "string" ? { provider, outcome: "error", error: read } : read.ok ? { provider, outcome: "ok" } : { provider, outcome: "error", error: read.refused ?? read.error ?? "" });
   for (const provider of order) {
     if (provider === "firecrawl-keyless") {
-      const sent = firecrawl?.live() && typeof url === "string" ? await passes(url, guard, options, checkMs) : null;
-      if (firecrawl && sent) {
-        const read = await firecrawl.read(sent, options.signal);
+      const sent = firecrawl?.live() ? await passes(url, guard, options, checkMs) : null;
+      if (firecrawl && sent && "href" in sent) {
+        const read = await firecrawl.read(sent.href, options.signal);
         turn("firecrawl-keyless", typeof read === "string" ? read.slice(0, 300) : read);
         if (typeof read !== "string") return { ...read, via: "firecrawl-keyless" };
         firecrawlSaid = read;
       }
     } else if (provider === "parallel") {
-      const sent = parallel?.live() && typeof url === "string" ? await passes(url, guard, options, checkMs) : null;
+      const sent = parallel?.live() ? await passes(url, guard, options, checkMs) : null;
       if (!parallel) why = noParallel;
-      else if (!parallel.live()) why = "not tried: refused earlier in this run";
-      else if (!sent) why = "not tried: the URL did not pass the public-host guard";
+      // Asked again after the check: a refusal while it ran turns Parallel off for this read too.
+      else if (!parallel.live() || !sent) why = "not tried: refused earlier in this run";
+      else if ("why" in sent) why = `not tried: ${sent.why}`;
       else {
-        const read = await parallel.read(sent, options.signal);
+        const read = await parallel.read(sent.href, options.signal);
         if (typeof read !== "string") {
           turn("parallel", read);
           return { ...read, via: "parallel" };
