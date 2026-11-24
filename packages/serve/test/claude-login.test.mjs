@@ -992,6 +992,74 @@ test("after the latest probe of the offers fails, a change back to the inputs th
   assert.deepEqual(await harnesses(), before, "the offers are not the starting state's");
 });
 
+// A tool key's change that waits for the probe out (the turn-on's, held) answers for its own key whatever becomes of that
+// probe: its key is stored before it waits, so another request's probe failing, or being overtaken, is no failure of its
+// own. Parallel's key is a tool key (none of the offers' inputs) and, on a faux server with no fake Parallel, is stored
+// unchecked (key-check.ts); the capabilities show it as the decision provider it unlocks (decisionsOf), read from the
+// keys at each compose, so they show it once something has composed them after the save.
+const parallelShown = async (api) => (await api("GET", "/capabilities")).body.workflows.decisions.providers.find((provider) => provider.id === "parallel")?.available === true;
+const PARALLEL_KEY = { values: { PARALLEL_API_KEY: "fake-test-key" } };
+const NOT_COMPOSED = "the capabilities never composed the tool key the change saved";
+test("a tool key's change that waits for the probe out answers for its own key though that probe fails: it probes again for the inputs it read", { timeout: 60_000 }, async (t) => {
+  const { api, logged } = await heldServer(t, { faux: FAUX });
+  assert.equal(await parallelShown(api), false, "Parallel shows before its key is saved");
+  const probe = held.hold((env) => claudeLoginOf(env) !== undefined, FAILED);
+  t.after(() => probe.release());
+  const turningOn = api("PUT", "/settings/claude-login", { only_me: true });
+  await probe.reached;
+  const saving = api("PUT", "/settings/tool-keys/parallel", PARALLEL_KEY);
+  await Promise.race([logged("harness_offers_wait"), saving]);
+  probe.release();
+  const [, saved] = await Promise.all([turningOn, saving]);
+  assert.equal(saved.status, 204, `a tool key's change answered the failure of the probe it waited for, another request's, though its key was stored: ${JSON.stringify(saved.body)}`);
+  assert.equal(await parallelShown(api), true, NOT_COMPOSED);
+});
+
+// The other order: the probe the change waits for is overtaken by a later one (a turn-off's) that then fails. The
+// change's key must still show: it settles on the latest probe, never on the dropped one, which lands nothing.
+test("a tool key's change that waits for the probe out answers for its own key once that probe is overtaken by one that fails", { timeout: 60_000 }, async (t) => {
+  const { api, logged } = await heldServer(t, { faux: FAUX });
+  const onProbe = held.hold((env) => claudeLoginOf(env) !== undefined, ON_REASON);
+  t.after(() => onProbe.release());
+  const turningOn = api("PUT", "/settings/claude-login", { only_me: true });
+  await onProbe.reached;
+  const saving = api("PUT", "/settings/tool-keys/parallel", PARALLEL_KEY);
+  await Promise.race([logged("harness_offers_wait"), saving]);
+  const offProbe = held.hold((env) => claudeLoginOf(env) === undefined, FAILED);
+  t.after(() => offProbe.release());
+  const turningOff = api("DELETE", "/settings/claude-login");
+  await offProbe.reached;
+  offProbe.release();
+  await turningOff;
+  onProbe.release();
+  const [, saved] = await Promise.all([turningOn, saving]);
+  assert.equal(saved.status, 204, JSON.stringify(saved.body));
+  assert.equal(await parallelShown(api), true, `${NOT_COMPOSED}: it settled on the probe it first waited for, which a later probe overtook`);
+});
+
+// A change waiting for the probe out wakes once a later probe overtakes it: it does not wait on for a probe whose offers
+// are dropped. The turn-on's probe stays held to the end; the turn-off's lands. The save has answered by then: one more
+// round trip to the server after the turn-off's answer lets its answer, written before, arrive.
+test("a tool key's change that waits for the probe out answers once a later probe overtakes that probe, not when the dropped probe ends", { timeout: 60_000 }, async (t) => {
+  const { api, logged } = await heldServer(t, { faux: FAUX });
+  const onProbe = held.hold((env) => claudeLoginOf(env) !== undefined, ON_REASON);
+  t.after(() => onProbe.release());
+  const turningOn = api("PUT", "/settings/claude-login", { only_me: true });
+  await onProbe.reached;
+  let answered = false;
+  const saving = api("PUT", "/settings/tool-keys/parallel", PARALLEL_KEY).then((res) => { answered = true; return res; });
+  await Promise.race([logged("harness_offers_wait"), saving]);
+  const off = await api("DELETE", "/settings/claude-login");
+  assert.equal(off.status, 200, JSON.stringify(off.body));
+  await api("GET", "/capabilities");
+  assert.equal(answered, true, "a tool key's change waited on for the probe it first waited for, after a later probe overtook it and landed");
+  const saved = await saving;
+  assert.equal(saved.status, 204, JSON.stringify(saved.body));
+  assert.equal(await parallelShown(api), true, NOT_COMPOSED);
+  onProbe.release();
+  await turningOn;
+});
+
 // A hold no check took is dropped as it is released, so a test that ends before its held check runs leaves no hold for
 // the next server's checks.
 const UNTAKEN = "the reason of a hold released before any check took it";
