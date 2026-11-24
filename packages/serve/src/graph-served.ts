@@ -1,8 +1,8 @@
 // What GET /runs/{id}/graph serves of each part of a run's graph (servedGraphView, below): redacted by a run's answer's rule
-// (key-refusal.ts redactedOutput, over the values the server holds and handed the run), and only then cut. graph-view.ts
-// makes the view whole, so a key saved after it was made, or kept for a busy store's read, is still found.
+// (key-refusal.ts redactedOutputWhole, over the values the server holds and handed the run), and only then cut.
+// graph-view.ts makes the view whole, so a key saved after it was made, or kept for a busy store's read, is still found.
 import { createHash } from "node:crypto";
-import { redactedOutput } from "./key-refusal.js";
+import { redactedOutput, redactedOutputWhole } from "./key-refusal.js";
 
 /** The most of a map item's label and of an error (a call's, a decision's) the graph shows. */
 export const LABEL_SHOWN = 200;
@@ -14,12 +14,14 @@ export type PartKind = "nodes" | "decision" | "effect";
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
-/** `value`, a part of a graph view of `kind`, as the graph serves it with `values` held: each string and number by
- *  redactedOutput, then a map item's label cut at LABEL_SHOWN and an error at ERROR_SHOWN. A text stored cut (a
- *  decision's state past 64 KB, an error marked cut, or one of exactly ERROR_CUT_BEFORE characters from before) has its
- *  last 6 times the longest held value plus 16 characters held back, where a value the stored cut split would sit. */
+/** `value`, a part of a graph view of `kind`, as the graph serves it with `values` held: read whole first, so a held
+ *  value split across two of its fields withholds the part as "[redacted]", then each string and number by
+ *  redactedOutput (redactedOutputWhole); then a map item's label cut at LABEL_SHOWN and an error at ERROR_SHOWN. A text
+ *  stored cut (a decision's state past 64 KB, an error marked cut, or one of exactly ERROR_CUT_BEFORE characters from
+ *  before) has its last 6 times the longest held value plus 16 characters held back, where a value the stored cut split
+ *  would sit. */
 export function servedPart(kind: PartKind, value: unknown, values: readonly string[]): unknown {
-  const shown = redactedOutput(value, values);
+  const shown = redactedOutputWhole(value, values);
   if (!isRecord(shown)) return shown;
   const hold = 6 * values.reduce((most, held) => Math.max(most, held.length), 0) + 16;
   const heldBack = (text: string) => `${text.slice(0, Math.max(0, text.length - hold))}…`;
@@ -50,7 +52,8 @@ const ISO_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
  *  over the same values), the parts by the file path's rule on top:
  *  - its nodes, each decision and each call through servedPart (a map item's label and an error cut short after);
  *  - every other top-level field (its run, its workflow, its structure `graph`, which echoes the workflow's nodes and their
- *    words, its totals, and any field added later) through redactedOutput, each by itself, its keys included;
+ *    words, its totals, and any field added later) through redactedOutputWhole, each by itself, its keys included: a
+ *    field whose JSON holds a held value split across two of its strings is "[redacted]";
  *  - `read_at`, which moves with every read: the server's clock as toISOString writes it, served as it is, never kept;
  *    anything else under the name is cut each read.
  *  Each part and each field, its name and its value, scalar or not, is cut once per content and held set and kept in
@@ -74,7 +77,7 @@ export function servedGraphView<T extends { nodes: unknown; decisions: unknown[]
     // A field's name and its value, scalar or not, each cut once per content and held set: a poll walks none again.
     // (graphWalks.rest counts the walks of a field that holds more than one value, as before.)
     const cutName = kept(`name:${keys}:${digest(name)}`, () => redactedOutput(name, values)) as string;
-    fields[cutName] = kept(`field:${keys}:${digest(name)}:${digest(value)}`, () => (isRecordOrArray(value) && graphWalks.rest++, redactedOutput(value, values)));
+    fields[cutName] = kept(`field:${keys}:${digest(name)}:${digest(value)}`, () => (isRecordOrArray(value) && graphWalks.rest++, redactedOutputWhole(value, values)));
   }
   return {
     // The read's own time, the server's clock as toISOString writes it, holds nothing of the run: served as it is. Any other

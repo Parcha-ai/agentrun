@@ -394,6 +394,23 @@ export function redactedOutput(value: unknown, secrets: readonly string[]): unkn
   return value;
 }
 
+/** `value` as redactedOutput cuts it, read whole first: an object or an array whose JSON holds a held value no cut in
+ *  place takes (withheldWhole, whose join view reads its strings joined: one split across two of its fields, or across a
+ *  property name and its value) is withheld whole, as "[redacted]", as a call's arguments are (timeline.ts argsOf). A
+ *  bigint is read as its digits; a value JSON cannot write is withheld. */
+export function redactedOutputWhole(value: unknown, secrets: readonly string[]): unknown {
+  if (value !== null && typeof value === "object") {
+    let json: string;
+    try {
+      json = JSON.stringify(value, (_key, item: unknown) => (typeof item === "bigint" ? item.toString() : item));
+    } catch {
+      return "[redacted]";
+    }
+    if (withheldWhole(json, secrets)) return "[redacted]";
+  }
+  return redactedOutput(value, secrets);
+}
+
 /** What a thinking or text block may show while it streams: what has streamed so far,
  *  redacted by the same rule as redacted(), less a fixed tail held back until the block ends, when its settled row
  *  replaces this one whole. A key whose head has streamed but not its tail cannot be found by any redactor, and a key
