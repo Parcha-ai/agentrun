@@ -17,7 +17,9 @@ import { servedKey } from "@/test/keys";
 
 const KEYS: ToolKeys = { keys: [servedKey({ id: "anthropic", kind: "model", label: "Anthropic", fields: [{ name: "ANTHROPIC_API_KEY", set: false, source: null }], unlocks: [], harnesses: ["pi", "claude-agent"], check: null })], reenter: null };
 const COMMAND = "CLAUDE_CONFIG_DIR=/data/claude-login CLAUDE_SECURESTORAGE_CONFIG_DIR=/data/claude-login ANTHROPIC_CONFIG_DIR=/data/claude-login/anthropic claude auth login";
-const OFF: ClaudeLoginView = { state: "off", place: "agentrun", command: COMMAND, can_start: true };
+const OFF: ClaudeLoginView = { state: "off", place: "agentrun", command: COMMAND, can_start: true, folder: "/data/claude-login", machine: { folder: "/u/p/.claude", source: "default" } };
+const SIGNED_OUT_HERE: ClaudeLoginView = { ...OFF, state: "signed_out" };
+const STARTED_AT = "2026-11-23T12:00:00.000Z";
 
 type Call = { method: string; path: string; body?: unknown };
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
@@ -37,10 +39,10 @@ function server(read: () => Answer | Promise<Answer>, write: (call: Call) => Ans
 let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); root = undefined; document.body.innerHTML = ""; });
 
-async function open(v2: ReturnType<typeof createClient>, onChange?: () => void) {
+async function open(v2: ReturnType<typeof createClient>, onChange?: () => void, available?: boolean) {
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
-  act(() => root!.render(createElement(KeysPage, { v2, writable: true, plan: createElement(ClaudeLoginRow, { v2, writable: true, onChange }) })));
+  act(() => root!.render(createElement(KeysPage, { v2, writable: true, plan: createElement(ClaudeLoginRow, { v2, writable: true, onChange, available }) })));
   const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
   await settle();
   const button = (label: RegExp) => [...host.querySelectorAll("button")].find((b) => label.test((b.textContent ?? "").trim()));
@@ -72,7 +74,7 @@ describe("Settings → Model keys, Claude Code's login on this machine", () => {
   });
 
   it("signed in: who and which plan; Turn off; nothing else to type", async () => {
-    let view: ClaudeLoginView = { state: "signed_in", place: "machine", command: COMMAND, can_start: true, account: { method: "claude.ai", email: "person@example.com", plan: "max" } };
+    let view: ClaudeLoginView = { ...OFF, state: "signed_in", place: "machine", account: { method: "claude.ai", email: "person@example.com", plan: "max" } };
     const { v2, calls } = server(() => view, () => (view = { ...OFF, place: "machine" }));
     const page = await open(v2);
     expect(page.row()!.textContent).toContain("Signed in as person@example.com (Max)");
@@ -152,11 +154,115 @@ describe("Settings → Model keys, Claude Code's login on this machine", () => {
     expect(page.button(/^Turn on$/)).toBeUndefined();
   });
 
+  it("switched off, as capabilities say (features.claude_login false): no row, and no request, so the browser logs no 404", async () => {
+    const { v2, calls } = server(() => json(404, { error: { code: "not_found", message: "getClaudeLogin: off" } }), () => OFF);
+    const page = await open(v2, undefined, false);
+    expect(page.row()).toBeNull();
+    expect(calls.filter((call) => call.path.startsWith("/v2/settings/claude-login"))).toEqual([]);
+    expect(page.host.textContent).toContain(ANTHROPIC_KEY_CREDITS);
+  });
+
+  it("switched off while it waits for a sign-in it started: the row goes, and no poll or return to the page asks again", async () => {
+    const SIGNED_OUT: ClaudeLoginView = { ...OFF, state: "signed_out", can_start: true };
+    const { v2, calls } = server(() => SIGNED_OUT, () => SIGNED_OUT);
+    const page = await open(v2, undefined, true);
+    await page.click(/Open the CLI's sign-in here/);
+    act(() => root!.render(createElement(KeysPage, { v2, writable: true, plan: createElement(ClaudeLoginRow, { v2, writable: true, available: false }) })));
+    await page.settle();
+    const reads = () => calls.filter((call) => call.method === "GET" && call.path === "/v2/settings/claude-login").length;
+    const before = reads();
+    await act(async () => { window.dispatchEvent(new Event("focus")); await new Promise((r) => setTimeout(r, 2_500)); });
+    await page.settle();
+    expect(page.row()).toBeNull();
+    expect(reads()).toBe(before);
+  });
+
   it("switched off on the server (404): no row; the Anthropic key says which plans include API credits", async () => {
     const { v2 } = server(() => json(404, { error: { code: "not_found", message: "getClaudeLogin: Claude Code's login on this machine is off on this server (AGENTRUN_CLAUDE_CODE_LOGIN=off)." } }), () => OFF);
     const page = await open(v2);
     expect(page.row()).toBeNull();
     expect(page.host.textContent).toContain(ANTHROPIC_KEY_CREDITS);
     expect(page.host.textContent).not.toMatch(/(Sign in|Continue) with Claude/);
+  });
+
+  it("names the folder: this machine's login as the server finds it (never a fixed ~/.claude), the folder the CLI is asked about, and, where the server saw no CLAUDE_CONFIG_DIR, what a Claude Code with its own needs", async () => {
+    let view: ClaudeLoginView = OFF;
+    const { v2 } = server(() => view, () => (view = { ...OFF, state: "signed_out", place: "machine", folder: "/u/p/.claude" }));
+    const page = await open(v2);
+    const machine = () => page.row()!.querySelector<HTMLInputElement>('input[type="radio"][value="machine"]')!;
+    expect(machine().parentElement!.textContent).toBe("This machine's Claude Code login (/u/p/.claude)");
+    expect(page.row()!.textContent).not.toContain("~/.claude");
+    expect(page.row()!.textContent).not.toMatch(/start AgentRun with CLAUDE_CONFIG_DIR/);
+    await act(async () => { machine().click(); });
+    expect(page.row()!.textContent).toMatch(/start AgentRun with CLAUDE_CONFIG_DIR set to that folder/);
+    await act(async () => { page.row()!.querySelector<HTMLInputElement>('input[name="only_me"]')!.click(); });
+    await page.click(/^Turn on$/);
+    expect(page.row()!.textContent).toMatch(/AgentRun asks the CLI about the login in \/u\/p\/\.claude\./);
+    expect(page.row()!.textContent).toMatch(/start AgentRun with CLAUDE_CONFIG_DIR set to that folder/);
+
+    // A server started with CLAUDE_CONFIG_DIR: that folder, and nothing to add.
+    act(() => root?.unmount());
+    view = { ...OFF, machine: { folder: "/work/claude-config", source: "CLAUDE_CONFIG_DIR" } };
+    const set = await open(server(() => view, () => view).v2);
+    const radio = set.row()!.querySelector<HTMLInputElement>('input[type="radio"][value="machine"]')!;
+    expect(radio.parentElement!.textContent).toBe("This machine's Claude Code login (/work/claude-config)");
+    await act(async () => { radio.click(); });
+    expect(set.row()!.textContent).not.toMatch(/start AgentRun with CLAUDE_CONFIG_DIR/);
+  });
+
+  it("a sign-in the server started that still waits shows as waiting from the server's word, after a reload too, with no press on this page", async () => {
+    let view: ClaudeLoginView = { ...SIGNED_OUT_HERE, sign_in: { state: "waiting", started_at: STARTED_AT, limit_ms: 600_000 } };
+    const { v2, calls } = server(() => view, () => view);
+    const page = await open(v2);
+    const waiting = page.button(/^Waiting for the browser…$/);
+    expect(waiting).toBeDefined();
+    expect(waiting!.disabled).toBe(true);
+    expect(page.button(/^Open the CLI's sign-in here$/)).toBeUndefined();
+    expect(page.row()!.textContent).toMatch(/The sign-in stops after 10 minutes\./);
+    expect(calls.some((call) => call.method === "POST")).toBe(false);
+    // The server says it ended signed in: the row says who.
+    view = { ...OFF, state: "signed_in", account: { method: "claude.ai", email: "person@example.com" }, sign_in: { state: "signed_in", started_at: STARTED_AT, ended_at: STARTED_AT, limit_ms: 600_000 } };
+    await page.click(/^Check again$/);
+    expect(page.row()!.textContent).toContain("Signed in as person@example.com");
+    expect(page.button(/^Waiting for the browser…$/)).toBeUndefined();
+  });
+
+  it("a sign-in that timed out says so, with its limit and how to start it again, and the button starts it again", async () => {
+    let view: ClaudeLoginView = { ...SIGNED_OUT_HERE, sign_in: { state: "timed_out", started_at: STARTED_AT, ended_at: STARTED_AT, limit_ms: 600_000 } };
+    const { v2, calls } = server(() => view, () => (view = { ...SIGNED_OUT_HERE, sign_in: { state: "waiting", started_at: STARTED_AT, limit_ms: 600_000 } }));
+    const page = await open(v2);
+    const status = page.row()!.querySelector('[role="status"]');
+    expect(status?.textContent).toMatch(/^The sign-in stopped after 10 minutes with no answer from the browser.*Open the CLI's sign-in here starts it again\.$/);
+    const again = page.button(/^Open the CLI's sign-in here$/);
+    expect(again!.disabled).toBe(false);
+    await page.click(/^Open the CLI's sign-in here$/);
+    expect(calls.filter((call) => call.method === "POST").map((call) => call.path)).toEqual(["/v2/settings/claude-login/login"]);
+    expect(page.button(/^Waiting for the browser…$/)!.disabled).toBe(true);
+  });
+
+  it("an older server's answer, with no folder, machine or sign-in, renders as it did: this machine's login at ~/.claude, no folder line, no sign-in state", async () => {
+    // A server from before the view named its folders (the development proxy may reach one) answers without them.
+    const older = { state: "off", place: "agentrun", command: COMMAND, can_start: true };
+    const { v2 } = server(() => json(200, older), () => json(200, { ...older, state: "signed_out", place: "machine" }));
+    const page = await open(v2);
+    expect(page.row()).not.toBeNull();
+    const machine = page.row()!.querySelector<HTMLInputElement>('input[type="radio"][value="machine"]')!;
+    expect(machine.parentElement!.textContent).toBe("This machine's Claude Code login (~/.claude)");
+    await act(async () => { machine.click(); });
+    expect(page.row()!.textContent).not.toMatch(/start AgentRun with CLAUDE_CONFIG_DIR/);
+    await act(async () => { page.row()!.querySelector<HTMLInputElement>('input[name="only_me"]')!.click(); });
+    await page.click(/^Turn on$/);
+    expect(page.row()!.textContent).toContain(COMMAND);
+    expect(page.row()!.textContent).not.toMatch(/AgentRun asks the CLI about the login in/);
+    expect(page.row()!.textContent).not.toMatch(/start AgentRun with CLAUDE_CONFIG_DIR/);
+    expect(page.row()!.querySelector('[role="status"]')).toBeNull();
+    expect(page.button(/^Open the CLI's sign-in here$/)!.disabled).toBe(false);
+  });
+
+  it("a sign-in the CLI ended without signing in says so with its exit code", async () => {
+    const { v2 } = server(() => ({ ...SIGNED_OUT_HERE, sign_in: { state: "failed", started_at: STARTED_AT, ended_at: STARTED_AT, limit_ms: 600_000, exit_code: 1 } }), () => OFF);
+    const page = await open(v2);
+    expect(page.row()!.querySelector('[role="status"]')?.textContent).toMatch(/ended without signing in \(exit code 1\)/);
+    expect(page.button(/^Open the CLI's sign-in here$/)!.disabled).toBe(false);
   });
 });

@@ -1,10 +1,11 @@
 """One error class per way a call can fail, the outcome kinds every client of the server maps to its own idiom (the CLI to
-an exit code, the TypeScript client and this one to a class). No message holds the API key, a secret a body carried, or
-the server's own message text, which could quote either: a message names the route, the status and the server's error
-code."""
+an exit code, the TypeScript client and this one to a class). No message holds the API key or a secret a body carried: a
+message names the route, the status, the server's error code and its reason, read from the error object the client keeps
+(the key cut from it; after a secret body, no reason)."""
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING, Any, ClassVar, Dict, Literal, Optional, Tuple, Type
 
 if TYPE_CHECKING:
@@ -14,6 +15,31 @@ ServerError = Dict[str, Any]
 """The server's error object ({"code", "message", ...}), with every copy of the API key cut from its values and keys."""
 
 Kind = Literal["refused", "auth", "unsupported", "unreachable", "usage", "late"]
+
+REASON_CHARS = 300
+"""The most of the server's reason a message carries."""
+
+
+_SPACES = re.compile(r"[\t\n\v\f\r \x85\xA0\U00001680\U00002000-\U0000200A\U00002028\U00002029\U0000202F\U0000205F\U00003000]+")
+"""The characters a reason keeps as one space: every whitespace run is one. Spelled out, not str.split(), so the
+TypeScript client's rule (packages/client/src/errors.ts) is the same character for character."""
+_DROPPED = re.compile(r"[\x00-\x08\x0E-\x1F\x7F-\x84\x86-\x9F\U0000200B-\U0000200F\U0000202A-\U0000202E\U00002060-\U00002064\U00002066-\U00002069\U0000FEFF]")
+"""The characters a reason drops: every other control character (C0, DEL, C1), the zero-width ones, the bidi controls
+and the BOM, none of which a terminal or a log shows as what it is."""
+
+
+def said(error: Optional[ServerError]) -> str:
+    """The server's reason as a message's end: ": <its message>", on one line (whitespace runs one space, every control,
+    zero-width, bidi and BOM character dropped, the ends trimmed), at most REASON_CHARS characters (code points), the last
+    a … when cut; empty when the error object holds no message, or none that survives. `error` is the one the client
+    keeps, the key already cut from it. The same cases test both clients (packages/client/test/reason-cases.json)."""
+    message = error.get("message") if error else None
+    if not isinstance(message, str):
+        return ""
+    line = _SPACES.sub(" ", _DROPPED.sub("", message)).strip(" ")
+    if not line:
+        return ""
+    return f": {line if len(line) <= REASON_CHARS else line[: REASON_CHARS - 1] + '…'}"
 
 
 class AgentRunError(Exception):
@@ -43,7 +69,7 @@ class AgentRunRefused(AgentRunError):
     kind: ClassVar[Kind] = "refused"
 
     def __init__(self, route: str, status: int, code: Optional[str], error: Optional[ServerError], why: Optional[str] = None, retry_after: Optional[float] = None) -> None:
-        super().__init__(why or f"The server refused {route}: {status}{f' {code}' if code else ''}.")
+        super().__init__(why or f"The server refused {route}: {status}{f' {code}' if code else ''}{said(error) or '.'}")
         self.status = status
         self.code = code
         self.error = error

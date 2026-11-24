@@ -74,8 +74,9 @@ export async function pinFirst(revision: { readonly id: string; readonly kind: s
  *  that server's own ports (`own`, Serve.own). `githubApp`:
  *  the run's GitHub App access (runner/mcp-github.ts), which lists a `github_app` server with a token of the run's
  *  repository, metadata read alone, as a save lists it with one (github-connection.ts tokenForListing); without it such a
- *  server can't be listed. `appOrigin`: a test's fake GitHub MCP (McpServersOverStore.appOrigin). */
-export function registryListing(store: Parameters<typeof mcpServersOverStore>[0], sealKey: Buffer, { loopback = false, own = [], network, githubApp, appOrigin }: { loopback?: boolean; own?: readonly string[]; network?: OAuthNetwork; githubApp?: GithubAppAccess; appOrigin?: string } = {}): (server: string, stop?: AbortSignal) => Promise<PinListing> {
+ *  server can't be listed. `appOrigin`: a test's fake GitHub MCP (McpServersOverStore.appOrigin). `composioOrigin`: a
+ *  test's fake Composio MCP (McpServersOverStore.composioOrigin). */
+export function registryListing(store: Parameters<typeof mcpServersOverStore>[0], sealKey: Buffer, { loopback = false, own = [], network, githubApp, appOrigin, composioOrigin }: { loopback?: boolean; own?: readonly string[]; network?: OAuthNetwork; githubApp?: GithubAppAccess; appOrigin?: string; composioOrigin?: string } = {}): (server: string, stop?: AbortSignal) => Promise<PinListing> {
   let registry: Promise<McpServersOverStore> | undefined;
   // The listing tokens minted and not yet revoked, and how many listings are under way: no one holds a listing token
   // after its listing (the claim's cleanup reaches only githubTokens' tokens), so once no listing is under way, each is
@@ -87,6 +88,7 @@ export function registryListing(store: Parameters<typeof mcpServersOverStore>[0]
     const opened = mcpServersOverStore(store, { [SEAL_KEY_ENV]: sealKey.toString("base64") }, version, network);
     opened.attach("", "", loopback, own);
     if (appOrigin) opened.appOrigin = appOrigin;
+    if (composioOrigin) opened.composioOrigin = composioOrigin;
     if (githubApp) opened.appToken = async () => {
       const got = await listingToken(githubApp);
       if ("token" in got) minted.push(got.token);

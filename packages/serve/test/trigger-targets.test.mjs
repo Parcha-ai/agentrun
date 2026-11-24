@@ -62,6 +62,7 @@ const deps = (over = {}) => {
     momentOf: async () => moment(),
     // The server's delete turn: here the write alone.
     runWrite: (_agentId, _runId, work) => work(),
+    cutHeld: async (_runId, text) => text,
     runStatus: async () => "working",
     ...rest,
   };
@@ -111,7 +112,7 @@ test("a message_run target to a run on a plan-billed harness recipe is not_allow
   const refused = triggerTargets(store, deps({ momentOf: async () => moment({ harness: "model-agent" }), planRecipe }));
   const issues = await refused.targetIssues({ kind: "message_run", run_id: "run-1", input: { content: "hi" } });
   assert.deepEqual(issues, [{ field: "target.run_id", reason: "not_allowed", message: RECIPE_MESSAGE_PERSON_ONLY }]);
-  assert.match(RECIPE_MESSAGE_PERSON_ONLY, /owner's own sign-in only for what a person starts/);
+  assert.match(RECIPE_MESSAGE_PERSON_ONLY, /owner's own sign-in only for what a person starts.*not every one is saved\. Save them in Settings → Harness keys/);
   // Before the cap words: an uncapped run on one is refused for the sign-in, the rule a cap does not change.
   const uncapped = triggerTargets(store, deps({ momentOf: async () => moment({ harness: "model-agent", maxCostUsd: undefined }), planRecipe }));
   assert.equal((await uncapped.targetIssues({ kind: "message_run", run_id: "run-1", input: { content: "hi" } }))[0].message, RECIPE_MESSAGE_PERSON_ONLY);

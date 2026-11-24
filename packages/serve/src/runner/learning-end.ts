@@ -46,6 +46,7 @@ import type { SignInReader } from "../run-view.js";
 import { type AlsoRow, FINAL_STATES, type LearningProposal, type McpServerRow, type Store } from "../store/store.js";
 import { shadowRunId } from "../learn/audit.js";
 import { getMcpServer } from "../mcp-store.js";
+import { purgeGate, refusedIn } from "../purged-workflow.js";
 import { readApprovers } from "../server-approvers.js";
 import { isCliRecord, runEntries, runTimeline, withoutFeedbackRounds } from "../store-reads/journal.js";
 import { capNowOf, KINDS } from "./journal-kinds.js";
@@ -508,7 +509,7 @@ export const draftFailedDigest = (runId: string): string => createHash("sha256")
  *  compiles it again. A revision of a connected agent's hold on give-backs is no recompile (runner/promotion.ts
  *  reviseAttemptOf). One record per run (its digest is the run's), written once: a claim that ends the run again
  *  writes none. */
-export async function recordDraftFailed(deps: Pick<LearningEndDeps, "store" | "log">, input: { runId: string; agentId: string; compile: CompileAsk; workflow: string; errors: readonly string[] }): Promise<void> {
+export async function recordDraftFailed(deps: Pick<LearningEndDeps, "store" | "log" | "learningFolder">, input: { runId: string; agentId: string; compile: CompileAsk; workflow: string; errors: readonly string[] }): Promise<void> {
   try {
     const records = await promotionsOf(deps.store.settings, input.agentId);
     const attempt = input.compile.mode === "revise" ? reviseAttemptOf(records, input.compile.held) : newCompileAttempt(records);
@@ -518,7 +519,7 @@ export async function recordDraftFailed(deps: Pick<LearningEndDeps, "store" | "l
     const failed = input.errors.join("; ").slice(0, CHECK_TEXT_MAX) || "no draft passed";
     const reason = `${DRAFT_FAILED}: ${failed}. ${attempt === 2 ? "It was the recompile, so it stops: nothing compiles again until its owner acts" : "It is not promoted; the next due run compiles it once more"}`;
     const check = { compile_after, agree_min, alone_min, attempt, n: 0, agreed: 0, alone: 0, of: [], ...(attempt === 2 ? { stopped: true as const } : {}) };
-    const kept = await recordPromotion(deps.store.settings, input.agentId, { workflow, digest, at: new Date().toISOString(), decided: "hold", reason, check }, (was) => was === undefined);
+    const kept = await recordPromotion(deps.store.settings, input.agentId, { workflow, digest, at: new Date().toISOString(), decided: "hold", reason, check }, (was) => was === undefined, refusedIn(() => deps.learningFolder(input.agentId), deps.store, deps.log));
     if (kept.won) deps.log?.(`learning: run ${input.runId}: the compile of ${workflow} failed its checks (attempt ${attempt}${attempt === 2 ? ", stopped" : ""})`);
   } catch (error) {
     deps.log?.(`learning: run ${input.runId}: the compile's failed drafts were not recorded: ${error instanceof Error ? error.message : String(error)}`);
@@ -574,8 +575,10 @@ export async function compileAskOf(deps: LearningEndDeps, input: { runId: string
   const { agentId } = input;
   // A revision is asked only of a workflow its promotion holds, once per hold. The workflows whose newest revision other
   // than their champion (learn/promote.ts championOf: it serves while that one is held) is held: the run's own may be one.
+  // A record the purge gate refuses is skipped as the champion's readers skip it (purged-workflow.ts refusedOf); a gate
+  // that can't be asked skips none, and the text read below is gated again.
   const records: PromotionRecord[] = await promotionsOf(deps.store.settings, agentId).catch(() => []);
-  const heldNames = heldNamesOf(records);
+  const heldNames = heldNamesOf(records, records.length ? await refusedIn(() => deps.learningFolder(agentId), deps.store, deps.log)(records).catch(() => undefined) : undefined);
   // The loop's numbers on the agent's definition (the revision this run runs): the first compile waits for compile_after
   // completed agent runs, the ending one counted.
   const { compile_after: compileAfter } = await loopOfRun(deps.store, input.runId);
@@ -608,8 +611,10 @@ export async function compileAskOf(deps: LearningEndDeps, input: { runId: string
   // `main`: the commit the snapshot read is main's at, which `current` was read from.
   let read: { workflows: number; current?: string; held?: PromotionRecord; main?: string };
   try {
+    // A workflow a purged run wrote is neither counted nor told (purgeGate), on main or at a replayed round's parent.
     const readFrom = async ({ snapshot, body }: Pick<FolderRead, "snapshot" | "body">) => {
-      const workflows = (snapshot?.workflows ?? []).filter(({ status }) => status === "active" || status === "pending");
+      const purged = (await purgeGate(snapshot, deps.store)).workflows;
+      const workflows = (snapshot?.workflows ?? []).filter(({ name, status }) => (status === "active" || status === "pending") && !purged.has(name));
       const textOf = async (name: string) => {
         const file = workflows.find((one) => one.name === name)?.files.find(({ path }) => path.endsWith("/workflow.json"));
         const text = file ? await body(file.path, file.oid) : undefined;

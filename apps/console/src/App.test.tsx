@@ -9,7 +9,7 @@ import type { Agent } from "@/lib/agentForm";
 import { runLabel } from "@/lib/format";
 import type { Run, TimelinePage } from "@/lib/v2";
 import { servedKey } from "@/test/keys";
-import { pick } from "@/test/picker";
+import { pick, wordsOf } from "@/test/picker";
 
 // Mission Control is the first page: the bare address and the old start page's both open it, so no link dead-ends.
 describe("route", () => {
@@ -24,6 +24,10 @@ describe("route", () => {
     expect(route("#/runs")).toEqual({ section: "runs" });
     expect(route("#/runs/r1")).toEqual({ section: "runs", run: "r1" });
     expect(route("#/runs?agent=calc")).toEqual({ section: "runs", runsOf: "calc" });
+  });
+  it("opens a race by its label under Runs", () => {
+    expect(route("#/races/bench-1")).toEqual({ section: "runs", race: "bench-1" });
+    expect(route("#/races/fix%20the%20test")).toEqual({ section: "runs", race: "fix the test" });
   });
   it("keeps the selected agent in a Playground link", () => {
     expect(route("#/playground?agent=agent%20two")).toEqual({ section: "playground", playgroundAgent: "agent two" });
@@ -48,6 +52,8 @@ describe("route", () => {
   });
   it("opens Settings → API Keys at its own address, and at #/settings", () => {
     expect(route("#/settings/keys")).toEqual({ section: "settings", settings: "keys" });
+    expect(route("#/settings/harness-keys")).toEqual({ section: "settings", settings: "harness-keys" });
+    expect(route("#/settings/api-keys")).toEqual({ section: "settings", settings: "api-keys" });
     expect(route("#/settings")).toEqual({ section: "settings", settings: "keys" });
     expect(route("#/settings/webhook")).toEqual({ section: "settings", settings: "webhook" });
     expect(route("#/settings/email")).toEqual({ section: "settings", settings: "email" });
@@ -84,6 +90,33 @@ let root: ReturnType<typeof createRoot> | undefined;
 // are unstubbed after each).
 globalThis.ResizeObserver ??= class { observe() {} unobserve() {} disconnect() {} } as unknown as typeof ResizeObserver;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; vi.unstubAllGlobals(); location.hash = ""; });
+
+describe("App, a race's page", () => {
+  it("reads the race's own runs alone: no runs list and no observations, which nobody sees there", async () => {
+    const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+    const asked: string[] = [];
+    vi.stubGlobal("fetch", async (url: string) => {
+      const at = new URL(url, "http://serve.test");
+      asked.push(`${at.pathname}${at.search}`);
+      if (at.pathname === "/v2/auth/session") return json(200, { password_set: true, signed_in: true, secrets_writable: true });
+      if (at.pathname === "/v2/capabilities") return json(200, { models: { source: "providers", ready: true }, harnesses: [], features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false } } });
+      if (at.pathname === "/v2/runs" || at.pathname === "/v2/agents") return json(200, { runs: [], agents: [], next_cursor: null });
+      if (at.pathname === "/v2/observations") return json(200, { sessions: [], days: 30 });
+      return json(404, { error: { code: "not_found", message: at.pathname, retryable: false } });
+    });
+    location.hash = "#/races/bench";
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(App)));
+    const end = Date.now() + 4000;
+    while (!host.textContent?.includes("No run carries the label") && Date.now() < end) await act(async () => { await new Promise((r) => setTimeout(r, 25)); });
+    expect(host.textContent).toContain("No run carries the label");
+    const runs = asked.filter((a) => a.startsWith("/v2/runs"));
+    expect(runs.length).toBeGreaterThan(0);
+    expect(runs.every((a) => new URLSearchParams(a.split("?")[1] ?? "").get("label") === "race:bench"), runs.join(" ")).toBe(true);
+    expect(asked.filter((a) => a.startsWith("/v2/observations"))).toEqual([]);
+  });
+});
 
 describe("App, Mission Control when the stats can't be read", () => {
   it("shows the error, not Loading for ever", async () => {
@@ -155,6 +188,8 @@ describe("App, Settings", () => {
       if (path === "/v2/capabilities") return json(200, { models: { source: "providers", ready: true }, harnesses: [], tools, features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false }, ...features } });
       if (path === "/v2/settings/tools") return json(200, { web_search: { provider: "auto" }, web_fetch: { provider: "kernel" } });
       if (path === "/v2/settings/tool-keys") return json(200, keys);
+      if (path === "/v2/settings/harness-keys") return json(200, { harnesses: [{ id: "model-agent", label: "Model Agent", named: true, ready: false, keys: [{ name: "harness:model-agent:MODEL_AGENT_API_KEY", set: false, source: null, changed_at: null }], kept: [], reenter: [] }] });
+      if (path === "/v2/settings/api-keys") return json(200, { keys: [{ id: "01a20b30-b53a-7000-9abd-64340ac132cb", name: "billing app", created_at: "2026-11-03T12:00:00.000Z", last_used_at: null, secret: { name: "api-key:01a20b30-b53a-7000-9abd-64340ac132cb", set: true, source: "console", changed_at: "2026-11-03T12:00:00.000Z" } }], limit: 50 });
       if (path === "/v2/settings/webhook") return json(200, { configured: false });
       if (path === "/v2/settings/webhook/deliveries") return json(200, { attempts: [] });
       if (path === "/v2/settings/mcp-servers") return json(200, { servers: [] });
@@ -217,9 +252,40 @@ describe("App, Settings", () => {
   it("#/settings/tools opens Tools, with a tab for each settings page, when the server offers a choice of provider", async () => {
     const page = await open({ tool_keys: { routes: true, at_rest: "sealed" } }, "#/settings/tools", choiceTools);
     expect(page.host.querySelector("h1")?.textContent).toBe("Tools");
-    expect([...page.host.querySelectorAll('nav[aria-label="Settings"] a')].map((a) => [a.textContent, a.getAttribute("aria-current")])).toEqual([["API Keys", null], ["Tools", "page"], ["MCP servers", null], ["GitHub", null], ["Email", null], ["Computers", null], ["Workspace", null]]);
+    expect([...page.host.querySelectorAll('nav[aria-label="Settings"] a')].map((a) => [a.textContent, a.getAttribute("aria-current")])).toEqual([["API Keys", null], ["Tools", "page"], ["MCP servers", null], ["GitHub", null], ["Email", null], ["Computers", null], ["Workspace", null], ["Demo", null]]);
     expect(page.host.querySelector('tr[data-tool="web_search"] button[aria-haspopup=listbox]')).toBeTruthy();
     expect(page.asked).toContain("GET /v2/settings/tools");
+  });
+
+  it("#/settings/api-keys opens AgentRun API keys, a tab only on a server that makes them", async () => {
+    const page = await open({ tool_keys: { routes: true, at_rest: "sealed" }, api_keys: { routes: true, limit: 50, at_rest: "hashed" } }, "#/settings/api-keys");
+    expect(page.host.querySelector("h1")?.textContent).toBe("AgentRun API keys");
+    expect([...page.host.querySelectorAll('nav[aria-label="Settings"] a')].map((a) => [a.textContent, a.getAttribute("aria-current")]).slice(0, 2)).toEqual([["API Keys", null], ["AgentRun API keys", "page"]]);
+    expect(page.asked).toContain("GET /v2/settings/api-keys");
+    expect(page.host.querySelector('[aria-label="Keys"]')?.textContent).toContain("billing app");
+    // The owner's session (the session read's secrets_writable) makes one here.
+    expect([...page.host.querySelectorAll("button")].some((b) => b.textContent === "Create key")).toBe(true);
+    act(() => root?.unmount());
+    document.body.innerHTML = "";
+    const none = await open({ tool_keys: { routes: true, at_rest: "sealed" } }, "#/settings/keys");
+    expect([...none.host.querySelectorAll('nav[aria-label="Settings"] a')].map((a) => a.textContent)).not.toContain("AgentRun API keys");
+  });
+
+  it("#/settings/harness-keys opens Harness keys, a tab only on a server started with a plan-billed recipe", async () => {
+    const page = await open({ tool_keys: { routes: true, at_rest: "sealed" }, harness_keys: { routes: true, at_rest: "sealed", harnesses: ["model-agent"], kept: [] } }, "#/settings/harness-keys");
+    expect(page.host.querySelector("h1")?.textContent).toBe("Harness keys");
+    expect([...page.host.querySelectorAll('nav[aria-label="Settings"] a')].map((a) => [a.textContent, a.getAttribute("aria-current")]).slice(0, 2)).toEqual([["API Keys", null], ["Harness keys", "page"]]);
+    expect(page.asked).toContain("GET /v2/settings/harness-keys");
+    expect(page.host.querySelector('[data-harness="model-agent"]')?.textContent).toContain("MODEL_AGENT_API_KEY");
+    act(() => root?.unmount());
+    document.body.innerHTML = "";
+    const none = await open({ tool_keys: { routes: true, at_rest: "sealed" }, harness_keys: { routes: true, at_rest: "sealed", harnesses: [], kept: [] } }, "#/settings/keys");
+    expect([...none.host.querySelectorAll('nav[aria-label="Settings"] a')].map((a) => a.textContent)).not.toContain("Harness keys");
+    act(() => root?.unmount());
+    document.body.innerHTML = "";
+    // No recipe named, keys still kept: the tab stays, so its keys can be removed.
+    const kept = await open({ tool_keys: { routes: true, at_rest: "sealed" }, harness_keys: { routes: true, at_rest: "sealed", harnesses: [], kept: ["old-agent"] } }, "#/settings/keys");
+    expect([...kept.host.querySelectorAll('nav[aria-label="Settings"] a')].map((a) => a.textContent)).toContain("Harness keys");
   });
 
   it("a server with a choice of provider and no tool keys has Settings, which opens on Tools", async () => {
@@ -229,7 +295,7 @@ describe("App, Settings", () => {
     for (let i = 0; i < 20; i++) await act(async () => { await new Promise((r) => setTimeout(r, 10)); });
     expect(location.hash).toBe("#/settings/tools");
     expect(page.host.querySelector("h1")?.textContent).toBe("Tools");
-    expect([...page.host.querySelectorAll('nav[aria-label="Settings"] a')].map((a) => a.textContent?.trim())).toEqual(["Tools", "MCP servers", "GitHub", "Email", "Computers", "Workspace"]);
+    expect([...page.host.querySelectorAll('nav[aria-label="Settings"] a')].map((a) => a.textContent?.trim())).toEqual(["Tools", "MCP servers", "GitHub", "Email", "Computers", "Workspace", "Demo"]);
   });
 
   // Secrets (Miguel, 11-09): an accounts-off loopback server's console session counts as the owner's, so the server says
@@ -266,26 +332,26 @@ describe("App, Settings", () => {
     expect(page.host.querySelector("h1")?.textContent).toBe("Webhook");
     expect(page.asked).toContain("GET /v2/settings/webhook");
     const tabs = [...page.host.querySelectorAll('nav[aria-label="Settings"] a')].map((a) => [a.textContent?.trim(), a.getAttribute("href"), a.getAttribute("aria-current")]);
-    expect(tabs).toEqual([["API Keys", "#/settings/keys", null], ["MCP servers", "#/settings/mcp", null], ["GitHub", "#/settings/github", null], ["Email", "#/settings/email", null], ["Computers", "#/settings/computers", null], ["Workspace", "#/settings/workspace", null], ["Webhook", "#/settings/webhook", "page"]]);
+    expect(tabs).toEqual([["API Keys", "#/settings/keys", null], ["MCP servers", "#/settings/mcp", null], ["GitHub", "#/settings/github", null], ["Email", "#/settings/email", null], ["Computers", "#/settings/computers", null], ["Workspace", "#/settings/workspace", null], ["Webhook", "#/settings/webhook", "page"], ["Demo", "#/settings/demo", null]]);
   });
 
   it("has a tab for each settings page on a server with tool keys, a choice of provider and the webhook routes", async () => {
     const page = await open({ tool_keys: { routes: true, at_rest: "sealed" }, webhooks: { routes: true, events: ["run.needs_input", "run.ended"], signing: "standard-webhooks/v1", at_rest: "sealed" } }, "#/settings/webhook", choiceTools);
     expect(page.host.querySelector("h1")?.textContent).toBe("Webhook");
     const tabs = [...page.host.querySelectorAll('nav[aria-label="Settings"] a')].map((a) => [a.textContent?.trim(), a.getAttribute("href"), a.getAttribute("aria-current")]);
-    expect(tabs).toEqual([["API Keys", "#/settings/keys", null], ["Tools", "#/settings/tools", null], ["MCP servers", "#/settings/mcp", null], ["GitHub", "#/settings/github", null], ["Email", "#/settings/email", null], ["Computers", "#/settings/computers", null], ["Workspace", "#/settings/workspace", null], ["Webhook", "#/settings/webhook", "page"]]);
+    expect(tabs).toEqual([["API Keys", "#/settings/keys", null], ["Tools", "#/settings/tools", null], ["MCP servers", "#/settings/mcp", null], ["GitHub", "#/settings/github", null], ["Email", "#/settings/email", null], ["Computers", "#/settings/computers", null], ["Workspace", "#/settings/workspace", null], ["Webhook", "#/settings/webhook", "page"], ["Demo", "#/settings/demo", null]]);
   });
 
   it("has no Webhook tab on a server without the webhook routes", async () => {
     const page = await open({ tool_keys: { routes: true, at_rest: "sealed" } }, "#/settings/keys");
     const tabs = [...page.host.querySelectorAll('nav[aria-label="Settings"] a')].map((a) => a.textContent?.trim());
-    expect(tabs).toEqual(["API Keys", "MCP servers", "GitHub", "Email", "Computers", "Workspace"]);
+    expect(tabs).toEqual(["API Keys", "MCP servers", "GitHub", "Email", "Computers", "Workspace", "Demo"]);
   });
 
   it("lists MCP servers in Settings on every server, its capabilities naming no MCP routes, and opens the page there", async () => {
     const page = await open({ tool_keys: { routes: true, at_rest: "sealed" }, mcp_client: { transports: ["streamable-http"], auth: ["none", "bearer"], at_rest: "sealed", harnesses: ["pi"] } }, "#/settings/mcp");
     const tabs = [...page.host.querySelectorAll('nav[aria-label="Settings"] a')].map((a) => [a.textContent?.trim(), a.getAttribute("href"), a.getAttribute("aria-current")]);
-    expect(tabs).toEqual([["API Keys", "#/settings/keys", null], ["MCP servers", "#/settings/mcp", "page"], ["GitHub", "#/settings/github", null], ["Email", "#/settings/email", null], ["Computers", "#/settings/computers", null], ["Workspace", "#/settings/workspace", null]]);
+    expect(tabs).toEqual([["API Keys", "#/settings/keys", null], ["MCP servers", "#/settings/mcp", "page"], ["GitHub", "#/settings/github", null], ["Email", "#/settings/email", null], ["Computers", "#/settings/computers", null], ["Workspace", "#/settings/workspace", null], ["Demo", "#/settings/demo", null]]);
     expect(page.asked).toContain("GET /v2/settings/mcp-servers");
   });
 
@@ -479,7 +545,7 @@ describe("App, the agents' names", () => {
     await act(async () => { link()!.click(); });
     await until(() => location.hash === `#/agents/${encodeURIComponent(made.agent_id)}`);
         await act(async () => { location.hash = `#/playground?agent=${encodeURIComponent(made.agent_id)}`; });
-    await until(() => host.querySelector<HTMLButtonElement>('button[aria-haspopup="listbox"][aria-label="Agent"]')?.textContent === made.definition.name);
+    await until(() => wordsOf(host.querySelector('button[aria-haspopup="listbox"][aria-label="Agent"]')) === made.definition.name);
     await type(host.querySelector<HTMLTextAreaElement>("textarea")!, "Check the 2.3.0 entry.");
     await act(async () => { button(/send request/i)!.click(); });
     await until(() => !!button(/Open this run/));
@@ -509,7 +575,7 @@ describe("App, the agents' names", () => {
     // Straight to the Playground, as a person tries a new agent: it is offered there, picked, and run.
     await act(async () => { location.hash = `#/playground?agent=${encodeURIComponent(made.agent_id)}`; });
     const pick = () => host.querySelector<HTMLButtonElement>('button[aria-haspopup="listbox"][aria-label="Agent"]');
-    await until(() => !!pick()?.textContent?.includes(made.definition.name!));
+    await until(() => wordsOf(pick()) === made.definition.name);
     await type(host.querySelector<HTMLTextAreaElement>("textarea")!, "Check the 2.3.0 entry.");
     await act(async () => { button(/send request/i)!.click(); });
     // The run panel's breadcrumb names the agent, as the run's page does.
@@ -519,11 +585,28 @@ describe("App, the agents' names", () => {
     expect(crumb()).not.toContain(made.agent_id);
   });
 
+  it("puts Start a run's agent beside the operation on one row, and names the path once", async () => {
+    const [first] = agentsList();
+    server({ active: [first] });
+    const { host, until } = await open("#/playground");
+    const agent = () => host.querySelector('button[aria-haspopup="listbox"][aria-label="Agent"]');
+    await until(() => !!agent());
+    const row = host.querySelector<HTMLElement>('[aria-label="Playground agent"]')!;
+    expect(host.querySelectorAll("#api-operation"), "one operation picker").toHaveLength(1);
+    expect(row.contains(host.querySelector("#api-operation")), "on the agent's row").toBe(true);
+    expect(row.contains(agent())).toBe(true);
+    expect(row.textContent!.match(/\/v2\/agents\//g), "the path once, with the agent's id").toHaveLength(1);
+    expect(row.textContent).toContain(`/v2/agents/${first.agent_id}/runs`);
+    await act(async () => { location.hash = "#/playground?operation=list-runs"; });
+    await until(() => !host.querySelector('[aria-label="Playground agent"]'));
+    expect(host.querySelectorAll("#api-operation"), "another operation keeps the page's row").toHaveLength(1);
+  });
+
   it("updates the Playground target when its URL changes and never substitutes a missing agent", async () => {
     const [first, second] = agentsList();
     server({ active: [first, second] });
     const { host, until } = await open(`#/playground?agent=${encodeURIComponent(second.agent_id)}`);
-    const selected = () => host.querySelector<HTMLButtonElement>('button[aria-haspopup="listbox"][aria-label="Agent"]')?.textContent;
+    const selected = () => wordsOf(host.querySelector('button[aria-haspopup="listbox"][aria-label="Agent"]'));
     await until(() => selected() === second.definition.name);
     expect(selected()).toBe(second.definition.name);
     await act(async () => { location.hash = `#/playground?agent=${encodeURIComponent(first.agent_id)}`; });
@@ -547,7 +630,7 @@ describe("App, the agents' names", () => {
       const option = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find((o) => o.textContent === second.definition.name)!;
       option.click();
     });
-    await until(() => picker()?.textContent === second.definition.name);
+    await until(() => wordsOf(picker()) === second.definition.name);
     await pick(host.querySelector<HTMLButtonElement>("#api-operation")!, "edit-agent");
     await until(() => location.hash.includes(`agent=${encodeURIComponent(second.agent_id)}`) && !!host.querySelector('input[aria-label="Name"]'));
     expect(host.querySelector<HTMLInputElement>('input[aria-label="Name"]')!.value).toBe(second.definition.name);

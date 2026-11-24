@@ -2,44 +2,25 @@
 // this machine (a valid package prints what it holds and exits 0; a malformed one, or no folder at all, prints each problem
 // and exits 1), and its eval runner.
 import assert from "node:assert/strict";
-import { spawn, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, watch, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { test } from "node:test";
+import * as group from "../../serve/test/fixtures/started.mjs";
 
 const BIN = new URL("../bin/agentrun.mjs", import.meta.url).pathname;
 const REVIEW = new URL("../../serve/templates/code-review/", import.meta.url).pathname;
-const validate = (dir) => spawnSync(process.execPath, [BIN, "template", "validate", dir], { encoding: "utf8", timeout: 120_000 });
+// A local check that starts no server: run to its end, its timeout a SIGKILL, since spawnSync's timeout sends one signal
+// and then waits for the exit with this file's event loop blocked (no test timeout fires meanwhile).
+const validate = (dir) => spawnSync(process.execPath, [BIN, "template", "validate", dir], { encoding: "utf8", timeout: 120_000, killSignal: "SIGKILL" });
 
-// A command this file starts that cannot outlive its test. It runs in a process group of its own, and on every path (a
-// pass, a failed assertion, the test's timeout) that group (the command and the eval it started) is sent a SIGKILL and
-// this file lets go of its pipes, which a process it started may still hold, so no case keeps this file's process alive
-// past its end. A held eval left running holds for up to its 30-minute run bound, past a CI shard's 24-minute limit.
-// Each wait is bounded and fails with the command's stderr so far. A signal a case sends goes to the command alone.
-function started(t, args, env) {
-  const child = spawn(process.execPath, [BIN, ...args], { env, stdio: ["ignore", "pipe", "pipe"], detached: true });
-  const seen = { out: "", err: "" };
-  child.stdout.on("data", (chunk) => (seen.out += chunk));
-  child.stderr.on("data", (chunk) => (seen.err += chunk));
-  const exited = new Promise((resolve) => child.once("exit", (code, signal) => resolve(code ?? signal)));
-  const closed = new Promise((resolve) => child.once("close", (code, signal) => resolve(code ?? signal)));
-  t.after(() => {
-    try {
-      if (child.pid !== undefined) process.kill(-child.pid, "SIGKILL");
-    } catch {
-      // The group has ended: nothing is left to stop.
-    }
-    child.stdout.destroy();
-    child.stderr.destroy();
-  });
-  return { child, seen, exited, closed };
-}
-function within(promise, ms, what, seen) {
-  let timer;
-  const late = new Promise((_, reject) => (timer = setTimeout(() => reject(new Error(`${what}: not within ${ms / 1000} s. Its stderr so far:\n${seen.err}`)), ms)));
-  return Promise.race([promise, late]).finally(() => clearTimeout(timer));
-}
+// Every other command is started in a process group of its own that ends with its test, and each wait on it is bounded
+// (serve's test/fixtures/started.mjs): a held eval left running holds for up to its 30-minute run bound, past a CI
+// shard's 24-minute limit.
+const started = (t, args, env) => group.started(t, BIN, args, env);
+const ran = (t, args, env, ms) => group.ran(t, BIN, args, env, ms);
+const { within } = group;
 
 test("template validate checks a package folder as the server does", (t) => {
   const ok = validate(REVIEW);
@@ -67,21 +48,37 @@ const EVALPKG = new URL("../../serve/test/fixtures/templates-eval/evalpkg/", imp
 const EVAL_FAUX = new URL("../../serve/test/fixtures/faux-template-eval.mjs", import.meta.url).pathname;
 const REVIEW_FAUX = new URL("../../serve/test/fixtures/faux-review.mjs", import.meta.url).pathname;
 const evalEnv = (dir) => ({ ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !["AGENTRUN_API_KEY", "AGENTRUN_TOKEN", "AGENTRUN_BASE_URL"].includes(name))), AGENTRUN_BOXES: "none", HOME: dir, XDG_CONFIG_HOME: join(dir, ".config") });
-const evaluate = (args, env) => spawnSync(process.execPath, [BIN, "template", "eval", ...args], { encoding: "utf8", env, timeout: 240_000 });
 
-test("template eval runs a package's cases on a server of its own and exits as the eval did", { timeout: 300_000 }, (t) => {
+test("template eval runs a package's cases on a server of its own and exits as the eval did", { timeout: 300_000 }, async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "agentrun-template-eval-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const env = evalEnv(dir);
-  const passed = evaluate([EVALPKG, "--case", "learned", "--faux", EVAL_FAUX, "--report", join(dir, "report.json")], env);
-  assert.equal(passed.status, 0, passed.stderr);
-  assert.match(passed.stdout, /^# Evals: evalpkg 0\.1\.0\n\n1 of 1 case passed\./);
+  const passed = await ran(t, ["template", "eval", EVALPKG, "--case", "learned", "--faux", EVAL_FAUX, "--report", join(dir, "report.json")], evalEnv(dir), 240_000);
+  assert.equal(passed.status, 0, passed.err);
+  assert.match(passed.out, /^# Evals: evalpkg 0\.1\.0\n\n1 of 1 case passed\./);
   assert.deepEqual(JSON.parse(readFileSync(join(dir, "report.json"), "utf8")).cases.map((c) => [c.name, c.pass]), [["learned", true]]);
-  const failed = evaluate([EVALPKG, "--case", "mcp-mismatch", "--faux", EVAL_FAUX], env);
-  assert.equal(failed.status, 1, failed.stderr);
-  const refused = evaluate([EVALPKG, "--case", "nope"], env);
-  assert.equal(refused.status, 2, refused.stderr);
-  assert.match(refused.stderr, /evals\/nope: no such case/);
+});
+
+// A case the package does not have is refused by this command before it starts the server's launcher: with no PATH the
+// launcher cannot run (its first program, mktemp, is not found), so an exit 2 with the refusal is this command's own.
+test("template eval refuses a case the package does not have before it starts anything: exit 2", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "agentrun-template-eval-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const refused = await ran(t, ["template", "eval", EVALPKG, "--case", "learned", "--case", "nope", "--case", "nor-this"], { ...evalEnv(dir), PATH: join(dir, "no-programs") }, 60_000);
+  assert.equal(refused.status, 2, refused.err);
+  assert.equal(refused.out, "");
+  assert.equal(refused.err, `${EVALPKG.replace(/\/$/, "")}: its eval cases do not check:\n- evals/nope: no such case (the package's are all-fail, all-pass, asks, flaky, held, learned, mcp-filed, mcp-match, mcp-mismatch)\n- evals/nor-this: no such case (the package's are all-fail, all-pass, asks, flaky, held, learned, mcp-filed, mcp-match, mcp-mismatch)\n`);
+});
+
+// A refusal the server makes comes back through its launcher: a folder that isn't one is the server's to refuse (this
+// command checks cases only in a folder). The wait is ran()'s, so output that never closes fails, naming what holds it.
+test("template eval passes on the server's own refusal through its launcher: exit 2, in the server's words", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "agentrun-template-eval-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const missing = join(dir, "no-such-dir");
+  const refused = await ran(t, ["template", "eval", missing, "--case", "x"], evalEnv(dir), 60_000);
+  assert.equal(refused.status, 2, refused.err);
+  assert.equal(refused.out, "");
+  assert.equal(refused.err, `${missing} is not a valid package:\n- it is not a folder: a package is one\n`);
 });
 
 for (const spelling of [["template", "eval"], ["eval-template"]]) test(`agentrun ${spelling.join(" ")} passes a stop sent to it alone on to the eval, which cancels its run and cleans up: 130, no report`, { timeout: 300_000 }, async (t) => {
@@ -114,8 +111,11 @@ for (const spelling of [["template", "eval"], ["eval-template"]]) test(`agentrun
 test.skip("template eval --server runs on that server with the token in AGENTRUN_API_KEY, and never prints it", { timeout: 300_000 }, async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "agentrun-template-eval-"));
   const data = join(dir, "data");
-  // The server in this process, on port 0: listening once startServe resolves, nothing to wait for.
+  // The server in this process, on port 0: listening once startServe resolves, nothing to wait for. It reads
+  // AGENTRUN_BOXES from this process's environment, which gets its old value back at the test's end.
+  const boxes = process.env.AGENTRUN_BOXES;
   process.env.AGENTRUN_BOXES = "none";
+  t.after(() => (boxes === undefined ? delete process.env.AGENTRUN_BOXES : (process.env.AGENTRUN_BOXES = boxes)));
   const { startServe } = await import("../../serve/dist/index.js");
   const server = await startServe({ data, port: 0, faux: REVIEW_FAUX });
   t.after(async () => {
@@ -123,19 +123,11 @@ test.skip("template eval --server runs on that server with the token in AGENTRUN
     rmSync(dir, { recursive: true, force: true });
   });
   const { baseUrl: base, token } = server;
-  const env = { ...evalEnv(dir), AGENTRUN_API_KEY: token };
   // code-review's null-name case: the faux reviewer's answer meets the findings schema, and its llm grader, run on the
   // same faux, answers no verdict, so the case fails, graded on that server.
-  const ran = await new Promise((resolve) => {
-    const child = spawn(process.execPath, [BIN, "template", "eval", REVIEW, "--case", "null-name", "--runs", "1", "--server", base, "--report", join(dir, "report.json")], { env, stdio: ["ignore", "pipe", "pipe"] });
-    let out = "";
-    let err = "";
-    child.stdout.on("data", (chunk) => (out += chunk));
-    child.stderr.on("data", (chunk) => (err += chunk));
-    child.on("close", (status) => resolve({ status, out, err }));
-  });
-  assert.equal(ran.status, 1, ran.err);
-  assert.ok(!ran.out.includes(token) && !ran.err.includes(token), "the token is never printed");
+  const evaluated = await ran(t, ["template", "eval", REVIEW, "--case", "null-name", "--runs", "1", "--server", base, "--report", join(dir, "report.json")], { ...evalEnv(dir), AGENTRUN_API_KEY: token }, 240_000);
+  assert.equal(evaluated.status, 1, evaluated.err);
+  assert.ok(!evaluated.out.includes(token) && !evaluated.err.includes(token), "the token is never printed");
   const report = JSON.parse(readFileSync(join(dir, "report.json"), "utf8"));
   assert.ok(!JSON.stringify(report).includes(token));
   assert.equal(report.server.kind, "remote");
@@ -175,11 +167,7 @@ test("template install imports a package from GitHub through the server and prin
     rmSync(dir, { recursive: true, force: true });
   });
   const env = { ...evalEnv(dir), AGENTRUN_BASE_URL: `http://127.0.0.1:${server.address().port}/v2`, AGENTRUN_API_KEY: "tok" };
-  const install = async (...args) => {
-    const { seen, closed } = started(t, ["template", "install", ...args], env);
-    const status = await within(closed, 120_000, `template install ${args.join(" ")}`, seen);
-    return { status, out: seen.out, err: seen.err };
-  };
+  const install = (...args) => ran(t, ["template", "install", ...args], env, 120_000);
   const source = `${id}@main`;
 
   const preview = await install(source, "--dry-run");

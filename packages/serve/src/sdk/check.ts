@@ -3,7 +3,7 @@
 // and collects the turns until it holds compile_after of them, then decides once on all of them through the shared
 // promotion gate, the evidence bar a managed check's compile_after inputs set (runner/promotion.ts sdkCheckTurn).
 import type { Shown } from "../learning.js";
-import { releaseSdkCheck, sdkCheckDeadline, sdkCheckTurn, sdkInputText } from "../runner/promotion.js";
+import { type PromotionDeps, releaseSdkCheck, sdkCheckDeadline, sdkCheckTurn, sdkInputText } from "../runner/promotion.js";
 import { promotionOf, promotionsOf } from "../learn/promote.js";
 import type { RunLaunch } from "../run-launch.js";
 import type { Store } from "../store/store.js";
@@ -41,8 +41,9 @@ function notBaseline(inbox: SdkInbox & { completion: NonNullable<SdkInbox["compl
  *  the check (sdkCheckTurn: kept until the check holds compile_after rows, the one that makes compile_after deciding on
  *  them all); any other turn is given back (releaseSdkCheck) and the check waits for the next turn; a turn the backend
  *  never completed before its inbox expired is one failed row (sdkCheckDeadline). Exact retries and reclaims compete on
- *  the reservation. */
-export async function settleSdkCheck(deps: { store: Store; agentId: string; launch: RunLaunch; inbox: SdkInbox; shown: () => Promise<Shown>; log: (line: string) => void }) {
+ *  the reservation. `refused`: what the purge gate refuses of the records, so the promotions trim keeps the champion its
+ *  readers serve (purged-workflow.ts refusedIn). */
+export async function settleSdkCheck(deps: { store: Store; agentId: string; launch: RunLaunch; inbox: SdkInbox; shown: () => Promise<Shown>; log: (line: string) => void; refused?: PromotionDeps["refused"] }) {
   const { inbox } = deps;
   const check = inbox.learning_check;
   if (!check) return;

@@ -128,6 +128,10 @@ ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519 -N ""
 ### npmrc-placeholder
 //registry.npmjs.org/:_authToken=${NPM_TOKEN}
 always-auth=true
+### npmrc-always-auth-leads
+    12→//registry.npmjs.org/:always-auth=true
+notes/setup.txt:41://npm.corp-sample.io/:always-auth=true
++//npm.corp-sample.io/:always-auth=true
 ### gha-secrets
 env:
   NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
@@ -183,3 +187,30 @@ const mask = (value: string) => `${value.slice(0, 4)}…${"*".repeat(8)}`;
 // mask("sk-...") === "sk-.…********"
 ### env-name-list
 Missing variables: OPENAI_API_KEY, ANTHROPIC_API_KEY, GITHUB_TOKEN, DATABASE_PASSWORD
+### yaml-cloudformation-tags
+Resources:
+  WidgetsDb:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      MasterUsername: !Ref DbUser
+      MasterUserPassword: !Ref DbPassword
+      AuthToken: !GetAtt WidgetsSecret.SecretString
+      ApiToken: !ImportValue widgets-api-token
+      ClientSecret: !Sub
+### yaml-ansible-vault
+widgets_db_password: !vault |
+          $ANSIBLE_VAULT;1.1;AES256
+          3162353164346539383766316566643063343935633036363466
+          6438623361663934386130623039386631396266646631360a
+### yaml-blocks-anchors-aliases
+defaults: &widgets_defaults
+  password: &widgets_pw
+  api_token: >-
+    {{ lookup('env', 'WIDGETS_API_TOKEN') }}
+  client_secret: |
+    {{ vault_client_secret }}
+staging:
+  <<: *widgets_defaults
+  password: *widgets_pw
+  smtp_password: ~
+  auth_token: null

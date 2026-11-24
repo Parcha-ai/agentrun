@@ -1,0 +1,5 @@
+---
+packages: @parcha/agentrun-serve
+kind: feature
+---
+A template package with triggers no longer needs a `budget` when every trigger has its own spend cap (`target.max_cost_usd`, a number above 0). `agentrun template validate`, an import and an apply take such a package. With no budget, one trigger without a cap of its own is refused, and the error names it (`triggers[1] (evening) has no max_cost_usd of its own, and the package has no budget`). A cap of 0, a negative, NaN or Infinity counts as none. `GET /v2/agents/{agent_id}/package` and `agentrun export` follow the same rule. An agent with no `max_cost_usd` whose triggers each have a cap now exports a package that validates. Before, any trigger blocked the export (`budget max_cost_usd`). Now only a trigger with no cap of its own blocks it, as a `trigger` note that names it. The agent such a package makes has no cap of its own, so a run its person starts has none, as on any agent made without `max_cost_usd`. Each run a trigger fires is capped at that trigger's cap. A package that reads today reads the same.

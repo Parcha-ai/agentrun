@@ -12,7 +12,8 @@ import { after, test } from "node:test";
 import { cap, capRun, rootEntries } from "./adapter-pi-cap-support.mjs";
 import { closeOpenSessions, piAdapterSpec, scriptedOrigin } from "./conformance-pi-adapter.mjs";
 
-const { paidRequest, parallelSearchFee } = await import("../dist/paid-calls.js");
+const { paidRequest } = await import("../dist/paid-calls.js");
+const { parallelSearchFee } = await import("@parcha/agentrun-web");
 const { timelineOf } = await import("../dist/timeline/index.js");
 const { mcpGateway } = await import("../dist/mcp-gateway.js");
 const quiet = { beforeIntent: async () => {}, beforeResult: async () => {} };

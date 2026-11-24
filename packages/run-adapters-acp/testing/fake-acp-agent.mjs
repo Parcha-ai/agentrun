@@ -10,6 +10,8 @@
 //          (titles agentrun-<tool>: <tool>; MCP and execute ask, edits do not; a refused native call still reports
 //          completed), or "goose-1.59" (as "goose", but titled as Goose 1.59.2 titles a call of an extension's tool:
 //          `agentrun: <tool, its underscores as spaces>`);
+//   titleSummary: with style "goose-1.59", the summary Goose 1.59.2 writes after such a title for a call whose
+//                 arguments it summarizes (a path): `agentrun: <tool> · <titleSummary>`;
 //   askMcp: ask permission before an MCP call (default: by style); askNative: the native kinds that ask;
 //   nativeLog: a file each native call that runs appends its title to;
 //   countFile: a file each event (new, load, prompt, cancel, mcp, permission) is appended to, one JSON line;
@@ -44,6 +46,7 @@
 //         "answer" in the words of the error it answers, alive.
 //   grow: {bytes}: at each save of a session, append `bytes` random bytes to <sessions>/store.db-wal and rewrite a
 //         store.db-shm beside it: a store that grows each turn, as Cursor's SQLite WAL does.
+//   holdInit: a file; while it exists, initialize is not answered, so the host can send this process nothing.
 // A script step {hang: true} is a model that never answers (until a cancel the agent heeds).
 // The step the model takes is the number it took before: its session's history (calls, native calls, answers), plus the
 // calls a recovery or context note names that its history does not hold, as a resumed model reads its conversation.
@@ -99,7 +102,7 @@ const pgid = (() => {
   }
 })();
 said({ type: "start", env: Object.keys(process.env).sort(), home, cwd: process.cwd(), pgid, ...(config.cursorDirs ? { cursorDir, deniesWrite } : {}) });
-const titleOf = (tool) => (style === "cursor" ? `agentrun-${tool}: ${tool}` : style === "goose-1.59" ? `agentrun: ${tool.replace(/_/g, " ")}` : `agentrun__${tool}`);
+const titleOf = (tool) => (style === "cursor" ? `agentrun-${tool}: ${tool}` : style === "goose-1.59" ? `agentrun: ${tool.replace(/_/g, " ")}${config.titleSummary ? ` · ${config.titleSummary}` : ""}` : `agentrun__${tool}`);
 const late = style === "cursor" && config.announce === "late";
 const models = config.models ? { currentModelId: config.models[0].modelId, availableModels: config.models } : undefined;
 /** The credential Cursor derives from its key, in its private HOME: here the key's sha256, never the key. */
@@ -314,7 +317,8 @@ async function takeTurn(client, session, prompt, signal) {
       const entry = { kind: "native", id, title: update.title, status: "pending" };
       session.history.push(entry);
       save(session);
-      await notify({ sessionUpdate: "tool_call", ...update });
+      // {announce: false}: a permission request for a call no tool_call announced.
+      if (s.announce !== false) await notify({ sessionUpdate: "tool_call", ...update });
       const allowed = deniesWrite && EDITS.has(s.native) ? false : askNative.has(s.native) ? await permitted(client, session, update) : true;
       if (signal.aborted) return { stopReason: "cancelled" };
       if (allowed && config.nativeLog) appendFileSync(config.nativeLog, `${update.title}\n`);
@@ -375,16 +379,19 @@ const signInWith = (methodId) => {
 };
 
 const app = agent({ name: "fake-acp" })
-  .onRequest("initialize", () => ({
-    protocolVersion: 1,
-    agentCapabilities: {
-      loadSession: config.advertiseLoad ?? loads,
-      mcpCapabilities: { http: config.advertiseHttp ?? config.http ?? true, sse: false },
-      ...(config.systemPrompt ? { sessionCapabilities: { systemPrompt: {} } } : {}),
-    },
-    agentInfo: { name: "fake-acp", version: "1.0.0" },
-    authMethods: (config.auth?.methods ?? []).map((id) => ({ id, name: id })),
-  }))
+  .onRequest("initialize", async () => {
+    while (config.holdInit && existsSync(config.holdInit)) await new Promise((resolve) => setTimeout(resolve, 20));
+    return {
+      protocolVersion: 1,
+      agentCapabilities: {
+        loadSession: config.advertiseLoad ?? loads,
+        mcpCapabilities: { http: config.advertiseHttp ?? config.http ?? true, sse: false },
+        ...(config.systemPrompt ? { sessionCapabilities: { systemPrompt: {} } } : {}),
+      },
+      agentInfo: { name: "fake-acp", version: "1.0.0" },
+      authMethods: (config.auth?.methods ?? []).map((id) => ({ id, name: id })),
+    };
+  })
   .onRequest("authenticate", ({ params }) => {
     const text = signInWith(params.methodId);
     if (text === undefined) throw RequestError.authRequired({ methodId: params.methodId });

@@ -10,7 +10,7 @@ import { type BeforeRequest, modelPortFor, RUNNER_RECORDS, sessionSpendOf } from
 import type { ModelRequest, ModelTicket, SessionRecord, SessionWriter } from "../../types.js";
 import type { Refusal } from "../../runner.js";
 import { aloneRefusal, overCapEnd, SPEND_CAP_REACHED } from "./words.js";
-import { freeCeilingEnd, freeRequest } from "./free.js";
+import { freeCeilingEnd, freeRequest, limitedFree } from "./free.js";
 import { decisionAsk } from "./admit.js";
 import { CapRefused, DecisionPriceUnreadable } from "./errors.js";
 import { beforeRequestOf, capRequestOf, type PricedRequest } from "./port.js";
@@ -21,6 +21,8 @@ type Verdict = { refuse?: string; forGood?: boolean; figures?: RefusalFigures; h
 
 /** The session a run's workflow decisions book under. */
 export const DECISION_SESSION = "decisions";
+/** The prefix of the model key a decision books under (`decision:<id>`). */
+const DECISION_KEY = "decision:";
 
 export interface RunCapOptions {
   /** The run's sessions: every key it has and each one's records (the journal's). */
@@ -39,8 +41,12 @@ export interface RunCapOptions {
   judged?(request: Parameters<BeforeRequest>[0], answer: Awaited<ReturnType<BeforeRequest>>): void;
   /** The most model requests on free models (free.ts freeModel) the run makes, capped or not: the next one past it is
    *  refused for good, in freeCeilingEnd's words. Its paid tool calls, its decisions and ChatGPT-plan requests never
-   *  count. Undefined: no such limit. */
+   *  count. Undefined: no such limit. A local model's request (CapModel.local) never counts toward it. */
   freeRequests?: number;
+  /** The agent's own limit (free.ts maxRequestsOf): every free request counts toward it, a local model's included (its
+   *  count, localRequestsMade, beside freeRequestsMade). The next request past it is refused for good, in the same words.
+   *  Undefined: none of its own. */
+  maxRequests?: number;
   /** Whether the run has parked (its host's pause): a model request waiting for room (runBooking) leaves the line then,
    *  refused in its own words, so nothing more is sent until a raise. */
   parked?(): boolean;
@@ -112,7 +118,11 @@ export function overCapOf(records: readonly SessionRecord[], othersUsd: number, 
 export function runCap(options: RunCapOptions): RunCap {
   /** Each decision under way's model, as the rule prices it (decisionAsk), by the model key its request books under. */
   const deciding = new Map<string, CapModel>();
-  const pricing = { modelOf: (id: string, route?: string) => deciding.get(id) ?? options.modelOf(id, route) };
+  // A decision's model key is never read by the run's model reader: a decision goes to its own provider, priced by the
+  // model it is admitted at (`deciding`) or, with no cap, by none. The run's reader may answer the run's model for any
+  // id (a CLI session's one model), which would mark an uncapped decision the plan's or a free model's: $0 to the run
+  // whatever its provider charged, or a known $0 for one whose charge was lost.
+  const pricing = { modelOf: (id: string, route?: string) => deciding.get(id) ?? (id.startsWith(DECISION_KEY) ? undefined : options.modelOf(id, route)) };
   const rule = beforeRequestOf({
     capUsd: options.capUsd,
     ...pricing,
@@ -130,15 +140,21 @@ export function runCap(options: RunCapOptions): RunCap {
   // freeModel refuses a plan model (its listing's price is no price), so `free` is false for every plan request, and the
   // plan mark is returned before the free one is looked at. One the rule refused stays refused.
   const limit = options.freeRequests;
+  const own = options.maxRequests;
   const judge: BeforeRequest = async (request) => {
     const free = freeRequest(request, pricing.modelOf);
-    const counted = free && request.key !== DECISION_SESSION && request.key !== TOOL_SESSION;
+    const ofRun = free && request.key !== DECISION_SESSION && request.key !== TOOL_SESSION;
+    // A local model's request (CapModel.local) is free and never under the server's limit (limitedFree), but it is under
+    // the agent's own, counted apart (`localRequest`) and added to the run's other free requests there.
+    const counted = ofRun && limitedFree(pricing.modelOf(request.model, request.route));
+    const local = ofRun && !counted;
     if (counted && limit !== undefined && (request.freeRequestsMade ?? 0) >= limit) return { refuse: freeCeilingEnd(limit), forGood: true, code: SPEND_CAP_REACHED };
+    if (ofRun && own !== undefined && (request.freeRequestsMade ?? 0) + (request.localRequestsMade ?? 0) >= own) return { refuse: freeCeilingEnd(own), forGood: true, code: SPEND_CAP_REACHED };
     const answer = await rule(request);
     if (answer && "refuse" in answer) return await roomOf(request, answer);
     if (!request.paid && pricing.modelOf(request.model, request.route)?.plan) return { ...answer, plan: true };
     if (!free) return answer;
-    return { ...(answer ?? {}), ...(counted ? { freeRequest: true as const } : {}), free: true as const };
+    return { ...(answer ?? {}), ...(counted ? { freeRequest: true as const } : {}), ...(local ? { localRequest: true as const } : {}), free: true as const };
   };
   // A step (a model request, a decision, a paid tool call) refused for room while steps in flight hold some of it: judged
   // again by the same rule as if none of the steps that settle on their own were out (a hold-only step, one the booking
@@ -176,7 +192,7 @@ export function runCap(options: RunCapOptions): RunCap {
           // Under no cap a decision is not priced: nothing is read, nothing refused (its model may be "unreadable").
           if (capUsd !== undefined && request.model === "unreadable") throw new DecisionPriceUnreadable();
           const asked = capUsd === undefined || request.model === "unreadable" ? undefined : decisionAsk(request);
-          const key = `decision:${request.id}`;
+          const key = `${DECISION_KEY}${request.id}`;
           if (asked) deciding.set(key, { ...asked.model, id: key });
           return steps.book(request.id, { model: key, ...(asked ? { inputTokensMax: asked.inputTokens, ...(asked.output === null ? {} : { outputTokensAsked: asked.output, outputTokensLeast: asked.output }), ...(asked.feeUsd > 0 ? { feeUsd: asked.feeUsd } : {}) } : { inputTokensMax: request.inputTokens }) });
         },

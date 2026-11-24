@@ -36,13 +36,14 @@ describe("the browser's provider names and help", () => {
     expect(providerHelp("browserbase", "browser")).toMatch(/Browserbase/);
   });
 
-  it("leaves search's and fetch's names and help as they were", () => {
-    expect(["auto", "native", "exa-keyless", "parallel"].map((p) => providerLabel(p, "web_search"))).toEqual(["auto", "native", "Exa keyless", "Parallel"]);
-    expect(["kernel", "parallel"].map((p) => providerLabel(p, "web_fetch"))).toEqual(["kernel fetch", "Parallel"]);
+  it("leaves search's and fetch's names and help their own", () => {
+    expect(["auto", "native", "firecrawl-keyless", "exa-keyless", "parallel"].map((p) => providerLabel(p, "web_search"))).toEqual(["auto", "native", "Firecrawl keyless", "Exa keyless", "Parallel"]);
+    expect(["auto", "firecrawl-keyless", "kernel", "parallel"].map((p) => providerLabel(p, "web_fetch"))).toEqual(["auto", "Firecrawl keyless", "kernel fetch", "Parallel"]);
     expect(providerHelp("kernel", "web_fetch")).toBe("This server's own fetch, guarded against private addresses.");
-    // auto's order as the server resolves it (tool-plane.ts): the harness's or provider's own, Parallel on the server's
-    // key, then keyless Exa. Parallel is named, so a person with its key knows auto uses it.
-    expect(providerHelp("auto", "web_search")).toBe("The harness's own search, or the model provider's hosted one; else Parallel where this server holds its key; else keyless Exa.");
+    // auto's order as the server resolves it (tool-plane.ts): Parallel on the server's key, then keyless Firecrawl with
+    // keyless Exa behind it, on every harness; the harness's or provider's own search only as native. Parallel is named,
+    // so a person with its key knows auto uses it.
+    expect(providerHelp("auto", "web_search")).toBe("Parallel where this server holds its key; else keyless Firecrawl, with keyless Exa behind it. The harness's own search, or the model provider's hosted one, only as native.");
     // A caller that names no tool reads the shared names, as before.
     expect(providerLabel("kernel")).toBe("kernel fetch");
   });

@@ -54,7 +54,7 @@ function Replay({ v2, agentId, name, choices, onPick, promotions, serving, stopp
   }, [v2, agentId, name, asked]);
   const heading = (
     <header className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b px-4 py-3">
-      <h2 className="min-w-0 flex-1"><span className="caps text-small font-semibold">{TITLE}</span> <span className="ml-1 break-all font-mono text-body font-semibold">{name}</span></h2>
+      <h2 className="min-w-0 flex-1"><span className="caps text-small font-semibold">{TITLE}</span> <span className="ml-1 break-words font-mono text-body font-semibold">{name}</span></h2>
       {choices.length > 1 && <Picker small className="w-56 max-w-full" label="Learned workflow" value={name} onChange={onPick} options={choices.map((c) => ({ value: c, label: c }))} />}
     </header>
   );
@@ -101,8 +101,11 @@ export function Steps({ data, stepMs = STEP_MS, promotions = [], serving = null,
   const record = recordOf(promotions, data.name, step.digest);
   // Serving is the champion's (the server's `serving`): a newer revision replaying or held never takes it from it.
   const standing = standingOf(record, { serving, stopped });
+  // Wide, the revision's words stand left of its graph; narrow, above it. The card's own width decides.
   return (
-    <div className="space-y-3 p-4">
+    <div className="[container-type:inline-size]">
+    <div className="grid grid-cols-1 gap-4 p-4 [@container(min-width:720px)]:grid-cols-[minmax(18rem,2fr)_minmax(0,3fr)]">
+    <div className="min-w-0 space-y-3">
       {n > 1 && (
         <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
           <Button size="sm" onClick={play} aria-label={playing ? "Pause the replay" : "Play the replay"} aria-pressed={playing}>{playing ? <Pause aria-hidden /> : <Play aria-hidden />}{playing ? "Pause" : "Play"}</Button>
@@ -114,7 +117,7 @@ export function Steps({ data, stepMs = STEP_MS, promotions = [], serving = null,
       <div className="min-w-0">
         <p className="font-mono text-label text-muted-foreground">
           <span>{n > 1 ? `Revision ${at + 1} of ${n}` : "One revision"}</span> · <time dateTime={step.at}>{when(step.at)}</time>
-          {" · "}{step.run ? <a href={`#/runs/${encodeURIComponent(step.run)}`} className="underline underline-offset-2 hover:text-foreground">run {runLabel(step.run)}</a> : "a person"}
+          {" · "}{step.run ? <a href={`#/runs/${encodeURIComponent(step.run)}`} className="whitespace-nowrap underline underline-offset-2 hover:text-foreground">run {runLabel(step.run)}</a> : "a person"}
         </p>
         <p className="mt-1 break-words text-lead" role="status" data-testid="replay-line">{step.line}</p>
         {step.reason && <p className="mt-0.5 line-clamp-2 break-words text-body text-muted-foreground">{step.reason}</p>}
@@ -126,6 +129,15 @@ export function Steps({ data, stepMs = STEP_MS, promotions = [], serving = null,
         </p>
         {replay && step.digest && <ReplayRevision key={step.digest} v2={replay.v2} agentId={replay.agentId} workflow={data.name} digest={step.digest} offered={replayable(standing)} resume={record?.decided === "replaying" ? (record.replay_id ?? null) : null} onStarted={replay.onStarted} onDecided={replay.onDecided} />}
       </div>
+      {(data.total > data.revisions.length || data.truncated || unreadable > 0) && (
+        <p className="text-body text-muted-foreground">
+          {data.total > data.revisions.length && `The latest ${data.revisions.length} of ${data.total} revisions. `}
+          {data.truncated && "Older changes are past the log this server keeps. "}
+          {unreadable > 0 && `${unreadable} ${unreadable === 1 ? "revision" : "revisions"} could not be read as a workflow and ${unreadable === 1 ? "is" : "are"} left out.`}
+        </p>
+      )}
+    </div>
+    <div className="min-w-0 space-y-3">
       {/* The graph takes the room: a short workflow is drawn up to 1.6x to the card's width, centred (by its margins, so a wide one still scrolls from its start) in a frame at least 280px tall. */}
       <div className="flex min-h-[280px] overflow-auto border bg-[radial-gradient(hsl(var(--border))_1px,transparent_1px)] [background-size:22px_22px] p-4">
         <WorkflowGraph graph={step.graph} marks={step.marks} label={`The workflow at revision ${at + 1} of ${n}, as a graph`} minScale={0.5} maxScale={1.6} className="m-auto" />
@@ -134,13 +146,8 @@ export function Steps({ data, stepMs = STEP_MS, promotions = [], serving = null,
         <GraphLegend />
         <p className="font-mono text-label text-muted-foreground"><span className="font-semibold text-foreground">NEW</span> first appears in this revision · <span className="font-semibold text-foreground">EDITED</span> its prompt, code, inputs or tier changed</p>
       </div>
-      {(data.total > data.revisions.length || data.truncated || unreadable > 0) && (
-        <p className="text-body text-muted-foreground">
-          {data.total > data.revisions.length && `The latest ${data.revisions.length} of ${data.total} revisions. `}
-          {data.truncated && "Older changes are past the log this server keeps. "}
-          {unreadable > 0 && `${unreadable} ${unreadable === 1 ? "revision" : "revisions"} could not be read as a workflow and ${unreadable === 1 ? "is" : "are"} left out.`}
-        </p>
-      )}
+    </div>
+    </div>
     </div>
   );
 }

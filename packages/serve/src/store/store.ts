@@ -130,7 +130,7 @@ export interface TemplatePackage {
   /** The names of the keys the package declared (its `secrets`, and those of the model choice the apply took), sorted,
    *  never their values: what an export of the agent names, whatever version of the package the server holds later, and
    *  the tool keys a run of the revision may carry (run-keys.ts; under the run-keys setting one that does not is refused).
-   *  Absent on a revision applied before it was kept. */
+   *  Every apply writes it. */
   readonly secrets?: readonly string[];
 }
 
@@ -346,6 +346,10 @@ export interface RunPatch {
    *  cancel waiting at its commit cut the look-back, never the job's end, and is refused (refuseLeftovers), unless a
    *  person's message waits too: that message's run is the one they stop or cancel. */
   readonly keepsEnd?: boolean;
+  /** A final patch's census (run-census.ts): where in the run's files the secrets its launch holds sit, made under the
+   *  launch's `sealed` bytes as they were then. The end that erases them writes it as the launch's census when its sealed
+   *  bytes are still those, else the marker "unscanned" (refuseLeftovers), as it does for an end with none. */
+  readonly census?: { readonly json: string; readonly sealed: Uint8Array };
 }
 
 /** The row runs.update answers. When the patch wrote `signInHanded` (the runner's bind at its claim), `save` rides with it:
@@ -364,12 +368,25 @@ export interface RunLaunchInput {
   readonly sealed?: Uint8Array | null;
 }
 
+/** The census a launch takes when sealed bytes are first written on it (RunLaunchRow.census): it holds secrets its caller
+ *  handed it, and no end has counted where they sit. An end erases them and writes its census in its place; an end that
+ *  wrote none (a runner from before the census, during a rolling deploy) leaves it, and an ended run's files under it are
+ *  withheld from a cut read, as under CENSUS_UNSCANNED. */
+export const CENSUS_PENDING = JSON.stringify("pending");
+/** The census an end that erased a launch's sealed bytes writes when it has none made under them (RunLaunchRow.census), and
+ *  a message's seal writes over CENSUS_PENDING left by such an end: what the run was handed may be in its files, and
+ *  nothing says where. */
+export const CENSUS_UNSCANNED = JSON.stringify("unscanned");
+
 /** A run's launch as the store holds it: the body the runner reads at its claim, and its sealed bytes, which the store never
- *  opens. */
+ *  opens. `census`: null when its launch never held sealed bytes (none handed, or a run ended before the census was kept);
+ *  CENSUS_PENDING from when they were first written until an end counted them; then the JSON text the last end that
+ *  erased them wrote (RunPatch.census, run-census.ts), or CENSUS_UNSCANNED when that end had none made under them. */
 export interface RunLaunchRow {
   readonly runId: string;
   readonly body: unknown;
   readonly sealed: Uint8Array | null;
+  readonly census: string | null;
   readonly createdAt: number;
 }
 
@@ -659,7 +676,8 @@ export interface Firing {
 
 export type FiringStatus = "due" | "started" | "sent" | "skipped" | "failed" | "missed" | "ignored";
 /** A trigger's firing as its row keeps it. `shown`: in the trigger's history (the newest HISTORY_KEPT); false, kept only
- *  for its key's day. `retryAt`: a due firing's next try; `waitsOn`: the run whose turn end wakes a due firing.
+ *  for its key's day. `retryAt`: a due firing's next try; `waitsOn`: what a due firing waits behind for its trigger's
+ *  room, a run's id, or a firing's key while the trigger has no run yet (triggers.ts busy).
  *  `startBy`: a firing its launch hook's host took with no run (sent), the time until which the host may still start
  *  its run (triggers.ts handedStart); null on any other. */
 export interface FiringRow {
@@ -739,6 +757,21 @@ export interface FiringChange {
    *  in the firing's retry_at column, which only a due firing holds otherwise, and is never read back as a retry. Any
    *  other status keeps none. */
   readonly startBy?: number;
+  /** Written only while the firing's status is this one, read in the settle's own transaction: a firing whose host's run
+   *  started it meanwhile (triggers.ts handedRan) is left as it is, and nothing is written. */
+  readonly from?: FiringStatus;
+  /** Written only while the firing holds its trigger's room at this time (the triggers' clock): sent with no run, its
+   *  startBy not passed. Read in the settle's own transaction: a host start that pushes a startBy out (triggers.ts
+   *  handedStart) leaves a firing whose window closed, or whose run started, meanwhile as it is. */
+  readonly holdsAt?: number;
+  /** Written only while the firing is sent with no run and its startBy is still this one, read in the settle's own
+   *  transaction: a host start that pushed a startBy out and wrote no run puts it back (triggers.ts handedStart), unless
+   *  its run started, or another start moved it, meanwhile. */
+  readonly startByWas?: number;
+  /** Written only while the firing has no run, read in the settle's own transaction (with `from`, a firing's start by a
+   *  run written apart from it, triggers.ts handedRan): one a release failed, or another run started, meanwhile is left
+   *  as it is. */
+  readonly noRun?: true;
 }
 /** What a settle does to the firing's trigger besides: `reset` its failure streak (a run started, a message sent), or
  *  count a `failure` toward it, turning it off at `pauseAt` in a row (auto-pause, the firing marked paused). */
@@ -909,7 +942,8 @@ export interface Triggers {
   /** The trigger's history, newest first: its shown firings. */
   firings(triggerId: string): Promise<FiringRow[]>;
   /** The firing changed (with its trigger's last_run_id moved to a newer run it names, and `streak`), in one transaction:
-   *  undefined when the firing is gone (its trigger deleted). `paused`: this failure turned the trigger off. */
+   *  undefined when the firing is gone (its trigger deleted), or is no longer the change's `from`. `paused`: this failure
+   *  turned the trigger off. */
   settle(triggerId: string, key: string, change: FiringChange, streak?: FiringStreak): Promise<{ firing: FiringRow; paused: boolean } | undefined>;
   /** Every due firing, and every failed one whose trigger.failed is not marked queued, oldest first. */
   pending(): Promise<FiringRow[]>;
@@ -919,13 +953,19 @@ export interface Triggers {
    *  `bound.reason` and nothing is queued. Undefined when the firing is gone or no longer due. A run that has ended takes no
    *  message (RunFinal, as command()), and nothing is written. */
   message(firing: { triggerId: string; key: string }, runId: string, command: { kind: string; body: unknown }, bound: { max: number; reason: string }): Promise<{ sent: true; commandId: number } | { skipped: string } | undefined>;
-  /** Every due firing waiting for its trigger's room (waits_on), oldest first, each with whether the room is there now
-   *  (fewer of its trigger's started runs not ended than its max_active_runs): one read for all of them. */
-  waiting(): Promise<(FiringRow & { readonly free: boolean })[]>;
+  /** Every due firing waiting for its trigger's room (waits_on), oldest first, each with whether the room is there at
+   *  `now` (the triggers' clock): fewer of its trigger's runs in progress (activeKeys) than its max_active_runs, or no
+   *  max_active_runs (cleared while the firing waited: the engine's own check decides). One read for all of them. */
+  waiting(now: number): Promise<(FiringRow & { readonly free: boolean })[]>;
   /** The soonest next time of an enabled trigger, or null. */
   soonest(): Promise<number | null>;
-  /** How many of the trigger's started runs have not ended (a run reopened later does not count). */
-  activeRuns(triggerId: string): Promise<number>;
+  /** The keys of the trigger's firings in progress at `now` (the triggers' clock), in no order: started with a run not
+   *  ended (a run reopened later does not count), or held, a firing its launch hook's host took with no run yet up to its
+   *  startBy. max_active_runs counts them. */
+  activeKeys(triggerId: string, now: number): Promise<string[]>;
+  /** The newest of the trigger's firings that hold its room at `now` (taken by its launch hook's host with no run yet, its
+   *  startBy not passed): its key, or undefined. */
+  held(triggerId: string, now: number): Promise<string | undefined>;
   /** The history kept to `history` shown firings: older ones a sender's key names (manual, pushed) are kept for their day
    *  (shown 0), others removed; shown-0 rows past `dayMs` removed, then the oldest past `kept` of them. Never a due
    *  firing, a failure not yet told, a started firing whose run has not ended, nor a sent one whose startBy is not before
@@ -942,9 +982,12 @@ export interface Runs {
    *  `expectedCurrent` checks the agent's current revision under its lock (RevisionMoved on mismatch); this is separate
    *  from the pinned revisionId. Settings guards are locked before the agent. Refusal writes no run, origin or launch.
    *  `startedAt` (ms) is when the run began, for one reported after it began elsewhere (a backend SDK run's
-   *  `started_at`); absent, now. */
+   *  `started_at`); absent, now. With `firing` (a launch hook's host starting the firing it was handed), that firing is
+   *  started with the run in the same transaction, its trigger's last run and failure streak as a started firing's
+   *  are, only while it has no run and is still due or sent with a start_by: any other (released, failed, settled) is
+   *  refused (FiringMoved), and nothing is written. */
   create(run:{ id: string; agentId: string; revisionId: string; origin?: RunOrigin; labels?: RunLabels;
-    expectedCurrent?: string | null; settingsGuards?: readonly SettingsGuard[]; startedAt?: number }, launch?: RunLaunchInput): Promise<RunRow>;
+    expectedCurrent?: string | null; settingsGuards?: readonly SettingsGuard[]; startedAt?: number; firing?: { triggerId: string; key: string } }, launch?: RunLaunchInput): Promise<RunRow>;
   /** A run whose agent is given inline and mapped to a source system by `agent.ref` and `revision.version`. In one
    *  transaction: the agent (one per `ref`, written on its first run, its name and description brought up to the version
    *  whose first use this is) and the revision (one per `version`, made current on its first use) are written or read, then
@@ -1083,8 +1126,9 @@ export interface Runs {
   failUnclaimed(summary: string): Promise<string[]>;
   /** The runs a runner may claim, oldest first: queued; parked with an untaken command or its wake_at passed; running with
    *  no runner (released at a runner's shutdown: it stays running, a run that started keeps that fact) or its claim run
-   *  out. */
-  claimable(options?: { limit?: number }): Promise<string[]>;
+   *  out. A parked run whose computer is kept for another runner that is still there (its pin, KEPT_PREFIX) is that
+   *  runner's alone: with `runner`, the claimer, such a run is left out; without it every run is counted. */
+  claimable(options?: { limit?: number; runner?: string }): Promise<string[]>;
   /** The epoch a runner's claim holds run `runId` at now, judged by the store's own clock (the one claims are stamped
    *  and fenced by), never a reader's; undefined when no claim holds it (none, released, or run out) or there is no
    *  such run. */
@@ -1225,6 +1269,20 @@ export type McpRemoved = { readonly url: string; readonly sealed: Uint8Array | n
 /** The fields of a server's write (Mcp.put). */
 export type McpServerWrite = { name: string; url: string; auth: string; protocol?: string | null; tools: unknown; prices?: unknown; serverInfo?: unknown; instructions?: string | null; sealed?: Uint8Array | null; listedAt?: number; updatedAt?: number; credentialChangedAt?: number | null; tokenLeftMs?: number | null };
 
+/** The API token's mark a write over a saved server's row needs, compared in the statement that writes or removes the row:
+ *  the setting at `record` (the server's source record, mcp-sources.ts) still says `by: "token"` for that very row (its
+ *  `of` is the row's created_at). An owner's save drops the mark in the transaction that writes its row (McpOwnersMark),
+ *  so a write that needs the mark never lands over the owner's save, whenever that save lands. The write that needs it
+ *  takes the server's lock first, so on Postgres its statement reads the record as the owner's committed transaction left
+ *  it. */
+export type McpTokensMark = { readonly record: string };
+
+/** The owner's write over a saved server's row: in the transaction that writes the row, and only once the row is written,
+ *  the setting at `record` (the server's source record) loses the API token's mark (`by`) when it still says the token
+ *  saved that very row. A write refused (no row) leaves the record as it was, so a refused owner's save never takes the
+ *  server from the token; one that lands makes it the owner's with no moment between its row and its record. */
+export type McpOwnersMark = { readonly record: string };
+
 export interface Mcp {
   /** The server's write: the server's row, inserted or replaced by name (its first save's time kept). An owner's save
    *  clears any refresh lease and changes the credential, so a refresh in flight is dropped (keepRefreshed's `kept: false`)
@@ -1233,20 +1291,25 @@ export interface Mcp {
   put(server: McpServerWrite): Promise<McpServerRow>;
   /** put(), only while the server's credential is still `expected` (its mark as the writer read it; null: no server by
    *  that name), compared and written in one statement: no other write lands between. Undefined, writing nothing, when
-   *  it is not. */
-  putIfCredential(server: McpServerWrite, expected: McpCredentialMark): Promise<McpServerRow | undefined>;
+   *  it is not. `tokens`: the API token's write over a saved row, which lands only while the row still carries the
+   *  token's mark (McpTokensMark), in the same statement. `owns`: the owner's write, which drops the token's mark in the
+   *  same transaction once the row is written (McpOwnersMark). */
+  putIfCredential(server: McpServerWrite, expected: McpCredentialMark, tokens?: McpTokensMark, owns?: McpOwnersMark): Promise<McpServerRow | undefined>;
   /** An owner's rewrite of a row it read, its credential kept as it is (a tools refresh, a save that sends no new
    *  credential): the listing, prices, url and times written by a compare-and-set on the CREDENTIAL, iff the row is still
    *  saved and its sealed value is still `seen` (the one the owner read). The credential's columns (sealed, token_until,
    *  credential_changed_at) and any refresh lease are left as they are, so a runner's refresh in flight still keeps its
    *  set. undefined, writing nothing, when the credential changed meanwhile (a refresh kept a rotated set) or the row went:
-   *  the caller reads it again and re-applies its change onto the fresh row, a bounded few times. */
-  rewrite(server: { name: string; url: string; auth: string; protocol?: string | null; tools: unknown; prices?: unknown; serverInfo?: unknown; instructions?: string | null; listedAt?: number; updatedAt?: number }, seen: Uint8Array | null): Promise<McpServerRow | undefined>;
+   *  the caller reads it again and re-applies its change onto the fresh row, a bounded few times. `owns`: as
+   *  putIfCredential's, the token's mark dropped in the same transaction once the row is written. */
+  rewrite(server: { name: string; url: string; auth: string; protocol?: string | null; tools: unknown; prices?: unknown; serverInfo?: unknown; instructions?: string | null; listedAt?: number; updatedAt?: number }, seen: Uint8Array | null, owns?: McpOwnersMark): Promise<McpServerRow | undefined>;
   /** Deletes the row, answering what it held as it went (McpRemoved); undefined when there was none. */
   remove(name: string): Promise<McpRemoved | undefined>;
   /** remove(), only while the server's credential is still `expected` (its mark as the remover read it), compared and
-   *  deleted in one statement. Undefined, deleting nothing, when it is not (or the server is gone). */
-  removeIfCredential(name: string, expected: NonNullable<McpCredentialMark>): Promise<McpRemoved | undefined>;
+   *  deleted in one statement. Undefined, deleting nothing, when it is not (or the server is gone). `tokens`: the API
+   *  token's removal, which lands only while the row still carries the token's mark (McpTokensMark), in the same
+   *  statement. */
+  removeIfCredential(name: string, expected: NonNullable<McpCredentialMark>, tokens?: McpTokensMark): Promise<McpRemoved | undefined>;
   /** The registry's rows, by name. */
   servers(): Promise<McpServerRow[]>;
   server(name: string): Promise<McpServerRow | undefined>;
@@ -1557,6 +1620,15 @@ export interface RunCapacity {
 /** How long a runner's row is kept once it stopped saying it is there (a runner that died without its close): its next
  *  put removes every row older than this. */
 export const RUNNER_ROWS_KEPT_MS = 24 * 60 * 60_000;
+
+/** How old a runner's row can be and still count as there, on the store's clock (runner/presence.ts PRESENCE_STALE_MS:
+ *  three renewals missed). The claim rule reads it for a kept computer's pin. */
+export const RUNNER_STALE_MS = 30_000;
+
+/** The settings key prefix of the computers kept at a run's park, one row per run (workspace/computer-kept.ts). A row
+ *  whose computer is pinned to the runner that kept it (its `runner` and `incarnation`) holds the run for that runner in
+ *  the claim rule, while that runner is there under that incarnation and the keep lasts. */
+export const KEPT_PREFIX = "computer_kept:";
 
 /** Every runner's word that it is there (runner/presence.ts). */
 export interface Runners {
@@ -2106,6 +2178,14 @@ export class RunsMadeFromLeft extends StoreConstraint {
   constructor(readonly runId: string, readonly runs: readonly string[]) {
     super(`run ${runId} has runs made from it not purged (${runs.join(", ")}): each is purged first`);
     this.name = "RunsMadeFromLeft";
+  }
+}
+
+/** A run's firing (Runs.create `firing`) that no longer takes it: no longer due or sent with a start_by, or it has a run. */
+export class FiringMoved extends Error {
+  constructor(readonly triggerId: string, readonly key: string) {
+    super(`firing ${key} of trigger ${triggerId} no longer takes a run: nothing was written`);
+    this.name = "FiringMoved";
   }
 }
 

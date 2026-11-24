@@ -14,7 +14,7 @@ import { type FramedEvent, framedExec } from "./hosted/framed-exec.js";
 import { networkFormOf } from "./hosted/network.js";
 import { orThrow, pause } from "./hosted/process.js";
 import { HostedProvider, type HostedOptions } from "./hosted/provider.js";
-import { jsonOf, type Rest, rest } from "./hosted/rest.js";
+import { httpsBase, jsonOf, type Rest, rest } from "./hosted/rest.js";
 import { shellLine } from "./hosted/scripts.js";
 import type { ComputerSpec, Refusal } from "./provider.js";
 import { ok, type Result } from "./result.js";
@@ -23,7 +23,7 @@ import { ok, type Result } from "./result.js";
 export interface SmolcloudProviderOptions extends Omit<HostedOptions, "kind" | "desktop"> {
 	/** The smol cloud API key. The caller passes it; this provider never reads it from the environment. */
 	apiKey: string;
-	/** The REST API; default https://api.smolmachines.com. */
+	/** The REST API, https alone; default https://api.smolmachines.com. */
 	apiUrl?: string;
 	/** The fetch every call goes through; default the global one. */
 	fetch?: typeof fetch;
@@ -290,6 +290,6 @@ export class SmolcloudProvider extends HostedProvider {
 	constructor(options: SmolcloudProviderOptions) {
 		const { apiKey, apiUrl = DEFAULT_API_URL, fetch, maxLifetimeMs = DAY_MS, ...rest } = options ?? ({} as SmolcloudProviderOptions);
 		if (typeof apiKey !== "string" || apiKey === "") throw new Error("options.apiKey, the smol cloud API key, is required: the provider reads no environment, so the caller passes it");
-		super(new SmolcloudHost({ apiKey, apiUrl, ...(fetch ? { fetch } : {}) }), { ...rest, maxLifetimeMs });
+		super(new SmolcloudHost({ apiKey, apiUrl: httpsBase(apiUrl, "the smol cloud API URL"), ...(fetch ? { fetch } : {}) }), { ...rest, maxLifetimeMs });
 	}
 }

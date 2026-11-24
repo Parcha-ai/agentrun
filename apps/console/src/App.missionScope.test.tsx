@@ -106,7 +106,7 @@ it("filters a connected session without requesting a nonexistent server-agent ru
   await act(async () => host.querySelector<HTMLInputElement>('input[name="mission-range"][value="7d"]')!.click());
   await wait(() => asked.filter(a => a.startsWith("GET /v2/stats?") && a.includes("agent=os_coding")).length >= 2, "the selected source survives the range refresh");
   expect(asked.some(a => a.startsWith("GET /v2/agents/os_coding/runs"))).toBe(false);
-  await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Choose coding agent for Query"]')!.click());
+  await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Choose coding agent for Ask about this session"]')!.click());
   expect(document.querySelector('a[role="menuitem"][href="#/observations/os_coding"]')?.textContent).toBe("Connected agent");
   expect(document.querySelector('a[role="menuitem"][href*="agent=os_coding"]')).toBeNull();
   await act(async () => [...document.querySelectorAll<HTMLButtonElement>('button[role="menuitem"]')].find(button => button.textContent === "Copy prompt")!.click());

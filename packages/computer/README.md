@@ -453,7 +453,7 @@ in the kernel's tool registry, keyed by these groups.
   | id | label | kinds | keys (required unless marked) | mounts | metered |
   | --- | --- | --- | --- | --- | --- |
   | docker | Docker | sandbox, desktop | none | bind | no |
-  | daytona | Daytona | sandbox | `DAYTONA_API_KEY`; `DAYTONA_API_URL`, `DAYTONA_TARGET`, `DAYTONA_ARCHIL_EGRESS`, `DAYTONA_ATTACH_EGRESS` (optional) | none (`unmounted`: archil); archil with `DAYTONA_ARCHIL_EGRESS` (`mountsWith`) | yes |
+  | daytona | Daytona | sandbox | `DAYTONA_API_KEY`; `DAYTONA_API_URL`, `DAYTONA_TARGET`, `DAYTONA_ARCHIL_EGRESS`, `DAYTONA_ATTACH_EGRESS`, `DAYTONA_LISTED_MS` (optional) | none (`unmounted`: archil); archil with `DAYTONA_ARCHIL_EGRESS` (`mountsWith`) | yes |
   | modal | Modal | sandbox | `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET` | archil | yes |
   | e2b | E2B | sandbox, desktop | `E2B_API_KEY` | archil | yes |
   | orgo | Orgo | desktop (Linux; Windows and macOS with `os`) | `ORGO_API_KEY` | none | yes |
@@ -628,7 +628,9 @@ by its rectangle), so a longer one ends the connection before anything is alloca
   answers once none of its windows shows and none of its launches runs, a launch that never showed a window included.
 - `screen.shot` is a PNG of the root window or a region inside it (one outside is `invalid`), with `scale` 1 and
   `cursor` from `QueryPointer`. A connection holds one shot, until it is read to its end or the next shot; a
-  `screen.read` of another id is `not_found`.
+  `screen.read` of another id is `not_found`. A cancelled shot stops waiting for the server's replies at once and
+  gives the display back. Known limit: a shot cancelled while its request is still being written, to an X server that
+  has stopped reading its socket, waits out that write's 30 s bound first.
 - `input.actions` checks the whole batch first, as `checkActions` does, and on X11 also refuses: a touch action
   (`unsupported`: X11 has no touch), a pixel scroll (`unsupported`: the wheel turns in clicks), a point or click count
   that is not whole (`invalid`), an unknown field, and text with a character no key types (a control character other
@@ -837,14 +839,21 @@ key.
   makes its Unix socket there (0600); the computer mounts it read-only at `/opt/agentrun/egress` (`EGRESS_MOUNT`).
 - **The proxy container** `computer-<hex>-egress`: `node` in `EGRESS_IMAGE` (node:22.23.5-trixie-slim, pinned by
   digest; `new DockerProvider({ daemonPath, egress: { image } })` replaces it) runs `dist/docker/egress-main.js`, this
-  package's own build, bound read-only with its `package.json`. It is on Docker's default bridge alone, publishes no
-  port, and runs as the computer's uid:gid with a read-only root, `--cap-drop ALL`, `no-new-privileges`, 256 MiB, 64
+  package's own build, bound read-only with its `package.json`. It is on the provider's egress bridge alone (below),
+  publishes no port, and runs as the computer's uid:gid with a read-only root, `--cap-drop ALL`, `no-new-privileges`, 256 MiB, 64
   pids, half a CPU (a fixed quota, not the computer's own cpus), 1024 open files and a bounded log. Its argv holds the list (or `--open public`), the computer's deadline (it ends itself then), this machine's own
   public addresses (refused as `this-host`), and `egress.hint`, the words a refusal adds (printable ASCII).
   `EGRESS_IMAGE` is the one place its digest is written. `create` pulls it at the first allow computer when the host
   lacks it (see Lifetime), so a host with no registry access pulls it ahead, reading the name from this package:
   `docker pull "$(node --input-type=module -e 'import { EGRESS_IMAGE } from "@parcha/agentrun-computer"; console.log(EGRESS_IMAGE)')"`
   (in this repository, from `packages/computer` after a build: `node -e 'import("./dist/index.js").then((m) => console.log(m.EGRESS_IMAGE))'`).
+- **The egress bridge** `agentrun-egress`: one user-defined bridge every proxy on the Docker host shares, with
+  inter-container traffic off (`com.docker.network.bridge.enable_icc=false`) and the label
+  `agentrun.computer.egress-network=1`. The first allow or open `create` makes it, and nothing removes it. No other
+  workload's container is on it, so none can reach a proxy or ARP-spoof the gateway the proxies go out through, as one
+  with `NET_RAW` could on Docker's default bridge. A `create` that finds a network of that name made otherwise (inter-container
+  traffic on, internal, not a local bridge, or without the label) refuses in words and makes nothing; remove that
+  network (`docker network rm agentrun-egress`) and create again. A proxy on any other network reads back as other.
 - **The computer**: init gets `--egress /opt/agentrun/egress/egress.sock`, listens on port 3128 of its own loopback,
   carries each connection to the socket, and gives every program it starts `HTTP_PROXY` and `HTTPS_PROXY` (and their
   lowercase forms) naming that port, with `NO_PROXY` naming the loopback itself. A program that ignores them reaches
@@ -1368,8 +1377,8 @@ unless they start with `modal_proto/`. Docs: modal.com, read 2026-11-05.
 `create(options)` in `dist/modal.js` builds a real client from `options.tokenId` and `options.tokenSecret`, and the
 provider in `options.app` (required: without it, it refuses in words naming the option, before any client). It reads no
 setting from the environment (see [Settings](#settings)) and passes the token to `ModalClient` explicitly, so a
-`MODAL_TOKEN_ID` or `MODAL_TOKEN_SECRET` on the host is never used. The key goes only to `options.serverUrl`, else the
-SDK's default `https://api.modal.com:443`: since the client cannot take a server, it refuses while `MODAL_SERVER_URL`
+`MODAL_TOKEN_ID` or `MODAL_TOKEN_SECRET` on the host is never used. The key goes only to `options.serverUrl` (https
+alone), else the SDK's default `https://api.modal.com:443`: since the client cannot take a server, it refuses while `MODAL_SERVER_URL`
 is set, and sets it to its choice only while it constructs the client, one construction at a time and put back after
 each, so neither `MODAL_PROFILE` nor a profile in `MODAL_CONFIG_PATH` or `~/.modal.toml` can redirect the key. The
 daemon is uploaded from `options.daemonPath`, else `dist/computerd-linux-amd64`, so a run publishes nothing.
@@ -1600,8 +1609,13 @@ the TTL.
   name lists, as a retry does (or answers `exists` when none lists). A create that fails without a 4xx
   answer, or is aborted, may still have made the sandbox, so the adapter deletes the name it chose. Then it waits for
   `started` (polling `GET /sandbox/{id}`), pushes in and starts the daemon, checks the daemon and probes its network
-  none from inside, and waits until the label listing shows the new computer twice running (Daytona's listing trails
-  a create). A sandbox that reads `error` or `build_failed` is gone, and create fails `vendor` with Daytona's
+  none from inside, and waits until the label listing shows the new computer twice running. Daytona's `GET /sandbox`
+  is eventually consistent (`daytonaio/daytona@b5a5d9e7:apps/api/src/sandbox/controllers/sandbox.controller.ts:130-146`:
+  an OpenSearch index the API never writes itself), and on a hosted deployment it left new sandboxes unlisted past
+  15 s. So a sandbox still unlisted after `listedMs` (15 s unset; `listedMs` or `DAYTONA_LISTED_MS`, in ms) is read by
+  its id: one that reads `started` with its labels is kept, with a note naming the labels, the sandbox and the wait,
+  and `list()` leaves it out until the listing shows it; a retry of its request on the same provider finds it by its
+  id. Any other answer fails create `timeout` in those words. A sandbox that reads `error` or `build_failed` is gone, and create fails `vendor` with Daytona's
   `errorReason`. Any failure or abort after the sandbox exists deletes it, and create never returns ok once its signal
   has aborted.
 - `attach({ id })` takes a sandbox id (or a computer's name, which Daytona answers to as well); `attach({ labels })`
@@ -1791,7 +1805,8 @@ default snapshot whose `/opt` another user can write would now be refused at cre
   which snapshot Daytona names for a sandbox made with none, and how soon after `autoDestroyAt` Daytona destroys;
 - how long `GET /sandbox/{id}` takes to answer 404 after a delete, and the listing to hide the sandbox (release waits
   for both, up to `goneMs`); how long a stop takes to read `stopped`;
-- how soon the label listing shows a new sandbox;
+- how soon the label listing shows a new sandbox: 0.7 to 1.6 s in pi-transport's runs, past 15 s on a hosted
+  deployment (create keeps a sandbox the listing trails, above);
 - the ports a CIDR list opens on the production runner, and whether a domain list blocks every port but 80 and 443;
 - `network: none` against the live bypass cases (ruling 9), on each class;
 - the linux-vm class end to end.
@@ -2051,7 +2066,8 @@ words, whatever its value, and every sandbox is made with public traffic off.
 - `create` waits for the sandbox to run; E2B's create options are not read back. Then the daemon: hello (version,
   `linux`, `amd64`, kind and groups), `/proc/self/status` (uid and gid 1000, no groups, `NoNewPrivs` 1, every
   capability set zero), `/proc/self/cwd` (`/work`), `/proc/self/exe`; and for none, the probe. It waits until the label
-  listing shows the new computer. A failure, mismatch or abort at any step kills the sandbox and waits for it to go;
+  listing shows the new computer, or, still unlisted after `listedMs`, keeps it when a read by its id finds it running
+  with its labels (the shared adapter's rule, as on Daytona). A failure, mismatch or abort at any step kills the sandbox and waits for it to go;
   create never returns ok once its signal has aborted.
 - `attach({ id })` or `attach({ labels })` reads the computer from E2B and, for a running computer, the daemon, as at
   create. `image` is the template create was asked for, from its label.
@@ -2800,7 +2816,7 @@ explicitly, so the SDK takes none of them from the environment.
 | `apiKey` | the boxd API key | required |
 | `org` | the org machines are made in and listed from, by name or id | the key's own |
 | `region` | the region machines are made in (`fra`, `nyc`) | the API's home region |
-| `baseUrl` | the API's address | `https://boxd.sh:9443` |
+| `baseUrl` | the API's address, https alone | `https://boxd.sh:9443` |
 | `vcpu`, `memory` | a boxd size: 1 and `4G`, 2 and `8G`, 4 and `16G`, or 8 and `32G`; both or neither; a sandbox's alone | the org's default |
 | `kind` | `linux` or `desktop` (from the desktop snapshot) | `linux` |
 | `maxLifetimeMs` | the longest lifetime `check` takes, at most 30 days | 24 h |
@@ -2924,7 +2940,7 @@ node packages/computer/dist/conformance/sweep.js --provider smolcloud --before /
 ```
 
 The conformance module, `dist/conformance/smolcloud.js`, checks `AGENTRUN_COMPUTER_LIVE_SMOLCLOUD=1` first, then reads
-`COMPUTER_SMOLCLOUD_API_KEY` (`apiKey`, required), `COMPUTER_SMOLCLOUD_API_URL` (`apiUrl`) and
+`COMPUTER_SMOLCLOUD_API_KEY` (`apiKey`, required), `COMPUTER_SMOLCLOUD_API_URL` (`apiUrl`, https alone) and
 `COMPUTER_SMOLCLOUD_IMAGE` (the run's image, default the box image), never `SMOLCLOUD_API_KEY`. Every computer of a run
 lives at most 30 minutes. The live sweep is the shared one; its scope is the key's account.
 
@@ -2996,8 +3012,7 @@ What Groundbox refuses or this host works around:
   should Groundbox start it after all; every other dropped socket closes with 4000, which leaves it running. A new
   socket counts as reading on only once Groundbox says something on it, so a peer that takes each attach and stays
   silent fails the stream after 5 minutes instead of holding `wait()` forever.
-- The API URL is https; http is taken only to a loopback host (127.0.0.0/8, `::1`, `localhost`), since the key rides
-  every call and the stream's upgrade.
+- The API URL is https alone, loopback included, since the key rides every call and the stream's upgrade.
 - On the box image and any other public image Groundbox runs a command as root. On Groundbox's own image and its
   templates it runs as the image's user, `runner` (uid 1001), with passwordless sudo, which the adapter's scripts use;
   `daemonUser` may not be 1001 there.

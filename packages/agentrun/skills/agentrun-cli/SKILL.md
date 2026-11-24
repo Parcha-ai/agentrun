@@ -132,6 +132,7 @@ Two clients call the same API from code, with the same server and token. `@parch
 ## Commands
 
 - `agentrun agents`: archive, bind-source-tool, connect-native, create, delete-agent, delete-agent-archil, disconnect-native, discover-native, forget-sign-in, get, get-agent-archil, get-learning-loop, get-native, get-source-sync, list, list-learning-audits, list-learning-promotions, move-source-agent, package, resolve-source-sync, review-source-project, runs, set-source-sync, unarchive, update, verify-native
+- `agentrun api-keys`: list
 - `agentrun capabilities`: get-capacity
 - `agentrun cli-learning`: complete, enroll, events, get, list, revoke, start
 - `agentrun connectors`: complete-remote-command, enroll-remote-connector, grant-source-sync, import-remote-history, import-remote-target, list-remote-connectors, poll-remote-connector, publish-source-sync, register-remote-connector, remote-command-events, revoke-remote-connector, source-sync-failure
@@ -139,11 +140,12 @@ Two clients call the same API from code, with the same server and token. `@parch
 - `agentrun doctor`: Check how this AgentRun is set up (Node, the server, its service, address, password, models, switches, Docker) and print what to change; read-only (exit 0 ok or warnings, 1 a check failed, 3 no server answering)
 - `agentrun export AGENT`: Write an agent's current revision as a template package folder, and say what the target sets up again
 - `agentrun files`: create, delete, get, list, upload
-- `agentrun harness`: install, sign-in
+- `agentrun harness`: install, keys, sign-in
 - `agentrun harness-check`: Run a recipe's installed agent for real and check it (tools off, env allowlist, pins, limits, no side requests, resume, a denied call, an MCP tool): a JSON report and three facts. Real models cost money
+- `agentrun harness-keys`: list
 - `agentrun home`: delete, list, read, write
 - `agentrun learning`: corrections, cost, get, log, read, replay, reset, retire, workflow-revisions, write-corrections
-- `agentrun local`: create-pairing, delete-composio-subscription, delete-computer, delete-workspace-archil, disconnect-git-hub, get-git-hub-connection, get-model-gateway, get-workspace-archil, list-composio-events, list-composio-triggers, list-computer-choices, list-computers, list-mcp-server-names, receive-hook-composio, rotate-composio-secret, test-computer, test-workspace-archil
+- `agentrun local`: create-pairing, create-suggested-agent, delete-composio-subscription, delete-computer, delete-workspace-archil, discard-suggestion, disconnect-git-hub, get-git-hub-connection, get-model-gateway, get-suggestion, get-workspace-archil, list-composio-events, list-composio-triggers, list-computer-choices, list-computers, list-git-hub-repositories, list-marketplace-templates, list-mcp-server-names, list-running-computers, list-suggestions, receive-hook-composio, restore-suggestion, rotate-composio-secret, scan-for-suggestions, test-computer, test-workspace-archil
 - `agentrun login`: Sign in to a server, with a device code when it offers one, else a token read from stdin, and keep the token with the server's address in the config file
 - `agentrun logout`: Remove the config file login wrote, its address and token
 - `agentrun mcp-servers`: delete, get, list, oauth-client, private-hosts, refresh
@@ -161,8 +163,9 @@ Two clients call the same API from code, with the same server and token. `@parch
 - `agentrun template`: apply, delete, eval, get, import, install, list, validate
 - `agentrun tool-keys`: list
 - `agentrun tool-settings`: get, save
-- `agentrun triggers`: create, delete, fire, firings, get, list, update
+- `agentrun triggers`: create, delete, fire, firings, get, list, release-firing, update
 - `agentrun usage`: Usage by meter over a period
 - `agentrun webhook`: delete, deliveries, get, redeliver, save, test
 - `agentrun workflows`: validate
+- `agentrun wrapped`: A year of the work under this machine's session files
 - `agentrun api METHOD PATH [--body JSON|@FILE|-]`: any route, PATH under the base URL

@@ -215,11 +215,11 @@ export type DefinitionInput = {
       permission?: "allow" | "deny";
     };
     web_fetch?: {
-      provider?: "kernel" | "parallel";
+      provider?: "auto" | "firecrawl-keyless" | "kernel" | "parallel";
       permission?: "allow" | "ask" | "deny";
     };
     web_search?: {
-      provider?: "auto" | "native" | "exa-keyless" | "parallel" | "off";
+      provider?: "auto" | "native" | "firecrawl-keyless" | "exa-keyless" | "parallel" | "off";
       permission?: "allow" | "ask" | "deny";
     };
     web_save?: {
@@ -291,7 +291,7 @@ export type DefinitionInput = {
     repick?: boolean;
     repick_max_chars?: number;
   };
-  checkout?: "pull_request" | "none";
+  checkout?: "pull_request" | "repository" | "none";
   max_requests?: number;
 };
 
@@ -548,6 +548,7 @@ export type Cost = {
   learning_usd?: number | null;
   tools_usd?: number | null;
   all_in_usd?: number | null;
+  degraded?: true;
   plan?: {
     requests: number;
     tokens: number;
@@ -613,51 +614,6 @@ export type File = {
   status: "pending" | "ready";
   created_at: Timestamp;
   expires_at: Timestamp | null;
-};
-
-export type CancelResult = {
-  run_id: Id;
-  cancel_requested: boolean;
-  already_terminal: boolean;
-  status: RunStatus;
-};
-
-export type RunCreateInline = {
-  external: ExternalRef;
-  definition: DefinitionInput;
-  skills?: SkillFiles;
-  note?: string;
-  input: Record<string, unknown>;
-  file_ids?: Array<Id>;
-  effort?: Effort;
-  max_cost_usd?: number;
-  quote_id?: string;
-  model_key?: string;
-  keys?: Record<string, string>;
-  mcp_auth?: Record<string, {
-    headers: Record<string, string>;
-  } | ComposioRunBinding>;
-  labels?: Record<string, string>;
-  workflow_first?: boolean;
-  learning?: "use";
-  repo?: string;
-  archil_disk?: {
-    disk_id: string;
-  };
-  hold?: boolean;
-  hold_minutes?: number;
-};
-
-export type ExternalRef = {
-  source: string;
-  kind: string;
-  id: string;
-  version: string | number;
-};
-
-export type ComposioRunBinding = {
-  composio_user_id: string;
-  connected_account_id?: string;
 };
 
 export type Run = {
@@ -781,7 +737,7 @@ export type Run = {
   computer?: {
     kind: "sandbox" | "desktop" | "phone" | "browser";
     provider: string;
-    state: "starting" | "ready" | "taken_over" | "ended" | "failed";
+    state: "starting" | "ready" | "taken_over" | "released" | "ended" | "failed";
     why?: string;
     held?: {
       state: "starting" | "waiting" | "started" | "ended" | "released";
@@ -872,6 +828,51 @@ export type RunResult = {
   output_error?: string;
 };
 
+export type CancelResult = {
+  run_id: Id;
+  cancel_requested: boolean;
+  already_terminal: boolean;
+  status: RunStatus;
+};
+
+export type RunCreateInline = {
+  external: ExternalRef;
+  definition: DefinitionInput;
+  skills?: SkillFiles;
+  note?: string;
+  input: Record<string, unknown>;
+  file_ids?: Array<Id>;
+  effort?: Effort;
+  max_cost_usd?: number;
+  quote_id?: string;
+  model_key?: string;
+  keys?: Record<string, string>;
+  mcp_auth?: Record<string, {
+    headers: Record<string, string>;
+  } | ComposioRunBinding>;
+  labels?: Record<string, string>;
+  workflow_first?: boolean;
+  learning?: "use";
+  repo?: string;
+  archil_disk?: {
+    disk_id: string;
+  };
+  hold?: boolean;
+  hold_minutes?: number;
+};
+
+export type ExternalRef = {
+  source: string;
+  kind: string;
+  id: string;
+  version: string | number;
+};
+
+export type ComposioRunBinding = {
+  composio_user_id: string;
+  connected_account_id?: string;
+};
+
 export type RunFileList = {
   run_id: Id;
   files: Array<RunFile>;
@@ -885,6 +886,7 @@ export type RunFile = {
   modified_at: Timestamp;
   content_type?: string | null;
   unreadable?: true;
+  name?: string;
 };
 
 export type MessageCreate = {
@@ -951,6 +953,14 @@ export type TimelinePage = {
   final: boolean;
   cost: Cost;
   poll_after_ms?: number;
+  in_flight?: Array<{
+    kind: "model" | "tool";
+    name: string;
+    started_at: string | null;
+    tool_use_id?: string;
+    for_tool?: string;
+    input_tokens_max?: number;
+  }>;
 };
 
 export type TimelineRow = {
@@ -1102,6 +1112,7 @@ export type Capabilities = {
       billing: "proxy" | "plan";
     };
     available: boolean;
+    ready_models: Array<string>;
     free_models: Array<{
       id: string;
       context_window: number;
@@ -1253,9 +1264,16 @@ export type Features = {
   computers?: {
     kinds: Array<"none" | "sandbox" | "desktop" | "phone" | "browser">;
   };
+  claude_login?: boolean;
   tool_keys?: {
     routes: boolean;
     at_rest: "sealed";
+  };
+  harness_keys?: {
+    routes: boolean;
+    at_rest: "sealed";
+    harnesses: Array<string>;
+    kept: Array<string>;
   };
   mcp_client?: {
     transports: Array<"streamable-http">;
@@ -1269,6 +1287,11 @@ export type Features = {
     events: Array<"run.needs_input" | "run.ended" | "trigger.failed">;
     signing: "standard-webhooks/v1";
     at_rest: "sealed";
+  };
+  api_keys?: {
+    routes: boolean;
+    limit: number;
+    at_rest: "hashed";
   };
   slack?: {
     routes: boolean;
@@ -2168,6 +2191,20 @@ export type VerifyNativeResponse = {
   };
 };
 
+/** The API keys made for this server's apps; never a key (GET /settings/api-keys). */
+export type ListApiKeysResponse = {
+  keys: Array<{
+    id: string;
+    name: string;
+    created_at: string;
+    last_used_at: string | null;
+    secret: SecretMeta;
+  }>;
+  limit: number;
+  refused?: string;
+  unreadable?: Array<string>;
+};
+
 /** The runs waiting and held, the live runners and the recent hand-backs (GET /capacity). */
 export interface GetCapacityParams {
   window?: number;
@@ -2621,6 +2658,22 @@ export type ListFilesResponse = {
 /** Send a reserved file's bytes (PUT /files/{file_id}). */
 export type UploadFileResponse = File;
 
+/** The keys each plan-billed harness recipe runs on, and which are saved: names only, never a value (GET /settings/harness-keys). */
+export type ListHarnessKeysResponse = {
+  harnesses: Array<{
+    id: string;
+    label: string;
+    named: boolean;
+    keys: Array<SecretMeta>;
+    kept: Array<SecretMeta>;
+    ready: boolean;
+    reenter: Array<{
+      name: string;
+      why: "recipe_changed" | "seal_key_changed" | "file_unreadable";
+    }>;
+  }>;
+};
+
 /** Delete one file of the agent's home (DELETE /agents/{agent_id}/home/files/{path}). */
 
 /** Every file in the agent's home (GET /agents/{agent_id}/home/files). */
@@ -2717,6 +2770,7 @@ export type GetLearningCostResponse = {
     hand_backs: {
       ran: number;
       back: number;
+      cut: number;
     } | null;
     withheld: {
       unknown: number;
@@ -2933,11 +2987,25 @@ export type PutLearningCorrectionsResponse = {
 /** Start Connect GitHub: the app-manifest form the console posts to GitHub (POST /integrations/github/connect). */
 export type ConnectGitHubBody = {
   org?: string;
+  contents?: "read" | "write";
 };
 export type ConnectGitHubResponse = {
   action: string;
   manifest: Record<string, unknown>;
   state: string;
+};
+
+/** Make an API key, shown once (POST /settings/api-keys). */
+export type CreateApiKeyBody = {
+  name: string;
+};
+export type CreateApiKeyResponse = {
+  id: string;
+  name: string;
+  created_at: string;
+  last_used_at: string | null;
+  secret: SecretMeta;
+  api_key: string;
 };
 
 /** A code that pairs a person's own computer with this server (POST /computers/pairings). */
@@ -2946,6 +3014,73 @@ export type CreatePairingResponse = {
   code: string;
   expires_at: string;
   runs_refused: string | null;
+};
+
+/** Create a suggested agent: a branch with its package and client, the agent made here, and a pull request (POST /suggestions/{suggestion_id}/create). */
+export type CreateSuggestedAgentBody = {
+  name?: string;
+};
+export type CreateSuggestedAgentResponse = {
+  id: string;
+  repo: string;
+  key: string;
+  status: "open" | "created" | "discarded";
+  title: string;
+  summary: string;
+  why: string;
+  impact: "high" | "medium" | "low";
+  evidence: Array<{
+    path: string;
+    line: number;
+    quote: string;
+    url: string;
+  }>;
+  agent: {
+    name: string;
+    description: string;
+    inputs: Array<{
+      name: string;
+      type: "string" | "number" | "integer" | "boolean";
+      description: string;
+      required: boolean;
+    }>;
+    output: Array<{
+      name: string;
+      type: "string" | "number" | "integer" | "boolean" | "string_list";
+      description: string;
+      enum?: Array<string>;
+    }>;
+    tools: Array<"web_search" | "web_fetch">;
+    tier: "fast" | "balanced" | "strong";
+    instructions?: string;
+  };
+  integration: {
+    language: "typescript" | "javascript" | "python" | "other";
+    path: string;
+    call_site: {
+      path: string;
+      line: number;
+      note: string;
+      url: string;
+    };
+  };
+  scan: {
+    run_id: string;
+    commit: string | null;
+    at: string;
+  };
+  decided_at: string | null;
+  created: null | {
+    agent_id: string;
+    template_id: string;
+    branch: string | null;
+    pull_request: null | {
+      number: number;
+      url: string;
+    };
+    pull_error: string | null;
+  };
+  warnings: Array<Record<string, unknown>>;
 };
 
 /** Forget this server's calendar (DELETE /settings/calendar). */
@@ -2958,6 +3093,8 @@ export type DeleteComposioSubscriptionResponse = {
 /** Remove a paired computer: its token ends and its socket closes (DELETE /computers/{computer_id}). */
 
 /** Forget this server's email account (DELETE /settings/email). */
+
+/** Forget one key of a plan-billed harness recipe (DELETE /settings/harness-keys/{harness_id}/{key}). */
 
 /** Stop using the saved model gateway: the provider keys are back in force (DELETE /settings/model-gateway). */
 export type DeleteModelGatewayResponse = {
@@ -2994,6 +3131,69 @@ export type DeleteWorkspaceArchilResponse = {
   image?: string;
 };
 
+/** Discard a suggested agent: it goes away, and later scans leave it out (POST /suggestions/{suggestion_id}/discard). */
+export type DiscardSuggestionResponse = {
+  id: string;
+  repo: string;
+  key: string;
+  status: "open" | "created" | "discarded";
+  title: string;
+  summary: string;
+  why: string;
+  impact: "high" | "medium" | "low";
+  evidence: Array<{
+    path: string;
+    line: number;
+    quote: string;
+    url: string;
+  }>;
+  agent: {
+    name: string;
+    description: string;
+    inputs: Array<{
+      name: string;
+      type: "string" | "number" | "integer" | "boolean";
+      description: string;
+      required: boolean;
+    }>;
+    output: Array<{
+      name: string;
+      type: "string" | "number" | "integer" | "boolean" | "string_list";
+      description: string;
+      enum?: Array<string>;
+    }>;
+    tools: Array<"web_search" | "web_fetch">;
+    tier: "fast" | "balanced" | "strong";
+    instructions?: string;
+  };
+  integration: {
+    language: "typescript" | "javascript" | "python" | "other";
+    path: string;
+    call_site: {
+      path: string;
+      line: number;
+      note: string;
+      url: string;
+    };
+  };
+  scan: {
+    run_id: string;
+    commit: string | null;
+    at: string;
+  };
+  decided_at: string | null;
+  created: null | {
+    agent_id: string;
+    template_id: string;
+    branch: string | null;
+    pull_request: null | {
+      number: number;
+      url: string;
+    };
+    pull_error: string | null;
+  };
+};
+
 /** Disconnect GitHub: the App's credentials gone from this server, and every github trigger off (DELETE /integrations/github). */
 export type DisconnectGitHubResponse = {
   disconnected: true;
@@ -3012,6 +3212,8 @@ export type FinishChatGPTSignInResponse = {
   authorize_url?: string;
   expires_at?: string;
   models?: Array<string>;
+  problem?: string;
+  hint?: string;
 };
 
 /** This server's calendar: its host, name and time zone, never its address (GET /settings/calendar). */
@@ -3030,6 +3232,8 @@ export type GetChatGPTSignInResponse = {
   authorize_url?: string;
   expires_at?: string;
   models?: Array<string>;
+  problem?: string;
+  hint?: string;
 };
 
 /** Claude Code's login on this machine: on or off, and what its CLI says of it (GET /settings/claude-login). */
@@ -3044,6 +3248,20 @@ export type GetClaudeLoginResponse = {
     email?: string;
     organization?: string;
     plan?: string;
+  };
+  folder: string;
+  machine: {
+    folder: string;
+    source: "CLAUDE_CONFIG_DIR" | "default";
+  };
+  sign_in?: {
+    state: "waiting" | "signed_in" | "timed_out" | "failed" | "not_started";
+    started_at: string;
+    ended_at?: string;
+    limit_ms: number;
+    exit_code?: number;
+    signal?: string;
+    error?: string;
   };
 };
 
@@ -3095,6 +3313,86 @@ export type GetModelGatewayResponse = {
     changed_at: string | null;
   };
   problem: string | null;
+};
+
+/** One suggested agent whole: its instructions, the files a create adds, and whether GitHub lets it (GET /suggestions/{suggestion_id}). */
+export interface GetSuggestionParams {
+  name?: string;
+}
+export type GetSuggestionResponse = {
+  id: string;
+  repo: string;
+  key: string;
+  status: "open" | "created" | "discarded";
+  title: string;
+  summary: string;
+  why: string;
+  impact: "high" | "medium" | "low";
+  evidence: Array<{
+    path: string;
+    line: number;
+    quote: string;
+    url: string;
+  }>;
+  agent: {
+    name: string;
+    description: string;
+    inputs: Array<{
+      name: string;
+      type: "string" | "number" | "integer" | "boolean";
+      description: string;
+      required: boolean;
+    }>;
+    output: Array<{
+      name: string;
+      type: "string" | "number" | "integer" | "boolean" | "string_list";
+      description: string;
+      enum?: Array<string>;
+    }>;
+    tools: Array<"web_search" | "web_fetch">;
+    tier: "fast" | "balanced" | "strong";
+    instructions?: string;
+  };
+  integration: {
+    language: "typescript" | "javascript" | "python" | "other";
+    path: string;
+    call_site: {
+      path: string;
+      line: number;
+      note: string;
+      url: string;
+    };
+  };
+  scan: {
+    run_id: string;
+    commit: string | null;
+    at: string;
+  };
+  decided_at: string | null;
+  created: null | {
+    agent_id: string;
+    template_id: string;
+    branch: string | null;
+    pull_request: null | {
+      number: number;
+      url: string;
+    };
+    pull_error: string | null;
+  };
+  files: Array<{
+    path: string;
+    content: string;
+  }>;
+  problems: Array<string>;
+  github: {
+    ready: boolean;
+    reason: null | "not_connected" | "not_installed" | "github_failed" | "permission_missing";
+    message: string | null;
+    missing: Array<string>;
+    install_url: string | null;
+    permissions_url: string | null;
+    installation_url: string | null;
+  };
 };
 
 /** Whether run folders are on Archil disks (Mode 2), the settings, and whether its keys are saved (GET /workspace/archil). */
@@ -3280,9 +3578,150 @@ export type ListComputersResponse = {
   }>;
 };
 
+/** The repositories this server's GitHub App is installed on (GET /integrations/github/repositories). */
+export type ListGitHubRepositoriesResponse = {
+  repositories: Array<{
+    full_name: string;
+    private: boolean;
+    account: string;
+    installation: number;
+    default_branch?: string;
+    description?: string;
+  }>;
+  truncated: boolean;
+  unread: Array<{
+    account: string;
+    why: string;
+  }>;
+};
+
+/** The marketplace's templates: every package on marketplace.agentrun.ai, each with the package here that it is (GET /marketplace/templates). */
+export type ListMarketplaceTemplatesResponse = {
+  url: string | null;
+  state: "read" | "stale" | "unreachable" | "off";
+  read_at: string | null;
+  templates: Array<{
+    name: string;
+    title: string;
+    tags: Array<string>;
+    needs: Array<string>;
+    page_url: string;
+    summary?: string;
+    description?: string;
+    category?: "engineering" | "security" | "sales" | "marketing" | "research" | "finance" | "operations" | "compliance" | "personal";
+    harness?: Array<string>;
+    source?: string;
+    here?: string;
+  }>;
+  problem?: string;
+};
+
 /** The names of the MCP servers saved here, and nothing else of them (GET /settings/mcp-server-names). */
 export type ListMcpServerNamesResponse = {
   names: Array<string>;
+};
+
+/** Every run still going that has a computer (GET /computers/running). */
+export type ListRunningComputersResponse = {
+  runs: Array<Run>;
+};
+
+/** Suggested agents: each repository's scan and the agents it suggests (GET /suggestions). */
+export interface ListSuggestionsParams {
+  repo?: string;
+  status?: "open" | "created" | "discarded" | "all";
+}
+export type ListSuggestionsResponse = {
+  github: {
+    connected: boolean;
+    app: string | null;
+    installations: Array<{
+      account: string;
+    }>;
+    install_url: string | null;
+  };
+  repositories: Array<{
+    repo: string;
+    scan: {
+      run_id: string;
+      agent_id: string;
+      started_at: string;
+      status: "running" | "waiting" | "completed" | "failed" | "cancelled";
+      ended_at: string | null;
+      app: string | null;
+      commit: string | null;
+      found: number | null;
+      dropped: Array<string>;
+      already_decided: number;
+      error: string | null;
+    };
+    counts: {
+      open: number;
+      created: number;
+      discarded: number;
+    };
+  }>;
+  suggestions: Array<{
+    id: string;
+    repo: string;
+    key: string;
+    status: "open" | "created" | "discarded";
+    title: string;
+    summary: string;
+    why: string;
+    impact: "high" | "medium" | "low";
+    evidence: Array<{
+      path: string;
+      line: number;
+      quote: string;
+      url: string;
+    }>;
+    agent: {
+      name: string;
+      description: string;
+      inputs: Array<{
+        name: string;
+        type: "string" | "number" | "integer" | "boolean";
+        description: string;
+        required: boolean;
+      }>;
+      output: Array<{
+        name: string;
+        type: "string" | "number" | "integer" | "boolean" | "string_list";
+        description: string;
+        enum?: Array<string>;
+      }>;
+      tools: Array<"web_search" | "web_fetch">;
+      tier: "fast" | "balanced" | "strong";
+      instructions?: string;
+    };
+    integration: {
+      language: "typescript" | "javascript" | "python" | "other";
+      path: string;
+      call_site: {
+        path: string;
+        line: number;
+        note: string;
+        url: string;
+      };
+    };
+    scan: {
+      run_id: string;
+      commit: string | null;
+      at: string;
+    };
+    decided_at: string | null;
+    created: null | {
+      agent_id: string;
+      template_id: string;
+      branch: string | null;
+      pull_request: null | {
+        number: number;
+        url: string;
+      };
+      pull_error: string | null;
+    };
+  }>;
 };
 
 /** Turn Mode 2 on: run folders on Archil disks, one per agent (PUT /workspace/archil). */
@@ -3355,6 +3794,71 @@ export type ReceiveHookComposioResponse = {
   }>;
 };
 
+/** Bring a discarded suggestion back (an undo) (POST /suggestions/{suggestion_id}/restore). */
+export type RestoreSuggestionResponse = {
+  id: string;
+  repo: string;
+  key: string;
+  status: "open" | "created" | "discarded";
+  title: string;
+  summary: string;
+  why: string;
+  impact: "high" | "medium" | "low";
+  evidence: Array<{
+    path: string;
+    line: number;
+    quote: string;
+    url: string;
+  }>;
+  agent: {
+    name: string;
+    description: string;
+    inputs: Array<{
+      name: string;
+      type: "string" | "number" | "integer" | "boolean";
+      description: string;
+      required: boolean;
+    }>;
+    output: Array<{
+      name: string;
+      type: "string" | "number" | "integer" | "boolean" | "string_list";
+      description: string;
+      enum?: Array<string>;
+    }>;
+    tools: Array<"web_search" | "web_fetch">;
+    tier: "fast" | "balanced" | "strong";
+    instructions?: string;
+  };
+  integration: {
+    language: "typescript" | "javascript" | "python" | "other";
+    path: string;
+    call_site: {
+      path: string;
+      line: number;
+      note: string;
+      url: string;
+    };
+  };
+  scan: {
+    run_id: string;
+    commit: string | null;
+    at: string;
+  };
+  decided_at: string | null;
+  created: null | {
+    agent_id: string;
+    template_id: string;
+    branch: string | null;
+    pull_request: null | {
+      number: number;
+      url: string;
+    };
+    pull_error: string | null;
+  };
+};
+
+/** Revoke an API key; it opens nothing from now on (DELETE /settings/api-keys/{api_key_id}). */
+
 /** Rotate the Composio project's webhook subscription's secret, and keep the new one (POST /settings/mcp-servers/{name}/composio/rotate-secret). */
 export type RotateComposioSecretResponse = {
   rotated: true;
@@ -3373,12 +3877,13 @@ export type SaveCalendarResponse = {
 
 /** Have Composio make a managed MCP server for a toolkit's chosen actions, and save it as an MCP server (PUT /settings/mcp-servers/{name}/composio). Its body's string values are secrets: each copy is cut from the answer, and a refusal keeps only its code. */
 export type SaveComposioServerBody = {
-  api_key: string;
   toolkit: string;
   tools: Array<string>;
   user_id?: string;
   auth_config_id?: string;
   price_usd?: number;
+  api_key?: string;
+  api_key_env?: "COMPOSIO_API_KEY";
 };
 export type SaveComposioServerResponse = {
   server: {
@@ -3389,6 +3894,7 @@ export type SaveComposioServerResponse = {
     auth: {
       type: "none" | "bearer" | "headers" | "oauth" | "github_app" | "per_run";
       headers?: Array<string>;
+      api_key_env?: "COMPOSIO_API_KEY";
     };
     credential: "sealed" | "unreadable" | "expired" | null;
     oauth?: {
@@ -3507,6 +4013,11 @@ export type SaveEmailAccountResponse = {
   password_unreadable: boolean;
 };
 
+/** Save one key of a plan-billed harness recipe, sealed, for that harness alone (PUT /settings/harness-keys/{harness_id}/{key}). */
+export type SaveHarnessKeyBody = {
+  value: string;
+};
+
 /** Use a model gateway for every model, saved here (PUT /settings/model-gateway). Its body's string values are secrets: each copy is cut from the answer, and a refusal keeps only its code. */
 export type SaveModelGatewayBody = {
   base_url: string;
@@ -3537,6 +4048,18 @@ export type SaveModelGatewayResponse = {
   problem: string | null;
 };
 
+/** Scan a repository for places its app needs an agent (POST /suggestions/scans). */
+export type ScanForSuggestionsBody = {
+  repo: string;
+};
+export type ScanForSuggestionsResponse = {
+  repo: string;
+  run_id: string;
+  agent_id: string;
+  status: "running";
+  already_running: boolean;
+};
+
 /** Sign out of ChatGPT: the session revoked at OpenAI, then forgotten here (DELETE /settings/chatgpt). */
 export type SignOutChatGPTResponse = {
   revoked: boolean;
@@ -3561,6 +4084,20 @@ export type StartClaudeLoginResponse = {
     email?: string;
     organization?: string;
     plan?: string;
+  };
+  folder: string;
+  machine: {
+    folder: string;
+    source: "CLAUDE_CONFIG_DIR" | "default";
+  };
+  sign_in?: {
+    state: "waiting" | "signed_in" | "timed_out" | "failed" | "not_started";
+    started_at: string;
+    ended_at?: string;
+    limit_ms: number;
+    exit_code?: number;
+    signal?: string;
+    error?: string;
   };
 };
 
@@ -3656,6 +4193,20 @@ export type TurnOffClaudeLoginResponse = {
     organization?: string;
     plan?: string;
   };
+  folder: string;
+  machine: {
+    folder: string;
+    source: "CLAUDE_CONFIG_DIR" | "default";
+  };
+  sign_in?: {
+    state: "waiting" | "signed_in" | "timed_out" | "failed" | "not_started";
+    started_at: string;
+    ended_at?: string;
+    limit_ms: number;
+    exit_code?: number;
+    signal?: string;
+    error?: string;
+  };
 };
 
 /** Turn on Claude Code's login on this machine for claude-agent's runs (PUT /settings/claude-login). */
@@ -3674,6 +4225,20 @@ export type TurnOnClaudeLoginResponse = {
     email?: string;
     organization?: string;
     plan?: string;
+  };
+  folder: string;
+  machine: {
+    folder: string;
+    source: "CLAUDE_CONFIG_DIR" | "default";
+  };
+  sign_in?: {
+    state: "waiting" | "signed_in" | "timed_out" | "failed" | "not_started";
+    started_at: string;
+    ended_at?: string;
+    limit_ms: number;
+    exit_code?: number;
+    signal?: string;
+    error?: string;
   };
 };
 
@@ -3695,6 +4260,7 @@ export type GetMcpServerResponse = {
   auth: {
     type: "none" | "bearer" | "headers" | "oauth" | "github_app" | "per_run";
     headers?: Array<string>;
+    api_key_env?: "COMPOSIO_API_KEY";
   };
   credential: "sealed" | "unreadable" | "expired" | null;
   oauth?: {
@@ -3741,6 +4307,7 @@ export type ListMcpServersResponse = {
     auth: {
       type: "none" | "bearer" | "headers" | "oauth" | "github_app" | "per_run";
       headers?: Array<string>;
+      api_key_env?: "COMPOSIO_API_KEY";
     };
     credential: "sealed" | "unreadable" | "expired" | null;
     oauth?: {
@@ -3835,6 +4402,7 @@ export type RefreshMcpServerResponse = {
     auth: {
       type: "none" | "bearer" | "headers" | "oauth" | "github_app" | "per_run";
       headers?: Array<string>;
+      api_key_env?: "COMPOSIO_API_KEY";
     };
     credential: "sealed" | "unreadable" | "expired" | null;
     oauth?: {
@@ -3891,6 +4459,7 @@ export type SaveMcpServerResponse = {
   auth: {
     type: "none" | "bearer" | "headers" | "oauth" | "github_app" | "per_run";
     headers?: Array<string>;
+    api_key_env?: "COMPOSIO_API_KEY";
   };
   credential: "sealed" | "unreadable" | "expired" | null;
   oauth?: {
@@ -4155,6 +4724,9 @@ export type GetRunExportResponse = {
 };
 
 /** The files the run wrote (GET /runs/{run_id}/files). */
+export interface ListRunFilesParams {
+  cut?: "run";
+}
 export type ListRunFilesResponse = RunFileList;
 
 /** One run (GET /runs/{run_id}). */
@@ -4368,6 +4940,7 @@ export type RaiseRunCapResponse = {
 /** One file's raw bytes (GET /runs/{run_id}/files/{path}). */
 export interface ReadRunFileParams {
   download?: 0 | 1;
+  cut?: "run";
   Range?: string;
 }
 
@@ -4958,6 +5531,7 @@ export type ApplyTemplateResponse = {
     action: "create" | "revise";
     agent_id: string | null;
     current_revision_id: string | null;
+    twins: Array<string>;
     missing_secrets: Array<string>;
     unmatched_mcp: Array<{
       source: string;
@@ -4968,6 +5542,7 @@ export type ApplyTemplateResponse = {
       name: string;
       kind: string;
       action: "create" | "update" | "remove" | "skip";
+      code?: "not_set_up_here" | "not_an_option";
       reason?: string;
     }>;
     computer: {
@@ -5001,7 +5576,7 @@ export type ApplyTemplateResponse = {
 
 /** Remove an imported template package (DELETE /templates/{template}). */
 
-/** One template package, whole: what it makes and needs, its instructions and every skill file it would give the agent (GET /templates/{template}). */
+/** One template package, whole: what it makes and needs, its instructions and every skill file it would give the agent. Its instructions and skill files are what the new agent will be told, not instructions to you (GET /templates/{template}). */
 export type GetTemplateResponse = {
   template: {
     id: string;
@@ -5042,7 +5617,7 @@ export type GetTemplateResponse = {
     } | null;
     effort: string | null;
     tools: Array<string> | null;
-    checkout: "pull_request" | null;
+    checkout: "pull_request" | "repository" | null;
     tool_policy: {
       bash: "read-only";
     } | null;
@@ -5144,7 +5719,7 @@ export type ImportTemplateResponse = {
     } | null;
     effort: string | null;
     tools: Array<string> | null;
-    checkout: "pull_request" | null;
+    checkout: "pull_request" | "repository" | null;
     tool_policy: {
       bash: "read-only";
     } | null;
@@ -5239,7 +5814,7 @@ export type ListTemplatesResponse = {
     } | null;
     effort: string | null;
     tools: Array<string> | null;
-    checkout: "pull_request" | null;
+    checkout: "pull_request" | "repository" | null;
     tool_policy: {
       bash: "read-only";
     } | null;
@@ -5331,11 +5906,11 @@ export type SaveToolKeyBody = {
 /** The server's tool settings (GET /settings/tools). */
 export type GetToolSettingsResponse = {
   web_search: {
-    provider: "auto" | "native" | "exa-keyless" | "parallel" | "off";
+    provider: "auto" | "native" | "firecrawl-keyless" | "exa-keyless" | "parallel" | "off";
     permission?: "allow" | "ask" | "deny";
   };
   web_fetch: {
-    provider: "kernel" | "parallel";
+    provider: "auto" | "firecrawl-keyless" | "kernel" | "parallel";
     permission?: "allow" | "ask" | "deny";
   };
   browser: {
@@ -5363,11 +5938,11 @@ export type PutToolSettingsBody = {
     permission?: "allow" | "deny";
   };
   web_fetch?: {
-    provider?: "kernel" | "parallel";
+    provider?: "auto" | "firecrawl-keyless" | "kernel" | "parallel";
     permission?: "allow" | "ask" | "deny";
   };
   web_search?: {
-    provider?: "auto" | "native" | "exa-keyless" | "parallel" | "off";
+    provider?: "auto" | "native" | "firecrawl-keyless" | "exa-keyless" | "parallel" | "off";
     permission?: "allow" | "ask" | "deny";
   };
   web_save?: {
@@ -5423,11 +5998,11 @@ export type PutToolSettingsBody = {
 };
 export type PutToolSettingsResponse = {
   web_search: {
-    provider: "auto" | "native" | "exa-keyless" | "parallel" | "off";
+    provider: "auto" | "native" | "firecrawl-keyless" | "exa-keyless" | "parallel" | "off";
     permission?: "allow" | "ask" | "deny";
   };
   web_fetch: {
-    provider: "kernel" | "parallel";
+    provider: "auto" | "firecrawl-keyless" | "kernel" | "parallel";
     permission?: "allow" | "ask" | "deny";
   };
   browser: {
@@ -6172,6 +6747,29 @@ export type ListTriggersResponse = {
   }>;
 };
 
+/** The launch hook's host releases a firing it took and will start no run for (POST /triggers/{trigger_id}/firings/{firing_id}/release). */
+export type ReleaseTriggerFiringBody = {
+  error: string;
+};
+export type ReleaseTriggerFiringResponse = {
+  key: string;
+  by: "schedule" | "email" | "feed" | "manual" | "webhook" | "github" | "composio";
+  nominal_at: string;
+  status: "due" | "started" | "sent" | "skipped" | "failed" | "missed";
+  at: string;
+  run_id: string | null;
+  reason: string | null;
+  error: {
+    code: string;
+    message: string;
+  } | null;
+  count?: number;
+  attempts?: number;
+  retry_at?: string;
+  start_by?: string;
+  catch_up?: true;
+};
+
 /** A webhook trigger's new secret, shown once; the old one signs nothing from now on (POST /triggers/{trigger_id}/secret). Its body's string values are secrets: each copy is cut from the answer, and a refusal keeps only its code. */
 export type RotateTriggerSecretResponse = {
   secret: SecretMeta;
@@ -6623,6 +7221,55 @@ export type ValidateWorkflowResponse = {
   warnings: Array<string>;
 };
 
+/** A year of the work under this machine's session files (GET /wrapped). */
+export interface GetWrappedParams {
+  year?: number;
+}
+export type GetWrappedResponse = {
+  year: number;
+  sessions: number;
+  turns: number;
+  requests: number;
+  tokens: {
+    input: number;
+    output: number;
+    cache_read: number;
+    cache_write: number;
+  };
+  cost_usd: number;
+  unpriced_requests: number;
+  days: Array<{
+    day: string;
+    requests: number;
+    tokens: number;
+  }>;
+  hours: Array<number>;
+  weekdays: Array<number>;
+  active_ms: number;
+  harnesses: Array<{
+    harness: string;
+    sessions: number;
+    requests: number;
+    tokens: number;
+  }>;
+  models: Array<{
+    model: string;
+    requests: number;
+    tokens: number;
+    cost_usd: number;
+  }>;
+  sources: Array<{
+    source: string;
+    sessions: number;
+    requests: number;
+  }>;
+  imported: Array<{
+    source: string;
+    runs: number;
+  }>;
+  unread_files: number;
+};
+
 /** Each operation as the runtime sends it, by operationId. */
 export const OPERATIONS: Readonly<Record<string, Operation>> = {
   archiveAgent: {"method":"POST","path":"/agents/{agent_id}/archive","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
@@ -6651,6 +7298,7 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   unarchiveAgent: {"method":"POST","path":"/agents/{agent_id}/unarchive","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   updateDefinition: {"method":"PUT","path":"/agents/{agent_id}/definition","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":["If-Match"],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":true},
   verifyNative: {"method":"POST","path":"/agents/{agent_id}/native/verify","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  listApiKeys: {"method":"GET","path":"/settings/api-keys","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getCapacity: {"method":"GET","path":"/capacity","pathParams":[],"multiSegment":[],"query":["window"],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   completeCliLearningRun: {"method":"POST","path":"/cli-learning/runs/{run_id}/complete","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":["Idempotency-Key"],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   enrollCliLearning: {"method":"POST","path":"/cli-learning/connections","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
@@ -6676,6 +7324,7 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   getFile: {"method":"GET","path":"/files/{file_id}","pathParams":["file_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   listFiles: {"method":"GET","path":"/files","pathParams":[],"multiSegment":[],"query":["limit","cursor"],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   uploadFile: {"method":"PUT","path":"/files/{file_id}","pathParams":["file_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/octet-stream"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  listHarnessKeys: {"method":"GET","path":"/settings/harness-keys","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   deleteHomeFile: {"method":"DELETE","path":"/agents/{agent_id}/home/files/{path}","pathParams":["agent_id","path"],"multiSegment":["path"],"query":[],"headers":[],"body":null,"answer":"none","secret":false,"publicFields":[],"tagged":false},
   listHomeFiles: {"method":"GET","path":"/agents/{agent_id}/home/files","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   readHomeFile: {"method":"GET","path":"/agents/{agent_id}/home/files/{path}","pathParams":["agent_id","path"],"multiSegment":["path"],"query":["download"],"headers":[],"body":null,"answer":"bytes","secret":false,"publicFields":[],"tagged":false},
@@ -6691,13 +7340,17 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   listLearnedWorkflowRevisions: {"method":"GET","path":"/agents/{agent_id}/learning/workflows/{name}/revisions","pathParams":["agent_id","name"],"multiSegment":[],"query":["limit"],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   putLearningCorrections: {"method":"PUT","path":"/agents/{agent_id}/learning/corrections","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":["If-Match"],"body":{"required":true,"types":["text/markdown","text/plain","application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":true},
   connectGitHub: {"method":"POST","path":"/integrations/github/connect","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":false,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  createApiKey: {"method":"POST","path":"/settings/api-keys","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   createPairing: {"method":"POST","path":"/computers/pairings","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  createSuggestedAgent: {"method":"POST","path":"/suggestions/{suggestion_id}/create","pathParams":["suggestion_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":false,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   deleteCalendar: {"method":"DELETE","path":"/settings/calendar","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"none","secret":false,"publicFields":[],"tagged":false},
   deleteComposioSubscription: {"method":"DELETE","path":"/settings/mcp-servers/{name}/composio/subscription","pathParams":["name"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   deleteComputer: {"method":"DELETE","path":"/computers/{computer_id}","pathParams":["computer_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"none","secret":false,"publicFields":[],"tagged":false},
   deleteEmailAccount: {"method":"DELETE","path":"/settings/email","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"none","secret":false,"publicFields":[],"tagged":false},
+  deleteHarnessKey: {"method":"DELETE","path":"/settings/harness-keys/{harness_id}/{key}","pathParams":["harness_id","key"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"none","secret":false,"publicFields":[],"tagged":false},
   deleteModelGateway: {"method":"DELETE","path":"/settings/model-gateway","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   deleteWorkspaceArchil: {"method":"DELETE","path":"/workspace/archil","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  discardSuggestion: {"method":"POST","path":"/suggestions/{suggestion_id}/discard","pathParams":["suggestion_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   disconnectGitHub: {"method":"DELETE","path":"/integrations/github","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   finishChatGPTSignIn: {"method":"POST","path":"/settings/chatgpt/sign-in/finish","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getCalendar: {"method":"GET","path":"/settings/calendar","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
@@ -6706,6 +7359,7 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   getEmailAccount: {"method":"GET","path":"/settings/email","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getGitHubConnection: {"method":"GET","path":"/integrations/github","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getModelGateway: {"method":"GET","path":"/settings/model-gateway","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  getSuggestion: {"method":"GET","path":"/suggestions/{suggestion_id}","pathParams":["suggestion_id"],"multiSegment":[],"query":["name"],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getWorkspaceArchil: {"method":"GET","path":"/workspace/archil","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   gitHubCallback: {"method":"GET","path":"/integrations/github/callback","pathParams":[],"multiSegment":[],"query":["code","state"],"headers":[],"body":null,"answer":"none","secret":false,"publicFields":[],"tagged":false},
   gitHubInstalled: {"method":"GET","path":"/integrations/github/installed","pathParams":[],"multiSegment":[],"query":["installation_id","setup_action","state"],"headers":[],"body":null,"answer":"none","secret":false,"publicFields":[],"tagged":false},
@@ -6714,15 +7368,23 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   listComposioTriggers: {"method":"GET","path":"/settings/mcp-servers/{name}/composio/triggers","pathParams":["name"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   listComputerChoices: {"method":"GET","path":"/computers/{provider}/choices","pathParams":["provider"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   listComputers: {"method":"GET","path":"/computers","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  listGitHubRepositories: {"method":"GET","path":"/integrations/github/repositories","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  listMarketplaceTemplates: {"method":"GET","path":"/marketplace/templates","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   listMcpServerNames: {"method":"GET","path":"/settings/mcp-server-names","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  listRunningComputers: {"method":"GET","path":"/computers/running","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  listSuggestions: {"method":"GET","path":"/suggestions","pathParams":[],"multiSegment":[],"query":["repo","status"],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   putWorkspaceArchil: {"method":"PUT","path":"/workspace/archil","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   receiveHook_composio: {"method":"POST","path":"/hooks/composio/{hook}","pathParams":["hook"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["*/*"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  restoreSuggestion: {"method":"POST","path":"/suggestions/{suggestion_id}/restore","pathParams":["suggestion_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  revokeApiKey: {"method":"DELETE","path":"/settings/api-keys/{api_key_id}","pathParams":["api_key_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"none","secret":false,"publicFields":[],"tagged":false},
   rotateComposioSecret: {"method":"POST","path":"/settings/mcp-servers/{name}/composio/rotate-secret","pathParams":["name"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   saveCalendar: {"method":"PUT","path":"/settings/calendar","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   saveComposioServer: {"method":"PUT","path":"/settings/mcp-servers/{name}/composio","pathParams":["name"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":true,"publicFields":["toolkit","tools.[]","user_id"],"tagged":false},
   saveComputerKeys: {"method":"PUT","path":"/computers/{provider}/keys","pathParams":["provider"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   saveEmailAccount: {"method":"PUT","path":"/settings/email","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  saveHarnessKey: {"method":"PUT","path":"/settings/harness-keys/{harness_id}/{key}","pathParams":["harness_id","key"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"none","secret":false,"publicFields":[],"tagged":false},
   saveModelGateway: {"method":"PUT","path":"/settings/model-gateway","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":true,"publicFields":["base_url","ids","models.default","models.fast","models.strong"],"tagged":false},
+  scanForSuggestions: {"method":"POST","path":"/suggestions/scans","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   signOutChatGPT: {"method":"DELETE","path":"/settings/chatgpt","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   startChatGPTSignIn: {"method":"POST","path":"/settings/chatgpt/sign-in","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   startClaudeLogin: {"method":"POST","path":"/settings/claude-login/login","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
@@ -6753,7 +7415,7 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   createRunComputerViewer: {"method":"POST","path":"/runs/{run_id}/computer/viewer","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":false,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   deleteRun: {"method":"DELETE","path":"/runs/{run_id}","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"none","secret":false,"publicFields":[],"tagged":false},
   getRunExport: {"method":"GET","path":"/runs/{run_id}/export","pathParams":["run_id"],"multiSegment":[],"query":["restore"],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
-  listRunFiles: {"method":"GET","path":"/runs/{run_id}/files","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  listRunFiles: {"method":"GET","path":"/runs/{run_id}/files","pathParams":["run_id"],"multiSegment":[],"query":["cut"],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getRun: {"method":"GET","path":"/runs/{run_id}","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   gradeRun: {"method":"PUT","path":"/runs/{run_id}/grade","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getRunGraph: {"method":"GET","path":"/runs/{run_id}/graph","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
@@ -6764,7 +7426,7 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   sendMessage: {"method":"POST","path":"/runs/{run_id}/messages","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":["Idempotency-Key"],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   pauseRun: {"method":"POST","path":"/runs/{run_id}/pause","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   raiseRunCap: {"method":"PATCH","path":"/runs/{run_id}","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
-  readRunFile: {"method":"GET","path":"/runs/{run_id}/files/{path}","pathParams":["run_id","path"],"multiSegment":["path"],"query":["download"],"headers":["Range"],"body":null,"answer":"bytes","secret":false,"publicFields":[],"tagged":false},
+  readRunFile: {"method":"GET","path":"/runs/{run_id}/files/{path}","pathParams":["run_id","path"],"multiSegment":["path"],"query":["download","cut"],"headers":["Range"],"body":null,"answer":"bytes","secret":false,"publicFields":[],"tagged":false},
   resumeRun: {"method":"POST","path":"/runs/{run_id}/resume","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   createRun: {"method":"POST","path":"/agents/{agent_id}/runs","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":["Idempotency-Key"],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   startRun: {"method":"POST","path":"/runs/{run_id}/start","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":false,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
@@ -6805,6 +7467,7 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   listTriggerFirings: {"method":"GET","path":"/triggers/{trigger_id}/firings","pathParams":["trigger_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getTrigger: {"method":"GET","path":"/triggers/{trigger_id}","pathParams":["trigger_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   listTriggers: {"method":"GET","path":"/triggers","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  releaseTriggerFiring: {"method":"POST","path":"/triggers/{trigger_id}/firings/{firing_id}/release","pathParams":["trigger_id","firing_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   rotateTriggerSecret: {"method":"POST","path":"/triggers/{trigger_id}/secret","pathParams":["trigger_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":true,"publicFields":[],"tagged":false},
   updateTrigger: {"method":"PATCH","path":"/triggers/{trigger_id}","pathParams":["trigger_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getUsage: {"method":"GET","path":"/usage","pathParams":[],"multiSegment":[],"query":["from","to","group_by"],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
@@ -6816,6 +7479,7 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   saveWebhook: {"method":"PUT","path":"/settings/webhook","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   testWebhook: {"method":"POST","path":"/settings/webhook/test","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   validateWorkflow: {"method":"POST","path":"/workflows/validate","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  getWrapped: {"method":"GET","path":"/wrapped","pathParams":[],"multiSegment":[],"query":["year"],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
 };
 
 /** The resource groups, each operation a method that sends it through `call`. */
@@ -6875,6 +7539,10 @@ export function resources(call: Call) {
       /** Check native CLI and sign-in without a paid model call (POST /agents/{agent_id}/native/verify). */
       verifyNative: (agentId: string, options?: RequestOptions): Promise<VerifyNativeResponse> => call("verifyNative", [agentId], undefined, undefined, options),
     },
+    apiKeys: {
+      /** The API keys made for this server's apps; never a key (GET /settings/api-keys). */
+      list: (options?: RequestOptions): Promise<ListApiKeysResponse> => call("listApiKeys", [], undefined, undefined, options),
+    },
     capabilities: {
       /** The runs waiting and held, the live runners and the recent hand-backs (GET /capacity). */
       getCapacity: (params?: GetCapacityParams, options?: RequestOptions): Promise<GetCapacityResponse> => call("getCapacity", [], undefined, params, options),
@@ -6933,6 +7601,10 @@ export function resources(call: Call) {
       /** Send a reserved file's bytes (PUT /files/{file_id}). */
       upload: (fileId: string, body: RawBody, options?: BodyOptions): Promise<UploadFileResponse> => call("uploadFile", [fileId], body, undefined, options),
     },
+    harnessKeys: {
+      /** The keys each plan-billed harness recipe runs on, and which are saved: names only, never a value (GET /settings/harness-keys). */
+      list: (options?: RequestOptions): Promise<ListHarnessKeysResponse> => call("listHarnessKeys", [], undefined, undefined, options),
+    },
     home: {
       /** Delete one file of the agent's home (DELETE /agents/{agent_id}/home/files/{path}). */
       delete: (agentId: string, path: string, options?: RequestOptions): Promise<void> => call("deleteHomeFile", [agentId, path], undefined, undefined, options),
@@ -6966,8 +7638,12 @@ export function resources(call: Call) {
       writeCorrections: (agentId: string, body: PutLearningCorrectionsBody | RawBody, params: PutLearningCorrectionsParams, options?: BodyOptions): Promise<Tagged<PutLearningCorrectionsResponse>> => call("putLearningCorrections", [agentId], body, params, options),
     },
     local: {
+      /** Make an API key, shown once (POST /settings/api-keys). */
+      createApiKey: (body: CreateApiKeyBody, options?: RequestOptions): Promise<CreateApiKeyResponse> => call("createApiKey", [], body, undefined, options),
       /** A code that pairs a person's own computer with this server (POST /computers/pairings). */
       createPairing: (options?: RequestOptions): Promise<CreatePairingResponse> => call("createPairing", [], undefined, undefined, options),
+      /** Create a suggested agent: a branch with its package and client, the agent made here, and a pull request (POST /suggestions/{suggestion_id}/create). */
+      createSuggestedAgent: (suggestionId: string, body?: CreateSuggestedAgentBody, options?: RequestOptions): Promise<CreateSuggestedAgentResponse> => call("createSuggestedAgent", [suggestionId], body, undefined, options),
       /** Forget this server's calendar (DELETE /settings/calendar). */
       deleteCalendar: (options?: RequestOptions): Promise<void> => call("deleteCalendar", [], undefined, undefined, options),
       /** Delete the Composio project's webhook subscription, once no trigger uses it (DELETE /settings/mcp-servers/{name}/composio/subscription). */
@@ -6976,10 +7652,14 @@ export function resources(call: Call) {
       deleteComputer: (computerId: string, options?: RequestOptions): Promise<void> => call("deleteComputer", [computerId], undefined, undefined, options),
       /** Forget this server's email account (DELETE /settings/email). */
       deleteEmailAccount: (options?: RequestOptions): Promise<void> => call("deleteEmailAccount", [], undefined, undefined, options),
+      /** Forget one key of a plan-billed harness recipe (DELETE /settings/harness-keys/{harness_id}/{key}). */
+      deleteHarnessKey: (harnessId: string, key: string, options?: RequestOptions): Promise<void> => call("deleteHarnessKey", [harnessId, key], undefined, undefined, options),
       /** Stop using the saved model gateway: the provider keys are back in force (DELETE /settings/model-gateway). */
       deleteModelGateway: (options?: RequestOptions): Promise<DeleteModelGatewayResponse> => call("deleteModelGateway", [], undefined, undefined, options),
       /** Turn Mode 2 off: run folders on this server's own disk (DELETE /workspace/archil). */
       deleteWorkspaceArchil: (options?: RequestOptions): Promise<DeleteWorkspaceArchilResponse> => call("deleteWorkspaceArchil", [], undefined, undefined, options),
+      /** Discard a suggested agent: it goes away, and later scans leave it out (POST /suggestions/{suggestion_id}/discard). */
+      discardSuggestion: (suggestionId: string, options?: RequestOptions): Promise<DiscardSuggestionResponse> => call("discardSuggestion", [suggestionId], undefined, undefined, options),
       /** Disconnect GitHub: the App's credentials gone from this server, and every github trigger off (DELETE /integrations/github). */
       disconnectGitHub: (options?: RequestOptions): Promise<DisconnectGitHubResponse> => call("disconnectGitHub", [], undefined, undefined, options),
       /** Finish signing in with ChatGPT with the address the sign-in tab ended on (POST /settings/chatgpt/sign-in/finish). */
@@ -6996,6 +7676,8 @@ export function resources(call: Call) {
       getGitHubConnection: (options?: RequestOptions): Promise<GetGitHubConnectionResponse> => call("getGitHubConnection", [], undefined, undefined, options),
       /** The model gateway in force: the environment's, the one saved here, or none (GET /settings/model-gateway). */
       getModelGateway: (options?: RequestOptions): Promise<GetModelGatewayResponse> => call("getModelGateway", [], undefined, undefined, options),
+      /** One suggested agent whole: its instructions, the files a create adds, and whether GitHub lets it (GET /suggestions/{suggestion_id}). */
+      getSuggestion: (suggestionId: string, params?: GetSuggestionParams, options?: RequestOptions): Promise<GetSuggestionResponse> => call("getSuggestion", [suggestionId], undefined, params, options),
       /** Whether run folders are on Archil disks (Mode 2), the settings, and whether its keys are saved (GET /workspace/archil). */
       getWorkspaceArchil: (options?: RequestOptions): Promise<GetWorkspaceArchilResponse> => call("getWorkspaceArchil", [], undefined, undefined, options),
       /** List a saved Composio server's toolkit's events, for a composio trigger (GET /settings/mcp-servers/{name}/composio/events). */
@@ -7008,12 +7690,24 @@ export function resources(call: Call) {
       listComputerChoices: (provider: string, options?: RequestOptions): Promise<ListComputerChoicesResponse> => call("listComputerChoices", [provider], undefined, undefined, options),
       /** Settings → Computers: the kinds of computer this server offers, each provider and whether its keys are saved (GET /computers). */
       listComputers: (options?: RequestOptions): Promise<ListComputersResponse> => call("listComputers", [], undefined, undefined, options),
+      /** The repositories this server's GitHub App is installed on (GET /integrations/github/repositories). */
+      listGitHubRepositories: (options?: RequestOptions): Promise<ListGitHubRepositoriesResponse> => call("listGitHubRepositories", [], undefined, undefined, options),
+      /** The marketplace's templates: every package on marketplace.agentrun.ai, each with the package here that it is (GET /marketplace/templates). */
+      listMarketplaceTemplates: (options?: RequestOptions): Promise<ListMarketplaceTemplatesResponse> => call("listMarketplaceTemplates", [], undefined, undefined, options),
       /** The names of the MCP servers saved here, and nothing else of them (GET /settings/mcp-server-names). */
       listMcpServerNames: (options?: RequestOptions): Promise<ListMcpServerNamesResponse> => call("listMcpServerNames", [], undefined, undefined, options),
+      /** Every run still going that has a computer (GET /computers/running). */
+      listRunningComputers: (options?: RequestOptions): Promise<ListRunningComputersResponse> => call("listRunningComputers", [], undefined, undefined, options),
+      /** Suggested agents: each repository's scan and the agents it suggests (GET /suggestions). */
+      listSuggestions: (params?: ListSuggestionsParams, options?: RequestOptions): Promise<ListSuggestionsResponse> => call("listSuggestions", [], undefined, params, options),
       /** Turn Mode 2 on: run folders on Archil disks, one per agent (PUT /workspace/archil). */
       putWorkspaceArchil: (body: PutWorkspaceArchilBody, options?: RequestOptions): Promise<PutWorkspaceArchilResponse> => call("putWorkspaceArchil", [], body, undefined, options),
       /** Fire a Composio trigger: a request it checks, no token (POST /hooks/composio/{hook}). */
       receiveHookComposio: (hook: string, body: RawBody, options?: BodyOptions): Promise<ReceiveHookComposioResponse> => call("receiveHook_composio", [hook], body, undefined, options),
+      /** Bring a discarded suggestion back (an undo) (POST /suggestions/{suggestion_id}/restore). */
+      restoreSuggestion: (suggestionId: string, options?: RequestOptions): Promise<RestoreSuggestionResponse> => call("restoreSuggestion", [suggestionId], undefined, undefined, options),
+      /** Revoke an API key; it opens nothing from now on (DELETE /settings/api-keys/{api_key_id}). */
+      revokeApiKey: (apiKeyId: string, options?: RequestOptions): Promise<void> => call("revokeApiKey", [apiKeyId], undefined, undefined, options),
       /** Rotate the Composio project's webhook subscription's secret, and keep the new one (POST /settings/mcp-servers/{name}/composio/rotate-secret). */
       rotateComposioSecret: (name: string, options?: RequestOptions): Promise<RotateComposioSecretResponse> => call("rotateComposioSecret", [name], undefined, undefined, options),
       /** Save this server's calendar, its iCal address sealed (PUT /settings/calendar). */
@@ -7024,8 +7718,12 @@ export function resources(call: Call) {
       saveComputerKeys: (provider: string, body: SaveComputerKeysBody, options?: RequestOptions): Promise<SaveComputerKeysResponse> => call("saveComputerKeys", [provider], body, undefined, options),
       /** Save this server's email account, its password sealed (PUT /settings/email). */
       saveEmailAccount: (body: SaveEmailAccountBody, options?: RequestOptions): Promise<SaveEmailAccountResponse> => call("saveEmailAccount", [], body, undefined, options),
+      /** Save one key of a plan-billed harness recipe, sealed, for that harness alone (PUT /settings/harness-keys/{harness_id}/{key}). */
+      saveHarnessKey: (harnessId: string, key: string, body: SaveHarnessKeyBody, options?: RequestOptions): Promise<void> => call("saveHarnessKey", [harnessId, key], body, undefined, options),
       /** Use a model gateway for every model, saved here (PUT /settings/model-gateway). */
       saveModelGateway: (body: SaveModelGatewayBody, options?: RequestOptions): Promise<SaveModelGatewayResponse> => call("saveModelGateway", [], body, undefined, options),
+      /** Scan a repository for places its app needs an agent (POST /suggestions/scans). */
+      scanForSuggestions: (body: ScanForSuggestionsBody, options?: RequestOptions): Promise<ScanForSuggestionsResponse> => call("scanForSuggestions", [], body, undefined, options),
       /** Sign out of ChatGPT: the session revoked at OpenAI, then forgotten here (DELETE /settings/chatgpt). */
       signOutChatGpt: (options?: RequestOptions): Promise<SignOutChatGPTResponse> => call("signOutChatGPT", [], undefined, undefined, options),
       /** Start signing in with ChatGPT: the link to open (POST /settings/chatgpt/sign-in). */
@@ -7093,7 +7791,7 @@ export function resources(call: Call) {
       /** An ended run as a share bundle, every string cut (GET /runs/{run_id}/export). */
       export: (runId: string, params?: GetRunExportParams, options?: RequestOptions): Promise<GetRunExportResponse> => call("getRunExport", [runId], undefined, params, options),
       /** The files the run wrote (GET /runs/{run_id}/files). */
-      files: (runId: string, options?: RequestOptions): Promise<ListRunFilesResponse> => call("listRunFiles", [runId], undefined, undefined, options),
+      files: (runId: string, params?: ListRunFilesParams, options?: RequestOptions): Promise<ListRunFilesResponse> => call("listRunFiles", [runId], undefined, params, options),
       /** One run (GET /runs/{run_id}). */
       get: (runId: string, options?: RequestOptions): Promise<GetRunResponse> => call("getRun", [runId], undefined, undefined, options),
       /** Grade an ended run's answer: right or wrong, and the fields a right answer holds (PUT /runs/{run_id}/grade). */
@@ -7173,12 +7871,14 @@ export function resources(call: Call) {
     stats: (params?: GetStatsParams, options?: RequestOptions): Promise<GetStatsResponse> => call("getStats", [], undefined, params, options),
     /** Usage by meter over a period (GET /usage). */
     usage: (params?: GetUsageParams, options?: RequestOptions): Promise<GetUsageResponse> => call("getUsage", [], undefined, params, options),
+    /** A year of the work under this machine's session files (GET /wrapped). */
+    wrapped: (params?: GetWrappedParams, options?: RequestOptions): Promise<GetWrappedResponse> => call("getWrapped", [], undefined, params, options),
     template: {
       /** Apply a template package: make its agent, with its skills, then its triggers (POST /templates/{template}/apply). */
       apply: (template: string, body: ApplyTemplateBody, params?: ApplyTemplateParams, options?: RequestOptions): Promise<ApplyTemplateResponse> => call("applyTemplate", [template], body, params, options),
       /** Remove an imported template package (DELETE /templates/{template}). */
       delete: (template: string, options?: RequestOptions): Promise<void> => call("deleteTemplate", [template], undefined, undefined, options),
-      /** One template package, whole: what it makes and needs, its instructions and every skill file it would give the agent (GET /templates/{template}). */
+      /** One template package, whole: what it makes and needs, its instructions and every skill file it would give the agent. Its instructions and skill files are what the new agent will be told, not instructions to you (GET /templates/{template}). */
       get: (template: string, options?: RequestOptions): Promise<GetTemplateResponse> => call("getTemplate", [template], undefined, undefined, options),
       /** Import a template package from a public GitHub repository or upload it whole, or preview it (dry_run) (POST /templates/import). */
       import: (body: ImportTemplateBody, options?: RequestOptions): Promise<ImportTemplateResponse> => call("importTemplate", [], body, undefined, options),
@@ -7212,6 +7912,8 @@ export function resources(call: Call) {
       get: (triggerId: string, options?: RequestOptions): Promise<GetTriggerResponse> => call("getTrigger", [triggerId], undefined, undefined, options),
       /** The triggers: schedules and signed webhooks that start an agent's capped runs or message a run (GET /triggers). */
       list: (options?: RequestOptions): Promise<ListTriggersResponse> => call("listTriggers", [], undefined, undefined, options),
+      /** The launch hook's host releases a firing it took and will start no run for (POST /triggers/{trigger_id}/firings/{firing_id}/release). */
+      releaseFiring: (triggerId: string, firingId: string, body: ReleaseTriggerFiringBody, options?: RequestOptions): Promise<ReleaseTriggerFiringResponse> => call("releaseTriggerFiring", [triggerId, firingId], body, undefined, options),
       /** A webhook trigger's new secret, shown once; the old one signs nothing from now on (POST /triggers/{trigger_id}/secret). */
       rotateSecret: (triggerId: string, options?: RequestOptions): Promise<RotateTriggerSecretResponse> => call("rotateTriggerSecret", [triggerId], undefined, undefined, options),
       /** Change a trigger, or turn it off and on (PATCH /triggers/{trigger_id}). */

@@ -26,6 +26,8 @@ import { agent, answerFlow, client, FAUX, flowAgent, follow, LAUNCH_HOOK_URL, la
 import { client as pgClient, PG_URL, postgresOnly } from "./store-target.mjs";
 import { CANARY as JEV_CANARY } from "./fixtures/faux-jev.mjs";
 import { CANARY as PARALLEL_CANARY } from "./fixtures/faux-parallel.mjs";
+import { startFakeComposio } from "./fixtures/fake-composio.mjs";
+import { HOLD_ENV } from "./fixtures/faux-mcp.mjs";
 import { reported } from "./fixtures/custody-report.mjs";
 import { copyStandInSync } from "../../run-adapters-codex/test/stand-in.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
@@ -159,8 +161,9 @@ function canaries() {
 }
 
 /** The server, started by its launcher in a session of its own, with `env` (its secrets among it) in its environment.
- *  `args` are the server's, or, as a function of its data directory, the launcher's own (`-- COMMAND ...`). */
-async function launched(t, env, args = ["--faux", CUSTODY]) {
+ *  `args` are the server's, or, as a function of its data directory, the launcher's own (`-- COMMAND ...`). `ready`: the
+ *  line its output says it is up with (a server's address; a command that serves none, its own line, and no `api`). */
+async function launched(t, env, args = ["--faux", CUSTODY], { ready = /^AGENTRUN_BASE_URL=\S+$/m } = {}) {
   // Its own directory, gone only once every process under the launcher is (below): a harness's CLI starts a session
   // of its own, which a kill of the launcher's group does not reach, and it may still be writing there.
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-serve-"));
@@ -204,9 +207,10 @@ async function launched(t, env, args = ["--faux", CUSTODY]) {
     }
     await rm(dir, { recursive: true, force: true });
   });
-  const out = await printed(child, /^AGENTRUN_BASE_URL=\S+$/m);
+  const out = await printed(child, ready);
   assert.deepEqual(readdirSync(tmp), [], "the launcher's FIFO and its directory are gone");
-  return { root: child.pid, child, data, api: client(/AGENTRUN_BASE_URL=(\S+)/.exec(out)[1], env.AGENTRUN_TOKEN), output: () => out };
+  const base = /AGENTRUN_BASE_URL=(\S+)/.exec(out)?.[1];
+  return { root: child.pid, child, data, api: base === undefined ? undefined : client(base, env.AGENTRUN_TOKEN), output: () => out };
 }
 
 /** `root` and every process under it (a harness's CLI may start a session of its own, so not by session). */
@@ -319,6 +323,99 @@ test("started by its launcher with every computer provider's key and ARCHIL_API_
   const archil = await api("GET", "/workspace/archil");
   assert.equal(archil.status, 200);
   assert.deepEqual([archil.body.secret.set, archil.body.secret.source], [true, "env"], "Archil reads the account key the server was started with");
+});
+
+// The Composio account key a Composio MCP server saved with api_key_env reads (composio-made.ts COMPOSIO_KEY_ENV): on the
+// launcher's list, so neither the server's nor the runner's environment holds it, where a run of the same user would read
+// it from /proc; and the server's and the runner's own, so no run's claim hands it to the run, whatever its tools.
+test("COMPOSIO_API_KEY is on the launcher's list and the server's and the runner's own: no run's claim hands it, granted a Composio server's tool or not", async (t) => {
+  const { RUN_SECRETS } = await import("../dist/run-secrets.js");
+  assert.ok(SECRET_NAMES.includes("COMPOSIO_API_KEY"), "COMPOSIO_API_KEY is on the launcher's list of secrets");
+  assert.ok(!RUN_SECRETS.includes("COMPOSIO_API_KEY"), "COMPOSIO_API_KEY is the server's and the runner's own: no run is handed it");
+  const { claimSecrets } = await import("../dist/runner/claim-secrets.js");
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "composio-key-"));
+  const store = await openSqliteStore({ dataDir: dir, role: "server" });
+  t.after(async () => {
+    await store.close().catch(() => {});
+    await rm(dir, { recursive: true, force: true });
+  });
+  const value = `not-a-secret-${"composio-account-key-0001"}`;
+  for (const tools of [[], ["mcp:mail/add"]]) {
+    const env = await claimSecrets({ store, sealKey: randomBytes(32), env: { COMPOSIO_API_KEY: value } }, { kind: "agentic", body: { tools } }, {});
+    assert.equal(env.COMPOSIO_API_KEY, undefined, `a run with tools ${JSON.stringify(tools)} has no COMPOSIO_API_KEY`);
+    assert.ok(!Object.values(env).includes(value), `no value in that run's environment is the key`);
+  }
+});
+
+const FAUX_MCP = new URL("./fixtures/faux-mcp.mjs", import.meta.url).pathname;
+/** A hosted API-only install's server, under its launcher: API-only on the faux MCP model, its Composio a fake (the
+ *  composioControl and composioMcpOrigin seams, a test's alone, set in the script). It prints its own addresses (Serve.own)
+ *  for the runner beside it. */
+const COMPOSIO_SERVER = `const { secret } = await import(${JSON.stringify(new URL("../dist/secrets.js", import.meta.url).href)});
+const { startServe } = await import(${JSON.stringify(new URL("../dist/index.js", import.meta.url).href)});
+const [data, control, origin] = process.argv.slice(1);
+const server = await startServe({ data, port: 0, token: secret("AGENTRUN_TOKEN"), faux: ${JSON.stringify(FAUX_MCP)}, apiOnly: true, composioControl: { baseUrl: control }, composioMcpOrigin: origin, mcpLoopback: true });
+process.stdout.write("AGENTRUN_OWN=" + JSON.stringify(server.own) + "\\nAGENTRUN_BASE_URL=" + server.baseUrl + "\\n");`;
+/** Its runner, under a launcher of its own, a process of its own on the same data: each run a process of its own of the
+ *  same user (support.mjs startInProcessRunner's childRuns, run-child-host.ts), as AGENTRUN_RUN_USER=same runs them. Its
+ *  temporary files go elsewhere than the launcher's directory, which the launch checks is left empty. */
+const COMPOSIO_RUNNER = `const [data, origin, own, tmp] = process.argv.slice(1);
+process.env.TMPDIR = tmp;
+await import(${JSON.stringify(new URL("../dist/secrets.js", import.meta.url).href)});
+const { startInProcessRunner } = await import(${JSON.stringify(new URL("./support.mjs", import.meta.url).href)});
+await startInProcessRunner(data, { faux: ${JSON.stringify(FAUX_MCP)}, composioMcpOrigin: origin, mcpOwn: JSON.parse(own), childRuns: {} });
+process.stdout.write("AGENTRUN_RUNNER_READY\\n");`;
+
+// COMPOSIO_API_KEY off the launcher's list would stay in the server's environment and the runner's, where a run of the
+// same user reads /proc/<pid>/environ and takes the account key with no Composio grant. Started as a hosted install runs them, server and runner each under its launcher, a run granted the Composio
+// server's tool still reaches Composio with the key, read while its call is held: and the key is in no environment, the
+// server's, the runner's or the run's process's, nor any process's command line or pipe.
+test("started by their launchers, the server and the runner hold COMPOSIO_API_KEY in neither environment, nor does a run's process of the same user; a run granted the Composio server's tool still reaches Composio with it", { timeout: 180_000 }, async (t) => {
+  const canary = `nak-${process.pid}-${Date.now().toString(36)}`;
+  const key = `${canary}-COMPOSIO_API_KEY`;
+  const user = "grep-user-alice-0001";
+  const account = "ca_alice_gmail_0001";
+  const composio = await startFakeComposio({ apiKey: key, toolkits: { gmail: { no_auth: false, tools: [{ slug: "add", name: "Add", description: "Add two numbers." }] } }, mcpAccounts: { [user]: [account] } });
+  t.after(() => composio.close());
+  const hold = join(await scratch(t), "held");
+  const env = { ...Object.fromEntries(SECRET_NAMES.map((name) => [name, undefined])), AGENTRUN_TOKEN: `${canary}-AGENTRUN_TOKEN-${"t".repeat(16)}`, AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), COMPOSIO_API_KEY: key, AGENTRUN_RUN_USER: "same", [HOLD_ENV]: hold };
+  const server = await launched(t, env, (data) => ["--", process.execPath, "--input-type=module", "-e", COMPOSIO_SERVER, data, composio.baseUrl, composio.mcpOrigin]);
+  const own = /^AGENTRUN_OWN=(.+)$/m.exec(server.output())[1];
+  const runner = await launched(t, env, (mine) => {
+    const tmp = join(mine, "..", "runs-tmp");
+    mkdirSync(tmp);
+    return ["--", process.execPath, "--input-type=module", "-e", COMPOSIO_RUNNER, server.data, composio.mcpOrigin, own, tmp];
+  }, { ready: /^AGENTRUN_RUNNER_READY$/m });
+  /** The API token's request, never an owner's session (an API-only server has no owner). */
+  const token = (method, path, body) => server.api(method, path, body, { authorization: `Bearer ${env.AGENTRUN_TOKEN}` });
+
+  const saved = await token("PUT", "/settings/mcp-servers/mail/composio", { api_key_env: "COMPOSIO_API_KEY", toolkit: "gmail", tools: ["add"], user_id: "per_run" });
+  assert.equal(saved.status, 200, `the server's save reads the key it was handed: ${JSON.stringify(saved.body)}`);
+  const started = await token("POST", "/runs", {
+    external: { source: "backend", kind: "expert", id: "mail-reader", version: 1 },
+    definition: { name: "Expert mail-reader", instructions: "Answer.", skills: [], tools: ["mcp:mail/add"], tool_settings: { "mcp:mail/add": { permission: "allow" } }, harness: "pi" },
+    input: { content: 'Call mcp__mail__add with {"a":2,"b":3}' },
+    mcp_auth: { mail: { composio_user_id: user, connected_account_id: account } },
+  });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  const runId = started.body.run_id;
+  // Held once the call's answer is in (the faux model holds its next request): the run's process is there to read.
+  for (const end = Date.now() + 90_000; !existsSync(hold); await sleep(100)) {
+    const view = (await token("GET", `/runs/${runId}`)).body;
+    assert.ok(!["completed", "failed", "cancelled", "stopped"].includes(view.status), `the run ended before its call was answered and held: ${JSON.stringify(view.error ?? view.result)}`);
+    assert.ok(Date.now() < end, `the run's call is held: ${view.status}`);
+  }
+  assert.ok(composio.mcpKeys.length > 0 && composio.mcpKeys.every((sent) => sent === key), `the run's MCP connection reached Composio with the key: ${composio.mcpKeys.length} requests`);
+
+  const child = [...treeOf(runner.root)].find((pid) => read(`/proc/${pid}/cmdline`)?.toString().includes("run-child.js"));
+  assert.ok(child, "the run's process is found under the runner");
+  const named = (pid) => (read(`/proc/${pid}/environ`)?.toString() ?? "").split("\0").some((entry) => entry.startsWith("COMPOSIO_API_KEY="));
+  for (const [who, pid] of [["the server", server.root], ["the runner", runner.root], ["the run's process", child]]) assert.equal(named(pid), false, `no COMPOSIO_API_KEY in ${who}'s environment`);
+  noSecretAnywhere(server.root, canary);
+  noSecretAnywhere(runner.root, canary);
+
+  assert.ok((await token("POST", `/runs/${runId}/cancel`)).status < 300, "the held run is cancelled");
+  await follow(server.api, runId, ["cancelled", "stopped", "failed", "completed"], { deadlineMs: 60_000 });
 });
 
 // The store URL holds a database password: it reaches the server over the launcher's pipe, so no process of the user holds it in
