@@ -313,6 +313,30 @@ test("every token of the login the runner hands a run's process (held claudeLogi
   }
 });
 
+test("where runs have users of their own, a run's login is read once, at its claim: a turn-on that lands after a claim read the login as off never has the runner hand that run's process the login's token, and a turn-off after a claim on the login leaves that run on it", async (t) => {
+  const { heldRedactor, keepText } = await import("../dist/runner/redact.js");
+  const { store } = await storeOn(t);
+  const data = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "held-login-once-"));
+  t.after(() => rmSync(data, { recursive: true, force: true }));
+  const deps = { store, sealKey: KEY, env: {}, data };
+  const launch = { input: { content: "Hello." }, harness: "claude-agent", place: { mode: "runner" } };
+  const reads = { claim: { runId: "run-own", epoch: 1 }, run: { agentId: "agent-own", revisionId: "rev-own", signInHanded: null }, launch, revision: { kind: "agentic", body: { harness: "claude-agent" } }, claimed: {} };
+  const turnOn = () => store.settings.put("claude_login", { v: 1, place: "agentrun", host: hostname(), only_me: true });
+  // The claim reads the login as off; the owner's turn-on lands between that read and the run's process's ask of its
+  // runner for the login.
+  const claimedOff = await host.staysInRunner(deps, "claude-agent", launch, "run-own", PER_RUN_USERS);
+  await turnOn();
+  const handed = await host.heldFor(deps, { ...reads, login: claimedOff.login }, heldRedactor(keepText), () => {}).held.claudeLogin();
+  assert.equal(handed, undefined, "a run claimed while the login was off is handed no login token: the turn-on after its claim never moves it onto the server user's login");
+  assert.equal(claimedOff.stays, false, "claimed as a process of its own, on the model keys");
+  // Claimed on the login (AgentRun's own folder); the owner's turn-off lands before the run's process asks.
+  const claimedOn = await host.staysInRunner(deps, "claude-agent", launch, "run-own", PER_RUN_USERS);
+  assert.equal(claimedOn.stays, false, "claimed as a process of its own, on the login's token");
+  await store.settings.remove("claude_login");
+  const kept = await host.heldFor(deps, { ...reads, login: claimedOn.login }, heldRedactor(keepText), () => {}).held.claudeLogin();
+  assert.equal(typeof kept?.token, "function", "a run claimed on the login is handed its reader, as its claim read it");
+});
+
 test("the install a run's process asks for is readable by every user and writable by none, an install from before installs were shared too", { skip: process.getuid?.() === 0 && "root reads every folder" }, async (t) => {
   const { store } = await storeOn(t);
   const data = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "held-install-"));
