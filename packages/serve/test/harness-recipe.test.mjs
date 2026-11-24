@@ -134,6 +134,21 @@ test("the loader passes a recipe's allowFile and its title tie through, to the a
   assert.deepEqual(acpRecipeFor(tied, "/opt/agent", tied.release.archives[PLATFORM], route).quirks, { permissionTie: "title" });
 });
 
+test("the loader passes a recipe's announces field through to the adapter's recipe, and refuses one in another shape with words that give its shape", async () => {
+  // Which tool of ours an agent's tool_call names is read from the field this names, never from its title.
+  const { acpRecipeFor } = await import("../dist/harness-recipe-entry.js");
+  const announces = { tool: "rawInput.toolName", server: "rawInput.providerIdentifier", args: "rawInput.args" };
+  const named = parseRecipe(JSON.stringify(recipeOf(undefined, { announces })));
+  assert.deepEqual(named.announces, announces);
+  assert.deepEqual(acpRecipeFor(named, "/opt/agent", named.release.archives[PLATFORM], { on: "keys" }).announces, announces);
+  assert.equal(parseRecipe(JSON.stringify(recipeOf())).announces, undefined);
+  for (const bad of [{}, { tool: 7 }, { tool: "rawInput..toolName" }, { tool: "rawInput.toolName", title: "title" }]) {
+    const refused = refusalOf(recipeOf(undefined, { announces: bad }));
+    assert.equal(refused.code, RECIPE_CODES.invalid, JSON.stringify(bad));
+    assert.match(refused.message, /announces is \{ "tool"/, JSON.stringify(bad));
+  }
+});
+
 // One recipe per rule, each breaking it alone, with the code it is refused by.
 const BROKEN = [
   ["rule 1, own keys only: a key the server holds for a model provider", RECIPE_CODES.keys, () => recipeOf(undefined, { keys: ["OPENROUTER_API_KEY"] })],

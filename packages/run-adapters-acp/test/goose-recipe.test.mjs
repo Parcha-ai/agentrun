@@ -81,3 +81,20 @@ test('the package ships its recipes', () => {
   const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
   assert.ok(pkg.files.includes('recipes'));
 });
+
+test("its announces field names a call by Goose 1.59.2's _meta.goose.toolCall.toolName (`agentrun__<tool>`, the name the model calls), never by its title", () => {
+  // Goose's tool_call carries the tool's prefixed name in _meta (goose-acp conversion.rs goose_tool_call_meta); its title
+  // is for people (`agentrun: write · proof.txt`) and is never read.
+  assert.deepEqual(recipeFile('goose').announces, { tool: '_meta.goose.toolCall.toolName' });
+});
+
+test('recipeProblems refuses an announces field with no tool path, a path that is not dotted names, or a key it does not know', () => {
+  const base = { id: 'x', command: BINARY, declares: { load: true, mcp: 'http' }, billing: { kind: 'proxy' } };
+  assert.deepEqual(recipeProblems({ ...base, announces: { tool: '_meta.goose.toolCall.toolName' } }), []);
+  assert.deepEqual(recipeProblems({ ...base, announces: { tool: 'rawInput.toolName', server: 'rawInput.providerIdentifier', args: 'rawInput.args' } }), []);
+  assert.match(recipeProblems({ ...base, announces: {} }).join(' '), /announces/);
+  assert.match(recipeProblems({ ...base, announces: { tool: 7 } }).join(' '), /announces/);
+  assert.match(recipeProblems({ ...base, announces: { tool: 'rawInput..toolName' } }).join(' '), /announces/);
+  assert.match(recipeProblems({ ...base, announces: { tool: 'rawInput.toolName', server: '' } }).join(' '), /announces/);
+  assert.match(recipeProblems({ ...base, announces: { tool: 'rawInput.toolName', title: 'title' } }).join(' '), /announces/);
+});

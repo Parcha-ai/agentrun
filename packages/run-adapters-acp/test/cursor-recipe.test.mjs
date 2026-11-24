@@ -44,6 +44,10 @@ test("its title tie is declared: Cursor's allowlist with allow: [] asks for ever
   assert.equal(file.allowFile, undefined);
 });
 
+test("its announces field names a call by Cursor 2026.11.13's late update: rawInput.providerIdentifier is our server, rawInput.toolName the tool, rawInput.args its arguments", () => {
+  assert.deepEqual(recipeFile('cursor').announces, { tool: 'rawInput.toolName', server: 'rawInput.providerIdentifier', args: 'rawInput.args' });
+});
+
 test('the credential Cursor derives from its key is named, so its HOME goes when its process ends', () => {
   assert.deepEqual(recipeFile('cursor').credentials, ['.config/cursor/auth.json']);
 });

@@ -1,10 +1,18 @@
 // How an MCP call of ours gets the agent's own tool call id (src/calls.ts): matched to the tool_call that announced it by
-// the tool and the arguments, never to another call's announcement. And which titles name our tool (ourTool).
+// the tool and the arguments, never to another call's announcement. Which tool of ours an announcement names is read from
+// the recipe's `announces` field (announcedTool), never from a title. And which titles name our tool for Cursor's tie
+// (ourTool).
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { CallIds, ourTool } from '../dist/calls.js';
+import * as calls from '../dist/calls.js';
 
-const TOOLS = new Set(['look_up', 'check_echo', 'lookup']);
+const { CallIds, ourTool } = calls;
+const TOOLS = new Set(['look_up', 'check_echo', 'lookup', 'write']);
+/** goose.json's and cursor.json's announces fields. */
+const GOOSE = Object.freeze({ tool: '_meta.goose.toolCall.toolName' });
+const CURSOR = Object.freeze({ tool: 'rawInput.toolName', server: 'rawInput.providerIdentifier', args: 'rawInput.args' });
+/** A tool_call as Goose 1.59.2 sends it: titled for people, named in `_meta.goose.toolCall.toolName`. */
+const gooseCall = (toolCallId, toolName, rawInput, kind = 'other') => ({ toolCallId, title: toolName.replace(/__/, ': ').replace(/_/g, ' '), kind, rawInput, _meta: { goose: { toolCall: { toolName } } } });
 
 test("ourTool reads a name, `agentrun__<tool>`, and Cursor's own title, `agentrun-<tool>: <tool>`; nothing else", () => {
   assert.equal(ourTool({ title: 'agentrun__look_up' }, TOOLS), 'look_up');
@@ -72,14 +80,41 @@ test('an announcement whose title names no tool of ours is matched by the argume
   assert.equal(ids.has('call_4'), true, 'still announced, still waiting for its own call');
 });
 
-// Known limit (PR body): an announcement whose title names no tool of ours is matched by its arguments alone, so a call of
-// the agent's own (Goose's load_skill) announced first with the same arguments takes our MCP call's id. Only the id the
-// resume memo keys the call by moves; the gate is asked at the MCP call either way. Kept red until announcements carry a
-// field the adapter reads; AGENTRUN_KNOWN_LIMITS=1 runs it, and it fails.
-test("an agent's own call announced with the same arguments as ours never takes our MCP call's id", { skip: process.env.AGENTRUN_KNOWN_LIMITS ? false : "known limit, in the PR body: an untitled announcement is matched by its arguments alone (AGENTRUN_KNOWN_LIMITS=1 runs it, red)" }, async () => {
+test("an agent's own call announced with the same arguments as ours never takes our MCP call's id: each is named by the recipe's field (Goose's _meta toolName)", async () => {
+  // Before (a known limit of this PR, skipped): both announcements were matched by their arguments alone, so Goose's own
+  // load_skill, announced first, took our MCP call's id, and the resume memo keyed our call under it.
+  assert.equal(typeof calls.announceCall, 'function', "calls.ts reads the recipe's announces field (announceCall)");
   const ids = new CallIds();
   const signal = new AbortController().signal;
-  ids.add('call_skill', undefined, { name: 'notes' });
-  ids.add('call_ours', undefined, { name: 'notes' });
+  calls.announceCall(ids, gooseCall('call_skill', 'skills__load_skill', { name: 'notes' }), GOOSE, TOOLS);
+  calls.announceCall(ids, gooseCall('call_ours', 'agentrun__look_up', { name: 'notes' }), GOOSE, TOOLS);
   assert.equal(await ids.take('look_up', { name: 'notes' }, signal, 50), 'call_ours');
+  assert.equal(ids.announced('call_ours'), 'look_up');
+  assert.equal(ids.has('call_skill'), false, "the agent's own call, by its field, is never one an MCP call can take");
+});
+
+test("announcedTool reads the recipe's announces field, never a title: Goose's _meta toolName (`agentrun__<tool>`), Cursor's rawInput (providerIdentifier, toolName)", () => {
+  assert.equal(typeof calls.announcedTool, 'function', "calls.ts reads the recipe's announces field (announcedTool)");
+  const { announcedTool } = calls;
+  // Goose: the tool's name as the model calls it, our server's prefix stripped.
+  assert.equal(announcedTool(gooseCall('c', 'agentrun__look_up', { q: 'x' }), GOOSE, TOOLS), 'look_up');
+  assert.equal(announcedTool(gooseCall('c', 'skills__load_skill', { name: 'x' }), GOOSE, TOOLS), null, "the agent's own tool");
+  assert.equal(announcedTool(gooseCall('c', 'look_up', {}), GOOSE, TOOLS), null, 'no server prefix: not ours');
+  assert.equal(announcedTool(gooseCall('c', 'agentrun__drop_tables', {}), GOOSE, TOOLS), null, 'our server, a tool it does not list');
+  assert.equal(announcedTool({ toolCallId: 'c', title: 'agentrun__look_up', rawInput: { q: 'x' } }, GOOSE, TOOLS), undefined, 'no field: a title is never read');
+  assert.equal(announcedTool(gooseCall('c', 'agentrun__look_up', {}), undefined, TOOLS), undefined, 'a recipe that declares no field reads none');
+  // Cursor: the server and the tool in two fields of the late update's rawInput.
+  const cursorUpdate = (providerIdentifier, toolName) => ({ toolCallId: 'c', title: 'agentrun: look_up', rawInput: { providerIdentifier, toolName, args: { q: 'x' } } });
+  assert.equal(announcedTool(cursorUpdate('agentrun', 'look_up'), CURSOR, TOOLS), 'look_up');
+  assert.equal(announcedTool(cursorUpdate('github', 'look_up'), CURSOR, TOOLS), null, "another server's tool named like ours");
+  assert.equal(announcedTool({ toolCallId: 'c', title: 'MCP: tool', rawInput: {} }, CURSOR, TOOLS), undefined, "Cursor's untitled announcement names nothing yet");
+});
+
+test('a title naming our tool on a native read call never sets announced: only the recipe\'s field does', () => {
+  // Before: the tool_call's title (`agentrun__write`, the model's text on a read Cursor titles as it likes) set
+  // announced, which Cursor's title tie then answered allow_once without the gate.
+  assert.equal(typeof calls.announceCall, 'function', "calls.ts reads the recipe's announces field (announceCall)");
+  const ids = new CallIds();
+  calls.announceCall(ids, { toolCallId: 'call_read', title: 'agentrun__write', kind: 'read', rawInput: { path: 'notes.md' } }, CURSOR, TOOLS);
+  assert.equal(ids.announced('call_read'), undefined);
 });

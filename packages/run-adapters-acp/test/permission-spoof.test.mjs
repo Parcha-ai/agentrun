@@ -117,3 +117,25 @@ test("a permission request titled as our tool with Goose's summary, of a kind wi
   assert.throws(() => readFileSync(nativeLog, 'utf8'), /ENOENT/, 'the call never ran');
   assert.equal(ran, 0);
 });
+
+test("on Cursor's tie, a native read titled `agentrun__write` is never announced as ours: its request asks the host's gate, and a deny answers reject_once", async (t) => {
+  // Before: the tool_call's title set announced, so the request under the same title was answered allow_once and the
+  // gate was never asked. A read Cursor titles with the model's words is the agent's own call; only the recipe's
+  // announces field (rawInput.providerIdentifier and toolName) names one of ours.
+  const dir = scratch();
+  const nativeLog = join(dir, 'native.log');
+  const recipe = fakeRecipe(dir, { script: [{ native: 'read', title: 'agentrun__write', input: { path: 'notes.md' } }, { sayLastResult: true }], style: 'cursor', askNative: ['read'], nativeLog });
+  assert.deepEqual(recipe.quirks, { permissionTie: 'title' });
+  const asked = [];
+  let ran = 0;
+  const { session } = await openSession(t, recipe, {
+    tools: [tool('write', () => ((ran += 1), 'wrote'))],
+    gate: async (call) => (asked.push(call), { deny: 'a read of its own' }),
+  });
+  await session.send('go');
+  assert.equal((await session.turnEnd()).status, 'completed');
+  assert.deepEqual(asked.map((c) => [c.tool, c.args.title]), [['acp_read', 'agentrun__write']], 'the host gate was asked about the read');
+  assert.deepEqual(fakeEvents(recipe).filter((e) => e.type === 'permission').map((e) => e.kind), ['reject_once']);
+  assert.throws(() => readFileSync(nativeLog, 'utf8'), /ENOENT/, 'the read never ran');
+  assert.equal(ran, 0);
+});
