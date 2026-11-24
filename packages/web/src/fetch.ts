@@ -47,9 +47,9 @@ async function passes(url: unknown, guard: Guard | undefined, options: GuardOpti
   return guard.check(target.href, { ...(options.lookup ? { lookup: options.lookup } : {}), signal }).then(() => ({ href: target.href }), () => ({ why: "the URL did not pass the public-host guard" }));
 }
 
-/** `url`, a page's, with no user name or password: cleared as a URL where it parses (a provider's may hold an "@" it left
- *  unencoded, and a URL reads the last "@" as their end), else withoutUserinfo's. A provider that followed a redirect
- *  names the URL it ended at, which may hold them. */
+/** `url`, a page's, with no user name or password: cleared as a URL where it parses (a URL drops a tab or a newline in
+ *  them and encodes a space, where withoutUserinfo, reading free text, stops), else withoutUserinfo's. A provider that
+ *  followed a redirect names the URL it ended at, which may hold them. */
 function withoutCredentials(url: string): string {
   const parsed = URL.parse(url);
   if (!parsed) return withoutUserinfo(url);
