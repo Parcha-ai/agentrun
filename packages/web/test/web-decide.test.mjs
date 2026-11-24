@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { deciderFrom, judgeRequest, LEFT_OUT, passagesOf, searchText, siftRequest, TEXT_CAP, THRESHOLD, webFetchText } from "../dist/index.js";
+import { deciderFrom, judgeRequest, LEFT_OUT, passagesOf, PaidRefused, searchText, siftRequest, TEXT_CAP, THRESHOLD, webFetchText } from "../dist/index.js";
 import fakeParallel from "./fixtures/faux-parallel.mjs";
 import { fakeWeb, PUBLIC } from "./fixtures/web-runs.mjs";
 
@@ -37,17 +37,24 @@ function fakeProvider(nouls = {}, { usage = { input_tokens: 100, output_tokens: 
   };
 }
 
+/** The fake's price: a flat fee per request, so each request's hold is known. */
+const PRICE = { requestUsd: 0.0002 };
+const priced = (provider, options = {}) => deciderFrom(provider, { price: PRICE, ...options });
+
 /** Three paragraphs, each its own passage: 590 letters and a blank line, twice, then 590 more. */
 const A = `${"a".repeat(590)}\n\n`;
 const B = `${"b".repeat(590)}\n\n`;
 const C = "c".repeat(590);
 const LONG = `${A}${B}${C}`;
-/** Parallel's fake, but an extract of PUBLIC answers LONG as the page. */
-async function longPages(url, init) {
+/** Parallel's fake, but an extract answers `content` as the page. */
+const pagesOf = (content) => async (url, init) => {
   if (new URL(String(url)).pathname !== "/v1/extract") return fakeParallel(url, init);
   const { urls } = JSON.parse(init.body);
-  return new Response(JSON.stringify({ extract_id: "x", results: urls.map((u) => ({ url: u, title: "Long", publish_date: null, excerpts: [], full_content: LONG })), errors: [], warnings: null, usage: [], session_id: "s" }), { status: 200, headers: { "content-type": "application/json" } });
-}
+  return new Response(JSON.stringify({ extract_id: "x", results: urls.map((u) => ({ url: u, title: "Long", publish_date: null, excerpts: [], full_content: content })), errors: [], warnings: null, usage: [], session_id: "s" }), { status: 200, headers: { "content-type": "application/json" } });
+};
+const longPages = pagesOf(LONG);
+const CTX = () => ({ signal: new AbortController().signal, deadlineMs: 5_000 });
+const bytesOf = (value) => Buffer.byteLength(JSON.stringify(value));
 
 test("the sift and judge requests are pinned: one noul per result or passage in the same words, the query, task and items in the state", () => {
   assert.deepEqual(siftRequest(pinned.sift.query, pinned.sift.hits, pinned.sift.task), pinned.sift.request);
@@ -59,7 +66,7 @@ test("the sift and judge requests are pinned: one noul per result or passage in 
 
 test("deciderFrom asks one request a search: the sift request, the step's deadline and signal, and an id the same request always has", async () => {
   const { asked, provider } = fakeProvider();
-  const web = fakeWeb({ decider: deciderFrom(provider), bounds: { decideMs: 4_000 } });
+  const web = fakeWeb({ decider: priced(provider), bounds: { decideMs: 4_000 } });
   await web.search("widgets delaware", { n: 4, task: TASK });
   await web.search("widgets delaware", { n: 4, task: TASK });
   assert.equal(asked.length, 2);
@@ -75,19 +82,21 @@ test("deciderFrom asks one request a search: the sift request, the step's deadli
 test("a sift keeps what the decider scores as needed and drops at the threshold: the kept results in order, a line saying so, and the record naming each dropped URL", async () => {
   assert.equal(THRESHOLD, 0.8);
   const { provider } = fakeProvider({ r1: 0.9, r2: 0.05, r3: 0.2, r4: 0.21 });
-  const { answer, receipt } = await fakeWeb({ decider: deciderFrom(provider) }).search("widgets delaware", { n: 4, task: TASK });
+  const { answer, receipt } = await fakeWeb({ decider: priced(provider) }).search("widgets delaware", { n: 4, task: TASK });
   assert.deepEqual(answer.results.map((hit) => hit.url), [URLS[0], URLS[3]]);
   assert.equal(answer.sift, "fake kept 2 of 4 results");
   assert.ok(searchText(answer).includes(`"sift":"fake kept 2 of 4 results"`), "the model reads it");
   assert.deepEqual(receipt.out, { bytes: Buffer.byteLength(searchText(answer)), chars: searchText(answer).length }, "the receipt measures what the model reads");
-  assert.deepEqual(receipt.cost.usd, 0.001, "the search's own fee: the decider's cost is the record's");
+  assert.deepEqual(receipt.cost.usd, 0.0012, "the search's fee and the decider's hold, which the run's cap books");
+  assert.deepEqual(receipt.cost.lines.map((fee) => [fee.by, fee.usd]), [["parallel", 0.001], ["fake", 0.0002]]);
+  assert.equal(receipt.cost.lines[1].name, "fake's decision");
   const record = receipt.classifier;
   assert.ok(Number.isFinite(record.latency_ms) && record.latency_ms >= 0);
   assert.deepEqual({ ...record, latency_ms: 0 }, {
     provider: "fake", op: "search", ran: true, items: { in: 4, kept: 2 },
     dropped: [{ id: URLS[1], score: 0.05, reason: "needed p=0.05 <= 0.2" }, { id: URLS[2], score: 0.2, reason: "needed p=0.2 <= 0.2" }],
     model: "fake-1", temperature_sent: null, temperature_applied: false, tokens: { in: 100, out: 4, basis: "reported" }, latency_ms: 0, cost: { usd: 0.0001, basis: "estimate" },
-    questions_sha256: sha256(JSON.stringify(siftQuestions())),
+    requests: 1, questions_sha256: sha256(JSON.stringify(siftQuestions())),
   });
 });
 
@@ -98,16 +107,16 @@ function siftQuestions() {
 
 test("the threshold is how sure the decider must be that a result is not needed: at 0.95 only p <= 0.05 is dropped", async () => {
   const { provider } = fakeProvider({ r1: 0.9, r2: 0.05, r3: 0.2, r4: 0.06 });
-  const { answer, receipt } = await fakeWeb({ decider: deciderFrom(provider, { threshold: 0.95 }) }).search("widgets delaware", { n: 4 });
+  const { answer, receipt } = await fakeWeb({ decider: priced(provider, { threshold: 0.95 }) }).search("widgets delaware", { n: 4 });
   assert.deepEqual(answer.results.map((hit) => hit.url), [URLS[0], URLS[2], URLS[3]]);
   assert.deepEqual(receipt.classifier.dropped.map((d) => d.id), [URLS[1]]);
-  assert.throws(() => deciderFrom(provider, { threshold: 0.5 }), /threshold/);
-  assert.throws(() => deciderFrom(provider, { threshold: 1.2 }), /threshold/);
+  assert.throws(() => deciderFrom(provider, { price: PRICE, threshold: 0.5 }), /threshold/);
+  assert.throws(() => deciderFrom(provider, { price: PRICE, threshold: 1.2 }), /threshold/);
 });
 
 test("a fetched part is judged in passages: the kept passages in order, LEFT_OUT where any were dropped, the part's place in the page unchanged", async () => {
   const { asked, provider } = fakeProvider({ p1: 0.9, p2: 0.01, p3: 0.7 });
-  const web = fakeWeb({ decider: deciderFrom(provider), send: { parallel: longPages } });
+  const web = fakeWeb({ decider: priced(provider), send: { parallel: longPages } });
   const { answer, receipt } = await web.fetch(PUBLIC, { task: TASK });
   assert.deepEqual(asked[0].request, judgeRequest(PUBLIC, TASK, [A, B, C]));
   assert.equal(answer.text, `${A}${LEFT_OUT}${C}`);
@@ -118,7 +127,7 @@ test("a fetched part is judged in passages: the kept passages in order, LEFT_OUT
     provider: "fake", op: "fetch", ran: true, items: { in: 3, kept: 2 },
     dropped: [{ id: "p2", score: 0.01, reason: "needed p=0.01 <= 0.2", at: [A.length, A.length + B.length] }],
     model: "fake-1", temperature_sent: null, temperature_applied: false, tokens: { in: 100, out: 4, basis: "reported" }, latency_ms: 0, cost: { usd: 0.0001, basis: "estimate" },
-    questions_sha256: sha256(JSON.stringify(judgeRequest(PUBLIC, TASK, [A, B, C]).questions)),
+    requests: 1, questions_sha256: sha256(JSON.stringify(judgeRequest(PUBLIC, TASK, [A, B, C]).questions)),
   });
   await web.fetch(PUBLIC, { task: TASK });
   assert.equal(asked.length, 2, "each call is judged, one the run's pages answer too");
@@ -126,7 +135,7 @@ test("a fetched part is judged in passages: the kept passages in order, LEFT_OUT
 
 test("a dropped passage's place counts from the page's start, not the part's", async () => {
   const { provider } = fakeProvider({ p1: 0.01 });
-  const web = fakeWeb({ decider: deciderFrom(provider), send: { parallel: longPages } });
+  const web = fakeWeb({ decider: priced(provider), send: { parallel: longPages } });
   const { answer, receipt } = await web.fetch(PUBLIC, { task: TASK, offset: A.length, maxChars: 600 });
   assert.equal(answer.text, "");
   assert.equal(answer.sift, `fake kept 0 of 1 passages of this part; … marks a passage left out`);
@@ -135,7 +144,7 @@ test("a dropped passage's place counts from the page's start, not the part's", a
 
 test("a fetch with no task is not judged: the part whole, a line saying so, and a record that says why", async () => {
   const { asked, provider } = fakeProvider();
-  const { answer, receipt } = await fakeWeb({ decider: deciderFrom(provider), send: { parallel: longPages } }).fetch(PUBLIC);
+  const { answer, receipt } = await fakeWeb({ decider: priced(provider), send: { parallel: longPages } }).fetch(PUBLIC);
   assert.equal(asked.length, 0);
   assert.equal(answer.text, LONG);
   assert.equal(answer.sift, "not run (no task given); this part is whole");
@@ -154,14 +163,14 @@ test("a search is sifted before it is fitted: the fit sees only the kept results
   const unsifted = await fakeWeb({ send: { parallel: wide } }).search("widgets", { n: 25 });
   assert.ok(unsifted.answer.omitted > 0, "too wide to fit unsifted");
   const { provider } = fakeProvider(Object.fromEntries(Array.from({ length: 25 }, (_, i) => [`r${i + 1}`, i % 2 ? 0.01 : 0.9])));
-  const { answer, receipt } = await fakeWeb({ decider: deciderFrom(provider), send: { parallel: wide } }).search("widgets", { n: 25, task: TASK });
+  const { answer, receipt } = await fakeWeb({ decider: priced(provider), send: { parallel: wide } }).search("widgets", { n: 25, task: TASK });
   assert.deepEqual([answer.results.length, answer.omitted, receipt.classifier.items], [13, undefined, { in: 25, kept: 13 }]);
   assert.equal(answer.sift, "fake kept 13 of 25 results");
 });
 
 test("nothing to sift is not sifted: an error, a failed page, a refused part; the record says it was skipped", async () => {
   const { asked, provider } = fakeProvider();
-  const web = fakeWeb({ decider: deciderFrom(provider) });
+  const web = fakeWeb({ decider: priced(provider) });
   const empty = await web.search("   ", { task: TASK });
   assert.deepEqual(empty.answer, { error: "web_search needs a query" });
   assert.deepEqual([empty.receipt.classifier.ran, empty.receipt.classifier.skipped], [false, "no results"]);
@@ -183,7 +192,7 @@ test("a decider that fails never passes the results through silently: they come 
   ];
   for (const [error, code, cost] of cases) {
     const { provider } = fakeProvider({}, { fail: async () => { throw error; } });
-    const { answer, receipt } = await fakeWeb({ decider: deciderFrom(provider) }).search("widgets delaware", { n: 4, task: TASK });
+    const { answer, receipt } = await fakeWeb({ decider: priced(provider) }).search("widgets delaware", { n: 4, task: TASK });
     assert.deepEqual(answer, { ...plain.answer, sift: `not run (${code}); these results are unsifted` });
     const record = receipt.classifier;
     assert.deepEqual([record.ran, record.items, record.dropped, record.error, record.cost], [false, { in: 4, kept: 4 }, [], { code, message: error.message }, cost], code);
@@ -194,7 +203,7 @@ test("a decider past the step's deadline is cut there: the results unsifted, the
   let seen;
   const { provider } = fakeProvider({}, { fail: (ctx) => { seen = ctx; return new Promise(() => {}); } });
   const started = performance.now();
-  const { answer, receipt } = await fakeWeb({ decider: deciderFrom(provider), bounds: { decideMs: 60 } }).search("widgets delaware", { n: 4 });
+  const { answer, receipt } = await fakeWeb({ decider: priced(provider), bounds: { decideMs: 60 } }).search("widgets delaware", { n: 4 });
   assert.ok(performance.now() - started < 2_000, "cut at its deadline, though the decider never answers");
   assert.equal(seen.signal.aborted, true, "the decider's signal ends at the deadline");
   assert.equal(answer.results.length, 4);
@@ -205,26 +214,26 @@ test("a decider past the step's deadline is cut there: the results unsifted, the
 test("the caller's stop ends the decider too: aborted, unsifted", async () => {
   const stop = new AbortController();
   const { provider } = fakeProvider({}, { fail: () => (stop.abort(), new Promise(() => {})) });
-  const { answer, receipt } = await fakeWeb({ decider: deciderFrom(provider) }).search("widgets delaware", { n: 4, signal: stop.signal });
+  const { answer, receipt } = await fakeWeb({ decider: priced(provider) }).search("widgets delaware", { n: 4, signal: stop.signal });
   assert.equal(answer.results.length, 4);
   assert.equal(receipt.classifier.error.code, "aborted");
 });
 
 test("a refused question keeps its item unjudged; every question refused, or an answer that is no noul, and the sift did not run, at the cost the provider gave", async () => {
   const some = fakeProvider({ r1: { type: "refusal" }, r2: 0.01 });
-  const partly = await fakeWeb({ decider: deciderFrom(some.provider) }).search("widgets delaware", { n: 2 });
+  const partly = await fakeWeb({ decider: priced(some.provider) }).search("widgets delaware", { n: 2 });
   assert.deepEqual(partly.answer.results.map((hit) => hit.url), [URLS[0]]);
   assert.equal(partly.receipt.classifier.ran, true);
 
   const all = fakeProvider({ r1: { type: "refusal" }, r2: { type: "refusal" } });
-  const refused = await fakeWeb({ decider: deciderFrom(all.provider) }).search("widgets delaware", { n: 2 });
+  const refused = await fakeWeb({ decider: priced(all.provider) }).search("widgets delaware", { n: 2 });
   assert.equal(refused.answer.sift, "not run (refused); these results are unsifted");
   assert.deepEqual(refused.receipt.classifier.cost, { usd: 0.0001, basis: "estimate" });
 
   for (const odd of [{ type: "noul", noul: 1.5 }, { type: "choice", choice: "yes" }, undefined]) {
     const { provider } = fakeProvider({ r1: 0.9 });
     const wrong = { ...provider, decide: async (request, ctx) => { const out = await provider.decide(request, ctx); return { ...out, answers: { ...out.answers, r2: odd } }; } };
-    const { answer, receipt } = await fakeWeb({ decider: deciderFrom(wrong) }).search("widgets delaware", { n: 2 });
+    const { answer, receipt } = await fakeWeb({ decider: priced(wrong) }).search("widgets delaware", { n: 2 });
     assert.equal(answer.results.length, 2);
     assert.deepEqual([receipt.classifier.error.code, receipt.classifier.cost], ["invalid_response", { usd: 0.0001, basis: "estimate" }], JSON.stringify(odd));
   }
@@ -232,31 +241,83 @@ test("a refused question keeps its item unjudged; every question refused, or an 
 
 test("tokens are the provider's when it reports them, else counted on the request when a counter is given, else none", async () => {
   const unreported = fakeProvider({}, { usage: null });
-  const counted = await fakeWeb({ decider: deciderFrom(unreported.provider, { count: (text) => text.length }) }).search("widgets delaware", { n: 2 });
+  const counted = await fakeWeb({ decider: priced(unreported.provider, { count: (text) => text.length }) }).search("widgets delaware", { n: 2 });
   const { request } = unreported.asked[0];
   assert.deepEqual(counted.receipt.classifier.tokens, { in: JSON.stringify({ state: request.state, questions: request.questions }).length, out: null, basis: "counted" });
-  const none = await fakeWeb({ decider: deciderFrom(fakeProvider({}, { usage: null }).provider) }).search("widgets delaware", { n: 2 });
+  const none = await fakeWeb({ decider: priced(fakeProvider({}, { usage: null }).provider) }).search("widgets delaware", { n: 2 });
   assert.equal(none.receipt.classifier.tokens, null);
 });
 
 test("the temperature a provider sent, and whether it was applied, are the record's: none said is none sent; a failure leaves it unknown, a skip unsent", async () => {
   const { provider } = fakeProvider();
   const said = { ...provider, decide: async (request, ctx) => ({ ...(await provider.decide(request, ctx)), temperature_sent: 0, temperature_applied: "unknown" }) };
-  const sent = await fakeWeb({ decider: deciderFrom(said) }).search("widgets delaware", { n: 2, task: TASK });
+  const sent = await fakeWeb({ decider: priced(said) }).search("widgets delaware", { n: 2, task: TASK });
   assert.deepEqual([sent.receipt.classifier.temperature_sent, sent.receipt.classifier.temperature_applied], [0, "unknown"]);
-  const quiet = await fakeWeb({ decider: deciderFrom(provider) }).search("widgets delaware", { n: 2, task: TASK });
+  const quiet = await fakeWeb({ decider: priced(provider) }).search("widgets delaware", { n: 2, task: TASK });
   assert.deepEqual([quiet.receipt.classifier.temperature_sent, quiet.receipt.classifier.temperature_applied], [null, false]);
   const broken = fakeProvider({}, { fail: async () => { throw new Error("down"); } });
-  const failed = await fakeWeb({ decider: deciderFrom(broken.provider) }).search("widgets delaware", { n: 2, task: TASK });
+  const failed = await fakeWeb({ decider: priced(broken.provider) }).search("widgets delaware", { n: 2, task: TASK });
   assert.deepEqual([failed.receipt.classifier.temperature_sent, failed.receipt.classifier.temperature_applied], [null, "unknown"]);
-  const skipped = await fakeWeb({ decider: deciderFrom(provider) }).search("   ", { task: TASK });
+  const skipped = await fakeWeb({ decider: priced(provider) }).search("   ", { task: TASK });
   assert.deepEqual([skipped.receipt.classifier.temperature_sent, skipped.receipt.classifier.temperature_applied], [null, false]);
 });
 
 test("a pinned model goes on the request", async () => {
   const { asked, provider } = fakeProvider();
-  await fakeWeb({ decider: deciderFrom(provider, { model: "jev-1.14" }) }).search("widgets delaware", { n: 2 });
+  await fakeWeb({ decider: priced(provider, { model: "jev-1.14" }) }).search("widgets delaware", { n: 2 });
   assert.equal(asked[0].request.model, "jev-1.14");
+});
+
+test("a decider needs a price: each request goes through the run's Pay at its hold, the most it may cost from its bytes, at the long rates past longPromptTokens", async () => {
+  assert.throws(() => deciderFrom(fakeProvider().provider), /price/);
+  const ceilMicro = (usd) => Math.ceil(Math.round(usd * 1e9) / 1e3) / 1e6;
+  for (const [price, holdOf] of [
+    [{ requestUsd: 0.0001, inputUsdPerMillionTokens: 1, outputUsdPerMillionTokens: 2, maxOutputTokens: 100, inputTokensPerByte: 2, extraInputTokens: 50 }, (bytes) => 0.0001 + ((bytes * 2 + 50) * 1) / 1e6 + (100 * 2) / 1e6],
+    [{ inputUsdPerMillionTokens: 1, longPromptTokens: 10, longInputUsdPerMillionTokens: 3 }, (bytes) => (bytes * 3) / 1e6],
+  ]) {
+    const fees = [];
+    const { asked, provider } = fakeProvider();
+    await fakeWeb({ decider: deciderFrom(provider, { price }), pay: async (fee, send) => (fees.push(fee), send()) }).search("widgets delaware", { n: 2, task: TASK });
+    const { request } = asked[0];
+    const decided = fees.filter((fee) => fee.by === "fake");
+    assert.equal(decided.length, 1);
+    assert.equal(decided[0].usd, ceilMicro(holdOf(bytesOf({ state: request.state, questions: request.questions }))));
+  }
+});
+
+test("a request the run's cap refuses is never sent: the step does not run, the results come unsifted, the record says pay_refused at $0, and no decider line is booked", async () => {
+  const { asked, provider } = fakeProvider();
+  const pay = async (fee, send) => {
+    if (fee.by === "fake") throw new PaidRefused("the run's cap has no room for fake's decision");
+    return send();
+  };
+  const { answer, receipt } = await fakeWeb({ decider: priced(provider), pay }).search("widgets delaware", { n: 4, task: TASK });
+  assert.equal(asked.length, 0);
+  assert.equal(answer.results.length, 4);
+  assert.equal(answer.sift, "not run (pay_refused); these results are unsifted");
+  const record = receipt.classifier;
+  assert.deepEqual([record.ran, record.requests, record.error, record.cost], [false, 0, { code: "pay_refused", message: "the run's cap has no room for fake's decision" }, { usd: 0, basis: "none" }]);
+  assert.deepEqual(receipt.cost.lines.map((fee) => fee.by), ["parallel"]);
+});
+
+test("a request refused unbilled (configuration, auth, a connection never made) settles at $0 with the cap; one whose outcome is lost settles at its hold", async () => {
+  for (const [code, billed] of [["configuration", false], ["auth", false], ["connection", false], ["outcome_unknown", true]]) {
+    const settled = [];
+    const pay = async (fee, send) => {
+      try {
+        const response = await send();
+        settled.push([fee.by, response.status]);
+        return response;
+      } catch (error) {
+        settled.push([fee.by, "thrown"]);
+        throw error;
+      }
+    };
+    const { provider } = fakeProvider({}, { fail: async () => { throw Object.assign(new Error(code), { code }); } });
+    const { receipt } = await fakeWeb({ decider: priced(provider), pay }).search("widgets delaware", { n: 4, task: TASK });
+    const line = receipt.cost.lines.find((fee) => fee.by === "fake");
+    assert.deepEqual([settled.find(([by]) => by === "fake")[1], line.usd, receipt.classifier.requests], billed ? ["thrown", 0.0002, 1] : [400, 0, 1], code);
+  }
 });
 
 test("passagesOf tiles the text: paragraphs packed to about 1,000 characters, a longer one cut on a space, never a surrogate pair split, and at most 50 passages", () => {
