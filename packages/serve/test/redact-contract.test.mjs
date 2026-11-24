@@ -619,10 +619,20 @@ test("valueLeft: a held value only a view finds, wholly inside a cut in place, i
 const DENSE = ["q8Vx", "R2mT"].join("");
 const BACKSLASH = String.fromCharCode(92);
 
-/** The adversarial texts of `size` characters, each with the held values it is read with: the shapes' prefixes and
- *  runs; each view's decoders over a text of nothing but what they decode (percent-encoded bytes, ASCII and not, "+",
- *  JSON's escapes at one level and two, a second level that starts and fails, non-ASCII stretches for NFKC, characters
- *  that render as nothing); and a held value found every 9 characters, each find cut in place. */
+/** A held value of two lines of 40 characters or more: three parts (each line, and both joined), each a needle. */
+const TWO_LINES = [`made-up-first-line-${"q8VxR2mT".repeat(3)}`, `made-up-second-line-${"R2mTq8Vx".repeat(3)}`];
+/** A held value whose longest form needs the most a run's tail read takes (8,192 characters). */
+const LONG = `${CUT_KEY}-${"q8VxR2mT7kPz".repeat(120)}`;
+
+/** The adversarial texts of `size` characters, each with the held values it is read with, each text stressing a stage:
+ *  - the shapes' prefixes and runs;
+ *  - each view's decoders over a text of nothing but what they decode: percent-encoded bytes, ASCII and not, "+",
+ *    JSON's escapes at one level and two (each kind, back to back), a second level that starts and fails, non-ASCII
+ *    stretches for NFKC, characters that render as nothing (zero-width spaces, soft hyphens, both between letters);
+ *  - a held value found every 9 characters, each find cut in place;
+ *  - a held value of two lines, its lines over and over: its parts found at every line, each cut in place;
+ *  - runs too long to read, each with a held value's head glued to its end: each run's tail read again, 8,192
+ *    characters of it, for the held value. */
 const adversarial = (size) => {
   const f = (unit) => fill(unit, size);
   const shapes = [
@@ -634,9 +644,15 @@ const adversarial = (size) => {
   const B = BACKSLASH;
   const views = [
     f("%41"), f("%e9"), f("a+"), f(`${B}n`), f(`${B}${B}n`), f(`${B}u0041`), f(`${B}${B}u0041`), f(`${B}${B}u004`),
-    f(String.fromCharCode(0xe9)), f(`a${String.fromCharCode(0x301)}`), f(ZWSP),
+    f(`${B}t${B}"${B}/${B}${B}${B}r${B}b${B}f`), f(`${B}${B}${B}"${B}${B}t${B}${B}${B}${B}`),
+    f(String.fromCharCode(0xe9)), f(`a${String.fromCharCode(0x301)}`), f(ZWSP), f(SHY), f(`a${SHY}b${ZWSP}`),
   ];
-  return [...[...shapes, ...views].map((text) => ({ text, values: [CUT_KEY] })), { text: f(`${DENSE} `), values: [DENSE] }];
+  return [
+    ...[...shapes, ...views].map((text) => ({ text, values: [CUT_KEY] })),
+    { text: f(`${DENSE} `), values: [DENSE] },
+    { text: f(`${TWO_LINES.join("\n")}\n`), values: [TWO_LINES.join("\n")] },
+    { text: f(`${"z".repeat(9000)}${LONG.slice(0, 16)} `), values: [LONG] },
+  ];
 };
 
 /** Each entry point that reads a text whole or in pieces, as the work count drives it: redactSecrets and redactLearned
@@ -690,6 +706,8 @@ test("the work count reads each stage: a form's search, a view and its decoders,
 //   at most 10/8 as long): about 308;
 // - so planCut is about 458; an answer adds its pieces' ends and joins (10), heldIn's check of what it returns (10/8 of
 //   a check: 171), of the pieces as they came (137), and its shape pass (64): about 840.
+// A held value of two lines adds its three parts as forms and plain needles (about 30 more). A held value of k long
+// lines adds k + 1 of each: its work grows with k, linear in the text all the same.
 // 1024 is that, rounded up to a power of two. A stage that read again from the start at each find passes the text once
 // per find: a held value found every 9 characters is found 14,563 times in 128 KiB.
 const WORK = 1024;
