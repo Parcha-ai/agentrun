@@ -1,7 +1,8 @@
 ---
 # The deploy parity fixture: one agent holding one of each kind a deploy carries (a builtin tool, a monid endpoint, an
 # MCP tool from each source with a pin, two skills and a rule, two keys, two trigger kinds, typed input and answer, a
-# budget, learning, approvals) on a harness and a model that are not the defaults. deploy-parity.test.mjs installs it,
+# budget, learning, approvals, and MCP tools its instructions and a skill name, which an apply renames to each
+# install's saved servers) on a harness and a model that are not the defaults. deploy-parity.test.mjs installs it,
 # deploys it, and checks the deployed agent is the same field by field (scripts/deploy-parity.mjs).
 name: parity-fixture
 display_name: Parity fixture
@@ -55,4 +56,5 @@ output: { schema: answer.schema.json }
 ---
 You keep a small team up to date. Each weekday you write a digest of what changed, and each event that arrives you
 triage. Follow your `digest` skill for a digest and your `triage` skill for an event, and answer as the answer schema
-says. Every fact you state has a source; what you don't know, you say you don't know.
+says. Every fact you state has a source; what you don't know, you say you don't know. Read a file you cite with
+`mcp:github/get_file_contents`.

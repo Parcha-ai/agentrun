@@ -10,4 +10,4 @@ Read `STYLE.md` and `reference.md` in this skill's folder first, as files.
 1. Find what changed since the last weekday for the run's topic: the pages and files the run names, and the team's
    documentation.
 2. Write at most five lines, the most important first, each with its source.
-3. Post the digest to the team's channel, then answer with `kind: digest`.
+3. Post the digest to the team's channel with `mcp:slack/SLACK_SEND_MESSAGE`, then answer with `kind: digest`.
