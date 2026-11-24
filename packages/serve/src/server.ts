@@ -5798,7 +5798,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // (mcp-secret-writes.ts tokenWriteOverRefused), landing only while the row still has the credential the gate read
         // (secretSeen) and the token's mark, standing on no auth config of the owner's server's and no ACTIVE account no
         // server it saved holds (tokenStandsOn, tokenAccountOn), as a Composio user in its own namespace (composioTokenUser),
-        // which only its own connect link connects. The body names no address or headers (composioSave refuses them).
+        // which, through this install, only its own connect link connects. The body names no address or headers
+        // (composioSave refuses them).
         const answer = await inComposioTurn(async () => {
           const over: { dropped?: ComposioDropped } = {};
           const guard: SaveGuard = { turn: (work) => composioTriggers.inTurnOf(id, work), inUse: () => composioTriggers.inUse(id, SAVE_AFTER_TRIGGERS) };

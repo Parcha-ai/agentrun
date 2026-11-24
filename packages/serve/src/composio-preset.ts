@@ -23,8 +23,9 @@ const SAVE_FIELDS = ["api_key", "api_key_env", "toolkit", "tools", "user_id", "a
 /** The one Composio user a server's actions run as, unless the owner names another. */
 export const COMPOSIO_USER = "agentrun";
 /** The namespace an API token's Composio users are kept in at Composio: its save names `ops`, Composio knows
- *  `agentrun.token.ops`, which only the token's own connect link connects. A fixed prefix, never the token's id: tokens
- *  rotate, and every token is one identity in the records. No save names a user_id in it. */
+ *  `agentrun.token.ops`, which, through this install, only the token's own connect link connects. A fixed prefix,
+ *  never the token's id: tokens rotate, and every token is one identity in the records. No save names a user_id in
+ *  it. */
 export const COMPOSIO_TOKEN_USER_PREFIX = "agentrun.token.";
 /** The Composio user an API token's save names `user` as (composioSave `userAs`). */
 export const composioTokenUser = (user: string): string => COMPOSIO_TOKEN_USER_PREFIX + user;

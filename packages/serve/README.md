@@ -3503,27 +3503,28 @@ serves these routes alone:
     Composio answers it, is that one, before anything is made at Composio; both say so in the same words. An
     `auth_config_id` Composio answers under another id (another letter case, say) is `422` under it. The token's
     Composio user has a namespace of its own: a save that is not `per_run` reaches Composio, and its server calls, as
-    `agentrun.token.<user_id>` (no `user_id`: `agentrun.token.agentrun`), a user only the token's own connect link
-    connects, so its `user_id` is at most 113 characters. No save names a `user_id` starting `agentrun.token.`, the
-    owner's included: `422` under `user_id`, before anything is sent. Nor does the token's save stand on a connected
-    account it did not connect: when Composio already has ACTIVE accounts for that user under its auth config, the save
-    is `403` before anything is made, unless a server the token saved holds each of them as one it made (connected
-    through the token's own link). The lookup reads 50 accounts a page, at most 10 pages (500 for that user and auth
-    config): past that the token's save is `403`, since it can't check them all, and an owner's save goes on with the
-    ones it read. That check sees the accounts there when the token saves; the namespace is what
-    keeps the user the token's after it, since no save here names it. A server the token saved before the namespace
+    `agentrun.token.<user_id>` (no `user_id`: `agentrun.token.agentrun`), a user that, through this install, only the
+    token's own connect link connects (the Composio dashboard, or another client of the same Composio project, can
+    connect any user id), so its `user_id` is at most 113 characters. No save names a `user_id` starting
+    `agentrun.token.`, the owner's included: `422` under `user_id`, before anything is sent. Nor does the token's save
+    stand on a connected account it did not connect: when Composio already has ACTIVE accounts for that user under its
+    auth config, the save is `403` before anything is made, unless a server the token saved holds each of them as one it
+    made (connected through the token's own link). The lookup reads 50 accounts a page, at most 10 pages (500 for that
+    user and auth config): past that the token's save is `403`, since it can't check them all, and an owner's save goes
+    on with the ones it read. That check sees the accounts there when the token saves; the namespace is what keeps the
+    user the token's after it, since no save here names it. A server the token saved before the namespace
     (0.1.0-beta.56) keeps calling as its bare `user_id` until it is saved again. Its next save moves it to the
     namespaced user and returns a connect link for it: connect the account again there. That save deletes at Composio
-    the account the server's own link made under the bare user, unless another saved server stands on it (that one
-    then owns it), and keeps an account it found there, which was never its own. Or delete the server. A `per_run`
-    save names no user, so none of this applies to it: each run calls as the user and account it names. An
-    `auth_config_id` naming one that another
-    server the token saved made is used, and that server's record still says it made it, so only its delete removes the
-    auth config at Composio, or, while this server still uses it, hands it to this one, whose delete then removes it.
-    Over a server the token saved, whose address only its origin shows, the owner's sign-in, save and preview take its
-    full URL: one that sends back the shown address is `422` under `url`, and nothing is sent, so the owner's credential
-    goes only to an address the owner named. The token chose that address, so its own save (and, on the full server,
-    its own preview) still takes the shown one for it.
+    every account the server's record holds as made here under the bare user (the one its own link connected, or one
+    handed to it), unless another saved server stands on it (that one then owns it), and keeps an account it found
+    there, which was never its own. Or delete the server. A `per_run` save names no user, so none of this applies to it:
+    each run calls as the user and account it names. An `auth_config_id` naming one that another server the token saved
+    made is used, and that server's record still says it made it, so only its delete removes the auth config at
+    Composio, or, while this server still uses it, hands it to this one, whose delete then removes it. Over a server the
+    token saved, whose address only its origin shows, the owner's sign-in, save and preview take its full URL: one that
+    sends back the shown address is `422` under `url`, and nothing is sent, so the owner's credential goes only to an
+    address the owner named. The token chose that address, so its own save (and, on the full server, its own preview)
+    still takes the shown one for it.
 
   The names route above is the listing: there is no list or read of a server's address, auth or tools here. The
   preview, refresh, sign-in, Composio tool listing and every other MCP settings route stay refused. On the full
