@@ -2651,7 +2651,7 @@ test("XCVII: the command readers cut every password the text scan before the lex
   }
 });
 
-test("XCVIII: the lexer read cuts where the span scan beside it does not: a name quoted, with .exe or a Windows path, continued or followed by a wide blank, and a descriptor redirection before the flag", async () => {
+test("XCVIII: the lexer read cuts where the span scan beside it does not: a name quoted (a path with blanks inside the quotes too), with .exe, .cmd or a Windows path, continued or followed by a wide blank; a wide blank before a flag or its value; anything between a program and its subcommand; a descriptor redirection before the flag", async () => {
   const pw = "Copper9lumen9";
   for (const text of [
     `"mysql" -h db -p${pw} app`,
@@ -2660,19 +2660,75 @@ test("XCVIII: the lexer read cuts where the span scan beside it does not: a name
     `mysql.exe -h db -p${pw} app`,
     `C:\\tools\\docker.exe login -u bot -p ${pw} r.io`,
     `npm.exe config set //r/:_authToken ${pw}`,
+    `npm.cmd config set //r/:_authToken ${pw}`,
+    `"C:\\Program Files\\Docker\\docker.exe" login -u bot -p ${pw} r.io`,
+    `"C:\\Program Files\\MySQL\\MySQL Server 8.0\\mysql.exe" -u root -p${pw} -e "SHOW DATABASES"`,
+    `"C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe" login -u bot -p ${pw} r.io`,
+    `"C:\\Program Files\\MySQL\\MySQL Server 8.0\\bin\\mysql.exe" -u root -p${pw} -e "SHOW DATABASES"`,
     `redis-cli \\\n  -h db -a ${pw} ping`,
     `mysql \\\n  -h db -p${pw} app`,
-    `mysql\u00a0-h db -p${pw} app`,
+    `docker \\\n  login -u bot -p ${pw} r.io`,
+    `npm \\\n  config set //r/:_authToken ${pw}`,
     `mysql\u3000-h db -p${pw} app`,
+    // A wide blank glued to the flag, the value or the subcommand: bash would read one word, the text still holds it.
+    `redis-cli\u00a0-a ${pw} ping`,
+    `redis-cli -h db -a\u00a0${pw} ping`,
+    `mysql\u00a0-p${pw} app`,
+    `mysql -h db\u00a0-p${pw} app`,
+    `docker\u00a0login -u bot -p ${pw} r.io`,
+    `docker\u3000login -u bot -p ${pw} r.io`,
+    `docker login -u bot\u00a0-p ${pw} r.io`,
+    `npm\u00a0config set //r/:_authToken ${pw}`,
+    `npm config\u3000set //r/:_authToken ${pw}`,
+    `npm set //r/:_authToken\u00a0${pw}`,
+    // Between a program and its subcommand: a redirection, an option and its value, an escaped blank.
+    `docker >out.txt login -u bot -p ${pw} r.io`,
+    `npm 2>&1 config set //r/:_authToken ${pw}`,
+    `npm --userconfig ~/.npmrc-ci config set //r/:_authToken ${pw}`,
+    `docker -D login -u bot -p ${pw} r.io`,
+    `npm -g set //r/:_authToken ${pw}`,
+    `docker\\ login -u bot -p ${pw} r.io`,
     `redis-cli &>all -h db -a ${pw} ping`,
     `mysql >&2 -h db -p${pw} app`,
     `redis-cli 2>&1 -h db -a ${pw} ping`,
   ]) {
     for (const wrap of FOUR_WRAPS) await gone(wrap(text), [pw]);
   }
+  // A registry tool running another subcommand is no login: its `-p` is a port.
+  for (const text of ["docker run -p 8080:80 img", "docker run img login -p 8080", "podman --remote run -p 5432 db"]) {
+    for (const wrap of FOUR_WRAPS) await kept(wrap(text));
+  }
 });
 
-test("XCIX: the shipped readers' counted reads at 512 KB: at most 8 a character over the lexer test's units, 12 where a command is named inside the quotes of an unclosed construct, each read by the rule that reads its command", async () => {
+test("C: rows only the lexer read cuts, one for each lexer behaviour the span scan would hide: a double-quoted name, curl past a lone `&`, the glued run and its tail past 1024 characters, a command re-read inside an earlier one's quotes", async () => {
+  const pw = "Copper9lumen9";
+  for (const [text, secrets] of [
+    // The double-quoted name (the scan needs a blank after `mysql`, and LOGIN_SCAN one after `docker`).
+    [`"mysql" -h db -p${pw} -e "select 1"`, [pw]],
+    [`"docker" login -u bot -p ${pw} r.io`, [pw]],
+    // curl reads on over a lone `&` (ruling XXIV); `$'-u'` is no `-u` to the scan.
+    [`curl https://x.io/?a=1&b=2 $'-u' admin:${pw}`, [pw]],
+    // The glued run: the shell ends the word at `&`, the password does not.
+    [`curl $'-u' admin:Copper&9lumen9 https://x.io`, ["Copper", "&9lumen9"]],
+    [`curl $'-u' admin:Copper&${"x".repeat(1100)}TAILMARK9 https://x.io`, ["Copper", "TAILMARK9"]],
+    // A command named inside the quotes an earlier one paired (`o'neil … 'x'`) is read again; the scan names no `mysql.exe`.
+    [`mysql.exe -h o'neil app; mysql.exe -p${pw} app 'x'`, [pw]],
+  ]) {
+    for (const wrap of FOUR_WRAPS) await gone(wrap(text), secrets);
+  }
+});
+
+test("CI: the re-read budget: a command named inside an earlier command's read is read again only within half a read a character, so a run of one command reads each character about twice, not once for every command in reach", async () => {
+  // Every command here is named inside the read before it (no operator ends one): past the budget the next is looked
+  // for past the earlier read's end. Without the budget each would read to the shared limit again, hundreds of reads
+  // a character. 64 KB keeps that case quick, so a lost budget fails here on its count and not on a clock.
+  for (const [id, unit] of [["curl-user", "curl -u a:b "], ["password-flag", "redis-cli -a x "], ["password-flag", "docker login -p x "], ["mysql-password", "mysql -p x "], ["secret-assign", "npm set x "]]) {
+    const { [id]: perChar } = await rulesRead([id], repeatTo(unit, 64 * 1024));
+    assert.ok(perChar <= 3, `${id} on ${JSON.stringify(unit)}: ${perChar.toFixed(2)} reads a character, past the re-read budget`);
+  }
+});
+
+test("XCIX: the shipped readers at 512 KB: at most 8 counted reads a character over the lexer test's units, 12 where a command is named inside the quotes of an unclosed construct, and each unit's rule CPU bounded against main's span scan for that rule, timed in the same call", async (t) => {
   const ruleOf = (unit) => (unit.startsWith("curl") ? "curl-user" : unit.startsWith("mysql") ? "mysql-password" : unit.startsWith("npm") ? "secret-assign" : "password-flag");
   const units = [
     'curl -H "$(curl $(curl $(date)))" -u a:b ', 'curl "$(', "curl $(((((( -u a:b ", "curl \x60 -u a:b ", 'curl "\x60$(" -u a:b ',
@@ -2681,13 +2737,39 @@ test("XCIX: the shipped readers' counted reads at 512 KB: at most 8 a character 
     "curl $( $(a) ", 'curl "$(echo "b") ', "curl ${a:-${b} ", "curl -s $(cat f; curl -s x $(date -u +%H:%MZ) ", "curl $(a; ", 'curl "$(a; ', "curl $(a $(b); ",
     "npm set x ", "mysql ${a ${b ${c ", "redis-cli -h o'neil -a x 'y' ",
   ];
-  for (const unit of units) {
-    const { [ruleOf(unit)]: perChar } = await rulesRead([ruleOf(unit)], repeatTo(unit, 512 * 1024));
-    assert.ok(perChar <= 8, `${ruleOf(unit)} on ${JSON.stringify(unit.slice(0, 24))}: ${perChar.toFixed(2)} reads a character`);
-  }
+  // CPU beside the count: the count sees the lexer only, the time sees the rule's whole work. The yardstick is main's
+  // span scan, timed in the same call on the same text: a unit's rule may take at most SCAN_TIMES the larger of its
+  // own rule's scan and REF, the scan of one heavy unit (`curl $(` at 512 KB, the slowest scan of these units) timed
+  // here, so a unit whose scan takes a millisecond is not held to a ratio of noise. CEILING_MS catches a blow-up on any
+  // box. Calibrated at 512 KB (rule / max(scan, REF), one run a unit): main's scrubber 1.96 at most, this one 6.07.
+  // A unit over its bound is timed once more and the faster run kept (the count is exact; the clock is not).
+  const [SCAN_TIMES, CEILING_MS] = [12, 5_000];
+  const { SPAN_SCANS } = await import("../dist/secret-rules.js");
+  const scanMs = (text) => {
+    const before = process.cpuUsage();
+    SPAN_SCANS["curl-user"](text);
+    const used = process.cpuUsage(before);
+    return (used.user + used.system) / 1000;
+  };
+  const heavy = repeatTo("curl $(", 512 * 1024);
+  const REF = Math.min(scanMs(heavy), scanMs(heavy));
+  t.diagnostic(`XCIX\tREF\t${REF.toFixed(1)} ms\t(main's curl-user scan of "curl $(" at 512 KB)`);
+  const bounded = async (id, unit, most) => {
+    const text = repeatTo(unit, 512 * 1024);
+    let cost = await ruleCost(id, text);
+    const label = `${id} on ${JSON.stringify(unit.slice(0, 24))}`;
+    assert.ok(cost.perChar <= most, `${label}: ${cost.perChar.toFixed(2)} reads a character`);
+    const limit = (c) => Math.min(CEILING_MS, SCAN_TIMES * Math.max(c.scan, REF));
+    if (cost.ms > limit(cost)) {
+      const again = await ruleCost(id, text);
+      if (again.ms < cost.ms) cost = again;
+    }
+    t.diagnostic(`XCIX\t${id}\t${cost.ms.toFixed(1)} ms\tscan ${cost.scan.toFixed(1)} ms\t${(cost.ms / Math.max(cost.scan, REF)).toFixed(2)} x\t${cost.perChar.toFixed(2)} reads\t${JSON.stringify(unit.slice(0, 28))}`);
+    assert.ok(cost.ms <= limit(cost), `${label}: ${Math.round(cost.ms)} ms; main's scan ${cost.scan.toFixed(1)} ms, REF ${REF.toFixed(1)} ms (at most ${SCAN_TIMES} x the larger, and ${CEILING_MS} ms)`);
+  };
+  for (const unit of units) await bounded(ruleOf(unit), unit, 8);
   for (const unit of ["curl $(x|'curl ''$(a ", "curl -s $(cat f|'curl -s ''$(date -u +%H:%M:%S)' ", "curl $(x|'curl ${a:-$(a ", "curl $(x|'curl ${a:-$(a; ", `curl "$(x|'curl "$(a; `]) {
-    const { "curl-user": perChar } = await rulesRead(["curl-user"], repeatTo(unit, 512 * 1024));
-    assert.ok(perChar <= 12, `curl-user on ${JSON.stringify(unit.slice(0, 24))}: ${perChar.toFixed(2)} reads a character`);
+    await bounded("curl-user", unit, 12);
   }
 });
 
@@ -2776,6 +2858,25 @@ const rulesRead = async (ids, text) => {
     out[id] = lexCount.read / text.length;
   }
   return out;
+};
+/** One rule on one text, its views read once: the characters shell-lex.ts read per character of the text (the count),
+ *  the rule's CPU ms, and main's span scan for that rule alone (secret-rules.ts SPAN_SCANS) on the same view text, timed
+ *  in the same call: the yardstick XCIX bounds the rule's time against. */
+const ruleCost = async (id, text) => {
+  const { lineBounds, SPAN_SCANS } = await import("../dist/secret-rules.js");
+  const { lexCount } = await import("../dist/shell-lex.js");
+  const [view] = secretCut.viewsOf(text);
+  const ctx = { held: [], source: view.source, homes: [], lint: async () => [], lines: lineBounds(view.text, ...view.decodedStrings, view.strings) };
+  const rule = SCRUB_RULES.find((each) => each.id === id);
+  lexCount.read = 0;
+  let before = process.cpuUsage();
+  await rule.find(view.text, ctx);
+  let used = process.cpuUsage(before);
+  const [perChar, ms] = [lexCount.read / text.length, (used.user + used.system) / 1000];
+  before = process.cpuUsage();
+  SPAN_SCANS[id](view.text);
+  used = process.cpuUsage(before);
+  return { perChar, ms, scan: (used.user + used.system) / 1000 };
 };
 /** Several rules on one text, its views read once: each rule's CPU time in ms, by id. The ceiling beside the count:
  *  the count sees the lexer only, this sees every rule's whole work (its name scan, word values, the text scan). */

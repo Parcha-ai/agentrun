@@ -5,6 +5,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
+import { Worker } from "node:worker_threads";
 import { commandLimit, isWord, lex, lexCount, NEST_MAX, wordChars, wordFrom, wordText } from "../dist/shell-lex.js";
 
 const shellEnds = (op) => op === ";" || op === "&" || op === "&&" || op === "||" || op === "|" || op === "|&";
@@ -16,6 +17,29 @@ const shown = (text, lexed) => lexed.tokens.map((token) => (isWord(token) ? text
 const values = (text, lexed) => lexed.tokens.filter(isWord).map((word) => wordText(text, word));
 const kinds = (word) => word.parts.map((part) => part.kind).join("+");
 const subs = (text, lexed) => lexed.subs.map(([start, end]) => text.slice(start, end));
+/** Each text's word values, lexed in a worker the test can stop: a lexer that loops (a token that reads nothing, read
+ *  again forever) blocks its own thread, so the bound is a timer outside it. "timeout" when it ran past `ms`. */
+const valuesWithin = (ms, texts) =>
+  new Promise((resolve) => {
+    const href = new URL("../dist/shell-lex.js", import.meta.url).href;
+    const source = `const { parentPort, workerData } = require("node:worker_threads");
+import(${JSON.stringify(href)}).then(({ lex, isWord, wordText }) =>
+  parentPort.postMessage(workerData.map((text) => lex(text, 0, text.length, () => false).tokens.filter(isWord).map((word) => wordText(text, word)))));`;
+    const worker = new Worker(source, { eval: true, workerData: texts });
+    const timer = setTimeout(() => {
+      void worker.terminate();
+      resolve("timeout");
+    }, ms);
+    worker.once("message", (out) => {
+      clearTimeout(timer);
+      void worker.terminate();
+      resolve(out);
+    });
+    worker.once("error", (error) => {
+      clearTimeout(timer);
+      resolve(`error: ${error.message}`);
+    });
+  });
 
 test("a command's words run to the first operator its caller ends on, or a line break", () => {
   const rows = [
@@ -169,10 +193,34 @@ test("`#` is a character, a backslash-newline joins lines, and reading starts wh
   assert.deepEqual(shown(text, read(text, { from: 9 })), ["-u", "a:b"]);
 });
 
-test("a bare run the limit cuts is read on to its end; a quote the limit cuts is a character", () => {
+test("a non-ASCII blank separates words as a space does (a transcript is not a script); quoted or escaped it is a character", async () => {
+  const rows = [
+    ["-a\u00a0pw", ["-a", "pw"]],
+    ["\u3000-a pw", ["-a", "pw"]],
+    ["a\u2009b\u202fc", ["a", "b", "c"]],
+    ["-p\ufeffpw", ["-p", "pw"]],
+    ['"a\u00a0b" c', ["a\u00a0b", "c"]],
+    ["a\\\u00a0b", ["a\u00a0b"]],
+  ];
+  // Lexed in a worker under a 10 s bound: a blank the token reader passes over but a word does not would be a word
+  // that reads nothing, and reading would never move on.
+  const got = await valuesWithin(10_000, rows.map(([text]) => text));
+  assert.notEqual(got, "timeout", "lexing the non-ASCII blank rows ran past 10 s: a token that reads nothing, read again forever");
+  assert.deepEqual(got, rows.map(([, want]) => want));
+  // Each call says what it read; lexCount sums the calls (the counted guard's measure) and decides nothing.
+  const before = lexCount.read;
+  const lexed = read("curl -u a:b 'c d' $(e)");
+  assert.ok(lexed.reads > 0);
+  assert.equal(lexCount.read - before, lexed.reads);
+});
+
+test("a bare run the limit cuts is read on to its end, a blank (a non-ASCII one too) ending it; a quote the limit cuts is a character", () => {
   const run = read("x abcdefgh y", { limit: 5 });
   assert.deepEqual(shown("x abcdefgh y", run), ["x", "abcdefgh"]);
   assert.equal(run.end, 10);
+  const wide = read("x abcdefgh\u00a0y", { limit: 5 });
+  assert.deepEqual(shown("x abcdefgh\u00a0y", wide), ["x", "abcdefgh"]);
+  assert.equal(wide.end, 10);
   const quoted = read('x "abc def"', { limit: 6 });
   assert.deepEqual(shown('x "abc def"', quoted), ["x", '"abc']);
 });

@@ -1,7 +1,11 @@
 // The differential corpus: command lines whose passwords the scrubber's five command readers (redis-cli -a, a registry
 // login -p, mysql -p, npm set _authToken, curl -u) read. expected.json records which characters main's scrubber cut in
 // each row (generate.mjs); scrub-differential.test.mjs requires every one of them cut still. Every input is synthetic.
+/** The commit whose scrubber expected.json records (main before the shell lexer); generate.mjs refuses any other. */
+export const BASE = "b0058698b0032901cecb6002e7f338110e628490";
 const PW = "Copper9lumen9";
+/** The password every row gives its command. */
+export const PASSWORD = PW;
 const NBSP = "\u00a0";
 const IDEO = "\u3000";
 
