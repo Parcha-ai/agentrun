@@ -107,12 +107,11 @@ test("the API token's write and removal over a saved row land only while the row
   assert.equal(await store.mcp.server("github"), undefined);
 });
 
-test("the owner's write over a row the token saved drops the token's marks from its record in the same transaction, its saved-at-a-listed-origin mark too; a record for another row of the name is left as it is", async (t) => {
+test("the owner's write over a row the token saved drops the token's mark from its record in the same transaction; a record for another row of the name is left as it is", async (t) => {
   const { store, clock } = await storeOn(t);
   const mark = (row) => ({ auth: row.auth, sealed: row.sealed !== null, changedAt: row.credentialChangedAt ?? null });
   const owns = { record: "mcp.source/github" };
   const row = await store.mcp.putIfCredential({ ...SERVER, auth: "per_run", sealed: null }, null, owns);
-  // main's spelling: the token's one mark is `by`; main keeps no `listed` mark (its list is the store's mcp.api_only_origins).
   const tokens = { source: "url", toolkit: null, of: row.createdAt, by: "token" };
   // A record for another row of the name (an earlier one's): the owner's write leaves it.
   await store.settings.put(owns.record, { ...tokens, of: row.createdAt - 1 });
@@ -120,7 +119,7 @@ test("the owner's write over a row the token saved drops the token's marks from 
   const once = await store.mcp.putIfCredential({ ...SERVER, auth: "per_run", sealed: null, instructions: "Once." }, mark(row), undefined, owns);
   assert.equal(once?.instructions, "Once.");
   assert.deepEqual(await store.settings.get(owns.record), { ...tokens, of: row.createdAt - 1 }, "another row's record is left as it is");
-  // This row's: both marks go, the rest is kept.
+  // This row's: the mark goes, the rest is kept.
   await store.settings.put(owns.record, tokens);
   clock.now += 1_000;
   await store.mcp.putIfCredential({ ...SERVER, auth: "per_run", sealed: null, instructions: "Twice." }, mark(once), undefined, owns);
@@ -136,13 +135,12 @@ test("a rewrite lands only on the row as its writer read it: the same credential
   for (const since of [{ url: "https://owners.example.com/mcp" }, { auth: "per_run" }, { prices: { create_issue: 0.5 } }]) {
     clock.now += 1_000;
     const saved = await store.mcp.put({ ...SERVER, auth: "none", sealed: null, ...since });
-    // main's spelling: rewrite's `seen` is the sealed credential read (Uint8Array | null), not the row.
-    assert.equal(await store.mcp.rewrite(listing, read.sealed), undefined, `${JSON.stringify(since)}: nothing written`);
+    assert.equal(await store.mcp.rewrite(listing, read), undefined, `${JSON.stringify(since)}: nothing written`);
     assert.deepEqual(await store.mcp.server("github"), saved, `${JSON.stringify(since)}: the save stands`);
   }
   // As read: it lands.
   const now = await store.mcp.put({ ...SERVER, auth: "none", sealed: null });
-  assert.deepEqual((await store.mcp.rewrite(listing, now.sealed))?.tools, [{ name: "listed_again" }]);
+  assert.deepEqual((await store.mcp.rewrite(listing, now))?.tools, [{ name: "listed_again" }]);
 });
 
 test("every save moves a server's last edit, even in the millisecond of the row a refresh read: the refresh's rewrite over a repricing save then writes nothing, and the save's prices stand", async (t) => {
@@ -152,8 +150,7 @@ test("every save moves a server's last edit, even in the millisecond of the row 
   const saves = [
     ["a save", (row, prices) => store.mcp.put({ ...SERVER, auth: "none", sealed: null, prices })],
     ["a save over the credential it read", (row, prices) => store.mcp.putIfCredential({ ...SERVER, auth: "none", sealed: null, prices }, mark(row))],
-    // main's spelling: rewrite's `seen` is the sealed credential read, not the row.
-    ["a save keeping the credential", (row, prices) => store.mcp.rewrite({ ...SERVER, auth: "none", prices }, row.sealed)],
+    ["a save keeping the credential", (row, prices) => store.mcp.rewrite({ ...SERVER, auth: "none", prices }, row)],
   ];
   await store.mcp.put({ ...SERVER, auth: "none", sealed: null });
   let price = 0.1;
@@ -164,12 +161,12 @@ test("every save moves a server's last edit, even in the millisecond of the row 
     assert.ok(saved.updatedAt > read.updatedAt, `${what}: its last edit moves past the one read, ${saved.updatedAt} after ${read.updatedAt}`);
     // The refresh writes what it listed with the prices it read, keeping the last edit it read.
     const refresh = { ...SERVER, auth: "none", tools: [{ name: "listed_again" }], prices: read.prices, updatedAt: read.updatedAt };
-    assert.equal(await store.mcp.rewrite(refresh, read.sealed), undefined, `${what}: the refresh writes nothing`);
+    assert.equal(await store.mcp.rewrite(refresh, read), undefined, `${what}: the refresh writes nothing`);
     assert.deepEqual(await store.mcp.server("github"), saved, `${what}: the save and its prices stand`);
   }
   // A refresh that lands keeps the last edit it read: it is not an edit.
   const read = await store.mcp.server("github");
-  const listed = await store.mcp.rewrite({ ...SERVER, auth: "none", tools: [{ name: "listed_again" }], prices: read.prices, updatedAt: read.updatedAt }, read.sealed);
+  const listed = await store.mcp.rewrite({ ...SERVER, auth: "none", tools: [{ name: "listed_again" }], prices: read.prices, updatedAt: read.updatedAt }, read);
   assert.equal(listed?.updatedAt, read.updatedAt, "a refresh keeps the last edit");
 });
 

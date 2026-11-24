@@ -1266,6 +1266,13 @@ export type McpTokensMark = { readonly record: string };
  *  server from the token; one that lands makes it the owner's with no moment between its row and its record. */
 export type McpOwnersMark = { readonly record: string };
 
+/** A row as a rewrite read it (Mcp.rewrite): its sealed credential, its address, its auth type and its last edit
+ *  (updatedAt). The rewrite lands only while the row still has all four, so it never writes back anything it read (an
+ *  address, an auth type, prices) over a save made since, even one that kept the address, auth type and credential. Every
+ *  save moves updatedAt past the row's own, even within its millisecond; a write that passes updatedAt (a refresh) keeps
+ *  the one it read. */
+export type McpRewriteSeen = { readonly sealed: Uint8Array | null; readonly url: string; readonly auth: string; readonly updatedAt: number };
+
 export interface Mcp {
   /** The server's write: the server's row, inserted or replaced by name (its first save's time kept). An owner's save
    *  clears any refresh lease and changes the credential, so a refresh in flight is dropped (keepRefreshed's `kept: false`)
@@ -1278,14 +1285,16 @@ export interface Mcp {
    *  token's mark (McpTokensMark), in the same statement. `owns`: the owner's write, which drops the token's mark in the
    *  same transaction once the row is written (McpOwnersMark). */
   putIfCredential(server: McpServerWrite, expected: McpCredentialMark, tokens?: McpTokensMark, owns?: McpOwnersMark): Promise<McpServerRow | undefined>;
-  /** An owner's rewrite of a row it read, its credential kept as it is (a tools refresh, a save that sends no new
-   *  credential): the listing, prices, url and times written by a compare-and-set on the CREDENTIAL, iff the row is still
-   *  saved and its sealed value is still `seen` (the one the owner read). The credential's columns (sealed, token_until,
+  /** A rewrite of a row it read, its credential kept as it is (a tools refresh, a save that sends no new credential): the
+   *  listing, prices, url and times written by a compare-and-set on the row as `seen` (McpRewriteSeen), iff the row is
+   *  still saved, its sealed value is still the one read, it is still at the address and of the auth type read, and no
+   *  save has edited it since (its updated_at the one read). The credential's columns (sealed, token_until,
    *  credential_changed_at) and any refresh lease are left as they are, so a runner's refresh in flight still keeps its
-   *  set. undefined, writing nothing, when the credential changed meanwhile (a refresh kept a rotated set) or the row went:
-   *  the caller reads it again and re-applies its change onto the fresh row, a bounded few times. `owns`: as
-   *  putIfCredential's, the token's mark dropped in the same transaction once the row is written. */
-  rewrite(server: { name: string; url: string; auth: string; protocol?: string | null; tools: unknown; prices?: unknown; serverInfo?: unknown; instructions?: string | null; listedAt?: number; updatedAt?: number }, seen: Uint8Array | null, owns?: McpOwnersMark): Promise<McpServerRow | undefined>;
+   *  set. undefined, writing nothing, when the credential changed meanwhile (a refresh kept a rotated set), a save landed
+   *  (one with no credential leaves the sealed column as it was, and may keep the address and auth type too), or the row
+   *  went: the caller reads it again and re-applies its change onto the fresh row while it still holds, a bounded few
+   *  times. `owns`: as putIfCredential's, the token's mark dropped in the same transaction once the row is written. */
+  rewrite(server: { name: string; url: string; auth: string; protocol?: string | null; tools: unknown; prices?: unknown; serverInfo?: unknown; instructions?: string | null; listedAt?: number; updatedAt?: number }, seen: McpRewriteSeen, owns?: McpOwnersMark): Promise<McpServerRow | undefined>;
   /** Deletes the row, answering what it held as it went (McpRemoved); undefined when there was none. */
   remove(name: string): Promise<McpRemoved | undefined>;
   /** remove(), only while the server's credential is still `expected` (its mark as the remover read it), compared and

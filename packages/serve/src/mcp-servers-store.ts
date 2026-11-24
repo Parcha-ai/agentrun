@@ -224,8 +224,9 @@ export class McpServersOverStore {
     return this.view(await this.need(name));
   }
 
-  /** POST preview: `{url, auth}`, or `{name}` for a saved server with its sealed credential. Stores nothing. */
-  async preview(body: Record<string, unknown>, stop?: AbortSignal): Promise<Listed> {
+  /** POST preview: `{url, auth}`, or `{name}` for a saved server with its sealed credential. Stores nothing. `byToken`:
+   *  the API token's, as a save's is (givenUrl). */
+  async preview(body: Record<string, unknown>, stop?: AbortSignal, byToken = false): Promise<Listed> {
     if (body.name !== undefined && body.url === undefined) {
       const issues = unknownFields(body, ["name"]);
       if (issues.length) throw invalid(issues);
@@ -237,9 +238,10 @@ export class McpServersOverStore {
     }
     // `name` with a url: the saved server the form is editing. Its address as every read shows it (shownUrl), sent back
     // unchanged, is the saved one here too (as save and sign-in map it): the browser never gets the real address back.
+    // Not over a server the token saved, for anyone but the token (givenUrl): its whole address is given.
     const { name: editing, ...asked } = body;
     const saved = editing === undefined ? undefined : await this.store.mcp.server(String(editing));
-    const { url, auth } = this.admit({ ...asked, ...(asked.url !== undefined ? { url: savedOrGiven(asked.url, saved?.url) } : {}) });
+    const { url, auth } = this.admit({ ...asked, ...(asked.url !== undefined ? { url: await this.givenUrl(asked.url, saved, byToken) } : {}) });
     // A github_app server's credential is a token of the App, minted here, as for a saved one: its static headers are optional.
     // A per_run server's are optional too: they only list its tools, for a server that lists them only to a caller it knows.
     if (auth.type !== "none" && auth.type !== "github_app" && auth.type !== "per_run" && !auth.headers) throw invalid([credentialMissing(auth.type, "A preview needs the credential it is to connect with.")]);
@@ -308,8 +310,9 @@ export class McpServersOverStore {
   async save(name: string, body: Record<string, unknown>, stop?: AbortSignal, checkedAgainst?: McpCredentialMark, made?: SourceRecord, stands?: ComposioMade, dropped?: (left: ComposioDropped) => void, guard?: SaveGuard, byToken = false) {
     nameOf(name);
     const was = await this.store.mcp.server(name);
-    // Its URL as every read shows it (shownUrl), sent back unchanged: the saved one.
-    const { url, auth, prices, toolkit, standIn } = this.admit({ ...body, ...(body.url !== undefined ? { url: savedOrGiven(body.url, was?.url) } : {}) }, true);
+    // Its URL as every read shows it (shownUrl), sent back unchanged: the saved one; over a server the token saved, only
+    // in the token's own save (givenUrl).
+    const { url, auth, prices, toolkit, standIn } = this.admit({ ...body, ...(body.url !== undefined ? { url: await this.givenUrl(body.url, was, byToken) } : {}) }, true);
     // What the server is (its source and toolkit, mcp-sources.ts): from what made it and the owner's toolkit, over what it
     // is now, checked before anything is listed; written once the server is, for the row it wrote.
     const sourceIssues: InputIssue[] = [];
@@ -510,13 +513,15 @@ export class McpServersOverStore {
     };
   }
 
-  /** Writes the owner's change over the row it read (`was`), its credential left as it is, by a compare-and-set on that
-   *  credential (store.mcp.rewrite). A lost one (a run kept a refreshed set meanwhile) reads the row again and re-applies the
-   *  change onto it, while `still` holds of it, at most REWRITE_TRIES writes; then it is refused in words, nothing written. */
+  /** Writes a change over the row it read (`was`), its credential left as it is, by a compare-and-set on that row's
+   *  credential, address, auth type and last edit (store.mcp.rewrite), so a save made since is never written back over,
+   *  even one that kept the address and auth type (a repricing). A lost one (a run kept a refreshed set meanwhile, or a
+   *  save landed) reads the row again and re-applies the change onto it, while `still` holds of it, at most REWRITE_TRIES
+   *  writes; then it is refused in words, nothing written. A refresh re-applied so takes the fresh row's prices. */
   private async rewriteKeeping(name: string, was: McpServerRow, fields: (row: McpServerRow) => Parameters<typeof rewriteMcpServer>[1], doing: "save" | "refresh", still: (row: McpServerRow) => boolean, owns?: McpOwnersMark): Promise<McpServerRow> {
     let row = was;
     for (let tries = 1; ; tries++) {
-      const saved = await rewriteMcpServer(this.store, fields(row), row.sealed, { githubMcpOrigin: this.appOrigin, ...(owns ? { owns } : {}) });
+      const saved = await rewriteMcpServer(this.store, fields(row), { sealed: row.sealed, url: row.url, auth: row.auth, updatedAt: row.updatedAt }, { githubMcpOrigin: this.appOrigin, ...(owns ? { owns } : {}) });
       if (saved) return saved;
       const fresh = await this.store.mcp.server(name);
       if (!fresh) throw notFound(name);
@@ -599,8 +604,9 @@ export class McpServersOverStore {
     nameOf(name);
     const issues = unknownFields(body, ["url", "scopes", "client_id", "client_secret", "toolkit"]);
     const current = await this.store.mcp.server(name);
-    // Its URL as every read shows it (shownUrl), sent back unchanged: the saved one.
-    const url = urlOf(savedOrGiven(body.url, current?.url), issues);
+    // Its URL as every read shows it (shownUrl), sent back unchanged: the saved one, but over a server the token saved,
+    // whose address the token chose (givenUrl): the owner's sign-in names it whole.
+    const url = urlOf(await this.givenUrl(body.url, current), issues);
     const { scopes, client_id, client_secret } = body;
     if (scopes !== undefined && !scopesValid(scopes)) issues.push({ field: "scopes", reason: "invalid", message: SCOPE_LIST });
     for (const [field, text] of [["client_id", client_id], ["client_secret", client_secret]] as const)
@@ -646,11 +652,13 @@ export class McpServersOverStore {
       if ((now ? saving(now) : null) !== entry.was) return back("changed_meanwhile");
       const prices = now?.url === entry.url ? ((now.prices ?? undefined) as McpPrices | undefined) : undefined;
       // Written only while the row is still the one just read, in the store's one statement: a save that lands in between
-      // stands too.
+      // stands too. A sign-in is the owner's alone: over a row the token saved, it drops the token's mark in the
+      // transaction that writes the signed-in row (`owns`), as the owner's save does, so the server is the owner's once
+      // the sign-in lands, and one refused leaves it the token's.
       const saved = await saveMcpServerIfCredential(this.store, this.sealKey, {
         name: entry.name, url: entry.url, auth: "oauth", protocol: listed.protocol, tools: listed.tools, serverInfo: listed.server_info, instructions: listed.instructions ?? null,
         ...(prices && Object.keys(prices).length ? { prices } : {}), credential: { type: "oauth", set },
-      }, credentialMark(now));
+      }, credentialMark(now), now ? { owns: { record: mcpSourceKey(entry.name) } } : {});
       if (!saved) return back("changed_meanwhile");
       // What the start said the server is, written for the row just saved, as a save's is.
       if (entry.source) await this.store.settings.put(mcpSourceKey(entry.name), storedSource(entry.source, saved));
@@ -779,6 +787,16 @@ export class McpServersOverStore {
    *  tokens, else its record, else url with none. */
   async sourceOf(row: RecordedRow & { name: string }): Promise<SourceRecord> {
     return sourceOf(row, await this.store.settings.get(mcpSourceKey(row.name)));
+  }
+
+  /** A body's URL for the saved row `saved` (savedOrGiven: its shown address sent back unchanged is its saved one), but
+   *  over a row the API token saved, whose address the token chose and every read shows only the origin of, for anyone
+   *  but the token (`byToken`): refused on `url`, so the owner's credential, a sign-in's or a header's, goes only to an
+   *  address the owner named whole. An address with nothing hidden (shown as it is) is taken as given. */
+  private async givenUrl(given: unknown, saved: McpServerRow | undefined, byToken = false): Promise<unknown> {
+    if (byToken || !saved || typeof given !== "string" || given !== shownUrl(saved.url) || given === saved.url) return savedOrGiven(given, saved?.url);
+    if (!savedByToken(await this.store.settings.get(mcpSourceKey(saved.name)), saved.createdAt)) return savedOrGiven(given, saved.url);
+    throw invalid([{ field: "url", reason: "not_an_option", message: `The MCP server ${saved.name} was saved by an API token, which chose its address, and reads show only its origin: give its full URL, so your credential goes only to an address you named.` }]);
   }
 
   private async view(row: McpServerRow) {

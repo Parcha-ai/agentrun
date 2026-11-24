@@ -5753,7 +5753,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "getMcpServer":
         return send(res, 200, await mcpServers.get(id));
       case "previewMcpServer":
-        return send(res, 200, await mcpServers.preview(await bodyOf(req), stopping.signal));
+        // The API token's preview, as the gate reads a token's save: a server it saved is previewed at its shown address.
+        return send(res, 200, await mcpServers.preview(await bodyOf(req), stopping.signal, req.headers.authorization !== undefined && !mayHoldSecrets(req)));
       case "saveMcpServer": {
         const body = await bodyOf(req);
         const preset = await mcpServers.composioPreset(id);
