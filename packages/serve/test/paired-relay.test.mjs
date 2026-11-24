@@ -253,8 +253,9 @@ after(() => {
 });
 
 /** One dial of `address`'s attach socket with the box's `token`, as its driver makes it: hello and ping answered, every
- *  close kept. `opened` settles with true once open, or the refusal's status and words. */
-function box(address, token, { headers = {} } = {}) {
+ *  close kept. `opened` settles with true once open, or the refusal's status and words. With `answer` (a promise), the
+ *  box answers hello only once it settles; `asked` settles when the hello comes. */
+function box(address, token, { headers = {}, answer } = {}) {
   const ws = new WebSocket(`${address.replace(/^http/, "ws")}${ATTACH_PATH}`, ATTACH_SUBPROTOCOL, { headers: { authorization: `Bearer ${token}`, ...headers }, perMessageDeflate: false });
   boxes.add(ws);
   ws.on("error", () => undefined);
@@ -268,6 +269,8 @@ function box(address, token, { headers = {} } = {}) {
     });
     ws.once("error", (error) => resolve({ error: error.message }));
   });
+  let heard;
+  const asked = new Promise((resolve) => (heard = resolve));
   ws.on("message", (data, binary) => {
     if (binary) return;
     let message;
@@ -276,10 +279,12 @@ function box(address, token, { headers = {} } = {}) {
     } catch {
       return;
     }
-    if (message.method === "hello") ws.send(JSON.stringify({ jsonrpc: "2.0", id: message.id, result: DRIVER_HELLO }));
-    else if (message.method === "ping") ws.send(JSON.stringify({ jsonrpc: "2.0", id: message.id, result: {} }));
+    if (message.method === "hello") {
+      heard();
+      void Promise.resolve(answer).then(() => ws.send(JSON.stringify({ jsonrpc: "2.0", id: message.id, result: DRIVER_HELLO })));
+    } else if (message.method === "ping") ws.send(JSON.stringify({ jsonrpc: "2.0", id: message.id, result: {} }));
   });
-  return { ws, opened, closed };
+  return { ws, opened, closed, asked };
 }
 
 test("the runner's attach listener takes a paired box's socket only with the server's proof and only while the box's row routes it to this runner and incarnation: a row routed nowhere or elsewhere, no proof and a replay are each 401", { timeout: 60_000 }, async (t) => {
@@ -371,6 +376,51 @@ test("a close on either side of a relayed paired socket closes the other: the bo
   assert.equal(closed?.code, 1001, `the runner's stop closes the box's socket with 1001: ${JSON.stringify(closed)}`);
   assert.match(lines.join("\n"), new RegExp(`computer_relayed run=run-a computer=${computer}`), "the server's line names the run and the box");
   assert.doesNotMatch(`${lines.join("\n")}\n${runnerLines.join("\n")}`, PAIRED_TOKEN, "no paired token in either side's lines");
+});
+
+test("a paired box whose route leaves the runner while it says hello there (its run's bring cancelled, the route dropped) is closed with 1001 in words saying it moved, never 4401: its pairing stays good and its redial to the runner its route names attaches; a box whose pairing is revoked at the same point is closed with 4401", { timeout: 60_000 }, async (t) => {
+  const { data, api, address } = await relayServer(t);
+  const side = await runnerSide(t, data);
+  const { relay } = await relayOf(t, side, address, "runner-a");
+  const { computer, token } = await pairedBox(api, address);
+  const listener = `http://${relay.host}:${relay.port}`;
+  const key = relayKeyOf(side.seal.key);
+  const mine = { runner: "runner-a", incarnation: relay.incarnation };
+  const proved = { tokenSha256: sha256Hex(token), ...mine };
+  // Each dial carries a proof of its own (the listener takes a proof once).
+  let proofs = 0;
+  const proof = () => ({ [LIVE_PROOF_HEADER]: relayProof(key, proved, Date.now() + proofs++) });
+  const paired = await routing(side.store);
+  /** A dial of the runner's listener whose box answers hello only once `then` (called at the hello) is done. */
+  const heldDial = async (then) => {
+    let answer;
+    const dial = box(listener, token, { headers: proof(), answer: new Promise((resolve) => (answer = resolve)) });
+    assert.equal(await dial.opened, true, "the runner's listener takes the box, its route naming this runner");
+    await dial.asked;
+    await then();
+    answer();
+    return Promise.race([dial.closed, sleep(10_000).then(() => "hung")]);
+  };
+
+  // Moved: the route dropped between the box's dial and its hello's answer, as a cancelled bring drops it.
+  assert.equal(await paired.route(computer, { ...mine, run: "run-a", until: UNTIL() }), true);
+  const moved = await heldDial(async () => assert.equal(await paired.unroute(computer, { ...mine, run: "run-a" }), true));
+  assert.equal(moved?.code, 1001, `a box whose route left this runner while it said hello is closed with 1001, its redial routed, never 4401 (pair again): ${JSON.stringify(moved)}`);
+  assert.match(moved.reason, new RegExp(`^${NAME} moved while it said hello`), "the close's words say it moved");
+  assert.equal(relay.dial.hub.online(computer), false, "the runner's hub does not keep it");
+  assert.equal((await side.store.pairedComputers.get(computer))?.revokedAt, null, "its pairing stays good");
+  assert.ok(pairedRow((await api("GET", "/computers")).body, computer), "the server still lists it as paired");
+  assert.equal(await paired.route(computer, { ...mine, run: "run-b", until: UNTIL() }), true);
+  const again = box(listener, token, { headers: proof() });
+  assert.equal(await again.opened, true, "its redial, routed to this runner again, is taken");
+  await until(async () => relay.dial.hub.online(computer), Boolean, "the runner's hub takes the box again: nothing of it was revoked");
+  again.ws.close(1000, "done");
+  await until(async () => relay.dial.hub.online(computer), (online) => online === false, "off the runner's hub once it closes");
+
+  // Revoked: the pairing revoked at the same point (its row alone, so only the check after hello sees it).
+  const revoked = await heldDial(async () => assert.equal(await side.store.pairedComputers.revoke(computer), true));
+  assert.equal(revoked?.code, 4401, `a box whose pairing was revoked while it said hello is closed with 4401: ${JSON.stringify(revoked)}`);
+  assert.match(revoked.reason, /pair it again/, "its words say to pair it again");
 });
 
 test("a paired box's hold holds across the relay: the runner lets the box go only once every remove or KILL its hold sent has answered; meanwhile its row still routes it there and no other run's runner takes it; then the box comes back to the server", { timeout: 60_000 }, async (t) => {
