@@ -19,8 +19,9 @@ export type Trimmed = { snippets: number; to_chars: number };
 /** One verdict per item asked about, in order, and one questions hash per request; model and temperature are the
  *  first request's. */
 export type Verdicts = { verdicts: Verdict[]; model: string | null; tokens: Tokens | null; cost: Cost; questions_sha256: string[]; trimmed?: Trimmed } & Temperature;
-/** How a decider's request is paid: `send` once the run's cap admits `fee`, as web's Pay sends a provider's request. */
-export type DecisionPay = <T>(fee: Fee, send: () => Promise<T>) => Promise<T>;
+/** How a decider's request is paid: `send` once the run's cap admits `fee`, as web's Pay sends a provider's request.
+ *  `costOf`: what the answer says it cost (its provider's cost_usd), which the cap settles it at, never above its hold. */
+export type DecisionPay = <T>(fee: Fee, send: () => Promise<T>, costOf?: (answer: T) => number | null) => Promise<T>;
 /** `pay` absent: the request is sent unmetered. */
 export type DecideContext = { signal: AbortSignal; deadlineMs: number; pay?: DecisionPay };
 
@@ -222,6 +223,24 @@ const noulOf = (answer: Record<string, unknown>): number | undefined => (answer.
 const choiceOf = (answer: Record<string, unknown>): Record<string, number> | undefined =>
   answer.type === "choice" && isRecord(answer.probabilities) && Object.values(answer.probabilities).every(isUnit) ? (answer.probabilities as Record<string, number>) : undefined;
 
+/** What a host hands jevWebDecider: TypeSafe's key, agentrun-jev's jevProvider (web depends on no provider), Jev's price
+ *  for the run's cap, and the fetch its requests go through when not the global one (a test's fake). */
+export type JevWeb = {
+  key: string;
+  jevProvider: (options: { apiKey: string; fetch?: typeof fetch }) => DecisionAsker;
+  price: DecisionPrice;
+  fetch?: typeof fetch;
+};
+/** The web decider Jev gives on TypeSafe's route, as a host's web tools run it: JEV_MODEL on every request, results
+ *  ranked under rerank+label. Built from what it is handed alone, never from the process's environment: `null` (no
+ *  TypeSafe key, or Jev turned off) gives none. */
+export function jevWebDecider(jev: JevWeb | null): { decider: WebDecider; policy: "rerank+label"; model: typeof JEV_MODEL } | undefined {
+  if (jev === null) return undefined;
+  if (typeof jev?.key !== "string" || jev.key.trim() === "") throw new TypeError("jevWebDecider needs TypeSafe's key, or null for no Jev");
+  const provider = jev.jevProvider({ apiKey: jev.key, ...(jev.fetch ? { fetch: jev.fetch } : {}) });
+  return { decider: deciderFrom(provider, { price: jev.price, model: JEV_MODEL }), policy: "rerank+label", model: JEV_MODEL };
+}
+
 export function deciderFrom(provider: DecisionAsker, options: DeciderOptions): WebDecider {
   if (options?.price === null || typeof options?.price !== "object") throw new TypeError(`deciderFrom needs ${provider.id}'s price, so the run's cap can hold each request`);
   const { price } = options;
@@ -233,7 +252,7 @@ export function deciderFrom(provider: DecisionAsker, options: DeciderOptions): W
     const bytes = Buffer.byteLength(text);
     const fee: Fee = { name, by: provider.id, usd: holdOf(price, bytes), basis: `the most a request of ${bytes} bytes may cost at ${provider.id}'s price` };
     const go = () => provider.decide(request, { decisionId: `web-${request.kind}-${sha256(text).slice(0, 24)}`, signal: ctx.signal, deadlineMs: ctx.deadlineMs });
-    const outcome = await (ctx.pay ? ctx.pay(fee, go) : go());
+    const outcome = await (ctx.pay ? ctx.pay(fee, go, (answered) => answered.cost_usd) : go());
     const cost: Cost = { usd: outcome.cost_usd, basis: outcome.cost_basis };
     const tokens: Tokens | null = outcome.usage
       ? { in: outcome.usage.input_tokens, out: outcome.usage.output_tokens, basis: "reported" }

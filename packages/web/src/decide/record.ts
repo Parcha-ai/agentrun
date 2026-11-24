@@ -41,15 +41,22 @@ export type StepOptions = { task?: string | undefined; signal?: AbortSignal | un
 export type Sifted<A> = { answer: A; classifier: DecisionRecord };
 type Failure = { code: string; message: string; cost: Cost };
 
-/** `pay` as a decider's: each request's fee goes on `lines` once it is sent, and one refused unbilled settles at $0
- *  (answered as a 4xx, which a cap books at nothing) with a $0 line. */
-export const decisionPay = (pay: Pay, lines: Fee[]): DecisionPay => async <T>(fee: Fee, send: () => Promise<T>): Promise<T> => {
+/** What a request answered at `cost` (its provider's figure) is charged under `fee`: that cost, never above the hold;
+ *  the hold when it reported none. */
+const chargeOf = (fee: Fee, cost: number | null | undefined): number => (typeof cost === "number" && Number.isFinite(cost) && cost >= 0 ? Math.min(cost, fee.usd) : fee.usd);
+
+/** `pay` as a decider's: each request's fee goes on `lines` once it is sent; one answered is charged at the cost its
+ *  answer reports (`costOf`), capped at its hold, or at the hold when it reports none, as Pay's `charged` tells the
+ *  cap; and one refused unbilled settles at $0 (answered as a 4xx, which a cap books at nothing) with a $0 line. */
+export const decisionPay = (pay: Pay, lines: Fee[]): DecisionPay => async <T>(fee: Fee, send: () => Promise<T>, costOf?: (answer: T) => number | null): Promise<T> => {
   let done: { value: T } | undefined;
   let failed: { error: unknown } | undefined;
+  let charge = fee.usd;
   await pay(fee, async () => {
     const at = lines.push(fee) - 1;
     try {
       done = { value: await send() };
+      charge = chargeOf(fee, costOf?.(done.value));
       return new Response(null, { status: 200 });
     } catch (error) {
       if (!unbilled(error)) throw error;
@@ -57,7 +64,7 @@ export const decisionPay = (pay: Pay, lines: Fee[]): DecisionPay => async <T>(fe
       lines[at] = { ...fee, usd: 0, basis: `not billed (${codeOf(error)})` };
       return new Response(null, { status: 400 });
     }
-  });
+  }, () => charge);
   if (done) return done.value;
   throw failed ? failed.error : new PaidRefused(`${fee.name} was not sent`);
 };
@@ -67,7 +74,7 @@ export async function bounded<T>(ask: (ctx: { signal: AbortSignal; deadlineMs: n
   const ms = options.ms ?? DECIDE_MS;
   let requests = 0;
   const pay = options.pay;
-  const counted: DecisionPay = (fee, send) => (pay ?? ((_, go) => go()))(fee, () => (requests++, send()));
+  const counted: DecisionPay = (fee, send, costOf) => (pay ?? ((_, go) => go()))(fee, () => (requests++, send()), costOf);
   const deadline = AbortSignal.timeout(ms);
   const signal = options.signal ? AbortSignal.any([options.signal, deadline]) : deadline;
   let stop!: (reason: unknown) => void;

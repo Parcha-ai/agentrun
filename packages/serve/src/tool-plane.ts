@@ -26,7 +26,8 @@
 import { META_TOOLS } from "./meta-tool-names.js";
 import { blurbOf, isAskable, isTableTool, tableTools } from "./tool-list.js";
 import { PROVIDERS as COMPUTER_PROVIDERS } from "@parcha/agentrun-computer";
-import { decisionKeysOf, PARALLEL_KEY_ENV } from "./decisions.js";
+import { decisionKeysOf, jevWebWhy, PARALLEL_KEY_ENV } from "./decisions.js";
+import { webJevOff } from "./env-switch.js";
 import { keyNeeded } from "./key-words.js";
 import type { InputIssue } from "./errors.js";
 import type { Settings } from "./store/index.js";
@@ -192,6 +193,9 @@ export type ResolveInput = {
   /** The facts of the adapter the harness runs on (its own search, its wire), its owner's table entry's (harness-table.ts
    *  factsOf: a module's harness's too); undefined for one with none (pi). Always given: a caller names them. */
   facts: AdapterFacts | undefined;
+  /** What the server's Jev means for web_search (decisions.ts jevWebWhy): said after the why of a search the run's own
+   *  web_search runs. None: no Jev key, nothing to say. */
+  jevWhy?: string;
 };
 
 /** Whether a harness's own search, `native` in its facts (the provider's search tool, through its proxy), has per-use fees
@@ -248,9 +252,19 @@ const nativeWhy = (input: ResolveInput): string => {
 const FIRECRAWL_SEARCH = "Firecrawl's free keyless search, no key, keyless Exa behind it";
 export const FIRECRAWL_FETCH = "Firecrawl's free keyless fetch, no key, the guarded direct fetch behind it. web_fetch sends each URL to Firecrawl's keyless service (never a private or local one); set PARALLEL_API_KEY or choose kernel to fetch directly";
 
+/** The resolutions of web_search the run's own web_search runs (web-run.ts webOf), where Jev ranks the results: native
+ *  only where it is the model provider's hosted search (pi's), never a harness's own search inside its CLI. */
+const ranksOwn = (resolves: Resolution, input: ResolveInput): boolean => WEB_RUNS.web_search.includes(resolves) && (resolves !== "native" || !input.facts?.webSearch);
+
 /** What `capability` resolves to on a run of `input`, and why in a plain sentence (capabilities' `why`): one rule, so
- *  the two never disagree. */
+ *  the two never disagree. A web_search the run's own tool runs says what Jev does with it, where the server has a Jev
+ *  key or Jev is turned off (`jevWhy`). */
 export function explainCapability(capability: Pickable, input: ResolveInput): { resolves: Resolution; why: string } {
+  const said = explained(capability, input);
+  return capability === "web_search" && input.jevWhy && ranksOwn(said.resolves, input) ? { ...said, why: `${said.why}; ${input.jevWhy}` } : said;
+}
+
+function explained(capability: Pickable, input: ResolveInput): { resolves: Resolution; why: string } {
   const chosen = input.override ?? input.pick ?? PROVIDERS[capability][0];
   const picked = input.override !== undefined ? "picked for this agent" : "picked in settings";
   const key = `your Parallel key (${input.parallelKeyFrom ?? "server"})`;
@@ -345,7 +359,8 @@ function browserBy(chosen: string, picked: string, keys: Record<BrowserVendor, b
 /** The server's environment's part of every resolution: its gateway and Parallel's key, and where the key is from. */
 const served = (env: NodeJS.ProcessEnv) => {
   const parallelKey = PARALLEL_KEY_ENV in decisionKeysOf(env);
-  return { gateway: Boolean(env.AGENT_MODEL_BASE_URL), parallelKey, browserKeys: browserKeysOf(env), ...(parallelKey ? { parallelKeyFrom: savedIn(env).has(PARALLEL_KEY_ENV) ? ("saved" as const) : ("server" as const) } : {}) };
+  const jevWhy = jevWebWhy(env);
+  return { gateway: Boolean(env.AGENT_MODEL_BASE_URL), parallelKey, browserKeys: browserKeysOf(env), ...(parallelKey ? { parallelKeyFrom: savedIn(env).has(PARALLEL_KEY_ENV) ? ("saved" as const) : ("server" as const) } : {}), ...(jevWhy ? { jevWhy } : {}) };
 };
 
 /** Each pickable capability on each harness under the server's `settings` and an agent's `overrides`, on `model`
@@ -461,6 +476,14 @@ export function planeOf(env: NodeJS.ProcessEnv): Plane {
 
 /** Whether a run is handed Parallel's key: one of its capabilities resolves to Parallel. */
 export const handsParallel = (plane: Plane): boolean => PICKABLE.some((name) => plane[name] === "parallel");
+
+/** The resolutions of each web tool its run's Web runs (web-run.ts SEARCH_CHAINS, FETCH_CHAINS), where Jev ranks a
+ *  search's results. */
+const WEB_RUNS: Readonly<Record<"web_search" | "web_fetch", readonly string[]>> = { web_search: ["parallel", "native", "firecrawl-keyless", "exa-keyless"], web_fetch: ["parallel", "firecrawl-keyless", DIRECT_FETCH] };
+/** Whether a run is handed TypeSafe's key for its web tools (decisions.ts DecisionNeeds.jevWeb): one of them resolves to
+ *  something its Web runs, and Jev is not turned off in the server's `env` (AGENTRUN_WEB_JEV_OFF). */
+export const handsJevWeb = (plane: Plane, env: NodeJS.ProcessEnv): boolean =>
+  !webJevOff(env) && (WEB_RUNS.web_search.includes(plane.web_search ?? "") || WEB_RUNS.web_fetch.includes(plane.web_fetch ?? ""));
 
 /** The issues of `value` as a settings map, its fields under `at` (none: a body's own): each settings key (a tool of the
  *  table, a catalog tool, an MCP server's wildcard) to `{provider?, permission?}`, a provider only for a capability that

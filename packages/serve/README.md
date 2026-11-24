@@ -1848,6 +1848,16 @@ A workflow's model nodes may each run on another tier's model, so a workflow's `
 it is Parallel on the server's key, else keyless Firecrawl, or the provider picked, and a pick of `native` alone is
 unavailable for a workflow.
 
+Where the server holds a TypeSafe key (`TYPESAFE_API_KEY`, set or saved), Jev ranks `web_search`'s results: each search's
+results are scored by Jev (`jev-1.14.0`) against the query and reordered by that score, every one kept, each with its
+`relevance` (0 to 1), and a `sift` line saying how they were ranked, or why not (a Jev failure leaves them as the
+provider gave them). It applies wherever the run's own `web_search` runs (Parallel, keyless Firecrawl or Exa, pi's hosted
+search), never to a harness's own search inside its CLI. Each Jev request is held on the run's spend cap at Jev's
+published price and booked at the cost Jev reported, never above that hold. `web_fetch` is never judged: a fetch asks
+Jev nothing and its page is whole. A server with only an OpenRouter key runs no ranking; `AGENTRUN_WEB_JEV_OFF=1` turns
+it off. `GET /capabilities`' `why` for `web_search` says which: `…; Jev (jev-1.14.0) ranks results …`,
+`…; Jev off: no TypeSafe key`, or `…; Jev off (AGENTRUN_WEB_JEV_OFF)`.
+
 | | `claude-agent` | `codex` | pi |
 | --- | --- | --- | --- |
 | `web_search`, `auto` (the default) | Parallel on the server's key, else keyless Firecrawl: Claude's own WebSearch is the `native` pick | Codex's own search, each search booked; behind a gateway, on OpenRouter or under a spend cap, Parallel on the server's key, else keyless Firecrawl, a host tool | one request to the run's own model provider with its hosted search (Anthropic, OpenAI direct); behind a gateway (`AGENT_MODEL_BASE_URL`) or on another provider, Parallel on the server's key, else keyless Firecrawl |
@@ -3878,8 +3888,9 @@ typed answers and their probabilities.
   failed after it may have been sent) keeps its receipt's cost `null`, and the run's reads `null`, never `0`.
 - The TypeSafe and Parallel keys never enter a run's environment, which its tools and its model's provider read. The
   server drops `TYPESAFE_API_KEY` and `PARALLEL_API_KEY` from every run's process. It hands a run's process those it
-  needs ([Safety](#safety)), a workflow's decision providers' and Parallel's where its `web_fetch` or `web_search`
-  resolves to Parallel, once, by name, on an inherited pipe (the first descriptor after its stdio and its secrets pipe, as macOS refuses a high one), at each
+  needs ([Safety](#safety)), a workflow's decision providers', Parallel's where its `web_fetch` or `web_search`
+  resolves to Parallel, and TypeSafe's where one of its web tools runs and Jev ranks it ([Search and
+  fetch](#search-and-fetch)), once, by name, on an inherited pipe (the first descriptor after its stdio and its secrets pipe, as macOS refuses a high one), at each
   launch, a resume after a restart included. The process reads them once into its decision providers and web tools,
   closes the descriptor before anything else runs, and keeps the keys nowhere else. It is never in an
   environment, an argument list or a file, and no program the run starts inherits it. With no key, no descriptor is
@@ -5159,8 +5170,8 @@ carries no cost at all, as from a provider that does not price the model. The te
   keys or bearer token (held, and handed to a run on Bedrock), an `AWS_PROFILE`, `GOOGLE_CLOUD_API_KEY` or the default
   application credentials file work. A credential file a provider reads by path (`AWS_PROFILE`'s `~/.aws` files, the
   default application credentials) is the host's: a run's process reads it for its model, and its file tools cannot.
-- `TYPESAFE_API_KEY` is a decision key, given to a workflow run's decision providers alone and never
-  with a run's other secrets, so a pi run on a `typesafe/` model does not get it: it finds no key for that model, and
+- `TYPESAFE_API_KEY` is a decision key, given to a workflow run's decision providers and to a run's web tools Jev
+  ranks alone, and never with a run's other secrets, so a pi run on a `typesafe/` model does not get it: it finds no key for that model, and
   the run fails.
 - A run's file tools (`read`, `write`, `edit`) reach its own `work/`, and two places of its own beside it: `read` also
   reaches the run's `tmp/` (next to `work/`, where a command's spilled output would go), and a write may also land in a

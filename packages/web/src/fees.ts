@@ -114,7 +114,10 @@ export class PaidRefused extends Error {
   override readonly name = "PaidRefused";
 }
 
-/** How a paid request is sent: `send` once the run's cap admits `fee`, or a throw of PaidRefused when it does not. */
-export type Pay = (fee: Fee, send: () => Promise<Response>) => Promise<Response>;
+/** How a paid request is sent: `send` once the run's cap admits `fee`, or a throw of PaidRefused when it does not.
+ *  `charged`, from a caller that learns what the request cost once it is answered (decisionPay: the cost a decision's
+ *  provider reported), is what the cap settles a billed answer at, never above `fee.usd`; without it, the cap settles
+ *  at `fee.usd`. */
+export type Pay = (fee: Fee, send: () => Promise<Response>, charged?: () => number) => Promise<Response>;
 /** No cap: the request is sent as it is. */
 export const unmetered: Pay = (_fee, send) => send();

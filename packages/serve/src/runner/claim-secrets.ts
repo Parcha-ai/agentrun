@@ -15,7 +15,7 @@ import { DECISION_KEYS, withoutSecrets } from "../secrets.js";
 import { getSealedKey } from "../server-keys.js";
 import { PLAN_PROVIDER, planOf, planReaderOf, withPlan } from "../chatgpt-plan.js";
 import type { SealedKeys } from "../store/store.js";
-import { handsParallel } from "../tool-plane.js";
+import { handsJevWeb, handsParallel } from "../tool-plane.js";
 import type { Revision } from "../agent-rows.js";
 import { held, held as runnerSeam } from "./held.js";
 import { savedGatewayIn } from "../model-gateway.js";
@@ -64,7 +64,7 @@ export async function claimSecrets(deps: ClaimSecretsDeps & { readonly redact: H
   // on the tools': it is read there by name alone (claimModelEnv), as a run's own model key is.
   const savedGateway = savedGatewayIn(deps.env ?? {});
   for (const name of keysFor(scoped, working)) if (working[name] !== undefined && !(savedGateway && name === GATEWAY_KEY_ENV)) env[name] = working[name];
-  const decision = decisionKeysFor(working, { providers: needs.decisionProviders, parallelWeb: launch.plane ? handsParallel(launch.plane) : false });
+  const decision = decisionKeysFor(working, { providers: needs.decisionProviders, parallelWeb: launch.plane ? handsParallel(launch.plane) : false, jevWeb: launch.plane ? handsJevWeb(launch.plane, working) : false });
   for (const [name, value] of Object.entries(decision)) env[name] = value;
   // The run's own tool keys, sealed with its launch: each one its revision declares, over the server's by the same name.
   // Opened by a runner, which holds the seal key; a run's own process is handed them with the rest of its claim's keys.
@@ -153,7 +153,7 @@ export async function hostDecisionKeys(deps: ClaimSecretsDeps, providers: readon
   // A run's own process holds no seal key: its runner reads them (held.ts).
   const at = deps.sealKey ? undefined : held();
   if (at) return at.decisionKeys(providers);
-  return decisionKeysFor(await workingEnv(deps), { providers, parallelWeb: false });
+  return decisionKeysFor(await workingEnv(deps), { providers, parallelWeb: false, jevWeb: false });
 }
 
 /** The model keys the host's models of `tiers` need (model.ts modelKeys: each one's provider's, or the gateway's), read as

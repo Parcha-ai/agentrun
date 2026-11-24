@@ -17,6 +17,8 @@ import { closeSync, readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import type { DecisionProvider } from "@parcha/agentrun-dsl";
 import { openRouterApp } from "@parcha/agentrun-kernel/host";
+import { JEV_MODEL } from "@parcha/agentrun-web";
+import { WEB_JEV_OFF_ENV, webJevOff } from "./env-switch.js";
 import { FAUX_ENV } from "./model.js";
 import { keyNeeded } from "./key-words.js";
 
@@ -97,14 +99,25 @@ export function decisionKeysOf(env: NodeJS.ProcessEnv): Record<string, string> {
   };
 }
 
-/** What a run's decision keys are for: the providers of its workflow's typed questions (providersNamed), and whether one
- *  of its web tools resolves to Parallel (tool-plane.ts' handsParallel), whose client reads Parallel's key (web-run.ts webOf). */
-export type DecisionNeeds = { providers: readonly string[]; parallelWeb: boolean };
+/** What a run's decision keys are for: the providers of its workflow's typed questions (providersNamed), whether one
+ *  of its web tools resolves to Parallel (tool-plane.ts' handsParallel), whose client reads Parallel's key (web-run.ts
+ *  webOf), and whether one of them runs with Jev ranking its results (web-run.ts handsJevWeb), on TypeSafe's key. */
+export type DecisionNeeds = { providers: readonly string[]; parallelWeb: boolean; jevWeb?: boolean };
+
+/** What capabilities' why says of Jev on web_search under the server's `env`: on, on TypeSafe's route; off by
+ *  AGENTRUN_WEB_JEV_OFF; off with only an OpenRouter key (the web decider runs on TypeSafe's route alone). Nothing with
+ *  no Jev key at all. */
+export function jevWebWhy(env: NodeJS.ProcessEnv): string | undefined {
+  if (webJevOff(env)) return `Jev off (${WEB_JEV_OFF_ENV})`;
+  const route = jevRoute(env);
+  if (route === "typesafe") return `Jev (${JEV_MODEL}) ranks results against the objective, or the query when none is given, on the server's TypeSafe key, billed per request`;
+  return route === "openrouter" ? "Jev off: no TypeSafe key" : undefined;
+}
 
 /** The decision keys the server hands a run's process for `needs`, of those it holds (decisionKeysOf): Jev's by its route
  *  (TypeSafe's, or OpenRouter's), OpenRouter's for an OpenRouter decision node, Parallel's for a Parallel one or for a
- *  web tool that resolves to Parallel. None else: a run with no decision node and no web tool on Parallel gets no
- *  descriptor at all. */
+ *  web tool that resolves to Parallel, TypeSafe's for web tools Jev ranks (`jevWeb`; on TypeSafe's route only). None
+ *  else: a run with no decision node, no web tool on Parallel and no web tool Jev ranks gets no descriptor at all. */
 export function decisionKeysFor(env: NodeJS.ProcessEnv, needs: DecisionNeeds): Record<string, string> {
   const names = new Set<string>();
   for (const id of needs.providers) {
@@ -114,6 +127,7 @@ export function decisionKeysFor(env: NodeJS.ProcessEnv, needs: DecisionNeeds): R
     if (id === "parallel") { const route = parallelRoute(env); if (route) names.add(route === "parallel" ? PARALLEL_KEY_ENV : JEV_OPENROUTER_KEY_ENV); }
   }
   if (needs.parallelWeb) names.add(PARALLEL_KEY_ENV);
+  if (needs.jevWeb && jevRoute(env) === "typesafe") names.add(JEV_KEY_ENV);
   return Object.fromEntries(Object.entries(decisionKeysOf(env)).filter(([name]) => names.has(name)));
 }
 

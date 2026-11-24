@@ -170,6 +170,8 @@ export {
   GUARD_CHARS,
   holdOf,
   JEV_MODEL,
+  type JevWeb,
+  jevWebDecider,
   judgeRequest,
   pageGuardRequest,
   QUESTIONS_PER_REQUEST,

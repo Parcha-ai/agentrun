@@ -89,13 +89,17 @@ const billed = (status: number) => (status >= 200 && status < 300) || status ===
 
 /** `send`, one request to a paid provider at `fee`, on the run's one ledger under the call it runs in (Ledger.paid):
  *  admitted at the fee's price, then sent, then settled at what it may have charged (its price on a 2xx, a 408 or a 5xx
- *  or when it threw after it was sent; $0 on another 4xx); a settle that cannot be written leaves it at its hold, never
- *  less. It throws PaidRefused, in the cap's words, when the cap does not hold its price, when its hold could not be kept,
+ *  or when it threw after it was sent, or what `charged` says it cost, never above its price; $0 on another 4xx); a
+ *  settle that cannot be written leaves it at its hold, never less. It throws PaidRefused, in the cap's words, when the cap does not hold its price, when its hold could not be kept,
  *  or when the call has no run's ledger, and then nothing is sent. A request that throws throws, settled at its price. */
-export async function paidRequest(fee: Fee, send: () => Promise<Response>): Promise<Response> {
+export async function paidRequest(fee: Fee, send: () => Promise<Response>, charged?: () => number): Promise<Response> {
   const ledger = ledgers.getStore();
   if (!ledger?.paid) throw new PaidRefused(unbookedRefusal(fee.name));
-  const stepped = await paidStep(ledger.paid, ledger.call, { name: fee.name, holdUsd: fee.usd, basis: fee.basis, by: fee.by }, send, (outcome) => ("thrown" in outcome || billed(outcome.result.status) ? fee.usd : 0));
+  const said = (): number => {
+    const usd = charged?.();
+    return typeof usd === "number" && Number.isFinite(usd) && usd >= 0 ? Math.min(usd, fee.usd) : fee.usd;
+  };
+  const stepped = await paidStep(ledger.paid, ledger.call, { name: fee.name, holdUsd: fee.usd, basis: fee.basis, by: fee.by }, send, (outcome) => ("thrown" in outcome ? fee.usd : billed(outcome.result.status) ? said() : 0));
   if ("refused" in stepped) throw new PaidRefused(stepped.refused);
   return stepped.result;
 }
