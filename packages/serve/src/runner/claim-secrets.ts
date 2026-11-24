@@ -195,9 +195,11 @@ export const MODEL_KEY_NAMES: readonly string[] = [...new Set([...Object.values(
  *  a claim opened from the store (claimSecrets, scoped to the run's model), or every one the server holds
  *  (savedModelKeys). So a model key saved in Settings → Model keys reaches the next run's model requests with no
  *  restart, as a tool key reaches its tools; a key set where AgentRun starts still wins (claimSecrets reads it first),
- *  and a provider the runner holds any key of gets none of its saved ones.
+ *  and a provider the runner holds any key of gets none of its saved ones. Each name is read from the first of `opened`
+ *  that holds it, by name, as a run's process is handed its keys (run-child-host.ts handed): a claim's model keys, never
+ *  enumerable, count as any other.
  *  The keys added are never enumerable either: a spread of the result, or a spawn given it, carries none of them. */
-export function withModelKeys(env: NodeJS.ProcessEnv, opened: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+export function withModelKeys(env: NodeJS.ProcessEnv, ...opened: readonly NodeJS.ProcessEnv[]): NodeJS.ProcessEnv {
   // A provider's keys are filled together or not at all: only when the runner holds none of them. A credential handed where
   // AgentRun started (ANTHROPIC_AUTH_TOKEN, an AWS key id) is never mixed with a saved key of the same provider, which its
   // route would send first (ANTHROPIC_API_KEY before the token) or pair with it (another AWS name). A key held empty
@@ -205,7 +207,10 @@ export function withModelKeys(env: NodeJS.ProcessEnv, opened: NodeJS.ProcessEnv)
   const fill = new Map<string, string>();
   for (const names of [...Object.values(PROVIDER_KEYS), [GATEWAY_KEY_ENV]]) {
     if (names.some((name) => env[name])) continue;
-    for (const name of names) if (opened[name]) fill.set(name, opened[name]!);
+    for (const name of names) {
+      const value = opened.map((from) => from[name]).find((held) => held);
+      if (value) fill.set(name, value);
+    }
   }
   // Every property of `env` as it is (enumerable or not, as runEnv made it), but a name the fill replaces, so a fixed empty
   // property is never copied in its way.
@@ -215,7 +220,7 @@ export function withModelKeys(env: NodeJS.ProcessEnv, opened: NodeJS.ProcessEnv)
   }
   for (const [name, value] of fill) Object.defineProperty(out, name, { value, enumerable: false, writable: false, configurable: false });
   // The claim's ChatGPT sign-in (claimSecrets), else the runner's own.
-  return withPlan(out, planOf(opened) ?? planOf(env));
+  return withPlan(out, opened.map(planOf).find((plan) => plan) ?? planOf(env));
 }
 
 /** The saved model keys of the models of a run's subagent tiers (`tiers`, `refs` as subagent.ts routedSubagentTiers
@@ -358,12 +363,12 @@ export async function claimSpendOff(deps: ClaimSecretsDeps, runKey: ClaimModelKe
 }
 
 /** The env a claimed run's model routes read: the run's own key alone where the claim opened one (withRunModelKey); else
- *  the runner's environment with the keys `opened` for it (withModelKeys), whose gateway variables read the run's key
- *  once a message hands it one (withRunModelKeyLater). */
-export function claimModelEnv(env: NodeJS.ProcessEnv, opened: NodeJS.ProcessEnv, runKey: ClaimModelKey | undefined, claim?: Pick<Claim, "runId" | "turn" | "attempt">): NodeJS.ProcessEnv {
+ *  the runner's environment with the keys `opened` for it, each name from the first source that holds it (withModelKeys),
+ *  whose gateway variables read the run's key once a message hands it one (withRunModelKeyLater). */
+export function claimModelEnv(env: NodeJS.ProcessEnv, opened: readonly NodeJS.ProcessEnv[], runKey: ClaimModelKey | undefined, claim?: Pick<Claim, "runId" | "turn" | "attempt">): NodeJS.ProcessEnv {
   // The claim's run, turn and attempt, which each request on serve's gateway names (request-metadata.ts).
-  if (!runKey) return withRequestMetadata(withModelKeys(env, opened), claim);
-  return withRequestMetadata(keyedAtClaim(runKey) ? withRunModelKey(env, runKey) : withRunModelKeyLater(withModelKeys(env, opened), runKey), claim);
+  if (!runKey) return withRequestMetadata(withModelKeys(env, ...opened), claim);
+  return withRequestMetadata(keyedAtClaim(runKey) ? withRunModelKey(env, runKey) : withRunModelKeyLater(withModelKeys(env, ...opened), runKey), claim);
 }
 
 /** The decision providers' own keys (decisions.ts: Jev's TypeSafe key, OpenRouter's, Parallel's): some are also pi-ai
@@ -378,8 +383,3 @@ export function withoutModelKeys(toolEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv 
   return toolEnv;
 }
 
-/** `under` and `over` as one set of opened keys for claimModelEnv, `over`'s value winning by name: every property as it
- *  is, so a claim's model keys (claimSecrets: never enumerable), which a spread would drop, reach the route. */
-export function keysOver(under: NodeJS.ProcessEnv, over: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  return Object.defineProperties({}, { ...Object.getOwnPropertyDescriptors(under), ...Object.getOwnPropertyDescriptors(over) }) as NodeJS.ProcessEnv;
-}

@@ -60,7 +60,7 @@ import { filesToCopy, placeRunInputs } from "../uploads.js";
 import { handedSignInReadsBack, signInReads } from "../sign-ins-store.js";
 import { UNREADABLE_SIGN_IN } from "../run-view.js";
 import { durableWait } from "../workflow/pi-versions.js";
-import { type ClaimModelKey, claimModelEnv, claimModelKey, claimSecrets, claimSpendOff, holdRunKey, keyedAtClaim, hostDecisionKeys, keysOver, learnedDecisionKeys, subagentTierKeys, tierModelKeys, underClaimed, withoutModelKeys } from "./claim-secrets.js";
+import { type ClaimModelKey, claimModelEnv, claimModelKey, claimSecrets, claimSpendOff, holdRunKey, keyedAtClaim, hostDecisionKeys, learnedDecisionKeys, subagentTierKeys, tierModelKeys, underClaimed, withoutModelKeys } from "./claim-secrets.js";
 import { compareEndOfRun, GRADER, withGrader } from "./compare-end.js";
 import { agreeOnOf } from "../learning-setting.js";
 import { catalogSessionNames, type ClaimMcp, mcpWhereHeld } from "./mcp-run.js";
@@ -301,8 +301,7 @@ export async function graderRouteOf(
   const savedKeys = keyed ? {} : await subagentTierKeys({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, ["fast"], refs);
   for (const redact of new Set(holds)) holdClaimed(redact, savedKeys);
   // The claim's run, turn and attempt on its grader's requests too (request-metadata.ts): they spend on the run's cap.
-  // keysOver, never a spread: the claim's model keys are not enumerable (claimSecrets).
-  const env = claimModelEnv(deps.env, keysOver(savedKeys, claimed), runKey, claim);
+  const env = claimModelEnv(deps.env, [claimed, savedKeys], runKey, claim);
   try {
     return await deps.routeOf(refs.fast, env, "fast", PI_WIRES, undefined, cut);
   } catch (error) {
@@ -332,8 +331,7 @@ export async function subagentTierRoutes(
   const { tiers, refs } = routedSubagentTiers(body, deps.env ?? {});
   const savedKeys = keyed ? {} : await subagentTierKeys({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, tiers, refs);
   holdClaimed(cut, savedKeys);
-  // keysOver, never a spread: the claim's model keys are not enumerable (claimSecrets).
-  const tierEnv = claimModelEnv(deps.env, keysOver(savedKeys, toolEnv), runKey, claim);
+  const tierEnv = claimModelEnv(deps.env, [toolEnv, savedKeys], runKey, claim);
   for (const tier of tiers) {
     try {
       routes.set(subagentRoute(tier), await deps.routeOf(refs[tier], tierEnv, tier, PI_WIRES, undefined, cut));
@@ -664,7 +662,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   holdClaimed(cut, toolEnv);
   // The route reads its model's key from the runner's environment, else the one the claim opened from the store: a key
   // saved in Settings → Model keys runs the next run with no restart (withModelKeys). A run with its own key: that key.
-  const modelEnv = claimModelEnv(deps.env, toolEnv, runKey, claim);
+  const modelEnv = claimModelEnv(deps.env, [toolEnv], runKey, claim);
   const route = await deps.routeOf(modelAskOf(launch.model, body.model), modelEnv, "default", PI_WIRES, undefined, cut);
   await planBeforeRun(modelEnv, route.provider.plan ? { provider: PLAN_PROVIDER } : undefined);
   // The run's models of other tiers, for its learned workflows' nodes of a tier (learnedTierRoutes, filled once the seed's
@@ -817,7 +815,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     // A run with its own model key: its learned nodes' tiers carry that key too, and no saved key is read.
     const tierKeys = keyed ? {} : await tierModelKeys({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, learnedTiers(workflows));
     holdClaimed(cut, tierKeys);
-    const tierEnv = claimModelEnv(deps.env, keysOver(toolEnv, tierKeys), runKey, claim);
+    const tierEnv = claimModelEnv(deps.env, [tierKeys, toolEnv], runKey, claim);
     for (const [tier, routed] of await learnedTierRoutes(workflows, tierEnv, (tier) => deps.routeOf(undefined, tierEnv, tier, PI_WIRES, undefined, cut))) {
       if ("why" in routed) tierUnreachable.set(tier, routed.why);
       else tierRoutes.set(tier, routed);
