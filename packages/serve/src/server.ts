@@ -1557,10 +1557,18 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // What the latest probe is made from, once it has read it, until it lands or fails: none while no probe is out. A
   // probe that fails never lands; when it is the latest, it clears this as it fails, so no probe is out after it.
   let probing: readonly (string | undefined)[] | undefined;
-  // The latest probe started, settled or not: a change waits for it while the offers held are behind and that probe is
-  // made from the change's inputs (keysChanged).
-  let latest: Promise<void> = Promise.resolve();
-  const probe = (why: string): Promise<void> => (latest = probeOffers(why));
+  // The latest probe's turn: it ends as that probe lands or fails, or as a later probe starts and overtakes it, whichever
+  // is first, and never fails. A change that waits for the probe out waits for its turn (keysChanged), so a dropped
+  // probe holds no one up and its failure is no one else's.
+  let turn: Promise<void> = Promise.resolve();
+  let endTurn: () => void = () => {};
+  const probe = (why: string): Promise<void> => {
+    endTurn();
+    turn = new Promise<void>((resolve) => (endTurn = resolve));
+    const probed = probeOffers(why);
+    probed.then(endTurn, endTurn);
+    return probed;
+  };
   const probeOffers = async (why: string) => {
     const mine = ++probes;
     probing = undefined;
@@ -1604,19 +1612,27 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const mine = ++needsAsked;
     const next = await needsOf(env);
     if (mine === needsAsked) needs = next;
-    const inputs = offersInputs(env);
     // A probe still out from other inputs (a turn-on's, after its turn-off) would put back offers made from them as it
-    // lands: a probe of these overtakes it. Only a change starts one, one per change, so nothing loops. While the probe
-    // out has read these inputs, a change starts none: with the offers held made from them too it recomposes at once;
-    // with them behind (a tool key saved while a turn-on's probe is out) it waits until that probe lands, or a later one
-    // overtakes it, and fails if it fails. With no probe out that has read its inputs (none out, or the latest still
-    // reading the Ollama listing), it recomposes when the offers held are made from these inputs and probes when not.
-    const out = probing !== undefined && sameInputs(probing, inputs);
-    if (out && !offersMadeFrom(inputs)) {
-      log?.(logLine("harness_offers_wait", { why: "key" }));
-      await latest;
-    } else if (offersMadeFrom(inputs) && (probing === undefined || out)) recompose();
-    else await probe("key");
+    // lands: a probe of these overtakes it. Only a change starts one, at most one per change, so nothing loops. While the
+    // probe out has read these inputs, a change starts none: with the offers held made from them too it recomposes at
+    // once; with them behind (a tool key saved while a turn-on's probe is out) it waits for that probe's turn, then
+    // decides again from the inputs read then (a later change's, if one landed meanwhile): the probe landed, and it
+    // recomposes; it failed, and the change probes for itself; a later probe overtook it, and the change goes by that
+    // one. So it never answers another request's failure, and never waits on a dropped probe. With no probe out that has
+    // read its inputs (none out, or the latest still reading the Ollama listing), it recomposes when the offers held are
+    // made from these inputs and probes when not; a probe it starts itself fails it if it fails.
+    for (;;) {
+      const inputs = offersInputs(env);
+      const out = probing !== undefined && sameInputs(probing, inputs);
+      if (out && !offersMadeFrom(inputs)) {
+        log?.(logLine("harness_offers_wait", { why: "key" }));
+        await turn;
+        continue;
+      }
+      if (offersMadeFrom(inputs) && (probing === undefined || out)) recompose();
+      else await probe("key");
+      return;
+    }
   };
   /** The Ollama here, as capabilities read it: its listing asked again behind the answer once stale (ollamaModels), and
    *  the reading made again, as a key's save does, once a listing differs from the one the offers were made from. So a
