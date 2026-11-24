@@ -13,6 +13,9 @@
  * Linear by count: `lexCount.read` counts each character a search reads. A search for a construct's closer that fails
  * is remembered (Misses), so a later opener of that kind inside the span it read fails at once, without reading it
  * again (it would read the same characters, paired the same; failing reads on, so it never ends a command earlier).
+ * An opener that closed when that span was read (`$(b)` in `$(a $(b) c`) is no such opener: it is read again.
+ * Callers read a command to commandLimit, which the commands named in one stretch share, so a search that failed at
+ * the limit is not read again by the next command (`curl $(a; curl $(a; …`).
  */
 
 export type PartKind = "lit" | "sq" | "dq" | "ansi" | "sub" | "tick" | "var" | "brace" | "arith" | "proc";
@@ -23,6 +26,14 @@ export type Word = { readonly start: number; readonly end: number; readonly part
 export type Op = { readonly op: string; readonly start: number; readonly end: number };
 export type Token = Word | Op;
 export const isWord = (token: Token): token is Word => "parts" in token;
+
+/** The limit of a command named at `named`: `max` characters past the end of its stretch of `2 * max`, never past `to`.
+ *  Every command named in one stretch shares it, and each reads at least `max` characters on and at most three times
+ *  that. */
+export function commandLimit(named: number, max: number, to: number): number {
+  const stretch = 2 * max;
+  return Math.min(to, (Math.floor(named / stretch) + 1) * stretch + max);
+}
 
 /** What lex read: its tokens to the first operator `ends` accepts (not included), where it stopped, and the body spans
  *  of the command substitutions (`$(…)`, backticks, `<(…)`, `>(…)`) in its words, nested ones not listed. */
@@ -38,6 +49,9 @@ type Miss = { readonly from: number; readonly to: number; readonly limit: number
 /** A failed closer search per construct kind: an opener of that kind in [from, to) fails without a search, unless
  *  the search that failed stopped at a limit nearer than this one's. Shared by every lex over one text. */
 export type Misses = Map<string, Miss>;
+/** The openers each Misses' reads closed, until a read of one fails: never failed from a span (a group around one
+ *  failed, it did not). */
+const closedOf = new WeakMap<Misses, Set<number>>();
 
 /** Character codes the reader looks at; END is past the limit. */
 const END = -1;
@@ -71,7 +85,13 @@ class Reader {
     readonly text: string,
     readonly limit: number,
     readonly misses: Misses,
-  ) {}
+  ) {
+    let closed = closedOf.get(misses);
+    if (!closed) closedOf.set(misses, (closed = new Set()));
+    this.closed = closed;
+  }
+
+  private readonly closed: Set<number>;
 
   /** Where the last group (`$(`, `<(`, `>(`) that failed stopped, until a token stream outside any group reads past
    *  it: a group whose own tokens hold a group that failed fails there too (it reads the same characters from the
@@ -84,10 +104,18 @@ class Reader {
 
   private missed(kind: string, open: number): boolean {
     const miss = this.misses.get(kind);
-    return miss !== undefined && miss.from <= open && open < miss.to && miss.limit >= Math.min(this.limit, miss.to + 1);
+    return miss !== undefined && miss.from <= open && open < miss.to && miss.limit >= Math.min(this.limit, miss.to + 1) && !this.closed.has(open);
+  }
+
+  /** `end`, the index past the closer of the construct at `open`, remembered as closed. */
+  private closes(open: number, end: number): number {
+    this.closed.add(open);
+    return end;
   }
 
   private fail(kind: string, open: number, to: number): -1 {
+    // It closed at another depth, if ever: from here on the span decides.
+    this.closed.delete(open);
     const miss = this.misses.get(kind);
     // Keep the wider span: a nested search fails first, inside the one around it.
     if (!(miss && miss.from <= open && miss.to >= to && miss.limit >= this.limit)) this.misses.set(kind, { from: open, to, limit: this.limit });
@@ -124,7 +152,7 @@ class Reader {
     for (let i = quote + 1; ; ) {
       lexCount.read++;
       const c = this.at(i);
-      if (c === DQ) return i + 1;
+      if (c === DQ) return this.closes(open, i + 1);
       if (c === END || c === NL) return this.fail("dq", open, i);
       if (c === BS) {
         i += this.at(i + 1) === END ? 1 : 2;
@@ -208,7 +236,7 @@ class Reader {
     for (let i = open + 2; ; ) {
       lexCount.read++;
       const c = this.at(i);
-      if (c === RB) return i + 1;
+      if (c === RB) return this.closes(open, i + 1);
       if (c === END || c === NL) return this.fail("brace", open, i);
       const end = this.quoted(i, nest + 1);
       if (end > 0) {
@@ -265,7 +293,7 @@ class Reader {
         if (token.op === "\n") return this.groupFailed(this.fail(kind, open, token.start), token.start);
         if (token.op === "(") depth++;
         else if (token.op === ")") {
-          if (depth === 0) return token.end;
+          if (depth === 0) return this.closes(open, token.end);
           depth--;
         }
       }

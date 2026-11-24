@@ -11,7 +11,7 @@
 // in its length (secret-scrub.test.mjs walks them).
 import { heldNeedles, MIN_SECRET } from "./learn/secrets.js";
 import { cutSpans, SECRET_SHAPES, type Shape, shapeSpans, type Span } from "./redact/match.js";
-import { isWord, lex, type Misses, type Word, wordFrom, wordText } from "./shell-lex.js";
+import { commandLimit, isWord, lex, type Misses, type Word, wordFrom, wordText } from "./shell-lex.js";
 
 export type CutKind =
   | "format" // a known format: prefix or checksum (sk-, ghp_, AKIA, JWT, PEM block, secretlint hits)
@@ -577,7 +577,8 @@ function placesOf(text: string, form: string): Hit[] {
   return out;
 }
 
-/** How far a command is read past its name: SHELL_LINE_MAX, and CURL_MAX for curl's continuation lines. */
+/** How far a command is read past its name, at least (shell-lex.ts commandLimit: at most three times): SHELL_LINE_MAX, and
+ *  CURL_MAX for curl's continuation lines. */
 const SHELL_LINE_MAX = 1024;
 const CURL_MAX = 4096;
 /** How deep a command inside a substitution of the same command is read on its own (`curl -H "$(curl -u a:pw …)"`). */
@@ -598,7 +599,7 @@ function commandsOf(text: string, command: RegExp, max: number, ends: (op: strin
   const re = new RegExp(command.source, command.flags);
   for (let m = re.exec(region); m; m = re.exec(region)) {
     const named = from + m.index + m[0].length;
-    const read = lex(text, named, Math.min(to, named + max), ends, misses);
+    const read = lex(text, named, commandLimit(named, max, to), ends, misses);
     out.push(read.tokens.filter(isWord));
     if (!own) substitutionWords(text, read.subs, depth, misses, out);
     if (depth < SUBSTITUTION_DEPTH) for (const [start, end] of read.subs) commandsOf(text, command, max, ends, own, start, end, depth + 1, misses, out);
@@ -1966,8 +1967,8 @@ const mysqlPasswords = (text: string): Hit[] => {
 const PASSWORD_FLAG = new RegExp(String.raw`(?<![A-Za-z0-9-])(--(?:[a-z0-9]{1,20}-){0,3}(?:password|passwd|pass|token|api-key|apikey|auth-token|secret-key|access-key))(?:=|[ \t]{1,3}(?!-))${VALUE}`, "gdi");
 /** A registry login (`docker login -p <pw>`), redis-cli's `-a <pw>`: each command read as one (commandsOf), its
  *  short password flag inside. */
-const LOGIN_COMMAND = /\b(?:docker|podman|nerdctl|buildah|skopeo)[ \t]{1,3}login\b/g;
-const REDIS_COMMAND = /\bredis-cli\b/g;
+const LOGIN_COMMAND = /\b(?:docker|podman|nerdctl|buildah|skopeo)[ \t]{1,3}login(?=[ \t]|\\\r?\n)/g;
+const REDIS_COMMAND = /\bredis-cli(?=[ \t]|\\\r?\n)/g;
 /** openssl's `-passin pass:<pw>` (and -passout, -pass, -k pass:): the password after `pass:`. */
 const OPENSSL_PASS = /(?<![A-Za-z0-9-])(-(?:passin|passout|pass|k))[ \t]{1,3}(["']?)pass:([^\s"']{1,1024})\2/dg;
 /** A .netrc line: `machine <host>` (or `default`), maybe `login`/`account`, then `password <pw>`. */
@@ -2034,7 +2035,7 @@ const cookieHeader = (text: string) => (m: RegExpExecArray): Hit | undefined => 
 /** A curl command, its continuation lines included, read as one (commandsOf with curlEnds: `;`, `|`, `&&`, `||`,
  *  a line's end, none of them quoted; a lone `&` does not end it, ruling XXIV); its `-u user:pass`, `-uuser:pass`,
  *  `--user user:pass` or `--user=user:pass` password read inside. */
-const CURL_COMMAND = /\bcurl\b/g;
+const CURL_COMMAND = /\bcurl(?=[ \t]|\\\r?\n)/g;
 /** How long a curl `-u` user may be before its `:`. */
 const CURL_USER_MAX = 256;
 const curlUsers = (text: string): Hit[] => {
