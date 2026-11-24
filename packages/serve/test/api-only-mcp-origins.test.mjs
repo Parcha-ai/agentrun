@@ -54,7 +54,7 @@ const rowOf = async (store, name) => {
 test("the setting: unset or blank is no origin; each comma-separated entry is an http(s) origin, kept once; a path, a query, a user or a non-URL stops the start, naming the entry by place, never its text", () => {
   for (const blank of [undefined, "", " ", " , "]) assert.deepEqual(apiOnlyMcpOriginsFrom(blank), [], JSON.stringify(blank));
   assert.deepEqual(apiOnlyMcpOriginsFrom("http://127.0.0.1:4001, https://Gateway.Example:443/,http://127.0.0.1:4001"), ["http://127.0.0.1:4001", "https://gateway.example"]);
-  for (const bad of ["http://127.0.0.1:4001/mcp", "https://gw.example?x=1", `https://user:${OTHER}@gw.example`, "gw.example", "ftp://gw.example", "https://gw.example#a"]) {
+  for (const bad of ["http://127.0.0.1:4001/mcp", "https://gw.example?x=1", Object.assign(new URL("https://gw.example"), { username: "user", password: OTHER }).href, "gw.example", "ftp://gw.example", "https://gw.example#a"]) {
     assert.throws(() => apiOnlyMcpOriginsFrom(`https://ok.example,${bad}`), (error) => error instanceof TypeError && /AGENTRUN_API_ONLY_MCP_ORIGINS/.test(error.message) && /entry 2/.test(error.message) && !error.message.includes(bad), bad);
   }
 });
@@ -73,7 +73,7 @@ test("API-only with the address's origin listed: the token saves contextforge as
 
   const run = await s.token("POST", "/runs", {
     external: { source: "backend", kind: "expert", id: "cf-1", version: 1 },
-    definition: { name: "Expert cf-1", instructions: "Answer.", skills: [], tools: ["mcp:contextforge/*"], tool_settings: { "mcp:contextforge/*": { permission: "allow" } }, harness: "pi" },
+    definition: { name: "Expert cf-1", instructions: "Answer.", skills: [], tools: ["mcp:contextforge/add"], tool_settings: { "mcp:contextforge/add": { permission: "allow" } }, harness: "pi" },
     input: { content: 'Call mcp__contextforge__add with {"a":2,"b":3}' },
     mcp_auth: { contextforge: { headers: { authorization: `Bearer ${RUN}` } } },
   });
