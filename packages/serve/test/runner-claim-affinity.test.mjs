@@ -54,6 +54,8 @@ const NEW = "It's a new desktop";
 const LOST = "The desktop wasn't kept: the runner that kept it is gone.";
 /** Why, while that runner is there but could not take the run back: it ends the kept one itself. */
 const HELD = "The desktop wasn't kept: another runner kept it and couldn't take the run, so that runner ends it.";
+/** The run's timeline as a park keeps its desktop (computer-deps.ts computerKeptWords). */
+const KEPT = "The desktop is kept for 10 minutes while you decide.";
 
 const until = async (done, what, ms = 60_000) => {
   const end = Date.now() + ms;
@@ -398,6 +400,9 @@ test("park on A, A there but refusing: B gives the row back, goes on on a new de
   assert.deepEqual([row?.id, row?.runner], ["a-d1", "runner-a"], `the kept row is still runner-a's: ${JSON.stringify(row)}`);
   // B's park kept nothing: its desktop goes as at a run's end, so no machine is left with no row and no runner to end it.
   await until(async () => !one.hosts.b.computers.has("b-d1"), "B's desktop is ended at its park", 5_000);
+  // So the run's timeline never says B's park kept it: the keep line is A's park's alone.
+  const said = (await runTimeline(one.server, RUN, ctx)).map((entry) => entry.summary ?? "");
+  assert.equal(said.filter((summary) => summary.includes(KEPT)).length, 1, `the desktop is said kept at A's park only, never at B's, which kept nothing: ${JSON.stringify(said)}`);
   // A's timer at the keep's time (computer-for-claim.ts park): its end still finds its row and deletes the desktop.
   const ended = await endKept(one.server.settings, RUN, one.atPark, async () => {
     await one.hosts.a.provider.release({ id: one.atPark.id, name: one.atPark.name }, "delete");
