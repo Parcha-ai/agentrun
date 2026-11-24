@@ -2,14 +2,18 @@
 // one per source and id, however many files write it (a Codex thread resumed in a new file, a Claude Code session copied
 // into a resumed one's); a subagent's is no session of its own but its parent's.
 import { createHash } from "node:crypto";
+import type { Stats } from "node:fs";
+import { stat } from "node:fs/promises";
+import { availableParallelism } from "node:os";
 import { relative, sep } from "node:path";
 import { type CalculateCost, type Catalog, builtinCatalog, priceRequests } from "./price.js";
 import { childrenOf, inOrder, type Readers, readerOf, sessionLocators } from "./read.js";
 import { type Env, type Locator, locatorKey, type SessionRead } from "./reader.js";
 import { READERS, SOURCES, type Source } from "./readers/index.js";
 import { AT, HAS_LONG, HAS_REASONING, HAS_USAGE, STRIDE, USAGE_FIELDS } from "./counts.js";
-import { addAll, addRecord, dropOwner, locatorNumber, ownerOf, type RecordIndex, recordIndex } from "./record-index.js";
-import { packed, packInto } from "./record-key.js";
+import { OLD_MB, type PoolRead, READ_AHEAD_BYTES, ReadPool } from "./pool.js";
+import { addAll, addRecord, dropOwner, locatorNumber, ownAll, ownerOf, type RecordIndex, recordIndex, someRecord } from "./record-index.js";
+import { type Packed, packed, packInto } from "./record-key.js";
 import type { Usage } from "./types.js";
 import { addTokens, noTokens, type Tokens } from "./usage.js";
 
@@ -77,6 +81,18 @@ export type ParseOptions = {
    *  their times and models, text-free as the totals are. `started`: the time (ms) of the first request of the session's
    *  own files (not its subagents'), absent when it has none. For a caller that buckets the same numbers (wrapped.ts). */
   requests?: (totals: SessionTotals, requests: readonly SessionRequest[], started: number | undefined) => void;
+  /** Threads that read the sources' files ahead, largest first, without a state and with the registry's readers (default:
+   *  the cores this process may run on, at most 8: past that the largest files set the time, and each worker costs its
+   *  heap). Each read is kept only when it is the one parseHome would make in order; 1 reads every file in order on this
+   *  thread. */
+  threads?: number;
+  /** With threads, the bytes of reads made ahead of the one being taken that may wait (default READ_AHEAD_BYTES,
+   *  256 MiB); at it, the threads read only the file being taken. Large files (BIG_FILE, 64 MiB, and over) are read
+   *  first, the rest in the import's order. More holds more memory and waits less behind a large file. */
+  readAhead?: number;
+  /** With threads, each worker's old generation in MB (default OLD_MB, 64). A worker that runs out of it gives its file
+   *  back, which is read on this thread, and another takes its place; past 2 x threads such losses the rest is read here. */
+  workerOldMb?: number;
 };
 
 /** One model request of a session: when (ms), by which model ("provider/model", the session's when the request names none),
@@ -116,6 +132,9 @@ type Compact = {
   /** Each request's time (ms), for the requests sink. */
   at: Float64Array;
 };
+
+/** The default threads' ceiling (ParseOptions.threads). */
+const MAX_THREADS = 8;
 
 /** Each model string once, by index: a request names its model as an index into it. */
 type Models = { names: string[]; index: Map<string, number> };
@@ -199,7 +218,9 @@ function requestAt(read: Compact, i: number, models: Models): SessionRequest {
 type Part = { locator: Locator; read: Compact };
 
 /** Every session of `sources` under `home`, as totals, sorted by key. */
-export async function parseHome(home: string, { sources = SOURCES, readers = READERS, state, catalog, calculateCost, env, failures, requests }: ParseOptions = {}): Promise<SessionTotals[]> {
+export async function parseHome(home: string, { sources = SOURCES, readers = READERS, state, catalog, calculateCost, env, failures, requests, threads = Math.min(availableParallelism(), MAX_THREADS), readAhead = READ_AHEAD_BYTES, workerOldMb = OLD_MB }: ParseOptions = {}): Promise<SessionTotals[]> {
+  const pool = !state && readers === READERS && threads > 1 ? new ReadPool(threads, readAhead, workerOldMb) : undefined;
+  try {
   let prices: Promise<Catalog | undefined> | undefined;
   const priceWith = () => (catalog === false ? Promise.resolve(undefined) : catalog ? Promise.resolve(catalog) : (prices ??= builtinCatalog()));
   const out: SessionTotals[] = [];
@@ -211,15 +232,28 @@ export async function parseHome(home: string, { sources = SOURCES, readers = REA
     }
     state.read = 0;
   }
+  // With a pool, every source is listed first and all their files queued at once, in the import's order: a source's last
+  // files then share the threads with the next source's, and the largest files of every source are read first (pool.ts).
+  const ahead = new Map<string, Listing>();
+  if (pool) {
+    for (const source of sources) ahead.set(source, await listSource(home, source, readers, env, true));
+    const items = [...ahead].flatMap(([source, { listed, childList }]) => [...listed.map(({ locator, stats }) => ({ source, locator, size: stats.size })), ...childList.map(({ locator, size }) => ({ source, locator, size }))]);
+    const ids = pool.readAll(items);
+    let at = 0;
+    for (const listing of ahead.values()) listing.reads = ids.slice(at, (at += listing.listed.length + listing.childList.length)).map((id) => () => pool.take(id));
+  }
   for (const source of sources) {
     const models: Models = { names: [], index: new Map() };
-    const { tops, children, unread } = await readSource(home, source, readers, env, state, models);
+    const { tops, children, unread } = await readSource(home, source, readers, env, state, models, ahead.get(source));
     out.push(...(await totalsOf(home, source, tops, children, models, priceWith, calculateCost, requests)));
     failed.push(...unread.map(({ locator, error }) => ({ key: keyOf(home, locator).key, file: locator.file, source, error })));
   }
   if (failed.length && !failures) throw new ReadFailures(failed);
   failures?.push(...failed);
   return out.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+  } finally {
+    pool?.close();
+  }
 }
 
 /** `source`'s locators read in the import's order, sessions first, then the subagents beside them, through one `seen`.
@@ -228,10 +262,20 @@ export async function parseHome(home: string, { sources = SOURCES, readers = REA
  *  gone, when its reader could not go on from its cursor (a new inode, truncated, rewritten), or when a locator holding a
  *  copy now comes before the one its record counts in (an append moved an older file after its resumed copy, a new file
  *  sorts before one it shares records with). A change of order among locators that share no record reads nothing again. */
-async function readSource(home: string, source: string, readers: Readers, env: Env | undefined, state: HomeState | undefined, models: Models): Promise<{ tops: Part[]; children: (Part & { of: Locator })[]; unread: { locator: Locator; error: unknown }[] }> {
-  const reader = readerOf(source, readers);
+/** A source's locators in the import's order, its subagents' with their sizes, and (with a pool) how to take each one's read. */
+type Listing = { listed: { locator: Locator; stats: Stats }[]; childList: { locator: Locator; of: Locator; size: number }[]; reads?: (() => Promise<PoolRead>)[] };
+
+async function listSource(home: string, source: string, readers: Readers, env: Env | undefined, sized = false): Promise<Listing> {
   const listed = await inOrder(await sessionLocators(home, source, { ...(env ? { env } : {}), readers }), source, readers);
-  const childList = await childrenOf(home, source, { ...(env ? { env } : {}), readers });
+  const children = await childrenOf(home, source, { ...(env ? { env } : {}), readers });
+  const childList = await Promise.all(children.map(async (child) => ({ ...child, size: sized ? ((await stat(child.locator.file).catch(() => undefined))?.size ?? 0) : 0 })));
+  return { listed, childList };
+}
+
+async function readSource(home: string, source: string, readers: Readers, env: Env | undefined, state: HomeState | undefined, models: Models, listing?: Listing): Promise<{ tops: Part[]; children: (Part & { of: Locator })[]; unread: { locator: Locator; error: unknown }[] }> {
+  const reader = readerOf(source, readers);
+  // The pool's listing, when parseHome read this source ahead (pool.ts); each read is taken below in order, or made again.
+  const { listed, childList, reads: ahead } = listing ?? (await listSource(home, source, readers, env));
   // Each locator's place in this pass's order of reading.
   const place = new Map([...listed.map(({ locator }) => locatorKey(locator)), ...childList.map(({ locator }) => locatorKey(locator))].map((key, at) => [key, at]));
   // Whether a locator holds a copy of a record that now counts after it: the fresh pass would count it in that locator.
@@ -245,7 +289,7 @@ async function readSource(home: string, source: string, readers: Readers, env: E
     const { owners, copied } = kept ?? { owners: recordIndex(), copied: new Map<string, Set<string>>() };
     let restarted = false;
     const unread: { locator: Locator; error: unknown }[] = [];
-    const read = async (locator: Locator): Promise<SessionRead[]> => {
+    const read = async (locator: Locator, pooled?: () => Promise<PoolRead>): Promise<SessionRead[]> => {
       const key = locatorKey(locator);
       const cursor = kept?.cursors.get(key);
       // The records read so far, as the reader asks for them, each new one this locator's, each found one noted. Both are
@@ -271,6 +315,16 @@ async function readSource(home: string, source: string, readers: Readers, env: E
           return this;
         },
       } as Set<string>;
+      if (pooled) {
+        // The pool's read is this one when none of the records it added, or asked for and did not hold, is one read before it.
+        const made = await pooled();
+        const held = (record: Packed) => ownerOf(owners, record) !== -1;
+        if (made.ok && !someRecord(made.mine, held) && !someRecord(made.missed, held)) {
+          ownAll(made.mine, me);
+          addAll(owners, made.mine);
+          return made.sessions;
+        }
+      }
       const result = await reader.read(locator, cursor, { turns: false, totals: true, seen }).catch((error: unknown) => void unread.push({ locator, error }));
       if (!result) {
         // A locator read before that cannot be read now gives up its cursor and the records it held, as a fresh pass
@@ -295,9 +349,9 @@ async function readSource(home: string, source: string, readers: Readers, env: E
     // Each locator's sessions packed as soon as they are read. A totals read gives each request's counts alone, and its
     // cursor, kept in a state between passes, holds those too: no request is held as an object, by a pass or a state. A
     // reader with no totals read gives its requests whole: only one locator's are held so at a time.
-    for (const { locator } of listed) for (const session of await read(locator)) tops.push({ locator: session.locator, read: compact(session, models) });
+    for (const [i, { locator }] of listed.entries()) for (const session of await read(locator, pass === 0 ? ahead?.[i] : undefined)) tops.push({ locator: session.locator, read: compact(session, models) });
     const children: (Part & { of: Locator })[] = [];
-    for (const { locator, of } of childList) for (const session of await read(locator)) children.push({ locator: session.locator, read: compact(session, models), of });
+    for (const [i, { locator, of }] of childList.entries()) for (const session of await read(locator, pass === 0 ? ahead?.[listed.length + i] : undefined)) children.push({ locator: session.locator, read: compact(session, models), of });
     // A locator its reader could not go on in, or a copy this pass found whose record counts after it: read the source
     // again, from nothing.
     if (pass > 0 || !kept || !(restarted || outOfOrder(kept))) return { tops, children, unread };
