@@ -136,12 +136,12 @@
     },
     {
       "at": "/rows/3/summary",
-      "end": 71,
+      "end": 57,
       "id": "c_12243d656f8c82d5",
       "kind": "personal",
       "restorable": true,
       "rule": "home-path",
-      "shape": "user[8]",
+      "shape": "home[8]",
       "start": 51
     },
     {
@@ -156,12 +156,12 @@
     },
     {
       "at": "/rows/3/text",
-      "end": 71,
+      "end": 57,
       "id": "c_3e45833dfce59dde",
       "kind": "personal",
       "restorable": true,
       "rule": "home-path",
-      "shape": "user[8]",
+      "shape": "home[8]",
       "start": 51
     },
     {
@@ -176,23 +176,23 @@
     },
     {
       "at": "/rows/4/summary",
-      "end": 60,
+      "end": 46,
       "id": "c_941ed45c120e5d3b",
       "kind": "personal",
       "restorable": true,
       "rule": "home-path",
-      "shape": "user[8]",
+      "shape": "home[8]",
       "start": 40
     },
     {
       "at": "/rows/4/summary",
-      "end": 88,
+      "end": 74,
       "id": "c_33f4fd2aa9d5aceb",
       "kind": "format",
       "restorable": false,
       "rule": "sk-key",
       "shape": "sk-proj-…[56]",
-      "start": 71
+      "start": 57
     },
     {
       "at": "/rows/4/text",
@@ -206,23 +206,23 @@
     },
     {
       "at": "/rows/4/text",
-      "end": 60,
+      "end": 46,
       "id": "c_b7ed7e5a5d321998",
       "kind": "personal",
       "restorable": true,
       "rule": "home-path",
-      "shape": "user[8]",
+      "shape": "home[8]",
       "start": 40
     },
     {
       "at": "/rows/4/text",
-      "end": 88,
+      "end": 74,
       "id": "c_4ae45f2c2f0dd13b",
       "kind": "format",
       "restorable": false,
       "rule": "sk-key",
       "shape": "sk-proj-…[56]",
-      "start": 71
+      "start": 57
     },
     {
       "at": "/run/result/final_answer",
@@ -236,23 +236,23 @@
     },
     {
       "at": "/run/result/final_answer",
-      "end": 60,
+      "end": 46,
       "id": "c_4b08d5130112f66e",
       "kind": "personal",
       "restorable": true,
       "rule": "home-path",
-      "shape": "user[8]",
+      "shape": "home[8]",
       "start": 40
     },
     {
       "at": "/run/result/final_answer",
-      "end": 88,
+      "end": 74,
       "id": "c_53573cd3656979a0",
       "kind": "format",
       "restorable": false,
       "rule": "sk-key",
       "shape": "sk-proj-…[56]",
-      "start": 71
+      "start": 57
     },
     {
       "at": "/run/title",
@@ -354,16 +354,16 @@
       "created_at": "2026-11-23T10:00:04.000Z",
       "id": "row_4",
       "kind": "text_block",
-      "summary": "The host [redacted:private-ip] answered from /home/[redacted:home-path]/work.",
-      "text": "The host [redacted:private-ip] answered from /home/[redacted:home-path]/work.",
+      "summary": "The host [redacted:private-ip] answered from /home/<user>/work.",
+      "text": "The host [redacted:private-ip] answered from /home/<user>/work.",
       "timestamp": "2026-11-23T10:00:04.000Z"
     },
     {
       "created_at": "2026-11-23T10:00:05.000Z",
       "id": "row_5",
       "kind": "final_answer",
-      "summary": "Done. Mail [redacted:email] about /home/[redacted:home-path]/work; key [redacted:sk-key].",
-      "text": "Done. Mail [redacted:email] about /home/[redacted:home-path]/work; key [redacted:sk-key].",
+      "summary": "Done. Mail [redacted:email] about /home/<user>/work; key [redacted:sk-key].",
+      "text": "Done. Mail [redacted:email] about /home/<user>/work; key [redacted:sk-key].",
       "timestamp": "2026-11-23T10:00:05.000Z"
     }
   ],
@@ -383,7 +383,7 @@
     },
     "kind": "agentic",
     "result": {
-      "final_answer": "Done. Mail [redacted:email] about /home/[redacted:home-path]/work; key [redacted:sk-key].",
+      "final_answer": "Done. Mail [redacted:email] about /home/<user>/work; key [redacted:sk-key].",
       "output": null
     },
     "review": null,
@@ -392,11 +392,11 @@
     "stopped_for": null,
     "title": "Connect with PGPASSWORD=[redacted:secret-assign] psql -h db"
   },
-  "sha256": "a741d04e107c0adf78066b0c10123acbdb0fa4f2168e4a8e2d1386b7407139f5",
+  "sha256": "3206083b01206826af267b9e9ee2ee3319577ca5897e1b83f291778a09c9faaa",
   "source": {
     "agentrun": "0.0.0-golden",
     "scrubber": {
-      "rules": "221bf13337be8d62bccca357dadd46ad1ee216f536a29440f4a9634e98c16bfc",
+      "rules": "aa1b4bf9b43632e60b9f18435f5d2e889c5320bd5e822d7239aae271be328385",
       "version": 1
     }
   }
