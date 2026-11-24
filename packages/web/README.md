@@ -30,11 +30,12 @@ const page = await web.fetch("https://example.org/", { offset: 0, maxChars: 20_0
   throws a `PaidRefused`. Without it, a request is unmetered.
 - `words.rateLimited` is what a keyless provider's rate limit says to the model.
 - `native` is the model's own hosted search, as a function. `send` and `endpoints` replace a provider's fetch or address
-  (a test's fakes). `now` is the breakers' clock. `bounds` sets a search's deadline. `log` receives what a fetch notes
+  (a test's fakes). `now` is the breakers' clock. `bounds` sets the searches' deadlines. `log` receives what a fetch notes
   that the model is not told.
 - A search's answer is fitted to `SEARCH_MAX_CHARS`: past it, its least relevant results are left out and `omitted`
   counts them. `search(query, { breakers })` reads and trips the given breakers instead of the Web's own (AgentRun's
-  server gives a call node fresh ones each call). `fetch(url, { lookup, fetchImpl })` dials through the given resolver
+  server gives a call node fresh ones each call), and `search(query, { bounds })` holds that call to its own deadlines.
+  `fetch(url, { lookup, fetchImpl })` dials through the given resolver
   and transport.
 
 Each call returns its `answer` and a `receipt`, `{ op, asked, provider, tries, out, cost, cache? }`. `tries` lists every

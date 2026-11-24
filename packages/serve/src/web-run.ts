@@ -5,7 +5,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { pathToFileURL } from "node:url";
 import type { TSchema } from "typebox";
 import type { PublicFetchOptions } from "@parcha/pi-browser";
-import { createWeb, type FetchProvider, type Guard, MAX_CHARS_MIN, PAGE_CHARS, type SearchBounds, type SearchProvider, TEXT_CAP, type Web } from "@parcha/agentrun-web";
+import { createWeb, type FetchProvider, type Guard, MAX_CHARS_MIN, PAGE_CHARS, type SearchProvider, TEXT_CAP, type Web } from "@parcha/agentrun-web";
 import { FAUX_PARALLEL_ENV, fauxFetch, parallelKeyOf } from "./decisions.js";
 import { hostedSearched, type SearchModels } from "./hosted-search.js";
 import { FAUX_ENV } from "./model.js";
@@ -73,9 +73,9 @@ export function ordersOf(env: NodeJS.ProcessEnv): { search: SearchProvider[]; fe
  *  claim its own), so one run's key, client, pages and breakers never serve another. */
 const webs = new WeakMap<NodeJS.ProcessEnv, Web>();
 
-/** The run's Web. Where either web tool resolves to Parallel, the key is read here, once. `bounds` applies to the Web
- *  this call makes (a test's). */
-export function webOf(env: NodeJS.ProcessEnv, bounds?: SearchBounds): Web {
+/** The run's Web. Where either web tool resolves to Parallel, the key is read here, once. A search's deadlines are its
+ *  call's (web-search.ts), never the Web's. */
+export function webOf(env: NodeJS.ProcessEnv): Web {
   let web = webs.get(env);
   if (web) return web;
   const plane = planeOf(env);
@@ -93,7 +93,6 @@ export function webOf(env: NodeJS.ProcessEnv, bounds?: SearchBounds): Web {
       ...(env[FAUX_ENV] && env[FAUX_EXA_ENV] ? { "exa-keyless": async (...args: Parameters<typeof fetch>) => (await fauxFetch(env, FAUX_EXA_ENV))!(...args) } : {}),
     },
     words: { rateLimited: RATE_LIMITED },
-    ...(bounds ? { bounds } : {}),
     log: (event, fields) => serverLog(logLine(event, fields)),
   });
   webs.set(env, web);

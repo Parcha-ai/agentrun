@@ -22,7 +22,7 @@ export async function searchFor(env: NodeJS.ProcessEnv, args: Record<string, unk
   return searched(env, args, breakers(), signal, models);
 }
 
-async function searched(env: NodeJS.ProcessEnv, args: Record<string, unknown>, breakerOf: (name: string) => Breaker, signal?: AbortSignal, models?: SearchOn): Promise<Search> {
+async function searched(env: NodeJS.ProcessEnv, args: Record<string, unknown>, breakerOf: (name: string) => Breaker, signal?: AbortSignal, models?: SearchOn, bounds?: SearchBounds): Promise<Search> {
   const resolved = planeOf(env).web_search;
   if (resolved !== "parallel" && resolved !== "native" && resolved !== "exa-keyless" && resolved !== "firecrawl-keyless") return { error: `web_search does not run here: ${resolved === undefined ? "no provider was resolved for it" : whyUnavailable(resolved)}` };
   const { query, n } = searchArgs(args);
@@ -30,17 +30,18 @@ async function searched(env: NodeJS.ProcessEnv, args: Record<string, unknown>, b
     if (!query) return { error: "web_search needs a query" };
     if (!ordersOf(env).search.length) return { error: "web_search: under --faux, the keyless search endpoints are fakes', and this server names none" };
   }
-  const { answer } = await searchingOn.run(models, () => webOf(env).search(query, { n, breakers: breakerOf, ...(signal ? { signal } : {}) }));
+  const { answer } = await searchingOn.run(models, () => webOf(env).search(query, { n, breakers: breakerOf, ...(signal ? { signal } : {}), ...(bounds ? { bounds } : {}) }));
   return answer;
 }
 
 /** The agent's tool. The run's Web is made as the tool is bound, so a run whose web_search resolves to Parallel reads its
  *  key when the run opens. `fake`: what answers each search in the provider's place (a template eval's web fake,
- *  web-fake.ts). `now` and `bounds`: a test's breaker clock and search deadlines. */
+ *  web-fake.ts). `now` and `bounds`: a test's breaker clock and this binding's search deadlines, held by its calls
+ *  alone. */
 export function webSearchTool(env: NodeJS.ProcessEnv, models?: SearchOn, fake?: (args: Record<string, unknown>, provider: Exclude<Search, { error: string }>["provider"]) => Search, now: () => number = Date.now, bounds?: SearchBounds): ToolRegistration<TSchema, JsonValue> {
   const provider = planeOf(env).web_search;
   const parallel = provider === "parallel";
-  if (!fake) webOf(env, bounds);
+  if (!fake) webOf(env);
   const breakerOf = breakers(now);
   const named = provider === "native" || provider === "parallel" || provider === "exa-keyless" ? provider : "firecrawl-keyless";
   return defineTool({
@@ -57,7 +58,7 @@ export function webSearchTool(env: NodeJS.ProcessEnv, models?: SearchOn, fake?: 
     } as unknown as TSchema,
     replay: "safe",
     execute: async (args, _api, context) => {
-      const answer = fake ? fitSearch(fake(args as Record<string, unknown>, named)) : await searched(env, args as Record<string, unknown>, breakerOf, context?.abortSignal, models);
+      const answer = fake ? fitSearch(fake(args as Record<string, unknown>, named)) : await searched(env, args as Record<string, unknown>, breakerOf, context?.abortSignal, models, bounds);
       return forModel(searchText(answer), { details: answer });
     },
   });

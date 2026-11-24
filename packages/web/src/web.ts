@@ -46,8 +46,9 @@ export type WebConfig = {
   bounds?: SearchBounds & { checkMs?: number };
   log?: WebLog;
 };
-/** `breakers`: the search breakers this call reads and trips (default the Web's own). */
-export type SearchOptions = { n?: number; signal?: AbortSignal; breakers?: (name: string) => Breaker };
+/** `breakers`: the search breakers this call reads and trips (default the Web's own). `bounds`: this call's deadlines,
+ *  each in place of the Web's (WebConfig.bounds) where given. */
+export type SearchOptions = { n?: number; signal?: AbortSignal; breakers?: (name: string) => Breaker; bounds?: SearchBounds };
 /** `lookup` and `fetchImpl`: the resolver and transport this call's guard dials through. */
 export type FetchOptions = Part & GuardOptions;
 export type Web = {
@@ -76,14 +77,13 @@ export function createWeb(config: WebConfig): Web {
   if (config.send?.["firecrawl-keyless"]) firecrawl.send = config.send["firecrawl-keyless"];
   if (config.send?.["exa-keyless"]) exa.send = config.send["exa-keyless"];
   if (config.words) firecrawl.words = exa.words = config.words;
-  const firecrawlSearchMs = config.bounds?.firecrawlMs;
 
   let parallel: Extract | null | undefined;
   const parallelOf = () => (parallel ??= config.keys?.parallel === undefined ? null : parallelExtract(config.keys.parallel, config.send?.parallel ?? fetch, pay));
   let keyless: KeylessFetch | undefined;
   const firecrawlOf = () => (keyless ??= firecrawlFetch(firecrawl, now));
 
-  const backendOf = (name: SearchProvider, args: Record<string, unknown>, signal: AbortSignal | undefined): Backend => {
+  const backendOf = (name: SearchProvider, args: Record<string, unknown>, signal: AbortSignal | undefined, firecrawlSearchMs: number | undefined): Backend => {
     const { query, n } = searchArgs(args);
     if (name === "parallel") return { name, ask: () => parallelSearched(args, parallelOf(), signal) };
     if (name === "native") return { name, ask: async () => (config.native ? config.native(query, n, signal) : { answer: { error: "web_search: no native search was given" } }) };
@@ -101,15 +101,17 @@ export function createWeb(config: WebConfig): Web {
   };
 
   return {
-    async search(query, { n, signal, breakers: breakerOf = runBreakers } = {}) {
+    async search(query, { n, signal, breakers: breakerOf = runBreakers, bounds } = {}) {
       const lines: Fee[] = [];
       const tries: Try[] = [];
       const args = { query, ...(n === undefined ? {} : { n }) };
       const order = config.order.search;
+      const searchMs = bounds?.searchMs ?? config.bounds?.searchMs;
+      const firecrawlMs = bounds?.firecrawlMs ?? config.bounds?.firecrawlMs;
       // Parallel's search answers an empty query itself; every other provider is asked only with one.
       const found: Search = !order.includes("parallel") && !searchArgs(args).query ? { error: "web_search needs a query" }
         : !order.length ? { error: "web_search has no provider to ask" }
-        : await feesOfCall.run(lines, () => searchInTurn(order.map((name) => backendOf(name, args, signal)), breakerOf, signal, config.bounds?.searchMs, tries));
+        : await feesOfCall.run(lines, () => searchInTurn(order.map((name) => backendOf(name, args, signal, firecrawlMs)), breakerOf, signal, searchMs, tries));
       const answer = fitSearch(found);
       const receipt: Receipt = { op: "search", asked: query, provider: "error" in answer ? null : answer.provider, tries, ...judged, out: outOf(searchText(answer)), cost: { usd: usd(lines), lines } };
       return { answer, receipt };
