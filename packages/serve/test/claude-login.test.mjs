@@ -1384,7 +1384,7 @@ test("a runner in a process of its own on the same data folder takes the Setting
     data,
     env: { HOME: data, PATH: "/usr/bin:/bin" },
     pinned: async () => pinned,
-    refused: undefined,
+    refused: () => undefined,
     sameMachine: false,
     claude: async () => ({ claudeLoginCommand: () => "claude auth login", claudeLoginStatus: async () => said }),
     changed: async () => {},
