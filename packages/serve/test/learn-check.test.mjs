@@ -183,6 +183,8 @@ test("a UUID or short sha whose hex holds aba and nine digits is served whole by
   const { learnedSecretShapes, redactLearned } = await import("../dist/learn/secrets.js");
   const sha = `aba123456789${"0123456789abcdef".repeat(2)}`.slice(0, 40);
   const glued = [
+    // The run id the learn-replay test got back as "01a20b88-e657-7000-a0af-[redacted]", alone and in a sentence.
+    "01a20b88-e657-7000-a0af-aba592512040",
     "run 01a20b88-e657-7000-a0af-aba592512040 replayed",
     "RUN 01A20B88-E657-7000-A0AF-ABA592512040",
     `commit ${sha.slice(0, 12)} on main`,
