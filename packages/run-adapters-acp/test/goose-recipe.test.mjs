@@ -101,7 +101,7 @@ test("recipeProblems refuses an announces path that starts at the update's title
 test("recipeProblems takes an announces path anywhere else in the update: only Goose's _meta path is read from a real release, so no other agent's shape is pinned", () => {
   // Before: only paths under _meta or rawInput loaded, a rule fitted to Cursor's rawInput as only our fake sends it.
   const base = { id: 'x', command: BINARY, declares: { load: true, mcp: 'http' }, billing: { kind: 'proxy' } };
-  for (const said of [{ tool: 'toolName' }, { tool: 'titled.toolName' }, { tool: 'statusOf.tool' }, { tool: 'rawInput.toolName', args: 'rawInput' }]) {
+  for (const said of [{ tool: 'toolName' }, { tool: 'titled.toolName' }, { tool: 'statusOf.tool' }, { tool: 'rawOutputs.toolName' }, { tool: 'contents.tool' }, { tool: 'rawInput.toolName', args: 'rawInput' }]) {
     assert.deepEqual(recipeProblems({ ...base, announces: said }), [], JSON.stringify(said));
   }
 });

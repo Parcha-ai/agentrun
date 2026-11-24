@@ -59,8 +59,9 @@ export interface AcpAnnounces {
 }
 
 /** A path an AcpAnnounces field may hold: field names joined by dots, never starting at the update's title,
- *  toolCallId, kind or status: a path through the title would let the agent's text name a call again. */
-export const ANNOUNCES_PATH = /^(?!(?:title|toolCallId|kind|status)(?:\.|$))[A-Za-z_$][\w$-]*(?:\.[A-Za-z_$][\w$-]*)*$/;
+ *  toolCallId, kind, status, rawOutput, content, locations or sessionUpdate: a path through the title would let the
+ *  agent's text name a call again, one through rawOutput or content a tool's output. */
+export const ANNOUNCES_PATH = /^(?!(?:title|toolCallId|kind|status|rawOutput|content|locations|sessionUpdate)(?:\.|$))[A-Za-z_$][\w$-]*(?:\.[A-Za-z_$][\w$-]*)*$/;
 
 /** The value at a dotted `path` in `value`, own fields only; undefined where any step is missing. */
 function at(value: unknown, path: string): unknown {
@@ -75,8 +76,9 @@ function at(value: unknown, path: string): unknown {
 /** The most of the word at a recipe's announces.tool a debug line quotes. */
 export const ANNOUNCED_FIELD_CHARS = 200;
 
-/** The word at the recipe's announces.tool in `update`, clipped to ANNOUNCED_FIELD_CHARS: what the agent said it calls,
- *  for the debug line (harness.ts), never its input. Null when the recipe declares no field or it holds no string. */
+/** The word at the recipe's announces.tool in `update`, clipped to ANNOUNCED_FIELD_CHARS: what the agent said it calls.
+ *  It may sit inside the call's input (Cursor's rawInput.toolName): the debug line (harness.ts) quotes it only for a call
+ *  of ours. Null when the recipe declares no field or it holds no string. */
 export function announcedField(update: unknown, announces: AcpAnnounces | undefined): string | null {
   const said = announces ? at(update, announces.tool) : undefined;
   return typeof said === "string" ? said.slice(0, ANNOUNCED_FIELD_CHARS) : null;

@@ -202,7 +202,8 @@ run and `auth_failed` lines stay. A run whose process failed at its start says w
 One line at start, `event=boxes`, says which boxes this server has ([Sandbox](#sandbox)); quiet keeps it too.
 `AGENTRUN_LOG=debug` keeps every line and also writes into a run's log one line per call an ACP agent announces, when
 its recipe declares `announces`: `acp: the agent announced a call`, with the call's `toolCallId`, its `kind`, the tool
-name the recipe's field holds (at most 200 characters) and the AgentRun tool it named, never the call's input. A call
+name the recipe's field holds when it names an AgentRun tool (at most 200 characters; `native` for any other call,
+since a recipe's field may sit inside the call's input) and the AgentRun tool it named, never the call's input. A call
 announced with no name (Cursor's) gets the line again when a later update names it.
 `event=harness_offers why=start ms=<n>` says how long the server took to check what each harness offers (each CLI's
 package and pins; [harnesses](#harnesses)), the bulk of its start; quiet keeps it too. It is made at the start only: a

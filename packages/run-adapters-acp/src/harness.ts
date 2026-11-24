@@ -321,11 +321,14 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
   };
 
   /** Debug only (serve's AGENTRUN_LOG=debug), on a recipe that declares announces: a call the agent announced, by its
-   *  ids and names, never its input or the agent's text. Written at its tool_call, and again at the later update that
-   *  names a call announced with no name (Cursor's). */
+   *  ids and names, never its input or the agent's text. The word at the recipe's field is quoted only when it names a
+   *  tool of ours: on Cursor's recipe it sits inside the call's input, so another call's is "native" (null: none).
+   *  Written at its tool_call, and again at the later update that names a call announced with no name (Cursor's). */
   const logAnnounced = (rt: Runtime, said: { readonly toolCallId: string; readonly kind?: string | null }) => {
     if (!options.debug || !recipe.announces) return;
-    log("acp: the agent announced a call", { toolCallId: said.toolCallId, kind: said.kind ?? null, field: announcedField(said, recipe.announces), ours: rt.calls.announced(said.toolCallId) ?? null });
+    const ours = rt.calls.announced(said.toolCallId) ?? null;
+    const field = announcedField(said, recipe.announces);
+    log("acp: the agent announced a call", { toolCallId: said.toolCallId, kind: said.kind ?? null, field: field && (ours === null ? "native" : field), ours });
   };
 
   const onUpdate = (rt: Runtime, notification: SessionNotification) => {
