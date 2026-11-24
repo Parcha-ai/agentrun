@@ -1059,9 +1059,10 @@ export async function computerForClaim(
       // running with nothing to end it.
       // Once that runner is gone, the row stays off: the machine went with it, or its host's janitor ends it. A failed
       // read of who is there puts it back: any janitor ends a row whose runner is gone. True when that runner was there,
-      // for the new one's words (Replaced.elsewhere, else lost).
-      const giveBack = async (): Promise<boolean> => {
-        if (!took || !elsewhere) return false;
+      // false when it was gone, for the new one's words (Replaced.elsewhere, lost); undefined when who is there was never
+      // read (the row not taken, or not pinned elsewhere), and the words name neither.
+      const giveBack = async (): Promise<boolean | undefined> => {
+        if (!took || !elsewhere) return undefined;
         took = false;
         const there = await heldElsewhere({ ...(store.runners ? { runners: store.runners } : {}), ...(launch.holder ? { self: launch.holder } : {}) })(record);
         if (there) await restoreKept(settings, launch.runId, record).catch(() => false);
@@ -1084,8 +1085,9 @@ export async function computerForClaim(
         const provider = await vendorProvider(entry, keys, configuration);
         const taken = await keptLaunch(provider, record, signal, () => writes.ended(entry.id, record.id));
         if (!taken) {
-          heldThere = await giveBack();
-          lost = elsewhere && !heldThere;
+          const there = await giveBack();
+          heldThere = there === true;
+          lost = there === false;
           return undefined;
         }
         // Metered again from here, with what its interval says it was made with: the time it was kept is no claim's.
@@ -1104,10 +1106,12 @@ export async function computerForClaim(
         deps.onConnected?.({ provider: entry.label, kind: record.kind, hello: { os, ...(osVersion ? { osVersion } : {}), arch }, kept: true });
         return { ...again, epoch: record.epoch };
       } catch {
-        // Taken off its row (or not), and not reached here: lost to this claim where it was pinned to another runner, its
-        // row given back while that runner is there, said so.
-        heldThere = await giveBack().catch(() => false);
-        lost = elsewhere && !lapsed && !heldThere;
+        // Taken off its row, and not reached here: lost to this claim where it was pinned to another runner, its row given
+        // back while that runner is there, said so. Never taken (its clock read or its take threw): who is there was never
+        // read, so the new one says neither.
+        const there = await giveBack().catch(() => undefined);
+        heldThere = there === true;
+        lost = there === false && !lapsed;
         return undefined;
       }
     },
