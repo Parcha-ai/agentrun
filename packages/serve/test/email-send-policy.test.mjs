@@ -2,8 +2,9 @@
 // allow, a run's first 5 sends go unasked and each one after asks, saying "this run has sent N emails", across a pause
 // too (the count is the run's record's, not the process's). On a run an email started (its thread), a send to anyone
 // outside the thread's participants (the account's own address and every From, To and Cc of the thread's messages)
-// asks even on allow, naming them. A run that reads the whole account (scope "mailbox"), or one no email started, is
-// held to the cap alone. A template eval's run never reads a real account to list its thread's people: with another
+// asks even on allow, naming them. A run that reads the whole account (scope "mailbox") has no thread ask, but as any
+// run a trigger started it asks before a send to an address the account never sent to (email-trigger-ask.test.mjs); a
+// run no trigger started is held to the cap alone. A template eval's run never reads a real account to list its thread's people: with another
 // account saved than its case's fake, a send asks nothing and is refused in the eval's words, no IMAP command sent.
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -207,18 +208,22 @@ test("the ask's reason is the gate's own field: a call whose own arguments carry
   assert.deepEqual(JSON.parse(gated.args_json), args);
 });
 
-test("a thread run whose agent reads the whole account (scope \"mailbox\") sends to the same outsider unasked: only the cap holds it", { timeout: 150_000 }, async (t) => {
+test("a thread run whose agent reads the whole account (scope \"mailbox\") has no thread ask, but is a trigger's run: a send to ana, whom the account wrote to, goes unasked; one to eve, who only wrote in, asks, naming her as never sent to", { timeout: 150_000 }, async (t) => {
   const server = await served(t);
   const faux = await mailbox(t);
   thread(faux);
   await saved(server.api, faux);
   const runId = await fired(server, faux, "wide", [
+    ["email_send", { to: ["ana@example.com"], subject: "Re: Plan", text: "Tuesday it is.", in_reply_to: "<m3@example.com>" }],
     ["email_send", { to: ["eve@example.com"], subject: "Hello", text: "Hi Eve." }],
   ], ANSWER, { tool_settings: { ...ALLOW, email_read: { scope: "mailbox" }, email_search: { scope: "mailbox" } } });
-  const { status, pending, view } = await settled(server.api, runId);
-  assert.equal(status, "completed", `no ask: ${JSON.stringify(pending)}`);
-  assert.equal(sawOf(view.result?.final_answer)[0]?.sent, true);
-  assert.deepEqual(faux.sent().map((m) => m.to), [["eve@example.com"]]);
+  const { status, pending } = await settled(server.api, runId);
+  assert.deepEqual(faux.sent().map((m) => m.to), [["ana@example.com"]], "only ana, in Sent, sent to unasked; eve waits");
+  assert.equal(status, "input_required", `the send to eve asks: ${JSON.stringify(pending)}`);
+  asksBecause(pending, /^eve@example\.com: this account has never sent to them$/);
+  assert.equal(await server.decide(runId, pending.id, "deny"), 204);
+  await follow(server.api, runId, ["completed"], { deadlineMs: 55_000 });
+  assert.equal(faux.sent().length, 1);
 });
 
 test("a template eval's thread run with a real account saved, not its case's fake: a send outside the thread reads nothing of that account (no IMAP command), asks nothing, and is refused in the eval's words", { timeout: 150_000 }, async (t) => {
