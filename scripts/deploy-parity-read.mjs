@@ -8,10 +8,11 @@
 // user or password, refused before any request and never echoed. Tokens come from the environment alone, never an
 // argument: AGENTRUN_PARITY_SOURCE_TOKEN and AGENTRUN_PARITY_TARGET_TOKEN. --lock reads the target's agent from the lock
 // a deploy wrote (DIR/.agentrun/deploy.json), and never its address: the target token goes to --target alone, and a lock
-// written for another target is refused with nothing sent. It prints `{pass, differences, unread, warnings}` as JSON,
-// a tool's settings in a difference as a digest alone (a pin can hold a credential), and exits 0 when the agent is the
+// written for another target, or an empty agent id, is refused with nothing sent. It prints
+// `{pass, differences, unread, warnings}` as JSON, a tool's settings in a difference as a digest alone (a pin can hold a credential), and exits 0 when the agent is the
 // same on both (no difference, and every field read on both sides or named in --accept-unread), 1 when it is not, 2 when
-// it could not check (bad input, an agent or a body not read), with one line on stderr.
+// it could not check (bad input, an agent or a body not read), with one line on stderr. That line never quotes what a
+// failure carried: an HTTP client's error can quote a header, the token's included.
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
@@ -21,6 +22,8 @@ import { describeAgent, parityDiff, readinessOf, stable, unreadFields } from "./
 import { isMain } from "./is-main.mjs";
 
 const enc = encodeURIComponent;
+/** An agent an install did not answer for: its message is the check's own, so the command prints it. */
+class NotRead extends Error {}
 const bodyOf = (answer) => (answer.status === 200 && answer.body !== null && typeof answer.body === "object" ? answer.body : null);
 
 /** A package file's (`{path, encoding, content}`) path and the sha256 of its bytes; none for a file with no content. */
@@ -32,7 +35,7 @@ const hashed = (file) => ({ path: file?.path, sha256: typeof file?.content === "
  *  nothing. */
 export async function readAgent(api, agentId) {
   const agent = await api("GET", `/agents/${enc(agentId)}`);
-  if (!bodyOf(agent)) throw new Error(`The agent ${agentId}: ${agent.status} ${agent.body?.error?.message ?? ""}`.trim());
+  if (!bodyOf(agent)) throw new NotRead(`The agent ${agentId}: ${agent.status} ${agent.body?.error?.message ?? ""}`.trim());
   const triggers = bodyOf(await api("GET", "/triggers"))?.triggers ?? null;
   const servers = bodyOf(await api("GET", "/settings/mcp-servers"))?.servers ?? null;
   const files = bodyOf(await api("GET", `/agents/${enc(agentId)}/package`))?.files;
@@ -97,19 +100,22 @@ function argsOf(argv) {
   if (!source) return { refused: `--source ${URL_RULE}` };
   const target = checkedBase(values.target);
   if (!target) return { refused: `--target ${URL_RULE}` };
+  // The check's own advice: a deploy's ("fix or remove it") would have a deploy lock removed to make a check run.
+  const ADVICE = "pass --target-agent ID, or a lock deploy wrote for this target";
   let targetAgent = values["target-agent"];
   if (values.lock) {
     let lock;
     try {
-      lock = lockOf(readFileSync(values.lock, "utf8"), values.lock, (_code, message) => new Error(message));
+      lock = lockOf(readFileSync(values.lock, "utf8"), values.lock, () => new Error("not a deploy lock"));
     } catch (error) {
-      return { refused: error.code ? `the lock ${values.lock} can't be read: ${error.code}` : error.message };
+      return { refused: error.code ? `the lock ${values.lock} can't be read: ${error.code}` : `the lock ${values.lock} is not a deploy lock (target, agent_id, revision_id, package_sha256): ${ADVICE}` };
     }
     const written = checkedBase(lock.target);
     if (!written) return { refused: `the lock ${values.lock} names a target that ${URL_RULE}: nothing was sent` };
-    if (written !== target) return { refused: `the lock ${values.lock} was written for another target than --target: nothing was sent` };
+    if (written !== target) return { refused: `the lock ${values.lock} was written for another target than --target, so nothing was sent: ${ADVICE}` };
     targetAgent ??= lock.agent_id;
   }
+  if (!targetAgent) return { refused: `the target's agent id is empty: ${ADVICE}` };
   const accepted = (values["accept-unread"] ?? "").split(",").map((one) => one.trim()).filter(Boolean);
   return { source, sourceAgent, target, targetAgent, accepted };
 }
@@ -126,9 +132,10 @@ async function main(argv, env) {
     const there = await readAgent(httpApi(args.target, env.AGENTRUN_PARITY_TARGET_TOKEN), args.targetAgent);
     answer = parityOf(source, there, args.accepted);
   } catch (error) {
-    // Only the message and the cause's code, on one line: a fetch error can quote a header. Any throw is "could not
-    // check", never "differs".
-    process.stderr.write(`deploy-parity: ${String(error?.cause?.code ?? error?.message).replace(/\s+/g, " ")}\n`);
+    // Any throw is "could not check", never "differs". Only the check's own message is printed; any other error by its
+    // name and its cause's code alone, since its message can quote a header value, the token's included.
+    const said = error instanceof NotRead ? error.message : `could not check (${[error?.name ?? "Error", error?.cause?.code].filter(Boolean).join(" ")})`;
+    process.stderr.write(`deploy-parity: ${said.replace(/\s+/g, " ")}\n`);
     return 2;
   }
   process.stdout.write(`${JSON.stringify(answer, null, 2)}\n`);
