@@ -22,7 +22,7 @@ import type { GateAnswer, GateCall } from "@parcha/agentrun-kernel";
 import type { DriveContext, HostTool, SessionState } from "@parcha/agentrun-kernel/kernel";
 import { askGate, journalRecords, NativeJournal, openTurn, placeSubmissions, recoveryNote, resumeUnstartedCalls, toolBridge, toolKey, transcriptOf, type DanglingCall, type ToolBridge, type TranscriptEntry } from "@parcha/agentrun-kernel/process";
 import type { ParentWatch } from "@parcha/agentrun-kernel/host";
-import { announceCall, CallIds, MCP_SERVER, nameCall, ourTool, permissionCallId } from "./calls.js";
+import { announceCall, announcedField, CallIds, MCP_SERVER, nameCall, ourTool, permissionCallId } from "./calls.js";
 import { ACP_CODES } from "./facts.js";
 import { allowFileText, homePath, type AcpRecipe } from "./recipe.js";
 import { restoreState, STATE_STREAM, StateMirror, type StateRecord } from "./state.js";
@@ -93,6 +93,9 @@ export interface AcpHarnessOptions {
   callIdWaitMs?: number;
   startMs?: number;
   log?: (message: string, fields?: Record<string, unknown>) => void;
+  /** Log each call the agent announces ("acp: the agent announced a call": its toolCallId, kind, the word at the
+   *  recipe's announces.tool and the tool of ours it named), on a recipe that declares announces. Ids and names only. */
+  debug?: boolean;
 }
 
 /** What the adapter holds of the drive in flight, to stop its turn. */
@@ -334,6 +337,10 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
         countCall(rt, cur, update.toolCallId);
         // Kept for the MCP call it may be, named by the recipe's announces field, never by its title (announceCall).
         announceCall(rt.calls, update, recipe.announces, names);
+        // Debug only (serve's AGENTRUN_LOG=debug): ids and names, never the call's input or the agent's text.
+        if (options.debug && recipe.announces) {
+          log("acp: the agent announced a call", { toolCallId: update.toolCallId, kind: update.kind ?? null, field: announcedField(update, recipe.announces), ours: rt.calls.announced(update.toolCallId) ?? null });
+        }
         return;
       }
       case "tool_call_update": {

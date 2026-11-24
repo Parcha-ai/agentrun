@@ -72,6 +72,16 @@ function at(value: unknown, path: string): unknown {
   return here;
 }
 
+/** The most of the word at a recipe's announces.tool a debug line quotes. */
+export const ANNOUNCED_FIELD_CHARS = 200;
+
+/** The word at the recipe's announces.tool in `update`, clipped to ANNOUNCED_FIELD_CHARS: what the agent said it calls,
+ *  for the debug line (harness.ts), never its input. Null when the recipe declares no field or it holds no string. */
+export function announcedField(update: unknown, announces: AcpAnnounces | undefined): string | null {
+  const said = announces ? at(update, announces.tool) : undefined;
+  return typeof said === "string" ? said.slice(0, ANNOUNCED_FIELD_CHARS) : null;
+}
+
 /** The tool of ours an agent's update names in the field its recipe declares (`announces`): its name; null when the
  *  field names a tool that is not ours (another server's, one without our prefix, or one of our server's that `tools`
  *  does not list); undefined when the recipe declares no field or the update does not carry it. A title is never read. */

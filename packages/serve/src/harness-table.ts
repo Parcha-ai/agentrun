@@ -349,6 +349,10 @@ export const HARNESS_RESUME_UNDECLARED = "HARNESS_RESUME_UNDECLARED";
 const moduleEntryOf = (facts: AdapterFacts, adapter: (launch: ModuleLaunch) => AgentAdapter | Promise<AgentAdapter>, { missing, ...extra }: Pick<HarnessEntry, "skillCheck" | "promises" | "hidden"> & ModuleChecks = {}, host: AcpEntryHost = {}): HarnessEntry =>
   Object.freeze({ ...adapterEntry(facts, moduleAdapter(facts, adapter, missing ? { missing } : {}, host), extra), runner: ON_TABLE });
 
+/** serve's one debug switch for the ACP adapter, AGENTRUN_LOG=debug: it logs each call the agent announces, by its ids
+ *  and names only (run-adapters-acp's AcpHarnessOptions.debug). */
+const acpDebug = (): { debug?: true } => (process.env.AGENTRUN_LOG === "debug" ? { debug: true } : {});
+
 /** A proxy-billed ACP agent's whole entry, moduleEntryOf over serve's own ACP adapter: a module's (HarnessModuleKit.acpEntry,
  *  `host` none) and a proxy-billed recipe's under harness-check (AcpEntryHost). Its agent's allowlist and keys are read
  *  from the launch's environment, never this process's, and its recipe names no server key (ownKeysOnly). */
@@ -367,6 +371,7 @@ function acpProxyEntryOf(options: AcpEntryOptions, host: AcpEntryHost = {}): Har
       ...(launch.confine ? { confine: launch.confine } : {}),
       env: launch.env,
       log: launch.log,
+      ...acpDebug(),
     });
   }, { promises: resume === "load" ? ACP_PROMISES : ACP_RESTART_PROMISES, ...(options.missing ? { missing: options.missing } : {}) }, host);
 }
@@ -415,7 +420,7 @@ function acpPlanEntryOf(options: AcpPlanEntryOptions, host: AcpEntryHost = {}): 
     try {
       const recipe = await ownKeysOnly(facts, await options.recipe({ model: needs.model.modelId, log, ...(needs.confine ? { confine: needs.confine } : {}), env, ...(probe ? { probe } : {}) }));
       // Its keys (recipe.keys) are read from the run's environment, which holds its own (ownKeys: run-secrets.ts keysFor).
-      return acp.acpAdapter({ recipe, ...(options.beforeStart ? { beforeStart: options.beforeStart } : {}), ...(needs.confine ? { confine: needs.confine } : {}), env, log });
+      return acp.acpAdapter({ recipe, ...(options.beforeStart ? { beforeStart: options.beforeStart } : {}), ...(needs.confine ? { confine: needs.confine } : {}), env, log, ...acpDebug() });
     } catch (error) {
       if (error instanceof HarnessUnavailable) throw error;
       throw new HarnessUnavailable((error as Error).message, fixOf(facts, error));
