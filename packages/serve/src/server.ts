@@ -1516,9 +1516,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const loginRefused = whyNotOneOwner({ apiOnly: options.apiOnly === true, tokens: tokens.length });
   await dropRefusedLogin(store.settings, loginOff ?? loginRefused, (line) => (log ? log(logLine("claude_login", { line })) : void process.stderr.write(`agentrun-serve: ${line}\n`)));
   // The status checks' folders a server killed mid-check left in the temporary folder, each with a copy of the account
-  // file (the harness's sweepClaudeStatusFolders): this user's alone, and only once older than twice a check's limit,
-  // so a check another server on this host runs now stays. Where the mode is there, as status checks are; a sweep that
-  // fails never stops the start.
+  // file (the harness's sweepClaudeStatusFolders): this user's alone, and only once the check has ended by the end it
+  // wrote in its folder, so a check another server on this host runs now stays. Where the mode is there, as status
+  // checks are; a sweep that fails never stops the start.
   if (loginOff === undefined) await import("@parcha/agentrun-harness-claude").then((claude) => claude.sweepClaudeStatusFolders()).catch(() => []);
   let claudeLogin = loginOf(await claudeLoginSetting(store.settings), data, base);
   // The model gateway saved in the console (model-gateway.ts), its key opened: laid over every reading of env, where the

@@ -10,7 +10,7 @@
 // The check runs in the person's own home, as does a run on macOS, where the CLI's tokens are in the login keychain.
 import { spawn } from "node:child_process";
 import { accessSync, constants, mkdtempSync, rmSync } from "node:fs";
-import { type FileHandle, lstat, mkdir, open, readdir, rm, writeFile } from "node:fs/promises";
+import { type FileHandle, lstat, mkdir, open, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import type { ModelPort, ModelUsage } from "@parcha/agentrun-kernel";
@@ -135,6 +135,11 @@ export function parseLoginStatus(stdout: string): ClaudeLoginStatus | undefined 
 
 /** The longest a status check may take. */
 export const LOGIN_STATUS_MS = 15_000;
+/** After a status check's limit asks its CLI to go (SIGTERM), how long before the CLI is killed (SIGKILL). */
+const STATUS_KILL_MS = 1_000;
+/** Once a status check's CLI has exited, or was killed, how long the check still waits for its output's pipe to close
+ *  before it leaves it: a process the CLI started can hold that pipe open with no end. */
+const STATUS_DRAIN_MS = 1_000;
 
 /** A status check the CLI outlasted: ended at its limit (`limitMs`) with no answer, which says nothing of the login (a
  *  loaded host can take that long), apart from a CLI that answered, in time, what reads as no status. `code` is
@@ -161,20 +166,41 @@ export class ClaudeLoginNoStatus extends Error {
 /** The name of a status check's own folder in the temporary folder, ahead of mkdtemp's six characters. */
 const STATUS_FOLDER = "agentrun-claude-status-";
 const STATUS_FOLDER_NAME = /^agentrun-claude-status-[A-Za-z0-9]{6}$/;
+/** The file in a status check's folder that says when the check ends at the latest, in ms since the epoch: its start
+ *  plus its own limit, the kill's grace and the wait for its pipe (claudeLoginStatus). */
+const STATUS_ENDS_FILE = "ends";
+/** How long past a check's end (STATUS_ENDS_FILE) its folder is left before a sweep takes it. */
+const STATUS_SWEEP_MARGIN_MS = LOGIN_STATUS_MS;
+
+/** When the status check that owns `folder` ends at the latest (its STATUS_ENDS_FILE), or undefined when that can't be
+ *  read as a time. */
+async function checkEnds(folder: string): Promise<number | undefined> {
+  try {
+    const file = join(folder, STATUS_ENDS_FILE);
+    const stat = await lstat(file);
+    if (!stat.isFile() || stat.size > 32) return undefined;
+    const ends = Number((await readFile(file, "utf8")).trim());
+    return Number.isSafeInteger(ends) ? ends : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 /** Removes what status checks cut off mid-way left: a server killed outright (SIGKILL) runs no `finally`, so its check's
  *  folder (claudeLoginStatus's `scratch`), with the copy of the account file in it, stays in the temporary folder. Takes
  *  each folder there named as a check's (the prefix and mkdtemp's six characters, nothing longer) that is this user's
- *  (`uid`, `process.getuid()` by default) and was last changed more than twice a check's limit (LOGIN_STATUS_MS) before
- *  `now`. A check's folder changes as it starts and lives no longer than that limit, so a check another server on this
- *  host is running is never taken; nor is another user's folder, a link or a file. `dir`: the temporary folder
- *  (`os.tmpdir()` by default). Nothing on Windows, which has no uid to tell whose a folder is. Never throws: a folder
- *  that can't be read or removed stays. Resolves to the folders it removed. The server runs it as it starts. */
+ *  (`uid`, `process.getuid()` by default) and whose check has ended: more than STATUS_SWEEP_MARGIN_MS (15 s) before
+ *  `now` by the end the check wrote in it (STATUS_ENDS_FILE), whatever limit its caller gave it, so a check another
+ *  server on this host is running is never taken. A folder with no such end (its check was killed before writing it) is
+ *  taken once it was last changed more than twice a check's limit (LOGIN_STATUS_MS) before `now`. Another user's
+ *  folder, a link or a file is never taken. `dir`: the temporary folder (`os.tmpdir()` by default). Nothing on Windows,
+ *  which has no uid to tell whose a folder is. Never throws: a folder that can't be read or removed stays. Resolves to
+ *  the folders it removed. The server runs it as it starts. */
 export async function sweepClaudeStatusFolders(options: { dir?: string; uid?: number; now?: number } = {}): Promise<string[]> {
   const uid = options.uid ?? process.getuid?.();
   if (uid === undefined) return [];
   const dir = options.dir ?? tmpdir();
-  const before = (options.now ?? Date.now()) - 2 * LOGIN_STATUS_MS;
+  const now = options.now ?? Date.now();
   let names: string[];
   try {
     names = await readdir(dir);
@@ -186,7 +212,9 @@ export async function sweepClaudeStatusFolders(options: { dir?: string; uid?: nu
     const path = join(dir, name);
     try {
       const stat = await lstat(path);
-      if (!stat.isDirectory() || stat.uid !== uid || stat.mtimeMs > before) continue;
+      if (!stat.isDirectory() || stat.uid !== uid) continue;
+      const ends = await checkEnds(path);
+      if (ends === undefined ? stat.mtimeMs > now - 2 * LOGIN_STATUS_MS : now <= ends + STATUS_SWEEP_MARGIN_MS) continue;
       await rm(path, { recursive: true, force: true });
       removed.push(path);
     } catch {
@@ -300,11 +328,15 @@ export const personHome = (login: ClaudeAgentLogin): string => login.userHome ??
  *  A status check is no session: nothing resumes in its config dir. `platform`: the one the CLI runs on, this host's.
  *  Asks once. Throws when the CLI gives no answer that reads as one: ClaudeLoginTimedOut when it was still running at
  *  the limit (`timeoutMs`, LOGIN_STATUS_MS by default) and was ended there, else ClaudeLoginNoStatus. A CLI that never
- *  started throws the spawn's own error. */
+ *  started throws the spawn's own error. At the limit the CLI is asked to go (SIGTERM) and killed STATUS_KILL_MS later;
+ *  once it has exited or was killed, the check waits at most STATUS_DRAIN_MS more for its output, which a process it
+ *  started may hold open. So a check settles within its limit and 2 s, whatever the CLI does. */
 export async function claudeLoginStatus(cli: string, login: ClaudeAgentLogin, options: { timeoutMs?: number; path?: string; platform?: NodeJS.Platform } = {}): Promise<ClaudeLoginStatus> {
   const scratch = mkdtempSync(join(tmpdir(), STATUS_FOLDER));
   const limitMs = options.timeoutMs ?? LOGIN_STATUS_MS;
   try {
+    // When this check ends at the latest, so another server's sweep leaves its folder until then, whatever its limit.
+    await writeFile(join(scratch, STATUS_ENDS_FILE), String(Date.now() + limitMs + STATUS_KILL_MS + STATUS_DRAIN_MS), { mode: 0o600, flag: "wx" });
     const HOME = personHome(login);
     const where = { HOME, ...loginEnv(login, options.platform), CLAUDE_CONFIG_DIR: await accountCopy(accountFile(login), join(scratch, "config")) };
     const { stdout, timedOut } = await new Promise<{ stdout: string; timedOut: boolean }>((resolve, reject) => {
@@ -312,26 +344,45 @@ export async function claudeLoginStatus(cli: string, login: ClaudeAgentLogin, op
         env: { PATH: options.path ?? process.env.PATH ?? "/usr/bin:/bin", ...where, DISABLE_AUTOUPDATER: "1", DISABLE_TELEMETRY: "1", DISABLE_ERROR_REPORTING: "1", CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1" },
         stdio: ["ignore", "pipe", "ignore"],
       });
-      // The limit is kept here, not by spawn's `timeout`, so the check knows it ended the CLI.
+      let out = "";
       let timedOut = false;
+      let settled = false;
+      let kill: ReturnType<typeof setTimeout> | undefined;
+      let drain: ReturnType<typeof setTimeout> | undefined;
+      const settle = (then: () => void) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(limit);
+        clearTimeout(kill);
+        clearTimeout(drain);
+        then();
+      };
+      // The CLI exits 1 when signed out, its answer said all the same.
+      const done = () => settle(() => {
+        child.stdout.destroy();
+        resolve({ stdout: out, timedOut });
+      });
+      // Once the CLI has exited or was killed, its pipe gets a short while to close, and is then left.
+      const drainSoon = () => {
+        drain ??= setTimeout(done, STATUS_DRAIN_MS);
+      };
+      // The limit is kept here, not by spawn's `timeout`, so the check knows it ended the CLI, and kills a CLI that
+      // outlasts the TERM.
       const limit = setTimeout(() => {
         timedOut = true;
         child.kill("SIGTERM");
+        kill = setTimeout(() => {
+          child.kill("SIGKILL");
+          drainSoon();
+        }, STATUS_KILL_MS);
       }, limitMs);
-      let out = "";
       child.stdout.setEncoding("utf8");
       child.stdout.on("data", (chunk: string) => {
         if (out.length < 64 * 1024) out += chunk;
       });
-      child.once("error", (error) => {
-        clearTimeout(limit);
-        reject(error);
-      });
-      // The CLI exits 1 when signed out, its answer said all the same.
-      child.once("close", () => {
-        clearTimeout(limit);
-        resolve({ stdout: out, timedOut });
-      });
+      child.once("error", (error) => settle(() => reject(error)));
+      child.once("exit", drainSoon);
+      child.once("close", done);
     });
     const status = parseLoginStatus(stdout.trim());
     // A whole answer written just before the limit still counts.

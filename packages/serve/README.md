@@ -1594,7 +1594,10 @@ has the row **Use Claude Code's login on this machine**, over these routes:
   copied: a file that doesn't parse as a JSON object, a bigger one, a FIFO or a device is not copied at all, and the
   check never waits on one. A run's config dir has none of them either, so the status says what a run gets. A check
   killed mid-way leaves its folder (`agentrun-claude-status-*` in the temporary folder); a server where the login is
-  allowed removes this user's ones older than twice the check's limit as it starts. The status check
+  allowed removes this user's ones as it starts, once the check has ended by the end it wrote in its folder (its limit,
+  however long, and 2 s) and 15 s more, or, for a folder with none, once older than twice the check's limit. At its
+  limit the check asks the CLI to go (SIGTERM), kills it 1 s later, and waits at most 1 s more for its output, so a CLI
+  that ignores the TERM, or a process it started that holds its output open, never holds the check. The status check
   runs in the person's home (the server's `HOME` when it is an absolute path, else the OS's home, read once where the
   server makes the login) on every place, as the sign-in does, and so does a run on the login
   on macOS: the CLI reads its tokens there from the login keychain, which is under that home. So a run there writes the
