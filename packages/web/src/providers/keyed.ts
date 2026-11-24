@@ -80,10 +80,12 @@ export async function keyedCall(client: Keyed | null, who: string, keyEnv: strin
   if (!client) return failed("refused", "NO_KEY", `web_${what} goes through ${who} here, and this run holds no ${who} key (${keyEnv})`);
   if (!client.live()) return failed("refused", "KEY_REFUSED", `${who} refused this run's key: it is not asked again in this run`);
   // A request that failed, or an answer whose body broke after its headers came (the request's timeout, its stop, a
-  // reset socket): typed by why, never thrown, so the receipt keeps the turn and the order goes on.
+  // reset socket): typed by why, never thrown, so the receipt keeps the turn and the order goes on. A stop is known by
+  // the caller's signal, never by the error's name: a run stops with a reason of its own, which the request fails with.
   const unanswered = (error: unknown, read: boolean) => {
+    if (signal?.aborted) return failed("infra", "STOPPED", `${who}'s ${what} was stopped`);
     const name = (error as Error)?.name;
-    return name === "TimeoutError" ? failed("infra", "TIMEOUT", `${who}'s ${what} did not answer in time`) : name === "AbortError" ? failed("infra", "STOPPED", `${who}'s ${what} was stopped`) : failed("infra", "CONNECT", read ? `${who}'s ${what} answer broke off` : `${who}'s ${what} failed to connect`);
+    return name === "TimeoutError" || name === "AbortError" ? failed("infra", "TIMEOUT", `${who}'s ${what} did not answer in time`) : failed("infra", "CONNECT", read ? `${who}'s ${what} answer broke off` : `${who}'s ${what} failed to connect`);
   };
   let response: Response;
   try {

@@ -167,13 +167,16 @@ test("Exa's answer of something other than its results is a failed turn, never t
   assert.deepEqual(receipt.tries.map((one) => one.outcome), ["error"]);
 });
 
-// An answer whose headers came (200, or a status this server reads) and whose body then broke: a socket reset, the
-// request's timeout or its stop. Exa's fake sends one chunk and then breaks as `breaks` says; Firecrawl's answers whole.
+// An answer whose headers came (200, or a status this server reads) and whose body then broke: a socket reset, or the
+// request's own timeout (a TimeoutError, or an AbortError with no stop by the caller). Exa's fake sends one chunk and
+// then breaks as `breaks` says; Firecrawl's answers whole. A caller's stop is the signal's, tested on its own below.
 const BROKEN = {
-  CONNECT: () => new TypeError("terminated"),
-  TIMEOUT: () => new DOMException("The operation was aborted due to timeout", "TimeoutError"),
-  STOPPED: () => new DOMException("This operation was aborted", "AbortError"),
+  reset: () => new TypeError("terminated"),
+  timeout: () => new DOMException("The operation was aborted due to timeout", "TimeoutError"),
+  abort: () => new DOMException("This operation was aborted", "AbortError"),
 };
+/** What each way of breaking is typed as, with no stop by the caller. */
+const BROKEN_CODE = { reset: "CONNECT", timeout: "TIMEOUT", abort: "TIMEOUT" };
 
 /** A send whose answer is `status` with `headers`, one chunk of body, then `breaks()`'s error, or, with `breaks` null, the
  *  request's own signal's reason once it aborts. `asked` counts the requests. */
@@ -213,12 +216,13 @@ function brokenWeb(exaSend) {
 const turns = (receipt) => receipt.tries.map((one) => [one.provider, one.outcome, one.failure?.class, one.failure?.code]);
 
 test("Exa's answer whose body breaks after its 200 headers is a failed turn typed by why: web_fetch goes on to the direct fetch, web_search to Firecrawl", async () => {
-  for (const [code, breaks] of Object.entries(BROKEN)) {
+  for (const [how, breaks] of Object.entries(BROKEN)) {
+    const code = BROKEN_CODE[how];
     const w = brokenWeb(brokenSend(200, breaks).send);
     const page = await w.fetch(PUBLIC);
-    assert.deepEqual([page.answer.ok, page.answer.via, turns(page.receipt)], [true, "direct", [["exa", "error", "infra", code], ["direct", "ok", undefined, undefined]]], `fetch, ${code}`);
+    assert.deepEqual([page.answer.ok, page.answer.via, turns(page.receipt)], [true, "direct", [["exa", "error", "infra", code], ["direct", "ok", undefined, undefined]]], `fetch, ${how}`);
     const found = await w.search("widgets");
-    assert.deepEqual([found.answer.provider, turns(found.receipt)], ["firecrawl", [["exa", "error", "infra", code], ["firecrawl", "ok", undefined, undefined]]], `search, ${code}`);
+    assert.deepEqual([found.answer.provider, turns(found.receipt)], ["firecrawl", [["exa", "error", "infra", code], ["firecrawl", "ok", undefined, undefined]]], `search, ${how}`);
   }
 });
 
