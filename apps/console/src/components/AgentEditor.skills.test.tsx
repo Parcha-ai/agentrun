@@ -3,7 +3,7 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentEditor, type EditorProps } from "./AgentEditor";
-import type { Agent, AgentFields, SaveProblem } from "@/lib/agentForm";
+import { editBody, type Agent, type AgentFields, type SaveProblem } from "@/lib/agentForm";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 const caps = { harnesses: [{ id: "pi", available: true }], tools: [], thinking: [] };
@@ -37,6 +37,24 @@ beforeEach(() => { vi.stubGlobal("ResizeObserver", class { observe() {} unobserv
 afterEach(() => { act(() => root?.unmount()); root = undefined; document.body.innerHTML = ""; vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 describe("agent skill authoring", () => {
+  it.each<Record<string, string>>([{}, { "other/SKILL.md": files["other/SKILL.md"] }])("preserves unavailable saved skills and refuses partial skill edits", async incomplete => {
+    const saved: AgentFields[] = [];
+    await render({ skillFiles: incomplete, onSave: async fields => { saved.push(fields); return null; } });
+    expect(host.textContent).toContain("reviewing");
+    expect(host.textContent).toContain("other");
+    expect(host.textContent).toContain("Skill files are unavailable");
+    expect(button("Add skill").disabled).toBe(true);
+    expect(button("Edit skill reviewing").disabled).toBe(true);
+    const nav = host.querySelector('nav[aria-label="Agent settings sections"]')!;
+    await act(async () => [...nav.querySelectorAll<HTMLButtonElement>("button")].find(b => b.textContent?.trim().startsWith("General"))!.click());
+    type(host.querySelector<HTMLInputElement>("#agent-description")!, "Still editable.");
+    await click("Save revision");
+    expect(saved[0].skillFiles).toBeUndefined();
+    expect(editBody(agent, saved[0], "", incomplete).definition.skills).toEqual(["other", "reviewing"]);
+    await update({ skillFiles: files });
+    await act(async () => [...nav.querySelectorAll<HTMLButtonElement>("button")].find(b => b.textContent?.trim().startsWith("Skills"))!.click());
+    expect(button("Add skill").disabled).toBe(false);
+  });
   it("keeps saved names while files load, offers retry after failure, and never enables a partial edit", async () => {
     const retry = vi.fn(); await render({ onRetrySkills: retry });
     expect(host.textContent).toContain("reviewing"); expect(button("Add skill")).toBeTruthy();

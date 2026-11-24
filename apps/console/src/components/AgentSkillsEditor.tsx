@@ -20,13 +20,16 @@ export function AgentSkillsEditor({ savedNames, files, error, onRetry, onChange,
   const [nameError, setNameError] = useState<string>();
   const [selected, setSelected] = useState<string>();
   const [selectedFile, setSelectedFile] = useState<string>();
-  const ready = files !== undefined;
-  const names = ready ? Object.keys(files).filter(path => path.endsWith("/SKILL.md")).map(path => path.slice(0, -"/SKILL.md".length)).sort() : savedNames;
+  const loadedNames = Object.keys(files ?? {}).filter(path => path.endsWith("/SKILL.md")).map(path => path.slice(0, -"/SKILL.md".length));
+  const missing = files === undefined ? [] : savedNames.filter(name => !loadedNames.includes(name));
+  const ready = files !== undefined && missing.length === 0;
+  const names = [...new Set([...savedNames, ...loadedNames])].sort();
+  const problem = error ?? (missing.length ? `Skill files are unavailable for ${missing.join(", ")}. Skill editing is disabled to preserve them; other settings can still be changed.` : undefined);
   const paths = selected && files ? Object.keys(files).filter(path => path.startsWith(`${selected}/`)).sort((a, b) => a === `${selected}/SKILL.md` ? -1 : b === `${selected}/SKILL.md` ? 1 : a.localeCompare(b)) : [];
   const path = paths.find(path => path === selectedFile) ?? paths[0];
   const open = (skill: string) => { setSelected(skill); setSelectedFile(`${skill}/SKILL.md`); setAdding(false); };
   const add = () => {
-    if (!files || readOnly) return;
+    if (!files || !ready || readOnly) return;
     const slug = name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 64).replace(/-$/, "");
     if (!slug) { setNameError("Use a name with letters or numbers."); return; }
     const path = `${slug}/SKILL.md`;
@@ -38,8 +41,8 @@ export function AgentSkillsEditor({ savedNames, files, error, onRetry, onChange,
     {!readOnly && <div className="flex justify-end">
       <Button size="sm" disabled={!ready} onClick={() => { setAdding(true); setNameError(undefined); }}><Plus aria-hidden /> Add skill</Button>
     </div>}
-    {!readOnly && !ready && (error
-      ? <Banner tone="error" role="alert" actions={onRetry && <Button size="sm" onClick={onRetry}>Retry skills</Button>}>{error}</Banner>
+    {!readOnly && !ready && (problem
+      ? <Banner tone="error" role="alert" actions={onRetry && <Button size="sm" onClick={onRetry}>Retry skills</Button>}>{problem}</Banner>
       : <p className="text-body text-muted-foreground" role="status">Loading skills…</p>)}
     {names.length ? <ul className="divide-y border">
       {names.map(skill => <li key={skill} className="flex items-center gap-3 px-3 py-3">
@@ -54,7 +57,7 @@ export function AgentSkillsEditor({ savedNames, files, error, onRetry, onChange,
       </Field>
       <div className="flex justify-end gap-2"><Button size="sm" onClick={() => setAdding(false)}>Cancel</Button><Button size="sm" disabled={!name.trim()} onClick={add}>Create skill</Button></div>
     </div>}
-    {path && files && !readOnly && <div className="space-y-4 border p-4">
+    {path && files && ready && !readOnly && <div className="space-y-4 border p-4">
       <Field label="Skill file" note="Supporting files stay with the skill when you save.">
         <Picker label="Skill file" value={path} onChange={setSelectedFile} options={paths.map(path => ({ value: path, label: path.slice(selected!.length + 1) }))} className="w-full" />
       </Field>
