@@ -34,6 +34,11 @@ describe("LearningGlance", () => {
     expect(cell(host, "glance-alone")).toBe("Finished alone95%56 of 59 runs it ran first, 3 handed back to the agent · 95% interval 86% to 98%");
     expect(cell(host, "glance-even")).toMatch(/^Break-evenRun 24\$[\d.]+ booked over 80 runs, \$[\d.]+ had the agent done all of it$/);
   });
+  it("a run a restart cut mid-call never finished alone: it counts with the hand-backs, out of the share", () => {
+    const cut: LearningCost = { ...COST, summary: { ...COST.summary, hand_backs: { ran: 59, back: 3, cut: 2 } } };
+    const host = draw(createElement(LearningGlance, { cost: cut, revisions: REVISIONS }));
+    expect(cell(host, "glance-alone")).toMatch(/^Finished alone92%54 of 59 runs it ran first, 5 handed back to the agent · 95% interval /);
+  });
   it("shows nothing before a learned workflow has taken a run over", () => {
     const before: LearningCost = { ...COST, summary: { ...COST.summary, takeover: null } };
     expect(draw(createElement(LearningGlance, { cost: before, revisions: [] })).textContent).toBe("");

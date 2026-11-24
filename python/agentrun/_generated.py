@@ -4435,6 +4435,7 @@ class GetLearningCostResponseSummaryAfter(TypedDict):
 class GetLearningCostResponseSummaryHandBacks(TypedDict):
     ran: int
     back: int
+    cut: int
 
 
 class GetLearningCostResponseSummaryWithheld(TypedDict):

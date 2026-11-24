@@ -60,7 +60,7 @@ import { filesToCopy, placeRunInputs } from "../uploads.js";
 import { handedSignInReadsBack, signInReads } from "../sign-ins-store.js";
 import { UNREADABLE_SIGN_IN } from "../run-view.js";
 import { durableWait } from "../workflow/pi-versions.js";
-import { type ClaimModelKey, claimModelEnv, claimModelKey, claimSecrets, claimSpendOff, holdRunKey, keyedAtClaim, hostDecisionKeys, learnedDecisionKeys, savedModelKeys, tierModelKeys, underClaimed, withoutModelKeys } from "./claim-secrets.js";
+import { type ClaimModelKey, claimModelEnv, claimModelKey, claimSecrets, claimSpendOff, holdRunKey, keyedAtClaim, hostDecisionKeys, keysOver, learnedDecisionKeys, savedModelKeys, tierModelKeys, underClaimed, withoutModelKeys } from "./claim-secrets.js";
 import { compareEndOfRun, GRADER, withGrader } from "./compare-end.js";
 import { agreeOnOf } from "../learning-setting.js";
 import { catalogSessionNames, type ClaimMcp, mcpWhereHeld } from "./mcp-run.js";
@@ -299,7 +299,8 @@ export async function graderRouteOf(
   const savedKeys = keyed ? {} : await savedModelKeys({ store: deps.store, sealKey: deps.sealKey, env: deps.env });
   for (const redact of new Set(holds)) holdClaimed(redact, savedKeys);
   // The claim's run, turn and attempt on its grader's requests too (request-metadata.ts): they spend on the run's cap.
-  const env = claimModelEnv(deps.env, { ...savedKeys, ...claimed }, runKey, claim);
+  // keysOver, never a spread: the claim's model keys are not enumerable (claimSecrets).
+  const env = claimModelEnv(deps.env, keysOver(savedKeys, claimed), runKey, claim);
   if (body.modelTiers?.fast === undefined && tierModelOf(env, "fast") === undefined) return undefined;
   try {
     return await deps.routeOf(body.modelTiers?.fast, env, "fast", PI_WIRES, undefined, cut);
@@ -661,7 +662,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     // A run with its own model key: its subagents' models carry that key too, and no saved key is read.
     const savedKeys = keyed ? {} : await savedModelKeys({ store: deps.store, sealKey: deps.sealKey, env: deps.env });
     holdClaimed(cut, savedKeys);
-    const tierEnv = claimModelEnv(deps.env, { ...savedKeys, ...toolEnv }, runKey, claim);
+    const tierEnv = claimModelEnv(deps.env, keysOver(savedKeys, toolEnv), runKey, claim);
     for (const tier of SUBAGENT_TIERS) {
       if (body.modelTiers?.[tier] === undefined && tierModelOf(tierEnv, tier) === undefined) continue;
       try {
@@ -790,7 +791,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     // A run with its own model key: its learned nodes' tiers carry that key too, and no saved key is read.
     const tierKeys = keyed ? {} : await tierModelKeys({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, learnedTiers(workflows));
     holdClaimed(cut, tierKeys);
-    const tierEnv = claimModelEnv(deps.env, { ...toolEnv, ...tierKeys }, runKey, claim);
+    const tierEnv = claimModelEnv(deps.env, keysOver(toolEnv, tierKeys), runKey, claim);
     for (const [tier, routed] of await learnedTierRoutes(workflows, tierEnv, (tier) => deps.routeOf(undefined, tierEnv, tier, PI_WIRES, undefined, cut))) {
       if ("why" in routed) tierUnreachable.set(tier, routed.why);
       else tierRoutes.set(tier, routed);

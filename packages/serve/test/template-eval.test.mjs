@@ -379,7 +379,7 @@ async function webPackage(t, name, web, calls, files = {}) {
 const resultOf = (call) => JSON.parse(call.result.split("\n")[0]);
 
 test("a web: unavailable case's run gets the real failed-search words on every web_search, a failed page on every web_fetch, and never the network", { timeout: 300_000 }, async (t) => {
-  const { RATE_LIMITED } = await import("../dist/exa-keyless.js");
+  const { RATE_LIMITED } = await import("../dist/web-run.js");
   const dir = await webPackage(t, "search-failed", "unavailable", [["web_search", { query: "industrial robotics deals this week" }], ["web_search", { query: "robotics funding" }], ["web_fetch", { url: "https://deals.example.test/week" }]]);
   const report = await evalTemplate({ dir, cases: ["search-failed"], serve: { faux: FAUX } });
   const [run] = report.cases[0].runs;
