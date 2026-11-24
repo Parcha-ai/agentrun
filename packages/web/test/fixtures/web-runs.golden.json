@@ -72,14 +72,7 @@
    "op": "search",
    "asked": "   ",
    "provider": null,
-   "tries": [
-    {
-     "provider": "parallel",
-     "outcome": "error",
-     "error": "web_search needs a query",
-     "ms": 0
-    }
-   ],
+   "tries": [],
    "classifier": "off",
    "wall": {
     "verdict": "unjudged"
