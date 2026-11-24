@@ -143,8 +143,8 @@ test("an account of another Composio user under the same auth config is never th
   assert.ok(!storeBytes(s.server.data).includes("other@example.com"), "nor kept");
 });
 
-for (const [what, made] of [["empty", { user: "" }], ["per-run", { user: "per_run", per_run: true }]]) {
-  test(`a server whose recorded Composio user is ${what} never has its accounts asked for, and says unknown`, async (t) => {
+for (const [what, made, says] of [["empty", { user: "" }, "says unknown"], ["per-run", { user: "per_run", per_run: true }, "shows no account: each run names its own"]]) {
+  test(`a server whose recorded Composio user is ${what} never has its accounts asked for, and ${says}`, async (t) => {
     const s = await setup(t, { active: ["gmail"] });
     assert.equal((await s.api("PUT", "/settings/mcp-servers/gmail/composio", { api_key: s.composio.apiKey, toolkit: "gmail", tools: ["add"] })).status, 200);
     // A damaged record, or a per-run one: its user is no Composio user a single account belongs to.
@@ -154,7 +154,8 @@ for (const [what, made] of [["empty", { user: "" }], ["per-run", { user: "per_ru
     const res = await s.api("POST", "/settings/mcp-servers/gmail/refresh");
     assert.equal(res.status, 200, JSON.stringify(res.body));
     assert.equal(s.composio.to("/api/v3/connected_accounts", "GET").length, asked, "Composio's connected accounts were never asked for");
-    assert.deepEqual(res.body.server.composio_account, { state: "unknown", checked_at: res.body.server.composio_account?.checked_at });
+    const account = res.body.server.composio_account;
+    assert.deepEqual(account, made.per_run ? undefined : { state: "unknown", checked_at: account?.checked_at });
   });
 }
 
