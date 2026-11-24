@@ -15,7 +15,7 @@ import { openPostgresStore, openSqliteStore } from "../dist/store/index.js";
 import { dropSchema, freshSchema, onPostgres, PG_URL } from "./store-target.mjs";
 
 const { API_KEY_SETTING, API_KEYS_LIMIT, ApiKeys, USED_EVERY_MS } = await import("../dist/api-keys.js");
-const { CLAUDE_LOGIN_SETTING, turnOnClaudeLogin, whyNotOneOwner } = await import("../dist/claude-login.js");
+const { CLAUDE_LOGIN_SETTING, oneOwnerDeps, turnOnClaudeLogin } = await import("../dist/claude-login.js");
 
 /** A place for one store, opened and closed by the test as a server's starts and stops would: a schema of its own on
  *  Postgres, a data directory of its own on SQLite; removed after the test. */
@@ -195,12 +195,12 @@ test("the login's turn-on itself waits for a revocation under way, and is refuse
   const { store, keys, stop } = await open();
   t.after(() => stop());
   const made = await keys.create({ name: "the last key" });
-  // The server's own wiring of the turn-on (server.ts loginDeps): its turn is the keys', and its refusal counts the keys
-  // when it is read. What a turn-on that got past the refusal would go on to is given too, so it would show.
+  // What the server's routes give the turn-on (server.ts loginDeps spreads the same oneOwnerDeps over its keys): its
+  // turn is the keys', and its refusal counts the keys each time it is asked. What a turn-on that got past the refusal
+  // would go on to is given too, so it would show.
   const went = [];
   const deps = {
-    turn: (work) => keys.inTurn(work),
-    get refused() { return whyNotOneOwner({ apiOnly: false, tokens: 1, keys: keys.count }); },
+    ...oneOwnerDeps({ apiOnly: false, tokens: 1 }, keys),
     settings: { ...store.settings, put: async (...args) => (went.push("the setting was written"), store.settings.put(...args)) },
     data: "/nonexistent", env: {}, sameMachine: true,
     signIns: { view: () => undefined, stop: async () => undefined },
@@ -235,10 +235,12 @@ test("a row whose dates are no dates, or that is no key's at all, is ignored and
   ({ store, keys, said, stop } = await open());
   t.after(() => stop());
   assert.deepEqual(keys.list().keys.map((one) => one.name), ["kept"], "the list answers with the keys it could read");
+  assert.deepEqual(keys.list().unreadable, [damaged, "not-a-key"], "and names the rows it could not, by id");
   assert.equal(keys.count, 1);
   assert.deepEqual(said.map((line) => [line.condition, line.key]).sort(), [["api_key_unreadable", `${API_KEY_SETTING}${damaged}`], ["api_key_unreadable", `${API_KEY_SETTING}not-a-key`]]);
   assert.ok(said.every((line) => /counts toward the limit until DELETE \/v2\/settings\/api-keys\//.test(line.effect)), "each line says how the row is removed");
   for (const id of [damaged, "not-a-key"]) await keys.revoke(id);
+  assert.equal("unreadable" in keys.list(), false, "removed, they are named no more");
   assert.deepEqual((await store.settings.all({ prefix: API_KEY_SETTING })).map((one) => one.key), [`${API_KEY_SETTING}${made.id}`], "both rows are gone, and the key's stays");
   await assert.rejects(keys.revoke(damaged), (error) => error.code === "not_found", "a second removal finds nothing");
 });

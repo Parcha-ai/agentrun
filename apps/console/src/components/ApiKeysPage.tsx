@@ -1,5 +1,5 @@
 import { SettingsSection, settingsBodyClass, settingsIntroClass, settingsPageClass } from "@/components/Settings";
-import { KeyRound } from "lucide-react";
+import { KeyRound, TriangleAlert } from "lucide-react";
 import { type FormEvent, useEffect, useRef, useState } from "react";
 import { RunError } from "@/components/RunError";
 import { ListSkeleton } from "@/components/Skeleton";
@@ -29,6 +29,8 @@ export function ApiKeysPage({ v2, writable, whyNot = "sign_in", origin }: { v2: 
   const [limit, setLimit] = useState<number | null>(null);
   // Why this server makes no key now, in its own words (it is one person's); null when it makes them.
   const [refused, setRefused] = useState<string | null>(null);
+  // The ids of rows that are no key's (damaged, or another version's): they open nothing and count toward the limit.
+  const [unreadable, setUnreadable] = useState<string[]>([]);
   const [loadError, setLoadError] = useState<ApiError | null>(null);
   const [made, setMade] = useState<ApiKeyMade | null>(null);
   const [problem, setProblem] = useState<{ title: string; error: ApiError } | null>(null);
@@ -43,11 +45,13 @@ export function ApiKeysPage({ v2, writable, whyNot = "sign_in", origin }: { v2: 
   // A revoked key's row is gone, and its buttons with it: the focus goes to the list, never back to the page's top.
   const listBox = useRef<HTMLDivElement>(null);
   const [focusList, setFocusList] = useState(false);
+  // A revocation that failed leaves its row: the focus goes back to that row's button, once it is enabled again.
+  const [focusRow, setFocusRow] = useState<string | null>(null);
   const asked = useRef(0);
   const load = () => {
     const n = ++asked.current;
     v2.apiKeys()
-      .then((v) => { if (n === asked.current) { setKeys(v.keys); setLimit(v.limit); setRefused(v.refused ?? null); setLoadError(null); } })
+      .then((v) => { if (n === asked.current) { setKeys(v.keys); setLimit(v.limit); setRefused(v.refused ?? null); setUnreadable(v.unreadable ?? []); setLoadError(null); } })
       .catch((e) => { if (n === asked.current) setLoadError(apiError(e)); });
   };
   useEffect(load, [v2]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -61,6 +65,11 @@ export function ApiKeysPage({ v2, writable, whyNot = "sign_in", origin }: { v2: 
     listBox.current?.focus();
     setFocusList(false);
   }, [focusList, busy]);
+  useEffect(() => {
+    if (!focusRow || busy) return;
+    revokeButtons.current.get(focusRow)?.focus();
+    setFocusRow(null);
+  }, [focusRow, busy]);
   const act = async (title: string, work: () => Promise<unknown>) => {
     setProblem(null); setBusy(true);
     try { await work(); } catch (e) { setProblem({ title, error: apiError(e) }); } finally { setBusy(false); }
@@ -78,18 +87,25 @@ export function ApiKeysPage({ v2, writable, whyNot = "sign_in", origin }: { v2: 
   const cancelRevoke = (id: string) => { setRevoking(null); requestAnimationFrame(() => revokeButtons.current.get(id)?.focus()); };
   const revoke = (key: ApiKey) => {
     setRevoking(null);
+    let revoked = false;
     void act("The key was not revoked", async () => {
       await v2.revokeApiKey(key.id);
+      revoked = true;
       // The key just shown is gone with its revocation: its panel would offer a key that opens nothing.
       setMade((current) => (current?.id === key.id ? null : current));
-      setFocusList(true);
-    });
+    }).then(() => (revoked ? setFocusList(true) : setFocusRow(key.id)));
+  };
+  /** Removes a row that is no key's, by its id: it opens nothing, so nothing is asked first. */
+  const removeUnreadable = (id: string) => {
+    void act("The row was not removed", () => v2.revokeApiKey(id)).then(() => setFocusList(true));
   };
 
   if (!keys) return loadError
     ? <Banner tone="error" className="m-8" actions={<Button type="button" size="xs" onClick={load}>Try again</Button>}><p className="font-mono">The API keys could not be read: {loadError.code}: {loadError.message}</p></Banner>
     : <div className={settingsPageClass}><ListSkeleton label="Loading API keys" rows={3} /></div>;
-  const full = limit !== null && keys.length >= limit;
+  // What counts toward the server's limit: the keys, and the rows that are no key's.
+  const held = keys.length + unreadable.length;
+  const full = limit !== null && held >= limit;
   // A key on the page is the only showing of it: the next one is made once this one is put away (Done), never over it.
   const shown = made !== null;
   return (
@@ -134,9 +150,9 @@ export function ApiKeysPage({ v2, writable, whyNot = "sign_in", origin }: { v2: 
               </Field>
             </form>
           </SettingsSection>
-          <SettingsSection label="Keys" title={limit === null ? "Keys" : `Keys · ${keys.length} of ${limit}`} note={<p>A token this server was started with (<span className="font-mono">AGENTRUN_TOKEN</span>) is set in its environment and is not listed here.</p>}>
-            <div ref={listBox} tabIndex={-1} className="outline-none">
-            {keys.length === 0
+          <SettingsSection label="Keys" title={limit === null ? "Keys" : `Keys · ${held} of ${limit}`} note={<p>A token this server was started with (<span className="font-mono">AGENTRUN_TOKEN</span>) is set in its environment and is not listed here.</p>}>
+            <div ref={listBox} tabIndex={-1} role="group" aria-label="API keys" className="outline-none">
+            {held === 0
               ? <p className="border p-4 text-body text-muted-foreground">No key has been made yet.</p>
               : (
                 <ul className="border">
@@ -150,7 +166,7 @@ export function ApiKeysPage({ v2, writable, whyNot = "sign_in", origin }: { v2: 
                           <span className="block min-w-0 break-words font-semibold lg:flex-1">{key.name}</span>
                           <span className="mt-1 flex flex-wrap gap-x-4 gap-y-0.5 text-small text-muted-foreground lg:mt-0 lg:shrink-0 lg:flex-nowrap">
                             <span className="lg:w-36">Made {when(key.created_at)}</span>
-                            <span className="lg:w-40">{key.last_used_at ? `Last used ${when(key.last_used_at)}` : "Never used"}</span>
+                            <span className="lg:w-44">{key.last_used_at ? `Last used ${when(key.last_used_at)}` : "Never used"}</span>
                           </span>
                         </div>
                         {/* Kept in its place while its question is open, so the row's dates stay in their columns. */}
@@ -165,6 +181,16 @@ export function ApiKeysPage({ v2, writable, whyNot = "sign_in", origin }: { v2: 
                           <Button type="button" variant="destructive" disabled={busy} onClick={() => revoke(key)}>Revoke the key</Button>
                         </div>
                       )}
+                    </li>
+                  ))}
+                  {unreadable.map((id) => (
+                    <li key={`unreadable:${id}`} className="flex items-center gap-3 border-b px-4 py-3 text-body last:border-b-0">
+                      <TriangleAlert className="mt-0.5 size-4 shrink-0 self-start text-warning-text" aria-hidden />
+                      <div className="min-w-0 flex-1">
+                        <span className="block min-w-0 break-all font-mono text-small">{id}</span>
+                        <span className="mt-1 block text-small text-muted-foreground">This row is no key's: it is damaged, or another version wrote it. It opens nothing and counts toward the limit.</span>
+                      </div>
+                      {writable && <Button type="button" variant="outline" size="sm" className="shrink-0" disabled={busy} aria-label={`Remove the unreadable row ${id}`} onClick={() => removeUnreadable(id)}>Remove</Button>}
                     </li>
                   ))}
                 </ul>

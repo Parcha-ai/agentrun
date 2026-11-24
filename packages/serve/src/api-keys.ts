@@ -136,9 +136,16 @@ export class ApiKeys {
   }
 
   /** GET /settings/api-keys: every key, oldest first, and the most a server keeps. `refused`: why this server makes
-   *  none now (server.ts apiKeysRefused), said with the list so a page can say it before anyone tries. */
-  list(refused?: string): { keys: ApiKeyView[]; limit: number; refused?: string } {
-    return { keys: [...this.#keys.values()].sort((a, b) => (a.row.id < b.row.id ? -1 : 1)).map((held) => this.#view(held)), limit: API_KEYS_LIMIT, ...(refused ? { refused } : {}) };
+   *  none now (server.ts apiKeysRefused), said with the list so a page can say it before anyone tries. `unreadable`:
+   *  the ids of the rows that are no key's, when there are any, so their owner sees what else counts toward the limit
+   *  and removes it (revoke takes such an id). */
+  list(refused?: string): { keys: ApiKeyView[]; limit: number; refused?: string; unreadable?: string[] } {
+    return {
+      keys: [...this.#keys.values()].sort((a, b) => (a.row.id < b.row.id ? -1 : 1)).map((held) => this.#view(held)),
+      limit: API_KEYS_LIMIT,
+      ...(refused ? { refused } : {}),
+      ...(this.#unreadable.size ? { unreadable: [...this.#unreadable].sort() } : {}),
+    };
   }
 
   /** POST /settings/api-keys: a new key named `name`, its value as `api_key`, this once. `refused`: why this server

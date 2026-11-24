@@ -21,14 +21,14 @@ const key = (extra: Partial<ApiKey> = {}): ApiKey => {
 type Call = { method: string; path: string; body: unknown };
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 /** A server with `state.keys`: GET lists them, POST makes one (201, with its value), DELETE revokes one. */
-function server(state: { keys: ApiKey[]; limit?: number; refused?: string; readsFail?: boolean; createFails?: boolean }) {
+function server(state: { keys: ApiKey[]; limit?: number; refused?: string; unreadable?: string[]; readsFail?: boolean; createFails?: boolean; revokeFails?: boolean }) {
   const calls: Call[] = [];
   const fetch = (async (url: string, init?: RequestInit) => {
     const call = { method: init?.method ?? "GET", path: String(url), body: init?.body ? JSON.parse(String(init.body)) : undefined };
     calls.push(call);
     const path = new URL(call.path, "http://serve.test").pathname;
     if (state.readsFail && call.method === "GET") return json(500, { error: { code: "internal", message: "the read failed", retryable: true } });
-    if (path === "/v2/settings/api-keys" && call.method === "GET") return json(200, { keys: state.keys, limit: state.limit ?? 50, ...(state.refused ? { refused: state.refused } : {}) });
+    if (path === "/v2/settings/api-keys" && call.method === "GET") return json(200, { keys: state.keys, limit: state.limit ?? 50, ...(state.refused ? { refused: state.refused } : {}), ...(state.unreadable?.length ? { unreadable: state.unreadable } : {}) });
     if (path === "/v2/settings/api-keys" && call.method === "POST") {
       if (state.createFails) return json(409, { error: { code: "api_keys_full", message: "This server keeps at most 50 API keys.", retryable: false } });
       const made = key({ id: "01a20b30-b53a-7000-9abd-000000000002", name: (call.body as { name: string }).name });
@@ -36,7 +36,13 @@ function server(state: { keys: ApiKey[]; limit?: number; refused?: string; reads
       return json(201, { ...made, api_key: MADE });
     }
     const one = /^\/v2\/settings\/api-keys\/([^/]+)$/.exec(path);
-    if (one && call.method === "DELETE") { state.keys = state.keys.filter((k) => k.id !== decodeURIComponent(one[1]!)); return new Response(null, { status: 204 }); }
+    if (one && call.method === "DELETE") {
+      if (state.revokeFails) return json(500, { error: { code: "internal", message: "the store is away", retryable: true } });
+      const id = decodeURIComponent(one[1]!);
+      state.keys = state.keys.filter((k) => k.id !== id);
+      state.unreadable = state.unreadable?.filter((u) => u !== id);
+      return new Response(null, { status: 204 });
+    }
     return json(404, { error: { code: "not_found", message: path, retryable: false } });
   }) as typeof globalThis.fetch;
   return { v2: createClient({ fetch }), calls, state };
@@ -153,9 +159,35 @@ describe("Settings → AgentRun API keys", () => {
     await page.click(/^Revoke the key$/);
     expect(calls.filter((c) => c.method === "DELETE").map((c) => c.path)).toEqual(["/v2/settings/api-keys/01a20b30-b53a-7000-9abd-000000000003"]);
     expect(page.rows().map((row) => row.textContent)).toEqual([expect.stringContaining("billing app")]);
-    // The revoked row and its buttons are gone: the focus is on the list, not lost to the page.
-    expect(document.activeElement).toBe(page.host.querySelector('[aria-label="Keys"] [tabindex="-1"]'));
-    expect(document.activeElement).not.toBe(document.body);
+    // The revoked row and its buttons are gone: the focus is on the list, which says what it is, not lost to the page.
+    const list = page.host.querySelector('[aria-label="Keys"] [tabindex="-1"]')!;
+    expect(document.activeElement).toBe(list);
+    expect([list.getAttribute("role"), list.getAttribute("aria-label")]).toEqual(["group", "API keys"]);
+  });
+
+  it("a revocation the server refuses keeps the row, says why, and gives the focus back to that row's button", async () => {
+    const { v2 } = server({ keys: [key({ name: "ci" })], revokeFails: true });
+    const page = await open(v2);
+    await page.click(/^Revoke ci$/);
+    await page.click(/^Revoke the key$/);
+    expect(page.host.textContent).toContain("The key was not revoked");
+    expect(page.rows()).toHaveLength(1);
+    expect(document.activeElement).toBe(page.button(/^Revoke ci$/));
+  });
+
+  it("a row that is no key's is listed by its id, counts toward the limit, and Remove takes it away", async () => {
+    const { v2, calls } = server({ keys: [key()], unreadable: ["not-a-key"], limit: 2 });
+    const page = await open(v2);
+    expect(page.host.textContent).toContain("Keys · 2 of 2");
+    expect(page.host.textContent).toContain("This server keeps at most 2 keys.");
+    const [, damaged] = page.rows();
+    expect(damaged!.textContent).toContain("not-a-key");
+    expect(damaged!.textContent).toContain("It opens nothing and counts toward the limit.");
+    await page.click(/^Remove the unreadable row not-a-key$/);
+    expect(calls.filter((c) => c.method === "DELETE").map((c) => c.path)).toEqual(["/v2/settings/api-keys/not-a-key"]);
+    expect(page.rows()).toHaveLength(1);
+    expect(page.host.textContent).toContain("Keys · 1 of 2");
+    expect(page.input().disabled).toBe(false);
   });
 
   it("revoking the key just made takes its panel away: it would offer a key that opens nothing", async () => {

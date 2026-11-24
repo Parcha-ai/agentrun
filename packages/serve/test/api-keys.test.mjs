@@ -260,7 +260,7 @@ test("a server started on its owner's own sign-in makes no key; one made before 
   // While it is there, the login that is one person's is refused by it: no key waits unseen for a later start.
   const login = await asOwner(server)("PUT", "/settings/claude-login", { only_me: true });
   assert.equal(login.status, 403, JSON.stringify(login.body));
-  assert.match(login.body.error.message, /^This server has an API key made for apps/);
+  assert.equal(login.body.error.message, "This server keeps an API key made for apps (Settings → AgentRun API keys). It opens nothing here, and would open the server at a start that takes keys again: a Claude plan is one person's. Revoke it first.");
   // Its owner revokes it here.
   assert.equal((await asOwner(server)("DELETE", `/settings/api-keys/${made.body.id}`)).status, 204);
   assert.deepEqual((await client(server.baseUrl, server.token)("GET", "/settings/api-keys")).body.keys, []);

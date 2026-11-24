@@ -3696,6 +3696,7 @@ class _ListApiKeysResponseRequired(TypedDict):
 
 class ListApiKeysResponse(_ListApiKeysResponseRequired, total=False):
     refused: str
+    unreadable: list[str]
 
 
 class ListApiKeysResponseKeysItem(TypedDict):

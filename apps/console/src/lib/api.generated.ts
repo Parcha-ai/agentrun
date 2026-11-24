@@ -4464,6 +4464,7 @@ export interface operations {
       }[];
       limit: number;
       refused?: string;
+      unreadable?: string[];
     };
   };
   listCliLearning: {

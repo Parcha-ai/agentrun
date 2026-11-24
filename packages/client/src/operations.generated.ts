@@ -2192,6 +2192,7 @@ export type ListApiKeysResponse = {
   }>;
   limit: number;
   refused?: string;
+  unreadable?: Array<string>;
 };
 
 /** The runs waiting and held, the live runners and the recent hand-backs (GET /capacity). */

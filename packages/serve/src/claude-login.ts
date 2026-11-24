@@ -140,12 +140,18 @@ export const LOGIN_SIGNED_OUT = "Claude Code's login on this machine is signed o
 export const LOGIN_UNKNOWN = "Claude Code could not say whether its login on this machine is signed in";
 
 /** Why this server may not turn the mode on, in one line, or undefined when it may: a Claude plan is one person's. */
-export function whyNotOneOwner(facts: { apiOnly: boolean; tokens: number; keys?: number }): string | undefined {
+export function whyNotOneOwner(facts: { apiOnly: boolean; tokens: number; keys?: number; keysDormant?: boolean }): string | undefined {
   if (facts.apiOnly) return "This server has no owner (the API-only profile), so anyone with its token starts runs: a Claude plan is one person's.";
   if (facts.tokens > 1) return `This server takes ${facts.tokens} API tokens, so more than one person can start runs here: a Claude plan is one person's.`;
   // A key made in the console for an app (api-keys.ts) is one more caller that starts runs, as a second token is.
+  // `keysDormant`: the keys open nothing on this server (api-keys.ts dormant), and would at a start that takes them.
   const keys = facts.keys ?? 0;
-  if (keys > 0) return `This server has ${keys === 1 ? "an API key" : `${keys} API keys`} made for apps (Settings → AgentRun API keys), so more than one caller can start runs here: a Claude plan is one person's. Revoke ${keys === 1 ? "it" : "them"} first.`;
+  if (keys > 0) {
+    const [what, it] = keys === 1 ? ["an API key", "it"] : [`${keys} API keys`, "them"];
+    return facts.keysDormant
+      ? `This server keeps ${what} made for apps (Settings → AgentRun API keys). ${keys === 1 ? "It opens" : "They open"} nothing here, and would open the server at a start that takes keys again: a Claude plan is one person's. Revoke ${it} first.`
+      : `This server has ${what} made for apps (Settings → AgentRun API keys), so more than one caller can start runs here: a Claude plan is one person's. Revoke ${it} first.`;
+  }
   return undefined;
 }
 
@@ -215,8 +221,9 @@ export type ClaudeLoginDeps = {
   data: string;
   env: Readonly<Record<string, string | undefined>>;
   pinned: () => Promise<string | undefined>;
-  /** Read when asked, never copied: the server's API keys are made and revoked while it runs (whyNotOneOwner counts them). */
-  refused: string | undefined;
+  /** Why this server may not turn the mode on now, asked each time and never held: the server's API keys are made and
+   *  revoked while it runs (whyNotOneOwner counts them). */
+  refused: () => string | undefined;
   /** Runs `work` once nothing that changes `refused` is under way, and holds such changes off until it settles: the
    *  API keys' turn (api-keys.ts inTurn). The turn-on decides and writes inside it. */
   turn: <T>(work: () => Promise<T>) => Promise<T>;
@@ -224,6 +231,17 @@ export type ClaudeLoginDeps = {
   claude: () => Promise<ClaudeLoginCli>;
   changed: () => Promise<void>;
 };
+
+/** A server's API keys as the login needs them (api-keys.ts ApiKeys): how many there are now, and their turn. */
+export type KeysForLogin = { readonly count: number; inTurn<T>(work: () => Promise<T>): Promise<T> };
+
+/** What the one-owner rule gives the login's routes over a server's keys: `refused`, which counts the keys each time
+ *  it is asked, and `turn`, the keys' own. The server's routes take both from here, and so does the test that runs the
+ *  turn-on against a held revocation: neither is a value read once, or a turn of its own. */
+export const oneOwnerDeps = (facts: { apiOnly: boolean; tokens: number; keysDormant?: boolean }, keys: KeysForLogin): Pick<ClaudeLoginDeps, "refused" | "turn"> => ({
+  refused: () => whyNotOneOwner({ ...facts, keys: keys.count }),
+  turn: (work) => keys.inTurn(work),
+});
 
 /** A route's refusal in words, answered as its `code` (server.ts makes it an ApiError). */
 export class ClaudeLoginRefused extends Error {
@@ -242,7 +260,8 @@ export async function claudeLoginView(deps: ClaudeLoginDeps): Promise<ClaudeLogi
   const login = loginAt(place, deps.data, deps.env);
   const cli = loginCli(await deps.pinned(), deps.env);
   const signIn = deps.signIns.view();
-  const base = { place, command: (await deps.claude()).claudeLoginCommand(login, cli ?? "claude"), can_start: deps.sameMachine && cli !== undefined && deps.refused === undefined, ...(deps.refused ? { refused: deps.refused } : {}), folder: login.dir, machine: machineFolder(deps.env), ...(signIn ? { sign_in: signIn } : {}) };
+  const refused = deps.refused();
+  const base = { place, command: (await deps.claude()).claudeLoginCommand(login, cli ?? "claude"), can_start: deps.sameMachine && cli !== undefined && refused === undefined, ...(refused ? { refused } : {}), folder: login.dir, machine: machineFolder(deps.env), ...(signIn ? { sign_in: signIn } : {}) };
   if (!setting) return { state: "off", ...base };
   if (setting.host !== hostname()) return { state: "other_machine", ...base, can_start: false };
   if (!cli) return { state: "no_cli", ...base };
@@ -260,7 +279,8 @@ export async function turnOnClaudeLogin(deps: ClaudeLoginDeps, body: unknown): P
   // keys, and none is made until the setting is written. What follows the write (the reading again, the CLI's status)
   // is outside the turn, so a key's revocation never waits on the CLI.
   await deps.turn(async () => {
-    if (deps.refused) throw new ClaudeLoginRefused("forbidden", deps.refused);
+    const refused = deps.refused();
+    if (refused) throw new ClaudeLoginRefused("forbidden", refused);
     const asked = turnOnBody(body);
     if ("problem" in asked) throw new ClaudeLoginRefused("input_invalid", asked.problem);
     await deps.settings.put(CLAUDE_LOGIN_SETTING, settingFor(asked.place, deps.data));
@@ -283,7 +303,8 @@ export async function turnOffClaudeLogin(deps: ClaudeLoginDeps): Promise<ClaudeL
  *  still waits is ended first (deps.signIns). The browser code goes to the CLI, never here; the answer is the view as it
  *  is when the sign-in starts, its `sign_in` waiting. */
 export async function startLoginHere(deps: ClaudeLoginDeps): Promise<ClaudeLoginView> {
-  if (deps.refused) throw new ClaudeLoginRefused("forbidden", deps.refused);
+  const refused = deps.refused();
+  if (refused) throw new ClaudeLoginRefused("forbidden", refused);
   const setting = await claudeLoginSetting(deps.settings);
   if (!setting) throw new ClaudeLoginRefused("agent_not_runnable", "Turn on Claude Code's login on this machine first.");
   if (setting.host !== hostname()) throw new ClaudeLoginRefused("agent_not_runnable", "It was turned on for another machine: sign in there.");

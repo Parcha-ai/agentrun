@@ -168,7 +168,8 @@ The server keeps no copy of a key, so it finds one in a text by its shape: `ar_k
 characters, a capital or a digit among them, are cut wherever a run's views, a shared transcript or a learned note
 would show them, whatever stands before them. A key cut short, or split across lines, is not found, so keep keys out
 of prompts and files a run reads all the same. A row under the keys' name in the store that is no key's (damaged, or
-another version's) opens nothing, is said in the log at the start, and is removed by `DELETE` with its id. An
+another version's) opens nothing and counts toward the limit. The list names it in `unreadable`, the console shows it
+with a Remove button, the log says it at the start, and `DELETE` with its id removes it. An
 [API-only](#api-only) server has no owner and serves none of these routes, so it takes no key at all: only the tokens
 it was started with. Its capabilities say `features.api_keys.routes: false`.
 
