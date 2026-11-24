@@ -230,8 +230,9 @@ export class McpServersOverStore {
     return this.view(await this.need(name));
   }
 
-  /** POST preview: `{url, auth}`, or `{name}` for a saved server with its sealed credential. Stores nothing. */
-  async preview(body: Record<string, unknown>, stop?: AbortSignal): Promise<Listed> {
+  /** POST preview: `{url, auth}`, or `{name}` for a saved server with its sealed credential. Stores nothing. `byToken`:
+   *  the API token's, as a save's is (givenUrl). */
+  async preview(body: Record<string, unknown>, stop?: AbortSignal, byToken = false): Promise<Listed> {
     if (body.name !== undefined && body.url === undefined) {
       const issues = unknownFields(body, ["name"]);
       if (issues.length) throw invalid(issues);
@@ -243,10 +244,10 @@ export class McpServersOverStore {
     }
     // `name` with a url: the saved server the form is editing. Its address as every read shows it (shownUrl), sent back
     // unchanged, is the saved one here too (as save and sign-in map it): the browser never gets the real address back.
-    // Not over a server the token saved (givenUrl): its whole address is given.
+    // Not over a server the token saved, for anyone but the token (givenUrl): its whole address is given.
     const { name: editing, ...asked } = body;
     const saved = editing === undefined ? undefined : await this.store.mcp.server(String(editing));
-    const { url, auth } = this.admit({ ...asked, ...(asked.url !== undefined ? { url: await this.givenUrl(asked.url, saved) } : {}) });
+    const { url, auth } = this.admit({ ...asked, ...(asked.url !== undefined ? { url: await this.givenUrl(asked.url, saved, byToken) } : {}) });
     // A github_app server's credential is a token of the App, minted here, as for a saved one: its static headers are optional.
     // A per_run server's are optional too: they only list its tools, for a server that lists them only to a caller it knows.
     if (auth.type !== "none" && auth.type !== "github_app" && auth.type !== "per_run" && !auth.headers) throw invalid([credentialMissing(auth.type, "A preview needs the credential it is to connect with.")]);
