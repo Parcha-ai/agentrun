@@ -6,8 +6,8 @@
 // firecrawl-keyless test.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { firecrawlFetch, SEARCH_UNAVAILABLE, searchBreaker, searchInTurn } from "../dist/index.js";
-import { answers, dailyLimit, FIRECRAWL_DAILY_LIMIT, firecrawlServer, refusal } from "./fixtures/fake-firecrawl.mjs";
+import { firecrawlFetch, firecrawlScrape, firecrawlSearch, SEARCH_UNAVAILABLE, searchBreaker, searchInTurn } from "../dist/index.js";
+import { answers, dailyLimit, FIRECRAWL_DAILY_INJECTION, firecrawlServer, refusal } from "./fixtures/fake-firecrawl.mjs";
 import { network } from "./fixtures/fake-network.mjs";
 import { webFetch } from "./support.mjs";
 
@@ -41,23 +41,44 @@ test("a fetch Firecrawl rate-limits goes direct for the wait it named, and to Fi
   assert.equal(fc.calls("firecrawl_scrape"), 2);
 });
 
-test("a fetch past Firecrawl's daily limit, said in plain text, goes direct, and Firecrawl is unasked until 00:00 UTC, then asked again", async (t) => {
-  let spent = true;
-  const fc = await firecrawlServer(t, (name) => (spent ? dailyLimit() : answers(name)));
-  let now = Date.parse("2026-11-24T12:00:00Z");
-  const firecrawl = firecrawlFetch({ endpoint: fc.url }, () => now);
-  const read = (url) => webFetch(url, { ...network(), firecrawl });
-  const first = await read(PUBLIC);
-  assert.equal(first.via, "direct");
-  assert.doesNotMatch(JSON.stringify(first), new RegExp(FIRECRAWL_DAILY_LIMIT), "Firecrawl's own words are never passed on");
-  spent = false;
-  now = Date.parse("2026-11-25T00:00:00Z") - 1;
-  assert.equal((await read("http://public.example/notes.txt")).via, "direct", "a millisecond before 00:00 UTC");
-  assert.equal(fc.calls("firecrawl_scrape"), 1);
-  now += 1;
-  assert.equal((await read(PUBLIC)).via, "firecrawl-keyless", "at 00:00 UTC");
-  assert.equal(fc.calls("firecrawl_scrape"), 2);
-});
+/** Fails when `said` carries any of Firecrawl's daily-limit words addressed to the agent. */
+const unsaid = (said, label) => {
+  const text = JSON.stringify(said);
+  for (const words of FIRECRAWL_DAILY_INJECTION) assert.ok(!text.includes(words), `${label}: "${words}" is never passed on`);
+};
+
+for (const where of ["search", "scrape", "rpc"]) {
+  test(`Firecrawl's daily-limit answer (${where === "rpc" ? "a JSON-RPC error" : `as firecrawl_${where} served it`}) to a search or a fetch is a quota until the next 00:00 UTC, in our words alone`, async (t) => {
+    const fc = await firecrawlServer(t, () => dailyLimit(where));
+    const now = () => Date.parse("2026-11-24T12:00:00Z");
+    const quota = { kind: "quota", retryAfter: "Wed, 25 Nov 2026 00:00:00 GMT" };
+    for (const [what, read] of [["search", firecrawlSearch("widgets", 5, { endpoint: fc.url, now })], ["fetch", firecrawlScrape(PUBLIC, { endpoint: fc.url, now })]]) {
+      const failed = await read;
+      assert.deepEqual(failed.limit, quota, `${what}: a quota until 00:00 UTC`);
+      unsaid(failed.error, what);
+    }
+  });
+}
+
+for (const where of ["scrape", "search"]) {
+  test(`a fetch past Firecrawl's daily limit (as firecrawl_${where} served it) goes direct, and Firecrawl is unasked until 00:00 UTC, then asked again`, async (t) => {
+    let spent = true;
+    const fc = await firecrawlServer(t, (name) => (spent ? dailyLimit(where) : answers(name)));
+    let now = Date.parse("2026-11-24T12:00:00Z");
+    const firecrawl = firecrawlFetch({ endpoint: fc.url }, () => now);
+    const read = (url) => webFetch(url, { ...network(), firecrawl });
+    const first = await read(PUBLIC);
+    assert.equal(first.via, "direct");
+    unsaid(first, "the fetch");
+    spent = false;
+    now = Date.parse("2026-11-25T00:00:00Z") - 1;
+    assert.equal((await read("http://public.example/notes.txt")).via, "direct", "a millisecond before 00:00 UTC");
+    assert.equal(fc.calls("firecrawl_scrape"), 1);
+    now += 1;
+    assert.equal((await read(PUBLIC)).via, "firecrawl-keyless", "at 00:00 UTC");
+    assert.equal(fc.calls("firecrawl_scrape"), 2);
+  });
+}
 
 /** A public URL holding a user name and password, a user name alone, a password alone: synthetic, built in code. */
 const CREDENTIALED = [["u", "p"], ["u", ""], ["", "p"]].map(([user, password]) => {
