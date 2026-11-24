@@ -737,6 +737,26 @@ export const COMMANDS = [
   },
   {
     "command": [
+      "api-keys",
+      "list"
+    ],
+    "operationId": "listApiKeys",
+    "method": "GET",
+    "path": "/settings/api-keys",
+    "pathParams": [],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "The API keys made for this server's apps; never a key"
+  },
+  {
+    "command": [
       "capabilities",
       "get-capacity"
     ],
@@ -2396,6 +2416,26 @@ export const COMMANDS = [
   {
     "command": [
       "local",
+      "list-marketplace-templates"
+    ],
+    "operationId": "listMarketplaceTemplates",
+    "method": "GET",
+    "path": "/marketplace/templates",
+    "pathParams": [],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "The marketplace's templates: every package on marketplace.agentrun.ai, each with the package here that it is"
+  },
+  {
+    "command": [
+      "local",
       "list-mcp-server-names"
     ],
     "operationId": "listMcpServerNames",
@@ -3148,7 +3188,17 @@ export const COMMANDS = [
       "run_id"
     ],
     "multiSegment": [],
-    "query": [],
+    "query": [
+      {
+        "name": "cut",
+        "type": "string",
+        "enum": [
+          "run"
+        ],
+        "required": false,
+        "description": "`run`: each file also has its `name`, its path under the run's own cut (each value the cut holds and each secret shape replaced by `[redacted]` in place, as a cut read cuts a file's text), whatever its type. A run whose cut can't be read is `403 forbidden`, as without `cut`. A server that doesn't know `cut` lists no `name`."
+      }
+    ],
     "headers": [],
     "bodyFlags": [],
     "hasBody": false,
@@ -4696,6 +4746,38 @@ export const COMMANDS = [
   {
     "command": [
       "triggers",
+      "release-firing"
+    ],
+    "operationId": "releaseTriggerFiring",
+    "method": "POST",
+    "path": "/triggers/{trigger_id}/firings/{firing_id}/release",
+    "pathParams": [
+      "trigger_id",
+      "firing_id"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [
+      {
+        "name": "error",
+        "type": "string",
+        "required": true,
+        "description": "Why the host starts no run for the firing, in plain words: a failure's code or reason, never a person's data or a key."
+      }
+    ],
+    "hasBody": true,
+    "bodyRequired": true,
+    "bodyTypes": [
+      "application/json"
+    ],
+    "secretBody": false,
+    "raw": false,
+    "summary": "The launch hook's host releases a firing it took and will start no run for"
+  },
+  {
+    "command": [
+      "triggers",
       "update"
     ],
     "operationId": "updateTrigger",
@@ -4939,6 +5021,32 @@ export const COMMANDS = [
     "secretBody": false,
     "raw": false,
     "summary": "Check a workflow definition without saving it"
+  },
+  {
+    "command": [
+      "wrapped"
+    ],
+    "operationId": "getWrapped",
+    "method": "GET",
+    "path": "/wrapped",
+    "pathParams": [],
+    "multiSegment": [],
+    "query": [
+      {
+        "name": "year",
+        "type": "integer",
+        "required": false,
+        "description": "A four-digit year, in the server's local zone. Default the current year."
+      }
+    ],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "A year of the work under this machine's session files"
   }
 ];
 

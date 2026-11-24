@@ -193,6 +193,7 @@ export interface components {
         billing: "proxy" | "plan";
       };
       available: boolean;
+      ready_models: string[];
       free_models: {
         id: string;
         context_window: number;
@@ -538,7 +539,7 @@ export interface components {
       detail: string;
     }[];
   };
-  ErrorCode: "bad_request" | "invalid_file_path" | "unauthenticated" | "insufficient_credits" | "spend_cap_reached" | "forbidden" | "system_file_forbidden" | "not_found" | "method_not_allowed" | "agent_exists" | "agent_not_runnable" | "home_busy" | "idempotency_mismatch" | "idempotency_in_progress" | "not_continuable" | "quote_invalid" | "precondition_failed" | "payload_too_large" | "unsupported_media_type" | "range_not_satisfiable" | "input_invalid" | "home_check_failed" | "rate_limited" | "internal" | "unsupported_here" | "unavailable" | "name_taken" | "agent_archived" | "request_timeout" | "key_set_by_server" | "budget_reached" | "webhook_off" | "slack_off" | "precondition_required" | "auth_required" | "not_mcp" | "upstream_failed" | "wrong_origin" | "sign_in_held" | "handoff_answered" | "computer_not_live" | "scope_taken" | "github_not_connected" | "github_already_connected" | "github_no_public_url" | "github_wrong_origin" | "github_failed" | "github_not_installed" | "github_permission_missing" | "github_file_exists" | "suggestion_decided" | "composio_no_public_url" | "composio_subscription_elsewhere" | "composio_not_connected" | "composio_account_ambiguous" | "composio_in_use" | "external_body_conflict" | "replay_conflict" | "runs_in_flight" | "learning_busy" | "agent_not_archived" | "run_not_final" | "run_learning" | "not_exportable" | "purged" | "model_key_required" | "runner_refused";
+  ErrorCode: "bad_request" | "invalid_file_path" | "unauthenticated" | "insufficient_credits" | "spend_cap_reached" | "forbidden" | "system_file_forbidden" | "not_found" | "method_not_allowed" | "agent_exists" | "agent_not_runnable" | "home_busy" | "idempotency_mismatch" | "idempotency_in_progress" | "not_continuable" | "quote_invalid" | "precondition_failed" | "payload_too_large" | "unsupported_media_type" | "range_not_satisfiable" | "input_invalid" | "home_check_failed" | "rate_limited" | "internal" | "unsupported_here" | "unavailable" | "name_taken" | "agent_archived" | "request_timeout" | "key_set_by_server" | "budget_reached" | "webhook_off" | "slack_off" | "precondition_required" | "auth_required" | "not_mcp" | "upstream_failed" | "wrong_origin" | "sign_in_held" | "handoff_answered" | "computer_not_live" | "scope_taken" | "github_not_connected" | "github_already_connected" | "github_no_public_url" | "github_wrong_origin" | "github_failed" | "github_not_installed" | "github_permission_missing" | "github_file_exists" | "suggestion_decided" | "composio_no_public_url" | "composio_subscription_elsewhere" | "composio_not_connected" | "composio_account_ambiguous" | "composio_in_use" | "external_body_conflict" | "replay_conflict" | "runs_in_flight" | "learning_busy" | "agent_not_archived" | "run_not_final" | "run_learning" | "not_exportable" | "purged" | "model_key_required" | "runner_refused" | "api_keys_full";
   ExternalRef: {
     source: string;
     kind: string;
@@ -632,6 +633,11 @@ export interface components {
       events: ("run.needs_input" | "run.ended" | "trigger.failed")[];
       signing: "standard-webhooks/v1";
       at_rest: "sealed";
+    };
+    api_keys?: {
+      routes: boolean;
+      limit: number;
+      at_rest: "hashed";
     };
     slack?: {
       routes: boolean;
@@ -961,7 +967,7 @@ export interface components {
     computer?: {
       kind: "sandbox" | "desktop" | "phone" | "browser";
       provider: string;
-      state: "starting" | "ready" | "taken_over" | "ended" | "failed";
+      state: "starting" | "ready" | "taken_over" | "released" | "ended" | "failed";
       why?: string;
       held?: {
         state: "starting" | "waiting" | "started" | "ended" | "released";
@@ -1111,6 +1117,7 @@ export interface components {
     modified_at: components["Timestamp"];
     content_type?: string | null;
     unreadable?: true;
+    name?: string;
   };
   RunFileList: {
     run_id: components["Id"];
@@ -1342,6 +1349,14 @@ export interface components {
     final: boolean;
     cost: components["Cost"];
     poll_after_ms?: number;
+    in_flight?: {
+      kind: "model" | "tool";
+      name: string;
+      started_at: string | null;
+      tool_use_id?: string;
+      for_tool?: string;
+      input_tokens_max?: number;
+    }[];
   };
   TimelineRow: {
     id: string;
@@ -1802,6 +1817,19 @@ export interface operations {
   createAgent: {
     body: components["AgentCreate"];
     answer: components["Agent"];
+  };
+  createApiKey: {
+    body: {
+      name: string;
+    };
+    answer: {
+      id: string;
+      name: string;
+      created_at: string;
+      last_used_at: string | null;
+      secret: components["SecretMeta"];
+      api_key: string;
+    };
   };
   createFile: {
     body: components["FileCreate"];
@@ -2536,6 +2564,7 @@ export interface operations {
       expires_at?: string;
       models?: string[];
       problem?: string;
+      hint?: string;
     };
   };
   fireTrigger: {
@@ -2675,12 +2704,12 @@ export interface operations {
       sha256: string;
       report: {
         blocked: {
-          kind: "mcp_server" | "trigger" | "pin" | "tool_setting" | "tool_policy" | "computer" | "paired_computer" | "sign_in" | "learning" | "input_schema" | "budget" | "package";
+          kind: "mcp_server" | "trigger" | "pin" | "tool_setting" | "tool_policy" | "computer" | "paired_computer" | "sign_in" | "learning" | "secrets" | "input_schema" | "budget" | "package";
           name: string;
           reason: string;
         }[];
         remade: {
-          kind: "mcp_server" | "trigger" | "pin" | "tool_setting" | "tool_policy" | "computer" | "paired_computer" | "sign_in" | "learning" | "input_schema" | "budget" | "package";
+          kind: "mcp_server" | "trigger" | "pin" | "tool_setting" | "tool_policy" | "computer" | "paired_computer" | "sign_in" | "learning" | "secrets" | "input_schema" | "budget" | "package";
           name: string;
           reason: string;
         }[];
@@ -2745,6 +2774,7 @@ export interface operations {
       expires_at?: string;
       models?: string[];
       problem?: string;
+      hint?: string;
     };
   };
   getClaudeLogin: {
@@ -2760,6 +2790,20 @@ export interface operations {
         email?: string;
         organization?: string;
         plan?: string;
+      };
+      folder: string;
+      machine: {
+        folder: string;
+        source: "CLAUDE_CONFIG_DIR" | "default";
+      };
+      sign_in?: {
+        state: "waiting" | "signed_in" | "timed_out" | "failed" | "not_started";
+        started_at: string;
+        ended_at?: string;
+        limit_ms: number;
+        exit_code?: number;
+        signal?: string;
+        error?: string;
       };
     };
   };
@@ -2912,6 +2956,7 @@ export interface operations {
         hand_backs: {
           ran: number;
           back: number;
+          cut: number;
         } | null;
         withheld: {
           unknown: number;
@@ -4115,6 +4160,53 @@ export interface operations {
       image?: string;
     };
   };
+  getWrapped: {
+    body: never;
+    answer: {
+      year: number;
+      sessions: number;
+      turns: number;
+      requests: number;
+      tokens: {
+        input: number;
+        output: number;
+        cache_read: number;
+        cache_write: number;
+      };
+      cost_usd: number;
+      unpriced_requests: number;
+      days: {
+        day: string;
+        requests: number;
+        tokens: number;
+      }[];
+      hours: number[];
+      weekdays: number[];
+      active_ms: number;
+      harnesses: {
+        harness: string;
+        sessions: number;
+        requests: number;
+        tokens: number;
+      }[];
+      models: {
+        model: string;
+        requests: number;
+        tokens: number;
+        cost_usd: number;
+      }[];
+      sources: {
+        source: string;
+        sessions: number;
+        requests: number;
+      }[];
+      imported: {
+        source: string;
+        runs: number;
+      }[];
+      unread_files: number;
+    };
+  };
   gitHubCallback: {
     body: never;
     answer: never;
@@ -4371,6 +4463,21 @@ export interface operations {
   listAllRuns: {
     body: never;
     answer: components["RunList"];
+  };
+  listApiKeys: {
+    body: never;
+    answer: {
+      keys: {
+        id: string;
+        name: string;
+        created_at: string;
+        last_used_at: string | null;
+        secret: components["SecretMeta"];
+      }[];
+      limit: number;
+      refused?: string;
+      unreadable?: string[];
+    };
   };
   listCliLearning: {
     body: never;
@@ -4842,6 +4949,28 @@ export interface operations {
           } | null;
         } | null;
       }[];
+    };
+  };
+  listMarketplaceTemplates: {
+    body: never;
+    answer: {
+      url: string | null;
+      state: "read" | "stale" | "unreachable" | "off";
+      read_at: string | null;
+      templates: {
+        name: string;
+        title: string;
+        tags: string[];
+        needs: string[];
+        page_url: string;
+        summary?: string;
+        description?: string;
+        category?: "engineering" | "security" | "sales" | "marketing" | "research" | "finance" | "operations" | "compliance" | "personal";
+        harness?: string[];
+        source?: string;
+        here?: string;
+      }[];
+      problem?: string;
     };
   };
   listMcpServerNames: {
@@ -6009,6 +6138,29 @@ export interface operations {
       };
     };
   };
+  releaseTriggerFiring: {
+    body: {
+      error: string;
+    };
+    answer: {
+      key: string;
+      by: "schedule" | "email" | "feed" | "manual" | "webhook" | "github" | "composio";
+      nominal_at: string;
+      status: "due" | "started" | "sent" | "skipped" | "failed" | "missed";
+      at: string;
+      run_id: string | null;
+      reason: string | null;
+      error: {
+        code: string;
+        message: string;
+      } | null;
+      count?: number;
+      attempts?: number;
+      retry_at?: string;
+      start_by?: string;
+      catch_up?: true;
+    };
+  };
   remoteCommandEvents: {
     body: {
       lease_token: string;
@@ -6201,6 +6353,10 @@ export interface operations {
         }[];
       }[];
     };
+  };
+  revokeApiKey: {
+    body: never;
+    answer: never;
   };
   revokeCliLearning: {
     body: never;
@@ -6716,6 +6872,20 @@ export interface operations {
         organization?: string;
         plan?: string;
       };
+      folder: string;
+      machine: {
+        folder: string;
+        source: "CLAUDE_CONFIG_DIR" | "default";
+      };
+      sign_in?: {
+        state: "waiting" | "signed_in" | "timed_out" | "failed" | "not_started";
+        started_at: string;
+        ended_at?: string;
+        limit_ms: number;
+        exit_code?: number;
+        signal?: string;
+        error?: string;
+      };
     };
   };
   startCliLearningRun: {
@@ -6958,6 +7128,20 @@ export interface operations {
         organization?: string;
         plan?: string;
       };
+      folder: string;
+      machine: {
+        folder: string;
+        source: "CLAUDE_CONFIG_DIR" | "default";
+      };
+      sign_in?: {
+        state: "waiting" | "signed_in" | "timed_out" | "failed" | "not_started";
+        started_at: string;
+        ended_at?: string;
+        limit_ms: number;
+        exit_code?: number;
+        signal?: string;
+        error?: string;
+      };
     };
   };
   turnOnClaudeLogin: {
@@ -6976,6 +7160,20 @@ export interface operations {
         email?: string;
         organization?: string;
         plan?: string;
+      };
+      folder: string;
+      machine: {
+        folder: string;
+        source: "CLAUDE_CONFIG_DIR" | "default";
+      };
+      sign_in?: {
+        state: "waiting" | "signed_in" | "timed_out" | "failed" | "not_started";
+        started_at: string;
+        ended_at?: string;
+        limit_ms: number;
+        exit_code?: number;
+        signal?: string;
+        error?: string;
       };
     };
   };

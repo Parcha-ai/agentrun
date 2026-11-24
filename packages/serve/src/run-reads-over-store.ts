@@ -4,6 +4,7 @@
 // (workspace/, not a run directory the server owns); its browser state and its timeline read the run's launch, revision and
 // journal. The live halves (a run's open browser viewer, the timeline's live stream) read the runner's live state through
 // the store (live/stream.ts watchRun) and the viewer handover, which the runner publishes.
+import { type InFlight, inFlightOf, toolsInFlight } from "./in-flight.js";
 import type { Context } from "@earendil-works/chord/context";
 import type { TimelineEvent } from "./timeline/index.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -61,8 +62,13 @@ export interface RunReadsDeps {
 }
 
 /** A run's files, through its Workspace (listRunFiles): every file, path-sorted, cut at the cap. A run with no folder lists
- *  none; a run whose output is withheld refuses (403), as its graph does. The same shape the route answered. */
-export async function listRunFiles(store: RunReadsStore, runId: string, deps: RunReadsDeps): Promise<{ run_id: string; files: FileView[]; complete: true; truncated: boolean }> {
+ *  none; a run whose output is withheld refuses (403), as its graph does. The same shape the route answered. With `cut`
+ *  `run`, each file also has its `name`: its path under the run's own cut, as a cut read cuts a file's text (redactSecrets
+ *  of deps.cutValues' values, read again after the names are cut: underCut), so a run that named a file by a held value
+ *  (a cache keyed by a key) can be listed to a model by its names alone. Every file is named, whatever its type: a file a
+ *  cut read doesn't answer (audio, an image) is one a grader is told of by its name. */
+export async function listRunFiles(store: RunReadsStore, runId: string, deps: RunReadsDeps, cut: string | null = null): Promise<{ run_id: string; files: (FileView & { name?: string })[]; complete: true; truncated: boolean }> {
+  if (cut !== null && cut !== "run") throw new ApiError("bad_request", `cut must be "run", not ${JSON.stringify(cut)}`);
   // Withheld (its browser sign-in this server can't read) refuses its files too, before any is read: a page it saved signed
   // in is what it saw (store-view's `unshown`), as the graph refuses and the base's filesShown did.
   if (await deps.withheld(store, runId)) throw new ApiError("forbidden", WITHHELD_SIGN_IN);
@@ -70,7 +76,12 @@ export async function listRunFiles(store: RunReadsStore, runId: string, deps: Ru
   // A folder the run made named recordings is not listed: the route's recordings/ is the run's recordings.
   const { files, deep } = workspace ? await listFiles(workspace, FILE_LIST_CAP, { owned: (name) => name === RECORDINGS }) : { files: [] as FileView[], deep: false };
   files.sort((a, b) => a.path.localeCompare(b.path));
-  return { run_id: runId, files: files.slice(0, FILE_LIST_CAP), complete: true, truncated: deep || files.length > FILE_LIST_CAP };
+  const listed = files.slice(0, FILE_LIST_CAP);
+  const truncated = deep || files.length > FILE_LIST_CAP;
+  if (cut === null) return { run_id: runId, files: listed, complete: true, truncated };
+  const named = await underCut(() => deps.cutValues(store, runId), async (held) => (held === "unreadable" ? undefined : listed.map((file) => ({ ...file, name: redactSecrets(file.path, held.values, Buffer.byteLength(file.path)) }))));
+  if (named === undefined) throw new ApiError("forbidden", WITHHELD_SIGN_IN);
+  return { run_id: runId, files: named, complete: true, truncated };
 }
 
 /** A type the cut read takes as text: one the table names text, JSON or NDJSON, or one it doesn't know (its bytes are
@@ -223,6 +234,9 @@ export interface TimelinePage {
   readonly has_more: boolean;
   readonly final: boolean;
   readonly cost: Record<string, unknown> | null;
+  /** What the run waits on now (in-flight.ts): each model request sent and not answered, each tool call not returned, from
+   *  when it was sent; empty once the run is final. */
+  readonly in_flight: readonly InFlight[];
 }
 
 /** What the timeline reader needs beyond the store: a context, the run's timeline rows and its view (status/state/cost). */
@@ -234,6 +248,9 @@ export interface TimelineDeps {
   runView(store: Store, runId: string): Promise<Record<string, unknown> | undefined>;
   /** How often the store is re-read while a page waits (default 1000 ms, the old poll). */
   readonly pollMs?: number;
+  /** The model requests a live run has in flight (in-flight.ts modelsInFlight over its journal); read only while it is
+   *  not final. None: a page names its tool calls in flight alone. */
+  inFlight?(store: Store, runId: string, context: Context): Promise<InFlight[]>;
 }
 
 /** The run timeline reader over the store (getTimeline): one RowLog per run, its change numbers stable across this server's
@@ -266,16 +283,18 @@ export function runTimelines(deps: TimelineDeps): { page(store: Store, runId: st
     const status = String(view.status);
     const state = String(view.state);
     const log = logOf(calls ? `${runId}\0calls` : runId);
-    // The run's rows as they stand now, then its status: a change to either is one more change the page carries.
-    log.sync(rows);
-    log.setState(`${status}:${state}`);
-    const page = log.page(after, limit);
     // Final when the run is terminal and settled (the view says so with poll_after_ms 0, as the old final did).
     const final = view.poll_after_ms === 0;
+    // What it waits on now, while it is live: a request sent or answered is a change, as a row is (GRE-4835).
+    const waiting = final ? inFlightOf([], []) : inFlightOf(deps.inFlight ? await deps.inFlight(store, runId, deps.context) : [], toolsInFlight(rows));
+    // The run's rows as they stand now, then its status and what it waits on: a change to any is one more change the page carries.
+    log.sync(rows);
+    log.setState(`${status}:${state}${waiting.key ? `:${waiting.key}` : ""}`);
+    const page = log.page(after, limit);
     // The run's whole Cost object, as GET /runs/{id} serves it (store-view costOfView): the page and the run read send the
     // same shape, so a reader need not read both to price the run.
     const cost = (view.cost as Record<string, unknown> | undefined) ?? null;
-    return { run_id: runId, status, state, reset: page.reset, rows: page.rows, drop: page.drop, next_after: page.next_after, unchanged: page.unchanged, has_more: page.has_more, final, cost };
+    return { run_id: runId, status, state, reset: page.reset, rows: page.rows, drop: page.drop, next_after: page.next_after, unchanged: page.unchanged, has_more: page.has_more, final, cost, in_flight: waiting.list };
   }
 
   return {

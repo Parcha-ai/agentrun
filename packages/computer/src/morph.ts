@@ -22,7 +22,7 @@ import { proxyFor, tunnelThrough } from "./env-proxy.js";
 import { type HostCall, HostError, type HostFacts, type Machine, type MachineHost, type MachineProcess, type MachineRequest } from "./host.js";
 import { orThrow, pause, runToExit, uploadThroughExec } from "./hosted/process.js";
 import { HostedProvider, type HostedOptions, type HostedTimeouts, isoOf, MAX_LABEL } from "./hosted/provider.js";
-import { jsonOf, type Rest, rest } from "./hosted/rest.js";
+import { httpsBase, jsonOf, type Rest, rest } from "./hosted/rest.js";
 import { pemOf, type Ssh2Module, SshExec, SshTunnelError, type SshTunnel } from "./hosted/ssh-exec.js";
 import { DOMAIN, dateOf, sizeRefusals } from "./hosted/values.js";
 import type { CallContext, ComputerSpec, Refusal } from "./provider.js";
@@ -515,13 +515,8 @@ export class MorphProvider extends HostedProvider {
 		if (typeof apiKey !== "string" || apiKey === "") throw new Error("options.apiKey, the Morph API key, is required: the provider reads no environment, so the caller passes it");
 		if (typeof (ssh2 as { Client?: unknown } | null)?.Client !== "function") throw new Error("options.ssh2 must be the ssh2 package (its Client class): the host installs it, as it does for Agent37");
 		if (typeof fetcher !== "function") throw new Error("options.fetch must be a function, as the global fetch is");
-		let api: URL;
-		try {
-			api = new URL(apiUrl);
-		} catch {
-			throw new Error(`apiUrl must be an https URL such as ${DEFAULT_API_URL}, not ${JSON.stringify(apiUrl)}`);
-		}
-		if (api.protocol !== "https:" || api.search !== "" || api.hash !== "") throw new Error(`apiUrl must be an https URL such as ${DEFAULT_API_URL}, not ${JSON.stringify(apiUrl)}`);
+		const api = new URL(httpsBase(apiUrl, "the Morph API URL"));
+		if (api.search !== "" || api.hash !== "") throw new Error(`the Morph API URL takes no query or fragment, as ${DEFAULT_API_URL} has none: ${JSON.stringify(apiUrl)}`);
 		if (typeof sshHost !== "string" || !(DOMAIN.test(sshHost) || isIP(sshHost) !== 0)) throw new Error(`sshHost must be a host name such as ${DEFAULT_SSH_HOST}, not ${JSON.stringify(sshHost)}`);
 		if (!Number.isSafeInteger(sshPort) || sshPort < 1 || sshPort > 65_535) throw new Error(`sshPort must be a TCP port, not ${JSON.stringify(sshPort)}`);
 		super(new MorphHost({ apiKey, ssh2, fetch: fetcher, apiUrl: api.href.replace(/\/+$/, ""), sshHost, sshPort }), { ...rest, timeouts });

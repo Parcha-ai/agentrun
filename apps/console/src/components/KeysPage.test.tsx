@@ -133,7 +133,7 @@ describe("KeysPage", () => {
     expect(page.row("Browserbase").textContent).toContain("BROWSERBASE_API_KEYSetSet in the environment");
     expect(page.row("Browserbase").textContent).toContain("BROWSERBASE_PROJECT_IDMissing");
     expect(page.row("Browserbase").textContent).toContain("1 of 2 set");
-    expect(page.row("Browserbase").textContent).toContain("pi only");
+    expect(page.row("Browserbase").textContent).toContain("Harness Pi only");
   });
 
   // QA: a key that no harness reads (TypeSafe's, which only a decision provider uses) read "Unlocks decisions.jev ·
@@ -146,7 +146,8 @@ describe("KeysPage", () => {
     expect(page.row("TypeSafe (Jev)").textContent).toContain("Unlocks decisions.jev");
     expect(page.row("TypeSafe (Jev)").textContent).not.toContain("Harnesses");
     expect(page.row("TypeSafe (Jev)").textContent).not.toContain(" · ");
-    expect(page.row("Parallel").textContent).toContain("Unlocks web_fetch, web_search · Harnesses pi, claude-agent, codex");
+    expect(page.row("Parallel").textContent, "each harness by its name").toContain("Unlocks web_fetch, web_search · Harnesses Pi, Claude, Codex");
+    expect([...page.row("Parallel").querySelectorAll("[data-harness]")].map((e) => e.getAttribute("data-harness")), "each with its icon").toEqual(["pi", "claude-agent", "codex"]);
   });
 
   it("Add key sends a PUT with only the values typed, then reads the keys again and says it changed", async () => {
@@ -288,7 +289,7 @@ describe("KeysPage", () => {
     expect([labels("Model keys"), labels("Tool keys")]).toEqual([["Anthropic"], ["Parallel", "Monid", "Browserbase"]]);
     expect(page.host.querySelector('section[aria-label="Model keys"] h2 + div p')?.textContent).toBe("We recommend an OpenRouter key with a dollar cap and an expiration date. Do not share this key with anyone.");
     expect(page.host.querySelector('section[aria-label="Tool keys"] h2 + div')).toBeNull();
-    expect(page.row("Anthropic").textContent).toContain("Model provider · Harnesses pi, claude-agent");
+    expect(page.row("Anthropic").textContent).toContain("Model provider · Harnesses Pi, Claude");
     await page.click(page.row("Anthropic"), /^Paste$/);
     await page.type("ANTHROPIC_API_KEY", FAKE);
     await page.click(page.row("Anthropic"), /^Save$/);

@@ -119,8 +119,8 @@ const creates = (vendor) => vendor.calls.filter(([verb]) => verb === "create").m
 /** `store` with its runs' claimMany counted (`calls.n`, each claim by the number of the call that made it in
  *  `calls.claimed`) and, while `gate.shut`, held until the gate opens (claimGate; each call counted in flight from the
  *  gate to its return): how the test makes A's poll wait while B's polls run, so a B that may claim the run claims it
- *  first whatever the timing. With `keptReads` ({ fail, failed }), the next
- *  `fail` reads of run-1's kept row throw as a store that did not answer, each counted in `failed`. */
+ *  first whatever the timing. With `keptReads` ({ fail, failed }), the next `fail` reads of run-1's kept row throw as a
+ *  store that did not answer, each counted in `failed`. */
 function watchedStore(store, gate = claimGate(), calls = { n: 0, claimed: [] }, keptReads = undefined) {
   const settings = keptReads && new Proxy(store.settings, {
     get(target, key) {

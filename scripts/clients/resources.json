@@ -112,6 +112,7 @@
     "fireTrigger": ["triggers", "fire"],
     "listTriggerFirings": ["triggers", "firings"],
     "rotateTriggerSecret": ["triggers", "rotate-secret"],
+    "releaseTriggerFiring": ["triggers", "release-firing"],
     "listTemplates": ["template", "list"],
     "getTemplate": ["template", "get"],
     "applyTemplate": ["template", "apply"],
@@ -131,6 +132,7 @@
     "getMcpPrivateHosts": ["mcp-servers", "private-hosts"],
     "getToolSettings": ["tool-settings", "get"],
     "putToolSettings": ["tool-settings", "save"],
+    "listApiKeys": ["api-keys", "list"],
     "getWebhook": ["webhook", "get"],
     "saveWebhook": ["webhook", "save"],
     "rotateWebhookSecret": ["webhook", "rotate-secret"],
@@ -146,6 +148,7 @@
     "redeliverSlack": ["slack", "redeliver"],
     "createQuote": ["quotes", "create"],
     "getUsage": ["usage"],
-    "getStats": ["stats"]
+    "getStats": ["stats"],
+    "getWrapped": ["wrapped"]
   }
 }

@@ -65,6 +65,25 @@ test("a script's files.write is held to write's setting and files.read, list and
   }
 });
 
+test("a deny that turns the phone off, its journal write failing (a fenced claim), still refuses the call; the claim's next refusal of the phone writes the off again, and once written it is not written again", async () => {
+  const { runners } = await stores({ runners: 1 });
+  const written = [];
+  let fails = 1;
+  const onComputerOff = async (kind) => {
+    written.push(kind);
+    if (fails-- > 0) throw new Error("the claim is fenced");
+  };
+  const revision = { kind: "agentic", body: { approvals: "never", computer: { kind: "phone", provider: "phone-harness" }, toolSettings: { phone: { permission: "deny" } } } };
+  const gate = await adapterRunGate(runners[0], { runId: "run-1" }, revision, root(), "none", { facts: undefined, onComputerOff });
+  const act = (n) => gate({ callId: `p${n}`, tool: "computer_act", args: { actions: [{ type: "click", x: 1, y: 1 }] } });
+  const first = await act(1);
+  assert.match(first.deny, /phone is off for the rest of this run/, first.deny);
+  assert.equal(typeof (await act(2)).deny, "string", "the next call refused short");
+  assert.deepEqual(written, ["phone", "phone"], "the off written again at the next refusal");
+  await act(3);
+  assert.deepEqual(written, ["phone", "phone"], "written once it held");
+});
+
 test("computer_op runs only the computer's ops that no step tool runs: observe, act and screenshot are their own tools, so each is held and recorded as that tool", async () => {
   const folder = root();
   const computer = fakeComputer(folder);

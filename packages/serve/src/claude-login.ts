@@ -16,6 +16,7 @@ import { delimiter, isAbsolute, join } from "node:path";
 import type { ClaudeAgentLogin, ClaudeLoginStatus } from "@parcha/agentrun-harness-claude";
 import { facts as claudeFacts } from "@parcha/agentrun-harness-claude/facts";
 import { registerSecretWrite } from "./secret-writes.js";
+import type { ClaudeSignIns, SignInView } from "./claude-sign-in.js";
 import type { Settings } from "./store/index.js";
 
 // Every operation here is the owner's session's alone (secret-writes.ts): no answer holds a credential, but turning a
@@ -53,12 +54,29 @@ export const LOGIN_PLACES = ["agentrun", "machine"] as const;
 export type LoginPlace = (typeof LOGIN_PLACES)[number];
 type Setting = { v: 1; place: LoginPlace; host: string; only_me: true };
 
-/** The directories of a login at `place`: AgentRun's in `data`, or this machine's (the CLI's own defaults for its user). */
+/** This machine's own Claude Code login folder as the CLI finds it for the server's user, by the CLI's own rule: its
+ *  config dir is `CLAUDE_CONFIG_DIR` when set, else `~/.claude`, and its credentials are kept there too unless
+ *  `CLAUDE_SECURESTORAGE_CONFIG_DIR` says otherwise. Read from the server's env, so a Claude Code started with another
+ *  `CLAUDE_CONFIG_DIR` is found only when AgentRun was started with it as well. A relative one is not taken: the CLI would
+ *  read it against a working directory this server does not share. `source` says which rule gave the folder. */
+export function machineFolder(env: Readonly<Record<string, string | undefined>> = process.env): { folder: string; source: "CLAUDE_CONFIG_DIR" | "default" } {
+  if (env.CLAUDE_CONFIG_DIR && isAbsolute(env.CLAUDE_CONFIG_DIR)) return { folder: env.CLAUDE_CONFIG_DIR, source: "CLAUDE_CONFIG_DIR" };
+  const home = env.HOME && isAbsolute(env.HOME) ? env.HOME : homedir();
+  return { folder: join(home, ".claude"), source: "default" };
+}
+
+/** The directories of a login at `place`: AgentRun's in `data`, or this machine's (machineFolder, and the Anthropic
+ *  profiles where the CLI looks for them: `ANTHROPIC_CONFIG_DIR`, else `$XDG_CONFIG_HOME/anthropic`, else
+ *  `~/.config/anthropic`). This machine's on the CLI's default folder carries the person's home too, so the harness
+ *  points the CLI at it as their own CLI runs, with no folder variable (the harness's signInEnv and loginEnv). This
+ *  machine's is `shared` with the person's own CLI, so a status check runs on a copy of its account file
+ *  (the harness's claudeLoginStatus). */
 export function loginAt(place: LoginPlace, data: string, env: Readonly<Record<string, string | undefined>> = process.env): ClaudeAgentLogin {
   if (place === "agentrun") return { dir: join(data, "claude-login"), profiles: join(data, "claude-login", "anthropic") };
   const home = env.HOME && isAbsolute(env.HOME) ? env.HOME : homedir();
   const config = env.XDG_CONFIG_HOME && isAbsolute(env.XDG_CONFIG_HOME) ? env.XDG_CONFIG_HOME : join(home, ".config");
-  return { dir: join(home, ".claude"), profiles: env.ANTHROPIC_CONFIG_DIR && isAbsolute(env.ANTHROPIC_CONFIG_DIR) ? env.ANTHROPIC_CONFIG_DIR : join(config, "anthropic") };
+  const { folder, source } = machineFolder(env);
+  return { dir: folder, profiles: env.ANTHROPIC_CONFIG_DIR && isAbsolute(env.ANTHROPIC_CONFIG_DIR) ? env.ANTHROPIC_CONFIG_DIR : join(config, "anthropic"), ...(source === "default" ? { home } : {}), shared: true };
 }
 
 /** The setting as saved, or undefined when the mode is not on (or the row is not one this reads). */
@@ -122,11 +140,23 @@ export const LOGIN_SIGNED_OUT = "Claude Code's login on this machine is signed o
 export const LOGIN_UNKNOWN = "Claude Code could not say whether its login on this machine is signed in";
 
 /** Why this server may not turn the mode on, in one line, or undefined when it may: a Claude plan is one person's. */
-export function whyNotOneOwner(facts: { apiOnly: boolean; tokens: number }): string | undefined {
+export function whyNotOneOwner(facts: { apiOnly: boolean; tokens: number; keys?: number; keysDormant?: boolean }): string | undefined {
   if (facts.apiOnly) return "This server has no owner (the API-only profile), so anyone with its token starts runs: a Claude plan is one person's.";
   if (facts.tokens > 1) return `This server takes ${facts.tokens} API tokens, so more than one person can start runs here: a Claude plan is one person's.`;
+  // A key made in the console for an app (api-keys.ts) is one more caller that starts runs, as a second token is.
+  // `keysDormant`: the keys open nothing on this server (api-keys.ts dormant), and would at a start that takes them.
+  const keys = facts.keys ?? 0;
+  if (keys > 0) {
+    const [what, it] = keys === 1 ? ["an API key", "it"] : [`${keys} API keys`, "them"];
+    return facts.keysDormant
+      ? `This server keeps ${what} made for apps (Settings → AgentRun API keys). ${keys === 1 ? "It opens" : "They open"} nothing here, and would open the server at a start that takes keys again: a Claude plan is one person's. Revoke ${it} first.`
+      : `This server has ${what} made for apps (Settings → AgentRun API keys), so more than one caller can start runs here: a Claude plan is one person's. Revoke ${it} first.`;
+  }
   return undefined;
 }
+
+/** Why a server with Claude Code's login on makes no API key for an app, in one line: the same rule from the other side. */
+export const LOGIN_REFUSES_API_KEYS = "Claude Code's login on this machine is on, and a Claude plan is one person's: an API key would let an app start runs on it. Turn the login off under Settings → Model keys first.";
 
 /** GET /settings/claude-login. `state`: `off` (not turned on), `other_machine` (turned on for another machine), else
  *  what the CLI says: `signed_in`, `signed_out`, or `no_cli` (no CLI here to ask yet: claude-agent's first run installs
@@ -142,6 +172,12 @@ export type ClaudeLoginView = {
   /** Why the mode can't be turned on here, in one line. */
   refused?: string;
   account?: { method?: string; email?: string; organization?: string; plan?: string };
+  /** The folder whose login the CLI is asked about: the login's directory at `place`. */
+  folder: string;
+  /** This machine's own Claude Code login as this server finds it (machineFolder). */
+  machine: { folder: string; source: "CLAUDE_CONFIG_DIR" | "default" };
+  /** The CLI's sign-in this server started, while this server runs (claude-sign-in.ts). */
+  sign_in?: SignInView;
 };
 
 /** The account's words, as the view shows them. */
@@ -177,17 +213,35 @@ export const claudeLoginRouteOff = (name: string, why: string): string => `${nam
 /** What the routes need of the server. `pinned`: the pinned CLI's path when installed. `refused`: whyNotOneOwner of this
  *  server. `sameMachine`: the request comes from a browser on this machine to a server bound to loopback with no public
  *  address, so a sign-in the CLI opens in a browser here reaches the person. `status`/`start`: the harness's
- *  claudeLoginStatus and startClaudeLogin. `changed`: env read again after a turn on or off. */
+ *  claudeLoginStatus and startClaudeLogin. `changed`: env read again after a turn on or off. `signIns`: the sign-in this
+ *  server started, one per server process (claude-sign-in.ts). */
 export type ClaudeLoginDeps = {
+  signIns: ClaudeSignIns;
   settings: Pick<Settings, "get" | "put" | "remove">;
   data: string;
   env: Readonly<Record<string, string | undefined>>;
   pinned: () => Promise<string | undefined>;
-  refused: string | undefined;
+  /** Why this server may not turn the mode on now, asked each time and never held: the server's API keys are made and
+   *  revoked while it runs (whyNotOneOwner counts them). */
+  refused: () => string | undefined;
+  /** Runs `work` once nothing that changes `refused` is under way, and holds such changes off until it settles: the
+   *  API keys' turn (api-keys.ts inTurn). The turn-on decides and writes inside it. */
+  turn: <T>(work: () => Promise<T>) => Promise<T>;
   sameMachine: boolean;
   claude: () => Promise<ClaudeLoginCli>;
   changed: () => Promise<void>;
 };
+
+/** A server's API keys as the login needs them (api-keys.ts ApiKeys): how many there are now, and their turn. */
+export type KeysForLogin = { readonly count: number; inTurn<T>(work: () => Promise<T>): Promise<T> };
+
+/** What the one-owner rule gives the login's routes over a server's keys: `refused`, which counts the keys each time
+ *  it is asked, and `turn`, the keys' own. The server's routes take both from here, and so does the test that runs the
+ *  turn-on against a held revocation: neither is a value read once, or a turn of its own. */
+export const oneOwnerDeps = (facts: { apiOnly: boolean; tokens: number; keysDormant?: boolean }, keys: KeysForLogin): Pick<ClaudeLoginDeps, "refused" | "turn"> => ({
+  refused: () => whyNotOneOwner({ ...facts, keys: keys.count }),
+  turn: (work) => keys.inTurn(work),
+});
 
 /** A route's refusal in words, answered as its `code` (server.ts makes it an ApiError). */
 export class ClaudeLoginRefused extends Error {
@@ -205,7 +259,9 @@ export async function claudeLoginView(deps: ClaudeLoginDeps): Promise<ClaudeLogi
   const place = setting?.place ?? "agentrun";
   const login = loginAt(place, deps.data, deps.env);
   const cli = loginCli(await deps.pinned(), deps.env);
-  const base = { place, command: (await deps.claude()).claudeLoginCommand(login, cli ?? "claude"), can_start: deps.sameMachine && cli !== undefined && deps.refused === undefined, ...(deps.refused ? { refused: deps.refused } : {}) };
+  const signIn = deps.signIns.view();
+  const refused = deps.refused();
+  const base = { place, command: (await deps.claude()).claudeLoginCommand(login, cli ?? "claude"), can_start: deps.sameMachine && cli !== undefined && refused === undefined, ...(refused ? { refused } : {}), folder: login.dir, machine: machineFolder(deps.env), ...(signIn ? { sign_in: signIn } : {}) };
   if (!setting) return { state: "off", ...base };
   if (setting.host !== hostname()) return { state: "other_machine", ...base, can_start: false };
   if (!cli) return { state: "no_cli", ...base };
@@ -219,25 +275,36 @@ export async function claudeLoginView(deps: ClaudeLoginDeps): Promise<ClaudeLogi
 
 /** PUT /settings/claude-login: turned on, refused in one line where more than one person can start runs. */
 export async function turnOnClaudeLogin(deps: ClaudeLoginDeps, body: unknown): Promise<ClaudeLoginView> {
-  if (deps.refused) throw new ClaudeLoginRefused("forbidden", deps.refused);
-  const asked = turnOnBody(body);
-  if ("problem" in asked) throw new ClaudeLoginRefused("input_invalid", asked.problem);
-  await deps.settings.put(CLAUDE_LOGIN_SETTING, settingFor(asked.place, deps.data));
+  // Decided and written in one turn: a key being made or revoked has landed, or been undone, when `refused` counts the
+  // keys, and none is made until the setting is written. What follows the write (the reading again, the CLI's status)
+  // is outside the turn, so a key's revocation never waits on the CLI.
+  await deps.turn(async () => {
+    const refused = deps.refused();
+    if (refused) throw new ClaudeLoginRefused("forbidden", refused);
+    const asked = turnOnBody(body);
+    if ("problem" in asked) throw new ClaudeLoginRefused("input_invalid", asked.problem);
+    await deps.settings.put(CLAUDE_LOGIN_SETTING, settingFor(asked.place, deps.data));
+  });
   await deps.changed();
   return claudeLoginView(deps);
 }
 
-/** DELETE /settings/claude-login: turned off. The login itself stays as the CLI keeps it; nothing here signs it out. */
+/** DELETE /settings/claude-login: turned off, and a sign-in this server started that still waits is ended. The login
+ *  itself stays as the CLI keeps it; nothing here signs it out. */
 export async function turnOffClaudeLogin(deps: ClaudeLoginDeps): Promise<ClaudeLoginView> {
+  await deps.signIns.stop();
   await deps.settings.remove(CLAUDE_LOGIN_SETTING);
   await deps.changed();
   return claudeLoginView(deps);
 }
 
-/** POST /settings/claude-login/login: the CLI's own sign-in, started on this machine, where it opens a browser. The
- *  browser code goes to the CLI, never here; the answer is the view as it is when the sign-in starts. */
+/** POST /settings/claude-login/login: the CLI's own sign-in, started on this machine, where it opens a browser, with the
+ *  shown line's own variables (the harness's signInEnv), so it signs in where the status reads. A sign-in that
+ *  still waits is ended first (deps.signIns). The browser code goes to the CLI, never here; the answer is the view as it
+ *  is when the sign-in starts, its `sign_in` waiting. */
 export async function startLoginHere(deps: ClaudeLoginDeps): Promise<ClaudeLoginView> {
-  if (deps.refused) throw new ClaudeLoginRefused("forbidden", deps.refused);
+  const refused = deps.refused();
+  if (refused) throw new ClaudeLoginRefused("forbidden", refused);
   const setting = await claudeLoginSetting(deps.settings);
   if (!setting) throw new ClaudeLoginRefused("agent_not_runnable", "Turn on Claude Code's login on this machine first.");
   if (setting.host !== hostname()) throw new ClaudeLoginRefused("agent_not_runnable", "It was turned on for another machine: sign in there.");
@@ -245,7 +312,9 @@ export async function startLoginHere(deps: ClaudeLoginDeps): Promise<ClaudeLogin
   const cli = loginCli(await deps.pinned(), deps.env);
   if (!cli) throw new ClaudeLoginRefused("agent_not_runnable", "No Claude Code CLI here yet: claude-agent's first run installs it, or run the command shown.");
   // The person's home and desktop, so the CLI can open their browser.
-  (await deps.claude()).startClaudeLogin(cli, loginAt(setting.place, deps.data, deps.env), { ...pathOf(deps.env), ...(deps.env.HOME ? { home: deps.env.HOME } : {}), display: deps.env });
+  const claude = await deps.claude();
+  const login = loginAt(setting.place, deps.data, deps.env);
+  await deps.signIns.start((timeoutMs) => claude.startClaudeLogin(cli, login, { ...pathOf(deps.env), ...(deps.env.HOME ? { home: deps.env.HOME } : {}), display: deps.env, timeoutMs }));
   return claudeLoginView(deps);
 }
 
