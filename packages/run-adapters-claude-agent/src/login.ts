@@ -82,18 +82,19 @@ const FOLDER_VARS = ["CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR"] as 
 
 /** The line a person runs to sign the CLI in at `login` (the CLI opens a browser itself), with signInEnv's variables
  *  but HOME, which is their terminal's own. A folder variable signInEnv leaves unset (the CLI's default folder) is
- *  cleared in a subshell, `(unset ...; ...)`, since a terminal that exports it would sign in there; the terminal keeps
- *  its own. The line stays the shell's own command, never `env`'s: env reads any word holding '=' as a variable (a CLI
- *  under /data/a=b would never start) and skips the shell's aliases and functions, where a `claude` alias is often the
- *  CLI's local install. sh, bash and zsh all read this line the same way. `platform`: as signInEnv's. */
+ *  cleared by `env -u`, since a terminal that exports it would sign in there: env is a program, so sh, bash, zsh, fish
+ *  and tcsh all run that line alike (fish has no `( ... )` subshell, tcsh no `NAME=value cmd`). env reads any word
+ *  holding '=' as one more variable, so a CLI path holding one (/data/a=b/claude) goes to `sh -c` as its `$0`, single
+ *  quoted, which every one of those shells reads alike too. What env skips: a `claude` alias or function of the
+ *  person's shell. Elsewhere nothing is cleared, and the line is the variables in front of the CLI, as a shell reads
+ *  them (sh, bash, zsh, fish 3.1 and later; not tcsh). `platform`: as signInEnv's. */
 export const loginCommand = (login: ClaudeAgentLogin, cli = "claude", platform: NodeJS.Platform = process.platform): string => {
   const env = signInEnv(login, platform);
   const cleared = FOLDER_VARS.filter((name) => !(name in env));
-  const run = [
-    ...Object.entries(env).filter(([name]) => name !== "HOME").map(([name, value]) => `${name}=${shellWord(value)}`),
-    commandWord(cli), "auth", "login",
-  ].join(" ");
-  return cleared.length ? `(unset ${cleared.join(" ")}; ${run})` : run;
+  const vars = Object.entries(env).filter(([name]) => name !== "HOME").map(([name, value]) => `${name}=${shellWord(value)}`);
+  if (!cleared.length) return [...vars, commandWord(cli), "auth", "login"].join(" ");
+  const run = cli.includes("=") ? ["sh", "-c", `'exec "$0" auth login'`, quoted(cli)] : [shellWord(cli), "auth", "login"];
+  return ["env", ...cleared.flatMap((name) => ["-u", name]), ...vars, ...run].join(" ");
 };
 
 const quoted = (word: string): string => `'${word.replace(/'/g, `'\\''`)}'`;
