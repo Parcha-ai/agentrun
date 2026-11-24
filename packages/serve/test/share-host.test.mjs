@@ -19,8 +19,14 @@ import { readFile, writeFile } from "node:fs/promises";
 import { request } from "node:http";
 import { join } from "node:path";
 import { test } from "node:test";
-import { portProbe } from "./trigger-support.mjs";
 import { builtConsole, call, serve } from "./support.mjs";
+
+/** One GET of / at the host, as the box's probe of a new loopback listener makes: its status. */
+async function portProbe(url) {
+  const res = await fetch(new URL("/", url));
+  await res.arrayBuffer();
+  return res.status;
+}
 
 const { exportBundle } = await import("../dist/run-export.js");
 const { packageSha256 } = await import("../dist/agent-package.js");
@@ -373,11 +379,16 @@ test("a restored record that names no value the host finds is a stale or edited 
   assert.deepEqual(sharesIn(s.shares), []);
 });
 
-test("each string is read alone too: a label its JSON escaping hides from the whole-body read still refuses", async (t) => {
+test("each string is read alone too: a label the whole-body read misses still refuses", async (t) => {
   const planted = plantedRestorable();
   const doc = JSON.parse(await restoredBundleOf(planted.content));
   const body = resigned({ ...doc, restored: doc.restored.filter((record) => record.rule !== "secret-assign") });
-  assert.equal((await scrub(body, { mode: "count" })).counts["secret-assign"] ?? 0, 0, "the whole-body read misses it here");
+  // The scrubber reads a body's JSON-decoded views too, so it finds this label in the whole body today. Blind that one
+  // read: the per-string reads alone must still find the label and refuse.
+  const blind = (text, opts) => scrub(text === body ? "" : text, opts);
+  assert.equal(((await blind(body, { mode: "count" })).counts ?? {})["secret-assign"] ?? 0, 0, "the blinded whole-body read finds nothing");
+  await assert.rejects(screenShare(body, [], blind), (error) => error.code === "input_invalid" && error.extra.details.counts["secret-assign"] === 1);
+  // And the host as it runs refuses it too.
   const s = await shareHost(t);
   const res = await upload(s, body);
   assert.equal(res.status, 422, res.text);
