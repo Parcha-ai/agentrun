@@ -118,3 +118,25 @@ test('the shim runs its child with the same stdio, passes TERM on, and exits as 
   const orphan = spawn(process.execPath, [PARENT_WATCH_SHIM, '1', '--', process.execPath, ...STUBBORN], { stdio: 'ignore' });
   assert.deepEqual(await new Promise((r) => orphan.on('close', (code, signal) => r({ code, signal }))), { code: 1, signal: null });
 });
+
+// A host that ends a child under the shim sends the shim TERM, then SIGKILL after a wait of its own (the sign-in's 5 s).
+// That SIGKILL reaches the shim alone: a child still running then would outlive it with no watch while its host lives.
+// So the shim kills a child that outlasts a TERM it passed on, a grace (2 s) later.
+test('the shim kills a child that outlasts a TERM it passed on, a grace later, while its host still runs, and ends as it did', { skip: !linux && 'needs /proc', timeout: 30_000 }, async (t) => {
+  const shim = spawn(process.execPath, [PARENT_WATCH_SHIM, String(process.pid), '--', process.execPath, '-e', 'process.on("SIGTERM", () => {}); process.stdout.write(String(process.pid)); setInterval(() => {}, 1000);'], { stdio: ['ignore', 'pipe', 'inherit'] });
+  let child;
+  t.after(() => { for (const pid of [shim.pid, child]) if (pid && alive(pid)) try { process.kill(pid, 'SIGKILL'); } catch {} });
+  // Its pid is written once its TERM handler is on.
+  child = Number(await new Promise((resolve) => shim.stdout.once('data', (d) => resolve(String(d)))));
+  assert.ok(alive(child), 'the child runs');
+  const closed = new Promise((resolve) => shim.on('close', (code, signal) => resolve({ code, signal })));
+  const asked = Date.now();
+  shim.kill('SIGTERM');
+  let timer;
+  const ended = await Promise.race([closed, new Promise((resolve) => { timer = setTimeout(() => resolve('still running'), 4_000); })]);
+  clearTimeout(timer);
+  assert.notEqual(ended, 'still running', `the shim and its child (pid ${child}) still ran 4 s after the shim passed a TERM on`);
+  assert.ok(Date.now() - asked >= 1_500, `the child had its grace to go: killed ${Date.now() - asked} ms after the TERM`);
+  assert.deepEqual(ended, { code: null, signal: 'SIGKILL' }, 'the shim ends as its child did');
+  assert.equal(alive(child), false, 'the child is gone');
+});

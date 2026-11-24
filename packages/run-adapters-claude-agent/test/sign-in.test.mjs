@@ -135,3 +135,29 @@ for (const watch of ['pdeathsig', 'shim']) {
     assert.equal(running(pid), false, `the sign-in's CLI (pid ${pid}) still ran 2 s after its server was SIGKILLed`);
   });
 }
+
+// A stop (a second press, a turn-off, a PUT that moves the login) or the limit asks the sign-in to go (SIGTERM) and kills
+// it 5 s later. Under the shim (macOS, or Linux with no setpriv) the server's child is the shim, not the CLI, so that
+// kill reaches the shim alone: a CLI that outlasts the TERM must be killed by the shim first, else it runs on with no
+// watch and no limit, holding the browser's port, while the server says the sign-in stopped.
+test('a stopped sign-in under the parent-watch shim ends only once its CLI is gone, though the CLI ignores SIGTERM', { skip: !linux ? 'needs /proc' : false, timeout: 30_000 }, async (t) => {
+  const dir = scratch();
+  const cli = join(dir, 'claude');
+  const pidFile = join(dir, 'pid');
+  // It ignores TERM (an ignored signal stays ignored across exec), notes its pid once it does, then is `sleep`.
+  writeFileSync(cli, `#!/bin/sh\ntrap '' TERM\necho $$ > '${pidFile}'\nexec sleep 300\n`, { mode: 0o755 });
+  let pid;
+  t.after(() => {
+    if (pid && running(pid)) try { process.kill(pid, 'SIGKILL'); } catch {}
+  });
+  const signIn = claude.startClaudeLogin(cli, { ...login(), userHome: scratch() }, { display: {}, watch: 'shim' });
+  await until(() => existsSync(pidFile) && readFileSync(pidFile, 'utf8').trim() !== '', "the CLI's sign-in started");
+  pid = Number(readFileSync(pidFile, 'utf8').trim());
+  assert.equal(running(pid), true, 'the sign-in waits');
+  const stopped = Date.now();
+  signIn.stop();
+  assert.deepEqual(await signIn.ended, { end: 'stopped' });
+  const end = Date.now() + 1_000;
+  while (running(pid) && Date.now() < end) await new Promise((resolve) => setTimeout(resolve, 25));
+  assert.equal(running(pid), false, `the stopped sign-in's CLI (pid ${pid}) still ran ${Date.now() - stopped} ms after the stop, though the sign-in had ended`);
+});
