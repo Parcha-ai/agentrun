@@ -567,6 +567,78 @@ test("a holder whose locks are taken over before its post (paused past the 60 s 
   assert.equal(outcome.error?.message, tokens.LOGIN_RUNNING_OUT, "the new holder kept its locks past the wait and wrote nothing: the ask is refused in words, having posted nothing");
 });
 
+test("a holder never marks its own live lock lost: the check after its post and its heartbeat's read and touch of the lock never cross, so no lock_lost is said and both locks are released, none left for the 60 s stale time", { timeout: 20_000 }, async (t) => {
+  assert.equal(typeof tokens.renewLogin, "function", "the runner's renewal (renewLogin)");
+  const { login, write } = loginFolder(t);
+  const now = 1_900_000_000_000;
+  const old = { access: fake("access-old"), refresh: fake("refresh-old") };
+  const next = { access: fake("access-new"), refresh: fake("refresh-new") };
+  write(oauthOf(old.access, now + 60_000, old.refresh));
+  const [current, legacy] = [join(login.dir, ".oauth_refresh.lock"), `${realpathSync(login.dir)}.lock`];
+  // The wall clock the locks are timed on, the test's: it moves 5 s once the post is out, as between two of the CLI's
+  // own beats, so the heartbeat's mtime is 5 s past the one the holder set at the lock's acquisition.
+  const wall = Date.now();
+  let clock = wall;
+  t.mock.method(Date, "now", () => clock);
+  // The heartbeat's first touch of the folder's lock on the moved clock: made on disk, then held before the holder takes
+  // it as its own mtime, until the test lets it go (or, if the check after the post reads the lock meanwhile, until
+  // that read is done and compared).
+  let entered;
+  const touched = new Promise((resolve) => (entered = resolve));
+  let release;
+  const touchHeld = new Promise((resolve) => (release = resolve));
+  let gated = false;
+  let holding = false;
+  let crossed = false;
+  const lockFs = {
+    mkdir: (path) => fsp.mkdir(path),
+    stat: async (path) => {
+      if (!holding || path !== current) return fsp.stat(path);
+      crossed = true;
+      const read = await fsp.stat(path);
+      setImmediate(release);
+      return read;
+    },
+    utimes: async (path, atime, mtime) => {
+      await fsp.utimes(path, atime, mtime);
+      if (path !== current || mtime.getTime() === wall || gated) return;
+      gated = true;
+      holding = true;
+      entered();
+      await touchHeld;
+      holding = false;
+    },
+    rm: (path, options) => fsp.rm(path, options),
+  };
+  let answer;
+  const answered = new Promise((resolve) => (answer = resolve));
+  const posts = [];
+  // The renewal's fetch, the test's own: no socket and no timer between its answer and the check after the post.
+  const fetch = async (url, init) => {
+    posts.push(JSON.parse(init.body));
+    clock = wall + 5_000;
+    await answered;
+    return { status: 200, json: async () => ({ access_token: next.access, refresh_token: next.refresh, expires_in: 3600 }) };
+  };
+  const lines = [];
+  const renew = tokens.renewLogin({ fetch, now: () => now, log: (fields) => lines.push(fields), lockFs, lockUpdateMs: 20 });
+  const asked = new tokens.LoginTokens({ login, now: () => now, renew }).token();
+  asked.catch(() => undefined);
+  await touched;
+  answer();
+  // One turn on, a check that does not wait for the heartbeat has read the lock (and lets the touch go itself once it
+  // has compared); one that waits has not, and the touch is let go here.
+  await new Promise((resolve) => setImmediate(resolve));
+  if (!crossed) release();
+  assert.equal(await asked, next.access, "the answer is handed");
+  assert.equal(posts.length, 1);
+  assert.deepEqual(lines.filter((fields) => fields.claude_login === "lock_lost"), [], "a holder never marks its own live lock lost: its check after the post never reads the lock mid-heartbeat");
+  assert.ok(!existsSync(current), "its lock in the folder is released, never left behind for the 60 s stale time");
+  assert.ok(!existsSync(legacy), "its lock beside the folder is released");
+  const saved = JSON.parse(readFileSync(join(login.dir, ".credentials.json"), "utf8")).claudeAiOauth;
+  assert.deepEqual([saved.accessToken, saved.refreshToken], [next.access, next.refresh], "the answer written back");
+});
+
 test("a renewal Anthropic refuses (400 invalid_grant) or that fails (a 5xx) refuses the ask in LOGIN_RUNNING_OUT's words, posts once for that ask and never again on its own as the clock goes on, and leaves the file byte for byte as it was; a refresh token refused as invalid_grant is never posted again", async (t) => {
   assert.equal(typeof tokens.LoginTokens, "function", "the runner has a reader of the login's access token");
   for (const [why, answer, nextAskPosts] of [
