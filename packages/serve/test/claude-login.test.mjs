@@ -1245,7 +1245,7 @@ test("a Claude-plan run whose login check times out twice goes on when the same 
   assert.equal(fake.calls(), 2, "asked twice before the earlier answer is taken");
 });
 
-test("a Claude-plan run whose login check times out twice is refused with LOGIN_UNKNOWN, in words that name the timeout, when the login never answered signed in here, answered 11 minutes ago, or only another login did", async () => {
+test("a Claude-plan run whose login check times out twice is refused with LOGIN_UNKNOWN, in words that name the timeout, when the login never answered signed in here, answered 11 minutes ago, answered after now (the clock set back since), or only another login did", async () => {
   const never = await ownLogin();
   const first = statusOf(timedOut(), timedOut());
   await assert.rejects(loginBeforeRun(never, "claude", first.status, { data: ANSWERS }), unknownByTimeout);
@@ -1268,6 +1268,13 @@ test("a Claude-plan run whose login check times out twice is refused with LOGIN_
   await assert.rejects(loginBeforeRun(fresh, "claude", statusOf(timedOut(), timedOut()).status, { data: ANSWERS, now: time.now }), unknownByTimeout);
   // The same folder with its credentials kept apart is another login too.
   await assert.rejects(loginBeforeRun({ ...other, secure: join(other.userHome, "elsewhere") }, "claude", statusOf(timedOut(), timedOut()).status, { data: ANSWERS, now: time.now }), unknownByTimeout);
+
+  // An answer noted a minute after now (the clock set back since) stands for nothing.
+  const ahead = await ownLogin();
+  time.at(60_000);
+  await loginBeforeRun(ahead, "claude", statusOf(SAID_IN).status, { data: ANSWERS, now: time.now });
+  time.at(0);
+  await assert.rejects(loginBeforeRun(ahead, "claude", statusOf(timedOut(), timedOut()).status, { data: ANSWERS, now: time.now }), unknownByTimeout, "an answer from a minute after now stood for a run whose checks timed out");
 });
 
 test("a signed-out answer is never asked again nor overridden by an earlier signed-in one: the run is refused at once with LOGIN_SIGNED_OUT, and that earlier answer is gone, so a timeout after it is refused", async () => {
