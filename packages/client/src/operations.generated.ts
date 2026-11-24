@@ -3197,6 +3197,20 @@ export type GetClaudeLoginResponse = {
     organization?: string;
     plan?: string;
   };
+  folder: string;
+  machine: {
+    folder: string;
+    source: "CLAUDE_CONFIG_DIR" | "default";
+  };
+  sign_in?: {
+    state: "waiting" | "signed_in" | "timed_out" | "failed" | "not_started";
+    started_at: string;
+    ended_at?: string;
+    limit_ms: number;
+    exit_code?: number;
+    signal?: string;
+    error?: string;
+  };
 };
 
 /** This server's email account: its address, servers and who signs in, never its password (GET /settings/email). */
@@ -3996,6 +4010,20 @@ export type StartClaudeLoginResponse = {
     organization?: string;
     plan?: string;
   };
+  folder: string;
+  machine: {
+    folder: string;
+    source: "CLAUDE_CONFIG_DIR" | "default";
+  };
+  sign_in?: {
+    state: "waiting" | "signed_in" | "timed_out" | "failed" | "not_started";
+    started_at: string;
+    ended_at?: string;
+    limit_ms: number;
+    exit_code?: number;
+    signal?: string;
+    error?: string;
+  };
 };
 
 /** Start signing in to an MCP server with OAuth: the page the owner opens (POST /settings/mcp-servers/{name}/oauth/start). Its body's string values are secrets: each copy is cut from the answer, and a refusal keeps only its code. */
@@ -4090,6 +4118,20 @@ export type TurnOffClaudeLoginResponse = {
     organization?: string;
     plan?: string;
   };
+  folder: string;
+  machine: {
+    folder: string;
+    source: "CLAUDE_CONFIG_DIR" | "default";
+  };
+  sign_in?: {
+    state: "waiting" | "signed_in" | "timed_out" | "failed" | "not_started";
+    started_at: string;
+    ended_at?: string;
+    limit_ms: number;
+    exit_code?: number;
+    signal?: string;
+    error?: string;
+  };
 };
 
 /** Turn on Claude Code's login on this machine for claude-agent's runs (PUT /settings/claude-login). */
@@ -4108,6 +4150,20 @@ export type TurnOnClaudeLoginResponse = {
     email?: string;
     organization?: string;
     plan?: string;
+  };
+  folder: string;
+  machine: {
+    folder: string;
+    source: "CLAUDE_CONFIG_DIR" | "default";
+  };
+  sign_in?: {
+    state: "waiting" | "signed_in" | "timed_out" | "failed" | "not_started";
+    started_at: string;
+    ended_at?: string;
+    limit_ms: number;
+    exit_code?: number;
+    signal?: string;
+    error?: string;
   };
 };
 
@@ -7011,6 +7067,55 @@ export type ValidateWorkflowResponse = {
   warnings: Array<string>;
 };
 
+/** A year of the work under this machine's session files (GET /wrapped). */
+export interface GetWrappedParams {
+  year?: number;
+}
+export type GetWrappedResponse = {
+  year: number;
+  sessions: number;
+  turns: number;
+  requests: number;
+  tokens: {
+    input: number;
+    output: number;
+    cache_read: number;
+    cache_write: number;
+  };
+  cost_usd: number;
+  unpriced_requests: number;
+  days: Array<{
+    day: string;
+    requests: number;
+    tokens: number;
+  }>;
+  hours: Array<number>;
+  weekdays: Array<number>;
+  active_ms: number;
+  harnesses: Array<{
+    harness: string;
+    sessions: number;
+    requests: number;
+    tokens: number;
+  }>;
+  models: Array<{
+    model: string;
+    requests: number;
+    tokens: number;
+    cost_usd: number;
+  }>;
+  sources: Array<{
+    source: string;
+    sessions: number;
+    requests: number;
+  }>;
+  imported: Array<{
+    source: string;
+    runs: number;
+  }>;
+  unread_files: number;
+};
+
 /** Each operation as the runtime sends it, by operationId. */
 export const OPERATIONS: Readonly<Record<string, Operation>> = {
   archiveAgent: {"method":"POST","path":"/agents/{agent_id}/archive","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
@@ -7214,6 +7319,7 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   saveWebhook: {"method":"PUT","path":"/settings/webhook","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   testWebhook: {"method":"POST","path":"/settings/webhook/test","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   validateWorkflow: {"method":"POST","path":"/workflows/validate","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  getWrapped: {"method":"GET","path":"/wrapped","pathParams":[],"multiSegment":[],"query":["year"],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
 };
 
 /** The resource groups, each operation a method that sends it through `call`. */
@@ -7593,6 +7699,8 @@ export function resources(call: Call) {
     stats: (params?: GetStatsParams, options?: RequestOptions): Promise<GetStatsResponse> => call("getStats", [], undefined, params, options),
     /** Usage by meter over a period (GET /usage). */
     usage: (params?: GetUsageParams, options?: RequestOptions): Promise<GetUsageResponse> => call("getUsage", [], undefined, params, options),
+    /** A year of the work under this machine's session files (GET /wrapped). */
+    wrapped: (params?: GetWrappedParams, options?: RequestOptions): Promise<GetWrappedResponse> => call("getWrapped", [], undefined, params, options),
     template: {
       /** Apply a template package: make its agent, with its skills, then its triggers (POST /templates/{template}/apply). */
       apply: (template: string, body: ApplyTemplateBody, params?: ApplyTemplateParams, options?: RequestOptions): Promise<ApplyTemplateResponse> => call("applyTemplate", [template], body, params, options),

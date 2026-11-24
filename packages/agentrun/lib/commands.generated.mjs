@@ -4939,6 +4939,32 @@ export const COMMANDS = [
     "secretBody": false,
     "raw": false,
     "summary": "Check a workflow definition without saving it"
+  },
+  {
+    "command": [
+      "wrapped"
+    ],
+    "operationId": "getWrapped",
+    "method": "GET",
+    "path": "/wrapped",
+    "pathParams": [],
+    "multiSegment": [],
+    "query": [
+      {
+        "name": "year",
+        "type": "integer",
+        "required": false,
+        "description": "A four-digit year, in the server's local zone. Default the current year."
+      }
+    ],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "A year of the work under this machine's session files"
   }
 ];
 

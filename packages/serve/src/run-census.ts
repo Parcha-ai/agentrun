@@ -12,7 +12,8 @@
 // earlier end's count of each file it left as it was (censusAfter).
 import { createHash, createHmac } from "node:crypto";
 import { launchValuesOf } from "./handed-values.js";
-import { heldSpans, type Span } from "./learn/secrets.js";
+import { heldSpans } from "./learn/secrets.js";
+import type { Span } from "./redact/match.js";
 import { cutsAsText, listFiles, RUN_FILE_CUT_MAX } from "./run-files.js";
 import { typeOf } from "./file-types.js";
 import { CENSUS_PENDING, type RunPatch, type Store } from "./store/store.js";
