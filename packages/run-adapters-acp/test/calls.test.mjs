@@ -75,8 +75,8 @@ test('an announcement whose title names no tool of ours is matched by the argume
 // Known limit (PR body): an announcement whose title names no tool of ours is matched by its arguments alone, so a call of
 // the agent's own (Goose's load_skill) announced first with the same arguments takes our MCP call's id. Only the id the
 // resume memo keys the call by moves; the gate is asked at the MCP call either way. Kept red until announcements carry a
-// field the adapter reads.
-test("an agent's own call announced with the same arguments as ours never takes our MCP call's id", { skip: "known limit, in the PR body: an untitled announcement is matched by its arguments alone" }, async () => {
+// field the adapter reads; AGENTRUN_KNOWN_LIMITS=1 runs it, and it fails.
+test("an agent's own call announced with the same arguments as ours never takes our MCP call's id", { skip: process.env.AGENTRUN_KNOWN_LIMITS ? false : "known limit, in the PR body: an untitled announcement is matched by its arguments alone (AGENTRUN_KNOWN_LIMITS=1 runs it, red)" }, async () => {
   const ids = new CallIds();
   const signal = new AbortController().signal;
   ids.add('call_skill', undefined, { name: 'notes' });
