@@ -13,7 +13,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { feed, posts } from "./feed-support.mjs";
-import { scratch, serve, withEnv } from "./support.mjs";
+import { follow, scratch, serve, withEnv } from "./support.mjs";
 import { fakeClock, hookServer, until } from "./trigger-support.mjs";
 
 const { apiOnlyTriggerSkipped } = await import("../dist/api-only.js");
@@ -60,7 +60,7 @@ async function deployServer(t, options, manifest = MANIFEST) {
 async function send(server, method, path, { token = true, body } = {}) {
   const res = await fetch(`${server.url}${path}`, {
     method,
-    headers: { ...(token ? { authorization: `Bearer ${server.token}` } : {}), ...(body === undefined ? {} : { "content-type": "application/json" }) },
+    headers: { ...(token ? { authorization: `Bearer ${typeof token === "string" ? token : server.token}` } : {}), ...(body === undefined ? {} : { "content-type": "application/json" }) },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
   const text = await res.text();
@@ -163,6 +163,26 @@ test("an API-only server applies a template, reads its agent and revisions, move
   assert.equal(deleted.status, 204, JSON.stringify(deleted.body));
   const gone = await send(server, "GET", `/v2/agents/${agent}`);
   assert.deepEqual([gone.status, gone.body.error?.code], [410, "purged"], JSON.stringify(gone.body));
+});
+
+test("an API-only server purges one ended run of an agent its deploy made, with the token, as it may purge the whole agent: the agent kept", { timeout: 120_000 }, async (t) => {
+  const server = await deployServer(t, { apiOnly: true, runner: true });
+  const applied = await send(server, "POST", "/v2/templates/deployed/apply", { body: { parameters: { topic: "tides" } } });
+  assert.equal(applied.status, 201, JSON.stringify(applied.body));
+  const agent = applied.body.agent_id;
+  const started = await send(server, "POST", `/v2/agents/${agent}/runs`, { body: { input: { content: "Today's note." } } });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  const run = started.body.run_id;
+  await follow(server.api, run, ["completed"]);
+
+  const deleted = await send(server, "DELETE", `/v2/runs/${run}`);
+  assert.equal(deleted.status, 204, JSON.stringify(deleted.body));
+  const read = await send(server, "GET", `/v2/runs/${run}`);
+  assert.deepEqual([read.status, read.body.error?.code, read.body.error?.details?.run_id], [410, "purged", run], JSON.stringify(read.body));
+  assert.deepEqual(await runsOf(server, agent), [], "no run of the agent is listed");
+  const kept = await send(server, "GET", `/v2/agents/${agent}`);
+  assert.deepEqual([kept.status, kept.body.agent_id], [200, agent], "the agent is kept");
+  assert.equal((await server.store.agents.get(agent)).archivedAt, null, "and not archived");
 });
 
 test("on an API-only server a template's schedule is never armed on the triggers' own clock, so its time passing starts no run; the whole server arms it", { timeout: 60_000 }, async (t) => {
@@ -353,6 +373,34 @@ test("an API-only server with the launch hook makes the template's schedule, and
   assert.deepEqual(runs.map((run) => run.run_id ?? run.id), [started.body.run_id], "the backend's one run");
   const firing = await server.store.triggers.firing(made.id, sent.firing_id);
   assert.deepEqual([firing.status, firing.runId], ["started", started.body.run_id]);
+});
+
+test("an API-only server with the launch hook takes the backend's release of a firing it answered 2xx and will start no run for: failed, host_released, with the token", { timeout: 120_000 }, async (t) => {
+  const clock = fakeClock("2026-06-01T08:00:00Z");
+  const hook = await hookServer(t);
+  const server = await deployServer(t, { apiOnly: true, triggerClock: clock, launchHook: { url: hook.url, secret: mintSecret() } });
+  const applied = await send(server, "POST", "/v2/templates/deployed/apply", { body: { parameters: { topic: "tides" } } });
+  assert.equal(applied.status, 201, JSON.stringify(applied.body));
+  const [made] = await server.store.triggers.list(applied.body.agent_id);
+  clock.to("2026-06-01T09:00:00Z");
+  const [{ sent }] = await until(() => hook.got.length && hook.got, 20_000, "the schedule's firing never reached the backend");
+  await until(async () => (await server.store.triggers.firing(made.id, sent.firing_id))?.status === "sent", 20_000, "the firing was never recorded sent");
+
+  // Only a credential that may start the firing's run may release it: the server's own token, as for that start. None,
+  // or any other, is refused at the door, and the firing stays sent.
+  const path = `/v2/triggers/${made.id}/firings/${sent.firing_id}/release`;
+  for (const [token, what] of [[false, "no token"], [`${server.token}x`, "another token"]]) {
+    const refused = await send(server, "POST", path, { token, body: { error: "The job failed at launch (launch_failed)." } });
+    assert.equal(refused.status, 401, `${what}: ${JSON.stringify(refused.body)}`);
+  }
+  assert.equal((await server.store.triggers.firing(made.id, sent.firing_id)).status, "sent", "no refusal touched it");
+
+  // The backend's job failed at launch: it says so, and the firing holds its trigger's room no longer.
+  const released = await send(server, "POST", path, { body: { error: "The job failed at launch (launch_failed)." } });
+  assert.equal(released.status, 200, JSON.stringify(released.body));
+  assert.deepEqual([released.body.key, released.body.status, released.body.error], [sent.firing_id, "failed", { code: "host_released", message: "The job failed at launch (launch_failed)." }]);
+  assert.equal((await server.store.triggers.activeKeys(made.id, clock.now())).length, 0, "its room is free");
+  assert.deepEqual(await runsOf(server, applied.body.agent_id), [], "no run started here");
 });
 
 test("an API-only server with the launch hook makes a feed whose urls are given; one left empty is skipped for want of a feed, as on the whole server", { timeout: 60_000 }, async (t) => {

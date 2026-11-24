@@ -6,10 +6,9 @@ import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer as createHttpServer } from "node:http";
-import { createServer } from "node:net";
 import { join } from "node:path";
 import { test } from "node:test";
-import { scratch as scratchOf, server } from "./support.mjs";
+import { dropping, scratch as scratchOf, server } from "./support.mjs";
 
 const BIN = new URL("../bin/agentrun.mjs", import.meta.url).pathname;
 const ROOT = new URL("../../../", import.meta.url).pathname;
@@ -17,17 +16,6 @@ const GENERATOR = join(ROOT, "scripts", "generate-clients.mjs");
 const TABLE = join(ROOT, "packages", "agentrun", "lib", "commands.generated.mjs");
 
 const scratch = () => scratchOf("cli");
-
-/** A server that is never reached: a listener of this test's own, open until the test ends, that drops every connection
- *  it takes (Node 24's fetch then fails with the cause UND_ERR_SOCKET). `connections()` counts them. The CLI must run
- *  beside it (`run`, not a blocking spawnSync) whenever it may connect. */
-async function dropping(t) {
-  let connections = 0;
-  const server = createServer((socket) => (connections++, socket.destroy()));
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  t.after(() => new Promise((resolve) => server.close(resolve)));
-  return { base: `http://127.0.0.1:${server.address().port}/v2`, connections: () => connections };
-}
 
 /** The server on DIR/data with a faux model (support.mjs server). */
 const serve = (t, dir, env) => server(t, { data: join(dir, "data"), env, faux: 'export default (context, faux) => faux.message("The answer is 42.");\n' });
@@ -417,6 +405,13 @@ test("learning approve, which takes the owner's console session and refuses ever
   const cli = cliOf(env, []);
   assert.equal(cli(["learning", "approve", "--help"]).code, 2);
   assert.doesNotMatch(cli(["learning"]).out, /approve/);
+});
+
+test("the server no test reaches fails every request with the cause UND_ERR_SOCKET, many at once: never ECONNRESET, which a close before the request is read can give", async (t) => {
+  const nobody = await dropping(t);
+  const causes = await Promise.all(Array.from({ length: 50 }, () => fetch(`${nobody.base}/agents`, { headers: { authorization: "Bearer fake-test-key" } }).then(() => "answered", (error) => error?.cause?.code ?? error?.name)));
+  assert.deepEqual([...new Set(causes)], ["UND_ERR_SOCKET"], JSON.stringify(causes));
+  assert.equal(nobody.connections(), 50);
 });
 
 test("with no server answering at the address, the hint names --base-url for a server on another port", async (t) => {

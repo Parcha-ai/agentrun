@@ -790,6 +790,12 @@ The names of the MCP servers saved here, and nothing else of them.
 
 Route: `GET /settings/mcp-server-names`.
 
+### `agentrun local list-running-computers`
+
+Every run still going that has a computer.
+
+Route: `GET /computers/running`.
+
 ### `agentrun local list-suggestions`
 
 Suggested agents: each repository's scan and the agents it suggests.
@@ -1017,6 +1023,8 @@ The files the run wrote.
 
 Route: `GET /runs/{run_id}/files`.
 
+- `--cut run` (string, one of these): `run`: each file also has its `name`, its path under the run's own cut (each value the cut holds and each secret shape replaced by `[redacted]` in place, as a cut read cuts a file's text), whatever its type. A run whose cut can't be read is `403 forbidden`, as without `cut`. A server that doesn't know `cut` lists no `name`.
+
 ### `agentrun runs get RUN_ID`
 
 One run.
@@ -1113,6 +1121,7 @@ One file's raw bytes.
 Route: `GET /runs/{run_id}/files/{path}`. It prints the answer's bytes as they are. PATH keeps its slashes.
 
 - `--download INTEGER` (integer): `1` forces a download.
+- `--cut run` (string, one of these): `run`: the file's text cut of every value the run's own cut holds (the server's keys, the keys a person saved, its secret stores' values, the sign-in refs the run was handed), each one and each secret shape replaced by `[redacted]` in place, as the run's timeline cuts its calls; the text is `[redacted]` whole when a value still shows in a form not cut in place. The cut holds this server's values, not every secret: a value handed to the run alone at its launch (a key of its own, an MCP server's headers) is not in it, and a secret of no known shape passes as written. Answered `text/plain; charset=utf-8` with `x-agentrun-cut: run` (a server that doesn't know `cut` answers the raw bytes, without it), the whole file (`Range` is not read). A file whose type is not text (text/*, JSON, NDJSON, or an extension the server doesn't type), or whose bytes are not UTF-8 or hold a NUL, is `415 unsupported_media_type`; one over 262144 bytes is `413 payload_too_large`; a run whose cut can't be read (the sign-in it was handed doesn't open) is `403 forbidden`. Without `cut`, the file's bytes as written.
 - `--range STRING` (string): One byte range, `bytes=<start>-<end>`.
 
 ### `agentrun runs resume RUN_ID`
@@ -1174,8 +1183,8 @@ Route: `GET /runs/{run_id}/timeline`.
 
 - `--after INTEGER` (integer): The change cursor last applied, from `next_after` or the last SSE `id`. 0 is the start.
 - `--wait-ms INTEGER` (integer): JSON only. How long to hold the request for a change after `after`.
-- `--limit INTEGER` (integer): At most this many rows in a page (1 to 500, default 500); has_more says when another waits.
-- `--calls whole` (string, one of these): `whole`: each `tool_use` row carries its call's arguments (`tool_input`) and each `tool_result` row the head of its output to 8000 characters (`tool_result_text`; a web call's every url, only its long texts cut), both through the run's redaction, for a reader that grades the run (a template eval). Its rows are another page sequence: a cursor (`after`, `Last-Event-ID`) from one read goes with the same `calls`.
+- `--limit INTEGER` (integer): At most this many rows in a page (1 to 500, default 500; with `calls=whole`, 1 to 100, default 100); has_more says when another waits.
+- `--calls whole` (string, one of these): `whole`: each `tool_use` row carries its call's arguments (`tool_input`) and each `tool_result` row its output whole to 120000 characters (`tool_result_text`; a web call's every url, only its long texts cut), both through the run's redaction, for a reader that grades the run (a template eval). Its rows are another page sequence: a cursor (`after`, `Last-Event-ID`) from one read goes with the same `calls`.
 - `--last-event-id STRING` (string): SSE reconnect. Same meaning as `after`, and wins over it.
 - `--follow` (boolean, this CLI's own): the timeline as it changes, one page per line (NDJSON), until the run ends; resumes a dropped connection
 
@@ -1300,7 +1309,7 @@ Route: none, it runs on this machine.
 - `--port N` (string, this CLI's own): the port to listen on (default: the first free from 7340; 7340 with --tailscale)
 - `--data DIR` (string, this CLI's own): the data directory (default ~/.agentrun)
 - `--tailscale` (boolean, this CLI's own): also serve it over HTTPS on your own tailnet only (tailscale serve, never Funnel); --no-tailscale takes it off
-- `--env KEY=VALUE` (string, this CLI's own): a local model's variable for the server, a start-time switch or the usage counts' switch: AGENT_MODEL_BASE_URL, AGENT_MODEL_GATEWAY_IDS, AGENT_MODEL, AGENT_MODEL_PRICE, AGENT_MODEL_API_KEY (none), AGENTRUN_MCP_ALLOW_LOOPBACK (1), AGENTRUN_WEBHOOK_PRIVATE_TARGETS (1), AGENTRUN_TELEMETRY, DO_NOT_TRACK; kept until KEY= removes it; repeatable
+- `--env KEY=VALUE` (string, this CLI's own): a local model's variable for the server or where Ollama listens, a start-time switch or the usage counts' switch: AGENT_MODEL_BASE_URL, AGENT_MODEL_GATEWAY_IDS, AGENT_MODEL, AGENT_MODEL_PRICE, AGENT_MODEL_API_KEY (none), OLLAMA_HOST, OLLAMA_CONTEXT_LENGTH, AGENTRUN_MCP_ALLOW_LOOPBACK (1), AGENTRUN_WEBHOOK_PRIVATE_TARGETS (1), AGENTRUN_TELEMETRY, DO_NOT_TRACK; kept until KEY= removes it; repeatable
 - `--public-url URL` (string, this CLI's own): the https address people open it at, through a proxy you run in front of it (your own tailscale serve, a reverse proxy); kept for every restart
 
 ### `agentrun service logs`
@@ -1555,6 +1564,16 @@ The triggers: schedules and signed webhooks that start an agent's capped runs or
 
 Route: `GET /triggers`.
 
+### `agentrun triggers release-firing TRIGGER_ID FIRING_ID`
+
+The launch hook's host releases a firing it took and will start no run for.
+
+Route: `POST /triggers/{trigger_id}/firings/{firing_id}/release`.
+
+- `--error STRING` (string, required): Why the host starts no run for the firing, in plain words: a failure's code or reason, never a person's data or a key.
+- `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
+- `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
+
 ### `agentrun triggers update TRIGGER_ID`
 
 Change a trigger, or turn it off and on.
@@ -1632,3 +1651,13 @@ Route: `POST /workflows/validate`.
 
 - `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
 - `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
+
+## wrapped
+
+### `agentrun wrapped`
+
+A year of the work under this machine's session files.
+
+Route: `GET /wrapped`.
+
+- `--year INTEGER` (integer): A four-digit year, in the server's local zone. Default the current year.

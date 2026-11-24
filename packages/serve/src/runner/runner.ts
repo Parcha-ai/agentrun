@@ -25,6 +25,7 @@ import { isFenced, type RunnerStore } from "./store-port.js";
 import { FINAL_STATES, type RunState } from "../store/store.js";
 import { Unanswered } from "../store/postgres/connection.js";
 import { clearWaitEnded } from "../browser-wait-ended.js";
+import { keptBy, readKept } from "../workspace/computer-kept.js";
 import { cutDeep, heldRedactor, processSecretRedactor, type Redact } from "./redact.js";
 import { type LiveTickerOptions, withLiveTicker } from "./live-ticker.js";
 import { keepPresence, type Presence } from "./presence.js";
@@ -208,6 +209,10 @@ export type HandBackCause = "drain" | "interrupted" | "end_retry" | "give_back";
 
 export interface Runner {
   readonly name: string;
+  /** The incarnation of its word in the store (presence.ts: its caller's, else its own), which its loops hand each claim's
+   *  computer (LoopDeps.incarnation): a computer a park keeps pinned to this runner names it. Absent with no store
+   *  runners, where no word is kept. */
+  readonly incarnation?: string;
   /** The claims this runner holds and has not lost. */
   held(): Claim[];
   /** Stops claiming, lets each held run go on to its own end for up to drainMs, then stops every loop left where it can
@@ -697,6 +702,22 @@ export function startRunner(options: RunnerOptions): Runner {
     }
   };
 
+  /** Whether the run under `claim` has a computer its park kept pinned to a runner other than this one, this process
+   *  (computer-kept.ts: the row names a runner and incarnation, keptBy). A row that cannot be read says yes: a loop
+   *  started on a guess would read the row again in its claim's computer, take it and try the machine from here,
+   *  dropping the row that runner's timer ends it by. Ending the stop with no loop touches no computer, and the row's
+   *  runner (or any janitor, once that runner is gone) still ends it. */
+  const keptElsewhere = async (claim: Claim): Promise<boolean> => {
+    if (!store.settings) return false;
+    try {
+      const kept = await readKept(store.settings, claim.runId);
+      const ours = (options.presence ?? presence)?.incarnation;
+      return kept?.runner !== undefined && !keptBy(kept, ours ? { runner: name, incarnation: ours } : undefined);
+    } catch {
+      return true;
+    }
+  };
+
   /** A claim of a run whose stopped end was refused (its untaken stop row has tries): it only ends the run, with no loop,
    *  so no turn, model request or tool runs on a run that is stopping. */
   const endRetried = async (claim: Claim, stop: Command) => {
@@ -835,7 +856,11 @@ export function startRunner(options: RunnerOptions): Runner {
     let ending: () => void = () => {};
     // Set below, once held is made: the loop asks deliverNow only once its first turn has ended, well after.
     let heldNow: Held | undefined;
+    // This runner's process as its word in the store names it (presence.ts), for the claim's computer: a park that keeps one
+    // only this runner can reach again pins it to this runner and this incarnation (computer-kept.ts pinnedOf).
+    const ours = (options.presence ?? presence)?.incarnation;
     const loop = loopsOf({
+      ...(ours ? { incarnation: ours } : {}),
       journal: (forClaim) => fenced(store.journal(forClaim), fence, forClaim.runId, () => ending()),
       flush: () => store.flush(),
       signal: abort.signal,
@@ -973,13 +998,18 @@ export function startRunner(options: RunnerOptions): Runner {
       //   starts now, not even its first input: a loop started first would send that input before the stop reached it;
       // - a run whose untaken stop row has tries, which failed to apply that stop before. Either source of tries counts: a
       //   refused stopped end (endRefused, released running) or a failed resume (resumeFailed's store.retry, released
-      //   parked).
+      //   parked);
+      // - a parked run stopped or cancelled whose computer its park kept pinned to another runner, or whose kept row can't
+      //   be read (keptElsewhere): the store gives a stop to any runner at once, never waiting on the pin, and this
+      //   runner can't reach that machine.
+      //   A loop would take the kept row (takeKept) and try to attach it, orphaning it on that runner's host; ending here
+      //   leaves the row that runner's, whose own timer at its time, or its janitor once the run is final, ends it.
       // One read of those claims' rows, made only when the batch has a queued or a released run.
       const reread = claims.filter((claim) => claim.from === "queued" || claim.from === "running" || claim.from === "parked");
       const rows = reread.length ? await store.commandsOf(reread.map((claim) => ({ runId: claim.runId, after: 0 }))) : new Map<string, Command[]>();
       for (const claim of claims) {
         const stop = endingRow((rows.get(claim.runId) ?? []).filter((row) => row.takenAt === null));
-        const endsOnly = stop !== undefined && (claim.from === "queued" || stop.tries > 0 || (claim.from === "running" && (await neverStarted(claim))));
+        const endsOnly = stop !== undefined && (claim.from === "queued" || stop.tries > 0 || (claim.from === "running" && (await neverStarted(claim))) || (claim.from === "parked" && (await keptElsewhere(claim))));
         if (stop && endsOnly && !closed && !killed && !runs.has(claim.runId)) {
           const key = `${claim.runId}:${claim.epoch}`;
           endingClaims.add(key);
@@ -1023,7 +1053,8 @@ export function startRunner(options: RunnerOptions): Runner {
    *  claim's loop still running holds its weight too): each claimed on its own, its weight put in `weights`. The first that
    *  does not fit ends the claim, unless the runner holds nothing: then it is claimed alone. */
   const claimByMemory = async (budget: RunnerMemory, free: number, weights: Map<string, number>): Promise<Claim[]> => {
-    const waiting = await store.runs.claimable({ limit: free });
+    // As this runner's claimer: a run whose computer is kept for another runner still there is not among them.
+    const waiting = await store.runs.claimable({ limit: free, runner: name });
     if (waiting.length === 0) return [];
     const weighed = await budget.weigh(waiting);
     let heldMib = [...runs.values(), ...replaced].reduce((sum, held) => sum + held.mib, 0);
@@ -1162,8 +1193,10 @@ export function startRunner(options: RunnerOptions): Runner {
     for (const held of runs.values()) clock.clearTimeout(held.deadline);
   };
 
+  const incarnation = (options.presence ?? presence)?.incarnation;
   return {
     name,
+    ...(incarnation ? { incarnation } : {}),
     held: () => [...runs.values()].filter((held) => !held.fence.lost && !held.ending).map((held) => held.claim),
     async close() {
       if (closed || killed) return;

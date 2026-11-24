@@ -15,7 +15,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { ASK } from "./fixtures/faux-browse-handoff.mjs";
 import { connect } from "./fixtures/ws-client.mjs";
-import { builtConsole, call, cookieOf, follow, runDir as runFolder, runRecordOf, scratch, serve, withEnv } from "./support.mjs";
+import { builtConsole, call, cookieAt, cookieOf, follow, runDir as runFolder, runRecordOf, scratch, serve, withEnv } from "./support.mjs";
 
 const { readLiveViewers } = await import("../dist/browser-live.js");
 
@@ -179,7 +179,7 @@ test("take over and hand back over the proxied socket: input outside a hold is d
 
 test("taking over gets the Host check every route gets: a page that rebound a name of its own cannot reach the viewer's socket to take the browser, whatever its Origin and cookie; this machine's name on another port (a tunnel) takes over", { timeout: 120_000 }, async (t) => {
   const w = await watched(t, { faux: BROWSE_HANDOFF });
-  const at = (name) => ({ origin: `http://${name}`, headers: { host: name, cookie: w.cookie } });
+  const at = (name) => ({ origin: `http://${name}`, headers: { host: name, cookie: cookieAt(w.cookie, name) } });
   const rebound = await connect(`ws://127.0.0.1:${w.server.port}${w.wsPath}`, at(`rebound.example:${w.server.port}`));
   assert.equal(rebound.status, 403, "a rebound name never reaches the socket");
   const tunnel = await connect(`ws://127.0.0.1:${w.server.port}${w.wsPath}`, at(`localhost:${w.server.port + 1}`));

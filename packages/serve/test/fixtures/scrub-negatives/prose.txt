@@ -1,0 +1,72 @@
+### commit-password-reset
+fix(auth): the password reset flow sends one email, not two
+
+The reset link was enqueued twice when the user clicked "Forgot password" while a previous token was still valid.
+Now the old reset token is invalidated first.
+### commit-rotate-key
+chore(ops): rotate the signing key every 90 days
+
+The key id is in the JWKS endpoint; old keys stay published for a week so tokens signed before the rotation verify.
+### commit-bearer-auth
+feat(api): accept bearer authentication on /v2/runs
+
+Bearer authorization replaces the cookie for API clients. A request without a token gets 401 and a
+WWW-Authenticate: Bearer realm="api", error="invalid_token" header.
+### pr-body-checklist
+## Why
+API keys were shown in full on the settings page. Now only the prefix and the last four characters are shown.
+
+## What
+- The key is hashed at rest (argon2id); the plaintext is shown once, at creation.
+- `revoked_at` column; a revoked key gets 401.
+- The settings page lists each key's prefix, created date and last use.
+
+## Test plan
+- [x] create a key, reload, see only the prefix
+- [x] revoke it, a request with it gets 401
+- [ ] rotate the webhook secret on staging
+### pr-review-comment
+nit: this logs the whole request, headers included — the Authorization header would end up in the log. Can we drop headers from the log line, or log only their names?
+### chat-rotate
+can you rotate the staging key? the old one showed up in a screenshot in the incident doc. no rush, it's read-only
+### chat-token-expired
+Token expired; please sign in again. If it keeps happening, clear the cookie and retry.
+### chat-dont-paste
+Please don't paste your API key in chat. If you did, revoke it on the dashboard and create a new one.
+### chat-spanish
+Oye, el token del bot venció anoche; ya lo roté y puse el nuevo en el vault. La contraseña del staging no cambió.
+### docs-password-policy
+Passwords must be at least 12 characters. We store a bcrypt hash of the password, never the password itself, and we never email a password.
+### docs-key-prefixes
+AWS access key ids start with AKIA or ASIA; GitHub classic tokens with ghp_ and fine-grained ones with github_pat_; OpenAI keys with sk-. A scanner keys on those prefixes.
+### docs-psql-env
+psql reads PGPASSWORD from the environment, or ~/.pgpass. Prefer the file: an environment variable shows up in `ps e` output.
+### docs-password-stdin
+Use `--password-stdin` so the password never appears in your shell history; `mysql -p` with no value prompts for it.
+### docs-secret-management
+Secrets live in the vault and are injected at deploy time. The app reads them from the environment; nothing secret is committed. To add one, open a ticket with the secret's name (not its value).
+### docs-oauth-flow
+The client exchanges the authorization code for an access token and a refresh token. The access token lives one hour; the refresh token is single-use and is rotated on every refresh.
+### docs-ssh-keys
+Add your public key to the deploy user's authorized_keys. Never share the private key; if a laptop is lost, remove its key from every host.
+### incident-summary
+Incident 2026-11-02: a misconfigured log filter wrote request headers to the debug log for 40 minutes. No tokens were exposed outside the cluster; all session tokens issued in that window were revoked as a precaution.
+### release-notes
+v1.4.0
+- The CLI reads its token from the keychain instead of a dotfile.
+- `widgets login` prints the token's scopes, never the token.
+- Fixed: a 401 during upload retried forever.
+### issue-report
+When I set the API key in the settings page and click save, the page says "Invalid key" even though the same key works with curl. Steps: 1) open Settings → API keys 2) paste key 3) save.
+### jargon-mix
+hash the password, salt it, pepper it; sign the token, verify the signature; encrypt the secret, decrypt the secret; the key is the key.
+### error-messages
+Error: invalid_grant (The provided authorization grant is invalid, expired, revoked, or was issued to another client.)
+Error: 403 Forbidden — Resource not accessible by personal access token
+Error: secret "app-credentials" not found
+### word-key-uses
+The key insight: the cache key is the request's path plus its query. Press any key to continue. Key: ✔ passed, ✖ failed.
+### word-token-uses
+The model used 12,840 input tokens and 911 output tokens. The tokenizer splits "unbelievable" into three tokens.
+### commit-revert-mention
+This reverts the change that logged the bearer token's length; the length alone was not useful.

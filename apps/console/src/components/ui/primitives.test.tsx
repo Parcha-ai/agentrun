@@ -154,6 +154,10 @@ describe("Banner", () => {
     expect(host.querySelector("svg")?.getAttribute("aria-hidden")).toBe("true");
     expect(host.querySelector("p")?.className).toContain("text-warning-text");
   });
+  it("as a bar, stands at least 48px tall so its bottom edge meets the edge under the navigation's logo row", () => {
+    const bar = mount(<Banner bar tone="info" actions={<Button size="xs">Turn off</Button>}>Demo mode.</Banner>).querySelector('[role="status"]')!;
+    expect(bar.className.split(" ")).toEqual(expect.arrayContaining(["min-h-12", "items-center", "border-b"]));
+  });
 });
 
 describe("Dialog", () => {
