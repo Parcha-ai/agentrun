@@ -44,10 +44,11 @@ const stubRoute = async () => ({ model: "faux-1", provider: { api: "anthropic-me
  *            computerDeps } (computerDepsFrom's); none by default (a runner place makes no computer)
  *   journal  called with the claim's Harness once the run's root is made, before the spec is built: what an earlier claim of
  *            the run left in its journal, written there as that claim wrote it
+ *   watch    called with the runner's store just before the spec is built (a test spies on what the claim reads there)
  */
 export async function specFor(t, options = {}) {
-  strictOptions("specFor", options, ["body", "kind", "monidPin", "skills", "launch", "settings", "routeOf", "uploads", "env", "keys", "ledger", "redact", "before", "computer", "journal"]);
-  const { body = {}, kind = "agentic", monidPin, skills, launch = {}, settings, routeOf = stubRoute, uploads = [], env = {}, keys = {}, ledger, redact, before, computer, journal } = options;
+  strictOptions("specFor", options, ["body", "kind", "monidPin", "skills", "launch", "settings", "routeOf", "uploads", "env", "keys", "ledger", "redact", "before", "computer", "journal", "watch"]);
+  const { body = {}, kind = "agentic", monidPin, skills, launch = {}, settings, routeOf = stubRoute, uploads = [], env = {}, keys = {}, ledger, redact, before, computer, journal, watch } = options;
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-spec-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -96,6 +97,7 @@ export async function specFor(t, options = {}) {
   const computerForClaim = composed?.computerForClaim ?? (async () => ({ release: async () => {} }));
   const deps = { env, data: dir, journal: (c) => store.journal(c), store, sealKey: SEAL_KEY, routeOf, computerForClaim, ...(composed ? { computerDeps: composed.computerDeps } : {}) };
   const launchBody = launchOf(fileIds);
+  watch?.(store);
   const spec = await adapterRunSpecFromLaunch(launchBody, run, deps, claim);
   return { spec, store, server, claim, dir, run, workFolder };
 }

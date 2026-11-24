@@ -5,6 +5,7 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 import { defineWorkflow, runTypedWorkflow, runWorkflow, workflowSha256, validateWorkflow, WorkflowSchemaConversionError } from '../dist/index.js';
+import { assertZodJsonContract } from '../dist/zod-json-contract.js';
 
 const Request = z.strictObject({ subject: z.string() });
 const Brief = z.strictObject({ summary: z.string(), sources: z.array(z.string()) });
@@ -195,4 +196,8 @@ test('representable Zod constraints and Jev metadata are preserved', () => {
   assert.equal(workflow.schemas.Decision.properties.samePerson.criteria.true, 'Name and birth year agree.');
   assert.deepEqual(workflow.schemas.Decision.properties.evidenceCount, { type: 'integer', minimum: 0, maximum: 10 });
   assert.deepEqual(workflow.schemas.Decision.properties.sources, { type: 'array', items: { type: 'string', minLength: 1 }, minItems: 1, maxItems: 5 });
+});
+
+test('a Zod object whose shape is a list is refused', () => {
+  assert.throws(() => assertZodJsonContract({ _zod: { def: { type: 'object', shape: [] } } }), /schema: unsupported Zod object shape/, 'a list shape is not a record of fields');
 });

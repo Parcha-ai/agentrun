@@ -209,9 +209,8 @@ export interface AdapterRunSpec {
   readonly workflowRevise?: WorkflowRevise;
   /** The run's end-of-run step, when its spec builds one (over the per-claim resources it holds, its Archil claim among
    *  them): it wins over LoopDeps.endOfRun and is asked where that one is, in the end turn while the claim is held, before
-   *  a tool host's beforeRelease and the run's release, its rows in the end's commit. `null`: the run takes none, and
-   *  LoopDeps.endOfRun is not asked either (a held run its model kept from running). */
-  readonly endOfRun?: EndOfRunTurn | null;
+   *  a tool host's beforeRelease and the run's release, its rows in the end's commit. */
+  readonly endOfRun?: EndOfRunTurn;
   /** What the claim laid of the run's learning seed (runner/learning-seed.ts): the learned workflows it was given, by
    *  name. The loop writes it on the root (KINDS.learningLaid) as this claim opens. Absent for a run that does not
    *  learn. */
@@ -3879,9 +3878,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     };
   }
 
-  /** The run's end-of-run step: its spec's (AdapterRunSpec.endOfRun) when it has one, none when its spec says none (null),
-   *  else the loop's deps'. */
-  const stepOf = (spec: AdapterRunSpec): EndOfRunTurn | undefined => (spec.endOfRun === null ? undefined : spec.endOfRun ?? deps.endOfRun);
+  /** The run's end-of-run step: its spec's (AdapterRunSpec.endOfRun) when it has one, else the loop's deps'. */
+  const stepOf = (spec: AdapterRunSpec): EndOfRunTurn | undefined => spec.endOfRun ?? deps.endOfRun;
 
   /** The end-of-run step (stepOf: the spec's, else LoopDeps.endOfRun), asked once: the rows to stage with the end; `stopped` when a person's stop
    *  came during it; `interrupted` when the claim was lost or the runner is closing (no end is written, and the next claim
