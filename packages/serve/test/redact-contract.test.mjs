@@ -543,6 +543,24 @@ const CASES = [
       },
     ];
   })(),
+  // A held value holding a backslash before a character an escape could start with ("n", "u" and four hex digits),
+  // written by a JSON writer: its backslash escaped ("\", "\\"), the character after it as it stands. Read one level
+  // deep, it is the held value; read two levels deep, the escaped backslash and the character after it are one escape,
+  // and the value is gone. So the text is read both ways, and withheld.
+  ...(() => {
+    const B = String.fromCharCode(92);
+    return [
+      ["a backslash written \\u005c, then n", `held: abcd${B}u005cnefgh ok`, `abcd${B}nefgh`],
+      ["a backslash written \\\\, then n, beside a \\u0041", `held: abcd${B}${B}nef${B}u0041gh ok`, `abcd${B}nefAgh`],
+      ["a backslash written \\u005c, then u0041", `held: x-made-up${B}u005cu0041y ok`, `x-made-up${B}u0041y`],
+    ].map(([what, text, value]) => ({
+      name: `a held value holding a backslash, in JSON with ${what}, withholds the text`,
+      text,
+      values: [value],
+      hides: ["abcd", "made-up"],
+      exact: Object.fromEntries(Object.keys(ENTRIES).map((name) => [name, "[redacted]"])),
+    }));
+  })(),
   // A character that renders as nothing (a default-ignorable code point: a zero-width space, a soft hyphen) between a
   // held value's characters hides it from no view: the views drop it, as they drop whitespace. A text that holds such
   // characters and no held value shows as it came.
