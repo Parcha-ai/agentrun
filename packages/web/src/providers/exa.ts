@@ -74,12 +74,12 @@ function snippetText(row: { highlights?: unknown; text?: unknown }, asked: "high
   return asked === "text" ? text || highlights : highlights || text;
 }
 
-/** `{query, n?}` searched through `client` (null: the run holds no key) under `settings`, and the limit Exa answered for
- *  the run's key, if any. */
+/** `{objective, queries?, n?}` (searchArgs) searched through `client` (null: the run holds no key) under `settings`,
+ *  the objective as Exa's query (Exa reads a goal in plain words), and the limit Exa answered for the run's key, if any. */
 export async function exaSearched(args: Record<string, unknown>, client: Keyed | null, settings: ExaSettings = {}, signal?: AbortSignal): Promise<Searched> {
-  const { query, n } = searchArgs(args);
-  if (!query) return { answer: { error: "web_search needs a query" } };
-  const got = await keyedCall(client, "Exa", "EXA_API_KEY", "search", "/search", exaSearchBody(query, n, settings), signal);
+  const { objective, queries, n } = searchArgs(args);
+  if (!objective) return { answer: { error: "web_search needs an objective" } };
+  const got = await keyedCall(client, "Exa", "EXA_API_KEY", "search", "/search", exaSearchBody(objective, n, settings), signal);
   if ("error" in got) return searchFailed(got);
   const { results } = got.json;
   if (!Array.isArray(results)) return searchFailed(failed("error", "UNREADABLE", "Exa's search answered no results this server reads"));
@@ -88,7 +88,7 @@ export async function exaSearched(args: Record<string, unknown>, client: Keyed |
     if (typeof row?.url !== "string" || !URL.canParse(row.url)) return [];
     return [{ url: row.url, title: typeof row.title === "string" ? clip(row.title, TITLE_CAP) : "", snippet: snippetOf(snippetText(row, asked)), ...(typeof row.publishedDate === "string" ? { published: row.publishedDate } : {}) }];
   });
-  return { answer: { provider: "exa", query, results: hits.slice(0, n) } };
+  return { answer: { provider: "exa", objective, queries, results: hits.slice(0, n) } };
 }
 
 /** The /contents request for `url` under `settings`: its text to the most of a page web_fetch reads and one character

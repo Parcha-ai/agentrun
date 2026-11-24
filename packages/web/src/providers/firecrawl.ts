@@ -5,7 +5,7 @@
 import { firecrawlFeeOf, type Pay } from "../fees.js";
 import { clip, markdownRead, type Read, TITLE_CAP } from "../page.js";
 import { defineProvider, type ProviderRun, settingsOf } from "../provider.js";
-import { failed, failure, type Hit, type Searched, searchArgs, searchFailed, snippetOf } from "../search.js";
+import { type Failed, failed, failure, type Hit, type Limit, type SearchAsk, type Searched, searchArgs, snippetOf } from "../search.js";
 import { type Check, domains, type Keyed, keyedCall, keyedClient, type KeyedFailed, matching, settingsProblems, wholeIn, yesNo } from "./keyed.js";
 
 export const FIRECRAWL_API_URL = "https://api.firecrawl.dev";
@@ -49,11 +49,60 @@ export function firecrawlSettingsProblems(settings: unknown): string[] {
 /** Firecrawl on `apiKey`, each request paid through `pay`. */
 export const firecrawlClient = (apiKey: string, send: typeof fetch = fetch, pay?: Pay, base: string = FIRECRAWL_API_URL): Keyed => keyedClient({ who: "Firecrawl", base, headers: { authorization: `Bearer ${apiKey}` }, feeOf: firecrawlFeeOf, timeoutMs: FIRECRAWL_KEYED_MS, refuseOn: [401] }, send, pay);
 
-/** The /v2/search request for `query`, `n` results, under `settings`: the results' descriptions alone, never a scrape. */
+/** How many of a search's queries Firecrawl is sent: one request each, at once. */
+export const FIRECRAWL_QUERIES_MAX = 3;
+/** The scrape a Firecrawl search asks of each result, as Firecrawl's guidance for agents asks: its page as markdown, its
+ *  main content alone unless `settings` say otherwise (each a scrape, priced by fees.ts firecrawlFeeOf). */
+export const firecrawlScrapeOptions = (settings: FirecrawlSettings = {}) => ({ formats: ["markdown"], onlyMainContent: settings.onlyMainContent ?? FIRECRAWL_DEFAULTS.onlyMainContent });
+
+/** Firecrawl's search rows, an answer's `data` or its `data.web`, as hits: each row whose url parses, its snippet its
+ *  page's markdown, else its description; undefined where the answer holds no rows this server reads. */
+export function firecrawlHits(data: unknown): Hit[] | undefined {
+  const holder = data as { web?: unknown } | unknown[] | undefined;
+  const rows = Array.isArray(holder) ? holder : Array.isArray(holder?.web) ? holder.web : undefined;
+  if (!rows) return undefined;
+  return rows.flatMap((row: { url?: unknown; title?: unknown; description?: unknown; markdown?: unknown } | null): Hit[] => {
+    if (typeof row?.url !== "string" || !URL.canParse(row.url)) return [];
+    const text = typeof row.markdown === "string" && row.markdown.trim() ? row.markdown : typeof row.description === "string" ? row.description : "";
+    return [{ url: row.url, title: typeof row.title === "string" ? clip(row.title, TITLE_CAP) : "", snippet: snippetOf(text) }];
+  });
+}
+
+/** The queries of `ask` Firecrawl is sent (FIRECRAWL_QUERIES_MAX), and each one's limit: n shared among them, rounded up. */
+export const firecrawlQueries = ({ queries, n }: SearchAsk): { queries: string[]; limit: number } => {
+  const sent = queries.slice(0, FIRECRAWL_QUERIES_MAX);
+  return { queries: sent, limit: Math.ceil(n / Math.max(1, sent.length)) };
+};
+
+/** The most binding limit among `failures`: a quota over a rate limit; the failure that met it. */
+const bindingOf = (failures: readonly Failed[]): Failed | undefined => failures.find((one) => one.limit?.kind === "quota") ?? failures.find((one) => one.limit);
+
+/** One search's answer from `each`, its queries' requests in query order, each its hits or its failure: the hits of every
+ *  request that answered, deduped by url (the first seen kept, in query order then the provider's), cut at `ask.n`;
+ *  with none answered, the first failure in query order. The most binding limit any request met (a quota over a rate
+ *  limit) goes to the run's breaker either way, typed as the failure that met it. */
+export function firecrawlMerged(provider: "firecrawl" | "firecrawl-keyless", { objective, queries, n }: SearchAsk, each: readonly (Hit[] | Failed)[]): Searched {
+  const failures = each.filter((one): one is Failed => !Array.isArray(one));
+  const binding = bindingOf(failures);
+  const answered = each.filter((one): one is Hit[] => Array.isArray(one));
+  if (!answered.length) {
+    const first = failures[0]!;
+    // The first failure's words and type; the binding limit, and whether it covers the key, from the one that met it.
+    const covers = binding?.failure.covers;
+    return { answer: { error: first.error }, failure: { ...first.failure, ...(covers ? { covers } : {}) }, ...(binding ? { limit: binding.limit as Limit } : {}) };
+  }
+  const held = binding ? { failure: binding.failure, limit: binding.limit as Limit } : {};
+  const seen = new Set<string>();
+  const results = answered.flat().filter((hit) => !seen.has(hit.url) && Boolean(seen.add(hit.url))).slice(0, n);
+  return { answer: { provider, objective, queries, results }, ...held };
+}
+
+/** The /v2/search request for `query`, `n` results, under `settings`: each result scraped (firecrawlScrapeOptions). */
 export function firecrawlSearchBody(query: string, n: number, settings: FirecrawlSettings = {}): Record<string, unknown> {
   return {
     query,
     limit: n,
+    scrapeOptions: firecrawlScrapeOptions(settings),
     ...(settings.tbs ? { tbs: settings.tbs } : {}),
     ...(settings.includeDomains ? { includeDomains: settings.includeDomains } : {}),
     ...(settings.excludeDomains ? { excludeDomains: settings.excludeDomains } : {}),
@@ -62,18 +111,19 @@ export function firecrawlSearchBody(query: string, n: number, settings: Firecraw
   };
 }
 
-/** `{query, n?}` searched through `client` (null: the run holds no key) under `settings`, and the limit Firecrawl
- *  answered for the run's key, if any. */
+/** `{objective, queries?, n?}` (searchArgs) searched through `client` (null: the run holds no key) under `settings`:
+ *  up to FIRECRAWL_QUERIES_MAX of its queries, one paid request each, all at once, merged (firecrawlMerged), and the
+ *  limit Firecrawl answered for the run's key, if any. */
 export async function firecrawlSearched(args: Record<string, unknown>, client: Keyed | null, settings: FirecrawlSettings = {}, signal?: AbortSignal): Promise<Searched> {
-  const { query, n } = searchArgs(args);
-  if (!query) return { answer: { error: "web_search needs a query" } };
-  const got = await keyedCall(client, "Firecrawl", "FIRECRAWL_API_KEY", "search", "/v2/search", firecrawlSearchBody(query, n, settings), signal);
-  if ("error" in got) return searchFailed(got);
-  const data = got.json.data as { web?: unknown } | unknown[] | undefined;
-  const rows = got.json.success === false ? undefined : Array.isArray(data) ? data : Array.isArray(data?.web) ? data.web : undefined;
-  if (!rows) return searchFailed(failed("error", "UNREADABLE", "Firecrawl's search answered no results this server reads"));
-  const hits = rows.flatMap((row: { url?: unknown; title?: unknown; description?: unknown } | null): Hit[] => (typeof row?.url === "string" && URL.canParse(row.url) ? [{ url: row.url, title: typeof row.title === "string" ? clip(row.title, TITLE_CAP) : "", snippet: snippetOf(typeof row.description === "string" ? row.description : "") }] : []));
-  return { answer: { provider: "firecrawl", query, results: hits.slice(0, n) } };
+  const ask = searchArgs(args);
+  if (!ask.objective) return { answer: { error: "web_search needs an objective" } };
+  const { queries, limit } = firecrawlQueries(ask);
+  const each = await Promise.all(queries.map(async (query): Promise<Hit[] | Failed> => {
+    const got = await keyedCall(client, "Firecrawl", "FIRECRAWL_API_KEY", "search", "/v2/search", firecrawlSearchBody(query, limit, settings), signal);
+    if ("error" in got) return got;
+    return (got.json.success === false ? undefined : firecrawlHits(got.json.data)) ?? failed("error", "UNREADABLE", "Firecrawl's search answered no results this server reads");
+  }));
+  return firecrawlMerged("firecrawl", ask, each);
 }
 
 /** The /v2/scrape request for `url` under `settings`: markdown alone. */

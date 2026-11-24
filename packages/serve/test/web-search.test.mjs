@@ -213,7 +213,7 @@ test("a capped workflow's call nodes are booked as an agent's calls are: its sea
   const seen = await calls(t, true);
   withEnv(t, {}, [EXTRACT_MODE]);
   const { api, data } = await serve(t, { fauxParallel: FAUX_PARALLEL, fauxWeb: FAUX_WEB });
-  const Search = { type: "object", required: ["query", "results"], properties: { query: { type: "string" }, results: { type: "array", minItems: 2, maxItems: 2 } } };
+  const Search = { type: "object", required: ["objective", "results"], properties: { objective: { type: "string" }, results: { type: "array", minItems: 2, maxItems: 2 } } };
   const Page = { type: "object", required: ["via"], properties: { via: { const: "parallel" } } };
   const flow = { v: 2, name: "booked", schemas: { In: { type: "object", required: ["q"], properties: { q: { type: "string" } } }, Search, Page }, input: { schemaId: "In" }, output: { schemaId: "Search", path: "found" }, root: { node: "chain", steps: [
     { node: "call", label: "Search", via: "tool", tool: "web_search", args: { query: "{q}", n: 2 }, out: "Search", as: "found", deadline_s: 60 },
@@ -285,15 +285,15 @@ test("with the key and Parallel picked by the agent, web_search runs on pi: an a
   const { rows } = await follow(api, started.body.run_id, ["completed"]);
   const results = rows.filter((row) => row.kind === "tool_result").map((row) => row.tool_result_preview);
   assert.equal(results.length, 1, JSON.stringify(results));
-  assert.match(results[0], /^\{"provider":"parallel","query":"widgets delaware","results":\[\{"url":"https:\/\/registry\.example\/widgets"/);
-  const Search = { type: "object", required: ["query", "results"], properties: { query: { type: "string" }, results: { type: "array", minItems: 2, maxItems: 2 } } };
+  assert.match(results[0], /^\{"provider":"parallel","objective":"widgets delaware","queries":\["widgets delaware"\],"results":\[\{"url":"https:\/\/registry\.example\/widgets"/);
+  const Search = { type: "object", required: ["objective", "results"], properties: { objective: { type: "string" }, results: { type: "array", minItems: 2, maxItems: 2 } } };
   const flow = { v: 2, name: "search", schemas: { In: { type: "object", required: ["q"], properties: { q: { type: "string" } } }, Search }, input: { schemaId: "In" }, output: { schemaId: "Search", path: "found" }, root: { node: "chain", steps: [{ node: "call", label: "Search", via: "tool", tool: "web_search", args: { query: "{q}", n: 2 }, out: "Search", as: "found", deadline_s: 60 }] } };
   assert.equal((await api("POST", "/agents", { definition: { id: "flow", name: "flow", workflow: flow, tools: ["web_search"], tool_settings: parallel } })).status, 201);
   const run = await api("POST", "/agents/flow/runs", { input: { q: "acme registry" } });
   assert.equal(run.status, 202, JSON.stringify(run.body));
   await follow(api, run.body.run_id, ["completed"]);
   const output = (await api("GET", `/runs/${run.body.run_id}`)).body.result.output;
-  assert.deepEqual([output.query, output.results.map((r) => r.url)], ["acme registry", ["https://registry.example/widgets", "https://result.example/2"]]);
+  assert.deepEqual([output.objective, output.results.map((r) => r.url)], ["acme registry", ["https://registry.example/widgets", "https://result.example/2"]]);
   assert.deepEqual((await seen()).map((call) => [call.path, call.authorized, call.queries]), [["/v1/search", true, ["widgets delaware"]], ["/v1/search", true, ["acme registry"]]]);
 });
 
@@ -307,7 +307,7 @@ test("keyless Exa: one MCP exchange with no key, its text read into results; a 4
   };
   const found = await exaSearch("widgets", 3, { send });
   assert.deepEqual(sent, [["initialize", false], ["notifications/initialized", false], ["tools/call", false]]);
-  assert.deepEqual(found, { provider: "exa-keyless", query: "widgets", results: [
+  assert.deepEqual(found, { provider: "exa-keyless", objective: "widgets", queries: ["widgets"], results: [
     { url: "http://public.example/", title: "Public page", snippet: "The answer is forty-two. See the registry for more.", published: "2026-10-01T00:00:00.000Z" },
     { url: "https://result.example/2", title: "Result 2 for widgets", snippet: "Excerpt 2." },
     { url: "https://result.example/3", title: "Result 3 for widgets", snippet: "Excerpt 3." },
@@ -359,13 +359,13 @@ test("keyless Exa past its free limit (a 429, or Exa's own notice in a 200): tri
 
   // A 429 naming 2 s, then results: the retry's results, after the 2 s Exa named and under half a second more.
   const retried = await search("429:2,ok");
-  assert.deepEqual(retried.answer, { provider: "exa-keyless", query: "widgets", results });
+  assert.deepEqual(retried.answer, { provider: "exa-keyless", objective: "widgets", queries: ["widgets"], results });
   assert.deepEqual([retried.searches, retried.exchanges, retried.waits.length], [2, 2, 1], "one more exchange, after one wait");
   assert.ok(retried.waits[0] >= 2_000 && retried.waits[0] < 2_500, `waited ${retried.waits[0]} ms`);
   // Exa's own notice of its free limit inside a 200 (isError, marked ai.exa/rateLimited), as a real run met it: no
   // Retry-After, so the wait is 1 to 3 s.
   const notice = await search("limited,ok");
-  assert.deepEqual([notice.answer, notice.searches], [{ provider: "exa-keyless", query: "widgets", results }, 2]);
+  assert.deepEqual([notice.answer, notice.searches], [{ provider: "exa-keyless", objective: "widgets", queries: ["widgets"], results }, 2]);
   assert.ok(notice.waits.length === 1 && notice.waits[0] >= 1_000 && notice.waits[0] < 3_000, `waited ${notice.waits} ms`);
 
   // Past the limit twice, either way: our words, tried twice and no more, none of Exa's text.
@@ -394,7 +394,7 @@ test("pi's hosted search: Anthropic's pause_turn answers the results it has and 
   withEnv(t, { AGENTRUN_TEST_FAUX_UPSTREAM: "pause", AGENTRUN_TEST_FAUX_UPSTREAM_CALLS: file });
   const env = { AGENTRUN_SERVE_FAUX: FAUX, AGENTRUN_SERVE_FAUX_UPSTREAM: new URL("./fixtures/faux-upstream.mjs", import.meta.url).pathname, ANTHROPIC_API_KEY: "not-a-secret" };
   const { models } = await runModels(env, undefined);
-  assert.deepEqual(await hostedSearch("widgets", 5, "anthropic/claude-sonnet-5-5", undefined, models), { provider: "native", query: "widgets", results: [{ url: "http://public.example/", title: "Public page", snippet: "", published: "October 1, 2026" }, { url: "https://result.example/2", title: "Result 2", snippet: "" }] });
+  assert.deepEqual(await hostedSearch("widgets", 5, "anthropic/claude-sonnet-5-5", undefined, models), { provider: "native", objective: "widgets", queries: ["widgets"], results: [{ url: "http://public.example/", title: "Public page", snippet: "", published: "October 1, 2026" }, { url: "https://result.example/2", title: "Result 2", snippet: "" }] });
   assert.match((await hostedSearch("widgets", 5, "faux/faux-1", undefined, models)).error, /has no hosted web search here/);
   assert.match((await hostedSearch("widgets", 5, "anthropic/no-such-model", undefined, models)).error, /no model to search on/);
   assert.equal((await readFile(file, "utf8")).trim().split("\n").length, 1, "one request, the paused one, not resubmitted");
@@ -467,15 +467,16 @@ test("a template eval's web fake: a native plane turns to the run's own web_sear
   assert.deepEqual(fakedPlane({ web_search: "parallel" }), { web_search: "parallel" });
   assert.equal(fakedPlane(undefined), undefined);
   assert.deepEqual(fakeSearch("unavailable", { query: "anything" }, "exa-keyless"), { error: keyless.RATE_LIMITED });
-  assert.deepEqual(fakeSearch("unavailable", {}, "exa-keyless"), { error: "web_search needs a query" });
+  assert.deepEqual(fakeSearch("unavailable", {}, "exa-keyless"), { error: "web_search needs an objective" });
   const hit = (i) => ({ url: `https://example.com/${i}`, title: `Hit ${i}`, snippet: `snippet ${i}` });
   const fixture = {
     search: { answers: [{ query: "^robots? funding", results: [hit(1), hit(2), hit(3)] }, { query: "funding", error: "Parallel's search answered 503" }], default: { results: [] } },
     fetch: { answers: [{ url: "https://example.com/empty", status: 204, text: "" }], default: { error: "fetch failed" } },
   };
-  assert.deepEqual(fakeSearch(fixture, { query: "Robot funding this week", n: 2 }, "parallel"), { provider: "parallel", query: "Robot funding this week", results: [hit(1), hit(2)] }, "the first answer whose query matches, case-insensitive, cut at n");
+  assert.deepEqual(fakeSearch(fixture, { query: "Robot funding this week", n: 2 }, "parallel"), { provider: "parallel", objective: "Robot funding this week", queries: ["Robot funding this week"], results: [hit(1), hit(2)] }, "the first answer whose query matches, case-insensitive, cut at n");
+  assert.deepEqual(fakeSearch(fixture, { objective: "Who raised money this week", queries: ["robot funding"], n: 1 }, "parallel"), { provider: "parallel", objective: "Who raised money this week", queries: ["robot funding"], results: [hit(1)] }, "a pattern matches the objective or any query");
   assert.deepEqual(fakeSearch(fixture, { query: "seed funding" }, "native"), { error: "Parallel's search answered 503" }, "the next answer when the first does not match");
-  assert.deepEqual(fakeSearch(fixture, { query: "weather" }, "native"), { provider: "native", query: "weather", results: [] }, "else the default");
+  assert.deepEqual(fakeSearch(fixture, { query: "weather" }, "native"), { provider: "native", objective: "weather", queries: ["weather"], results: [] }, "else the default");
   const refused = await fakeFetch("unavailable", "https://example.com/post");
   assert.equal(refused.ok, false);
   assert.equal(refused.error, "fetch failed", "as a fetch whose connection is refused fails");

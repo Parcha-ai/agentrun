@@ -6,14 +6,17 @@ import type { Pay } from "./fees.js";
 import type { Guard, GuardOptions } from "./guard.js";
 import type { Read, Unread } from "./page.js";
 import type { Words } from "./providers/mcp.js";
-import { type Breaker, type Failure, failure, type Holding, type Limit, type SearchBounds, type Searched } from "./search.js";
+import { type Breaker, type Failure, failure, type Holding, type Limit, type SearchAsk, type SearchBounds, type Searched } from "./search.js";
 
-/** The run's own model provider's hosted search. `signal` is the caller's; it keeps its own bounds. */
+export type { SearchAsk };
+
+/** The run's own model provider's hosted search, asked one query (a search's first). `signal` is the caller's; it keeps
+ *  its own bounds. */
 export type NativeSearch = (query: string, n: number, signal?: AbortSignal) => Promise<Searched>;
 
 /** What a Web hands a provider it makes: the run's key for it, where its requests go and through what, its settings
  *  (checked when the Web was made), the run's Pay, the clock, a product's words, a native search, the public-host guard,
- *  and a call's bounds. Each is the run's, never another provider's. */
+ *  a call's bounds, and the client the run knows of (WebClient). Each is the run's, never another provider's. */
 export type ProviderParts = {
   key?: string;
   endpoint?: string;
@@ -25,22 +28,26 @@ export type ProviderParts = {
   words?: Words;
   native?: NativeSearch;
   bounds?: SearchBounds;
+  client?: WebClient;
 };
+/** What a run knows of the agent calling the web tools, each only where known, never made up: `model`, the id of the
+ *  model that writes the searches and reads their results; `session`, the run's id, the one session of every search the
+ *  run makes. */
+export type WebClient = { model?: string; session?: string };
 
-/** A search a call asks: the query (trimmed, at most QUERY_MAX) and how many results (1 to RESULTS_MAX). */
-export type SearchAsk = { query: string; n: number };
 /** A read that gave no page: in our words, the failure typed (search.ts Failed; a stand-in's may give the words alone),
  *  and the limit it met, if any (for the run's breaker). */
 export type ReadFailed = { error: string; failure?: Failure; limit?: Limit };
 
 /** A provider made for one Web. `search`: one search, ended by `deadline` (the call's one deadline for every provider it
  *  asks) or kept on the caller's `signal` and the provider's own bound, as the provider says; `bounds`, the call's own,
- *  each in place of the Web's (ProviderParts.bounds) where given. `read`: one read of a page
+ *  each in place of the Web's (ProviderParts.bounds) where given; `client`, the call's own, each field in place
+ *  of the Web's (ProviderParts.client) where given. `read`: one read of a page
  *  (one that passed the guard's check, unless the provider ends the order and reads through the guard itself).
  *  `unready`: why a read is not asked now, unsent (its key refused, or none where none means no turn), typed, or
  *  undefined. */
 export type ProviderRun = {
-  search?(ask: SearchAsk, deadline: AbortSignal, signal?: AbortSignal, bounds?: SearchBounds): Promise<Searched>;
+  search?(ask: SearchAsk, deadline: AbortSignal, signal?: AbortSignal, bounds?: SearchBounds, client?: WebClient): Promise<Searched>;
   read?(url: unknown, options: GuardOptions): Promise<Read | Unread | ReadFailed>;
   unready?(): Failure | undefined;
 };

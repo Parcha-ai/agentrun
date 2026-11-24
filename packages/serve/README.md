@@ -1741,8 +1741,8 @@ agent_not_runnable`, with `details.unbound` and `details.missing`).
 | `bash_signal` | Send a background process's group `TERM`, `INT` or `KILL`: `{id, signal}` | an agentic definition whose place is a sandbox | no, no |
 | `bash_list` | List the run's background processes: id, state or exit code, output size, start time and command | an agentic definition whose place is a sandbox | no, no |
 | `ask_person` | Ask the person who started the run; the turn ends until a message answers | nothing | no, no |
-| `web_fetch` | Read one web page from a public host through the guarded direct fetch, or through Parallel's extract where Parallel is picked ([search and fetch](#search-and-fetch)), a part at a time: `{url, offset?, max_chars?}` in, a Page out, `{ok, url, status, title, text, chars, truncated?, original_chars?, beyond_read?, offset?, next_offset?, html_chars?, converted?, links, links_omitted?, via, parallel?, refused?, error?}` | nothing (`PARALLEL_API_KEY` for Parallel, one billed extract a page a run) | yes, yes |
-| `web_search` | Search the web, natively where the harness or the model's provider can, else through Parallel where the server holds its key, else keyless through Exa, or through the provider picked ([search and fetch](#search-and-fetch)): `{query, n?}` in, `{provider, query, results: [{url, title, snippet, published?}], text?}` or `{error}` out | nothing (`PARALLEL_API_KEY` for Parallel) | yes, yes |
+| `web_fetch` | Read one web page from a public host through the guarded direct fetch, or through Parallel's extract where Parallel is picked ([search and fetch](#search-and-fetch)), a part at a time: `{url, offset?, max_chars?, objective?}` in (`objective`, what the page is read for, is passed to the run's Web; with no classifier in the run it changes nothing), a Page out, `{ok, url, status, title, text, chars, truncated?, original_chars?, beyond_read?, offset?, next_offset?, html_chars?, converted?, links, links_omitted?, via, parallel?, refused?, error?}` | nothing (`PARALLEL_API_KEY` for Parallel, one billed extract a page a run) | yes, yes |
+| `web_search` | Search the web, natively where the harness or the model's provider can, else through Parallel where the server holds its key, else keyless through Exa, or through the provider picked ([search and fetch](#search-and-fetch)): `{objective, queries?, n?}` in (`{query}` alone is deprecated, searched as the objective and its one query), `{provider, objective, queries, results: [{url, title, snippet, published?}], text?}` or `{error}` out | nothing (`PARALLEL_API_KEY` for Parallel) | yes, yes |
 | `web_save` | Download one file from a public URL into the run's `work/` and keep it there, for a link that expires (a generated image, audio or video): `{url, path}` in, `path` relative to `work/` and a bare name under `media/`; `{ok: true, path, bytes, content_type, duration_s?, url}` or `{ok: false, url, refused \| error}` out, `duration_s` its length in seconds when it is audio or video whose bytes give it (below). Never overwrites | nothing | no, no |
 | `browser` | A hosted browser, Browserbase's or Kernel's, on pi-browser's durable adapter: `snapshot`, `run`, `screenshot`, `browser_read`, `browser_release`, `browser_relaunch`, `browser_downloads` and `browser_upload` (into and from the run's `work/`); Kernel keeps no downloads, so a run on Kernel has no `browser_downloads` | `BROWSERBASE_API_KEY` and `BROWSERBASE_PROJECT_ID`, or `KERNEL_API_KEY` | yes, no |
 | `monid:<provider>/<endpoint>`, `monid:<provider>/*` | One monid endpoint, or every endpoint monid lists for a provider (at most 50), each pinned at the save and run as a tool of its own, paid per call from the monid wallet: `{body?, queryParams?, pathParams?}` in, the run's `output`, `price` and `cost` out ([monid](#monid)) | `MONID_API_KEY` | no, no |
@@ -1984,11 +1984,13 @@ https://exa.ai/terms). To turn them off, set `web_search` to `native` (native on
 keys (or set `PARALLEL_API_KEY`): `auto` then searches through Parallel and bills the key.
 
 Keyless Firecrawl is one MCP exchange with Firecrawl's public endpoint (`https://mcp.firecrawl.dev/v2/mcp`), with no key,
-no Authorization header and no header of our own: `firecrawl_search` with the query and the number of results asked for,
+no Authorization header and no header of our own: `firecrawl_search` once for each of the search's first 3 queries, all at
+once, each with the objective (its tool requires one), its share of the results asked for and a scrape of each result
+as markdown, the answers merged by URL,
 or `firecrawl_scrape` with the URL, for its markdown. A call ends at 30 s and is not retried: the backend behind Firecrawl
 answers it in its place. A search's 60 s are one deadline for both keyless backends: Firecrawl's 30 s leave Exa the rest,
 and no backend starts once the deadline is spent. A page Firecrawl read with a status that is not 2xx, or an answer past
-the bound (1 MiB for a search, the guarded fetch's 5 MiB for a page), is no read: the call goes to the backend behind
+the bound (8 MiB for a search, its results scraped; the guarded fetch's 5 MiB for a page), is no read: the call goes to the backend behind
 Firecrawl, and where the guarded direct fetch then reads the page, the server logs why Firecrawl gave none
 (`event=web_fetch_firecrawl_failed`, never the URL). Firecrawl refuses a keyless call it will not serve with a code, and
 only the code is read, never its words or its sign-up link: `KEYLESS_QUOTA_EXHAUSTED` (its free daily limit spent), `KEYLESS_ACCESS_NOT_AVAILABLE` or
@@ -2037,7 +2039,10 @@ refuses is refused and never leaves the machine. A call stopped before its page 
 `via: "stopped"`: no page came for it (the run's read of the URL goes on for its other calls).
 
 `web_search` through Parallel uses its Search API (`POST https://api.parallel.ai/v1/search`, its `fast` mode, about
-$0.001 a search). On every provider the query is cut at 200 characters and `n` is 1 to 25 (10 by default). A result is a lead: the agent reads the page with `web_fetch`. A failure answers
+$0.001 a search): the objective as its objective, the queries as its `search_queries`, and the run's model as
+`client_model` (its bare id) where the run names one. A search asks an objective, what the agent wants to find out in a
+sentence (cut at 1,000 characters), and up to 5 keyword queries (each cut at 200; with none, the objective's first 200
+characters); Exa is sent the objective as its query, native search the first query. `n` is 1 to 25 (10 by default). A result is a lead: the agent reads the page with `web_fetch`. A failure answers
 `{error}`, with nothing searched instead; a 401 or 403 to either web tool stops Parallel for both for the rest of the run.
 
 Parallel's fees are the run's spend, booked as monid's are: each search and each page Parallel extracts is marked in the
@@ -2065,7 +2070,7 @@ keyless use has a rate limit it does not publish, and its own terms. Past that l
 then is a tool error in our words (above): the model reads why and answers without it, and the run's later searches
 are held for the wait. Exa answers its daily count running out the same way, naming no wait, so a second limit naming no
 wait after a wait has passed (a 429 with Retry-After is a timed limit, and only waits), in the same run and with no search succeeding since, turns search off for the rest of that run. A search ends at 60 s, its retry
-included, so a call never hangs. The answer is the query and its results, each a URL, a title, a
+included, so a call never hangs. The answer is the objective, the queries and their results, each a URL, a title, a
 snippet of at most 3,000 characters and its date when Exa knows it, then a line asking the model to cite the URLs it
 relies on. Keyless Exa answers behind keyless Firecrawl, the default for a harness with no native search when the server
 holds no Parallel key; `off` turns `web_search` off, both included.

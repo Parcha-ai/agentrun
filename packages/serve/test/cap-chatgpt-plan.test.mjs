@@ -144,7 +144,7 @@ test("a capped codex run and a capped pi run on a ChatGPT plan model are admitte
   // A paid tool on the plan: Parallel's searches, $0.001 each, under a cap of $0.0025. Two are sent and booked; the third
   // could not fit, so it is refused before it is sent and the run waits on a raise of its cap. The cap's spend is the two
   // searches alone: every plan request in the run counts $0.
-  openai.answer = (body) => (offers(body, "web_search") && outputsIn(body) < 5 ? { call: "web_search", args: { query: `widgets ${outputsIn(body)}` } } : {});
+  openai.answer = (body) => (offers(body, "web_search") && outputsIn(body) < 5 ? { call: "web_search", args: { objective: `widgets ${outputsIn(body)}` } } : {});
   for (const harness of ["pi", "codex"]) {
     const searches = openai.parallel.length;
     const done = await run(harness, 0.0025, { tools: ["web_search"], tool_settings: { web_search: { provider: "parallel" } } });
@@ -163,7 +163,7 @@ test("a plan run past 60 requests is not stopped by the free-model limit, on cod
   withEnv(t, {}, ["AGENTRUN_FREE_MODEL_REQUESTS"]);
   const { openai, run } = await planServer(t);
   const SEARCHES = 61;
-  openai.answer = (body) => (offers(body, "web_search") && outputsIn(body) < SEARCHES ? { call: "web_search", args: { query: `widgets ${outputsIn(body)}` } } : {});
+  openai.answer = (body) => (offers(body, "web_search") && outputsIn(body) < SEARCHES ? { call: "web_search", args: { objective: `widgets ${outputsIn(body)}` } } : {});
   for (const [harness, capUsd] of [["codex", undefined], ["pi", undefined], ["pi", 5]]) {
     const searches = openai.parallel.length;
     const done = await run(harness, capUsd, { tools: ["web_search"], tool_settings: { web_search: { provider: "parallel" } } });
