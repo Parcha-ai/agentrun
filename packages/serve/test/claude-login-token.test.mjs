@@ -1531,6 +1531,51 @@ test("a read of the lock that fails for a reason other than the lock being gone,
   assert.ok(!existsSync(current), "its lock is released");
 });
 
+test("a renewal whose save fails to read the login's file (an I/O error, not the file gone) keeps the new pair in memory, the refresh token Anthropic rotated in it the only one left: the next ask saves it and is handed its token, and a later ask renews with the new refresh token", { timeout: 20_000 }, async (t) => {
+  assert.equal(typeof tokens.renewLogin, "function", "the runner's renewal (renewLogin)");
+  const { login, write } = loginFolder(t);
+  const start = 1_900_000_000_000;
+  let clock = start;
+  const file = join(login.dir, ".credentials.json");
+  const old = { access: fake("access-old"), refresh: fake("refresh-old") };
+  const next = { access: fake("access-new"), refresh: fake("refresh-new") };
+  const third = { access: fake("access-third"), refresh: fake("refresh-third") };
+  write(oauthOf(old.access, start + 60_000, old.refresh));
+  const endpoint = await rotatingEndpoint(t, new Map([[old.refresh, next], [next.refresh, third]]));
+  // Anthropic has answered the post of the old refresh token, rotating it: the renewal's next read of the file, its
+  // save's, fails once (EIO).
+  let failNext = false;
+  const failed = [];
+  const fetch = async (url, init) => {
+    const answer = await endpoint.fetch(url, init);
+    if (JSON.parse(init.body).refresh_token === old.refresh) failNext = true;
+    return answer;
+  };
+  const readFile = async (path) => {
+    if (failNext) {
+      failNext = false;
+      failed.push(path);
+      throw Object.assign(new Error(`EIO: i/o error, read '${path}'`), { code: "EIO" });
+    }
+    return fsp.readFile(path, "utf8");
+  };
+  const lines = [];
+  const renew = tokens.renewLogin({ fetch, now: () => clock, log: (fields) => lines.push(fields), readFile });
+  const reader = new tokens.LoginTokens({ login, now: () => clock, renew });
+  assert.equal(await reader.token(), next.access, "the ask is handed the renewed token");
+  assert.deepEqual(failed, [file], "the save's read of the login's file failed once (EIO)");
+  assert.equal(JSON.parse(readFileSync(file, "utf8")).claudeAiOauth.refreshToken, old.refresh, "unsaved: the file still holds the spent refresh token");
+  const asked = await reader.token().catch((error) => error.message);
+  assert.equal(asked, next.access, "a save whose read of the file failed (EIO) keeps the renewed pair in memory: the next ask is handed its token, never refused for the spent refresh token left in the file");
+  assert.equal(JSON.parse(readFileSync(file, "utf8")).claudeAiOauth.refreshToken, next.refresh, "the next ask saved the held pair, its new refresh token in the file");
+  // Near the new token's end: renewed with the new refresh token, each posted once.
+  clock = start + 3_600_000 - 60_000;
+  assert.equal(await reader.token(), third.access, "a later ask renews with the new refresh token");
+  assert.deepEqual(endpoint.posts.map((post) => post.body.refresh_token), [old.refresh, next.refresh], "each refresh token posted once, the spent one never again");
+  assert.deepEqual(lines.filter((fields) => fields.saved === "no"), [{ claude_login: "renewed", saved: "no", reason: "file_unread" }], "the save held for the failed read is said as one, never as a newer pair");
+  assert.deepEqual(listing(login.dir), [".credentials.json"], "no temp file or lock left");
+});
+
 test("a renewal Anthropic refuses (400 invalid_grant) or that fails (a 5xx) refuses the ask in LOGIN_RUNNING_OUT's words, posts once for that ask and never again on its own as the clock goes on, and leaves the file byte for byte as it was; a refresh token refused as invalid_grant is never posted again", async (t) => {
   assert.equal(typeof tokens.LoginTokens, "function", "the runner has a reader of the login's access token");
   for (const [why, answer, nextAskPosts] of [

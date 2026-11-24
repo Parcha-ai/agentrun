@@ -214,6 +214,8 @@ export interface RenewLoginOptions {
   readonly lockFs?: LockFs;
   /** How often a held lock is read and touched (its heartbeat). Default: the pinned CLI's (`update:5000`). */
   readonly lockUpdateMs?: number;
+  /** The renewal's reads of the login's file, as text. Default: fs/promises' readFile (a test's fails one on cue). */
+  readonly readFile?: (path: string) => Promise<string>;
 }
 
 /** Refresh tokens this process never posts again: one Anthropic refused for good (`invalid_grant`), and one it took (a
@@ -238,7 +240,7 @@ async function saveHeld(file: string, held: HeldPair, options: RenewLoginOptions
   const forget = () => {
     if (heldPairs.get(file) === held) heldPairs.delete(file);
   };
-  const current = await credentialsNow(file);
+  const current = await credentialsNow(file, options);
   if (!current || (current.oauth.refreshToken !== held.posted && current.oauth.refreshToken !== "")) {
     forget();
     say({ claude_login: "renewed", saved: "no", reason: "newer" });
@@ -300,12 +302,14 @@ async function saveHeldUnderLock(dir: string, file: string, held: HeldPair, opti
   }
 }
 
+const readText = (path: string): Promise<string> => readFile(path, "utf8");
+
 /** The login's credentials file as it is now, in the pinned CLI's shape: its parsed object and its `claudeAiOauth`,
  *  every token in it held for redaction; none when it is not there or not that shape. */
-async function credentialsNow(file: string): Promise<{ json: Record<string, unknown>; oauth: Record<string, unknown> } | undefined> {
+async function credentialsNow(file: string, options: RenewLoginOptions): Promise<{ json: Record<string, unknown>; oauth: Record<string, unknown> } | undefined> {
   let json: unknown;
   try {
-    json = JSON.parse(await readFile(file, "utf8"));
+    json = JSON.parse(await (options.readFile ?? readText)(file));
   } catch {
     return undefined;
   }
@@ -338,7 +342,7 @@ export function renewLogin(options: RenewLoginOptions = {}): Renew {
       }
       seen = held.renewed.access;
     }
-    const read = await credentialsNow(file);
+    const read = await credentialsNow(file, options);
     // Another holder renewed it since it was read, or it changed: the caller reads it again.
     if (read?.oauth.accessToken !== seen) return undefined;
     const refresh = read.oauth.refreshToken;
@@ -607,7 +611,7 @@ async function renewUnderLock(dir: string, file: string, seen: string, refresh: 
     if (locks) {
       try {
         // Read again under the lock: a holder that renewed before it was taken has written its pair, which is taken.
-        const held = await credentialsNow(file);
+        const held = await credentialsNow(file, options);
         if (!held || held.oauth.accessToken !== seen || held.oauth.refreshToken !== refresh) return undefined;
         // A lock read as another's is said as lost; one whose read failed, as unread: no takeover is said that did not
         // happen. Either way nothing is posted under it, and the next try reads it again.
@@ -624,7 +628,7 @@ async function renewUnderLock(dir: string, file: string, seen: string, refresh: 
       }
     }
     // Another holder renews it now: its write is taken when it lands, never a second post of the same refresh token.
-    if ((await credentialsNow(file))?.oauth.accessToken !== seen) return undefined;
+    if ((await credentialsNow(file, options))?.oauth.accessToken !== seen) return undefined;
     if (Date.now() > giveUp) {
       say({ claude_login: "renew_failed", reason: "locked" });
       throw new Error("another holder kept the login's refresh lock");
