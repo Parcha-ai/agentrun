@@ -229,9 +229,9 @@ function partsOf(value: string): string[] {
 /** The strings of a held JSON value (an object or an array, as it parses, at any depth) that may be printed alone, each
  *  held as itself (trimmed), as any held value: one that holds a line break (a service account's private key, `jq -r
  *  .private_key`), and one whose key, lowered, is a credential's whole name (redact/match.ts CREDENTIAL_NAMES: an OAuth
- *  client's "client_secret", a token's "refresh_token"; never "page_token"). An array's strings go by the array's key.
- *  Its other strings are not held: an id, a project, an email and public URLs ("client_id", "token_uri") are no secret,
- *  and would be cut wherever a text names them. */
+ *  client's "client_secret", a token's "refresh_token"; never "page_token"). An array's items have no key, so only the
+ *  line-break rule holds them. Its other strings are not held: an id, a project, an email and public URLs ("client_id",
+ *  "token_uri") are no secret, and would be cut wherever a text names them. */
 function heldFields(value: string): string[] {
   const head = value.trimStart()[0];
   if (head !== "{" && head !== "[") return [];
@@ -245,7 +245,7 @@ function heldFields(value: string): string[] {
   const walk = (node: unknown, key: string | undefined): void => {
     if (typeof node === "string") {
       if (/[\r\n]/.test(node) || (key !== undefined && CREDENTIAL_NAMES.has(key.toLowerCase()))) out.push(node.trim());
-    } else if (Array.isArray(node)) for (const item of node) walk(item, key);
+    } else if (Array.isArray(node)) for (const item of node) walk(item, undefined);
     else if (node !== null && typeof node === "object") for (const [name, item] of Object.entries(node)) walk(item, name);
   };
   walk(parsed, undefined);
