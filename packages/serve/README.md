@@ -450,7 +450,7 @@ A run's runner renews its claim on the run every 10 s, for a claim of 30 s. A ru
 time, writes nothing more to the run, and the store refuses any write under a claim the run has moved past. On SQLite
 the runner counts a claim's 30 s from when the store granted it, not from when it asked, so a claim or renew that
 waited for a busy disk keeps the time the store gave it; the runner still stops 5 s before the store's claim runs out.
-On Postgres it counts from when it asked. A renew the store does not answer within the claim's time still loses the run. Once the
+On Postgres it counts from when it asked. A renew the store never answers in time still loses the run. Once the
 claim lapses another runner claims the run and resumes it from its journal. A run's own computer doesn't survive a
 runner loss, a crash, a server stop or a park (the claim that resumes the run starts a new one, and says so on the
 timeline and, once, to the model as an "AgentRun server note"), and the agent's own computer, a persistent setting, does.
