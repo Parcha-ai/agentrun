@@ -1,3 +1,4 @@
+import { isRecord } from "./record.js";
 
 export type SystemOneQuestion =
   | { type: "choice"; instructions: string; criteria: Record<string, string | null> }
@@ -249,11 +250,9 @@ export function refusedQuestions(answers: Record<string, unknown>): string[] {
 
 /** What `answersToValue` throws for a refused answer: the backstop. A decision node never gets this far, since `decide()`
  *  escalates the run for review (DECISION_REFUSED) on a refusal first. */
-export function refusalError(ids: string[]): SystemOneError {
+function refusalError(ids: string[]): SystemOneError {
   return new SystemOneError(`System One refused ${ids.length === 1 ? "question" : "questions"} ${ids.map((id) => `"${id}"`).join(", ")}`, null, undefined, "refusal");
 }
-
-const isRecord = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v);
 
 /** The confidence TypeSafe documents for Jev (docs.typesafe.ai/confidence), computed from an answer's probabilities: for a
  *  choice of n options, (p - 1/n) / (1 - 1/n) for the chosen option's p, floored at 0; for a score of n levels, 1 minus

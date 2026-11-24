@@ -7,6 +7,7 @@ import { createHash } from "node:crypto";
 import type { RouteNode, Workflow, WorkflowDeps, WorkflowNode } from "../workflow.js";
 import { desugarWorkflow, isItemFailure } from "../workflow.js";
 import { setLongTimeout, type LongTimer } from "../long-timer.js";
+import { isRecord } from "../record.js";
 import { chainStep, childrenOf, completedIteration, enclosingChains, enclosingIterations, isWithin, mapItemOf, nodeAt, topLevelCompletion } from "./execution-path.js";
 import { bindingDigests, LEDGER_FORMAT } from "./binding.js";
 import { canonicalHash as hash } from "./canonical-hash.js";
@@ -293,7 +294,6 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
     writtenStates.add(sha256);
     return value;
   };
-  const isRecord = (value: unknown): value is Record<string, unknown> => Boolean(value) && typeof value === "object" && !Array.isArray(value);
   const validEntry = (entry: unknown): entry is MapEntry => isRecord(entry) && Number.isSafeInteger(entry.length) && (entry.length as number) >= 0
     && Number.isSafeInteger(entry.items) && (entry.items as number) >= 0 && typeof entry.base === "string" && SHA.test(entry.base);
   /** The path of map item `index` of the map at `mapPath`: the prefix the interpreter gives every path inside it. */
