@@ -9,6 +9,7 @@ import { DEADLINE_LABEL, show } from "./drift.js";
 import { type HostCall, HostError, type HostFacts, type Machine, type MachineHost, type MachineProcess, type MachineRequest } from "./host.js";
 import { CALL_SLACK_MS, codeOfError, orThrow, race, runChecked, until } from "./hosted/process.js";
 import { HostedProvider, type HostedOptions, mayHaveMade } from "./hosted/provider.js";
+import { httpsBase } from "./hosted/rest.js";
 import { shellLine } from "./hosted/scripts.js";
 import { dateOf } from "./hosted/values.js";
 import type { CallContext, ComputerSpec, Refusal } from "./provider.js";
@@ -76,7 +77,7 @@ export interface BoxdProviderOptions extends HostedOptions {
 	org?: string;
 	/** "fra", "nyc", ... Unset: the API's home region. */
 	region?: string;
-	/** Default https://boxd.sh:9443, the SDK's own. */
+	/** https alone; default https://boxd.sh:9443, the SDK's own. */
 	baseUrl?: string;
 	/** A boxd size, both or neither: 1 and 4G, 2 and 8G, 4 and 16G, 8 and 32G. Unset: the org's default. */
 	vcpu?: number;
@@ -463,7 +464,7 @@ export class BoxdProvider extends HostedProvider {
 		if (Number(rest.daemonUser?.split(":")[0]) === IMAGE_UID) throw new Error(`the daemon user ${rest.daemonUser} is the uid of the machine's own user, whose processes init refuses to run beside; choose another, such as 2510:2510`);
 		const kind = rest.kind === "desktop" ? "desktop" : "linux";
 		if (kind === "desktop" && vcpu !== undefined) throw new Error("a boxd desktop starts from a snapshot, which keeps the size it was captured at: name no vcpu or memory for kind desktop");
-		const client = { apiKey, baseURL: baseUrl, region };
+		const client = { apiKey, baseURL: httpsBase(baseUrl, "the boxd API URL"), region };
 		const { machines, snapshots } = new Boxd({ ...client, timeout: rest.timeouts?.requestMs ?? REQUEST_MS });
 		const creator = new Boxd({ ...client, timeout: rest.timeouts?.createMs ?? CREATE_MS, maxRetries: 0 }).machines;
 		const size = vcpu === undefined ? undefined : { vcpu, memory: memory as string };

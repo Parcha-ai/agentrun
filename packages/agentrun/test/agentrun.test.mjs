@@ -214,6 +214,15 @@ else if (process.env.STUB_HANG) {
   // STUB_SETUP: the setup-code line a server with a public URL and no password yet prints.
   if (process.env.STUB_SETUP) console.log("Set up this server: " + process.env.STUB_SETUP);
   console.log("Open " + (process.env.STUB_OPEN || "http://127.0.0.1:7399/"));
+  // STUB_AFTER: lines on stdout (split at "|") a moment after it has started, as a server's log lines come; with
+  // STUB_AFTER_EXIT, it exits right after them.
+  // STUB_AFTER_EXIT=<n>: n KiB of other lines before them, so the pipe still holds the last ones as it exits.
+  if (process.env.STUB_AFTER) setTimeout(() => {
+    if (process.env.STUB_AFTER_EXIT) for (let i = 0; i < Number(process.env.STUB_AFTER_EXIT); i++) console.log("x".repeat(1023));
+    for (const line of process.env.STUB_AFTER.split("|")) console.log(line);
+    // Its writes queue while the pipe is full: it exits once they are all in the pipe, so the last are still unread.
+    if (process.env.STUB_AFTER_EXIT) process.stdout.write("", () => process.exit(0));
+  }, 200);
   // STUB_STDERR_AFTER: a line on stderr every 50 ms once it has started, as a server's warnings come.
   if (process.env.STUB_STDERR_AFTER) setInterval(() => console.error("agentrun-serve: a warning (stub)"), 50);
   if (process.env.STUB_SIGTERM !== "die") process.on("SIGTERM", () => process.exit(0));
@@ -1271,6 +1280,35 @@ test("a sign-in's authorize code is said only when it is one OpenAI's authorize 
   for (const known of sent) assert.match(said(known), new RegExp(`\\(authorize_${known}\\)`), known);
   // OpenAI's own token answer is not a local sender's: its status and code are said as they are.
   assert.match(told("at=x event=chatgpt chatgpt=sign_in_failed reason=token_403_unsupported_country"), /\(token_403_unsupported_country\)/);
+});
+
+test("started, the start log keeps the server's line of a ChatGPT sign-in that did not finish, its code whole; the terminal says it as other, and no other line is kept", { timeout: 60_000 }, async (t) => {
+  const failed = "at=2026-11-24T00:00:00.000Z event=chatgpt chatgpt=sign_in_failed reason=authorize_Call_admin_now";
+  const request = "at=2026-11-24T00:00:00.000Z event=request route=/v2/agents status=200";
+  let told = "";
+  const run = await throughStub(t, ["--no-open"], { STUB_AFTER: `${request}|${failed}` }, {
+    running: async (child) => {
+      child.stderr.on("data", (chunk) => (told += chunk));
+      for (let i = 0; !/authorize_other/.test(told); i++) {
+        assert.ok(i < 100, `the terminal said the sign-in's failure: ${told}`);
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+    },
+  });
+  assert.equal(run.code, 0, run.err);
+  assert.doesNotMatch(run.err, /Call_admin_now/, "the terminal never says a code a local sender chose");
+  const log = readFileSync(startLog(run.home), "utf8");
+  assert.ok(log.split("\n").includes(failed), log);
+  assert.doesNotMatch(log, /event=request/, "only a sign-in's failure is kept past the start");
+});
+
+test("started, a server's last line before it exits is kept in the start log: a sign-in's failure it printed as it ended is not lost", { timeout: 60_000 }, async (t) => {
+  const failed = "at=2026-11-24T00:00:00.000Z event=chatgpt chatgpt=sign_in_failed reason=authorize_Call_admin_now";
+  // 512 KiB of other lines first: the server exits with its last lines still in the pipe.
+  const run = await throughStub(t, ["--no-open"], { STUB_AFTER: failed, STUB_AFTER_EXIT: "512" }, { running: (child) => new Promise((resolve) => (child.exitCode !== null ? resolve() : child.on("exit", resolve))) });
+  assert.equal(run.code, 0, run.err);
+  assert.ok(readFileSync(startLog(run.home), "utf8").split("\n").includes(failed), run.err);
+  assert.match(run.err, /\(authorize_other\)/, "the terminal said it too");
 });
 
 test("started, the bin says a refused request on stderr; stdout stays the one running line", { timeout: 120_000 }, async (t) => {
