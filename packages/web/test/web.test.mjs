@@ -447,5 +447,5 @@ test("the package's root entry is its named API: none of the internals it is bui
   const names = Object.keys(await import("../dist/index.js"));
   const internal = ["sleep", "callTool", "textBlocks", "MAX_BYTES", "PROTOCOL", "TIMEOUT_MS", "retryAfterMs", "waitOf", "searchBusy", "partOfRead", "markdownRead", "isRefused"];
   assert.deepEqual(internal.filter((name) => names.includes(name)), []);
-  for (const name of ["createWeb", "webFetch", "webFetchText", "fetchPage", "searchInTurn", "breakers", "linksOf", "parallelExtract", "parallelSearched", "exaSearch", "firecrawlSearch", "firecrawlScrape", "firecrawlFetch", "PaidRefused"]) assert.ok(names.includes(name), name);
+  for (const name of ["createWeb", "webFetch", "webFetchText", "fetchPage", "askedUrl", "searchInTurn", "breakers", "linksOf", "parallelExtract", "parallelSearched", "exaSearch", "firecrawlSearch", "firecrawlScrape", "firecrawlFetch", "PaidRefused"]) assert.ok(names.includes(name), name);
 });

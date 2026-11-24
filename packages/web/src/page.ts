@@ -42,21 +42,21 @@ export const clip = (text: string, max: number) => (text.length > max ? `${text.
  *  cut: a cut can end inside them, leaving no "@" for it to find. It reads on to the last "@" before the host, as a URL
  *  does: a password may hold an "@" left unencoded. */
 export const withoutUserinfo = (text: string) => text.replace(/\/\/[^\s/?#]*@/g, "//");
-/** `url`, a page's, with no user name or password: cleared as a URL where it parses (a URL drops a tab or a newline in
- *  them and encodes a space, where withoutUserinfo, reading free text, stops), else withoutUserinfo's. A provider that
- *  followed a redirect names the URL it ended at, which may hold them. Run it before a url is cut: a cut can end inside
- *  them, leaving a url that does not parse and no "@" for withoutUserinfo to find. */
+/** `url`, a page's, with no user name or password, cleared as a URL (a URL drops a tab or a newline in them and encodes a
+ *  space, where withoutUserinfo, reading free text, stops); "" where it does not parse, as no URL to name: a scrub of its
+ *  text can stop short of them (at a space). A provider that followed a redirect names the URL it ended at, which may
+ *  hold them. Run it before a url is cut: a cut can end inside them, leaving a url that does not parse. */
 export function withoutCredentials(url: string): string {
   const parsed = URL.parse(url);
-  if (!parsed) return withoutUserinfo(url);
+  if (!parsed) return "";
   if (!parsed.username && !parsed.password) return url;
   parsed.username = "";
   parsed.password = "";
   return clip(parsed.href, URL_MAX);
 }
-/** The URL a call asked for, as a page names it: with no user name or password, and cut. One that does not parse is no
- *  URL, and a scrub of its text can stop short of them (at a space), so a page names none: "". */
-export const askedUrl = (url: unknown) => (typeof url === "string" && URL.canParse(url) ? clip(withoutCredentials(url), URL_MAX) : "");
+/** The URL a call asked for, as a page names it: with no user name or password, and cut; "" where it is no string or
+ *  does not parse (withoutCredentials). */
+export const askedUrl = (url: unknown) => (typeof url === "string" ? clip(withoutCredentials(url), URL_MAX) : "");
 
 /** Which part of a page's text an answer holds: from `offset` (0 by default), about `maxChars` characters (PAGE_CHARS by
  *  default, at most TEXT_CAP). */
