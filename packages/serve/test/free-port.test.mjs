@@ -1,7 +1,8 @@
-// The one port helper serve's tests hand out loopback ports with (fixtures/ports.mjs freePort): a port nothing listens on
-// now, below the host's ephemeral range wherever that range starts, never one this process handed out before, and a
-// listen error other than "in use" said as itself. fakeOllama's own listen says its error too.
+// The port helper serve's tests that import it hand out loopback ports with (fixtures/ports.mjs freePort): a port nothing
+// listens on now, below the host's ephemeral range wherever that range starts, never one this process handed out before
+// or is probing, and a listen error other than "in use" said as itself. fakeOllama's own listen says its error too.
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { test } from "node:test";
 import { fakeOllama } from "./fixtures/fake-ollama.mjs";
@@ -28,9 +29,10 @@ test("two thousand ports handed out in one process are all different, so no test
 test("a listen error other than the port being in use rejects with its own code, never read as in use and every port tried", async () => {
   // 192.0.2.1 (TEST-NET-1) is no address of this machine: a listen there fails EADDRNOTAVAIL.
   const host = "192.0.2.1";
-  // A host that binds addresses it doesn't own (net.ipv4.ip_nonlocal_bind=1) lets that listen succeed: the test says so.
+  // A host that binds addresses it doesn't own (net.ipv4.ip_nonlocal_bind=1) lets that listen succeed: the test says so,
+  // with the setting as read.
   const got = await freePort({ host }).then((port) => ({ port }), (error) => ({ error }));
-  assert.ok(got.error, `a listen on ${host} succeeded (port ${got.port}): this host binds addresses it doesn't own (net.ipv4.ip_nonlocal_bind=1), so it can't give this test a listen error`);
+  assert.ok(got.error, `a listen on ${host} succeeded (port ${got.port}), with net.ipv4.ip_nonlocal_bind ${nonlocalBind()}: no listen error to test on this host`);
   assert.equal(got.error.code, "EADDRNOTAVAIL", `the listen error was said as ${got.error.code ?? "no code"}: ${got.error.message}`);
 });
 
@@ -67,8 +69,17 @@ test("two freePort calls at once never get the same port: under a range from 102
   assert.deepEqual(refused, ["Error: no free port below the ephemeral range: none in 1024-1025 (it starts at 1026)"], "the call refused");
 });
 
-test("a fake Ollama asked for a port another listener holds rejects with EADDRINUSE, its cause, instead of an uncaught error", async (t) => {
+test("a fake Ollama asked for a port another listener holds rejects with EADDRINUSE instead of an uncaught error", async (t) => {
   const first = await fakeOllama(t);
   const port = Number(first.host.split(":")[1]);
   await assert.rejects(fakeOllama(t, { port }), { code: "EADDRINUSE" });
 });
+
+/** net.ipv4.ip_nonlocal_bind as this host reads it: "at 0", "at 1", or why it can't be read. */
+function nonlocalBind() {
+  try {
+    return `at ${readFileSync("/proc/sys/net/ipv4/ip_nonlocal_bind", "utf8").trim()}`;
+  } catch (error) {
+    return `unread (${error.code ?? error.message})`;
+  }
+}

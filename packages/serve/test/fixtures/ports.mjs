@@ -1,6 +1,5 @@
-// The loopback ports serve's tests hand out: one rule for every test that lists an address as down, or gives a process a
-// port it binds later by name. No imports but node's, so fake-ollama.mjs (which a walk with no built serve takes) can
-// import it.
+// The loopback ports the serve tests that import this hand out: one rule for a test that lists an address as down, or
+// gives a process a port it binds later by name. No imports but node's, so a test with no built serve can import it.
 import { readFileSync } from "node:fs";
 import { createServer } from "node:net";
 
@@ -14,8 +13,9 @@ export function ephemeralLow() {
   }
 }
 
-/** Every port this process has handed out. One is never handed out again: serve keeps a down Ollama address's listing for
- *  its TTL, and a test given an address an earlier one listed as down would read that listing. */
+/** Every port this process has handed out, or is probing now. One is never handed out again: serve keeps a down Ollama
+ *  address's listing for its TTL (OLLAMA_TTL_MS), and a test given an address an earlier one listed as down would read
+ *  that listing, never asking what listens there now. */
 const handedOut = new Set();
 
 /**
@@ -24,7 +24,9 @@ const handedOut = new Set();
  * it: a test can list it as down, or give it to a process that binds it later. Picked from 1,000 below `low` or from
  * 20000, whichever is lower (never under 1024), up to `low` or 32768, whichever is lower; tried from a random place, each
  * candidate once. A port in use is passed over. Any other listen error rejects as itself. A range that leaves no
- * candidate, or none free, fails by name.
+ * candidate, or none free, fails by name. A port is claimed before it is probed, so two calls at once never get the same
+ * one. Test files run side by side (serve's suite runs 8 at once) each keep their own set, and a probe proves a port free
+ * only when it runs: two files can be handed the same port, about 1 in 12,768 per pair.
  */
 export async function freePort({ low = ephemeralLow(), host = "127.0.0.1" } = {}) {
   const to = Math.min(low, 32768);
@@ -34,9 +36,15 @@ export async function freePort({ low = ephemeralLow(), host = "127.0.0.1" } = {}
   const start = Math.floor(Math.random() * span);
   for (let i = 0; i < span; i++) {
     const port = from + ((start + i) % span);
-    if (handedOut.has(port) || !(await bindable(port, host))) continue;
+    if (handedOut.has(port)) continue;
     handedOut.add(port);
-    return port;
+    let free = false;
+    try {
+      free = await bindable(port, host);
+    } finally {
+      if (!free) handedOut.delete(port);
+    }
+    if (free) return port;
   }
   throw new Error(`no free port below the ephemeral range: none in ${from}-${to - 1} (it starts at ${low})`);
 }
