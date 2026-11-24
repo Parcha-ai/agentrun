@@ -796,8 +796,8 @@ test("AGENTRUN_TOKEN, the name the setup page gives the server's token, stands i
   assert.equal(empty.code, 4, empty.err);
   assert.match(empty.err, /No token for/);
   mkdirSync(join(dir, ".config", "agentrun"), { recursive: true, mode: 0o700 });
-  writeFileSync(join(dir, ".config", "agentrun", "config.json"), JSON.stringify({ base_url: prefix, api_key: "fake-test-kept" }), { mode: 0o600 });
-  assert.equal(await sent({ AGENTRUN_TOKEN: "fake-test-token" }), "Bearer fake-test-kept", "the token kept for this address wins");
+  writeFileSync(join(dir, ".config", "agentrun", "config.json"), JSON.stringify({ base_url: prefix, api_key: "not-a-secret" }), { mode: 0o600 });
+  assert.equal(await sent({ AGENTRUN_TOKEN: "fake-test-token" }), "Bearer not-a-secret", "the token kept for this address wins");
   // The server on this machine, started with AGENTRUN_TOKEN (no .token file): the same variable is its token here.
   const data = join(dir, "data");
   mkdirSync(data, { mode: 0o700 });
