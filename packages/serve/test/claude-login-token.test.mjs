@@ -10,6 +10,7 @@
 // (test/fixtures/credentials-cli-2.1.286.json in the Claude adapter) reads. No key, no network: fake values in scratch
 // folders, and a fake token endpoint on loopback (the renewal's fetch is a seam; the request is sent there, never out).
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import * as fsp from "node:fs/promises";
@@ -387,6 +388,64 @@ test("a held pair whose save keeps failing is handed until its own token nears i
     });
   }
   assert.equal(endpoint.posts.length, 1, "nothing posted after the one renewal: no loop, the spent refresh token never again");
+});
+
+test("a held pair's save takes its turn with renewals: it reads the file again under the CLI's refresh lock, so a newer pair another holder (the CLI, or a renewal of this process) wrote after an earlier read is never overwritten with the held one, whose refresh token is spent", { timeout: 20_000 }, async (t) => {
+  assert.equal(typeof tokens.LoginTokens, "function", "the runner has a reader of the login's access token");
+  const { data, login } = loginFolder(t);
+  const start = 1_900_000_000_000;
+  const file = join(login.dir, ".credentials.json");
+  const lock = join(login.dir, ".oauth_refresh.lock");
+  const old = { access: fake("access-old"), refresh: fake("refresh-old") };
+  const next = { access: fake("access-new"), refresh: fake("refresh-new") };
+  const newer = { access: fake("access-newer"), refresh: fake("refresh-newer") };
+  const oldText = JSON.stringify({ claudeAiOauth: oauthOf(old.access, start + 60_000, old.refresh) });
+  const newerText = JSON.stringify({ claudeAiOauth: oauthOf(newer.access, start + 8 * HOUR, newer.refresh) });
+  // The save fails first (the file reached through a link, which replaceFile never replaces): the renewed pair is held.
+  const elsewhere = join(data, "credentials-elsewhere.json");
+  writeFileSync(elsewhere, oldText, { mode: 0o600 });
+  symlinkSync(elsewhere, file);
+  const endpoint = await rotatingEndpoint(t, new Map([[old.refresh, next]]));
+  const reader = new tokens.LoginTokens({ login, now: () => start, fetch: endpoint.fetch });
+  assert.equal(await reader.token(), next.access, "renewed, its save failed: the pair is held in memory");
+  // The disk works again. For the next ask the file is a named pipe: each read of it waits until the test writes the
+  // old pair into it, so the test acts at a known point of the ask, with no timer.
+  rmSync(file);
+  execFileSync("mkfifo", [file]);
+  const asked = reader.token();
+  asked.catch(() => undefined);
+  // The ask's own read of the token. A new pipe takes the name before that read ends, so the next read waits too.
+  const first = await fsp.open(file, "w");
+  await first.writeFile(oldText);
+  rmSync(file);
+  execFileSync("mkfifo", [file]);
+  await first.close();
+  // The held save's read is open. Another holder renews the login now, as the CLI does: only while it holds the
+  // refresh lock. Either way the file is a plain one again before the save's read ends.
+  const second = await fsp.open(file, "w");
+  let free = true;
+  try {
+    mkdirSync(lock);
+  } catch (error) {
+    if (error.code !== "EEXIST") throw error;
+    free = false;
+  }
+  writeWhole(file, free ? newerText : oldText);
+  if (free) rmSync(lock, { recursive: true });
+  await second.writeFile(oldText);
+  await second.close();
+  assert.equal(await asked, next.access, "the held token is handed");
+  if (!free) {
+    // The save held the lock while it read: the other holder renews once the lock is its own, from the saved pair.
+    mkdirSync(lock);
+    assert.equal(JSON.parse(readFileSync(file, "utf8")).claudeAiOauth.refreshToken, next.refresh, "the held pair was saved under the lock");
+    writeWhole(file, newerText);
+    rmSync(lock, { recursive: true });
+  }
+  const kept = JSON.parse(readFileSync(file, "utf8")).claudeAiOauth;
+  assert.deepEqual([kept.accessToken, kept.refreshToken], [newer.access, newer.refresh], "the newer pair on disk is kept: a held save never writes over a pair another holder wrote after its read");
+  assert.equal(await reader.token(), newer.access, "and it is handed");
+  assert.equal(endpoint.posts.length, 1, "nothing posted after the one renewal");
 });
 
 /** `lock` taken over as another runner takes a stale one (proper-lockfile): removed, made again, its mtime the new
