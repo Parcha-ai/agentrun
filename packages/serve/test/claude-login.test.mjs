@@ -714,10 +714,11 @@ for (const [change, ask, place] of RACE_CHANGES) {
     let held = false;
     const pressed = startLoginHere(rig.deps({ pinned: async () => { if (!held) { held = true; inGap.open(); await gap.wait; } return rig.pinned; } }));
     await inGap.wait;
-    // The change's own request: the same sign-ins, seen through a wrapper that says when it asks for a turn, its start
-    // and stop included, so a change that asks for one any way is let through and never waits on the held sign-in here.
+    // The change's own request: the same sign-ins, seen through a wrapper that says when it asks for a turn (the one way
+    // to start or end a sign-in), so a change that asks for one any way is let through and never waits on the held
+    // sign-in here.
     const waits = latch();
-    const watched = { view: () => rig.signIns.view(), serial: (work) => { waits.open(); return rig.signIns.serial(work); }, start: (begin) => watched.serial((turn) => turn.start(begin)), stop: () => watched.serial((turn) => turn.stop()), close: () => rig.signIns.close() };
+    const watched = { view: () => rig.signIns.view(), serial: (work) => { waits.open(); return rig.signIns.serial(work); }, close: () => rig.signIns.close() };
     const changing = ask(rig.deps({ signIns: watched }));
     const first = await Promise.race([changing.then(() => "answered inside the gap"), waits.wait.then(() => "waited its turn")]);
     gap.open();

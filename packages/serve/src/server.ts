@@ -1614,9 +1614,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   /** The sign-in as the store holds it now (ChatGPTPlan.refresh): a change reads env again, and so does one this server
    *  failed to take (changed_failed), until it takes. */
   const planNow = () => plan.refresh();
-  /** What Claude Code's login routes use: a turn on or off reads the setting again, then env, as a key's save does. A
-   *  sign-in this server starts opens a browser on its machine, so only where the console is on loopback here; it is
-   *  kept for this process (claudeSignIns, above), and one still waiting is ended at the stop. */
+  /** What Claude Code's login routes use: a turn on or off hands over the login it saved, then env is read again, as a
+   *  key's save does. A sign-in this server starts opens a browser on its machine, so only where the console is on
+   *  loopback here; it is kept for this process (claudeSignIns, above), and one still waiting is ended at the stop. */
   stops.push(async () => claudeSignIns.close());
   const loginDeps = (): ClaudeLoginDeps => ({
     signIns: claudeSignIns,
@@ -1627,10 +1627,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     refused: loginRefused,
     sameMachine: isLoopback(host) && !options.publicUrl,
     claude: () => import("@parcha/agentrun-harness-claude"),
-    changed: async () => {
-      claudeLogin = loginOf(await claudeLoginSetting(store.settings), data, base);
-      await keysChanged();
+    saved: (login) => {
+      claudeLogin = login;
     },
+    changed: keysChanged,
   });
   // The boxes a place may name, read once from the computers runs execute on (place-offers.ts): AGENTRUN_BOXES lists
   // them, docker alone when it is not set; docker by its probe, daytona and modal by their providers' keys, read as a

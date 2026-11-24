@@ -36,7 +36,7 @@ function endedView(started: Omit<SignInView, "state">, end: ClaudeSignInEnd, at:
     case "failed":
       return { ...ended, state: "not_started", error: end.message };
     case "stopped":
-      // Only this server stops one, and it forgets it as it does (stop), so this view is never kept.
+      // Only this server stops one, and it forgets it as it does (a turn's stop), so this view is never kept.
       return { ...ended, state: "failed" };
   }
 }
@@ -77,29 +77,20 @@ export class ClaudeSignIns {
    *  turn (claude-login.ts: the turn-on, the turn-off, the sign-in's start and the drop at the server's start), each
    *  reading the setting inside it, so none lands between another's read and its start or save. A turn lasts while it
    *  decides and starts: a sign-in's wait for its browser is no turn's. A turn that throws rejects its own answer alone;
-   *  the next turn runs as if it had ended. */
+   *  the next turn runs as if it had ended. A sign-in starts and ends only through a turn's `start` and `stop`: there is no
+   *  start or stop beside them, since one called inside a turn would wait for that turn to end, for ever. */
   serial<T>(work: (turn: SignInTurn) => Promise<T>): Promise<T> {
     const next = this.#queue.then(() => work({ start: (begin) => this.#start(begin), stop: () => this.#end() }));
     this.#queue = next.catch(() => {});
     return next;
   }
 
-  /** Start a sign-in with `begin` (the harness's startClaudeLogin, given the limit), after ending one that waits: a turn
-   *  of its own. */
-  start(begin: (limitMs: number) => ClaudeSignIn): Promise<SignInView> {
-    return this.serial((turn) => turn.start(begin));
-  }
-
-  /** End a sign-in that waits, and forget the one there is: a turn of its own. */
-  stop(): Promise<void> {
-    return this.serial((turn) => turn.stop());
-  }
-
-  /** The server's stop: as stop(), resolving once a CLI that waited is gone, and a start asked after it (a request still
-   *  in flight) spawns nothing. A CLI left waiting would keep the browser's callback port from the next server's sign-in. */
+  /** The server's stop: a turn that ends a sign-in that waits and forgets it, resolving once its CLI is gone; a start
+   *  asked after it (a request still in flight) spawns nothing. A CLI left waiting would keep the browser's callback port
+   *  from the next server's sign-in. */
   close(): Promise<void> {
     this.#closed = true;
-    return this.stop();
+    return this.serial((turn) => turn.stop());
   }
 
   async #start(begin: (limitMs: number) => ClaudeSignIn): Promise<SignInView> {

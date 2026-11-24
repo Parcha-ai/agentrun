@@ -264,8 +264,10 @@ export const claudeLoginRouteOff = (name: string, why: string): string => `${nam
 /** What the routes need of the server. `pinned`: the pinned CLI's path when installed. `refused`: whyNotOneOwner of this
  *  server. `sameMachine`: the request comes from a browser on this machine to a server bound to loopback with no public
  *  address, so a sign-in the CLI opens in a browser here reaches the person. `status`/`start`: the harness's
- *  claudeLoginStatus and startClaudeLogin. `changed`: env read again after a turn on or off. `signIns`: the sign-in this
- *  server started, one per server process (claude-sign-in.ts). */
+ *  claudeLoginStatus and startClaudeLogin. `saved`: the login runs here go on after a turn on or off (none once off),
+ *  handed over inside the turn that saved it, so two changes never leave the server's copy out of order. `changed`: env
+ *  read again after that turn, outside the queue, so a sign-in pressed meanwhile never waits on it. `signIns`: the
+ *  sign-in this server started, one per server process (claude-sign-in.ts). */
 export type ClaudeLoginDeps = {
   signIns: ClaudeSignIns;
   settings: Pick<Settings, "get" | "put" | "remove">;
@@ -275,6 +277,7 @@ export type ClaudeLoginDeps = {
   refused: string | undefined;
   sameMachine: boolean;
   claude: () => Promise<ClaudeLoginCli>;
+  saved: (login: ClaudeAgentLogin | undefined) => void;
   changed: () => Promise<void>;
 };
 
@@ -310,11 +313,6 @@ export async function claudeLoginView(deps: ClaudeLoginDeps): Promise<ClaudeLogi
   }
 }
 
-// The setting changes, and a sign-in starts, only in a turn on the sign-ins' queue (ClaudeSignIns.serial), each turn
-// reading the setting inside it: the turn-on, the turn-off, the sign-in's start and the drop at the server's start. So a
-// move or a turn-off never lands between a sign-in's read of the setting and its start; it comes before the read, or
-// after the start, and then ends that sign-in. The views (claudeLoginView) are read after the turn, outside the queue.
-
 /** PUT /settings/claude-login: turned on, refused in one line where more than one person can start runs. A turn-on that
  *  moves the login to another place first ends a sign-in this server started that still waits: its CLI signs in at the
  *  old place, which the login no longer reads. One at the same place leaves it waiting, as it still signs in there. */
@@ -324,9 +322,11 @@ export async function turnOnClaudeLogin(deps: ClaudeLoginDeps, body: unknown): P
   if ("problem" in asked) throw new ClaudeLoginRefused("input_invalid", asked.problem);
   await deps.signIns.serial(async (turn) => {
     if ((await claudeLoginSetting(deps.settings))?.place !== asked.place) await turn.stop();
-    await deps.settings.put(CLAUDE_LOGIN_SETTING, settingFor(asked.place, deps.data));
-    await deps.changed();
+    const setting = settingFor(asked.place, deps.data);
+    await deps.settings.put(CLAUDE_LOGIN_SETTING, setting);
+    deps.saved(loginOf(setting, deps.data, deps.env));
   });
+  await deps.changed();
   return claudeLoginView(deps);
 }
 
@@ -336,8 +336,9 @@ export async function turnOffClaudeLogin(deps: ClaudeLoginDeps): Promise<ClaudeL
   await deps.signIns.serial(async (turn) => {
     await turn.stop();
     await deps.settings.remove(CLAUDE_LOGIN_SETTING);
-    await deps.changed();
+    deps.saved(undefined);
   });
+  await deps.changed();
   return claudeLoginView(deps);
 }
 
