@@ -269,7 +269,7 @@ function adapterEntry(facts: AdapterFacts, make: (env: NodeJS.ProcessEnv, needs:
  *  throws is a HarnessUnavailable with the fix its code names in the facts (fixOf: install, pins). */
 function moduleAdapter(facts: AdapterFacts, build: (launch: ModuleLaunch) => AgentAdapter | Promise<AgentAdapter>, { missing }: ModuleChecks, host: AcpEntryHost = {}) {
   return async (env: NodeJS.ProcessEnv, needs: AdapterNeeds): Promise<AgentAdapter> => {
-    const { fixOf, harnessLog, priceOf } = await import("./adapters.js");
+    const { fixOf, harnessLog, priceOf, providerOf } = await import("./adapters.js");
     const unavailable = (error: unknown) => (error instanceof HarnessUnavailable ? error : new HarnessUnavailable((error as Error).message, fixOf(facts, error)));
     // What no key fixes is said first (a binary): a refusal for it names no key.
     let lacks: string | undefined;
@@ -279,7 +279,7 @@ function moduleAdapter(facts: AdapterFacts, build: (launch: ModuleLaunch) => Age
       throw unavailable(error);
     }
     if (lacks) throw new HarnessUnavailable(lacks);
-    const provider = providerFor(facts.wire, env, needs.model, facts.id);
+    const provider = providerOf(facts.wire, env, needs, facts.id);
     // A person's Claude Code login is its CLI's alone (claude-login.ts): no request of this harness goes on it; a key of
     // its wire's vendor's, or OpenRouter's, runs it.
     if (provider.login) throw new HarnessUnavailable(`${facts.label} runs on a model key: Claude Code's login on this machine is its CLI's alone.`, undefined, [wireOf(facts.wire)!.key, "OPENROUTER_API_KEY"]);
