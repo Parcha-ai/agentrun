@@ -304,6 +304,14 @@ export async function gradeOne(ctx, grader, kase, record, servers, graded) {
   }
 }
 
+/** What one step's run left, for its graders, as the template eval's run record (TE.callRecordOf): its answer and calls
+ *  with no fake's stamp in them, its fake MCP calls paired with the fakes' own log by their stamps, and that log whole,
+ *  read only by a tool_used grader on a faked tool. */
+export function recordOf({ view, rows, harness, servers, fakes, files }) {
+  const answer = typeof view.result?.final_answer === "string" ? view.result.final_answer : "";
+  return { answer: TE.unstamped(answer), ...TE.callRecordOf(TE.callsOf(rows, harness, servers), servers, fakes), files };
+}
+
 /** One step's run graded by its case's graders, as the template eval grades one. */
 async function step(ctx, job, one, kase, agentId, harness, learns) {
   const { api, options } = ctx;
@@ -312,7 +320,7 @@ async function step(ctx, job, one, kase, agentId, harness, learns) {
   const { view, timedOut, learningUnsettled } = await settled(api, runId, learns, waitUntil(options));
   const rows = await timelineRows(api, runId);
   const servers = Object.keys(kase.mcp);
-  const record = { answer: typeof view.result?.final_answer === "string" ? view.result.final_answer : "", calls: TE.callsOf(rows, harness, servers), mcpCalls: ctx.fakes.flatMap((f) => f.calls.map((c) => ({ ...c }))), files: await filesOf(api, runId, kase) };
+  const record = recordOf({ view, rows, harness, servers, fakes: ctx.fakes, files: await filesOf(api, runId, kase) });
   for (const fake of ctx.fakes) fake.calls.length = 0;
   const graded = view.status === "completed";
   // The package's output schema, held as the template eval holds it: the server's own verdict on the run.
