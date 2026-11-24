@@ -539,7 +539,9 @@ async function postRefresh(oauth: Record<string, unknown>, refresh: string, opti
   };
   let response: Response;
   try {
-    response = await (options.fetch ?? globalThis.fetch)(loginRefresh.tokenUrl, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(options.callMs ?? REFRESH_CALL_MS) });
+    // Never followed: a 307 or 308 would post the same body, refresh token included, to the Location's host. A redirect
+    // rejects as fetch's network error, a failed post like any other: nothing saved, the refresh token not taken as refused.
+    response = await (options.fetch ?? globalThis.fetch)(loginRefresh.tokenUrl, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), redirect: "error", signal: AbortSignal.timeout(options.callMs ?? REFRESH_CALL_MS) });
   } catch (error) {
     say({ claude_login: "renew_failed", reason: (error as Error)?.name === "TimeoutError" ? "timeout" : "network" });
     throw new Error("the login's renewal request got no answer");
