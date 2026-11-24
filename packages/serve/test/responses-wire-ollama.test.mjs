@@ -395,3 +395,117 @@ test("codex and opencode on an Ollama model are given the window the route runs 
   assert.equal(seen.contextWindow, undefined);
   assert.equal(seen.maxOutputTokens, undefined);
 });
+
+// A structured output is Ollama's own: /api/chat's `format` holds the answer to the schema (constrained decoding), as
+// OpenAI's json_schema does. It reaches Ollama on the Messages body's output_config.format (Anthropic's field for it), so
+// a Messages client asking it on an Ollama model is held to it too. A format beside tools would leave the model no way
+// to call one, so that pair is refused with words, never run as words alone.
+test("text.format json_schema reaches Ollama as its format, json_object as an object schema, a text format as none; beside tools sent, or of another type, it is refused with a 400 and Ollama is never asked", async (t) => {
+  const ollama = await fakeOllama(t, { reply: () => ({ text: '{"verdict":"ok"}' }) });
+  const fetcher = await responsesOn(ollama, TOOLS);
+  const schema = { type: "object", properties: { verdict: { type: "string" } }, required: ["verdict"], additionalProperties: false };
+  const plain = { ...ASK, tools: undefined };
+  const asked = [
+    [{ type: "json_schema", name: "review", strict: true, schema }, schema],
+    [{ type: "json_object" }, { type: "object" }],
+    [{ type: "text" }, undefined],
+  ];
+  for (const [format, sent] of asked) {
+    const { status, text } = await answerOf(fetcher, { ...plain, text: { format } });
+    assert.equal(status, 200, text);
+    assert.deepEqual(ollama.got.chat.at(-1).format, sent, JSON.stringify(format));
+  }
+  assert.equal((await answerOf(fetcher, plain)).status, 200);
+  assert.equal(ollama.got.chat.at(-1).format, undefined, "no text.format: no format");
+  const none = await answerOf(fetcher, { ...ASK, tool_choice: "none", text: { format: asked[0][0] } });
+  assert.equal(none.status, 200, none.text);
+  assert.deepEqual(ollama.got.chat.at(-1).format, schema, "tool_choice \"none\" sends no tool, so the format is taken");
+  assert.equal(ollama.got.chat.at(-1).tools, undefined);
+  const before = ollama.got.chat.length;
+  for (const [body, words] of [
+    [{ ...ASK, text: { format: asked[0][0] } }, /text\.format json_schema beside tools is not taken on this model's route/],
+    [{ ...ASK, text: { format: { type: "json_object" } } }, /text\.format json_object beside tools/],
+    [{ ...plain, text: { format: { type: "json_schema", name: "review" } } }, /text\.format json_schema with no schema object/],
+    [{ ...plain, text: { format: { type: "grammar", syntax: "lark" } } }, /text\.format "grammar" is not taken on this model's route/],
+  ]) {
+    const { status, text } = await answerOf(fetcher, body);
+    assert.equal(status, 400, text);
+    const { error } = JSON.parse(text);
+    assert.equal(error.type, "invalid_request_error", text);
+    assert.match(error.message, words);
+  }
+  assert.equal(ollama.got.chat.length, before, "no refused request reached Ollama");
+});
+
+// OpenAI's Responses API streams only when asked (`stream: true`); a body that names no stream is answered whole.
+test("a request that names no stream gets the final response as one JSON body; stream: true streams", async (t) => {
+  const ollama = await fakeOllama(t, { reply: () => ({ text: "done.", usage: { input: 5, output: 1 } }) });
+  const fetcher = await responsesOn(ollama, TOOLS);
+  const { stream: _stream, ...unnamed } = ASK;
+  const response = await fetcher(`${ROUTE_ORIGIN}/v1/responses`, { method: "POST", body: JSON.stringify(unnamed) });
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get("content-type") ?? "", /application\/json/, "answered whole, not as a stream");
+  const body = JSON.parse(await response.text());
+  assert.equal(body.object, "response");
+  assert.equal(body.status, "completed");
+  assert.equal(body.usage.input_tokens, 5);
+  const streamed = await fetcher(`${ROUTE_ORIGIN}/v1/responses`, { method: "POST", body: JSON.stringify(ASK) });
+  assert.match(streamed.headers.get("content-type") ?? "", /text\/event-stream/);
+  await streamed.text();
+});
+
+// Ollama takes temperature and top_p in its options; a value that is not a number is refused, never dropped. null is
+// the API's own "the default".
+test("temperature and top_p reach Ollama's options; null asks the model's default; a value not a number is refused with a 400", async (t) => {
+  const ollama = await fakeOllama(t, { reply: () => ({ text: "done." }) });
+  const fetcher = await responsesOn(ollama, TOOLS);
+  assert.equal((await answerOf(fetcher, { ...ASK, temperature: 0.2, top_p: 0.9 })).status, 200);
+  assert.equal(ollama.got.chat[0].options?.temperature, 0.2);
+  assert.equal(ollama.got.chat[0].options?.top_p, 0.9);
+  assert.equal((await answerOf(fetcher, { ...ASK, temperature: null, top_p: null })).status, 200);
+  assert.equal(ollama.got.chat[1].options?.temperature, undefined);
+  assert.equal(ollama.got.chat[1].options?.top_p, undefined);
+  for (const [field, value] of [["temperature", "hot"], ["top_p", "0.9"]]) {
+    const { status, text } = await answerOf(fetcher, { ...ASK, [field]: value });
+    assert.equal(status, 400, text);
+    assert.match(JSON.parse(text).error.message, new RegExp(`${field} .* is not taken on this model's route`));
+  }
+  assert.equal(ollama.got.chat.length, 2, "no refused request reached Ollama");
+});
+
+// Ollama's chat has no switch for one call per answer, so the edge keeps it: parallel_tool_calls false (codex sends it
+// for a model it does not know) gets the answer's first call alone, as OpenAI's model would have made one.
+test("parallel_tool_calls false: an answer with two calls comes back with its first alone; true or absent: both", async (t) => {
+  const ollama = await fakeOllama(t, { reply: () => ({ calls: [{ name: "read", arguments: { path: "a.ts" } }, { name: "read", arguments: { path: "b.ts" } }] }) });
+  const fetcher = await responsesOn(ollama, TOOLS);
+  const callsOf = (events) => events.at(-1).response.output.filter((item) => item.type === "function_call").map((item) => JSON.parse(item.arguments).path);
+  const one = await answerOf(fetcher, ASK);
+  assert.deepEqual(callsOf(one.events), ["a.ts"]);
+  assert.deepEqual(ofType(one.events, "response.output_item.added").filter((event) => event.item.type === "function_call").length, 1, "the second call never announced");
+  assert.equal(one.events.at(-1).response.parallel_tool_calls, false);
+  assert.deepEqual(callsOf((await answerOf(fetcher, { ...ASK, parallel_tool_calls: true })).events), ["a.ts", "b.ts"]);
+  const { parallel_tool_calls: _parallel, ...unnamed } = ASK;
+  assert.deepEqual(callsOf((await answerOf(fetcher, unnamed)).events), ["a.ts", "b.ts"]);
+});
+
+// A thinking model asked an effort thinks (Ollama's think: true); asked "none" it does not (think: false), where Ollama's
+// own default would have it think. A model that does not reason is asked neither. An effort that names no level is
+// refused.
+test("reasoning.effort reaches a thinking model as Ollama's think: a level asks think true, \"none\" think false, none asked Ollama's default; a model that does not reason is asked neither; an unknown effort is refused", async (t) => {
+  const ollama = await fakeOllama(t, { reply: () => ({ text: "done." }) });
+  const thinker = await responsesOn(ollama, TOOLS);
+  const plain = await responsesOn(ollama, PLAIN);
+  const thinkOf = async (fetcher, body) => {
+    const { status, text } = await answerOf(fetcher, body);
+    assert.equal(status, 200, text);
+    return ollama.got.chat.at(-1).think;
+  };
+  assert.equal(await thinkOf(thinker, { ...ASK, reasoning: { effort: "high", summary: "auto" } }), true);
+  assert.equal(await thinkOf(thinker, { ...ASK, reasoning: { effort: "none" } }), false);
+  assert.equal(await thinkOf(thinker, ASK), undefined);
+  assert.equal(await thinkOf(plain, { ...ASK, model: PLAIN, reasoning: { effort: "high" } }), undefined);
+  assert.equal(await thinkOf(plain, { ...ASK, model: PLAIN, reasoning: { effort: "none" } }), undefined);
+  const { status, text } = await answerOf(thinker, { ...ASK, reasoning: { effort: "extreme" } });
+  assert.equal(status, 400, text);
+  assert.match(JSON.parse(text).error.message, /reasoning\.effort "extreme" is not taken on this model's route/);
+});
