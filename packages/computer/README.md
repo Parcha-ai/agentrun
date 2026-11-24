@@ -1057,7 +1057,10 @@ const made = await docker.create({ image: image.value, lifetimeMs: 600_000, netw
 - **The docker CLI gets only what it reads.** The provider reads no environment: its `env` option is the host's (serve
   passes its own values of the docker descriptor's `hostEnv`), and every docker call it makes (`dockerArch`,
   `ensureImage` and the provider's own, each taking `env` too) is started with the names of it docker reads
-  (`DOCKER_ENV_NAMES`), and none of the rest. Without `env`, docker starts with none. The names: PATH, HOME, TMPDIR, the
+  (`DOCKER_ENV_NAMES`), and none of the rest. Library callers pass `env` (serve does): without it docker gets no
+  environment at all, so a bare `docker` is found only on the default path (`/usr/bin:/bin`), not in `/usr/local/bin` or
+  a snap, and no credential helper is found on PATH; the `docker` option, the CLI's absolute path, is the other way to
+  name it. The names: PATH, HOME, TMPDIR, the
   locale, `DOCKER_HOST`, `DOCKER_CONTEXT`, `DOCKER_CONFIG` and Docker's TLS, API and buildx settings, ssh's agent socket,
   `XDG_RUNTIME_DIR` and the proxy (either case), for a daemon or registry that is not local, and the places a pull's
   credential helper (`docker-credential-<name>` on PATH) looks: the Secret Service's bus, GnuPG's home and agent, an AWS
