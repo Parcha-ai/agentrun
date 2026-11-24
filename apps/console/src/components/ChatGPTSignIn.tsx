@@ -62,7 +62,8 @@ export function ChatGPTSignIn({ v2, view, onView, writable = true, whyNot = "sig
       const n = ++asked.current;
       v2.chatGPT().then((body) => {
         const next = chatGPTView(body);
-        if (n === asked.current && next && next.state !== "pending") set(next);
+        // The sign-in ended: a paste's refusal from while it waited is stale, and the server's view says how it ended.
+        if (n === asked.current && next && next.state !== "pending") { setProblem(null); set(next); }
       }, () => {}).finally(() => { reading = false; });
     };
     const timer = setInterval(read, POLL_MS);
@@ -108,11 +109,15 @@ export function ChatGPTSignIn({ v2, view, onView, writable = true, whyNot = "sig
     } finally { setBusy(false); setFinishing(false); }
   };
 
-  const alert = problem && <p className="font-mono text-small text-destructive-text" role="alert">{problem}</p>;
+  // A refusal here first; else, not waiting, why the server's last sign-in ended unsigned (its view's `problem`): OpenAI's
+  // tab says it completed before the server exchanges the code, so this is the only word of a failure after it.
+  const said = problem ?? (pending ? undefined : v.problem);
+  const alert = said && <p className="font-mono text-small text-destructive-text" role="alert">{said}</p>;
   if (v.state === "signed_in") return (
     <div className="space-y-2">
       <p className="text-body font-semibold">{signedInAs(v)}</p>
       <PlanDisclosure />
+      {alert}
     </div>
   );
   if (!writable) return <p className="text-body" role="status">{WHY_NOT_WORDS[whyNot]}</p>;

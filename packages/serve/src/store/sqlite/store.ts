@@ -23,7 +23,7 @@ import {
   RevisionMoved, SignInHandedTo, SignInMissing, type SignIns, type SignInRow, type SignInTombstoneRow, type ViewerKind,
   type AttemptCause, type ComputerIntervalRow, type ComputerIntervals, type RunAttemptRow, type RunAttempts, type ComputerLedger, type ComputerLedgerRow, type PairedComputerRow, type PairedComputers, RUN_CHANGES_PAGE, type RunChangeCursor,
   type ImportedTemplates, type MintedTokenRow, type MintedTokens, type SecureRewrite, type SettingsGuard, type McpGuard,
-  RUNNER_ROWS_KEPT_MS, type RunnerRow, type Runners, tombstoneMetrics,
+  KEPT_PREFIX, RUNNER_ROWS_KEPT_MS, RUNNER_STALE_MS, type RunnerRow, type Runners, tombstoneMetrics,
 } from "../store.js";
 
 /** The run a launch body is made from (Runs.madeFrom): the run whose input it replays (`replay.of`) or audits (`audit.of`). */
@@ -158,7 +158,7 @@ const TRIGGER_COLUMNS = "id, agent_id, name, enabled, source, target, next_at, l
 const FINAL = FINAL_STATES.map((state) => `'${state}'`).join(", ");
 /** Firing `f` (the alias) is one its launch hook's host took with no run yet, inside its start window: its startBy, kept in
  *  retry_at, not passed at the `?` it binds (the triggers' clock). It holds its trigger's room as a run in progress
- *  (activeRuns, waiting's free, held) and stays in the history (prune). */
+ *  (activeKeys, waiting's free, held) and stays in the history (prune). */
 const holdsRoom = (f: string): string => `(${f}.status = 'sent' AND ${f}.run_id IS NULL AND ${f}.retry_at IS NOT NULL AND ${f}.retry_at >= ?)`;
 /** Firing `f` is one of its trigger's runs in progress: started with run `r` (the alias of its LEFT JOINed run) not ended,
  *  or holding the room (holdsRoom, its one `?`). */
@@ -175,17 +175,44 @@ const lockCommandsOf = (tx: Tx, runId: string): Promise<void> => tx.dialect.lock
  *  its claim run out, once its backoff (an interrupted run's) has passed; parked, once no claim holds it (a run parks
  *  under its claim and is released a few seconds later), with its wake_at passed, an untaken stop or cancel, or an untaken command
  *  that can answer it once its backoff (a failed resume's) has passed. A row marked `answers: false` (a trigger's
- *  follow-up message) answers no park: it waits, untaken, and its loop gets it after the person's answer wakes the run. */
-const claimableIn = (d: Dialect, n: StoreNow): { sql: string; params: SqliteValue[] } => ({
-  sql: `(state = 'queued'
+ *  follow-up message) answers no park: it waits, untaken, and its loop gets it after the person's answer wakes the run.
+ *  With `claimer` (a claim's runner), a parked run whose computer is pinned to another runner (keptElsewhere) is left
+ *  out while only its wake or an answering command makes it claimable; without it (a count of what waits) it is in.
+ *  An untaken stop or cancel row is its own branch, outside the pin: a person's stop never waits on a pin, and any
+ *  runner claims the run at once to end it (runner.ts claimMore ends it without a loop, never taking the kept machine).
+ *  The SQL tells the branches apart by place: the stop/cancel EXISTS is OR'ed beside a parenthesis holding the wake and
+ *  the answer, and only that parenthesis carries `AND NOT keptElsewhere`. */
+const claimableIn = (d: Dialect, n: StoreNow, claimer?: string): { sql: string; params: SqliteValue[] } => {
+  const pin = claimer === undefined ? undefined : keptElsewhere(d, n, claimer);
+  return {
+    sql: `(state = 'queued'
   OR (state = 'running' AND (runner IS NULL OR claimed_until < ${n.sql}) AND (backoff_until IS NULL OR backoff_until <= ${n.sql}))
   OR (state = 'parked' AND (runner IS NULL OR claimed_until < ${n.sql}) AND (
-    (wake_at IS NOT NULL AND wake_at <= ${n.sql})
-    OR EXISTS (SELECT 1 FROM commands WHERE commands.run_id = runs.id AND commands.taken_at IS NULL AND commands.kind IN ('stop', 'cancel'))
-    OR ((backoff_until IS NULL OR backoff_until <= ${n.sql}) AND EXISTS (SELECT 1 FROM commands WHERE commands.run_id = runs.id AND commands.taken_at IS NULL
-      AND ${d.jsonNotFalse(readableJson(d, "commands.body"), ["answers"])})))))`,
-  params: [...n.params, ...n.params, ...n.params, ...n.params, ...n.params],
-});
+    EXISTS (SELECT 1 FROM commands WHERE commands.run_id = runs.id AND commands.taken_at IS NULL AND commands.kind IN ('stop', 'cancel'))
+    OR (((wake_at IS NOT NULL AND wake_at <= ${n.sql})
+      OR ((backoff_until IS NULL OR backoff_until <= ${n.sql}) AND EXISTS (SELECT 1 FROM commands WHERE commands.run_id = runs.id AND commands.taken_at IS NULL
+        AND ${d.jsonNotFalse(readableJson(d, "commands.body"), ["answers"])})))${pin ? `
+      AND NOT ${pin.sql}` : ""}))))`,
+    params: [...n.params, ...n.params, ...n.params, ...n.params, ...n.params, ...(pin?.params ?? [])],
+  };
+};
+/** The run's computer is kept at its park (its KEPT_PREFIX row) pinned to a runner other than `claimer` that is still
+ *  there under the incarnation the row names, at the deadlines' clock `n`: its runners row seen within RUNNER_STALE_MS,
+ *  claiming (refused NULL); the keep neither ending nor ended, and its `until` ahead. That runner's Docker engine or
+ *  attach hub holds the machine, so only it can take it back (workspace/computer-kept.ts pinnedOf); once any of these
+ *  stops holding, any runner claims the run. Read in the claim's own statement, so no check-then-act gap. A row with no
+ *  runner (a computer any runner reaches: an exec vendor's, a phone; or one an earlier build kept) pins nothing. */
+const keptElsewhere = (d: Dialect, n: StoreNow, claimer: string): { sql: string; params: SqliteValue[] } => {
+  const value = readableJson(d, "kept.value");
+  const field = (name: string) => d.jsonText(value, [name]);
+  return {
+    sql: `EXISTS (SELECT 1 FROM settings kept JOIN runners pin ON pin.runner = ${field("runner")}
+      WHERE kept.key = '${KEPT_PREFIX}' || runs.id AND pin.runner <> ? AND pin.incarnation = ${field("incarnation")} AND pin.refused IS NULL
+        AND pin.seen_at >= ${n.sql} - ${d.bigintParam} AND ${field("ending")} IS NULL AND ${field("ended")} IS NULL
+        AND ${d.jsonNumber(value, ["until"])} > ${n.sql})`,
+    params: [claimer, ...n.params, RUNNER_STALE_MS, ...n.params],
+  };
+};
 /** What a claim sets: the next epoch, the runner and its lease (from `n`, the deadlines' clock, plus a lease in ms), running,
  *  no backoff. Binds the runner, `n`'s parameters, then the lease. */
 const claimSet = (n: StoreNow): string => `epoch = epoch + 1, runner = ?, claimed_until = ${n.sql} + ?, state = 'running', backoff_until = NULL`;
@@ -1117,6 +1144,9 @@ class SqliteStore implements Store {
           await d.lockRow(tx, "triggers", "id", triggerId);
           const was = await tx.get<FiringRecord>(`SELECT ${FIRING_COLUMNS} FROM trigger_firings WHERE trigger_id = ? AND key = ?`, triggerId, key);
           if (!was || (change.from !== undefined && was.status !== change.from)) return undefined;
+          // holdsAt: holdsRoom's own predicate, at that time.
+          if (change.holdsAt !== undefined && !(was.status === "sent" && was.run_id === null && was.retry_at !== null && was.retry_at >= change.holdsAt)) return undefined;
+          if (change.startByWas !== undefined && !(was.status === "sent" && was.run_id === null && was.retry_at === change.startByWas)) return undefined;
           const settled = change.status !== undefined && change.status !== "due";
           // Out of due, a firing keeps no retry, wait, payload or attrs (unless keepAttrs), nor the reason its last try gave
           // (unless it gives one). One exception: a sent firing keeps its startBy in retry_at (firingOf reads it back as
@@ -1193,18 +1223,18 @@ class SqliteStore implements Store {
       waiting: async (clockNow) =>
         (await db.all<FiringRecord & { free: number | boolean }>(
           `SELECT ${FIRING_COLUMNS.split(", ").map((c) => `f.${c}`).join(", ")},
-             (SELECT COUNT(*) FROM trigger_firings s LEFT JOIN runs r ON r.id = s.run_id
-               WHERE s.trigger_id = f.trigger_id AND ${inProgress("s", "r")}) < COALESCE(t.max_active_runs, 1) AS free
+             (t.max_active_runs IS NULL OR (SELECT COUNT(*) FROM trigger_firings s LEFT JOIN runs r ON r.id = s.run_id
+               WHERE s.trigger_id = f.trigger_id AND ${inProgress("s", "r")}) < t.max_active_runs) AS free
            FROM trigger_firings f JOIN triggers t ON t.id = f.trigger_id
            WHERE f.status = 'due' AND f.waits_on IS NOT NULL ORDER BY f.at, f.${d.firingOrder}`,
           clockNow,
         // A comparison reads 1 on SQLite and true on Postgres.
         )).map((r) => ({ ...firingOf(r), free: r.free === 1 || r.free === true })),
       soonest: async () => (await db.get<{ at: number | null }>("SELECT MIN(next_at) AS at FROM triggers WHERE enabled = 1 AND next_at IS NOT NULL"))?.at ?? null,
-      activeRuns: async (triggerId, clockNow) =>
-        (await db.get<{ n: number }>(
-          `SELECT COUNT(*) AS n FROM trigger_firings f LEFT JOIN runs r ON r.id = f.run_id WHERE f.trigger_id = ? AND ${inProgress("f", "r")}`, triggerId, clockNow,
-        ))!.n,
+      activeKeys: async (triggerId, clockNow) =>
+        (await db.all<{ key: string }>(
+          `SELECT f.key FROM trigger_firings f LEFT JOIN runs r ON r.id = f.run_id WHERE f.trigger_id = ? AND ${inProgress("f", "r")}`, triggerId, clockNow,
+        )).map((r) => r.key),
       held: async (triggerId, clockNow) =>
         (await db.get<{ key: string }>(
           `SELECT f.key FROM trigger_firings f WHERE f.trigger_id = ? AND ${holdsRoom("f")} ORDER BY f.at DESC, f.${d.firingOrder} DESC LIMIT 1`, triggerId, clockNow,
@@ -1593,8 +1623,9 @@ class SqliteStore implements Store {
         const [result] = await db.write([{ sql: `UPDATE runs SET wake_at = ${n.sql} WHERE id = ? AND state = 'parked' RETURNING id`, params: [...n.params, runId] }]);
         return (result?.rows.length ?? 0) > 0;
       },
-      claimable: async ({ limit } = {}) => {
-        const claimable = claimableIn(d, clock());
+      claimable: async ({ limit, runner } = {}) => {
+        // The claimer's name, where it is a claimer's read (a runner's memory path): a run pinned to another runner is not its.
+        const claimable = claimableIn(d, clock(), runner);
         const bounded = typeof limit === "number" && Number.isSafeInteger(limit) && limit >= 0;
         const rows = await db.all<{ id: string }>(`SELECT id FROM runs WHERE ${claimable.sql} ORDER BY started_at, id${bounded ? " LIMIT ?" : ""}`, ...claimable.params, ...(bounded ? [limit] : []));
         return rows.map((row) => row.id);
@@ -2583,7 +2614,9 @@ class SqliteStore implements Store {
       // The clock is read once the transaction holds the writer lock: a claim that waited for another writer runs its
       // lease from now, never comes back already run out. The deadlines' clock (the database's on Postgres) both judges what
       // is claimable and stamps the lease, which comes back from the row.
-      const claimable = claimableIn(this.#db.dialect, this.#clock());
+      // A run whose computer is kept for another runner still there is never picked: no claim, no epoch moved, nothing
+      // given back (keptElsewhere).
+      const claimable = claimableIn(this.#db.dialect, this.#clock(), runner);
       // With many claimers (Postgres), the rows picked are locked as they are read. A poll over many (claimMany) skips a
       // row another claimer holds (Dialect.claimLock): two claims never pick one run, and neither waits for the other. A
       // claim of one named run waits for a write in flight on its row (Dialect.claimOneLock), then reads it as it is: a

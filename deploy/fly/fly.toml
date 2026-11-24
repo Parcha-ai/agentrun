@@ -1,0 +1,49 @@
+# AgentRun Server on Fly.io: one Machine and one volume, from the release's published image (no build).
+# Deploy it with deploy/fly/launch.sh (deploy/README.md#flyio): it makes the app, the token and the seal key as Fly
+# secrets, then deploys this file. Run it again to upgrade.
+# Fly gives the Machine no Docker, so its agents get file tools and web_fetch but no shell.
+
+# The runner drains its runs for 6 s, then hands the rest back for up to 25 s more. Fly's default is SIGINT, then 5 s.
+kill_signal = "SIGTERM"
+kill_timeout = 40
+
+[build]
+  image = "ghcr.io/parcha-ai/agentrun-server:v0.1.0-beta.55"
+
+# A deploy updates the one Machine in place, on its volume. canary and bluegreen would boot a second Machine beside it
+# with a new, empty volume (Fly refuses both for a Machine with a volume).
+[deploy]
+  strategy = "rolling"
+  max_unavailable = 1
+
+[env]
+  # Fly hasn't been shown to keep the image helper's file capabilities, so runs run as the server's user, each still a
+  # process of its own, as on Render and Railway.
+  AGENTRUN_RUN_USER = "same"
+
+# The store, the runs' folders and the installed harnesses are all in /data. One Machine on one volume: the SQLite
+# store can't be shared, so never scale this app past one Machine. Fly snapshots the volume daily and keeps 5 days.
+[[mounts]]
+  source = "agentrun_data"
+  destination = "/data"
+  initial_size = "10gb"
+
+[http_service]
+  internal_port = 7340
+  force_https = true
+  # A scheduled agent runs with no one visiting: the Machine is never stopped.
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    grace_period = "30s"
+    interval = "15s"
+    timeout = "5s"
+    method = "GET"
+    path = "/v2/health"
+
+# 1 GB holds a run or two at once. For more, raise memory here and run launch.sh again.
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "1gb"

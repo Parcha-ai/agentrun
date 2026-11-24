@@ -63,6 +63,13 @@ for arg in "$@"; do
     --no-runner) alone=1 ;;
   esac
 done
+# A data directory this user can't write (a volume the host mounted as root's, say) stops here, in one line, before
+# either process starts: the store, the runs' folders and the installed harnesses are all written there. One not made
+# yet is left to the server, which makes it.
+if [ -n "$data" ] && [ -d "$data" ] && { [ ! -w "$data" ] || [ ! -x "$data" ]; }; then
+  say "$data is not writable by uid $(id -u), the user this runs as: it is owned by uid $(stat -c %u "$data") with mode $(stat -c %a "$data"); give it to uid $(id -u) (chown $(id -u) $data) or mount one that is"
+  exit 1
+fi
 [ -z "$alone" ] || exec node "$cli" "$@"
 if [ -z "$data" ]; then
   say "server-and-runner needs --data DIR: the runner opens the server's store there"

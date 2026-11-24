@@ -611,6 +611,13 @@ __all__ = [
     "GetWebhookResponseObject2Disabled",
     "GetWorkspaceArchilResponse",
     "GetWorkspaceArchilResponseSecret",
+    "GetWrappedResponse",
+    "GetWrappedResponseDaysItem",
+    "GetWrappedResponseHarnessesItem",
+    "GetWrappedResponseImportedItem",
+    "GetWrappedResponseModelsItem",
+    "GetWrappedResponseSourcesItem",
+    "GetWrappedResponseTokens",
     "GradeRunBody",
     "GradeRunResponse",
     "GrantSourceSyncBody",
@@ -4919,6 +4926,7 @@ class FinishChatGPTSignInResponse(_FinishChatGPTSignInResponseRequired, total=Fa
     authorize_url: str
     expires_at: str
     models: list[str]
+    problem: str
 
 
 class GetCalendarResponse(TypedDict):
@@ -4938,6 +4946,7 @@ class GetChatGPTSignInResponse(_GetChatGPTSignInResponseRequired, total=False):
     authorize_url: str
     expires_at: str
     models: list[str]
+    problem: str
 
 
 class _GetClaudeLoginResponseRequired(TypedDict):
@@ -11297,6 +11306,63 @@ class ValidateWorkflowResponseIssuesItem(TypedDict):
     message: str
 
 
+class GetWrappedResponse(TypedDict):
+    year: int
+    sessions: int
+    turns: int
+    requests: int
+    tokens: GetWrappedResponseTokens
+    cost_usd: float
+    unpriced_requests: int
+    days: list[GetWrappedResponseDaysItem]
+    hours: list[int]
+    weekdays: list[int]
+    active_ms: int
+    harnesses: list[GetWrappedResponseHarnessesItem]
+    models: list[GetWrappedResponseModelsItem]
+    sources: list[GetWrappedResponseSourcesItem]
+    imported: list[GetWrappedResponseImportedItem]
+    unread_files: int
+
+
+class GetWrappedResponseTokens(TypedDict):
+    input: int
+    output: int
+    cache_read: int
+    cache_write: int
+
+
+class GetWrappedResponseDaysItem(TypedDict):
+    day: str
+    requests: int
+    tokens: int
+
+
+class GetWrappedResponseHarnessesItem(TypedDict):
+    harness: str
+    sessions: int
+    requests: int
+    tokens: int
+
+
+class GetWrappedResponseModelsItem(TypedDict):
+    model: str
+    requests: int
+    tokens: int
+    cost_usd: float
+
+
+class GetWrappedResponseSourcesItem(TypedDict):
+    source: str
+    sessions: int
+    requests: int
+
+
+class GetWrappedResponseImportedItem(TypedDict):
+    source: str
+    runs: int
+
+
 # Each operation as the runtime sends it, by operationId.
 OPERATIONS: dict[str, Operation] = {
     "archiveAgent": Operation(method="POST", path="/agents/{agent_id}/archive", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
@@ -11448,7 +11514,7 @@ OPERATIONS: dict[str, Operation] = {
     "sendMessage": Operation(method="POST", path="/runs/{run_id}/messages", path_params=("run_id",), multi_segment=(), query=(), headers=("Idempotency-Key",), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "pauseRun": Operation(method="POST", path="/runs/{run_id}/pause", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "raiseRunCap": Operation(method="PATCH", path="/runs/{run_id}", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
-    "readRunFile": Operation(method="GET", path="/runs/{run_id}/files/{path}", path_params=("run_id", "path"), multi_segment=("path",), query=("download",), headers=("Range",), body=None, answer="bytes", secret=False, public_fields=(), tagged=False),
+    "readRunFile": Operation(method="GET", path="/runs/{run_id}/files/{path}", path_params=("run_id", "path"), multi_segment=("path",), query=("download", "cut"), headers=("Range",), body=None, answer="bytes", secret=False, public_fields=(), tagged=False),
     "resumeRun": Operation(method="POST", path="/runs/{run_id}/resume", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "createRun": Operation(method="POST", path="/agents/{agent_id}/runs", path_params=("agent_id",), multi_segment=(), query=(), headers=("Idempotency-Key",), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "startRun": Operation(method="POST", path="/runs/{run_id}/start", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=False, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
@@ -11500,6 +11566,7 @@ OPERATIONS: dict[str, Operation] = {
     "saveWebhook": Operation(method="PUT", path="/settings/webhook", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "testWebhook": Operation(method="POST", path="/settings/webhook/test", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "validateWorkflow": Operation(method="POST", path="/workflows/validate", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
+    "getWrapped": Operation(method="GET", path="/wrapped", path_params=(), multi_segment=(), query=("year",), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
 }
 
 
@@ -12139,12 +12206,12 @@ class RunsResource(Group):
         return self._call("raiseRunCap", (run_id,), body, None, timeout=timeout)
 
     @overload
-    def read_file(self, run_id: str, path: str, *, download: Literal[0, 1] | None = None, range: str | None = None, stream: Literal[False] = False, timeout: float | None = None) -> bytes: ...
+    def read_file(self, run_id: str, path: str, *, download: Literal[0, 1] | None = None, range: str | None = None, cut: Literal["run"] | None = None, stream: Literal[False] = False, timeout: float | None = None) -> bytes: ...
     @overload
-    def read_file(self, run_id: str, path: str, *, download: Literal[0, 1] | None = None, range: str | None = None, stream: Literal[True], timeout: float | None = None) -> StreamedResponse: ...
-    def read_file(self, run_id: str, path: str, *, download: Literal[0, 1] | None = None, range: str | None = None, stream: bool = False, timeout: float | None = None) -> bytes | StreamedResponse:
+    def read_file(self, run_id: str, path: str, *, download: Literal[0, 1] | None = None, range: str | None = None, cut: Literal["run"] | None = None, stream: Literal[True], timeout: float | None = None) -> StreamedResponse: ...
+    def read_file(self, run_id: str, path: str, *, download: Literal[0, 1] | None = None, range: str | None = None, cut: Literal["run"] | None = None, stream: bool = False, timeout: float | None = None) -> bytes | StreamedResponse:
         """One file's raw bytes (GET /runs/{run_id}/files/{path})."""
-        return self._call("readRunFile", (run_id, path), None, {"download": download, "Range": range}, timeout=timeout, stream=stream)
+        return self._call("readRunFile", (run_id, path), None, {"download": download, "Range": range, "cut": cut}, timeout=timeout, stream=stream)
 
     def resume(self, run_id: str, *, timeout: float | None = None) -> ResumeRunResponse:
         """Resume a paused workflow run (POST /runs/{run_id}/resume)."""
@@ -12435,3 +12502,7 @@ class Resources:
     def usage(self, *, from_: str | None = None, to: str | None = None, group_by: Literal["meter", "agent", "key", "day", "region"] | None = None, timeout: float | None = None) -> GetUsageResponse:
         """Usage by meter over a period (GET /usage)."""
         return self._operation("getUsage", (), None, {"from": from_, "to": to, "group_by": group_by}, timeout=timeout)
+
+    def wrapped(self, *, year: int | None = None, timeout: float | None = None) -> GetWrappedResponse:
+        """A year of the work under this machine's session files (GET /wrapped)."""
+        return self._operation("getWrapped", (), None, {"year": year}, timeout=timeout)
