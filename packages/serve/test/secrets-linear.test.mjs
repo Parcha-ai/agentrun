@@ -13,8 +13,8 @@ const KEY = ["not-a-secret", "x-0123456789abcdef"].join("-");
 /** The most characters the shape scanners may visit per character of a text (redact-contract.test.mjs's adversarial
  *  bound): a scanner that read a run again from each repeat in it passes the run once per repeat. */
 const SCANNED_MAX = 128;
-/** An answer redacted with one held value, and the characters the shape scanners visited (redact/match.ts `scanned`) per
- *  character of it. Counted, not timed, so a loaded machine can't fail it. */
+/** An answer redacted with one held value, and the characters its redaction visited (redact/match.ts `scanned`, every
+ *  stage) per character of it. Counted, not timed, so a loaded machine can't fail it. */
 const counted = (text) => {
   scanned.chars = 0;
   const out = redactedAnswer(text, [KEY]);
@@ -42,6 +42,8 @@ const SHAPES = [
   /(?:AKIA|ASIA)[0-9A-Z]{16}/, /AIza[0-9A-Za-z_-]{35}/, /-----BEGIN[ A-Z0-9]{0,64}PRIVATE KEY[ A-Z0-9]{0,64}-----/,
   /gh[pousr]_[A-Za-z0-9]{30,16384}|github_pat_[A-Za-z0-9_]{20,16384}/, /(?<![A-Za-z0-9])sk-[A-Za-z0-9_-]{20,16384}/,
   /xox[abposre]-[A-Za-z0-9-]{10,16384}|xapp-[A-Za-z0-9-]{10,16384}/,
+  // A key made in the console (api-keys.ts): 43 or more of its characters to the run's end, a capital or a digit among them.
+  /ar_key_(?=[A-Za-z0-9_-]{0,16384}[A-Z0-9])[A-Za-z0-9_-]{43,16384}/,
   /eyJ(?<!eyJ[A-Za-z0-9_-]{0,16384}?eyJ)[A-Za-z0-9_-]{8,16384}\.eyJ[A-Za-z0-9_-]{8,16384}\.[A-Za-z0-9_-]{8,16384}/,
   /whsec_[A-Za-z0-9+/]{24,16384}={0,2}/,
   /:\/\/[^\s/?#@:]{1,256}:[^\s/?#@]{0,1024}@/,
@@ -84,6 +86,23 @@ test("over 3,000 random texts of the shapes' own pieces, what is redacted is wha
   }
 });
 
+test("over 3,000 random texts of an API key's pieces, what is redacted is what reading from every character redacts", () => {
+  // The prefix whole and in parts; runs long enough to make a key and too short, with a capital or a digit and with
+  // neither (a name); and what ends a run or stands before one.
+  const PIECES = ["ar_key_", "ar_key_", "ar_key_", "ar_", "key_", "ar", "_", "-", "abcdefgh", "abcdefghijklmnopqrstuvwxyz_abcdefghijklmnopqrstuvwxyz", "abcdefghijklmnopqrstuvwxyz_abcdefghijklmnopqrstuvwxyz", "abcdefgh01234567", "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefg", "x9", "a", "a", "Z", " ", " ", "=", ".", "/", "\"", "Bearer "];
+  let seed = 20261124;
+  const random = () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648);
+  let cut = 0;
+  for (let i = 0; i < 3011; i++) {
+    const text = Array.from({ length: 2 + Math.floor(random() * 14) }, () => PIECES[Math.floor(random() * PIECES.length)]).join("");
+    const want = reference(text);
+    assert.equal(redactSecrets(text, [], 1 << 20), want, JSON.stringify(text));
+    if (want !== text) cut++;
+  }
+  // Both happen often: a text with a key in it, and one that only resembles one (a short run, a run of lower case alone).
+  assert.ok(cut > 300 && cut < 2700, `${cut} of 3011 texts were cut`);
+});
+
 test("a JWT whose parts are near the 16384 bound is redacted whole, not only its first 4096 characters", () => {
   const part = (c) => c.repeat(16_380);
   const jwt = `eyJ${part("A")}.eyJ${part("B")}.${part("C")}`;
@@ -120,8 +139,8 @@ test("two whsec_ secrets back to back are both redacted whole: the first's run t
 });
 
 // Each shape's adversarial input (its prefix repeated with no terminator, its prefix then its body's class with none) is
-// counted in redact-contract.test.mjs, "adversarial texts: the characters the shape scanners visit are at most a fixed
-// multiple of the text's length", through redactSecrets and redactLearned alike.
+// counted in redact-contract.test.mjs: "adversarial texts: the characters the shape scanners visit…" (at most 128 per
+// character, no held value) and "…the whole pipeline visits…" (at most its WORK, one held value).
 
 test("a JWT is still found wherever it starts, glued to a word's characters too, and a private key's header with any key type", () => {
   const jwt = ["eyJhbGciOiJIUzI1NiJ9", "eyJzdWIiOiIxMjM0NTY3ODkwIn0", "dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U"].join(".");

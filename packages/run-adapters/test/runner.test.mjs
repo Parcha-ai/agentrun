@@ -523,7 +523,8 @@ test("modelPortFor, alone (a chat run's session): the runner's records and event
   const events = [];
   const asked = [];
   const port = async (extra = {}) => modelPortFor(await store.open(key), { key, maxTurns: 3, beforeRequest: (r) => { asked.push([r.key, r.turn, r.spentUsd]); }, onEvent: (e) => events.push(e), ...extra });
-  const runnerRecords = async () => (await store.read(key)).filter((r) => r.kind.startsWith('runner.')).map((r) => [r.kind, r.data]);
+  // A request's record says when it left (`at`, an ISO time: GRE-4835); the rest is compared whole.
+  const runnerRecords = async () => (await store.read(key)).filter((r) => r.kind.startsWith('runner.')).map((r) => { if (r.kind !== RUNNER_RECORDS.request) return [r.kind, r.data]; const { at, ...data } = r.data; assert.match(at, /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/); return [r.kind, data]; });
 
   // The first process: one answered request, then one a crash cuts off (it left, no answer came back).
   const first = await port();

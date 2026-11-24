@@ -55,7 +55,7 @@ describe("existing agent observation", () => {
     const host = await render(createElement(AgentsList, { agents: [], observations: read }));
     expect(host.querySelector<HTMLImageElement>("li a img")?.getAttribute("src")).toBe(claudeMark);
     expect(host.textContent).toContain("Existing backend");
-    expect(host.textContent).toContain("Claude Code");
+    expect(host.querySelector('li a [role="img"]')?.getAttribute("aria-label"), "the icon names its harness").toBe("Claude Code");
     expect(host.textContent).toContain("test-model");
     expect(host.textContent).not.toContain("No agents yet");
     const card = host.querySelector('a[href="#/observations/session-a"]')!.closest("li")!;
@@ -271,12 +271,21 @@ describe("existing agent observation", () => {
       expect(host.textContent).not.toContain("Existing backend");
     }
   });
+  it("heads This server's section with its hand-off, under the tabs, as Another machine's is headed", async () => {
+    const host = await render(createElement(NativeConnections, { v2: { discoverNative: vi.fn() } as never, go: vi.fn() }));
+    const handoff = host.querySelector('[role="group"][aria-label="Connect your agents options"]')!;
+    const section = host.querySelector('section[aria-label="Discover native setups"]')!;
+    expect(section.contains(handoff)).toBe(true);
+    expect(handoff.parentElement!.querySelector("h2")!.textContent).toBe("Discover on this server");
+    // Never on the tabs' line: the tabs' radio group and the hand-off are not siblings.
+    expect(host.querySelector('[role="radiogroup"][aria-label="Connection method"]')!.parentElement!.contains(handoff) && !section.contains(handoff)).toBe(false);
+  });
   it("offers existing-application observation through the same coding-agent dropdown", async () => {
     const discoverNative = vi.fn();
     const host = await render(createElement(NativeConnections, { v2: { discoverNative } as never, go: vi.fn(), initialSource: "observe" }));
     expect(host.querySelector('section[aria-label="Observe an existing application"]')).toBeTruthy();
     expect(host.textContent).toContain("Connect Claude Code or Codex running locally, in Docker, or on another server");
-    expect(host.textContent).toContain("Connect agent");
+    expect(host.textContent).toContain("Connect your agents");
     expect(host.querySelector('input[aria-label="Project on server host"]')).toBeNull();
     expect(discoverNative).not.toHaveBeenCalled();
   });

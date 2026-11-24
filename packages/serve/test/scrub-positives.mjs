@@ -22,6 +22,7 @@ export const HEX64 = "9f3a".repeat(16);
 const GOOGLE = `AIza${"Sy7Qm2Lp9Xk4Rt8Yb3Nc6Vd1Hj5Fg0Sa_-x".slice(0, 35)}`;
 const SLACK = `xoxb-${"1234567890"}-${"Zq7Wm2Lp9Xk4"}`;
 const WHSEC = `whsec_${"Qm2Lp9Xk4Rt8".repeat(3)}`;
+export const AR_KEY = `${["ar", "key", ""].join("_")}${"Qm2Lp9Xk4Rt8-Zx7".repeat(3).slice(0, 43)}`;
 const BEARER = `tok${"9Lm3".repeat(6)}`;
 const URL_PW = `Pg${"9vLq2".repeat(3)}`;
 const URL_KEY = `k${"7Hq2Zp4W".repeat(3)}`;
@@ -40,6 +41,7 @@ export const POSITIVES = [
   { id: "google-api-key", text: `maps key ${GOOGLE} set`, rules: ["google-api-key"], gone: [GOOGLE] },
   { id: "slack-token", text: `bot ${SLACK} ok`, rules: ["slack-token"], gone: [SLACK] },
   { id: "webhook-secret", text: `signing ${WHSEC} ok`, rules: ["webhook-secret"], gone: [WHSEC] },
+  { id: "agentrun-api-key", text: `the app sends ${AR_KEY} on each call`, rules: ["agentrun-api-key"], gone: [AR_KEY] },
   { id: "private-key-block", text: `key:\n${PEM}\ndone`, rules: ["private-key-block"], gone: ["b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQ", "QyNTUxOQAAACBzeW50aGV0aWMtdGVzdC1rZXktbm90"] },
   { id: "url-password", text: `connect postgres://app:${URL_PW}@db.internal:5432/app now`, rules: ["url-password"], gone: [URL_PW] },
   { id: "url-credential", text: `GET https://api.example.com/v1/search?q=x&api_key=${URL_KEY}&page=2`, rules: ["url-credential"], gone: [URL_KEY] },

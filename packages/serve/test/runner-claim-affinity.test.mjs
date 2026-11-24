@@ -110,10 +110,11 @@ function hostVendor(host) {
 const creates = (vendor) => vendor.calls.filter(([verb]) => verb === "create").map(([, id]) => id);
 
 /** `store` with its runs' claimMany counted (`calls.n`, each claim by the number of the call that made it in
- *  `calls.claimed`) and, while `gate.shut`, held until the gate opens: how the test makes A's poll wait while B's polls
- *  run, so a B that may claim the run claims it first whatever the timing. With `keptReads` ({ fail, failed }), the next
- *  `fail` reads of run-1's kept row throw as a store that did not answer, each counted in `failed`. */
-function watchedStore(store, gate = { shut: false }, calls = { n: 0, claimed: [] }, keptReads = undefined) {
+ *  `calls.claimed`) and, while `gate.shut`, held until the gate opens (claimGate; each call counted in flight from the
+ *  gate to its return): how the test makes A's poll wait while B's polls run, so a B that may claim the run claims it
+ *  first whatever the timing. With `keptReads` ({ fail, failed }), the next `fail` reads of run-1's kept row throw as a
+ *  store that did not answer, each counted in `failed`. */
+function watchedStore(store, gate = claimGate(), calls = { n: 0, claimed: [] }, keptReads = undefined) {
   const settings = keptReads && new Proxy(store.settings, {
     get(target, key) {
       const value = Reflect.get(target, key, target);
@@ -135,20 +136,15 @@ function watchedStore(store, gate = { shut: false }, calls = { n: 0, claimed: []
       return async (...args) => {
         calls.n += 1;
         const n = calls.n;
-        if (gate.shut) await gate.opened;
-        // Past the gate, the claim reads the store when its transaction gets the writer: on a loaded machine, after the
-        // gate shut. Counted in `gate.inFlight` until it answers; `gate.reading`, when set, is a store that slow.
-        const reading = (async () => {
-          await gate.reading?.();
-          return value.apply(target, args);
-        })();
-        gate.inFlight?.add(reading);
+        await gate.pass();
         try {
-          const claims = await reading;
+          // A store that slow (`gate.reading`, when set): the claim reads only once the hook returns, in flight all along.
+          await gate.reading?.();
+          const claims = await value.apply(target, args);
           if (claims.length > 0) calls.claimed.push({ n, runIds: claims.map((claim) => claim.runId) });
           return claims;
         } finally {
-          gate.inFlight?.delete(reading);
+          gate.leave();
         }
       };
     },
@@ -163,13 +159,14 @@ function watchedStore(store, gate = { shut: false }, calls = { n: 0, claimed: []
   });
 }
 
-/** A gate that starts open: close() holds every claimMany asked after it until open(), and resolves once every claim
- *  already past it has answered. A poll that passed the gate just before it shut reads the store when its transaction
- *  gets the writer, so on a loaded machine it could read what the test writes next (an answer, a stop) and claim the run
- *  while A's polls were meant to be held. */
+/** A gate that starts open: close() holds every claimMany behind it until open(), and resolves once no claimMany is
+ *  between the gate and its return (`inFlight`, counted by pass() and leave()). A poll already past the gate when it
+ *  closed reads the store as it was before the test's next command: else it could claim the run that command makes
+ *  claimable, as a runner with free loops would, though the test means that runner's loops to be full. `reading`, when
+ *  set, is awaited by each claim past the gate before it reads the store (a slow store, for the forced race). */
 function claimGate() {
-  const gate = { shut: false, opened: Promise.resolve(), inFlight: new Set(), reading: undefined };
-  gate.close = async () => {
+  const gate = { shut: false, opened: Promise.resolve(), inFlight: 0, drained: [], reading: undefined };
+  gate.close = () => {
     let open;
     gate.opened = new Promise((resolve) => (open = resolve));
     gate.open = () => {
@@ -177,7 +174,19 @@ function claimGate() {
       open();
     };
     gate.shut = true;
-    await Promise.allSettled([...gate.inFlight]);
+    if (gate.inFlight === 0) return Promise.resolve();
+    return new Promise((resolve) => gate.drained.push(resolve));
+  };
+  /** Into the gate: waits while it is shut, then counts the call in flight. */
+  gate.pass = async () => {
+    while (gate.shut) await gate.opened;
+    gate.inFlight += 1;
+  };
+  /** Out of the gate: the last call in flight lets every close() waiting on it go on. */
+  gate.leave = () => {
+    gate.inFlight -= 1;
+    if (gate.inFlight > 0) return;
+    for (const resolve of gate.drained.splice(0)) resolve();
   };
   return gate;
 }
@@ -349,7 +358,8 @@ test("a stop of a parked run pinned to a live runner whose loops are full ends w
   const one = await parkedOnA(t);
   const [rowA] = (await one.server.runners.list()).filter((row) => row.runner === "runner-a");
   await one.start("runner-b", "b");
-  // A's loops full: its polls claim nothing while the gate is shut (as a runner with no free loop claims nothing).
+  // A's loops full: its polls claim nothing while the gate is shut (as a runner with no free loop claims nothing), and the
+  // stop is sent once no poll of A's is past the gate.
   await one.gate.close();
   await one.server.command(RUN, { kind: "stop" });
   const polledFrom = one.claimManyCalls["runner-b"].n;
