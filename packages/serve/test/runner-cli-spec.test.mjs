@@ -217,6 +217,16 @@ for (const harness of ["claude-agent", "codex", "opencode"]) {
   });
 }
 
+// The session carries its model's context window from the catalog that prices the run (cli-run-spec.ts modelsOf), so the
+// kernel's tool bridge holds each result to that model's share of it (boundResult's budget), not to the host's bound alone.
+for (const harness of ["claude-agent", "codex", "opencode"]) {
+  test(`the ${harness} session carries its model's context window`, async (t) => {
+    const model = harness === "claude-agent" ? { provider: "anthropic", modelId: "claude-haiku-5-5" } : undefined;
+    const { spec: built } = await specOn(t, harness, { prepare: (data) => linkHarnesses(data), ...(model ? { model, env: { ANTHROPIC_API_KEY: `not-a-secret-${"anthropic"}` } } : {}) });
+    assert.ok(Number.isInteger(built.session.contextWindow) && built.session.contextWindow > 0, `a window: ${built.session.contextWindow}`);
+  });
+}
+
 /** An output schema a CLI run's answer meets: `{ok: true}`. */
 const OK_SCHEMA = { type: "object", additionalProperties: false, required: ["ok"], properties: { ok: { const: true } } };
 

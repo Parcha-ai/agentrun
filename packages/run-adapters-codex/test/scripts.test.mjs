@@ -212,6 +212,17 @@ test("a completed call's result past the host's bound: the store keeps it whole,
   assert.deepEqual(settle(nested('e1', 'charge', done(whole), rolled(boundResult(other).text))), { kind: 'interrupted' }, 'a cut of another text still disagrees');
 });
 
+test("a completed call's result cut to a small model's window: the store keeps it whole, Codex got the per-model cut, and the two still agree", () => {
+  // The bridge cuts to the model's window (boundResult's budget), which settle is never told: any bound of the stored
+  // text agrees with it, and a cut of another text still does not.
+  const whole = `charged ${'x'.repeat(50_000)}`;
+  for (const budget of [{ contextWindow: 16_384 }, { contextWindow: 100 }]) {
+    assert.deepEqual(settle(nested('e1', 'charge', done(whole), rolled(boundResult(whole, budget).text))), { kind: 'completed', text: whole }, JSON.stringify(budget));
+  }
+  const other = `charged ${'y'.repeat(50_000)}`;
+  assert.deepEqual(settle(nested('e1', 'charge', done(whole), rolled(boundResult(other, { contextWindow: 16_384 }).text))), { kind: 'interrupted' }, 'a cut of another text still disagrees');
+});
+
 test("a session written before the host's bound: both records hold the same uncut result past it, and the call is completed", () => {
   // Before #1527 the bridge handed Codex the whole result, so an older session's rollout holds the same text the store
   // does, past HOST_RESULT_MAX_CHARS. Matching records are a completed call, so arm answers a re-issued never call from
