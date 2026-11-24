@@ -860,8 +860,8 @@ function createProjector(options: TimelineOptions) {
     // ok, and never the detail as it came.
     const worded = shown.text === view.text ? outcome : outcomeOf(tool.name, { ...view, text: shown.text });
     // A call refused before it ran is named refused already (refusedLabel), and a computer step's label says it could not
-    // (saysFailure): its row says why, never that it failed.
-    const failedSummary = refused(view) || saysFailure(tool.name, { text: view.text, details: view.details, isError: view.isError }) ? `${named}: ${failure(shown.text)}` : `${named} failed: ${failure(shown.text)}`;
+    // (saysFailure, asked of an error alone, with the text its label read): its row says why, never that it failed.
+    const failedSummary = refused(view) || (view.isError && saysFailure(tool.name, { text: shown.text, details: view.details, isError: true })) ? `${named}: ${failure(shown.text)}` : `${named} failed: ${failure(shown.text)}`;
     // One the run's end closed has no outcome: interrupted, as a call cut off reads (interrupt), with no status.
     const unended = endedWithRun(view);
     return make("tool_result", conv, rowId, {

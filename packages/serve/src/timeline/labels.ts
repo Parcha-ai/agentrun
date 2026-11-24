@@ -28,7 +28,8 @@ export function registerLabel(tool: string, label: LabelFn, fold?: FoldSpec, { n
   if (saysFailure) saying.set(tool, saysFailure === true ? () => true : saysFailure);
 }
 
-/** Whether `tool`'s label says that its errored call `result` failed (registerLabel's saysFailure). */
+/** Whether `tool`'s label says that its errored call `result` failed (registerLabel's saysFailure). `result` is the one
+ *  the label was given, so the two read the same text. */
 export const saysFailure = (tool: string, result: ToolResultView): boolean => saying.get(tool)?.(result) === true;
 
 /** A remote MCP server's tool, read `<server> · <tool>`: by its catalog name, `mcp:<server>/<tool>`, or by the name the
@@ -198,8 +199,12 @@ registerLabel(
 registerLabel("snapshot", () => "Looked at the page structure", { many: (n) => `Looked at the page structure ${n} times` }, { name: "Look at the page structure" });
 registerLabel("screenshot", () => "Took a screenshot", { many: (n) => `Took ${n} screenshots` }, { name: "Take screenshots" });
 /** Whether a browser call errored as the browser's refusal before it ran: pi-browser's typed failure, `code: "refused"`
- *  (code sent to a browser that takes only actions, an op it does not take), read by that field, never by its words. */
-const browserRefused = (result: ToolResultView | undefined): boolean => result?.isError === true && str(obj(json(result.text))?.code) === "refused";
+ *  with `effect: "none"` (code sent to a browser that takes only actions, an op it does not take), read by those fields,
+ *  never by its words. A refusal after some of its actions ran (`effect: "partial"`, a take-over mid-batch) is not one. */
+const browserRefused = (result: ToolResultView | undefined): boolean => {
+  const failure = result?.isError === true ? obj(json(result.text)) : undefined;
+  return str(failure?.code) === "refused" && str(failure?.effect) === "none";
+};
 registerLabel(
   "run",
   (a, result) => {
