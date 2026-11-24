@@ -272,3 +272,29 @@ test("Exa's 402 or 429 whose body breaks keeps what its status said: the 402 a q
     assert.deepEqual(turns(next.receipt), [["exa", "held", "rate", "HELD"], ["firecrawl", "ok", undefined, undefined]], `held for its Retry-After, ${code}`);
   }
 });
+
+/** A send that never answers: once the request's signal aborts, it fails with that signal's reason, as fetch does. */
+function hangingSend() {
+  const sent = { asked: 0 };
+  sent.send = (_url, init) => {
+    sent.asked += 1;
+    return new Promise((_resolve, reject) => {
+      const stop = () => reject(init.signal.reason);
+      if (init.signal.aborted) stop();
+      else init.signal.addEventListener("abort", stop, { once: true });
+      sent.waiting?.();
+    });
+  };
+  return sent;
+}
+
+test("a search the run stops with a reason of its own (an Error, not an AbortError), before Exa's headers or while its body is read, is a stopped turn", async () => {
+  for (const [label, exa] of [["before the headers", hangingSend()], ["mid-body", brokenSend(200, null)]]) {
+    const w = brokenWeb(exa.send);
+    const call = new AbortController();
+    exa.waiting = () => call.abort(new Error("the run was stopped"));
+    const found = await w.search("widgets", { signal: call.signal });
+    assert.deepEqual(turns(found.receipt), [["exa", "error", "infra", "STOPPED"]], label);
+    assert.equal(exa.asked, 1);
+  }
+});

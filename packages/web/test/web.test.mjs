@@ -248,7 +248,10 @@ test("keyless Firecrawl with the direct fetch behind it: Firecrawl reads a publi
   await run(f, w, [
     { url: PUBLIC, asks: ["firecrawl-keyless"], tries: [["firecrawl-keyless", "ok"]], by: "firecrawl-keyless" },
     { url: PUBLIC, part: { offset: 10 }, asks: [], tries: [], by: "firecrawl-keyless", check: (_answer, receipt) => assert.equal(receipt.cache, "hit") },
-    { url: EVIL, asks: [], tries: [["firecrawl-keyless", "error"], ["direct", "error"]], by: null, check: (answer) => assert.match(answer.refused, /^refused: evil\.example is not a public host/) },
+    { url: EVIL, asks: [], tries: [["firecrawl-keyless", "error"], ["direct", "error"]], by: null, check: (answer, receipt) => {
+      assert.match(answer.refused, /^refused: evil\.example is not a public host/);
+      assert.equal(receipt.tries[0].failure?.code, "GUARD", "keyless Firecrawl's turn is the guard's refusal");
+    } },
     { url: NOTES, asks: ["firecrawl-keyless", "direct"], tries: [["firecrawl-keyless", "error"], ["direct", "ok"]], by: "direct" },
     { url: `${PUBLIC}?run=a`, asks: ["direct"], tries: [["firecrawl-keyless", "held"], ["direct", "ok"]], by: "direct" },
   ], "fetch firecrawl-keyless");
