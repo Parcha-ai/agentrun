@@ -95,19 +95,31 @@ test("a save's read refused as sent (403, 404) is its answer at once, never sent
     assert.deepEqual(pinned, { refused: [{ tool: "monid:faux/nowhere", message: "monid lists no endpoint /nowhere of a provider faux." }] });
     assert.deepEqual([sent, waits], [["/v1/inspect"], []]);
   });
-  await t.test("no answer on the listing, a 503 on an inspect", async () => {
+  await t.test("monid out of reach", async () => {
+    const sent = [];
+    const waits = [];
+    const down = async (url) => (sent.push(new URL(url).pathname), Promise.reject(new TypeError("fetch failed")));
+    const pinned = await pinMonid(["monid:apollo/*"], { key: KEY, fetch: down, sleep: async (ms) => void waits.push(ms) });
+    assert.deepEqual(pinned, { refused: [{ tool: "monid:apollo/*", message: "monid:apollo/* could not be pinned: monid's listing could not be read (monid could not be reached: fetch failed)." }] });
+    assert.deepEqual([sent, waits], [["/v1/endpoints"], []]);
+  });
+  await t.test("no answer in the request's limit on the listing, a 503 on an inspect", async () => {
     const failed = new Set();
     const flaky = async (url, init) => {
       const path = new URL(url).pathname;
       if (failed.has(path)) return fakeMonid(url, init);
       failed.add(path);
-      if (path === "/v1/endpoints") throw new TypeError("fetch failed");
+      // Held until the request's own limit ends it.
+      if (path === "/v1/endpoints") return new Promise((_, reject) => init.signal.addEventListener("abort", () => reject(init.signal.reason), { once: true }));
       return new Response(JSON.stringify({ message: "upstream unavailable" }), { status: 503 });
     };
     const waits = [];
-    const pinned = await pinMonid(["monid:apollo/*"], { key: KEY, fetch: flaky, sleep: async (ms) => void waits.push(ms) });
-    assert.ok(pinned && "pin" in pinned, JSON.stringify(pinned));
-    assert.equal(Object.keys(pinned.pin).length, 3);
+    const client = monidClient({ key: KEY, fetch: flaky, requestMs: 50, sleep: async (ms) => void waits.push(ms) });
+    const page = await client.endpoints(undefined);
+    assert.equal(page.error, undefined, JSON.stringify(page));
+    assert.deepEqual(page.items.map((item) => item.endpoint), LISTING.slice(0, 2).map((item) => item.endpoint));
+    const shown = await client.inspect({ provider: "faux", endpoint: "/person/enrich" });
+    assert.equal(shown.error, undefined, JSON.stringify(shown));
     assert.deepEqual(waits, [2000, 2000], "each sent again after 2 s, monid naming no wait");
   });
 });

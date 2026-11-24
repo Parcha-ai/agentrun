@@ -6,8 +6,9 @@
 // monid's listing (a provider's wildcard: every endpoint it lists, GET /v1/endpoints; one endpoint: POST /v1/inspect),
 // and the pin is stamped on the revision, a grant its current revision made too carried unread. A grant monid does not
 // list is refused in words, so is one that cannot be read now (no key, monid unreachable). A read monid refuses for its
-// rate, fails (5xx) or leaves unanswered is sent again inside the save's time (READ_BUDGET_MS), and one server's saves
-// share each read (monidReads): saves that arrive together read the listing once. A run reads only its pin.
+// rate, fails (5xx) or leaves unanswered past its limit is sent again inside the save's time (READ_BUDGET_MS), and one
+// server's saves share each read (monidReads): saves that arrive together read the listing once. A run reads only its
+// pin.
 //
 // An endpoint priced by usage (per result, per unit, metered, a matrix or tier with a usage part) is pinned too, with no
 // fixed price, and the save's warnings name it (usageWords): monid can't cap what such a call charges. Its maxCost
@@ -49,10 +50,10 @@ const TERMINAL = ["COMPLETED", "FAILED", "BLOCKED", "STOPPED", "TIMED_OUT"];
 const MIN_READ_MS = 100;
 /** How many inspects a save has out at once. */
 const INSPECTS_AT_ONCE = 8;
-/** A save's read of the listing or an inspect, refused for the rate (429), failed by monid (5xx) or not answered, is
- *  sent again after what monid says to wait (Retry-After, 2 s when it says nothing, at most READ_WAIT_MS), while that
- *  read's waits add up to at most READ_WAITS_MS and the save is inside READ_BUDGET_MS of its first read: a burst of
- *  saves on one key waits out monid's rate inside the save's own time, and only then is refused. */
+/** A save's read of the listing or an inspect, refused for the rate (429), failed by monid (5xx) or not answered in
+ *  time, is sent again after what monid says to wait (Retry-After, 2 s when it says nothing, at most READ_WAIT_MS),
+ *  while that read's waits add up to at most READ_WAITS_MS and the save is inside READ_BUDGET_MS of its first read: a
+ *  burst of saves on one key waits out monid's rate inside the save's own time, and only then is refused. */
 const READ_WAIT_MS = 10_000;
 const READ_WAITS_MS = 20_000;
 const READ_BUDGET_MS = 45_000;
@@ -142,7 +143,7 @@ export function chargeOf(answer: MonidAnswer): number | null | undefined {
 export function monidClient(options: MonidOptions) {
   const { key, requestMs = 30_000, pollMs = 2_000, waitMs = 150_000, sleep = pause } = options;
   const send = options.fetch ?? fetch;
-  const call = async (method: string, path: string, body: Json | undefined, signal?: AbortSignal, ms = requestMs): Promise<{ status: number; body: Json; retryAfter?: number }> => {
+  const call = async (method: string, path: string, body: Json | undefined, signal?: AbortSignal, ms = requestMs): Promise<{ status: number; body: Json; retryAfter?: number; timedOut?: true }> => {
     const limit = AbortSignal.timeout(ms);
     try {
       const res = await send(`${MONID_API}${path}`, { method, headers: { authorization: `Bearer ${key}`, ...(body ? { "content-type": "application/json" } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}), signal: signal ? AbortSignal.any([signal, limit]) : limit });
@@ -151,19 +152,22 @@ export function monidClient(options: MonidOptions) {
       const retryAfter = Number(res.headers?.get?.("retry-after") ?? NaN);
       return { status: res.status, body: isObject(json) ? json : { message: text.slice(0, 500) }, ...(retryAfter >= 0 ? { retryAfter } : {}) };
     } catch (error) {
-      return { status: 0, body: { message: signal?.aborted ? "stopped by the caller" : limit.aborted ? `no answer in ${ms / 1000} s` : String((error as Error)?.message ?? error) } };
+      const timedOut = !signal?.aborted && limit.aborted;
+      return { status: 0, body: { message: signal?.aborted ? "stopped by the caller" : timedOut ? `no answer in ${ms / 1000} s` : String((error as Error)?.message ?? error) }, ...(timedOut ? { timedOut: true as const } : {}) };
     }
   };
   const answer = (res: { status: number; body: Json }): MonidAnswer => (res.status >= 200 && res.status < 300 ? res.body : failure(res.status, res.body));
   /** When this client's reads stop being sent again (READ_BUDGET_MS after its first). */
   let readsEnd: number | undefined;
-  /** A save's read, safe to repeat (READ_WAITS_MS, READ_BUDGET_MS); any other refusal (401, 403, 404) is its answer. */
+  /** A save's read, safe to repeat (READ_WAITS_MS, READ_BUDGET_MS); any other refusal (401, 403, 404), or monid out of
+   *  reach (a request that failed before its limit), is its answer. */
   const read = async (method: string, path: string, body: Json | undefined, signal?: AbortSignal) => {
     const end = (readsEnd ??= Date.now() + READ_BUDGET_MS);
     for (let waited = 0; ; ) {
       const res = await call(method, path, body, signal, Math.min(requestMs, Math.max(MIN_READ_MS, end - Date.now())));
       const wait = Math.min(READ_WAIT_MS, (res.retryAfter ?? 2) * 1000);
-      if ((res.status !== 0 && res.status !== 429 && res.status < 500) || signal?.aborted || waited + wait > READ_WAITS_MS || Date.now() + wait >= end) return res;
+      const again = res.status === 429 || res.status >= 500 || res.timedOut === true;
+      if (!again || signal?.aborted || waited + wait > READ_WAITS_MS || Date.now() + wait >= end) return res;
       waited += wait;
       await sleep(wait, signal);
     }
