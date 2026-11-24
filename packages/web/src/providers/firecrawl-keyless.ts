@@ -1,33 +1,14 @@
-// Keyless Firecrawl: Firecrawl's public MCP endpoint (https://mcp.firecrawl.dev/v2/mcp, the console's preset too), which
-// answers its keyless tools with no key, under a free daily limit. The default backend of web_search (keyless Exa behind
-// it, web-search.ts) and of web_fetch (the guarded direct fetch behind it, web-fetch.ts). Each call is one MCP exchange
-// through the shared client (keyless-mcp.ts callTool), with no key, no Authorization and no header of our own:
-// `firecrawl_search` with `{query, limit}`, whose text block is JSON, `{success, data: {web: [{url, title, description,
-// position}]}}`; or `firecrawl_scrape` with `{url, formats: ["markdown"]}`, whose text block is JSON, `{markdown,
-// metadata: {title, sourceURL, statusCode, ...}}`. Those are read into the same Search every web_search answers, or the
-// same Read every web_fetch answers. web_fetch sends each URL it reads this way to Firecrawl, a third party; a URL the
-// public-host guard refuses (a private, loopback, link-local or intranet address) never goes (web-fetch.ts).
-//
-// Firecrawl refuses a keyless call it will not serve with a tool result marked isError whose payload (its
-// recoveryPayload: `{code, request_id, auth_mode: "keyless", message, signup_url?, retry_after_seconds?}`) comes as the
-// result's structuredContent or as JSON in its text: both are read, and only `code` is, never the message's words.
-// KEYLESS_QUOTA_EXHAUSTED (its daily limit), KEYLESS_ACCESS_NOT_AVAILABLE and KEYLESS_TOOL_NOT_AVAILABLE are a quota
-// answer: the run's breaker turns Firecrawl off for the rest of the run. KEYLESS_LIMIT_REACHED and an HTTP 429 are a
-// rate limit, with the wait it names (retry_after_seconds, Retry-After), which the breaker holds Firecrawl for. Firecrawl's
-// own words (a link to sign up) are never passed on: a call answers ours. A call is not retried here (the backend behind
-// Firecrawl answers it in its place), and ends at FIRECRAWL_MS (30 s), inside any deadline its caller holds, so a
-// Firecrawl that hangs leaves the backend behind it the rest of a search's 60 s, or a fetch's direct read its own time.
-import { type Bounded, callTool, MAX_BYTES, RATE_LIMITED, textBlocks } from "./keyless-mcp.js";
-import { clip, markdownRead, type Read, TITLE_CAP } from "./web-fetch-direct.js";
-import { type Hit, type Limit, type Search, snippetOf, waitOf } from "./web-search.js";
+// Keyless Firecrawl: search and scrape through Firecrawl's public MCP endpoint, no key, under a free daily limit. A
+// refusal is read by its code alone (quota: off for the run; limit: held for its wait), never by Firecrawl's words. A
+// call is never retried and ends at FIRECRAWL_MS. A URL the public-host guard refuses is never sent (fetch.ts).
+import { clip, markdownRead, PAGE_MAX_BYTES, type Read, TITLE_CAP, withoutUserinfo } from "../page.js";
+import { type Hit, type Limit, type Search, snippetOf, waitOf } from "../search.js";
+import { type Bounded, callTool, MAX_BYTES, RATE_LIMITED, textBlocks, type Words } from "./mcp.js";
 
 export const FIRECRAWL_MCP_URL = "https://mcp.firecrawl.dev/v2/mcp";
 export const FIRECRAWL_SEARCH_TOOL = "firecrawl_search";
 export const FIRECRAWL_SCRAPE_TOOL = "firecrawl_scrape";
-/** Under `--faux` only: the URL of a fake MCP server (a test's, on loopback) asked in place of Firecrawl's endpoint.
- *  Under --faux with none named, Firecrawl is never asked. */
-export const FAUX_FIRECRAWL_ENV = "AGENTRUN_SERVE_FAUX_FIRECRAWL";
-/** The most one call to Firecrawl takes: half a search's one deadline (web-search.ts KEYLESS_SEARCH_MS). */
+/** The most one call to Firecrawl takes: half a search's one deadline (search.ts KEYLESS_SEARCH_MS). */
 export const FIRECRAWL_MS = 30_000;
 /** Firecrawl's keyless refusal codes, by what the run's breaker makes of each. */
 const QUOTA_CODES: ReadonlySet<string> = new Set(["KEYLESS_QUOTA_EXHAUSTED", "KEYLESS_ACCESS_NOT_AVAILABLE", "KEYLESS_TOOL_NOT_AVAILABLE"]);
@@ -37,8 +18,8 @@ const RATE_CODES: ReadonlySet<string> = new Set(["KEYLESS_LIMIT_REACHED"]);
 export type FirecrawlFailed = { error: string; limit?: Limit };
 
 /** Where a call goes: `endpoint` (default Firecrawl's), through `send` (default fetch), ended at `timeoutMs` (default
- *  FIRECRAWL_MS) or by `signal`, whichever is first. */
-export type FirecrawlOptions = { endpoint?: string; send?: typeof fetch; signal?: AbortSignal; timeoutMs?: number };
+ *  FIRECRAWL_MS) or by `signal`, whichever is first; `words`, the caller's for a rate limit (default RATE_LIMITED). */
+export type FirecrawlOptions = { endpoint?: string; send?: typeof fetch; signal?: AbortSignal; timeoutMs?: number; words?: Words };
 
 /** A refusal's payload: the result's structuredContent, else its text read as JSON; undefined when neither is an object. */
 function payloadOf(result: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
@@ -65,15 +46,15 @@ export function firecrawlLimitOf(payload: Record<string, unknown> | undefined): 
 }
 
 /** What a call answers for a limit Firecrawl met. */
-const limitWords = (limit: Limit, what: "search" | "fetch"): string => (limit.kind === "rate" ? RATE_LIMITED : `Keyless Firecrawl will not serve this server's ${what}es now (its free limit is spent, or keyless use is not open to it): it is not asked again in this run`);
+const limitWords = (limit: Limit, what: "search" | "fetch", words: Words = {}): string => (limit.kind === "rate" ? (words.rateLimited ?? RATE_LIMITED) : `Keyless Firecrawl will not serve this server's ${what}es now (its free limit is spent, or keyless use is not open to it): it is not asked again in this run`);
 
 /** One call's outcome as Firecrawl's answer to `what`: its refusals and failures in our words, else `read` of the result's
  *  JSON text. */
-function readCalled<T>(called: Bounded, what: "search" | "fetch", read: (json: Record<string, unknown>) => T | FirecrawlFailed): T | FirecrawlFailed {
+function readCalled<T>(called: Bounded, what: "search" | "fetch", read: (json: Record<string, unknown>) => T | FirecrawlFailed, words?: Words): T | FirecrawlFailed {
   if ("status" in called) {
     if (called.status === 429) {
       const limit: Limit = { kind: "rate", ...(called.retryAfterS === undefined ? {} : { retryAfter: called.retryAfterS }) };
-      return { error: limitWords(limit, what), limit };
+      return { error: limitWords(limit, what, words), limit };
     }
     return { error: `Firecrawl's MCP endpoint answered ${called.status} to ${called.step === "initialize" ? "initialize" : `the ${what}`}` };
   }
@@ -83,7 +64,7 @@ function readCalled<T>(called: Bounded, what: "search" | "fetch", read: (json: R
   if (result?.isError === true) {
     const payload = payloadOf(result);
     const limit = firecrawlLimitOf(payload);
-    if (limit) return { error: limitWords(limit, what), limit };
+    if (limit) return { error: limitWords(limit, what, words), limit };
     return { error: typeof payload?.code === "string" ? `Firecrawl's ${what} failed (${clip(payload.code, 60)})` : `Firecrawl's ${what} failed` };
   }
   try {
@@ -94,16 +75,16 @@ function readCalled<T>(called: Bounded, what: "search" | "fetch", read: (json: R
 }
 
 /** The tool `name` with `args` on Firecrawl's keyless endpoint, its answer bounded at `maxBytes`, read by `read`: once. */
-async function firecrawlCall<T>(name: string, args: Record<string, unknown>, what: "search" | "fetch", maxBytes: number, read: (json: Record<string, unknown>) => T | FirecrawlFailed, { endpoint = FIRECRAWL_MCP_URL, send = fetch, signal, timeoutMs = FIRECRAWL_MS }: FirecrawlOptions): Promise<T | FirecrawlFailed> {
+async function firecrawlCall<T>(name: string, args: Record<string, unknown>, what: "search" | "fetch", maxBytes: number, read: (json: Record<string, unknown>) => T | FirecrawlFailed, { endpoint = FIRECRAWL_MCP_URL, send = fetch, signal, timeoutMs = FIRECRAWL_MS, words }: FirecrawlOptions): Promise<T | FirecrawlFailed> {
   const own = AbortSignal.timeout(timeoutMs);
   const deadline = AbortSignal.any([own, ...(signal ? [signal] : [])]);
   try {
-    return readCalled(await callTool(endpoint, send, deadline, name, args, maxBytes), what, read);
+    return readCalled(await callTool(endpoint, send, deadline, name, args, maxBytes), what, read, words);
   } catch (error) {
     // Firecrawl's own bound, or the caller's: its deadline (a search's, spent) or its stop.
     if (own.aborted) return { error: `Firecrawl's ${what} did not answer within ${timeoutMs / 1000} s` };
     const reason = signal?.aborted ? (signal.reason as Error)?.name : (error as Error)?.name;
-    return { error: reason === "TimeoutError" ? `Firecrawl's ${what} did not answer before the ${what}'s time ran out` : reason === "AbortError" ? `the ${what} was stopped` : `Firecrawl's ${what} failed: ${String((error as Error)?.message ?? error).slice(0, 300)}` };
+    return { error: reason === "TimeoutError" ? `Firecrawl's ${what} did not answer before the ${what}'s time ran out` : reason === "AbortError" ? `the ${what} was stopped` : `Firecrawl's ${what} failed: ${withoutUserinfo(String((error as Error)?.message ?? error)).slice(0, 300)}` };
   }
 }
 
@@ -119,11 +100,10 @@ export async function firecrawlSearch(query: string, n: number, options: Firecra
 }
 
 /** The page at `url` scraped by Firecrawl's keyless endpoint, as markdown, its answer at most the direct fetch's bound
- *  (pi-browser's PUBLIC_MAX_BYTES). Firecrawl names no cut, so the text is read as the whole page's. A page whose status
+ *  (PAGE_MAX_BYTES). Firecrawl names no cut, so the text is read as the whole page's. A page whose status
  *  is not 2xx is no read: the caller fetches directly, as for a refusal. */
 export async function firecrawlScrape(url: string, options: FirecrawlOptions = {}): Promise<Read | FirecrawlFailed> {
-  const { PUBLIC_MAX_BYTES } = await import("@parcha/pi-browser");
-  return firecrawlCall<Read>(FIRECRAWL_SCRAPE_TOOL, { url, formats: ["markdown"] }, "fetch", PUBLIC_MAX_BYTES, (json) => {
+  return firecrawlCall<Read>(FIRECRAWL_SCRAPE_TOOL, { url, formats: ["markdown"] }, "fetch", PAGE_MAX_BYTES, (json) => {
     if (typeof json.markdown !== "string" || json.markdown.trim() === "") return { error: "Firecrawl's fetch answered no page text" };
     const meta = (typeof json.metadata === "object" && json.metadata !== null ? json.metadata : {}) as { title?: unknown; sourceURL?: unknown; url?: unknown; statusCode?: unknown };
     const final = [meta.url, meta.sourceURL].find((one): one is string => typeof one === "string" && URL.canParse(one)) ?? url;

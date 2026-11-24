@@ -222,9 +222,10 @@ export const unguardedOperations = (doc: Json): string[] =>
 //
 // Shown once. A value the server mints for a person to copy is shown ONCE, as a field of its own named `<kind>_secret`
 // beside `secret: SecretMeta`, and only in the owner session's minting answer (the create, a rotate, the first save):
-// so far `signing_secret` alone (a webhook trigger's, POST /triggers and POST /triggers/{id}/secret; the outbound
-// webhook's, its first PUT /settings/webhook). A token caller's create answer says `secret_set: true` beside secret.set,
-// and no value. MCP mints nothing a person copies: a `client_secret` in any answer is a leak. The planted-secret harness
+// so far `signing_secret` (a webhook trigger's, POST /triggers and POST /triggers/{id}/secret; the outbound
+// webhook's, its first PUT /settings/webhook) and an API key's, named `api_key` for what an app calls it (POST
+// /settings/api-keys, api-keys.ts). A token caller's create answer says `secret_set: true` beside secret.set,
+// and no value; a token never reaches an API key's create at all. MCP mints nothing a person copies: a `client_secret` in any answer is a leak. The planted-secret harness
 // (test/fixtures/planted-secrets.mjs) allows a value only in an answer its plant declares as minting (`mints`), to the
 // owner's session, and flags it anywhere else: any GET, a token caller's answer, a later answer, the journal, the
 // store's rows, the log, an export.

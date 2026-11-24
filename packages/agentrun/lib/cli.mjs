@@ -17,7 +17,7 @@ import { COMMANDS, SECRET_ROUTES } from "./commands.generated.mjs";
 import { ALL, FLAGS, MAX_PAGES, REQUEST_MS, WAIT, followTimeline, timerMs, waitRun } from "./follow.mjs";
 import { guarded, refusalExit } from "./login.mjs";
 import { LOCAL } from "./local.mjs";
-import { apiBase } from "./target.mjs";
+import { apiBase, checkedBase } from "./target.mjs";
 
 export const NOUNS = new Set(["api", "help", ...[...COMMANDS, ...LOCAL].map((entry) => entry.command[0])]);
 const DEFAULT_BASE_URL = "http://127.0.0.1:7340/v2"; // key-gate: loopback-rule the default address of the server started on this machine
@@ -155,25 +155,15 @@ const alive = (pid) => {
   }
 };
 
-/** A base URL as every command takes it: http or https, with no query, fragment, user or password, which would carry
- *  the token elsewhere or swallow the path appended to it; then its API base (target.mjs apiBase: /v2 added when its
- *  path holds no v2 segment, the origin unchanged). `where` names it in the refusal; the URL itself is never echoed, as
- *  it may hold a password. */
+/** A base URL as every command takes it (target.mjs checkedBase): its API base, or a refusal `where` names; the URL
+ *  itself is never echoed, as it may hold a password. */
 function baseOf(given, where) {
-  const url = URL.canParse(given) ? new URL(given) : undefined;
-  if (!url || !/^https?:$/.test(url.protocol) || /[?#]/.test(given) || url.username || url.password) {
-    throw usageError(`${where} must be an http or https URL with no query, fragment, user or password: the server's address, or its API's base ending /v2.`);
-  }
-  return apiBase(given);
+  const base = checkedBase(given);
+  if (base === undefined) throw usageError(`${where} must be an http or https URL with no query, fragment, user or password: the server's address, or its API's base ending /v2.`);
+  return base;
 }
 
-const isBase = (url) => {
-  try {
-    return baseOf(url, ""), true;
-  } catch {
-    return false;
-  }
-};
+const isBase = (url) => checkedBase(url) !== undefined;
 
 /** Where the request goes and the token it carries. A token goes only with the address it came with: the local
  *  server's own token is never sent to another server. The local token is DIR/.token, whatever the record says. */
