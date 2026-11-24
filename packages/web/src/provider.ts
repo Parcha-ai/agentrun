@@ -6,7 +6,7 @@ import type { Pay } from "./fees.js";
 import type { Guard, GuardOptions } from "./guard.js";
 import type { Read, Unread } from "./page.js";
 import type { Words } from "./providers/mcp.js";
-import { type Breaker, type Failure, failure, type Limit, type SearchBounds, type Searched } from "./search.js";
+import { type Breaker, type Failure, failure, type Holding, type Limit, type SearchBounds, type Searched } from "./search.js";
 
 /** The run's own model provider's hosted search. `signal` is the caller's; it keeps its own bounds. */
 export type NativeSearch = (query: string, n: number, signal?: AbortSignal) => Promise<Searched>;
@@ -45,25 +45,26 @@ export type ProviderRun = {
 };
 
 /** How a provider's fetch fits the order. `ends`: it answers whatever it reads, the order's last word (the guarded direct
- *  fetch). Otherwise `miss` says what becomes of a read it gave no page, ahead of the page another gave:
- *  - "said": the page names why under the provider's id, and the model is told; so is a turn it was not asked (unready,
- *    held, or the URL refused by the guard);
- *  - `{log, when}`: never the model's; a failed read is logged as `log`, at once with the provider and the limit it met
- *    (`when` "failed"), or once a provider that ends the order has answered, with what it did (`when` "ends"; never
- *    where none follows). A turn it was not asked is passed over unrecorded. */
+ *  fetch). Otherwise the page names why the provider gave none under its id, and the model is told: a read that gave no
+ *  page, and a turn it was not asked for being unready or held. `miss` says what more becomes of it:
+ *  - "said": a turn the guard's check refused is told too, and every turn not asked is on the receipt;
+ *  - `{log, when}`: a failed read is logged as `log`, at once with the provider and the limit it met (`when` "failed"),
+ *    or once a provider that ends the order has answered, with what it did (`when` "ends"; never where none follows). A
+ *    turn it was not asked is not on the receipt. */
 export type FetchShape = { ends: true } | { ends?: false; miss: "said" } | { ends?: false; miss: { log: string; when: "failed" | "ends" } };
 
 /** A provider's settings, typed `S`: `problems` says what is wrong with a value, one line each (none: it is S). */
 export type SettingsSpec<S> = { problems(value: unknown): string[]; readonly typed?: S };
 export const settingsOf = <S>(problems: (value: unknown) => string[]): SettingsSpec<S> => ({ problems });
 
-/** One provider: its `id` (what an order names), its `label` in our words, the variable its key is read from, the tools
- *  it serves, what its fetch does where it serves web_fetch, its settings where it takes any, and `make`, the provider
- *  for one Web. */
+/** One provider: its `id` (what an order names), its `label` in our words, the variable its key is read from, `keyless`
+ *  where it is the free use of a service another provider reads on a key, the tools it serves, what its fetch does where
+ *  it serves web_fetch, its settings where it takes any, and `make`, the provider for one Web. */
 export type WebProvider<Id extends string = string> = {
   id: Id;
   label: string;
   key?: { env: string };
+  keyless?: true;
   ops: readonly ("search" | "fetch")[];
   fetch?: FetchShape;
   settings?: SettingsSpec<unknown>;
@@ -74,10 +75,17 @@ export type WebProvider<Id extends string = string> = {
  *  unions) and `make`. Two arguments, so the unions are read from `meta` alone, never from what `make` answers. */
 export const defineProvider = <const M extends Omit<WebProvider, "make">>(meta: M, make: WebProvider["make"]): M & Pick<WebProvider, "make"> => ({ ...meta, make });
 
+/** When a breaker holding a provider lets it be asked again, in words: until the minute it names (UTC), or for the rest
+ *  of the run. */
+export function holdingWords({ kind, until }: Holding): string {
+  const what = kind === "rate" ? "rate-limited" : "out of quota";
+  return Number.isFinite(until) ? `${what} until ${new Date(Math.ceil(until / 60_000) * 60_000).toISOString().slice(11, 16)} UTC` : `${what} for the rest of this run`;
+}
+
 /** A provider's reads behind `breaker`: `held` is why it is not asked now, typed (unready, else the breaker holding it:
- *  its limit's kind, code HELD), and a failed read's limit trips the breaker. The fetch's breaker is search's
- *  (searchBreaker). */
-export type Reader = { held(): Failure | undefined; read(url: unknown, options: GuardOptions): Promise<Read | Unread | ReadFailed> };
+ *  its limit's kind, code HELD, and until when, holdingWords), `holding` what holds the breaker, and a failed read's limit
+ *  trips the breaker. The fetch's breaker is search's (searchBreaker). */
+export type Reader = { held(): Failure | undefined; holding?(): Holding | undefined; read(url: unknown, options: GuardOptions): Promise<Read | Unread | ReadFailed> };
 export function readerOf(run: ProviderRun, breaker: Breaker): Reader {
   const read = run.read;
   if (!read) throw new Error("readerOf: the provider has no read");
@@ -86,8 +94,9 @@ export function readerOf(run: ProviderRun, breaker: Breaker): Reader {
       const unready = run.unready?.();
       if (unready) return unready;
       const holding = breaker.holding();
-      return holding ? failure(holding.kind, "HELD", "not tried: held by its limit") : undefined;
+      return holding ? failure(holding.kind, "HELD", `not tried: ${holdingWords(holding)}`) : undefined;
     },
+    holding: () => breaker.holding(),
     async read(url, options) {
       const got = await read(url, options);
       if (!("ok" in got) && got.limit) breaker.read({ answer: { error: got.error }, limit: got.limit, ...(got.failure ? { failure: got.failure } : {}) });

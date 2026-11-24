@@ -21,6 +21,8 @@ export type FetchProvider = Serving<"fetch">;
 /** A provider read on the run's key (WebConfig.keys), and one whose fetch says on the page why it gave none. */
 export type KeyedProvider = Registered extends infer P ? (P extends { id: infer I; key: { env: string } } ? I : never) : never;
 export type SaidProvider = Registered extends infer P ? (P extends { id: infer I; fetch: { miss: "said" } } ? I : never) : never;
+/** A provider web_fetch may ask ahead of the one that ends its order: the page names why it gave none under its id. */
+export type AheadProvider = Registered extends infer P ? (P extends { id: infer I; fetch: { miss: unknown } } ? I : never) : never;
 /** Each provider's settings, typed, by its id: those of a provider that takes any (each with its defaults, in its file). */
 export type ProviderSettings = { [P in Registered as P extends { settings: SettingsSpec<unknown> } ? P["id"] : never]?: P extends { settings: SettingsSpec<infer S> } ? S : never };
 
@@ -34,8 +36,12 @@ export function providerOf(id: string): WebProvider {
 }
 /** Whether `id` names a provider serving `op`. */
 export const serves = (id: unknown, op: "search" | "fetch"): boolean => isProviderId(id) && providerOf(id).ops.includes(op);
-/** The ids of the providers whose fetch says on the page why it gave none (SaidProvider). */
+/** The ids of the providers whose fetch says on the page a turn the guard refused, and records every turn (SaidProvider). */
 export const SAID: readonly SaidProvider[] = (PROVIDERS as readonly WebProvider[]).flatMap(({ id, fetch }) => (fetch && !fetch.ends && fetch.miss === "said" ? [id as SaidProvider] : []));
+/** The ids of the providers web_fetch may ask ahead of the one that ends its order (AheadProvider), in registry order. */
+export const AHEAD: readonly AheadProvider[] = (PROVIDERS as readonly WebProvider[]).flatMap(({ id, fetch }) => (fetch && !fetch.ends ? [id as AheadProvider] : []));
+/** The provider `id` names, in our words: its label, after "keyless" where it is a service's free use. */
+export const providerName = (id: string): string => (providerOf(id).keyless ? `keyless ${providerOf(id).label}` : providerOf(id).label);
 
 /** What is wrong with `settings`, one line each: a provider they name that takes none, or what its own check refuses. */
 export function settingsProblemsOf(settings: unknown): string[] {

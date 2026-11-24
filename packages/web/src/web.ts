@@ -3,7 +3,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { WebDecider } from "./decide/decider.js";
 import { type DecidePolicy, decisionPay, type DecisionRecord, findInPage, type FoundPage, judgePart, policyOf, siftSearch } from "./decide/step.js";
-import { type Pages, type Readers, type WebLog, type WebPage, webFetchText, webPart, webRead } from "./fetch.js";
+import { missesOf, type Pages, type Readers, type WebLog, type WebPage, webFetchText, webPart, webRead } from "./fetch.js";
 import { type Fee, type Pay, unmetered } from "./fees.js";
 import type { Guard, GuardOptions } from "./guard.js";
 import { clip, type Page, type Part, partProblem, URL_MAX } from "./page.js";
@@ -170,7 +170,7 @@ export function createWeb(config: WebConfig): Web {
       let classifier: Receipt["classifier"] = "off";
       if (need && whole.ok && whole.text && config.decider) {
         const found = await findInPage(config.decider, asked, whole, need, step);
-        answer = found.answer ?? notApplied(found.classifier.error!.code);
+        answer = found.answer ? { ...found.answer, ...missesOf(whole) } : notApplied(found.classifier.error!.code);
         classifier = found.classifier;
       } else if (need && whole.ok && whole.text) answer = notApplied("no classifier in this run");
       else if (config.decider) ({ answer, classifier } = await judgePart(config.decider, asked, part, { task, ...step }));

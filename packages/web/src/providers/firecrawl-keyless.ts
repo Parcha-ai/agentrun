@@ -163,10 +163,10 @@ export function firecrawlFetch(options: Omit<FirecrawlOptions, "signal" | "now">
 }
 
 /** Keyless Firecrawl: search and scrape on its public MCP endpoint (or `endpoint`). Its search ends at the call's deadline
- *  or its own bound (`bounds.firecrawlMs`, default FIRECRAWL_MS); a fetch it gives no page is logged once the direct
- *  fetch has answered, never the model's (it is a fallback, and its words are never passed on). */
+ *  or its own bound (`bounds.firecrawlMs`, default FIRECRAWL_MS); why a fetch gave no page is said on the page in our
+ *  words (Firecrawl's own are never passed on) and logged once the direct fetch has answered. */
 export const firecrawlKeyless = defineProvider(
-  { id: "firecrawl-keyless", label: "Firecrawl", ops: ["search", "fetch"], fetch: { miss: { log: "web_fetch_firecrawl_failed", when: "ends" } } },
+  { id: "firecrawl-keyless", label: "Firecrawl", keyless: true, ops: ["search", "fetch"], fetch: { miss: { log: "web_fetch_firecrawl_failed", when: "ends" } } },
   ({ endpoint, send, words, now, bounds }): ProviderRun => {
     const options: Omit<FirecrawlOptions, "signal"> = { ...(endpoint ? { endpoint } : {}), ...(send ? { send } : {}), ...(words ? { words } : {}), now };
     return {

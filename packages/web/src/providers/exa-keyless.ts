@@ -127,7 +127,7 @@ export function exaLimitOf(found: ExaLimited): Limit | undefined {
 
 /** Keyless Exa, web_search only: ended by the call's deadline; its free limit is the breaker's (exaLimitOf), its words
  *  the model's alone. */
-export const exaKeyless = defineProvider({ id: "exa-keyless", label: "Exa", ops: ["search"] }, ({ send, words }): ProviderRun => ({
+export const exaKeyless = defineProvider({ id: "exa-keyless", label: "Exa", keyless: true, ops: ["search"] }, ({ send, words }): ProviderRun => ({
   async search({ query, n }, deadline) {
     const found = await searchTyped(query, n, { ...(send ? { send } : {}), ...(words ? { words } : {}), signal: deadline });
     if (!("failure" in found)) return { answer: found };

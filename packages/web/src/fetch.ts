@@ -4,8 +4,8 @@ import type { FoundPage } from "./decide/step.js";
 import { unmetered } from "./fees.js";
 import type { Guard, GuardOptions } from "./guard.js";
 import { clip, HTML_READ_CHARS, PAGE_READ_MAX_CHARS, type Page, type Part, partOfRead, type Read, TIMEOUT_MS, type Unread, URL_MAX } from "./page.js";
-import type { Reader } from "./provider.js";
-import { type FetchProvider, providerOf, SAID, type SaidProvider } from "./providers/registry.js";
+import { holdingWords, type Reader } from "./provider.js";
+import { AHEAD, type AheadProvider, type FetchProvider, providerName, providerOf } from "./providers/registry.js";
 import { type Failure, failure, type Limit, type Try } from "./search.js";
 
 const PORTS = new Set(["", "80", "443"]);
@@ -14,10 +14,10 @@ const PORTS = new Set(["", "80", "443"]);
 export const PAGES_HELD = 8;
 
 /** How a page came: `via`, the provider that gave it ("none": the caller's order holds no provider that ends it, and no
- *  provider in it read the page; "stopped": the call was stopped first); under the id of each provider whose misses are
- *  said (SaidProvider, provider.ts FetchShape) and that gave none, why, where the guarded direct fetch answered or none
- *  did (never on a page another provider read). */
-export type Via = { via: FetchProvider | "stopped" | "none" } & Partial<Record<SaidProvider, string>>;
+ *  provider in it read the page; "stopped": the call was stopped first); under the id of each provider asked ahead of it
+ *  (AheadProvider, provider.ts FetchShape) that gave none, why, where the guarded direct fetch answered or none did
+ *  (never on a page another provider read). */
+export type Via = { via: FetchProvider | "stopped" | "none" } & Partial<Record<AheadProvider, string>>;
 export type WebPage = Page & Via;
 /** A page web_fetch read, and how. */
 export type WebRead = Read & Via;
@@ -52,10 +52,10 @@ type ReadWith = { readers: Readers; order: readonly FetchProvider[]; guard?: Gua
 
 /** The page at `url` read once, by the providers of `order` in turn, each turn recorded in `tries` as it is taken. A
  *  provider that ends the order (the guarded direct fetch) answers whatever it reads. Any other is asked where its reader
- *  is given and not held and the guard passes the URL within `checkMs`; a read it gives no page, or a turn it was not
- *  asked, is said on the page or logged, as its FetchShape says. */
+ *  is given and not held and the guard passes the URL within `checkMs`; why a read gave no page, or why a turn was not
+ *  asked, is said on the page, and logged or recorded as its FetchShape says. */
 async function readOnce(url: unknown, { readers, order, guard, checkMs, options, log, tries }: ReadWith): Promise<WebRead | WebUnread> {
-  const said: Partial<Record<SaidProvider, string>> = {};
+  const said: Partial<Record<AheadProvider, string>> = {};
   const logged: { event: string; said: string }[] = [];
   for (const id of order) {
     const shape = providerOf(id).fetch;
@@ -64,15 +64,16 @@ async function readOnce(url: unknown, { readers, order, guard, checkMs, options,
     if (shape.ends) {
       // Its failure, typed, is the receipt's, never the page's.
       const { failure, ...read } = (await reader.read(url, options)) as (Read | Unread) & { failure?: Failure };
-      // Why a provider ahead gave no page goes to the log, never to the model (the page is this one's); never the URL.
+      // Why a provider ahead gave no page is logged as well as said, never with the URL.
       for (const miss of logged) log?.(miss.event, { said: miss.said, direct: read.ok ? "read" : "failed" });
       tries.push({ provider: id, outcome: read.ok ? "ok" : "error", ...(read.ok ? {} : { error: read.refused ?? read.error ?? "" }), ...(failure ? { failure } : {}) });
       return { ...read, via: id, ...said };
     }
-    let why = reader.held();
-    if (why === undefined && !(typeof url === "string" && (await passes(url, guard, options, checkMs)))) why = failure("refused", "GUARD", "not tried: the URL did not pass the public-host guard");
+    const held = reader.held();
+    const why = held ?? (typeof url === "string" && (await passes(url, guard, options, checkMs)) ? undefined : failure("refused", "GUARD", "not tried: the URL did not pass the public-host guard"));
     if (why !== undefined) {
-      if (shape.miss === "said") (said[id as SaidProvider] = why.message), tries.push({ provider: id, outcome: "error", error: why.message, failure: why });
+      if (shape.miss === "said") (said[id as AheadProvider] = why.message), tries.push({ provider: id, outcome: "error", error: why.message, failure: why });
+      else if (held) said[id as AheadProvider] = held.message;
       continue;
     }
     const read = await reader.read(url, options);
@@ -84,11 +85,15 @@ async function readOnce(url: unknown, { readers, order, guard, checkMs, options,
     const error = read.error ?? "";
     const limit: Limit | undefined = "limit" in read ? read.limit : undefined;
     const typed = "failure" in read && read.failure ? { failure: read.failure } : {};
+    // A read that met a limit is said by what holds the provider now, never by the provider's words for it.
+    const holding = limit ? reader.holding?.() : undefined;
+    const words = holding ? holdingWords(holding) : error;
     if (shape.miss === "said") {
-      said[id as SaidProvider] = error;
+      said[id as AheadProvider] = words;
       tries.push({ provider: id, outcome: "error", error, ...typed });
       continue;
     }
+    said[id as AheadProvider] = words.slice(0, 300);
     tries.push({ provider: id, outcome: "error", ...(error ? { error: error.slice(0, 300) } : {}), ...typed, ...(limit ? { limit } : {}) });
     if (shape.miss.when === "failed") log?.(shape.miss.log, { provider: id, said: error.slice(0, 300), ...(limit ? { limit: JSON.stringify(limit) } : {}) });
     else logged.push({ event: shape.miss.log, said: error.slice(0, 300) });
@@ -168,9 +173,15 @@ function endingReader(id: FetchProvider, guard: Guard | undefined): Reader {
 export function webPart(read: WebRead | WebUnread, part: Part = {}): WebPage {
   if (!read.ok) return read;
   const { via, ...page } = read;
-  const said: Partial<Record<SaidProvider, string>> = {};
-  for (const id of SAID) if (page[id] !== undefined) (said[id] = page[id]), delete page[id];
+  const said = missesOf(read);
+  for (const id of AHEAD) delete page[id];
   return { ...partOfRead(page, part), via, ...said };
+}
+
+const AHEAD_IDS: ReadonlySet<string> = new Set(AHEAD);
+/** Why each provider asked ahead of the one that gave `page` gave none, by its id (Via), in the order they were asked. */
+export function missesOf(page: object): Partial<Record<AheadProvider, string>> {
+  return Object.fromEntries(Object.entries(page).filter(([id, why]) => AHEAD_IDS.has(id) && typeof why === "string"));
 }
 
 /** The part (`offset`, `maxChars`) of the page at `url` as a WebPage: webPart of webRead. */
@@ -197,13 +208,18 @@ function partLine(page: Page, name: string): string | undefined {
   return `Characters ${start}-${end} of ${page.original_chars}: the end of the page.`;
 }
 
-/** A page as the tool `name` answers the model: its JSON, then a line for each picked provider that gave none saying why,
- *  and one saying where this part is in the page when it is not all of it. */
+/** What answered after the providers ahead gave no page: the direct fetch, or nothing (Via: reasons are said only there). */
+function cameBy(via: unknown): string {
+  return via === "none" ? "no provider after it read the page" : "this one was fetched directly";
+}
+
+/** A page as the tool `name` answers the model: its JSON, then a line for each picked provider that gave none saying why
+ *  and what gave the page instead, and one saying where this part is in the page when it is not all of it. */
 export function webFetchText(page: WebPage | Page | FoundPage, name: string = "web_fetch"): string {
   const lines = [JSON.stringify(page)];
-  for (const id of SAID) {
-    const why = (page as Partial<Record<SaidProvider, unknown>>)[id];
-    if (typeof why === "string" && why) lines.push(`${providerOf(id).label} was picked for web_fetch and gave no page (${why}); this one was fetched directly.`);
+  const came = cameBy((page as { via?: unknown }).via);
+  for (const [id, why] of Object.entries(missesOf(page))) {
+    if (why) lines.push(`${providerName(id)} was picked for web_fetch and gave no page (${why}); ${came}.`);
   }
   const where = "found" in page ? undefined : partLine(page, name);
   if (where) lines.push(where);
