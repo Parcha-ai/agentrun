@@ -278,6 +278,23 @@ test("the CLI loads a provider module by path, prints the report, and exits 0 wh
 	assert.match(out.text(), /core PASS 1\/1/);
 });
 
+test("a run takes the id the live sweep's --before minted (options.run, the CLI's --run): every computer it makes carries it", async () => {
+	const seen = [];
+	const label = pass("health.label", { run: async (t) => seen.push(t.spec().labels["agentrun.conformance"]) });
+	const fake = fakeComputers();
+	const report = await runConformance(fake.provider, { image: IMAGE, run: "0123456789ab", cases: [label] });
+	assert.equal(report.core, "pass");
+	assert.ok(fake.made.length > 0);
+	for (const { labels } of fake.made) assert.equal(labels["agentrun.conformance"], "0123456789ab");
+	assert.deepEqual(seen, ["0123456789ab"]);
+	await assert.rejects(runConformance(fakeComputers().provider, { image: IMAGE, run: "not-an-id", cases: [label] }), /options\.run is a run id the live sweep's --before mints, 12 hex characters; got "not-an-id"/);
+	assert.equal(await main(["--provider", "./fixtures/fake-provider.mjs", "--run", "ba9876543210"], { stdout: sink(), cwd: HERE, cases: [label] }), 0);
+	assert.equal(seen.at(-1), "ba9876543210", "the CLI's --run is the run's id");
+	await main(["--provider", "./fixtures/fake-provider.mjs"], { stdout: sink(), cwd: HERE, cases: [label] });
+	assert.match(seen.at(-1), /^[0-9a-f]{12}$/, "without it, a fresh id");
+	assert.notEqual(seen.at(-1), "ba9876543210");
+});
+
 test("--long runs the long cases; without it they skip in words that name the flag, and --exec-stream refuses it", async () => {
 	const long = pass("lifetime.waits", { level: "full", group: "lifetime", run: async (t) => t.long("it waits on a vendor's timer") });
 	const json = async (argv) => {
@@ -361,6 +378,9 @@ test("the CLI exits 2 on a usage error, and says what is wrong", async () => {
 		[["--provider", "./fixtures/fake-provider.mjs", "--only", "exec,network"], /--only: network is neither a group .* nor a case id/],
 		[["--provider", "./fixtures/fake-provider.mjs", "--concurrency", "0"], /--concurrency: "0" is not a whole number of computers, 1 or more/],
 		[["--provider", "./fixtures/fake-provider.mjs", "--concurrency", "two"], /--concurrency: "two" is not a whole number of computers, 1 or more/],
+		[["--provider", "./fixtures/fake-provider.mjs", "--run"], /--run needs a value/],
+		[["--provider", "./fixtures/fake-provider.mjs", "--run", "ABC"], /--run: "ABC" is not a run id the live sweep's --before mints \(12 hex characters\)/],
+		[["--provider", "e2b", "--exec-stream", "--machine", "m", "--run", "0123456789ab"], /--exec-stream runs alone: drop --run/],
 	]) {
 		const err = sink();
 		const code = await main(argv, { stdout: sink(), stderr: err, cwd: HERE, cases: [pass("exec.argv")] });
