@@ -11,9 +11,9 @@ const PORTS = new Set(["", "80", "443"]);
 /** How many pages a run keeps what it read of (Pages): each at most PAGE_READ_MAX_CHARS characters of text. */
 export const PAGES_HELD = 8;
 
-/** `parallel`, where Parallel was asked for the page and gave none: why, on the page fetched directly after it, or on the
- *  failed page ("none") where nothing after it read one. `via` "none": the caller's order holds no direct fetch, and no
- *  provider in it read the page. */
+/** `parallel`, where Parallel was asked for the page and gave none: why, on the page fetched directly after it, or on
+ *  the failed page ("none") where nothing after it read one. `via` "none": the caller's order holds no direct fetch,
+ *  and no provider in it read the page. */
 export type WebPage = Page & { via: "parallel" | "firecrawl-keyless" | "direct" | "stopped" | "none"; parallel?: string };
 /** A page web_fetch read, and how (WebPage's `via` and `parallel`). */
 export type WebRead = Read & Pick<WebPage, "via" | "parallel">;
