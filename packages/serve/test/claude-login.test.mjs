@@ -219,6 +219,10 @@ test("one owner: refused in one line where more than one person can start runs, 
   withEnv(t, {}, MODEL_VARS);
   assert.equal(whyNotOneOwner({ apiOnly: false, tokens: 1 }), undefined);
   assert.match(whyNotOneOwner({ apiOnly: true, tokens: 1 }), /^This server has no owner .*one person's\.$/);
+  // A key made in the console for an app is one more caller, as a second token is (api-keys.ts).
+  assert.equal(whyNotOneOwner({ apiOnly: false, tokens: 1, keys: 0 }), undefined);
+  assert.equal(whyNotOneOwner({ apiOnly: false, tokens: 1, keys: 1 }), "This server has an API key made for apps (Settings → AgentRun API keys), so more than one caller can start runs here: a Claude plan is one person's. Revoke it first.");
+  assert.match(whyNotOneOwner({ apiOnly: false, tokens: 1, keys: 3 }), /^This server has 3 API keys made for apps .*Revoke them first\.$/);
   assert.deepEqual(turnOnBody({ only_me: true }), { place: "agentrun" });
   assert.deepEqual(turnOnBody({ only_me: true, place: "machine" }), { place: "machine" });
   assert.ok("problem" in turnOnBody({ place: "machine" }));

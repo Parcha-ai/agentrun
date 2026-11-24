@@ -301,6 +301,12 @@ const URL_CREDENTIAL: Shape = {
   },
 };
 
+/** An API key made in this server's console (api-keys.ts): `ar_key_` and its 32 random bytes in base64url, 43
+ *  characters or more to the end of that run, so a key glued to more of its characters is cut whole. Not after a
+ *  letter, a digit or "_": a word that only ends in the prefix's letters (`bar_key_...`) names no key. The server keeps
+ *  no copy of such a key (only a keyed hash), so its shape is the one way it is found in a text. */
+const AGENTRUN_API_KEY = prefixRun("AgentRun API key", ["ar_key_"], PART, 43, (text, at) => at === 0 || !WORD(text.charCodeAt(at - 1)));
+
 /** Text shaped like a secret, by kind. The same shapes the Pi learning loop's guard refuses. */
 export const SECRET_SHAPES: readonly Shape[] = [
   prefixFixed("AWS access key id", ["AKIA", "ASIA"], only(UPPER + DIGIT), 16),
@@ -309,6 +315,7 @@ export const SECRET_SHAPES: readonly Shape[] = [
   prefixRun("GitHub token", ["ghp_", "gho_", "ghu_", "ghs_", "ghr_"], ALNUM_CLASS, 30),
   prefixRun("GitHub token", ["github_pat_"], WORD, 20),
   prefixRun("sk- key", ["sk-"], PART, 20, (text, at) => at === 0 || !ALNUM_CLASS(text.charCodeAt(at - 1))),
+  AGENTRUN_API_KEY,
   prefixRun("Slack token", [..."abposre"].map((kind) => `xox${kind}-`).concat("xapp-"), only(`${ALNUM}-`), 10),
   JWT,
   WEBHOOK_SECRET,

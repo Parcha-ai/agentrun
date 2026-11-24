@@ -338,7 +338,7 @@ export function decodedTimes(text: string, times: number): string {
 // ---------- shapes
 
 /** Public prefixes a format's shape may name: each a fixed literal of a published format, never read from the value. */
-const PREFIXES = ["pypi-AgEIcHlwaS5vcmc", "github_pat_", "-----BEGIN", "AGE-SECRET-KEY-", "dop_v1_", "doo_v1_", "dor_v1_", "sk-ant-", "sk-proj-", "glpat-", "whsec_", "xoxb-", "xoxp-", "xoxa-", "xoxo-", "xoxs-", "xoxr-", "xoxe-", "xapp-", "ghp_", "gho_", "ghu_", "ghs_", "ghr_", "npm_", "hf_", "sk-", "SG.", "AKIA", "ASIA", "AIza", "eyJ"];
+const PREFIXES = ["pypi-AgEIcHlwaS5vcmc", "github_pat_", "-----BEGIN", "AGE-SECRET-KEY-", "dop_v1_", "doo_v1_", "dor_v1_", "sk-ant-", "sk-proj-", "glpat-", "whsec_", "ar_key_", "xoxb-", "xoxp-", "xoxa-", "xoxo-", "xoxs-", "xoxr-", "xoxe-", "xapp-", "ghp_", "gho_", "ghu_", "ghs_", "ghr_", "npm_", "hf_", "sk-", "SG.", "AKIA", "ASIA", "AIza", "eyJ"];
 
 const NOT_DIGIT = /[^0-9]/;
 const NOT_HEX = /[^0-9a-f]/i;
@@ -722,6 +722,7 @@ const SHAPE_IDS = new Map([
   ["private key block", "private-key-block"],
   ["GitHub token", "github-token"],
   ["sk- key", "sk-key"],
+  ["AgentRun API key", "agentrun-api-key"],
   ["Slack token", "slack-token"],
   ["JWT", "jwt"],
   ["webhook signing secret", "webhook-secret"],
@@ -952,7 +953,7 @@ async function lintUrlPasswords(text: string, ctx: ScrubContext): Promise<Hit[]>
 }
 
 /** The shapes that open with a public prefix, each with the characters of the run (a blob) its prefix could sit inside
- *  (ruling X). A prefix holding `-` or `_` (sk-, ghp_, github_pat_, xoxb-, whsec_) and a JWT can only sit inside a
+ *  (ruling X). A prefix holding `-` or `_` (sk-, ar_key_, ghp_, github_pat_, xoxb-, whsec_) and a JWT can only sit inside a
  *  base64url run, so `/`, `+`, `.`, `:` and `=` stand outside one: a key in a URL's or a file's path is a key. AKIA and
  *  AIza sit inside standard base64 too: `+` is of the run, `/` is a path's separator (s3://bucket/AKIA...), and a run
  *  ends on `=`'s padding. */
@@ -966,6 +967,7 @@ const RUNS: Readonly<Record<string, { readonly before: RegExp; readonly after: R
   "google-api-key": BASE64,
   "github-token": URL_SAFE,
   "sk-key": URL_SAFE,
+  "agentrun-api-key": URL_SAFE,
   "slack-token": URL_SAFE,
   "webhook-secret": URL_SAFE,
   jwt: URL_SAFE,

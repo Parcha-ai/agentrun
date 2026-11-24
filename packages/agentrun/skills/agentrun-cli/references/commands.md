@@ -212,6 +212,14 @@ Check native CLI and sign-in without a paid model call.
 
 Route: `POST /agents/{agent_id}/native/verify`.
 
+## api-keys
+
+### `agentrun api-keys list`
+
+The API keys made for this server's apps; never a key.
+
+Route: `GET /settings/api-keys`.
+
 ## capabilities
 
 ### `agentrun capabilities get-capacity`

@@ -140,11 +140,17 @@ export const LOGIN_SIGNED_OUT = "Claude Code's login on this machine is signed o
 export const LOGIN_UNKNOWN = "Claude Code could not say whether its login on this machine is signed in";
 
 /** Why this server may not turn the mode on, in one line, or undefined when it may: a Claude plan is one person's. */
-export function whyNotOneOwner(facts: { apiOnly: boolean; tokens: number }): string | undefined {
+export function whyNotOneOwner(facts: { apiOnly: boolean; tokens: number; keys?: number }): string | undefined {
   if (facts.apiOnly) return "This server has no owner (the API-only profile), so anyone with its token starts runs: a Claude plan is one person's.";
   if (facts.tokens > 1) return `This server takes ${facts.tokens} API tokens, so more than one person can start runs here: a Claude plan is one person's.`;
+  // A key made in the console for an app (api-keys.ts) is one more caller that starts runs, as a second token is.
+  const keys = facts.keys ?? 0;
+  if (keys > 0) return `This server has ${keys === 1 ? "an API key" : `${keys} API keys`} made for apps (Settings → AgentRun API keys), so more than one caller can start runs here: a Claude plan is one person's. Revoke ${keys === 1 ? "it" : "them"} first.`;
   return undefined;
 }
+
+/** Why a server with Claude Code's login on makes no API key for an app, in one line: the same rule from the other side. */
+export const LOGIN_REFUSES_API_KEYS = "Claude Code's login on this machine is on, and a Claude plan is one person's: an API key would let an app start runs on it. Turn the login off under Settings → Model keys first.";
 
 /** GET /settings/claude-login. `state`: `off` (not turned on), `other_machine` (turned on for another machine), else
  *  what the CLI says: `signed_in`, `signed_out`, or `no_cli` (no CLI here to ask yet: claude-agent's first run installs

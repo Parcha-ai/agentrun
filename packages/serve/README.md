@@ -139,6 +139,36 @@ An id or a secret given twice, or an entry that is not `id:secret`, stops the st
 the launcher hands it over its pipe, and no run's process or runner loop gets it. A rotation adds the new token, moves
 callers, then removes the old one ([deploy/README.md](../../deploy/README.md#rotating-the-api-token)).
 
+### API keys for your apps
+
+An app that calls this server does not need a token from the server's environment. The owner makes a key for it in the
+console, under Settings → AgentRun API keys, or with `POST /v2/settings/api-keys` and `{"name": "billing app"}` from
+their signed-in session:
+
+- **Shown once.** The answer holds the key as `api_key` (`ar_key_` and 32 random bytes in base64url). No read shows it
+  again. A lost key is revoked and replaced.
+- **What it opens.** Everything a token opens on `/v2` and `/mcp`, sent as `Authorization: Bearer <key>`. A key is never
+  the setup code: only a token the server was started with sets the first password.
+- **What is kept.** A keyed hash of the key (HMAC-SHA-256 under a key derived from the seal key), never the key. A row
+  written without the seal key opens nothing.
+- **Who makes and revokes.** Both are secret writes: the owner's signed-in session alone. A token, or a key, gets
+  `403 forbidden` with the console page in `details.console_url`, so a key that leaks cannot make another.
+- **Listing and revoking.** `GET /v2/settings/api-keys` answers each key's `name`, `created_at` and `last_used_at`
+  (written about once a minute). `DELETE /v2/settings/api-keys/{api_key_id}` revokes one, and the next request that
+  carries it is `401`.
+- **Limit.** A server keeps at most 50 keys; the next `POST` is `409 api_keys_full` until one is revoked.
+- **One person's server.** A key is one more caller that starts runs, as a second token is. So a server with Claude
+  Code's login on makes no key (`403 forbidden`, in words), and a server with a key refuses to turn that login on until
+  the key is revoked. A server started with `--harness-sign-in` makes none and takes none made before. The list says
+  why in `refused`.
+- **In the log.** A request a key opened names it by id (`api_key=<id>`), never by value.
+
+The server keeps no copy of a key, so it finds one in a text by its shape: `ar_key_` and 43 or more base64url
+characters are cut wherever a run's views, a shared transcript or a learned note would show them. A key cut short, or
+split across lines, is not found, so keep keys out of prompts and files a run reads all the same. An
+[API-only](#api-only) server has no owner and serves none of these routes, so it takes no key at all: only the tokens
+it was started with.
+
 ## Sandbox in 60 seconds
 
 An agent with a shell, in a Docker container of its own: on a machine with Docker, in a checkout built as above, with
@@ -1560,8 +1590,8 @@ has the row **Use Claude Code's login on this machine**, over these routes:
   you opt into by name. Its folder is the one the CLI uses: `CLAUDE_CONFIG_DIR` when the server's environment sets it to
   an absolute path, else `~/.claude`. A Claude Code that keeps its login in another folder is found only when AgentRun
   is started with `CLAUDE_CONFIG_DIR` set to that folder. A server where more than one person can start runs (more
-  than one API token, the API-only profile) refuses it with `403` and one line saying why, and a turn-on saved before
-  is dropped when such a server starts.
+  than one API token, an [API key made for an app](#api-keys-for-your-apps), the API-only profile) refuses it with
+  `403` and one line saying why, and a turn-on saved before is dropped when such a server starts.
 - `GET /v2/settings/claude-login` says `state`: `off`, `signed_in` (with the `account` the CLI names: method, email,
   organization, plan), `signed_out`, `no_cli` (claude-agent's first run installs the pinned CLI), `unknown`, or
   `other_machine`. `folder` is the folder whose login the CLI is asked about, and `machine` is this machine's own
@@ -3310,6 +3340,7 @@ failed, 2 when nothing ran. The runner, the graders and the report are in
 | `GET /runs/{id}/browser` | This server's own (`x-agentrun-serve: "liveview/1"`): the run's live browser view for the owner, `{state: "off", reason}`, `{state: "none"}` or `{state: "live", viewer}` ([the live view](#the-browsers-live-view)). |
 | `POST /runs/{id}/browser/hand-back` | This server's own (`liveview/2`): the owner's answer to the agent's ask for them in its browser, `{outcome: "done" \| "cancelled"}`; the first answer wins, a different one is `409 handoff_answered` ([the live view](#the-browsers-live-view)). |
 | `GET /runs/{id}/computer` | This server's own (`computer/1`): the run's live computer view for the owner, one family for every kind, `{state: "off", hold, why?}`, `{state: "none", kind, hold}` or `{state: "live", kind, viewer, hold}`, its viewer under `/runs/{id}/computer/live/`; the browser is kind `browser` here, beside its own route ([the live view](#the-browsers-live-view)). |
+| `GET` and `POST /settings/api-keys`, `DELETE /settings/api-keys/{api_key_id}` | [API keys for your apps](#api-keys-for-your-apps), this server's own routes (`x-agentrun-serve: "apikeys/1"`): the keys the owner makes in the console, each shown once and kept as a keyed hash. Making and revoking take the owner's signed-in session. |
 | `GET`, `PUT` and `DELETE /settings/webhook`, `POST /settings/webhook/test`, `GET /settings/webhook/deliveries` and `POST .../deliveries/{webhook_id}/redeliver` | [Webhooks](#webhooks), this server's own routes (`x-agentrun-serve: "webhook/1"`): the URL run notices are POSTed to, signed by the Standard Webhooks spec; never its secret but once. |
 | `GET` and `POST /triggers`, `GET`, `PATCH` and `DELETE /triggers/{id}`, `POST /triggers/{id}/fire`, `GET /triggers/{id}/firings`, `POST /triggers/{id}/secret`, `POST /hooks/{id}` (no token: [signed](#webhook-triggers)) | [Schedules](#schedules), this server's own routes (`x-agentrun-serve: "trigger/1"`): schedules that start an agent's capped runs, each firing once, and their history. |
 | `GET /templates`, `POST /templates/{name}/apply` | [Templates](#templates), this server's own routes (`x-agentrun-serve: "templates/1"`): the template packages it ships, and an apply that makes one's agent and triggers, all or nothing. |

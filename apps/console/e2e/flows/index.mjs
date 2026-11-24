@@ -27,6 +27,7 @@ import runToEnd from "./run-to-end.mjs";
 import takeOver from "./take-over.mjs";
 import askDone from "./ask-done.mjs";
 import secretsWriteOnly from "./secrets-write-only.mjs";
+import apiKeys from "./api-keys.mjs";
 import templateApply from "./template-apply.mjs";
 import templateUnattended from "./template-unattended.mjs";
 import templateUnattendedNavigation from "./template-unattended-navigation.mjs";
@@ -78,6 +79,7 @@ export const flows = [
   signedOutElsewhere,
   serverDeny,
   secretsWriteOnly,
+  apiKeys,
   computersKeys,
   computersRunning,
   workspaceArchil,

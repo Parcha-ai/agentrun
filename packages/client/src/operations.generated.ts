@@ -1278,6 +1278,11 @@ export type Features = {
     signing: "standard-webhooks/v1";
     at_rest: "sealed";
   };
+  api_keys?: {
+    routes: boolean;
+    limit: number;
+    at_rest: "hashed";
+  };
   slack?: {
     routes: boolean;
     events: Array<"run.needs_input" | "run.ended" | "trigger.failed">;
@@ -2176,6 +2181,19 @@ export type VerifyNativeResponse = {
   };
 };
 
+/** The API keys made for this server's apps; never a key (GET /settings/api-keys). */
+export type ListApiKeysResponse = {
+  keys: Array<{
+    id: string;
+    name: string;
+    created_at: string;
+    last_used_at: string | null;
+    secret: SecretMeta;
+  }>;
+  limit: number;
+  refused?: string;
+};
+
 /** The runs waiting and held, the live runners and the recent hand-backs (GET /capacity). */
 export interface GetCapacityParams {
   window?: number;
@@ -2957,6 +2975,19 @@ export type ConnectGitHubResponse = {
   action: string;
   manifest: Record<string, unknown>;
   state: string;
+};
+
+/** Make an API key, shown once (POST /settings/api-keys). */
+export type CreateApiKeyBody = {
+  name: string;
+};
+export type CreateApiKeyResponse = {
+  id: string;
+  name: string;
+  created_at: string;
+  last_used_at: string | null;
+  secret: SecretMeta;
+  api_key: string;
 };
 
 /** A code that pairs a person's own computer with this server (POST /computers/pairings). */
@@ -3784,6 +3815,8 @@ export type RestoreSuggestionResponse = {
     pull_error: string | null;
   };
 };
+
+/** Revoke an API key; it opens nothing from now on (DELETE /settings/api-keys/{api_key_id}). */
 
 /** Rotate the Composio project's webhook subscription's secret, and keep the new one (POST /settings/mcp-servers/{name}/composio/rotate-secret). */
 export type RotateComposioSecretResponse = {
@@ -7171,6 +7204,7 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   unarchiveAgent: {"method":"POST","path":"/agents/{agent_id}/unarchive","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   updateDefinition: {"method":"PUT","path":"/agents/{agent_id}/definition","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":["If-Match"],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":true},
   verifyNative: {"method":"POST","path":"/agents/{agent_id}/native/verify","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  listApiKeys: {"method":"GET","path":"/settings/api-keys","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getCapacity: {"method":"GET","path":"/capacity","pathParams":[],"multiSegment":[],"query":["window"],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   completeCliLearningRun: {"method":"POST","path":"/cli-learning/runs/{run_id}/complete","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":["Idempotency-Key"],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   enrollCliLearning: {"method":"POST","path":"/cli-learning/connections","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
@@ -7212,6 +7246,7 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   listLearnedWorkflowRevisions: {"method":"GET","path":"/agents/{agent_id}/learning/workflows/{name}/revisions","pathParams":["agent_id","name"],"multiSegment":[],"query":["limit"],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   putLearningCorrections: {"method":"PUT","path":"/agents/{agent_id}/learning/corrections","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":["If-Match"],"body":{"required":true,"types":["text/markdown","text/plain","application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":true},
   connectGitHub: {"method":"POST","path":"/integrations/github/connect","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":false,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  createApiKey: {"method":"POST","path":"/settings/api-keys","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   createPairing: {"method":"POST","path":"/computers/pairings","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   createSuggestedAgent: {"method":"POST","path":"/suggestions/{suggestion_id}/create","pathParams":["suggestion_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":false,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   deleteCalendar: {"method":"DELETE","path":"/settings/calendar","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"none","secret":false,"publicFields":[],"tagged":false},
@@ -7246,6 +7281,7 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   putWorkspaceArchil: {"method":"PUT","path":"/workspace/archil","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   receiveHook_composio: {"method":"POST","path":"/hooks/composio/{hook}","pathParams":["hook"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["*/*"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   restoreSuggestion: {"method":"POST","path":"/suggestions/{suggestion_id}/restore","pathParams":["suggestion_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  revokeApiKey: {"method":"DELETE","path":"/settings/api-keys/{api_key_id}","pathParams":["api_key_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"none","secret":false,"publicFields":[],"tagged":false},
   rotateComposioSecret: {"method":"POST","path":"/settings/mcp-servers/{name}/composio/rotate-secret","pathParams":["name"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   saveCalendar: {"method":"PUT","path":"/settings/calendar","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   saveComposioServer: {"method":"PUT","path":"/settings/mcp-servers/{name}/composio","pathParams":["name"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":true,"publicFields":["toolkit","tools.[]","user_id"],"tagged":false},
@@ -7407,6 +7443,10 @@ export function resources(call: Call) {
       /** Check native CLI and sign-in without a paid model call (POST /agents/{agent_id}/native/verify). */
       verifyNative: (agentId: string, options?: RequestOptions): Promise<VerifyNativeResponse> => call("verifyNative", [agentId], undefined, undefined, options),
     },
+    apiKeys: {
+      /** The API keys made for this server's apps; never a key (GET /settings/api-keys). */
+      list: (options?: RequestOptions): Promise<ListApiKeysResponse> => call("listApiKeys", [], undefined, undefined, options),
+    },
     capabilities: {
       /** The runs waiting and held, the live runners and the recent hand-backs (GET /capacity). */
       getCapacity: (params?: GetCapacityParams, options?: RequestOptions): Promise<GetCapacityResponse> => call("getCapacity", [], undefined, params, options),
@@ -7502,6 +7542,8 @@ export function resources(call: Call) {
       writeCorrections: (agentId: string, body: PutLearningCorrectionsBody | RawBody, params: PutLearningCorrectionsParams, options?: BodyOptions): Promise<Tagged<PutLearningCorrectionsResponse>> => call("putLearningCorrections", [agentId], body, params, options),
     },
     local: {
+      /** Make an API key, shown once (POST /settings/api-keys). */
+      createApiKey: (body: CreateApiKeyBody, options?: RequestOptions): Promise<CreateApiKeyResponse> => call("createApiKey", [], body, undefined, options),
       /** A code that pairs a person's own computer with this server (POST /computers/pairings). */
       createPairing: (options?: RequestOptions): Promise<CreatePairingResponse> => call("createPairing", [], undefined, undefined, options),
       /** Create a suggested agent: a branch with its package and client, the agent made here, and a pull request (POST /suggestions/{suggestion_id}/create). */
@@ -7566,6 +7608,8 @@ export function resources(call: Call) {
       receiveHookComposio: (hook: string, body: RawBody, options?: BodyOptions): Promise<ReceiveHookComposioResponse> => call("receiveHook_composio", [hook], body, undefined, options),
       /** Bring a discarded suggestion back (an undo) (POST /suggestions/{suggestion_id}/restore). */
       restoreSuggestion: (suggestionId: string, options?: RequestOptions): Promise<RestoreSuggestionResponse> => call("restoreSuggestion", [suggestionId], undefined, undefined, options),
+      /** Revoke an API key; it opens nothing from now on (DELETE /settings/api-keys/{api_key_id}). */
+      revokeApiKey: (apiKeyId: string, options?: RequestOptions): Promise<void> => call("revokeApiKey", [apiKeyId], undefined, undefined, options),
       /** Rotate the Composio project's webhook subscription's secret, and keep the new one (POST /settings/mcp-servers/{name}/composio/rotate-secret). */
       rotateComposioSecret: (name: string, options?: RequestOptions): Promise<RotateComposioSecretResponse> => call("rotateComposioSecret", [name], undefined, undefined, options),
       /** Save this server's calendar, its iCal address sealed (PUT /settings/calendar). */
