@@ -204,7 +204,7 @@ test("this machine's login in a CLAUDE_CONFIG_DIR folder, which the person's own
     const folder = scratch();
     const bytes = Buffer.from(`${JSON.stringify({ hasCompletedOnboarding: true, migrationVersion: 15 })}\n`);
     writeFileSync(join(folder, '.claude.json'), bytes, { mode: 0o600 });
-    const login = { dir: folder, profiles: join(folder, 'anthropic'), shared: true };
+    const login = { dir: folder, profiles: join(folder, 'anthropic') };
     const person = scratch();
     const fake = fakeCli();
     assert.deepEqual(await claude.claudeLoginStatus(fake.cli, login, { platform, home: person }), OUT);
@@ -232,12 +232,12 @@ test("every place's status check runs in the person's real home, never one under
     const base = scratch();
     const { login: atHome } = defaultLogin();
     const places = [
-      // AgentRun's own folder: the sign-in's variables, the folder its config dir and its credentials dir.
+      // AgentRun's own folder: its credentials dir the folder, as its sign-in names it; the config dir a copy.
       ['own', { dir: join(base, 'claude-login'), profiles: join(base, 'claude-login', 'anthropic') }, person],
       // The CLI's default folder: the login's home is the person's; the Keychain item with no suffix.
       ['home', atHome, atHome.home],
       // A CLAUDE_CONFIG_DIR folder: the item hashed from the folder, never from the copy.
-      ['shared', { dir: folder, profiles: join(folder, 'anthropic'), shared: true }, person],
+      ['folder', { dir: folder, profiles: join(folder, 'anthropic') }, person],
     ];
     for (const [where, login, home] of places) {
       const fake = fakeCli();
@@ -250,12 +250,9 @@ test("every place's status check runs in the person's real home, never one under
       const secure = seen.env.CLAUDE_SECURESTORAGE_CONFIG_DIR;
       assert.equal(secure, where === 'home' && platform === 'darwin' ? '' : login.dir, `${platform} ${where}: the place's own credentials dir`);
       assert.ok(secure === '' || outside(tmp, secure), `${platform} ${where}: the credentials dir ${secure} is never the copy's`);
-      if (where === 'own') {
-        // As the sign-in at that folder runs (signInEnv), in that home.
-        assert.deepEqual(placeVars(seen.env), { ...claude.claudeSignInEnv(login), HOME: person }, `${platform}: AgentRun's own folder is asked as it is signed in`);
-      } else {
-        assert.ok(seen.env.CLAUDE_CONFIG_DIR && !outside(tmp, seen.env.CLAUDE_CONFIG_DIR), `${platform} ${where}: the config dir is the copy, under the check's folder`);
-      }
+      // Every place, AgentRun's own included: the config dir is the copy, and the rest is a run's (claudeLoginEnv).
+      assert.ok(seen.env.CLAUDE_CONFIG_DIR && !outside(tmp, seen.env.CLAUDE_CONFIG_DIR), `${platform} ${where}: the config dir is the copy, under the check's folder`);
+      assert.deepEqual(placeVars(seen.env), { HOME: home, ...claude.claudeLoginEnv(login, platform), CLAUDE_CONFIG_DIR: seen.env.CLAUDE_CONFIG_DIR }, `${platform} ${where}: a run's variables, in the person's home, on a copy`);
     }
   }
   // No home given: the server's own (os.homedir()).
@@ -334,7 +331,7 @@ test("the status check's copy of the account file holds no secret: not the API k
   const folder = scratch();
   for (const [where, file, login] of [
     ['default folder', join(home, '.claude.json'), { dir: join(home, '.claude'), profiles: join(home, '.config', 'anthropic'), home }],
-    ['CLAUDE_CONFIG_DIR folder', join(folder, '.claude.json'), { dir: folder, profiles: join(folder, 'anthropic'), shared: true }],
+    ['CLAUDE_CONFIG_DIR folder', join(folder, '.claude.json'), { dir: folder, profiles: join(folder, 'anthropic') }],
   ]) {
     const bytes = Buffer.from(`${JSON.stringify(account, null, 2)}\n`);
     writeFileSync(file, bytes, { mode: 0o600 });

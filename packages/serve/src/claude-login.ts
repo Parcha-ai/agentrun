@@ -121,16 +121,15 @@ export function machineFolder(env: Readonly<Record<string, string | undefined>> 
  *  `~/.config/anthropic`). This machine's on the CLI's default folder carries the person's home too, so the harness
  *  points the CLI at it as their own CLI runs, with no folder variable (the harness's signInEnv and loginEnv). This
  *  machine's with a credentials dir in the server's env (machineFolder's `credentials`) carries it as `secure`, absolute
- *  (empty: `~/.claude`, `unsuffixed`), so the CLI keeps the tokens where the person's own CLI with it does. This
- *  machine's is `shared` with the person's own CLI, so a status check runs on a copy of its account file
- *  (the harness's claudeLoginStatus). */
+ *  (empty: `~/.claude`, `unsuffixed`), so the CLI keeps the tokens where the person's own CLI with it does. A status
+ *  check at either place runs on a copy of the account file (the harness's claudeLoginStatus). */
 export function loginAt(place: LoginPlace, data: string, env: Readonly<Record<string, string | undefined>> = process.env): ClaudeAgentLogin {
   if (place === "agentrun") return { dir: join(data, "claude-login"), profiles: join(data, "claude-login", "anthropic") };
   const home = env.HOME && isAbsolute(env.HOME) ? env.HOME : homedir();
   const config = env.XDG_CONFIG_HOME && isAbsolute(env.XDG_CONFIG_HOME) ? env.XDG_CONFIG_HOME : join(home, ".config");
   const { folder, source, credentials } = machineFolder(env);
   const secure = credentials === undefined ? {} : credentials === "" ? { secure: join(home, ".claude"), unsuffixed: true } : { secure: credentials };
-  return { dir: folder, profiles: env.ANTHROPIC_CONFIG_DIR && isAbsolute(env.ANTHROPIC_CONFIG_DIR) ? env.ANTHROPIC_CONFIG_DIR : join(config, "anthropic"), ...(source === "default" ? { home } : {}), ...secure, shared: true };
+  return { dir: folder, profiles: env.ANTHROPIC_CONFIG_DIR && isAbsolute(env.ANTHROPIC_CONFIG_DIR) ? env.ANTHROPIC_CONFIG_DIR : join(config, "anthropic"), ...(source === "default" ? { home } : {}), ...secure };
 }
 
 /** The setting as saved, or undefined when the mode is not on (or the row is not one this reads). */

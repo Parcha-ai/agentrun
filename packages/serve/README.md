@@ -1574,14 +1574,15 @@ has the row **Use Claude Code's login on this machine**, over these routes:
   exports either still signs in at that login. It runs in the terminal's own shell (sh, bash or zsh), never under
   `env`, so a `claude` alias there is used and a CLI path holding `=` stays a path. A run
   there reaches the same tokens: on macOS with `CLAUDE_SECURESTORAGE_CONFIG_DIR` set and empty, the CLI's way to name
-  that item while the run has a config dir of its own; elsewhere with it set to `~/.claude`. On `machine`, either
-  folder, the status check never runs the CLI on the person's own account file, which the CLI rewrites on every start
-  whose config version is not its own: each check copies `.claude.json` (`~/.claude.json`, or the `CLAUDE_CONFIG_DIR`
-  folder's), opening the original only to read it, into a folder of its own, gives the CLI that folder as its config
-  dir and the tokens as a run reads them, and removes the folder however the check ends. The copy (0600, in a 0700
-  folder) leaves out the fields that hold secrets: `primaryApiKey` (the API key an older Claude Code signed in with),
-  `env` and every `mcpServers`, whose env and headers hold tokens; a file that doesn't parse as a JSON object is not
-  copied at all. A run's config dir has none of them either, so the status says what a run gets. The status check
+  that item while the run has a config dir of its own; elsewhere with it set to `~/.claude`. On every place, the status
+  check never runs the CLI on the login's own account file, which the CLI rewrites on every start whose config version
+  is not its own: each check copies `.claude.json` (`~/.claude.json` on `machine` with the default folder, else the
+  login folder's), opening the original only to read it, into a folder of its own, gives the CLI that folder as its
+  config dir and the tokens as a run reads them, and removes the folder however the check ends. The copy (0600, in a
+  0700 folder) leaves out the fields that hold secrets: `primaryApiKey` (the API key an older Claude Code signed in
+  with), `env` and every `mcpServers`, whose env and headers hold tokens. Only a regular file of at most 32 MiB is
+  copied: a file that doesn't parse as a JSON object, a bigger one, a FIFO or a device is not copied at all, and the
+  check never waits on one. A run's config dir has none of them either, so the status says what a run gets. The status check
   runs in the person's home (the server's `HOME`) on every place, as the sign-in does, and so does a run on the login
   on macOS: the CLI reads its tokens there from the login keychain, which is under that home. `sign_in`
   says what became of that sign-in while the server runs: `waiting` for the browser since `started_at`, `signed_in`,

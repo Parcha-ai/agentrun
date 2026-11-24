@@ -58,14 +58,16 @@ async function cliEnvs(login, home) {
   return { status: status.seen().env, signIn: signIn.seen().env, shown: commandVars(claude.claudeLoginCommand(login, signIn.cli)), line: claude.claudeLoginCommand(login) };
 }
 
-test("AgentRun's own login folder: the status check, the sign-in and the shown line use it as the CLI's config dir and credentials dir, the status check and the sign-in in the person's home, and a run its credentials dir on every platform", async () => {
+test("AgentRun's own login folder: the sign-in and the shown line use it as the CLI's config dir and credentials dir, the status check as its credentials dir with a copy of its account file as the config dir, the status check and the sign-in in the person's home, and a run its credentials dir on every platform", async () => {
   const base = scratch();
   const login = { dir: join(base, 'claude-login'), profiles: join(base, 'claude-login', 'anthropic') };
   mkdirSync(login.dir, { recursive: true });
   const home = scratch();
   const { status, signIn, shown, line } = await cliEnvs(login, home);
   const own = { CLAUDE_CONFIG_DIR: login.dir, CLAUDE_SECURESTORAGE_CONFIG_DIR: login.dir, ANTHROPIC_CONFIG_DIR: login.profiles };
-  assert.deepEqual(folderVars(status), own);
+  // The status check: the same credentials and profiles, its config dir a copy (login-status.test.mjs), never the folder.
+  assert.notEqual(status.CLAUDE_CONFIG_DIR, login.dir);
+  assert.deepEqual(folderVars(status), { ...own, CLAUDE_CONFIG_DIR: status.CLAUDE_CONFIG_DIR });
   // In the person's home, as the sign-in: on macOS the login keychain, where the CLI keeps the tokens, is under it.
   assert.equal(status.HOME, home, "the status check runs in the person's home, as the sign-in does");
   assert.deepEqual(folderVars(signIn), own);
@@ -158,7 +160,7 @@ test("a run on this machine's login on the CLI's default folder reaches the pers
   assert.deepEqual(claude.claudeLoginEnv(login, 'win32'), { CLAUDE_SECURESTORAGE_CONFIG_DIR: login.dir, ANTHROPIC_CONFIG_DIR: login.profiles });
 });
 
-test("this machine's login in a CLAUDE_CONFIG_DIR folder: every use names that folder as config dir and credentials dir, which is where the person's own claude with that variable keeps both, on every platform", async () => {
+test("this machine's login in a CLAUDE_CONFIG_DIR folder: every use names that folder as credentials dir, and every use but the status check (which runs on a copy of its account file) as config dir, which is where the person's own claude with that variable keeps both, on every platform", async () => {
   const folder = scratch();
   const login = { dir: folder, profiles: '/u/p/.config/anthropic' };
   const home = scratch();
@@ -166,7 +168,8 @@ test("this machine's login in a CLAUDE_CONFIG_DIR folder: every use names that f
   // The person's CLI with CLAUDE_CONFIG_DIR=<folder>: credentials dir <folder> (Linux), Keychain item hashed from
   // <folder> (macOS), account <folder>/.claude.json. The credentials dir set to <folder> gives the same item and file.
   const own = { CLAUDE_CONFIG_DIR: folder, CLAUDE_SECURESTORAGE_CONFIG_DIR: folder, ANTHROPIC_CONFIG_DIR: login.profiles };
-  assert.deepEqual(folderVars(status), own);
+  assert.notEqual(status.CLAUDE_CONFIG_DIR, folder);
+  assert.deepEqual(folderVars(status), { ...own, CLAUDE_CONFIG_DIR: status.CLAUDE_CONFIG_DIR });
   assert.deepEqual(folderVars(signIn), own);
   assert.deepEqual(shown, own);
   assert.equal(line, `CLAUDE_CONFIG_DIR=${folder} CLAUDE_SECURESTORAGE_CONFIG_DIR=${folder} ANTHROPIC_CONFIG_DIR=${login.profiles} claude auth login`);

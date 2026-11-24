@@ -337,8 +337,13 @@ test("Open the CLI's sign-in here signs the CLI in at the login's own folder: th
   assert.equal(view.account?.email, "person@example.com", JSON.stringify(view));
   assert.equal(view.folder, login);
   assert.equal(view.sign_in?.state, "signed_in", JSON.stringify(view.sign_in));
-  // The sign-in and every status check asked about the same folder.
-  for (const call of fake.calls()) assert.deepEqual([call.argv, call.config, call.secure], [call.argv, login, login]);
+  // The sign-in and every status check asked about the same folder: the sign-in with it as its config dir, each status
+  // check on a copy of its account file outside it (the CLI rewrites the one in its config dir on start).
+  for (const call of fake.calls()) {
+    assert.equal(call.secure, login, JSON.stringify(call));
+    if (call.argv === "auth status --json") assert.ok(call.config && relative(login, call.config).startsWith(".."), JSON.stringify(call));
+    else assert.equal(call.config, login, JSON.stringify(call));
+  }
 });
 
 test("a sign-in no browser answers within its limit is ended and says so, apart from any other end", { timeout: 120_000 }, async (t) => {
@@ -419,7 +424,7 @@ test("a turn-on that moves the login to another place ends a sign-in that waits,
 
 test("this machine's login is the folder the CLI uses: CLAUDE_CONFIG_DIR when the server has it as an absolute path, else ~/.claude; the view names it", { timeout: 120_000 }, async (t) => {
   assert.equal(loginAt("machine", "/d", { HOME: "/u/p" }).dir, "/u/p/.claude");
-  assert.deepEqual(loginAt("machine", "/d", { HOME: "/u/p", CLAUDE_CONFIG_DIR: "/u/p/elsewhere" }), { dir: "/u/p/elsewhere", profiles: "/u/p/.config/anthropic", shared: true });
+  assert.deepEqual(loginAt("machine", "/d", { HOME: "/u/p", CLAUDE_CONFIG_DIR: "/u/p/elsewhere" }), { dir: "/u/p/elsewhere", profiles: "/u/p/.config/anthropic" });
   assert.equal(loginAt("machine", "/d", { HOME: "/u/p", CLAUDE_CONFIG_DIR: "elsewhere" }).dir, "/u/p/.claude", "a relative one is read against a working directory the server does not share");
   assert.equal(loginAt("agentrun", "/d", { HOME: "/u/p", CLAUDE_CONFIG_DIR: "/u/p/elsewhere" }).dir, "/d/claude-login", "AgentRun's own login is in its data");
 
@@ -473,7 +478,7 @@ test("this machine's login on the CLI's default folder is asked as the person's 
     assert.equal(call.secure, process.platform === "darwin" ? "" : join(home, ".claude"), JSON.stringify(call));
   }
   // The login carries the person's home only on the default folder: that is what tells its variables apart.
-  assert.deepEqual(loginAt("machine", "/d", { HOME: "/u/p" }), { dir: "/u/p/.claude", profiles: "/u/p/.config/anthropic", home: "/u/p", shared: true });
+  assert.deepEqual(loginAt("machine", "/d", { HOME: "/u/p" }), { dir: "/u/p/.claude", profiles: "/u/p/.config/anthropic", home: "/u/p" });
   assert.equal(loginAt("machine", "/d", { HOME: "/u/p", CLAUDE_CONFIG_DIR: "/u/p/elsewhere" }).home, undefined);
 });
 

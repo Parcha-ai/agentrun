@@ -23,14 +23,14 @@ const scratch = () => mkdtempSync(join(ROOT, `t${n++}-`));
 /** What never reaches the CLI on a login. */
 const TOKENS = ['ANTHROPIC_BASE_URL', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN'];
 
-/** A login whose directories no one may open: anything that reads them fails. */
+/** A login whose profiles directory no one may open, so anything that reads it fails; its folder holds no account file
+ *  yet, the one file of it a status check opens (to copy it). */
 function sealedLogin() {
   const base = scratch();
   const login = { dir: join(base, 'login'), profiles: join(base, 'login', 'anthropic') };
   mkdirSync(login.profiles, { recursive: true });
   chmodSync(login.profiles, 0o000);
-  chmodSync(login.dir, 0o000);
-  after(() => { chmodSync(login.dir, 0o700); chmodSync(login.profiles, 0o700); });
+  after(() => { chmodSync(login.profiles, 0o700); });
   return login;
 }
 
@@ -87,7 +87,7 @@ function fakeCli(status) {
   return { cli, seen: () => JSON.parse(readFileSync(join(dir, 'seen.json'), 'utf8')) };
 }
 
-test('the status check asks the CLI with the login directories alone, never opening them, and reads its answer', async () => {
+test('the status check asks the CLI with the login directories, opening only the account file to copy it, and reads its answer', async () => {
   const login = sealedLogin();
   const signedIn = fakeCli({ loggedIn: true, authMethod: 'claude.ai', subscriptionType: 'max' });
   assert.deepEqual(await claudeLoginStatus(signedIn.cli, login), { signedIn: true, method: 'claude.ai', plan: 'max' });
@@ -96,8 +96,9 @@ test('the status check asks the CLI with the login directories alone, never open
   assert.equal(env.CLAUDE_SECURESTORAGE_CONFIG_DIR, login.dir);
   assert.equal(env.ANTHROPIC_CONFIG_DIR, login.profiles);
   for (const name of TOKENS) assert.equal(env[name], undefined, name);
-  // Its config dir is the login's, as the sign-in's is: `auth status` reads the account `auth login` wrote there.
-  assert.equal(env.CLAUDE_CONFIG_DIR, login.dir);
+  // Its config dir is a copy of the account file `auth login` wrote in the login's folder, never that folder, which the
+  // CLI would rewrite on start.
+  assert.ok(env.CLAUDE_CONFIG_DIR && env.CLAUDE_CONFIG_DIR !== login.dir, env.CLAUDE_CONFIG_DIR);
   assert.notEqual(env.HOME, login.dir);
   const signedOut = fakeCli({ loggedIn: false, authMethod: 'none' });
   assert.deepEqual(await claudeLoginStatus(signedOut.cli, login), { signedIn: false, method: 'none' });
