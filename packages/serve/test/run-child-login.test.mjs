@@ -76,12 +76,12 @@ test("a run's own process, where each run is a user of its own, reads and makes 
   assert.deepEqual(asked.filter((name) => name === "claudeLogin"), ["claudeLogin"], "the runner was asked once whether this claim goes on the login");
 });
 
-test("a run's own process whose runner hands it no login (a claim the runner does not put on it) goes on its model keys, never refused for a login, and reads no machine id", { skip: ROOT }, async (t) => {
+test("a run's own process whose runner hands it no login (a claim the runner does not put on it) is not on the login: it reads no token and no machine id, and goes on to build its adapter", { skip: ROOT }, async (t) => {
   const asked = [];
   await assert.rejects(childClaim(t, () => undefined, asked), (error) => {
     assert.doesNotMatch(error.message, /EACCES|machine-id/, `the server's machine-id file is never read or made here: ${error.stack}`);
-    assert.doesNotMatch(error.message, /handed it no Claude Code login/, `the runner's answer (no login) is the decision: ${error.stack}`);
-    assert.match(error.message, /ANTHROPIC_API_KEY|model key/i, `with no login the claim goes on the model keys, and has none here: ${error.stack}`);
+    // Past its login and its model choice to its adapter, which finds no install of the CLI here (the test lays none).
+    assert.match(error.message, /^Claude Code \(\S+\) is not installed in /, `the runner's answer (no login) is the decision, and the claim goes on without one: ${error.stack}`);
     return true;
   });
   assert.ok(asked.includes("claudeLogin"), `the runner was asked: ${asked.join(", ")}`);

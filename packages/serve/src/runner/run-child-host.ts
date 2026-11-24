@@ -70,7 +70,7 @@ import { createDispatchLoop } from "./dispatch.js";
 import { refuseRecipeTriggerRun, resolveRunnerLoop, withSavedGatewayDeps } from "./harness-loops.js";
 import { isWorkflowRevision } from "./workflow-loop.js";
 import { loginForRun } from "../claude-login.js";
-import { agentRunLogin, loginRunnerInProcess, loginTokensFor } from "../claude-login-token.js";
+import { agentRunLogin, LOGIN_NOT_HANDED, loginRunnerInProcess, loginTokensFor } from "../claude-login-token.js";
 import type { Held, HeldComputerAsk } from "./held.js";
 import { heardComputerHold } from "./computer-journal.js";
 import { type Claim, type Command, type CommandOutcome, type HeldState, type Loop, type LoopDeps, type LoopEnd, type LoopFactory, type StopReason, ClaimRefused } from "./loop-contract.js";
@@ -740,11 +740,14 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
     // or refused); never its folder or its refresh token. Each token is carried into the runner's redactor for this run
     // (redact.ts carry) before it is handed, a renewed one too: model text that repeats it is cut from the run's journal
     // as the runner writes it (runner.ts fenced), from what it stages and from its rows, as the run's own tool keys are.
+    // This answer is the claim's one decision whether it goes on the login: none, it does not; a login other than
+    // AgentRun's own folder is refused in words, never left to a model key. The process reads no setting or machine id.
     claudeLogin: async () => {
       if (await runKeyed()) return undefined;
       const harness = launch.harness ?? (revision.body as { harness?: string }).harness;
       const at = await loginForRun(store.settings, deps.data, deps.env ?? {}, harness, launch.place);
-      if (!at || !agentRunLogin(at, deps.data)) return undefined;
+      if (!at) return undefined;
+      if (!agentRunLogin(at, deps.data)) throw new ClaimRefused(LOGIN_NOT_HANDED);
       const carry = cut.carry;
       if (!carry) throw new ClaimRefused("This runner has no redactor that can cut the login's token from what its run writes, so it hands none.");
       const tokens = loginTokensFor(at);

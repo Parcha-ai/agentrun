@@ -368,6 +368,21 @@ test("every token of the login the runner hands a run's process (held claudeLogi
   }
 });
 
+test("the runner's answer to held claudeLogin is the claim's one decision whether it goes on the login: none with the login off, and a claim on this machine's own login refused in words, never left to a model key", async (t) => {
+  const { store } = await storeOn(t);
+  const data = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "held-login-answer-"));
+  t.after(() => rmSync(data, { recursive: true, force: true }));
+  const { heldRedactor, keepText } = await import("../dist/runner/redact.js");
+  const claimOf = (runId) => host.heldFor({ store, sealKey: KEY, env: {}, data }, { claim: { runId, epoch: 1 }, run: { agentId: "agent-own", revisionId: "rev-own", signInHanded: null }, launch: { input: { content: "Hello." }, harness: "claude-agent", place: { mode: "runner" } }, revision: { kind: "agentic", body: { harness: "claude-agent" } }, claimed: {} }, heldRedactor(keepText), () => {}).held;
+  assert.equal(await claimOf("run-own").claudeLogin(), undefined, "the login off: none, so the claim goes on the model keys");
+  await store.settings.put("claude_login", settingFor("machine", data));
+  await assert.rejects(claimOf("run-own").claudeLogin(), (error) => {
+    assert.equal(error.name, "ClaimRefused", `refused for good: ${error.stack}`);
+    assert.equal(error.message, loginToken.LOGIN_NOT_HANDED);
+    return true;
+  });
+});
+
 test("the install a run's process asks for is readable by every user and writable by none, an install from before installs were shared too", { skip: process.getuid?.() === 0 && "root reads every folder" }, async (t) => {
   const { store } = await storeOn(t);
   const data = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "held-install-"));

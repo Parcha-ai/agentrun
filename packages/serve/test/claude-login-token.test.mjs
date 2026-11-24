@@ -1593,7 +1593,7 @@ test("every value the runner reads from the login is held for redaction, and eac
   assert.ok(held.includes(access) && held.includes(refresh), "the access and the refresh token are this process's secrets, cut from what it writes");
 });
 
-test("a run's own process holds each token its runner hands before its CLI has it, tells its runner a token Anthropic refused, and with no reader handed it is refused in words, never moved to a model key", async (t) => {
+test("a run's own process holds each token its runner hands before its CLI has it, and tells its runner a token Anthropic refused", async (t) => {
   assert.equal(typeof tokens.heldTokenLogin, "function", "a run's own process wraps its runner's reader (claude-login-token.ts heldTokenLogin)");
   const handed = fake("access-handed");
   const redacted = [];
@@ -1605,12 +1605,6 @@ test("a run's own process holds each token its runner hands before its CLI has i
   assert.deepEqual(Object.keys(login), ["token", "refused"], "a reader alone: no folder, no refresh token");
   await login.refused(handed);
   assert.deepEqual(told, [handed], "the refused token told to the runner, which renews it");
-  assert.throws(() => tokens.heldTokenLogin(undefined, () => {}), (error) => {
-    assert.equal(error.message, tokens.LOGIN_NOT_HANDED);
-    assert.match(error.message, /AGENTRUN_RUN_USER=same/);
-    assert.match(error.message, /model_key/);
-    return true;
-  });
 });
 
 test("the pinned CLI's own write of a login (credentials-cli-2.1.286.json) reads: its access token, to its end; within the margin it is renewed with the login's own client id and scopes", async (t) => {

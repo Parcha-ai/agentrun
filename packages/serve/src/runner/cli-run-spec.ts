@@ -500,9 +500,12 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // carries only where it is, and its CLI says it is signed in before the run starts. A run that brought its own key
   // runs on that key, and a run in a sandbox place on the model keys. A run's own process (a user of its own, which
   // cannot open the login's folder) goes on its runner's reader of the login's access token alone (held.ts claudeLogin),
-  // each token it hands held by the redactors and this process's own; its CLI then never gets a refresh token.
-  const atLogin = keyed ? undefined : await loginForRun(deps.store.settings, deps.data, deps.env ?? {}, name, launch.place);
-  const login: RunLogin | undefined = !atLogin || deps.sealKey ? atLogin : heldTokenLogin(await runnerSeam()?.claudeLogin(), hold);
+  // each token it hands held by the redactors and this process's own; its CLI then never gets a refresh token. Whether
+  // such a claim goes on the login at all is its runner's answer alone (none: it does not): the setting names the
+  // machine by the id in the server's data folder (claude-login.ts machineId), which the run's user can neither read nor
+  // make there.
+  const handed = keyed || deps.sealKey ? undefined : await runnerSeam()?.claudeLogin();
+  const login: RunLogin | undefined = keyed ? undefined : handed ? heldTokenLogin(handed, hold) : deps.sealKey ? await loginForRun(deps.store.settings, deps.data, deps.env ?? {}, name, launch.place) : undefined;
   const env = withClaudeLogin(cliRunEnv(deps.env, deps.data, claimed, launch.plane, runKey, claim), login);
   // A plan-billed recipe's keys saved for its harness alone (harness-keys.ts), opened at each claim for this run's harness
   // and no other (a run's own process asks its runner, which opens its claim's own: held.ts harnessKeys), held by the
