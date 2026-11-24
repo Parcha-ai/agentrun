@@ -61,6 +61,7 @@ your harness's name. The ones that change what an owner sees:
 | Fact | What serve does with it |
 | --- | --- |
 | `wire` | Which models the harness is offered and which key rows name it. On `anthropic-messages` that is Anthropic's models, on the Anthropic and OpenRouter key rows; on `openai-responses`, OpenAI's, on the OpenAI and OpenRouter rows. |
+| `wire` (a translated route) | The models the runner's route translates onto that wire are offered too, whatever the harness. Today that is this machine's Ollama models on `anthropic-messages`, at $0, with no key. Such a model's provider comes with a `fetch`: the route's own, answering at the provider's `origin`. A harness forwards its model requests with it: a module hands `ModuleLaunch.fetch` to its model proxy (`startModelProxy`'s `fetch`), and a built-in adapter passes it as its `fetch` option. A harness that drops it sends those requests to the network, where nothing answers. |
 | `ownModel` | Set it when the harness runs only its wire's vendor's models, never the gateway's default. |
 | `normalizeModel` | How the model id is written for your provider (Anthropic's ids have dashes where OpenRouter's have dots). |
 | `steer` | Whether a message sent mid-turn reaches the turn in flight. ACP has no steer, so an ACP agent says `false`. |

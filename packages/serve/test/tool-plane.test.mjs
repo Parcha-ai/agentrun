@@ -9,7 +9,7 @@ import { randomBytes } from "node:crypto";
 import { test } from "node:test";
 import { BOUND_TOOLS, TOOLS, toolsView } from "../dist/tools.js";
 import { CAPABILITIES, explainCapability, explainsView, planeFor, PROVIDERS, recheckPlane, relaunchPlane, settingsIssues, TOOL_SETTINGS_KEY } from "../dist/tool-plane.js";
-import { resolveOnBuiltin } from "./gate-support.mjs";
+import { builtinFacts, resolveOnBuiltin } from "./gate-support.mjs";
 import { tableTools } from "../dist/tool-list.js";
 import { openSqliteStore, STORE_FILE } from "../dist/store/sqlite/store.js";
 import { CANARY } from "./fixtures/faux-parallel.mjs";
@@ -362,6 +362,22 @@ test("the run check resolves search as the run does: a workflow picking native s
   assert.doesNotMatch(said(await blockersOf(env, claude, {})), /web_search/, "uncapped: Claude's own search");
   assert.match(said(await blockersOf(env, claude, {}, { capped: true })), /The tool web_search does not run here on claude-agent: no native search for claude-agent under a spend cap: Claude's own search has per-use fees a spend cap cannot reserve yet/, "capped: refused, its fees never let past the cap");
   assert.doesNotMatch(said(await blockersOf(env, { ...claude, toolSettings: {} }, {}, { capped: true })), /web_search/, "capped on auto: keyless Exa, nothing to refuse");
+});
+
+test("on a model the route translates onto the harness's wire (an Ollama model on Messages), the harness's own search never runs: native is unavailable, auto goes to Parallel or keyless Firecrawl and says why, in the resolver, capabilities and the run check", async () => {
+  const ollama = "ollama/qwen3:8b";
+  const unavailable = "unavailable: no native search for claude-agent on a model the route translates";
+  const search = (input) => explainCapability("web_search", { ...base, facts: builtinFacts("claude-agent"), harness: "claude-agent", model: ollama, ...input });
+  assert.deepEqual(search({ pick: "native" }), { resolves: unavailable, why: "no native search for claude-agent on a model the route translates" }, "native picked: never Claude's own search");
+  assert.deepEqual(search({ override: "native" }).resolves, unavailable, "native picked for the agent: the same");
+  assert.deepEqual(search({}), { resolves: "firecrawl-keyless", why: "Claude's own search does not run on a model the route translates; Firecrawl's free keyless search, no key, keyless Exa behind it" }, "auto: keyless Firecrawl, never an explicit pick of a search that cannot run");
+  assert.deepEqual(search({ parallelKey: true, parallelKeyFrom: "server" }), { resolves: "parallel", why: "Claude's own search does not run on a model the route translates; your Parallel key (server)" }, "auto with the server's Parallel key");
+  assert.equal(search({ model: "anthropic/claude-sonnet-5-5", pick: "native" }).resolves, "native", "a model it asks itself: Claude's own search, as before");
+  assert.equal(explainsView({}, { web_search: { provider: "native" } }, {}, ollama).web_search.resolves["claude-agent"], unavailable, "capabilities say so");
+  const said = (blockers) => blockers.map((blocker) => blocker.message).join(" ");
+  const claude = { kind: "agentic", harness: "claude-agent", model: ollama, instructions: "Search the web.", tools: ["web_search"], toolSettings: { web_search: { provider: "native" } } };
+  assert.match(said(await blockersOf({}, claude, {})), /The tool web_search does not run here on claude-agent: no native search for claude-agent on a model the route translates\./, "the run check refuses it before it starts");
+  assert.doesNotMatch(said(await blockersOf({}, { ...claude, toolSettings: {} }, {})), /web_search/, "on auto: keyless Firecrawl, nothing to refuse");
 });
 
 test("a run relaunched while a capability is set to deny is handed it denied; launched, it is handed the provider a held call would use, and the gate refuses each call", () => {
