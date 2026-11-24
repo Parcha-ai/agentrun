@@ -131,24 +131,209 @@ const prefixFixed = (kind: string, prefixes: readonly string[], cls: Class, coun
   scan: (text, at, prefix) => (fixed(text, at + prefix.length, count, cls) ? { start: at, end: at + prefix.length + count, next: at + 1 } : none(at + 1)),
 });
 
-const PRIVATE_KEY_HEADER = only(` ${UPPER}${DIGIT}`);
-/** A private key block's header: "-----BEGIN", its key type (RSA, EC, OPENSSH, ENCRYPTED) at most 64 characters each
- *  side of "PRIVATE KEY", then "-----". Each start reads at most 140 characters. */
+const PRIVATE_KEY_TYPE = only(` ${UPPER}${DIGIT}`);
+/** Where a private key block's armor line at `at` ends, past its closing "-----", or -1. Its opening ("-----BEGIN" or
+ *  "-----END", `head` characters) is already read; then its key type (RSA, EC, OPENSSH, ENCRYPTED, an armored key's
+ *  "PGP ... BLOCK"), at most 64 characters each side of "PRIVATE KEY", then "-----". It reads at most 140 characters,
+ *  and 11 at each place "PRIVATE KEY" may stand. */
+function armorEnd(text: string, at: number, head: number): number {
+  const from = at + head;
+  let end = from;
+  while (end < text.length && end - from < 140 && PRIVATE_KEY_TYPE(text.charCodeAt(end))) end++;
+  scanned.chars += end - from + 1;
+  const length = end - from;
+  if (length >= 140 || !text.startsWith("-----", end)) return -1;
+  for (let i = Math.max(0, length - 75); i <= Math.min(64, length - 11); i++) {
+    scanned.chars += 11;
+    if (text.startsWith("PRIVATE KEY", from + i)) return end + 5;
+  }
+  return -1;
+}
+
+/** The most characters between a key's header and its END line, and the most base64 characters on a body line. */
+const KEY_BODY_MAX = 16384;
+/** The most lines of a key's body read when no END line is in reach. */
+const KEY_LINES = 1024;
+/** The most characters of a legacy PEM's or armored key's header line after its colon. */
+const KEY_HEADER_MAX = 256;
+const KEY_BASE64 = only(`${ALNUM}+=`);
+/** A header line's text: any character but a line break, a backslash, a quote or a "<". */
+const KEY_HEADER_TEXT: Class = (code) =>
+  code !== 10 && code !== 13 && code !== 92 && code !== 34 && code !== 39 && code !== 60;
+const KEY_HEADER_WORDS = ["Proc-Type:", "DEK-Info:", "Version:", "Comment:"];
+
+/** How many backslashes stand at `at`, at most 9 read: an escape takes 1 to 8 (a string four deep); 9 is too many. */
+function backslashes(text: string, at: number): number {
+  let end = at;
+  while (end < text.length && end - at < 9 && text.charCodeAt(end) === 92) end++;
+  scanned.chars += end - at + 1;
+  return end - at;
+}
+
+/** Where an escape at `at` of one of `chars`, after 1 to 8 backslashes, ends, or -1. */
+function escapeEnd(text: string, at: number, chars: string): number {
+  const count = backslashes(text, at);
+  const ok = count >= 1 && count <= 8 && at + count < text.length && chars.includes(text[at + count]!);
+  return ok ? at + count + 1 : -1;
+}
+
+/** Where each spelling of a line break at `at` ends, in the order the key's reading tries them: CRLF, then CR alone;
+ *  LF; an escaped CR followed by an escaped LF, then the CR alone; an escaped LF. */
+function keyBreaks(text: string, at: number): number[] {
+  if (at >= text.length) return [];
+  scanned.chars += 2;
+  const code = text.charCodeAt(at);
+  if (code === 13) return text.charCodeAt(at + 1) === 10 ? [at + 2, at + 1] : [at + 1];
+  if (code === 10) return [at + 1];
+  if (code !== 92) return [];
+  const count = backslashes(text, at);
+  if (count > 8) return [];
+  const after = text[at + count];
+  if (after === "n") return [at + count + 1];
+  if (after !== "r") return [];
+  const lf = escapeEnd(text, at + count + 1, "n");
+  return lf >= 0 ? [lf, at + count + 1] : [at + count + 1];
+}
+
+/** Where the blanks at `at` end: spaces, tabs and escaped tabs. */
+function keyBlanks(text: string, at: number): number {
+  let end = at;
+  for (;;) {
+    const code = text.charCodeAt(end);
+    scanned.chars += 1;
+    if (code === 32 || code === 9) end++;
+    else if (code !== 92) return end;
+    else {
+      const tab = escapeEnd(text, end, "t");
+      if (tab < 0) return end;
+      end = tab;
+    }
+  }
+}
+
+/** Where the base64 at `at` ends: at most KEY_BODY_MAX of its characters, each a letter, a digit, "+", "=" or a "/"
+ *  (maybe escaped, "\/"). */
+function keyBase64(text: string, at: number): number {
+  let end = at;
+  for (let count = 0; count < KEY_BODY_MAX; count++) {
+    const code = text.charCodeAt(end);
+    scanned.chars += 1;
+    if (KEY_BASE64(code) || code === 47) end++;
+    else if (code !== 92) return end;
+    else {
+      const slash = escapeEnd(text, end, "/");
+      if (slash < 0) return end;
+      end = slash;
+    }
+  }
+  return end;
+}
+
+/** Where a legacy PEM's or armored key's header line at `at` ends ("Proc-Type:", "DEK-Info:", "Version:" or "Comment:",
+ *  then at most KEY_HEADER_MAX characters of its text), or -1. */
+function keyHeaderLine(text: string, at: number): number {
+  for (const word of KEY_HEADER_WORDS) {
+    scanned.chars += word.length;
+    if (!text.startsWith(word, at)) continue;
+    const from = at + word.length;
+    let end = from;
+    while (end < text.length && end - from < KEY_HEADER_MAX && KEY_HEADER_TEXT(text.charCodeAt(end))) end++;
+    scanned.chars += end - from + 1;
+    return end;
+  }
+  return -1;
+}
+
+/** Whether a body line may end at `at`: a line break or a closing quote (either maybe escaped), a tag's "<", the text's
+ *  end. */
+function keyLineEnds(text: string, at: number): boolean {
+  if (at >= text.length) return true;
+  scanned.chars += 1;
+  const code = text.charCodeAt(at);
+  if (code === 10 || code === 13 || code === 34 || code === 39 || code === 60) return true;
+  return code === 92 && escapeEnd(text, at, `rn"'`) >= 0;
+}
+
+/** Where a body line at `at` ends, or -1: blanks, then base64, or a header line, or nothing, then blanks, at a place a
+ *  line may end. Each is tried in that order and the first that ends at such a place is the line. */
+function keyLine(text: string, at: number): number {
+  const start = keyBlanks(text, at);
+  const base64 = keyBase64(text, start);
+  if (base64 > start) {
+    const end = keyBlanks(text, base64);
+    if (keyLineEnds(text, end)) return end;
+  }
+  const header = keyHeaderLine(text, start);
+  if (header >= 0) {
+    const end = keyBlanks(text, header);
+    if (keyLineEnds(text, end)) return end;
+  }
+  return keyLineEnds(text, start) ? start : -1;
+}
+
+/** Where a line break at `at` and the body line after it end, the break's spellings tried in order, or -1. */
+function keyNextLine(text: string, at: number): number {
+  for (const start of keyBreaks(text, at)) {
+    const end = keyLine(text, start);
+    if (end >= 0) return end;
+  }
+  return -1;
+}
+
+/** Where the END line of a block whose header ends at `header` ends, or -1: the first "-----" after the header, at most
+ *  KEY_BODY_MAX characters on, must start one. The search stops at that "-----", so a reading from one header never
+ *  passes the next header's dashes. */
+function keyEndLine(text: string, header: number): number {
+  const dashes = find(text, "-----", header);
+  if (dashes < 0 || dashes - header > KEY_BODY_MAX) return -1;
+  scanned.chars += 3;
+  return text.startsWith("-----END", dashes) ? armorEnd(text, dashes, 8) : -1;
+}
+
+/** Where the body lines after a header that ends at `header` end, or -1 when not even an empty line stands there: a
+ *  first line (after a line break, or glued to the header), then at most KEY_LINES - 1 more, each after a line break,
+ *  as long as one follows. */
+function keyBodyLines(text: string, header: number): number {
+  let end = keyNextLine(text, header);
+  if (end < 0) end = keyLine(text, header);
+  for (let lines = 1; end >= 0 && lines < KEY_LINES; lines++) {
+    const next = keyNextLine(text, end);
+    if (next < 0) break;
+    end = next;
+  }
+  return end;
+}
+
+/** A private key block, whole: its BEGIN line through its body to its END line, the key itself, not its header alone (a
+ *  cut read serves a run's whole file). Ported from #3617's rule, one regex there, read here by hand with every
+ *  character counted.
+ *  - With its END line within KEY_BODY_MAX characters, all between is cut, whatever wraps the body's lines (a code
+ *    string literal on each, a "#" or ">" before each, an XML or HTML line break, an escape, an armored key's headers):
+ *    the body is any character but a "-" that starts "-----", so the END line can only start at the first "-----"
+ *    after the header, and the reading from one header stops there.
+ *  - With no END line in reach (a key cut short, one past the bound, one the edge of a window key-refusal.ts reads
+ *    crosses), it is cut through its body's lines: the first maybe glued to its header, at most KEY_LINES in all. A
+ *    line break is LF, CRLF or CR, or one escaped in a quoted string ("\n", "\r\n", "\\n" in a string within a string:
+ *    at most 8 backslashes, four strings deep). A line is blanks (a space, a tab, or an escaped tab), then base64 of at
+ *    most KEY_BODY_MAX characters (its slashes maybe escaped, "\/"), or a legacy PEM's or armored key's header
+ *    (Proc-Type, DEK-Info, Version, Comment) of at most KEY_HEADER_MAX after its colon, or nothing (a blank line), then
+ *    blanks; it ends at a line break or a closing quote (either maybe escaped), an XML or HTML tag's "<", or the text's
+ *    end. Text after the body that is no such line (prose, a field) stays.
+ *  - A header with not even an empty line after it (prose on its line, another header glued to it) is cut alone, as
+ *    the header shape before this one cut it.
+ *  A block read whole or through its lines reads on from its end: a "-----BEGIN" inside it can only stand in a header
+ *  line's text, already cut. Each part is bounded, a line break's spellings try the line after it at most three times,
+ *  and the search for the END line stops at the next "-----": the reading stays linear. */
 const PRIVATE_KEY: Shape = {
   kind: "private key block",
   prefixes: ["-----BEGIN"],
   scan(text, at) {
-    const from = at + 10;
-    let end = from;
-    while (end < text.length && end - from < 140 && PRIVATE_KEY_HEADER(text.charCodeAt(end))) end++;
-    scanned.chars += end - from + 1;
-    const length = end - from;
-    if (length >= 140 || !text.startsWith("-----", end)) return none(at + 1);
-    for (let i = Math.max(0, length - 75); i <= Math.min(64, length - 11); i++) {
-      scanned.chars += 11;
-      if (text.startsWith("PRIVATE KEY", from + i)) return { start: at, end: end + 5, next: at + 1 };
-    }
-    return none(at + 1);
+    const header = armorEnd(text, at, 10);
+    if (header < 0) return none(at + 1);
+    const whole = keyEndLine(text, header);
+    if (whole >= 0) return { start: at, end: whole, next: whole };
+    const lines = keyBodyLines(text, header);
+    return lines >= 0 ? { start: at, end: lines, next: lines } : { start: at, end: header, next: at + 1 };
   },
 };
 
