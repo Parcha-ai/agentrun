@@ -6,6 +6,7 @@ import { toolOffers } from "@/lib/agentForm";
 import { createClient } from "@/lib/client";
 import type { Places } from "@/lib/place";
 import { laneStart } from "@/lib/race";
+import { pick, picker } from "@/test/picker";
 
 // #/races/new: the task, and 2 to 4 lanes (a harness and a model each, from the harnesses this server runs). Start sends
 // one inline run per lane (POST /v2/runs), each under its own Idempotency-Key, then opens the race. A lane the server
@@ -42,6 +43,7 @@ type Made = Record<string, unknown> & { id: string };
 function mount(answer: (sent: Sent) => Response | Promise<Response>, places: Places | null = null, agent?: (made: Made) => Response | Promise<Response> | undefined) {
   const sent: Sent[] = [];
   const made: Made[] = [];
+  const archived: string[] = [];
   const went: string[] = [];
   const fetch = (async (url: string, init?: RequestInit) => {
     const path = new URL(url, "http://serve.test").pathname;
@@ -52,7 +54,18 @@ function mount(answer: (sent: Sent) => Response | Promise<Response>, places: Pla
       if (theirs) return theirs;
       if (made.some((m) => m.id === definition.id)) return json(409, { error: { code: "agent_exists", message: `an agent ${definition.id} exists here`, retryable: false } });
       made.push(definition);
-      return json(201, { agent_id: definition.id, revision: "rev-1", kind: "agentic", definition });
+      return json(201, { agent_id: definition.id, revision: `rev-${definition.id}`, kind: "agentic", definition });
+    }
+    // Every agent here was edited once in the Agents list since it was made: version 2 is current, newest first.
+    const revisionsOf = /^\/v2\/agents\/([^/]+)\/revisions$/.exec(path);
+    if (revisionsOf) {
+      const id = decodeURIComponent(revisionsOf[1]);
+      return json(200, { revisions: [{ revision: `rev-${id}-edited`, version: 2, current: true }, { revision: `rev-${id}`, version: 1, current: false }], next_cursor: null });
+    }
+    const archiveOf = /^\/v2\/agents\/([^/]+)\/archive$/.exec(path);
+    if (archiveOf && init?.method === "POST") {
+      archived.push(decodeURIComponent(archiveOf[1]));
+      return json(200, { agent_id: decodeURIComponent(archiveOf[1]), archived_at: "2026-11-24T23:00:00Z" });
     }
     const runOf = /^\/v2\/agents\/([^/]+)\/runs$/.exec(path);
     if (!runOf || init?.method !== "POST") return json(404, { error: { code: "not_found", message: path, retryable: false } });
@@ -63,7 +76,7 @@ function mount(answer: (sent: Sent) => Response | Promise<Response>, places: Pla
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
   act(() => root!.render(createElement(RaceStart, { v2: createClient({ fetch }), harnesses: HARNESSES, tools: TOOLS, places, go: (to: string) => void went.push(to), label: LABEL })));
-  return { host, sent, made, went };
+  return { host, sent, made, archived, went };
 }
 const started = (sent: Sent) => json(202, { run_id: `run-${sent.lane}`, agent_id: sent.agentId, status: "queued", state: "working", labels: sent.body.labels });
 const button = (host: Element, label: string) => [...host.querySelectorAll("button")].find((b) => b.textContent?.trim() === label);
@@ -91,7 +104,8 @@ describe("RaceStart", () => {
     expect(made).toEqual([one.agent, two.agent]);
     // No external reference: the console's own agents, which it archives, edits and deletes as any other.
     for (const m of made) expect(m).not.toHaveProperty("external");
-    expect(sent.map((s) => [s.agentId, s.body])).toEqual([[one.agent.id, one.run], [two.agent.id, two.run]]);
+    // Each run pinned to its agent's first revision, the one the create answered.
+    expect(sent.map((s) => [s.agentId, s.body])).toEqual([[one.agent.id, { ...one.run, revision: `rev-${one.agent.id}` }], [two.agent.id, { ...two.run, revision: `rev-${two.agent.id}` }]]);
     expect(new Set(sent.map((s) => s.key)).size).toBe(2);
     expect(went).toEqual([`#/races/${LABEL}`]);
   });
@@ -180,11 +194,35 @@ describe("RaceStart", () => {
     await settle();
     expect(made.filter((m) => m.id.startsWith(`race-${LABEL}-2-`)), "lane 2's agent, made once").toHaveLength(1);
     expect(sent.map((s) => [s.lane, s.agentId])).toEqual([["1", made[0].id], ["2", kept[0].id]]);
+    // The agent was edited in the Agents list since it was made: the lane still runs its first revision, the model the
+    // race shows.
+    expect(sent[1].body.revision).toBe(`rev-${kept[0].id}`);
     expect(went).toEqual([`#/races/${LABEL}`]);
   });
 
+  it("a refused lane picked again lets its agent go (archived, so the Agents list keeps none of it) and makes a new one", async () => {
+    let refuse = true;
+    const { host, sent, made, archived } = mount((one) => one.lane === "2" && refuse
+      ? json(409, { error: { code: "agent_not_runnable", message: "That model doesn't run on this server: no key for it.", retryable: false } })
+      : started(one));
+    await type(host, TASK);
+    await act(async () => { button(host, "Start the race")!.click(); });
+    await settle();
+    const refusedAgent = sent.find((s) => s.lane === "2")!.agentId;
+    expect(archived).toEqual([]);
+    await pick(picker(host.querySelector('[data-race-lane="2"]')!, "Lane 2 harness")!, "pi");
+    await settle();
+    expect(archived, "the refused pick's agent").toEqual([refusedAgent]);
+    refuse = false;
+    await act(async () => { button(host, "Start the lanes left")!.click(); });
+    await settle();
+    const again = sent.filter((s) => s.lane === "2").at(-1)!;
+    expect(again.agentId).not.toBe(refusedAgent);
+    expect(made.find((m) => m.id === again.agentId)?.harness).toBe("pi");
+  });
+
   it("a refused last lane can be removed, since its refusal started nothing; with every lane left started, the race opens", async () => {
-    const { host, sent, went } = mount((one) => one.lane === "3"
+    const { host, sent, archived, went } = mount((one) => one.lane === "3"
       ? json(409, { error: { code: "agent_not_runnable", message: "That model doesn't run on this server: no key for it.", retryable: false } })
       : started(one));
     await act(async () => { button(host, "Add a lane")!.click(); });
@@ -197,6 +235,7 @@ describe("RaceStart", () => {
     await settle();
     expect(host.querySelectorAll("[data-race-lane]")).toHaveLength(2);
     expect(sent.map((s) => s.lane)).toEqual(["1", "2", "3"]);
+    expect(archived, "the removed lane's agent, which never ran").toEqual([sent[2].agentId]);
     expect(went).toEqual([`#/races/${LABEL}`]);
   });
 
