@@ -38,7 +38,7 @@ const page = await web.fetch("https://example.org/", { offset: 0, maxChars: 20_0
   and transport.
 
 Each call returns its `answer` and a `receipt`, `{ op, asked, provider, tries, classifier, wall, injection, out, cost,
-cache? }`. `tries` lists every provider asked, with its outcome. `cost` holds the fees of the requests sent.
+cache?, unsifted? }`. `tries` lists every provider asked, with its outcome. `cost` holds the fees of the requests sent.
 `classifier` is `"off"` unless a decider is given (below); `wall` and `injection` are `"unjudged"`.
 
 ## The classifier step
@@ -95,6 +95,9 @@ const { answer, receipt } = await web.search("widgets delaware", { n: 5, task: "
   place in the page. It is empty when the step did not run. `tokens` are the provider's
   when it reports them, else counted on the request by `count`, else null. `temperature_sent` and `temperature_applied` (true, false or "unknown") are what
   the provider says its request carried; one that says nothing sent none.
+- `receipt.unsifted`, in a run with a decider, is the text a web with none would have given the model for the same call
+  (a fetch's part as asked, without `lookingFor`), whether the step ran, was skipped or failed: set beside the text the
+  model read, it is what the step saved. A web with no decider writes none.
 - Each decider request goes through `pay` before it is sent, held at the most it may cost (`holdOf` its `price`:
   `JEV_PUBLISHED_PRICING`, `PARALLEL_DECISION_PRICE`, `anthropicDecisionPrice()`), and is a line of its own in
   `receipt.cost` (`"jev's decision"`). One refused unbilled (configuration, auth, no connection) settles at $0; one the
