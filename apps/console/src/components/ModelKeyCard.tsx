@@ -28,8 +28,9 @@ const apiError = (e: unknown): ApiError => (e instanceof ClientError ? e.toApiEr
  *  page keeps the card while one waits), and once signed in the card says who and OpenAI's words on usage until `onDone`.
  *  `harnesses`: the capabilities' harnesses, listed as what runs here. On a gateway server (`source` `gateway`) whose
  *  default isn't the plan's, neither the sign-in nor a key runs an agent: the card says what does, the gateway's model,
- *  or why serve refuses the gateway's address (GET /v2/settings/model-gateway's `problem`). */
-export function ModelKeyCard({ v2, needs, model, onSaved, writable, whyNot = "sign_in", plan, onPlan, onDone, harnesses, source, routePrefix }: { v2: Client; needs?: "key" | "model" | null; model?: string | null; onSaved?: () => void; writable: boolean; whyNot?: SecretsWhyNot; plan?: ChatGPTView | null; onPlan?: (v: ChatGPTView) => void; onDone?: () => void; harnesses?: readonly HarnessInfo[]; source?: Capabilities["models"]["source"]; routePrefix?: string | null }) {
+ *  or why serve refuses the gateway's address (GET /v2/settings/model-gateway's `problem`), read again with each new read
+ *  of the capabilities (`capsRead`, a new value each time: an address fixed at a restart then stops reading refused). */
+export function ModelKeyCard({ v2, needs, model, onSaved, writable, whyNot = "sign_in", plan, onPlan, onDone, harnesses, source, routePrefix, capsRead }: { v2: Client; needs?: "key" | "model" | null; model?: string | null; onSaved?: () => void; writable: boolean; whyNot?: SecretsWhyNot; plan?: ChatGPTView | null; onPlan?: (v: ChatGPTView) => void; onDone?: () => void; harnesses?: readonly HarnessInfo[]; source?: Capabilities["models"]["source"]; routePrefix?: string | null; capsRead?: unknown }) {
   const [rows, setRows] = useState<ToolKey[] | null>(null);
   const [loadError, setLoadError] = useState<ApiError | null>(null);
   const [pick, setPick] = useState<string | null>(null);
@@ -52,7 +53,7 @@ export function ModelKeyCard({ v2, needs, model, onSaved, writable, whyNot = "si
     let live = true;
     v2.modelGateway().then((v) => { if (live) setGateway({ problem: v.problem, fromEnv: v.source === "env" }); }, () => { if (live) setGateway(undefined); });
     return () => { live = false; };
-  }, [v2, onGateway]);
+  }, [v2, onGateway, capsRead]);
   const load = () => {
     const n = ++asked.current;
     v2.listToolKeys()

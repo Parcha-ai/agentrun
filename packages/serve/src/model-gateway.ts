@@ -206,10 +206,11 @@ export type ModelGatewayDeps = {
 /** The variables of the gateway's fields that the environment sets. */
 const setAtStart = (env: KeyEnv): string[] => [BASE_VAR, IDS_VAR, ...TIERS.map((tier) => TIER_VARS[tier]), GATEWAY_KEY_ENV].filter((name) => envValue(env, name) !== undefined);
 
-/** Why `value` may not be the gateway's address (gatewayBase's one rule, under the field's name), or undefined. */
-function baseProblem(field: string, value: string): string | undefined {
+/** Why `value` may not be the gateway's address, under the field's name, or undefined: by `rule`, the one address rule
+ *  (gatewayBase) unless given another. */
+function baseProblem(field: string, value: string, rule: (field: string, value: string) => unknown = gatewayBase): string | undefined {
   try {
-    gatewayBase(field, value);
+    rule(field, value);
     return undefined;
   } catch (error) {
     if (error instanceof HarnessUnavailable) return error.message;
@@ -217,17 +218,11 @@ function baseProblem(field: string, value: string): string | undefined {
   }
 }
 
-/** Why a run refuses `value` as the gateway (modelGatewayBase: the one rule, and an API that is no gateway's, Particle's),
- *  in a run's words, or null: the view's `problem`, which the console's first screen shows. */
-function runProblem(field: string, value: string): string | null {
-  try {
-    modelGatewayBase(value, field);
-    return null;
-  } catch (error) {
-    if (error instanceof HarnessUnavailable) return error.message;
-    throw error;
-  }
-}
+/** The rule a run holds the gateway to (modelGatewayBase: the address rule, and an API that is no gateway's, Particle's). */
+const runRule = (field: string, value: string): string => modelGatewayBase(value, field);
+/** Why a run refuses `value` as the gateway, in a run's words, or null: the view's `problem`, which the console's first
+ *  screen shows, and what a save refuses. */
+const runProblem = (field: string, value: string): string | null => baseProblem(field, value, runRule) ?? null;
 
 const originOf = (base: string): string => new URL(gatewayBase("base_url", base)).origin;
 
@@ -283,7 +278,8 @@ export async function saveGateway(deps: ModelGatewayDeps, body: unknown): Promis
   const base = typeof body.base_url === "string" ? body.base_url.trim() : undefined;
   if (base === undefined || !base) issues.push({ field: "base_url", reason: body.base_url === undefined ? "missing" : "wrong_type", message: "base_url is the gateway's address, such as https://gateway.example/v1" });
   else {
-    const problem = baseProblem("base_url", base);
+    // A run's rule, so nothing is saved that no run could use.
+    const problem = runProblem("base_url", base);
     if (problem) issues.push({ field: "base_url", reason: "invalid", message: problem });
   }
   if (body.api_key !== undefined && body.api_key !== null) {

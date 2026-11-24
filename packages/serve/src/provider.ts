@@ -85,7 +85,9 @@ export function gatewayBase(setting: string, value: string): string {
 export function modelGatewayBase(value: string, setting = "AGENT_MODEL_BASE_URL"): string {
   const base = gatewayBase(setting, value);
   if (["api.particle.ai", "us.api.particle.ai"].includes(new URL(base).hostname)) {
-    throw new HarnessUnavailable("Particle uses Chat Completions here: remove AGENT_MODEL_BASE_URL, save PARTICLE_API_KEY and select particle/particle-1 with Pi. Particle does not support HTTP POST /v1/responses.");
+    // Set where AgentRun starts, it is that variable to remove; given as the console's base_url, it is just not a gateway.
+    const instead = setting === "AGENT_MODEL_BASE_URL" ? "remove AGENT_MODEL_BASE_URL, save" : "it is not a model gateway, so save";
+    throw new HarnessUnavailable(`Particle uses Chat Completions here: ${instead} PARTICLE_API_KEY and select particle/particle-1 with Pi. Particle does not support HTTP POST /v1/responses.`);
   }
   return base;
 }
