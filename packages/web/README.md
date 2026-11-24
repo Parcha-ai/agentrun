@@ -108,8 +108,8 @@ const { answer, receipt } = await web.search("widgets delaware", { n: 5, task: "
   `injection` `{ verdict: "injection" | "none", score }` (at `INJECTION_THRESHOLD` 0.75). A judged wall or injection
   adds one plain `warning` to the answer, such as `"this looks like a login wall, not the page's own content (0.9); if
   you need the page, try another source"`, and the page's text is kept: a hint, never a gate. A guard that fails or is
-  refused leaves the page `unjudged` (`wall.error` says why), adds nothing, and is asked again on the next fetch. Its
-  request is a fee line of its own (`"jev's page guard"`). Search snippets are not screened.
+  refused leaves the page `unjudged` (`wall.error` says why), adds nothing, and is asked again on the next fetch. It is
+  asked beside the step, and its request is a fee line of its own (`"jev's page guard"`), after the step's. Search snippets are not screened.
 - `receipt.unsifted`, in a run with a decider, is the text a web with none would have given the model for the same call
   (a fetch's part as asked, without `lookingFor`), whether the step ran, was skipped or failed: set beside the text the
   model read, it is what the step saved. A web with no decider writes none.
