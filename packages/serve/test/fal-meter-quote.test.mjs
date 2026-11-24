@@ -98,3 +98,41 @@ test("an error from get_pricing is asked once more before the job is called unpr
   assert.deepEqual(again.asked, [KLING_PRO], "read again");
   near(later.holdUsd, 0.84, "priced");
 });
+
+/** An `ask` as the gateway gives a call whose signal is `stop`: get_pricing waits, and once that call stops (its deadline,
+ *  its run's abort) it answers nothing, as the gateway does when it catches the abort. */
+function stopping(stop) {
+  const asked = [];
+  const ask = async (tool, args) => {
+    asked.push(args.endpoint_id);
+    await new Promise((done) => (stop.signal.aborted ? done() : stop.signal.addEventListener("abort", done, { once: true })));
+    return undefined;
+  };
+  return { ask, asked };
+}
+
+test("a job whose own call is live is priced when the call that read the price for both stops before fal answers", async () => {
+  const { falMeter } = await load();
+  const meter = falMeter();
+  const first = new AbortController();
+  const stopped = stopping(first);
+  const live = pricing(0.14);
+  const firstQuote = meter.quote("submit_job", klingJob, stopped.ask, first.signal);
+  const liveQuote = meter.quote("submit_job", klingJob, live.ask, new AbortController().signal);
+  await new Promise((done) => setTimeout(done, 10));
+  first.abort();
+  const [gone, priced] = await Promise.all([firstQuote, liveQuote]);
+  assert.ok(gone.unpriceable, "the stopped call has no price");
+  assert.equal(priced.unpriceable, undefined, `the live call is priced, not refused: ${priced.unpriceable}`);
+  near(priced.holdUsd, 0.84, "priced from its own read");
+  assert.deepEqual(live.asked, [KLING_PRO], "the live call read the price once, with its own ask");
+});
+
+test("a price read that failed while its call was live is not asked again by the jobs that shared it", async () => {
+  const { falMeter } = await load();
+  const meter = falMeter();
+  const { ask, asked } = pricing(0.14, { answers: ["error", "error"], delayMs: 20 });
+  const quotes = await Promise.all([1, 2, 3].map(() => meter.quote("submit_job", klingJob, ask, signal)));
+  assert.equal(asked.length, 2, "one read and its one retry for the three");
+  for (const quote of quotes) assert.match(quote.unpriceable ?? "", /answered an error/);
+});
