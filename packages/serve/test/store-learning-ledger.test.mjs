@@ -6,7 +6,8 @@
 //   - a run's end again (after a reopen) writes its spend rows anew, none left from the end before; healCost records the
 //     row again with the healed cost; a purge takes the run's row and every spend row it booked or that audits it;
 //   - a row an earlier build left behind (it ended the run again, or healed its cost, and wrote no ledger) is recorded
-//     again where it is read, never shown stale;
+//     again where it is read, never shown stale; a run it ended with no row is recorded where it is read, at the figures
+//     its end would have written;
 //   - the money rule's read at a claim (pastRunsOverStore) is bounded: the agent's newest PAST_RUNS runs on no named disk,
 //     the ledger of those runs alone, no agent-wide read; its by-hand side is the job's own cost of the `agent` runs among
 //     the same runs as its served side (since the reset, no named disk), and the cost page says the same.
@@ -102,6 +103,26 @@ test("a ledger row an earlier build left behind is recorded again where it is re
   assert.equal((await runAllInOverStore(store, "r-healed")).usd, 0.7, "the healed cost");
   const page = await agentCostOverStore(store, "agent-1");
   assert.deepEqual(page.runs.map((run) => [run.run_id, run.cost_usd]), [["r-again", 2], ["r-healed", 0.7]], "the cost page reads the same");
+});
+
+test("a run that ended with no ledger row (a runner of the build before ended it) is recorded where it is read, among runs that have one, at the figures its end would have written", async (t) => {
+  const { store, file, end } = await ledgerStore(t);
+  await end("r1", 1);
+  await end("r2", 1.3, { path: "agent" }, { also: [kept(1, 1, 0.3, { compiled: { workflow: "answer", digest: C } })] });
+  await end("s1", 0.1, SERVED);
+  const figures = async () => ({
+    page: (await agentCostOverStore(store, "agent-1")).runs.map((run) => [run.run_id, run.cost_usd, run.learning_usd, run.compile_usd, run.total_usd]),
+    run: await runAllInOverStore(store, "r2"),
+    past: await pastRunsOverStore(store, "agent-1"),
+  });
+  const before = await figures();
+  const db = await raw(file);
+  await db.run("DELETE FROM learning_ledger WHERE run_id = ?", "r2");
+  await db.run("DELETE FROM learning_spend WHERE run_id = ?", "r2");
+  await db.close();
+  assert.equal((await store.learning.ledger("agent-1", ["r2"])).rows.length, 0, "r2 has no row now");
+  assert.deepEqual(await figures(), before, "read from its run row and its rounds, as its end records it");
+  assert.deepEqual(before.page.find(([id]) => id === "r2"), ["r2", 1, 0.3, 0.3, 1.3]);
 });
 
 test("the money rule's read at a claim is bounded: the agent's newest PAST_RUNS runs on no named disk and their ledger alone, no agent-wide read", async (t) => {
