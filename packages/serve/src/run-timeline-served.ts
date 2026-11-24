@@ -28,6 +28,8 @@ import { FINAL_STATES, type Store } from "./store/store.js";
 export type ServedTimelineDeps = {
   readonly serverSecrets: () => string[];
   readonly signIns?: SignInReader;
+  /** The server's seal key (ViewDeps.sealKey). */
+  readonly sealKey: Buffer | undefined;
   /** The environment a run's model key is read from, with the keys a person saved (withSecrets, as main's plainKey). */
   readonly keyEnv: () => NodeJS.ProcessEnv;
   /** Each learned item's status on an agent's newest learning save (learning-routes.ts statusesOf): what a run held for

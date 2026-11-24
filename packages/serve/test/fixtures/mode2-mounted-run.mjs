@@ -24,10 +24,6 @@ const { readBackOf } = await import("./archil-readback.mjs");
 const { fakeComputer } = await import("../workspace-fake-computer.mjs");
 const { KINDS } = await import("../workspace-kinds-fixture.mjs");
 const { archilControlFetch } = await import("../archil-control-fake.mjs");
-const { seedOf } = await import("../../dist/learning.js");
-const { folderTestHooks } = await import("../../dist/learn/folder.js");
-const { learningWorkspace } = await import("../../dist/workspace/index.js");
-const { learningCommit } = await import("../../dist/learn/commit.js");
 
 process.env.AGENTRUN_OPENCODE_STANDIN = "1";
 const STAND_IN = new URL("./fake-opencode-serve.mjs", import.meta.url).pathname;
@@ -38,7 +34,6 @@ const ARCHIL_SETTINGS = { diskId: "dsk-0000000000000001", region: "aws-us-east-1
 export const KEY = runKey(AGENT, RUN);
 export const SKILL = "---\nname: cite\ndescription: Cite every claim.\n---\nCite every claim.\n";
 export const SKILL_KEY = `${KEY}/.agents/skills/cite/SKILL.md`;
-const CORRECTION = "Wait a little longer after each failed call.";
 const stubRoute = async () => ({ model: "faux-1", provider: { api: "anthropic-messages", origin: "https://route.invalid", credential: () => "not-a-secret" } });
 
 /** The run's computer, an E2B sandbox, started by the runner's own computerForClaim (the run's folder mounted from its
@@ -81,32 +76,8 @@ function sandboxOverArchil(disk, scratch, mounts) {
   }));
 }
 
-/** The agent's learning folder, holding one correction on its main, as a local folder that stands in for the one on the
- *  run's Archil disk (folderTestHooks.workspace): the seed's commit, for the launch's learning start. `read` counts the
- *  claim's reads of it. */
-async function learningSeedIn(t, dir, read) {
-  const folderData = join(dir, "learning-disk");
-  mkdirSync(folderData);
-  await seedOf(folderData, AGENT);
-  const folder = learningWorkspace({ mode: "local", data: folderData, agentId: AGENT });
-  try {
-    const made = await learningCommit(folder.workspace, { runId: "run-0", reason: "feedback", files: [], correction: CORRECTION });
-    assert.equal(made.ok, true, JSON.stringify(made));
-  } finally {
-    await folder.end();
-  }
-  const seed = (await seedOf(folderData, AGENT)).sha;
-  folderTestHooks.workspace = (place) => {
-    assert.equal(place.mode, "archil", "a Mode 2 run reads its learning folder on its Archil disk");
-    read.count += 1;
-    return learningWorkspace({ mode: "local", data: folderData, agentId: place.agentId });
-  };
-  t.after(() => delete folderTestHooks.workspace);
-  return seed;
-}
-
-/** A Mode 2 run of a revision with one skill, over the Archil fake `disk`, in a fresh store (`learns`: a learning run whose
- *  seed holds a correction; `read` counts the claim's reads of its learning folder). `claimNext(build)` claims it (a claim taken over a lapsed one when there was
+/** A Mode 2 run of a revision with one skill, over the Archil fake `disk`, in a fresh store (`learns`: a learning run, its seed
+ *  the agent's first save in the store). `claimNext(build)` claims it (a claim taken over a lapsed one when there was
  *  one) and builds its spec; `t.after` lets every spec go. */
 export async function mode2Run(t, { harness, disk, learns = false }) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-mode2-skills-"));
@@ -127,8 +98,7 @@ export async function mode2Run(t, { harness, disk, learns = false }) {
     { id: AGENT, name: "Agent" },
     { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", tools: ["read", "write"], skills: { "cite/SKILL.md": "0".repeat(64) }, computer: { kind: "sandbox", provider: "e2b" }, ...(harness ? { harness } : {}), ...(learns ? { learning: true } : {}) }, skills: { "cite/SKILL.md": SKILL } },
   );
-  const read = { count: 0 };
-  const learning = learns ? { seed: await learningSeedIn(t, dir, read), section: "" } : undefined;
+  const learning = learns ? { seed: (await server.learning.seed(AGENT)).save.id, section: "" } : undefined;
   const launch = { input: { content: "Do the thing." }, title: "t", place: { mode: "runner" }, ...(harness ? { harness, model: { provider: "openai", modelId: "gpt-5" } } : { model: { provider: "anthropic", modelId: "claude-sonnet-5.5" } }), ...(learning ? { learning } : {}) };
   await server.runs.create({ id: RUN, agentId: AGENT, revisionId: "rev-1" }, { body: launch });
   await saveArchilSettings(server, ARCHIL_SETTINGS);
@@ -148,7 +118,6 @@ export async function mode2Run(t, { harness, disk, learns = false }) {
   };
   return {
     mounts,
-    read,
     /** The computer's folder: the fake computer's /workspace, a local folder that stands in for the mounted run's folder. */
     scratch,
     /** Claim the run (`leaseMs`: the claim's lease) and build its spec with `build`. */

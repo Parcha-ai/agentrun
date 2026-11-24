@@ -5,8 +5,8 @@
 // counts by rule and by kind, and how many of the cuts the person could restore. Never a value, a piece of one, a shape
 // or an offset: counts only. It reads and changes nothing (the store opened as a runner opens it; no seal key made).
 //
-// Exit 0 once counted, 1 when the run is withheld (its cut can't be read here: a sign-in pointer that doesn't open, or no
-// seal key for a store that keeps secrets; it never counts without the held values), 2 for bad arguments or a run the
+// Exit 0 once counted, 1 when the run is withheld (its cut can't be read here: a sign-in pointer or a sealed launch that
+// doesn't open, or no seal key for a store that keeps secrets; it never counts without the held values), 2 for bad arguments or a run the
 // store does not hold.
 import { existsSync } from "node:fs";
 import { join } from "node:path";
@@ -42,6 +42,8 @@ export const SHARE_RUN_FIELDS = ["kind", "status", "state", "title", "created_at
 export interface ShareTextDeps {
   readonly serverSecrets: () => string[];
   readonly signIns?: SignInReader;
+  /** The store's seal key, undefined when it has none: the run's sealed launch values are read under it (run-cut.ts). */
+  readonly sealKey: Buffer | undefined;
   readonly keyEnv: () => NodeJS.ProcessEnv;
 }
 
@@ -115,7 +117,7 @@ export async function shareTexts(store: Store, runId: string, deps: ShareTextDep
   if ((await runCutValues(deps, store, runId)) === "unreadable") return "withheld";
   // The origin names the console's link, which the allowlist drops: none of it is read. A reserved .invalid name, so the
   // package scan finds no service endpoint.
-  const viewDeps: ViewDeps = { origin: "http://scrub.invalid", serverSecrets: deps.serverSecrets, keyEnv: deps.keyEnv, ...(deps.signIns ? { signIns: deps.signIns } : {}) };
+  const viewDeps: ViewDeps = { origin: "http://scrub.invalid", serverSecrets: deps.serverSecrets, keyEnv: deps.keyEnv, sealKey: deps.sealKey, ...(deps.signIns ? { signIns: deps.signIns } : {}) };
   const view = await viewOverStore(store, runId, viewDeps);
   if (!view) return "unknown";
   const texts: (string | ShareText)[] = [];
@@ -141,6 +143,7 @@ export async function shareTexts(store: Store, runId: string, deps: ShareTextDep
           runWorkspace: async () => null,
           recordings: async () => null,
           env: deps.keyEnv(),
+          sealKey: deps.sealKey,
           runFacts: (_store, id) => factsOverStore(store, id, viewDeps),
           withheld: async () => false,
           cutValues: (_store, id) => runCutValues(deps, store, id),
@@ -308,13 +311,14 @@ export async function scrubMain(argv: readonly string[], usage: string, io: { ou
     const deps: ShareTextDeps = {
       serverSecrets,
       ...(seal ? { signIns: signInReads(store, seal.key) } : {}),
+      sealKey: seal?.key,
       keyEnv: () => withSecrets(env, "all", stored),
     };
     const gathered = await shareTexts(store, runId, deps);
     for (const line of warnings.splice(0)) io.err(line);
     if (gathered === "unknown") return unknown();
     if (gathered === "withheld") {
-      io.err(`agentrun-serve scrub: run ${runId} is withheld: this server can't read back the browser sign-in it was handed (its seal key changed or is missing, or the sign-in is damaged), so its held values are unknown and nothing was counted.`);
+      io.err(`agentrun-serve scrub: run ${runId} is withheld: this server can't read back what it was handed, a browser sign-in or the keys sealed with its launch (its seal key changed or is missing, or the record is damaged), so its held values are unknown and nothing was counted.`);
       return 1;
     }
     held.push(...gathered.held);

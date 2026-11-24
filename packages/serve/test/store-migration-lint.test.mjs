@@ -108,3 +108,21 @@ test("the header is a line of the migration's leading comment, nowhere else", ()
 test("store-schema --build says the versions this build knows, from its own files, with no store", () => {
   assert.deepEqual(buildSchema(), { postgres: migrationsIn().at(-1).version, sqlite: SCHEMA_VERSION });
 });
+
+// Postgres reads a function body between a pair of `$tag$` delimiters (`$$` with no tag). A lone `$` is a syntax error
+// that only a Postgres migrate run shows, and every Postgres-backed server then fails to start on it (0027 once shipped
+// to CI as `AS $` ... `$;`). Outside comments, every `$` but a `$1` parameter is part of a delimiter, in pairs.
+test("every shipped Postgres migration quotes its function bodies in matched $tag$ pairs, with no lone $", () => {
+  const bad = [];
+  for (const m of migrationsIn()) {
+    const code = m.sql.replace(/--[^\n]*/g, "").replace(/\$\d+/g, "");
+    const tags = new Map();
+    const rest = code.replace(/\$([A-Za-z_]\w*)?\$/g, (tag) => {
+      tags.set(tag, (tags.get(tag) ?? 0) + 1);
+      return "";
+    });
+    if (rest.includes("$")) bad.push(`${name(m)}: a lone $`);
+    for (const [tag, count] of tags) if (count % 2 !== 0) bad.push(`${name(m)}: ${tag} opens ${count} times, unmatched`);
+  }
+  assert.deepEqual(bad, []);
+});

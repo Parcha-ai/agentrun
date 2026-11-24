@@ -12,7 +12,7 @@ import { watchCommandsAt, wakeCommands } from "../command-wake.js";
 import { claimFence, storeNow, type StoreNow } from "../fence.js";
 import { JOURNAL_FIRST_ID, RunStorage } from "../journal/storage.js";
 import { RUNNER_RECORDS } from "@parcha/agentrun-kernel";
-import { COMMANDS_ONE_ANSWER, COMPUTER_INTERVALS, COMPUTER_INTERVALS_ADDED, COMPUTER_INTERVALS_RUN, DDL, diskUpgrade, HAND_BACKS, HAND_BACKS_AT, HAND_BACKS_KEPT_MS, HAND_BACKS_RUN, IMPORTED_TEMPLATES, LEARNING_ROWS, listingUpgrade, MINTED_TOKENS, purgeUpgrade, relayUpgrade, NATIVE_COMMANDS_INDEX, PI_TABLE, PI_TABLES, REVISIONS_MCP_PIN, REVISIONS_MONID_PIN, RUN_ATTEMPTS, RUNNERS, RUNNERS_ADDED, RUNS_COST_UPPER_BOUND, RUNS_LABELS, SCHEMA_VERSION, SETTLED_LIST_STATUS, TRIGGERS_TEMPLATE_ID } from "../schema.js";
+import { COMMANDS_ONE_ANSWER, COMPUTER_INTERVALS, COMPUTER_INTERVALS_ADDED, COMPUTER_INTERVALS_RUN, DDL, diskUpgrade, HAND_BACKS, HAND_BACKS_AT, HAND_BACKS_KEPT_MS, HAND_BACKS_RUN, IMPORTED_TEMPLATES, LEARNING_ROWS, listingUpgrade, MINTED_TOKENS, purgeUpgrade, relayUpgrade, NATIVE_COMMANDS_INDEX, PI_TABLE, PI_TABLES, REVISIONS_MCP_PIN, REVISIONS_MONID_PIN, RUN_ATTEMPTS, RUNNERS, RUNNERS_ADDED, RUN_LAUNCH_CENSUS, RUN_LAUNCH_CENSUS_PENDING, RUNS_COST_UPPER_BOUND, RUNS_LABELS, SCHEMA_VERSION, SETTLED_LIST_STATUS, TRIGGERS_TEMPLATE_ID } from "../schema.js";
 import {
   ActiveRuns, AgentArchived, AgentDeleting, AgentPurged, CommandTaken, ExternalBodyConflict, Fenced, FiringMoved, RunFinal, RunPurged, RunsMadeFromLeft, SchemaVersionUnknown, STORE_WRITE_DEADLINE_MS, StoreAwaitsServer, StoreBusy, StoreConstraint, StoreFromEarlierVersion, TriggerFull, TriggersLeft, UPLOAD_PREFIX, type AgentRow, type Agents,
   type Claim, type Command, type FiringRow, type FiringStatus, type ImportRunInput, type Journal, type NewRevision, type RevisionRow, type RunRow, type Runs,
@@ -342,6 +342,7 @@ export const SQLITE_RUNNER_NEEDS: readonly { readonly table: string; readonly co
   { table: "settings", columns: ["connector_id"], why: "add native command ownership metadata" },
   { table: "runs", columns: ["cost_upper_bound"], why: "add the bound beside each run's cost" },
   { table: "runs", columns: ["labels"], why: "add each run's labels" },
+  { table: "run_launch", columns: ["census"], why: "add each run's census" },
   { table: "triggers", columns: ["template_id"], why: "add each trigger's package mark" },
   { table: "runners", columns: ["host"], why: "keep each runner's word that it is there and its relay in one table (runners)" },
   { table: "runners", columns: Object.keys(RUNNERS_ADDED), why: "keep each runner's version and slots, and each hand-back (runners.version, runners.slots, hand_backs)" },
@@ -493,6 +494,13 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
     if (!runColumns.has("labels")) {
       if (role === "runner") throw new StoreAwaitsServer("add each run's labels");
       await connection.write([{ sql: RUNS_LABELS }], { full: true });
+    }
+    // An earlier build of this version kept no census on a run's launch (schema.ts RUN_LAUNCH_CENSUS): the server adds the
+    // column, nullable, every run ended before reading as never handed a secret, and marks each launch that holds one now
+    // as pending (store.ts CENSUS_PENDING). A runner writes it at each end, so it waits for that server.
+    if (!(await connection.all<{ name: string }>("SELECT name FROM pragma_table_info('run_launch')")).some((column) => column.name === "census")) {
+      if (role === "runner") throw new StoreAwaitsServer("add each run's census");
+      await connection.write([{ sql: RUN_LAUNCH_CENSUS }, { sql: RUN_LAUNCH_CENSUS_PENDING }], { full: true });
     }
     // An earlier build of this version kept no package mark on a trigger (schema.ts TRIGGERS_TEMPLATE_ID): the server adds
     // the column, nullable, every trigger made before reading as no package's. A runner reads each trigger through it, so
@@ -1710,7 +1718,7 @@ class SqliteStore implements Store {
             }
           }
           // An update that made the run final: its other untaken rows are refused in this transaction, after its own takes.
-          await refuseLeftovers(tx, claim.runId, patch.state, at, d, patch.keepsEnd === true);
+          await refuseLeftovers(tx, claim.runId, patch.state, at, d, patch.keepsEnd === true, patch.census);
           // The bind's save lease, in this same transaction as the sign_in_handed write just made (applyRunPatch, under
           // SIGN_IN_HANDED_LOCK): this run saves unless another run already holds one of the handed pointers (a running run,
           // or — within signInSettleMs of leaving running, a vendor's settle window — one that left running less than that
