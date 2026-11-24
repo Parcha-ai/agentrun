@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { deciderFrom, judgeRequest, LEFT_OUT, passagesOf, PaidRefused, searchText, siftRequest, TEXT_CAP, THRESHOLD, webFetchText } from "../dist/index.js";
+import { deciderFrom, judgeRequest, LEFT_OUT, passagesOf, PaidRefused, QUESTIONS_PER_REQUEST, searchText, siftRequest, siftSearch, STATE_BUDGET_BYTES, TEXT_CAP, THRESHOLD, webFetchText } from "../dist/index.js";
 import fakeParallel from "./fixtures/faux-parallel.mjs";
 import { fakeWeb, PUBLIC } from "./fixtures/web-runs.mjs";
 
@@ -96,7 +96,7 @@ test("a sift keeps what the decider scores as needed and drops at the threshold:
     provider: "fake", op: "search", ran: true, items: { in: 4, kept: 2 },
     dropped: [{ id: URLS[1], score: 0.05, reason: "needed p=0.05 <= 0.2" }, { id: URLS[2], score: 0.2, reason: "needed p=0.2 <= 0.2" }],
     model: "fake-1", temperature_sent: null, temperature_applied: false, tokens: { in: 100, out: 4, basis: "reported" }, latency_ms: 0, cost: { usd: 0.0001, basis: "estimate" },
-    requests: 1, questions_sha256: sha256(JSON.stringify(siftQuestions())),
+    requests: 1, questions_sha256: [sha256(JSON.stringify(siftQuestions()))],
   });
 });
 
@@ -127,7 +127,7 @@ test("a fetched part is judged in passages: the kept passages in order, LEFT_OUT
     provider: "fake", op: "fetch", ran: true, items: { in: 3, kept: 2 },
     dropped: [{ id: "p2", score: 0.01, reason: "needed p=0.01 <= 0.2", at: [A.length, A.length + B.length] }],
     model: "fake-1", temperature_sent: null, temperature_applied: false, tokens: { in: 100, out: 4, basis: "reported" }, latency_ms: 0, cost: { usd: 0.0001, basis: "estimate" },
-    requests: 1, questions_sha256: sha256(JSON.stringify(judgeRequest(PUBLIC, TASK, [A, B, C]).questions)),
+    requests: 1, questions_sha256: [sha256(JSON.stringify(judgeRequest(PUBLIC, TASK, [A, B, C]).questions))],
   });
   await web.fetch(PUBLIC, { task: TASK });
   assert.equal(asked.length, 2, "each call is judged, one the run's pages answer too");
@@ -318,6 +318,54 @@ test("a request refused unbilled (configuration, auth, a connection never made) 
     const line = receipt.cost.lines.find((fee) => fee.by === "fake");
     assert.deepEqual([settled.find(([by]) => by === "fake")[1], line.usd, receipt.classifier.requests], billed ? ["thrown", 0.0002, 1] : [400, 0, 1], code);
   }
+});
+
+test("a search over the state budget is trimmed: every snippet cut to the longest length that fits, the cut recorded, one request", async () => {
+  const hits = Array.from({ length: 10 }, (_, i) => ({ url: `https://wide.example/${i}`, title: `Result ${i}`, snippet: "汉".repeat(3_000) }));
+  const { asked, provider } = fakeProvider();
+  const got = await priced(provider).sift("widgets", hits, TASK, CTX());
+  assert.equal(asked.length, 1);
+  const { state } = asked[0].request;
+  assert.ok(bytesOf(state) <= STATE_BUDGET_BYTES, String(bytesOf(state)));
+  const cut = Object.values(state.results).map((hit) => hit.snippet.length);
+  assert.ok(cut.every((n) => n === cut[0]) && cut[0] < 3_000, String(cut));
+  const longer = siftRequest("widgets", hits.map((hit) => ({ ...hit, snippet: hit.snippet.slice(0, cut[0] + 1) })), TASK);
+  assert.ok(bytesOf(longer.state) > STATE_BUDGET_BYTES, "the longest that fits");
+  assert.deepEqual(asked[0].request, siftRequest("widgets", hits.map((hit) => ({ ...hit, snippet: hit.snippet.slice(0, cut[0]) })), TASK));
+  assert.deepEqual(got.trimmed, { snippets: 10, to_chars: cut[0] });
+  const { answer, classifier } = await siftSearch(priced(fakeProvider().provider), { provider: "parallel", query: "widgets", results: hits }, { task: TASK });
+  assert.deepEqual([classifier.trimmed, classifier.requests], [{ snippets: 10, to_chars: cut[0] }, 1]);
+  assert.deepEqual(answer.results, hits, "the model reads every snippet whole");
+  const small = await priced(fakeProvider().provider).sift("widgets", hits.slice(0, 1), TASK, CTX());
+  assert.equal(small.trimmed, undefined, "a state within the budget is sent whole");
+});
+
+test("passages over the state budget go in several requests, each within it and QUESTIONS_PER_REQUEST, ids counted across the page, the verdicts merged in order", async () => {
+  const passages = Array.from({ length: 200 }, (_, i) => `${String(i).padStart(3, "0")} ${"x".repeat(995)}\n\n`);
+  const { asked, provider } = fakeProvider(Object.fromEntries(passages.map((_, i) => [`p${i + 1}`, i % 2 ? 0.9 : 0.01])));
+  const got = await priced(provider).judge(PUBLIC, TASK, passages, CTX());
+  assert.ok(asked.length >= 3, String(asked.length));
+  let first = 0;
+  for (const { request } of asked) {
+    const n = Object.keys(request.questions).length;
+    assert.ok(bytesOf(request.state) <= STATE_BUDGET_BYTES && n <= QUESTIONS_PER_REQUEST);
+    assert.deepEqual(request, judgeRequest(PUBLIC, TASK, passages.slice(first, first + n), first + 1));
+    first += n;
+  }
+  assert.equal(first, 200);
+  assert.deepEqual(got.verdicts.map((v) => v.keep), passages.map((_, i) => i % 2 === 1));
+  assert.deepEqual(got.questions_sha256, asked.map(({ request }) => sha256(JSON.stringify(request.questions))));
+  assert.deepEqual([got.tokens, got.cost], [{ in: 100 * asked.length, out: 4 * asked.length, basis: "reported" }, { usd: Math.round(0.0001 * asked.length * 1e6) / 1e6, basis: "estimate" }]);
+});
+
+test("a fetched part over the budget is judged in several requests: the record counts them with a hash each, and the cap books each", async () => {
+  const wide = `${"汉".repeat(900)}\n\n`.repeat(40);
+  const { asked, provider } = fakeProvider();
+  const { answer, receipt } = await fakeWeb({ decider: priced(provider), send: { parallel: pagesOf(wide) } }).fetch(PUBLIC, { task: TASK, maxChars: 50_000 });
+  assert.equal(answer.text, wide, "nothing dropped at p=0.5");
+  assert.equal(asked.length, 2);
+  assert.deepEqual([receipt.classifier.requests, receipt.classifier.questions_sha256.length, receipt.classifier.items], [2, 2, { in: 40, kept: 40 }]);
+  assert.deepEqual(receipt.cost.lines.filter((fee) => fee.by === "fake").map((fee) => fee.usd), [0.0002, 0.0002]);
 });
 
 test("passagesOf tiles the text: paragraphs packed to about 1,000 characters, a longer one cut on a space, never a surrogate pair split, and at most 50 passages", () => {
