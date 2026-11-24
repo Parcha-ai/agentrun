@@ -48,12 +48,14 @@ const commandVars = (line) => Object.fromEntries(line.split(' ').filter((word) =
 /** The folder variables of `env`, unset ones left out. */
 const folderVars = (env) => Object.fromEntries(FOLDER_VARS.filter((name) => env[name] !== undefined).map((name) => [name, env[name]]));
 
-/** What the CLI got for its status check and its sign-in at `login`, and the line shown for it. */
-async function cliEnvs(login, home) {
+/** What the CLI got for its status check and its sign-in at `login`, made with the person's home `home` (`userHome`), and
+ *  the line shown for it. */
+async function cliEnvs(given, home) {
+  const login = { ...given, userHome: home };
   const status = fakeCli();
-  assert.deepEqual(await claude.claudeLoginStatus(status.cli, login, { home }), { signedIn: false, method: 'none' });
+  assert.deepEqual(await claude.claudeLoginStatus(status.cli, login), { signedIn: false, method: 'none' });
   const signIn = fakeCli();
-  claude.startClaudeLogin(signIn.cli, login, { home, display: {} });
+  claude.startClaudeLogin(signIn.cli, login, { display: {} });
   await until(() => signIn.seen() !== undefined, "the CLI's sign-in started");
   return { status: status.seen().env, signIn: signIn.seen().env, shown: commandVars(claude.claudeLoginCommand(login, signIn.cli)), line: claude.claudeLoginCommand(login) };
 }

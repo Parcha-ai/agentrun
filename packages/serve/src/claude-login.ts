@@ -112,9 +112,13 @@ export function machineFolder(env: Readonly<Record<string, string | undefined>> 
   const secure = env.CLAUDE_SECURESTORAGE_CONFIG_DIR;
   const credentials = secure === "" || (secure && isAbsolute(secure)) ? { credentials: secure } : {};
   if (env.CLAUDE_CONFIG_DIR && isAbsolute(env.CLAUDE_CONFIG_DIR)) return { folder: env.CLAUDE_CONFIG_DIR, source: "CLAUDE_CONFIG_DIR", ...credentials };
-  const home = env.HOME && isAbsolute(env.HOME) ? env.HOME : homedir();
-  return { folder: join(home, ".claude"), source: "default", ...credentials };
+  return { folder: join(homeOf(env), ".claude"), source: "default", ...credentials };
 }
+
+/** The person's home as the server's env says it: its `HOME` when absolute, else `os.homedir()`. The person's own CLI
+ *  reads its home as Node does (`os.homedir()`, which is `HOME` when set), so the two agree for the server's own env;
+ *  reading the env handed in first keeps it the one source a test or an embedding host can set. */
+const homeOf = (env: Readonly<Record<string, string | undefined>>): string => (env.HOME && isAbsolute(env.HOME) ? env.HOME : homedir());
 
 /** The directories of a login at `place`: AgentRun's in `data`, or this machine's (machineFolder, and the Anthropic
  *  profiles where the CLI looks for them: `ANTHROPIC_CONFIG_DIR`, else `$XDG_CONFIG_HOME/anthropic`, else
@@ -122,14 +126,16 @@ export function machineFolder(env: Readonly<Record<string, string | undefined>> 
  *  points the CLI at it as their own CLI runs, with no folder variable (the harness's signInEnv and loginEnv). This
  *  machine's with a credentials dir in the server's env (machineFolder's `credentials`) carries it as `secure`, absolute
  *  (empty: `~/.claude`, `unsuffixed`), so the CLI keeps the tokens where the person's own CLI with it does. A status
- *  check at either place runs on a copy of the account file (the harness's claudeLoginStatus). */
+ *  check at either place runs on a copy of the account file (the harness's claudeLoginStatus). Every login carries the
+ *  person's home as `userHome`, read here once (homeOf), so the status check, the sign-in and a run on macOS all run in
+ *  that one home whatever reads it later (the harness's personHome). */
 export function loginAt(place: LoginPlace, data: string, env: Readonly<Record<string, string | undefined>> = process.env): ClaudeAgentLogin {
-  if (place === "agentrun") return { dir: join(data, "claude-login"), profiles: join(data, "claude-login", "anthropic") };
-  const home = env.HOME && isAbsolute(env.HOME) ? env.HOME : homedir();
+  const home = homeOf(env);
+  if (place === "agentrun") return { dir: join(data, "claude-login"), profiles: join(data, "claude-login", "anthropic"), userHome: home };
   const config = env.XDG_CONFIG_HOME && isAbsolute(env.XDG_CONFIG_HOME) ? env.XDG_CONFIG_HOME : join(home, ".config");
   const { folder, source, credentials } = machineFolder(env);
   const secure = credentials === undefined ? {} : credentials === "" ? { secure: join(home, ".claude"), unsuffixed: true } : { secure: credentials };
-  return { dir: folder, profiles: env.ANTHROPIC_CONFIG_DIR && isAbsolute(env.ANTHROPIC_CONFIG_DIR) ? env.ANTHROPIC_CONFIG_DIR : join(config, "anthropic"), ...(source === "default" ? { home } : {}), ...secure };
+  return { dir: folder, profiles: env.ANTHROPIC_CONFIG_DIR && isAbsolute(env.ANTHROPIC_CONFIG_DIR) ? env.ANTHROPIC_CONFIG_DIR : join(config, "anthropic"), ...(source === "default" ? { home } : {}), ...secure, userHome: home };
 }
 
 /** The setting as saved, or undefined when the mode is not on (or the row is not one this reads). */
@@ -335,10 +341,10 @@ export async function startLoginHere(deps: ClaudeLoginDeps): Promise<ClaudeLogin
   if (!deps.sameMachine) throw new ClaudeLoginRefused("forbidden", "The CLI's sign-in opens a browser on the server's machine: run the command shown in a terminal there.");
   const cli = loginCli(await deps.pinned(), deps.env);
   if (!cli) throw new ClaudeLoginRefused("agent_not_runnable", "No Claude Code CLI here yet: claude-agent's first run installs it, or run the command shown.");
-  // The person's home and desktop, so the CLI can open their browser.
+  // The person's home (the login's `userHome`) and desktop, so the CLI can open their browser.
   const claude = await deps.claude();
   const login = loginAt(setting.place, deps.data, deps.env);
-  await deps.signIns.start((timeoutMs) => claude.startClaudeLogin(cli, login, { ...pathOf(deps.env), ...(deps.env.HOME ? { home: deps.env.HOME } : {}), display: deps.env, timeoutMs }));
+  await deps.signIns.start((timeoutMs) => claude.startClaudeLogin(cli, login, { ...pathOf(deps.env), display: deps.env, timeoutMs }));
   return claudeLoginView(deps);
 }
 

@@ -50,10 +50,10 @@ function login() {
 }
 
 test("the sign-in this host starts runs with the shown line's own variables: the login's folder as its config dir, never a temporary one", async () => {
-  const at = login();
   const home = scratch();
+  const at = { ...login(), userHome: home };
   const fake = fakeCli();
-  claude.startClaudeLogin(fake.cli, at, { home, display: { DISPLAY: ':42', ANTHROPIC_API_KEY: 'not-a-secret' } });
+  claude.startClaudeLogin(fake.cli, at, { display: { DISPLAY: ':42', ANTHROPIC_API_KEY: 'not-a-secret' } });
   await until(() => fake.seen() !== undefined, "the CLI's sign-in started");
   const { argv, env } = fake.seen();
   assert.deepEqual(argv, ['auth', 'login', '--claudeai']);
@@ -73,7 +73,7 @@ test("the sign-in this host starts runs with the shown line's own variables: the
 test('a sign-in says how it ended: signed in (exit 0), ended without signing in (its exit code), ended at its limit, stopped, or never started', async () => {
   const at = login();
   const ended = async (options, fake) => {
-    const signIn = claude.startClaudeLogin(fake?.cli ?? join(scratch(), 'no-such-cli'), at, { home: scratch(), ...options });
+    const signIn = claude.startClaudeLogin(fake?.cli ?? join(scratch(), 'no-such-cli'), at, options);
     assert.equal(typeof signIn?.ended?.then, 'function', 'startClaudeLogin answers the sign-in it started');
     return signIn;
   };

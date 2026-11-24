@@ -164,9 +164,9 @@ test("the pinned CLI's status check on AgentRun's own login, run in the person's
   const before = { list: listing(home), files: snapshot() };
   // AgentRun's own login: a folder in its data dir, outside the home, that no sign-in has filled yet.
   const data = scratch();
-  const login = { dir: join(data, 'claude-login'), profiles: join(data, 'claude-login', 'anthropic') };
+  const login = { dir: join(data, 'claude-login'), profiles: join(data, 'claude-login', 'anthropic'), userHome: home };
   mkdirSync(login.dir, { mode: 0o700 });
-  const status = await claude.claudeLoginStatus(pinned, login, { path: '/usr/bin:/bin', home });
+  const status = await claude.claudeLoginStatus(pinned, login, { path: '/usr/bin:/bin' });
   assert.deepEqual(status, OUT, 'the answer still reads as a status: signed out');
   assert.deepEqual(listing(home), before.list, 'nothing new under the home: no account file, settings, backup or lock');
   assert.deepEqual(snapshot(), before.files, "every file of the person's home keeps its bytes and mtime");
@@ -204,10 +204,10 @@ test("this machine's login in a CLAUDE_CONFIG_DIR folder, which the person's own
     const folder = scratch();
     const bytes = Buffer.from(`${JSON.stringify({ hasCompletedOnboarding: true, migrationVersion: 15 })}\n`);
     writeFileSync(join(folder, '.claude.json'), bytes, { mode: 0o600 });
-    const login = { dir: folder, profiles: join(folder, 'anthropic') };
     const person = scratch();
+    const login = { dir: folder, profiles: join(folder, 'anthropic'), userHome: person };
     const fake = fakeCli();
-    assert.deepEqual(await claude.claudeLoginStatus(fake.cli, login, { platform, home: person }), OUT);
+    assert.deepEqual(await claude.claudeLoginStatus(fake.cli, login, { platform }), OUT);
     const [seen] = fake.seen();
     const config = seen.env.CLAUDE_CONFIG_DIR;
     assert.notEqual(config, folder, `${platform}: the status check never runs the CLI on the folder's own account file`);
@@ -233,15 +233,15 @@ test("every place's status check runs in the person's real home, never one under
     const { login: atHome } = defaultLogin();
     const places = [
       // AgentRun's own folder: its credentials dir the folder, as its sign-in names it; the config dir a copy.
-      ['own', { dir: join(base, 'claude-login'), profiles: join(base, 'claude-login', 'anthropic') }, person],
+      ['own', { dir: join(base, 'claude-login'), profiles: join(base, 'claude-login', 'anthropic'), userHome: person }, person],
       // The CLI's default folder: the login's home is the person's; the Keychain item with no suffix.
       ['home', atHome, atHome.home],
       // A CLAUDE_CONFIG_DIR folder: the item hashed from the folder, never from the copy.
-      ['folder', { dir: folder, profiles: join(folder, 'anthropic') }, person],
+      ['folder', { dir: folder, profiles: join(folder, 'anthropic'), userHome: person }, person],
     ];
     for (const [where, login, home] of places) {
       const fake = fakeCli();
-      const { tmp, outcome } = await inOwnTmp(() => claude.claudeLoginStatus(fake.cli, login, { platform, home: person }));
+      const { tmp, outcome } = await inOwnTmp(() => claude.claudeLoginStatus(fake.cli, login, { platform }));
       assert.deepEqual(outcome.value, OUT, `${platform} ${where}: ${outcome.error}`);
       const [seen] = fake.seen();
       assert.equal(seen.env.HOME, home, `${platform} ${where}: the status check runs in the person's home`);
@@ -255,7 +255,7 @@ test("every place's status check runs in the person's real home, never one under
       assert.deepEqual(placeVars(seen.env), { HOME: home, ...claude.claudeLoginEnv(login, platform), CLAUDE_CONFIG_DIR: seen.env.CLAUDE_CONFIG_DIR }, `${platform} ${where}: a run's variables, in the person's home, on a copy`);
     }
   }
-  // No home given: the server's own (os.homedir()).
+  // A login made with no home of either kind: the server's own (os.homedir()).
   const base = scratch();
   const fake = fakeCli();
   assert.deepEqual(await claude.claudeLoginStatus(fake.cli, { dir: join(base, 'claude-login'), profiles: join(base, 'claude-login', 'anthropic') }), OUT);

@@ -425,7 +425,7 @@ test("a turn-on that moves the login to another place ends a sign-in that waits,
 
 test("this machine's login is the folder the CLI uses: CLAUDE_CONFIG_DIR when the server has it as an absolute path, else ~/.claude; the view names it", { timeout: 120_000 }, async (t) => {
   assert.equal(loginAt("machine", "/d", { HOME: "/u/p" }).dir, "/u/p/.claude");
-  assert.deepEqual(loginAt("machine", "/d", { HOME: "/u/p", CLAUDE_CONFIG_DIR: "/u/p/elsewhere" }), { dir: "/u/p/elsewhere", profiles: "/u/p/.config/anthropic" });
+  assert.deepEqual(loginAt("machine", "/d", { HOME: "/u/p", CLAUDE_CONFIG_DIR: "/u/p/elsewhere" }), { dir: "/u/p/elsewhere", profiles: "/u/p/.config/anthropic", userHome: "/u/p" });
   assert.equal(loginAt("machine", "/d", { HOME: "/u/p", CLAUDE_CONFIG_DIR: "elsewhere" }).dir, "/u/p/.claude", "a relative one is read against a working directory the server does not share");
   assert.equal(loginAt("agentrun", "/d", { HOME: "/u/p", CLAUDE_CONFIG_DIR: "/u/p/elsewhere" }).dir, "/d/claude-login", "AgentRun's own login is in its data");
 
@@ -478,8 +478,9 @@ test("this machine's login on the CLI's default folder is asked as the person's 
     assert.ok(call.config && relative(home, call.config).startsWith(".."), JSON.stringify(call));
     assert.equal(call.secure, process.platform === "darwin" ? "" : join(home, ".claude"), JSON.stringify(call));
   }
-  // The login carries the person's home only on the default folder: that is what tells its variables apart.
-  assert.deepEqual(loginAt("machine", "/d", { HOME: "/u/p" }), { dir: "/u/p/.claude", profiles: "/u/p/.config/anthropic", home: "/u/p" });
+  // The login carries `home` only on the default folder: that is what tells its variables apart. Every login carries the
+  // person's home as `userHome`, where the status check, the sign-in and a run on macOS run.
+  assert.deepEqual(loginAt("machine", "/d", { HOME: "/u/p" }), { dir: "/u/p/.claude", profiles: "/u/p/.config/anthropic", home: "/u/p", userHome: "/u/p" });
   assert.equal(loginAt("machine", "/d", { HOME: "/u/p", CLAUDE_CONFIG_DIR: "/u/p/elsewhere" }).home, undefined);
 });
 
@@ -529,7 +530,7 @@ test("this machine's login honours CLAUDE_SECURESTORAGE_CONFIG_DIR in the server
   assert.deepEqual(claude.claudeLoginEnv(folderEmpty, "darwin"), { CLAUDE_SECURESTORAGE_CONFIG_DIR: "", ANTHROPIC_CONFIG_DIR: profiles });
   // A relative one is not taken, as with CLAUDE_CONFIG_DIR; AgentRun's own login never reads it.
   assert.deepEqual(claude.claudeSignInEnv(at({ CLAUDE_SECURESTORAGE_CONFIG_DIR: "secure" }), "linux"), { HOME: "/u/p", ANTHROPIC_CONFIG_DIR: profiles });
-  assert.deepEqual(loginAt("agentrun", "/d", { HOME: "/u/p", CLAUDE_SECURESTORAGE_CONFIG_DIR: "/u/p/secure" }), { dir: "/d/claude-login", profiles: "/d/claude-login/anthropic" });
+  assert.deepEqual(loginAt("agentrun", "/d", { HOME: "/u/p", CLAUDE_SECURESTORAGE_CONFIG_DIR: "/u/p/secure" }), { dir: "/d/claude-login", profiles: "/d/claude-login/anthropic", userHome: "/u/p" });
 
   // A server started with it: the view names it, and the sign-in and every status check keep the tokens there.
   const secure = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-secure-dir-"));
@@ -578,7 +579,7 @@ test("a login turned on here still reads as this machine's after the machine's h
   hostnameAs(t, `not-${hostname()}`);
   const view = (await api("GET", "/settings/claude-login")).body;
   assert.equal(view.state, "signed_out", `the login turned on here reads as another machine's under a new hostname: ${JSON.stringify(view)}`);
-  assert.deepEqual(await loginForRun(store.settings, data, {}, "claude-agent", { mode: "runner" }), loginAt("agentrun", data), "a run here goes on the login under a new hostname");
+  assert.deepEqual(await loginForRun(store.settings, data, {}, "claude-agent", { mode: "runner" }), loginAt("agentrun", data, {}), "a run here goes on the login under a new hostname");
 });
 
 test("two data folders are two machines: each gets an id of its own, and a login turned on over one reads as another machine's from the other", async (t) => {
@@ -588,7 +589,7 @@ test("two data folders are two machines: each gets an id of its own, and a login
   });
   const row = settingFor("agentrun", one);
   const saved = { get: async () => row };
-  assert.deepEqual(await loginForRun(saved, one, {}, "claude-agent", { mode: "runner" }), loginAt("agentrun", one), "the data folder it was turned on over runs on it");
+  assert.deepEqual(await loginForRun(saved, one, {}, "claude-agent", { mode: "runner" }), loginAt("agentrun", one, {}), "the data folder it was turned on over runs on it");
   assert.equal(await loginForRun(saved, two, {}, "claude-agent", { mode: "runner" }), undefined, "a login turned on over another data folder reads as another machine's");
   const ids = [one, two].map((data) => readFileSync(join(data, "machine-id"), "utf8").trim());
   for (const id of ids) assert.match(id, /^[0-9a-f]{32}$/);

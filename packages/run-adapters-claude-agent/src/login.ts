@@ -33,6 +33,10 @@ export interface ClaudeAgentLogin {
   /** With `secure`: the variable was set and empty, which on macOS names the Keychain item with no suffix, so it goes to
    *  the CLI empty there too. */
   unsuffixed?: boolean;
+  /** The home of the person whose CLI keeps the login, read once by whoever makes the login (serve's loginAt: the
+   *  server's `HOME` when absolute, else `os.homedir()`, as the person's own CLI reads it), so the status check, the
+   *  sign-in and a run on macOS all run in that one home (personHome). With `home`, the same folder. */
+  userHome?: string;
 }
 
 /** `login.secure` as the CLI's variable on `platform` (undefined when it is not set apart): empty on macOS where the
@@ -256,13 +260,14 @@ async function accountCopy(from: string, to: string): Promise<string> {
   return to;
 }
 
-/** The home of the person whose CLI keeps `login`: the login's own (`home`, the CLI's default folder), else `given`, else
- *  the server's (`os.homedir()`). On macOS the CLI reads its tokens from the login keychain, which is under that home:
- *  in any other home (an empty one, a session's) it finds no keychain and reads signed out, whatever the variables. */
-export const personHome = (login: ClaudeAgentLogin, given?: string): string => login.home ?? given ?? homedir();
+/** The home of the person whose CLI keeps `login`, the one every use of the login reads: the login's `userHome`, else
+ *  its `home` (the CLI's default folder), else the server's (`os.homedir()`), for a login made with neither. On macOS
+ *  the CLI reads its tokens from the login keychain, which is under that home: in any other home (an empty one, a
+ *  session's) it finds no keychain and reads signed out, whatever the variables. */
+export const personHome = (login: ClaudeAgentLogin): string => login.userHome ?? login.home ?? homedir();
 
 /** Ask the CLI at `cli` whether it is signed in at `login`: `auth status --json`, with only PATH and the login's
- *  variables beside it, in the person's home (personHome; `home` given, else the server's) on every place and platform.
+ *  variables beside it, in the person's home (personHome) on every place and platform.
  *  The CLI rewrites its account file (`.claude.json`, in its config dir) whenever that file's migration number is not its
  *  own, and adds a settings file, a backup and a lock beside it the first time, all in its config dir, so the check never
  *  runs it on the login's own file, whatever the caller says of the login: the config dir is a copy of the account file
@@ -272,10 +277,10 @@ export const personHome = (login: ClaudeAgentLogin, given?: string): string => l
  *  folder's; else hashed from the login's folder, as the sign-in there named it), so the copy never renames it.
  *  A status check is no session: nothing resumes in its config dir. `platform`: the one the CLI runs on, this host's.
  *  Throws when the CLI gives no answer that reads as one. */
-export async function claudeLoginStatus(cli: string, login: ClaudeAgentLogin, options: { timeoutMs?: number; path?: string; platform?: NodeJS.Platform; home?: string } = {}): Promise<ClaudeLoginStatus> {
+export async function claudeLoginStatus(cli: string, login: ClaudeAgentLogin, options: { timeoutMs?: number; path?: string; platform?: NodeJS.Platform } = {}): Promise<ClaudeLoginStatus> {
   const scratch = mkdtempSync(join(tmpdir(), STATUS_FOLDER));
   try {
-    const HOME = personHome(login, options.home);
+    const HOME = personHome(login);
     const where = { HOME, ...loginEnv(login, options.platform), CLAUDE_CONFIG_DIR: await accountCopy(accountFile(login), join(scratch, "config")) };
     const stdout = await new Promise<string>((resolve, reject) => {
       const child = spawn(cli, ["auth", "status", "--json"], {
@@ -334,14 +339,14 @@ function startable(cli: string, path: string): void {
 }
 
 /** Start the CLI's own sign-in at `login` (`auth login`), with the line's own variables (signInEnv) in the person's home
- *  (`home`) and desktop (`display`): it opens a browser on this machine and keeps what it gets in the login's folder.
+ *  (personHome) and desktop (`display`): it opens a browser on this machine and keeps what it gets in the login's folder.
  *  Nothing of it is read here: its output goes nowhere. It is ended after `timeoutMs` (SIGN_IN_MS by default), which
  *  `ended` says apart from any other end.
  *  It dies with this process, as a session's CLI does: started under the kernel's parent watch (parentWatched; `watch`,
  *  by default what this machine supports), so a server that is SIGKILLed, and runs no stop or limit timer, leaves no CLI
  *  waiting on the browser's port. It is not detached: it stays in this process's group, so a terminal's Ctrl-C ends it
  *  with the server as before, and nothing here kills a group, which would take a browser the CLI started with it. */
-export function startClaudeLogin(cli: string, login: ClaudeAgentLogin, options: { timeoutMs?: number; path?: string; home?: string; display?: Readonly<Record<string, string | undefined>>; watch?: ParentWatch } = {}): ClaudeSignIn {
+export function startClaudeLogin(cli: string, login: ClaudeAgentLogin, options: { timeoutMs?: number; path?: string; display?: Readonly<Record<string, string | undefined>>; watch?: ParentWatch } = {}): ClaudeSignIn {
   // What a browser needs to open on this desktop, when the server has it.
   const display = Object.fromEntries(["DISPLAY", "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS", "BROWSER"].flatMap((name) => {
     const value = options.display?.[name];
@@ -356,7 +361,7 @@ export function startClaudeLogin(cli: string, login: ClaudeAgentLogin, options: 
     startable(cli, path);
     const run = parentWatched({ command: cli, args: ["auth", "login", "--claudeai"] }, options.watch);
     child = spawn(run.command, run.args, {
-      env: { PATH: path, HOME: personHome(login, options.home), ...display, ...signInEnv(login), DISABLE_AUTOUPDATER: "1", DISABLE_TELEMETRY: "1", DISABLE_ERROR_REPORTING: "1" },
+      env: { PATH: path, HOME: personHome(login), ...display, ...signInEnv(login), DISABLE_AUTOUPDATER: "1", DISABLE_TELEMETRY: "1", DISABLE_ERROR_REPORTING: "1" },
       stdio: "ignore",
     });
   } catch (error) {
