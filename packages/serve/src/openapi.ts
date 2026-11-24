@@ -8,7 +8,7 @@ import { NATIVE_BINDING, NATIVE_RUN, NATIVE_PATHS } from "./native/schema.js";
 // not serve at all (NOT_SERVED) is left out of the document, and this server's own routes are added as operations marked
 // `x-agentrun-serve` (true, or the addition that made it, as `stats/1`), listed in `info.x-agentrun-serve`.
 import { readFileSync } from "node:fs";
-import { CALL_RESULT_CHARS, CAPS, TRIGGER_SOURCES } from "./timeline/index.js";
+import { CALL_RESULT_CHARS, CALLS_PAGE_ROWS, CAPS, TRIGGER_SOURCES } from "./timeline/index.js";
 import { EMAIL_SCOPES, PASSWORD_MAX, SCOPED_TOOLS, SEND_CAP } from "./email/names.js";
 import { PAYLOAD_KEPT_BYTES, type TriggerAdapter } from "./trigger-adapter.js";
 import { TRIGGER_ADAPTERS } from "./trigger-adapters.js";
@@ -145,6 +145,26 @@ const HARNESS_PROMISES = {
 };
 const closed = (properties: Json, description?: string) => ({ type: "object", additionalProperties: false, required: Object.keys(properties), properties, ...(description ? { description } : {}) });
 const USD = { type: ["number", "null"], minimum: 0, description: "The sum of the known costs, rounded to 1e-6; null when no run's cost is known, never 0 for unknown." };
+/** wrapped/1: GET /wrapped's answer (wrapped.ts). */
+const WRAPPED_TOKENS = closed({ input: COUNT, output: COUNT, cache_read: COUNT, cache_write: COUNT });
+const WRAPPED: Json = closed({
+  year: { type: "integer", minimum: 1000, maximum: 9999 },
+  sessions: { ...COUNT, description: "Sessions whose first request falls in the year." },
+  turns: { ...COUNT, description: "The person's prompts in those sessions." },
+  requests: { ...COUNT, description: "Model requests made in the year, each once, subagents' with them." },
+  tokens: { ...WRAPPED_TOKENS, description: "The year's requests' tokens: `input` is uncached input, so the whole prompt is input + cache_read + cache_write." },
+  cost_usd: { type: "number", minimum: 0, description: "The list price of the requests that could be priced; `unpriced_requests` counts those that could not." },
+  unpriced_requests: COUNT,
+  days: { type: "array", description: "Each local day with a request, ascending.", items: closed({ day: { type: "string", pattern: "^\\d{4}-\\d{2}-\\d{2}$" }, requests: COUNT, tokens: COUNT }) },
+  hours: { type: "array", minItems: 24, maxItems: 24, items: COUNT, description: "Requests by local hour of the day." },
+  weekdays: { type: "array", minItems: 7, maxItems: 7, items: COUNT, description: "Requests by local weekday, Sunday first." },
+  active_ms: { ...COUNT, description: "Time at work: the gaps between a session's requests, each counted when under 15 minutes." },
+  harnesses: { type: "array", items: closed({ harness: { type: "string" }, sessions: COUNT, requests: COUNT, tokens: COUNT }), description: "By the harness that runs what each source ran, most tokens first." },
+  models: { type: "array", items: closed({ model: { type: "string", description: "`provider/model`, or `unknown` for a request that names none." }, requests: COUNT, tokens: COUNT, cost_usd: { type: "number", minimum: 0 } }), description: "By the request's model, most tokens first." },
+  sources: { type: "array", items: closed({ source: { type: "string" }, sessions: COUNT, requests: COUNT }), description: "By the tool the sessions were read from." },
+  imported: { type: "array", items: closed({ source: { type: "string" }, runs: COUNT }), description: "The runs imported here in the year, by source (never `live`)." },
+  unread_files: { ...COUNT, description: "Session files that could not be read (gone since listed, or not openable by this user), so the numbers are short by them. A count only: no path." },
+}, "A year of the work under this machine's home, bucketed by each request's time in the server's local zone.");
 /** Runs counted together (AgentStoreReader.analytics's AnalyticsGroup). */
 const GROUP = {
   runs: COUNT, completed: { ...COUNT, description: "Completed, escalated runs included: one completed and waits for a person's review." },
@@ -497,15 +517,16 @@ const CHATGPT_SIGN_IN = {
     authorize_url: { type: "string", format: "uri", description: "With `pending`: the link that sign-in opens." },
     expires_at: { type: "string", format: "date-time", description: "With `pending`: when that sign-in stops waiting, as its start answered." },
     models: { type: "array", items: { type: "string" }, description: "With `signed_in`: the plan's models, read from OpenAI at the sign-in, each named `chatgpt/<model-id>` in a revision." },
+    problem: { type: "string", description: "Why the last sign-in ended without signing in, in words a person acts on: a plan OpenAI gave no use of (\"This ChatGPT plan can't be used here: …\"), a workspace whose admin turned off open-source apps (\"Your ChatGPT workspace's admin has turned off open-source apps (External access → OSS → Use ChatGPT plan): …\"), another refusal at OpenAI's sign-in page or of the code (a Free plan's sign-in has ended in one of these, and the words say a Free plan may be the reason), an answer that could not be read, OpenAI out of reach, or a sign-in that could not be saved. Always fixed words, never OpenAI's code (anything on the server's machine can send its loopback callback one). Set once the browser's return or a pasted address got that far (OpenAI's tab has already said the sign-in completed), or when a sign-in waited out its 10 minutes (\"The sign-in timed out before OpenAI sent the code back: start it again.\"); the server's log line `event=chatgpt chatgpt=sign_in_failed reason=…` names it (OpenAI's status and error code, or `timed_out`; never a token or a code). Present while signed in too, when a later sign-in failed. Gone at the next start, sign-in or sign-out; a cancelled sign-in sets none." },
   },
 };
 /** GET /settings/claude-login's answer (claude-login.ts ClaudeLoginView): what Claude Code's CLI says of its login, never
  *  a token. */
 const CLAUDE_LOGIN = {
-  type: "object", additionalProperties: false, required: ["state", "place", "command", "can_start"],
+  type: "object", additionalProperties: false, required: ["state", "place", "command", "can_start", "folder", "machine"],
   properties: {
     state: { enum: ["off", "other_machine", "signed_in", "signed_out", "no_cli", "unknown"], description: "`off`: not turned on. `other_machine`: turned on for another machine than this server's. Else what the CLI says: `signed_in`, `signed_out`, `no_cli` (no Claude Code CLI here yet: claude-agent's first run installs the pinned one), `unknown` (it gave no answer)." },
-    place: { enum: ["agentrun", "machine"], description: "Where the login is: `agentrun`, AgentRun's own directory in its data (the default); `machine`, this machine's own Claude Code login (~/.claude), which the owner opts into." },
+    place: { enum: ["agentrun", "machine"], description: "Where the login is: `agentrun`, AgentRun's own directory in its data (the default); `machine`, this machine's own Claude Code login (`machine.folder`), which the owner opts into." },
     command: { type: "string", description: "The line that signs the CLI in at `place`, for a terminal on this machine." },
     can_start: { type: "boolean", description: "Whether POST /settings/claude-login/login can start the CLI's sign-in here: the server is bound to loopback with no public address, so the browser it opens is on this machine." },
     refused: { type: "string", description: "Why the mode can't be turned on here, in one line: more than one person can start runs on this server." },
@@ -513,6 +534,28 @@ const CLAUDE_LOGIN = {
       type: "object", additionalProperties: false,
       properties: { method: { type: "string" }, email: { type: "string" }, organization: { type: "string" }, plan: { type: "string" } },
       description: "With `signed_in`: what the CLI's status says of the account (its sign-in method, email, organization and plan), for display.",
+    },
+    folder: { type: "string", description: "The folder whose login the CLI is asked about: the login's directory at `place`. The sign-in started here and `command` sign in there, and its status is read there." },
+    machine: {
+      type: "object", additionalProperties: false, required: ["folder", "source"],
+      properties: {
+        folder: { type: "string", description: "This machine's own Claude Code login folder, as the CLI finds it for this server's user." },
+        source: { enum: ["CLAUDE_CONFIG_DIR", "default"], description: "`CLAUDE_CONFIG_DIR`: the server's environment names the folder (an absolute path). `default`: it does not, so the folder is the CLI's default, `~/.claude`; a Claude Code that keeps its login in another folder is found only when this server is started with `CLAUDE_CONFIG_DIR` set to it." },
+      },
+      description: "This machine's own Claude Code login, the folder `place: machine` uses.",
+    },
+    sign_in: {
+      type: "object", additionalProperties: false, required: ["state", "started_at", "limit_ms"],
+      properties: {
+        state: { enum: ["waiting", "signed_in", "timed_out", "failed", "not_started"], description: "`waiting`: for the browser, since `started_at`. `signed_in`: the CLI's sign-in ended signed in. `timed_out`: no answer from the browser within `limit_ms`, so it was ended; a sign-in page still open can't finish, and POST /settings/claude-login/login starts it again. `failed`: the CLI ended without signing in (`exit_code`, or the `signal` that ended it). `not_started`: the CLI could not be started (`error`)." },
+        started_at: { type: "string", format: "date-time" },
+        ended_at: { type: "string", format: "date-time" },
+        limit_ms: { type: "integer", description: "How long it waits for the browser before it is ended (10 minutes)." },
+        exit_code: { type: "integer" },
+        signal: { type: "string" },
+        error: { type: "string" },
+      },
+      description: "The CLI's sign-in this server started (POST /settings/claude-login/login), as long as this server runs: absent when none was started, or after a turn-off.",
     },
   },
 };
@@ -1423,7 +1466,7 @@ const TEMPLATE = closed({
   license: NULLABLE_STRING,
   author: { type: ["object", "null"], additionalProperties: false, required: ["name"], properties: { name: { type: "string" }, email: { type: "string" }, url: { type: "string" } }, description: "Who made the package; null when it names no one." },
   repository: NULLABLE_STRING,
-  output: { type: ["object", "null"], additionalProperties: false, required: ["schema", "json_schema"], properties: { schema: { type: "string", description: "The schema's file in the package; it ships beside each SKILL.md." }, json_schema: { type: ["object", "null"], description: "The JSON Schema the agent's answer meets (its last fenced json block)." } }, description: "The shape of the agent's answer; null when the package names none." },
+  output: { type: ["object", "null"], additionalProperties: false, required: ["schema", "json_schema"], properties: { schema: { type: "string", description: "The schema's file in the package; it ships beside each SKILL.md." }, json_schema: { type: ["object", "null"], description: "The JSON Schema the agent's answer meets (its last fenced json block, or the whole answer when it is one JSON object)." } }, description: "The shape of the agent's answer; null when the package names none." },
   harness: { type: ["array", "null"], items: { type: "string" }, description: "The harnesses it runs on, in the order it prefers them: apply takes the first this server runs. Null: any, the server's default." },
   model: {
     type: ["object", "null"], additionalProperties: false, required: ["tier"],
@@ -2281,6 +2324,17 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       ],
       responses: { "200": json(CAPACITY, "The capacity, read now."), ...errors(400, 401, 429, 500) },
       "x-agentrun-serve": "capacity/1",
+    },
+  },
+  "/wrapped": {
+    get: {
+      operationId: "getWrapped", tags: ["runs"], summary: "A year of the work under this machine's session files",
+      description: "Reads the Claude Code, Codex, pi and other session files under the home of the machine this server runs on, and answers numbers and names only (no prompt, title, path or project). Everything is bucketed by each request's time in the server's local zone, so a session that spans New Year splits; a session counts for the year of its first request. Answered only by a server bound to loopback with no public URL: any other, and the API-only profile, is 403. The answer is kept for a minute.",
+      parameters: [
+        { name: "year", in: "query", required: false, description: "A four-digit year, in the server's local zone. Default the current year.", schema: { type: "integer", minimum: 1000, maximum: 9999 } },
+      ],
+      responses: { "200": json(WRAPPED, "The year, read now."), ...errors(400, 401, 403, 429, 500) },
+      "x-agentrun-serve": "wrapped/1",
     },
   },
   "/runs/{run_id}/graph": {
@@ -3216,7 +3270,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
   "/runs/{run_id}/approvals/{approval_id}": {
     post: {
       operationId: "answerApproval", tags: ["runs"], summary: "Answer a tool call that waits for the owner's approval",
-      description: "A tool set to ask parks its run at each call: status input_required, state waiting, and its view's and its summary's pending (kind approval) naming the call; a timeline row of kind tool_approval_requested follows the call's own rows (its call's, and its result's once it ran), then a row with what came of the answer. allow runs the call once, and the session goes on with its result; deny answers the call with the refusal, the note as its reason. The first answer wins: the same answer again is 204, another 409 not_continuable with details {reason: already_answered, decision}. A cancel of the run marks the call canceled, and a stop withdraws it. A person's message while it waits declines it, with the message as the reason: the run goes on in one turn with the refusal and their words, its row reads `Declined by your message`, their words show as their own message row between the approval row and the outcome, and a later answer is 409 with details.decision deny. Only the owner's password session answers, on the page's own origin with a JSON body: a bearer token is 403 forbidden, since a run's process, an agent's MCP client or a script may hold one.",
+      description: "A tool set to ask parks its run at each call: status input_required, state waiting, and its view's and its summary's pending (kind approval) naming the call; a timeline row of kind tool_approval_requested follows the call's own rows (its call's, and its result's once it ran), then a row with what came of the answer. allow runs the call once, and the session goes on with its result: a read the runner lost mid-call may run again on its next claim, a call with a side effect never does; deny answers the call with the refusal, the note as its reason. The first answer wins: the same answer again is 204, another 409 not_continuable with details {reason: already_answered, decision}. A cancel of the run marks the call canceled, and a stop withdraws it. A person's message while it waits declines it, with the message as the reason: the run goes on in one turn with the refusal and their words, its row reads `Declined by your message`, their words show as their own message row between the approval row and the outcome, and a later answer is 409 with details.decision deny. Only the owner's password session answers, on the page's own origin with a JSON body: a bearer token is 403 forbidden, since a run's process, an agent's MCP client or a script may hold one.",
       parameters: [ref("parameters/RunId"), { name: "approval_id", in: "path", required: true, description: "The run's pending.id.", schema: { type: "string" } }],
       requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, required: ["decision"], properties: { decision: { enum: ["allow", "deny"] }, note: { type: "string", maxLength: 2000, description: "Why: with deny, the refusal's reason the model is told." }, confirm_destructive: { const: true, description: "The second confirm an allow of a destructive call needs (its pending's `destructive`): without it that allow is 422 on `confirm_destructive`, reason `missing`, and the call still waits. A deny needs none.", "x-agentrun-serve": "allowreads/1" } } } } } },
       responses: { "204": { description: "Answered: the run goes on." }, ...errors(400, 401, 403, 404, 409, 415, 422, 429, 500) },
@@ -3953,7 +4007,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
     },
     tool_result_text: {
       type: ["string", "null"],
-      description: `On a \`tool_result\` row of a timeline read with \`calls=whole\` alone: the head of the call's output, to ${CALL_RESULT_CHARS} characters, through the run's redaction, its URLs' query values elided as \`tool_result_preview\`'s are; null for an empty output. A \`web_search\`'s or \`web_fetch\`'s is its JSON whole but for its long texts: every result's \`url\`, \`title\` and \`published\` (a page's \`url\` and \`title\`) as it came, each snippet, the provider's \`text\` and a page's \`text\` cut to fit and ending in "…" where cut, a page's \`links\` past the cut counted in \`links_cut\`; longer than ${CALL_RESULT_CHARS} only when its urls alone pass it. Absent otherwise.`,
+      description: `On a \`tool_result\` row of a timeline read with \`calls=whole\` alone: the call's output whole to ${CALL_RESULT_CHARS} characters (its head past that), through the run's redaction, its URLs' query values elided as \`tool_result_preview\`'s are; null for an empty output. A \`web_search\`'s or \`web_fetch\`'s is its JSON whole but for its long texts: every result's \`url\`, \`title\` and \`published\` (a page's \`url\` and \`title\`) as it came, each snippet, the provider's \`text\` and a page's \`text\` cut to fit and ending in "…" where cut, a page's \`links\` past the cut counted in \`links_cut\`; longer than ${CALL_RESULT_CHARS} only when its urls alone pass it. Absent otherwise.`,
       "x-agentrun-serve": "callswhole/1",
     },
     learning: {
@@ -4467,8 +4521,8 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
   }
   // The console's password session, the one credential approving a workflow draft takes (approveLearningFile).
   ((doc.components as Json).securitySchemes as Record<string, Json>).ownerSession = {
-    type: "apiKey", in: "cookie", name: "agentrun-<port>",
-    description: "The owner's console session: the cookie `agentrun-<port>`, this server's port (the document as served names it), that the console sets when the owner signs in with their password (accounts on). Sent from this server's own origin; a token never stands for it.",
+    type: "apiKey", in: "cookie", name: "agentrun-<port>-session",
+    description: "The owner's console session: the cookie the console sets when the owner signs in with their password (accounts on). On http it is `agentrun-<port>-session`, for the port the browser opened (a container's published port, not the one it listens on); over https, `__Host-agentrun-session`. The document as served names the one for the request that fetched it. Sent from this server's own origin; a token never stands for it.",
     "x-agentrun-serve": "learning/2",
   };
   const schemas = (doc.components as Json).schemas as Record<string, Json>;
@@ -4535,10 +4589,10 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
   }
   // A contract field this server takes with a meaning of its own, said on it.
   definition.properties.max_cost_usd = { ...definition.properties.max_cost_usd, "x-agentrun-serve-note": "The agent's default cap of each run started without a max_cost_usd of its own (a run's own wins), kept with its revision: above 0 sets it, 0 clears it (no default), and an edit that leaves the field out keeps the agent's, so leaving a field out never removes a spend limit. An agentic definition's or a workflow's alike." };
-  definition.properties.output_schema = { ...definition.properties.output_schema, "x-agentrun-serve-note": "An agentic definition's alone (a workflow's output is its workflow's): the JSON Schema its final answer's last fenced json block meets, at most 64 KiB, refused at save when it does not compile. A completed run's result.output is that block's value when it meets the schema, else null. An edit that leaves the field out keeps the agent's. A template's answer schema (its manifest's `output`) is set here at apply. Over 32 KiB, a scheduled run is handed only the fields the producing run's schema names in `x-carried`; carried arrays lose entries from the front until they fit, and the run is told how many. A save refuses an `x-carried` that is not unique root property names." };
+  definition.properties.output_schema = { ...definition.properties.output_schema, "x-agentrun-serve-note": "An agentic definition's alone (a workflow's output is its workflow's): the JSON Schema its final answer's json block meets (its last fenced one, or the whole answer when it is one JSON object), at most 64 KiB, refused at save when it does not compile. A completed run's result.output is that block's value when it meets the schema, else null. An edit that leaves the field out keeps the agent's. A template's answer schema (its manifest's `output`) is set here at apply. Over 32 KiB, a scheduled run is handed only the fields the producing run's schema names in `x-carried`; carried arrays lose entries from the front until they fit, and the run is told how many. A save refuses an `x-carried` that is not unique root property names." };
   definition.properties.input_schema = { ...definition.properties.input_schema, "x-agentrun-serve-note": "An agentic definition's alone (a workflow's input is its workflow's own schema): a JSON Schema object schema (`type: object`), at most 64 KiB, refused at save when it does not compile. Every run's `input` is checked against it with the full compiler, by POST /agents/{agent_id}/runs, a trigger's start_run target (at save and when it fires) and a template's triggers, and refused 422 `input_invalid` with an issue at each path (`input.company`, `input.topics.1`). `content` is reserved: named, it is `{type: string}`; it is always taken as text (the run's message). It is required when the schema has no field of its own; when the schema's own fields are all optional, a run gives `content` or one of them, and an input with none is refused at `input.content`. The run's first message is `content`, then the other fields as one fenced json block under the line `Input:`. Absent: `{content: string}`. An edit that leaves the field out keeps the agent's. A template's `inputs` are set here at apply." };
   const runResult = schemas.RunResult as Json & { properties: Record<string, Json> };
-  runResult.properties.output = { ...runResult.properties.output, "x-agentrun-serve-note": "A workflow run's output, as its workflow ended; an agentic run's, its final answer's last fenced json block when it meets the agent's output_schema, else null (no schema, no block, not JSON, or a value the schema refuses). The runner gives the model the schema in its instructions on every harness, and asks once more, in the same session under the same cap, when the answer misses it; output_error says why one still missed." };
+  runResult.properties.output = { ...runResult.properties.output, "x-agentrun-serve-note": "A workflow run's output, as its workflow ended; an agentic run's, its final answer's json block (its last fenced one, or the whole answer when it is one JSON object) when it meets the agent's output_schema, else null (no schema, no block, not JSON, or a value the schema refuses). The runner gives the model the schema in its instructions on every harness, and asks once more, in the same session under the same cap, when the answer misses it; output_error says why one still missed." };
   // instructions XOR workflow (validate.ts): a workflow revision has none. version, skills and tools: this server
   // mints or keeps them when a write leaves them out (agents-store.ts definitionOf), so none of the four is required of a
   // write; only instructions ever misses from an answer (a workflow revision's), so Definition keeps the rest required.
@@ -4583,8 +4637,8 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
   const timeline = (doc.paths["/runs/{run_id}/timeline"] as Json).get as Json;
   timeline.parameters = [
     ...(timeline.parameters as Json[]),
-    { name: "limit", in: "query", required: false, description: "At most this many rows in a page (1 to 500, default 500); has_more says when another waits.", schema: { type: "integer", minimum: 1, maximum: 500, default: 500 } },
-    { name: "calls", in: "query", required: false, description: `\`whole\`: each \`tool_use\` row carries its call's arguments (\`tool_input\`) and each \`tool_result\` row the head of its output to ${CALL_RESULT_CHARS} characters (\`tool_result_text\`; a web call's every url, only its long texts cut), both through the run's redaction, for a reader that grades the run (a template eval). Its rows are another page sequence: a cursor (\`after\`, \`Last-Event-ID\`) from one read goes with the same \`calls\`.`, schema: { enum: ["whole"] } },
+    { name: "limit", in: "query", required: false, description: `At most this many rows in a page (1 to 500, default 500; with \`calls=whole\`, 1 to ${CALLS_PAGE_ROWS}, default ${CALLS_PAGE_ROWS}); has_more says when another waits.`, schema: { type: "integer", minimum: 1, maximum: 500, default: 500 } },
+    { name: "calls", in: "query", required: false, description: `\`whole\`: each \`tool_use\` row carries its call's arguments (\`tool_input\`) and each \`tool_result\` row its output whole to ${CALL_RESULT_CHARS} characters (\`tool_result_text\`; a web call's every url, only its long texts cut), both through the run's redaction, for a reader that grades the run (a template eval). Its rows are another page sequence: a cursor (\`after\`, \`Last-Event-ID\`) from one read goes with the same \`calls\`.`, schema: { enum: ["whole"] } },
   ];
   timeline["x-agentrun-serve-changed"] = { limit: "timelinelimit/1", calls: "callswhole/1" };
   changed.push("GET /runs/{run_id}/timeline");
@@ -4912,11 +4966,10 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
   return doc;
 }
 
-/** The document as served on `port`: the owner's session cookie named as the console sets it on that port
- *  (page.ts: `agentrun-<port>`). Without a port, the document as built. */
-export function servedOpenapi(doc: Json, port: number | undefined): Json {
-  if (port === undefined) return doc;
+/** The document as served with the owner's session cookie under `cookie`, the name the console sets for the request
+ *  (page.ts ownerCookieName). */
+export function servedOpenapi(doc: Json, cookie: string): Json {
   const components = doc.components as Json;
   const schemes = components.securitySchemes as Record<string, Json>;
-  return { ...doc, components: { ...components, securitySchemes: { ...schemes, ownerSession: { ...schemes.ownerSession, name: `agentrun-${port}` } } } };
+  return { ...doc, components: { ...components, securitySchemes: { ...schemes, ownerSession: { ...schemes.ownerSession, name: cookie } } } };
 }

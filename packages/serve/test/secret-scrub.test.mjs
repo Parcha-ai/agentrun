@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readFileSync } from "node:fs";
 import * as secretCut from "../dist/secret-cut.js";
-import { SHAPES } from "../dist/learn/secrets.js";
+import { SECRET_SHAPES, shapeSpans } from "../dist/redact/match.js";
 
 const { RULE_PATTERNS = {}, SCRUB_RULES, scrub, scrubWith } = secretCut;
 import { AKIA, BLOB, GHP, HELD, HEX64, JWT, macHome, NPM, PEM, SK, unixHome, windowsHome } from "./scrub-positives.mjs";
@@ -585,7 +585,9 @@ const UNBOUNDED_ALLOWED = {
 
 test("P0 4 (ruling B): every rule regex is bounded: no *, + or {n,} outside the allowlist, each allowed one with a reason", () => {
   const problems = [];
-  for (const [name, pattern] of [...Object.entries(RULE_PATTERNS), ...SHAPES.map(([name, pattern]) => [`SHAPES ${name}`, pattern])]) {
+  // SECRET_SHAPES (redact/match.ts) are scanners, not regexes: linear by construction, pinned by its own tests.
+  assert.ok(SECRET_SHAPES.every((shape) => typeof shape.scan === "function"), "every SECRET_SHAPES entry is a scanner");
+  for (const [name, pattern] of Object.entries(RULE_PATTERNS)) {
     assert.ok(pattern instanceof RegExp, name);
     const found = unboundedIn(pattern.source);
     if (found.length && !UNBOUNDED_ALLOWED[name]) problems.push(`${name}: ${found.join(", ")} in /${pattern.source}/`);
@@ -955,15 +957,14 @@ test("X (N1): a known prefix's boundary is its own alphabet's: a key in a URL or
   }
 });
 
-test("XI: a key's run longer than its shape's bound, at a valid boundary, is cut whole to its end; past the scan's bound it fails closed", async () => {
+test("XI: a key's run is cut whole to its end at any length: redact/match.ts reads a shape's run once, with no bound (a run past 16384 failed closed before #3622's scanners)", async () => {
   const long = `sk-${R(20_000, 3)}`;
   const out = await gone(`k ${long} end`, [long.slice(3, 40), long.slice(-40)]);
   assert.equal(out.text, "k [redacted:sk-key] end");
   const ghp = `ghp_${R(36, 5)}_${R(20, 6)}`;
   assert.equal((await gone(`t ${ghp} u`, [ghp.slice(-20)])).text, "t [redacted:github-token] u");
-  const huge = `k sk-${R(70_000, 4)} end`;
-  assert.deepEqual(await scrub(huge, { mode: "cut" }), { ok: false, counts: {} });
-  await assert.rejects(scrub(huge, { mode: "count" }));
+  const huge = `sk-${R(70_000, 4)}`;
+  assert.equal((await gone(`k ${huge} end`, [huge.slice(3, 40), huge.slice(-40)])).text, "k [redacted:sk-key] end");
 });
 
 test("XII (N2): code shapes are no value in code alone; after UPPER_NAME=, a YAML key at a line's start or a flag, a real-shaped password is cut", async () => {
@@ -2408,26 +2409,35 @@ test("LXXXVIII: a value past VALUE's 1024-character bound is cut to its end (Gre
   }
 });
 
-test("LXXXIX: a URL's password past 1024 characters is still SHAPES' URL with a password (Greptile P1 on 55b0239695): url-password cuts it, the final check sees it", async () => {
+test("LXXXIX: a URL's password past 1024 characters is still SECRET_SHAPES' URL with a password (Greptile P1 on 55b0239695): url-password cuts it, the final check sees it", async () => {
   const pw = "a1B2".repeat(275);
-  const url = SHAPES.find(([kind]) => kind === "URL with a password")[1];
+  const url = SECRET_SHAPES.find((shape) => shape.kind === "URL with a password");
   for (const text of [`redis://default:${pw}@cache:6379/0`, `postgres://app:${pw}@db:5432/x`]) {
-    assert.ok(url.test(text), text.slice(0, 40));
+    assert.equal(shapeSpans(text, url).length, 1, text.slice(0, 40));
     for (const wrap of FOUR_WRAPS) {
       const out = await gone(wrap(text), [pw.slice(0, 200), pw.slice(-200)]);
       assert.deepEqual(out.cuts.map((cut) => cut.rule), ["url-password"], wrap(text).slice(0, 60));
       if (wrap === FOUR_WRAPS[0]) assert.ok(/@(?:cache:6379\/0|db:5432\/x)$/.test(out.text), out.text.slice(-60));
     }
   }
-  // Linear: SHAPES' URL shape on 2 MB of userinfos that never reach an `@`, and of long ones that do.
+  // Linear: SECRET_SHAPES' URL shape on 2 MB of userinfos that never reach an `@`, and of long ones that do.
   for (const piece of ["a://b:", `x://u:${"p".repeat(3000)} `, `x://u:${"p".repeat(3000)}@h `]) {
     const text = repeatTo(piece, 2_000_000);
-    const every = new RegExp(url.source, "g");
     const started = cpuNow();
-    const found = [...text.matchAll(every)].length;
+    const found = shapeSpans(text, url).length;
     const ms = cpuNow() - started;
     assert.equal(found, piece.endsWith("@h ") ? Math.ceil(2_000_000 / piece.length) : 0);
     assert.ok(ms < 2_000, `${JSON.stringify(piece.slice(0, 12))} x 2 MB: ${Math.round(ms)} ms CPU`);
+  }
+});
+
+test("XC: each SECRET_SHAPES kind is one rule that reads every shape of that kind: GitHub's classic and fine-grained tokens are both github-token (redact/match.ts holds them as two shapes)", async () => {
+  assert.ok(SECRET_SHAPES.length > new Set(SECRET_SHAPES.map((shape) => shape.kind)).size, "a kind with two shapes is still there to test");
+  for (const token of [`ghp_${R(36, 21)}`, `github_pat_${R(22, 22)}_${R(59, 23)}`]) {
+    for (const wrap of FOUR_WRAPS) {
+      const out = await gone(wrap(`see ${token} end`), [token.slice(4, 30), token.slice(-30)]);
+      assert.ok(out.cuts.some((cut) => cut.rule === "github-token"), `${wrap(token).slice(0, 40)}: ${JSON.stringify(out.cuts.map((cut) => cut.rule))}`);
+    }
   }
 });
 

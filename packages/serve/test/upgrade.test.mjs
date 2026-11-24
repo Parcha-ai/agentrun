@@ -155,18 +155,23 @@ test("started by npx @parcha/agentrun on an earlier version's data, the refusal 
   assert.equal(err.match(/agentrun-serve:/g).length, 1, err);
 });
 
-test("the new folder it names is one not there yet, and an earlier installer's command in the old folder is said to move with it", { timeout: 20_000 }, async (t) => {
+// install.sh keeps its Node (node/), its packages (lib/) and the command (bin/agentrun) in ~/.agentrun, beside the data:
+// that command, or the service running it, may be what started this refusal. Moving the folder takes all three.
+test("the new folder it names is one not there yet, and an installed agentrun in the old folder is said to move with it: run the installer again", { timeout: 20_000 }, async (t) => {
   const data = join(await scratch(t), ".agentrun");
   await oldHome(data, "old");
   await mkdir(`${data}-new`, { recursive: true });
   await mkdir(`${data}-earlier`, { recursive: true });
-  await mkdir(join(data, "bin"), { recursive: true });
+  for (const dir of ["bin", "node", "lib"]) await mkdir(join(data, dir), { recursive: true });
   await writeFile(join(data, "bin", "agentrun"), "#!/bin/sh\n");
   const { err, code } = await startByLauncher(t, data);
   assert.equal(code, 1, err);
   assert.ok(err.includes(`npx @parcha/agentrun@0.4.22 --data ${data}-new-2`), err);
   assert.ok(err.includes(`mv ${data} ${data}-earlier-2`), err);
-  assert.match(err, /bin\/agentrun \(the earlier installer's command\) moves with it/);
+  const note = err.split("\n").find((line) => line.includes(`mv ${data} `)) ?? "";
+  assert.match(note, /\bnode\/.*\blib\/.*\bbin\/agentrun\b/, "the runtime and packages move too, not only the command");
+  assert.match(note, /run the installer again/);
+  assert.doesNotMatch(err, /earlier installer's command/, "the command there may be this version's: the installer run again for it");
 });
 
 test("started by the launcher on a store an earlier release set up, the refusal names the launcher's command, not docker's", { timeout: 20_000 }, async (t) => {

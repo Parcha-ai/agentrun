@@ -135,7 +135,8 @@ const groupSeconds = (group) => (group.count ? COMMAND_SECONDS + Math.max(group.
  * The ::warning line for a shard that ran more than a quarter and more than a minute over its model, else undefined. Its
  * weights are CI's own times, and a file that grows (release-preflight.test.mjs went 152 s to 257 s in a day) makes its
  * shard the run's slowest while the plan still reads balanced; the warning says so in the run that shows it. A minute
- * is a hosted runner's noise; a faster runner (Blacksmith, in the merge queue) is never a drift.
+ * is a hosted runner's noise; a faster runner (Blacksmith, in the merge queue and on this repository's own pull requests)
+ * is never a drift, so the warning comes from main's runs and a fork's.
  */
 export function timingDrift(name, modelled, seconds) {
   if (seconds - modelled <= 60 || seconds <= modelled * 1.25) return undefined;

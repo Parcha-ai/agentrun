@@ -411,6 +411,8 @@ __all__ = [
     "GetChatGPTSignInResponse",
     "GetClaudeLoginResponse",
     "GetClaudeLoginResponseAccount",
+    "GetClaudeLoginResponseMachine",
+    "GetClaudeLoginResponseSignIn",
     "GetCliLearningRunResponse",
     "GetEmailAccountResponse",
     "GetEmailAccountResponseImap",
@@ -609,6 +611,13 @@ __all__ = [
     "GetWebhookResponseObject2Disabled",
     "GetWorkspaceArchilResponse",
     "GetWorkspaceArchilResponseSecret",
+    "GetWrappedResponse",
+    "GetWrappedResponseDaysItem",
+    "GetWrappedResponseHarnessesItem",
+    "GetWrappedResponseImportedItem",
+    "GetWrappedResponseModelsItem",
+    "GetWrappedResponseSourcesItem",
+    "GetWrappedResponseTokens",
     "GradeRunBody",
     "GradeRunResponse",
     "GrantSourceSyncBody",
@@ -1118,6 +1127,8 @@ __all__ = [
     "StartChatGPTSignInResponse",
     "StartClaudeLoginResponse",
     "StartClaudeLoginResponseAccount",
+    "StartClaudeLoginResponseMachine",
+    "StartClaudeLoginResponseSignIn",
     "StartCliLearningRunBody",
     "StartCliLearningRunResponse",
     "StartCliLearningRunResponseLearning",
@@ -1178,9 +1189,13 @@ __all__ = [
     "TriggersResource",
     "TurnOffClaudeLoginResponse",
     "TurnOffClaudeLoginResponseAccount",
+    "TurnOffClaudeLoginResponseMachine",
+    "TurnOffClaudeLoginResponseSignIn",
     "TurnOnClaudeLoginBody",
     "TurnOnClaudeLoginResponse",
     "TurnOnClaudeLoginResponseAccount",
+    "TurnOnClaudeLoginResponseMachine",
+    "TurnOnClaudeLoginResponseSignIn",
     "UnarchiveAgentResponse",
     "UnarchiveRunResponse",
     "UpdateDefinitionBody",
@@ -4911,6 +4926,7 @@ class FinishChatGPTSignInResponse(_FinishChatGPTSignInResponseRequired, total=Fa
     authorize_url: str
     expires_at: str
     models: list[str]
+    problem: str
 
 
 class GetCalendarResponse(TypedDict):
@@ -4930,6 +4946,7 @@ class GetChatGPTSignInResponse(_GetChatGPTSignInResponseRequired, total=False):
     authorize_url: str
     expires_at: str
     models: list[str]
+    problem: str
 
 
 class _GetClaudeLoginResponseRequired(TypedDict):
@@ -4937,11 +4954,14 @@ class _GetClaudeLoginResponseRequired(TypedDict):
     place: Literal["agentrun", "machine"]
     command: str
     can_start: bool
+    folder: str
+    machine: GetClaudeLoginResponseMachine
 
 
 class GetClaudeLoginResponse(_GetClaudeLoginResponseRequired, total=False):
     refused: str
     account: GetClaudeLoginResponseAccount
+    sign_in: GetClaudeLoginResponseSignIn
 
 
 class GetClaudeLoginResponseAccount(TypedDict, total=False):
@@ -4949,6 +4969,24 @@ class GetClaudeLoginResponseAccount(TypedDict, total=False):
     email: str
     organization: str
     plan: str
+
+
+class GetClaudeLoginResponseMachine(TypedDict):
+    folder: str
+    source: Literal["CLAUDE_CONFIG_DIR", "default"]
+
+
+class _GetClaudeLoginResponseSignInRequired(TypedDict):
+    state: Literal["waiting", "signed_in", "timed_out", "failed", "not_started"]
+    started_at: str
+    limit_ms: int
+
+
+class GetClaudeLoginResponseSignIn(_GetClaudeLoginResponseSignInRequired, total=False):
+    ended_at: str
+    exit_code: int
+    signal: str
+    error: str
 
 
 class GetEmailAccountResponse(TypedDict):
@@ -6270,11 +6308,14 @@ class _StartClaudeLoginResponseRequired(TypedDict):
     place: Literal["agentrun", "machine"]
     command: str
     can_start: bool
+    folder: str
+    machine: StartClaudeLoginResponseMachine
 
 
 class StartClaudeLoginResponse(_StartClaudeLoginResponseRequired, total=False):
     refused: str
     account: StartClaudeLoginResponseAccount
+    sign_in: StartClaudeLoginResponseSignIn
 
 
 class StartClaudeLoginResponseAccount(TypedDict, total=False):
@@ -6282,6 +6323,24 @@ class StartClaudeLoginResponseAccount(TypedDict, total=False):
     email: str
     organization: str
     plan: str
+
+
+class StartClaudeLoginResponseMachine(TypedDict):
+    folder: str
+    source: Literal["CLAUDE_CONFIG_DIR", "default"]
+
+
+class _StartClaudeLoginResponseSignInRequired(TypedDict):
+    state: Literal["waiting", "signed_in", "timed_out", "failed", "not_started"]
+    started_at: str
+    limit_ms: int
+
+
+class StartClaudeLoginResponseSignIn(_StartClaudeLoginResponseSignInRequired, total=False):
+    ended_at: str
+    exit_code: int
+    signal: str
+    error: str
 
 
 class _StartMcpOAuthBodyRequired(TypedDict):
@@ -6392,11 +6451,14 @@ class _TurnOffClaudeLoginResponseRequired(TypedDict):
     place: Literal["agentrun", "machine"]
     command: str
     can_start: bool
+    folder: str
+    machine: TurnOffClaudeLoginResponseMachine
 
 
 class TurnOffClaudeLoginResponse(_TurnOffClaudeLoginResponseRequired, total=False):
     refused: str
     account: TurnOffClaudeLoginResponseAccount
+    sign_in: TurnOffClaudeLoginResponseSignIn
 
 
 class TurnOffClaudeLoginResponseAccount(TypedDict, total=False):
@@ -6404,6 +6466,24 @@ class TurnOffClaudeLoginResponseAccount(TypedDict, total=False):
     email: str
     organization: str
     plan: str
+
+
+class TurnOffClaudeLoginResponseMachine(TypedDict):
+    folder: str
+    source: Literal["CLAUDE_CONFIG_DIR", "default"]
+
+
+class _TurnOffClaudeLoginResponseSignInRequired(TypedDict):
+    state: Literal["waiting", "signed_in", "timed_out", "failed", "not_started"]
+    started_at: str
+    limit_ms: int
+
+
+class TurnOffClaudeLoginResponseSignIn(_TurnOffClaudeLoginResponseSignInRequired, total=False):
+    ended_at: str
+    exit_code: int
+    signal: str
+    error: str
 
 
 class _TurnOnClaudeLoginBodyRequired(TypedDict):
@@ -6419,11 +6499,14 @@ class _TurnOnClaudeLoginResponseRequired(TypedDict):
     place: Literal["agentrun", "machine"]
     command: str
     can_start: bool
+    folder: str
+    machine: TurnOnClaudeLoginResponseMachine
 
 
 class TurnOnClaudeLoginResponse(_TurnOnClaudeLoginResponseRequired, total=False):
     refused: str
     account: TurnOnClaudeLoginResponseAccount
+    sign_in: TurnOnClaudeLoginResponseSignIn
 
 
 class TurnOnClaudeLoginResponseAccount(TypedDict, total=False):
@@ -6431,6 +6514,24 @@ class TurnOnClaudeLoginResponseAccount(TypedDict, total=False):
     email: str
     organization: str
     plan: str
+
+
+class TurnOnClaudeLoginResponseMachine(TypedDict):
+    folder: str
+    source: Literal["CLAUDE_CONFIG_DIR", "default"]
+
+
+class _TurnOnClaudeLoginResponseSignInRequired(TypedDict):
+    state: Literal["waiting", "signed_in", "timed_out", "failed", "not_started"]
+    started_at: str
+    limit_ms: int
+
+
+class TurnOnClaudeLoginResponseSignIn(_TurnOnClaudeLoginResponseSignInRequired, total=False):
+    ended_at: str
+    exit_code: int
+    signal: str
+    error: str
 
 
 class DeleteMcpServerResponse(TypedDict):
@@ -11189,6 +11290,63 @@ class ValidateWorkflowResponseIssuesItem(TypedDict):
     message: str
 
 
+class GetWrappedResponse(TypedDict):
+    year: int
+    sessions: int
+    turns: int
+    requests: int
+    tokens: GetWrappedResponseTokens
+    cost_usd: float
+    unpriced_requests: int
+    days: list[GetWrappedResponseDaysItem]
+    hours: list[int]
+    weekdays: list[int]
+    active_ms: int
+    harnesses: list[GetWrappedResponseHarnessesItem]
+    models: list[GetWrappedResponseModelsItem]
+    sources: list[GetWrappedResponseSourcesItem]
+    imported: list[GetWrappedResponseImportedItem]
+    unread_files: int
+
+
+class GetWrappedResponseTokens(TypedDict):
+    input: int
+    output: int
+    cache_read: int
+    cache_write: int
+
+
+class GetWrappedResponseDaysItem(TypedDict):
+    day: str
+    requests: int
+    tokens: int
+
+
+class GetWrappedResponseHarnessesItem(TypedDict):
+    harness: str
+    sessions: int
+    requests: int
+    tokens: int
+
+
+class GetWrappedResponseModelsItem(TypedDict):
+    model: str
+    requests: int
+    tokens: int
+    cost_usd: float
+
+
+class GetWrappedResponseSourcesItem(TypedDict):
+    source: str
+    sessions: int
+    requests: int
+
+
+class GetWrappedResponseImportedItem(TypedDict):
+    source: str
+    runs: int
+
+
 # Each operation as the runtime sends it, by operationId.
 OPERATIONS: dict[str, Operation] = {
     "archiveAgent": Operation(method="POST", path="/agents/{agent_id}/archive", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
@@ -11392,6 +11550,7 @@ OPERATIONS: dict[str, Operation] = {
     "saveWebhook": Operation(method="PUT", path="/settings/webhook", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "testWebhook": Operation(method="POST", path="/settings/webhook/test", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "validateWorkflow": Operation(method="POST", path="/workflows/validate", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
+    "getWrapped": Operation(method="GET", path="/wrapped", path_params=(), multi_segment=(), query=("year",), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
 }
 
 
@@ -12327,3 +12486,7 @@ class Resources:
     def usage(self, *, from_: str | None = None, to: str | None = None, group_by: Literal["meter", "agent", "key", "day", "region"] | None = None, timeout: float | None = None) -> GetUsageResponse:
         """Usage by meter over a period (GET /usage)."""
         return self._operation("getUsage", (), None, {"from": from_, "to": to, "group_by": group_by}, timeout=timeout)
+
+    def wrapped(self, *, year: int | None = None, timeout: float | None = None) -> GetWrappedResponse:
+        """A year of the work under this machine's session files (GET /wrapped)."""
+        return self._operation("getWrapped", (), None, {"year": year}, timeout=timeout)

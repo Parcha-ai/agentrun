@@ -9,7 +9,8 @@
 // three times, an escape a boundary in each; the engine takes the union of what every view finds. Every pattern is a
 // named module-level constant (RULE_PATTERNS) and every run it reads is bounded, so each rule reads a text in time linear
 // in its length (secret-scrub.test.mjs walks them).
-import { heldSpans, SHAPES, spans } from "./learn/secrets.js";
+import { heldNeedles, MIN_SECRET } from "./learn/secrets.js";
+import { cutSpans, SECRET_SHAPES, type Shape, shapeSpans, type Span } from "./redact/match.js";
 
 export type CutKind =
   | "format" // a known format: prefix or checksum (sk-, ghp_, AKIA, JWT, PEM block, secretlint hits)
@@ -584,7 +585,7 @@ function inside(text: string, command: RegExp, pattern: RegExp, hit: (m: RegExpE
   return out;
 }
 
-// ---------- format: learn/secrets.ts SHAPES, the PEM block whole, secretlint
+// ---------- format: redact/match.ts SECRET_SHAPES, the PEM block whole, secretlint
 
 const SHAPE_IDS = new Map([
   ["AWS access key id", "aws-access-key"],
@@ -629,7 +630,7 @@ function trimmedTail(run: string): string {
   }
 }
 
-/** The private-key headers SHAPES finds, each stretched to its block's end: the next END line, when only a block's
+/** The private-key headers SECRET_SHAPES finds, each stretched to its block's end: the next END line, when only a block's
  *  characters stand between; else the base64 run after it. A header inside a block already cut is skipped, so a text
  *  of repeated headers is read once. */
 function pemBlocks(text: string, headers: readonly [number, number][], lines: LineBounds): Hit[] {
@@ -756,7 +757,7 @@ function pemLines(text: string, start: number, headerEnd: number, lines: LineBou
   return stop;
 }
 
-/** A URL's password as a URL holds one (ruling XXIX), which SHAPES' URL shape (a user first, no `/` in the password)
+/** A URL's password as a URL holds one (ruling XXIX), which SECRET_SHAPES' URL shape (a user first, no `/` in the password)
  *  misses: a scheme, `://`, a user (none: `redis://:pw@`), `:`, then the password to the last `@` before a blank or a
  *  quote that a host follows (a name or a bracketed IPv6 address, then a port, a path, a query or the URL's end). `/`,
  *  `+`, `=` and `@` are a password's characters; a user is never bracketed or braced (`http://[::1]:8080/a@b`, a
@@ -785,7 +786,7 @@ function urlUserinfos(text: string): { password: [number, number]; userinfo: [nu
   return out;
 }
 
-/** A URL's password alone, of SHAPES' `://user:password@` match: the user and the host stay. */
+/** A URL's password alone, of SECRET_SHAPES' `://user:password@` match: the user and the host stay. */
 function urlPassword(text: string, [start, end]: readonly [number, number]): Hit | undefined {
   // `scheme://[::1]:8443;x@host`: a bracketed IPv6 host, never a user (ruling XXXV).
   if (text.charAt(start + 3) === "[") return undefined;
@@ -885,13 +886,22 @@ function nestedBlanked(text: string, source: string | undefined): string {
   return out;
 }
 
-const SHAPE_RULES: readonly ScrubRule[] = SHAPES.map(([name, pattern]) => {
+/** SECRET_SHAPES by kind, in their order: a kind two shapes find (GitHub's classic and fine-grained tokens) is one rule. */
+const SHAPE_KINDS: readonly (readonly [string, readonly Shape[]])[] = [
+  ...SECRET_SHAPES.reduce((kinds, shape) => kinds.set(shape.kind, [...(kinds.get(shape.kind) ?? []), shape]), new Map<string, Shape[]>()),
+];
+
+/** Every match of one kind's shapes in `text`, each on its own, in order. */
+const kindSpans = (text: string, shapes: readonly Shape[]): Span[] =>
+  shapes.length === 1 ? shapeSpans(text, shapes[0]!) : shapes.flatMap((shape) => shapeSpans(text, shape)).sort((a, b) => a[0] - b[0]);
+
+const SHAPE_RULES: readonly ScrubRule[] = SHAPE_KINDS.map(([name, shapes]) => {
   const id = SHAPE_IDS.get(name) ?? slug(name);
   const kind: CutKind = SHAPE_LABELS.has(id) ? "label" : "format";
-  if (id === "private-key-block") return rule(id, kind, (text, ctx) => pemBlocks(text, spans(text, pattern), linesOfContext(text, ctx)));
+  if (id === "private-key-block") return rule(id, kind, (text, ctx) => pemBlocks(text, kindSpans(text, shapes), linesOfContext(text, ctx)));
   if (id === "url-password") {
     return rule(id, kind, async (text, ctx) => [
-      ...spans(text, pattern).flatMap((span) => urlPassword(text, span) ?? []),
+      ...kindSpans(text, shapes).flatMap((span) => urlPassword(text, span) ?? []),
       ...urlUserinfos(text).map(({ password: [start, end] }) => ({ start, end, name: "url", quoted: true })),
       ...(await lintUrlPasswords(text, ctx)),
     ]);
@@ -901,13 +911,13 @@ const SHAPE_RULES: readonly ScrubRule[] = SHAPES.map(([name, pattern]) => {
   if (run) {
     return rule(id, kind, (text, ctx) => {
       const read = nestedBlanked(text, ctx?.source);
-      return spans(read, pattern).flatMap(([start, end]) => (opensKey(read, start, run.before) ? [{ start, end: keyEnd(read, start, end, run.after) }] : []));
+      return kindSpans(read, shapes).flatMap(([start, end]) => (opensKey(read, start, run.before) ? [{ start, end: keyEnd(read, start, end, run.after) }] : []));
     });
   }
-  return rule(id, kind, (text) => spans(text, pattern).map(([start, end]) => ({ start, end, ...(quoted ? { quoted } : {}) })));
+  return rule(id, kind, (text) => kindSpans(text, shapes).map(([start, end]) => ({ start, end, ...(quoted ? { quoted } : {}) })));
 });
 
-/** Vendor keys with a public prefix the learning guard's SHAPES do not hold (ruling L), the scrubber's alone: each a
+/** Vendor keys with a public prefix the learning guard's SECRET_SHAPES do not hold (ruling L), the scrubber's alone: each a
  *  format, bounded like X's prefixes (a prefix holding `_`, `-` or `.` sits only inside a base64url run). Hugging
  *  Face `hf_`, DigitalOcean `dop_v1_`/`doo_v1_`/`dor_v1_` (64 hex), PyPI's `pypi-` macaroon (its fixed
  *  `AgEIcHlwaS5vcmc` header: "pypi.org"), SendGrid `SG.<22>.<43>`. */
@@ -1074,6 +1084,66 @@ function straddlingPems(text: string, lines: LineBounds, found: readonly Hit[]):
 const SECRETLINT = rule("secretlint", "format", async (text, ctx) => (await ctx.lint()).filter((find) => !LINT_URLS.has(find.id)).flatMap((find) => placesOf(text, find.value)));
 
 // ---------- held
+
+/** Every place a held value stands in `text`: each form, hex and folded identifier redact/match.ts cuts in place
+ *  (cutSpans over learn/secrets.ts heldNeedles), and each form split by one run of blanks (blankSplitPlaces). A form found
+ *  nowhere as it stands (partly encoded, split twice) is still seen by valueMatcher over what is left. */
+function heldSpans(text: string, values: readonly string[]): Span[] {
+  const needles = heldNeedles(values);
+  return [...cutSpans(text, needles, []), ...blankSplitPlaces(text, needles.forms)];
+}
+
+const isBlankCode = (code: number): boolean =>
+  code === 32 || (code >= 9 && code <= 13) || code === 0xa0 || code === 0x1680 || (code >= 0x2000 && code <= 0x200a) || code === 0x2028 || code === 0x2029 || code === 0x202f || code === 0x205f || code === 0x3000 || code === 0xfeff;
+
+/** How many runs of blanks stand in `text` from `start` to `last`. */
+function blankRuns(text: string, start: number, last: number): number {
+  let runs = 0;
+  for (let at = start + 1; at <= last; at++) if (isBlankCode(text.charCodeAt(at)) && !isBlankCode(text.charCodeAt(at - 1))) runs++;
+  return runs;
+}
+
+/** Every place a form (one MIN_SECRET long or more, with no blank of its own) stands in `text` split by one run of
+ *  blanks (a line wrapped, a space typed into it; ruling XXXII: two runs are words, `alpha beta gamma`): the span from
+ *  its first character to its last, the blanks between included, so a cut over it takes the form whole (ruling XIV).
+ *  Each blank's offset is kept, not a copy of the text's: an offset in the text with its blanks taken out maps back by a
+ *  search over them. */
+function blankSplitPlaces(text: string, forms: readonly string[]): Span[] {
+  const blanks: number[] = [];
+  const kept: string[] = [];
+  let from = 0;
+  for (let at = 0; at < text.length; at++) {
+    if (!isBlankCode(text.charCodeAt(at))) continue;
+    if (at > from) kept.push(text.slice(from, at));
+    blanks.push(at);
+    from = at + 1;
+  }
+  if (!blanks.length) return [];
+  kept.push(text.slice(from));
+  const squeezed = kept.join("");
+  // The text's offset of the squeezed text's `k`th character: k plus the blanks before it (blank i has blanks[i] - i
+  // characters before it).
+  const offsetOf = (k: number): number => {
+    let low = 0;
+    let high = blanks.length;
+    while (low < high) {
+      const mid = (low + high) >> 1;
+      if (blanks[mid]! - mid <= k) low = mid + 1;
+      else high = mid;
+    }
+    return k + low;
+  };
+  const out: Span[] = [];
+  for (const form of forms) {
+    if (form.length < MIN_SECRET || [...form].some((c) => isBlankCode(c.charCodeAt(0)))) continue;
+    for (const { start: at, end } of placesOf(squeezed, form)) {
+      const start = offsetOf(at);
+      const last = offsetOf(end - 1);
+      if (last - start + 1 > form.length && blankRuns(text, start, last) === 1) out.push([start, last + 1]);
+    }
+  }
+  return out;
+}
 
 /** Held values are read in the view's text before its escapes were blanked: a held value may hold a backslash. */
 const HELD = rule("held-value", "held", (_text, ctx) => (ctx.held.length ? heldSpans(ctx.source, ctx.held).map(([start, end]) => ({ start, end })) : []));
@@ -2265,7 +2335,7 @@ export const SCRUB_RULES: readonly ScrubRule[] = Object.freeze([
   rule("private-ip", "personal", (text) => [...each(text, IPV4, (m) => ipv4(text, m)), ...each(text, IPV6, (m) => ipv6(text, m))], { shapeClass: "ip" }),
 ]);
 
-/** Every module-level pattern the rules read, by name: secret-scrub.test.mjs walks each (and learn/secrets.ts SHAPES)
+/** Every module-level pattern the rules read, by name: secret-scrub.test.mjs walks each (redact/match.ts SECRET_SHAPES are scanners, linear by construction)
  *  and fails on an unbounded quantifier outside its allowlist, and fails on a module-level pattern missing here. */
 export const RULE_PATTERNS: Readonly<Record<string, RegExp>> = Object.freeze({
   ESCAPE, CONTROLS, DRIVE_PATH, NOT_DIGIT, NOT_HEX, NOT_ALNUM, NOT_BASE64, PLACEHOLDER, ELLIPSIS, TYPE_WORD, GENERIC, PASCAL_TYPE, METAVAR, NAME_PARTS, LEADING_DASHES,
