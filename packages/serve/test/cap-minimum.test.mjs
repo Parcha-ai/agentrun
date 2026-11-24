@@ -5,9 +5,9 @@
 // step's least fits the cap; a step's least is its whole input bound at the cache-write price ($3.75 a million) and a
 // 1,024-token answer ($15 a million). The answers' usage is a desktop run's on Sonnet (3,146 tokens written to the cache
 // at first, then 1,300 more each step, 40 out), so the run spends about $0.04 in all. So:
-//  - through a gateway (OpenRouter, which counts nothing): the first request is bounded by its bytes, 9,772 tokens, most
+//  - through a gateway (OpenRouter, which counts nothing): the first request is bounded by its bytes, 10,072 tokens, most
 //    of them the computer's tools' and codemode's definitions, the computer's types among them, and the desktop skill's
-//    line in the system prompt, so it needs $0.052. Each later request carries the one before it, so it is bounded by
+//    line in the system prompt, so it needs $0.053. Each later request carries the one before it, so it is bounded by
 //    what that one billed and the bytes it adds, its screenshot at the 1,366 tokens it bills (1,744 over the last bill,
 //    against the 1,300 each step bills here): the whole run needs $0.082. $0.09, documented, takes it to its answer;
 //    $0.08 wraps it up before its last screenshot;
@@ -94,7 +94,7 @@ test("the documented minimums are what the run needs, to the cent above: $0.09 t
   assert.deepEqual(offeredOf(gateway.sent[0]), DESKTOP_OFFERED, "the run is offered a desktop run's tools, the host's codemode among them");
   assert.ok(gateway.asked[0].request.inputTokensMax > 9_000, `through a gateway the first request is read by its bytes: ${gateway.asked[0].request.inputTokensMax}`);
   assert.equal(direct.asked[0].request.inputTokensMax, 3_146 + 675, "straight to Anthropic, by its count and the tool-use prompt");
-  assert.deepEqual([gateway.first, direct.first].map((usd) => Math.round(usd * 1000) / 1000), [0.052, 0.03], "the first request's least");
+  assert.deepEqual([gateway.first, direct.first].map((usd) => Math.round(usd * 1000) / 1000), [0.053, 0.03], "the first request's least");
   assert.deepEqual([Math.ceil(gateway.whole * 100) / 100, Math.ceil(direct.whole * 100) / 100], [GATEWAY_MINIMUM, DIRECT_MINIMUM], JSON.stringify({ gateway: gateway.whole, direct: direct.whole }));
 });
 
