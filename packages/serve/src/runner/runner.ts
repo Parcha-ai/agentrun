@@ -30,6 +30,7 @@ import { keptBy, readKept } from "../workspace/computer-kept.js";
 import { cutDeep, heldRedactor, processSecretRedactor, type Redact } from "./redact.js";
 import { type LiveTickerOptions, withLiveTicker } from "./live-ticker.js";
 import { keepPresence, type Presence } from "./presence.js";
+import { flushTraces } from "../otel/tracer.js";
 
 /** Tries of the re-read after a claim or release commit was answered Unanswered (the commit may have landed). */
 const UNKNOWN_READS = 5;
@@ -158,8 +159,8 @@ export interface RunnerOptions {
    *  it: what the run's earlier claims left is let go (workspace/run-end-computers.ts, their computers). A throw is said
    *  as an error; the run's end stands. Absent: nothing. */
   runEnded?: (claim: Claim) => Promise<void>;
-  /** The runner's clock (epoch ms) for what it writes itself: a withdrawn answer's time in an end it writes. Default
-   *  Date.now. */
+  /** The runner's clock (epoch ms) for what it writes itself: a withdrawn answer's time in an end it writes, and every
+   *  backoff it releases a run with (the store reads them on its own clock, the same one). Default Date.now. */
   now?: () => number;
   /** The one redactor (redact.ts secretRedactor over the secrets the runner holds): every error text this runner writes
    *  to a run's row or end, or emits, passes through it, and each loop gets it (LoopDeps.redact). Default: the one over every secret this process's environment holds (runnerSecrets), so a runner
@@ -884,7 +885,7 @@ export function startRunner(options: RunnerOptions): Runner {
       const cut = end.state !== "interrupted" ? undefined : closedItself ? "retry" as const : held.stoppedFor === "shutdown" ? "drain" as const : undefined;
       await release(claim, {
         ...(end.state === "parked" && end.wakeAt !== undefined ? { wakeAt: end.wakeAt }
-        : inARow > 0 ? { backoffUntil: Date.now() + interruptBackoffMs * 2 ** Math.min(inARow - 1, 6) }
+        : inARow > 0 ? { backoffUntil: now() + interruptBackoffMs * 2 ** Math.min(inARow - 1, 6) }
         : {}),
         ...(cut ? { cut } : {}),
       });
@@ -928,7 +929,7 @@ export function startRunner(options: RunnerOptions): Runner {
         await release(claim, { state: "parked" });
       } else {
         await store.flush();
-        await release(claim, { state: "parked", backoffUntil: Date.now() + resumeBackoffMs * 2 ** (tries - 1) });
+        await release(claim, { state: "parked", backoffUntil: now() + resumeBackoffMs * 2 ** (tries - 1) });
       }
     } else {
       await store.flush();
@@ -1353,6 +1354,8 @@ export function startRunner(options: RunnerOptions): Runner {
       await ticker?.close();
       // It claims no more: its word that it is here goes.
       await presence?.close();
+      // Its runs' trace spans still waiting in the batch are sent, at most FLUSH_MS (nothing when tracing is off).
+      await flushTraces();
     },
     kill() {
       killed = true;
