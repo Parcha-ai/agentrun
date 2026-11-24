@@ -7,7 +7,8 @@
 // The suites run with a plain `node --test`, so at node's default concurrency (every core). `--test-concurrency <n>` or
 // TEST_CONCURRENCY=<n> passes it to each suite; the flag wins, and neither leaves node's default alone.
 // `--captures <dir>`, once or more, runs no suite: it reads what the capture hook wrote into each directory while
-// the suites ran elsewhere (CI's test shards), and needs a capture in every directory and from every suite.
+// the suites ran elsewhere (CI's test shards), and needs a capture or the hook's marker in every directory, and a capture
+// from every suite.
 // `lake exe validator-sweep out.json` then asserts the Lean validator accepts every
 // workflow the TypeScript validator accepts.
 import { execFileSync } from "node:child_process";
@@ -15,6 +16,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { REACHED } from "./capture-hooks.mjs";
 
 const root = resolve(fileURLToPath(new URL("../../..", import.meta.url)));
 const args = process.argv.slice(2);
@@ -55,7 +57,9 @@ if (given.length) {
   captures = [];
   for (const dir of given) {
     const files = existsSync(dir) ? finished(dir) : [];
-    if (!files.length) problems.push(`${dir}: no captures; the test shard that writes them did not finish, or the capture hook is not reaching it`);
+    // The hook's marker alone is a shard that ran under it and validated no workflow; the check by suite below still needs
+    // a capture from every suite.
+    if (!files.length && !existsSync(join(dir, REACHED))) problems.push(`${dir}: no captures; the test shard that writes them did not finish, or the capture hook is not reaching it`);
     captures.push(...files);
   }
   const sources = new Set(captures.map((file) => sourceOf(JSON.parse(readFileSync(file, "utf8")))));

@@ -28,3 +28,22 @@ export function githubFormAction(action: string, href: (u: string) => string | u
   const url = new URL(ok);
   return url.protocol === "https:" && url.hostname === "github.com" ? ok : undefined;
 }
+
+/** A GitHub login as the server takes it (github-connection.ts's LOGIN): letters, digits and single hyphens, 39 at most. */
+const LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}$/;
+/** github.com's own pages, which no account can be named: the first part of an address that is one of these names no
+ *  organization. `orgs` and `organizations` lead an organization's own pages (github.com/orgs/<login>,
+ *  github.com/organizations/<login>/settings), so the login is the part after them. */
+const ORG_PAGES = new Set(["orgs", "organizations"]);
+const GITHUB_PAGES = new Set(["settings", "apps", "marketplace", "enterprises", "sponsors", "notifications", "explore", "topics", "features", "login", "new"]);
+/** The organization a person typed for the App, as a login: what people paste (its github.com address, with or without
+ *  https:// and a path after it, an organization's own page included, or @name) is read as its login. `org` undefined:
+ *  none typed (the App is the person's own); `problem`: what was typed is no login, said in words, and nothing is sent. */
+export function githubOrgOf(typed: string): { org?: string; problem?: string } {
+  const trimmed = typed.trim();
+  if (!trimmed) return {};
+  const parts = trimmed.replace(/^https?:\/\//i, "").replace(/^(www\.)?github\.com\//i, "").replace(/^@/, "").split(/[?#]/)[0]!.split("/");
+  const s = ORG_PAGES.has(parts[0]!.toLowerCase()) ? (parts[1] ?? "") : parts[0]!;
+  return LOGIN.test(s) && !ORG_PAGES.has(s.toLowerCase()) && !GITHUB_PAGES.has(s.toLowerCase()) ? { org: s }
+    : { problem: `“${trimmed}” isn't a GitHub organization. Enter its login, as in github.com/<login>, or leave the field empty for your own account.` };
+}

@@ -16,7 +16,7 @@ import { abortedOutcome, openDrive, pendingSubmissions, Restart, SessionHalt, ty
 import { toolSchemaProblems } from "@parcha/agentrun-kernel";
 import { bridgeTool, NativeJournal, recoveryNote, settleTurn, transcriptOf } from "@parcha/agentrun-kernel/process";
 import { type BinaryProbe, checkedOnce, checkedOnceAsync, hostHeaderProblems, type ModelProxyOptions, startModelProxy } from "@parcha/agentrun-kernel/host";
-import { anthropicPolicy, withWebSearches } from "./host/policy.js";
+import { anthropicPolicy, isoDay, withWebSearches } from "./host/policy.js";
 import { findClaudeExecutable, platformSuffix } from "./binary.js";
 import { CLAUDE_AGENT_PACKAGE, ClaudeAgentNotInstalled, ClaudeAgentPinMismatch, ClaudeAgentThinkingOff } from "./errors.js";
 import { type ClaudeAgentSdk, claudeCodeHarness, claudeToolSearch, lostPrompts } from "./harness.js";
@@ -28,8 +28,9 @@ import type { ToolServerModules } from "./host/tool-server.js";
 import { CLAUDE_AGENT_SDK_INSTALL, CLAUDE_AGENT_SDK_VERSION, CLAUDE_CODE_VERSION, installedVersion } from "./versions.js";
 export { CLAUDE_AGENT_CLI_SKILL_NAMES } from "./cli-names.js";
 
-/** The pinned CLI's tools the copied harness leaves undecided, off by name in every session (WebSearch unless `webSearch`). */
-export const CLAUDE_AGENT_ALSO_OFF: readonly string[] = Object.freeze(["Skill", "WebSearch"]);
+/** The pinned CLI's tools off by name in every session (WebSearch unless `webSearch`): those the copied harness leaves
+ *  undecided, and WebFetch, which fetches from the CLI's own process where the host's web_fetch is the session's. */
+export const CLAUDE_AGENT_ALSO_OFF: readonly string[] = Object.freeze(["Skill", "WebSearch", "WebFetch"]);
 
 /** The local plugin the session's skills are served from: the model sees each as `agentrun:<name>`, and may load it by
  *  that name or, unless the CLI has a command or skill of that name (`CLAUDE_AGENT_CLI_SKILL_NAMES`), by its bare one. */
@@ -141,9 +142,13 @@ export interface ClaudeAgentAdapterOptions {
   /** How hard the model thinks when a node names no level (its `thinking`, else its `effort`). Default medium; it is
    *  never off. */
   thinking?: ClaudeAgentThinking;
-  /** For tests: the fetch the model proxy forwards with. */
+  /** The fetch the model proxy forwards with: the host's route for a model it translates onto this wire (a test's
+   *  recorder, too); absent, the network. Forwarding it is the harness contract (HARNESS.md, the facts' `wire`). */
   fetch?: typeof fetch;
-  /** For tests: the clock a user turn's day is read from (harness.ts dateLine). Default the system's. */
+  /** The run's clock, when the host sets one (serve: a template eval case's `now`): a user turn's day is read from it
+   *  (harness.ts dateLine), and the CLI's own date lines, which it reads from the machine's clock, are made to say its
+   *  day in `zone` at the session's model proxy (policy.ts `day`). A session on a login has no proxy: there the CLI's
+   *  lines keep the machine's date. Default the system's clock, and the CLI's lines pass as written. */
   now?: () => Date;
   /** The IANA zone a user turn's day is read in (harness.ts dateLine), the one the host's environment line names. Default UTC. */
   zone?: string;
@@ -410,6 +415,9 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
           ...(options.maxOutputTokens ? { maxOutputTokens: options.maxOutputTokens } : {}),
           ...(provider.auth ? { auth: provider.auth } : {}),
           ...(provider.headers ? { headers: provider.headers } : {}),
+          // On a clock the host set (`now`), the CLI's own date lines, read from the machine's clock, say that clock's day in
+          // the run's zone. A session on a login has no proxy, and keeps the machine's date.
+          ...(options.now ? { day: () => isoDay(options.now!(), options.zone) } : {}),
           ...(options.log ? { log: options.log } : {}),
           ...(options.fetch ? { fetch: options.fetch } : {}),
         } } : {}),

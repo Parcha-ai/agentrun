@@ -130,6 +130,43 @@ describe("ChatGPTSignIn", () => {
     expect(calls.length).toBe(reads);
   });
 
+  it("a browser's return the server could not finish says why, where the waiting page was, with Continue with ChatGPT to try again", async () => {
+    let state: ChatGPTView = { state: "pending", authorize_url: AUTHORIZE };
+    const { v2 } = server(() => state, () => json(500, {}));
+    const page = await mount(v2, state);
+    // OpenAI's tab said the sign-in completed; the server then could not exchange the code.
+    state = { state: "signed_out", problem: "OpenAI refused the sign-in: a Free ChatGPT plan may be the reason; with a paid plan, start it again." };
+    await page.wait(() => !!page.host.querySelector('[role="alert"]'), "the problem is shown");
+    expect(page.host.querySelector('[role="alert"]')!.textContent).toBe("OpenAI refused the sign-in: a Free ChatGPT plan may be the reason; with a paid plan, start it again.");
+    expect(page.button(/^Continue with ChatGPT$/)).toBeTruthy();
+  });
+
+  it("a refused paste, then a browser's return the server could not finish: the server's final word replaces the paste's", async () => {
+    const refused = "That address is from another sign-in: paste the one from the sign-in you started last, or start again.";
+    let state: ChatGPTView = { state: "pending", authorize_url: AUTHORIZE };
+    const { v2 } = server(() => state, () => json(400, { error: { code: "bad_request", message: refused, retryable: false } }));
+    const page = await mount(v2, state);
+    await page.paste(PASTED);
+    await page.click(/^Finish sign-in$/);
+    expect(page.host.querySelector('[role="alert"]')?.textContent).toBe(refused);
+    state = { state: "signed_out", problem: "OpenAI refused the sign-in: a Free ChatGPT plan may be the reason; with a paid plan, start it again." };
+    await page.wait(() => page.host.querySelector('[role="alert"]')?.textContent === state.problem, "the server's problem is shown, not the paste's refusal");
+  });
+
+  it("a page opened after such a sign-in says why from the server's view", async () => {
+    const { v2 } = server(() => ({ state: "signed_out" }), () => json(500, {}));
+    const page = await mount(v2, { state: "signed_out", problem: "This server could not reach OpenAI to finish the sign-in: check its connection, then start again." });
+    expect(page.host.querySelector('[role="alert"]')?.textContent).toContain("could not reach OpenAI");
+  });
+
+  it("signed in, a later sign-in that failed says why under who is signed in", async () => {
+    const problem = "OpenAI refused the sign-in: a Free ChatGPT plan may be the reason; with a paid plan, start it again.";
+    const { v2 } = server(() => ({ ...SIGNED_IN, problem }), () => json(500, {}));
+    const page = await mount(v2, { ...SIGNED_IN, problem });
+    expect(page.host.textContent).toContain("person@example.com");
+    expect(page.host.querySelector('[role="alert"]')?.textContent).toBe(problem);
+  });
+
   it("a read slower than the 2 s poll still lands: one read at a time, so the next doesn't make it stale", async () => {
     const reads: number[] = [];
     const fetch = (async () => {
@@ -175,6 +212,34 @@ describe("ChatGPTSignIn", () => {
     const page = await mount(v2, waiting);
     const until = new Date(expires).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
     expect(page.host.textContent).toContain(`Waits until ${until}`);
+  });
+
+  it("a sign-in still waiting shows the server's hint once a read carries it, long before it times out, and a new start drops it", async () => {
+    // OpenAI shows a workspace admin's refusal on its own page and never sends the browser back: the server's hint names it.
+    const HINT = "OpenAI hasn't sent the code back yet. If OpenAI's page showed an error instead of signing you in, your ChatGPT workspace's admin has likely turned off open-source apps (External access → OSS → Use ChatGPT plan): ask them to turn it on, or sign in with another account.";
+    const expires = new Date(Date.now() + 540_000).toISOString();
+    let waiting: ChatGPTView = { state: "pending", authorize_url: AUTHORIZE, expires_at: expires };
+    const { v2 } = server(() => waiting, () => json(200, { authorize_url: AUTHORIZE, expires_at: expires }));
+    const page = await mount(v2, waiting);
+    expect(page.host.textContent).not.toContain("workspace's admin");
+    waiting = { ...waiting, hint: HINT };
+    await page.wait(() => page.host.querySelector('[role="status"]')?.textContent === HINT, "the next read's hint is shown");
+    expect(page.host.querySelector('[role="alert"]'), "a hint, not an error").toBeNull();
+    waiting = { state: "pending", authorize_url: AUTHORIZE, expires_at: expires };
+    await page.click(/^Start again$/);
+    expect(page.host.textContent).not.toContain("workspace's admin");
+  });
+
+  it("a new waiting view given by its page drops a hint an earlier read showed, at once, not at the next read", async () => {
+    const HINT = "OpenAI hasn't sent the code back yet.";
+    const expires = new Date(Date.now() + 540_000).toISOString();
+    let waiting: ChatGPTView = { state: "pending", authorize_url: AUTHORIZE, expires_at: expires, hint: HINT };
+    const { v2 } = server(() => waiting, () => json(500, {}));
+    const page = await mount(v2, { state: "pending", authorize_url: AUTHORIZE, expires_at: expires });
+    await page.wait(() => page.host.querySelector('[role="status"]')?.textContent === HINT, "a read's hint is shown");
+    waiting = { state: "pending", authorize_url: `${AUTHORIZE}&n=2`, expires_at: expires };
+    act(() => root!.render(createElement(ChatGPTSignIn, { v2, view: waiting, onView: () => {}, writable: true })));
+    expect(page.host.querySelector('[role="status"]'), "the new view has no hint").toBeNull();
   });
 
   it("while a pasted sign-in finishes, reads that still say waiting show no error, and it ends signed in", async () => {

@@ -58,6 +58,9 @@ function memoryStore(setting = PERSISTENT) {
       replaceIf: async (key, was, value) => rows.has(key) && JSON.stringify(rows.get(key)) === JSON.stringify(was) && (rows.set(key, structuredClone(value)), true),
       removeIf: async (key, was) => rows.has(key) && JSON.stringify(rows.get(key)) === JSON.stringify(was) && rows.delete(key),
       remove: async (key) => void rows.delete(key),
+      // The rows under a prefix, in key order, as the store's: the janitor reads the kept rows this way.
+      all: async ({ prefix } = { prefix: "" }) =>
+        [...rows].filter(([key]) => key.startsWith(prefix)).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([key, value]) => ({ key, value: structuredClone(value), updatedAt: 0 })),
     },
     sealedKeys: { get: async (name) => keys.get(name), put: async (name, sealed) => void keys.set(name, sealed), remove: async (name) => void keys.delete(name), all: async () => [...keys].map(([name]) => ({ name })) },
     computerLedger: { put: async () => {}, get: async () => undefined, list: async () => [], remove: async () => {} },

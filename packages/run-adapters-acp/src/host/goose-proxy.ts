@@ -327,7 +327,8 @@ export interface GooseProxyOptions {
   price?: ModelProxyOptions["price"];
   maxOutputTokens?: number;
   log?: (message: string, fields?: Record<string, unknown>) => void;
-  /** For tests: the fetch the proxy forwards with. */
+  /** The fetch the proxy forwards with: the host's route for a model it translates onto Messages (a test's recorder,
+   *  too); absent, the network. Forwarding it is the harness contract (HARNESS.md, the facts' `wire`). */
   fetch?: typeof fetch;
 }
 

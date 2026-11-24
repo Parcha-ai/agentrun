@@ -85,9 +85,10 @@ test("the CLI is started with the host's tools only, no settings, no sign-in and
   const runNode = createHarnessRunner(adapter, { store: memorySessionStore(), tools: [lookup] });
   assert.deepEqual(await runNode({ kind: 'agent', label: 'q', system: ['Be brief.'], user: 'Go.', schema: SCHEMAS.Out, tools: ['lookup'] }), { answer: 'ok' });
   const [options] = seen;
-  // No built-in tool, and the ones that keep state outside the transcript or start other agents are off by name too.
+  // No built-in tool, and the ones that keep state outside the transcript, start other agents or reach the web (WebSearch,
+  // WebFetch: the host's web_search and web_fetch are the session's) are off by name too.
   assert.deepEqual(options.tools, []);
-  for (const name of ['Task', 'Agent', 'WebSearch', 'CronCreate', 'ScheduleWakeup', 'EnterWorktree', 'SendMessage', 'TaskCreate', 'Monitor', 'BashOutput', 'Workflow', 'AskUserQuestion']) assert.ok(options.disallowedTools.includes(name), name);
+  for (const name of ['Task', 'Agent', 'WebSearch', 'WebFetch', 'CronCreate', 'ScheduleWakeup', 'EnterWorktree', 'SendMessage', 'TaskCreate', 'Monitor', 'BashOutput', 'Workflow', 'AskUserQuestion']) assert.ok(options.disallowedTools.includes(name), name);
   assert.deepEqual([...options.allowedTools].sort(), ['mcp__hands__lookup', 'mcp__hands__submit']);
   assert.deepEqual(Object.keys(options.mcpServers), ['hands']);
   assert.deepEqual([options.permissionMode, options.strictMcpConfig, options.settingSources], ['dontAsk', true, []]);
@@ -102,6 +103,19 @@ test("the CLI is started with the host's tools only, no settings, no sign-in and
   assert.ok(!Object.values(env).includes('provider-secret'));
   assert.ok(!Object.values(env).some((v) => typeof v === 'string' && v.includes('/.claude')), "never the operator's ~/.claude");
   assert.equal(env.CLAUDE_AGENT_SDK_CLIENT_APP, 'agentrun-claude-agent');
+});
+
+// A host tool the host marks deferred (its catalog past the threshold, found by the host's tools_search and run by its
+// tools_call) is never listed to the CLI, as no harness lists one (the kernel's tool bridge): a run whose own tool search
+// is off (a model the host's route translates) keeps its context for the tools it lists.
+test("a host tool marked deferred is never listed to the CLI: not among the tools it is allowed", async (t) => {
+  const seen = [];
+  const { adapter } = await claude(t, { script: ['call submit {"value":{"answer":"ok"}}'], sdk: { onQuery: (options) => seen.push(options) } });
+  const lookup = { name: 'lookup', description: 'Look.', inputSchema: { type: 'object' }, replay: 'safe', call: async () => ({ text: 'x' }) };
+  const hidden = { name: 'mcp__probe__hidden', description: 'Hidden.', inputSchema: { type: 'object' }, replay: 'safe', deferred: true, call: async () => ({ text: 'y' }) };
+  const runNode = createHarnessRunner(adapter, { store: memorySessionStore(), tools: [lookup, hidden] });
+  assert.deepEqual(await runNode({ kind: 'agent', label: 'q', system: ['Be brief.'], user: 'Go.', schema: SCHEMAS.Out, tools: ['lookup', 'mcp__probe__hidden'] }), { answer: 'ok' });
+  assert.deepEqual([...seen[0].allowedTools].sort(), ['mcp__hands__lookup', 'mcp__hands__submit']);
 });
 
 // The Skill gate apart from the CLI. On the pinned CLI a name that is no skill of the session's never reaches the hook (the
@@ -187,6 +201,7 @@ test("webSearch: the CLI is offered WebSearch alone and told so, the gate lets i
   const [options] = seen;
   assert.deepEqual(options.tools, ['WebSearch']);
   assert.ok(!options.disallowedTools.includes('WebSearch') && options.disallowedTools.includes('Skill'), JSON.stringify(options.disallowedTools));
+  assert.ok(options.disallowedTools.includes('WebFetch'), `WebSearch on leaves WebFetch off by name: ${JSON.stringify(options.disallowedTools)}`);
   assert.match(options.systemPrompt.append, /^Your only tools are this app's \(the mcp__hands__ tools, if it has any\) and WebSearch; you have no shell, file or fetch tools/);
   // The search's intent is in the session's records before it runs, as a read: a crash cut is retried, not reported lost.
   const records = await store.read(store.keys()[0]);

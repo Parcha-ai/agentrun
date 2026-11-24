@@ -1,6 +1,7 @@
 package x11
 
 import (
+	"context"
 	"fmt"
 	"image"
 	"unicode"
@@ -40,7 +41,7 @@ func (c *Conn) QueryExtension(name string) (Extension, error) {
 	body := le.AppendUint16(nil, uint16(len(name)))
 	body = append(body, 0, 0)
 	body = append(body, name...)
-	r, err := c.call(opQueryExtension, 0, body, smallReply)
+	r, err := c.call(context.Background(), opQueryExtension, 0, body, smallReply)
 	if err != nil {
 		return Extension{}, err
 	}
@@ -58,7 +59,7 @@ func (c *Conn) InitXTest() error {
 	}
 	body := []byte{2, 0}
 	body = le.AppendUint16(body, 2)
-	r, err := c.call(ext.Major, xtestGetVersion, body, smallReply)
+	r, err := c.call(context.Background(), ext.Major, xtestGetVersion, body, smallReply)
 	if err != nil {
 		return fmt.Errorf("XTEST's GetVersion: %w", err)
 	}
@@ -91,18 +92,19 @@ func (c *Conn) FakeInput(kind, detail byte, x, y int) error {
 	return err
 }
 
-// RootSize is the root window's size now, which a RandR change may have moved since the setup.
-func (c *Conn) RootSize() (width, height int, err error) {
-	r, err := c.call(opGetGeometry, 0, le.AppendUint32(nil, c.screen.Root), smallReply)
+// RootSize is the root window's size now, which a RandR change may have moved since the setup. It waits for the
+// answer until ctx ends.
+func (c *Conn) RootSize(ctx context.Context) (width, height int, err error) {
+	r, err := c.call(ctx, opGetGeometry, 0, le.AppendUint32(nil, c.screen.Root), smallReply)
 	if err != nil {
 		return 0, 0, err
 	}
 	return int(le.Uint16(r[16:])), int(le.Uint16(r[18:])), nil
 }
 
-// QueryPointer is where the pointer is on the root window.
-func (c *Conn) QueryPointer() (x, y int, err error) {
-	r, err := c.call(opQueryPointer, 0, le.AppendUint32(nil, c.screen.Root), smallReply)
+// QueryPointer is where the pointer is on the root window. It waits for the answer until ctx ends.
+func (c *Conn) QueryPointer(ctx context.Context) (x, y int, err error) {
+	r, err := c.call(ctx, opQueryPointer, 0, le.AppendUint32(nil, c.screen.Root), smallReply)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -115,15 +117,16 @@ const LockMask = 0x2
 // State is the core keyboard and pointer state now: which modifiers are on, and which buttons are down (QueryPointer's
 // mask).
 func (c *Conn) State() (uint16, error) {
-	r, err := c.call(opQueryPointer, 0, le.AppendUint32(nil, c.screen.Root), smallReply)
+	r, err := c.call(context.Background(), opQueryPointer, 0, le.AppendUint32(nil, c.screen.Root), smallReply)
 	if err != nil {
 		return 0, err
 	}
 	return le.Uint16(r[24:]), nil
 }
 
-// GetImage reads a rectangle of the root window as ZPixmap and converts it to RGBA through the visual's masks.
-func (c *Conn) GetImage(x, y, width, height int) (*image.RGBA, error) {
+// GetImage reads a rectangle of the root window as ZPixmap and converts it to RGBA through the visual's masks. It
+// waits for the image until ctx ends.
+func (c *Conn) GetImage(ctx context.Context, x, y, width, height int) (*image.RGBA, error) {
 	if width*height > MaxImagePixels {
 		return nil, fmt.Errorf("a %dx%d image is over the %d pixels one GetImage reads", width, height, MaxImagePixels)
 	}
@@ -133,7 +136,7 @@ func (c *Conn) GetImage(x, y, width, height int) (*image.RGBA, error) {
 	body = le.AppendUint16(body, uint16(width))
 	body = le.AppendUint16(body, uint16(height))
 	body = le.AppendUint32(body, 0xffffffff)
-	r, err := c.call(opGetImage, 2, body, width*height*4)
+	r, err := c.call(ctx, opGetImage, 2, body, width*height*4)
 	if err != nil {
 		return nil, err
 	}
@@ -232,7 +235,7 @@ type Keymap struct {
 // KeyboardMapping reads the keyboard map of every keycode.
 func (c *Conn) KeyboardMapping() (*Keymap, error) {
 	count := int(c.maxKey) - int(c.minKey) + 1
-	r, err := c.call(opGetKeyboardMapping, 0, []byte{c.minKey, byte(count), 0, 0}, count*255*4)
+	r, err := c.call(context.Background(), opGetKeyboardMapping, 0, []byte{c.minKey, byte(count), 0, 0}, count*255*4)
 	if err != nil {
 		return nil, err
 	}

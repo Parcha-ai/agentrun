@@ -1,6 +1,6 @@
 import type { ObservationRead } from "@/lib/observations";
 import { queryPlaygroundHref } from "@/lib/playgroundRoutes";
-import { Archive, ArrowUpRight, History, Play } from "lucide-react";
+import { Archive, ArrowUpRight, Flag, History, Play } from "lucide-react";
 import { Picker } from "@/components/ui/picker";
 import { ProblemCard } from "@/components/Problem";
 import { RunKind } from "@/components/RunKind";
@@ -42,7 +42,8 @@ export function RunsList({ runs, agentName, onOpen, error, onRetry, onMore, load
             {filter.source && <Button size="sm" variant="primary" aria-pressed onClick={() => onFilter({ ...filter, source: undefined })}><History aria-hidden /> {filter.source === "live" ? "Made here" : `From ${filter.source}`}</Button>}
           </>
         )}
-        <CodingAgentAction label="Query" prompt={`${queryRunsPrompt(location.origin, agentId)}\nCurrent view: ${filter.status ? `status ${filter.status}` : "all statuses"}; ${archived ? "archived runs" : "non-archived runs"}${filter.source && !agentId ? `; ${filter.source === "live" ? "runs made here" : `runs imported from ${filter.source}`}` : ""}.`} playgroundHref={queryPlaygroundHref(agentId, filter)} />
+        <a href="#/races/new" className={buttonVariants({ variant: "outline", size: "sm" })}><Flag aria-hidden />New race</a>
+        <CodingAgentAction label="Ask about runs" prompt={`${queryRunsPrompt(location.origin, agentId)}\nCurrent view: ${filter.status ? `status ${filter.status}` : "all statuses"}; ${archived ? "archived runs" : "non-archived runs"}${filter.source && !agentId ? `; ${filter.source === "live" ? "runs made here" : `runs imported from ${filter.source}`}` : ""}.`} playgroundHref={queryPlaygroundHref(agentId, filter)} />
       </header>
       <div className="min-h-0 flex-1 overflow-auto">
       {error && !runs ? <ProblemCard problem={error} onRetry={onRetry} className="" />
