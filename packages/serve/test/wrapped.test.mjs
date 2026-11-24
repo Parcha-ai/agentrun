@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { request } from "node:http";
+import { keptReads } from "../dist/wrapped.js";
 import { agent, follow, serve } from "./support.mjs";
 
 const WORDS = "Fixture prompt, never reported.";
@@ -185,4 +186,57 @@ test("Wrapped prices at serve's catalog: a model serve lists and pi-ai's built-i
   assert.equal(status, 200, JSON.stringify(body));
   assert.deepEqual(body.models.map((m) => [m.model, m.requests]), [["openrouter/inclusionai/ling-3.2-flash:free", 1]]);
   assert.deepEqual([body.unpriced_requests, body.cost_usd], [0, 0], "priced at its $0 entry");
+});
+
+// keptReads over reads the test settles by hand, on a mocked clock (Date only: setImmediate stays real).
+function keptOver() {
+  const calls = [];
+  const kept = keptReads((year) => new Promise((resolve, reject) => void calls.push({ year, resolve, reject })));
+  return { calls, kept };
+}
+const READ = { wrapped: {}, unread: 0 };
+const settled = () => new Promise((resolve) => setImmediate(resolve));
+
+test("keptReads shares a read still going however long it takes, keeps the current year a minute after it ends, then reads again", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: new Date(2026, 5, 1).getTime() });
+  const { calls, kept } = keptOver();
+  const first = kept(2026);
+  t.mock.timers.tick(10 * 60_000);
+  assert.equal(kept(2026), first, "a read still going is shared, past any minute");
+  assert.equal(calls.length, 1);
+  calls[0].resolve(READ);
+  await first;
+  await settled();
+  t.mock.timers.tick(59_000);
+  assert.equal(kept(2026), first, "kept within the minute after it ended");
+  t.mock.timers.tick(2_000);
+  assert.notEqual(kept(2026), first, "read again past the minute");
+  assert.deepEqual(calls.map((call) => call.year), [2026, 2026]);
+});
+
+test("keptReads keeps a year already over until the server stops, and reads each year once", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: new Date(2026, 5, 1).getTime() });
+  const { calls, kept } = keptOver();
+  const past = kept(2025);
+  calls[0].resolve(READ);
+  await past;
+  await settled();
+  t.mock.timers.tick(30 * 24 * 3_600_000);
+  assert.equal(kept(2025), past);
+  kept(2024);
+  assert.deepEqual(calls.map((call) => call.year), [2025, 2024]);
+});
+
+test("keptReads drops a read that failed: the next ask reads again", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: new Date(2026, 5, 1).getTime() });
+  const { calls, kept } = keptOver();
+  const failed = kept(2025);
+  calls[0].reject(new Error("the worker ended"));
+  await assert.rejects(failed, /the worker ended/);
+  await settled();
+  const again = kept(2025);
+  assert.notEqual(again, failed);
+  assert.equal(calls.length, 2);
+  calls[1].resolve(READ);
+  assert.equal(await again, READ);
 });
