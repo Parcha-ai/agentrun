@@ -545,3 +545,76 @@ test("the check's MCP name pattern is serve's MCP_NAME_IN_TEXT with its server c
   assert.equal(plain(parity.MCP_IN_TEXT?.source), plain(serves), "deploy-parity.mjs's MCP_IN_TEXT is not serve's MCP_NAME_IN_TEXT with its server captured");
   assert.equal(parity.MCP_IN_TEXT?.flags, "g");
 });
+
+test("a token the HTTP client refuses (a CR or LF inside it) exits 2 with one line that never quotes it", async (t) => {
+  const { a, b } = pair();
+  const source = await listener(t, (request) => (request.url === "/v2/agents/agt_a1" ? [200, a] : [404, {}]));
+  const target = await listener(t, (request) => (request.url === "/v2/agents/agt_b9" ? [200, b] : [404, {}]));
+  const args = ["--source", source.base, "--source-agent", "agt_a1", "--target", target.base, "--target-agent", "agt_b9"];
+  // Joined at run time, like every fake credential here. Each half is looked for alone: a printed CR or LF may be
+  // turned into a space.
+  const [head, tail] = [["parity", "head", "5c1e"].join("-"), ["parity", "tail", "9d2b"].join("-")];
+  const tokens = { "a source token with a LF": { AGENTRUN_PARITY_SOURCE_TOKEN: `${head}\n${tail}` }, "a target token with a CR": { AGENTRUN_PARITY_TARGET_TOKEN: `${head}\r${tail}` } };
+  const wrong = [];
+  for (const [what, env] of Object.entries(tokens)) {
+    const run = await cli({ ...keptEnv(), ...env }, args, { bin: CHECK });
+    if (run.code !== 2) wrong.push(`${what}: exit ${run.code}`);
+    if ([head, tail].some((half) => `${run.out}${run.err}`.includes(half))) wrong.push(`${what}: the token is printed`);
+    if (run.err.trim().split("\n").length !== 1 || !run.err.startsWith("deploy-parity: ")) wrong.push(`${what}: not one deploy-parity line`);
+  }
+  assert.deepEqual(wrong, [], "each malformed token exits 2 with one line, its text never printed");
+});
+
+test("an empty target agent id is refused with exit 2 before any request: from a lock, or from --target-agent beside one", async (t) => {
+  const { a } = pair();
+  // An install that answers its agent list: an empty id read as GET /v2/agents/ would be compared, not refused.
+  const install = await listener(t, (request) => (request.url === "/v2/agents/agt_a1" ? [200, a] : request.url === "/v2/agents/" ? [200, { agents: [a] }] : [404, {}]));
+  const from = ["--source", install.base, "--source-agent", "agt_a1", "--target", install.base];
+  const cases = {
+    "a lock whose agent_id is empty": [...from, "--lock", scratchFile(t, "deploy.json", JSON.stringify({ ...lockFor(install.base), agent_id: "" }))],
+    "an empty --target-agent beside a lock": [...from, "--target-agent", "", "--lock", scratchFile(t, "deploy.json", JSON.stringify(lockFor(install.base)))],
+  };
+  const wrong = [];
+  for (const [what, args] of Object.entries(cases)) {
+    const run = await cli(keptEnv(), args, { bin: CHECK });
+    if (run.code !== 2) wrong.push(`${what}: exit ${run.code}`);
+    if (!/^deploy-parity: the target's agent id is empty: pass --target-agent ID, or a lock deploy wrote for this target\n$/.test(run.err)) wrong.push(`${what}: not the empty-id refusal`);
+    if (install.seen.length) wrong.push(`${what}: requests sent: ${install.seen.map((one) => one.path).join(" ")}`);
+    install.seen.length = 0;
+  }
+  assert.deepEqual(wrong, [], "an empty target agent id is refused with exit 2, its refusal's words, and no request");
+});
+
+test("a loose tool setting (for a tool the agent isn't granted) shows a digest in a difference, never its value", async (t) => {
+  // Joined at run time: a Slack-token-shaped literal in source trips key scanners.
+  const TOKEN = ["xoxp", "parity-loose-not-a-real-token"].join("-");
+  const { a, b } = pair();
+  const pinned = structuredClone(a);
+  pinned.definition.tool_settings.parity_ungranted = { token: TOKEN };
+  const answering = (path, agent, servers) => (request) => (request.url === path ? [200, agent] : request.url === "/v2/settings/mcp-servers" ? [200, { servers }] : [404, {}]);
+  const source = await listener(t, answering("/v2/agents/agt_a1", pinned, serversOn()));
+  const target = await listener(t, answering("/v2/agents/agt_b9", b, serversOn({ slack: "team-slack", github: "gh", docs: "team-docs" })));
+  const run = await cli(keptEnv(), ["--source", source.base, "--source-agent", "agt_a1", "--target", target.base, "--target-agent", "agt_b9"], { bin: CHECK });
+  assert.equal(run.code, 1, run.err);
+  assert.ok(!run.out.includes(TOKEN), "the loose setting's token is on stdout");
+  assert.ok(!run.err.includes(TOKEN), "the loose setting's token is on stderr");
+  const shown = JSON.parse(run.out).differences.map(({ field, kind, source: from, target: to }) => [field, kind, Object.keys(from ?? {}), /^[0-9a-f]{12}$/.test(from?.sha256), to]);
+  assert.deepEqual(shown, [["tool_settings.parity_ungranted", "missing", ["sha256"], true, undefined]], "the loose setting's difference names tool_settings.parity_ungranted and shows the source as {sha256: 12 hex} alone");
+});
+
+test("a lock the check can't use is refused with the check's own advice, never a deploy's", async (t) => {
+  const from = ["--source", "http://127.0.0.1:9/v2", "--source-agent", "agt_a1", "--target", "http://127.0.0.1:9/v2"];
+  const locks = {
+    "a lock that is not JSON": "{not json",
+    "a lock with no revision_id": JSON.stringify({ target: "http://127.0.0.1:9/v2", agent_id: "agt_b9" }),
+    "a lock written for another target": JSON.stringify(lockFor("http://127.0.0.1:8/v2")),
+  };
+  const wrong = [];
+  for (const [what, text] of Object.entries(locks)) {
+    const run = await cli(keptEnv(), [...from, "--lock", scratchFile(t, "deploy.json", text)], { bin: CHECK });
+    if (run.code !== 2) wrong.push(`${what}: exit ${run.code}`);
+    if (/fix or remove/.test(run.err)) wrong.push(`${what}: a deploy's advice`);
+    if (!run.err.includes("pass --target-agent ID, or a lock deploy wrote for this target")) wrong.push(`${what}: not the check's advice`);
+  }
+  assert.deepEqual(wrong, [], "each lock is refused with exit 2 and the check's advice (pass --target-agent ID, or a lock deploy wrote for this target)");
+});
