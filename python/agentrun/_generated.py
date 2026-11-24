@@ -455,6 +455,7 @@ __all__ = [
     "GetMcpPrivateHostsResponse",
     "GetMcpServerResponse",
     "GetMcpServerResponseAuth",
+    "GetMcpServerResponseComposioAccount",
     "GetMcpServerResponseOauth",
     "GetMcpServerResponseToolsItem",
     "GetModelGatewayResponse",
@@ -675,6 +676,9 @@ __all__ = [
     "ListCliLearningResponseConnectionsItem",
     "ListComposioEventsResponse",
     "ListComposioEventsResponseEventsItem",
+    "ListComposioToolkitsBody",
+    "ListComposioToolkitsResponse",
+    "ListComposioToolkitsResponseToolkitsItem",
     "ListComposioToolsBody",
     "ListComposioToolsResponse",
     "ListComposioToolsResponseToolsItem",
@@ -748,6 +752,7 @@ __all__ = [
     "ListMcpServersResponse",
     "ListMcpServersResponseServersItem",
     "ListMcpServersResponseServersItemAuth",
+    "ListMcpServersResponseServersItemComposioAccount",
     "ListMcpServersResponseServersItemOauth",
     "ListMcpServersResponseServersItemToolsItem",
     "ListRemoteConnectorsResponse",
@@ -928,6 +933,7 @@ __all__ = [
     "RefreshMcpServerResponse",
     "RefreshMcpServerResponseServer",
     "RefreshMcpServerResponseServerAuth",
+    "RefreshMcpServerResponseServerComposioAccount",
     "RefreshMcpServerResponseServerOauth",
     "RefreshMcpServerResponseServerToolsItem",
     "Region",
@@ -1063,6 +1069,7 @@ __all__ = [
     "SaveComposioServerResponseComposio",
     "SaveComposioServerResponseServer",
     "SaveComposioServerResponseServerAuth",
+    "SaveComposioServerResponseServerComposioAccount",
     "SaveComposioServerResponseServerOauth",
     "SaveComposioServerResponseServerToolsItem",
     "SaveComputerKeysBody",
@@ -1083,6 +1090,7 @@ __all__ = [
     "SaveMcpServerResponse",
     "SaveMcpServerResponseAuth",
     "SaveMcpServerResponseComposio",
+    "SaveMcpServerResponseComposioAccount",
     "SaveMcpServerResponseOauth",
     "SaveMcpServerResponseToolsItem",
     "SaveModelGatewayBody",
@@ -5248,6 +5256,19 @@ class ListComposioEventsResponseEventsItem(_ListComposioEventsResponseEventsItem
     instructions: str
 
 
+class ListComposioToolkitsBody(TypedDict):
+    api_key: str
+
+
+class ListComposioToolkitsResponse(TypedDict):
+    toolkits: list[ListComposioToolkitsResponseToolkitsItem]
+
+
+class ListComposioToolkitsResponseToolkitsItem(TypedDict):
+    slug: str
+    name: str
+
+
 class ListComposioToolsBody(TypedDict):
     api_key: str
     toolkit: str
@@ -6169,6 +6190,7 @@ class SaveComposioServerResponseServer(_SaveComposioServerResponseServerRequired
     prices: dict[str, float]
     not_metered: list[str]
     secret: SecretMeta
+    composio_account: SaveComposioServerResponseServerComposioAccount
 
 
 class _SaveComposioServerResponseServerAuthRequired(TypedDict):
@@ -6210,6 +6232,15 @@ class SaveComposioServerResponseServerToolsItem(_SaveComposioServerResponseServe
     fallback_allow_reads: Literal[True]
     default_permission: Literal["allow", "ask", "deny"]
     permissions: list[Literal["allow", "ask", "deny"]]
+
+
+class _SaveComposioServerResponseServerComposioAccountRequired(TypedDict):
+    state: Literal["connected", "pending", "expired", "none", "unknown"]
+    checked_at: str
+
+
+class SaveComposioServerResponseServerComposioAccount(_SaveComposioServerResponseServerComposioAccountRequired, total=False):
+    labels: list[str]
 
 
 class SaveComposioServerResponseComposio(TypedDict):
@@ -6647,6 +6678,7 @@ class GetMcpServerResponse(_GetMcpServerResponseRequired, total=False):
     prices: dict[str, float]
     not_metered: list[str]
     secret: SecretMeta
+    composio_account: GetMcpServerResponseComposioAccount
 
 
 class _GetMcpServerResponseAuthRequired(TypedDict):
@@ -6690,6 +6722,15 @@ class GetMcpServerResponseToolsItem(_GetMcpServerResponseToolsItemRequired, tota
     permissions: list[Literal["allow", "ask", "deny"]]
 
 
+class _GetMcpServerResponseComposioAccountRequired(TypedDict):
+    state: Literal["connected", "pending", "expired", "none", "unknown"]
+    checked_at: str
+
+
+class GetMcpServerResponseComposioAccount(_GetMcpServerResponseComposioAccountRequired, total=False):
+    labels: list[str]
+
+
 class ListMcpServersResponse(TypedDict):
     servers: list[ListMcpServersResponseServersItem]
 
@@ -6714,6 +6755,7 @@ class ListMcpServersResponseServersItem(_ListMcpServersResponseServersItemRequir
     prices: dict[str, float]
     not_metered: list[str]
     secret: SecretMeta
+    composio_account: ListMcpServersResponseServersItemComposioAccount
 
 
 class _ListMcpServersResponseServersItemAuthRequired(TypedDict):
@@ -6755,6 +6797,15 @@ class ListMcpServersResponseServersItemToolsItem(_ListMcpServersResponseServersI
     fallback_allow_reads: Literal[True]
     default_permission: Literal["allow", "ask", "deny"]
     permissions: list[Literal["allow", "ask", "deny"]]
+
+
+class _ListMcpServersResponseServersItemComposioAccountRequired(TypedDict):
+    state: Literal["connected", "pending", "expired", "none", "unknown"]
+    checked_at: str
+
+
+class ListMcpServersResponseServersItemComposioAccount(_ListMcpServersResponseServersItemComposioAccountRequired, total=False):
+    labels: list[str]
 
 
 McpOAuthClientResponse: TypeAlias = "dict[str, Any]"
@@ -6848,6 +6899,7 @@ class RefreshMcpServerResponseServer(_RefreshMcpServerResponseServerRequired, to
     prices: dict[str, float]
     not_metered: list[str]
     secret: SecretMeta
+    composio_account: RefreshMcpServerResponseServerComposioAccount
 
 
 class _RefreshMcpServerResponseServerAuthRequired(TypedDict):
@@ -6891,6 +6943,15 @@ class RefreshMcpServerResponseServerToolsItem(_RefreshMcpServerResponseServerToo
     permissions: list[Literal["allow", "ask", "deny"]]
 
 
+class _RefreshMcpServerResponseServerComposioAccountRequired(TypedDict):
+    state: Literal["connected", "pending", "expired", "none", "unknown"]
+    checked_at: str
+
+
+class RefreshMcpServerResponseServerComposioAccount(_RefreshMcpServerResponseServerComposioAccountRequired, total=False):
+    labels: list[str]
+
+
 class _SaveMcpServerBodyRequired(TypedDict):
     url: str
 
@@ -6930,6 +6991,7 @@ class SaveMcpServerResponse(_SaveMcpServerResponseRequired, total=False):
     prices: dict[str, float]
     not_metered: list[str]
     secret: SecretMeta
+    composio_account: SaveMcpServerResponseComposioAccount
     composio: SaveMcpServerResponseComposio
 
 
@@ -6972,6 +7034,15 @@ class SaveMcpServerResponseToolsItem(_SaveMcpServerResponseToolsItemRequired, to
     fallback_allow_reads: Literal[True]
     default_permission: Literal["allow", "ask", "deny"]
     permissions: list[Literal["allow", "ask", "deny"]]
+
+
+class _SaveMcpServerResponseComposioAccountRequired(TypedDict):
+    state: Literal["connected", "pending", "expired", "none", "unknown"]
+    checked_at: str
+
+
+class SaveMcpServerResponseComposioAccount(_SaveMcpServerResponseComposioAccountRequired, total=False):
+    labels: list[str]
 
 
 class SaveMcpServerResponseComposio(TypedDict):
@@ -11575,6 +11646,7 @@ OPERATIONS: dict[str, Operation] = {
     "gitHubCallback": Operation(method="GET", path="/integrations/github/callback", path_params=(), multi_segment=(), query=("code", "state"), headers=(), body=None, answer="none", secret=False, public_fields=(), tagged=False),
     "gitHubInstalled": Operation(method="GET", path="/integrations/github/installed", path_params=(), multi_segment=(), query=("installation_id", "setup_action", "state"), headers=(), body=None, answer="none", secret=False, public_fields=(), tagged=False),
     "listComposioEvents": Operation(method="GET", path="/settings/mcp-servers/{name}/composio/events", path_params=("name",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "listComposioToolkits": Operation(method="POST", path="/settings/mcp-servers/composio/toolkits", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=True, public_fields=(), tagged=False),
     "listComposioTools": Operation(method="POST", path="/settings/mcp-servers/composio/tools", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=True, public_fields=("toolkit",), tagged=False),
     "listComposioTriggers": Operation(method="GET", path="/settings/mcp-servers/{name}/composio/triggers", path_params=("name",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "listComputerChoices": Operation(method="GET", path="/computers/{provider}/choices", path_params=("provider",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
@@ -12091,6 +12163,10 @@ class LocalResource(Group):
     def list_composio_events(self, name: str, *, timeout: float | None = None) -> ListComposioEventsResponse:
         """List a saved Composio server's toolkit's events, for a composio trigger (GET /settings/mcp-servers/{name}/composio/events)."""
         return self._call("listComposioEvents", (name,), None, None, timeout=timeout)
+
+    def list_composio_toolkits(self, body: ListComposioToolkitsBody, *, timeout: float | None = None) -> ListComposioToolkitsResponse:
+        """List the toolkits Composio offers, for the console's toolkit picker; stores nothing (POST /settings/mcp-servers/composio/toolkits). Its body's string values are secrets: each copy is cut from the answer, and a refusal keeps only its code."""
+        return self._call("listComposioToolkits", (), body, None, timeout=timeout)
 
     def list_composio_tools(self, body: ListComposioToolsBody, *, timeout: float | None = None) -> ListComposioToolsResponse:
         """List the actions of a Composio toolkit, for the console's picker; stores nothing (POST /settings/mcp-servers/composio/tools). Its body's string values are secrets: each copy is cut from the answer, and a refusal keeps only its code."""
