@@ -778,6 +778,19 @@ const JSON_ESCAPE: Decoder = {
     return first.end;
   },
 };
+/** JSON's escapes, decoded once: a "\" that starts an escape and what follows it, as one character. A held value that
+ *  holds a backslash before a character an escape starts with ("\n", "A" as written), written by a JSON writer
+ *  ("\\n", "\u0041"), reads as itself here, where the two levels JSON_ESCAPE reads make the escaped backslash and
+ *  what follows it one escape. */
+const JSON_ESCAPE_ONCE: Decoder = {
+  trigger: "\\",
+  decode(text, at, unit) {
+    const char = unescaped(text, at);
+    if (!char) return -1;
+    unit(char.char, at, char.end);
+    return char.end;
+  },
+};
 /** What JSON_ESCAPE reads at `at`: the character the escape there decodes to, through both levels, and where it ends;
  *  undefined where no escape starts (the "\" is then itself). key-refusal.ts's peek counts an escape by it, so the
  *  read past a call's stop and the JSON view see the same characters. */
@@ -798,12 +811,15 @@ const viewSpec = (when: (text: string) => boolean, decoders: readonly Decoder[])
   special: new RegExp(`[\\s${decoders.map((decoder) => `\\${decoder.trigger}`).join("")}\\u0080-\\uffff]`, "g"),
 });
 /** The views of a text read for each held value, in order: squeezed; percent-decoded; percent-decoded with "+" as a
- *  space; JSON's escapes decoded twice. Each is lowered for hexes and flattened for folded identifiers in holds. */
+ *  space; JSON's escapes decoded twice; and decoded once, where the text holds an escape that decodes to a backslash
+ *  (elsewhere the two levels read as one does). Each is lowered for hexes and flattened for folded identifiers in
+ *  holds. */
 const VIEWS: readonly ViewSpec[] = [
   viewSpec(() => true, []),
   viewSpec((text) => /%[0-9a-fA-F]{2}/.test(text), [PERCENT]),
   viewSpec((text) => text.includes("+"), [PERCENT, PLUS]),
   viewSpec((text) => /\\(?:u[0-9a-fA-F]{4}|["\\/bfnrt])/.test(text), [JSON_ESCAPE]),
+  viewSpec((text) => /\\(?:\\|u005[cC])/.test(text), [JSON_ESCAPE_ONCE]),
 ];
 
 /** `text` as the whole-text check reads it: decoded by `spec`'s decoders, then squeezed (squeeze: NFKC, its whitespace

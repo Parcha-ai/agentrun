@@ -750,9 +750,10 @@ test("adversarial texts: the characters the shape scanners visit are at most a f
 // - the shapes, sought over the text and over its cut, and each run read: 128, the shapes' own bound (the test above);
 // - planCut's finds: the text lowered (1), each form and the hex searched (2 each, a find and the text before it: 16),
 //   the folded search (4), the finds merged (1): about 21;
-// - one whole-text check: whether each of the three decoding views is read (3); four views at most, each built in 9
-//   reads (its special characters found, its blanks, its non-ASCII stretches squeezed twice, its cover) and the JSON
-//   view in 23 (two levels of escapes read per character decoded), then each searched for 7 plain needles, the hex and
+// - one whole-text check: whether each of the four decoding views is read (4); four views at most in a text with no
+//   escaped backslash, five in one with (JSON's escapes read once too), each built in 9 reads (its special characters
+//   found, its blanks, its non-ASCII stretches squeezed twice, its cover) and the JSON view in 23 (two levels of
+//   escapes read per character decoded), then each searched for 7 plain needles, the hex and
 //   the fold, lowered and flattened (21 each): about 137; planCut runs two (the text with its cuts, then the cut text,
 //   at most 10/8 as long): about 308;
 // - so planCut is about 458; an answer adds its pieces' ends and joins (10), heldIn's check of what it returns (10/8 of
