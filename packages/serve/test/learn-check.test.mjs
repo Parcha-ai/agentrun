@@ -176,22 +176,29 @@ test("a bank account, IBAN, routing or sort-code number beside its word is a sec
   }
 });
 
-// "ABA" is a routing number's word only standing alone: "aba" right before nine digits, as a run id's last part can
-// start ("run-aba592512040"), is part of a word, no routing number, and learning prints it as it is.
-test("a run id ending in \"aba\" and nine digits is no routing number; ABA or routing beside nine digits still is", async () => {
+// The routing number's word ends at a word end: an id or hash whose hex holds "aba" and nine digits after a word start
+// (a UUID's last group, a sha cut to twelve characters) is no routing number, and learning serves it whole. Every
+// spaced, colon, "#" and "is" form stays cut.
+test("a UUID or short sha whose hex holds aba and nine digits is served whole by redactLearned; ABA or routing beside nine digits is still cut", async () => {
   const { learnedSecretShapes, redactLearned } = await import("../dist/learn/secrets.js");
-  for (const text of ["Replayed run-aba592512040 from the store.", "run-aba592512040", "Replayed run-ABA592512040 from the store."]) {
-    assert.deepEqual(learnedSecretShapes(text), [], `no secret: ${text}`);
-    assert.equal(redactLearned(text, []), text);
-  }
-  // Controls: the word alone, then a space, a "#" or "number:", and nine digits, is still a routing number, cut.
-  for (const [text, cut] of [
-    ["Pay by ABA 123456789 today.", "Pay by [redacted] today."],
-    ["Wire ABA#123456789 now.", "Wire [redacted] now."],
-    ["The routing number: 123456789 is theirs.", "The [redacted] is theirs."],
-  ]) {
-    assert.deepEqual(learnedSecretShapes(text), ["routing number"], text);
-    assert.equal(redactLearned(text, []), cut);
+  const sha = `aba123456789${"0123456789abcdef".repeat(2)}`.slice(0, 40);
+  const glued = [
+    "run 01a20b88-e657-7000-a0af-aba592512040 replayed",
+    "RUN 01A20B88-E657-7000-A0AF-ABA592512040",
+    `commit ${sha.slice(0, 12)} on main`,
+    `build-${sha.slice(0, 12)}`,
+    `commit ${sha}`,
+    `ref-${sha}`,
+  ];
+  assert.deepEqual(glued.map((text) => redactLearned(text, [])), glued);
+  for (const text of glued) assert.deepEqual(learnedSecretShapes(text), [], text);
+  const routing = ["ABA 123456789", "ABA: 123456789", "ABA#123456789", "ABA is 123456789", "aba number 123456789", "routing number 123456789", "routing: 123456789"];
+  for (const number of routing) {
+    for (const text of [number, `Wire it with ${number} today.`]) {
+      assert.deepEqual(learnedSecretShapes(text), ["routing number"], text);
+      const out = redactLearned(text, []);
+      assert.ok(out.includes("[redacted]") && !out.includes("123456789"), `${text}: ${out}`);
+    }
   }
 });
 
