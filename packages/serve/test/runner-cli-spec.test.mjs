@@ -491,6 +491,23 @@ test("a CLI run's opening message is saved as inputs/message.md in the run's fol
   assert.equal(readFileSync(join(runFolder(dir, "agent-1", RUN), "inputs", "message.md"), "utf8"), "Write a file.");
 });
 
+test("a template eval case's files (EvalFakes.files) are in a CLI run's folder at its claim, before its first turn; one the folder already holds is left as the run made it", async (t) => {
+  const files = { "media/run-keys.json": '{"stem": "k7m2p9qa"}\n', "media/kept.json": "seeded\n" };
+  const evalFakes = (agentId) => (agentId === "agent-1" ? { files } : undefined);
+  // A claim that resumes the run: its folder holds what the run made of a seeded file.
+  const prepare = (dir) => {
+    mkdirSync(join(runFolder(dir, "agent-1", RUN), "media"), { recursive: true });
+    writeFileSync(join(runFolder(dir, "agent-1", RUN), "media", "kept.json"), "the run's own\n");
+  };
+  const { dir } = await specOn(t, "opencode", { prepare, deps: { evalFakes } });
+  assert.equal(readFileSync(join(runFolder(dir, "agent-1", RUN), "media", "run-keys.json"), "utf8"), '{"stem": "k7m2p9qa"}\n');
+  assert.equal(readFileSync(join(runFolder(dir, "agent-1", RUN), "media", "kept.json"), "utf8"), "the run's own\n");
+  // Mode 2: the run's folder is on the agent's Archil disk, and the files land there, before any computer mounts it.
+  const disk = new FakeArchilDisk();
+  await specOn(t, "opencode", { archil: disk, deps: { evalFakes } });
+  assert.equal(Buffer.from(disk.files.get(`${runKey("agent-1", RUN)}/media/run-keys.json`) ?? "").toString("utf8"), '{"stem": "k7m2p9qa"}\n', "on the disk, in the run's folder");
+});
+
 test("Mode 2 (the server's Archil settings saved): the CLI still works in the run's scratch on this machine, a write to <cwd>/x.txt lands as x.txt in the run's folder on the Archil disk, and bash runs as Archil exec, at most 295 s", async (t) => {
   const disk = new FakeArchilDisk();
   const { spec: built, cwd, control, outbound } = await specOn(t, "opencode", { archil: disk });
