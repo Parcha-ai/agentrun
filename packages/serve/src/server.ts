@@ -63,7 +63,7 @@ import { deref, explain } from "./explain.js";
 import { HOME_HOST_OWNED } from "./files.js";
 import { DATA_ENV, syncDir, TOKEN_FILE, writeDurable } from "./server-fs.js";
 import { homePath, hostOwnedOf, type OwnedReadAt } from "./home-path.js";
-import { asksOllama, chooseModel, EFFORTS, FAUX_ENV, FAUX_UPSTREAM_ENV, MODEL_NODES, type ModelNeeds, modelSource, THINKING_LEVELS, unpricedModels, withoutFaux } from "./model.js";
+import { asksOllama, chooseModel, EFFORTS, FAUX_ENV, MODEL_NODES, type ModelNeeds, modelSource, THINKING_LEVELS, unpricedModels, withoutFaux } from "./model.js";
 import { DEFAULT_HARNESS, HARNESSES, type HarnessCapability, harnessOfBody, harnessOffers } from "./harness.js";
 import { HARNESS_MODULES_ENV, HARNESS_MODULES_SETTING, HARNESS_RECIPES_ENV, HARNESS_RECIPES_SETTING, HARNESS_TABLE_ENV, harnessIds, harnessModulesEnv, harnessOf, harnessRecipesEnv, harnessTable, planRecipesOf, recipeHarness, tableIds } from "./harness-table.js";
 import { claudeCliIn, HarnessInstall, type HarnessInstaller, installDirOf, NPM_STOP_GRACE_MS, npmInstall } from "./harness-install.js";
@@ -416,9 +416,6 @@ export type ServeOptions = {
    *  with goes through (the tests' fake for that check alone), in place of monid's API; the runs' calls go through
    *  `fauxMonid`'s. */
   fauxMonidCheck?: string;
-  /** With `faux` only: a module whose default export is the fetch the Anthropic and OpenAI providers send through, in
-   *  place of their APIs, for web_search's own request to the provider the revision's model names (model.ts). */
-  fauxUpstream?: string;
   /** With `faux` only: a module whose default export is the fetch web_search's keyless Exa search sends through, in place
    *  of Exa's MCP endpoint (web-run.ts FAUX_EXA_ENV). */
   fauxExa?: string;
@@ -559,7 +556,7 @@ export type ServeOptions = {
 
 /** Each test switch a run's process reads, by the variable it reads it from: set only under `faux`, but the faux
  *  harness's, which scripts the harnesses with or without it. */
-const FAUX_SWITCHES = [["fauxBrowser", FAUX_BROWSER_ENV], ["fauxWeb", FAUX_WEB_ENV], ["fauxJev", FAUX_JEV_ENV], ["fauxParallel", FAUX_PARALLEL_ENV], ["fauxOpenrouter", FAUX_OPENROUTER_ENV], ["fauxMonid", FAUX_MONID_ENV], ["fauxUpstream", FAUX_UPSTREAM_ENV], ["fauxExa", FAUX_EXA_ENV]] as const;
+const FAUX_SWITCHES = [["fauxBrowser", FAUX_BROWSER_ENV], ["fauxWeb", FAUX_WEB_ENV], ["fauxJev", FAUX_JEV_ENV], ["fauxParallel", FAUX_PARALLEL_ENV], ["fauxOpenrouter", FAUX_OPENROUTER_ENV], ["fauxMonid", FAUX_MONID_ENV], ["fauxExa", FAUX_EXA_ENV]] as const;
 
 /** The switches a run's process gets, each module path resolved: the owner's harness modules (harnessModules), and the test
  *  switches, which are empty outside tests. A test's in-process runner takes the same (test/support.mjs
@@ -3368,6 +3365,15 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       return { warnings: [], stamp: {} };
     }
     if (cliLearningOf(body) || sdkOf(body)) return { warnings: [], stamp: {} };
+    // A workflow's own issues, as POST /workflows/validate lists them (workflowIssues: the DSL's checks, the durable
+    // runner's refusal), refuse its save before anything is written, each at its path under definition.workflow. Asked
+    // with no tools list: its run binds every tool its call nodes name whether `tools` lists it or not (tools.ts
+    // grantedTools), so a call node's unlisted tool is validate's hint, never a reason to refuse a runnable workflow.
+    if (revision.kind === "workflow") {
+      const { workflowIssues } = await import("./workflow-run.js");
+      const { issues } = await workflowIssues(body.workflow);
+      if (issues.length) throw invalid(issues.map(({ path, code, message }) => ({ field: `definition.workflow${path}`, reason: "invalid", code, message })));
+    }
     // An agent on a harness that installs on first use starts its install, if it is not in yet: its first run waits for less.
     const harnessId = revision.kind === "agentic" ? harnessOfBody(body) : undefined;
     const install = harnessId !== undefined && Object.hasOwn(installs, harnessId) ? installs[harnessId] : undefined;
