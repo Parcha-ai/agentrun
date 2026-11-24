@@ -149,6 +149,10 @@ test("this repository's shards cover every test file of every suite once, and ci
   }
   const lean = workflow.jobs.lean.steps.find((step) => /collect\.mjs/.test(step.run ?? '')).run;
   assert.deepEqual([...lean.matchAll(/lean-sweep-([\w-]+)/g)].map((m) => m[1]), leanShards, 'the lean job reads every lean shard\'s captures');
+  // A lean shard whose files validate no workflow uploads the hook's marker alone (spec/lean/sweep/capture-register.mjs).
+  const upload = testJob.steps.find((step) => step.name === 'Keep the workflows the tests validated, for the lean job').with.path;
+  assert.match(upload, /lean-sweep\/\*\.json$/m, 'a lean shard uploads its captures');
+  assert.match(upload, /lean-sweep\/reached$/m, 'and the capture hook\'s marker');
   // The any pool's shards install poppler for serve's pdf_pages.
   assert.ok(Object.values(shards).some((s) => s.pool === 'any' && s.suites.some((x) => x.name === '@parcha/agentrun-serve')), 'serve is in the any pool');
 });

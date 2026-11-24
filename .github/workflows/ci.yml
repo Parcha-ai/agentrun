@@ -184,14 +184,17 @@ jobs:
           # scripts/ci-timings.json is measured on Blacksmith: on GitHub's runners a shard over its model does not mean the
           # weights are stale, and ci-shard does not warn of it.
           CI_SHARD_UNTIMED_RUNNER: ${{ runner.environment == 'github-hosted' && '1' || '' }}
-      # The lean job reads these and fails on a missing one; a shard with none marks this step red, never the shard.
+      # The lean job reads these and fails on a missing one; a shard with none marks this step red, never the shard. The capture
+      # hook's marker, reached, uploads too: a shard whose files validate no workflow has it and no capture.
       - name: Keep the workflows the tests validated, for the lean job
         if: startsWith(matrix.shard, 'lean-')
         continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: lean-sweep-${{ matrix.shard }}
-          path: ${{ runner.temp }}/lean-sweep/*.json
+          path: |
+            ${{ runner.temp }}/lean-sweep/*.json
+            ${{ runner.temp }}/lean-sweep/reached
           if-no-files-found: error
           retention-days: 7
           overwrite: true
