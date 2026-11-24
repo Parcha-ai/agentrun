@@ -3,7 +3,7 @@
 // holds them, a cut read cuts them from its files by value. Its end erases them, and writes in their place its census:
 // where in each file they sat, never the values (run-census.ts). After the end a cut read cuts a file by its census entry
 // while the file's bytes are the ones counted, and withholds it (403) otherwise: edited or written after the end, or a
-// run whose end erased them with no census (a runner from before the census: its launch still "pending"). A run never
+// run whose end erased them with no census (the marker, or a "pending" an earlier build left). A run never
 // handed a secret reads as before. A launch whose sealed part doesn't open here withholds the run, as an unreadable sign-in
 // does. Read raw, a file of a run that is shown is the bytes as written. The model gateway is a loopback stand-in (fixtures/faux-gateway.mjs) behind a front that holds
 // the run's first model call, so the test acts while the run is live.
@@ -163,14 +163,14 @@ test("a run's own model_key is cut from its files by a cut read while it runs, a
   assert.deepEqual(await cutRead(run, "clean.txt"), [200, "nothing held here\n"], "the same bytes again read as counted");
 });
 
-test("an ended run whose end erased its secrets with no census (its launch left pending, or the marker) withholds its files", { timeout: 180_000 }, async (t) => {
+test("an ended run whose end erased its secrets with no census (the marker, or a pending an earlier build left) withholds its files", { timeout: 180_000 }, async (t) => {
   const handed = await liveRun(t, { start: { model_key: KEY } });
   await writeFile(join(handed.work, "notes.txt"), "plain words\n");
   await handed.ended();
   assert.deepEqual(await cutRead(handed, "notes.txt"), [200, "plain words\n"], "counted at its end");
-  // A runner from before the census erases the sealed key and writes nothing else.
+  // A "pending" 0027 or an earlier build left is no census this build reads.
   await setCensus(handed.data, handed.runId, JSON.stringify("pending"));
-  assert.deepEqual(await cutRead(handed, "notes.txt"), [403, "forbidden"], "pending with nothing sealed: withheld");
+  assert.deepEqual(await cutRead(handed, "notes.txt"), [403, "forbidden"], "a pending left over: withheld");
   await setCensus(handed.data, handed.runId, JSON.stringify("unscanned"));
   assert.deepEqual(await cutRead(handed, "notes.txt"), [403, "forbidden"], "the marker: withheld");
 });

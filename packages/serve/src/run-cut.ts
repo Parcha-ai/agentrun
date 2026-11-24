@@ -12,7 +12,7 @@ import { MIN_SECRET } from "./learn/secrets.js";
 import { censusDigest } from "./run-census.js";
 import { type RunLaunch, readLaunchBody } from "./run-launch.js";
 import { type SignInReader, shownOf } from "./run-view.js";
-import { CENSUS_PENDING, type RunRow, type Store } from "./store/store.js";
+import { type RunRow, type Store } from "./store/store.js";
 
 /** Run `runId`'s cut set: the values everything served of it is cut of (its view's words, its title, its Timeline's
  *  rows, its error, its files), and `censusDigest`, its launch's census's digest when an end erased what its caller
@@ -30,10 +30,10 @@ export async function runCutValues(deps: { serverSecrets: () => string[]; signIn
   if (handed === "unreadable") return "unreadable";
   const launch = launchValuesOf(deps.sealKey, runId, row.sealed);
   if (launch === "unreadable") return "unreadable";
-  // A launch whose secrets no end has erased yet (CENSUS_PENDING, sealed bytes held) has no census to cut its files by: the
-  // values cut them. Every other census does, live or ended: an earlier turn's, which says where what that turn's caller
-  // handed sat; or a marker, which says nothing, so the files are withheld (censusCut).
-  const census = row.census === null || (row.census === CENSUS_PENDING && row.sealed !== null) ? undefined : row.census;
+  // A launch no end has counted yet (census null) has no census to cut its files by: the values cut them. Every other
+  // census does, live or ended: an earlier turn's, which says where what that turn's caller handed sat; or a marker, or
+  // text this build doesn't read, which says nothing, so the files are withheld (censusCut).
+  const census = row.census ?? undefined;
   return { values: [...deps.serverSecrets(), ...handed.refs.filter((ref) => ref.length >= MIN_SECRET), ...launch], ...(census !== undefined ? { censusDigest: censusDigest(census) } : {}) };
 }
 
