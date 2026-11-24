@@ -241,7 +241,7 @@ function stringEnd(lists: readonly (readonly (readonly [number, number])[])[], a
 
 /** Every rule's hits in one view of a chunk, mapped to the input (`offset`: the chunk's start in it), each widened to
  *  hold an escape it starts or ends inside. A label rule's hit on a placeholder (isPlaceholder) is no hit, whichever
- *  label rule found it. */
+ *  label rule found it; a hit read whole (Hit.whole: a curl `-u` password) is judged with nothing after it. */
 async function viewHits(rules: readonly ScrubRule[], view: View, offset: number, opts: ScrubOptions, run: Run, out: Found[]): Promise<void> {
   const ctx = contextOf(view, opts);
   for (const [order, rule] of rules.entries()) {
@@ -252,7 +252,7 @@ async function viewHits(rules: readonly ScrubRule[], view: View, offset: number,
       if (rule.kind === "label") {
         // What follows the value is read on its own line or in its own string only (ruling LIV, XLVI's bound): a JSON
         // string's end and its object's `}` or `,` after it are no code's evidence for the value.
-        const slot = { name: hit.name, bare: hit.quoted !== true && !QUOTES.includes(view.source.charAt(hit.start - 1) || " "), after: view.text.slice(hit.end, Math.min(hit.end + 8, ctx.lines?.end(hit.end) ?? view.text.length)), code: hit.code, typed: hit.typed };
+        const slot = { name: hit.name, bare: hit.quoted !== true && !QUOTES.includes(view.source.charAt(hit.start - 1) || " "), after: hit.whole ? "" : view.text.slice(hit.end, Math.min(hit.end + 8, ctx.lines?.end(hit.end) ?? view.text.length)), code: hit.code, typed: hit.typed };
         if (isPlaceholder(view.text.slice(hit.start, hit.end), slot)) continue;
       }
       const [start, end] = inputSpan(view, hit.start, hit.end);
