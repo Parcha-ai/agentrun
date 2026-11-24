@@ -58,8 +58,9 @@ export interface AcpAnnounces {
   readonly args?: string;
 }
 
-/** A path an AcpAnnounces field may hold: field names joined by dots. */
-export const ANNOUNCES_PATH = /^[A-Za-z_$][\w$-]*(\.[A-Za-z_$][\w$-]*)*$/;
+/** A path an AcpAnnounces field may hold: field names joined by dots, inside the update's `_meta` or `rawInput`. Never
+ *  its title, id, kind or status: a path through the title would let the agent's text name a call again. */
+export const ANNOUNCES_PATH = /^(?:_meta|rawInput)(?:\.[A-Za-z_$][\w$-]*)+$/;
 
 /** The value at a dotted `path` in `value`, own fields only; undefined where any step is missing. */
 function at(value: unknown, path: string): unknown {

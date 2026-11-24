@@ -154,7 +154,7 @@ export function recipeProblems(recipe: AcpRecipe): string[] {
     const said = typeof given === "object" && given !== null && !Array.isArray(given) ? (given as Record<string, unknown>) : undefined;
     const path = (value: unknown) => typeof value === "string" && ANNOUNCES_PATH.test(value);
     const shaped = said !== undefined && Object.keys(said).every((key) => key === "tool" || key === "server" || key === "args");
-    if (!said || !shaped || !path(said.tool) || (said.server !== undefined && !path(said.server)) || (said.args !== undefined && !path(said.args))) problems.push('announces is { "tool": a dotted path in the agent\'s tool_call, "server"?: one, "args"?: one }');
+    if (!said || !shaped || !path(said.tool) || (said.server !== undefined && !path(said.server)) || (said.args !== undefined && !path(said.args))) problems.push('announces is { "tool": a dotted path inside _meta or rawInput of the agent\'s tool_call, "server"?: one, "args"?: one }');
   }
   const quirks = recipe.quirks as { mcpCall?: unknown; permissionTie?: unknown } | undefined;
   if (quirks?.permissionTie !== undefined && quirks.permissionTie !== "title") problems.push(`the quirk permissionTie ${JSON.stringify(quirks.permissionTie)} is not "title"`);
