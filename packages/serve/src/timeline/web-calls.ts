@@ -23,22 +23,33 @@ function clip(text: string, keep: number): string {
 }
 
 /** Every string in `value` through `each`, property names too (a tool may write a value as one): two names `each` makes
- *  one are both kept, the later ones numbered, as the runner's cutDeep keeps them (runner/redact.ts). */
+ *  one are both kept, the later ones numbered, as the runner's cutDeep keeps them (runner/redact.ts). Each name's next
+ *  number is kept (`next`), so k names that cut to one cost k lookups, not k²/2: no name is ever taken back, so every
+ *  number below it is still taken, and the one it finds is the lowest free one, as a count from 2 finds. */
 function eachString(value: unknown, each: (text: string) => string): unknown {
   if (typeof value === "string") return each(value);
   if (Array.isArray(value)) return value.map((item) => eachString(item, each));
   if (!isObj(value)) return value;
   const out: Obj = {};
+  let next: Map<string, number> | undefined;
   for (const [key, item] of Object.entries(value)) {
     const once = each(key);
     let name = once;
-    for (let n = 2; Object.hasOwn(out, name); n++) name = `${once} (${n})`;
+    if (Object.hasOwn(out, name)) {
+      next ??= new Map();
+      let n = next.get(once) ?? 2;
+      while (Object.hasOwn(out, `${once} (${n})`)) n++;
+      name = `${once} (${n})`;
+      next.set(once, n + 1);
+    }
     Object.defineProperty(out, name, { value: eachString(item, each), enumerable: true, writable: true, configurable: true });
   }
   return out;
 }
 
-/** Every string in `value` in order; with `names`, each property name before its value. */
+/** Every string in `value` in the order its object reads (Object.entries: integer-like names first, a name written twice
+ *  once, with its last value): the order JSON.stringify writes it back in (webCut, webShownOf). With `names`, each
+ *  property name before its value. */
 function stringsOf(value: unknown, names: boolean, out: string[] = []): string[] {
   if (typeof value === "string") out.push(value);
   else if (Array.isArray(value)) for (const item of value) stringsOf(item, names, out);
@@ -49,6 +60,22 @@ function stringsOf(value: unknown, names: boolean, out: string[] = []): string[]
     }
   return out;
 }
+
+/** A JSON string as written, and the colon after it when it is a property name. */
+const JSON_STRING = /("(?:[^"\\]|\\.)*")(\s*:)?/g;
+
+/** Every string in `line`, a JSON text that parses, in the order it is written, each value of a name written twice too;
+ *  with `names`, each property name as well, before its value. In JSON that parses, a quote outside a string only
+ *  ever opens one, so the strings are read by JSON_STRING alone. */
+function writtenStrings(line: string, names: boolean): string[] {
+  const out: string[] = [];
+  for (const [, quoted, colon] of line.matchAll(JSON_STRING)) if (names || !colon) out.push(JSON.parse(quoted!) as string);
+  return out;
+}
+
+/** Whether a text holds a held value no cut in place takes (key-refusal.ts withheldWhole): `joined` is `parts` joined
+ *  by line breaks, for a reader that reads each part by itself too (adapter-run-spec.ts answersCut). */
+export type WebHolds = (joined: string, parts: readonly string[]) => boolean;
 
 /** `text`, a call of `tool`'s output, read as its tool writes it: the JSON object on its first line, and where that line
  *  ends (-1 when it is the whole text). Undefined for a tool other than web_search and web_fetch, or an output whose
@@ -68,19 +95,36 @@ function webRead(tool: string, text: string): { read: Obj; end: number } | undef
 /** Whether `text`, a web call's output, is withheld whole: `holds` (whether a text holds a held value no cut in place
  *  takes: key-refusal.ts withheldWhole) reads its JSON's strings as they came joined by line breaks, then the lines after
  *  the JSON: once its values alone, so two values side by side in the output are side by side in the join, and once with
- *  each property name before its value, so a name and its value are too. Each string is cut on its own wherever the output is shown (webCut,
- *  webShownOf), and the JSON's punctuation between two strings is no whitespace any view of the whole text joins across,
- *  so a held value split across two of them is found only here. Every reader of a web call's output asks this first:
- *  the runner before it stores the answer (adapter-run-spec.ts answersCut), a timeline before its row shows any of it
- *  (timeline.ts shownOf, resultText). False for an output that is not a web call's JSON. */
-export function webHeld(tool: string, text: string, holds: (text: string) => boolean): boolean {
+ *  each property name before its value, so a name and its value are too. Each string is cut on its own wherever the
+ *  output is shown (webCut, webShownOf), and the JSON's punctuation between two strings is no whitespace any view of the
+ *  whole text joins across, so a held value split across two of them is found only here. The strings are read in the
+ *  order the output is written back in (stringsOf: what webCut stores and webShownOf shows), and, where that differs
+ *  (an integer-like name, a name written twice), in the order the text was written too (writtenStrings: what a row's
+ *  preview shows of the text as it came). Every reader of a web call's output asks this first: the runner before it
+ *  stores the answer (adapter-run-spec.ts answersCut), a timeline before its row shows any of it (timeline.ts shownOf,
+ *  resultText). False for an output that is not a web call's JSON. */
+export function webHeld(tool: string, text: string, holds: WebHolds): boolean {
   const web = webRead(tool, text);
   return web ? heldIn(web, text, holds) : false;
 }
 
 /** webHeld of an output already read (webRead). */
-const heldIn = (web: { read: Obj; end: number }, text: string, holds: (text: string) => boolean): boolean =>
-  [false, true].some((names) => holds(`${stringsOf(web.read, names).join("\n")}${web.end < 0 ? "" : text.slice(web.end)}`));
+function heldIn(web: { read: Obj; end: number }, text: string, holds: WebHolds): boolean {
+  const after = web.end < 0 ? [] : [text.slice(web.end + 1)];
+  const line = web.end < 0 ? text : text.slice(0, web.end);
+  const asked = (strings: readonly string[]): boolean => {
+    const parts = [...strings, ...after];
+    return holds(parts.join("\n"), parts);
+  };
+  return [false, true].some((names) => {
+    const back = stringsOf(web.read, names);
+    const written = writtenStrings(line, names);
+    return asked(back) || (!sameStrings(back, written) && asked(written));
+  });
+}
+
+/** Whether two lists hold the same strings in the same order. */
+const sameStrings = (a: readonly string[], b: readonly string[]): boolean => a.length === b.length && a.every((one, i) => one === b[i]);
 
 /** What a web call withheld whole shows. */
 const WITHHELD: WebShown = () => "[redacted]";
@@ -102,7 +146,7 @@ function linksWithin(links: readonly unknown[], keep: number): number {
  *  longer parses. "[redacted]" when `holds` finds a held value split across its strings (webHeld). Undefined for a tool
  *  other than web_search and web_fetch, or an output whose first line is not a JSON object: that one is cut as any other
  *  tool's. */
-export function webCut(tool: string, text: string, cut: (text: string) => string, holds?: (text: string) => boolean): string | undefined {
+export function webCut(tool: string, text: string, cut: (text: string) => string, holds?: WebHolds): string | undefined {
   const web = webRead(tool, text);
   if (!web) return undefined;
   if (holds && heldIn(web, text, holds)) return "[redacted]";
@@ -114,7 +158,7 @@ export function webCut(tool: string, text: string, cut: (text: string) => string
  *  tool other than web_search and web_fetch, or an output that is not its JSON. A page's links past a cut are counted
  *  in `links_cut`. With `holds`, an output it withholds (webHeld: a held value split across two strings, which `each`
  *  reads one at a time) shows "[redacted]". */
-export function webShownOf(tool: string, text: string, each: (text: string) => string = (part) => part, holds?: (text: string) => boolean): WebShown | undefined {
+export function webShownOf(tool: string, text: string, each: (text: string) => string = (part) => part, holds?: WebHolds): WebShown | undefined {
   const web = webRead(tool, text);
   if (!web) return undefined;
   const shown = eachString(web.read, each) as Obj;

@@ -8,7 +8,7 @@
 // The server chooses the keys a run needs (decisionKeysFor) and hands them over once, by name, on an inherited pipe
 // (`DECISION_KEY_FD_ENV` names it), at each launch of the run: its workflow's decision providers' keys, and Parallel's
 // where one of its web tools resolves to Parallel (tool-plane.ts); a run that needs none gets no pipe. The run's process
-// reads them once (handedKeys) into its providers and the web tools' Parallel client (web-fetch.ts), and nowhere else;
+// reads them once (handedKeys) into its providers and the web tools' Parallel client (web-run.ts webOf), and nowhere else;
 // no provider reads a key from the environment. The TypeSafe and Parallel keys never enter a run's environment, which
 // the run's tools and its model's provider read (`ToolHost.env`, a call node's effect): the server drops the variables
 // from the run's process. On the OpenRouter route the Jev key is also the model gateway's key, which the run's process
@@ -98,7 +98,7 @@ export function decisionKeysOf(env: NodeJS.ProcessEnv): Record<string, string> {
 }
 
 /** What a run's decision keys are for: the providers of its workflow's typed questions (providersNamed), and whether one
- *  of its web tools resolves to Parallel (tool-plane.ts' handsParallel), whose client reads Parallel's key (web-fetch.ts). */
+ *  of its web tools resolves to Parallel (tool-plane.ts' handsParallel), whose client reads Parallel's key (web-run.ts webOf). */
 export type DecisionNeeds = { providers: readonly string[]; parallelWeb: boolean };
 
 /** The decision keys the server hands a run's process for `needs`, of those it holds (decisionKeysOf): Jev's by its route
