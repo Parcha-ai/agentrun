@@ -90,6 +90,9 @@ export interface AcpHarnessOptions {
   /** Run before every start of the agent's process, a restart included: the host's check of the binary it runs. A throw
    *  refuses that start, so a binary replaced after the adapter was made is checked before it ever runs. */
   beforeStart?: (command: string) => Promise<void>;
+  /** Files the agent's private HOME gets at each start beside the recipe's, from the names of the tools its MCP server
+   *  lists there (Goose's permission file, goosePermissions): by path inside the HOME, as the recipe's `files`. */
+  files?: (tools: readonly string[]) => Readonly<Record<string, string>>;
   callIdWaitMs?: number;
   startMs?: number;
   log?: (message: string, fields?: Record<string, unknown>) => void;
@@ -566,8 +569,10 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
     const records = (await journal.read<StateRecord>(STATE_STREAM)).map((r) => r.data);
     restoreState(home, records);
     const own = new Set<string>();
-    for (const [path, text] of Object.entries(recipe.files ?? {})) {
-      const clean = homePath(path)!;
+    const toolFiles = options.files?.(listed.map((tool) => tool.name)) ?? {};
+    for (const [path, text] of [...Object.entries(recipe.files ?? {}), ...Object.entries(toolFiles)]) {
+      const clean = homePath(path);
+      if (!clean) throw new Error(`acp: the file ${JSON.stringify(path)} must be inside the private HOME`);
       const file = join(home, clean);
       mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
       writeFileSync(file, text, { mode: 0o600 });

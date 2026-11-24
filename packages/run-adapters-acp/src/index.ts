@@ -6,7 +6,7 @@ export { CALL_STREAM, contextNote, MODEL_STREAM, PERMISSION_STREAM, PROMPT_STREA
 export { STATE_BUDGET, STATE_STREAM, stateBudgetPassed, stateFiles, type StateRecord } from "./state.js";
 export type { ConfineChild } from "./host/child.js";
 export { GOOSE_INSTALL, GOOSE_NOT_INSTALLED, gooseFacts } from "./goose-facts.js";
-export { gooseAdapter, gooseRecipe, recipeFile, type AcpRecipeFile, type AcpRecipeName, type GooseAdapterOptions, type GooseRecipeOptions } from "./goose.js";
+export { GOOSE_PERMISSION_FILE, gooseAdapter, goosePermissions, gooseRecipe, recipeFile, type AcpRecipeFile, type AcpRecipeName, type GooseAdapterOptions, type GooseRecipeOptions } from "./goose.js";
 export { applyGoose, GOOSE_BETAS, GOOSE_OWN_TOOLS, gooseProxy, goosePolicy, gooseRoutes, gooseToolName, gooseUsage, limitGooseOutput, type GoosePolicyOptions, type GooseProvider, type GooseProxyOptions } from "./host/goose-proxy.js";
 export { acpPlatform, AcpBinaryRefused, CURSOR_PIN, GOOSE_PIN, pinnedRelease, treeDigest, verifyPinnedBinary, verifyPinnedBinaryAsync, verifyPinnedTree, type AcpArchivePin, type AcpBinaryPin, type AcpPlatform, type PinnedRelease } from "./pinned-binary.js";
 export { CURSOR_CODES, CURSOR_INSTALL, CURSOR_LIMITS, cursorCard, cursorFacts, type CursorLimits } from "./cursor-facts.js";
