@@ -34,9 +34,10 @@
 // (store KEPT_PREFIX: no other runner's poll picks it, nothing is claimed and given back). A stop or cancel is exempt:
 // any runner claims the run at once and ends it with no loop, never taking the row (runner.ts claimMore), and the
 // row's runner ends the machine at its time, or at its janitor's pass once the run is over. Once it is gone (its row stale
-// for PRESENCE_STALE_MS, a new incarnation, a refusal) any runner claims the run; a claim that then finds the machine gone
-// says so (computerLostWords), and its janitor never ends a row pinned to another runner still there (sweepKept): that
-// runner's own timer or janitor does. A machine any runner reaches by its id (an exec vendor's sandbox, a phone) is not
+// for PRESENCE_STALE_MS, a new incarnation) or refusing claims, any runner claims the run; a claim that then finds the
+// machine gone says so (computerLostWords). A refusing runner is still there (store KEPT_PREFIX): the claim that could
+// not reach its machine puts the row back, and no janitor but that runner's ends a row pinned to a runner still there
+// (sweepKept): that runner's own timer or janitor does. A machine any runner reaches by its id (an exec vendor's sandbox, a phone) is not
 // pinned, and moves.
 import { type ComputerProvider, connectOf, type MountKind, type ProviderEntry } from "@parcha/agentrun-computer";
 import { PRESENCE_STALE_MS } from "../runner/presence.js";
@@ -135,9 +136,10 @@ export type KeptHolders = {
   readonly self?: KeptHolder;
 };
 
-/** The one rule both janitor sweeps leave a kept machine by (sweepKept, and the provider sweep through sparedKept): its
- *  row is pinned to a runner other than `self` that is still there under the row's incarnation (seen within
- *  PRESENCE_STALE_MS). Only that runner's engine or hub has the machine, so a delete from here either finds nothing (and
+/** The one rule both janitor sweeps leave a kept machine by (sweepKept, and the provider sweep through sparedKept), and a
+ *  claim gives a row back by (computer-for-claim.ts reattach): its row is pinned to a runner other than `self` that is
+ *  still there under the row's incarnation (seen within PRESENCE_STALE_MS, refusing claims or not: store KEPT_PREFIX
+ *  states the one meaning, and why the claim rule alone also asks that it claims). Only that runner's engine or hub has the machine, so a delete from here either finds nothing (and
  *  marks the row ended, leaking it) or, where both runners list it (a dial vendor's account, a shared Docker engine),
  *  ends a machine its runner still keeps. The runners are read once per maker's call. A read that fails counts every
  *  pinned row as held elsewhere: ending another runner's machine blind would leak it or take it. */

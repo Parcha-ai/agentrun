@@ -197,8 +197,9 @@ const claimableIn = (d: Dialect, n: StoreNow, claimer?: string): { sql: string; 
   };
 };
 /** The run's computer is kept at its park (its KEPT_PREFIX row) pinned to a runner other than `claimer` that is still
- *  there under the incarnation the row names, at the deadlines' clock `n`: its runners row seen within RUNNER_STALE_MS,
- *  claiming (refused NULL); the keep neither ending nor ended, and its `until` ahead. That runner's Docker engine or
+ *  there (KEPT_PREFIX says what that means: its runners row seen within RUNNER_STALE_MS at the deadlines' clock `n`,
+ *  under the incarnation the row names) and claiming (refused NULL); the keep neither ending nor ended, and its `until`
+ *  ahead, on the same clock it was stamped on. That runner's Docker engine or
  *  attach hub holds the machine, so only it can take it back (workspace/computer-kept.ts pinnedOf); once any of these
  *  stops holding, any runner claims the run. Read in the claim's own statement, so no check-then-act gap. A row with no
  *  runner (a computer any runner reaches: an exec vendor's, a phone; or one an earlier build kept) pins nothing. */

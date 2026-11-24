@@ -1593,7 +1593,15 @@ export const RUNNER_STALE_MS = 30_000;
 
 /** The settings key prefix of the computers kept at a run's park, one row per run (workspace/computer-kept.ts). A row
  *  whose computer is pinned to the runner that kept it (its `runner` and `incarnation`) holds the run for that runner in
- *  the claim rule, while that runner is there under that incarnation and the keep lasts. */
+ *  the claim rule, while that runner is there under that incarnation and the keep lasts.
+ *
+ *  "There", for a pinned row's runner, means one thing everywhere: its runners row seen within RUNNER_STALE_MS on the
+ *  store's clock, under the incarnation the row names, refusing claims or not. That runner holds the machine: no other
+ *  runner's janitor ends it (computer-kept.ts heldElsewhere, for sweepKept and sparedKept), and a claim that took the row
+ *  and could not reach the machine puts the row back (computer-for-claim.ts reattach), so that runner's own end finds it.
+ *  The claim rule (sqlite/store.ts keptElsewhere) asks one thing more, that it is claiming (`refused` null): a runner that
+ *  refuses claims would never take the run back, so pinning the run to it would only stall it. Its machine stays its own
+ *  all the same. */
 export const KEPT_PREFIX = "computer_kept:";
 
 /** Every runner's word that it is there (runner/presence.ts). */
