@@ -2841,6 +2841,27 @@ test("CVI: a subcommand read passes over at most PATH_GAP option words between `
   assert.ok(perChar <= 4, `secret-assign on "npm -x config -x " at 512 KB: ${perChar.toFixed(2)} words passed over a character, past 4`);
 });
 
+test("CVII: a password after `npm config set` is cut however many option words stand between `config` and `set`: 8 to 64 options of three forms, raw and in a JSON string", async () => {
+  // Past PATH_GAP option words the read stops walking options one by one; it must still find `set` and cut the value
+  // after its key, never skip the command.
+  const pw = ["Copper9", "lumen9"].join("");
+  const FORMS = { "-a 1": () => ["-a", "1"], "--x=y": () => ["--x=y"], quoted: (i) => (i % 2 ? ["--x='y z'"] : ["-a", '"v w"']) };
+  const left = [];
+  let rows = 0;
+  for (const [form, words] of Object.entries(FORMS)) {
+    for (const n of [8, 9, 16, 64]) {
+      const command = ["npm", "config", ...Array.from({ length: n }, (_, i) => words(i)).flat(), "set", "//r/:_authToken", pw].join(" ");
+      for (const [wrap, text] of [["raw", `$ ${command}\n`], ["json", `${JSON.stringify({ command })}\n`]]) {
+        rows++;
+        const out = await scrub(text, { mode: "cut" });
+        assert.equal(out.ok, true, `failed closed on ${JSON.stringify(text.slice(0, 120))}`);
+        if (out.text.includes(pw)) left.push(`${form} x${n} ${wrap}`);
+      }
+    }
+  }
+  assert.deepEqual(left, [], `npm config set behind option words: password left on ${left.length} of ${rows} rows: ${left.join(", ")}`);
+});
+
 test("XCIX: the shipped readers at 512 KB: at most 8 counted reads a character over the lexer test's units, 12 where a command is named inside the quotes of an unclosed construct, and each unit's rule CPU bounded against main's span scan for that rule, timed in the same call", async (t) => {
   const ruleOf = (unit) => (unit.startsWith("curl") ? "curl-user" : unit.startsWith("mysql") ? "mysql-password" : unit.startsWith("npm") ? "secret-assign" : "password-flag");
   const units = [
