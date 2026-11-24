@@ -67,10 +67,15 @@ test("every shipped package's cases load, and each case's fake MCP servers serve
             const answer = spec.answers.find((a) => (spec.input.required ?? []).every((key) => Object.hasOwn(a.when, key)));
             if (!answer) continue;
             const result = await client.callTool({ name: tool, arguments: answer.when });
-            assert.deepEqual(result.content, answer.result.content, `${p.name}/${one.name}: ${name}.${tool} answers from its fixture`);
-            made.push({ tool: `mcp:${name}/${tool}`, arguments: answer.when });
+            // Headed by its own stamp, the nonce the fake logs with the call: the fixture's content past it.
+            const [head, ...rest] = result.content;
+            const stamp = /^fake-call ([0-9a-f]{32})\n?/.exec(head?.text ?? "");
+            assert.ok(stamp, `${p.name}/${one.name}: ${name}.${tool} answers headed by its stamp: ${JSON.stringify(head)}`);
+            const unstamped = head.text === stamp[0] && head.text.indexOf("\n") < 0 ? rest : [{ ...head, text: head.text.slice(stamp[0].length) }, ...rest];
+            assert.deepEqual(unstamped, answer.result.content, `${p.name}/${one.name}: ${name}.${tool} answers from its fixture`);
+            made.push({ tool: `mcp:${name}/${tool}`, arguments: answer.when, nonce: stamp[1] });
           }
-          assert.deepEqual(fake.calls, made, "each call is recorded, with its arguments");
+          assert.deepEqual(fake.calls, made, "each call is recorded, with its arguments and the nonce its answer was stamped with");
         } finally {
           await client.close().catch(() => undefined);
           await fake.close();

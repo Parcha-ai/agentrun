@@ -181,9 +181,45 @@ test("a step's timeline is read page by page, through next_after while has_more"
 test("a grader whose run fails is recorded as not graded, and the step is kept", async () => {
   const api = async () => ({ status: 500, body: { error: "down" }, headers: new Headers() });
   const ctx = { api, options: { deadline: Date.now() + 60_000, runTimeoutMs: 1000 } };
-  const got = await bench.gradeOne(ctx, { file: "finds.md", type: "llm", rubric: "r" }, { input: "x" }, { answer: "", calls: [], mcpCalls: [], files: [] }, [], true);
+  const got = await bench.gradeOne(ctx, { file: "finds.md", type: "llm", rubric: "r" }, { input: "x" }, { answer: "", calls: [], mcpCalls: [], fakeLog: [], files: [] }, [], true);
   assert.deepEqual([got.grader, got.pass, got.cost_usd], ["finds.md", false, null]);
   assert.match(got.reason, /^not graded: /);
+});
+
+test("a step's record pairs its fake MCP calls with the fakes' own log by their stamps, as the template eval's does: a tool_used grader on a faked tool reads the log, and neither its grader's input nor the record shows a raw fake argument or a stamp", async () => {
+  const TE = await import("../dist/template-eval.js");
+  const { Client, StreamableHTTPClientTransport } = await import("@modelcontextprotocol/client");
+  // A real fake, called as a run's MCP client calls it: its own log (the tool's name as the fake logs it, the nonce) and
+  // the stamped answer it gave make the timeline's rows, so nothing the pairing reads is written by hand.
+  const fixture = { server: "crm", description: "A contact.", tools: { update_contact: { description: "Set a contact's fields.", input: { type: "object", properties: { id: { type: "string" }, note: { type: "string" } }, required: ["id"] }, answers: [{ when: { id: "7" }, result: { content: [{ type: "text", text: "updated 7" }] } }] } } };
+  const fake = await TE.startFake("crm", fixture);
+  const client = new Client({ name: "learn-bench-test", version: "1.0.0" }, { capabilities: {}, versionNegotiation: { mode: "auto" } });
+  let answered;
+  try {
+    await client.connect(new StreamableHTTPClientTransport(new URL(fake.url)));
+    answered = await client.callTool({ name: "update_contact", arguments: { id: "7", note: "a raw fake argument" } });
+  } finally {
+    await client.close().catch(() => undefined);
+    await fake.close();
+  }
+  const [logged] = fake.calls;
+  const resultText = answered.content.map((part) => part.text ?? "").join("");
+  // The timeline's copy: the run's cut took the note.
+  const rows = [
+    { kind: "tool_use", tool_name: logged.tool, tool_use_id: "u", tool_input: { id: "7", note: "[redacted]" } },
+    { kind: "tool_result", tool_use_id: "u", tool_status: "success", tool_result_text: resultText },
+  ];
+  const fakes = [{ name: "crm", calls: [...fake.calls] }];
+  const view = { result: { final_answer: `The CRM said: ${resultText}` } };
+  const record = bench.recordOf({ view, rows, harness: "pi", servers: ["crm"], fakes, files: [] });
+  assert.equal(record.answer, "The CRM said: updated 7", "the answer, less the stamp it echoed");
+  assert.deepEqual(record.fakeLog.map((call) => call.arguments.note), ["a raw fake argument"], "the fakes' own log, whole, for a tool_used grader");
+  assert.deepEqual(record.mcpCalls.map((call) => [call.tool, call.arguments?.note, call.result]), [["mcp:crm/update_contact", "[redacted]", "updated 7"]], "the timeline's call, paired by its stamp, no stamp left");
+  const used = TE.gradeDeterministic({ type: "tool_used", file: "u.md", tools: ["mcp:crm/update_contact"], count: 1, args: { note: "a raw fake argument" } }, record, ["crm"]);
+  assert.equal(used.pass, true, JSON.stringify(used));
+  const input = TE.graderInput({ type: "llm", file: "g.md", rubric: "r" }, "x", record);
+  assert.ok(!input.includes("a raw fake argument"), input);
+  assert.doesNotMatch(input, /fake-call [0-9a-f]{32}/, input);
 });
 
 test("a step whose learning had not settled stops its series, naming the step: no later step runs without its lesson", () => {
@@ -221,7 +257,7 @@ test("an ungraded check is no wrong keep: a grader outage after the plant is cou
 });
 
 test("a grader that could not grade says so: ungraded, from a run that did not finish, a grader run that failed, or the deadline", async () => {
-  const kase = { input: "x" }; const record = { answer: "", calls: [], mcpCalls: [], files: [] };
+  const kase = { input: "x" }; const record = { answer: "", calls: [], mcpCalls: [], fakeLog: [], files: [] };
   const llm = { file: "finds.md", type: "llm", rubric: "r" };
   const down = { api: async () => ({ status: 500, body: {}, headers: new Headers() }), options: { deadline: Date.now() + 60_000, runTimeoutMs: 1000 } };
   assert.equal((await bench.gradeOne(down, llm, kase, record, [], false)).ungraded, true, "the run did not finish");
