@@ -3209,16 +3209,18 @@ after asks, saying "this run has sent 5 emails" (the count is the run's own reco
 stops two auto-responders answering each other. On a run an email started whose `email_read` is thread-scoped (no
 `scope: "mailbox"`), a send to anyone outside the thread's people
 (the account's own address and every From, To and Cc of the thread's messages) asks too, naming them ("eve@example.com
-is outside this email's thread"). On any run a trigger started (schedule, webhook, Slack, GitHub, Composio, email or
-feed), a send to an address this account has never sent to asks too, naming it ("someone@example.com: this account has
-never sent to them"). Never sent to means no message in the account's own Sent folder (Gmail's Sent Mail) has the
-address in its To, Cc or Bcc: the exact address, case-blind, as far back as Sent goes. Mail received from someone
-doesn't count, so a scheduled run replying to a first-time sender asks once. The account's own address, and an address
-the run already sent to (unasked or approved), never ask. A Sent folder that can't be read asks, saying so. `scope:
-"mailbox"` doesn't lift this ask; it only turns the thread ask off. A playground or API run has neither ask, only the
-cap. The pending approval carries the reason as `asks_because`, which the console's card
-says above the call's arguments ("Asks because ..."). With accounts off, where no one can
-approve, such a send is refused in those words.
+is outside this email's thread"). That thread-scoped email run keeps its thread ask and skips the new-address check
+below, so the thread's people, its sender first, go unasked. On any other run a trigger started (schedule, webhook,
+Slack, GitHub, Composio, feed, or an email run with `scope: "mailbox"`), a send to an address this account has never
+sent to asks too, naming it ("someone@example.com: this account has never sent to them"). Never sent to means no
+message in the account's own Sent folder (Gmail's Sent Mail) has the address in its To, Cc or Bcc: the exact address,
+case-blind, as far back as Sent goes. Mail received from someone doesn't count, so a scheduled run replying to a
+first-time sender asks once. The new-address check never asks about the account's own address or an address the run
+already sent to (unasked or approved); the 5-send cap still counts every send. A Sent folder that can't be read asks,
+saying so. `scope: "mailbox"` turns the thread ask off and puts the run under the new-address check instead. A
+playground or API run has neither ask, only the cap. The pending approval carries the reason as `asks_because`, which
+the console's card says above the call's arguments ("Asks because ..."). With accounts off, where no one can approve,
+such a send is refused in those words.
 
 An agent whose definition says `checkout: repository` starts each run in a checkout of the repository the run names: its
 start's `repo`, else the first `https://github.com/<owner>/<repo>` in its first message (a github trigger's run, its
