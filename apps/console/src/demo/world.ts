@@ -631,8 +631,9 @@ export function createWorld({ opened = Date.now(), clock = () => Date.now() }: {
     if (!a) return null;
     const files = skills ?? skillFiles.get(revisionOf(a)) ?? {};
     a.saved ??= a.notes.map((_, i) => definitionOf(a, i + 1) as Record<string, unknown>);
-    // An edit is made on the definition that is current, and becomes the current one, whichever revision was before.
-    a.saved.push({ ...a.saved[versionOf(a) - 1], ...definition });
+    // PUT saves the complete definition. Omitted optional settings reset to their defaults; merging would
+    // resurrect a model or thinking choice the editor explicitly cleared. Earlier revisions stay intact.
+    a.saved.push({ ...definition });
     a.notes = [...a.notes, note];
     a.current = undefined;
     skillFiles.set(revisionOf(a), { ...files });
