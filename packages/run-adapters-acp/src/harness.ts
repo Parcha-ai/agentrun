@@ -3,7 +3,7 @@
 // The agent is one process per kernel Drive (one per runner's hold of the session), started at the drive's first turn
 // and ended with it: a turn after another goes to the same agent session, as a person's would. A drive:
 //  1. makes the session's private HOME fresh and gives it back what the records mirrored of the agent's own session
-//     store (state.ts), then the recipe's own files;
+//     store (state.ts), then the recipe's own files and its allowFile, from the tools this start lists;
 //  2. starts the agent (host/agent.ts: the environment allowlist, its own process group) and the adapter's MCP server
 //     (host/mcp.ts: the host's tools, nothing else), and checks initialize against the recipe's declares;
 //  3. gives the agent back its session (session/load, its replayed history kept off the timeline), or a new one, whose
@@ -22,9 +22,9 @@ import type { GateAnswer, GateCall } from "@parcha/agentrun-kernel";
 import type { DriveContext, HostTool, SessionState } from "@parcha/agentrun-kernel/kernel";
 import { askGate, journalRecords, NativeJournal, openTurn, placeSubmissions, recoveryNote, resumeUnstartedCalls, toolBridge, toolKey, transcriptOf, type DanglingCall, type ToolBridge, type TranscriptEntry } from "@parcha/agentrun-kernel/process";
 import type { ParentWatch } from "@parcha/agentrun-kernel/host";
-import { CallIds, MCP_SERVER, NATIVE_EFFECT_KINDS, ourTool, permissionCallId } from "./calls.js";
+import { CallIds, MCP_SERVER, NATIVE_EFFECT_KINDS, ourTool, permissionCallId, rawInputTool } from "./calls.js";
 import { ACP_CODES } from "./facts.js";
-import { homePath, type AcpRecipe } from "./recipe.js";
+import { allowFileText, homePath, type AcpRecipe } from "./recipe.js";
 import { restoreState, STATE_STREAM, StateMirror, type StateRecord } from "./state.js";
 import { startAgent, type AgentProcess } from "./host/agent.js";
 import { cutKeys, keysToCut } from "./host/key-cut.js";
@@ -90,9 +90,6 @@ export interface AcpHarnessOptions {
   /** Run before every start of the agent's process, a restart included: the host's check of the binary it runs. A throw
    *  refuses that start, so a binary replaced after the adapter was made is checked before it ever runs. */
   beforeStart?: (command: string) => Promise<void>;
-  /** Files the agent's private HOME gets at each start beside the recipe's, from the names of the tools its MCP server
-   *  lists there (Goose's permission file, goosePermissions): by path inside the HOME, as the recipe's `files`. */
-  files?: (tools: readonly string[]) => Readonly<Record<string, string>>;
   callIdWaitMs?: number;
   startMs?: number;
   log?: (message: string, fields?: Record<string, unknown>) => void;
@@ -348,18 +345,13 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
       case "tool_call_update": {
         if (!cur) return;
         // A call the agent named only after announcing it (Cursor's MCP calls: a tool_call titled "MCP: tool" with no
-        // input, then this update titled `agentrun: <tool>` with {providerIdentifier, toolName, args}): taken as ours
-        // here, under the id its tool_call already counted. Its kind is the tool_call's, which ourTool already let
-        // through, or this update's own when it names one.
+        // input, then this update with rawInput {providerIdentifier, toolName, args}): taken as ours here, under the id its
+        // tool_call already counted, by that field (rawInputTool), never by the update's title. Held to both kinds, the
+        // tool_call's and the update's: a shell renamed by a later update is never ours.
         if (rt.calls.announced(update.toolCallId) === undefined) {
-          // Held to both kinds, the tool_call's and the update's: a shell renamed by a later update is never ours.
-          const title = update.title ?? null;
-          const announcedAs = ourTool({ title, kind: rt.kinds.get(update.toolCallId) ?? null }, names);
-          const tool = announcedAs && ourTool({ title, kind: update.kind ?? null }, names) === announcedAs ? announcedAs : undefined;
-          if (tool) {
-            const raw = update.rawInput as { toolName?: unknown; args?: unknown } | null | undefined;
-            const args = raw && raw.toolName === tool && typeof raw.args === "object" && raw.args !== null && !Array.isArray(raw.args) ? raw.args : raw;
-            rt.calls.add(update.toolCallId, tool, args);
+          const named = rawInputTool({ rawInput: update.rawInput, kind: rt.kinds.get(update.toolCallId) ?? null }, names);
+          if (named && rawInputTool({ rawInput: update.rawInput, kind: update.kind ?? null }, names)) {
+            rt.calls.add(update.toolCallId, named.tool, typeof named.args === "object" && named.args !== null && !Array.isArray(named.args) ? named.args : undefined);
           }
         }
         // Its status is the agent's word only: what it changes is the mirror of the agent's session store.
@@ -438,12 +430,16 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
     const turn = cur?.turn;
     if (!cur || !turn || turn.stop.signal.aborted) return turn?.limitHit ? choose("reject_once") : cancelled;
     if (turn.limitHit) return choose("reject_once");
-    // Our own tool: the gate is the bridge's, asked at the MCP call itself. Allowed once, never always. The title is the
-    // agent's text, so it takes both: a request whose kind has no effects of its own and whose name is ours, for the
-    // tool_call the agent announced as that same tool of ours under the request's own id. Anything else is the agent's
-    // own call: the host's gate, journaled.
-    const mine = ourTool(request.toolCall as { title?: string | null; name?: string | null; kind?: string | null }, names);
-    if (mine && rt.calls.announced(request.toolCall.toolCallId) === mine) return choose("allow_once");
+    // Our own tool, on a recipe that declares the title tie (quirks.permissionTie, Cursor's alone): the gate is the
+    // bridge's, asked at the MCP call itself, so the request is allowed once, never always. Cursor needs it: its
+    // allowlist with allow: [] (which keeps it from writing files unasked) asks for every MCP call, ours included. The
+    // title is the agent's text, so the tie takes both: a request whose kind has no effects of its own and whose title
+    // names our tool, for the tool_call the agent announced as that same tool under the request's own id. Without the
+    // quirk (Goose, which asks nothing for our tools: its allowFile) every request is the host gate's, journaled.
+    if (recipe.quirks?.permissionTie === "title") {
+      const mine = ourTool(request.toolCall as { title?: string | null; name?: string | null; kind?: string | null }, names);
+      if (mine && rt.calls.announced(request.toolCall.toolCallId) === mine) return choose("allow_once");
+    }
     const call = request.toolCall;
     const kind = typeof call.kind === "string" && call.kind ? call.kind : "other";
     const title = typeof call.title === "string" ? call.title : kind;
@@ -569,8 +565,10 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
     const records = (await journal.read<StateRecord>(STATE_STREAM)).map((r) => r.data);
     restoreState(home, records);
     const own = new Set<string>();
-    const toolFiles = options.files?.(listed.map((tool) => tool.name)) ?? {};
-    for (const [path, text] of [...Object.entries(recipe.files ?? {}), ...Object.entries(toolFiles)]) {
+    // The recipe's allowFile (Goose's permission file): the tools this start lists, in the agent's own form, and nothing
+    // else, so the agent runs them unasked and our gate asks at the MCP call.
+    const allowed = recipe.allowFile ? { [recipe.allowFile.path]: allowFileText(recipe.allowFile.form, listed.map((tool) => tool.name)) } : {};
+    for (const [path, text] of [...Object.entries(recipe.files ?? {}), ...Object.entries(allowed)]) {
       const clean = homePath(path);
       if (!clean) throw new Error(`acp: the file ${JSON.stringify(path)} must be inside the private HOME`);
       const file = join(home, clean);

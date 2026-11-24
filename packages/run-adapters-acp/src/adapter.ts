@@ -39,9 +39,6 @@ export interface AcpAdapterOptions {
   /** Run before every start of the agent's process, a restart included (Goose's: its pin, verifyPinnedBinaryAsync). A
    *  throw refuses that start. */
   beforeStart?: (command: string) => Promise<void>;
-  /** Files the agent's private HOME gets at each start beside the recipe's, from the names of the tools its MCP server
-   *  lists there (Goose's permission file, goosePermissions): by path inside the HOME, as the recipe's `files`. */
-  files?: (tools: readonly string[]) => Readonly<Record<string, string>>;
   /** How long an MCP call waits for the agent's tool_call that announces it. Default 10 s. */
   callIdWaitMs?: number;
   /** How long the agent may take to start and open its session. Default 60 s. */
@@ -120,7 +117,6 @@ export function acpAdapter(options: AcpAdapterOptions): AgentAdapter {
         ...(options.env ? { env: options.env } : {}),
         ...(options.proxy ? { proxy: (drive: { halt(reason: unknown): void }) => options.proxy!({ models: io.models, tools: spec.tools.map((tool) => tool.name), halt: drive.halt }) } : {}),
         ...(options.beforeStart ? { beforeStart: options.beforeStart } : {}),
-        ...(options.files ? { files: options.files } : {}),
         ...(options.callIdWaitMs !== undefined ? { callIdWaitMs: options.callIdWaitMs } : {}),
         ...(options.startMs !== undefined ? { startMs: options.startMs } : {}),
         ...(options.log ? { log: options.log } : {}),

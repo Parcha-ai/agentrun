@@ -26,25 +26,34 @@ export function canonical(value: unknown): string {
  *  our tools, whatever its title says. */
 export const NATIVE_EFFECT_KINDS: ReadonlySet<string> = new Set(["execute", "edit", "delete", "move", "fetch"]);
 
-/** The host tool an ACP tool call names, by the agent's own name for our MCP server's tools (Goose `agentrun__<tool>`, or
- *  as Goose 1.59.2 titles it, `agentrun: <tool>` with the tool's underscores as spaces, and ` · <summary>` after it for a
- *  call whose arguments it summarizes, a path; Cursor `agentrun-<tool>: <tool>`),
- *  when it is one of `tools` and its kind is not one with effects of its own. The title is the agent's text, so this alone
- *  is never evidence that a call is ours: a permission request also needs the tool_call that announced it
- *  (CallIds.announced). */
+/** The host tool an ACP tool call names, by a name for our MCP server's tools (`agentrun__<tool>`, as Goose names them)
+ *  or by Cursor's own title for one (`agentrun-<tool>: <tool>`), when it is one of `tools` and its kind is not one with
+ *  effects of its own. No other title form is read: Goose 1.59.2's (`agentrun: <tool>`, with ` · <summary>` after it)
+ *  ties nothing, since Goose asks nothing for our tools (its recipe's allowFile) and its calls are matched by their
+ *  arguments (CallIds). Cursor's form stays for Cursor's tie alone (quirks.permissionTie). The title is the agent's text,
+ *  so this alone is never evidence that a call is ours: a permission request also needs the tool_call that announced it
+ *  (CallIds.announced) and a recipe that declares the tie. */
 export function ourTool(update: { title?: string | null; name?: string | null; kind?: string | null }, tools: ReadonlySet<string>): string | undefined {
   if (typeof update.kind === "string" && NATIVE_EFFECT_KINDS.has(update.kind)) return undefined;
   const candidates: string[] = [];
-  for (const whole of [update.name, update.title]) {
-    if (typeof whole !== "string") continue;
-    // The name is what comes before Goose's summary (` · proof.txt`): the summary is the call's argument, never a name.
-    const said = whole.split(" · ")[0]!;
-    const goose = new RegExp(`^${MCP_SERVER}__(.+)$`).exec(said);
-    if (goose) candidates.push(goose[1]!);
-    const cursor = new RegExp(`^${MCP_SERVER}(-[^:]*)?: (.+)$`).exec(said);
-    if (cursor) candidates.push(cursor[2]!.trim(), ...(cursor[1] ? [] : [cursor[2]!.replace(/ /g, "_")]));
+  for (const said of [update.name, update.title]) {
+    if (typeof said !== "string") continue;
+    const named = new RegExp(`^${MCP_SERVER}__(.+)$`).exec(said);
+    if (named) candidates.push(named[1]!);
+    const cursor = new RegExp(`^${MCP_SERVER}-[^:]*: (.+)$`).exec(said);
+    if (cursor) candidates.push(cursor[1]!.trim());
   }
   return candidates.find((name) => tools.has(name));
+}
+
+/** The tool of ours an agent's update names in its rawInput, as Cursor 2026.11.13 names an MCP call it announced
+ *  untitled: `{providerIdentifier: "agentrun", toolName, args}`. A field, read as it is; undefined when it names another
+ *  server, no tool of `tools`, or the update's kind has effects of its own. */
+export function rawInputTool(update: { rawInput?: unknown; kind?: string | null }, tools: ReadonlySet<string>): { tool: string; args: unknown } | undefined {
+  if (typeof update.kind === "string" && NATIVE_EFFECT_KINDS.has(update.kind)) return undefined;
+  const raw = update.rawInput;
+  if (!isPlain(raw) || raw.providerIdentifier !== MCP_SERVER || typeof raw.toolName !== "string" || !tools.has(raw.toolName)) return undefined;
+  return { tool: raw.toolName, args: raw.args };
 }
 
 /** The agent's announced calls, matched to the MCP calls of our tools that reach the server. */

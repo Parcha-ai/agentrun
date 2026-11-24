@@ -4,9 +4,10 @@
 // What the recipe holds was measured on Goose 1.59.2 over ACP:
 //  - `goose acp` in a private HOME, provider `anthropic` in approve mode: a call of one of Goose's own tools asks
 //    permission (the host's gate answers it, allow_once or reject_once, never an `always`), and a call of ours asks
-//    nothing, since `$HOME/.config/goose/permission.yaml`, written at each start (goosePermissions), allows each of the
-//    run's tools by its name (`agentrun__<name>`), which approve mode reads before it asks; our tools' gate is the
-//    host's, at the MCP call. Session naming and the keyring off;
+//    nothing, since `$HOME/.config/goose/permission.yaml`, the recipe's allowFile written at each start, allows each of
+//    the run's tools by its name (`agentrun__<name>`), which approve mode reads before it asks; our tools' gate is the
+//    host's, at the MCP call. The recipe declares no title tie (quirks.permissionTie), so every request Goose does make
+//    goes to the host's gate. Session naming and the keyring off;
 //  - every bundled extension off in `$HOME/.config/goose/config.yaml`, which leaves the model our MCP server's tools
 //    (`agentrun__<name>`) and `load_skill`, which Goose always offers. ACP's `_meta.enabledExtensions: []` is not used:
 //    it drops our MCP server too;
@@ -19,7 +20,7 @@
 import { readFileSync } from "node:fs";
 import type { AgentAdapter } from "@parcha/agentrun-kernel";
 import { acpAdapter, type AcpAdapterOptions } from "./adapter.js";
-import { gooseProxy, gooseToolName, type GooseProxyOptions } from "./host/goose-proxy.js";
+import { gooseProxy, type GooseProxyOptions } from "./host/goose-proxy.js";
 import { GOOSE_PIN, pinnedRelease, unpinned, verifyPinnedBinary, verifyPinnedBinaryAsync } from "./pinned-binary.js";
 import { MODEL_ID, recipeProblems, type AcpRecipe } from "./recipe.js";
 
@@ -60,18 +61,7 @@ export function gooseRecipe(options: GooseRecipeOptions): AcpRecipe {
   return recipe;
 }
 
-/** Where Goose reads its tools' permissions, in its private HOME (Paths::config_dir()/permission.yaml). */
-export const GOOSE_PERMISSION_FILE = ".config/goose/permission.yaml";
-
-/** Goose's permission file for a run whose MCP server lists `tools`: each allowed always by the name Goose calls it
- *  (`agentrun__<name>`), as Goose 1.59.2's PermissionConfig holds it under `user` (every field present: none has a
- *  default, and a file that does not parse stops Goose at its start). Written as JSON, which YAML reads. Nothing else is
- *  allowed: Goose's own tools still ask. */
-export function goosePermissions(tools: readonly string[]): Record<string, string> {
-  return { [GOOSE_PERMISSION_FILE]: `${JSON.stringify({ user: { always_allow: tools.map(gooseToolName), ask_before: [], never_allow: [] } })}\n` };
-}
-
-export interface GooseAdapterOptions extends Omit<AcpAdapterOptions, "recipe" | "proxy" | "beforeStart" | "files">, Omit<GooseProxyOptions, "log"> {
+export interface GooseAdapterOptions extends Omit<AcpAdapterOptions, "recipe" | "proxy" | "beforeStart">, Omit<GooseProxyOptions, "log"> {
   /** The Goose binary, absolute. Its sha256 is checked when the adapter is made and again before every start of a Goose
    *  process (a restart included), and it is never run for the check. */
   binary: string;
@@ -93,8 +83,6 @@ export function gooseAdapter(options: GooseAdapterOptions): AgentAdapter {
     // Checked again before each process starts: a binary replaced since the adapter was made never runs unchecked. An
     // unchanged file is not hashed again (the check remembers it by its identity).
     beforeStart: (command) => verifyPinnedBinaryAsync(command, pinned),
-    // Our tools run unasked by Goose (the host's gate asks at the MCP call): its permission file, from the run's tools.
-    files: goosePermissions,
     proxy: gooseProxy({ model, provider, ...(price ? { price } : {}), ...(maxOutputTokens ? { maxOutputTokens } : {}), ...(fetch ? { fetch } : {}), ...(rest.log ? { log: rest.log } : {}) }),
   });
 }

@@ -17,5 +17,6 @@
   ],
   "quiet": ["couldn't save your credentials", "EISDIR: illegal operation on a directory, open"],
   "declares": { "load": true, "mcp": "http" },
-  "billing": { "kind": "plan", "maxTurns": 20, "maxToolCalls": 100 }
+  "billing": { "kind": "plan", "maxTurns": 20, "maxToolCalls": 100 },
+  "quirks": { "permissionTie": "title" }
 }
