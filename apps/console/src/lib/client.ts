@@ -409,7 +409,7 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     /** The templates this server offers. */
     listTemplates: () => call<{ templates: TemplateView[] }>("GET", "/templates"),
     /** The marketplace's templates, as the server read them: always 200, its `state` saying whether it could. */
-    listMarketplaceTemplates: () => call<MarketplaceList>("GET", "/templates/marketplace"),
+    listMarketplaceTemplates: () => call<MarketplaceList>("GET", "/marketplace/templates"),
     /** Makes a template's agent (and its triggers) under one Idempotency-Key: the same request again answers what it did. */
     applyTemplate: (name: string, body: TemplateApply, idempotencyKey: string) =>
       call<TemplateApplied>("POST", `/templates/${encodeURIComponent(name)}/apply`, { body, headers: { "idempotency-key": idempotencyKey } }),

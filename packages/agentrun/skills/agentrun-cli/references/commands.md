@@ -788,7 +788,7 @@ Route: `GET /integrations/github/repositories`.
 
 The marketplace's templates: every package on marketplace.agentrun.ai, each with the package here that it is.
 
-Route: `GET /templates/marketplace`.
+Route: `GET /marketplace/templates`.
 
 ### `agentrun local list-mcp-server-names`
 

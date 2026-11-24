@@ -1,5 +1,5 @@
 // The marketplace's templates beside this server's own (GRE-4834): the server reads marketplace.agentrun.ai's list
-// (GET /v2/templates/marketplace) and marks each entry that is a package here already. The Templates and Build pages
+// (GET /v2/marketplace/templates) and marks each entry that is a package here already. The Templates and Build pages
 // list this server's packages first, then the marketplace's others, so the console shows what the marketplace shows.
 import { useEffect, useState } from "react";
 import type { Client } from "./client";

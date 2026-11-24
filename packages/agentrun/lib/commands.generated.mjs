@@ -2400,7 +2400,7 @@ export const COMMANDS = [
     ],
     "operationId": "listMarketplaceTemplates",
     "method": "GET",
-    "path": "/templates/marketplace",
+    "path": "/marketplace/templates",
     "pathParams": [],
     "multiSegment": [],
     "query": [],

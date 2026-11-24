@@ -11508,7 +11508,7 @@ OPERATIONS: dict[str, Operation] = {
     "listComputerChoices": Operation(method="GET", path="/computers/{provider}/choices", path_params=("provider",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "listComputers": Operation(method="GET", path="/computers", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "listGitHubRepositories": Operation(method="GET", path="/integrations/github/repositories", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
-    "listMarketplaceTemplates": Operation(method="GET", path="/templates/marketplace", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "listMarketplaceTemplates": Operation(method="GET", path="/marketplace/templates", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "listMcpServerNames": Operation(method="GET", path="/settings/mcp-server-names", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "listRunningComputers": Operation(method="GET", path="/computers/running", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "listSuggestions": Operation(method="GET", path="/suggestions", path_params=(), multi_segment=(), query=("repo", "status"), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
@@ -12028,7 +12028,7 @@ class LocalResource(Group):
         return self._call("listGitHubRepositories", (), None, None, timeout=timeout)
 
     def list_marketplace_templates(self, *, timeout: float | None = None) -> ListMarketplaceTemplatesResponse:
-        """The marketplace's templates: every package on marketplace.agentrun.ai, each with the package here that it is (GET /templates/marketplace)."""
+        """The marketplace's templates: every package on marketplace.agentrun.ai, each with the package here that it is (GET /marketplace/templates)."""
         return self._call("listMarketplaceTemplates", (), None, None, timeout=timeout)
 
     def list_mcp_server_names(self, *, timeout: float | None = None) -> ListMcpServerNamesResponse:

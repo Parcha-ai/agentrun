@@ -1,4 +1,4 @@
-// The marketplace's templates (GET /v2/templates/marketplace): marketplace.agentrun.ai lists every template package,
+// The marketplace's templates (GET /v2/marketplace/templates): marketplace.agentrun.ai lists every template package,
 // Parcha's and the community's, and publishes that list as /search.json, the one its own pages are built beside. The
 // console lists the packages this server ships and those imported here, then the marketplace's others, so the two show
 // the same templates. This server reads the list only when asked (no read at its start, none in the background), keeps

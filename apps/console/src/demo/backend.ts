@@ -7,7 +7,7 @@
 // And its catalogue, which is the product's own and holds nothing of the owner's: what the server can do
 // (`/capabilities`, shown as a server with every model and tool ready, without its secrets' names or its switches) and the
 // templates it ships with (`/templates`, the bundled ones only), with the marketplace's list beside them
-// (`/templates/marketplace`), whose entries are marked here only for a bundled one.
+// (`/marketplace/templates`), whose entries are marked here only for a bundled one.
 import { DAY } from "./tale";
 import { DEMO_REFUSAL, demoPicked } from "./mode";
 import type { GradeBody, MarketplaceList, TemplateApply, TemplateView, TriggerCreate, TriggerInput } from "@/lib/v2";
@@ -81,7 +81,7 @@ export function createDemoFetch({ real, world = createWorld() }: { real: typeof 
       templates = (served.templates ?? []).filter((t) => t.bundled === true);
       return json({ ...served, templates });
     }
-    if (method === "GET" && path === "/templates/marketplace") {
+    if (method === "GET" && path === "/marketplace/templates") {
       const res = await real(input, init);
       if (!res.ok) return res;
       const served = (await res.json()) as MarketplaceList;
