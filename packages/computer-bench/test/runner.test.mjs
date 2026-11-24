@@ -390,3 +390,41 @@ test("parallel episodes give the same verdicts as one at a time", async () => {
 	const key = (results) => results.map((result) => `${result.task}/${result.seed}/${result.arm}=${result.outcome}`).sort();
 	assert.deepEqual(key(await run(4)), key(await run(1)));
 });
+
+test("a stop asked for while fast episodes run starts no further episode", async () => {
+	// Fake episodes never wait on I/O. The stop is asked for from a setImmediate after the first result, the way the
+	// CLI's SIGINT handler asks: it runs only once the runner gives the event loop a turn.
+	const fake = fakeBackend({ agents: FAKE_AGENTS });
+	let opened = 0;
+	let openedAfterStop = 0;
+	const backend = {
+		...fake,
+		open(request) {
+			opened += 1;
+			if (request.signal.aborted) openedAfterStop += 1;
+			return fake.open(request);
+		},
+	};
+	const controller = new AbortController();
+	let asked = false;
+	const seeds = Array.from({ length: 200 }, (_, i) => i + 1);
+	const results = await runBench({
+		tasks: fakeTasks("fake.files.write"),
+		arms: [arm("fake-right")],
+		seeds,
+		backend,
+		store: store(),
+		grade: "never",
+		parallel: 2,
+		signal: controller.signal,
+		onResult: () => {
+			if (asked) return;
+			asked = true;
+			setImmediate(() => controller.abort(new Error("stopped")));
+		},
+	});
+	assert.ok(results.length < seeds.length, `all ${results.length} of ${seeds.length} episodes ran: the stop could not run until the run had ended`);
+	assert.ok(controller.signal.aborted, "the stop ran before the run ended");
+	assert.equal(openedAfterStop, 0, "no episode was opened after the stop");
+	assert.ok(opened < seeds.length);
+});
