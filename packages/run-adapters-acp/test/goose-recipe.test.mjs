@@ -46,6 +46,22 @@ test('its config turns every one of the eight bundled extensions off, and names 
   assert.deepEqual(Object.keys(recipeFile('goose').files), ['.config/goose/config.yaml']);
 });
 
+test("its allowFile is Goose's permission file, in Goose's own form, and it declares no title tie: Goose asks nothing for our tools, and every request it does make goes to the host's gate", () => {
+  const file = recipeFile('goose');
+  assert.deepEqual(file.allowFile, { path: '.config/goose/permission.yaml', form: 'goose-permission' });
+  assert.equal(file.quirks?.permissionTie, undefined);
+});
+
+test('recipeProblems refuses an allowFile outside HOME, one in a form no agent reads, one at a path the recipe also writes, and a title tie other than "title"', () => {
+  const base = { id: 'x', command: BINARY, declares: { load: true, mcp: 'http' }, billing: { kind: 'proxy' } };
+  assert.deepEqual(recipeProblems({ ...base, allowFile: { path: '.config/goose/permission.yaml', form: 'goose-permission' }, quirks: { permissionTie: 'title' } }), []);
+  assert.match(recipeProblems({ ...base, allowFile: { path: '/etc/goose/permission.yaml', form: 'goose-permission' } }).join(' '), /allowFile .*inside the private HOME/);
+  assert.match(recipeProblems({ ...base, allowFile: { path: '.config/goose/permission.yaml', form: 'yaml' } }).join(' '), /allowFile .*form/);
+  assert.match(recipeProblems({ ...base, allowFile: { path: '.config/goose/permission.yaml' } }).join(' '), /allowFile .*form/);
+  assert.match(recipeProblems({ ...base, allowFile: { path: 'p.yaml', form: 'goose-permission' }, files: { 'p.yaml': '' } }).join(' '), /allowFile .*files/);
+  assert.match(recipeProblems({ ...base, quirks: { permissionTie: 'name' } }).join(' '), /permissionTie/);
+});
+
 test('a run\'s recipe adds the binary and GOOSE_MODEL, and recipeProblems finds none', () => {
   const recipe = gooseRecipe({ command: BINARY, model: 'claude-sonnet-5-5' });
   assert.deepEqual(recipeProblems(recipe), []);

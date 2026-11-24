@@ -1,15 +1,15 @@
-// Goose asks no permission for a call of our tools: at each start its adapter writes Goose's permission file into the
-// run's private HOME (`.config/goose/permission.yaml`), every tool the run lists allowed by the name Goose calls it
-// (`agentrun__<tool>`) and nothing else, which Goose 1.59.2's approve mode reads before it would ask. The host's gate is
-// asked once per call, at the MCP call, under the agent's own id. Run on the fake agent (testing/fake-acp-agent.mjs) as
-// Goose's binary, which reads that file as Goose does; no Goose, no model.
+// Goose asks no permission for a call of our tools: at each start the adapter writes the recipe's allowFile (Goose's:
+// `.config/goose/permission.yaml`, form `goose-permission`) into the run's private HOME, every tool that start lists
+// allowed by the name Goose calls it (`agentrun__<tool>`) and nothing else, which Goose 1.59.2's approve mode reads before
+// it would ask. The host's gate is asked once per call, at the MCP call, under the agent's own id. Run on the fake agent
+// (testing/fake-acp-agent.mjs) as Goose's binary, which reads that file as Goose does; no Goose, no model.
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { chmodSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { gooseAdapter } from '@parcha/agentrun-harness-acp';
-import { FAKE, fakeEvents, fakeRecipe, openSession, scratch, tool } from './helpers.mjs';
+import { FAKE, fakeEvents, fakeRecipe, GOOSE_ALLOW_FILE, openSession, scratch, tool } from './helpers.mjs';
 
 /** The fake agent behind a launcher at Goose's binary's place (Goose's own `acp` argument ignored), and the adapter
  *  gooseAdapter makes of it, pinned to the launcher's sha256. */
@@ -44,4 +44,25 @@ test("Goose's permission file holds the run's tools as always allowed, by Goose'
   assert.deepEqual(fakeEvents(recipe).filter((e) => e.type === 'permission'), [], 'Goose asked no permission');
   assert.deepEqual(asked.map((c) => [c.tool, c.callId]), [['write', 'call_0']], "the gate is asked once, by the bridge, under the agent's id");
   assert.deepEqual(wrote, [{ path: 'proof.txt', content: 'hello' }]);
+});
+
+test("the recipe's allowFile is written from that start's tools alone; a recipe without one writes none, and the agent's request for our tool goes to the host's gate", { timeout: 60_000 }, async (t) => {
+  const script = [{ call: 'write', args: { path: 'a.txt', content: 'x' } }, { sayLastResult: true }];
+  const withFile = fakeRecipe(scratch(), { script, style: 'goose', askMcp: true }, { allowFile: GOOSE_ALLOW_FILE });
+  const asked = [];
+  const one = await openSession(t, withFile, { tools: [tool('write', () => 'wrote')], gate: async (call) => (asked.push(call), 'allow') });
+  await one.session.send('go');
+  assert.equal((await one.session.turnEnd()).status, 'completed');
+  const home = fakeEvents(withFile).find((e) => e.type === 'start')?.home;
+  assert.deepEqual(JSON.parse(readFileSync(join(home, '.config', 'goose', 'permission.yaml'), 'utf8')).user.always_allow, ['agentrun__write'], "this start's tools, by Goose's names");
+  assert.deepEqual(asked.map((c) => c.tool), ['write']);
+
+  const without = fakeRecipe(scratch(), { script, style: 'goose', askMcp: true }, { allowFile: undefined });
+  const refused = [];
+  const two = await openSession(t, without, { tools: [tool('write', () => 'wrote')], gate: async (call) => (refused.push(call), call.tool.startsWith('acp_') ? { deny: 'no' } : 'allow') });
+  await two.session.send('go');
+  assert.equal((await two.session.turnEnd()).status, 'completed');
+  const bare = fakeEvents(without).find((e) => e.type === 'start')?.home;
+  assert.equal(existsSync(join(bare, '.config', 'goose', 'permission.yaml')), false, 'no allowFile, no file');
+  assert.deepEqual(refused.map((c) => c.tool), ['acp_other'], "Goose's request for our tool, with no file, is the host gate's");
 });

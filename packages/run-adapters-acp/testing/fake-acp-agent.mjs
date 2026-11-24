@@ -23,6 +23,7 @@
 //   announce: "late" (with style "cursor"): an MCP call as Cursor 2026.11.13 announces it, a tool_call titled
 //             "MCP: tool" with no input, then a tool_call_update titled `agentrun: <tool>` whose rawInput is
 //             {providerIdentifier, toolName, args}; its permission request is titled `agentrun-<tool>: <tool>`;
+//   lateTitle: with announce "late", that update's title instead (a release that words it otherwise);
 //   models: the models session/new and session/load list ({modelId, name}), the first current; session/set_model
 //           takes one of them and refuses any other;
 //   writeAuth: at session/new and session/load, write $HOME/.config/cursor/auth.json holding the sha256 of the
@@ -280,7 +281,7 @@ async function takeTurn(client, session, prompt, signal) {
       if (late) {
         // Cursor 2026.11.13: the call is announced with no name, then named by an update, then asked about by its own title.
         await notify({ sessionUpdate: "tool_call", toolCallId: id, title: "MCP: tool", kind: "other", status: "pending", rawInput: {} });
-        await notify({ sessionUpdate: "tool_call_update", toolCallId: id, title: `agentrun: ${s.call}`, rawInput: { providerIdentifier: "agentrun", toolName: s.call, args } });
+        await notify({ sessionUpdate: "tool_call_update", toolCallId: id, title: config.lateTitle ?? `agentrun: ${s.call}`, rawInput: { providerIdentifier: "agentrun", toolName: s.call, args } });
         await notify({ sessionUpdate: "tool_call_update", toolCallId: id, status: "in_progress" });
       } else await notify({ sessionUpdate: "tool_call", ...update });
       if (askMcp && !alwaysAllowed.has(`agentrun__${s.call}`) && !(await permitted(client, session, late ? { toolCallId: id, title: titleOf(s.call), kind: "other", status: "pending" } : update))) {

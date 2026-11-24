@@ -38,6 +38,12 @@ test('its CLI config denies every Write and allows nothing: Cursor makes no file
   assert.equal(config.approvalMode, 'allowlist');
 });
 
+test("its title tie is declared: Cursor's allowlist with allow: [] asks for every MCP call, so its request for one of our announced calls is answered allow_once; it writes no allowFile", () => {
+  const file = recipeFile('cursor');
+  assert.deepEqual(file.quirks, { permissionTie: 'title' });
+  assert.equal(file.allowFile, undefined);
+});
+
 test('the credential Cursor derives from its key is named, so its HOME goes when its process ends', () => {
   assert.deepEqual(recipeFile('cursor').credentials, ['.config/cursor/auth.json']);
 });

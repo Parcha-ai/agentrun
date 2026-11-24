@@ -6,26 +6,29 @@ import { CallIds, ourTool } from '../dist/calls.js';
 
 const TOOLS = new Set(['look_up', 'check_echo', 'lookup']);
 
-test("ourTool ties each agent's title for our tool: `agentrun__<tool>`, `agentrun-<tool>: <tool>`, and Goose 1.59.2's `agentrun: <tool with spaces>`", () => {
-  assert.equal(ourTool({ title: 'agentrun: look up', kind: 'other' }, TOOLS), 'look_up');
-  assert.equal(ourTool({ title: 'agentrun: check echo' }, TOOLS), 'check_echo');
-  assert.equal(ourTool({ title: 'agentrun: lookup', kind: 'other' }, TOOLS), 'lookup');
+test("ourTool reads a name, `agentrun__<tool>`, and Cursor's own title, `agentrun-<tool>: <tool>`; nothing else", () => {
   assert.equal(ourTool({ title: 'agentrun__look_up' }, TOOLS), 'look_up');
+  assert.equal(ourTool({ name: 'agentrun__check_echo' }, TOOLS), 'check_echo');
   assert.equal(ourTool({ title: 'agentrun-look_up: look_up' }, TOOLS), 'look_up');
-  // Goose 1.59.2 writes a summary of the call's arguments (a path) after the title: `agentrun: write · proof.txt`.
-  assert.equal(ourTool({ title: 'agentrun: look up · proof.txt', kind: 'other' }, TOOLS), 'look_up');
-  assert.equal(ourTool({ title: 'agentrun: check echo · a · b' }, TOOLS), 'check_echo', 'cut at the first');
+  assert.equal(ourTool({ title: 'agentrun-lookup: lookup', kind: 'other' }, TOOLS), 'lookup');
+});
+
+test("ourTool no longer reads Goose 1.59.2's titles (`agentrun: <tool with spaces>`, ` · <summary>`): those calls are matched by their arguments, and Goose asks nothing for them", () => {
+  // Before: each of these was read as our tool, and its permission request answered allow_once on the title.
+  for (const title of ['agentrun: look up', 'agentrun: check echo', 'agentrun: lookup', 'agentrun: look up · proof.txt', 'agentrun: check echo · a · b', 'agentrun__look_up · proof.txt']) {
+    assert.equal(ourTool({ title, kind: 'other' }, TOOLS), undefined, title);
+  }
 });
 
 test("ourTool leaves another server's tool named like ours, and a call with effects of its own, as the agent's own", () => {
-  for (const title of ['github: look up', 'agentrun-github: look up', 'agentrun github: look up', 'Agentrun: look up', 'agentrun: Look Up', 'agentrun: look  up', 'agentrun: look up now', 'xagentrun: look up', 'agentrun: look_up_', 'agentrun:look up', 'agentrun: look up now · x', 'agentrun: look up·x', ' · agentrun: look up', 'github: look up · proof.txt']) {
+  for (const title of ['github: look up', 'agentrun-github: look up', 'agentrun github: look up', 'Agentrun: look up', 'agentrun: Look Up', 'agentrun: look  up', 'agentrun: look up now', 'xagentrun: look up', 'agentrun: look_up_', 'agentrun:look up', 'agentrun: look up now · x', 'agentrun: look up·x', ' · agentrun: look up', 'github: look up · proof.txt', 'agentrun-look_up: look up']) {
     assert.equal(ourTool({ title, kind: 'other' }, TOOLS), undefined, title);
   }
   for (const kind of ['execute', 'edit', 'delete', 'move', 'fetch']) {
-    assert.equal(ourTool({ title: 'agentrun: look up', kind }, TOOLS), undefined, kind);
-    assert.equal(ourTool({ title: 'agentrun: look up · proof.txt', kind }, TOOLS), undefined, `${kind}, with a summary`);
+    assert.equal(ourTool({ title: 'agentrun__look_up', kind }, TOOLS), undefined, kind);
+    assert.equal(ourTool({ title: 'agentrun-look_up: look_up', kind }, TOOLS), undefined, `${kind}, Cursor's form`);
   }
-  assert.equal(ourTool({ title: 'agentrun: drop tables', kind: 'other' }, TOOLS), undefined, 'a tool that is not ours, under our server name');
+  assert.equal(ourTool({ title: 'agentrun__drop_tables', kind: 'other' }, TOOLS), undefined, 'a tool that is not ours, under our server name');
 });
 
 test('two parallel calls whose announcements come in reverse order each get their own id', async () => {
