@@ -114,31 +114,8 @@ line read, and the read's state. A file replaced or truncated since is read from
 newline yet is read but not consumed. A source that keeps many sessions in one file (a SQLite database) implements
 `discover` and `read` itself and returns one locator per session, with its `id`.
 
-With `turns: false`, `totals: true` asks for only what `parseHome` totals: each session read then has `counts` set and
-`requests` empty. Only a `lineReader` whose source sets `totals: true` (one that sets no turn's model, usage or time after
-adding it) reads so; Claude Code's, Codex's and pi's do. Any other reader ignores the option, and its sessions have
-`requests` whole and no `counts`. `Counts` holds the requests in typed arrays, in order:
-
-- `n`: the number of requests.
-- `models`: each model name once; `model[i]` is request `i`'s index into it, or -1 for none named.
-- `values`: seven numbers a request, from `i * 7`: input, output, cacheRead, cacheWrite, cacheWrite1h and reasoning
-  tokens, then the request's time (the `at` a read of turns gives it, in ms since the epoch).
-- `has[i]`: which usage request `i` has, as bits: 1 its usage at all, 2 cacheWrite1h, 4 reasoning.
-
-`atOf(counts, i)` reads request `i`'s time:
-
-```ts
-import { atOf, READERS } from "@parcha/agentrun-import";
-
-const reader = READERS["claude-code"];
-for (const locator of await reader.discover(home)) {
-  const { sessions } = await reader.read(locator, undefined, { turns: false, totals: true });
-  for (const read of sessions) {
-    if (!read.counts) continue; // a reader with no totals read: read.requests holds its requests whole
-    for (let i = 0; i < read.counts.n; i++) console.log(read.session.id, new Date(atOf(read.counts, i)).toISOString());
-  }
-}
-```
+`totals: true` with `turns: false` gives `counts` (the package's packed form, for parseHome) and empty `requests`; a
+reader without one ignores it.
 
 `readSession(locator, source)`, `sessionLocators(home, source)`, `inOrder(locators, source)` and
 `childrenOf(home, source)` are what serve's import reads through.

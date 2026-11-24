@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import { appendFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
+import { atOf } from "../dist/counts.js";
 import * as importLib from "../dist/index.js";
 import { lineReader, parseHome, READERS } from "../dist/index.js";
 import { anthropicUsage, at, claudeAnswer, claudeFile, claudeUser, codexAnswer, codexContext, codexFile, codexMeta, codexTokens, codexUser, jsonl, openaiUsage, piAnswer, piFile, piMeta, piUser, tempHome, writeJsonl } from "./fixtures.mjs";
@@ -186,7 +187,11 @@ test("a source of the caller's own that asks for no totals read is totalled from
 
 // Each request's time, as a turns read gives it (its first record's, else the latest before it, else 0): a totals
 // read's counts carry it too, for what buckets requests by time.
-const timesOf = ({ counts, requests }) => (counts ? Array.from({ length: counts.n }, (_, i) => importLib.atOf(counts, i)) : requests.map((request) => request.at));
+const timesOf = ({ counts, requests }) => (counts ? Array.from({ length: counts.n }, (_, i) => atOf(counts, i)) : requests.map((request) => request.at));
+
+test("Counts' layout is the package's own: the index exports the type, not atOf", () => {
+  assert.equal("atOf" in importLib, false);
+});
 const time = (i) => Date.parse(at(i));
 const untimed = ({ timestamp: _time, ...record }) => record;
 const item = (i, payload) => ({ type: "response_item", timestamp: at(i), payload });
