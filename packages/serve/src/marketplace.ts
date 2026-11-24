@@ -150,7 +150,8 @@ export function hereOf(entry: Pick<MarketplaceTemplate, "name" | "source">, pack
 type Read = { templates: MarketplaceTemplate[]; at: number };
 
 /** The marketplace's list as this server reads it: on demand, kept MARKETPLACE_TTL_MS, one read at a time however many
- *  ask, and the last good list kept through a failed read. `fetchImpl` and `now` are a test's seams. */
+ *  ask, and the last good list kept through a failed read. `fetchImpl`, `now` and `deadlineMs` (the read's time limit,
+ *  MARKETPLACE_LIMITS.ms unless said) are a test's seams. */
 export class Marketplace {
   readonly url: string | null;
   #fetch: typeof fetch;
@@ -158,11 +159,13 @@ export class Marketplace {
   #held: Read | undefined;
   #failed: { at: number; problem: string } | undefined;
   #reading: Promise<Read> | undefined;
+  #deadlineMs: number;
 
-  constructor(url: string | null, options: { fetchImpl?: typeof fetch; now?: () => number } = {}) {
+  constructor(url: string | null, options: { fetchImpl?: typeof fetch; now?: () => number; deadlineMs?: number } = {}) {
     this.url = url;
     this.#fetch = options.fetchImpl ?? fetch;
     this.#now = options.now ?? Date.now;
+    this.#deadlineMs = options.deadlineMs ?? MARKETPLACE_LIMITS.ms;
   }
 
   async list(): Promise<Omit<MarketplaceAnswer, "templates"> & { templates: MarketplaceTemplate[] }> {
@@ -187,12 +190,13 @@ export class Marketplace {
 
   async #read(): Promise<Read> {
     const at = `${this.url}/search.json`;
-    const signal = AbortSignal.timeout(MARKETPLACE_LIMITS.ms);
+    // One deadline for the whole read: the answer's headers and every byte of its body.
+    const signal = AbortSignal.timeout(this.#deadlineMs);
     let res: Response;
     try {
       res = await this.#fetch(at, { redirect: "manual", signal, headers: { accept: "application/json", "user-agent": "agentrun-serve" } });
     } catch (error) {
-      throw new Error(signal.aborted ? `The marketplace (${this.url}) did not answer in ${MARKETPLACE_LIMITS.ms / 1000} s.` : `The marketplace (${this.url}) could not be reached: ${(error as Error).message}.`);
+      throw new Error(signal.aborted ? `The marketplace (${this.url}) did not answer in ${this.#deadlineMs / 1000} s.` : `The marketplace (${this.url}) could not be reached: ${(error as Error).message}.`);
     }
     if (res.status >= 300 && res.status < 400) {
       await res.body?.cancel();
@@ -216,7 +220,7 @@ export class Marketplace {
         chunks.push(chunk);
       }
     } catch (error) {
-      throw signal.aborted ? new Error(`The marketplace (${this.url}) did not finish its list in ${MARKETPLACE_LIMITS.ms / 1000} s.`) : error;
+      throw signal.aborted ? new Error(`The marketplace (${this.url}) did not finish its list in ${this.#deadlineMs / 1000} s.`) : error;
     }
     let json: unknown;
     try {

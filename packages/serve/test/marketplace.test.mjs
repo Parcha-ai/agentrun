@@ -120,6 +120,35 @@ test("a read refuses a redirect, an answer over its bytes, and one that is not J
   assert.match(await once(new Response("<html>", { status: 200 })), /not JSON/);
 });
 
+test("a read that never answers, or answers and then stalls, ends at the deadline (unreachable, or stale over the last good list) and is tried again after a minute", { timeout: 10_000 }, async () => {
+  // The timeout: a read with no deadline would wait on these servers for ever, so the test fails rather than hangs.
+  let clock = Date.parse("2026-11-24T00:00:00Z");
+  // A server that never sends its headers: the fetch ends only when the read's signal does, as a real one would.
+  const silent = (_url, init) => new Promise((_, reject) => init.signal.addEventListener("abort", () => reject(init.signal.reason), { once: true }));
+  // A server that sends its headers and one chunk, then nothing: the body errors when the signal aborts, as a real one's does.
+  const stalled = (_url, init) => Promise.resolve(new Response(new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode("[")); init.signal.addEventListener("abort", () => c.error(init.signal.reason), { once: true }); } }), { status: 200 }));
+  let fetchImpl = silent;
+  const market = new Marketplace(SITE, { now: () => clock, deadlineMs: 50, fetchImpl: (url, init) => fetchImpl(url, init) });
+
+  const silentRead = await market.list();
+  assert.deepEqual([silentRead.state, silentRead.templates], ["unreachable", []]);
+  assert.match(silentRead.problem, /did not answer in 0\.05 s/);
+
+  clock += MARKETPLACE_RETRY_MS;
+  fetchImpl = async () => new Response(JSON.stringify(LIST), { status: 200 });
+  assert.equal((await market.list()).state, "read", "tried again after a minute, and read");
+
+  clock += MARKETPLACE_TTL_MS;
+  fetchImpl = stalled;
+  const stalledRead = await market.list();
+  assert.deepEqual([stalledRead.state, stalledRead.templates.length], ["stale", LIST.length], "the last good list is kept");
+  assert.match(stalledRead.problem, /did not finish its list in 0\.05 s/);
+
+  clock += MARKETPLACE_RETRY_MS;
+  fetchImpl = async () => new Response(JSON.stringify([LIST[0]]), { status: 200 });
+  assert.equal((await market.list()).templates.length, 1, "and tried again after a minute");
+});
+
 test("GET /v2/templates/marketplace answers the marketplace's list with the package here that each is, read once for callers within 5 minutes; off and unreachable answer 200 with an empty list", { timeout: 60_000 }, async (t) => {
   let answer = () => ({});
   const market = await fakeMarketplace(t, () => answer());
