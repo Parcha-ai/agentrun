@@ -162,7 +162,7 @@ Two clients call the same API from code, with the same server and token. `@parch
 - `agentrun template`: apply, delete, eval, get, import, install, list, validate
 - `agentrun tool-keys`: list
 - `agentrun tool-settings`: get, save
-- `agentrun triggers`: create, delete, fire, firings, get, list, update
+- `agentrun triggers`: create, delete, fire, firings, get, list, release-firing, update
 - `agentrun usage`: Usage by meter over a period
 - `agentrun webhook`: delete, deliveries, get, redeliver, save, test
 - `agentrun workflows`: validate

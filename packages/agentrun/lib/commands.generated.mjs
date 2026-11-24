@@ -4706,6 +4706,38 @@ export const COMMANDS = [
   {
     "command": [
       "triggers",
+      "release-firing"
+    ],
+    "operationId": "releaseTriggerFiring",
+    "method": "POST",
+    "path": "/triggers/{trigger_id}/firings/{firing_id}/release",
+    "pathParams": [
+      "trigger_id",
+      "firing_id"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [
+      {
+        "name": "error",
+        "type": "string",
+        "required": true,
+        "description": "Why the host starts no run for the firing, in plain words: a failure's code or reason, never a person's data or a key."
+      }
+    ],
+    "hasBody": true,
+    "bodyRequired": true,
+    "bodyTypes": [
+      "application/json"
+    ],
+    "secretBody": false,
+    "raw": false,
+    "summary": "The launch hook's host releases a firing it took and will start no run for"
+  },
+  {
+    "command": [
+      "triggers",
       "update"
     ],
     "operationId": "updateTrigger",

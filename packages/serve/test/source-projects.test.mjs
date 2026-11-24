@@ -9,7 +9,7 @@ import { sourceSnapshotDigest } from "../dist/native/source-snapshot-types.js";
 import { commitSourceSnapshot } from "../dist/source-sync/snapshots.js";
 import { projectPlacement, verifySourceProject } from "../dist/source-sync/projects.js";
 import { beginSourceIO, requireSourceIOIdle } from "../dist/source-sync/io.js";
-import { openSqliteStore } from "../dist/store/index.js";
+import { FiringMoved, openSqliteStore } from "../dist/store/index.js";
 import { withHeldFiles } from "../dist/runs-over-store.js";
 import { FakeArchilDisk } from "./fixtures/archil-fake.mjs";
 
@@ -207,4 +207,19 @@ test('already placed uploads never dispatch another local copy', async t => {
   f.options.placeUploads = async () => assert.fail('an upload is copied only once');
   const placed = await projectPlacement(f.options).place(f.given);
   assert.deepEqual(placed.launch.sourceProject.inputs, ['inputs/upload.csv']);
+});
+
+test("a project agent's trigger_firing start that loses to its firing's release undoes its placement and settles its hold: nothing is kept for a run that never exists", async t => {
+  const f = await setup(t, 'local');
+  const dir = await mkdtemp(join(tmpdir(), 'project-firing-moved-'));
+  const store = await openSqliteStore({ file: join(dir, 'store.sqlite'), role: 'server' });
+  t.after(async () => { await store.close(); await rm(dir, { recursive: true, force: true }); });
+  await store.agents.create({ id: f.given.agentId, name: 'Fixture' }, f.given.revision);
+  f.options.hold = ({ agentId }) => beginSourceIO(store, agentId, 'placement');
+  // The run's write finds the firing released meanwhile (store.runs.create `firing`): refused, and nothing written.
+  const moved = new FiringMoved('trg_fixture', `fir_${'0'.repeat(32)}`);
+  await assert.rejects(withHeldFiles(store, { project: projectPlacement(f.options) }, f.given.runId, f.given.agentId, f.given.revision, f.given.launch, async () => { throw moved; }), actual => actual === moved);
+  assert.equal(await store.runs.get(f.given.runId), undefined);
+  assert.equal(f.state.undone, 1, 'the placement is undone');
+  await requireSourceIOIdle(store, f.given.agentId);
 });

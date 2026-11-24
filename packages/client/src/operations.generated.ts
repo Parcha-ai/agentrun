@@ -6620,6 +6620,29 @@ export type ListTriggersResponse = {
   }>;
 };
 
+/** The launch hook's host releases a firing it took and will start no run for (POST /triggers/{trigger_id}/firings/{firing_id}/release). */
+export type ReleaseTriggerFiringBody = {
+  error: string;
+};
+export type ReleaseTriggerFiringResponse = {
+  key: string;
+  by: "schedule" | "email" | "feed" | "manual" | "webhook" | "github" | "composio";
+  nominal_at: string;
+  status: "due" | "started" | "sent" | "skipped" | "failed" | "missed";
+  at: string;
+  run_id: string | null;
+  reason: string | null;
+  error: {
+    code: string;
+    message: string;
+  } | null;
+  count?: number;
+  attempts?: number;
+  retry_at?: string;
+  start_by?: string;
+  catch_up?: true;
+};
+
 /** A webhook trigger's new secret, shown once; the old one signs nothing from now on (POST /triggers/{trigger_id}/secret). Its body's string values are secrets: each copy is cut from the answer, and a refusal keeps only its code. */
 export type RotateTriggerSecretResponse = {
   secret: SecretMeta;
@@ -7312,6 +7335,7 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   listTriggerFirings: {"method":"GET","path":"/triggers/{trigger_id}/firings","pathParams":["trigger_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getTrigger: {"method":"GET","path":"/triggers/{trigger_id}","pathParams":["trigger_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   listTriggers: {"method":"GET","path":"/triggers","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  releaseTriggerFiring: {"method":"POST","path":"/triggers/{trigger_id}/firings/{firing_id}/release","pathParams":["trigger_id","firing_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   rotateTriggerSecret: {"method":"POST","path":"/triggers/{trigger_id}/secret","pathParams":["trigger_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":true,"publicFields":[],"tagged":false},
   updateTrigger: {"method":"PATCH","path":"/triggers/{trigger_id}","pathParams":["trigger_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getUsage: {"method":"GET","path":"/usage","pathParams":[],"multiSegment":[],"query":["from","to","group_by"],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
@@ -7744,6 +7768,8 @@ export function resources(call: Call) {
       get: (triggerId: string, options?: RequestOptions): Promise<GetTriggerResponse> => call("getTrigger", [triggerId], undefined, undefined, options),
       /** The triggers: schedules and signed webhooks that start an agent's capped runs or message a run (GET /triggers). */
       list: (options?: RequestOptions): Promise<ListTriggersResponse> => call("listTriggers", [], undefined, undefined, options),
+      /** The launch hook's host releases a firing it took and will start no run for (POST /triggers/{trigger_id}/firings/{firing_id}/release). */
+      releaseFiring: (triggerId: string, firingId: string, body: ReleaseTriggerFiringBody, options?: RequestOptions): Promise<ReleaseTriggerFiringResponse> => call("releaseTriggerFiring", [triggerId, firingId], body, undefined, options),
       /** A webhook trigger's new secret, shown once; the old one signs nothing from now on (POST /triggers/{trigger_id}/secret). */
       rotateSecret: (triggerId: string, options?: RequestOptions): Promise<RotateTriggerSecretResponse> => call("rotateTriggerSecret", [triggerId], undefined, undefined, options),
       /** Change a trigger, or turn it off and on (PATCH /triggers/{trigger_id}). */
