@@ -66,11 +66,12 @@ const { answer, receipt } = await web.search("widgets delaware", { n: 5, task: "
 - The decider only asks: it gives one score per item, `p(needed)`, or null where the provider refused the question. The
   step decides what the model reads: an item is dropped when `1 - p(needed) >= THRESHOLD` (0.8). A refused question
   keeps its item.
-- `policy` (WebConfig) says how a search's results reach the model: `"drop"`, the default, as above; or
-  `"rerank+label"`, which keeps every result, the most relevant first (ties in the provider's order, a refused one last),
-  each labelled `"relevance": 0.82` (its score to two places; none where refused). Its `sift` reads `"jev ordered 10
-  results by relevance, how likely each holds what the search asks for (0 to 1)"`, and adds `; nothing here looks
-  relevant to "<query>"; consider rephrasing` when no result reaches `LOW_RELEVANCE` (0.3). A search is ranked before
+- `policy` (WebConfig) says how a search's results reach the model: `"drop"`, the default, as above; `"label"`, which
+  keeps every result in the provider's order, each labelled `"relevance": 0.82` (its score to two places; none where
+  refused); or `"rerank+label"`, which labels them too and puts the most relevant first (ties in the provider's order, a
+  refused one last). The `sift` reads `"jev labelled 10 results with their relevance, how likely each holds what the
+  search asks for (0 to 1)"` (`"jev ordered 10 results by relevance, ..."` under rerank+label), and adds `; nothing here
+  looks relevant to "<query>"; consider rephrasing` when no result reaches `LOW_RELEVANCE` (0.3). A search is ranked before
   it is fitted, so the fit leaves out the least relevant. The decider is asked the same request under either policy;
   a fetched part is judged as drop judges it.
 - `fetch(url, { lookingFor })` (the tool's `looking_for`) says what the agent is looking for in the page. The decider
