@@ -1,6 +1,6 @@
 # @parcha/agentrun-import
 
-Reads the coding-agent sessions under a home (Claude Code, Codex, pi) into one Session shape: normalized token usage,
+Reads the coding-agent sessions under a home (Claude Code, Codex, Gemini CLI, pi) into one Session shape: normalized token usage,
 subagents counted under their parent, and byte-offset cursors so a second pass reads only what was appended. AgentRun's
 server imports past sessions through it.
 
@@ -26,7 +26,7 @@ const sessions = await parseHome(homedir(), { sources: ["claude-code", "codex"] 
   answer; a file that fails to read gives up what it held and is read from its start next time.
 - `failures: []` collects each file its reader could not read (`{ key, file, source, error }`) while the rest are
   totalled; without it, parseHome throws `ReadFailures`. An unreadable file is never taken for an empty one.
-- `env` names where a source keeps its own directory (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`); without it the home's.
+- `env` names where a source keeps its own directory (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `GEMINI_CLI_HOME`); without it the home's.
 
 ## A year of work
 
@@ -47,7 +47,7 @@ built on: each session's totals and its requests, as they are totalled.
 ## Known answer
 
 ```sh
-node dist/cli.js <home> [--sources claude-code,codex,pi] --known-answer
+node dist/cli.js <home> [--sources claude-code,codex,gemini,pi] --known-answer
 ```
 
 One JSONL line per session, sorted by key: `{key, source, tokens: {input, output, cacheRead, cacheWrite, cacheWrite1h},
@@ -60,12 +60,13 @@ CLI as it is; the library loads it only to price.
 
 ## Usage
 
-`normalizeUsage(format, raw)` reads one request's usage as `"anthropic"`, `"openai"` or `"pi"` writes it:
+`normalizeUsage(format, raw)` reads one request's usage as `"anthropic"`, `"openai"`, `"gemini"` or `"pi"` writes it:
 
 | Source | `input` | `cacheWrite1h` | `reasoning` |
 | --- | --- | --- | --- |
 | Anthropic | `input_tokens` (already excludes the cache) | `cache_creation.ephemeral_1h_input_tokens` | |
 | OpenAI, Codex | `input_tokens - cached_input_tokens` | | `reasoning_output_tokens` (part of `output`) |
+| Gemini CLI | `input - cached` (`promptTokenCount` holds the cached tokens), plus `tool` | | `thoughts` (added to `output`, which Gemini bills them as) |
 | pi | `input` | `cacheWrite1h` | |
 
 A Claude Code session's id is its file's name (`<id>.jsonl`): a resumed session's file is its own session, and a
@@ -73,6 +74,12 @@ record copied into it from an earlier file counts only in that file; a file hold
 Codex sessions sum each request's `last_token_usage`, never `total_token_usage`. Claude Code writes one line per content
 block of a response, each with the response's usage: a request (`message.id`, `requestId`) counts once, at its last
 line's usage.
+Gemini CLI sessions are `~/.gemini/tmp/<project>/chats/session-*.jsonl` (`GEMINI_CLI_HOME` moves the home), and the older
+whole-file `session-*.json`. A message is written again each time it changes, so a request (a `gemini` message with
+`tokens`) counts once, as the file ends: its last record, less any `$rewindTo`. The CLI migrates a `.json` into a `.jsonl`
+on resume, keeping the message ids, so the same request in both files counts once. A subagent's file
+(`chats/<parent session id>/<id>.jsonl`) counts under its parent. Turns carry user and assistant text and tool calls; tool
+results and thoughts are not read. serve has no Gemini harness: an import from Gemini runs as pi does.
 
 ## Readers
 

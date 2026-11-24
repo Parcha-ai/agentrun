@@ -3,11 +3,13 @@
 import type { Reader } from "../reader.js";
 import { claudeCode } from "./claude-code.js";
 import { codex } from "./codex.js";
+import { gemini } from "./gemini.js";
 import { pi } from "./pi.js";
 
 export const READERS = {
   "claude-code": claudeCode,
   codex,
+  gemini,
   pi,
 } as const satisfies Record<string, Reader<string, any>>;
 

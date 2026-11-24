@@ -4145,7 +4145,7 @@ cost reads that estimate, as an estimate: the run (`cost.usd`, basis `estimate`)
 analytics, and `GET /usage`. A session on a model the catalog does not price stays unknown.
 
 - `--dry-run` lists what it would import and writes nothing.
-- `--from claude-code,codex,pi` picks the sources.
+- `--from claude-code,codex,gemini,pi` picks the sources.
 - `--include-deleted` also imports the sessions of project folders that no longer exist, such as a git worktree you
   deleted. Each such folder is still its own agent, with no instructions or skills to read.
 - `--all` keeps those too, as well as sessions of temporary folders and sessions with no message of yours.

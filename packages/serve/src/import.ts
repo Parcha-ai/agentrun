@@ -14,7 +14,7 @@ import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { AssistantEntry, ROOT_CONVERSATION_ID, type StorageWrite, ToolResultEntry, UserEntry } from "@earendil-works/pi-durable";
 import { type EntryLike, REQUEST_COST, type RunMetrics, runMetricsOf } from "./timeline/index.js";
 import { defaultData } from "./files.js";
-import { childrenOf, HARNESS_OF, inOrder, type Locator, locatorKey, locatorOf, mostEffortOf, priceRequests, readSession, type Session, SOURCE_NAMES, SOURCES, type Source, sessionLocators, type Turn } from "@parcha/agentrun-import";
+import { childrenOf, geminiCwd, geminiSessionId, HARNESS_OF, inOrder, type Locator, locatorKey, locatorOf, mostEffortOf, priceRequests, readSession, type Session, SOURCE_NAMES, SOURCES, type Source, sessionLocators, type Turn } from "@parcha/agentrun-import";
 import { type Found, hoursOf, type OpenAt, summaryLines } from "./import-summary.js";
 import { stopOnce } from "./stop-signals.js";
 import { catalogPrices, type Listed, providerModels } from "./model.js";
@@ -123,12 +123,16 @@ async function remoteHistoryMetadata(file: string, source: Source): Promise<{id:
   // Claude Code's id is its file's name (<id>.jsonl), as readSession reads it; the others' come from a record.
   let id:string|undefined=source==='claude-code'?basename(file,'.jsonl'):undefined,cwd:string|undefined,child=false;
   const str=(value:unknown):string|undefined=>typeof value==='string' && value!==''?value:undefined;
+  // Gemini CLI's project is not in a record: it is the path its project directory records (the reader's own rule).
+  if(source==='gemini')cwd=await geminiCwd(file);
   const metadataOf = (parts: Buffer[]): void => {
     try {
       const row = JSON.parse(Buffer.concat(parts).toString('utf8'));
       if(!row || typeof row!=='object' || Array.isArray(row))return;
       if(source==='claude-code'){
         cwd??=str(row.cwd);child ||= row.isSidechain===true;
+      }else if(source==='gemini'){
+        if(str(row.sessionId))id??=geminiSessionId(file,str(row.sessionId));child ||= row.kind==='subagent';
       }else if(source==='pi'){
         if(row.type==='session'){id=str(row.id)??id;cwd=str(row.cwd)??cwd;}
       }else if(row.type==='session_meta'){
@@ -148,7 +152,7 @@ async function remoteHistoryMetadata(file: string, source: Source): Promise<{id:
       if (!bytesRead) {
         metadataOf(parts);
         // readSession uses the file name only when no source record supplied an id. That is known only at EOF.
-        id??=basename(file,'.jsonl');
+        id??=source==='gemini'?geminiSessionId(file):basename(file,'.jsonl');
         return metadata();
       }
       position += bytesRead;
@@ -436,9 +440,30 @@ export async function planImport({ home, sources = SOURCES, all = false, deleted
   // Each listed session's place in the import's order (inOrder).
   const rank = new Map<Session, number>();
   const temps = [...new Set([tempDir, await realpath(tempDir).catch(() => tempDir)])];
+  // Whether a session's project is one the import leaves out (a temp folder, a deleted one), said in the left-out list.
+  // Only --all brings those in. The session's project is `session.cwd`.
+  const outsideProject = async (session: Session, file: string, source: Source): Promise<boolean> => {
+    const cwd = session.cwd;
+    if (all || !cwd) return false;
+    // A temp folder first, gone or not: only --all brings it in, as the left-out line says.
+    if (temps.some((temp) => cwd === temp || cwd.startsWith(temp + sep))) {
+      leave({ what: file, why: `its project ${cwd} is a temp directory`, kind: "temp", session: `${source}:${session.id}` }, source, cwd);
+      return true;
+    }
+    const there = await lstat(cwd).catch(() => null);
+    if (!there?.isDirectory() && !deleted) {
+      leave({ what: file, why: `its project ${cwd} is gone`, kind: "gone", session: `${source}:${session.id}` }, source, cwd);
+      return true;
+    }
+    return false;
+  };
   for (const source of sources) {
+    // Every session file the source lists, kept or left out: a subagent whose owner is none of them ran under a session
+    // that is gone.
+    const listed = new Set<string>();
     for (const { locator, stats } of await inOrder(await sessionLocators(home, source), source)) {
       const { file } = locator;
+      listed.add(locatorKey(locator));
       if (signal?.aborted) {
         stopped = true;
         break;
@@ -473,22 +498,13 @@ export async function planImport({ home, sources = SOURCES, all = false, deleted
         continue;
       }
       if (!all && session.users === 0 && !session.child) {
-        leave({ what: file, why: "no message of the person's", kind: "no-words", session: `${source}:${session.id}` }, source, session.cwd);
+        // A legacy file whose migrated copy is beside it reads as only copies: that is what it is, not an empty session.
+        if (session.copies > 0) leave({ what: file, why: "holds only records of sessions imported already", kind: "copies", session: `${source}:${session.id}` }, source, session.cwd);
+        else leave({ what: file, why: "no message of the person's", kind: "no-words", session: `${source}:${session.id}` }, source, session.cwd);
         continue;
       }
       const cwd = session.cwd;
-      if (!all) {
-        // A temp folder first, gone or not: only --all brings it in, as the left-out line says.
-        if (temps.some((temp) => cwd === temp || cwd.startsWith(temp + sep))) {
-          leave({ what: file, why: `its project ${cwd} is a temp directory`, kind: "temp", session: `${source}:${session.id}` }, source, cwd);
-          continue;
-        }
-        const there = await lstat(cwd).catch(() => null);
-        if (!there?.isDirectory() && !deleted) {
-          leave({ what: file, why: `its project ${cwd} is gone`, kind: "gone", session: `${source}:${session.id}` }, source, cwd);
-          continue;
-        }
-      }
+      if (await outsideProject(session, file, source)) continue;
       if (session.child) {
         untied.push({ locator, source });
         continue;
@@ -507,7 +523,29 @@ export async function planImport({ home, sources = SOURCES, all = false, deleted
       rank.set(session, rank.size);
       project.sessions.push(session);
     }
-    for (const { locator, of } of await childrenOf(home, source)) child(locatorKey(of), locator);
+    // A subagent whose session's file is gone (Claude Code's folder or Gemini's with no file beside it) is untied: it counts
+    // in the totals alone, as a Codex thread naming no parent does.
+    for (const { locator, of } of await childrenOf(home, source)) {
+      if (listed.has(locatorKey(of))) {
+        child(locatorKey(of), locator);
+        continue;
+      }
+      // Its project is checked as any session's is: one in a temp folder or a deleted one stays out of the default totals.
+      const orphanStats = await stat(locator.file).catch(() => null);
+      if (!orphanStats) continue;
+      if (orphanStats.size > MAX_SESSION_BYTES) {
+        leave({ what: locator.file, why: `over ${MAX_SESSION_BYTES} bytes`, kind: "large" }, source);
+        continue;
+      }
+      const orphan = await readSession(locator, source, { turns: false }).catch((error: unknown) => leave(unread(locator.file, error), source));
+      if (!orphan) continue;
+      if (!orphan.cwd) {
+        leave({ what: locator.file, why: "no project directory in it", kind: "no-project" }, source);
+        continue;
+      }
+      if (await outsideProject(orphan, locator.file, source)) continue;
+      untied.push({ locator, source });
+    }
   }
   ownRuns(projects, rank);
   // The owner's choice, once each session has its one project: a project not chosen is no part of the plan.
