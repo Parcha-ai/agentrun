@@ -1,7 +1,7 @@
 // Any Agent Client Protocol agent as an AgentRun harness. Written for AgentRun.
 export { acpAdapter, type AcpAdapterOptions, type AcpProxy, type AcpProxySession } from "./adapter.js";
 export { ACP_CODES, acpFacts, type AcpFacts } from "./facts.js";
-export { allowFileText, homePath, MODEL_ID, recipeProblems, RESERVED_ENV, type AcpAllowFile, type AcpAllowForm, type AcpBilling, type AcpRecipe, type AcpRefusal } from "./recipe.js";
+export { ALLOW_FILE_FORMS, allowFileText, homePath, MODEL_ID, recipeProblems, RESERVED_ENV, type AcpAllowFile, type AcpAllowForm, type AcpBilling, type AcpRecipe, type AcpRefusal } from "./recipe.js";
 export { CALL_STREAM, contextNote, MODEL_STREAM, PERMISSION_STREAM, PROMPT_STREAM, REASK_LIMIT, SESSION_STREAM, sentSubmissions, TOOLS_STREAM } from "./harness.js";
 export { STATE_BUDGET, STATE_STREAM, stateBudgetPassed, stateFiles, type StateRecord } from "./state.js";
 export type { ConfineChild } from "./host/child.js";

@@ -75,7 +75,8 @@ export function acpRecipeFor(recipe: Recipe, binary: string, release: RecipeArch
     state: [...recipe.state],
     declares: { ...recipe.declares },
     billing: recipe.model.billing === "proxy" ? { kind: "proxy" } : { kind: "plan", maxTurns: recipe.model.maxTurns, maxToolCalls: recipe.model.maxToolCalls },
-    ...(recipe.quirks.mcpCall ? { quirks: { mcpCall: recipe.quirks.mcpCall } } : {}),
+    ...(recipe.allowFile ? { allowFile: { path: recipe.allowFile.path, form: recipe.allowFile.form as NonNullable<AcpRecipe["allowFile"]>["form"] } } : {}),
+    ...(recipe.quirks.mcpCall || recipe.quirks.permissionTie ? { quirks: { ...(recipe.quirks.mcpCall ? { mcpCall: recipe.quirks.mcpCall } : {}), ...(recipe.quirks.permissionTie ? { permissionTie: recipe.quirks.permissionTie } : {}) } } : {}),
   };
 }
 

@@ -8,8 +8,9 @@
 //     provider sees only the turns' Messages requests; anything it reaches for beyond loopback goes to the check's own
 //     proxy, which refuses and lists it).
 //   Stage 3, live: the agent is killed (SIGKILL) after a turn and the next turn resumes it (its own session/load, or a
-//     fresh session told the conversation), a denied call never runs, one of our tools runs over MCP, and another runner
-//     with its own directory picks the session up from the records.
+//     fresh session told the conversation), a denied call never runs, one of our tools runs over MCP without the agent
+//     asking permission for it (unless its recipe declares the title tie), and another runner with its own directory
+//     picks the session up from the records.
 // It prints the three facts a harness row carries: resume (load | restart), tool_gate (permission | config: whether the
 // agent asks before a tool call) and billing (proxy | plan).
 // The check spends: four short turns on the run's model, under a cap (default $0.25).
@@ -245,11 +246,14 @@ async function checkRun(options: HarnessCheckOptions, held: string[]): Promise<H
   const echoed: unknown[] = [];
   const deniedRan: unknown[] = [];
   const tools: HostTool[] = [
-    { name: "check_echo", description: "Echo the text back, prefixed with ECHO.", inputSchema: { type: "object", properties: { text: { type: "string" } }, required: ["text"] }, replay: "never", call: async (args) => (echoed.push(args), { text: `ECHO:${(args as { text?: unknown })?.text ?? ""}` }) },
+    // A path beside the text: Goose 1.59.2 titles a call whose arguments hold one with a summary of it (` · proof.txt`), so
+    // each release's title form for such a call runs here, and the adapter ties nothing to it.
+    { name: "check_echo", description: "Echo the text back, prefixed with ECHO.", inputSchema: { type: "object", properties: { text: { type: "string" }, path: { type: "string", description: "A file name to echo beside it." } }, required: ["text"] }, replay: "never", call: async (args) => (echoed.push(args), { text: `ECHO:${(args as { text?: unknown })?.text ?? ""}` }) },
     { name: "check_denied", description: "A tool this run refuses: calling it shows the refusal.", inputSchema: { type: "object", properties: { text: { type: "string" } }, required: ["text"] }, replay: "never", call: async (args) => (deniedRan.push(args), { text: "this call should never have run" }) },
   ];
   // The gate allows check_echo alone. Everything else is denied, the agent's own calls (`acp_<kind>`) included, as a
-  // server's gate answers them: a call of ours whose title the adapter can't tie is one of those, so it fails mcp_tool.
+  // server's gate answers them: a permission request for a call of ours, on a recipe with no title tie or one whose title
+  // the adapter can't tie, is one of those, so it fails mcp_tool.
   const gateAsked: { tool: string; answer: string }[] = [];
   const gate = async (call: { tool: string }) => {
     const answer = call.tool === "check_echo" ? "allow" : "deny";
@@ -363,12 +367,18 @@ async function checkRun(options: HarnessCheckOptions, held: string[]): Promise<H
     // Turn 1: one of our tools over MCP.
     say(`${recipe.label}: turn 1, a call of our check_echo tool over MCP`);
     const first = await sessionOn(join(work, "runner-a"));
-    const t1 = await first.turn(`Use the check_echo tool once, with the text argument set to ${nonce}. Then reply with exactly what it returned and nothing else.`);
+    const t1 = await first.turn(`Use the check_echo tool once, with the text argument set to ${nonce} and the path argument set to proof.txt. Then reply with exactly what it returned and nothing else.`);
+    // Every permission the agent asked for in turn 1, which calls check_echo alone: a request for our tool. The adapter
+    // answers one only where the recipe declares the title tie (quirks.permissionTie, Cursor's); any other agent must
+    // ask nothing for our tools (an allowFile, Goose's), since the server's gate asks at the MCP call.
+    const permissionAsks = asked().length;
+    const tied = recipe.quirks.permissionTie === "title";
+    const askedProblem = permissionAsks > 0 && !tied ? `the agent asked permission for our tool ${permissionAsks} time(s): its recipe needs an allowFile in the form the agent reads, so it runs our tools unasked, or the title tie (quirks.permissionTie) when the agent asks for every MCP call whatever its config says` : undefined;
     const firstOpen = opened()[0];
     // The environment while the agent runs.
     const environ = firstOpen?.pid ? environOf(firstOpen.pid) : undefined;
     const echoReached = messages().some((r) => r.text.includes(`ECHO:${nonce}`));
-    stage3.mcp_tool = { ok: t1.status === "completed" && echoed.length >= 1 && (recipe.model.billing !== "proxy" || echoReached), turn: t1.status, ...(t1.error ? { error: t1.error } : {}), calls: echoed.length, resultReachedModel: recipe.model.billing === "proxy" ? echoReached : null };
+    stage3.mcp_tool = { ok: t1.status === "completed" && echoed.length >= 1 && (recipe.model.billing !== "proxy" || echoReached) && !askedProblem, turn: t1.status, ...(t1.error ? { error: t1.error } : {}), calls: echoed.length, resultReachedModel: recipe.model.billing === "proxy" ? echoReached : null, permissionAsks, ...(askedProblem ? { problem: askedProblem } : {}) };
 
     // Stage 2: the tools the agent offered its model on its first request. The proxy refuses a request that offers a tool
     // its policy does not allow, so one that reached the provider at all passed that rule: the stage is whether one did.

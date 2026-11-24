@@ -97,9 +97,14 @@ export interface Recipe {
   readonly env: Readonly<Record<string, string>>;
   readonly model: RecipeModel;
   readonly files: Readonly<Record<string, string>>;
+  /** A file in the private HOME the adapter writes at each start from that start's tools, in the form the agent reads
+   *  (Goose's `.config/goose/permission.yaml`, `goose-permission`): the agent runs our tools without asking. */
+  readonly allowFile?: { readonly path: string; readonly form: string };
   readonly state: readonly string[];
   readonly declares: { readonly load: boolean; readonly mcp: "http" | "stdio" };
-  readonly quirks: { readonly mcpCall?: "match" | "mint" };
+  /** `permissionTie: "title"`: the adapter answers the agent's permission request for one of our announced calls
+   *  allow_once (Cursor's way); absent, every request goes to the server's gate. */
+  readonly quirks: { readonly mcpCall?: "match" | "mint"; readonly permissionTie?: "title" };
   readonly signIn?: RecipeSignIn;
 }
 
@@ -112,7 +117,7 @@ export class RecipeRefused extends Error {
 }
 
 /** The fields a recipe has. */
-const FIELDS = new Set(["id", "label", "release", "args", "keys", "keyMethod", "env", "model", "files", "state", "declares", "quirks", "signIn", "description", "$schema"]);
+const FIELDS = new Set(["id", "label", "release", "args", "keys", "keyMethod", "env", "model", "files", "allowFile", "state", "declares", "quirks", "signIn", "description", "$schema"]);
 /** Fields that would run something of the recipe's own at install or start (rule 4). */
 const INSTALL_FIELDS = new Set(["install", "installCommand", "postinstall", "preinstall", "setup", "script", "scripts", "run", "hooks", "update"]);
 /** Fields that would name a binary other than the release's archive (rule 2). */
@@ -307,12 +312,24 @@ export function recipeProblems(parsed: unknown): { code: RecipeCode; words: stri
     if (!insideHome(path)) say(RECIPE_CODES.paths, `the file ${JSON.stringify(path)} must be a path inside the session's private HOME`);
     if (typeof content !== "string") say(RECIPE_CODES.invalid, `the file ${JSON.stringify(path)}'s content must be a string`);
   }
+  if (r.allowFile !== undefined) {
+    const allow = r.allowFile;
+    if (!isPlain(allow) || typeof allow.path !== "string" || typeof allow.form !== "string" || Object.keys(allow).some((k) => k !== "path" && k !== "form")) say(RECIPE_CODES.invalid, 'allowFile is { "path": a file in the private HOME, "form": the form its agent reads }');
+    else {
+      const path = insideHome(allow.path);
+      if (!path) say(RECIPE_CODES.paths, `the allowFile ${JSON.stringify(allow.path)} must be a path inside the session's private HOME`);
+      else if (isPlain(r.files) && Object.keys(r.files).some((file) => insideHome(file) === path)) say(RECIPE_CODES.invalid, `the allowFile ${JSON.stringify(allow.path)} is also one of files: the adapter writes it from each start's tools`);
+      // The forms are the ACP package's (ALLOW_FILE_FORMS), the one definition. Without that package no recipe runs.
+      const forms = acpPackage()?.ALLOW_FILE_FORMS;
+      if (forms !== undefined && !forms.includes(allow.form)) say(RECIPE_CODES.invalid, `the allowFile form ${JSON.stringify(allow.form)} is none of ${forms.join(", ")}`);
+    }
+  }
   if (r.state !== undefined && !strings(r.state)) say(RECIPE_CODES.paths, "state is a list of folders in the private HOME");
   else for (const path of (r.state as string[] | undefined) ?? []) if (!insideHome(path)) say(RECIPE_CODES.paths, `the state folder ${JSON.stringify(path)} must be inside the session's private HOME`);
 
   const declares = r.declares;
   if (!isPlain(declares) || typeof declares.load !== "boolean" || (declares.mcp !== "http" && declares.mcp !== "stdio")) say(RECIPE_CODES.invalid, 'declares is { "load": true or false, "mcp": "http" or "stdio" }');
-  if (r.quirks !== undefined && (!isPlain(r.quirks) || Object.keys(r.quirks).some((k) => k !== "mcpCall") || (r.quirks.mcpCall !== undefined && r.quirks.mcpCall !== "match" && r.quirks.mcpCall !== "mint"))) say(RECIPE_CODES.invalid, 'quirks is { "mcpCall": "match" or "mint" }');
+  if (r.quirks !== undefined && (!isPlain(r.quirks) || Object.keys(r.quirks).some((k) => k !== "mcpCall" && k !== "permissionTie") || (r.quirks.mcpCall !== undefined && r.quirks.mcpCall !== "match" && r.quirks.mcpCall !== "mint") || (r.quirks.permissionTie !== undefined && r.quirks.permissionTie !== "title"))) say(RECIPE_CODES.invalid, 'quirks is { "mcpCall": "match" or "mint", "permissionTie": "title" }');
   if (r.description !== undefined && typeof r.description !== "string") say(RECIPE_CODES.invalid, "description is a string");
   return problems;
 }
@@ -340,6 +357,7 @@ export function parseRecipe(text: string): Recipe {
     env: r.env ?? {},
     model: r.model,
     files: Object.fromEntries(Object.entries(r.files ?? {}).map(([path, content]) => [insideHome(path)!, content])),
+    ...(r.allowFile ? { allowFile: Object.freeze({ path: insideHome(r.allowFile.path)!, form: r.allowFile.form }) } : {}),
     state: (r.state ?? []).map((path) => insideHome(path)!),
     declares: r.declares,
     quirks: r.quirks ?? {},

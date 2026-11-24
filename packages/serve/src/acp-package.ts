@@ -32,6 +32,8 @@ export type AcpPackage = {
   cursorRootOf(binary: string, cmd: string): string | undefined;
   /** The form a model id an ACP agent lists takes (Cursor's `gpt-5.4-nano[reasoning=medium]` among them). */
   readonly MODEL_ID: RegExp;
+  /** The forms a recipe's allowFile may take (`goose-permission`). */
+  readonly ALLOW_FILE_FORMS: readonly string[];
   acpPlatform(): string | undefined;
   /** `pin`'s release for `platform` (default this host's) with its binary's digest, and its tree's when `tree`; undefined
    *  where none is pinned so. */

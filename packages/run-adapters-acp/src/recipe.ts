@@ -31,6 +31,9 @@ const ALLOW_FORMS = {
   "goose-permission": (tools: readonly string[]) => `${JSON.stringify({ user: { always_allow: tools.map((tool) => `${MCP_SERVER}__${tool}`), ask_before: [], never_allow: [] } })}\n`,
 } satisfies Record<string, (tools: readonly string[]) => string>;
 
+/** The forms an allowFile may take, by name: a recipe loader's check (serve's) reads them from here. */
+export const ALLOW_FILE_FORMS: readonly string[] = Object.freeze(Object.keys(ALLOW_FORMS));
+
 /** The form of a recipe's allowFile. */
 export type AcpAllowForm = keyof typeof ALLOW_FORMS;
 
