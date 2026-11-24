@@ -49,7 +49,7 @@ import { ConnectExistingAgents, NativeConnections } from "@/components/NativeCon
 import { StartHere } from "@/components/StartHere";
 import { missionFrom, type MissionView, rangeFrom, type StatsRange } from "@/lib/mission";
 import { Playground, type StartResult, startFailure } from "@/components/Playground";
-import { type Agent, decisionProvider, toolOffers } from "@/lib/agentForm";
+import { type Agent, decisionProvider, runsWhere, toolOffers } from "@/lib/agentForm";
 import { RUN_STATUSES, RunsList } from "@/components/RunsList";
 import { type Section, Shell } from "@/components/Shell";
 import { SessionUnread, SignIn } from "@/components/SignIn";
@@ -769,12 +769,19 @@ function ConsolePage({ v2, onSignedOut, demo = false }: ConsoleProps) {
     if (v.state === "pending" || v.state === "signed_in") setPlanShown(true);
     if (v.state === "signed_in") void readCaps();
   };
-  const selectedDefinition = agents?.find((agent) => agent.agent_id === pick)?.definition;
+  const selectedAgent = agents?.find((agent) => agent.agent_id === pick);
+  const selectedDefinition = selectedAgent?.definition;
   // The run the Playground starts is the picked revision's: the "No model" bar reads its definition, the agent's current
   // one when none is picked. A picked revision the page holds no definition for is not known to run natively, on a
   // backend SDK or on the login, so the bar stays.
   const runDefinition: Record<string, unknown> | undefined = playgroundRevision.revision ? playgroundRevision.definition : selectedDefinition;
   const externalPlayground = runDefinition?.native || backendSdkOf(runDefinition);
+  // The login is a model only for a run on the runner (serve's loginForRun): a run in a sandbox box goes on the model
+  // keys. Where the run goes is its definition's own place, else where the server runs one that names none (runsWhere:
+  // the server's default place for a revision with a shell tool, else the runner). Not known (the server's places not
+  // read yet), the bar stays.
+  const runPlace = runDefinition && selectedAgent ? runsWhere({ kind: selectedAgent.kind, definition: runDefinition as Agent["definition"] }, placesOf(caps))?.place : undefined;
+  const onClaudeLogin = claudeSignedIn && caps?.models?.needs !== "model" && runDefinition?.harness === LOGIN_HARNESS && runPlace?.mode === "runner";
   const playgroundTarget = where.operation ? where.playgroundAgent : pick ?? where.playgroundAgent;
   return (
     <ScheduleNames.Provider value={scheduleNames}>
@@ -852,7 +859,7 @@ function ConsolePage({ v2, onSignedOut, demo = false }: ConsoleProps) {
               <span className="min-w-0 break-all font-mono text-small text-muted-foreground">{where.operation === "apply-template" ? `/v2/templates/${where.template ? encodeURIComponent(where.template) : "{template}"}/apply` : where.operation === "list-runs" ? (where.playgroundAgent ? `/v2/agents/${where.playgroundAgent}/runs` : "/v2/runs") : where.operation === "create-agent" ? "/v2/agents" : where.operation === "edit-agent" ? `/v2/agents/${where.playgroundAgent ?? "{agent_id}"}/definition` : "/v2/agents/{agent_id}/runs"}</span>
             </div>
             {where.operation === "apply-template" ? <div className="min-h-0 flex-1 overflow-auto"><TemplatesPage key={where.template ?? ""} v2={v2} name={where.template} go={go} playground draft={where.draft} /></div> : where.operation === "list-runs" ? <RunsRequest key={`list:${where.playgroundAgent ?? ""}:${where.status ?? ""}:${where.archived ?? false}`} v2={v2} origin={location.origin} agentId={where.playgroundAgent} filter={{ status: where.status, archived: where.archived }} /> : where.operation ? <AgentRequest key={`${where.operation}:${where.playgroundAgent ?? ""}:${where.draft ?? ""}`} v2={v2} operation={where.operation} origin={location.origin} agentId={where.playgroundAgent} draft={where.draft} harnesses={editorCaps.harnesses} routePrefix={c?.models?.route_prefix} /> : <>
-              {!externalPlayground && caps?.models?.ready === false && !(claudeSignedIn && caps.models.needs !== "model" && runDefinition?.harness === LOGIN_HARNESS) && <NoModelBanner needs={caps.models.needs} source={caps.models.source} model={caps.models.default} settings={caps.features?.tool_keys?.routes === true && caps.features.tool_keys.at_rest === "sealed"} chatgpt={plan?.state === "signed_out" || plan?.state === "expired"} />}
+              {!externalPlayground && caps?.models?.ready === false && !onClaudeLogin && <NoModelBanner needs={caps.models.needs} source={caps.models.source} model={caps.models.default} settings={caps.features?.tool_keys?.routes === true && caps.features.tool_keys.at_rest === "sealed"} chatgpt={plan?.state === "signed_out" || plan?.state === "expired"} />}
               {startError && <div className="m-8 border p-4" role="alert"><p className="text-lead text-destructive-text">The agents could not be read: {startError}</p><Button size="sm" className="mt-3" type="button" onClick={() => setRetry((n) => n + 1)}>Try again</Button></div>}
               {agents && <Playground agents={agents.filter((a) => !a.archived_at)} revisions={revs} efforts={efforts} origin={location.origin} agentId={pick ?? undefined} onAgent={setPick} onRevision={(revision, definition) => setPlaygroundRevision({ revision, definition })} onSend={send} limits={caps?.limits} {...(demo ? { upload: demoUpload } : {})} removeUpload={v2.deleteUpload} onOpenRun={(id) => go(`#/runs/${encodeURIComponent(id)}`)}
                 live={(id) => <LiveRun key={id} v2={v2} runId={id} caps={caps} agentName={agentName} />} />}

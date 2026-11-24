@@ -310,6 +310,11 @@ export async function claudeLoginView(deps: ClaudeLoginDeps): Promise<ClaudeLogi
   }
 }
 
+// The setting changes, and a sign-in starts, only in a turn on the sign-ins' queue (ClaudeSignIns.serial), each turn
+// reading the setting inside it: the turn-on, the turn-off, the sign-in's start and the drop at the server's start. So a
+// move or a turn-off never lands between a sign-in's read of the setting and its start; it comes before the read, or
+// after the start, and then ends that sign-in. The views (claudeLoginView) are read after the turn, outside the queue.
+
 /** PUT /settings/claude-login: turned on, refused in one line where more than one person can start runs. A turn-on that
  *  moves the login to another place first ends a sign-in this server started that still waits: its CLI signs in at the
  *  old place, which the login no longer reads. One at the same place leaves it waiting, as it still signs in there. */
@@ -317,47 +322,56 @@ export async function turnOnClaudeLogin(deps: ClaudeLoginDeps, body: unknown): P
   if (deps.refused) throw new ClaudeLoginRefused("forbidden", deps.refused);
   const asked = turnOnBody(body);
   if ("problem" in asked) throw new ClaudeLoginRefused("input_invalid", asked.problem);
-  if ((await claudeLoginSetting(deps.settings))?.place !== asked.place) await deps.signIns.stop();
-  await deps.settings.put(CLAUDE_LOGIN_SETTING, settingFor(asked.place, deps.data));
-  await deps.changed();
+  await deps.signIns.serial(async (turn) => {
+    if ((await claudeLoginSetting(deps.settings))?.place !== asked.place) await turn.stop();
+    await deps.settings.put(CLAUDE_LOGIN_SETTING, settingFor(asked.place, deps.data));
+    await deps.changed();
+  });
   return claudeLoginView(deps);
 }
 
 /** DELETE /settings/claude-login: turned off, and a sign-in this server started that still waits is ended. The login
  *  itself stays as the CLI keeps it; nothing here signs it out. */
 export async function turnOffClaudeLogin(deps: ClaudeLoginDeps): Promise<ClaudeLoginView> {
-  await deps.signIns.stop();
-  await deps.settings.remove(CLAUDE_LOGIN_SETTING);
-  await deps.changed();
+  await deps.signIns.serial(async (turn) => {
+    await turn.stop();
+    await deps.settings.remove(CLAUDE_LOGIN_SETTING);
+    await deps.changed();
+  });
   return claudeLoginView(deps);
 }
 
 /** POST /settings/claude-login/login: the CLI's own sign-in, started on this machine, where it opens a browser, with the
  *  shown line's own variables (the harness's signInEnv), so it signs in where the status reads. A sign-in that
  *  still waits is ended first (deps.signIns). The browser code goes to the CLI, never here; the answer is the view as it
- *  is when the sign-in starts, its `sign_in` waiting. */
+ *  is when the sign-in starts, its `sign_in` waiting. The setting is read, and the CLI started on it, in one turn. */
 export async function startLoginHere(deps: ClaudeLoginDeps): Promise<ClaudeLoginView> {
   if (deps.refused) throw new ClaudeLoginRefused("forbidden", deps.refused);
-  const setting = await claudeLoginSetting(deps.settings);
-  if (!setting) throw new ClaudeLoginRefused("agent_not_runnable", "Turn on Claude Code's login on this machine first.");
-  if (!thisMachine(setting, deps.data)) throw new ClaudeLoginRefused("agent_not_runnable", "It was turned on for another machine: sign in there.");
-  if (!deps.sameMachine) throw new ClaudeLoginRefused("forbidden", "The CLI's sign-in opens a browser on the server's machine: run the command shown in a terminal there.");
-  const cli = loginCli(await deps.pinned(), deps.env);
-  if (!cli) throw new ClaudeLoginRefused("agent_not_runnable", "No Claude Code CLI here yet: claude-agent's first run installs it, or run the command shown.");
-  // The person's home (the login's `userHome`) and desktop, so the CLI can open their browser.
-  const claude = await deps.claude();
-  const login = loginAt(setting.place, deps.data, deps.env);
-  await deps.signIns.start((timeoutMs) => claude.startClaudeLogin(cli, login, { ...pathOf(deps.env), display: deps.env, timeoutMs }));
+  await deps.signIns.serial(async (signIn) => {
+    const setting = await claudeLoginSetting(deps.settings);
+    if (!setting) throw new ClaudeLoginRefused("agent_not_runnable", "Turn on Claude Code's login on this machine first.");
+    if (!thisMachine(setting, deps.data)) throw new ClaudeLoginRefused("agent_not_runnable", "It was turned on for another machine: sign in there.");
+    if (!deps.sameMachine) throw new ClaudeLoginRefused("forbidden", "The CLI's sign-in opens a browser on the server's machine: run the command shown in a terminal there.");
+    const cli = loginCli(await deps.pinned(), deps.env);
+    if (!cli) throw new ClaudeLoginRefused("agent_not_runnable", "No Claude Code CLI here yet: claude-agent's first run installs it, or run the command shown.");
+    // The person's home (the login's `userHome`) and desktop, so the CLI can open their browser.
+    const claude = await deps.claude();
+    const login = loginAt(setting.place, deps.data, deps.env);
+    await signIn.start((timeoutMs) => claude.startClaudeLogin(cli, login, { ...pathOf(deps.env), display: deps.env, timeoutMs }));
+  });
   return claudeLoginView(deps);
 }
 
 /** At the server's start: a setting saved where the mode is now off or refused (`why`: the switch, a listen address past
  *  loopback, a second token, the API-only profile) goes, so no runner, in this process or another, runs on it; the reason
- *  is logged. */
-export async function dropRefusedLogin(settings: Pick<Settings, "get" | "remove">, why: string | undefined, log: (line: string) => void): Promise<void> {
-  if (!why || !(await claudeLoginSetting(settings))) return;
-  await settings.remove(CLAUDE_LOGIN_SETTING);
-  log(`Claude Code's login on this machine turned off: ${why}`);
+ *  is logged. A turn on `signIns`' queue, as every change of the setting is. */
+export async function dropRefusedLogin(signIns: Pick<ClaudeSignIns, "serial">, settings: Pick<Settings, "get" | "remove">, why: string | undefined, log: (line: string) => void): Promise<void> {
+  if (!why) return;
+  await signIns.serial(async () => {
+    if (!(await claudeLoginSetting(settings))) return;
+    await settings.remove(CLAUDE_LOGIN_SETTING);
+    log(`Claude Code's login on this machine turned off: ${why}`);
+  });
 }
 
 /** What the routes and a run's check use of the harness (its login.ts), loaded only when asked. */
