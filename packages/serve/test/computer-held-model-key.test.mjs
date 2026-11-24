@@ -1,4 +1,5 @@
-// A held run (computer-held.ts) whose model can't run here: no key for it, its harness refusing it, no price under a cap.
+// A held run (computer-held.ts) whose model can't run here: no key for it, its harness refusing it (a CLI harness that
+// runs here but for want of a model key among them), no price under a cap.
 // Its create is not refused for that: a benchmark's held run only calls the computer and lets it go, and never needs the
 // model. The words the create would have said ride the run's launch (hold.refused): its start and every message are
 // refused in them (409 agent_not_runnable), and its computer still takes calls until the release or the hold's lapse.
@@ -21,6 +22,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { createRegistry, Harness } from "@earendil-works/pi-durable";
@@ -42,6 +44,7 @@ const { cliRunSpecFromLaunch } = await import("../dist/runner/cli-run-spec.js");
 const { claimSecrets } = await import("../dist/runner/claim-secrets.js");
 const { claudeOf, codexOf, opencodeOf, CODEX_STANDIN_ENV, OPENCODE_STANDIN_ENV } = await import("../dist/adapters.js");
 const { openSqliteStore } = await import("../dist/store/index.js");
+const { blockersOf } = await import("../dist/runnable.js");
 const { startModelProxy } = await import("@parcha/agentrun-kernel/host");
 
 process.env.AGENTRUN_OPENCODE_STANDIN = "1";
@@ -63,6 +66,11 @@ const GATEWAY_KEY = "not-a-secret-held-gateway-key";
 /** A model key and a tool key this host holds, a test's: never real ones. */
 const HOST_MODEL_KEY = "not-a-secret-held-host-model-key";
 const HOST_TOOL_KEY = "not-a-secret-held-host-tool-key";
+/** OpenCode's stand-in (fixtures/fake-opencode-serve.mjs), which speaks `opencode serve`'s protocol: no CLI is installed
+ *  for the served opencode cases. */
+const OPENCODE_STAND_IN = fileURLToPath(new URL("./fixtures/fake-opencode-serve.mjs", import.meta.url));
+/** The words opencode is refused in on a host with no model key for it (provider.ts providerFor, OpenAI's wire). */
+const OPENCODE_KEY_WORDS = /opencode needs OPENAI_API_KEY/;
 /** A replay of a learned workflow (runner/promotion.ts), as a launch names it: no workflow by that name was ever laid. */
 const REPLAY = { of: "run-0", workflow: "flow", digest: "0".repeat(64) };
 /** The claim-time computer of the pi claims below: the fake computer on `root` as a phone (no mount to check). */
@@ -238,6 +246,64 @@ test("served, no model key: a held run that a non-model blocker keeps from runni
   assert.deepEqual([held.status, held.body.error?.code], [409, "agent_not_runnable"], `a hold defers the model's refusal only: ${JSON.stringify(held.body)}`);
   assert.deepEqual(held.body.error.details?.missing?.web_search, ["PARALLEL_API_KEY"], "the tool's missing key still refuses the held create");
   assert.deepEqual((await api("GET", "/agents/searcher/runs")).body.runs, [], "no run was made");
+});
+
+/** An unavailable opencode offer as a server holds it (harness.ts harnessOffers), with `extra` (its reason, its keys). */
+const opencodeOffer = (extra) => ({ id: "opencode", label: "OpenCode", promises: {}, available: false, steer: false, default_model: null, models: [], free_models: [], run_memory_mib: 704, ...extra });
+
+test("run check (blockersOf): a CLI harness unavailable here for want of a model key alone (its offer's keys) is its model's blocker, which a held create defers; one unavailable for another reason (its binary missing) is not", async () => {
+  const revision = { kind: "agentic", harness: "opencode", model: "openai/gpt-6.1-sol", tools: [] };
+  const env = { PATH: process.env.PATH };
+  const keyed = await blockersOf(env, revision, {}, { offers: [opencodeOffer({ reason: "opencode needs OPENAI_API_KEY, OPENROUTER_API_KEY (OpenAI's models through OpenRouter), or a gateway in AGENT_MODEL_BASE_URL.", keys: ["OPENAI_API_KEY", "OPENROUTER_API_KEY"] })] });
+  const lacksKey = keyed.find((b) => b.field === "definition.harness");
+  assert.ok(lacksKey, `opencode unavailable here is a blocker of its own: ${JSON.stringify(keyed)}`);
+  assert.equal(lacksKey.harness, "opencode", "the blocker names its harness");
+  assert.equal(lacksKey.model, true, `opencode unavailable for want of a model key alone is its model's blocker (model: true), so a held create opens: ${JSON.stringify(lacksKey)}`);
+  const unkeyed = await blockersOf(env, revision, {}, { offers: [opencodeOffer({ reason: "OpenCode is not installed here (npm install opencode-ai)." })] });
+  const lacksBinary = unkeyed.find((b) => b.field === "definition.harness");
+  assert.ok(lacksBinary, `opencode not installed is a blocker of its own: ${JSON.stringify(unkeyed)}`);
+  assert.equal(lacksBinary.model, undefined, `opencode unavailable for a reason no model key fixes is not its model's blocker, so a held create is still refused: ${JSON.stringify(lacksBinary)}`);
+});
+
+test("served, no model key: a held run of opencode, a CLI harness that runs here but for want of a model key, opens and holds its computer, its start refused in the create's words; the same run not held is refused at its create in the key's words", async (t) => {
+  const seam = claimSeam();
+  const { api } = await keylessServer(t, seam, { [OPENCODE_STANDIN_ENV]: JSON.stringify({ command: process.execPath, args: [OPENCODE_STAND_IN] }) });
+  const saved = await api("POST", "/agents", agent("coder", { harness: "opencode", model: "openai/gpt-6.1-sol", computer: SANDBOX }));
+  assert.equal(saved.status, 201, `the opencode agent saves, its harness's missing key a warning at a save: ${JSON.stringify(saved.body)}`);
+  const input = { content: "Do the task." };
+
+  // The control: without hold the create is refused, in the words opencode is refused in here.
+  const unheld = await api("POST", "/agents/coder/runs", { input });
+  assert.deepEqual([unheld.status, unheld.body.error?.code], [409, "agent_not_runnable"], `an opencode run that is not held is refused at its create for want of a model key: ${JSON.stringify(unheld.body)}`);
+  assert.match(unheld.body.error.message, OPENCODE_KEY_WORDS, "the refusal names the model key opencode needs here");
+  assert.equal(unheld.body.error.details?.harness, "opencode", "and names the harness");
+
+  const held = await api("POST", "/agents/coder/runs", { input, hold: true, hold_minutes: 5 });
+  assert.equal(held.status, 202, `a held opencode run's create is not refused for its harness's missing model key alone: ${JSON.stringify(held.body)}`);
+  const id = held.body.run_id;
+  await seam.claimed;
+  const call = await api("POST", `/runs/${id}/computer/call`, { method: "files.list", params: { path: "/workspace" } });
+  await withRunRead(api, id, () => assert.deepEqual([call.status, call.body.ok], [200, true], `the owner's call reaches the held opencode run's computer: ${JSON.stringify(call.body)}`));
+  const waiting = (await api("GET", `/runs/${id}`)).body.computer?.held;
+  await withRunRead(api, id, () => assert.equal(waiting?.state, "waiting", `the claim opened with no model key and holds the computer for its owner: ${JSON.stringify(waiting)}`));
+  const start = await api("POST", `/runs/${id}/start`, {});
+  assert.deepEqual([start.status, start.body.error?.code, start.body.error?.message], [409, "agent_not_runnable", unheld.body.error.message], `the start is refused in the create's words: ${JSON.stringify(start.body)}`);
+
+  const release = await api("POST", `/runs/${id}/computer/release`, {});
+  await withRunRead(api, id, () => assert.deepEqual([release.status, release.body], [200, { held: { state: "released" } }], `the owner lets the computer go: ${JSON.stringify(release.body)}`));
+  await seam.released;
+});
+
+test("served, no model key: a held run of opencode unavailable here for a reason no model key fixes (its binary missing) is still refused at its create, and no run is made", async (t) => {
+  withEnv(t, {}, [OPENCODE_STANDIN_ENV]);
+  const missing = join(await scratch(t), "no-opencode-here");
+  const { api } = await keylessServer(t, undefined, { OPENCODE_BIN: missing });
+  const saved = await api("POST", "/agents", agent("coder", { harness: "opencode", model: "openai/gpt-6.1-sol", computer: SANDBOX }));
+  assert.equal(saved.status, 201, `the opencode agent saves, its harness not set up a warning at a save: ${JSON.stringify(saved.body)}`);
+  const held = await api("POST", "/agents/coder/runs", { input: { content: "Do the task." }, hold: true });
+  assert.deepEqual([held.status, held.body.error?.code], [409, "agent_not_runnable"], `a hold defers a model's blocker only, never a harness no model key sets up: ${JSON.stringify(held.body)}`);
+  assert.equal(held.body.error.details?.harness, "opencode", "the refusal names the harness");
+  assert.deepEqual((await api("GET", "/agents/coder/runs")).body.runs, [], "no run was made");
 });
 
 /** A create's deps (runs-over-store.ts StartDeps) as prepareLaunch reads them, for an agentic run of `MODEL` on a sandbox:
