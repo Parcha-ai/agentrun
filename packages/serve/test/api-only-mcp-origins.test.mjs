@@ -4,8 +4,9 @@
 // (which keeps no credential) at a listed origin alone. A body with a credential is the secret-write refusal (403).
 // A per_run body at another origin, a body of another auth type, or a Composio preset's name is the refused route's own
 // 404. A save over a server the token did not save, or one that seals a credential, is 403 (tokenWriteOverRefused). None
-// of these refusals sends anything to the address. Fake MCP servers on loopback, fake Composio, the faux MCP model.
-// No key, no network.
+// of these refusals sends anything to the address. The list holds past the save: drop an origin and restart, and a run
+// that grants a server the token saved there sends it nothing and says why. Fake MCP servers on loopback, fake Composio,
+// the faux MCP model. No key, no network.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
@@ -36,15 +37,23 @@ async function gateway(t) {
 
 /** An API-only server whose list of MCP origins is `origins` (or what `origins` makes of the fake Composio beside it);
  *  requests with its API token. */
-async function setup(t, origins) {
+async function setup(t, origins, more = {}) {
   const composio = await startFakeComposio({ apiKey: KEY, toolkits: { gmail: { no_auth: false, tools: [{ slug: "add", name: "Add", description: "Add two numbers." }] } }, mcpAccounts: {} });
   t.after(() => composio.close());
-  const server = await serve(t, { faux: FAUX_MCP, apiOnly: true, apiOnlyMcpOrigins: typeof origins === "function" ? origins(composio) : origins, composioControl: { baseUrl: composio.baseUrl }, composioMcpOrigin: composio.mcpOrigin });
+  const server = await serve(t, { faux: FAUX_MCP, apiOnly: true, apiOnlyMcpOrigins: typeof origins === "function" ? origins(composio) : origins, composioControl: { baseUrl: composio.baseUrl }, composioMcpOrigin: composio.mcpOrigin, ...more });
   const token = (method, path, body) => server.api(method, path, body, { authorization: `Bearer ${server.token}` });
   return { server, token, composio };
 }
 
 const perRun = (url) => ({ url, auth: { type: "per_run", headers: { authorization: `Bearer ${LIST}` } } });
+const OFF_LIST = "The MCP server contextforge can't be used: the API token saved it at an origin that is no longer on this server's AGENTRUN_API_ONLY_MCP_ORIGINS. Nothing was sent.";
+/** An inline run (external `id`) granted contextforge's add, handed the run's own token. */
+const runAdd = (s, id) => s.token("POST", "/runs", {
+  external: { source: "backend", kind: "expert", id, version: 1 },
+  definition: { name: `Expert ${id}`, instructions: "Answer.", skills: [], tools: ["mcp:contextforge/add"], tool_settings: { "mcp:contextforge/add": { permission: "allow" } }, harness: "pi" },
+  input: { content: 'Call mcp__contextforge__add with {"a":2,"b":3}' },
+  mcp_auth: { contextforge: { headers: { authorization: `Bearer ${RUN}` } } },
+});
 const names = async (s) => (await s.token("GET", "/settings/mcp-server-names")).body;
 const rowOf = async (store, name) => {
   const row = await store.mcp.server(name);
@@ -57,6 +66,49 @@ test("the setting: unset or blank is no origin; each comma-separated entry is an
   for (const bad of ["http://127.0.0.1:4001/mcp", "https://gw.example?x=1", Object.assign(new URL("https://gw.example"), { username: "user", password: OTHER }).href, "gw.example", "ftp://gw.example", "https://gw.example#a"]) {
     assert.throws(() => apiOnlyMcpOriginsFrom(`https://ok.example,${bad}`), (error) => error instanceof TypeError && /AGENTRUN_API_ONLY_MCP_ORIGINS/.test(error.message) && /entry 2/.test(error.message) && !error.message.includes(bad), bad);
   }
+  // A wildcard is refused in words that say so, not taken as a host that matches nothing.
+  for (const wild of ["https://*.example.com", "*"]) {
+    assert.throws(() => apiOnlyMcpOriginsFrom(`https://ok.example,${wild}`), (error) => error instanceof TypeError && /entry 2 is a wildcard, and wildcards are not supported/.test(error.message), wild);
+  }
+});
+
+test("ServeOptions.apiOnlyMcpOrigins is read as the setting is: an origin written in capitals and with a trailing slash is the same origin, and the save is 200", async (t) => {
+  const gw = await gateway(t);
+  const s = await setup(t, [`${gw.origin.replace("http:", "HTTP:")}/`]);
+  const saved = await s.token("PUT", PATH, perRun(gw.fake.url));
+  assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  assert.deepEqual(await names(s), { names: ["contextforge"] });
+});
+
+test("the list holds past the save: restart with the origin still listed and a run reaches it; restart without it and a run granted its tool sends it nothing and says why, the run's revision pinned before or saved now", async (t) => {
+  const gw = await gateway(t);
+  const other = await gateway(t);
+  const first = await setup(t, [gw.origin]);
+  assert.equal((await first.token("PUT", PATH, perRun(gw.fake.url))).status, 200);
+  await first.server.stop();
+
+  // Still listed (beside another): the run calls add with its own token.
+  const kept = await setup(t, [other.origin, gw.origin], { data: first.server.data });
+  const ran = await runAdd(kept, "cf-1");
+  assert.equal(ran.status, 202, JSON.stringify(ran.body));
+  assert.equal((await follow(kept.server.api, ran.body.run_id, ["completed", "failed"], { deadlineMs: 60_000 })).last.status, "completed", JSON.stringify((await kept.server.api("GET", `/runs/${ran.body.run_id}`)).body.error));
+  assert.ok(gw.fake.log.some((entry) => entry.method === "tools/call" && entry.tool === "add"), "listed: the run called add");
+  await kept.server.stop();
+
+  // Dropped: the revision pinned above runs no call to it (its claim refused), and a new revision does not pin it.
+  const dropped = await setup(t, [other.origin], { data: first.server.data });
+  const from = gw.fake.log.length;
+  const sent = gw.sent.length;
+  const again = await runAdd(dropped, "cf-1");
+  assert.equal(again.status, 202, JSON.stringify(again.body));
+  assert.equal((await follow(dropped.server.api, again.body.run_id, ["completed", "failed"], { deadlineMs: 60_000 })).last.status, "failed");
+  assert.equal((await dropped.server.api("GET", `/runs/${again.body.run_id}`)).body.error?.message, OFF_LIST);
+  const fresh = await runAdd(dropped, "cf-2");
+  const words = fresh.status === 202
+    ? ((await follow(dropped.server.api, fresh.body.run_id, ["completed", "failed"], { deadlineMs: 60_000 })), (await dropped.server.api("GET", `/runs/${fresh.body.run_id}`)).body.error?.message)
+    : JSON.stringify(fresh.body);
+  assert.ok(String(words).includes(OFF_LIST.slice(0, -" Nothing was sent.".length)), `a new revision: ${words}`);
+  assert.deepEqual([gw.fake.log.slice(from), gw.sent.slice(sent)], [[], []], "dropped: the address got nothing, no run's token among it");
 });
 
 test("API-only with the address's origin listed: the token saves contextforge as per_run (200), the names route lists it, nothing of a credential is kept, and a run handed mcp_auth reaches it with its own token", async (t) => {
