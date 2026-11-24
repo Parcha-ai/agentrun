@@ -20,8 +20,9 @@ export type Trimmed = { snippets: number; to_chars: number };
  *  first request's. */
 export type Verdicts = { verdicts: Verdict[]; model: string | null; tokens: Tokens | null; cost: Cost; questions_sha256: string[]; trimmed?: Trimmed } & Temperature;
 /** How a decider's request is paid: `send` once the run's cap admits `fee`, as web's Pay sends a provider's request.
- *  `costOf`: what the answer says it cost (its provider's cost_usd), which the cap settles it at, never above its hold. */
-export type DecisionPay = <T>(fee: Fee, send: () => Promise<T>, costOf?: (answer: T) => number | null) => Promise<T>;
+ *  `costOf`: what the answer says it cost (its provider's cost_usd and its basis), which the cap settles it at and its
+ *  receipt line says, never above its hold. */
+export type DecisionPay = <T>(fee: Fee, send: () => Promise<T>, costOf?: (answer: T) => Cost) => Promise<T>;
 /** `pay` absent: the request is sent unmetered. */
 export type DecideContext = { signal: AbortSignal; deadlineMs: number; pay?: DecisionPay };
 
@@ -252,7 +253,7 @@ export function deciderFrom(provider: DecisionAsker, options: DeciderOptions): W
     const bytes = Buffer.byteLength(text);
     const fee: Fee = { name, by: provider.id, usd: holdOf(price, bytes), basis: `the most a request of ${bytes} bytes may cost at ${provider.id}'s price` };
     const go = () => provider.decide(request, { decisionId: `web-${request.kind}-${sha256(text).slice(0, 24)}`, signal: ctx.signal, deadlineMs: ctx.deadlineMs });
-    const outcome = await (ctx.pay ? ctx.pay(fee, go, (answered) => answered.cost_usd) : go());
+    const outcome = await (ctx.pay ? ctx.pay(fee, go, (answered) => ({ usd: answered.cost_usd, basis: answered.cost_basis })) : go());
     const cost: Cost = { usd: outcome.cost_usd, basis: outcome.cost_basis };
     const tokens: Tokens | null = outcome.usage
       ? { in: outcome.usage.input_tokens, out: outcome.usage.output_tokens, basis: "reported" }

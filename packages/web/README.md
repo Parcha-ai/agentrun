@@ -127,7 +127,9 @@ const { answer, receipt } = await web.search("widgets delaware", { n: 5, task: "
   model read, it is what the step saved. A web with no decider writes none.
 - Each decider request goes through `pay` before it is sent, held at the most it may cost (`holdOf` its `price`:
   `JEV_PUBLISHED_PRICING`, `PARALLEL_DECISION_PRICE`, `anthropicDecisionPrice()`), and is a line of its own in
-  `receipt.cost` (`"jev's decision"`). One refused unbilled (configuration, auth, no connection) settles at $0; one the
+  `receipt.cost` (`"jev's decision"`). One answered is charged, and its line says, the cost its provider gave
+  (reported, or estimated where it reported none; the line's basis says which), never above its hold, and the hold
+  where it gave none; `pay` is told that charge (`charged`), so a cap books what the receipt says. One refused unbilled (configuration, auth, no connection) settles at $0; one the
   cap refuses is never sent, and the step does not run (`pay_refused`). The record's `cost` is the provider's own
   figure for what was spent, summed over its requests, and `requests` how many were sent. A request after the first that
   fails fails the step, at what every request sent cost.

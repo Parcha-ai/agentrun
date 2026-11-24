@@ -41,14 +41,19 @@ export type StepOptions = { task?: string | undefined; signal?: AbortSignal | un
 export type Sifted<A> = { answer: A; classifier: DecisionRecord };
 type Failure = { code: string; message: string; cost: Cost };
 
-/** What a request answered at `cost` (its provider's figure) is charged under `fee`: that cost, never above the hold;
- *  the hold when it reported none. */
-const chargeOf = (fee: Fee, cost: number | null | undefined): number => (typeof cost === "number" && Number.isFinite(cost) && cost >= 0 ? Math.min(cost, fee.usd) : fee.usd);
+/** The line a request answered at `cost` (its provider's figure, reported or estimated) is charged on under `fee`: that
+ *  cost, never above the hold, the line saying which; `fee`'s own line (the hold) when it gave none. */
+const chargedLine = (fee: Fee, cost: Cost | undefined): Fee => {
+  if (!cost || (cost.basis !== "reported" && cost.basis !== "estimate") || typeof cost.usd !== "number" || !Number.isFinite(cost.usd) || cost.usd < 0) return fee;
+  const said = cost.basis === "reported" ? `the cost ${fee.by} reported` : `${fee.by}'s cost as estimated (it reported none)`;
+  return cost.usd <= fee.usd ? { ...fee, usd: cost.usd, basis: said } : { ...fee, basis: `the hold; ${said} was $${cost.usd}` };
+};
 
 /** `pay` as a decider's: each request's fee goes on `lines` once it is sent; one answered is charged at the cost its
  *  answer reports (`costOf`), capped at its hold, or at the hold when it reports none, as Pay's `charged` tells the
- *  cap; and one refused unbilled settles at $0 (answered as a 4xx, which a cap books at nothing) with a $0 line. */
-export const decisionPay = (pay: Pay, lines: Fee[]): DecisionPay => async <T>(fee: Fee, send: () => Promise<T>, costOf?: (answer: T) => number | null): Promise<T> => {
+ *  cap, and its line becomes that charge (chargedLine), so the receipt says what the cap booked; one refused unbilled
+ *  settles at $0 (answered as a 4xx, which a cap books at nothing) with a $0 line. */
+export const decisionPay = (pay: Pay, lines: Fee[]): DecisionPay => async <T>(fee: Fee, send: () => Promise<T>, costOf?: (answer: T) => Cost): Promise<T> => {
   let done: { value: T } | undefined;
   let failed: { error: unknown } | undefined;
   let charge = fee.usd;
@@ -56,7 +61,9 @@ export const decisionPay = (pay: Pay, lines: Fee[]): DecisionPay => async <T>(fe
     const at = lines.push(fee) - 1;
     try {
       done = { value: await send() };
-      charge = chargeOf(fee, costOf?.(done.value));
+      const line = chargedLine(fee, costOf?.(done.value));
+      charge = line.usd;
+      lines[at] = line;
       return new Response(null, { status: 200 });
     } catch (error) {
       if (!unbilled(error)) throw error;
