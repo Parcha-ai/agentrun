@@ -32,8 +32,10 @@
 // names the runner and its process (`runner`, `incarnation`: the presence incarnation, runner/presence.ts), and while
 // that runner is there under that incarnation and the keep lasts, the claim rule gives the run to that runner alone
 // (store KEPT_PREFIX: no other runner's poll picks it, nothing is claimed and given back). A stop or cancel is exempt:
-// any runner claims the run at once and ends it with no loop, never taking the row (runner.ts claimMore), and the
-// row's runner ends the machine at its time, or at its janitor's pass once the run is over. Once it is gone (its row stale
+// any runner claims the run at once and ends it with no loop, never taking the row (runner.ts claimMore). The run is
+// final then, so its machine has no user: the run's end (run-end-computers.ts) or any janitor's provider sweep deletes it
+// wherever its provider lists it, and the row's runner ends the row at its time or its janitor's pass, reading the
+// machine gone where it is, as when it deletes it itself. Once it is gone (its row stale
 // for PRESENCE_STALE_MS, a new incarnation) or refusing claims, any runner claims the run; a claim that then can't reach
 // the machine says why: its runner is gone (computerLostWords), or it is there and ends it (computerHeldWords). A
 // refusing runner is still there (store KEPT_PREFIX): the claim that could
@@ -152,13 +154,15 @@ export type KeptHolders = {
   readonly self?: KeptHolder;
 };
 
-/** The one rule both janitor sweeps leave a kept machine by (sweepKept, and the provider sweep through sparedKept), and a
+/** The one rule the janitor's kept pass leaves a kept row by (sweepKept), a park leaves another's row by (keepKept), and a
  *  claim gives a row back by (computer-for-claim.ts reattach): its row is pinned to a runner other than `self` that is
  *  still there under the row's incarnation (seen within PRESENCE_STALE_MS, refusing claims or not: store KEPT_PREFIX
- *  states the one meaning, and why the claim rule alone also asks that it claims). Only that runner's engine or hub has the machine, so a delete from here either finds nothing (and
- *  marks the row ended, leaking it) or, where both runners list it (a dial vendor's account, a shared Docker engine),
- *  ends a machine its runner still keeps. The runners are read once per maker's call. A read that fails counts every
- *  pinned row as held elsewhere: ending another runner's machine blind would leak it or take it. */
+ *  states the one meaning, and why the claim rule alone also asks that it claims). Only that runner's engine or hub has
+ *  the machine, so a delete from here either finds nothing (and marks the row ended, leaking it) or, where both runners
+ *  list it (a dial vendor's account, a shared Docker engine), ends a machine its runner still keeps. The provider sweep
+ *  asks nothing of this: it ends only a machine past its deadline or whose run is final, which has no user. The runners
+ *  are read once per maker's call. A read that fails counts every pinned row as held elsewhere: ending another runner's
+ *  machine blind would leak it or take it. */
 export function heldElsewhere(holders: KeptHolders): (kept: Pick<Kept, "runner" | "incarnation">) => Promise<boolean> {
   let there: Promise<Set<string> | "unknown"> | undefined;
   return async (kept) => {
@@ -168,20 +172,6 @@ export function heldElsewhere(holders: KeptHolders): (kept: Pick<Kept, "runner" 
     const live = await there;
     return live === "unknown" || live.has(`${kept.runner}\n${kept.incarnation}`);
   };
-}
-
-/** The kept machines a provider sweep leaves this pass, by provider id and computer id: each row not yet ended whose
- *  machine is held elsewhere (heldElsewhere, the kept pass's own rule). Throws when the rows can't be read: the sweep
- *  then can't tell which machines are kept, and must not guess. */
-export async function sparedKept(deps: KeptHolders & { readonly settings: Pick<KeptSettings, "all"> }): Promise<(provider: string, id: string) => boolean> {
-  const rows = await deps.settings.all({ prefix: KEPT_PREFIX });
-  const elsewhere = heldElsewhere(deps);
-  const spared = new Set<string>();
-  for (const row of rows) {
-    const kept = keptOf(row.value);
-    if (kept && !kept.ended && (await elsewhere(kept))) spared.add(`${kept.provider}\n${kept.id}`);
-  }
-  return (provider, id) => spared.has(`${provider}\n${id}`);
 }
 
 /** How long one delete of a kept computer may take at the janitor's pass: past it the pass goes on, the row is left
@@ -329,8 +319,7 @@ export async function sweepKept(deps: {
   } catch (error) {
     return { ended, failed: [`the kept computers could not be read: ${words(error)}`] };
   }
-  // The runners there now, read once for the pass, only where a row is pinned to another runner (heldElsewhere: the
-  // provider sweep leaves the same machines by the same rule, computer-janitor.ts).
+  // The runners there now, read once for the pass, only where a row is pinned to another runner (heldElsewhere).
   const othersThere = heldElsewhere(deps);
   for (const row of rows) {
     const runId = row.key.slice(KEPT_PREFIX.length);

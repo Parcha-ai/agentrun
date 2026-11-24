@@ -274,21 +274,6 @@ test("a stopped run's end on another runner deletes a dial machine kept by a liv
   assert.equal((await readKept(run.server.settings, RUN))?.ended, true);
 });
 
-test("a run's end spares a machine kept by a live runner only on the kept row's provider: one of the same id on another provider is released as before", { timeout: 60_000 }, async (t) => {
-  const run = await opened(t);
-  // c2 on docker is an earlier claim's (epoch 2); the kept row, pinned to runner-a, names a machine of the same id on
-  // another provider. Nothing on docker is kept, so the run's end on runner-b lets go of both.
-  const machine = (id, epoch) => run.docker.held.set(id, { ref: { id, name: id }, labels: { "agentrun.run": RUN, "agentrun.epoch": String(epoch) } });
-  machine("c1", 1);
-  machine("c2", 2);
-  await run.server.settings.put(keptKeyOf(RUN), { provider: "e2b", kind: "sandbox", id: "c2", name: "c2", epoch: 2, until: Date.now() + KEEP_MS, runner: "runner-a", incarnation: "inc-a" });
-  const logged = [];
-  const computers = { kinds: KINDS, providers: { docker: () => run.docker.provider() } };
-  await runEndComputers({ store: run.server, computers, log: (line) => logged.push(line), retryMs: 50, self: () => ({ runner: "runner-b", incarnation: "inc-b" }) })({ runId: RUN, epoch: 3 });
-  assert.deepEqual(run.docker.left(), [], "docker's c2 is not the kept machine: released with c1");
-  assert.deepEqual(logged, [`run ${RUN} is over: let go of the computers an earlier claim left on docker, c1, c2`]);
-});
-
 test("a run whose only claim ends it lets its own sandbox go at its end, and the run's end asks the provider nothing more", { timeout: 120_000 }, async (t) => {
   const run = await opened(t);
   await run.start("runner-a");
