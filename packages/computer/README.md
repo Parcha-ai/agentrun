@@ -3275,6 +3275,66 @@ computer's `HOME`, which the provider sets, is a directory its user can write, a
 From code: `runConformance(provider, { image, only?, signal?, drifted?, mountFor?, caseTimeoutMs?, cleanupTimeoutMs?,
 fixture?, fetch? })` returns the report, and `formatReport(report)` the text above.
 
+### Provider health: time to interactive (`--tti`, `--burst`)
+
+Whether a provider works today, and how fast, measured through this package's own provider layer. Time to interactive
+(TTI) is the time from a computer's `create` call to the answer of its first command: `create`, `connect` (computerd's
+hello) and one `exec.run`, read on the run's clock; the delete comes after and is not timed. `--tti <n>` makes `n`
+computers one at a time, each deleted before the next; `--burst <n>` makes `n` at once. Either runs alone, or both, the
+burst after. It runs as cases of the conformance runner (`src/conformance/tti.ts`), so a provider the CLI can make gets
+it with nothing more: the module's settings and keys by name, its image, the run's label, the deletes, the sweep and
+the list that shows nothing is left.
+
+```sh
+npm run conformance -w @parcha/agentrun-computer -- --provider daytona --tti 100 --burst 100 [--image <image>] [--json]
+```
+
+```text
+computer tti · daytona · linux, daemon pid1 · image default
+came up: yes
+serial n 100 · ok 100/100 (100%) · median 512 ms · p95 640 ms · p99 702 ms · score 94.28
+burst  n 100 at once · ok 98/100 (98%) · median 830 ms · p95 1410 ms · p99 1630 ms · score 87.27
+  ✗ 2x create failed (limit): ...
+cleanup ✓ 0 left · 200 deleted
+computers alive at once: 100 at most
+tti FAIL: 2 of 200 computers did not come up
+```
+
+(The numbers above show the shape, not a measurement.) `came up` is `yes` when any computer ran its first command, else
+`no` with the first reason one did not. It exits 0 when every computer came up and the run left nothing behind, else 1,
+and 2 on a usage error; `--tti` and `--burst` take `--image` and `--json` and refuse the suite's flags. `--json` prints
+`{ provider, providerVersion, kind, daemonMode, image, command, cameUp, why?, serial?, burst?, pass, cleanup, computers,
+daemons, notes?, providerNotes? }`, each shape `{ n, ok, successRate, ttiMs, stats: { median, p95, p99 }, score, errors:
+[{ words, count }] }`. From code: `measureTti(provider, { image, iterations, burst, clock?, signal? })`, `formatTti`,
+`ttiStats` and `ttiScore`.
+
+The yardstick is ComputeSDK's sandbox benchmark ([computesdk/benchmarks](https://github.com/computesdk/benchmarks), MIT;
+`benchmarks/sandbox/tti.bench.ts`, `scoring.ts`, `src/util/stats.ts`), and three things are theirs as they wrote them:
+TTI from create's call to the first command's success, with destroy left out; the statistics, 5% of the times trimmed
+from each end, the median of the rest, p95 and p99 by nearest rank; and the score, each of median, p95 and p99 as
+`100 * (1 - ms / 10000)` (0 at 10 s or more), weighted 0.6, 0.25 and 0.15, times the success rate. Their board's runs are
+100 computers through 100 slots, all launched at once: `--burst 100`. Where this differs:
+
+- The first command is `echo agentrun` through computerd's `exec.run` (no shell; `cmd.exe /d /c echo agentrun` on
+  Windows), not `node -v`: a run's image need not carry Node.
+- TTI is through this layer, so it holds what a provider does in `create` beyond the vendor's own call (on most remote
+  providers, putting computerd in the machine and starting it) and `connect`'s hello. It is the time an agent waits
+  here, not the vendor's SDK alone.
+- Each computer is made as the suite makes them: the run's label, a 30-minute lifetime, network `none` where the kind
+  requires it, and the module's image (`conformanceImage()`, such as Daytona's `default` snapshot or E2B's `desktop`
+  template) unless `--image` names one. ComputeSDK's sandboxes have an open network and each vendor's default image.
+- One computer has 150 s to come up in all (their bounds: 120 s for create, 30 s for the command), and the clock reads
+  whole milliseconds.
+- The serial shape is their `sequential` one, retired from their board on 2026-08-11; it is kept here because a provider
+  that fails only under a burst is a different finding from one that fails alone.
+- A burst's computers are deleted one after another once the burst ends, outside the time; theirs each destroy its own.
+
+What it cannot drive, and why: a browser (Browserbase, Kernel, local Chrome) runs no command, only CDP, so it is not
+measured (`came up: no: the provider declares no exec`). A dial host (Cloudflare, Fly, and E2B, Modal or Daytona with
+`COMPUTER_<ID>_CONNECT=dial`) makes machines that dial a server the internet reaches, so from this CLI every create is
+refused in words; its Core runs inside `packages/serve/scripts/dial-conformance.mjs`, which has no TTI mode. Archil is a
+mount here, not a computer provider, so there is no Archil sandbox to time.
+
 ## Persistent computers: an agent's own
 
 A run's computer belongs to its run: it has a deadline (`lifetimeMs`, required), and the janitor or the vendor ends it
