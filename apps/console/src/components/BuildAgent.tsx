@@ -13,6 +13,7 @@ import { TemplateProvenance } from "./Templates";
 import { agentDraftHref, briefAgentDraft } from "@/lib/agentDraft";
 import { defaultPlaceOf } from "@/lib/agentForm";
 import type { McpServer } from "@/lib/mcp";
+import type { ToolGate } from "@/lib/toolSettings";
 import { type Place, placeLabel } from "@/lib/place";
 import { applyTemplatePrompt, buildAgentPrompt } from "@/lib/codingAgentPrompts";
 import type { Client } from "@/lib/client";
@@ -28,7 +29,10 @@ const ICONS: Record<string, typeof FileText> = {
 };
 
 /** What Build's Tools step reads of the server: the tools it offers, where runs can go, and whether it runs MCP tools. */
-export type BuildCaps = Pick<EditorCaps, "tools" | "places" | "mcp" | "mcpHarnesses">;
+export type BuildCaps = Pick<EditorCaps, "tools" | "places" | "mcp" | "mcpHarnesses"> & {
+  /** Each tool's permission on this server (capabilities' tools, toolGates): a tool it denies for every agent is refused. */
+  gates?: ToolGate[];
+};
 
 /** Build in a coding agent, or apply the same complete template in the API playground. Choosing a template never writes.
  *  With `caps`, a Tools step picks the new agent's tools (the editor's cards, the MCP servers saved in Settings among
@@ -136,7 +140,13 @@ function ToolsStep({ caps, v2, tools, place, onTools, onPlace }: { caps: BuildCa
     setServers(null);
     v2.listMcpServers!().then((r) => { if (n === asked.current) setServers(r.servers); }, () => { if (n === asked.current) setServers("failed"); });
   };
-  useEffect(() => { if (open && asked.current === 0) loadMcp(); }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Read once per availability: when the step is open and MCP is on, including MCP turning on (capabilities answering
+  // late) while the step is already open. MCP turning off forgets the read, so turning on again reads anew.
+  const read = useRef(false);
+  useEffect(() => {
+    if (!mcp) { read.current = false; return; }
+    if (open && !read.current) { read.current = true; loadMcp(); }
+  }, [open, mcp]); // eslint-disable-line react-hooks/exhaustive-deps
   const offered = caps.tools.filter((t) => !t.call_only || tools.includes(t.name));
   const builtIns = (q: string) => offered.filter((t) => matchesFilter(q, t.name, t.blurb, t.summary));
   const count = (q: string) => builtIns(q).length + (mcp ? mcpShownCount(servers, tools, q) : 0);
@@ -157,7 +167,7 @@ function ToolsStep({ caps, v2, tools, place, onTools, onPlace }: { caps: BuildCa
         {query.trim() && !shown && <p className="mb-3 font-mono text-body text-muted-foreground">No tool matches “{query.trim()}”.</p>}
         {!caps.tools.length && !mcp && <p className="text-small text-muted-foreground">This server lists no tools yet.</p>}
         <ul className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,18rem),1fr))] items-start gap-2">
-          <BuiltInToolCards shown={builtIns(query)} offers={caps.tools} tools={tools} harness="pi" place={place} places={caps.places} mcpHarnesses={caps.mcpHarnesses} onChange={onTools} />
+          <BuiltInToolCards shown={builtIns(query)} offers={caps.tools} tools={tools} harness="pi" place={place} places={caps.places} mcpHarnesses={caps.mcpHarnesses} gates={caps.gates} onChange={onTools} />
           {mcp && <li className="col-span-full"><McpToolPicker servers={servers} tools={tools} harness="pi" harnesses={caps.mcpHarnesses} filter={query} onRetry={loadMcp} onChange={onTools} /></li>}
         </ul>
       </div>
