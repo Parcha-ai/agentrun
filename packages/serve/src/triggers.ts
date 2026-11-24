@@ -1089,7 +1089,9 @@ export class Triggers {
       // run or a message.
       const archived = await this.archivedSkip(trigger.agentId);
       if (this.closed) return;
-      if (archived) return void (await this.store.triggers.settle(triggerId, key, { status: "skipped", reason: archived }));
+      // A host start since the reads above owns the firing: still writing here, or done (past due, so from: "due" holds).
+      if (this.starting.has(key)) return;
+      if (archived) return void (await this.store.triggers.settle(triggerId, key, { status: "skipped", reason: archived, from: "due" }));
       if (trigger.target.kind === "message_run") return void (await this.send(trigger, firing));
       // Room found is held (handing) until what came of it is written: a host start meanwhile counts this firing. The
       // firing is read again in the check: a host start may have started it since, or be writing its run. One being
@@ -1152,7 +1154,7 @@ export class Triggers {
     const { target } = trigger;
     if (!(await this.store.runs.get(target.run_id))) {
       await this.store.triggers.update(trigger.id, { enabled: false, nextAt: null, disabled: { at: iso(this.clock.now()), reason: "source_unreadable", detail: RUN_DELETED } });
-      await this.store.triggers.settle(trigger.id, firing.key, { status: "skipped", reason: RUN_DELETED });
+      await this.store.triggers.settle(trigger.id, firing.key, { status: "skipped", reason: RUN_DELETED, from: "due" });
       this.deps.say({ condition: "trigger_source_unreadable", trigger: trigger.id, error: RUN_DELETED });
       await this.offThere([trigger]);
       return;
@@ -1166,8 +1168,8 @@ export class Triggers {
       return this.answered(trigger.id, firing.key, error, target.run_id);
     }
     if (this.closed) return;
-    if (skipped) return void (await this.store.triggers.settle(trigger.id, firing.key, { status: "skipped", reason: skipped }));
-    await this.store.triggers.settle(trigger.id, firing.key, { status: "sent", runId: target.run_id }, { reset: true });
+    if (skipped) return void (await this.store.triggers.settle(trigger.id, firing.key, { status: "skipped", reason: skipped, from: "due" }));
+    await this.store.triggers.settle(trigger.id, firing.key, { status: "sent", runId: target.run_id, from: "due" }, { reset: true });
   }
 
   /** The firing kept due, waiting for its trigger's room (no try counted, no retry time): a tick drives it once the store
