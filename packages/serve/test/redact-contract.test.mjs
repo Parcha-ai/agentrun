@@ -609,12 +609,21 @@ const CASES = [
     ];
     const edge = `${"w ".repeat(4090)}${JSON.stringify({ t: `see ${H}`, s: `${R} more` })}`;
     const whole = (title) => JSON.stringify({ items: [{ title, snippet: `${R} more` }] });
+    // 1,000 objects, each value of 3 to 8 characters, with `note` in the 501st; and the entry points that read all of it
+    // (a row's head and learning's print stop short).
+    const many = (note) => JSON.stringify(Array.from({ length: 1000 }, (_, i) => ({ name: `item${i}`, kind: ["red", "blue", "green", "amber"][i % 4], tag: `t${(i * 7919).toString(36).padStart(3, "0")}`, ...(i === 500 ? { note } : {}) })));
+    const three = (text) => ({ redactedCall: text, redactedAnswer: text, runFile: text });
     return [
       ...split.map(([what, text]) => ({ name: `a held value split across ${what} withholds the text`, text, values: [P24.join("")], hides: [H.slice(0, 8), R.slice(0, 8)], exact: all("[redacted]") })),
       // The first piece of an answer ends inside the first string: the second piece alone reads its quotes the wrong way
       // round, and the pass over what the pieces show reads them joined. A row's head never reaches the JSON.
       { name: "a held value split across two strings at the edge of an answer's first piece withholds the text", text: edge, values: [P24.join("")], hides: [H.slice(0, 8), R.slice(0, 8)], exact: all("[redacted]", ["redacted"]) },
       { name: "a held value whole in one string of a JSON text is cut in place, and the JSON still parses (control)", text: whole(`see ${P24.join("")}`), values: [P24.join("")], hides: [H], exact: all(whole("see [redacted]")) },
+      // The join view reads 6,000 short strings joined (names and values, about 50 KB), past several pieces of an answer:
+      // no run of them is a held value, so only the held value itself is cut, in place, and every other string shows as
+      // it came (control).
+      { name: "1,000 objects of short values beside a held value: only the held value is cut (control)", text: many(P24.join("")), values: [P24.join("")], hides: [H], exact: three(many("[redacted]")) },
+      { name: "1,000 objects of short values, a held value in none: shown as they came (control)", text: many("plain note"), values: [P24.join("")], hides: [], exact: three(many("plain note")) },
     ];
   })(),
   // Two encodings mixed (P2-A): each view decoded one family, so a split by an encoded space in one family and an
