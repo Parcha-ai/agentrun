@@ -291,7 +291,10 @@ test("two saved servers of one source and toolkit keep a grant each: the target 
   one.servers.push({ name: "team-slack-ops", url: "https://mcp.example/slack-ops", source: "composio", toolkit: "slack" });
   one.agent.definition.tools = [...one.agent.definition.tools.filter((tool) => tool !== "mcp:team-slack/SLACK_SEND_MESSAGE"), "mcp:team-slack-ops/SLACK_SEND_MESSAGE"];
   delete one.agent.definition.tool_settings;
-  assert.deepEqual(diffOf(source, one).map(({ field, kind }) => [field, kind]), [["mcp_tools.mcp:composio:slack/SLACK_SEND_MESSAGE", "changed"]]);
+  assert.deepEqual(diffOf(source, one).map(({ field, kind }) => [field, kind]), [["mcp_tools.mcp:composio:slack/SLACK_SEND_MESSAGE", "changed"]], "the target lost the pinned slack grant and its pin: the check must name mcp_tools.mcp:composio:slack/SLACK_SEND_MESSAGE");
+  // The target kept the pinned grant alone: the unpinned one is gone.
+  const pinned = readB();
+  assert.deepEqual(diffOf(source, pinned).map(({ field, kind }) => [field, kind]), [["mcp_tools.mcp:composio:slack/SLACK_SEND_MESSAGE", "changed"]], "the target lost the unpinned slack grant: the check must name mcp_tools.mcp:composio:slack/SLACK_SEND_MESSAGE");
 });
 
 test("an MCP tool the instructions name by the target's own server name is the same tool: apply renames it, the check reads it by its toolkit", () => {
