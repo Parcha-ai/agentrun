@@ -108,7 +108,7 @@ test("a 401 says the run's key is refused, and Firecrawl is not asked again by e
   const { fc, w } = await firecrawlWeb(t, () => refused(401, { success: false, error: "Unauthorized: Invalid token" }), { order: { search: ["firecrawl"], fetch: ["firecrawl", "direct"] } });
   assert.match((await w.search("widgets")).answer.error, /Firecrawl refused this run's key \(401\)/);
   const page = await w.fetch(PUBLIC);
-  assert.deepEqual(page.receipt.tries.map((one) => [one.provider, one.outcome]), [["direct", "ok"]]);
+  assert.deepEqual(page.receipt.tries.map((one) => [one.provider, one.outcome, one.failure?.code]), [["firecrawl", "error", "KEY_REFUSED"], ["direct", "ok", undefined]], "Firecrawl's turn, unsent, says why");
   assert.equal(fc.got.length, 1);
 
   const none = await firecrawlWeb(t, () => firecrawlResults(FIRECRAWL_HITS), { key: null, order: { search: ["firecrawl"], fetch: ["firecrawl", "direct"] } });

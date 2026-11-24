@@ -85,7 +85,7 @@ test("a 401 says the run's key is refused, and Exa is not asked again by either 
   const again = await w.search("gadgets");
   assert.match(again.answer.error, /Exa refused this run's key/);
   const page = await w.fetch(PUBLIC);
-  assert.deepEqual([page.answer.via, page.receipt.tries.map((one) => [one.provider, one.outcome])], ["direct", [["direct", "ok"]]]);
+  assert.deepEqual([page.answer.via, page.receipt.tries.map((one) => [one.provider, one.outcome, one.failure?.code])], ["direct", [["exa", "error", "KEY_REFUSED"], ["direct", "ok", undefined]]], "Exa's turn, unsent, says why");
   assert.equal(exa.got.length, 1);
   keyless("401", first, again, page, logs);
 });

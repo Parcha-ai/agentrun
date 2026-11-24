@@ -48,11 +48,11 @@ export type ProviderRun = {
 /** How a provider's fetch fits the order. `ends`: it answers whatever it reads, the order's last word (the guarded direct
  *  fetch). Otherwise the page names why the provider gave none under its id, and the model is told: a read that gave no
  *  page, and a turn it was not asked for being unready or held. `miss` says what more becomes of it:
- *  - "said": a turn the guard's check refused is told too, and every turn not asked is on the receipt;
+ *  - "said": a turn the guard's check refused is told too;
  *  - `{log, when}`: a failed read is logged as `log`, at once with the provider and the limit it met (`when` "failed"),
- *    or once a provider that ends the order has answered, with what it did (`when` "ends"; never where none follows). Of
- *    the turns it was not asked, only one its breaker held is on the receipt.
- *  A turn its breaker held is on the receipt as search's is: outcome "held", its failure the hold. */
+ *    or once a provider that ends the order has answered, with what it did (`when` "ends"; never where none follows).
+ *  Every turn not asked is on the receipt as search's is: one its breaker held as outcome "held", its failure the hold;
+ *  any other (unready, or the guard's refusal) as a failed turn saying why. */
 export type FetchShape = { ends: true } | { ends?: false; miss: "said" } | { ends?: false; miss: { log: string; when: "failed" | "ends" } };
 
 /** A provider's settings, typed `S`: `problems` says what is wrong with a value, one line each (none: it is S). */
