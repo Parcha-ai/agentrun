@@ -508,9 +508,9 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
       if (ctx.deadline === undefined) log('claude-agent: the kernel gave no deadline; assuming a 300 s invocation', {});
       const deadline = ctx.deadline ?? Date.now() + ASSUMED_INVOCATION_MS;
       // On a person's login there is no model route: the CLI calls Anthropic itself, and its responses are booked from
-      // its stream (loginBooking).
+      // its stream (loginBooking), which also reports each answer to the turn budget, as a model proxy does.
       const login = options.login;
-      const booking = login ? loginBooking(login.models, model, (error) => ctx.halt?.(error)) : undefined;
+      const booking = login ? loginBooking(login.models, model, (error) => ctx.halt?.(error), options.resultBudget?.turn) : undefined;
       const handler = login ? undefined : gatewayHandler({
         routes: CLAUDE_ROUTES,
         models: { model, ...(smallModel ? { smallModel } : {}) },

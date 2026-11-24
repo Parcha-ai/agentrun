@@ -8,7 +8,8 @@ import { RESULT_CHARS_PER_TOKEN, resultMaxChars } from './tools.js';
  * held to its share of the window (tools.ts resultMaxChars); this holds a turn's results, all of them, to what the
  * context has not spent. The kernel owns the rule; a harness only reports two facts of each answer (`open`): the input
  * tokens its request held and its output, and how many tool calls it made. The session's model proxy reports them for
- * every harness it serves (ModelProxyOptions.turn); pi reports them from its own answer hook.
+ * every harness it serves (ModelProxyOptions.turn); pi, and Claude Code on a person's login (no proxy), report them
+ * from their own hooks.
  *
  * What is left for a turn: the window, less what the request held, the answer, and the room kept for the model's next
  * answer (answerReserve), at RESULT_CHARS_PER_TOKEN. Each call claims the smaller of its own bound and what is
