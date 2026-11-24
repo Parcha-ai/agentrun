@@ -2,12 +2,24 @@
 // anything either host set on its own, and diffed into named differences. The same agent read twice is []. Each change a
 // deploy could make (a skill dropped, the model swapped, a tool kind lost, a trigger dropped, a key renamed) is exactly
 // one difference naming its field. A field a side does not serve is unread, never counted as equal. The reader
-// (deploy-parity-read.mjs) is checked against an answering function, no server.
+// (deploy-parity-read.mjs) is checked against an answering function, and its command against loopback listeners.
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
-import { describeAgent, parityDiff, readinessOf, unreadFields } from "./deploy-parity.mjs";
+import * as parity from "./deploy-parity.mjs";
 import { readAgent } from "./deploy-parity-read.mjs";
+import { DEFINITION_FIELDS } from "../packages/serve/dist/validate.js";
+import { cli, keptEnv } from "../packages/agentrun/test/support.mjs";
 
+const { describeAgent, parityDiff, readinessOf, unreadFields } = parity;
+const CHECK = new URL("./deploy-parity-read.mjs", import.meta.url).pathname;
+const sha256 = (text) => createHash("sha256").update(text).digest("hex");
+/** The package files' content hashes, by what each file holds. */
+const H = Object.fromEntries(["manifest", "answer", "style", "digest", "reference", "triage"].map((name) => [name, sha256(name)]));
 const SOL = "openai/gpt-6.1-sol";
 const TIERS = { fast: "openai/gpt-6-luna", balanced: "openai/gpt-6-terra", strong: SOL };
 
@@ -54,6 +66,12 @@ const serversOn = ({ slack = "slack", github = "github", docs = "docs" } = {}) =
 ];
 /** GET /v2/templates/{id} for the agent's package. */
 const templateOf = (agent, secrets = ["MONID_API_KEY", "PARALLEL_API_KEY"]) => ({ template: { id: agent.template.id, sha: agent.template.sha, secrets } });
+/** The files of the agent's package (GET /v2/agents/{id}/package), each by its content hash as readAgent reads them: the
+ *  export names each MCP tool in them by its toolkit, and ships a rule beside every skill once, under rules/. */
+const packageFilesOf = () => [
+  { path: "agent.md", sha256: H.manifest }, { path: "answer.schema.json", sha256: H.answer }, { path: "rules/STYLE.md", sha256: H.style },
+  { path: "skills/digest/SKILL.md", sha256: H.digest }, { path: "skills/digest/reference.md", sha256: H.reference }, { path: "skills/triage/SKILL.md", sha256: H.triage },
+];
 
 /** Source A as read, and target B: another host, its own ids, times and server names. */
 function pair() {
@@ -61,8 +79,8 @@ function pair() {
   const b = agentOn({ id: "agt_b9", at: "2026-11-25T10:30:00.000Z", slack: "team-slack", github: "gh", docs: "team-docs" });
   return {
     a, b,
-    readA: () => ({ agent: a, triggers: triggersOn(), servers: serversOn(), template: templateOf(a) }),
-    readB: () => ({ agent: b, triggers: triggersOn({ id: "agt_b9", at: "2026-11-25T10:30:00.000Z" }), servers: serversOn({ slack: "team-slack", github: "gh", docs: "team-docs" }), template: templateOf(b) }),
+    readA: () => ({ agent: structuredClone(a), triggers: triggersOn(), servers: serversOn(), template: templateOf(a), packageFiles: packageFilesOf() }),
+    readB: () => ({ agent: structuredClone(b), triggers: triggersOn({ id: "agt_b9", at: "2026-11-25T10:30:00.000Z" }), servers: serversOn({ slack: "team-slack", github: "gh", docs: "team-docs" }), template: templateOf(b), packageFiles: packageFilesOf() }),
   };
 }
 const diffOf = (readA, readB) => parityDiff(describeAgent(readA), describeAgent(readB));
@@ -241,4 +259,150 @@ test("readAgent reads the agent, its triggers, its servers, its package's keys a
 
   // No agent: a refusal naming it, never a description of nothing.
   await assert.rejects(readAgent(api, "agt_nope"), /agt_nope: 404 Not found\./);
+});
+
+test("every field of a definition is compared, but those HOST_SET names with why: a field serve adds later is compared by default", () => {
+  const host = parity.HOST_SET ?? {};
+  for (const [field, why] of Object.entries(host)) assert.ok(DEFINITION_FIELDS.includes(field) && typeof why === "string" && why.length > 0, `${field}: ${why}`);
+  const ignored = [];
+  for (const field of [...DEFINITION_FIELDS, "a_field_serve_adds_later"]) {
+    if (Object.hasOwn(host, field)) continue;
+    const { readA, readB } = pair();
+    const target = readB();
+    target.agent.definition[field] = { guard: field };
+    if (diffOf(readA(), target).length === 0) ignored.push(field);
+  }
+  assert.deepEqual(ignored, [], "each field here changed on the target and the check saw no difference");
+});
+
+test("two saved servers of one source and toolkit keep a grant each: the target losing one of them is a difference", () => {
+  const { readA, readB } = pair();
+  const source = readA();
+  source.servers.push({ name: "slack-ops", url: "https://mcp.example/slack-ops", source: "composio", toolkit: "slack" });
+  source.agent.definition.tools.push("mcp:slack-ops/SLACK_SEND_MESSAGE");
+  const both = readB();
+  both.servers.push({ name: "team-slack-ops", url: "https://mcp.example/slack-ops", source: "composio", toolkit: "slack" });
+  both.agent.definition.tools.push("mcp:team-slack-ops/SLACK_SEND_MESSAGE");
+  assert.deepEqual(diffOf(source, both), [], "both grants on both sides, under other names");
+  // The target kept the unpinned grant alone: the pinned one, and its pin, are gone.
+  const one = readB();
+  one.servers.push({ name: "team-slack-ops", url: "https://mcp.example/slack-ops", source: "composio", toolkit: "slack" });
+  one.agent.definition.tools = [...one.agent.definition.tools.filter((tool) => tool !== "mcp:team-slack/SLACK_SEND_MESSAGE"), "mcp:team-slack-ops/SLACK_SEND_MESSAGE"];
+  delete one.agent.definition.tool_settings;
+  assert.deepEqual(diffOf(source, one).map(({ field, kind }) => [field, kind]), [["mcp_tools.mcp:composio:slack/SLACK_SEND_MESSAGE", "changed"]]);
+});
+
+test("an MCP tool the instructions name by the target's own server name is the same tool: apply renames it, the check reads it by its toolkit", () => {
+  const { readA, readB } = pair();
+  const source = readA();
+  source.agent.definition.instructions = "Post with mcp:slack/SLACK_SEND_MESSAGE, read with mcp:github/*.\n";
+  const target = readB();
+  target.agent.definition.instructions = "Post with mcp:team-slack/SLACK_SEND_MESSAGE, read with mcp:gh/*.\n";
+  assert.deepEqual(diffOf(source, target), []);
+  assert.equal(describeAgent(target).fields.instructions, "Post with mcp:slack/SLACK_SEND_MESSAGE, read with mcp:github/*.");
+  // Another tool is still another tool.
+  target.agent.definition.instructions = "Post with mcp:team-slack/SLACK_DELETE_MESSAGE, read with mcp:gh/*.\n";
+  assert.deepEqual(diffOf(source, target).map(({ field }) => field), ["instructions"]);
+  // A server saved nowhere here, and a name that is the tail of a longer word, stay as written.
+  target.agent.definition.instructions = "xmcp:team-slack/SLACK_SEND_MESSAGE and mcp:nowhere/a_tool";
+  assert.equal(describeAgent(target).fields.instructions, "xmcp:team-slack/SLACK_SEND_MESSAGE and mcp:nowhere/a_tool");
+});
+
+test("skill files are compared by the content hashes of the agent's package: a rule is beside each skill, the agent's own listing is not read, and a file without a 64-hex hash is unread", () => {
+  const { readA, readB } = pair();
+  const { fields } = describeAgent(readA());
+  assert.deepEqual(fields.skill_files, {
+    digest: { "digest/SKILL.md": H.digest, "digest/STYLE.md": H.style, "digest/reference.md": H.reference },
+    triage: { "triage/SKILL.md": H.triage, "triage/STYLE.md": H.style },
+  });
+  // GET /agents/{id} lists the files as the target stored them, its own server names in them: never compared.
+  const listed = readB();
+  listed.agent.skills[0].sha256 = "renamed-on-the-target";
+  assert.deepEqual(diffOf(readA(), listed), []);
+  // A file the package answers without a hash (a renamed field, say) is never an equal undefined.
+  for (const sha of [undefined, "D1", "abc"]) {
+    const bad = readB();
+    bad.packageFiles.find((file) => file.path === "skills/digest/SKILL.md").sha256 = sha;
+    assert.deepEqual(describeAgent(bad).unread.map((one) => one.field), ["skill_files"], String(sha));
+  }
+  assert.deepEqual(describeAgent({ ...readB(), packageFiles: null }).unread.map((one) => one.field), ["skill_files"]);
+});
+
+test("readAgent reads the agent's package and hashes each file's bytes, text or base64", async () => {
+  const { a } = pair();
+  const files = [{ path: "agent.md", encoding: "utf8", content: "---\nname: x\n---\nBody.\n" }, { path: "skills/x/logo.png", encoding: "base64", content: Buffer.from([0, 1, 2, 255]).toString("base64") }];
+  const answers = { "GET /agents/agt_a1": [200, a], [`GET /agents/agt_a1/package`]: [200, { name: "x", files, sha256: "0".repeat(64), report: { blocked: [], remade: [] } }] };
+  const api = async (method, path) => {
+    const [status, value] = answers[`${method} ${path}`] ?? [404, { error: { code: "not_found", message: "Not found." } }];
+    return { status, body: value };
+  };
+  const read = await readAgent(api, "agt_a1");
+  assert.deepEqual(read.packageFiles, [
+    { path: "agent.md", sha256: sha256("---\nname: x\n---\nBody.\n") },
+    { path: "skills/x/logo.png", sha256: createHash("sha256").update(Buffer.from([0, 1, 2, 255])).digest("hex") },
+  ]);
+  delete answers["GET /agents/agt_a1/package"];
+  assert.equal((await readAgent(api, "agt_a1")).packageFiles, null);
+});
+
+/** A loopback listener answering with `answer(request)` (`[status, body]`), each request's method, path and
+ *  Authorization header kept in `seen`: `{base, seen}`, `base` ending /v2. Closed at the test's end. */
+async function listener(t, answer = () => [404, { error: { code: "not_found", message: "Not found." } }]) {
+  const seen = [];
+  const server = createServer((request, response) => {
+    seen.push({ method: request.method, path: request.url, authorization: request.headers.authorization ?? null });
+    const [status, body] = answer(request);
+    response.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  return { base: `http://127.0.0.1:${server.address().port}/v2`, seen };
+}
+
+/** A scratch folder with `name` holding `text`: its path. Removed at the test's end. */
+function scratchFile(t, name, text) {
+  const dir = mkdtempSync(join(tmpdir(), "deploy-parity-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  writeFileSync(join(dir, name), text);
+  return join(dir, name);
+}
+
+test("--lock gives the target's agent id alone: the target token goes to --target and nowhere a lock names", async (t) => {
+  const { a, b } = pair();
+  const attacker = await listener(t);
+  const source = await listener(t, (request) => (request.url === "/v2/agents/agt_a1" ? [200, a] : [404, {}]));
+  const target = await listener(t, (request) => (request.url === "/v2/agents/agt_b9" ? [200, b] : [404, {}]));
+  const env = { ...keptEnv(), AGENTRUN_PARITY_SOURCE_TOKEN: "source-secret", AGENTRUN_PARITY_TARGET_TOKEN: "target-secret" };
+  const from = ["--source", source.base, "--source-agent", "agt_a1"];
+  const elsewhere = scratchFile(t, "deploy.json", JSON.stringify({ target: attacker.base, agent_id: "agt_b9" }));
+
+  // No --target: the lock's address is never taken, so nothing is sent anywhere.
+  const bare = await cli(env, [...from, "--lock", elsewhere], { bin: CHECK });
+  assert.deepEqual(attacker.seen, [], "the address the lock names got no request, so no Authorization header");
+  assert.equal(bare.code, 2, bare.err);
+  assert.match(bare.err, /--target/);
+  // A lock that names another target than --target: refused, nothing sent.
+  const crossed = await cli(env, [...from, "--target", target.base, "--lock", elsewhere], { bin: CHECK });
+  assert.equal(crossed.code, 2, crossed.err);
+  assert.deepEqual([attacker.seen, source.seen, target.seen], [[], [], []]);
+  // The lock of a deploy to --target: its agent id is read, each token goes to its own install.
+  const own = scratchFile(t, "deploy.json", JSON.stringify({ target: `${target.base}/`, agent_id: "agt_b9" }));
+  const run = await cli(env, [...from, "--target", target.base, "--lock", own], { bin: CHECK });
+  assert.equal(run.code, 1, run.err);
+  assert.deepEqual([...new Set(source.seen.map((one) => one.authorization))], ["Bearer source-secret"]);
+  assert.deepEqual([...new Set(target.seen.map((one) => one.authorization))], ["Bearer target-secret"]);
+  assert.ok(target.seen.some((one) => one.path === "/v2/agents/agt_b9"));
+  assert.deepEqual(attacker.seen, []);
+});
+
+test("bad input exits 2 with one line, never a stack trace: an unknown option, a lock not there, a lock that is not JSON", async (t) => {
+  const env = keptEnv();
+  const from = ["--source", "http://127.0.0.1:9/v2", "--source-agent", "agt_a1", "--target", "http://127.0.0.1:9/v2"];
+  for (const args of [[...from, "--target-agent", "agt_b9", "--nope"], [...from, "--lock", join(tmpdir(), "deploy-parity-no-such-lock.json")], [...from, "--lock", scratchFile(t, "deploy.json", "{not json")]]) {
+    const run = await cli(env, args, { bin: CHECK });
+    assert.equal(run.code, 2, `${args.at(-1)}: ${run.err}`);
+    assert.equal(run.err.trim().split("\n").length, 1, run.err);
+    assert.match(run.err, /^deploy-parity: /);
+    assert.equal(run.out, "");
+  }
 });
