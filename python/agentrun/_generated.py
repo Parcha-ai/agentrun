@@ -611,6 +611,13 @@ __all__ = [
     "GetWebhookResponseObject2Disabled",
     "GetWorkspaceArchilResponse",
     "GetWorkspaceArchilResponseSecret",
+    "GetWrappedResponse",
+    "GetWrappedResponseDaysItem",
+    "GetWrappedResponseHarnessesItem",
+    "GetWrappedResponseImportedItem",
+    "GetWrappedResponseModelsItem",
+    "GetWrappedResponseSourcesItem",
+    "GetWrappedResponseTokens",
     "GradeRunBody",
     "GradeRunResponse",
     "GrantSourceSyncBody",
@@ -11314,6 +11321,63 @@ class ValidateWorkflowResponseIssuesItem(TypedDict):
     message: str
 
 
+class GetWrappedResponse(TypedDict):
+    year: int
+    sessions: int
+    turns: int
+    requests: int
+    tokens: GetWrappedResponseTokens
+    cost_usd: float
+    unpriced_requests: int
+    days: list[GetWrappedResponseDaysItem]
+    hours: list[int]
+    weekdays: list[int]
+    active_ms: int
+    harnesses: list[GetWrappedResponseHarnessesItem]
+    models: list[GetWrappedResponseModelsItem]
+    sources: list[GetWrappedResponseSourcesItem]
+    imported: list[GetWrappedResponseImportedItem]
+    unread_files: int
+
+
+class GetWrappedResponseTokens(TypedDict):
+    input: int
+    output: int
+    cache_read: int
+    cache_write: int
+
+
+class GetWrappedResponseDaysItem(TypedDict):
+    day: str
+    requests: int
+    tokens: int
+
+
+class GetWrappedResponseHarnessesItem(TypedDict):
+    harness: str
+    sessions: int
+    requests: int
+    tokens: int
+
+
+class GetWrappedResponseModelsItem(TypedDict):
+    model: str
+    requests: int
+    tokens: int
+    cost_usd: float
+
+
+class GetWrappedResponseSourcesItem(TypedDict):
+    source: str
+    sessions: int
+    requests: int
+
+
+class GetWrappedResponseImportedItem(TypedDict):
+    source: str
+    runs: int
+
+
 # Each operation as the runtime sends it, by operationId.
 OPERATIONS: dict[str, Operation] = {
     "archiveAgent": Operation(method="POST", path="/agents/{agent_id}/archive", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
@@ -11518,6 +11582,7 @@ OPERATIONS: dict[str, Operation] = {
     "saveWebhook": Operation(method="PUT", path="/settings/webhook", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "testWebhook": Operation(method="POST", path="/settings/webhook/test", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "validateWorkflow": Operation(method="POST", path="/workflows/validate", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
+    "getWrapped": Operation(method="GET", path="/wrapped", path_params=(), multi_segment=(), query=("year",), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
 }
 
 
@@ -12457,3 +12522,7 @@ class Resources:
     def usage(self, *, from_: str | None = None, to: str | None = None, group_by: Literal["meter", "agent", "key", "day", "region"] | None = None, timeout: float | None = None) -> GetUsageResponse:
         """Usage by meter over a period (GET /usage)."""
         return self._operation("getUsage", (), None, {"from": from_, "to": to, "group_by": group_by}, timeout=timeout)
+
+    def wrapped(self, *, year: int | None = None, timeout: float | None = None) -> GetWrappedResponse:
+        """A year of the work under this machine's session files (GET /wrapped)."""
+        return self._operation("getWrapped", (), None, {"year": year}, timeout=timeout)

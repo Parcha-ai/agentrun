@@ -147,6 +147,7 @@
     "redeliverSlack": ["slack", "redeliver"],
     "createQuote": ["quotes", "create"],
     "getUsage": ["usage"],
-    "getStats": ["stats"]
+    "getStats": ["stats"],
+    "getWrapped": ["wrapped"]
   }
 }
