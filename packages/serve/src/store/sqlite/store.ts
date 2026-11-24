@@ -765,6 +765,8 @@ class SqliteStore implements Store {
   readonly where: string;
   /** The deadlines' clock now (fence.ts storeNow): the database's on Postgres, this store's clock bound on SQLite. */
   readonly #clock: () => StoreNow;
+  /** Store.leaseClock: this store's clock when the deadlines are stamped on it (no database clock: SQLite, or a test's). */
+  readonly leaseClock?: () => number;
   /** Each claim's one journal, until it is closed. */
   readonly #journals = new Map<string, RunStorage>();
   /** Each run's claim this store released last (its epoch): journal() refuses that claim, or an older one, rather than
@@ -789,6 +791,7 @@ class SqliteStore implements Store {
     const d = db.dialect;
     const clock = (): StoreNow => storeNow(d, now);
     this.#clock = clock;
+    if (!d.nowSql) this.leaseClock = now;
 
     const insertAgent = (tx: SqliteExecutor, agent: { id: string; name: string; description?: string | null }, at: number) =>
       tx.run("INSERT INTO agents (id, name, description, created_at) VALUES (?, ?, ?, ?)", agent.id, agent.name, agent.description ?? null, at);

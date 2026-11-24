@@ -263,6 +263,10 @@ handed them apart from its environment. Spans are sent in the background, so a r
 a server or runner that stops waits at most 3 s to send what is left, and a collector that is down costs one log line
 and the dropped spans. Unset, or with `OTEL_SDK_DISABLED=true`, no OpenTelemetry code loads and nothing is sent.
 
+To send traces to Sentry (two variables: its OTLP endpoint and its `x-sentry-auth` header) or to any other backend
+through an OpenTelemetry Collector, and for what Sentry's Agents view shows of a run, see
+[Send run traces to Sentry or any OpenTelemetry backend](../../docs/traces.md).
+
 ## Anonymous usage counts
 
 The server sends six anonymous events: `server_started`, a daily `heartbeat`, `first_run_completed`, and, for
@@ -467,7 +471,10 @@ It names no path, size or version. One route serves as both liveness and readine
 and a 200 says it can work, and the platforms here take one path.
 
 A run's runner renews its claim on the run every 10 s, for a claim of 30 s. A runner that stops, or cannot renew in
-time, writes nothing more to the run, and the store refuses any write under a claim the run has moved past. Once the
+time, writes nothing more to the run, and the store refuses any write under a claim the run has moved past. On SQLite
+the runner counts a claim's 30 s from when the store granted it, not from when it asked, so a claim or renew that
+waited for a busy disk keeps the time the store gave it; the runner still stops 5 s before the store's claim runs out.
+On Postgres it counts from when it asked. A renew the store never answers in time still loses the run. Once the
 claim lapses another runner claims the run and resumes it from its journal. A run's own computer doesn't survive a
 runner loss, a crash, a server stop or a park (the claim that resumes the run starts a new one, and says so on the
 timeline and, once, to the model as an "AgentRun server note"), and the agent's own computer, a persistent setting, does.
@@ -1610,13 +1617,20 @@ has the row **Use Claude Code's login on this machine**, over these routes:
   login directory in the data folder, which you sign in once; `machine` is this machine's own Claude Code login, which
   you opt into by name. Its folder is the one the CLI uses: `CLAUDE_CONFIG_DIR` when the server's environment sets it to
   an absolute path, else `~/.claude`. A Claude Code that keeps its login in another folder is found only when AgentRun
-  is started with `CLAUDE_CONFIG_DIR` set to that folder. A server where more than one person can start runs (more
-  than one API token, an [API key made for an app](#api-keys-for-your-apps), the API-only profile) refuses it with
-  `403` and one line saying why, and a turn-on saved before is dropped when such a server starts.
+  is started with `CLAUDE_CONFIG_DIR` set to that folder. Where the server's environment sets
+  `CLAUDE_SECURESTORAGE_CONFIG_DIR` (an absolute path, or empty), the CLI is asked, signed in and run with it, as the
+  person's own Claude Code with that variable keeps its tokens: in that folder, or, empty, in `~/.claude` and on macOS
+  the Keychain item with no suffix. A server where more than one person can start runs (more than one API token, an
+  [API key made for an app](#api-keys-for-your-apps), the API-only profile) refuses it with `403` and one line saying
+  why, and a turn-on saved before is dropped when such a server starts. The setting names the machine it was turned on
+  for by an id the server makes once in its data folder (`machine-id`, 0600) and reads back on every later start,
+  never by the hostname, which on a laptop changes with the network. Two data folders are two machines. A setting
+  saved before the id reads as `other_machine` until it is turned on again.
 - `GET /v2/settings/claude-login` says `state`: `off`, `signed_in` (with the `account` the CLI names: method, email,
   organization, plan), `signed_out`, `no_cli` (claude-agent's first run installs the pinned CLI), `unknown`, or
   `other_machine`. `folder` is the folder whose login the CLI is asked about, and `machine` is this machine's own
-  login folder (`machine.source`: `CLAUDE_CONFIG_DIR` or `default`). `command` is the line that signs the CLI in at
+  login folder (`machine.source`: `CLAUDE_CONFIG_DIR` or `default`; `machine.credentials`: the server's
+  `CLAUDE_SECURESTORAGE_CONFIG_DIR`, when it sets one). `command` is the line that signs the CLI in at
   the login's place, for a terminal on the server's machine. Where the console is on that machine (a server on loopback
   with no public address), `can_start` is true and `POST /v2/settings/claude-login/login` starts the pinned CLI's own
   `auth login`, which opens a browser there. It runs with the same variables as `command`, so it signs in at `folder`,
@@ -1624,31 +1638,48 @@ has the row **Use Claude Code's login on this machine**, over these routes:
   `machine` with the default `~/.claude`, the CLI is signed in as the person's own `claude` runs: no
   `CLAUDE_CONFIG_DIR` or `CLAUDE_SECURESTORAGE_CONFIG_DIR`, in their home, so it writes the account in `~/.claude.json`
   and the tokens where their Claude Code keeps them (in `~/.claude`; on macOS the Keychain item `Claude Code-credentials`).
-  `command` there starts with `env -u CLAUDE_CONFIG_DIR -u CLAUDE_SECURESTORAGE_CONFIG_DIR`, so a terminal that exports
-  either still signs in at that login. A run
+  `command` there is `env -u CLAUDE_CONFIG_DIR -u CLAUDE_SECURESTORAGE_CONFIG_DIR ... auth login`, so a terminal that
+  exports either still signs in at that login. env is a program, so the line runs alike when pasted into sh, bash,
+  zsh, fish or tcsh; a CLI path holding `=`, which env would read as a variable, goes to `sh -c` as its `$0`. env skips
+  a `claude` alias or function of the terminal's shell. A run
   there reaches the same tokens: on macOS with `CLAUDE_SECURESTORAGE_CONFIG_DIR` set and empty, the CLI's way to name
-  that item while the run has a config dir of its own; elsewhere with it set to `~/.claude`. On `machine`, either
-  folder, the status check never runs the CLI on the person's own account file, which the CLI rewrites on every start
-  whose config version is not its own: each check copies `.claude.json` (`~/.claude.json`, or the `CLAUDE_CONFIG_DIR`
-  folder's), opening the original only to read it, into a folder of its own, gives the CLI that folder as its config
-  dir and the tokens as a run reads them, and removes the folder however the check ends. The copy (0600, in a 0700
-  folder) leaves out the fields that hold secrets: `primaryApiKey` (the API key an older Claude Code signed in with),
-  `env` and every `mcpServers`, whose env and headers hold tokens; a file that doesn't parse as a JSON object is not
-  copied at all. A run's config dir has none of them either, so the status says what a run gets. The status check
-  runs in the person's home (the server's `HOME`) on every place, as the sign-in does, and so does a run on the login
-  on macOS: the CLI reads its tokens there from the login keychain, which is under that home. `sign_in`
+  that item while the run has a config dir of its own; elsewhere with it set to `~/.claude`. On every place, the status
+  check never runs the CLI on the login's own account file, which the CLI rewrites on every start whose config version
+  is not its own: each check copies `.claude.json` (`~/.claude.json` on `machine` with the default folder, else the
+  login folder's), opening the original only to read it, into a folder of its own, gives the CLI that folder as its
+  config dir and the tokens as a run reads them, and removes the folder however the check ends. The copy (0600, in a
+  0700 folder) leaves out the fields that hold secrets: `primaryApiKey` (the API key an older Claude Code signed in
+  with), `env` and every `mcpServers`, whose env and headers hold tokens. Only a regular file of at most 32 MiB is
+  copied: a file that doesn't parse as a JSON object, a bigger one, a FIFO or a device is not copied at all, and the
+  check never waits on one. A run's config dir has none of them either, so the status says what a run gets. A check
+  killed mid-way leaves its folder (`agentrun-claude-status-*` in the temporary folder); a server where the login is
+  allowed removes this user's ones as it starts, once the check has ended by the end it wrote in its folder (its limit,
+  however long, and 2 s) and 15 s more, or, for a folder with none, once older than twice the check's limit. At its
+  limit the check asks the CLI to go (SIGTERM), kills it 1 s later, and waits at most 1 s more for its output, so a CLI
+  that ignores the TERM, or a process it started that holds its output open, never holds the check. The status check
+  runs in the person's home (the server's `HOME` when it is an absolute path, else the OS's home, read once where the
+  server makes the login) on every place, as the sign-in does, and so does a run on the login
+  on macOS: the CLI reads its tokens there from the login keychain, which is under that home. So a run there writes the
+  CLI's cache and logs under the person's `~/Library/Caches/claude-cli-nodejs`, where they stay; removing that folder is
+  safe. `sign_in`
   says what became of that sign-in while the server runs: `waiting` for the browser since `started_at`, `signed_in`,
   `timed_out` (no answer from the browser within 10 minutes, so it was ended and a sign-in page still open can't
   finish), `failed` (the CLI ended without signing in, with its `exit_code`), or `not_started`. A second start ends a
-  sign-in that still waits, and so do turning the mode off and stopping the server, which waits for that CLI to exit.
+  sign-in that still waits, and so do turning the mode off, a `PUT` that moves the login to the other `place`, and
+  stopping the server, which waits for that CLI to exit. A `PUT` at the same `place` leaves it waiting.
+  The CLI dies with the server, as a session's CLI does, so a server that is killed outright (SIGKILL, the OOM killer)
+  leaves no sign-in waiting on the browser's port.
 - `DELETE /v2/settings/claude-login` turns it off. The login stays as the CLI keeps it.
 
 While it is on, a claude-agent run on an `anthropic/<model>` model goes on the login: its CLI gets no
 `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN` or key, no model proxy runs, and the CLI's sandbox denies its commands
 reads of the login. A model named on a gateway or OpenRouter keeps its key, and so does a run started with its own
 `model_key`. With no key at all, claude-agent's default
-model is `anthropic/claude-sonnet-5-5`. A run whose login is signed out fails at its start and says so. It never
-switches to a key. The run books its tokens and no dollars (`cost.plan`, `on: "claude_code"`), and the plan's own limits
+model is `anthropic/claude-sonnet-5-5`. A run whose login is signed out fails at its start and says so. A status check
+the CLI outlasts (15 s) is asked once more; still no answer, the run goes on when the same login read signed in within
+the last 10 minutes in this server process (at a run's check or in Settings), else it fails saying the check timed out.
+A check where the CLI answered nothing that reads as a status gets the same. Any other failure of the check, such as no CLI at
+its path, fails the run at once in the check's own words. It never switches to a key. The run books its tokens and no dollars (`cost.plan`, `on: "claude_code"`), and the plan's own limits
 apply. Only a run in a runner place, on the machine the mode was turned on for, goes on the login. A run placed in a
 sandbox, or on another machine, uses the keys. The login is the server's user's, so a run on it needs runs under that
 user: where each run is a user of its own (the image, `run_isolation: "uid"`), a claude-agent run that would go on the
@@ -2404,7 +2435,8 @@ Composio is an MCP server like any other, so it needs no adapter of its own. Set
 preset: you give your Composio API key, a toolkit (`github`, `slack`...), the actions to grant (picked from the
 toolkit's list) and a server name, and the server has Composio make a managed MCP server for them, then saves it as an
 ordinary MCP server with the key sealed as an `x-api-key` header. `POST /v2/settings/mcp-servers/composio/tools`
-`{api_key, toolkit}` lists the actions; `PUT /v2/settings/mcp-servers/{name}/composio` `{api_key, toolkit, tools,
+`{api_key, toolkit}` lists the actions, and `POST /v2/settings/mcp-servers/composio/toolkits` `{api_key}` lists the
+toolkits Composio offers (`{toolkits: [{slug, name}]}`, by name) for the console's toolkit picker; `PUT /v2/settings/mcp-servers/{name}/composio` `{api_key, toolkit, tools,
 user_id?, auth_config_id?, price_usd?}` makes and saves the server. In place of `api_key`, `"api_key_env":
 "COMPOSIO_API_KEY"` reads the key from that variable, as the server and each runner were started with it, at each use and keeps no copy: the
 way an [API-only](#api-only) server's token saves one. That key is only ever sent to Composio's own origin, fixed in
@@ -2419,8 +2451,13 @@ server. `price_usd` (0 or more, as a `prices` value) is what each call costs you
 price, so a call is held under its run's cap and booked as the run's tool cost (its trace span's `usd`, the run's
 `cost.usd`), as any priced MCP tool's. A re-save that names no price keeps the server's prices for the actions it still
 lists. Composio's server can leave out an action it was allowed (it did for `HACKERNEWS_GET_FRONTPAGE`), so the answer's
-`not_served` names any chosen action the saved server doesn't list. Both routes are the owner's session alone, and a
-saved Composio server is gated, approved and shown on the Timeline as any MCP server's tools are, "not metered" until
+`not_served` names any chosen action the saved server doesn't list. These routes are the owner's session alone. A refresh of a saved Composio server also reads its account at Composio,
+and every read of the server then says it as `composio_account: {state, labels?, checked_at}`: `connected` with each
+account's label (its alias, else the name Composio shows, else its word id; never its id or a token), `pending` while
+its connect link is unfinished, `expired`, `none`, or `unknown` when Composio didn't answer. An account Composio answers as
+another user's is never the server's, and a server whose recorded user is empty or `per_run` is never asked about (`unknown`).
+The API token sees `composio_account` too, in a server's full read: its label may be the account's email.
+A saved Composio server is gated, approved and shown on the Timeline as any MCP server's tools are, "not metered" until
 you price them (`price_usd`, or the server's `prices`). Composio's own meta tools stay refused, and the helper actions
 that connect an account are left off the server's address. Deleting the server in Settings deletes what its save made in Composio too, with the saved key: the Composio MCP server, the connected account its connect link started (the link with it) and the auth config it made (Composio's "already gone" is fine). What another saved server uses is kept until the last of them goes, and what was there before the save (an auth config or account you had) is never deleted. The `DELETE` answers `200 {deleted: true, composio: {removed, note}}`: the note says what it removed, what it kept and why, and, when Composio refuses or does not answer, what is left to remove in Composio yourself (`removed: false`; the server is still forgotten here). The console shows it. A save that fails removes in Composio what it made there and never what it found, and its error names what is left when Composio refuses that too (a 422 on a field says it in `details.composio` as well). A save over a preset server removes, once it is saved, the Composio MCP server its earlier save made, and what that save made and the new one no longer stands on (the account of another `user_id`, the auth config of another toolkit), with the key it was made with, unless another saved server uses it, and answers `composio: {removed, note}` saying so. An ordinary `PUT` that moves a preset server to another address makes it another service's server: it removes what the preset made for it in Composio as its delete would, and answers `composio` too. While Composio triggers use the server, that move, and a preset save over it as another `user_id` or auth config, are refused as its delete is (`409 composio_in_use`, naming them). Preset saves and MCP server deletes run one at a time, so a delete never removes what a save in progress reuses; an ordinary save of a preset server lists its tools at once and takes its turn only to write the server and clean up.
 [Connect Composio tools and triggers](../../docs/tutorials/composio.md) walks through the preset and a Composio
@@ -2500,8 +2537,10 @@ its authorization server refused: sign in again), null for `auth.type` none. No 
 credential; a server's error text is cut of the values sent before it is shown. `POST .../{name}/refresh` lists the
 tools again with the saved URL and credential, keeps them, and answers `{added, removed, changed, server}`: `changed`
 names a tool whose title, description, schemas or annotations differ. `DELETE .../{name}` forgets the server and its
-credential. Capabilities' `features.mcp_client` says `transports: ["streamable-http"]`, the `auth` types and `at_rest:
-"sealed"`.
+credential. Capabilities' `features.mcp_client` says `transports: ["streamable-http"]`, the `auth` types, `at_rest:
+"sealed"`, and `composio_per_run: true`: a per-run Composio server takes each run's own Composio account, named in the
+run's `mcp_auth`. A backend in front of an API-only server reads it there, since that server does not serve the API
+document.
 
 ### A credential handed with each run
 
