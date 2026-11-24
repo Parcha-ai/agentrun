@@ -44,7 +44,7 @@ import { toolingOf } from "./tools.js";
 import { type Plane, planeFor, type ToolSettingsMap } from "./tool-plane.js";
 import { declaredKeys, undeclaredKeys, withCarried } from "./run-keys.js";
 import type { RunTrigger } from "./triggers.js";
-import { clip } from "./web-fetch-direct.js";
+import { clip } from "@parcha/agentrun-web";
 import { isObject, type Json } from "./validate.js";
 
 /** The store slice these writers need: the run rows, its commands, and the origin read a retry makes. */

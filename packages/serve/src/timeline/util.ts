@@ -1,4 +1,4 @@
-import { SCRUBBED_URL, trimmed } from "../text-urls.js";
+import { SCRUBBED_URL, trimmed } from "@parcha/agentrun-web/text-urls";
 
 export type Obj = Record<string, unknown>;
 

@@ -10,27 +10,30 @@ import { redactLearned, redactSecrets, secretShapes } from "../dist/learn/secret
 import { scanned } from "../dist/redact/match.js";
 
 const KEY = ["not-a-secret", "x-0123456789abcdef"].join("-");
-/** The whole pipeline's bound with a held value (redact-contract.test.mjs WORK): characters visited per character. */
-const WORK = 1024;
-/** An answer redacted with one held value, and the characters its redaction visited (redact/match.ts `scanned`) per
- *  character of it. Counted, not timed: read again from every repeat, a run is passed once per repeat. */
+/** The most characters the shape scanners may visit per character of a text (redact-contract.test.mjs's adversarial
+ *  bound): a scanner that read a run again from each repeat in it passes the run once per repeat. */
+const SCANNED_MAX = 128;
+/** An answer redacted with one held value, and the characters its redaction visited (redact/match.ts `scanned`, every
+ *  stage) per character of it. Counted, not timed, so a loaded machine can't fail it. */
 const counted = (text) => {
   scanned.chars = 0;
   const out = redactedAnswer(text, [KEY]);
   return { out, per: scanned.chars / text.length };
 };
 
-test("an answer of about 1 MB made of github_pat_ runs is redacted in linear time, every run whole", () => {
+test("an answer of about 1 MB made of github_pat_ runs is redacted in linear time, every run whole", (t) => {
   const { out, per } = counted(`${"github_pat_".repeat(744)} `.repeat(128));
   assert.equal(out, "[redacted] ".repeat(128));
-  // Read again from every repeat, each run of 744 is passed 744 times over.
-  assert.ok(per <= WORK, `${per.toFixed(1)} characters visited per character`);
+  t.diagnostic(`${per.toFixed(1)} characters visited per character`);
+  // Read again from every repeat, each run of 744 is passed hundreds of times over.
+  assert.ok(per <= SCANNED_MAX, `${per.toFixed(1)} characters visited per character, over ${SCANNED_MAX}`);
 });
 
-test("an answer of about 1 MB of JWT-shaped runs whose first part repeats eyJ is redacted in linear time, every run whole", () => {
+test("an answer of about 1 MB of JWT-shaped runs whose first part repeats eyJ is redacted in linear time, every run whole", (t) => {
   const { out, per } = counted(`${"eyJ".repeat(2715)}.eyJabcdefgh.abcdefgh `.repeat(128));
   assert.equal(out, "[redacted] ".repeat(128));
-  assert.ok(per <= WORK, `${per.toFixed(1)} characters visited per character`);
+  t.diagnostic(`${per.toFixed(1)} characters visited per character`);
+  assert.ok(per <= SCANNED_MAX, `${per.toFixed(1)} characters visited per character, over ${SCANNED_MAX}`);
 });
 
 // The shapes as secrets.ts has them (bounded; the JWT from the first "eyJ" of a run), read the way it did before: from
@@ -118,7 +121,7 @@ test("two whsec_ secrets back to back are both redacted whole: the first's run t
 
 // Each shape's adversarial input (its prefix repeated with no terminator, its prefix then its body's class with none) is
 // counted in redact-contract.test.mjs: "adversarial texts: the characters the shape scanners visit…" (at most 128 per
-// character, no held value) and "…the whole pipeline visits…" (at most WORK, one held value).
+// character, no held value) and "…the whole pipeline visits…" (at most its WORK, one held value).
 
 test("a JWT is still found wherever it starts, glued to a word's characters too, and a private key's header with any key type", () => {
   const jwt = ["eyJhbGciOiJIUzI1NiJ9", "eyJzdWIiOiIxMjM0NTY3ODkwIn0", "dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U"].join(".");
