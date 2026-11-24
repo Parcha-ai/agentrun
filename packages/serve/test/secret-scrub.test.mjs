@@ -2548,7 +2548,7 @@ test("XCV: curl reads on past a substitution, its contents left out (Greptile P1
   }
 });
 
-test("XCVI: commands are read by one shell lexer (shell-lex.ts; GRE-4791): an operator inside a substitution, a substitution of any length or left open, ANSI-C quoting and a continuation line no longer end a command before its password", async () => {
+test("XCVI: commands are read by one shell lexer (shell-lex.ts): an operator inside a substitution, a substitution of any length or left open, ANSI-C quoting and a continuation line no longer end a command before its password", async () => {
   for (const text of [
     "redis-cli -h $(hostname; true) -a Copper9lumen9 ping",
     "mysql -h \x60hostname;true\x60 -pCopper9lumen9 app",
