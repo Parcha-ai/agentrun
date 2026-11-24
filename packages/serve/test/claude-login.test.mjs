@@ -1036,7 +1036,7 @@ const parallelShown = async (api) => (await api("GET", "/capabilities")).body.wo
 const PARALLEL_KEY = { values: { PARALLEL_API_KEY: "fake-test-key" } };
 const NOT_COMPOSED = "the capabilities never composed the tool key the change saved";
 test("a tool key's change that waits for the probe out answers for its own key though that probe fails: it probes again for the inputs it read", { timeout: 60_000 }, async (t) => {
-  const { api, logged } = await heldServer(t, { faux: FAUX });
+  const { api, logged, probes } = await heldServer(t, { faux: FAUX });
   assert.equal(await parallelShown(api), false, "Parallel shows before its key is saved");
   const probe = held.hold((env) => claudeLoginOf(env) !== undefined, FAILED);
   t.after(() => probe.release());
@@ -1048,6 +1048,8 @@ test("a tool key's change that waits for the probe out answers for its own key t
   const [, saved] = await Promise.all([turningOn, saving]);
   assert.equal(saved.status, 204, `a tool key's change answered the failure of the probe it waited for, another request's, though its key was stored: ${JSON.stringify(saved.body)}`);
   assert.equal(await parallelShown(api), true, NOT_COMPOSED);
+  // The failed probe landed nothing, so the offers held are still behind the inputs the change read: it probes them itself.
+  assert.equal(probes("key"), 1, "a tool key's change whose waited-for probe failed left the offers behind the inputs it read: it did not probe them again");
 });
 
 // The other order: the probe the change waits for is overtaken by a later one (a turn-off's) that then fails. The
