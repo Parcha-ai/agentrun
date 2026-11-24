@@ -276,6 +276,8 @@ interface Ran {
 const isNumber = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
 const isWhole = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value);
 const noSuchContainer = (stderr: string) => /no such container/i.test(stderr);
+/** Docker's answer to a docker rm of a container another removal of which is under way: it is going away (#gone). */
+const removalUnderWay = (stderr: string) => /removal of container \S+ is already in progress/i.test(stderr);
 /** Docker's words for a network it does not have: the CLI's "No such network", or the daemon's "network ... not found". */
 const NO_SUCH_NETWORK = /no such network|network \S+ not found/i;
 /** Docker's words for a docker run whose --name another container holds. */
@@ -1226,7 +1228,8 @@ export class DockerProvider implements ComputerProvider {
 				if (!leftover(proxy.Config?.Labels, (proxy as { Created?: unknown }).Created) || typeof proxy.Id !== "string") continue;
 				const ran = await this.#run(["rm", "--force", proxy.Id], signal);
 				if (!ran.ok) return ran;
-				if (ran.value.exitCode !== 0 && !noSuchContainer(ran.value.stderr)) return vendorFail("docker",`docker rm of the egress proxy ${nameOf(proxy)} failed: ${ran.value.stderr.trim()}`);
+				const gone = await this.#gone(ran.value, proxy.Id, `docker rm of the egress proxy ${nameOf(proxy)}`, AbortSignal.timeout(SETTLE_MS), signal);
+				if (!gone.ok) return gone;
 				removed.push(nameOf(proxy));
 			}
 		}
@@ -1285,7 +1288,7 @@ export class DockerProvider implements ComputerProvider {
 	/**
 	 * Stops or deletes the computer, then its egress proxy, found by its label (EGRESS_LABEL=<name>), and on delete its
 	 * egress volume, found the same way: a container or volume of the proxy's name without that label is never touched.
-	 * Each is ok when already gone.
+	 * Each is ok when already gone, or once gone when Docker answers that its removal is already in progress (#gone).
 	 */
 	async release(ref: ComputerRef, how: ReleaseHow): Promise<Result<void>> {
 		if (!NAME.test(ref.name)) return fail("invalid", `${ref.name} is not the name of a Docker computer (computer-<12 hex digits>)`);
@@ -1312,7 +1315,8 @@ export class DockerProvider implements ComputerProvider {
 		for (const id of lines(found.value.stdout)) {
 			const container = await this.#run(["rm", "--force", id], bound);
 			if (!container.ok) return container;
-			if (container.value.exitCode !== 0 && !noSuchContainer(container.value.stderr)) return vendorFail("docker", `docker rm ${proxy} failed: ${container.value.stderr.trim()}`);
+			const gone = await this.#gone(container.value, id, `docker rm ${proxy}`, bound);
+			if (!gone.ok) return gone;
 		}
 		const volumes = await this.#run(["volume", "ls", ...filters, "--format", "{{.Name}}"], bound);
 		if (!volumes.ok) return volumes;
@@ -1358,9 +1362,11 @@ export class DockerProvider implements ComputerProvider {
 		const mine = report?.Config?.Labels?.[ATTEMPT_LABEL] === attempt;
 		// By the id looked at, never by the name, which another create may hold by the time rm runs.
 		if (mine) {
-			const removed = await this.#run(["rm", "--force", "--volumes", String(report.Id)], AbortSignal.timeout(SETTLE_MS));
+			const bound = AbortSignal.timeout(SETTLE_MS);
+			const removed = await this.#run(["rm", "--force", "--volumes", String(report.Id)], bound);
 			if (!removed.ok) return removed;
-			if (removed.value.exitCode !== 0 && !noSuchContainer(removed.value.stderr)) return vendorFail("docker", `docker rm ${name} failed: ${removed.value.stderr.trim()}`);
+			const gone = await this.#gone(removed.value, String(report.Id), `docker rm ${name}`, bound);
+			if (!gone.ok) return gone;
 		}
 		const proxy = await this.#removeProxy(name, attempt);
 		return proxy.ok ? ok(report !== undefined && !mine) : proxy;
@@ -1371,7 +1377,8 @@ export class DockerProvider implements ComputerProvider {
 		const args = how === "stop" ? ["stop", ref.name] : ["rm", "--force", "--volumes", ref.name];
 		const ran = await this.#run(args);
 		if (!ran.ok) return ran;
-		if (ran.value.exitCode !== 0 && !noSuchContainer(ran.value.stderr)) return vendorFail("docker",`docker ${args[0]} ${ref.name} failed: ${ran.value.stderr.trim()}`);
+		const gone = await this.#gone(ran.value, ref.name, `docker ${args[0]} ${ref.name}`, AbortSignal.timeout(SETTLE_MS));
+		if (!gone.ok) return gone;
 		const label = `label=${EGRESS_LABEL}=${ref.name}`;
 		const proxies = await this.#run(["ps", "-a", "--no-trunc", "--filter", label, "--format", "{{.ID}}"]);
 		if (!proxies.ok) return proxies;
@@ -1379,7 +1386,8 @@ export class DockerProvider implements ComputerProvider {
 		for (const id of proxies.value.stdout.split("\n").map((line) => line.trim()).filter(Boolean)) {
 			const ended = await this.#run(how === "stop" ? ["stop", id] : ["rm", "--force", id]);
 			if (!ended.ok) return ended;
-			if (ended.value.exitCode !== 0 && !noSuchContainer(ended.value.stderr)) return vendorFail("docker",`docker ${how === "stop" ? "stop" : "rm"} of ${ref.name}'s egress proxy failed: ${ended.value.stderr.trim()}`);
+			const gone = await this.#gone(ended.value, id, `docker ${how === "stop" ? "stop" : "rm"} of ${ref.name}'s egress proxy`, AbortSignal.timeout(SETTLE_MS));
+			if (!gone.ok) return gone;
 		}
 		if (how === "stop") return ok(undefined);
 		const volumes = await this.#run(["volume", "ls", "--filter", label, "--format", "{{.Name}}"]);
@@ -1391,6 +1399,27 @@ export class DockerProvider implements ComputerProvider {
 			if (removed.value.exitCode !== 0) return vendorFail("docker",`docker volume rm ${volume} failed: ${removed.value.stderr.trim()}`);
 		}
 		return ok(undefined);
+	}
+
+	/**
+	 * Whether the docker rm (or stop) that answered `ran` left container `key` gone, `what` naming the call: ok on exit 0
+	 * or "No such container". "Removal of container ... is already in progress" means another removal of it is under way,
+	 * so it is going away: it is looked for, SETTLE_EVERY_MS apart, until it is gone (ok), the caller's `signal` aborts
+	 * (aborted), or `bound` runs out with it still there (a failure that names it). Every other answer is the failure it is.
+	 */
+	async #gone(ran: Ran, key: string, what: string, bound: AbortSignal, signal?: AbortSignal): Promise<Result<void>> {
+		if (ran.exitCode === 0 || noSuchContainer(ran.stderr)) return ok(undefined);
+		if (!removalUnderWay(ran.stderr)) return vendorFail("docker", `${what} failed: ${ran.stderr.trim()}`);
+		const from = Date.now();
+		const either = signal ? AbortSignal.any([signal, bound]) : bound;
+		for (;;) {
+			const look = await this.#inspect([key], either, "{{json .Id}}");
+			if (look.ok && look.value.length === 0) return ok(undefined);
+			if (signal?.aborted) return fail("aborted", `${what} was aborted while docker was still removing ${key}`);
+			if (bound.aborted) return vendorFail("docker", `${what} failed: docker answered that the removal of ${key} was already in progress, and it was still there ${Math.round((Date.now() - from) / 1000)} s later`);
+			if (!look.ok) return look;
+			await sleep(SETTLE_EVERY_MS, undefined, { signal: either }).catch(() => undefined);
+		}
 	}
 
 	/** Inspects containers by name or id, whole or only the fields a format names; one that is gone is left out. */

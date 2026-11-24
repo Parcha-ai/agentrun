@@ -1029,9 +1029,10 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 /** How long the run read that asks whether a runner holds a queued run may take. */
 export const CLAIM_READ_TIMEOUT_MS = 10_000;
 /** Whether a runner holds the run now (the run read's `claim`); undefined when the read fails, takes over
- *  CLAIM_READ_TIMEOUT_MS or is stopped by `signal` (the eval's stop): not known, so never a reason to cancel the run. */
-async function heldNow(api: Api, runId: string, signal?: AbortSignal): Promise<boolean | undefined> {
-  const timeout = AbortSignal.timeout(CLAIM_READ_TIMEOUT_MS);
+ *  CLAIM_READ_TIMEOUT_MS, runs past the run's `deadline` or is stopped by `signal` (the eval's stop): not known, so never
+ *  a reason to cancel the run. Its bound ends at the deadline, so a read that stalls never puts the cancel past it. */
+async function heldNow(api: Api, runId: string, deadline: number, signal?: AbortSignal): Promise<boolean | undefined> {
+  const timeout = AbortSignal.timeout(Math.max(0, Math.min(CLAIM_READ_TIMEOUT_MS, deadline - Date.now())));
   const read = await api("GET", `/runs/${runId}`, undefined, {}, { signal: signal ? AbortSignal.any([signal, timeout]) : timeout }).catch(() => undefined);
   return read?.status === 200 && isObject(read.body) ? isObject(read.body.claim) : undefined;
 }
@@ -1046,8 +1047,8 @@ async function waitRun(api: Api, runId: string, deadline: number, signal?: Abort
   // left to the whole deadline. A run's view reads queued until its first rows show, held or not (a slow start on a busy
   // machine), so a queued page past the bound asks the run read whether a runner holds it now: one does, and the bound
   // starts again from now, so a run a runner keeps holding is waited for to its own deadline. A read that doesn't answer
-  // (failed, stalled past its bound, or stopped) says neither: it is asked again at the next page, and the stop and the
-  // deadline still end the wait.
+  // (failed, stalled past its bound or the deadline, or stopped) says neither: it is asked again at the next page, and
+  // the stop and the deadline still end the wait.
   let queuedUntil = started + queueTimeoutMs;
   for (;;) {
     if (signal?.aborted) {
@@ -1069,14 +1070,15 @@ async function waitRun(api: Api, runId: string, deadline: number, signal?: Abort
       return { status, rows, waiting: typeof waiting?.summary === "string" ? waiting.summary : "it waits on a person" };
     }
     if (status === "queued" && Date.now() > queuedUntil) {
-      const held = await heldNow(api, runId, signal);
+      const held = await heldNow(api, runId, deadline, signal);
       if (held === true) queuedUntil = Date.now() + queueTimeoutMs;
       else if (held === false) {
         await api("POST", `/runs/${runId}/cancel`, {}).catch(() => undefined);
         return { status: "timed_out", rows, why: `the run stayed queued for ${Math.round(queueTimeoutMs / 1000)} s with no runner holding it, and it was cancelled` };
       }
     }
-    if (Date.now() > deadline) {
+    // At the deadline, not only past it: the claim read's bound ends at the deadline, and may end in its very millisecond.
+    if (Date.now() >= deadline) {
       await api("POST", `/runs/${runId}/cancel`, {});
       return { status: "timed_out", rows, why: `the run took longer than ${Math.round((deadline - started) / 1000)} s (state ${String(page.state)} when the wait gave up) and was cancelled` };
     }

@@ -119,9 +119,10 @@ export async function runnerBeside(dataDir: string, { loops, loopsTold, drainMs,
   // the runner beside it (read at each end, once it has started): a computer kept pinned to another runner is that one's.
   const { runEndComputers } = await import("../workspace/run-end-computers.js");
   const { projectRunEnded } = await import("../source-sync/checkpoints.js");
+  const { runCensus } = await import("../run-census.js");
   const self = () => (runner.incarnation ? { runner: name, incarnation: runner.incarnation } : undefined);
   const runEnded = projectRunEnded(store, runEndComputers({ store, computers: computers.computerDeps, log: (line) => console.error(`agentrun-serve runner: ${line}`), self }));
-  const runner = startRunner({ store, name, createLoop, memory: runnerMemory(store, undefined, runs, isolation ? RUN_PROCESS_MIB : 0), onEvent: said, runEnded, ...(held !== undefined ? { loops: held } : {}), ...(drainMs !== undefined ? { drainMs } : {}) });
+  const runner = startRunner({ store, name, createLoop, census: runCensus(store, { data: dataDir, sealKey: seal.key, env: runs }), memory: runnerMemory(store, undefined, runs, isolation ? RUN_PROCESS_MIB : 0), onEvent: said, runEnded, ...(held !== undefined ? { loops: held } : {}), ...(drainMs !== undefined ? { drainMs } : {}) });
   // The computer janitor over the same computers, when the start asks for it: never under --faux. Its lines are the
   // runner's, on stderr (a stderr whose reader closed loses them, never the process: cli.ts).
   const { startJanitor } = await import("../workspace/computer-janitor.js");

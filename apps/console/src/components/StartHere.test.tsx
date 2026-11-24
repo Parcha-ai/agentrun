@@ -22,13 +22,13 @@ const mount = (p: Partial<StartHereProps> = {}) => {
   return host;
 };
 const button = (host: HTMLElement, text: string) => [...host.querySelectorAll("button")].find((b) => b.textContent?.trim() === text)!;
-const expand = (host: HTMLElement) => act(() => button(host, "Run an agent here").click());
+const expand = (host: HTMLElement) => act(() => button(host, "See templates").click());
 
 describe("StartHere", () => {
   it("starts with native connection, without model setup or expanded execution controls", () => {
     const h = html({ harnesses: [{ id: "pi", available: true, default_model: null }] });
     expect(h).toContain("No model key needed");
-    expect(h).toContain("Connect agent");
+    expect(h).toContain("Connect your agents");
     expect(h).toContain("live connection or a history import");
     expect(h).toContain('aria-expanded="false"');
     expect(h).not.toContain("Try it");
@@ -40,6 +40,12 @@ describe("StartHere", () => {
     const host = mount({ onTry: (t) => { tried.push(t.id); return new Promise((r) => { finish = () => r(null); }); } });
     expand(host);
     for (const name of ["Hello, AgentRun", "Summarize a web page", "Plan a task"]) expect(host.textContent).toContain(name);
+    // Each card says what it does once: its name, its one line, its button.
+    expect([...host.querySelectorAll("li")].map((li) => li.textContent)).toEqual([
+      "Hello, AgentRunA first agent: writes hello.md and answers in one line.Try it",
+      "Summarize a web pageReads a public web page and sums it up in three bullets.Try it",
+      "Plan a taskTurns a goal into steps, risks and a first move.Try it",
+    ]);
     const tries = [...host.querySelectorAll("button")].filter((b) => b.textContent === "Try it");
     expect(tries).toHaveLength(3);
     // No card is singled out: every Try it is the same button.

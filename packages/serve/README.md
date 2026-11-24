@@ -243,6 +243,26 @@ whose stored cost was unknown that it read, those whose priced booking it wrote 
 heals on its next read). The rest stay unknown: a charge of no known cost, or a booking with no request to read. It
 names no run, and a store with no such run says nothing; quiet keeps it too.
 
+## Traces (OpenTelemetry)
+
+Set `OTEL_EXPORTER_OTLP_ENDPOINT` (or `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`) and every run on a pi or CLI harness
+exports a GenAI trace over OTLP/HTTP to any backend that takes one, with the official OpenTelemetry SDK: an
+`invoke_agent {harness}` span per claim of the run, under it a `chat {model}` span per model request (provider, model,
+`server.address` (the host the request goes to, OpenRouter's for a model reached through it; none where not known),
+and tokens with the cache: `gen_ai.usage.input_tokens` includes the cache read and write, which are also given on their
+own) and an `execute_tool {tool}` span per tool call. A run is one trace, sampled whole or not at
+all (`OTEL_TRACES_SAMPLER`, `OTEL_TRACES_SAMPLER_ARG`). A request billed to a plan, and every turn of a plan harness,
+has `agentrun.billing=plan` and no token counts. No span holds content (a prompt, a message, a tool's arguments or
+result), whatever `OTEL_INSTRUMENTATION_GENAI_CAPTURE_CONTENT` says; content capture comes later. Reasoning tokens are
+not on chat spans yet: the usage a run's requests are booked with does not count them apart. Nor is
+`gen_ai.response.model`: the model asked for is `gen_ai.request.model`. The exporter takes the standard
+`OTEL_EXPORTER_OTLP_HEADERS` and `OTEL_EXPORTER_OTLP_TIMEOUT`, and the resource `OTEL_SERVICE_NAME` and
+`OTEL_RESOURCE_ATTRIBUTES` (put `deployment.environment.name` there); `service.name` is `agentrun` unless set. Runs never
+receive these settings: no `OTEL_*` variable reaches a run's harness, tools or computer, and a run's own process is
+handed them apart from its environment. Spans are sent in the background, so a run's end never waits on the collector;
+a server or runner that stops waits at most 3 s to send what is left, and a collector that is down costs one log line
+and the dropped spans. Unset, or with `OTEL_SDK_DISABLED=true`, no OpenTelemetry code loads and nothing is sent.
+
 ## Anonymous usage counts
 
 The server sends six anonymous events: `server_started`, a daily `heartbeat`, `first_run_completed`, and, for
@@ -1554,7 +1574,10 @@ The sign-in is the owner's alone, over the owner's signed-in session (the API to
   sign-in tab ends on a page that won't load: copy its whole address into the console, which sends it as
   `POST /v2/settings/chatgpt/sign-in/finish` `{"redirect_url": "..."}`.
 - `GET /v2/settings/chatgpt` says `state`: `signed_out`, `pending` (with `authorize_url` and `expires_at`), `signed_in`
-  (with `email`, `plan` and the plan's `models`) or `expired`.
+  (with `email`, `plan` and the plan's `models`) or `expired`. A `pending` sign-in with no code back after its first
+  minute also carries a `hint`. It names the likely cause first: the ChatGPT workspace's admin has turned off open-source
+  apps (External access → OSS → Use ChatGPT plan). OpenAI shows that refusal on its own page and never sends the browser
+  back.
 - `DELETE /v2/settings/chatgpt` signs out: it removes the sign-in here and revokes it at OpenAI, and answers
   `{"revoked": true}` when OpenAI confirmed it (or nothing was signed in, as when it only cancels a waiting sign-in).
   When OpenAI didn't confirm it, the answer is `{"revoked": false, "message": "Signed out here. OpenAI didn't confirm
@@ -1720,7 +1743,7 @@ agent_not_runnable`, with `details.unbound` and `details.missing`).
 | `ask_person` | Ask the person who started the run; the turn ends until a message answers | nothing | no, no |
 | `web_fetch` | Read one web page from a public host through the guarded direct fetch, or through Parallel's extract where Parallel is picked ([search and fetch](#search-and-fetch)), a part at a time: `{url, offset?, max_chars?}` in, a Page out, `{ok, url, status, title, text, chars, truncated?, original_chars?, beyond_read?, offset?, next_offset?, html_chars?, converted?, links, links_omitted?, via, parallel?, refused?, error?}` | nothing (`PARALLEL_API_KEY` for Parallel, one billed extract a page a run) | yes, yes |
 | `web_search` | Search the web, natively where the harness or the model's provider can, else through Parallel where the server holds its key, else keyless through Exa, or through the provider picked ([search and fetch](#search-and-fetch)): `{query, n?}` in, `{provider, query, results: [{url, title, snippet, published?}], text?}` or `{error}` out | nothing (`PARALLEL_API_KEY` for Parallel) | yes, yes |
-| `web_save` | Download one file from a public URL into the run's `work/` and keep it there, for a link that expires (a generated image, audio or video): `{url, path}` in, `path` relative to `work/` and a bare name under `media/`; `{ok: true, path, bytes, content_type, duration_s?, url}` or `{ok: false, url, refused \| error}` out, `duration_s` an mp3, wav, mp4 or m4a's length in seconds read from its bytes. Never overwrites | nothing | no, no |
+| `web_save` | Download one file from a public URL into the run's `work/` and keep it there, for a link that expires (a generated image, audio or video): `{url, path}` in, `path` relative to `work/` and a bare name under `media/`; `{ok: true, path, bytes, content_type, duration_s?, url}` or `{ok: false, url, refused \| error}` out, `duration_s` its length in seconds when it is audio or video whose bytes give it (below). Never overwrites | nothing | no, no |
 | `browser` | A hosted browser, Browserbase's or Kernel's, on pi-browser's durable adapter: `snapshot`, `run`, `screenshot`, `browser_read`, `browser_release`, `browser_relaunch`, `browser_downloads` and `browser_upload` (into and from the run's `work/`); Kernel keeps no downloads, so a run on Kernel has no `browser_downloads` | `BROWSERBASE_API_KEY` and `BROWSERBASE_PROJECT_ID`, or `KERNEL_API_KEY` | yes, no |
 | `monid:<provider>/<endpoint>`, `monid:<provider>/*` | One monid endpoint, or every endpoint monid lists for a provider (at most 50), each pinned at the save and run as a tool of its own, paid per call from the monid wallet: `{body?, queryParams?, pathParams?}` in, the run's `output`, `price` and `cost` out ([monid](#monid)) | `MONID_API_KEY` | no, no |
 | `pdf_pages` | A workflow call only: `{path, maxPages?, dpi?}` in, `{name, pageCount, dpi, pages: [{page, image}], text}` out. Draws a document's first pages (3 by default, at 110 dpi) as PNGs under the run's `work/pages/<stem>/<dpi>/` (`<stem>`: the document's path below its directory made one name, with a short hash, so two documents of one file name never share pages), the dpi lowered so a page's long side is at most 1568 px, with its text (`pdftotext`, cut at 20,000 characters). A PNG or JPEG passes through as one page, scaled down to 1568 px. `path` is under `--documents` or the run's `work/`, never outside | `pdftoppm`, `pdftotext` | no, yes |
@@ -1868,14 +1891,15 @@ Each child books on the run's cap, so size the cap for K passes, not one.
 
 `web_search` and `web_fetch` work on every harness with only a model key. Each resolves, for a run, in one order: (1) the
 provider the user picked, optional: the agent's own (`definition.tool_settings`) over the server's
-(`PUT /settings/tools`); (2) the native tool, the harness's own or its model provider's hosted one (on claude-agent
-only where it is picked: `auto` there skips Claude's own search, an explicit `native` pick); (3) for
+(`PUT /settings/tools`); (2) for
 `web_search`, Parallel, where the server holds a Parallel key (`PARALLEL_API_KEY` in its environment, or one saved on Tool
-keys): `auto` then uses that key and bills it, each search booked as the run's cost ($0.001 a search); (4) the keyless
-fallback, Firecrawl's public MCP endpoint (for `web_search` with Exa's behind it). A revision's `tools` (and a pack's grant) names the capability, never a provider. On codex, `auto` is
-Codex's own search, except behind a gateway, on OpenRouter (which runs neither Codex's nor Claude's own search, and
-counts no searches to price) or under a spend cap (its request has no input bound, which a cap cannot
-admit), where it is Parallel on the server's key, else keyless Firecrawl. `off` turns `web_search` off: nothing is
+keys): `auto` then uses that key and bills it, each search booked as the run's cost ($0.001 a search); (3) the keyless
+fallback, Firecrawl's public MCP endpoint (for `web_search` with Exa's behind it). A revision's `tools` (and a pack's grant) names the capability, never a provider.
+`auto` is agentrun's own search on every harness. The native search, the harness's own (Claude's WebSearch, Codex's
+live search) or on pi one request to the run's own model provider with its hosted search, runs only where `native` is
+picked; it is unavailable behind a gateway, on OpenRouter (which runs neither Codex's nor Claude's own search, and
+counts no searches to price) or under a spend cap (Codex's request has no input bound, and Claude's searches have
+per-use fees, which a cap cannot reserve yet). `off` turns `web_search` off: nothing is
 searched, and an agent naming it is refused (`409`) until it is turned on again. A pick of `firecrawl-keyless` is keyless
 Firecrawl with keyless Exa behind it, and a pick of `exa-keyless` is keyless Exa alone, the key held or not.
 A workflow's model nodes may each run on another tier's model, so a workflow's `web_search` never searches natively:
@@ -1884,8 +1908,8 @@ unavailable for a workflow.
 
 | | `claude-agent` | `codex` | pi |
 | --- | --- | --- | --- |
-| `web_search`, `auto` (the default) | Parallel on the server's key, else keyless Firecrawl: Claude's own WebSearch is the `native` pick | Codex's own search, each search booked; behind a gateway, on OpenRouter or under a spend cap, Parallel on the server's key, else keyless Firecrawl, a host tool | one request to the run's own model provider with its hosted search (Anthropic, OpenAI direct); behind a gateway (`AGENT_MODEL_BASE_URL`) or on another provider, Parallel on the server's key, else keyless Firecrawl |
-| `web_search`, `native` | Claude's own WebSearch, unavailable on OpenRouter or under a spend cap | the same, unavailable behind a gateway, on OpenRouter or under a spend cap | the same, unavailable where there is none: never a keyless search |
+| `web_search`, `auto` (the default) | Parallel on the server's key, else keyless Firecrawl, a host tool: Claude's own WebSearch is the `native` pick | the same: Codex's own search is the `native` pick | the same: the model provider's hosted search is the `native` pick |
+| `web_search`, `native` | Claude's own WebSearch, unavailable on OpenRouter or under a spend cap | Codex's own search, each search booked; unavailable behind a gateway, on OpenRouter or under a spend cap | one request to the run's own model provider with its hosted search (Anthropic, OpenAI direct); unavailable behind a gateway (`AGENT_MODEL_BASE_URL`) or on another provider: never a keyless search |
 | `web_search`, `off` | unavailable (`web_search is turned off in settings`): nothing is searched | the same | the same |
 | `web_search`, `firecrawl-keyless` | Firecrawl's public MCP search, keyless Exa's behind it, a host tool | the same | the same |
 | `web_search`, `exa-keyless` | Exa's public MCP search alone, a host tool | the same | the same |
@@ -3289,6 +3313,16 @@ warning, as a github trigger is with GitHub not connected. The first package is 
 rules of an apply are in [templates/README.md](https://github.com/Parcha-ai/agentrun/blob/main/packages/serve/templates/README.md);
 `agentrun template validate DIR` checks a folder as the server does.
 
+`GET /v2/marketplace/templates` lists the templates on [marketplace.agentrun.ai](https://marketplace.agentrun.ai), the
+list the marketplace publishes (`/search.json`), each with `here`, the id of the package on this server that it is
+(`x-agentrun-serve: "marketplace/1"`). The server reads the list only when asked, never at its start, keeps it 5
+minutes, and keeps the last good one through a failed read (`state: "stale"`); with none it answers `unreachable` and an
+empty list, always with a 200. Nothing on the list is imported or run: an entry that names its `source` installs with
+`POST /v2/templates/import`, its publisher trusted once, and one that names none from its marketplace page. The
+console's Templates and Build pages list this server's packages, then the marketplace's others.
+`AGENTRUN_MARKETPLACE=off` reads none, as does `--faux` unless it names an address; `AGENTRUN_MARKETPLACE=<https
+address>` reads that site's list.
+
 `agentrun template eval DIR` (`agentrun-serve eval-template DIR`) runs a package's eval cases as real runs of its agent
 and grades each run with the case's graders: by default on a server of its own over a temp data directory, so it never
 touches yours, with each case's fake MCP servers on loopback and its corrections seeded through the learning API. Real
@@ -3348,6 +3382,7 @@ failed, 2 when nothing ran. The runner, the graders and the report are in
 | `GET`, `PUT` and `DELETE /settings/webhook`, `POST /settings/webhook/test`, `GET /settings/webhook/deliveries` and `POST .../deliveries/{webhook_id}/redeliver` | [Webhooks](#webhooks), this server's own routes (`x-agentrun-serve: "webhook/1"`): the URL run notices are POSTed to, signed by the Standard Webhooks spec; never its secret but once. |
 | `GET` and `POST /triggers`, `GET`, `PATCH` and `DELETE /triggers/{id}`, `POST /triggers/{id}/fire`, `GET /triggers/{id}/firings`, `POST /triggers/{id}/secret`, `POST /hooks/{id}` (no token: [signed](#webhook-triggers)) | [Schedules](#schedules), this server's own routes (`x-agentrun-serve: "trigger/1"`): schedules that start an agent's capped runs, each firing once, and their history. |
 | `GET /templates`, `POST /templates/{name}/apply` | [Templates](#templates), this server's own routes (`x-agentrun-serve: "templates/1"`): the template packages it ships, and an apply that makes one's agent and triggers, all or nothing. |
+| `GET /marketplace/templates` | [Templates](#templates), this server's own route (`x-agentrun-serve: "marketplace/1"`): marketplace.agentrun.ai's templates as this server read them, each with the package here that it is. |
 | `POST /mcp` | This server's own route (`x-agentrun-serve: "mcp/1"`): the [MCP endpoint](#for-coding-agents), Streamable HTTP with one JSON-RPC message per POST (`initialize`, `ping`, `tools/list`, `tools/call`), answered as JSON, stateless. Its ten tools call these routes in process with the caller's token. The Bearer token only, never the page's cookie; a browser `Origin` other than this server's own is `403`; any other method is `405`. |
 | `GET /usage` | The runs' costs, by meter, agent, key, day or region (`key` and `region` are one line, `local`). By meter, `tools` holds the runs' paid tool calls and the workflow decisions Parallel charged on its own API, as `cost.tools_usd` does. A run of unknown cost adds what it is known to have spent so far (its `so_far_usd`: each priced charge, browser time and paid tools included) and is counted in `unpriced_runs` (in the total and in each line it is unknown on), so no sum is ever null, it never passes as $0, and a total is never below a line of its own: with `unpriced_runs` above 0 the total is a lower bound. `basis` says how the costs were reached ([A run's cost](#a-runs-cost-its-tokens-and-its-basis)). |
 
@@ -3763,7 +3798,9 @@ back.
 `GET /v2/capabilities` lists each in `harnesses`, with `available` and, when not, the `reason`, and `default_model`: the
 model the harness runs when a definition names none (`provider/model-id`, as a save and a run resolve it), or null where
 it runs none (the harness does not run here, or no default model here runs on it: claude-agent never takes a gateway's
-model). A definition naming a
+model). Its `models` are those a save takes; `ready_models`, those of them a run takes now, their provider connected here
+(its key set, or the ChatGPT sign-in where that is how the harness runs them). One that lacks only its key is in `models`
+and not in `ready_models`: a save of it warns, and the console's Model picker lists it only when asked. A definition naming a
 harness this server does not run yet saves with a warning on `definition.harness`, and a run of it is
 `409 agent_not_runnable` with `details.harness`; it never runs on pi instead. This server runs pi always, and
 `claude-agent`, `codex` and `opencode` when each adapter's package, pins and provider endpoint check out; the harness's
@@ -4803,13 +4840,27 @@ not metered and bills its own account outside the cap. fal is counted: a job sen
 toolkit `fal`, or at `mcp.fal.ai`) through `run_model`, `submit_job` or `submit_jobs` is priced before it is sent, at
 fal's unit price for its endpoint (the server's own `get_pricing`, read with the run's credential and kept five
 minutes) times the units the job's input states: its images, their megapixels, its text's characters, the seconds it
-names, or, for dubbing, lip-sync, voice isolation and speech-to-text, which fal bills by the length of the media they
-are given, that length, read from the file first. That price is held under the cap, a
+names (only on an endpoint whose input sets the length fal bills, such as Kling's or Veo's `duration`, and only in
+that field), or, for dubbing, lip-sync, voice isolation and speech-to-text, which fal bills by the length of the media they
+are given, that length, read from the file first. A length fal rounds up is rounded up the same way: a talking head's
+voice to whole seconds, ElevenLabs Music and dubbing to whole minutes. That price is held under the cap, a
 job the cap can't take is refused before it is submitted, and the job is booked as the run's tool cost, charged by the
 server, with the price and the count it came from. It is an estimate at fal's list price, not fal's invoice: fal
-reports no cost for a job, and a minimum charge, a discount or a rate that depends on a setting `get_pricing` does not
-list are not in it. A job whose units can't be known before it runs (one billed by compute time or tokens, one that
-names no size or length, media whose length can't be read, an endpoint with no listed price) is refused under a cap,
+reports no cost for a job, and a minimum charge or a discount `get_pricing` does not list is not in it. Where fal's rate
+depends on a setting and `get_pricing` states one rate (Ideogram v3's and Ideogram character's `rendering_speed`,
+Veo's audio and resolution, Kling v3's audio and voice control, sync-lipsync's pro model, Nano Banana Pro's and Nano
+Banana 2's resolution, web search and thinking, Fabric's resolution), a job is priced at `get_pricing`'s rate times the ratio fal's model page gives its
+settings, a setting it leaves out at its default, plus any charge the page adds per unit (a web search, per image).
+Where the page and `get_pricing` disagree, the higher is held. The endpoints of those families (Ideogram v3 and
+character, Nano Banana Pro and 2, each also served as a Gemini image preview, Veo 3 and 3.1, Kling v3, sync-lipsync v2,
+Fabric 1.0) are each decided: priced by their settings or at one rate. Some of their video endpoints have no reader for
+the length fal bills (the changelog lists them). These endpoints' rates are decided, but their holds aren't yet: under a cap, a job on one is refused until its length can be read. Ideogram v4, v4.5 and v4.6 and Nano Banana
+2.1 are such families with no rate decided, so all of them are refused under a cap. An image job whose `limit_generations` is anything but `true` or
+left out is refused under a cap too: `false` lets its prompt ask for more images than it names, each billed. A variant fal adds to one of them is refused under a cap until it is decided, in words that
+name it, never held at `get_pricing`'s one rate. Any other endpoint is priced at `get_pricing`'s one rate, whatever its
+settings. A job whose units can't be known before it runs (one billed by compute time or tokens,
+one that names no size or length, media whose length can't be read, an endpoint with no listed price, a setting value
+the model page names no rate for, a variant whose rate is not decided) is refused under a cap,
 in words that say why; with no cap it runs, booked as an unknown charge. A price saved for a fal tool takes the place
 of this. A request costs its input, plus the output it
 is sent with at the output price, plus any fee its tokens do not show (below). Its input is priced at its worst case:
