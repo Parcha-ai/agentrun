@@ -638,7 +638,7 @@ export function createWorld({ opened = Date.now(), clock = () => Date.now() }: {
     a.current = undefined;
     skillFiles.set(revisionOf(a), { ...files });
     if (typeof definition.description === "string") a.description = definition.description;
-    if (typeof definition.model === "string") a.model = definition.model;
+    a.model = typeof definition.model === "string" ? definition.model : MODELS.default;
     if (typeof definition.harness === "string") a.harness = definition.harness;
     a.learning = !!a.saved.at(-1)!.learning;
     return agentOf(a);
@@ -736,6 +736,8 @@ export function createWorld({ opened = Date.now(), clock = () => Date.now() }: {
     const version = a ? a.notes.findIndex((_, i) => revisionOf(a, i + 1) === revision) + 1 : 0;
     if (!a || !version) return null;
     a.current = version === a.notes.length ? undefined : version;
+    const definition = definitionOf(a);
+    a.model = typeof definition.model === "string" ? definition.model : MODELS.default;
     return agentOf(a);
   };
   const writeCorrections = (id: string, text: string): string | null => { if (!agents.get(id)?.learning) return null; corrections.set(id, text); return text; };

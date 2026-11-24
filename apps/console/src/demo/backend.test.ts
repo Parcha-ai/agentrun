@@ -110,7 +110,7 @@ describe("demo mode's backend", () => {
   });
 
   it("clears removed optional settings after saving and reopening, while preserving the original revision", async () => {
-    const { v2, asked } = demo();
+    const { v2, asked, now } = demo();
     const made = await v2.createAgent({ definition: { version: 1, name: "Reset settings", instructions: "Review.", harness: "pi", model: "test/model", thinking: "high", skills: [], tools: ["read"] } });
     const body = editBody(made, { thinking: undefined, model: "" }, "Use model defaults");
     expect(body.definition).not.toHaveProperty("thinking");
@@ -120,8 +120,14 @@ describe("demo mode's backend", () => {
     expect(reopened.definition).not.toHaveProperty("thinking");
     expect(reopened.definition).not.toHaveProperty("model");
     expect(reopened.definition).toMatchObject({ instructions: "Review.", harness: "pi", tools: ["read"] });
+    const { run } = await v2.startRun(made.agent_id, { input: { content: "Review the change." } }, "reset-model");
+    now.ms += 60_000;
+    expect((await v2.runUsage(run.run_id)).lines).toEqual(expect.arrayContaining([expect.objectContaining({ provider: "anthropic", model: "claude-sonnet-5-5" })]));
     await v2.setCurrent(made.agent_id, made.revision!);
     expect((await v2.getAgent(made.agent_id)).agent.definition).toMatchObject({ thinking: "high", model: "test/model" });
+    const restored = await v2.startRun(made.agent_id, { input: { content: "Review again." } }, "restored-model");
+    now.ms += 60_000;
+    expect((await v2.runUsage(restored.run.run_id)).lines).toEqual(expect.arrayContaining([expect.objectContaining({ provider: "test", model: "model" })]));
     expect(asked).toEqual([]);
   });
 
