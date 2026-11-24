@@ -428,8 +428,8 @@ export interface ClaudeSignIn {
   stop(): void;
 }
 
-/** Whether `file` is a regular file this process may execute. */
-function executable(file: string): boolean {
+/** Whether `file` is a regular file this process may execute. A Buffer is a path's own bytes, as the kernel takes them. */
+function executable(file: string | Buffer): boolean {
   try {
     accessSync(file, constants.X_OK);
     return statSync(file).isFile();
@@ -444,18 +444,40 @@ function onPath(name: string, path: string): string | undefined {
   return undefined;
 }
 
-/** The first line of `file` (at most 256 bytes), or undefined when it can't be read. */
-function firstLine(file: string): string | undefined {
+/** Whether a program named by the bytes `name` is on a folder of `path` (the sign-in's PATH, which env searches). */
+const onPathBytes = (name: Buffer, path: string): boolean => path.split(delimiter).some((dir) => dir !== "" && executable(Buffer.concat([Buffer.from(join(dir, "/")), name])));
+
+/** The first line of `file` (at most 256 bytes) as its bytes, or undefined when it can't be read. */
+function firstLine(file: string): Buffer | undefined {
   let fd: number | undefined;
   try {
     fd = openSync(file, "r");
     const head = Buffer.alloc(256);
-    return head.subarray(0, readSync(fd, head, 0, head.length, 0)).toString("latin1").split("\n")[0];
+    const read = head.subarray(0, readSync(fd, head, 0, head.length, 0));
+    const end = read.indexOf(0x0a);
+    return end < 0 ? read : read.subarray(0, end);
   } catch {
     return undefined;
   } finally {
     if (fd !== undefined) closeSync(fd);
   }
+}
+
+/** The words of a `#!` line after the `#!` (the interpreter, then its argument), as bytes: the kernel reads the line as
+ *  bytes and splits it at blanks, so a path under a folder whose name is not ASCII is that name's bytes, never a decode
+ *  of them. Blanks are ASCII ones only: in UTF-8 the byte 0xA0 is part of a character (`à` is C3 A0), not a space. */
+function shebangWords(line: Buffer | undefined): Buffer[] {
+  if (!line || line[0] !== 0x23 || line[1] !== 0x21) return [];
+  const words: Buffer[] = [];
+  let start = -1;
+  for (let i = 2; i <= line.length; i++) {
+    const blank = i === line.length || [0x20, 0x09, 0x0d, 0x0b, 0x0c, 0x00].includes(line[i]!);
+    if (blank && start >= 0) {
+      words.push(line.subarray(start, i));
+      start = -1;
+    } else if (!blank && start < 0) start = i;
+  }
+  return words;
 }
 
 const notStartable = (cli: string, why = ""): Error => Object.assign(new Error(`spawn ${cli} ENOENT${why}`), { code: "ENOENT" });
@@ -474,12 +496,14 @@ function startable(cli: string, path: string): void {
   if (/[\\/]/.test(cli)) accessSync(cli, constants.X_OK);
   else file = onPath(cli, path) ?? "";
   if (!file) throw notStartable(cli);
-  const [, interpreter, program] = /^#!\s*(\S+)(?:\s+(\S+))?/.exec(firstLine(file) ?? "") ?? [];
+  // The interpreter and its argument are checked by their bytes (Buffer paths); the tests on their ASCII characters read
+  // them as Latin-1, which maps each byte to one character, so those tests see exactly the bytes. The words decode them.
+  const [interpreter, program] = shebangWords(firstLine(file));
   if (!interpreter) return;
-  if (!executable(interpreter)) throw notStartable(cli, `: the interpreter its first line names, ${interpreter}, is not there`);
+  if (!executable(interpreter)) throw notStartable(cli, `: the interpreter its first line names, ${interpreter.toString()}, is not there`);
   // env runs the program it is given, looked up on the sign-in's PATH; an option or a variable is left to env.
-  if (/(^|\/)env$/.test(interpreter) && program && !/^-|=/.test(program) && !(/\//.test(program) ? executable(program) : onPath(program, path))) {
-    throw notStartable(cli, `: the interpreter its first line names, ${program}, is on no folder of its PATH`);
+  if (/(^|\/)env$/.test(interpreter.toString("latin1")) && program && !/^-|=/.test(program.toString("latin1")) && !(program.includes(0x2f) ? executable(program) : onPathBytes(program, path))) {
+    throw notStartable(cli, `: the interpreter its first line names, ${program.toString()}, is on no folder of its PATH`);
   }
 }
 
