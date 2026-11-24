@@ -48,9 +48,11 @@ export const EXA_SEARCH_TYPE_USD: Readonly<Record<ExaSearchType, number>> = Obje
 /** Each search result past the 10 a type includes: $1 per 1,000. */
 export const EXA_SEARCH_RESULT_USD = 0.001;
 export const EXA_SEARCH_INCLUDED = 10;
-/** Each content asked of a page (text, highlights, summary), in a search's results or a contents request: $1 per 1,000
- *  pages, so a page with text and highlights is two. */
+/** Each content asked of a page in a contents request (text, highlights, summary): $1 per 1,000 pages, so a page with
+ *  text and highlights is two. A search's text and highlights are in its type's price (Exa's own cost report,
+ *  costDollars, 2026-11-24); its AI page summaries are $1 per 1,000 pages. */
 export const EXA_CONTENT_USD = 0.001;
+export const EXA_SUMMARY_USD = 0.001;
 const EXA_CONTENTS = ["text", "highlights", "summary"] as const;
 
 const isExaType = (type: unknown): type is ExaSearchType => typeof type === "string" && Object.hasOwn(EXA_SEARCH_TYPE_USD, type);
@@ -58,7 +60,7 @@ const isExaType = (type: unknown): type is ExaSearchType => typeof type === "str
 const exaContentsAsked = (contents: unknown): number => (typeof contents === "object" && contents !== null ? EXA_CONTENTS.filter((name) => { const asked = (contents as Record<string, unknown>)[name]; return asked !== undefined && asked !== null && asked !== false; }).length : 0);
 
 /** The fee of a request to Exa's `path` with `body`: a search's by its type (auto when it names none, as Exa reads it), its
- *  results past 10 and the contents asked of each; a contents request's by its URLs and the contents asked of each (one
+ *  results past 10 and a summary of each where it asks one; a contents request's by its URLs and the contents asked of each (one
  *  at least: Exa answers text when none is asked). Undefined for an endpoint the web tools do not ask, and for a search
  *  type with no price here. */
 export function exaFeeOf(path: string, body: unknown): Fee | undefined {
@@ -67,9 +69,10 @@ export function exaFeeOf(path: string, body: unknown): Fee | undefined {
     const type = asked.type ?? "auto";
     if (!isExaType(type)) return undefined;
     const n = typeof asked.numResults === "number" && asked.numResults > 0 ? Math.floor(asked.numResults) : EXA_SEARCH_INCLUDED;
-    const contents = exaContentsAsked(asked.contents);
+    const summary = (asked.contents as { summary?: unknown } | undefined)?.summary;
+    const summaries = summary !== undefined && summary !== null && summary !== false ? n : 0;
     const more = Math.max(0, n - EXA_SEARCH_INCLUDED);
-    return { name: "Exa's search", by: "exa", usd: usd(EXA_SEARCH_TYPE_USD[type] + EXA_SEARCH_RESULT_USD * more + EXA_CONTENT_USD * contents * n), basis: `Exa's list price for a ${type} search of ${n} results${contents ? `, ${contents === 1 ? "one content" : `${contents} contents`} each` : ""}` };
+    return { name: "Exa's search", by: "exa", usd: usd(EXA_SEARCH_TYPE_USD[type] + EXA_SEARCH_RESULT_USD * more + EXA_SUMMARY_USD * summaries), basis: `Exa's list price for a ${type} search of ${n} results${summaries ? ", each summarized" : ""}` };
   }
   if (path === "/contents") {
     const urls = Array.isArray(asked.urls) ? Math.max(1, asked.urls.length) : 1;
