@@ -510,7 +510,19 @@ function stuckCli({ ignoreTerm = false, holder = false } = {}) {
     '',
   ].join('\n'), { mode: 0o755 });
   const pids = () => ['pid', 'holder'].filter((name) => existsSync(join(dir, name))).map((name) => Number(readFileSync(join(dir, name), 'utf8').trim()));
-  return { cli, pids };
+  /** The stand-in CLI's own pid (its `exec` keeps it). */
+  const pid = () => Number(readFileSync(join(dir, 'pid'), 'utf8').trim());
+  return { cli, pids, pid };
+}
+
+/** Whether `pid` is a live process (one this test may not signal still is). */
+function alive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error.code === 'EPERM';
+  }
 }
 
 for (const [what, options] of [['ignores SIGTERM', { ignoreTerm: true }], ['leaves a process holding its output open', { holder: true }]]) {
@@ -531,6 +543,8 @@ for (const [what, options] of [['ignores SIGTERM', { ignoreTerm: true }], ['leav
     assert.equal(outcome.error?.code, 'timed_out', `it ends as timed_out: ${outcome.error?.message ?? JSON.stringify(outcome.value)}`);
     assert.deepEqual(readdirSync(tmp), [], "the check's folder is gone");
     assert.equal(stuck.pids().length, options.holder ? 2 : 1, 'the stand-in reached its wait');
+    // The check ended its CLI, a TERM or the kill after it, and never left it running (a process it started is its own).
+    assert.equal(alive(stuck.pid()), false, `the status check ended at its limit, but its CLI (pid ${stuck.pid()}) still runs`);
   });
 }
 
