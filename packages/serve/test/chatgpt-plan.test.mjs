@@ -1024,6 +1024,34 @@ test("a start's settle lists the plan's models only with a token OpenAI takes, a
   assert.equal((await openRow(store, sealKey)).unlisted, undefined);
 });
 
+test("the server's read of an unlisted sign-in a reader renewed lists its models then, not at the next start, with no renewal of its own; a listed row or a closed plan queues none", { timeout: 30_000 }, async (t) => {
+  const openai = fakeOpenAI(t);
+  const { ChatGPTPlan } = await import("../dist/chatgpt-plan.js");
+  const store = mapStore();
+  const sealKey = randomBytes(32);
+  const old = await seatRow(store, sealKey);
+  await seatUnsettled(store, sealKey, old, -1_000);
+  let told = 0;
+  const plan = await startOf(new ChatGPTPlan({ store, sealKey, changed: () => void (told += 1) }));
+  await until(() => openai.revocationsOf(old.refresh) === 1, "the start's settle carried the old pair off");
+  assert.equal(openai.modelLists, 0, "the start's token was ended: nothing listed");
+  const renewed = await new ChatGPTPlan({ store, sealKey }).token();
+  await plan.refresh();
+  await until(() => openai.modelLists === 1, "the server's read queued a settle with the fresh token");
+  await until(async () => (await openRow(store, sealKey)).unlisted === undefined, "the listed models written");
+  await until(() => told >= 1, "and told to the server, so its offers are made again");
+  assert.deepEqual(openai.modelBearers, [`Bearer ${renewed}`]);
+  assert.equal(openai.refreshes, 1, "the reader's renewal alone: the read never renews");
+  await plan.refresh();
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.equal(openai.modelLists, 1, "a listed row queues no settle");
+  await plan.close();
+  await seatUnsettled(store, sealKey, (await openRow(store, sealKey)).credential, 60 * 60_000);
+  await plan.refresh();
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.equal(openai.modelLists, 1, "after close(), a read queues no settle to outlive the stop");
+});
+
 test("close() waits for a start's settle to tell the server: not while the change callback it owes is out, at once after", { timeout: 30_000 }, async (t) => {
   fakeOpenAI(t);
   const { ChatGPTPlan } = await import("../dist/chatgpt-plan.js");
