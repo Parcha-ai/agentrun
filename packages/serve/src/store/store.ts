@@ -1328,8 +1328,10 @@ export interface Settings {
   /** Saves `value` under `key` only when the key has no row yet; the value saved after (this one, or the one there before).
    *  With `capacity`, count and insert share a namespace lock and transaction across store handles. Every raw key under
    *  the exact prefix counts, without decoding values. An existing key wins even at capacity; undefined means a new key
-   *  was refused. The nonempty prefix must contain the key, and limit must be a positive safe integer. */
-  putIfAbsent(key: string, value: unknown, capacity?: { readonly prefix: string; readonly limit: number }): Promise<unknown>;
+   *  was refused. The nonempty prefix must contain the key, and limit must be a positive safe integer. With `claim`,
+   *  holds the run's shared row lock and checks its epoch/lease in the same transaction as the insert, as replaceIf
+   *  does: a stale claim throws Fenced and nothing is written. */
+  putIfAbsent(key: string, value: unknown, capacity?: { readonly prefix: string; readonly limit: number }, claim?: Claim): Promise<unknown>;
   /** Saves `value` under `key` only while its row still holds `was` (as get read it), in one statement: a compare-and-set,
    *  so of two writers that read one row only one replaces it. True when it was replaced; false, with nothing written,
    *  when the row changed since or is gone. With `claim`, holds the run's shared row lock and checks its epoch/lease in

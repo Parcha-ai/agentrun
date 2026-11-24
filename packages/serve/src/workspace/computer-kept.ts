@@ -46,7 +46,7 @@
 // machine is ever left with no row and no runner to end it. A machine any runner reaches by its id (an exec vendor's
 // sandbox, a phone) is not pinned, and moves.
 import { type ComputerProvider, connectOf, type MountKind, type ProviderEntry } from "@parcha/agentrun-computer";
-import { FINAL_STATES, KEPT_PREFIX, RUNNER_STALE_MS, type Runners, type Settings, type Store } from "../store/index.js";
+import { type Claim, FINAL_STATES, KEPT_PREFIX, RUNNER_STALE_MS, type Runners, type Settings, type Store } from "../store/index.js";
 
 /** How long a park keeps the run's computer for its resume: 10 minutes. */
 export const KEEP_MS = 10 * 60_000;
@@ -227,23 +227,28 @@ const KEEP_TRIES = 3;
  * run's, and that runner's end still finishes a row so marked. Any other row is replaced, as before: no runner, this
  * claim's own runner, a runner gone, or one ended. A write that lost reads again, up to KEEP_TRIES times; past them the
  * park keeps nothing. Throws where the store throws.
+ *
+ * Every write is under `claim`, the parking claim (Settings.putIfAbsent's and replaceIf's claim: the fence checked in the
+ * write's own transaction). A park runs before its claim's park commit, so a claim that lost the run by then (its lease
+ * ran out, and another claim may have parked and kept since) is refused (Fenced, thrown) and writes and marks nothing:
+ * the row the run's current claim wrote stays as it wrote it.
  */
-export async function keepKept(settings: Pick<KeptSettings, "get" | "putIfAbsent" | "replaceIf">, runId: string, kept: Kept, holders: KeptHolders): Promise<Kept | undefined> {
+export async function keepKept(settings: Pick<KeptSettings, "get" | "putIfAbsent" | "replaceIf">, runId: string, kept: Kept, holders: KeptHolders, claim?: Claim): Promise<Kept | undefined> {
   const key = keptKeyOf(runId);
   const row = rowOf(kept);
   const elsewhere = heldElsewhere(holders);
   for (let tries = 0; tries < KEEP_TRIES; tries += 1) {
     const was = await settings.get(key);
     if (was === undefined) {
-      if (JSON.stringify(await settings.putIfAbsent(key, row)) === JSON.stringify(row)) return row;
+      if (JSON.stringify(await settings.putIfAbsent(key, row, undefined, claim)) === JSON.stringify(row)) return row;
       continue;
     }
     const other = keptOf(was);
     if (other && !other.ended && (await elsewhere(other))) {
-      if (!other.ending) await settings.replaceIf(key, was, rowOf(other, "ending"));
+      if (!other.ending) await settings.replaceIf(key, was, rowOf(other, "ending"), claim);
       return undefined;
     }
-    if (await settings.replaceIf(key, was, row)) return row;
+    if (await settings.replaceIf(key, was, row, claim)) return row;
   }
   return undefined;
 }

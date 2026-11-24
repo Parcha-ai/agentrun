@@ -2008,7 +2008,7 @@ class SqliteStore implements Store {
         const encoded=json(value);
         await db.write([{ sql: "INSERT INTO settings (key, value, connector_id, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value, connector_id = excluded.connector_id, updated_at = excluded.updated_at", params: [key, encoded, nativeCommandOwner(key,encoded), now()] }]);
       },
-      putIfAbsent: async (key, value, capacity) => {
+      putIfAbsent: async (key, value, capacity, claim) => {
         const encoded=json(value);
         if (capacity !== undefined) {
           if (typeof capacity.prefix !== "string" || !capacity.prefix || capacity.prefix.includes("\0") || !key.startsWith(capacity.prefix) || !Number.isSafeInteger(capacity.limit) || capacity.limit < 1)
@@ -2017,6 +2017,8 @@ class SqliteStore implements Store {
             // SQLite holds its writer lock already; Postgres holds this schema's prefix lock until commit. The count
             // and insertion cannot interleave with another bounded insertion, even through an independent store handle.
             await d.lockKey(tx, `settings.capacity:${capacity.prefix}`);
+            // Settings precede the run's claim lock, as in replaceIf.
+            if (claim) await underClaim(tx, claim, now);
             const existing = await tx.get<{ value: string }>("SELECT value FROM settings WHERE key = ?", key);
             if (existing !== undefined) return JSON.parse(existing.value);
             // Match Settings.all's literal prefix range: use the key index and never parse values or treat _/% as LIKE.
@@ -2036,6 +2038,13 @@ class SqliteStore implements Store {
             return saved === undefined ? undefined : JSON.parse(saved.value);
           });
         }
+        // Under a claim: the claim's fence and the insert in one transaction, so a claim that lost the run writes nothing.
+        if (claim) return db.transaction(async (tx) => {
+          const at = await underClaim(tx, claim, now);
+          await tx.run("INSERT INTO settings (key, value, connector_id, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT (key) DO NOTHING", key, encoded, nativeCommandOwner(key, encoded), at);
+          const saved = await tx.get<{ value: string }>("SELECT value FROM settings WHERE key = ?", key);
+          return saved === undefined ? undefined : JSON.parse(saved.value);
+        });
         await db.write([{ sql: "INSERT INTO settings (key, value, connector_id, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT (key) DO NOTHING", params: [key, encoded, nativeCommandOwner(key,encoded), now()] }]);
         const row = await db.get<{ value: string }>("SELECT value FROM settings WHERE key = ?", key);
         return row === undefined ? undefined : JSON.parse(row.value);

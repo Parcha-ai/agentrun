@@ -52,7 +52,7 @@ import { LOST_RECREATES, lostEnd, lostInCallWords, lostRecreatedWords } from "..
 import { missingNeeds, needsNoSandboxWords, needsWords } from "../computer-needs.js";
 import { inToolCall, stopRun } from "../paid-calls.js";
 import { getSealedKey } from "../server-keys.js";
-import type { Store } from "../store/index.js";
+import type { Claim, Store } from "../store/index.js";
 import { type AgentComputerHold, agentComputerOf, forgetAgentComputer, holdAgentComputer, keepAgentComputer, liveHolderOf, reconcileAgentComputer, serverIdOf } from "./agent-computer.js";
 import type { MountCheck } from "./attach.js";
 import { type AttachedComputers, pairedProvider, withPaired } from "./attached-computers.js";
@@ -1297,7 +1297,9 @@ export async function computerForClaim(
    *  every claim's take-back and every janitor judge it by: a runner whose clock is off from the store's never moves it)
    *  and the row written, never over a row pinned to another runner still there (keepKept: that runner's end compares
    *  it). What is written in the folder after the delta landed is the disk's only if a claim takes it back (pullFolder).
-   *  No clock read, no row, or a row this park may not write over: undefined, and the park keeps nothing. */
+   *  Every write is under this claim (keepKept's claim, the store's fence): one that lost the run by now (its lease ran
+   *  out, another claim may have parked and kept since) writes and marks nothing. No clock read, no row, a row this park
+   *  may not write over, or a claim fenced: undefined, and the park keeps nothing. */
   const keepRow = (): Promise<{ readonly row: Kept; readonly stamped: number } | undefined> =>
     (keeping ??= (async () => {
       if (!keeps || !settings || released) return undefined;
@@ -1306,7 +1308,8 @@ export async function computerForClaim(
         const at = await storeClock();
         const stamped = now();
         const ref = keeps.computer.ref;
-        const row = await keepKept(settings, launch.runId, { provider: keeps.entry, kind: keeps.kind, id: ref.id, name: ref.name, epoch: keeps.epoch, until: at + KEEP_MS, ...(resolved.folder ? { folder: resolved.folder } : {}), ...(keeps.pinned && launch.holder ? { runner: launch.holder.runner, incarnation: launch.holder.incarnation } : {}) }, { ...(store.runners ? { runners: store.runners } : {}), ...(launch.holder ? { self: launch.holder } : {}) });
+        const fence = (launch.claim ?? { runId: launch.runId, epoch: launch.epoch }) as Claim;
+        const row = await keepKept(settings, launch.runId, { provider: keeps.entry, kind: keeps.kind, id: ref.id, name: ref.name, epoch: keeps.epoch, until: at + KEEP_MS, ...(resolved.folder ? { folder: resolved.folder } : {}), ...(keeps.pinned && launch.holder ? { runner: launch.holder.runner, incarnation: launch.holder.incarnation } : {}) }, { ...(store.runners ? { runners: store.runners } : {}), ...(launch.holder ? { self: launch.holder } : {}) }, fence);
         return row ? { row, stamped } : undefined;
       } catch {
         return undefined;
