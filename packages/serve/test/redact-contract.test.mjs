@@ -5,6 +5,7 @@
 // an entry point's own contract fixes it. Where the entry points answer differently, the test's diagnostics say which
 // differ, so a change that moves one of them shows up there. Every key-shaped text here is put together at run time.
 import assert from "node:assert/strict";
+import { generateKeyPairSync } from "node:crypto";
 import { test } from "node:test";
 import { addressForms } from "../dist/calendar/address.js";
 import * as refusal from "../dist/key-refusal.js";
@@ -808,6 +809,9 @@ const BACKSLASH = String.fromCharCode(92);
 const TWO_LINES = [`made-up-first-line-${"q8VxR2mT".repeat(3)}`, `made-up-second-line-${"R2mTq8Vx".repeat(3)}`];
 /** A held value whose longest form needs the most a run's tail read takes (8,192 characters). */
 const LONG = `${CUT_KEY}-${"q8VxR2mT7kPz".repeat(120)}`;
+/** A held key as one is held in practice: a 4096-bit RSA key's PKCS #8 PEM, made here (about 3,270 characters, 50 body
+ *  lines of 64 and a short last one): 51 parts, each a form and a plain needle, beside its whole forms. */
+const RSA_PEM = generateKeyPairSync("rsa", { modulusLength: 4096, privateKeyEncoding: { type: "pkcs8", format: "pem" }, publicKeyEncoding: { type: "spki", format: "pem" } }).privateKey.trim();
 
 /** The adversarial texts of `size` characters, each with the held values it is read with, each text stressing a stage:
  *  - the shapes' prefixes and runs;
@@ -817,6 +821,8 @@ const LONG = `${CUT_KEY}-${"q8VxR2mT7kPz".repeat(120)}`;
  *  - a held value found every 9 characters, each find cut in place; and every 11, a character between each two finds
  *    that no cut covers, so each find is checked against its own covered stretch of the view;
  *  - a held value of two lines, its lines over and over: its parts found at every line, each cut in place;
+ *  - a held 4096-bit RSA key, over and over, and its body's lines in reverse order (never the key whole, every line a
+ *    part cut in place): its 51 parts searched in each view;
  *  - runs too long to read, each with a held value's head glued to its end: each run's tail read again, 8,192
  *    characters of it, for the held value. */
 const adversarial = (size) => {
@@ -839,6 +845,8 @@ const adversarial = (size) => {
     { text: f(`${DENSE} `), values: [DENSE] },
     { text: f(`${DENSE} x `), values: [DENSE] },
     { text: f(`${TWO_LINES.join("\n")}\n`), values: [TWO_LINES.join("\n")] },
+    { text: f(`${RSA_PEM}\n`), values: [RSA_PEM] },
+    { text: f(`${RSA_PEM.split("\n").slice(1, -1).reverse().join("\n")}\n`), values: [RSA_PEM] },
     { text: f(`${"z".repeat(9000)}${LONG.slice(0, 16)} `), values: [LONG] },
   ];
 };
