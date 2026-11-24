@@ -233,15 +233,24 @@ const heldPairs = new Map<string, HeldPair>();
 
 /** `held` written into `file` as the pinned CLI writes a renewal back (login-refresh.ts): only while the file still holds
  *  the refresh token it spent (or one the CLI cleared), the fields it gives over the file's, the rest kept as they are.
- *  "saved" once written, "held" while the write fails (kept in heldPairs), and "dropped" when the file holds another
- *  holder's pair (or no longer holds a login the runner reads): the file wins, as the CLI's own check lets it. */
+ *  "saved" once written, "held" while the write or the read before it fails (kept in heldPairs), and "dropped" when the
+ *  file holds another holder's pair (or is gone, or holds no login the runner reads): the file wins, as the CLI's own
+ *  check lets it. */
 async function saveHeld(file: string, held: HeldPair, options: RenewLoginOptions, owned?: () => Promise<LockRead>): Promise<"saved" | "held" | "dropped"> {
   const say = options.log ?? (() => undefined);
   const forget = () => {
     if (heldPairs.get(file) === held) heldPairs.delete(file);
   };
-  const current = await credentialsNow(file, options);
-  if (!current || (current.oauth.refreshToken !== held.posted && current.oauth.refreshToken !== "")) {
+  const current = await credentialsRead(file, options);
+  // A read that failed says nothing of which pair the file holds, and the held pair's refresh token may be the only one
+  // left that renews the login (Anthropic rotated it): the pair stays held, and a later ask reads the file again. It is
+  // dropped only once a read shows the file gone or holding another pair.
+  if (current === "unread") {
+    heldPairs.set(file, held);
+    say({ claude_login: "renewed", saved: "no", reason: "file_unread" });
+    return "held";
+  }
+  if (current === "gone" || (current.oauth.refreshToken !== held.posted && current.oauth.refreshToken !== "")) {
     forget();
     say({ claude_login: "renewed", saved: "no", reason: "newer" });
     return "dropped";
@@ -304,21 +313,30 @@ async function saveHeldUnderLock(dir: string, file: string, held: HeldPair, opti
 
 const readText = (path: string): Promise<string> => readFile(path, "utf8");
 
+type Credentials = { json: Record<string, unknown>; oauth: Record<string, unknown> };
+
 /** The login's credentials file as it is now, in the pinned CLI's shape: its parsed object and its `claudeAiOauth`,
- *  every token in it held for redaction; none when it is not there or not that shape. */
-async function credentialsNow(file: string, options: RenewLoginOptions): Promise<{ json: Record<string, unknown>; oauth: Record<string, unknown> } | undefined> {
+ *  every token in it held for redaction. "gone" when it is not there, or holds no login in that shape; "unread" when
+ *  the read fails another way (an I/O error) or its text is not JSON, which says nothing of which pair it holds. */
+async function credentialsRead(file: string, options: RenewLoginOptions): Promise<Credentials | "gone" | "unread"> {
   let json: unknown;
   try {
     json = JSON.parse(await (options.readFile ?? readText)(file));
-  } catch {
-    return undefined;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException)?.code === "ENOENT" ? "gone" : "unread";
   }
-  if (json === null || typeof json !== "object" || Array.isArray(json)) return undefined;
+  if (json === null || typeof json !== "object" || Array.isArray(json)) return "gone";
   const oauth = (json as { claudeAiOauth?: unknown }).claudeAiOauth;
-  if (oauth === null || typeof oauth !== "object" || Array.isArray(oauth)) return undefined;
+  if (oauth === null || typeof oauth !== "object" || Array.isArray(oauth)) return "gone";
   const fields = oauth as Record<string, unknown>;
   holdSecret(...strings([fields.accessToken, fields.refreshToken]));
   return { json: json as Record<string, unknown>, oauth: fields };
+}
+
+/** credentialsRead's credentials, none when it read none: the caller reads the file again later. */
+async function credentialsNow(file: string, options: RenewLoginOptions): Promise<Credentials | undefined> {
+  const read = await credentialsRead(file, options);
+  return typeof read === "string" ? undefined : read;
 }
 
 /** The pinned CLI's renewal of a login (the adapter's login-refresh.ts), as the runner does it in the CLI's place. */
