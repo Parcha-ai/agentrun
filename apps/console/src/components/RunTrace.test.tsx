@@ -74,6 +74,10 @@ describe("the Dev tools tab", () => {
     const run = { ...RUN, cost: { ...RUN.cost!, cap_usd: 0.75 }, stopped_for: "budget" as const, budget_refused_calls: 0 };
     const host = await open({ run_id: RUN.run_id, model_requests: "not_recorded", spans: [], dropped: 0 }, { run });
     expect([...host.querySelectorAll("section[aria-label='What stands out'] li")].map((li) => li.textContent)).toEqual(["The run was told to wrap up for its budgetIts model was told to answer soon, to stay under its $0.75 cap. No tool call was refused."]);
+    // Told to wrap up and no more: said plainly. With a call refused the run did less than it was asked, and it reads as bad.
+    const red = (h: Element) => h.querySelector("section[aria-label='What stands out'] li span")!.className.includes("text-destructive-text");
+    const refused = await open({ run_id: RUN.run_id, model_requests: "not_recorded", spans: [], dropped: 0 }, { run: { ...run, budget_refused_calls: 2 } });
+    expect([red(host), red(refused)]).toEqual([false, true]);
     // A run with no span that did not stop for its budget has no such section.
     const plain = await open({ run_id: RUN.run_id, model_requests: "not_recorded", spans: [], dropped: 0 });
     expect(plain.querySelector("section[aria-label='What stands out']")).toBeNull();

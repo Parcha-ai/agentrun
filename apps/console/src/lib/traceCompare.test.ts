@@ -99,6 +99,9 @@ describe("runs' figures side by side", () => {
     const part = sideOf(run("run_part", { cost: { usd: null, basis: "estimate", charge_state: null, cap_usd: null, so_far_usd: 0.0382, unpriced: 1 } }), SMALL, 0);
     const cost = compareFigures([FIRST, part]).find((row) => row.label === "Cost")!;
     expect([words(cost), cost.cells[1]!.value, cost.cells[1]!.exact, differenceWords(cost)]).toEqual([["$0.6336", "at least $0.0382"], 0.0382, false, null]);
+    // A whole cost stands as it is, a ceiling still said as at most, though the server sends what is priced beside it.
+    const held = sideOf(run("run_held", { cost: { usd: 1, basis: "estimate", charge_state: null, cap_usd: null, upper_bound: true, so_far_usd: 0.4, unpriced: 0 } }), SMALL, 0);
+    expect(words(compareFigures([FIRST, held]).find((row) => row.label === "Cost")!)).toEqual(["$0.6336", "at most $1.00"]);
     // A run whose cost the server does not say at all stays unknown.
     const none = sideOf(run("run_none", { cost: { usd: null, basis: "unpriced", charge_state: null, cap_usd: null } }), SMALL, 0);
     expect(words(compareFigures([FIRST, none]).find((row) => row.label === "Cost")!)).toEqual(["$0.6336", "–"]);

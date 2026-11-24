@@ -3,8 +3,7 @@
 // figure is one the tab itself shows of that run (lib/trace); a figure a run's trace does not carry stays unknown (null),
 // never 0, and no difference is said of it. Nor of a figure that is not exact: a sum over the part of a run its trace
 // holds, or a ceiling.
-import { runEnded } from "./format";
-import { soFar } from "./format";
+import { runEnded, soFar } from "./format";
 import { byModel, byTool, cacheShare, duration, inputTokens, percent, spanMs, traceTotals, usd } from "./trace";
 import type { Run, RunTrace } from "./v2";
 

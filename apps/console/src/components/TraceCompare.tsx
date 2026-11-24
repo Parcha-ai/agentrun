@@ -68,7 +68,7 @@ export function TraceCompare({ v2, ids, now: fixed }: { v2: Pick<Client, "getRun
       <div className="space-y-6 p-5 md:p-8">
         {/* A trace is a run's first 2,000 requests and calls: a longer run's figures are of that part, and are said so. */}
         {sides.map((side, i) => partial(side) && (
-          <p key={side.run.run_id} role="status" data-partial className="text-body text-muted-foreground">{nameOf(i)}'s trace holds its first {side.trace.spans.length.toLocaleString("en-US")} requests and calls; {side.trace.dropped.toLocaleString("en-US")} later ones are not counted. Its figures from the trace are at least what is shown, and no difference is said of them. Its cost is the whole run's.</p>
+          <p key={side.run.run_id} role="status" data-partial className="text-body text-muted-foreground">{nameOf(i)}'s trace holds its first {side.trace.spans.length.toLocaleString("en-US")} requests and calls; {side.trace.dropped.toLocaleString("en-US")} later ones are not counted. Its figures from the trace are at least what is shown, and no difference is said of them. Its cost is the run's own, not summed from the trace.</p>
         ))}
         {going > 0 && <p role="status" className="text-body text-muted-foreground">{going === 1 ? "One of these runs is" : `${going} of these runs are`} still going: {going === 1 ? "its" : "their"} figures are as they stood when this page opened. Open the page again for newer ones.</p>}
         <section aria-label="The runs in figures">
