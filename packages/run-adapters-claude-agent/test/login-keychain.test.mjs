@@ -120,8 +120,9 @@ function runSays(m, login) {
 const OWN = "their own claude, with no variable of AgentRun's";
 /** Each way a person signs in at `login`. */
 const WAYS = {
-  // The console's button (serve's startLoginHere): the server's PATH and HOME.
-  'the sign-in this host starts': async (m, login) => assert.deepEqual(await claude.startClaudeLogin(m.cli, login, { path: m.path, home: m.home, display: {} }).ended, { end: 'exited', code: 0, signal: null }),
+  // The console's button (serve's startLoginHere): the server's PATH and HOME. The sign-in runs in the person's home
+  // (personHome): the login's userHome, else the server's own, so it is started as the server of that person (asServerOf).
+  'the sign-in this host starts': async (m, login) => assert.deepEqual(await claude.startClaudeLogin(m.cli, login, { path: m.path, display: {} }).ended, { end: 'exited', code: 0, signal: null }),
   'the shown line, run in their terminal': (m, login) => assert.equal(spawnSync('/bin/sh', ['-c', claude.claudeLoginCommand(login, m.cli)], { env: m.terminal }).status, 0),
   // As they run the CLI: their CLAUDE_CONFIG_DIR where they use one, nothing else.
   [OWN]: (m, login) => assert.equal(spawnSync(m.cli, ['auth', 'login'], { env: { ...m.terminal, ...(login.home === undefined ? { CLAUDE_CONFIG_DIR: login.dir } : {}) } }).status, 0),
@@ -161,7 +162,7 @@ test("on macOS the person's own claude reads signed in on this machine's login a
 test("the stand-ins keep macOS's rule, the one a status check in a home of its own broke: a signed-in login asked with the same variables reads signed out in any home but the person's, where the login keychain is", { skip }, async () => {
   const m = mac();
   const login = PLACES["AgentRun's own folder"](m);
-  await WAYS['the sign-in this host starts'](m, login);
+  await asServerOf(m, () => WAYS['the sign-in this host starts'](m, login));
   const asked = (home) => JSON.parse(spawnSync(m.cli, ['auth', 'status', '--json'], { env: { PATH: m.path, ...claude.claudeSignInEnv(login), HOME: home }, encoding: 'utf8' }).stdout).loggedIn;
   assert.equal(asked(scratch()), false, "an empty home: no login keychain, so no tokens");
   assert.equal(asked(m.home), true, "the person's home");
