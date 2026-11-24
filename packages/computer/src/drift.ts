@@ -102,7 +102,8 @@ export function helloDrift(hello: HelloResult | null | undefined, expected: Hell
 	// spec/computer/README.md, "Versioning": another protocol major is another wire (helloProblem), and the daemon's own
 	// version, which pins the build the provider ships, must match exactly. Their words here are the drift list's own.
 	if (helloProblem(hello?.protocol, "provider")) {
-		found.push(`hello: the daemon speaks protocol ${text(hello?.protocol)}, expected exactly ${PROTOCOL_VERSION}`);
+		const major = PROTOCOL_VERSION.split(".")[0];
+		found.push(`hello: the daemon speaks protocol ${text(hello?.protocol)}, expected protocol ${major}.x (major ${major})`);
 	}
 	if (hello?.version !== expected.version) found.push(`hello: the daemon reports version ${text(hello?.version)}, expected ${expected.version}`);
 	if (hello?.os !== "linux") found.push(`hello: the daemon reports os ${text(hello?.os)}, expected linux`);
