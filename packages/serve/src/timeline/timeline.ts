@@ -866,7 +866,7 @@ function createProjector(options: TimelineOptions) {
    *  a nested one. */
   const useRow = (conv: number, rowId: string, callId: string, name: string, args: Obj, raw: Obj, fields: Partial<TimelineEvent>) =>
     make("tool_use", conv, rowId, { summary: label(name, args), tool_name: name, tool_use_id: callId, tool_input_preview: inputPreview(args, caps.preview), ...inputOf(args, raw), ...fields });
-  /** A `calls` read's `tool_input` (inputShown), at most `calls.result` characters of strings a row: the raw arguments
+  /** A `calls` read's `tool_input` (inputShown), at most `calls.result` characters of names and values a row: the raw arguments
    *  through `calls.input`, else the arguments as the rows show them; none when the arguments themselves are withheld. */
   const inputOf = (args: Obj, raw: Obj): { tool_input?: Obj } => {
     if (!options.calls) return {};
