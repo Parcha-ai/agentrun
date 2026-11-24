@@ -26,7 +26,9 @@
 // refused unsent (UNUSABLE.perRunMissing).
 //
 // A per-run Composio server (composio-made.ts composioPerRun) is bound by each run's caller ({composio_user_id,
-// connected_account_id?} in mcp_auth, sealed in its launch): its entry carries them as `query` (mcp-gateway.ts).
+// connected_account_id?} in mcp_auth, sealed in its launch): its entry carries them as `query` (mcp-gateway.ts). Each
+// open reads the owner's Composio users again (composio-owners.ts): a binding of one that the owner's session didn't hand
+// (the token's, or one sealed before the seal marked who handed it) is refused unsent (UNUSABLE.composioOwnersUser).
 // A Composio server saved with api_key_env (composio-made.ts key_env) seals no key: each open reads the variable's value
 // as the runner was handed it at its start (secrets.ts secret, never its environment), for an address on Composio's origin
 // alone (composioEnvKey), and only for a server the run is granted: the run's process never holds it. Unset, or a row at
@@ -62,6 +64,7 @@ import { type McpCredentials, type McpPin } from "../mcp-gateway.js";
 import { type PinListing, pinFirst } from "../mcp-pin-first.js";
 import { mcpNameOf } from "../tool-names.js";
 import { composioEnvKey, composioMadeKey, composioPerRun, recordedMade } from "../composio-made.js";
+import { bindingRuns, ownersComposioUsers } from "../composio-owners.js";
 import { composioRunQuery } from "../composio-preset.js";
 import { META_REASON, metaToolOf } from "../mcp-meta.js";
 import { resourceToolProblem } from "../mcp-resources.js";
@@ -449,7 +452,9 @@ export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> 
   const composioAccount = async (name: string, row: McpServerRow): Promise<{ query: Record<string, string> } | { unopened: string } | undefined> => {
     if (!composioPerRun(row, await store.settings.get(composioMadeKey(name)))) return undefined;
     const given = await handed(name, row.url, "composio");
-    return "unopened" in given ? given : { query: composioRunQuery(given.composio) };
+    if ("unopened" in given) return given;
+    if (!bindingRuns(given.composio, await ownersComposioUsers(store))) return { unopened: UNUSABLE.composioOwnersUser };
+    return { query: composioRunQuery(given.composio) };
   };
 
   const fresh = async () => {

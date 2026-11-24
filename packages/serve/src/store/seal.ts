@@ -86,8 +86,10 @@ export function openMcpCredential(key: Buffer, row: { readonly name: string; rea
 }
 
 /** A run's binding of a per-run Composio server: the Composio user its calls run as, and the connected account when the
- *  caller names one. Never kept on the server's row: sealed in the run's launch alone. */
-export type ComposioBinding = { readonly user_id: string; readonly connected_account_id?: string };
+ *  caller names one. Never kept on the server's row: sealed in the run's launch alone. `by`: who handed it, the API token
+ *  or the owner's session, sealed with it so the run can't change it; each claim reads it against the owner's Composio
+ *  users (composio-owners.ts). A binding sealed before the mark has none. */
+export type ComposioBinding = { readonly user_id: string; readonly connected_account_id?: string; readonly by?: "token" | "owner" };
 
 /** What a run's caller handed one MCP server (`mcp_auth.<server>`): a per_run server's headers, or a per-run Composio
  *  server's binding (its key stays the server's own); each with the origin of the server's url when it was handed, so a
