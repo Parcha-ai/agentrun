@@ -48,6 +48,25 @@ test("a port in use is passed over: under a range from 1025 the one candidate is
   }
 });
 
+test("two freePort calls at once never get the same port: under a range from 1026 with 1025 held, one call is handed 1024 and the other fails by name", async (t) => {
+  // Held here, or already held by something else on this machine: either way it is in use when it is tried.
+  const holder = createServer();
+  const held = await new Promise((resolve) => {
+    holder.once("error", () => resolve(false));
+    holder.listen(1025, "127.0.0.1", () => resolve(true));
+  });
+  t.after(() => held && new Promise((resolve) => holder.close(resolve)));
+  // The first call starts at 1025 and finds it in use; the second starts at 1024. The first then reaches 1024 while the
+  // second's probe of it has closed: only a port claimed before its probe keeps the first off it.
+  const starts = [0.75, 0.25];
+  t.mock.method(Math, "random", () => starts.shift());
+  const settled = await Promise.allSettled([freePort({ low: 1026 }), freePort({ low: 1026 })]);
+  const handed = settled.filter((s) => s.status === "fulfilled").map((s) => s.value);
+  assert.deepEqual(handed, [1024], "the ports handed out");
+  const refused = settled.filter((s) => s.status === "rejected").map((s) => String(s.reason));
+  assert.deepEqual(refused, ["Error: no free port below the ephemeral range: none in 1024-1025 (it starts at 1026)"], "the call refused");
+});
+
 test("a fake Ollama asked for a port another listener holds rejects with EADDRINUSE, its cause, instead of an uncaught error", async (t) => {
   const first = await fakeOllama(t);
   const port = Number(first.host.split(":")[1]);
