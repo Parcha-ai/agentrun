@@ -54,8 +54,26 @@ export type AcpPackage = {
 const requireHere = createRequire(import.meta.url);
 let loaded: AcpPackage | null | undefined;
 
+/** serve's one debug switch for the ACP adapter, AGENTRUN_LOG=debug, read as each adapter is made: it logs each call the
+ *  agent announces, by its ids and names only (the package's AcpHarnessOptions.debug). Serve owns the variable, so the
+ *  package never reads it. */
+const debugOption = (): { debug?: true } => (process.env.AGENTRUN_LOG === "debug" ? { debug: true } : {});
+
+/** `pkg` with each adapter factory it exports (every function named `...Adapter`: acpAdapter, gooseAdapter,
+ *  cursorAdapter) handed serve's debug switch at each call. Here, where serve loads the package, so no place that builds
+ *  an ACP agent's adapter has to remember it. */
+function withDebug(pkg: AcpPackage): AcpPackage {
+  const made: Record<string, unknown> = { ...pkg };
+  for (const [name, value] of Object.entries(pkg)) {
+    if (typeof value !== "function" || !name.endsWith("Adapter")) continue;
+    const factory = value as (options: Record<string, unknown>) => AgentAdapter;
+    made[name] = (options: Record<string, unknown>) => factory({ ...options, ...debugOption() });
+  }
+  return Object.freeze(made) as AcpPackage;
+}
+
 /** The package, or undefined where it is not installed beside serve. Only its absence is: a package that is there and
- *  fails to load throws. */
+ *  fails to load throws. Its adapter factories take serve's debug switch (withDebug). */
 export function acpPackage(): AcpPackage | undefined {
   if (loaded === undefined) {
     let found = true;
@@ -64,7 +82,7 @@ export function acpPackage(): AcpPackage | undefined {
     } catch {
       found = false;
     }
-    loaded = found ? (requireHere(ACP_PACKAGE) as AcpPackage) : null;
+    loaded = found ? withDebug(requireHere(ACP_PACKAGE) as AcpPackage) : null;
   }
   return loaded ?? undefined;
 }
