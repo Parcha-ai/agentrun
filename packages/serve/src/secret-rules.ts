@@ -579,61 +579,136 @@ function placesOf(text: string, form: string): Hit[] {
 /** How far a command is read past its name: SHELL_LINE_MAX, and CURL_MAX for curl's continuation lines. */
 const SHELL_LINE_MAX = 1024;
 const CURL_MAX = 4096;
-/** Where the quoted part opened at `at` closes, before its line's end and `limit`, or -1 (a quote left open is a
- *  character). A double-quoted part's backslash escapes the next character. With `substitutions` (curl), a double-quoted
- *  part's `$(` or backtick is where it stops instead, as the shell runs a substitution there (Greptile P2 on 4cacd50606:
- *  `"X-Time: $(date -u +%H:%M)"` read whole gave curl-user `-u +%H:%M`); the caller reads that place as the command's end. */
-function quoteClose(text: string, at: number, limit: number, substitutions = false): number {
-  const quote = text.charAt(at);
-  for (let i = at + 1; i < limit; i++) {
+/** How far a substitution's closer is looked for: one that does not close within it ends the command where it opens. */
+const SUBSTITUTION_MAX = 256;
+/** Where a substitution opened at `at` ends, past its closer, before its line's end, `limit` and SUBSTITUTION_MAX, or
+ *  -1: a backtick's at the next one, a `$(`'s at its matching `)`, parentheses counted and a quoted part read whole. */
+function substitutionEnd(text: string, at: number, limit: number): number {
+  const tick = text.charAt(at) === "\x60";
+  const stop = Math.min(limit, at + SUBSTITUTION_MAX);
+  let depth = 0;
+  for (let i = at + 1; i < stop; i++) {
     const c = text.charAt(i);
-    if (c === quote) return i;
     if (c === "\n") return -1;
-    if (quote !== '"') continue;
-    if (substitutions && (c === "\x60" || (c === "$" && text.charAt(i + 1) === "("))) return i;
-    if (c === "\\" && text.charAt(i + 1) !== "\n") i++;
+    if (c === "\\") i++;
+    else if (tick) {
+      if (c === "\x60") return i + 1;
+    } else if (c === "(") depth++;
+    else if (c === ")") {
+      if (--depth === 0) return i + 1;
+    } else if (c === "'" || c === '"') {
+      let close = i + 1;
+      while (close < stop && text.charAt(close) !== c && text.charAt(close) !== "\n") close += c === '"' && text.charAt(close) === "\\" ? 2 : 1;
+      if (close >= stop || text.charAt(close) !== c) return -1;
+      i = close;
+    }
   }
   return -1;
 }
-/** Where a shell command whose name ends at `from` ends (Greptile P1 on 683391d4fd: `redis-cli -a 'Copper&lumen9'`
- *  stopped at its quoted `&`, and its password stayed): its line's end, or a shell operator outside quotes (`;`, `|`,
- *  `&`). A quoted part is read whole to its closing quote on its line. curl (ruling XXIV) runs on over a backslash's
- *  line break and a lone `&`, and ends at `&&`, `$(` and a backtick too, a double-quoted one's included. At most SHELL_LINE_MAX characters (CURL_MAX) are
- *  read, a quote's search included. Once a quote of a kind fails to close, every later one of that kind would too (its
- *  search reads the same characters, paired the same), so each kind is searched for until one fails: linear. */
-function commandEnd(text: string, from: number, curl: boolean): number {
+/** A quote search that failed, by quote kind: no closer between `from` and `to` (where it stopped), `final` when it
+ *  stopped at a line break or a substitution that never closes, and the substitutions it read whole on the way. Under
+ *  "$", the place of the last substitution such a search found never closes. */
+type QuoteMiss = { from: number; to: number; final: boolean; subs: [number, number][] };
+/** Where the quoted part opened at `at` closes, before its line's end and `limit`, or -1 (a quote left open is a
+ *  character). A double-quoted part's backslash escapes the next character; for curl its substitutions are read whole
+ *  and added to `subs`, and one that never closes leaves the quote open. A quote inside a span an earlier search of its
+ *  kind read without a closer reads on from where that one stopped (the same characters, paired the same), so each
+ *  character is searched once per kind: linear. */
+function quoteEnd(text: string, at: number, limit: number, curl: boolean, misses: Record<string, QuoteMiss | undefined>, subs: [number, number][]): number {
+  const quote = text.charAt(at);
+  const found: [number, number][] = [];
+  let i = at + 1;
+  const miss = misses[quote];
+  if (miss && miss.from < at && at < miss.to) {
+    if (miss.final || miss.to >= limit) return -1;
+    i = miss.to;
+    for (const sub of miss.subs) if (sub[0] > at) found.push(sub);
+  }
+  let final = false;
+  for (; i < limit; i++) {
+    const c = text.charAt(i);
+    if (c === quote) {
+      subs.push(...found);
+      return i;
+    }
+    if (c === "\n") {
+      final = true;
+      break;
+    }
+    if (quote !== '"') continue;
+    if (curl && (c === "\x60" || (c === "$" && text.charAt(i + 1) === "("))) {
+      const end = substitutionEnd(text, i, limit);
+      if (end < 0) {
+        // The command's own read reaches this `$(` next and ends there: it asks misses["$"], not substitutionEnd again.
+        misses.$ = { from: i, to: i, final: true, subs: [] };
+        final = true;
+        break;
+      }
+      found.push([i, end]);
+      i = end - 1;
+    } else if (c === "\\" && text.charAt(i + 1) !== "\n") i++;
+  }
+  misses[quote] = { from: at, to: i, final, subs: found };
+  return -1;
+}
+/** Where a shell command whose name ends at `from` ends, and the substitutions it holds (Greptile P1 on 683391d4fd:
+ *  `redis-cli -a 'Copper&lumen9'` stopped at its quoted `&`, and its password stayed): its line's end, or a shell
+ *  operator outside quotes (`;`, `|`, `&`). A quoted part is read whole to its closing quote on its line. curl (ruling
+ *  XXIV) runs on over a backslash's line break and a lone `&`, and ends at `&&`; a substitution (`$(…)`, a backtick
+ *  pair), bare or in double quotes, is read whole and the command read on past it (Greptile's P2 and P1 on 4cacd50606
+ *  and 3e8ed77da8: its contents are no part of curl's arguments, and a `-u` after it is), and one that never closes
+ *  ends the command where it opens. At most SHELL_LINE_MAX characters (CURL_MAX) are read. `misses` carries failed
+ *  quote searches from one command to the next (quoteEnd), and a substitution's search is bounded and ends its command
+ *  when it fails: linear in the text. */
+function commandEnd(text: string, from: number, curl: boolean, misses: Record<string, QuoteMiss | undefined>): { end: number; subs: [number, number][] } {
   const limit = Math.min(text.length, from + (curl ? CURL_MAX : SHELL_LINE_MAX));
-  let open = "'\"";
+  const subs: [number, number][] = [];
   let at = from;
   while (at < limit) {
     const c = text.charAt(at);
-    if (c === "\n" || c === ";" || c === "|") return at;
+    if (c === "\n" || c === ";" || c === "|") return { end: at, subs };
     if (c === "&") {
-      if (!curl || text.charAt(at + 1) === "&") return at;
-    } else if (curl && (c === "\x60" || (c === "$" && text.charAt(at + 1) === "("))) return at;
-    else if (curl && c === "\\") {
+      if (!curl || text.charAt(at + 1) === "&") return { end: at, subs };
+    } else if (curl && (c === "\x60" || (c === "$" && text.charAt(at + 1) === "("))) {
+      const end = misses.$?.from === at ? -1 : substitutionEnd(text, at, limit);
+      if (end < 0) return { end: at, subs };
+      subs.push([at, end]);
+      at = end;
+      continue;
+    } else if (curl && c === "\\") {
       const e = text.charAt(at + 1);
       at += e === "\r" && text.charAt(at + 2) === "\n" ? 3 : e === "" ? 1 : 2;
       continue;
-    } else if ((c === "'" || c === '"') && open.includes(c)) {
-      const close = quoteClose(text, at, limit, curl);
-      if (close >= 0 && text.charAt(close) !== c) return close;
+    } else if (c === "'" || c === '"') {
+      const close = quoteEnd(text, at, limit, curl, misses, subs);
       if (close >= 0) at = close;
-      else open = open.replace(c, "");
     }
     at++;
   }
-  return Math.min(at, limit);
+  return { end: Math.min(at, limit), subs };
 }
 
+/** How deep a command inside a substitution of the same command is read on its own (`curl -H "$(curl -u a:pw …)"`). */
+const SUBSTITUTION_DEPTH = 4;
 /** The hits `pattern` finds inside each command `command` names (read whole first, to commandEnd), mapped to the text.
- *  The next command is looked for past this one's end. */
-function inside(text: string, command: RegExp, pattern: RegExp, hit: (m: RegExpExecArray) => Hit | undefined, curl = false): Hit[] {
+ *  A hit starting inside one of the command's substitutions is not the command's; the substitution's contents are read
+ *  as a text of their own. The next command is looked for past this one's end. */
+function inside(text: string, command: RegExp, pattern: RegExp, hit: (m: RegExpExecArray) => Hit | undefined, curl = false, depth = 0): Hit[] {
   const out: Hit[] = [];
   const re = new RegExp(command.source, command.flags);
+  const misses: Record<string, QuoteMiss | undefined> = {};
   for (let m = re.exec(text); m; m = re.exec(text)) {
-    const end = commandEnd(text, m.index + m[0].length, curl);
-    for (const found of each(text.slice(m.index, end), pattern, hit)) out.push({ ...found, start: m.index + found.start, end: m.index + found.end });
+    const { end, subs } = commandEnd(text, m.index + m[0].length, curl, misses);
+    for (const found of each(text.slice(m.index, end), pattern, hit)) {
+      const start = m.index + found.start;
+      if (!subs.some(([from, to]) => from <= start && start < to)) out.push({ ...found, start, end: m.index + found.end });
+    }
+    if (depth < SUBSTITUTION_DEPTH) {
+      for (const [from, to] of subs) {
+        const body = from + (text.charAt(from) === "$" ? 2 : 1);
+        for (const found of inside(text.slice(body, to - 1), command, pattern, hit, curl, depth + 1)) out.push({ ...found, start: body + found.start, end: body + found.end });
+      }
+    }
     re.lastIndex = Math.max(end, m.index + 1);
   }
   return out;

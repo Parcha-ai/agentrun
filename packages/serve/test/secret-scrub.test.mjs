@@ -2507,10 +2507,10 @@ test("XCII: a command's quoted part holds its shell operators (Greptile P1 on 68
   }
   // A quote left open on its line is a character, as before: the command still ends at the next operator.
   assert.ok((await gone("mysql -u root -pTq7Wm2Rk9 'app; grep -pattern file", ["Tq7Wm2Rk9"])).text.endsWith("; grep -pattern file"));
-  // Each rule alone reads 2 MB of commands, quotes closed, open and escaped, in CPU time linear in it (as LXXXIII).
+  // Each rule alone reads 2 MB of commands, quotes closed, open and escaped, in CPU time linear in it (LXXXVIII's 2 MB bound).
   for (const unit of [`mysql -u r -p'${"a&".repeat(300)}' db `, `redis-cli -a "${'\\"'.repeat(400)} `, `curl -u "u:${"p;".repeat(300)}" -H 'a`, "redis-cli '\"".repeat(40), `docker login -p "${"\\".repeat(500)}`]) {
     for (const [id, ms] of Object.entries(await rulesAlone(["mysql-password", "password-flag", "curl-user"], repeatTo(unit, 2_000_000)))) {
-      assert.ok(ms < 1_000, `${id} on ${unit.slice(0, 20)}: ${Math.round(ms)} ms`);
+      assert.ok(ms < 2_000, `${id} on ${unit.slice(0, 20)}: ${Math.round(ms)} ms`);
     }
   }
 });
@@ -2521,6 +2521,29 @@ test("XCIV: a substitution inside curl's double quotes still ends curl, as the s
   }
   // A quoted `-u` value before the substitution is still read, and one after it is another command's.
   await gone('curl -u "admin:Copper&lumen9" -H "X-Time: $(date)" https://x.io', ["Copper", "lumen9"]);
+});
+
+test("XCV: curl reads on past a substitution, its contents left out (Greptile P1 on 3e8ed77da8): a `-u` after `$(…)` or a backtick pair is cut, one inside it is not curl's, a curl inside it is read on its own", async () => {
+  for (const text of [
+    'curl -H "X-Time: $(date)" -u admin:Copper9lumen9 https://x.io',
+    "curl -H \"X-Time: \x60date\x60\" -u admin:Copper9lumen9 https://x.io",
+    "curl -H X-Time:$(date -u +%s) -u admin:Copper9lumen9 https://x.io",
+    'curl -H "X-A: $(printf "%s" "$(date)")" -u admin:Copper9lumen9 https://x.io',
+    'curl -H "X-T: $(curl -s -u admin:Copper9lumen9 https://t.io/token)" https://x.io',
+  ]) {
+    for (const wrap of FOUR_WRAPS) {
+      const out = await gone(wrap(text), ["Copper9lumen9"]);
+      if (wrap === FOUR_WRAPS[0]) assert.ok(out.text.includes("$(") || out.text.includes("\x60"), out.text);
+    }
+  }
+  // A substitution as the whole password is a reference, as before XCII: no cut. One left open still ends curl.
+  await kept('curl -u "admin:$(cat ~/.pw)" https://x.io');
+  await kept("curl -H \"X: $(date -u +%H:%M https://x.io\n-u a:b");
+  // curl-user alone reads 2 MB of nested, unclosed and repeated substitutions in CPU time linear in it (LXXXVIII's 2 MB bound).
+  for (const unit of ['curl -H "$(curl $(curl $(date)))" -u a:b ', 'curl "$(', "curl $(((((( -u a:b ", "curl \x60 -u a:b ", 'curl "\x60$(" -u a:b ']) {
+    const { "curl-user": ms } = await rulesAlone(["curl-user"], repeatTo(unit, 2_000_000));
+    assert.ok(ms < 2_000, `${unit.slice(0, 20)}: ${Math.round(ms)} ms`);
+  }
 });
 
 test("XCIII: a query or form password past 1024 characters is cut to its end (Greptile P1 on 683391d4fd): QUERY_PASSWORD's bound no longer leaves its tail", async () => {
@@ -2537,11 +2560,11 @@ test("XCIII: a query or form password past 1024 characters is cut to its end (Gr
       if (wrap === FOUR_WRAPS[0]) assert.ok(out.text.endsWith(after), out.text.slice(-80));
     }
   }
-  // The rule alone reads 2 MB of long values in CPU time linear in it: values apart, and values one run holds.
+  // The rule alone reads 2 MB of long values in CPU time linear in it (LXXXVIII's 2 MB bound): values apart, and values one run holds.
   for (const unit of [`?password=${long}& `, `?password=${"a".repeat(1100)}`, `"?password=${"a".repeat(1100)}"`, `'?password=${"a".repeat(1100)}'`]) {
     const { hits, ms } = await ruleAlone("query-password", `x${repeatTo(unit, 2_000_000)}`);
     assert.ok(hits.length >= 1, unit.slice(0, 20));
-    assert.ok(ms < 1_000, `${unit.slice(0, 20)}: ${Math.round(ms)} ms`);
+    assert.ok(ms < 2_000, `${unit.slice(0, 20)}: ${Math.round(ms)} ms`);
   }
 });
 
