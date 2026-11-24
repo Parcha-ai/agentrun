@@ -175,9 +175,9 @@ const BROKEN = {
   STOPPED: () => new DOMException("This operation was aborted", "AbortError"),
 };
 
-/** A send whose answer is `status` with headers, one chunk of body, then `breaks()`'s error, or, with `breaks` null, the
+/** A send whose answer is `status` with `headers`, one chunk of body, then `breaks()`'s error, or, with `breaks` null, the
  *  request's own signal's reason once it aborts. `asked` counts the requests. */
-function brokenSend(status, breaks) {
+function brokenSend(status, breaks, headers = {}) {
   const sent = { asked: 0 };
   sent.send = async (_url, init) => {
     sent.asked += 1;
@@ -195,7 +195,7 @@ function brokenSend(status, breaks) {
         });
       },
     });
-    return new Response(body, { status, headers: { "content-type": "application/json" } });
+    return new Response(body, { status, headers: { "content-type": "application/json", ...headers } });
   };
   return sent;
 }
@@ -258,4 +258,17 @@ test("a fetch turn Exa is not asked, its key refused earlier or the URL refused 
   const { w: fresh } = await exaWeb(t, (_path, body) => exaPage(body.urls[0], "never"), { order: { search: [], fetch: ["exa", "direct"] } });
   const evil = await fresh.fetch(EVIL);
   assert.deepEqual(turns(evil.receipt)[0], ["exa", "error", "refused", "GUARD"], "the guard's refusal: a turn, unsent");
+});
+
+test("Exa's 402 or 429 whose body breaks keeps what its status said: the 402 a quota of the whole key, the 429 its Retry-After, and the next search held by it", async () => {
+  for (const [code, breaks] of Object.entries(BROKEN)) {
+    const quota = brokenWeb(brokenSend(402, breaks).send);
+    const spent = await quota.search("widgets");
+    assert.deepEqual([turns(spent.receipt)[0], spent.receipt.tries[0].limit, spent.receipt.tries[0].failure.covers], [["exa", "error", "quota", "HTTP_402"], { kind: "quota" }, "key"], `402, ${code}`);
+    const rate = brokenWeb(brokenSend(429, breaks, { "retry-after": "30" }).send);
+    const limited = await rate.search("widgets");
+    assert.deepEqual([turns(limited.receipt)[0], limited.receipt.tries[0].limit], [["exa", "error", "rate", "HTTP_429"], { kind: "rate", retryAfter: "30" }], `429, ${code}`);
+    const next = await rate.search("gadgets");
+    assert.deepEqual(turns(next.receipt), [["exa", "held", "rate", "HELD"], ["firecrawl", "ok", undefined, undefined]], `held for its Retry-After, ${code}`);
+  }
 });
