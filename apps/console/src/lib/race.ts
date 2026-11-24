@@ -5,9 +5,9 @@ import { defaultTools, type ToolOffer } from "./agentForm";
 import type { Client } from "./client";
 import { tokensWords } from "./format";
 import { uuid } from "./idempotency";
-import { computerOfPlace, newAgentPlace, type Places } from "./place";
+import { newAgentPlace, type Places } from "./place";
 import { steps } from "./timeline";
-import type { Computer, Run, RunCreateInline, TimelineRow } from "./v2";
+import type { Run, RunCreateInline, TimelineRow } from "./v2";
 
 /** The label key that names a race, and the one that numbers its lanes. */
 export const RACE_KEY = "race";
@@ -60,15 +60,16 @@ export const MIN_LANES = 2;
 const LANE_INSTRUCTIONS = "Do the task you are given.";
 /** What one lane runs on. */
 export type LaneChoice = { harness: string; model: string };
-/** What a lane works with: its tools, and the computer they run on (none named: the runner). */
-export type LaneKit = { tools: string[]; computer?: Computer };
+/** What a lane works with: its tools. */
+export type LaneKit = { tools: string[] };
 
-/** A lane's kit, a new agent's on this server: every tool its harness runs here (agentForm.ts defaultTools), in the
- *  server's default box when it has one (with the shell), else on the runner. The inline route gives a definition no
- *  tools and no place of its own, so the lane names both, or it has nothing to do its task with. */
+/** A lane's kit, a new agent's on this server: every tool its harness runs here (agentForm.ts defaultTools), with the
+ *  shell where the server's default place is a box. The inline route grants a definition no tools of its own, so the
+ *  lane names them, or it has nothing to do its task with. It names no place: the server puts the run where it puts a
+ *  new agent with these tools (its defaultPlaceOf, mirrored in agentForm.ts): the box only with a shell tool, so an
+ *  adapter harness's lane (no shell) runs on the runner, where Claude Code's login works and no box starts. */
 export function laneKit(harness: string, offers: ToolOffer[], places: Places | null | undefined): LaneKit {
-  const place = newAgentPlace(places);
-  return { tools: defaultTools(harness, offers, place), ...(place ? { computer: computerOfPlace(place) } : {}) };
+  return { tools: defaultTools(harness, offers, newAgentPlace(places)) };
 }
 
 /** The inline run (POST /v2/runs) lane `n` of race `label` starts: an agent of its own (external `race-<label>-<n>`),
@@ -78,7 +79,7 @@ export function laneKit(harness: string, offers: ToolOffer[], places: Places | n
 export function laneStart(label: string, n: number, lane: LaneChoice, task: string, maxCostUsd: number, kit: LaneKit): RunCreateInline {
   return {
     external: { source: "console", kind: "race", id: `race-${label}-${n}`, version: `${lane.harness} ${lane.model}` },
-    definition: { name: `Race ${label}, lane ${n}`, instructions: LANE_INSTRUCTIONS, harness: lane.harness, model: lane.model, tools: kit.tools, ...(kit.computer ? { computer: kit.computer } : {}) },
+    definition: { name: `Race ${label}, lane ${n}`, instructions: LANE_INSTRUCTIONS, harness: lane.harness, model: lane.model, tools: kit.tools },
     input: { content: task },
     max_cost_usd: maxCostUsd,
     labels: { [RACE_KEY]: label, [LANE_KEY]: String(n), harness: lane.harness, model: lane.model },

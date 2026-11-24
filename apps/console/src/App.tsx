@@ -94,7 +94,8 @@ export function route(h: string = location.hash): Where {
   let m = h.match(/^#\/runs\/([^/?]+)$/);
   if (m) return { section: "runs", run: decodeURIComponent(m[1]) };
   // A race: the runs its race:<label> label groups, watched side by side, under Runs. #/races/new is the form that starts
-  // one (a new race's label is never `new`: newRaceLabel).
+  // one. A race this console starts is never labeled `new` (newRaceLabel); one an API caller labeled `new` is not
+  // reachable here, and its runs still list under Runs with that label.
   if (h === "#/races/new") return { section: "runs", newRace: true };
   m = h.match(/^#\/races\/([^/?]+)$/);
   if (m) return { section: "runs", race: decodeURIComponent(m[1]) };
