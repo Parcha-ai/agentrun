@@ -299,13 +299,19 @@ const AUTHORIZE_CODES = new Set([
 
 /** A failed sign-in's reason as the terminal says it. An `authorize_<code>` reason comes from the loopback callback's
  *  `?error=`, which any process on the machine can send while a sign-in waits: a code that is not one the authorize step
- *  sends is said as `authorize_other`. Under this command that is all that is kept of it (the server's stdout reaches
- *  only this teller); `agentrun-serve` run on its own logs the tagged code. */
+ *  sends is said as `authorize_other`. The server's line, its tagged code whole, is kept in the start log (signInFailed);
+ *  `agentrun-serve` run on its own logs it. */
 function signInReason(reason) {
   if (reason === undefined) return "no reason given";
   const authorize = /^authorize_(.+)$/.exec(reason);
   return authorize && !AUTHORIZE_CODES.has(authorize[1]) ? "authorize_other" : reason;
 }
+
+/** Whether `line` is the server's log line of a ChatGPT sign-in that did not finish. */
+const signInFailed = (line) => {
+  const fields = fieldsOf(line);
+  return fields.event === "chatgpt" && fields.chatgpt === "sign_in_failed";
+};
 
 /** A teller for one start: given a line of the server's output, what to say of it to the person, or undefined. A refused
  *  request (auth_failed) and a verified webhook delivery its trigger does not take (hook_ignored) are said in words, with
@@ -428,7 +434,8 @@ export async function main(argv, env = process.env) {
   // server's own "Open " line; the lines SAID names go to stderr after it, for the person, so stdout stays that one line.
   // What it prints on stderr comes through as it is, as it prints it, at the pace this command's stderr is read (forward).
   // Until the server prints the address, all it writes on either goes to the start log too, and the last lines of each are
-  // kept: a start that fails says them, with the step, how the server ended and the log (failureText).
+  // kept: a start that fails says them, with the step, how the server ended and the log (failureText). After it, the log
+  // keeps only a ChatGPT sign-in's failure (tell).
   const log = openStartLog(dataDir);
   const logPath = log.fd === undefined ? undefined : join(dataDir, START_LOG);
   // The first write to the log that failed (a full disk, a quota): the start goes on, the log keeps what it holds, and a
@@ -505,6 +512,10 @@ export async function main(argv, env = process.env) {
   const tell = (line) => {
     const said = SAID.test(line) ? line : teller(line);
     if (said !== undefined) told ? console.error(said) : held.push(said);
+    // Started, the start log keeps the server's line of a ChatGPT sign-in that did not finish: its reason whole, a code
+    // the terminal says only as authorize_other included, which nothing else under this command keeps. (Before the start,
+    // every line goes there already.)
+    if (started && signInFailed(line)) toLog(`${line}\n`);
   };
   // A SAID line can come before the "Open " line too (the setup link is printed as the server attaches its owner, before
   // its banner): it is held and said first, in order.
@@ -558,7 +569,9 @@ export async function main(argv, env = process.env) {
     return ended?.code || 1;
   }
   started = true;
-  closeLog();
+  // Kept open for a sign-in's failure (tell) until the server's output has all been read: its exit can come before the
+  // last lines in the pipe.
+  void closed.then(closeLog);
   console.log(`AgentRun is running at ${url}`);
   // For the person at the terminal (stderr, so stdout stays the one line a script reads): how to stop it, and where its
   // data is kept, which the next start opens again.

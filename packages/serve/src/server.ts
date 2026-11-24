@@ -1508,7 +1508,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // where it is signed in. A sign-in, a sign-out or an expiry it sees makes the reading again, as a key's save does.
   const plan = new ChatGPTPlan({ store, sealKey: seal.key, log: (fields) => (log ? log(logLine("chatgpt", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("chatgpt", fields)}\n`)), changed: () => keysChanged() });
   await plan.load();
-  stops.push(async () => plan.close());
+  stops.push(async () => void plan.close());
   // Claude Code's login on this machine (claude-login.ts): env carries where it is while the owner has it on, so
   // claude-agent's model checks see a model without a key. Unset, its switch follows the listen address: there on
   // loopback, off past it. A setting kept where the mode is now off or refused goes first.
@@ -1602,13 +1602,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     savedGateway = await readSavedGateway(store, seal.key);
     await keysChanged();
   };
-  /** The sign-in as the store holds it now: a runner may have renewed it, or found it expired. A change reads env again;
-   *  so does a sign-in's change this server failed to take (changed_failed), until it takes. */
-  const planNow = async () => {
-    const was = plan.state;
-    if ((await plan.load()).state !== was) await keysChanged();
-    else await plan.changeAgain();
-  };
+  /** The sign-in as the store holds it now (ChatGPTPlan.refresh): a change reads env again, and so does one this server
+   *  failed to take (changed_failed), until it takes. */
+  const planNow = () => plan.refresh();
   /** What Claude Code's login routes use: a turn on or off reads the setting again, then env, as a key's save does. A
    *  sign-in this server starts opens a browser on its machine, so only where the console is on loopback here; it is
    *  kept for this process (claude-sign-in.ts), and one still waiting is ended at the stop. */
@@ -6737,8 +6733,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     closing = true;
     stopping.abort();
     clearInterval(localSourceTimer);
-    // Cancel a pending ChatGPT callback without signing out or changing the saved credential.
-    plan.close();
+    // Cancel a pending ChatGPT callback without signing out or changing the saved credential (not waited for).
+    void plan.close();
     // The CLI's sign-in still waiting for its browser ends with the server, which forgets it: left running, its CLI would
     // keep the browser's callback port from the next server's sign-in. Awaited until its process is gone.
     const signInStopped = claudeSignIns.close();

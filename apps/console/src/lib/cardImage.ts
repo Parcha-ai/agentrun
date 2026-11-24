@@ -16,9 +16,9 @@ import { hslToRgb, readTokens } from "@/design/contrast";
 export type CardBar = { readonly label: string; readonly value: number; readonly text?: string; readonly measured?: false };
 
 /** A chart on a card: bars as columns (a run of many: hours, days, months; every bar drawn) or as rows (named shares,
- *  each label beside its bar; as many as fit, chartCapacity). Absent `kind`: columns for more than six bars, rows
- *  otherwise, so a chart whose bars a mapper folds to fit says `kind: "rows"`. */
-export type CardChart = { readonly label?: string; readonly kind?: "columns" | "rows"; readonly bars: readonly CardBar[] };
+ *  each label beside its bar; as many as fit, chartCapacity). The caller says which: a kind guessed from the bars given
+ *  would change how many fit with how many a mapper folds them to. */
+export type CardChart = { readonly label?: string; readonly kind: "columns" | "rows"; readonly bars: readonly CardBar[] };
 
 /** What a card says. Every word on the image is one of these; nothing else is read. */
 export type CardBody = {
@@ -27,7 +27,7 @@ export type CardBody = {
   readonly title: string;
   /** The card's one big number, as words ("$0.00", "1.2M") and its unit ("tokens"). */
   readonly figure?: { readonly value: string; readonly unit?: string };
-  /** Label and value pairs, two columns of up to three. */
+  /** Label and value pairs, at most six: up to three side by side, more in two columns of up to three. */
   readonly rows?: readonly { readonly label: string; readonly value: string }[];
   /** Up to two charts, side by side: two columns charts each as wide as its share of their bars, a rows chart a fixed share. */
   readonly charts?: readonly CardChart[];
@@ -58,6 +58,8 @@ const SANS = "'Schibsted Grotesk', system-ui, -apple-system, 'Segoe UI', Roboto,
 const ADVANCE = { mono: 0.6, sans: 0.56 } as const;
 const MAX_ROWS = 6;
 const MAX_CHARTS = 2;
+/** The most bars of one chart the alt reads (a year by day): a screen reader reads the rest as a count. */
+const ALT_BARS = 365;
 
 const TOKENS = readTokens(tokensCss);
 
@@ -156,7 +158,7 @@ function chartEl(chart: CardChart, x: number, y: number, width: number, height: 
    *  fills its track, as an outline. */
   const lengthOf = (bar: CardBar, track: number) =>
     bar.measured === false && measure(bar.value) === 0 ? track : most > 0 ? Math.min(track, (measure(bar.value) / most) * track) : 0;
-  const rows = kindOf(chart) === "rows";
+  const rows = chart.kind === "rows";
   const room = height - (top - y);
   if (rows) {
     const shown = bars.slice(0, rowsThatFit(room));
@@ -199,12 +201,9 @@ function chartEl(chart: CardChart, x: number, y: number, width: number, height: 
   return { marks: out, shown: bars.length };
 }
 
-/** A chart's kind as drawn: the one it says, else columns for more than six bars. */
-const kindOf = (chart: CardChart): "columns" | "rows" => chart.kind ?? (chart.bars.length > 6 ? "columns" : "rows");
-
 /** A chart's share of the width beside another: a columns chart's grows with its bars (each column as wide as the
  *  other's), a rows chart's is fixed (its bars stack, and its labels need the room). */
-const weightOf = (chart: CardChart): number => (kindOf(chart) === "rows" ? 10 : Math.max(chart.bars.length, 4));
+const weightOf = (chart: CardChart): number => (chart.kind === "rows" ? 10 : Math.max(chart.bars.length, 4));
 
 /** How many rows of bars fit a rows chart's `room` (its height under its label): one at the least. */
 const rowsThatFit = (room: number): number => Math.max(1, Math.floor(room / 36));
@@ -280,13 +279,14 @@ function draw(body: CardBody): { marks: string[]; shown: number[]; rows: number;
     y += 16;
   }
 
-  // The rows: two columns, each pair a caps label over its value, as many as fit above the charts and the foot.
+  // The rows: up to three side by side, more in two columns, each pair a caps label over its value, as many as fit above
+  // the charts and the foot.
   const rows = (body.rows ?? []).slice(0, MAX_ROWS);
   // Each drawn chart with its index in body.charts, which chartCapacity answers by.
   const charts = (body.charts ?? []).map((chart, index) => ({ chart, index })).filter(({ chart }) => chart.bars.length > 0).slice(0, MAX_CHARTS);
   let rowsShown = 0;
   if (rows.length) {
-    const columns = rows.length > 3 ? 2 : Math.min(rows.length, 3);
+    const columns = rows.length > 3 ? 2 : rows.length;
     const perColumn = Math.ceil(rows.length / columns);
     const columnWidth = (INNER - 32 * (columns - 1)) / columns;
     const pitch = 64;
@@ -320,8 +320,11 @@ function draw(body: CardBody): { marks: string[]; shown: number[]; rows: number;
         out.push(...marks);
         shownBars[index] = shown;
         if (shown) {
-          const bars = chart.bars.slice(0, shown).map((bar) => `${bar.label} ${bar.text ?? (bar.measured === false ? "not measured yet" : String(measure(bar.value)))}`).join(", ");
-          alt.push(chart.label ? `${chart.label}: ${bars}` : bars);
+          // A year's bars read at most: past that, how many more are drawn.
+          const read = Math.min(shown, ALT_BARS);
+          const bars = chart.bars.slice(0, read).map((bar) => `${bar.label} ${bar.text ?? (bar.measured === false ? "not measured yet" : String(measure(bar.value)))}`).join(", ");
+          const more = shown > read ? `, and ${shown - read} more` : "";
+          alt.push(chart.label ? `${chart.label}: ${bars}${more}` : `${bars}${more}`);
         }
         x += width + gap;
       });
