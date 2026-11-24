@@ -346,14 +346,14 @@ test("a workflow run's title: an input with no held value gives the title its fi
 // tool's answer among them) and the completion's answer and error. A held value split across two strings of one of
 // them withholds that one, and one split across two of them withholds both; the event's or the completion's own facts
 // (sequence, type, id, name, status) stay. A held value whole in one string is cut in place (controls).
-async function sdkRunOf(t) {
+async function sdkRunOf(t, secrets = SECRETS) {
   const server = await serve(t, { runner: false });
   const definition = { id: "sdk-split", name: "SDK split", instructions: "Use the policy.", sdk: { runtime: "claude-agent-sdk" }, learning: false, tools: [] };
   assert.equal((await server.api("POST", "/agents", { definition })).status, 201);
   const started = await server.api("POST", "/agents/sdk-split/sdk-runs", { runtime: "claude-agent-sdk", input: "A task.", instructions: "Keep the policy." }, { "Idempotency-Key": "split" });
   assert.equal(started.status, 201, JSON.stringify(started.body));
   const id = started.body.run_id;
-  return { id, sdk: new SdkRuns(server.store, server.data, "fake-test-key", () => [...SECRETS]), inbox: () => sdkInbox(server.store, id) };
+  return { id, sdk: new SdkRuns(server.store, server.data, "fake-test-key", () => [...secrets]), inbox: () => sdkInbox(server.store, id) };
 }
 const toolEvent = (id, input, output) => ({ type: "tool", id, name: "web_search", status: "completed", input, output });
 
@@ -382,6 +382,36 @@ test("an SDK run's completion: a held value split across its answer and its erro
   const { completion } = await run.inbox();
   assert.deepEqual(shows(JSON.stringify(completion)), []);
   assert.deepEqual(completion, { status: "failed", answer: "[redacted]", error: "[redacted]" });
+});
+
+// A second held value, and what of either value a stored text must not show: each half's first eight characters.
+const [HEAD2, REST2] = [["Wm5T", "qX8c", "Rv3N", "jB7d"].join(""), ["Lp4K", "hF9s", "Zt2G", "yE6a"].join("")];
+const BOTH = [KEY, `${HEAD2}${REST2}`];
+const showsEither = (text) => [HEAD, REST, HEAD2, REST2].map((half) => half.slice(0, 8)).filter((half) => text.includes(half));
+
+test("an SDK run's completion: one part withheld by itself, its tail holding a second value's head whose rest is the other part, stores neither half", async (t) => {
+  // The answer holds the first value split by a space, so it is withheld alone; it ends with the second value's head,
+  // and the error starts with that value's rest.
+  const run = await sdkRunOf(t, BOTH);
+  assert.deepEqual(await run.sdk.complete(run.id, { status: "failed", answer: `stopped at ${HEAD} ${REST}, then ${HEAD2}`, error: `${REST2} was refused` }), { accepted: true });
+  const { completion } = await run.inbox();
+  assert.deepEqual(showsEither(JSON.stringify(completion)), []);
+  assert.deepEqual(completion, { status: "failed", answer: "[redacted]", error: "[redacted]" });
+});
+
+test("an SDK run's tool event: its input withheld by itself, its tail holding a second value's head whose rest is the output, stores neither half", async (t) => {
+  const run = await sdkRunOf(t, BOTH);
+  const events = [toolEvent("t1", { command: `echo ${HEAD} ${REST} and ${HEAD2}` }, { note: `${REST2} more` })];
+  assert.deepEqual(await run.sdk.events(run.id, { sequence: 1, events }), { accepted: true });
+  const inbox = await run.inbox();
+  assert.deepEqual(showsEither(JSON.stringify(inbox)), []);
+  assert.deepEqual(inbox.batches[0].events, [toolEvent("t1", "[redacted]", "[redacted]")]);
+});
+
+test("an SDK run's completion with its answer withheld by itself and an error that holds no part of a held value keeps the error as given (control)", async (t) => {
+  const run = await sdkRunOf(t, BOTH);
+  assert.deepEqual(await run.sdk.complete(run.id, { status: "failed", answer: `stopped at ${HEAD} ${REST}`, error: "the search was refused" }), { accepted: true });
+  assert.deepEqual((await run.inbox()).completion, { status: "failed", answer: "[redacted]", error: "the search was refused" });
 });
 
 test("an SDK run's completion with a held value whole in its answer is cut in place, its error as given (control)", async (t) => {
