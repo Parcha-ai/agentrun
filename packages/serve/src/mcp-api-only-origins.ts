@@ -6,9 +6,8 @@
 // signed-in session (which an API-only server doesn't serve) is the owner's, whenever it was saved, and the list does not
 // govern it. An API-only start with the setting
 // unset holds an empty list, so a per_run server the token saved with the profile off is refused until its origin is
-// listed; that start says so once in its log, naming each such server (offApiOnlyMcpServers).
+// listed.
 import { mcpSourceKey, savedByToken } from "./mcp-sources.js";
-import { listMcpServers } from "./mcp-store.js";
 import { isObject } from "./validate.js";
 
 /** The settings key the list is held under, as `{ origins: string[] }`. */
@@ -45,12 +44,4 @@ export async function offApiOnlyMcpOrigins(store: SettingsReader, name: string, 
   }
   if (held.includes(origin)) return undefined;
   return `The MCP server ${name} can't be used: the API token saved it at an origin that is no longer on this server's AGENTRUN_API_ONLY_MCP_ORIGINS. Nothing was sent.`;
-}
-
-/** The names of the saved servers offApiOnlyMcpOrigins refuses now, sorted: none when the store holds no list. What an
- *  API-only start says once in its log (server.ts), by name alone, never an address. */
-export async function offApiOnlyMcpServers(store: SettingsReader & Parameters<typeof listMcpServers>[0]): Promise<string[]> {
-  const off: string[] = [];
-  for (const row of await listMcpServers(store)) if (await offApiOnlyMcpOrigins(store, row.name, row)) off.push(row.name);
-  return off.sort();
 }
