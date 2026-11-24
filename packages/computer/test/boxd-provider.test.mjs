@@ -8,7 +8,7 @@ import { BOXD, kindRefusals } from "../dist/index.js";
 import { providerFor } from "../dist/providers.js";
 
 const { BoxdProvider, boxdDesktopSnapshot, create } = await import("../dist/boxd.js");
-const { BOXD_ENV, settingsFromEnv, conformanceImage, createProvider, createHost, sweepScope } = await import("../dist/conformance/boxd.js");
+const { BOXD_ENV, settingsFromEnv, conformanceImage, createProvider, createDriftedProvider, createHost, sweepScope } = await import("../dist/conformance/boxd.js");
 
 const KEY = "bxd_fake_computer_key_0123456789";
 const NAME = "agentrun.computer.name";
@@ -552,4 +552,38 @@ test("the sweep's scope names the org, the region and the key by its sha256 pref
 	assert.notEqual(sweepScope({ env: { ...env, [BOXD_ENV.region]: "nyc" } }), scope, "another region is another place");
 	assert.notEqual(sweepScope({ env: { [BOXD_ENV.key]: KEY } }), scope, "the key's own org and home region are another place");
 	assert.throws(() => sweepScope({ env: {} }), /COMPUTER_BOXD_API_KEY/);
+});
+
+test("the conformance module hands the caller's onNote to the provider: a release whose run folder was not let go cleanly is said through it", async () => {
+	// A running Archil computer: release lets go of its folder first, through an exec that cannot start here.
+	const labels = { "agentrun.computer": "1", [NAME]: "computer-0123456789ab", "agentrun.run": "r1", "agentrun.mount": JSON.stringify({ kind: "archil", disk: "dsk-00000000000baf76", region: "aws-us-east-1", agent: "a1" }) };
+	let deleted = false;
+	const { Boxd } = recorder({
+		get: () => (deleted ? Promise.reject(named("NotFoundError")) : machine({ labels })),
+		delete: () => {
+			deleted = true;
+		},
+		streamExec: () => {
+			throw new Error("no exec here");
+		},
+	});
+	const notes = [];
+	const provider = await createProvider({ env: { [BOXD_ENV.live]: "1", [BOXD_ENV.key]: KEY }, Boxd, timeouts: { ...TIMEOUTS, pollMs: 1 }, onNote: (note) => notes.push(note) });
+	const released = await provider.release({ id: "m-1", name: "computer-0123456789ab" }, "delete");
+	assert.equal(released.ok, true, JSON.stringify(released));
+	assert.equal(deleted, true);
+	assert.equal(notes.length, 1, JSON.stringify(notes));
+	assert.equal(notes[0].computer, "computer-0123456789ab");
+	assert.match(notes[0].note, /was deleted, and the run's folder was not let go cleanly/);
+});
+
+test("the conformance module's daemon: an option's path over COMPUTER_BOXD_DAEMON, and the drifted twin uploads the one it built", async () => {
+	const env = { [BOXD_ENV.live]: "1", [BOXD_ENV.key]: KEY, [BOXD_ENV.daemon]: "/nonexistent/untangle-env/computerd" };
+	const options = { env, timeouts: TIMEOUTS, daemonPath: "/nonexistent/untangle-option/computerd", buildDaemon: async () => "/nonexistent/untangle-drift/computerd" };
+	const made = await (await createProvider({ ...options, Boxd: recorder({ list: [] }).Boxd })).create(SPEC, { requestId: "req-untangle-boxd-1" });
+	assert.equal(made.ok, false);
+	assert.match(made.error.message, /no daemon binary at \/nonexistent\/untangle-option\/computerd/);
+	const drifted = await (await createDriftedProvider({ ...options, Boxd: recorder({ list: [] }).Boxd })).create(SPEC, { requestId: "req-untangle-boxd-2" });
+	assert.equal(drifted.ok, false);
+	assert.match(drifted.error.message, /no daemon binary at \/nonexistent\/untangle-drift\/computerd/);
 });
