@@ -137,7 +137,7 @@ test("AGENTRUN_LOG=debug reaches the adapter every ACP entry of the harness tabl
   }));
   const env = { HOME: process.env.HOME, PATH: process.env.PATH, [DATA_ENV]: data, ...harnessRecipesEnv([proxy, plan], data), ANTHROPIC_API_KEY: "fake-test-key", CURSOR_API_KEY: "fake-test-key" };
   // The plan-billed recipe's key, as a start's claim lays it.
-  layHarnessKeys(env, { MODEL_AGENT_API_KEY: "fake-harness-key" });
+  layHarnessKeys(env, { MODEL_AGENT_API_KEY: "fake-test-key" });
 
   const expect = (debug) => ({
     cursor: [["acpAdapter", debug]],
