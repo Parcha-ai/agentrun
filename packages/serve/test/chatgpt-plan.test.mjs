@@ -1354,6 +1354,35 @@ test("signing out through the API answers whether OpenAI confirmed the revocatio
   assert.equal(openai.revocationsOf(third.refresh), 1);
 });
 
+test("the server's stop waits a short while for a sign-in past its code's exchange: one that ends in time is saved before the store closes, one that doesn't end never holds the stop", { timeout: 60_000 }, async (t) => {
+  withEnv(t, {}, MODEL_VARS);
+  const openai = fakeOpenAI(t);
+  let release;
+  openai.holdModels = new Promise((resolve) => (release = resolve));
+  t.after(() => release());
+  const finishing = async (server) => {
+    const started = await server.api("POST", "/settings/chatgpt/sign-in");
+    assert.equal(started.status, 200, JSON.stringify(started.body));
+    // Its answer is cut off by the stop: what it says is not the test's.
+    server.api("POST", "/settings/chatgpt/sign-in/finish", { redirect_url: callbackFor(started.body.authorize_url) }).catch(() => undefined);
+  };
+  const hung = (promise, ms) => Promise.race([promise.then(() => "ended"), new Promise((resolve) => setTimeout(() => resolve("hung"), ms))]);
+  // Its model list answers while the stop waits: the sign-in is kept, and the next server reads it signed in.
+  const first = await serve(t, { faux: undefined, runner: false, harnesses: false });
+  await finishing(first);
+  await until(() => openai.modelLists === 1, "the sign-in's code was exchanged, and its models are being listed");
+  const stopping = first.stop();
+  assert.equal(await hung(stopping, 300), "hung", "the stop waits for the sign-in its model list holds");
+  release();
+  await stopping;
+  const again = await serve(t, { data: first.data, faux: undefined, runner: false, harnesses: false });
+  assert.equal((await again.api("GET", "/settings/chatgpt")).body.state, "signed_in", "kept before the store closed");
+  // Its model list never answers: the stop gives up on it after its short wait.
+  openai.holdModels = new Promise((resolve) => (release = resolve));
+  await finishing(again);
+  await until(() => openai.modelLists === 2, "the second sign-in's models are being listed");
+  assert.equal(await hung(again.stop(), 15_000), "ended", "the stop ends with the sign-in still out");
+});
 
 test("normal server shutdown releases a pending ChatGPT callback without signing out the saved plan", { timeout: 30_000 }, async (t) => {
   withEnv(t, {}, MODEL_VARS);
