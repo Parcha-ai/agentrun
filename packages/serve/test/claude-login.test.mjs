@@ -21,6 +21,7 @@ import { agent, follow, secretWritePath, serve, withEnv } from "./support.mjs";
 
 secretWritePath(["GET", "PUT", "DELETE"], /^\/settings\/claude-login$/);
 secretWritePath(["POST"], /^\/settings\/claude-login\/login$/);
+secretWritePath(["PUT", "DELETE"], /^\/settings\/harness-keys\/[^/]+\/[^/]+$/);
 
 const MODEL_VARS = ["AGENT_MODEL_BASE_URL", "AGENT_MODEL", "AGENT_MODEL_FAST", "AGENT_MODEL_STRONG", "AGENT_MODEL_API_KEY", "AGENT_MODEL_GATEWAY_IDS", "AGENTRUN_SERVE_DEFAULT_MODEL", "ANTHROPIC_BASE_URL", "OPENAI_BASE_URL", "CLAUDE_CODE_OAUTH_TOKEN", CLAUDE_LOGIN_ENV, ...MODEL_KEYS.map((row) => row.field)];
 const OPERATIONS = [["GET", "/settings/claude-login", "getClaudeLogin"], ["PUT", "/settings/claude-login", "turnOnClaudeLogin"], ["DELETE", "/settings/claude-login", "turnOffClaudeLogin"], ["POST", "/settings/claude-login/login", "startClaudeLogin"]];
@@ -793,19 +794,36 @@ for (const [change, ask, place] of RACE_CHANGES) {
   });
 }
 
-// The rereads of two login changes can overlap, as each runs after its turn. A turn-on finds the offers' inputs changed
-// and probes the offers again, which can take seconds. A turn-off that lands meanwhile finds the offers held made from
-// its own inputs (the turn-on's probe has not landed) and keeps them. The turn-on's probe, landing after that, must not
-// put back offers made from the login being on. Here that probe is held at claude-agent's check (fixtures/held-offers.cjs)
-// while the turn-off runs to its answer, then let go; the turn-on answers only once its probe has landed.
-const PROBE_WHY = "a probe from before the turn-off landed after it and put back an offer made from the login being on";
-test("a turn-off that lands while the turn-on's probe of the offers is still out leaves claude-agent needing a key once that probe ends", { timeout: 60_000 }, async (t) => {
-  const table = createRequire(import.meta.url).resolve("./fixtures/held-offers.cjs");
-  const held = createRequire(import.meta.url)(table);
+// The server probes the harnesses' offers again after a change of what they are made from (keysChanged), and the probe
+// can take seconds. The rereads of two changes can overlap, as a login change's runs after its turn. Whatever lands last
+// must be offers made from what the server reads then. The probe is held at claude-agent's check by a test harness table
+// (fixtures/held-offers.cjs), with no timers: the test lets it go once the other change has answered, and a change
+// answers only once the probe it started has landed. `probes(why)` counts the probes from the server's log lines.
+const HELD_TABLE = createRequire(import.meta.url).resolve("./fixtures/held-offers.cjs");
+const held = createRequire(import.meta.url)(HELD_TABLE);
+
+/** A server on the held table for test `t`: the fake CLI on PATH, no model key, and `options` laid on it. `harnesses()`: its capabilities' harnesses now; `probes(why)`: how many probes of the offers it
+ *  has made for `why`. */
+async function heldServer(t, options = {}) {
   const fake = await fakeCli(t);
   withEnv(t, { PATH: `${dirname(fake.cli)}${delimiter}${process.env.PATH}` }, MODEL_VARS);
-  const { api } = await serve(t, { faux: undefined, harnesses: false, runner: false, harnessTable: table });
-  assert.equal((await offerOf(api)).available, false, "no key and the login off: claude-agent runs nothing");
+  t.after(() => held.answer(undefined));
+  const lines = [];
+  const server = await serve(t, { faux: undefined, harnesses: false, runner: false, harnessTable: HELD_TABLE, log: (line) => void lines.push(line), ...options });
+  const harnesses = async () => (await server.api("GET", "/capabilities")).body.harnesses;
+  const probes = (why) => lines.filter((line) => line.includes(" event=harness_offers ") && line.includes(` why=${why} `)).length;
+  return { ...server, harnesses, probes };
+}
+const claudeAgentIn = (harnesses) => harnesses.find((offer) => offer.id === "claude-agent");
+
+// A turn-on finds the offers' inputs changed and probes them. A turn-off that lands meanwhile finds the offers held made
+// from its own inputs (the turn-on's probe has not landed). The turn-on's probe, landing after it, must not put back
+// offers made from the login being on.
+const PROBE_WHY = "a probe from before the turn-off landed after it and put back an offer made from the login being on";
+test("a turn-off that lands while the turn-on's probe of the offers is still out leaves claude-agent needing a key once that probe ends", { timeout: 60_000 }, async (t) => {
+  const { api, harnesses } = await heldServer(t);
+  const before = await harnesses();
+  assert.equal(claudeAgentIn(before).available, false, "no key and the login off: claude-agent runs nothing");
 
   const probe = held.hold((env) => claudeLoginOf(env) !== undefined);
   t.after(() => probe.release());
@@ -817,10 +835,79 @@ test("a turn-off that lands while the turn-on's probe of the offers is still out
   assert.equal(on.status, 200, JSON.stringify(on.body));
   assert.equal(off.status, 200, JSON.stringify(off.body));
   assert.equal(off.body.state, "off");
-  const caps = (await api("GET", "/capabilities")).body;
-  const offer = caps.harnesses.find((one) => one.id === "claude-agent");
-  assert.equal(offer.available, false, `${PROBE_WHY}: ${JSON.stringify(offer)}`);
-  assert.equal(caps.models.ready, false, "no key and the login off: no model runs here");
+  const after = await harnesses();
+  assert.equal(claudeAgentIn(after).available, false, `${PROBE_WHY}: ${JSON.stringify(claudeAgentIn(after))}`);
+  assert.deepEqual(after, before, `${PROBE_WHY}: the offers are not the starting state's`);
+  assert.equal((await api("GET", "/capabilities")).body.models.ready, false, "no key and the login off: no model runs here");
+});
+
+// The same for any two changes whose second lands back on the inputs the offers held were made from: a model key saved
+// (its probe held), then deleted. OpenAI's key is not checked against OpenAI as it is saved (key-check.ts NOT_CHECKED),
+// so nothing here reaches the network.
+const KEY_WHY = "a probe from before the key's delete landed after it and put back offers made from the key being saved";
+test("a model key deleted while its save's probe of the offers is still out leaves the starting state's offers once that probe ends", { timeout: 60_000 }, async (t) => {
+  const { api, harnesses } = await heldServer(t);
+  const before = await harnesses();
+
+  const probe = held.hold((env) => env.OPENAI_API_KEY !== undefined);
+  t.after(() => probe.release());
+  const saving = api("PUT", "/settings/tool-keys/openai", { values: { OPENAI_API_KEY: "not-a-secret-openai-key" } });
+  await probe.reached;
+  const deleted = await api("DELETE", "/settings/tool-keys/openai");
+  probe.release();
+  const saved = await saving;
+  assert.equal(saved.status, 204, JSON.stringify(saved.body));
+  assert.equal(deleted.status, 204, JSON.stringify(deleted.body));
+  const after = await harnesses();
+  assert.deepEqual(after, before, KEY_WHY);
+  assert.equal(claudeAgentIn(after).available, false, "no key and the login off: claude-agent runs nothing");
+});
+
+// A plan-billed recipe (harness-recipe.ts) for the harness keys' route alone: never installed, never run.
+async function planRecipeFile(t) {
+  const { archivePlatform } = await import("../dist/harness-archive.js");
+  const dir = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-login-recipe-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const file = join(dir, "recipe.json");
+  writeFileSync(file, `${JSON.stringify({
+    id: "model-agent",
+    label: "Model Agent",
+    release: { registry: "model-agent", version: "1.0.0", archives: { [archivePlatform()]: { url: "https://releases.example.invalid/model-agent-1.0.0.tar.bz2", format: "tar.bz2", sha256: "0".repeat(64), cmd: "./agent" } } },
+    env: { MODEL_AGENT_MODE: "plan", MODEL_AGENT_VENDOR: "127.0.0.1:9", MODEL_AGENT_MODEL: "vendor-model" },
+    model: { billing: "plan", wire: "anthropic-messages", env: "MODEL_AGENT_MODEL", maxTurns: 8, maxToolCalls: 8, hosts: ["127.0.0.1:9"] },
+    files: { ".config/model-agent/settings.json": "{\"telemetry\": false}\n" },
+    state: [".model-agent/sessions"],
+    declares: { load: true, mcp: "http" },
+    keys: ["MODEL_AGENT_API_KEY"],
+  }, null, 2)}\n`);
+  return file;
+}
+
+// A tool key is none of the offers' inputs (offersEnvOf), so its save or delete starts no probe. A probe it finds out,
+// made from the inputs read now (a harness key's, which may find newer facts), must land: a tool key's change never
+// drops it. The facts here are the held table's: claude-agent's check answers FACT from the harness key's save on.
+const FACT = "the probe after the harness key's save found this";
+const TOOL_KEY_PROBED = "a tool key's change, which changes none of the offers' inputs, started a probe of the offers";
+const FACT_WHY = "a tool key's change while a probe made from the inputs read now was out dropped that probe: the facts it found never landed";
+test("a tool key's change starts no probe of the offers, and one made while a probe from the inputs read now is out leaves that probe's facts standing once it lands", { timeout: 60_000 }, async (t) => {
+  const { api, harnesses, probes } = await heldServer(t, { harnessRecipes: [await planRecipeFile(t)] });
+  assert.equal((await api("DELETE", "/settings/tool-keys/typesafe")).status, 204);
+  assert.equal(probes("key"), 0, `${TOOL_KEY_PROBED} with no probe out`);
+  assert.notEqual(claudeAgentIn(await harnesses()).reason, FACT);
+
+  held.answer(FACT);
+  const probe = held.hold(() => true);
+  t.after(() => probe.release());
+  const saving = api("PUT", "/settings/harness-keys/model-agent/MODEL_AGENT_API_KEY", { value: "not-a-secret-harness-key" });
+  await probe.reached;
+  const deleted = await api("DELETE", "/settings/tool-keys/typesafe");
+  probe.release();
+  const saved = await saving;
+  assert.equal(saved.status, 204, JSON.stringify(saved.body));
+  assert.equal(deleted.status, 204, JSON.stringify(deleted.body));
+  const offer = claudeAgentIn(await harnesses());
+  assert.equal(offer.reason, FACT, `${FACT_WHY}: ${JSON.stringify(offer)}`);
+  assert.equal(probes("key"), 0, `${TOOL_KEY_PROBED} while one made from the inputs read now was out`);
 });
 
 // A turn starts or ends the sign-in through its own `turn`. A start or stop of the sign-ins' own beside it would be a
@@ -828,6 +915,8 @@ test("a turn-off that lands while the turn-on's probe of the offers is still out
 // waits for the sign-ins' close) with it. The sign-ins offer none: their queue (serial), the view and the server's close.
 test("the sign-ins start and end a sign-in only in a turn on their queue: they offer no start or stop of their own, which a turn calling it would wait on for ever", () => {
   assert.deepEqual(Object.getOwnPropertyNames(ClaudeSignIns.prototype).sort(), ["close", "constructor", "serial", "view"], "the sign-ins offer a start or stop beside a turn's, which one called inside a turn waits on for ever");
+  // A class field is the instance's own, not the prototype's: the one the sign-ins have is their limit.
+  assert.deepEqual(Object.keys(new ClaudeSignIns()), ["limitMs"], "the sign-ins offer a start or stop beside a turn's, which one called inside a turn waits on for ever");
 });
 
 test("the machine's id is a file of the owner's alone (0600) in the data folder, kept across a restart, so the login stays this machine's; a setting saved with a hostname and no id reads as another machine's until turned on again", { timeout: 180_000 }, async (t) => {
