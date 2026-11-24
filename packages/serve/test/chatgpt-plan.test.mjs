@@ -112,6 +112,8 @@ function fakeOpenAI(t) {
     if (url.href === "https://api.openai.com/v1/models" && request.method === "GET") {
       o.modelLists += 1;
       if (o.modelsDelayMs) await new Promise((resolve) => setTimeout(resolve, o.modelsDelayMs));
+      // `holdModels`: a promise the model list waits on before it answers, so a test acts while it is out.
+      if (o.holdModels) await o.holdModels;
       if (!liveAccess(request))return Response.json({ error: { message: "bad token" } }, { status: 401 });
       return Response.json({ object: "list", data: ["gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-luna", "text-embedding-3-small"].map((id) => ({ id, object: "model" })) });
     }
@@ -153,10 +155,23 @@ function mapStore({ clock = () => Date.now() } = {}) {
   const sealed = new Map();
   const settings = new Map();
   const holds = (name, was) => sealed.has(name) && Buffer.from(sealed.get(name)).equals(Buffer.from(was));
+  let held;
   return {
     sealed,
+    /** The next get reads the row at once and answers only once the returned release is called. */
+    holdNextGet: () => {
+      let release;
+      held = new Promise((resolve) => (release = resolve));
+      return release;
+    },
     sealedKeys: {
-      get: async (name) => sealed.get(name),
+      get: async (name) => {
+        const bytes = sealed.get(name);
+        const hold = held;
+        held = undefined;
+        if (hold) await hold;
+        return bytes;
+      },
       put: async (name, bytes) => void sealed.set(name, bytes),
       replaceIf: async (name, was, bytes) => (holds(name, was) ? (sealed.set(name, bytes), true) : false),
       remove: async (name) => void sealed.delete(name),
@@ -1161,6 +1176,60 @@ test("a paste whose code's exchange a sign-out or the 10 minutes cut off answers
   assert.deepEqual(plan.view(), { state: "signed_out", problem: TIMED_OUT });
   await assert.rejects(late, (error) => error.message === TIMED_OUT);
   assert.deepEqual(logged.map((fields) => fields.reason ?? fields.chatgpt), ["signed_out", "timed_out"]);
+});
+
+test("close() resolves only once a cancelled sign-in has ended: not while its model list is out, at once after it answers", { timeout: 30_000 }, async (t) => {
+  const openai = fakeOpenAI(t);
+  const { ChatGPTPlan } = await import("../dist/chatgpt-plan.js");
+  const plan = new ChatGPTPlan({ store: mapStore(), sealKey: randomBytes(32) });
+  let release;
+  openai.holdModels = new Promise((resolve) => (release = resolve));
+  t.after(() => {
+    release();
+    return plan.close();
+  });
+  const { authorize_url } = await plan.startSignIn();
+  const finishing = plan.finishSignIn(callbackFor(authorize_url));
+  finishing.catch(() => undefined);
+  await until(() => openai.modelLists === 1, "the sign-in's code was exchanged, and its models are being listed");
+  let closed = false;
+  const closing = plan.close().then(() => (closed = true));
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(closed, false, "the cancelled sign-in is still listing its models: close() has not resolved");
+  release();
+  await closing;
+  assert.equal(closed, true);
+});
+
+test("a read of the row that a sign-in kept or a sign-out passed while it was out leaves the state they set", { timeout: 30_000 }, async (t) => {
+  fakeOpenAI(t);
+  const { ChatGPTPlan } = await import("../dist/chatgpt-plan.js");
+  const store = mapStore();
+  const plan = new ChatGPTPlan({ store, sealKey: randomBytes(32) });
+  t.after(() => plan.close());
+  // A load reads no row; a sign-in is kept before it answers.
+  let release = store.holdNextGet();
+  const before = plan.load();
+  const { authorize_url } = await plan.startSignIn();
+  await plan.finishSignIn(callbackFor(authorize_url));
+  assert.equal(plan.view().state, "signed_in");
+  release();
+  await before;
+  assert.equal(plan.view().state, "signed_in", "the load that read no row before the sign-in does not sign it out");
+  // A load and a token() read the signed-in row; a sign-out passes before they answer.
+  for (const read of [() => plan.load(), () => plan.token()]) {
+    if (plan.view().state !== "signed_in") {
+      const again = await plan.startSignIn();
+      await plan.finishSignIn(callbackFor(again.authorize_url));
+    }
+    release = store.holdNextGet();
+    const out = read();
+    await plan.signOut();
+    assert.equal(plan.view().state, "signed_out");
+    release();
+    await out;
+    assert.equal(plan.view().state, "signed_out", "the read of the row the sign-out removed does not sign it back in");
+  }
 });
 
 test("a sign-in waiting listens for its loopback callback on this test process's own loopback address (pi-ai's PI_OAUTH_CALLBACK_HOST), port 1455", { timeout: 30_000 }, async (t) => {

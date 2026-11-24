@@ -201,6 +201,9 @@ export interface ChatGPTPlanDeps {
  *  never shows a token when logged. */
 export class ChatGPTPlan implements PlanReader {
   #snapshot: Row | undefined;
+  /** Moved on by each write of the snapshot (wrote: a sign-in kept, a renewal, an expiry, a sign-out): a read of the row
+   *  that was out across one never takes its row over it (readTaken). */
+  #writes = 0;
   #pending: Pending | undefined;
   /** An access token OpenAI refused (refused): token() renews rather than send it again. */
   #refusedAccess: string | undefined;
@@ -278,6 +281,21 @@ export class ChatGPTPlan implements PlanReader {
     return row ? { row, bytes } : undefined;
   }
 
+  /** The row as sealed now (readSealed), taken as the snapshot unless a write moved the snapshot while the read was out:
+   *  a load or token() that read the row before a sign-in was kept, or before a sign-out removed it, leaves their state. */
+  private async readTaken(): Promise<{ row: Row; bytes: Uint8Array } | undefined> {
+    const writes = this.#writes;
+    const read = await this.readSealed();
+    if (this.#writes === writes) this.#snapshot = read?.row;
+    return read;
+  }
+
+  /** `row` as the snapshot, by a write that knows it is the row's latest (a sign-in kept, a renewal, a sign-out). */
+  private wrote(row: Row | undefined): void {
+    this.#snapshot = row;
+    this.#writes += 1;
+  }
+
   /** The row sealed as `bytes`, opened (its tokens held for redaction); none when they do not open. */
   private open(bytes: Uint8Array): Row | undefined {
     try {
@@ -304,7 +322,7 @@ export class ChatGPTPlan implements PlanReader {
 
   /** Reads the sealed row into the state a reader sees. Returns this. */
   async load(): Promise<this> {
-    this.#snapshot = await this.read();
+    await this.readTaken();
     return this;
   }
 
@@ -458,7 +476,7 @@ export class ChatGPTPlan implements PlanReader {
       if (epoch !== this.#epoch) continue;
       if (await this.swap(was, row)) break;
     }
-    this.#snapshot = row;
+    this.wrote(row);
     this.#problem = undefined;
     this.#deps.log?.({ chatgpt: "signed_in", ...(previousRevoked === undefined ? {} : { previous_revoked: String(previousRevoked) }) });
     // Saved: no longer waiting, so it reads signed in while the server takes the change (`saved`, the sign-in's settle).
@@ -514,8 +532,7 @@ export class ChatGPTPlan implements PlanReader {
   /** The access token to send now: the sealed one, renewed first when it ends within 5 minutes. Throws PlanUnavailable,
    *  in words, when there is none. */
   async token(): Promise<string> {
-    const row = await this.read();
-    this.#snapshot = row;
+    const row = (await this.readTaken())?.row;
     if (!row) throw new PlanUnavailable(SIGNED_OUT);
     if (row.state === "expired") throw new PlanUnavailable(EXPIRED);
     if (this.fresh(row)) return row.credential.access;
@@ -552,10 +569,9 @@ export class ChatGPTPlan implements PlanReader {
     const holder = randomUUID();
     const giveUp = this.now() + REFRESH_LEASE_MS + REFRESH_CALL_MS;
     for (;;) {
-      const read = await this.readSealed();
+      const read = await this.readTaken();
       if (!read) throw new PlanUnavailable(SIGNED_OUT);
       const { row, bytes } = read;
-      this.#snapshot = row;
       if (row.state === "expired") throw new PlanUnavailable(EXPIRED);
       // A peer renewed it since: its pair is the row's now.
       if (row.credential.refresh !== seen && this.fresh(row)) return row.credential.access;
@@ -592,7 +608,7 @@ export class ChatGPTPlan implements PlanReader {
       }
       const expired: Row = { ...bare, state: "expired" };
       if (await this.swap(bytes, expired)) {
-        this.#snapshot = expired;
+        this.wrote(expired);
         this.#deps.log?.({ chatgpt: "expired" });
         await this.tellChanged();
         throw new PlanUnavailable(EXPIRED);
@@ -602,7 +618,7 @@ export class ChatGPTPlan implements PlanReader {
     const renewed: Row = { ...bare, credential: { ...bare.credential, ...next } };
     this.hold(renewed.credential);
     if (await this.swap(bytes, renewed)) {
-      this.#snapshot = renewed;
+      this.wrote(renewed);
       return renewed.credential.access;
     }
     // The owner signed out or in again while OpenAI renewed it: the new pair is the sign-in's no longer, and no one
@@ -614,8 +630,7 @@ export class ChatGPTPlan implements PlanReader {
   /** After a renewal whose write back lost its compare-and-set (the owner signed out or in again meanwhile): its result
    *  is dropped, and the row's state wins. */
   private async adopt(): Promise<string> {
-    const now = await this.read();
-    this.#snapshot = now;
+    const now = (await this.readTaken())?.row;
     if (!now) throw new PlanUnavailable(SIGNED_OUT);
     if (now.state === "expired") throw new PlanUnavailable(EXPIRED);
     if (this.fresh(now)) return now.credential.access;
@@ -649,7 +664,7 @@ export class ChatGPTPlan implements PlanReader {
       revoked = revoked && removed;
       break;
     }
-    this.#snapshot = undefined;
+    this.wrote(undefined);
     this.#deps.log?.({ chatgpt: "signed_out", revoked: String(revoked) });
     await this.tellChanged();
     return { revoked };
