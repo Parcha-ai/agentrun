@@ -19,6 +19,9 @@ import { test } from "node:test";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { startFakeOAuth } from "./fixtures/fake-oauth-server.mjs";
 import { call, clientOwnerSession, cookieOf, serve as serveOf, withEnv } from "./support.mjs";
+import { onPostgres } from "./store-target.mjs";
+import { Connection } from "../dist/store/sqlite/connection.js";
+import { PgConnection } from "../dist/store/postgres/connection.js";
 
 const { openapiDocument } = await import("../dist/openapi.js");
 const { mcpSourceKey } = await import("../dist/mcp-sources.js");
@@ -401,4 +404,36 @@ test("every operation the gate can refuse to the token documents that 403, so a 
   const ops = new Map(Object.values(doc.paths).flatMap((item) => Object.values(item).map((op) => [op?.operationId, op])));
   const undocumented = gate.registeredOperations().filter((operation) => !("403" in ops.get(operation).responses));
   assert.deepEqual(undocumented, [], `secret writes whose 403 the document leaves out: ${undocumented.join(", ")}`);
+});
+
+test("an owner's preview at the token's shown address never sends the credential to the address the token chose once the owner has moved the server: a move between the preview's read of the row and of who saved it refuses the preview (412), and that address gets nothing", async (t) => {
+  const server = await serve(t);
+  const chosen = await startFakeMcp();
+  const named = await startFakeMcp();
+  t.after(() => Promise.all([chosen.close(), named.close()]));
+  const page = await asPage(server);
+  const token = asToken(server);
+  // The token saves it at an address it chose; reads show only that address's origin.
+  assert.equal((await token("PUT", "/settings/mcp-servers/docs", { url: chosen.url, auth: { type: "none" } })).status, 200);
+  const shown = (await page("GET", "/settings/mcp-servers/docs")).json?.url;
+  // The owner's own save moves it to an address the owner named (the token's mark dropped with it), landing after the
+  // preview read the row and before it read who saved it.
+  let armed = false;
+  const prototype = onPostgres ? PgConnection.prototype : Connection.prototype;
+  const get = prototype.get;
+  t.mock.method(prototype, "get", async function (sql, ...params) {
+    if (armed && /FROM settings WHERE key/.test(sql) && params[0] === mcpSourceKey("docs")) {
+      armed = false;
+      const moved = await page("PUT", "/settings/mcp-servers/docs", { url: named.url, auth: { type: "none" } });
+      assert.equal(moved.status, 200, moved.text);
+    }
+    return get.call(this, sql, ...params);
+  });
+  const sent = chosen.log.length;
+  armed = true;
+  const preview = await page("POST", "/settings/mcp-servers/preview", { name: "docs", url: shown, auth: { type: "bearer", token: TOKEN } });
+  assert.equal(armed, false, "the owner's move landed inside the preview");
+  assert.deepEqual(chosen.log.slice(sent).filter((one) => one.authorization), [], `the address the token chose got the owner's credential: the preview took the row it read before the owner's move for the owner's (${preview.status})`);
+  assert.equal(preview.status, 412, preview.text);
+  assert.deepEqual([(await server.store.mcp.server("docs"))?.url, (await server.store.settings.get(mcpSourceKey("docs")))?.by], [named.url, undefined], "the server is where the owner moved it, the owner's");
 });
