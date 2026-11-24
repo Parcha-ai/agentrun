@@ -237,7 +237,8 @@ export class ChatGPTPlan implements PlanReader {
   #refreshing: Promise<void> | undefined;
   /** The last settle queued (settle): each waits for the one before it. */
   #settling: Promise<Settled> | undefined;
-  /** The ends of the sign-ins cancelled and not yet ended (close waits for them). */
+  /** The ends of the sign-ins cancelled and not yet ended, and the start's settle with the change it tells (settleLeft):
+   *  close waits for them. */
   readonly #ending = new Set<Promise<void>>();
   readonly #watchers = new Set<(tokens: string[]) => void>();
   readonly #deps: ChatGPTPlanDeps;
@@ -354,7 +355,10 @@ export class ChatGPTPlan implements PlanReader {
    *  (planReaderOf, at each claim) never calls it, so no runner lists the plan's models or sends a refresh token to
    *  OpenAI's revocation endpoint. */
   settleLeft(): void {
-    void this.settle().then(({ listed }) => (listed ? this.tellChanged() : undefined));
+    // Its change callback is waited for by close(), as the settle is: the server never closes under a change it owes.
+    const told = this.settle().then(({ listed }) => (listed ? this.tellChanged() : undefined));
+    this.#ending.add(told);
+    void told.then(() => this.#ending.delete(told));
   }
 
   view(): PlanView {
@@ -533,10 +537,20 @@ export class ChatGPTPlan implements PlanReader {
   }
 
   private async settleOnce(): Promise<Settled> {
-    const read = await this.readSealed();
-    if (!read || (!read.row.unlisted && !read.row.retired?.length)) return {};
+    const owed = (read: { row: Row } | undefined): read is { row: Row; bytes: Uint8Array } => Boolean(read && (read.row.unlisted || read.row.retired?.length));
+    let read = await this.readSealed();
+    if (!owed(read)) return {};
+    // The list is asked only with a token OpenAI takes: one that has ended (or ends within the margin) is renewed first,
+    // as any reader's is (token(), under the row's lease), and the row read again. Not while another holder's renewal is
+    // out (a live lease): the settle never waits on it, and its row stays unlisted for the next settle.
+    const leased = read.row.lease !== undefined && read.row.lease.until > (await this.storeNow());
+    if (read.row.unlisted && read.row.state === "signed_in" && !this.fresh(read.row) && !leased) {
+      await this.token().catch(() => undefined);
+      read = await this.readSealed();
+      if (!owed(read)) return {};
+    }
     const signedIn = read.row.credential.refresh;
-    const models = read.row.unlisted && read.row.state === "signed_in" ? await this.listModels(read.row.credential.access) : undefined;
+    const models = read.row.unlisted && read.row.state === "signed_in" && this.fresh(read.row) ? await this.listModels(read.row.credential.access) : undefined;
     const confirmed = new Set<string>();
     for (const old of read.row.retired ?? []) if (await this.revoke(old)) confirmed.add(old.refresh);
     const revoked = read.row.retired?.length ? confirmed.size === read.row.retired.length : undefined;
@@ -698,9 +712,25 @@ export class ChatGPTPlan implements PlanReader {
       return renewed.credential.access;
     }
     // The owner signed out or in again while OpenAI renewed it: the new pair is the sign-in's no longer, and no one
-    // holds it but this renewal, so it is revoked here, never handed out.
-    await this.revoke(renewed.credential);
+    // holds it but this renewal, so it is revoked here, never handed out. One OpenAI doesn't confirm is carried.
+    if (!(await this.revoke(renewed.credential))) await this.carry(renewed.credential);
     return this.adopt();
+  }
+
+  /** A pair this holder got and could not save (a renewal whose write back lost: renewUnder), whose revocation OpenAI
+   *  didn't confirm: carried in the row (`retired`), for the server's next settle to revoke, as a replaced sign-in's pair
+   *  is (keep). Never written over another holder's live lease (its write back would lose in turn); none with no row (a
+   *  sign-out says OpenAI's word is not the whole answer while a renewal is out). */
+  private async carry(credential: Credential): Promise<void> {
+    for (;;) {
+      const now = await this.readSealed();
+      if (!now || (now.row.lease && now.row.lease.until > (await this.storeNow()))) return;
+      const next: Row = { ...now.row, retired: [...(now.row.retired ?? []), credential] };
+      if (await this.swap(now.bytes, next)) {
+        this.wrote(next);
+        return;
+      }
+    }
   }
 
   /** After a renewal whose write back lost its compare-and-set (the owner signed out or in again meanwhile): its result
