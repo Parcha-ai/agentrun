@@ -3504,8 +3504,10 @@ serves these routes alone:
     `auth_config_id` Composio answers under another id (another letter case, say) is `422` under it. Nor does it stand on
     a connected account the token did not connect: when Composio already has an ACTIVE account for the save's `user_id`
     under its auth config, the save is `403` before anything is made, unless a server the token saved holds that account
-    (one its own connect link started). That covers accounts no record here names: one the owner connected in Composio's
-    dashboard, kept after deleting a server, or used by a server saved by hand. Name a `user_id` of the token's own. A
+    as one it made (connected through the token's own link). That covers accounts no record here names: one the owner
+    connected in Composio's dashboard, kept after deleting a server, or used by a server saved by hand. Name a `user_id`
+    of the token's own. A server the token saved before this rule that holds an account it found, not made, is refused
+    on its next save the same way: name a new `user_id` and connect it through the link the token's save returns. A
     `per_run` save names no user, so this never applies to it. An `auth_config_id` naming one that another
     server the token saved made is used, and that server's record still says it made it, so only its delete removes the
     auth config at Composio, or, while this server still uses it, hands it to this one, whose delete then removes it.
