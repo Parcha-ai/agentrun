@@ -48,6 +48,8 @@ test("a hold with no end named (out of quota for the rest of a run) holds the ho
   assert.deepEqual(noteHold(endless, NOW), { ...endless, until: NOW + ENDLESS_HOLD_MS });
   assert.deepEqual(noteHold({ ...endless, until: Number.POSITIVE_INFINITY }, NOW), undefined, "the same, again");
   assert.equal(ENDLESS_HOLD_MS, 60 * 60_000);
+  assert.equal(activeHolds(NOW + 59 * 60_000).length, 1, "held at 59 min");
+  assert.deepEqual(activeHolds(NOW + 60 * 60_000), [], "gone at 1 h");
 });
 
 test("a run's spawn environment carries the holds, hold data alone; the run reads them back and refuses anything else", (t) => {

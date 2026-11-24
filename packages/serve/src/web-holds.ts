@@ -16,6 +16,9 @@ export const WEB_HOLDS_ENV = "AGENTRUN_SERVE_WEB_HOLDS";
 const TOOLS: ReadonlySet<string> = new Set(["search", "fetch", "key"]);
 const KINDS: ReadonlySet<string> = new Set(["quota", "rate"]);
 const FIELDS = ["provider", "tool", "kind", "until"];
+// This process's holds, by provider and tool. Known limit: a runner in its own process (`agentrun-serve runner`) keeps
+// its runs' holds here, in its memory: they hold that runner's next runs, and the server's GET /capabilities never sees
+// them.
 const holds = new Map<string, WebHold>();
 
 /** `value` as a keyless provider's hold, its end `until` (epoch ms; null or Infinity: none named, read as ENDLESS_HOLD_MS

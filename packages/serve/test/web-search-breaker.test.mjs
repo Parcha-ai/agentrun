@@ -3,8 +3,10 @@
 // unavailable for the rest of the run, without asking the provider again. Once it answers that the run is rate-limited
 // (Exa's free limit, a 429, a rate-limit error), every call answers that search is busy for the seconds left of the wait
 // the provider named (Retry-After, in seconds or as an HTTP date), or 60 s when it named none; past it, the next call
-// asks the provider again. The breaker is the run's own: each run's binding (TOOLS' bind, as a run binds its tools)
-// starts closed, so another run on the same server searches as before. Each provider is the tests' fake: keyless Exa, Parallel, and
+// asks the provider again. A keyed provider's breaker is the run's own: each run's binding (TOOLS' bind, as a run binds
+// its tools) starts closed, so another run on the same server asks it as before. A keyless provider's limit is the
+// server's (web-holds.ts): another run starts held, until the limit lifts or the server restarts. Each provider is the
+// tests' fake: keyless Exa, Parallel, and
 // the model providers' hosted search (Anthropic, OpenAI) through the run's models.
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
@@ -101,19 +103,32 @@ test("keyless Exa rate-limits a run's first search (Retry-After 30): that call a
   assert.equal(await searches(), 1, "Exa was asked once, by the first call");
 });
 
-test("the breaker is the run's own: another run on the same server searches as before and asks the provider again, while the limited run stays busy", async (t) => {
+test("a keyless limit is the server's: another run starts held and leaves Exa unasked until a restart, while the limited run stays busy; a keyed provider's breaker is the run's own, so another run asks Parallel again", async (t) => {
   const { env, searches } = await exa(t, "429,ok");
   const limited = await bindRun(env);
   assert.deepEqual(said(await limited("widgets")), { error: RATE_LIMITED });
   busy(await limited("widgets"), 29, 30);
-  // A second run's binding, on the same server's environment: it starts closed.
-  const next = await bindRun(env);
-  const found = said(await next("widgets"));
+  // A second run: its own environment, so its own Web, made with the server's holds.
+  const next = await bindRun({ ...env });
+  busy(await next("widgets"), 28, 30);
+  assert.equal(await searches(), 1, "the second run did not ask Exa");
+  // A restart forgets the holds: a run after it asks Exa again.
+  forgetHolds();
+  const restarted = await bindRun({ ...env });
+  const found = said(await restarted("widgets"));
   assert.equal(found.provider, "exa-keyless", JSON.stringify(found));
   assert.ok(found.results.length > 0, JSON.stringify(found));
-  assert.equal(await searches(), 2, "the second run asked Exa");
-  busy(await limited("widgets"), 29, 30);
+  assert.equal(await searches(), 2, "the run after the restart asked Exa");
+  busy(await limited("widgets"), 28, 30);
   assert.equal(await searches(), 2);
+
+  const keyed = await parallel(t, "429");
+  const first = await bindRun(keyed.env);
+  assert.match(said(await first("widgets")).error, /^Parallel's search answered 429$/);
+  busy(await first("widgets"), 59, 60);
+  const other = await bindRun({ ...keyed.env });
+  assert.match(said(await other("widgets")).error, /^Parallel's search answered 429$/, "another run asks Parallel");
+  assert.equal(await keyed.searches(), 2, "a keyed hold stays the run's");
 });
 
 test("a keyed provider's quota answer stops the run's search for good, and its rate limit holds it for a wait: Parallel's 402 and 429, Anthropic's billing_error and rate_limit_error, OpenAI's insufficient_quota and rate_limit_exceeded", async (t) => {
