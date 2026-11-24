@@ -253,7 +253,10 @@ const RUN_GRAPH = {
     read_at: { type: "string", format: "date-time", description: "When the view shown was read: the run process's last live view while it goes, else the read itself." },
     run: {
       type: "object", additionalProperties: false, required: ["id", "agent", "revision", "status", "paused", "startedAt", "endedAt"],
-      properties: { id: { type: "string" }, agent: { type: "string" }, revision: { type: "string" }, status: ref("schemas/RunStatus"), paused: { type: "boolean" }, startedAt: { type: "string", format: "date-time" }, endedAt: { type: ["string", "null"], format: "date-time" } },
+      properties: {
+        id: { type: "string" }, agent: { type: "string" }, revision: { type: "string" }, status: ref("schemas/RunStatus"), paused: { type: "boolean" }, startedAt: { type: "string", format: "date-time" }, endedAt: { type: ["string", "null"], format: "date-time" },
+        withheld: { const: true, description: "Present when the run's facts hold a saved secret split across two of them (its agent and its revision): `agent` and `revision` are then \"[redacted]\", and the rest is served as it is." },
+      },
     },
     workflow: { type: "object", description: "The revision's workflow definition." },
     graph: {

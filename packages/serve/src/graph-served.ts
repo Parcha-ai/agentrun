@@ -50,6 +50,23 @@ const isRecordOrArray = (value: unknown): boolean => typeof value === "object" &
  *  instructions ending with the value's head and its first option starting with the rest): the shape the contract gives
  *  the field, no nodes and no edges, and `withheld`, so a reader draws nothing and can say why. */
 const WITHHELD_GRAPH = { nodes: [], edges: [], withheld: true } as const;
+
+/** The run's facts (`run`) when their JSON holds a held value split across two of them (its agent and its revision): the
+ *  facts the server makes itself, which carry no one's words (its id, status, pause and times), each still cut as any
+ *  string is, the agent and the revision "[redacted]", and `withheld`. */
+const withheldRun = (run: Record<string, unknown>, values: readonly string[]) => ({
+  ...Object.fromEntries(["id", "status", "paused", "startedAt", "endedAt"].filter((key) => key in run).map((key) => [key, redactedOutput(run[key], values)])),
+  agent: "[redacted]",
+  revision: "[redacted]",
+  withheld: true,
+});
+
+/** The top-level fields served in their own shape when withheld whole, by name: what a reader of the graph reads at once
+ *  (the console draws the graph's nodes and reads the run's status). Any other field withheld whole is "[redacted]". */
+const IN_SHAPE: Readonly<Record<string, (value: Record<string, unknown>, values: readonly string[]) => unknown>> = {
+  graph: () => ({ ...WITHHELD_GRAPH }),
+  run: withheldRun,
+};
 /** A time as Date's toISOString writes it, and nothing else: digits, its fixed separators and Z. */
 const ISO_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 
@@ -58,8 +75,9 @@ const ISO_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
  *  - its nodes, each decision and each call through servedPart (a map item's label and an error cut short after);
  *  - every other top-level field (its run, its workflow, its structure `graph`, which echoes the workflow's nodes and their
  *    words, its totals, and any field added later) through redactedOutputWhole, each by itself, its keys included: a
- *    field whose JSON holds a held value split across two of its strings is "[redacted]", but for `graph`, which is
- *    served in the graph's own shape, WITHHELD_GRAPH, so every reader that draws it still reads its nodes and edges;
+ *    field whose JSON holds a held value split across two of its strings is "[redacted]", but for `graph` and `run`,
+ *    each served in its own shape (IN_SHAPE), so every reader that draws the run still reads a graph's nodes and edges
+ *    and the run's status;
  *  - `read_at`, which moves with every read: the server's clock as toISOString writes it, served as it is, never kept;
  *    anything else under the name is cut each read.
  *  Each part and each field, its name and its value, scalar or not, is cut once per content and held set and kept in
@@ -86,7 +104,8 @@ export function servedGraphView<T extends { nodes: unknown; decisions: unknown[]
     fields[cutName] = kept(`field:${keys}:${digest(name)}:${digest(value)}`, () => {
       if (isRecordOrArray(value)) graphWalks.rest++;
       const cut = redactedOutputWhole(value, values);
-      return name === "graph" && isRecordOrArray(value) && cut === "[redacted]" ? { ...WITHHELD_GRAPH } : cut;
+      const shape = Object.hasOwn(IN_SHAPE, name) ? IN_SHAPE[name] : undefined;
+      return shape && isRecord(value) && cut === "[redacted]" ? shape(value, values) : cut;
     });
   }
   return {
