@@ -1,7 +1,8 @@
-// serve's one debug switch on the built-in Goose: AGENTRUN_LOG=debug reaches Goose's adapter (harness-table.ts
-// gooseLaunch) as it reaches every other ACP agent's, so a run on the real Goose writes the adapter's "acp: the agent
-// announced a call" line for its call of ours, by the toolCallId the run's tool row carries. Goose's entry builds its
-// adapter apart from acpEntryOf, so the plan entry's test (acp-announce-log.test.mjs) does not reach it.
+// serve's one debug switch on the built-in Goose: AGENTRUN_LOG=debug reaches the adapter Goose's entry builds
+// (harness-table.ts gooseLaunch) as it reaches every other ACP agent's, so a run on the real Goose writes the adapter's
+// "acp: the agent announced a call" line for its call of ours, by the toolCallId the run's tool row carries. Goose's
+// entry builds its adapter apart from acpEntryOf, so the plan entry's test (acp-announce-log.test.mjs) does not reach
+// it; acp-debug-entries.test.mjs walks every entry's.
 // It needs the real Goose 1.59.2 binary, which AGENTRUN_TEST_GOOSE names (its digest is checked against the pin, so no
 // stand-in can be), and skips without it, saying why. Its model is the scripted origin (fake-anthropic.mjs): no spend.
 import assert from "node:assert/strict";
