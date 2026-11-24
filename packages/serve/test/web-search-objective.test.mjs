@@ -79,3 +79,18 @@ test("the timeline names a search by its first query, else its objective, else i
   assert.equal(inputPreview({ objective: OBJECTIVE, queries: ["widgets delaware"] }, 200), OBJECTIVE, "a search's preview is its objective");
   assert.equal(inputPreview({ url: "https://registry.example/widgets", objective: OBJECTIVE }, 200), "https://registry.example/widgets", "a fetch's preview is its url, its objective or none");
 });
+
+test("serve builds web_search and web_fetch from @parcha/agentrun-web's export: the same description and parameters whatever provider the run resolves", async () => {
+  const web = await import("@parcha/agentrun-web");
+  const answered = () => ({ provider: "parallel", objective: "x", queries: ["x"], results: [] });
+  const fetched = async () => ({ ok: false, url: "", status: 0, title: "", text: "", links: [], error: "x" });
+  const env = (search, fetch) => ({ [TOOL_PLANE_ENV]: JSON.stringify({ web_search: search, web_fetch: fetch }), PARALLEL_API_KEY: CANARY, AGENTRUN_SERVE_FAUX: FAUX });
+  for (const [search, fetch] of [["parallel", "parallel"], ["native", "kernel"], ["firecrawl-keyless", "firecrawl-keyless"], ["exa-keyless", "kernel"]]) {
+    const searchTool = webSearchTool(env(search, fetch), undefined, answered);
+    const fetchTool = webFetchTool(env(search, fetch), "web_fetch", fetched);
+    assert.equal(searchTool.description, web.WEB_SEARCH_DESCRIPTION, `web_search's description on ${search} is the export's`);
+    assert.deepEqual(searchTool.parameters, web.WEB_SEARCH_PARAMETERS, `web_search's parameters on ${search} are the export's`);
+    assert.equal(fetchTool.description, web.WEB_FETCH_DESCRIPTION, `web_fetch's description on ${fetch} is the export's`);
+    assert.deepEqual(fetchTool.parameters, web.WEB_FETCH_PARAMETERS, `web_fetch's parameters on ${fetch} are the export's`);
+  }
+});

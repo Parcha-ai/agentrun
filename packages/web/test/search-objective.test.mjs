@@ -168,3 +168,26 @@ test("web_fetch's objective is what findInPage looks for; looking_for is its ali
   const part = (await plain.fetch(PUBLIC, { offset: 100, maxChars: 500 })).answer;
   assert.deepEqual((await plain.fetch(PUBLIC, { objective: NEED, offset: 100, maxChars: 500 })).answer, part, "no classifier: the part asked for, and no word of the objective");
 });
+
+/** The names a tool's text must not hold: each provider's label and id, and the model providers', each as a word. */
+const PROVIDER_NAMES = [...new Set([...web.PROVIDERS.flatMap((one) => [one.id, one.label]).filter((name) => /^[A-Za-z-]+$/.test(name) && !["native", "direct"].includes(name)), "Anthropic", "OpenAI", "Claude", "Codex", "codex"])];
+
+test("web_search's and web_fetch's descriptions and parameters are exported, one text whatever provider answers, naming no provider", () => {
+  const texts = { WEB_SEARCH_DESCRIPTION: web.WEB_SEARCH_DESCRIPTION, WEB_SEARCH_PARAMETERS: JSON.stringify(web.WEB_SEARCH_PARAMETERS), WEB_FETCH_DESCRIPTION: web.WEB_FETCH_DESCRIPTION, WEB_FETCH_PARAMETERS: JSON.stringify(web.WEB_FETCH_PARAMETERS) };
+  for (const [name, text] of Object.entries(texts)) assert.ok(typeof text === "string" && text.length > 100, `${name} is exported`);
+  assert.ok(PROVIDER_NAMES.includes("Parallel") && PROVIDER_NAMES.includes("firecrawl-keyless") && PROVIDER_NAMES.includes("Exa"), "the names checked include every provider's");
+  for (const [name, text] of Object.entries(texts)) for (const provider of PROVIDER_NAMES) assert.doesNotMatch(text, new RegExp(`(?<![\\w-])${provider}(?![\\w-])`), `${name} names ${provider}`);
+  assert.deepEqual([web.WEB_SEARCH_PARAMETERS.required, web.WEB_SEARCH_PARAMETERS.properties.query.deprecated, web.WEB_SEARCH_PARAMETERS.properties.queries.type], [["objective"], true, "array"], "web_search asks an objective, query deprecated");
+  assert.match(web.WEB_SEARCH_DESCRIPTION, /1-3 short keyword queries/, "and teaches a few short keyword queries");
+  assert.deepEqual([web.WEB_FETCH_PARAMETERS.required, web.WEB_FETCH_PARAMETERS.properties.objective.type], [["url"], "string"], "web_fetch asks a url, an objective optional");
+});
+
+test("a search's own session (SearchOptions.session) is Parallel's session_id, over the Web's client.session; with neither, none is sent", async () => {
+  const fake = keyed(() => json({ results: [{ url: "https://a.example/", title: "A", excerpts: ["An excerpt."] }] }));
+  const told = web.createWeb({ order: { search: ["parallel"], fetch: [] }, keys: { parallel: KEY }, send: { parallel: fake.send }, client: { model: "claude-opus-4-7", session: "run-7" } });
+  const bare = web.createWeb({ order: { search: ["parallel"], fetch: [] }, keys: { parallel: KEY }, send: { parallel: fake.send } });
+  await told.search({ objective: OBJECTIVE }, { n: 1, session: "task-3-seed-1" });
+  await bare.search({ objective: OBJECTIVE }, { n: 1, session: "task-3-seed-2" });
+  await bare.search({ objective: OBJECTIVE }, { n: 1 });
+  assert.deepEqual(fake.sent.map(({ body }) => [body.session_id, body.client_model]), [["task-3-seed-1", "claude-opus-4-7"], ["task-3-seed-2", undefined], [undefined, undefined]], "the call's session wins, the Web's model kept; nothing made up");
+});
