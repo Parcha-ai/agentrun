@@ -51,6 +51,10 @@ export function videoSteps(rows: readonly TimelineRow[], recording: Pick<RunReco
     .sort((a, b) => a.at - b.at);
 }
 
+/** The tool call a step is, by the call's id: a call's row, or its result's once the result folded into it (lib/timeline's
+ *  `steps`). Null for a step that is no call (a phase, a message). The run's trace knows the call by the same id. */
+export const stepCall = (step: Step): string | null => ((step.row.kind === "tool_use" || step.row.kind === "tool_result") && step.row.tool_use_id ? step.row.tool_use_id : null);
+
 /** The step the video is at: the last that happened at or before `seconds`, by its place in `told` (in the video's
  *  order, as videoSteps gives it); -1 before the first. */
 export function stepAt(told: readonly VideoStep[], seconds: number): number {

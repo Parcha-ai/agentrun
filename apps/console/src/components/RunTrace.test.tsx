@@ -3,7 +3,7 @@ import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { RunDetail } from "@/components/RunDetail";
 import { RunTrace } from "@/components/RunTrace";
-import { TRACE, TRACE_CLI, TRACE_END, TRACE_LIVE, TRACE_LIVE_NOW, TRACE_START, TRACE_USD, USAGE_CLI } from "@/components/RunTrace.sample";
+import { TRACE, TRACE_CLI, TRACE_END, TRACE_LIVE, TRACE_LIVE_NOW, TRACE_START, TRACE_USD, USAGE_CLI, USAGE_MACHINES, USAGE_REDO } from "@/components/RunTrace.sample";
 import { messageFeatures } from "@/fixtures";
 import type { Run, RunTrace as Trace, RunUsage } from "@/lib/v2";
 
@@ -55,6 +55,29 @@ describe("the Dev tools tab", () => {
     expect(tile(host, "Time")?.textContent).toMatch(/3m 45s.*model 38% · tools 60%/);
   });
 
+  it("says how much of its spend cap the run's cost is, and that it stopped short for it", async () => {
+    // $0.6336 of a $0.75 cap.
+    const run = { ...RUN, cost: { ...RUN.cost!, cap_usd: 0.75 }, stopped_for: "budget" as const, budget_refused_calls: 3 };
+    const host = await open(TRACE, { run, view: "breakdown" });
+    expect(tile(host, "Cost, estimated")?.textContent).toMatch(/\$0\.6336.*84% of its \$0\.75 cap · requests \$0\.6132 · tools \$0\.0204/);
+    expect([...host.querySelectorAll("section[aria-label='What stands out'] li")][0]!.textContent).toBe("The run stopped short for its budgetIt wound down near its $0.75 cap and answered from what it had. 3 tool calls were refused, unrun, for its budget.");
+    // A cost that is a ceiling is at most that share of the cap, never an exact one.
+    const held = await open(TRACE, { run: { ...RUN, cost: { ...RUN.cost!, cap_usd: 0.75, upper_bound: true } } });
+    expect(tile(held, "Cost, estimated")?.textContent ?? tile(held, "Cost")?.textContent).toMatch(/at most 84% of its \$0\.75 cap/);
+    // A run with no cap says none, and one that never came near its cap says nothing of a stop.
+    const plain = await open(TRACE, { run: { ...RUN, cost: { ...RUN.cost!, cap_usd: 5 } }, view: "breakdown" });
+    expect(tile(plain, "Cost, estimated")?.textContent).toMatch(/13% of its \$5\.00 cap/);
+    expect(plain.textContent).not.toMatch(/stopped short|refused for the run/);
+  });
+  it("says a run stopped short for its budget though its trace has no request and no call", async () => {
+    // A CLI harness's record keeps no request, and the run answered its wrap-up without calling a tool.
+    const run = { ...RUN, cost: { ...RUN.cost!, cap_usd: 0.75 }, stopped_for: "budget" as const, budget_refused_calls: 0 };
+    const host = await open({ run_id: RUN.run_id, model_requests: "not_recorded", spans: [], dropped: 0 }, { run });
+    expect([...host.querySelectorAll("section[aria-label='What stands out'] li")].map((li) => li.textContent)).toEqual(["The run stopped short for its budgetIt wound down near its $0.75 cap and answered from what it had."]);
+    // A run with no span that did not stop for its budget has no such section.
+    const plain = await open({ run_id: RUN.run_id, model_requests: "not_recorded", spans: [], dropped: 0 });
+    expect(plain.querySelector("section[aria-label='What stands out']")).toBeNull();
+  });
   it("lists every request and call in the order they started, each call under the request that made it", async () => {
     const host = await open(TRACE);
     const listed = callRows(host);
@@ -402,6 +425,104 @@ describe("the Dev tools tab", () => {
       ["daytona · H100 GPUComputer time", "900 GPU-seconds", "Unknown", "No price"],
       ["daytona · diskComputer time1 computer still running when read", "0.000064 GB-months", "Unknown", "No price"],
     ]);
+  });
+
+  it("says which attempt a cost line was made in and what its repeated requests cost, where an attempt was cut and another took over", async () => {
+    const host = await open(TRACE_CLI, { readUsage: vi.fn(async () => USAGE_REDO), view: "breakdown" });
+    const cost = host.querySelector("section[aria-label='Where the cost went']")!;
+    expect([...cost.querySelectorAll("[role=region] tbody tr")].map((tr) => tr.children[0]!.textContent)).toEqual([
+      "claude-sonnet-5-5TokensAttempt 1: requests cut before they answered, sent again", "claude-sonnet-5-5TokensAttempt 2", "monid · toolsTool chargesAttempt 2",
+    ]);
+    // The split's parts say the attempt too: two of them are one model's.
+    expect([...cost.querySelectorAll("ul li")].map((li) => li.textContent)).toEqual(["claude-sonnet-5-5 · attempt 1 · sent again$0.0312 · 7%", "claude-sonnet-5-5 · attempt 2$0.4125 · 90%", "monid · tools · attempt 2$0.0150 · 3%"]);
+    // The server's own sum of the repeated requests' lines, with its share of the run's cost: $0.0312 of $0.4587.
+    expect(cost.querySelector("[data-redo]")!.textContent).toMatch(/^Requests sent twice: \$0\.0312 · 7%\. An attempt at a turn was cut/);
+    // Only what the cut attempt had not finished was sent again: its paid calls are not said to be repeated.
+    expect(cost.querySelector("[data-redo]")!.textContent).toContain("its answered requests and finished paid calls were reused");
+    expect([...host.querySelectorAll("section[aria-label='What stands out'] li")].map((li) => li.textContent)).toContain("$0.0312 went on requests sent twice1 of the run's 3 cost lines is of requests an attempt sent and was cut before they answered, which the next attempt sent again: 7% of the run's cost.");
+  });
+  it("tells two parts of one model and one attempt apart: the requests that answered, and the ones cut and sent again", async () => {
+    // An attempt answered some requests before another was cut: both lines are attempt 1's, one of them not billable.
+    const usage = { ...USAGE_REDO, lines: [USAGE_REDO.lines![0]!, { ...USAGE_REDO.lines![1]!, attempt: 1 }, USAGE_REDO.lines![2]!] };
+    const host = await open(TRACE_CLI, { readUsage: vi.fn(async () => usage), view: "breakdown" });
+    expect([...host.querySelectorAll("section[aria-label='Where the cost went'] ul li")].map((li) => li.textContent!.replace(/\$.*/, ""))).toEqual(["claude-sonnet-5-5 · attempt 1 · sent again", "claude-sonnet-5-5 · attempt 1", "monid · tools · attempt 2"]);
+  });
+  it("says a repeated request's cost as at most, with no share, where it is what was held for a request cut before its usage", async () => {
+    const usage = { ...USAGE_REDO, lines: [{ ...USAGE_REDO.lines![0]!, upper_bound: true as const }, ...USAGE_REDO.lines!.slice(1)] };
+    const host = await open(TRACE_CLI, { readUsage: vi.fn(async () => usage), view: "breakdown" });
+    expect(host.querySelector("[data-redo]")!.textContent).toMatch(/^Requests sent twice: at most \$0\.0312\. An attempt/);
+  });
+  it("says nothing of attempts on a run none of whose attempts was cut", async () => {
+    const host = await open(TRACE_CLI, { readUsage: vi.fn(async () => USAGE_CLI), view: "breakdown" });
+    expect(host.querySelector("[data-redo]")).toBeNull();
+    expect(host.textContent).not.toMatch(/Attempt \d|sent twice|sent again/);
+  });
+
+  it("draws the run's computers and browser sessions under its calls, each on the same time axis, and lists them in the Breakdown", async () => {
+    const host = await open(TRACE, { readUsage: vi.fn(async () => USAGE_MACHINES) });
+    const lanes = [...overviewOf(host).querySelectorAll("[data-stretches]")];
+    expect(lanes.map((lane) => lane.querySelector("p")!.textContent)).toEqual(["Computers (1)", "Browser sessions (1)"]);
+    // The sandbox outlasts the window at both ends; the session is a quarter of the way in, for a quarter of it.
+    const [computer, session] = lanes.map((lane) => lane.querySelector<HTMLElement>("[data-stretch]")!);
+    expect([computer!.style.left, computer!.style.width, computer!.title]).toEqual(["0%", "100%", "daytona sandbox, up 3m 59s, from 2.4 s before the first request"]);
+    expect([Number.parseFloat(session!.style.left).toFixed(1), Number.parseFloat(session!.style.width).toFixed(1), session!.title]).toEqual(["25.2", "26.7", "browserbase browser, up 1m 00s, from +0:56.6"]);
+    // A stretch is no call: a press on one opens no panel, and the overview's words count them.
+    await click(computer);
+    expect(panel(host)).toBeNull();
+    expect(overviewOf(host).querySelector("[role=img]")!.getAttribute("aria-label")).toMatch(/Under them, 1 computer and 1 browser session: the Breakdown lists each\.$/);
+
+    await pick(host, "trace-view", "breakdown");
+    const table = host.querySelector("section[aria-label='Computers and browser sessions'] table")!;
+    expect([...table.querySelectorAll("thead th")].map((th) => th.textContent)).toEqual(["What", "Started", "Up for", "In the run's cost", "Note"]);
+    expect([...table.querySelectorAll("tbody tr")].map((tr) => [...tr.children].map((cell) => cell.textContent))).toEqual([
+      ["daytona sandbox2 vCPU · 4 GB · 10 GB disk", "2.4 s before the first request", "3m 59s", "3m 46s", "–None"],
+      ["browserbase browserbb_9d2c41", "+0:56.6", "1m 00s", "1m 00s", "Closed by the agent"],
+    ]);
+  });
+  it("lists a session whose start was never recorded, with what was charged for it, and draws no bar for it", async () => {
+    // Its runner died before the release that writes a session's start and end: the charge is still the run's.
+    const lost = { ...USAGE_MACHINES.browser_sessions![0]!, tag: "browser-2", provider_session_id: null, started_at: null, ended_at: null, release_reason: "lost", charged_seconds: 42 };
+    const usage = { ...USAGE_MACHINES, computer_intervals: [], browser_sessions: [lost, USAGE_MACHINES.browser_sessions![0]!] };
+    const host = await open(TRACE, { readUsage: vi.fn(async () => usage) });
+    expect(overviewOf(host).querySelectorAll("[data-stretch]")).toHaveLength(1);
+    await pick(host, "trace-view", "breakdown");
+    expect([...host.querySelectorAll("section[aria-label='Computers and browser sessions'] tbody tr")].map((tr) => [...tr.children].map((cell) => cell.textContent))).toEqual([
+      ["browserbase browserbb_9d2c41", "+0:56.6", "1m 00s", "1m 00s", "Closed by the agent"],
+      ["browserbase browser", "Not recorded", "Not recorded", "42.0 s", "Lost"],
+    ]);
+  });
+  it("says how long a computer with no end recorded had been up when the run ended, never its age now, and draws no session opened after the trace's last span", async () => {
+    // Its delete failed: it may be up still, hours after. The usage covers the run to its end (228 s in; the sandbox was made 1 s in).
+    const open_ = { ...USAGE_MACHINES.computer_intervals![0]!, ended_at: null };
+    // A session opened after the window's end (a long run's trace holds its first spans only).
+    const later = { ...USAGE_MACHINES.browser_sessions![0]!, tag: "browser-9", started_at: new Date(TRACE_START + 300_000).toISOString(), ended_at: new Date(TRACE_START + 330_000).toISOString(), charged_seconds: 30 };
+    const usage = { ...USAGE_MACHINES, ended_at: new Date(TRACE_END).toISOString(), computer_intervals: [open_], browser_sessions: [later] };
+    // The page is opened a day later: the run's own end still dates the figure.
+    const host = await open(TRACE, { readUsage: vi.fn(async () => usage), now: TRACE_END });
+    expect([...overviewOf(host).querySelectorAll("[data-stretches]")].map((lane) => lane.querySelector("p")!.textContent)).toEqual(["Computers (1)"]);
+    await pick(host, "trace-view", "breakdown");
+    expect([...host.querySelectorAll("section[aria-label='Computers and browser sessions'] tbody tr")].map((tr) => [tr.children[0]!.textContent, tr.children[2]!.textContent])).toEqual([
+      ["daytona sandbox2 vCPU · 4 GB · 10 GB disk", "No end recorded · up 3m 47s when the run ended"],
+      ["browserbase browserbb_9d2c41", "30.0 s"],
+    ]);
+  });
+  it("lists a run's computers though its trace has no request and no call, against the run's start", async () => {
+    // A run that made its computer and failed before its first request: the sandbox was made 1 s after the run began.
+    const empty = { run_id: TRACE.run_id, model_requests: "priced" as const, spans: [], dropped: 0 };
+    const host = await open(empty, { readUsage: vi.fn(async () => ({ ...USAGE_MACHINES, lines: [], browser_sessions: [] })) });
+    expect(host.textContent).toContain("This run made no model request and called no tool.");
+    expect([...host.querySelectorAll("section[aria-label='Computers and browser sessions'] tbody tr")].map((tr) => [...tr.children].map((cell) => cell.textContent))).toEqual([
+      ["daytona sandbox2 vCPU · 4 GB · 10 GB disk", "+0:01.0", "3m 59s", "3m 46s", "–None"],
+    ]);
+  });
+  it("draws no such lane and lists none for a run that made no computer and opened no browser, or whose usage is not read", async () => {
+    for (const readUsage of [vi.fn(async () => USAGE_CLI), undefined]) {
+      const host = await open(TRACE, { readUsage, view: "breakdown" });
+      expect(host.querySelector("section[aria-label='Computers and browser sessions']")).toBeNull();
+      await pick(host, "trace-view", "calls");
+      expect(overviewOf(host).querySelector("[data-stretches]")).toBeNull();
+      act(() => root?.unmount()); root = undefined; document.body.innerHTML = "";
+    }
   });
 
   it("shows lines only as read at the run's version now: lines left by a reread that failed after the run moved are not shown as its own", async () => {
