@@ -41,6 +41,9 @@ export type PlaygroundProps = {
   /** A notice under that row (no model to run on yet). */
   notice?: ReactNode;
   onAgent?: (id: string) => void;
+  /** The revision picked for the run ("" for the current one) and its definition, undefined when the page does not hold
+   *  it: told on every change, and on the first render. */
+  onRevision?: (revision: string, definition: Record<string, unknown> | undefined) => void;
   /** Sends the request; resolves with what the server answered. */
   onSend?: (agentId: string, body: StartBody, key: string) => Promise<StartResult>;
   onOpenRun?: (runId: string) => void;
@@ -56,12 +59,13 @@ export type PlaygroundProps = {
 
 /** The hosted console's API playground for starting a run: the request on the left (a form, or its JSON), the same
  *  request as code on the right, and the server's answer, with a way into the run it started. */
-export function Playground({ lead, notice, agents, revisions = [], efforts, origin, agentId: initialAgent, onAgent, onSend, onOpenRun, result: initialResult = null, live, limits, upload = sendUpload, removeUpload }: PlaygroundProps) {
+export function Playground({ lead, notice, agents, revisions = [], efforts, origin, agentId: initialAgent, onAgent, onRevision, onSend, onOpenRun, result: initialResult = null, live, limits, upload = sendUpload, removeUpload }: PlaygroundProps) {
   const [agentId, setAgentId] = useState(initialAgent ?? agents[0]?.agent_id ?? "");
-  // The selection follows the list and the page's choice: an agent that left the list (archived) is not kept.
+  // The selection follows the list and the page's choice: an agent that left the list (archived) is not kept. Another
+  // agent runs its current revision: a revision picked for the last one is not its.
   useEffect(() => {
-    if (initialAgent && initialAgent !== agentId && agents.some((a) => a.agent_id === initialAgent)) setAgentId(initialAgent);
-    else if (!agents.some((a) => a.agent_id === agentId)) setAgentId(agents[0]?.agent_id ?? "");
+    if (initialAgent && initialAgent !== agentId && agents.some((a) => a.agent_id === initialAgent)) { setAgentId(initialAgent); setRevision(""); }
+    else if (!agents.some((a) => a.agent_id === agentId)) { setAgentId(agents[0]?.agent_id ?? ""); setRevision(""); }
   }, [agents, initialAgent]); // eslint-disable-line react-hooks/exhaustive-deps
   const agent = agents.find((a) => a.agent_id === agentId);
   const native = nativeReadinessOf(agent);
@@ -74,6 +78,8 @@ export function Playground({ lead, notice, agents, revisions = [], efforts, orig
   // against the revision it runs), else the current one's. The fields start again for another agent, or a changed
   // schema.
   const picked = revision ? revisions.find((r) => r.revision === revision)?.definition : undefined;
+  // The page says what the run will need (its "No model" bar) by the revision the run will use.
+  useEffect(() => { onRevision?.(revision, picked); }, [revision, picked]); // eslint-disable-line react-hooks/exhaustive-deps
   // The default cap an empty max_cost_usd box leaves in force (as the run bar says it): the picked revision's, since the
   // server runs with the cap of the revision it runs, else the current one's. A number is that cap and null is none;
   // undefined is a picked revision whose definition the page does not hold, so the box names no amount.
