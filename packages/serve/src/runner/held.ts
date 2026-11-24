@@ -51,10 +51,12 @@ export interface HeldMcpAsk {
   readonly appendRoot: (entry: unknown) => Promise<void>;
 }
 
-/** What the run's process gives the runner's computerForClaim (workspace/computer-for-claim.ts): its callbacks only. The
- *  run, its epoch, its folder, its mode and its revision are the runner's own reads of the claim. */
+/** What the run's process gives the runner's computerForClaim (workspace/computer-for-claim.ts): its callbacks, and the
+ *  kind its journal says an earlier claim's deny turned off (ComputerForClaimDeps.turnedOff), read there as hadComputer
+ *  is. The run, its epoch, its folder, its mode and its revision are the runner's own reads of the claim. */
 export interface HeldComputerAsk {
   readonly hadComputer: () => Promise<boolean>;
+  readonly turnedOff?: string;
   readonly signal?: AbortSignal;
   readonly say?: (words: string) => void;
   readonly onImageWait?: (making: boolean, image: string) => void;

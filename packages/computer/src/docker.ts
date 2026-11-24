@@ -42,12 +42,16 @@ import {
 	EGRESS_IMAGE,
 	EGRESS_LABEL,
 	EGRESS_MOUNT,
+	EGRESS_NETWORK,
 	EGRESS_READY_MS,
 	EGRESS_SOCKET,
+	type DockerNetworkInspect,
 	type EgressCode,
 	egressCode,
 	egressCodeProblem,
 	egressNameOf,
+	egressNetworkArgs,
+	egressNetworkProblem,
 	egressRunArgs,
 	egressVolumeArgs,
 	hostAddresses,
@@ -272,6 +276,8 @@ interface Ran {
 const isNumber = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
 const isWhole = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value);
 const noSuchContainer = (stderr: string) => /no such container/i.test(stderr);
+/** Docker's words for a network it does not have: the CLI's "No such network", or the daemon's "network ... not found". */
+const NO_SUCH_NETWORK = /no such network|network \S+ not found/i;
 /** Docker's words for a docker run whose --name another container holds. */
 const nameTaken = (stderr: string) => /Conflict\. The container name "[^"]*" is already in use/.test(stderr);
 const nameOf = (report: DockerInspect) => (report.Name ?? "").replace(/^\//, "");
@@ -609,7 +615,10 @@ export class DockerProvider implements ComputerProvider {
 		const lifetimeFrom = Date.now();
 		const deadline = new Date(lifetimeFrom + runLifetimeMs(spec)).toISOString();
 		if (allow !== undefined) {
-			// The proxy first, ready before the computer exists: a computer never runs with a network it cannot reach.
+			// The egress bridge first: one of its name this provider did not make is refused before anything is made.
+			const network = await this.#egressNetwork(signal);
+			if (!network.ok) return fail(network.error.code, network.error.message);
+			// The proxy next, ready before the computer exists: a computer never runs with a network it cannot reach.
 			const started = await this.#startEgress(name, user, deadline, allow, spec.labels ?? {}, attempt, signal);
 			if (!started.ok) {
 				// Another create of this request, in another process, runs its proxy: what it makes is the request's.
@@ -828,6 +837,33 @@ export class DockerProvider implements ComputerProvider {
 		}
 	}
 
+	/**
+	 * The bridge every egress proxy is on (EGRESS_NETWORK), made when Docker has none of its name, and read back as the
+	 * one egressNetworkArgs makes: a network of that name made otherwise is refused in words, and nothing is made. Two
+	 * creates that both find none both make it; the one Docker refuses as already there reads it back.
+	 */
+	async #egressNetwork(signal?: AbortSignal): Promise<Result<void>> {
+		const inspect = () => this.#run(["network", "inspect", "--format", "{{json .}}", EGRESS_NETWORK], signal);
+		let found = await inspect();
+		if (!found.ok) return found;
+		if (found.value.exitCode !== 0 && NO_SUCH_NETWORK.test(found.value.stderr)) {
+			const made = await this.#run(egressNetworkArgs(), signal);
+			if (!made.ok) return made;
+			if (made.value.exitCode !== 0 && !/already exists/i.test(made.value.stderr)) return vendorFail("docker", `docker network create ${EGRESS_NETWORK} failed: ${made.value.stderr.trim()}`);
+			found = await inspect();
+			if (!found.ok) return found;
+		}
+		if (found.value.exitCode !== 0) return vendorFail("docker", `docker network inspect ${EGRESS_NETWORK} failed: ${found.value.stderr.trim()}`);
+		let network: DockerNetworkInspect;
+		try {
+			network = JSON.parse(found.value.stdout) as DockerNetworkInspect;
+		} catch {
+			return vendorFail("docker", `docker network inspect ${EGRESS_NETWORK} wrote what is not JSON: ${found.value.stdout.slice(0, 200)}`);
+		}
+		const problem = egressNetworkProblem(network ?? {});
+		return problem === undefined ? ok(undefined) : fail("refused", problem);
+	}
+
 	/** Starts the desktop's X server through the daemon and waits until hello declares the display (startDisplay). */
 	async #startDisplay(ref: ComputerRef, desktop: Required<DockerDesktopOptions>, signal?: AbortSignal): Promise<Result<void>> {
 		const opened = await this.#open(ref, signal);
@@ -979,7 +1015,8 @@ export class DockerProvider implements ComputerProvider {
 		const proxy = await this.#proxyOf(report, signal);
 		if (!proxy.ok) return proxy;
 		const network = networkOf(report, proxy.value, this.#code, this.#hostLocal());
-		if (typeof network !== "string" && "other" in network) found.push(`network: ${network.other}, which this provider never makes`);
+		// Its own words say what is wrong: an old proxy's say what made it and what to do.
+		if (typeof network !== "string" && "other" in network) found.push(`network: ${network.other}`);
 		const deadline = config.Labels?.[DEADLINE_LABEL] ?? "";
 		const at = Date.parse(deadline);
 		if (Number.isNaN(at) || new Date(at).toISOString() !== deadline) {

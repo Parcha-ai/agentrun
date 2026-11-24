@@ -76,7 +76,9 @@ const browserPort = (req: IncomingMessage) => hostPort(req.headers.host) ?? req.
 const cookieName = (req: IncomingMessage) => `agentrun-${browserPort(req)}`;
 export const cookiesOf = (req: IncomingMessage, name: string) =>
   String(req.headers.cookie ?? "").split(";").map((part) => part.trim()).filter((part) => part.startsWith(`${name}=`)).map((part) => part.slice(name.length + 1));
-export const overHttps = (req: IncomingMessage) => String(req.headers["x-forwarded-proto"] ?? "").split(",")[0]!.trim().toLowerCase() === "https";
+/** Whether the browser reached this server over TLS, as the proxy in front says (X-Forwarded-Proto): `https`, or `wss`,
+ *  which some proxies (Traefik) send on a WebSocket upgrade. Both are the page's https origin and its `__Host-` cookie. */
+export const overHttps = (req: IncomingMessage) => ["https", "wss"].includes(String(req.headers["x-forwarded-proto"] ?? "").split(",")[0]!.trim().toLowerCase());
 export const ownOrigin = (req: IncomingMessage) => `${overHttps(req) ? "https" : "http"}://${String(req.headers.host ?? "").toLowerCase()}`;
 export const isJson = (req: IncomingMessage) => String(req.headers["content-type"] ?? "").split(";")[0]!.trim().toLowerCase() === "application/json";
 
