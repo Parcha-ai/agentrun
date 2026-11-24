@@ -1280,6 +1280,7 @@ export type Features = {
     auth: Array<"none" | "bearer" | "headers" | "oauth" | "github_app" | "per_run">;
     at_rest: "sealed";
     harnesses: Array<string>;
+    composio_per_run: boolean;
   };
   tool_permissions?: boolean;
   webhooks?: {
