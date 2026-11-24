@@ -11,8 +11,11 @@ entries.
 - The host's tools are one loopback MCP server, `agentrun`, given on `session/new`: over HTTP when the recipe declares
   it, else over stdio through a small bridge. Every call runs through the kernel's tool bridge: the host's gate, the
   call's intent in the session's records, then the tool.
-- `session/request_permission` for the agent's own tools goes through the host's gate (allow, deny, park), journaled.
-  The adapter answers `allow_once` or `reject_once`, never an `allow_always`, and never trusts the status ACP reports.
+- `session/request_permission` goes through the host's gate (allow, deny, park), journaled. The adapter answers
+  `allow_once` or `reject_once`, never an `allow_always`, and never trusts the status ACP reports. The host's tools ask
+  nothing: a recipe's `allowFile` (Goose's `.config/goose/permission.yaml`) lists them for the agent at each start, and
+  the gate asks at the MCP call. A recipe that declares `quirks.permissionTie: "title"` (Cursor's, whose allowlist asks
+  for every MCP call) has its request for one of the host's announced calls answered `allow_once` without the gate.
 - `session/load` resumes a session when the recipe declares it and the agent advertises it; the history it replays stays
   off the timeline. With no load, a crash mid-turn restarts the turn on a new agent session with the kernel's recovery
   note, and the conversation so far as a context note.

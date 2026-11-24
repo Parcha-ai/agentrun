@@ -221,9 +221,10 @@ refused (`RECIPE_INVALID`, or the code of the rule it would break).
 | `signIn` | no | The owner's own sign-in, made by the agent's own command, for runs on the owner's own machine: `{ "args": [ARG, ...], "homeArg": FLAG, "terms"?: URL }`, `args` the agent's sign-in flags (agy's `["--login"]`), `homeArg` the flag that names the folder it keeps that sign-in in (agy's `--gemini-dir`), and `terms` the https address of the vendor's terms (printable ASCII with no space, at most 200 characters), named in the warning each sign-in prints. Plan billing alone, beside `keys`. See [Sign-in](#sign-in) and [Vendor terms](#vendor-terms). |
 | `env` | no | Variables the agent gets, each written out as a literal string: `{ "NAME": "value" }`. The place for an agent's switches (turn off its own tools, its telemetry, its session naming). No key, nothing read from the host (rule 5). |
 | `files` | no | Files written into the session's private HOME before the agent starts: `{ "path/in/home": "content" }`. A path is relative to HOME (`.config/agent/config.yaml`, or `$HOME/.config/...`). |
+| `allowFile` | no | `{ "path": "path/in/home", "form": FORM }`: a file the adapter writes into the private HOME at each start, listing the tools that start's MCP server offers in the form the agent reads, so the agent calls AgentRun's tools without asking permission and the server's gate asks at the MCP call. `form` is `"goose-permission"` (Goose's `.config/goose/permission.yaml`: each tool as `agentrun__<tool>` under `always_allow`, nothing else). Not one of `files`. An agent that asks before every tool call needs this, or the title tie in `quirks`, or `harness-check` fails its `mcp_tool`. |
 | `state` | no | Folders in the private HOME where the agent keeps its sessions (`.local/share/agent/sessions`). AgentRun copies them into the session's records after each turn, so a session survives a crash and moves to another runner. It keeps only the bytes that changed since the last copy, never SQLite's `-shm` file, and at most 8 MiB per session. Past that, the run says so and a resume starts the agent fresh with the conversation so far. |
 | `declares` | yes | What the agent says it can do at ACP `initialize`: `{ "load": true \| false, "mcp": "http" \| "stdio" }`. `load` is whether it resumes a session with `session/load`; `mcp` is how it takes AgentRun's tools (an MCP server over HTTP, or over stdio). A run is refused (`ACP_CAPABILITY_MISMATCH`) when the agent says otherwise. |
-| `quirks` | no | `{ "mcpCall": "match" \| "mint" }`: how an MCP call is tied to the agent's tool call, for an agent that announces its calls late (`mint`). Most agents need none. |
+| `quirks` | no | `{ "mcpCall": "match" \| "mint", "permissionTie": "title" }`. `mcpCall`: how an MCP call is tied to the agent's tool call, for an agent that announces its calls late (`mint`). `permissionTie`: for an agent that asks permission before every MCP call whatever its config says (Cursor's allowlist with an empty `allow`), the adapter answers its request for an AgentRun tool it announced `allow_once` by the request's title, and the server's gate asks at the MCP call. Without it, every permission request goes to the server's gate. Most agents need neither. |
 | `description` | no | A sentence about the agent. |
 
 An example, for an agent called Acme that bills through AgentRun's proxy:
@@ -279,7 +280,7 @@ with that rule's code. `agentrun harness install --recipe` and `agentrun harness
    archive is pinned the same way: an archive with more than one executable (Antigravity's ships a sidecar,
    `localharness_external`, beside its server) has its whole tree's digest pinned by `treeSha256` or recorded at the
    first install, so no file beside the binary runs unpinned. A check or a sign-in refuses a tree that changed since.
-3. **Private paths** (`RECIPE_PATH_OUTSIDE`). Every `files` path and `state` folder is inside the session's private
+3. **Private paths** (`RECIPE_PATH_OUTSIDE`). Every `files` path, the `allowFile` path and every `state` folder is inside the session's private
    HOME: no absolute path, no `..`. The archive's `cmd` stays inside the agent's own folder.
 4. **The owner installs it** (`RECIPE_INSTALLS_ITSELF`). Only `agentrun harness install --recipe FILE` downloads and
    unpacks the release. A recipe has no `install`, `postinstall`, `setup` or `script` step of its own, and a check of
@@ -391,8 +392,11 @@ a harness row carries:
   asks, so its tools are gated only by its config).
 - `billing`: `proxy` or `plan`.
 
-The report's `gate` lists each permission the agent asked for and each question the gate was asked. A call whose title
-the adapter can't tie to an AgentRun tool is refused, and fails `mcp_tool`.
+The report's `gate` lists each permission the agent asked for and each question the gate was asked. `mcp_tool` fails
+when the agent asked permission for `check_echo` and the recipe declares no title tie (`quirks.permissionTie`): give it
+an `allowFile` so it runs AgentRun's tools unasked. Its row says how many times it asked (`permissionAsks`). A request
+whose title the adapter can't tie to an AgentRun tool is refused, and fails `mcp_tool` too. Turn 1 asks for
+`check_echo` with a `path` argument, the kind of argument an agent may summarize in its call's title.
 
 `--cap USD` bounds what the check spends (default $0.25). `--data DIR` is the data directory the agent was installed
 into. A check that passes writes `~/.agentrun/harnesses/<id>.checked` there, open to you alone: the sha256 of the
