@@ -13,6 +13,7 @@ import { after, before, describe, it } from "node:test";
 import test from "node:test";
 import { conformanceCases, DaemonClient, formatReport, runConformance } from "../dist/index.js";
 import { main } from "../dist/conformance/cli.js";
+import { computerdListening } from "./computerd-listening.mjs";
 import { fakeComputers, fakeRunFolders } from "./fake-computer.mjs";
 
 const IMAGE = "debian:bookworm-slim";
@@ -269,10 +270,7 @@ describe("the synced folder's cases, on the fake's computers run by computerd in
 		const deadline = new Date(Date.now() + 10 * 60_000).toISOString();
 		init = spawn("unshare", ["-Ur", DAEMON, "init", "--deadline", deadline], { env: { PATH: process.env.PATH, AGENTRUN_COMPUTERD_SOCKET: socket }, stdio: ["ignore", "ignore", "pipe"] });
 		init.stderr.on("data", (chunk) => (stderr += chunk));
-		for (let tries = 0; !existsSync(socket); tries++) {
-			assert.ok(tries < 200 && init.exitCode === null, `computerd's init did not listen at ${socket}: ${stderr}`);
-			await new Promise((resolve) => setTimeout(resolve, 25));
-		}
+		await computerdListening(socket, init, () => stderr);
 	});
 
 	after(async () => {

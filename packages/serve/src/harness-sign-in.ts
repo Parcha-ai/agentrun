@@ -7,13 +7,11 @@
 // the folder, and judges the sign-in by the agent's exit status alone. AgentRun never reads, refreshes or sends the
 // sign-in (HARNESS.md#sign-in).
 import { spawn } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ACP_PACKAGE, acpPackage } from "./acp-package.js";
-import { ARCHIVE_CODES, archivePlatform, digestOf } from "./harness-archive.js";
-import { installDirOf } from "./harness-install.js";
-import { AGENT_VARS, loadRecipe, pinnedDigest, pinnedTree, recipeBinaryOf, recipeInstallLine, RecipeRefused, releaseFor, signedInNoteOf, signInHomeOf } from "./harness-recipe.js";
+import { archivePlatform } from "./harness-archive.js";
+import { AGENT_VARS, installHolds, loadRecipe, recipeInstall, RecipeRefused, signedInNoteOf, signInHomeOf } from "./harness-recipe.js";
 
 /** A recipe with no signIn: it runs on its keys alone, and has nothing to sign in. */
 export const HARNESS_NO_SIGN_IN = "HARNESS_NO_SIGN_IN";
@@ -52,20 +50,13 @@ export async function signInHarness(options: SignInHarnessOptions): Promise<{ ok
   }
   const { recipe, file } = loaded;
   if (!recipe.signIn) return refuse(HARNESS_NO_SIGN_IN, `${recipe.label}'s recipe names no signIn: it runs on its keys (${recipe.keys.join(", ") || "none"}), and has nothing to sign in`);
-  // The installed binary and every file beside it, the pinned ones, as a check finds them: nothing is downloaded here.
-  const platform = options.platform ?? archivePlatform();
-  const release = releaseFor(recipe, platform);
-  if (!platform || !release) return refuse("HARNESS_PLATFORM_UNSUPPORTED", `${recipe.label} ${recipe.release.version} has no release for ${platform ?? `${process.platform}-${process.arch}`}`);
-  const line = recipeInstallLine(file, options.data, options.env);
-  const binary = recipeBinaryOf(options.data, recipe, release);
-  const pin = pinnedDigest(options.data, recipe, release, platform);
-  const treePin = pinnedTree(options.data, recipe, release, platform);
-  if (!existsSync(binary) || !pin || !treePin) return refuse("HARNESS_NOT_INSTALLED", `${recipe.label} ${recipe.release.version} is not installed in ${installDirOf(options.data, recipe.id)}. Install it with: ${line}`);
-  const acp = acpPackage();
-  if (!acp) return refuse("HARNESS_NOT_INSTALLED", `the ACP adapter (${ACP_PACKAGE}) beside this server is not installed`);
-  const found = await digestOf(binary).catch(() => undefined);
-  const tree = await acp.treeDigest(installDirOf(options.data, recipe.id)).catch(() => undefined);
-  if (found !== pin.sha256 || tree !== treePin.sha256) return refuse(ARCHIVE_CODES.binary, `${recipe.label}'s installed files are not the pinned ones. Install it again with: ${line}`);
+  // The installed binary and every file beside it, the pinned ones, as a check finds them (recipeInstall, installHolds):
+  // nothing is downloaded here.
+  const install = recipeInstall(options.data, recipe, file, options.env, options.platform ?? archivePlatform());
+  if ("code" in install) return refuse(install.code, install.message);
+  const off = await installHolds(install);
+  if (off) return refuse(off.code, off.message);
+  const { release, binary } = install;
 
   const home = signInHomeOf(options.data, recipe.id);
   mkdirSync(home, { recursive: true, mode: 0o700 });

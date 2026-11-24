@@ -12,6 +12,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"image"
 	"image/png"
@@ -155,6 +156,15 @@ func (d *Display) gone(c *x11.Conn, err error) error {
 	return rpc.Errorf(rpc.KindUnsupported, "the display %s went away: %v", d.name, err)
 }
 
+// failed is gone for a read that waits on ctx: one that stopped because ctx ended answers aborted, and leaves the
+// connection to the next call.
+func (d *Display) failed(ctx context.Context, c *x11.Conn, method string, err error) error {
+	if ended := ctx.Err(); ended != nil && errors.Is(err, ended) {
+		return rpc.Errorf(rpc.KindAborted, "%s was cancelled while it read the display", method)
+	}
+	return d.gone(c, err)
+}
+
 // Conn is the display's connection, made now if there is none or the last one ended, for the apps group (package apps),
 // which reads windows on the same display. Its failure is unsupported, in words.
 func (d *Display) Conn() (*x11.Conn, error) {
@@ -283,7 +293,8 @@ func (d *Display) shot(ctx context.Context, raw json.RawMessage) (any, error) {
 	return ShotResult{ID: id, Size: len(data), Data: first, EOF: eof, Width: b.Dx(), Height: b.Dy(), Scale: 1, Cursor: cursor}, nil
 }
 
-// shoot holds the display, for method, while it reads the region and where the pointer is.
+// shoot holds the display, for method, while it reads the region and where the pointer is. A cancel stops the read
+// at once and gives the display back, though the server has not answered.
 func (d *Display) shoot(ctx context.Context, method string, region []int) (*image.RGBA, *[2]int, error) {
 	if err := d.hold(ctx, method); err != nil {
 		return nil, nil, err
@@ -293,19 +304,19 @@ func (d *Display) shoot(ctx context.Context, method string, region []int) (*imag
 	if err != nil {
 		return nil, nil, err
 	}
-	img, cursor, err := capture(c, region)
+	img, cursor, err := capture(ctx, c, region)
 	if duringShot != nil {
 		duringShot()
 	}
 	if err != nil {
-		return nil, nil, d.gone(c, err)
+		return nil, nil, d.failed(ctx, c, method, err)
 	}
 	return img, cursor, nil
 }
 
-// capture reads the region (the whole screen when nil) and where the pointer is.
-func capture(c *x11.Conn, region []int) (*image.RGBA, *[2]int, error) {
-	width, height, err := c.RootSize()
+// capture reads the region (the whole screen when nil) and where the pointer is, until ctx ends.
+func capture(ctx context.Context, c *x11.Conn, region []int) (*image.RGBA, *[2]int, error) {
+	width, height, err := c.RootSize(ctx)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -319,11 +330,11 @@ func capture(c *x11.Conn, region []int) (*image.RGBA, *[2]int, error) {
 			return nil, nil, rpc.Errorf(rpc.KindInvalid, "region %v is not a rectangle of at least one pixel inside the %dx%d screen", region, width, height)
 		}
 	}
-	img, err := c.GetImage(x, y, w, h)
+	img, err := c.GetImage(ctx, x, y, w, h)
 	if err != nil {
 		return nil, nil, err
 	}
-	px, py, err := c.QueryPointer()
+	px, py, err := c.QueryPointer(ctx)
 	if err != nil {
 		return nil, nil, err
 	}

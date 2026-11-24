@@ -7,8 +7,9 @@
 //
 // `plan(units, n)` assigns units to n shards, longest first, each to the shard it lengthens least, with a shard's time
 // modelled as each suite's longest file or its files' total over the suite's measured parallelism, whichever is more. The
-// weights come from scripts/ci-timings.json (seconds on a GitHub-hosted runner, from CI's own logs: `node
-// scripts/ci-timings.mjs`). A file it does not list weighs its suite's median; nothing is dropped for a missing weight.
+// weights come from scripts/ci-timings.json (seconds on the Blacksmith runners that run the merge queue's shards and this
+// repository's own pull requests', from CI's own logs: `node scripts/ci-timings.mjs`). GitHub's runners, where main and
+// a fork's pull request run, take the same files in other proportions, so the plan is balanced for Blacksmith. A file it does not list weighs its suite's median; nothing is dropped for a missing weight.
 // The plan is a pure function of the checkout, so every job of a run computes the same one.
 //   node scripts/ci-plan.mjs [--pool <name>]   prints the test shards and their modelled seconds
 import { existsSync, globSync, readdirSync, readFileSync } from 'node:fs';
@@ -135,10 +136,11 @@ const groupSeconds = (group) => (group.count ? COMMAND_SECONDS + Math.max(group.
  * The ::warning line for a shard that ran more than a quarter and more than a minute over its model, else undefined. Its
  * weights are CI's own times, and a file that grows (release-preflight.test.mjs went 152 s to 257 s in a day) makes its
  * shard the run's slowest while the plan still reads balanced; the warning says so in the run that shows it. A minute
- * is a hosted runner's noise; a faster runner (Blacksmith, in the merge queue) is never a drift.
+ * is a runner's noise. `untimedRunner` is a runner the weights were not measured on (GitHub's, for main and a fork's pull
+ * request): a shard over its model there says nothing about the weights, so it never warns.
  */
-export function timingDrift(name, modelled, seconds) {
-  if (seconds - modelled <= 60 || seconds <= modelled * 1.25) return undefined;
+export function timingDrift(name, modelled, seconds, { untimedRunner = false } = {}) {
+  if (untimedRunner || seconds - modelled <= 60 || seconds <= modelled * 1.25) return undefined;
   return `::warning title=ci-timings.json is stale::${name} ran ${seconds} s, modelled ${modelled} s: refresh scripts/ci-timings.json from CI's job logs (node scripts/ci-timings.mjs <job log>...), and split a test file that alone is near a shard's time`;
 }
 

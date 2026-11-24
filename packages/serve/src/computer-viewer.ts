@@ -182,7 +182,8 @@ const js = `"use strict";
       ready = true; kind = m.kind; input = m.input; holding = m.held === true;
       $("phone").hidden = kind !== "phone";
       document.body.dataset.kind = kind;
-      showHands(); setDrive(m.drive); say(""); focusScreen();
+      // Focus comes in only for a person who holds the computer: the page that frames the viewer keeps its own otherwise.
+      showHands(); setDrive(m.drive); say(""); if (holding) focusScreen();
     }
     else if (m.type === "hold") {
       holding = m.held === true;
@@ -276,6 +277,8 @@ const js = `"use strict";
   var justComposed = null;
   function onKeyDown(e) {
     justComposed = null;
+    // Tab is the computer's only while the person holds it; else it moves the focus on, out of the viewer.
+    if (e.key === "Tab" && !holding) return;
     if (e.isComposing || e.keyCode === 229 || e.key === "Dead") return;
     if ((e.ctrlKey || e.metaKey) && (e.key === "v" || e.key === "V")) return;
     e.preventDefault();

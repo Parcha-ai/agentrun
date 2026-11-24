@@ -11,13 +11,14 @@
 // RUNNER_ONLY), so no run's agent reaches its own computer this way: it drives it through its tools.
 import { callComputer, callIssues, type ChannelOptions, type ChannelStore, sendRow, TAKE_MS } from "./computer-channel.js";
 import { type ComputerCallOptions, type ComputerCallStore, computerHoldOf, entriesOf, runOver } from "./computer-commands.js";
-import { COMPUTER_RELEASE, COMPUTER_START, heldIn, type HeldState, holdIssues } from "./computer-held.js";
-import { computerOfPlace, type ComputerSetting, type PlaceView } from "./computer-setting.js";
+import { COMPUTER_RELEASE, COMPUTER_START, heldIn, heldRefused, type HeldState, holdIssues } from "./computer-held.js";
+import { type Definition, settingOfDefinition } from "./computer-setting.js";
 import { ApiError, invalid } from "./errors.js";
 import { runComputerField } from "./run-computer.js";
-import { readLaunchBody } from "./run-launch.js";
+import { type RunLaunch, readLaunchBody } from "./run-launch.js";
 import type { Store } from "./store/index.js";
 import { unknownFields } from "./validate.js";
+import { readKept } from "./workspace/computer-kept.js";
 
 export { holdIssues };
 
@@ -31,7 +32,7 @@ export type HeldStore = ComputerCallStore & ChannelStore & Pick<Store, "runs">;
 export type HeldOptions = ComputerCallOptions & ChannelOptions;
 
 /** The hold run `runId`'s launch asked for, or undefined when it holds no computer. */
-async function holdOfRun(store: Pick<Store, "runs">, runId: string): Promise<{ minutes: number } | undefined> {
+async function holdOfRun(store: Pick<Store, "runs">, runId: string): Promise<RunLaunch["hold"]> {
   return store.runs.launch(runId).then((row) => readLaunchBody(row.body)?.hold, () => undefined);
 }
 
@@ -47,17 +48,27 @@ export async function heldField(store: HeldStore, runId: string, options: HeldOp
   return { state, minutes: read.minutes, ...(state === "released" ? {} : { until: new Date(read.until).toISOString() }), ...(read.why ? { why: read.why } : {}) };
 }
 
+/** Whether parked run `runId`'s computer of `kind` was let go: a park's claim releases it but for a desktop, a phone or a
+ *  sandbox kept for the resume, until its keep's time (workspace/computer-kept.ts). A browser's is said on its own read. */
+async function releasedAtPark(store: Pick<Store, "settings">, runId: string, kind: string, now: number): Promise<boolean> {
+  if (kind === "browser") return false;
+  const kept = await readKept(store.settings, runId).catch(() => undefined);
+  return !kept || kept.kind !== kind || kept.ended === true || kept.ending === true || now >= kept.until;
+}
+
 /** The run read's `computer` field (`{ computer }`, or nothing for a run with none): its revision's computer setting, else
- *  the one its place says; taken_over while the owner holds its desktop or phone (computerHoldOf, read from the run's
+ *  the one its place says; released once a stop let it go, or while the run is parked with it let go (releasedAtPark); taken_over while the owner holds its desktop or phone (computerHoldOf, read from the run's
  *  journal only while that computer is up); with `held` for a run that holds its computer for its owner. The journal is
  *  read at most once, and not at all for a run that neither can be taken over nor holds. `view` is the run read so far. */
-export async function runComputerRead(store: HeldStore & Pick<Store, "agents">, runId: string, view: Record<string, unknown>, options: HeldOptions = {}): Promise<{ computer?: Record<string, unknown> }> {
+export async function runComputerRead(store: HeldStore & Pick<Store, "agents" | "settings">, runId: string, view: Record<string, unknown>, options: HeldOptions = {}): Promise<{ computer?: Record<string, unknown> }> {
   const run = await store.runs.get(runId);
-  const body = run ? ((await store.agents.revision(run.revisionId))?.body as { computer?: ComputerSetting; place?: PlaceView } | undefined) : undefined;
-  const setting = body?.computer ?? (body?.place ? computerOfPlace(body.place) : undefined);
+  const setting = run ? settingOfDefinition(((await store.agents.revision(run.revisionId))?.body ?? {}) as Definition)?.computer : undefined;
   if (!setting) return {};
   const error = view.error as { code?: unknown; message?: unknown } | null | undefined;
-  const read = { id: runId, status: String(view.status), ...(error && typeof error.code === "string" ? { error: { code: error.code, message: String(error.message ?? "") } } : {}) };
+  // A stop lets the run's computer go (the run's row is final until a follow-up queues it again); a park keeps a desktop,
+  // a phone or a sandbox only for its keep's time.
+  const released = run?.state === "stopped" || (run?.state === "parked" && (await releasedAtPark(store, runId, setting.kind, options.now?.() ?? Date.now())));
+  const read = { id: runId, status: String(view.status), ...(error && typeof error.code === "string" ? { error: { code: error.code, message: String(error.message ?? "") } } : {}), ...(released ? { released } : {}) };
   // The run's journal, read at most once for the whole field (the hold and `held` both read it), and only when one needs
   // it: a long run's every poll would pay for a read that grows with it.
   let journal: Promise<Awaited<ReturnType<typeof entriesOf>>> | undefined;
@@ -83,7 +94,8 @@ function fieldsOf(body: unknown): Record<string, unknown> {
  * - callRunComputer: the channel's answer (callComputer), the computer's own: `{ ok: true, value }` or `{ ok: false,
  *   error }`. 422 for a method the protocol does not have.
  * - startRun, releaseRunComputer: 404 for a run that holds no computer, and for a release of one already let go; 409
- *   computer_not_live when the hold is not where the route needs it (not up yet, already started, released).
+ *   computer_not_live when the hold is not where the route needs it (not up yet, already started, released). A start of a
+ *   run whose model kept it from running at its create: 409 agent_not_runnable, in its create's words (hold.refused).
  * Either: 503 when the runner took no row in time.
  */
 export async function heldRoute(name: string, runId: string, body: unknown, store: HeldStore, options: HeldOptions = {}): Promise<unknown> {
@@ -95,7 +107,11 @@ export async function heldRoute(name: string, runId: string, body: unknown, stor
   }
   const issues = unknownFields(fields, []);
   if (issues.length) throw invalid(issues);
-  if (!(await holdOfRun(store, runId))) throw new ApiError("not_found", `run ${runId} holds no computer: a run started with hold: true holds one`);
+  const hold = await holdOfRun(store, runId);
+  if (!hold) throw new ApiError("not_found", `run ${runId} holds no computer: a run started with hold: true holds one`);
+  // Its model kept it from running at its create: its agent never starts, in the words its create would have said, and
+  // nothing is sent, so its computer still takes calls and its release (computer-held.ts).
+  if (name === "startRun" && hold.refused) throw heldRefused(hold.refused);
   const read = heldIn(await entriesOf(store, runId, options));
   const over = await runOver(store, runId);
   if (name === "releaseRunComputer" && (over || read?.state === "released")) throw new ApiError("not_found", `run ${runId}'s computer was already let go`);

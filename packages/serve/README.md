@@ -139,6 +139,40 @@ An id or a secret given twice, or an entry that is not `id:secret`, stops the st
 the launcher hands it over its pipe, and no run's process or runner loop gets it. A rotation adds the new token, moves
 callers, then removes the old one ([deploy/README.md](../../deploy/README.md#rotating-the-api-token)).
 
+### API keys for your apps
+
+An app that calls this server does not need a token from the server's environment. The owner makes a key for it in the
+console, under Settings → AgentRun API keys, or with `POST /v2/settings/api-keys` and `{"name": "billing app"}` from
+their signed-in session:
+
+- **Shown once.** The answer holds the key as `api_key` (`ar_key_` and 32 random bytes in base64url). No read shows it
+  again. A lost key is revoked and replaced.
+- **What it opens.** Everything a token opens on `/v2` and `/mcp`, sent as `Authorization: Bearer <key>`. A key is never
+  the setup code: only a token the server was started with sets the first password.
+- **What is kept.** A keyed hash of the key (HMAC-SHA-256 under a key derived from the seal key), never the key. A row
+  written without the seal key opens nothing.
+- **Who makes and revokes.** Both are secret writes: the owner's signed-in session alone. A token, or a key, gets
+  `403 forbidden` with the console page in `details.console_url`, so a key that leaks cannot make another.
+- **Listing and revoking.** `GET /v2/settings/api-keys` answers each key's `name`, `created_at` and `last_used_at`
+  (written about once a minute). `DELETE /v2/settings/api-keys/{api_key_id}` revokes one, and the next request that
+  carries it is `401`.
+- **Limit.** A server keeps at most 50 keys; the next `POST` is `409 api_keys_full` until one is revoked.
+- **One person's server.** A key is one more caller that starts runs, as a second token is. So a server with Claude
+  Code's login on makes no key (`403 forbidden`, in words), and a server with a key refuses to turn that login on until
+  the key is revoked. A server started with `--harness-sign-in` makes none, and a key made before opens nothing there.
+  Such a key is still listed, so its owner can revoke it, and it still refuses the login. The list says why in
+  `refused`.
+- **In the log.** A request a key opened names it by id (`api_key=<id>`), never by value.
+
+The server keeps no copy of a key, so it finds one in a text by its shape: `ar_key_` and 43 or more base64url
+characters, a capital or a digit among them, are cut wherever a run's views, a shared transcript or a learned note
+would show them, whatever stands before them. A key cut short, or split across lines, is not found, so keep keys out
+of prompts and files a run reads all the same. A row under the keys' name in the store that is no key's (damaged, or
+another version's) opens nothing and counts toward the limit. The list names it in `unreadable`, the console shows it
+with a Remove button, the log says it at the start, and `DELETE` with its id removes it. An
+[API-only](#api-only) server has no owner and serves none of these routes, so it takes no key at all: only the tokens
+it was started with. Its capabilities say `features.api_keys.routes: false`.
+
 ## Sandbox in 60 seconds
 
 An agent with a shell, in a Docker container of its own: on a machine with Docker, in a checkout built as above, with
@@ -416,7 +450,16 @@ A run's runner renews its claim on the run every 10 s, for a claim of 30 s. A ru
 time, writes nothing more to the run, and the store refuses any write under a claim the run has moved past. Once the
 claim lapses another runner claims the run and resumes it from its journal. A run's own computer doesn't survive a
 runner loss, a crash, a server stop or a park (the claim that resumes the run starts a new one, and says so on the
-timeline and, once, to the model as an "AgentRun server note"), and the agent's own computer, a persistent setting, does. `agentrun-serve runner --check --data DIR --name N`
+timeline and, once, to the model as an "AgentRun server note"), and the agent's own computer, a persistent setting, does.
+The exception is a park's keep: a desktop, phone or sandbox a park keeps for 10 minutes comes back to the run's resume.
+One that only the runner that kept it can reach again (a Docker container, a machine that dials the server) holds the
+parked run for that runner while it is there under the same process (its word in the last 30 s, not refusing) and the
+keep lasts: no other runner claims the run to resume it, so a runner whose loops are full makes an answer wait until
+then. A stop or a cancel never waits: any runner claims the run at once and ends it without taking the kept machine
+(also when the kept row can't be read then), which the runner that kept it ends at its time, or sooner at its janitor's
+next pass once the run is over; another runner's janitor leaves both the row and the machine. Once that runner
+is gone, any runner claims it, starts a new one, and the timeline says `The desktop wasn't kept: the runner that kept it
+is gone.` `agentrun-serve runner --check --data DIR --name N`
 (or `AGENTRUN_RUNNER_NAME=N` in place of `--name`) checks the runner's environment by name (its store, its seal key,
 every run-facing name its server holds, a forwarder on loopback) and whether the runner named `N` has a fresh
 heartbeat: it exits 0 when both hold, 1 when either does not, and 2 when no name is given. `--check --env` checks the
@@ -857,12 +900,24 @@ paths and addresses) ran without it.
 whether this server offers it now, the tools it brings, and each provider with its key names and whether each is saved
 (never a value). `PUT /v2/computers/{provider}/keys` saves a provider's keys, sealed under the server's seal key, from
 the owner's signed-in session only (the API token is 403), and `POST /v2/computers/{provider}/test` makes one read at
-the provider with them and starts nothing. A key set in the server's environment wins over the saved one. The keys are
+the provider with them and starts nothing. A key set in the server's environment wins over the saved one.
+`GET /v2/computers/running` lists the computers up now: one row for each run still going (queued, working, paused or
+waiting on its person) whose agent has a computer, with the run's id, agent, title, status and state and its `computer`
+as `GET /v2/runs/{run_id}` carries it (`starting`, `ready`, or `taken_over` while its owner drives it, and a held
+run's hold), newest first. The runs list carries no computer, so this is the one read for every running computer
+across runs and agents; the console's Settings → Computers shows it as Running now. An agent's own computer kept
+between runs is on the agent's read (`own_computer`), and a paired computer under `paired` in `GET /v2/computers`. The keys are
 `DAYTONA_API_KEY` (with `DAYTONA_API_URL` and `DAYTONA_TARGET` optional), `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET`,
 `E2B_API_KEY`, `AGENT37_API_KEY` and `AGENT37_SSH_KEY`, `MORPH_API_KEY`, `ORGO_API_KEY`, `PHONE_HARNESS_API_KEY`,
 `BROWSERBASE_API_KEY` and `BROWSERBASE_PROJECT_ID`, `KERNEL_API_KEY`, `BOXD_API_KEY` (with `BOXD_ORG` and
 `BOXD_REGION` optional), `SMOLCLOUD_API_KEY`, `GROUNDBOX_API_KEY`, `CLOUDFLARE_RELAY_URL` and `CLOUDFLARE_RELAY_TOKEN` (the relay Worker's,
 `packages/computer/relays/cloudflare`), and `FLY_API_TOKEN` and `FLY_APP`; Docker takes none.
+`GET /v2/computers/running` lists every run still going (queued, working, paused or waiting on its person) whose agent
+has a computer, newest first, each as `GET /v2/runs/{run_id}` answers it: its `computer` says the kind and provider,
+`starting`, `ready` or `taken_over` while its owner drives it, and a held run's hold. The runs list carries no
+computer, so this is the one read of the computers up across runs and agents; the console's Settings → Computers shows
+it as Running now. An agent's own computer kept between runs is on the agent's read (`own_computer`), and a paired
+computer under `paired` in `GET /v2/computers`.
 The vendors bill their computers by time on their own pages: this server meters no
 computer time. The older [`place`](#place) is this setting's v2 view: `{"mode": "runner"}` is kind `none`, and
 `{"mode": "sandbox", "box": X}` is a sandbox on provider X. Writing either sets both.
@@ -1211,7 +1266,8 @@ An agentic revision names its model as `provider/model-id` (`"model"` in its def
 this host's default, `AGENT_MODEL`. With no `AGENT_MODEL`, a model provider's key, the server's own or saved as a
 [tool key](#tool-keys), gives the default, the first of: `anthropic/claude-sonnet-5-5` with `ANTHROPIC_API_KEY`,
 `openai/gpt-6.1-sol` with `OPENAI_API_KEY`, `particle/particle-1` with `PARTICLE_API_KEY`, then
-`openrouter/openai/gpt-6.1-sol` with `OPENROUTER_API_KEY`. Set `AGENT_MODEL` for another. Direct Particle runs on Pi;
+`openrouter/openai/gpt-6.1-sol` with `OPENROUTER_API_KEY`. With none of those, pi's default is the first model of this
+machine's Ollama that calls tools ([below](#on-this-machines-ollama)), and so is claude-agent's and Goose's. Set `AGENT_MODEL` for another. Direct Particle runs on Pi;
 claude-agent takes the Anthropic one and codex the OpenAI one. A workflow revision names no model: each model node names a tier (`fast`, `default`
 or `strong`), and the host maps it, `fast` to `AGENT_MODEL_FAST` and `strong` to `AGENT_MODEL_STRONG`, each falling back
 to `AGENT_MODEL`. Capabilities show the mapping in `models` (`{source, route_prefix, fast, default, strong}`):
@@ -1498,7 +1554,10 @@ The sign-in is the owner's alone, over the owner's signed-in session (the API to
   sign-in tab ends on a page that won't load: copy its whole address into the console, which sends it as
   `POST /v2/settings/chatgpt/sign-in/finish` `{"redirect_url": "..."}`.
 - `GET /v2/settings/chatgpt` says `state`: `signed_out`, `pending` (with `authorize_url` and `expires_at`), `signed_in`
-  (with `email`, `plan` and the plan's `models`) or `expired`.
+  (with `email`, `plan` and the plan's `models`) or `expired`. A `pending` sign-in with no code back after its first
+  minute also carries a `hint`. It names the likely cause first: the ChatGPT workspace's admin has turned off open-source
+  apps (External access → OSS → Use ChatGPT plan). OpenAI shows that refusal on its own page and never sends the browser
+  back.
 - `DELETE /v2/settings/chatgpt` signs out: it removes the sign-in here and revokes it at OpenAI, and answers
   `{"revoked": true}` when OpenAI confirmed it (or nothing was signed in, as when it only cancels a waiting sign-in).
   When OpenAI didn't confirm it, the answer is `{"revoked": false, "message": "Signed out here. OpenAI didn't confirm
@@ -1529,20 +1588,45 @@ run agents on it.
 
 On a server one person runs on their own machine, Claude Agent can run on that person's Claude plan through the Claude
 Code CLI's own login. The CLI holds the login and calls Anthropic itself. AgentRun never reads, copies, stores or relays
-the login. It tells the CLI where the login is and asks it `claude auth status`, nothing else. Settings → Model keys
+the login's tokens. It tells the CLI where the login is and asks it `claude auth status`, nothing else. Settings → Model keys
 has the row **Use Claude Code's login on this machine**, over these routes:
 
 - `PUT /v2/settings/claude-login` `{"only_me": true, "place": "agentrun"}` turns it on. `only_me` is the owner's word
   that they alone run agents on this server. `place` is where the login is: `agentrun` (the default) is AgentRun's own
-  login directory in the data folder, which you sign in once; `machine` is this machine's own Claude Code login
-  (`~/.claude`), which you opt into by name. A server where more than one person can start runs (more than one API
-  token, the API-only profile) refuses it with `403` and one line saying why, and a turn-on saved before is dropped
-  when such a server starts.
+  login directory in the data folder, which you sign in once; `machine` is this machine's own Claude Code login, which
+  you opt into by name. Its folder is the one the CLI uses: `CLAUDE_CONFIG_DIR` when the server's environment sets it to
+  an absolute path, else `~/.claude`. A Claude Code that keeps its login in another folder is found only when AgentRun
+  is started with `CLAUDE_CONFIG_DIR` set to that folder. A server where more than one person can start runs (more
+  than one API token, an [API key made for an app](#api-keys-for-your-apps), the API-only profile) refuses it with
+  `403` and one line saying why, and a turn-on saved before is dropped when such a server starts.
 - `GET /v2/settings/claude-login` says `state`: `off`, `signed_in` (with the `account` the CLI names: method, email,
   organization, plan), `signed_out`, `no_cli` (claude-agent's first run installs the pinned CLI), `unknown`, or
-  `other_machine`. `command` is the line that signs the CLI in at the login's place, for a terminal on the server's
-  machine. Where the console is on that machine (a server on loopback with no public address), `can_start` is true and
-  `POST /v2/settings/claude-login/login` starts the pinned CLI's own `auth login`, which opens a browser there.
+  `other_machine`. `folder` is the folder whose login the CLI is asked about, and `machine` is this machine's own
+  login folder (`machine.source`: `CLAUDE_CONFIG_DIR` or `default`). `command` is the line that signs the CLI in at
+  the login's place, for a terminal on the server's machine. Where the console is on that machine (a server on loopback
+  with no public address), `can_start` is true and `POST /v2/settings/claude-login/login` starts the pinned CLI's own
+  `auth login`, which opens a browser there. It runs with the same variables as `command`, so it signs in at `folder`,
+  and the status is read there too, since `auth login` writes the account it signed in to its config dir. On
+  `machine` with the default `~/.claude`, the CLI is signed in as the person's own `claude` runs: no
+  `CLAUDE_CONFIG_DIR` or `CLAUDE_SECURESTORAGE_CONFIG_DIR`, in their home, so it writes the account in `~/.claude.json`
+  and the tokens where their Claude Code keeps them (in `~/.claude`; on macOS the Keychain item `Claude Code-credentials`).
+  `command` there starts with `env -u CLAUDE_CONFIG_DIR -u CLAUDE_SECURESTORAGE_CONFIG_DIR`, so a terminal that exports
+  either still signs in at that login. A run
+  there reaches the same tokens: on macOS with `CLAUDE_SECURESTORAGE_CONFIG_DIR` set and empty, the CLI's way to name
+  that item while the run has a config dir of its own; elsewhere with it set to `~/.claude`. On `machine`, either
+  folder, the status check never runs the CLI on the person's own account file, which the CLI rewrites on every start
+  whose config version is not its own: each check copies `.claude.json` (`~/.claude.json`, or the `CLAUDE_CONFIG_DIR`
+  folder's), opening the original only to read it, into a folder of its own, gives the CLI that folder as its config
+  dir and the tokens as a run reads them, and removes the folder however the check ends. The copy (0600, in a 0700
+  folder) leaves out the fields that hold secrets: `primaryApiKey` (the API key an older Claude Code signed in with),
+  `env` and every `mcpServers`, whose env and headers hold tokens; a file that doesn't parse as a JSON object is not
+  copied at all. A run's config dir has none of them either, so the status says what a run gets. The status check
+  runs in the person's home (the server's `HOME`) on every place, as the sign-in does, and so does a run on the login
+  on macOS: the CLI reads its tokens there from the login keychain, which is under that home. `sign_in`
+  says what became of that sign-in while the server runs: `waiting` for the browser since `started_at`, `signed_in`,
+  `timed_out` (no answer from the browser within 10 minutes, so it was ended and a sign-in page still open can't
+  finish), `failed` (the CLI ended without signing in, with its `exit_code`), or `not_started`. A second start ends a
+  sign-in that still waits, and so do turning the mode off and stopping the server, which waits for that CLI to exit.
 - `DELETE /v2/settings/claude-login` turns it off. The login stays as the CLI keeps it.
 
 While it is on, a claude-agent run on an `anthropic/<model>` model goes on the login: its CLI gets no
@@ -1562,6 +1646,58 @@ with nothing to set. `AGENTRUN_CLAUDE_CODE_LOGIN` overrides the default. `off` t
 it available past loopback, but a server with more than one API token still refuses it, and so does the API-only
 profile. While the mode is off, the row is gone and every route above answers `404` naming its operation. A turn-on
 saved earlier is dropped when the server starts, and claude-agent runs on the model keys.
+
+### On this machine's Ollama
+
+Start Ollama (`ollama serve`, or its app) beside your own server and it lists Ollama's models itself, with no key, no
+gateway and no restart: `GET /api/tags` for the tags, `POST /api/show` for each one's capabilities and trained context. Each chat model
+is `ollama/<tag>` in `harnesses[].models` and `harnesses[].free_models` for pi and for every harness on a wire the
+route translates, and the console names it
+`<tag> · local (Ollama)`, on a run's page too (from the run's `tokens` usage line, `provider` `ollama` and `model` the
+tag), so a run on the default says which model it ran on. An embedding model is left out. A model pulled or an Ollama started after the server shows in capabilities
+within half a minute (the listing is kept that long, and asked again behind the next answer). A down or stuck Ollama
+lists no models and slows nothing: the listing has 2 seconds in all, follows no redirect, and keeps the models shown
+before its deadline. A run never waits on the listing: one on `ollama/<tag>` asks that model's `/api/show` alone (10
+seconds), and a run on any other model, a key's default included, never asks Ollama.
+
+- Where: `OLLAMA_HOST`, read as the ollama CLI reads it. Unset, 127.0.0.1:11434, but only on one owner's own server
+  on their own machine, the one `--harness-sign-in` starts on: it listens on loopback with no public address, keeps the
+  SQLite store, runs its runs beside it as its own user, and takes one owner and one API token. On any other server
+  (shared, `--no-runner`, Postgres, API-only, more than one token), whatever answers on that machine's 11434 is no model
+  of the people who start runs there, so unset means no Ollama: name it in `OLLAMA_HOST`. A host alone, or `host:port`, with no
+  scheme is plain http, port 11434 when none is given; `http://` and `https://` take their own default ports. `0.0.0.0`
+  and `::`, where `ollama serve` listens on every address, mean this machine (127.0.0.1 and `[::1]`). A path is kept.
+  Plain http goes only to this machine (loopback); another machine takes `https://`. A refused `OLLAMA_HOST` lists no
+  models, and the server's log says why once, at its start (`event=ollama_host_refused`, never the value: a user or
+  password in it stays unsaid). `agentrun service install --env OLLAMA_HOST=<host:port>` gives it to the service.
+- Context: each request is Ollama's own `/api/chat`, streamed, with `options.num_ctx` the least of 65,536, the model's
+  trained context (where `/api/show` names one) and `OLLAMA_CONTEXT_LENGTH` (where the server's environment sets it to a
+  whole number above 0, as a person short of memory does for Ollama itself). The model's context window here is the same
+  number, so pi compacts before Ollama would cut the prompt. `agentrun service install --env
+  OLLAMA_CONTEXT_LENGTH=<tokens>` gives the limit to the service.
+- Thinking: a model whose capabilities include `thinking` has its reasoning split out by Ollama. For any other, an
+  answer that opens with `<think>` has that part as thinking up to `</think>`, the split Ollama makes for a thinking
+  model, so the tags never reach the answer.
+- Tools: a model whose capabilities include `tools` takes them natively. Any other takes them as text: the tools are
+  described in its prompt, and a call written in its answer comes back as a real call.
+- Cost: $0, booked as a known cost. Its requests never count toward the server's [limit on free
+  requests](#a-limit-on-free-requests): there is no shared quota behind them. An agent's own `max_requests` counts them,
+  with its other free requests, so a run on Ollama that keeps calling tools still stops there.
+- Harness: pi, and every harness on a wire the route translates. That wire is Anthropic's Messages: claude-agent,
+  Goose, and a harness module on it. Its requests go through the same translation as pi's: the same `/api/chat`,
+  `num_ctx`, tools and cost. A Messages client's token count (`/v1/messages/count_tokens`) is answered there without
+  asking the model, an answer it asks for unstreamed comes back whole (or as a 500 error with words when part of the
+  stream doesn't read), and every model id it sends (Claude Code's small model too) runs the one tag. claude-agent turns its own tool search off on these models. codex and opencode, on
+  OpenAI's Responses, never list them.
+- Cloud models: an Ollama cloud model (a `-cloud` tag, with `remote_host` and `remote_model` in `/api/tags` or
+  `/api/show`) runs on ollama.com, not here, so it is never listed: never local, never $0, never the default.
+- Default: with no model key held (and no `AGENT_MODEL`, ChatGPT sign-in or gateway), pi and every harness on a wire the
+  route translates run on the first model Ollama lists that calls tools. Any key wins. A model without tools is pickable, never the default. Ollama lists the model
+  pulled last first, so pulling one can change that default, and a saved agent that names no model follows it. Name the
+  model (`ollama/<tag>`) to pin it.
+
+`inkling-2-mini` (Ollama 0.40.17 or later) is the model to try first. Under `--faux` or `AGENT_MODEL_BASE_URL`, Ollama
+is never asked.
 
 ## Tools
 
@@ -1735,14 +1871,15 @@ Each child books on the run's cap, so size the cap for K passes, not one.
 
 `web_search` and `web_fetch` work on every harness with only a model key. Each resolves, for a run, in one order: (1) the
 provider the user picked, optional: the agent's own (`definition.tool_settings`) over the server's
-(`PUT /settings/tools`); (2) the native tool, the harness's own or its model provider's hosted one (on claude-agent
-only where it is picked: `auto` there skips Claude's own search, an explicit `native` pick); (3) for
+(`PUT /settings/tools`); (2) for
 `web_search`, Parallel, where the server holds a Parallel key (`PARALLEL_API_KEY` in its environment, or one saved on Tool
-keys): `auto` then uses that key and bills it, each search booked as the run's cost ($0.001 a search); (4) the keyless
-fallback, Firecrawl's public MCP endpoint (for `web_search` with Exa's behind it). A revision's `tools` (and a pack's grant) names the capability, never a provider. On codex, `auto` is
-Codex's own search, except behind a gateway, on OpenRouter (which runs neither Codex's nor Claude's own search, and
-counts no searches to price) or under a spend cap (its request has no input bound, which a cap cannot
-admit), where it is Parallel on the server's key, else keyless Firecrawl. `off` turns `web_search` off: nothing is
+keys): `auto` then uses that key and bills it, each search booked as the run's cost ($0.001 a search); (3) the keyless
+fallback, Firecrawl's public MCP endpoint (for `web_search` with Exa's behind it). A revision's `tools` (and a pack's grant) names the capability, never a provider.
+`auto` is agentrun's own search on every harness. The native search, the harness's own (Claude's WebSearch, Codex's
+live search) or on pi one request to the run's own model provider with its hosted search, runs only where `native` is
+picked; it is unavailable behind a gateway, on OpenRouter (which runs neither Codex's nor Claude's own search, and
+counts no searches to price) or under a spend cap (Codex's request has no input bound, and Claude's searches have
+per-use fees, which a cap cannot reserve yet). `off` turns `web_search` off: nothing is
 searched, and an agent naming it is refused (`409`) until it is turned on again. A pick of `firecrawl-keyless` is keyless
 Firecrawl with keyless Exa behind it, and a pick of `exa-keyless` is keyless Exa alone, the key held or not.
 A workflow's model nodes may each run on another tier's model, so a workflow's `web_search` never searches natively:
@@ -1751,8 +1888,8 @@ unavailable for a workflow.
 
 | | `claude-agent` | `codex` | pi |
 | --- | --- | --- | --- |
-| `web_search`, `auto` (the default) | Parallel on the server's key, else keyless Firecrawl: Claude's own WebSearch is the `native` pick | Codex's own search, each search booked; behind a gateway, on OpenRouter or under a spend cap, Parallel on the server's key, else keyless Firecrawl, a host tool | one request to the run's own model provider with its hosted search (Anthropic, OpenAI direct); behind a gateway (`AGENT_MODEL_BASE_URL`) or on another provider, Parallel on the server's key, else keyless Firecrawl |
-| `web_search`, `native` | Claude's own WebSearch, unavailable on OpenRouter or under a spend cap | the same, unavailable behind a gateway, on OpenRouter or under a spend cap | the same, unavailable where there is none: never a keyless search |
+| `web_search`, `auto` (the default) | Parallel on the server's key, else keyless Firecrawl, a host tool: Claude's own WebSearch is the `native` pick | the same: Codex's own search is the `native` pick | the same: the model provider's hosted search is the `native` pick |
+| `web_search`, `native` | Claude's own WebSearch, unavailable on OpenRouter or under a spend cap | Codex's own search, each search booked; unavailable behind a gateway, on OpenRouter or under a spend cap | one request to the run's own model provider with its hosted search (Anthropic, OpenAI direct); unavailable behind a gateway (`AGENT_MODEL_BASE_URL`) or on another provider: never a keyless search |
 | `web_search`, `off` | unavailable (`web_search is turned off in settings`): nothing is searched | the same | the same |
 | `web_search`, `firecrawl-keyless` | Firecrawl's public MCP search, keyless Exa's behind it, a host tool | the same | the same |
 | `web_search`, `exa-keyless` | Exa's public MCP search alone, a host tool | the same | the same |
@@ -3156,6 +3293,16 @@ warning, as a github trigger is with GitHub not connected. The first package is 
 rules of an apply are in [templates/README.md](https://github.com/Parcha-ai/agentrun/blob/main/packages/serve/templates/README.md);
 `agentrun template validate DIR` checks a folder as the server does.
 
+`GET /v2/marketplace/templates` lists the templates on [marketplace.agentrun.ai](https://marketplace.agentrun.ai), the
+list the marketplace publishes (`/search.json`), each with `here`, the id of the package on this server that it is
+(`x-agentrun-serve: "marketplace/1"`). The server reads the list only when asked, never at its start, keeps it 5
+minutes, and keeps the last good one through a failed read (`state: "stale"`); with none it answers `unreachable` and an
+empty list, always with a 200. Nothing on the list is imported or run: an entry that names its `source` installs with
+`POST /v2/templates/import`, its publisher trusted once, and one that names none from its marketplace page. The
+console's Templates and Build pages list this server's packages, then the marketplace's others.
+`AGENTRUN_MARKETPLACE=off` reads none, as does `--faux` unless it names an address; `AGENTRUN_MARKETPLACE=<https
+address>` reads that site's list.
+
 `agentrun template eval DIR` (`agentrun-serve eval-template DIR`) runs a package's eval cases as real runs of its agent
 and grades each run with the case's graders: by default on a server of its own over a temp data directory, so it never
 touches yours, with each case's fake MCP servers on loopback and its corrections seeded through the learning API. Real
@@ -3180,7 +3327,7 @@ failed, 2 when nothing ran. The runner, the graders and the report are in
 | `GET /capacity` | This server's own (`capacity/1`): the runs waiting for a runner and held by one, each live runner's version, slots and free slots, and the hand-backs within `?window=` minutes, read from the store ([capacity and health](#capacity-and-health)). Served under `AGENTRUN_API_ONLY=1` too. |
 | `GET /openapi.json` | Without a credential: this API as an OpenAPI 3.1 document, the `agentrun.v2/0` contract (vendored in `src/openapi/`, its source in `info`) with this server's own routes marked `x-agentrun-serve`, the operations it answers `501` marked `x-agentrun-serve-unsupported`, and a contract operation that takes more than the contract gives marked `x-agentrun-serve-changed` with each change named; `links.openapi` in capabilities points at it. |
 | `GET /capabilities` | Without a credential. `backend: local`, every feature flag present and true only when it works; `tools`, the tools an agentic revision may name; `workflows`, what a workflow revision's model nodes get and, in `workflows.decisions.providers`, the decision providers its typed questions run on; `models`, where models come from and the model of each tier. |
-| `POST /agents`, `GET /agents`, `GET /agents/{id}` | `POST` takes `{definition, skills?, note?}` and makes the agent with its first revision, current. A definition has `instructions` (an agentic revision) or `workflow` (a workflow revision, checked by the DSL first), and `name`, `description`, `model` and `thinking` (agentic only), `harness` ([harnesses](#harnesses)), `place` ([place](#place)), `tools`, `tool_settings` ([search and fetch](#search-and-fetch)), `skills` (names; each `<name>/SKILL.md` is in `skills`) and `version`, which is the number the revision gets, and `max_cost_usd`, the agent's default cap (an agentic agent's or a workflow's), kept by an edit that leaves it out and cleared only by 0 ([spend cap](#spend-cap)), and `output_schema` (agentic only, at most 64 KiB): the JSON Schema the final answer's last fenced json block meets, which a completed run's `result.output` then holds (null when the answer doesn't meet it), kept by an edit that leaves it out. A template's answer schema is set here at apply, and a run a schedule trigger starts is handed that trigger's last completed `result.output` after its message; no other source's runs are, since each of their firings is a different event. Over 32 KiB, a scheduled run is handed only the fields the producing run's schema names in `x-carried`; carried arrays lose entries from the front until they fit, and the run is told how many. A save refuses an `x-carried` that is not unique root property names. `checkout` (agentic only): `pull_request` has the server check out, before each run's first turn, the pull request the run's GitHub event names, in `repo/` at its head with its base and merge base, using a read-only token of its GitHub App that the agent never holds ([GitHub triggers](#github-triggers-connect-github)); `none` clears it, and an edit that leaves it out keeps it. A field the store does not keep (`input_schema`) is `422 input_invalid` by name, and so is a definition that can never run here; one this host cannot run yet saves with `warnings` ([models](#models)). The ETag (`home_etag`) is the current revision's id. `GET /agents/{id}` adds `tools`, the tools its current revision grants with each one's provider ([search and fetch](#search-and-fetch)). It also adds `run_blockers` (`x-agentrun-serve: "runblockers/1"`): `{message, fields}` as a start with no overrides would be refused now (`409 agent_not_runnable`), or null. It is always null for an archived, native or SDK agent and for a revision whose MCP tools its first run pins, and the read asks no other service, so under the agent's `max_cost_usd` an OpenRouter decision model's missing price is named only once a save or a start has read OpenRouter's catalog: null is no promise that a start is accepted. |
+| `POST /agents`, `GET /agents`, `GET /agents/{id}` | `POST` takes `{definition, skills?, note?}` and makes the agent with its first revision, current. A definition has `instructions` (an agentic revision) or `workflow` (a workflow revision, checked by the DSL first), and `name`, `description`, `model` and `thinking` (agentic only), `harness` ([harnesses](#harnesses)), `place` ([place](#place)), `tools`, `tool_settings` ([search and fetch](#search-and-fetch)), `skills` (names; each `<name>/SKILL.md` is in `skills`) and `version`, which is the number the revision gets, and `max_cost_usd`, the agent's default cap (an agentic agent's or a workflow's), kept by an edit that leaves it out and cleared only by 0 ([spend cap](#spend-cap)), and `output_schema` (agentic only, at most 64 KiB): the JSON Schema the final answer's json block meets (its last fenced one, or the whole answer when it is one JSON object), which a completed run's `result.output` then holds (null when the answer doesn't meet it), kept by an edit that leaves it out. A template's answer schema is set here at apply, and a run a schedule trigger starts is handed that trigger's last completed `result.output` after its message; no other source's runs are, since each of their firings is a different event. Over 32 KiB, a scheduled run is handed only the fields the producing run's schema names in `x-carried`; carried arrays lose entries from the front until they fit, and the run is told how many. A save refuses an `x-carried` that is not unique root property names. `checkout` (agentic only): `pull_request` has the server check out, before each run's first turn, the pull request the run's GitHub event names, in `repo/` at its head with its base and merge base, using a read-only token of its GitHub App that the agent never holds ([GitHub triggers](#github-triggers-connect-github)); `none` clears it, and an edit that leaves it out keeps it. A field the store does not keep (`input_schema`) is `422 input_invalid` by name, and so is a definition that can never run here; one this host cannot run yet saves with `warnings` ([models](#models)). The ETag (`home_etag`) is the current revision's id. `GET /agents/{id}` adds `tools`, the tools its current revision grants with each one's provider ([search and fetch](#search-and-fetch)). It also adds `run_blockers` (`x-agentrun-serve: "runblockers/1"`): `{message, fields}` as a start with no overrides would be refused now (`409 agent_not_runnable`), or null. It is always null for an archived, native or SDK agent and for a revision whose MCP tools its first run pins, and the read asks no other service, so under the agent's `max_cost_usd` an OpenRouter decision model's missing price is named only once a save or a start has read OpenRouter's catalog: null is no promise that a start is accepted. |
 | `PUT /agents/{id}/definition` | The same body, checked [the same way](#models): a new revision, its parent the current one, made current. Without `skills` the current revision's skill files carry over. A definition that is the current revision already writes nothing, so a PUT sent twice makes one revision. An agent's id and name stay those it was made with (another name is `422` on `definition.name`). Its description is a label kept on the agent, not on a revision: a PUT that names a new one makes the next revision (even when nothing else changed) and writes the description with it in one commit, so a stale or refused edit changes neither; a PUT that leaves it out keeps it. `If-Match` that is not the current ETag is `412 precondition_failed`; the store compares it again inside the commit, so of two edits that read the same revision exactly one lands. The contract's body is taken too: the definition itself, with `If-Match` required (`412` without it) and `definition.version` greater than the current one (`422`). Any such version is taken, and always makes a new revision, the same definition included; the revision is numbered as this server numbers them, the next, and the answer says which; the route reads a body holding `definition` as this one, any other as the contract's. |
 | `GET /agents/{id}/revisions` | The agent's revisions, newest first: `revision`, `version`, `parent`, `kind`, `current`, `note`, `created_at` and the `definition`. |
 | `POST /agents/{id}/current` | `{revision}`: one of the agent's revisions becomes current again. |
@@ -3191,7 +3338,7 @@ failed, 2 when nothing ran. The runner, the graders and the report are in
 | `POST /agents/{id}/runs`, `GET /agents/{id}/runs` | A run of the current revision, or of `revision`. An agentic run's input is `{content: string}`; a workflow run's is what its workflow's input schema takes. `file_ids` names [uploaded](#uploads) files, copied into the run's `work/inputs/` before it starts and named in its first message. `labels` (this server's own, `runlabels/1`) is the caller's map of its own strings for the run: at most 16 keys, each 1 to 63 letters, digits, `.`, `_`, `-` or `/` starting with a letter or a digit, each value 1 to 256 characters with no control character; kept as given, served as `labels` on every read of the run (`{}` when none), never read by the server otherwise, so no place for a secret. The agent's runs, newest first; `label` filters them as `GET /runs` does. |
 | `GET /runs` | Every agent's runs, newest first, a page of at most 100; `agent`, `revision` and `status` narrow it, `label=<key>:<value>` (`runlabels/1`, split at the first `:`, once per request) keeps the runs holding that label, and `archived=true` lists only archived ones. A failed run's summary carries its `error`, and a waiting run's its `pending`. |
 | `GET /runs/{id}` | The run: its revision, kind, status, state, result, error, `pending` (this server's own, `pending/1`: what a waiting run waits on, by `kind`: `{kind: "question", question, asked_at}` for a question it asked a person; `approval` for a tool call held for a person's approval, with the tool, its arguments and its price; `budget` for a run paused at its cap ([a run paused at its cap](#a-run-paused-at-its-cap)); `{kind: "browser", instruction, completion_condition, asked_at, expires_at}` for its agent's ask for the owner in its browser; or `{kind: "computer", computer: "desktop" \| "phone", instruction, completion_condition, asked_at, expires_at}` for its agent's ask for the owner on its desktop or phone; else null, a stopped turn's included) and cost (`basis` `reported`, `estimate` or `unpriced`, with its model requests' `tokens`: [A run's cost](#a-runs-cost-its-tokens-and-its-basis); $0 before its first model request, a cancelled run's included). |
-| `GET /runs/{id}/timeline` | JSON pages with the change-number cursor (`after`, `next_after`, `reset`, `drop`, `has_more`, `final`, `wait_ms` long poll, and this server's own `limit`, 1 to 500 rows a page, default 500), or server-sent events with `Accept: text/event-stream` (`id` is the cursor, `Last-Event-ID` resumes). Rows sort by `seq`; the usage row (`Cost so far`), the run's running total, is always the last row, and moves to the end when a row comes after it. |
+| `GET /runs/{id}/timeline` | JSON pages with the change-number cursor (`after`, `next_after`, `reset`, `drop`, `has_more`, `final`, `wait_ms` long poll, and this server's own `limit`, 1 to 500 rows a page, default 500), or server-sent events with `Accept: text/event-stream` (`id` is the cursor, `Last-Event-ID` resumes). Rows sort by `seq`; the usage row (`Cost so far`), the run's running total, is always the last row, and moves to the end when a row comes after it. Beside the rows, `in_flight`: what a live run waits on now, each model request sent and not answered (from its booking's `runner.request`, stamped `at` when it left) and each tool call not returned, from when it was sent; empty once the run is final. A request sent or answered is a change of the page, as a row is. |
 | `POST /runs/{id}/messages` | To an agentic run: `steer` while the agent works, `answer` when it asked the person, `follow_up` after a stop or after it completed: a completed run opens again, the same run on its own session and store, takes a place under `--max-runs` (it waits for one when none is free), and completes again. A failed or cancelled run, an archived run and a run of an archived agent are `409 not_continuable` (a run of an agent [being deleted](#deleting-an-agent-another-system-owns), `409 agent_not_runnable`); a workflow run takes none (`501`). |
 | `POST /runs/{id}/stop`, `POST /runs/{id}/cancel` | Stop ends an agentic run's turn and leaves the run `input_required` and idle. Cancel ends a run `cancelled` once its process has exited. |
 | `POST /runs/{id}/archive`, `POST /runs/{id}/unarchive` | [Archiving](#archiving) one run. Answers the run, with `archived_at`. |
@@ -3211,9 +3358,11 @@ failed, 2 when nothing ran. The runner, the graders and the report are in
 | `GET /runs/{id}/browser` | This server's own (`x-agentrun-serve: "liveview/1"`): the run's live browser view for the owner, `{state: "off", reason}`, `{state: "none"}` or `{state: "live", viewer}` ([the live view](#the-browsers-live-view)). |
 | `POST /runs/{id}/browser/hand-back` | This server's own (`liveview/2`): the owner's answer to the agent's ask for them in its browser, `{outcome: "done" \| "cancelled"}`; the first answer wins, a different one is `409 handoff_answered` ([the live view](#the-browsers-live-view)). |
 | `GET /runs/{id}/computer` | This server's own (`computer/1`): the run's live computer view for the owner, one family for every kind, `{state: "off", hold, why?}`, `{state: "none", kind, hold}` or `{state: "live", kind, viewer, hold}`, its viewer under `/runs/{id}/computer/live/`; the browser is kind `browser` here, beside its own route ([the live view](#the-browsers-live-view)). |
+| `GET` and `POST /settings/api-keys`, `DELETE /settings/api-keys/{api_key_id}` | [API keys for your apps](#api-keys-for-your-apps), this server's own routes (`x-agentrun-serve: "apikeys/1"`): the keys the owner makes in the console, each shown once and kept as a keyed hash. Making and revoking take the owner's signed-in session. |
 | `GET`, `PUT` and `DELETE /settings/webhook`, `POST /settings/webhook/test`, `GET /settings/webhook/deliveries` and `POST .../deliveries/{webhook_id}/redeliver` | [Webhooks](#webhooks), this server's own routes (`x-agentrun-serve: "webhook/1"`): the URL run notices are POSTed to, signed by the Standard Webhooks spec; never its secret but once. |
 | `GET` and `POST /triggers`, `GET`, `PATCH` and `DELETE /triggers/{id}`, `POST /triggers/{id}/fire`, `GET /triggers/{id}/firings`, `POST /triggers/{id}/secret`, `POST /hooks/{id}` (no token: [signed](#webhook-triggers)) | [Schedules](#schedules), this server's own routes (`x-agentrun-serve: "trigger/1"`): schedules that start an agent's capped runs, each firing once, and their history. |
 | `GET /templates`, `POST /templates/{name}/apply` | [Templates](#templates), this server's own routes (`x-agentrun-serve: "templates/1"`): the template packages it ships, and an apply that makes one's agent and triggers, all or nothing. |
+| `GET /marketplace/templates` | [Templates](#templates), this server's own route (`x-agentrun-serve: "marketplace/1"`): marketplace.agentrun.ai's templates as this server read them, each with the package here that it is. |
 | `POST /mcp` | This server's own route (`x-agentrun-serve: "mcp/1"`): the [MCP endpoint](#for-coding-agents), Streamable HTTP with one JSON-RPC message per POST (`initialize`, `ping`, `tools/list`, `tools/call`), answered as JSON, stateless. Its ten tools call these routes in process with the caller's token. The Bearer token only, never the page's cookie; a browser `Origin` other than this server's own is `403`; any other method is `405`. |
 | `GET /usage` | The runs' costs, by meter, agent, key, day or region (`key` and `region` are one line, `local`). By meter, `tools` holds the runs' paid tool calls and the workflow decisions Parallel charged on its own API, as `cost.tools_usd` does. A run of unknown cost adds what it is known to have spent so far (its `so_far_usd`: each priced charge, browser time and paid tools included) and is counted in `unpriced_runs` (in the total and in each line it is unknown on), so no sum is ever null, it never passes as $0, and a total is never below a line of its own: with `unpriced_runs` above 0 the total is a lower bound. `basis` says how the costs were reached ([A run's cost](#a-runs-cost-its-tokens-and-its-basis)). |
 
@@ -3329,7 +3478,8 @@ serves these routes alone:
   the backend whose inline runs made it;
 - the [purge of a run](#purging-a-run-or-an-agent-made-here) (`DELETE /runs/{id}`) of such an agent, for that
   backend: it erases one user's runs where deleting the agent, which every user's runs share, would take them all. A
-  run of an agent made here is refused, as every address not listed here is;
+  run of an agent made here (a deploy's, below) is purged the same way, since the token may archive and delete that
+  whole agent, every run of it purged;
 - the computer settings' two reads, for a backend to check before it launches: `GET /computers` (each provider, its
   key names and whether each is saved, and whether it is ready) and `GET /workspace/archil` (whether runs' folders are
   on Archil, and whether its account key is saved). Neither answers a key's value. Their writes, tests and key choices
@@ -3378,11 +3528,28 @@ serves these routes alone:
     refused with `412` leaves it the token's), and one that lands while the token's is under way wins: the token's is
     `412`.
 
-  The names route above is the listing: there is no list or read of a server's address, auth or tools here, and no
-  generic save (`PUT /settings/mcp-servers/{name}`), so the token saves no server at an address or with headers of its
-  own. The preview, refresh, sign-in, Composio tool listing and every other MCP settings route stay refused. On the full
+  The names route above is the listing: there is no list or read of a server's address, auth or tools here. The
+  generic save (`PUT /settings/mcp-servers/{name}`) is a `404` unless the operator names the MCP origins it may save at,
+  so by default the token saves no server at an address or with headers of its own. The preview, refresh, sign-in, Composio tool listing and every other MCP settings route stay refused. On the full
   server the token's `api_key_env` is `403`, as `api_key` is: the owner's session saves a Composio server there either
   way;
+- a per_run MCP server's save at an origin the operator names, for a backend whose runs each bring their own
+  credential for a gateway it runs (such as a loopback forwarder): `AGENTRUN_API_ONLY_MCP_ORIGINS`, comma-separated
+  origins (`https://mcp.example.com`), a plain setting. With it, the token's `PUT /settings/mcp-servers/{name}` saves
+  `"auth": {"type": "per_run"}` at one of those origins, a new name or over a server the token saved that seals no
+  credential, and each run hands its own credential in `mcp_auth`. A body that sends a credential (a bearer token, or
+  headers with any other auth type) is `403`, as is a save over a server saved any other way or one that seals a
+  credential. A per_run body at any other origin, any other auth type, and a Composio server's name (its own route
+  saves it) are this profile's `404`. Each refusal comes before anything is sent to the address.
+  `AGENTRUN_MCP_ALLOW_LOOPBACK=1` is still needed for a loopback origin. Unset or blank, the save is a `404` as before;
+  an entry that is not an http or https origin alone, or a wildcard, stops the start, in words. The list holds past
+  the save: drop an origin and restart, and a per_run server the token saved there is refused at a run's start, at
+  an agent's save and at the next call of a run already going, and nothing is sent to it. Unset, the list is empty, so
+  a per_run server the token saved with API-only off is refused until its origin is listed: list it before upgrading,
+  or re-save it from the owner's signed-in session with API-only off, which makes it the owner's and leaves the save
+  closed. The start logs one line (`api_only_mcp_off_list`) with the count and names of the servers off the list,
+  never their addresses, and nothing when there are none. A server saved from the owner's signed-in session (which an
+  API-only server doesn't serve) is the owner's, whenever it was saved, and the list does not govern it;
 - a run's desktop or phone, for a backend that shows its user the live view and lets them take over: see below.
 
 Here a run's computer routes take the server's token. `POST /runs/{id}/computer/viewer` mints a 5-minute link on
@@ -3441,13 +3608,19 @@ The 10 minutes run from the answer, not from `fired_at`, so a firing that reache
 waited on `max_active_runs`, one handed again after a restart) gets the same time. The server never hands a `sent`
 firing over again. Until its run starts or its `start_by` passes, it holds its trigger's room as a run in progress
 would: with `max_active_runs`, a later firing waits for that room, and without it the overlap check skips a later
-firing, naming the held one. Once `start_by` passes it holds nothing, and a waiting firing is handed.
+firing, naming the held one. Once `start_by` passes it holds nothing, and a waiting firing is handed. A start that
+begins by `start_by` holds the room until its run is written: when `start_by` is less than a minute away, the server
+moves it to a minute after the start began, before it writes the run. A start that fails without writing its run
+moves `start_by` back, so failed starts never extend the window.
 
-The firing is the run's key, so a second start for the same firing answers the same run, and the request takes no
+The firing is the run's key, so a second start for the same firing answers the same run, also while the first is
+still writing it (202 with `idempotent-replayed: true`), and the request takes no
 `Idempotency-Key` (422 with one). A firing that is neither due nor taken by its host (failed, skipped, or one of
 another agent's triggers) is refused with 422. A due firing takes its start only while its trigger has room for it,
 by the overlap check and `max_active_runs` the server applies before it hands a firing over: one waiting on its retry
-whose place another firing's run has taken since is refused with 422 `not_due`, which says why.
+whose place another firing's run has taken since is refused with 422 `not_due`, which says why. So is one whose place
+another firing is taking: a firing whose hook has not answered yet, or whose host's start is being written, holds the
+room as a run in progress until that is done.
 
 A hook that does not take the firing is a failed try of it, as a refused run is, unless the host started its run by
 then. The firing's `error.code` is `hook_failed`, and its `reason` names the cause: the status the host answered,
@@ -3605,7 +3778,9 @@ back.
 `GET /v2/capabilities` lists each in `harnesses`, with `available` and, when not, the `reason`, and `default_model`: the
 model the harness runs when a definition names none (`provider/model-id`, as a save and a run resolve it), or null where
 it runs none (the harness does not run here, or no default model here runs on it: claude-agent never takes a gateway's
-model). A definition naming a
+model). Its `models` are those a save takes; `ready_models`, those of them a run takes now, their provider connected here
+(its key set, or the ChatGPT sign-in where that is how the harness runs them). One that lacks only its key is in `models`
+and not in `ready_models`: a save of it warns, and the console's Model picker lists it only when asked. A definition naming a
 harness this server does not run yet saves with a warning on `definition.harness`, and a run of it is
 `409 agent_not_runnable` with `details.harness`; it never runs on pi instead. This server runs pi always, and
 `claude-agent`, `codex` and `opencode` when each adapter's package, pins and provider endpoint check out; the harness's
@@ -3860,7 +4035,7 @@ stays in every total.
   server; a Mode 2 agent's folder on an Archil disk keeps the run's text until a learning reset or the agent's purge.
 - It takes the owner's session (the password sign-in, or the console on a server bound to loopback) or the API token;
   any other console session is `403 forbidden`, no credential `401`. An [API-only](#api-only) server purges a run of
-  an agent another system owns alone; a run of an agent made here is its profile's `404` there.
+  any agent with its token, as it deletes or purges the whole agent.
 
 An agent made here is purged the same way once archived: `DELETE /v2/agents/{id}`. Its revisions' content, name and
 description, learning, triggers, saved sign-ins, own computer, disk and folders go, and each of its runs is purged.
@@ -4850,7 +5025,7 @@ A request on a free model costs $0, so no dollar cap can stop one: a free model 
 (an OpenRouter `:free` model and the like, as `harnesses[].free_models` lists them; an OpenRouter router is none, since
 it bills the model it picks), with no fee beside the request. Its provider's shared daily quota is what a looping run
 burns. So a run has a limit on those requests: 60, or `AGENTRUN_FREE_MODEL_REQUESTS` (a whole number above 0; anything
-else refuses the server's start and the runner's). ChatGPT-plan requests don't count. Capabilities'
+else refuses the server's start and the runner's). ChatGPT-plan requests and [Ollama's](#on-this-machines-ollama) don't count. Capabilities'
 `limits.free_model_requests` says it, and the console says "free model: up to 60 requests" beside the cap of an agent
 on a free model. A run may make that many; the next is not sent, and the run ends `failed` as one its
 cap ends, its error `spend_cap_reached`: "Not sent: this run reached its 60-request limit for free models." (the number
@@ -4859,6 +5034,9 @@ workflow's agent nodes. Every such request of the run counts, its own model's, i
 compaction, a title), and one a crash cut, which is booked at $0, a known cost; a paid request, a paid tool call and a
 workflow's decision never count, and are never refused by it. The count is read from the run's booking records at each
 request, so a restart or a claim moved to another runner keeps it.
+
+An agent's own `max_requests` is a lower limit of the same kind, in the same words. It counts everything the server's
+limit counts and a local model's requests (Ollama's) too: the only limit a run on Ollama meets besides its turns.
 
 ### A run paused at its cap
 

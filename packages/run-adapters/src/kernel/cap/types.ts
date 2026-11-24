@@ -34,6 +34,9 @@ export interface CapModel {
   readonly outputCeiling: number | null;
   readonly reasoning?: boolean;
   readonly plan?: boolean;
+  /** `local`: a model on the host's own machine (serve's Ollama models), $0 with no provider quota behind it: a free model
+   *  whose requests never count toward the run's free-model limit (free.ts limitedFree). */
+  readonly local?: boolean;
 }
 
 /** A model request about to be sent, from any harness (pi in process, a CLI's through the model proxy). */
