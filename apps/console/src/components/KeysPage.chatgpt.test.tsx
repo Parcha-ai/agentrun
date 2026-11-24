@@ -40,10 +40,10 @@ function server(plan: () => ChatGPTView | Response, write: (call: Call) => Respo
 let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; vi.unstubAllGlobals(); });
 
-async function open(v2: ReturnType<typeof createClient>, onChange?: () => void) {
+async function open(v2: ReturnType<typeof createClient>, onChange?: () => void, source?: string) {
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
-  act(() => root!.render(createElement(KeysPage, { v2, onChange, writable: true, harnesses: HARNESSES, plan: createElement(ChatGPTRow, { v2, writable: true, onChange }) })));
+  act(() => root!.render(createElement(KeysPage, { v2, onChange, writable: true, harnesses: HARNESSES, plan: createElement(ChatGPTRow, { v2, writable: true, onChange, ...(source ? { source } : {}) }) })));
   const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
   await settle();
   const button = (label: RegExp) => [...host.querySelectorAll("button")].find((b) => label.test((b.textContent ?? "").trim()));
@@ -65,6 +65,16 @@ describe("Settings → Model keys, the ChatGPT plan row", () => {
     expect(text).toContain("gpt-6.1-sol · gpt-6-luna");
     expect(text).toContain("Eligible usage in this app uses your ChatGPT plan. Manage usage in your ChatGPT settings.");
     expect(text).toContain("This sign-in is yours: don't let other people run agents on this server with it.");
+  });
+
+  // A gateway server sends every model with none named to the gateway (serve's settingsModel): the plan runs only an
+  // agent that names one of its models, so the row says that, not that Codex and pi run on it (beta.55 note).
+  it("on a gateway server, says the plan runs only an agent that names its model, not that Codex and pi run on it", async () => {
+    const { v2 } = server(() => SIGNED_IN);
+    const page = await open(v2, undefined, "gateway");
+    const text = page.row()!.textContent!;
+    expect(text).not.toContain("Codex and pi agents run on your ChatGPT plan");
+    expect(text).toContain("This server sends its models to a gateway, so agents run there by default. An agent runs on your ChatGPT plan only when it names one of the plan's models (chatgpt/…).");
   });
 
   it("Sign out asks first, then signs out and says what is left to do in ChatGPT", async () => {
