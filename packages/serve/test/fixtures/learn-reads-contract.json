@@ -1,0 +1,102 @@
+{
+  "about": "The fields an external client reads of an agent's learning through the v2 API, by route, and the learning settings it sends on a launch. A field here is one a client depends on: removing or renaming it breaks that client, so test/learn-reads-contract.test.mjs fails. Fields added beside these pass. Types: number, string, boolean, list (a list read whole); a type ending in |null takes null. {\"object\": {...}} lists an object's fields, {\"list\": spec} a list's items, and \"nullable\": true lets either be null. source_revision is the client's revision this list was taken from.",
+  "source_revision": "ff058f7b42704fa04a0e791e62aaed4a48d703d7",
+  "reads": {
+    "GET /agents/{id}/learning/cost": {
+      "object": {
+        "runs": { "list": { "object": {
+          "n": "number|null",
+          "run_id": "string",
+          "path": "string|null",
+          "cost_usd": "number|null",
+          "workflow": "string|null",
+          "digest": "string|null",
+          "total_usd": "number|null"
+        } } },
+        "total_runs": "number",
+        "summary": { "nullable": true, "object": {
+          "takeover": { "nullable": true, "object": { "n": "number", "run_id": "string" } },
+          "before": { "nullable": true, "object": { "runs": "number", "mean_usd": "number|null" } },
+          "after": { "nullable": true, "object": { "runs": "number", "mean_usd": "number|null" } },
+          "times_cheaper": "number|null"
+        } },
+        "bill": { "nullable": true, "object": {
+          "points": { "list": { "object": { "n": "number", "actual_usd": "number", "agent_usd": "number|null" } } },
+          "break_even": { "nullable": true, "object": { "n": "number" } },
+          "gap_usd": "number|null",
+          "withheld": "number",
+          "booked_usd": "number",
+          "learning_usd": "number",
+          "holds": { "list": { "object": { "n": "number|null", "at": "string", "workflow": "string", "reason": "string" } } }
+        } }
+      }
+    },
+    "GET /agents/{id}/learning/promotions": {
+      "object": {
+        "serving": { "list": { "object": {
+          "workflow": "string",
+          "state": "string",
+          "check": { "nullable": true, "object": { "n": "number", "agreed": "number", "alone": "number" } },
+          "digest": "string|null",
+          "champion": { "nullable": true, "object": {
+            "digest": "string",
+            "nodes": { "nullable": true, "list": { "object": { "path": "string", "kind": "string", "label": "string", "tier": "string|null", "checks": "list" } } }
+          } }
+        } } },
+        "promotions": { "list": { "object": {
+          "workflow": "string",
+          "digest": "string",
+          "at": "string",
+          "decided": "string",
+          "reason": "string",
+          "check": { "nullable": true, "object": { "n": "number", "agreed": "number", "alone": "number" } }
+        } } }
+      }
+    },
+    "GET /agents/{id}/learning/audits": {
+      "object": {
+        "audits": { "list": { "object": { "agreed": "boolean|null", "workflow": "string", "digest": "string", "promoted_at": "string|null", "source": "string" } } }
+      }
+    },
+    "GET /agents/{id}/learning/loop": {
+      "object": {
+        "completed_runs": "number",
+        "compiles": { "list": { "object": {
+          "run_id": "string",
+          "round": "number",
+          "at": "string",
+          "workflow": "string|null",
+          "attempts": { "list": { "object": { "ok": "boolean", "errors": { "list": "string" } } } },
+          "promoted": "boolean|null",
+          "draft_errors": { "list": "string" }
+        } } }
+      }
+    },
+    "DELETE /agents/{id}/learning 409": {
+      "object": { "error": { "object": { "code": "string", "retry_after_ms": "number" } } }
+    },
+    "GET /runs/{id}": {
+      "object": {
+        "path": "string|null",
+        "cost": { "object": { "usd": "number|null", "tools_usd": "number|null", "learning_usd": "number|null", "all_in_usd": "number|null" } }
+      }
+    },
+    "GET /runs/{id}/timeline learned_workflow row": {
+      "object": {
+        "kind": "string",
+        "tool_name": "string",
+        "learned_nodes": { "list": { "object": { "label": "string", "kind": "string", "status": "string", "duration_ms": "number" } } }
+      }
+    }
+  },
+  "values": {
+    "run paths": ["agent", "workflow", "handed_back"],
+    "promotion decisions": ["promote", "hold", "replaying"],
+    "serving states": ["serving", "checking", "held", "stopped"],
+    "learned workflow row": { "kind": "tool_result", "tool_name": "learned_workflow" },
+    "reset busy code": "learning_busy"
+  },
+  "launch": {
+    "learning": { "compile_after": 5, "agree_min": 0.8, "alone_min": 0.7, "agree_on": ["answer"], "audit_every": 10, "audit_every_later": 20, "audit_later_after": 50, "hold_window": 10, "hold_disagree": 3, "stop_window": 100 }
+  }
+}
