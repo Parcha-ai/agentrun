@@ -240,6 +240,11 @@ export class ChatGPTPlan implements PlanReader {
   /** The ends of the sign-ins cancelled and not yet ended, and the start's settle with the change it tells (settleLeft):
    *  close waits for them. */
   readonly #ending = new Set<Promise<void>>();
+  /** Set by close(): no read queues a settle after it, so none outlives the server's stop. */
+  #closed = false;
+  /** When a read last queued a settle (refresh): a list OpenAI keeps failing is asked again at most once a minute,
+   *  however often the console reads. */
+  #readSettledAt = -Infinity;
   readonly #watchers = new Set<(tokens: string[]) => void>();
   readonly #deps: ChatGPTPlanDeps;
   constructor(deps: ChatGPTPlanDeps) {
@@ -350,7 +355,8 @@ export class ChatGPTPlan implements PlanReader {
   }
 
   /** What a stop left in the row (a sign-in it cut off after its save: keep) settled, out of the caller's way: the
-   *  server's, once, at its start, once its first offers are made. Models it lists are told to the server (its change
+   *  server's, at its start once its first offers are made, and at a read of a row a reader renewed while it was still
+   *  unlisted (refresh). Models it lists are told to the server (its change
    *  callback, as a sign-in's are), so the offers made from the fallback list are made again. A runner's reader
    *  (planReaderOf, at each claim) never calls it, so no runner lists the plan's models or sends a refresh token to
    *  OpenAI's revocation endpoint. */
@@ -595,6 +601,14 @@ export class ChatGPTPlan implements PlanReader {
       const was = this.state;
       if ((await this.load()).state !== was) await this.tellChanged();
       else if (this.#changeOwed) await this.tellChanged(true);
+      // A row still on the fallback list whose token a reader renewed lists now, not at the next start: a settle queued
+      // as the start's is (settleLeft), with the token as read and no renewal, one at a time, at most once a minute, none
+      // after close().
+      const row = this.#snapshot;
+      if (row?.unlisted && row.state === "signed_in" && this.fresh(row) && !this.#settling && !this.#closed && this.now() - this.#readSettledAt >= 60_000) {
+        this.#readSettledAt = this.now();
+        this.settleLeft();
+      }
     })().finally(() => (this.#refreshing = undefined)));
   }
 
@@ -800,6 +814,7 @@ export class ChatGPTPlan implements PlanReader {
   /** Stops the sign-in waiting, at the server's close. Resolves once every sign-in cancelled (by this, a newer start, a
    *  sign-out or its 10 minutes) has ended, whatever its end said in the log. */
   close(): Promise<void> {
+    this.#closed = true;
     this.cancel();
     // A settle out (the start's, a kept sign-in's) is waited for too: the server's stop bounds the wait (planClosed), and
     // what it cuts off stays in the row for the next start.

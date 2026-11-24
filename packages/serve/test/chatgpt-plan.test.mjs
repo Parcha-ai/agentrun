@@ -1032,7 +1032,9 @@ test("the server's read of an unlisted sign-in a reader renewed lists its models
   const old = await seatRow(store, sealKey);
   await seatUnsettled(store, sealKey, old, -1_000);
   let told = 0;
-  const plan = await startOf(new ChatGPTPlan({ store, sealKey, changed: () => void (told += 1) }));
+  // The plan's clock, moved past the minute between a read's settles so each check below fails for its own reason.
+  let skew = 0;
+  const plan = await startOf(new ChatGPTPlan({ store, sealKey, now: () => Date.now() + skew, changed: () => void (told += 1) }));
   await until(() => openai.revocationsOf(old.refresh) === 1, "the start's settle carried the old pair off");
   assert.equal(openai.modelLists, 0, "the start's token was ended: nothing listed");
   const renewed = await new ChatGPTPlan({ store, sealKey }).token();
@@ -1042,14 +1044,25 @@ test("the server's read of an unlisted sign-in a reader renewed lists its models
   await until(() => told >= 1, "and told to the server, so its offers are made again");
   assert.deepEqual(openai.modelBearers, [`Bearer ${renewed}`]);
   assert.equal(openai.refreshes, 1, "the reader's renewal alone: the read never renews");
+  const pause = () => new Promise((resolve) => setTimeout(resolve, 150));
+  skew += 61_000;
   await plan.refresh();
-  await new Promise((resolve) => setTimeout(resolve, 100));
+  await pause();
   assert.equal(openai.modelLists, 1, "a listed row queues no settle");
-  await plan.close();
-  await seatUnsettled(store, sealKey, (await openRow(store, sealKey)).credential, 60 * 60_000);
+  await seatUnsettled(store, sealKey, (await openRow(store, sealKey)).credential);
   await plan.refresh();
-  await new Promise((resolve) => setTimeout(resolve, 100));
-  assert.equal(openai.modelLists, 1, "after close(), a read queues no settle to outlive the stop");
+  await until(() => openai.modelLists === 2, "unlisted again and fresh, a read a minute on lists");
+  await until(async () => (await openRow(store, sealKey)).unlisted === undefined, "and writes them");
+  await pause();
+  await seatUnsettled(store, sealKey, (await openRow(store, sealKey)).credential);
+  await plan.refresh();
+  await pause();
+  assert.equal(openai.modelLists, 2, "within the minute, a read asks OpenAI no more, however often the console reads");
+  skew += 61_000;
+  await plan.close();
+  await plan.refresh();
+  await pause();
+  assert.equal(openai.modelLists, 2, "after close(), a read queues no settle to outlive the stop");
 });
 
 test("close() waits for a start's settle to tell the server: not while the change callback it owes is out, at once after", { timeout: 30_000 }, async (t) => {
