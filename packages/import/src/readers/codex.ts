@@ -4,21 +4,19 @@ import { addRequest, setUsage } from "../counts.js";
 import { type LineSource, lineReader, type ReadContext } from "../lines.js";
 import { entries, rememberUser } from "../reader.js";
 import { argsOf, effortOf, isObject, str, textOf } from "../text.js";
-import type { Answer, Turn } from "../types.js";
+import type { Turn, Usage } from "../types.js";
 import { normalizeUsage } from "../usage.js";
 
 /** Whether the file has user_message events, and its user messages, each with its place among the turns, held to the
- *  file's end. `open`: the request the model's output items join, until a result of one of its calls; `unpaid`, the
- *  latest request whose usage has not come (written after its calls' results at times); `records`, whether the file has
- *  token_usage_records, with the responses they counted, and `total`, the last token_count's total; `items`, whether
- *  each completed item failed, and `results`, each tool result by call id, with whether its output said; `provider`, the
- *  model provider its session_meta names. */
+ *  file's end. `openAt`: the request the model's output items join, until a result of one of its calls (`openCalls`);
+ *  `unpaidAt`, the latest request whose usage has not come (written after its calls' results at times), each by its index
+ *  in the read's answers, or a totals read's counts; `records`, whether the file has token_usage_records, with the
+ *  responses they counted, and `total`, the last token_count's total; `items`, whether each completed item failed, and
+ *  `results`, each tool result by call id, with whether its output said; `provider`, the model provider its session_meta
+ *  names. */
 type Own = {
   events: boolean;
   held: { index: number; turn: Turn }[];
-  open?: Answer;
-  unpaid?: Answer;
-  /** A totals read's open and unpaid requests instead, by their index in its counts, and the open one's call ids. */
   openAt?: number;
   unpaidAt?: number;
   openCalls?: string[];
@@ -73,34 +71,27 @@ function record(value: Record<string, unknown>, at: number, { state, keep, add }
   const { session, names, turns, own: codex, counts } = state;
   const payload = isObject(value.payload) ? value.payload : {};
   // One request's output items are one turn; its usage, when it comes, is that turn's. A usage with no request (a
-  // compaction's, one whose output is no item read here) is a turn of its own.
-  const answer = (): Answer => {
-    const turn: Answer = { role: "assistant", text: "", calls: [], at, ...(session.model ? { model: session.model } : {}), ...(state.effort ? { effort: state.effort } : {}) };
-    add(turn);
-    return turn;
+  // compaction's, one whose output is no item read here) is a turn of its own. Each is held by its index: in the read's
+  // answers, or a totals read's counts, each request its model, usage and time alone.
+  const answer = (): number => {
+    if (counts) return addRequest(counts, session.model, undefined, at);
+    add({ role: "assistant", text: "", calls: [], at, ...(session.model ? { model: session.model } : {}), ...(state.effort ? { effort: state.effort } : {}) });
+    return state.answers.length - 1;
   };
-  const request = (): Answer => codex.open ?? (codex.open = codex.unpaid = answer());
-  // Each request's own counts (a token_count's last_token_usage), never the thread's running total.
-  const answered = (usage: unknown, response?: string) => {
-    const tokens = normalizeUsage("openai", usage);
-    const turn = codex.unpaid ?? answer();
-    if (tokens) turn.usage = tokens;
-    if (response) turn.key = response;
-    codex.open = codex.unpaid = undefined;
-  };
-  // A totals read's: the same, each request its model, usage and time alone.
-  const answerAt = (): number => addRequest(counts!, session.model, undefined, at);
-  const requestAt = (): number => {
+  const request = (): number => {
     if (codex.openAt === undefined) {
-      codex.openAt = codex.unpaidAt = answerAt();
+      codex.openAt = codex.unpaidAt = answer();
       codex.openCalls = [];
     }
     return codex.openAt;
   };
-  const answeredAt = (usage: unknown) => {
+  const usageOn = (i: number, tokens: Usage) => (counts ? setUsage(counts, i, tokens) : (state.answers[i]!.usage = tokens));
+  // Each request's own counts (a token_count's last_token_usage), never the thread's running total.
+  const answered = (usage: unknown, response?: string) => {
     const tokens = normalizeUsage("openai", usage);
-    const index = codex.unpaidAt ?? answerAt();
-    if (tokens) setUsage(counts!, index, tokens);
+    const i = codex.unpaidAt ?? answer();
+    if (tokens) usageOn(i, tokens);
+    if (response && !counts) state.answers[i]!.key = response;
     codex.openAt = codex.unpaidAt = undefined;
   };
   if (value.type === "session_meta") {
@@ -119,7 +110,6 @@ function record(value: Record<string, unknown>, at: number, { state, keep, add }
     if (!session.cwd && str(payload.cwd)) session.cwd = payload.cwd as string;
     state.effort = effortOf(payload.effort);
     // A new turn: a request left open (aborted) has no usage to come.
-    codex.open = codex.unpaid = undefined;
     codex.openAt = codex.unpaidAt = undefined;
     return;
   }
@@ -131,7 +121,7 @@ function record(value: Record<string, unknown>, at: number, { state, keep, add }
     const id = str(payload.response_id);
     if (id && codex.responses.has(id)) return;
     if (id) codex.responses.add(id);
-    return counts ? answeredAt(payload.usage) : answered(payload.usage, id);
+    return answered(payload.usage, id);
   }
   if (value.type === "event_msg") {
     if (payload.type === "user_message") {
@@ -143,8 +133,7 @@ function record(value: Record<string, unknown>, at: number, { state, keep, add }
       const total = isObject(info.total_token_usage) ? JSON.stringify(info.total_token_usage) : undefined;
       if (total !== undefined && total === codex.total) return;
       codex.total = total;
-      if (counts) answeredAt(info.last_token_usage);
-      else answered(info.last_token_usage);
+      answered(info.last_token_usage);
     } else if (payload.type === "item_completed" && isObject(payload.item) && str(payload.item.id)) {
       // Whether a call failed is its result's turn's: none is kept without turns.
       if (!keep) return;
@@ -166,22 +155,23 @@ function record(value: Record<string, unknown>, at: number, { state, keep, add }
     if (text) codex.held.push({ index: turns.length, turn: { role: "user", text, at } });
   } else if (payload.type === "message" && payload.role === "assistant") {
     const text = textOf(payload.content);
-    if (text && counts) requestAt();
-    else if (text) {
-      const turn = request();
-      if (keep) turn.text = [turn.text, text].filter(Boolean).join("\n");
+    if (!text) return;
+    const i = request();
+    if (keep) {
+      const turn = state.answers[i]!;
+      turn.text = [turn.text, text].filter(Boolean).join("\n");
     }
-  } else if (typeof payload.type === "string" && CODEX_OUTPUTS.has(payload.type) && counts) {
-    requestAt();
-    if (payload.type === "function_call" || payload.type === "custom_tool_call") codex.openCalls!.push(String(payload.call_id ?? payload.id ?? ""));
   } else if (typeof payload.type === "string" && CODEX_OUTPUTS.has(payload.type)) {
-    const turn = request();
+    const i = request();
     if (payload.type !== "function_call" && payload.type !== "custom_tool_call") return;
     const id = String(payload.call_id ?? payload.id ?? "");
+    codex.openCalls!.push(id);
+    // A totals read keeps no call: the request's counts are all it holds.
+    if (counts) return;
     const name = String(payload.name ?? "");
     // A tool's name is for its result's turn: none is kept without turns.
     if (keep) names.set(id, name);
-    turn.calls.push({
+    state.answers[i]!.calls.push({
       type: "toolCall",
       id,
       name,
@@ -190,7 +180,6 @@ function record(value: Record<string, unknown>, at: number, { state, keep, add }
   } else if (payload.type === "function_call_output" || payload.type === "custom_tool_call_output") {
     const id = String(payload.call_id ?? "");
     // The model saw a result: what it writes next is another request.
-    if (codex.open?.calls.some((call) => call.id === id)) codex.open = undefined;
     if (codex.openAt !== undefined && codex.openCalls!.includes(id)) codex.openAt = undefined;
     // A result is a turn alone (no count): none is kept without turns.
     if (!keep) return;

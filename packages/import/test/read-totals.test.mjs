@@ -180,6 +180,36 @@ test("Codex: a totals read's requests are a turns: false read's, by token counts
   await same(READERS.codex, [counted, recorded]);
 });
 
+test("Codex: a late result of an earlier request's call leaves the open request open, in every kind of read and from a cursor", async (t) => {
+  const home = await tempHome(t);
+  const records = [
+    codexMeta("thread-late"),
+    codexContext(1),
+    codexUser("Go.", 2),
+    { type: "response_item", timestamp: at(3), payload: { type: "function_call", name: "shell", arguments: "{}", call_id: "call_a" } },
+    codexTokens(openaiUsage(100, 0, 10), openaiUsage(100, 0, 10), 4),
+    { type: "response_item", timestamp: at(5), payload: { type: "reasoning", summary: [] } },
+    // The first request's call's result, after its usage: the second request, open, is no request of that call's.
+    { type: "response_item", timestamp: at(6), payload: { type: "function_call_output", call_id: "call_a", output: "ok" } },
+    codexAnswer("Done.", 7),
+    codexTokens(openaiUsage(200, 0, 20), openaiUsage(300, 0, 30), 8),
+  ];
+  const file = await writeJsonl(codexFile(home, "rollout-2026-01-01T00-00-00-late.jsonl"), records);
+  const reader = READERS.codex;
+  const outputs = (read) => (read.counts ? fromCounts(read) : fromRequests(read)).map(({ usage }) => usage?.output);
+  for (const options of [{}, { turns: false }, { turns: false, totals: true }]) assert.deepEqual(outputs((await reader.read({ file }, undefined, options)).sessions[0]), [10, 20], JSON.stringify(options));
+  // Two passes, the first ending after each line in turn: the second goes on from its cursor.
+  const text = jsonl(records);
+  for (let cut = text.indexOf("\n") + 1; cut < text.length; cut = text.indexOf("\n", cut) + 1) {
+    await writeFile(file, text.slice(0, cut));
+    const first = await reader.read({ file }, undefined, { turns: false, totals: true });
+    await appendFile(file, text.slice(cut));
+    const next = await reader.read({ file }, first.cursor, { turns: false, totals: true });
+    assert.equal(next.resumed, true);
+    assert.deepEqual(outputs(next.sessions[0]), [10, 20], `from byte ${cut}`);
+  }
+});
+
 test("a totals read goes on from its cursor as it read, and no read of another kind goes on from it", async (t) => {
   const home = await tempHome(t);
   const rnd = random(3);
