@@ -1023,6 +1023,8 @@ The files the run wrote.
 
 Route: `GET /runs/{run_id}/files`.
 
+- `--cut run` (string, one of these): `run`: each file also has its `name`, its path under the run's own cut (each value the cut holds and each secret shape replaced by `[redacted]` in place, as a cut read cuts a file's text), whatever its type. A run whose cut can't be read is `403 forbidden`, as without `cut`. A server that doesn't know `cut` lists no `name`.
+
 ### `agentrun runs get RUN_ID`
 
 One run.

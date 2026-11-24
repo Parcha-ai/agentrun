@@ -214,6 +214,8 @@ export class ChatGPTPlan implements PlanReader {
   #problem: string | undefined;
   /** Set when the server's change callback failed after a sign-in was saved; cleared once it takes (changeAgain). */
   #changeOwed = false;
+  /** The owed change in flight (changeAgain), which a read while it is out waits for. */
+  #changing: Promise<void> | undefined;
   readonly #watchers = new Set<(tokens: string[]) => void>();
   readonly #deps: ChatGPTPlanDeps;
   constructor(deps: ChatGPTPlanDeps) {
@@ -460,15 +462,20 @@ export class ChatGPTPlan implements PlanReader {
   }
 
   /** Takes again a sign-in's change the server failed to take (changed_failed), at the server's read of the sign-in, so
-   *  what it offers does not wait for a restart. Nothing when none is owed; a failure again stays owed, said once. */
-  async changeAgain(): Promise<void> {
-    if (!this.#changeOwed) return;
-    try {
-      await this.#deps.changed?.();
-      this.#changeOwed = false;
-    } catch {
-      // Owed still: the next read takes it again.
-    }
+   *  what it offers does not wait for a restart. Nothing when none is owed; a failure again stays owed, said once. One at
+   *  a time: a read while one is out waits for that one (the console polls, and each change relists and probes). */
+  changeAgain(): Promise<void> {
+    if (!this.#changeOwed) return Promise.resolve();
+    // Cleared in a reaction, never inside the try: a callback that throws at once would run a `finally` there before the
+    // assignment, and leave a settled promise in flight for good.
+    return (this.#changing ??= (async () => {
+      try {
+        await this.#deps.changed?.();
+        this.#changeOwed = false;
+      } catch {
+        // Owed still: the next read takes it again.
+      }
+    })().finally(() => (this.#changing = undefined)));
   }
 
   /** The plan's models from OpenAI's list (GET /v1/models with the token), those of the current families; the fallback
