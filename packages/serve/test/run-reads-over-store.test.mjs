@@ -92,6 +92,19 @@ test("listRunFiles with cut run names each file under the run's cut, read again 
   await assert.rejects(() => listRunFiles(store, "run-1", deps({ runWorkspace: async () => localWorkspace(work) }), "whole"), (e) => e.code === "bad_request");
 });
 
+test("listRunFiles with cut run names no file once the run's cut is its census's: a census counts where a value sits in a file's text, never in its name", async () => {
+  const store = await freshStore();
+  await store.runs.create({ id: "run-1", agentId: "a1", revisionId: "r1" });
+  const work = tempDir("agentrun-ws-census-");
+  // The run named a file by the key its caller handed it; its end erased the key, so the cut no longer holds it.
+  writeFileSync(join(work, "handed-key.json"), "{}");
+  writeFileSync(join(work, "plain.txt"), "plain");
+  const cutValues = async () => ({ values: ["server-key"], censusDigest: "d".repeat(64) });
+  const answer = await listRunFiles(store, "run-1", deps({ runWorkspace: async () => localWorkspace(work), cutValues }), "run");
+  assert.deepEqual(answer.files.map((f) => [f.path, "name" in f]), [["handed-key.json", false], ["plain.txt", false]]);
+  assert.equal(answer.truncated, false);
+});
+
 // ---- readRunFile ----------------------------------------------------------------------------------------------------
 
 test("readRunFile is 404 for a run with no folder", async () => {

@@ -62,6 +62,7 @@ const deps = (over = {}) => {
     momentOf: async () => moment(),
     // The server's delete turn: here the write alone.
     runWrite: (_agentId, _runId, work) => work(),
+    cutHeld: async (_runId, text) => text,
     runStatus: async () => "working",
     ...rest,
   };

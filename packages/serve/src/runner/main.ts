@@ -57,6 +57,7 @@ import { routeOf } from "./model-route.js";
 import { RUN_PROCESS_MIB, runnerMemory } from "./memory-claim.js";
 import { childLoops, isolationLoops, type RunIsolation, RunIsolationRefused, runIsolationOf } from "./run-child-host.js";
 import { sweepEndedScratch } from "./scratch-sweep.js";
+import { runCensus } from "../run-census.js";
 import { RUNNER_LOOPS, RUNNER_RENEW_EVERY_MS, runnerName, startRunner, type Runner, type RunnerEvent, type RunnerMemory } from "./runner.js";
 import { keepPresence, type Presence } from "./presence.js";
 import { diskFreeGate } from "./disk-free.js";
@@ -332,6 +333,8 @@ export async function startRunnerProcess(options: RunnerProcessOptions): Promise
       createLoop,
       name,
       presence,
+      // Each end counts where in the run's files what its caller handed it sits, as the server reads them.
+      census: runCensus(store, { data: options.dataDir, sealKey: seal.key, env }),
       ...(options.loops ? { loops: options.loops } : {}),
       ...(options.drainMs ? { drainMs: options.drainMs } : {}),
       memory,

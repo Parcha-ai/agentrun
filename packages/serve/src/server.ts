@@ -110,7 +110,7 @@ import { type ServedTimelineDeps, servedTimelineRows } from "./run-timeline-serv
 import { servedRunTrace } from "./run-trace.js";
 import { servedRunUsage } from "./run-usage.js";
 import { servedRunDiff, servedRunLearning } from "./run-learning-served.js";
-import { agentPointers, WITHHELD_LEARNING } from "./handed-values.js";
+import { agentPointers, cutHanded, handedSecretValues, launchValuesOf, RETIRED_MAX, retiredValues, WITHHELD_LEARNING } from "./handed-values.js";
 import { runCutValues } from "./run-cut.js";
 import { type HeldRefusal, readLaunchBody } from "./run-launch.js";
 import { modelKeyMisfit, modelKeyOf, modelKeyRequired, noServerKeyFor, runModelOrigin, serverKeyMissing } from "./run-model-key.js";
@@ -2222,7 +2222,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   };
   // What a run held for its owner's OK reads as it stands on its agent's learning folder's main (statusesOf).
   const statuses = (agentId: string) => statusesOf(data, agentId);
-  const viewDepsFor = (origin: string): ViewDeps => ({ origin, serverSecrets, signIns, keyEnv: () => withSavedGateway(own(withSecrets(process.env, "all", storedKeys)), savedGateway), statuses });
+  const viewDepsFor = (origin: string): ViewDeps => ({ origin, serverSecrets, signIns, sealKey, keyEnv: () => withSavedGateway(own(withSecrets(process.env, "all", storedKeys)), savedGateway), statuses });
   // A run read as a whole (its own read, its archive) lists its recordings too, from its recordings folder on this machine
   // (run-recordings.ts), where the runner beside it wrote them; every other read of the view opens no file.
   const recordings = (agentId: string, runId: string, endedAt: number | null) => recordingsOf(recordingsFolder(data, agentId, runId), endedAt);
@@ -2247,14 +2247,15 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     env,
     runFacts: (_store, runId) => factsOverStore(store, runId, viewDepsFor(ownOriginOf())),
     withheld: (_store, runId) => withheldOverStore(store, runId, viewDepsFor(ownOriginOf())),
-    cutValues: (_store, runId) => runCutValues({ serverSecrets, signIns }, store, runId),
+    cutValues: (_store, runId) => runCutValues({ serverSecrets, signIns, sealKey }, store, runId),
     context: ctx,
+    sealKey,
     liveViewer: (runId: string) => liveViewerLink(store, sealKey, runId, answers(runId)),
   };
   // The run timeline reader over the store (run-reads-over-store runTimelines): one change-numbered RowLog per run, synced
   // from its journal (store-reads) on each read, its view (viewOverStore) for status/state/cost and whether it is final.
   // The route frames the SSE around its `page`, which long-polls the journal, byte-identical to the old live run's page.
-  const servedTimelineDeps: ServedTimelineDeps = { serverSecrets, signIns, keyEnv: () => withSavedGateway(own(withSecrets(process.env, "all", storedKeys)), savedGateway), statuses };
+  const servedTimelineDeps: ServedTimelineDeps = { serverSecrets, signIns, sealKey, keyEnv: () => withSavedGateway(own(withSecrets(process.env, "all", storedKeys)), savedGateway), statuses };
   const timelines = runTimelines({
     context: ctx,
     // The run's rows as served (run-timeline-served.ts), by its one cut (run-cut.ts, read for each page: a secret rotated
@@ -2267,6 +2268,16 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // A live run's model requests sent and not answered (in-flight.ts), from its booking's records in its journal.
     inFlight: async (forStore, runId, context) => modelsInFlight(await runEntries(forStore, runId, context)),
   });
+  /** `text` as a message to run `runId` is written: cut of `handed` (what the message itself hands) and of what the run
+   *  holds now (its turn's end erases those, and a read after it could no longer cut them); a run whose seal doesn't
+   *  open is withheld till then anyway. Read inside the turn that writes the message (runWrite), never before it: a
+   *  message written first in that turn (one that hands a new key) is in the seal read here, so a message that says
+   *  that key without handing it is cut of it too. Both writers of a message read it: a person's (sendMessage) and a
+   *  trigger's (trigger-targets.ts message_run). */
+  async function cutHeld(runId: string, text: string, handed: readonly string[] = []): Promise<string> {
+    const held = launchValuesOf(sealKey, runId, (await store.runs.launch(runId)).sealed);
+    return cutHanded(text, [...handed, ...(held === "unreadable" ? [] : held)]);
+  }
   const triggerDeps: TriggerTargetDeps = {
     ...(options.beforeSubmit ? { beforeSubmit: options.beforeSubmit } : {}),
     start: startDeps,
@@ -2279,6 +2290,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     planRecipe: (harness: string) => recipeHarness(base, harness) === "plan" && !harnessKeysSavedHere(data, harness),
     // Read when a firing's message is sent (declared below, with the delete turn).
     runWrite: (agentId, runId, work) => runWrite(agentId, runId, work),
+    cutHeld: (runId, text) => cutHeld(runId, text),
     runStatus: async (runId: string) => ((await viewOverStore(store, runId, viewDepsFor(ownOriginOf())))?.status as string | undefined) ?? null,
     completedOutput: async (runId: string) => {
       const view = await viewOverStore(store, runId, viewDepsFor(ownOriginOf()));
@@ -4014,7 +4026,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  which then writes nothing, so a turn never starts with no key to spend. Its `keys` replace the run's whole, each one
    *  its revision reads (else 422 by name); under the run-keys setting, a message that would leave the run without a tool
    *  key its template declared and this host does not hold (its last turn's end erased them) is refused, 409, nothing
-   *  written. */
+   *  written. A value the run held that the message replaces is kept sealed as `retired`, only to be cut, until the turn's
+   *  end erases the seal; where what the run holds does not open here, or past RETIRED_MAX values replaced, the seal says
+   *  so (`lost`), and the run is withheld until its end, which counts nothing (handed-values.ts launchValuesOf). */
   async function messageSeal(run: { id: string; kind: string }, handed: Handed): Promise<LaunchSealed | undefined> {
     const launch = readLaunchBody((await store.runs.launch(run.id)).body);
     // A held run its model kept from running takes no message (runs-over-store.ts message refuses it in its create's
@@ -4036,14 +4050,18 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (handed.mcp === undefined && handed.model === undefined && handed.keys === undefined && !needsKey && !owed.length) return undefined;
     const origin = runModelOrigin(env);
     return (current) => {
-      const held = current === null ? {} : (openRunLaunch(sealKey, run.id, current) ?? {});
+      const opened = openRunLaunch(sealKey, run.id, current);
+      const held = opened ?? {};
       const mcp = handed.mcp ?? held.mcp;
       const model = handed.model !== undefined && origin ? { key: handed.model, origin } : held.model;
       const keys = handed.keys ?? held.keys;
       if (!model && needsKey) throw modelKeyRequired(true);
       const unpaid = owed.length && revision ? keysOwed(revision, env, Object.keys(keys ?? {})) : [];
       if (unpaid.length) throw keysOwedRefusal(unpaid);
-      return sealRunLaunch(sealKey, run.id, { ...(mcp ? { mcp } : {}), ...(model ? { model } : {}), ...(keys ? { keys } : {}) });
+      const next = { ...(mcp ? { mcp } : {}), ...(model ? { model } : {}), ...(keys ? { keys } : {}) };
+      const retired = retiredValues(held, next);
+      const lost = opened === undefined || held.lost === true || retired.length > RETIRED_MAX;
+      return sealRunLaunch(sealKey, run.id, { ...next, ...(lost ? { lost: true as const } : { retired }) });
     };
   }
 
@@ -4064,7 +4082,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       const run = await triggers.handedStart(given, agentId, async (firing) => {
         const secrets = await handed();
         const seal = startSeal(secrets);
-        return targets.start(firing.target, rest.input, firing.trigger, firing.from, firing.title, firing.previous, { body: rest, ...(seal ? { sealed: seal } : {}), ...carriedOf(secrets) });
+        // What the server writes of the start (its input, which the run's title is read from) is cut of what it hands.
+        const cut = cutHanded(rest, handedSecretValues(secrets));
+        return targets.start(firing.target, cut.input, firing.trigger, firing.from, firing.title, firing.previous, { body: cut, ...(seal ? { sealed: seal } : {}), ...carriedOf(secrets) });
       });
       return { status: 202, body: await viewOverStore(store, run.run_id, viewDepsFor(linkOrigin(req))), headers: { location: `/v2/runs/${run.run_id}`, ...(run.replayed ? { "idempotent-replayed": "true" } : {}) } };
     }
@@ -4078,7 +4098,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       }
       const secrets = await handed();
       const seal = startSeal(secrets);
-      const run = await startRunOf(entry, body, { ...(origin ? { origin } : {}), ...(seal ? { sealed: seal } : {}), ...carriedOf(secrets) });
+      // What the server writes of the start (its input, which the run's title is read from) is cut of what it hands; the
+      // idempotency fingerprint stays the body's as sent.
+      const run = await startRunOf(entry, cutHanded(body, handedSecretValues(secrets)), { ...(origin ? { origin } : {}), ...(seal ? { sealed: seal } : {}), ...carriedOf(secrets) });
       // Its view from the store: the run and its launch were inserted in one transaction, so the view reads it whole.
       return { status: 202, body: await viewOverStore(store, run.id, viewDepsFor(linkOrigin(req))), headers: { location: `/v2/runs/${run.id}` } };
     });
@@ -4133,7 +4155,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       }
       const secrets = await handed();
       const seal = startSeal(secrets);
-      const started = await startInline(store, startDeps, inline, run, { ...(origin ? { origin } : {}), ...(seal ? { sealed: seal } : {}), ...carriedOf(secrets) });
+      // What the server writes of the start (its input, which the run's title is read from) is cut of what it hands.
+      const started = await startInline(store, startDeps, inline, cutHanded(run, handedSecretValues(secrets)), { ...(origin ? { origin } : {}), ...(seal ? { sealed: seal } : {}), ...carriedOf(secrets) });
       return { status: 202, body: await viewOverStore(store, started.id, viewDepsFor(linkOrigin(req))), headers: { location: `/v2/runs/${started.id}` } };
     });
   }
@@ -4935,7 +4958,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       const sdk=new SdkRuns(store,data,sdkSecret,()=>[...serverSecrets(),new CliLearningConnections(store,sdkSecret).token(connection)],[],"cli");
       if(found.name==="cliLearningEvents")return send(res,200,await sdk.events(runId,await bodyOf(req)));
       if(found.name==="completeCliLearningRun"){const result=await sdk.complete(runId,await bodyOf(req));await new CliLearningConnections(store,sdkSecret).recordWindow(connection.connection_id,connection.generation,runId,launch.cli_learning.session_id);return send(res,200,result);}
-      return send(res,200,{...await sdk.status(runId),learning:await servedRunLearning({serverSecrets,signIns,statuses},store,runId)});
+      return send(res,200,{...await sdk.status(runId),learning:await servedRunLearning({serverSecrets,signIns,sealKey,statuses},store,runId)});
     }
     if (["getSdkRun","sdkRunEvents","completeSdkRun"].includes(found.name)) {
       const runId=decodeURIComponent(found.pattern.exec(path)![1]!);
@@ -4943,7 +4966,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       await sdk.authenticate(runId,String(req.headers.authorization??"").replace(/^Bearer /,""));
       if(found.name==="sdkRunEvents")return send(res,200,await sdk.events(runId,await bodyOf(req)));
       if(found.name==="completeSdkRun")return send(res,200,await sdk.complete(runId,await bodyOf(req)));
-      return send(res,200,{...await sdk.status(runId),learning:await servedRunLearning({serverSecrets,signIns,statuses},store,runId)});
+      return send(res,200,{...await sdk.status(runId),learning:await servedRunLearning({serverSecrets,signIns,sealKey,statuses},store,runId)});
     }
     if (!bearer(req.headers.authorization, req)) {
       authFailed(`/v2${path}`, req.headers.authorization === undefined ? "no_credential" : "wrong_token");
@@ -5300,15 +5323,20 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         if (run.kind === "workflow") throw unsupported("messages.steer_workflow_runs", "A workflow run takes no messages here: its workflow runs to its end, or a cancel ends it.");
         const { body, handed } = handedLaunchSecrets(await bodyOf(req));
         const answer = await idempotent(req, `/runs/${id}/messages`, body, async () => {
-          const seal = await messageSeal(run, await handed());
+          const secrets = await handed();
+          const seal = await messageSeal(run, secrets);
           const extra = unknownFields(body, ["content"]);
           if (extra.length) throw invalid(extra);
-          const content = body.content;
-          if (typeof content !== "string" || !/\S/.test(content)) throw invalid([{ field: "content", reason: content === undefined ? "missing" : "wrong_type", message: "content is a non-empty string" }]);
-          if (content.length > MAX_MESSAGE) throw invalid([{ field: "content", reason: "too_long", message: `content is at most ${MAX_MESSAGE} characters` }]);
+          const given = body.content;
+          if (typeof given !== "string" || !/\S/.test(given)) throw invalid([{ field: "content", reason: given === undefined ? "missing" : "wrong_type", message: "content is a non-empty string" }]);
+          if (given.length > MAX_MESSAGE) throw invalid([{ field: "content", reason: "too_long", message: `content is at most ${MAX_MESSAGE} characters` }]);
           // Its mcp_auth and model_key replace the run's in the steer's own write, so the turn it starts uses them.
           // In its agent's delete turn (runWrite): a message that may open the run again never lands under its purge.
-          const { mode, messageId } = await runWrite(run.agentId, run.id, () => message(store, run, content, { ...(seal ? { launchSealed: seal } : {}), ...(options.beforeSubmit ? { beforeSubmit: options.beforeSubmit } : {}) }));
+          // Its text is cut of what it hands and of what the run holds, read in that turn (cutHeld).
+          const { mode, messageId } = await runWrite(run.agentId, run.id, async () => {
+            const content = await cutHeld(run.id, given, handedSecretValues(secrets));
+            return message(store, run, content, { ...(seal ? { launchSealed: seal } : {}), ...(options.beforeSubmit ? { beforeSubmit: options.beforeSubmit } : {}) });
+          });
           // The run's state after the command row is written (the run view): the runner applies the steer; the client polls.
           const { status, state } = await runStatusState(run.id);
           return { status: 202, body: { run_id: run.id, message_id: messageId, mode, status, state, poll_after_ms: 1000 } };
@@ -5619,7 +5647,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // The run's lines from its booking (run-usage.ts), the figures its cost.usd joins: none, with why, while it is at work
         // or where its figure is not its booking's.
         // Names through the run's cut, and a withheld run refused (403), as its trace is.
-        return send(res, 200, await servedRunUsage({ serverSecrets, signIns }, store, id));
+        return send(res, 200, await servedRunUsage({ serverSecrets, signIns, sealKey }, store, id));
       case "getRunTrace":
         await needRun(id);
         // The run's spans over its served Timeline rows and its journal (run-trace.ts): cut by the run's one cut, as its
@@ -6080,7 +6108,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const values = await learningValues(id);
         const read = await agentLoopOverStore(store, id);
         const compiles = await Promise.all(read.compiles.map(async (one) => {
-          const cut = await runCutValues({ serverSecrets, signIns }, store, one.run_id).catch(() => "unreadable" as const);
+          const cut = await runCutValues({ serverSecrets, signIns, sealKey }, store, one.run_id).catch(() => "unreadable" as const);
           const workflow = one.workflow === null ? null : shown.name(one.workflow);
           if (cut === "unreadable") return { ...one, workflow, attempts: one.attempts.map(({ ok }) => ({ ok, errors: [] })), draft_errors: [], withheld: true };
           const all = [...values, ...cut.values];
@@ -6165,14 +6193,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // The run's learning view over the store (learning-1's runLearningOverStore): its end, the notes it was given and its seed
         // from its launch, what it holds for the owner's OK as the store's run view reads it (on its folder's main), as main.
         // Cut by the run's one cut, and refused for a withheld run (run-learning-served.ts).
-        return send(res, 200, await servedRunLearning({ serverSecrets, signIns, statuses }, store, run.id));
+        return send(res, 200, await servedRunLearning({ serverSecrets, signIns, sealKey, statuses }, store, run.id));
       }
       case "getRunLearningDiff": {
         const run = await needRun(id);
         // The run's learning diff over the store (learning-routes.ts runDiffOverStore): its merge from its agent's learning
         // folder, else its kept proposal's notes against its seed, else no file against the seed its launch names. Cut by the
         // run's one cut, and refused for a withheld run, as its learning is (run-learning-served.ts).
-        return send(res, 200, await servedRunDiff({ serverSecrets, signIns }, store, data, run.id));
+        return send(res, 200, await servedRunDiff({ serverSecrets, signIns, sealKey }, store, data, run.id));
       }
       case "listApiKeys":
         return send(res, 200, apiKeys.list(await apiKeysRefused()));
