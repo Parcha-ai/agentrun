@@ -14,7 +14,7 @@ import { JOURNAL_FIRST_ID, RunStorage } from "../journal/storage.js";
 import { RUNNER_RECORDS } from "@parcha/agentrun-kernel";
 import { COMMANDS_ONE_ANSWER, COMPUTER_INTERVALS, COMPUTER_INTERVALS_ADDED, COMPUTER_INTERVALS_RUN, DDL, diskUpgrade, HAND_BACKS, HAND_BACKS_AT, HAND_BACKS_KEPT_MS, HAND_BACKS_RUN, IMPORTED_TEMPLATES, listingUpgrade, MINTED_TOKENS, purgeUpgrade, relayUpgrade, NATIVE_COMMANDS_INDEX, PI_TABLE, PI_TABLES, REVISIONS_MCP_PIN, REVISIONS_MONID_PIN, RUN_ATTEMPTS, RUNNERS, RUNNERS_ADDED, RUNS_COST_UPPER_BOUND, RUNS_LABELS, SCHEMA_VERSION, SETTLED_LIST_STATUS, TRIGGERS_TEMPLATE_ID } from "../schema.js";
 import {
-  ActiveRuns, AgentArchived, AgentDeleting, AgentPurged, CommandTaken, ExternalBodyConflict, Fenced, RunFinal, RunPurged, RunsMadeFromLeft, SchemaVersionUnknown, STORE_WRITE_DEADLINE_MS, StoreAwaitsServer, StoreBusy, StoreConstraint, StoreFromEarlierVersion, TriggerFull, TriggersLeft, UPLOAD_PREFIX, type AgentRow, type Agents,
+  ActiveRuns, AgentArchived, AgentDeleting, AgentPurged, CommandTaken, ExternalBodyConflict, Fenced, FiringMoved, RunFinal, RunPurged, RunsMadeFromLeft, SchemaVersionUnknown, STORE_WRITE_DEADLINE_MS, StoreAwaitsServer, StoreBusy, StoreConstraint, StoreFromEarlierVersion, TriggerFull, TriggersLeft, UPLOAD_PREFIX, type AgentRow, type Agents,
   type Claim, type Command, type FiringRow, type FiringStatus, type ImportRunInput, type Journal, type NewRevision, type RevisionRow, type RunRow, type Runs,
   type JournalReads, type KeptListing, type LaunchSealedWrite, type RunLabels, type UpdatedRun,
   type ReleasedState, type RunState, type SecureRewriteOptions, type Store, type StoreRole, type TemplatePackage, type Templates, type TriggerDef, type TriggerPatch, type TriggerRow, type Triggers, type TriggerScope,
@@ -1148,6 +1148,7 @@ class SqliteStore implements Store {
           // holdsAt: holdsRoom's own predicate, at that time.
           if (change.holdsAt !== undefined && !(was.status === "sent" && was.run_id === null && was.retry_at !== null && was.retry_at >= change.holdsAt)) return undefined;
           if (change.startByWas !== undefined && !(was.status === "sent" && was.run_id === null && was.retry_at === change.startByWas)) return undefined;
+          if (change.noRun && was.run_id !== null) return undefined;
           const settled = change.status !== undefined && change.status !== "due";
           // Out of due, a firing keeps no retry, wait, payload or attrs (unless keepAttrs), nor the reason its last try gave
           // (unless it gives one). One exception: a sent firing keeps its startBy in retry_at (firingOf reads it back as
@@ -1323,8 +1324,24 @@ class SqliteStore implements Store {
         })),
     };
 
+    /** Firing `firing` started with run `runId`, in the run's own transaction, under its trigger's row lock (as settle
+     *  takes it): only while it has no run and is due, or sent with a start_by (its host took it); else FiringMoved,
+     *  which rolls the run back. Its trigger's last run and failure streak move as a started firing's do (settle). */
+    const startFiring = async (tx: Tx, { triggerId, key }: { triggerId: string; key: string }, runId: string, at: number): Promise<void> => {
+      await d.lockRow(tx, "triggers", "id", triggerId);
+      const moved = await tx.runCounted(
+        "UPDATE trigger_firings SET status = 'started', run_id = ?, retry_at = NULL, waits_on = NULL, payload = NULL, attrs = NULL, reason = NULL, attempts = 0 WHERE trigger_id = ? AND key = ? AND run_id IS NULL AND (status = 'due' OR (status = 'sent' AND retry_at IS NOT NULL))",
+        runId, triggerId, key,
+      );
+      if (moved === 0) throw new FiringMoved(triggerId, key);
+      const trigger = await tx.get<{ last_run_id: string | null }>("SELECT last_run_id FROM triggers WHERE id = ?", triggerId);
+      // Run ids are UUIDv7s, sorted by when the run started: an older run never takes a later one's place (settle).
+      const last = trigger?.last_run_id && trigger.last_run_id > runId ? trigger.last_run_id : runId;
+      await tx.run("UPDATE triggers SET last_run_id = ?, failures_in_a_row = 0, updated_at = ? WHERE id = ?", last, at, triggerId);
+    };
+
     this.runs = {
-      create: async ({ id, agentId, revisionId, origin, labels, expectedCurrent, settingsGuards, startedAt }, launch) => {
+      create: async ({ id, agentId, revisionId, origin, labels, expectedCurrent, settingsGuards, startedAt, firing }, launch) => {
         // sign_in_handed is not written here: the runner writes it at its claim (runs.update under the epoch fence).
         const insert = `INSERT INTO runs (id, agent_id, revision_id, state, epoch, labels, disk, started_at) VALUES (?, ?, ?, 'queued', 0, ?, ?, ?) RETURNING ${RUN_COLUMNS}`;
         const labelled = labelsColumn(labels);
@@ -1347,6 +1364,7 @@ class SqliteStore implements Store {
           const row = await tx.get<RunRecord>(insert, id, agentId, revisionId, labelled, launchDiskOf(launch), startedAt ?? at);
           if (origin) await tx.run("INSERT INTO run_origins (key, run_id, fingerprint, created_at) VALUES (?, ?, ?, ?)", origin.key, id, origin.fingerprint ?? null, at);
           if (launch) await writeLaunch(tx, id, launch, at);
+          if (firing) await startFiring(tx, firing, id, at);
           return runOf(row!);
         }));
       },

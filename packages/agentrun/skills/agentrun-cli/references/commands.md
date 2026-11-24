@@ -1023,6 +1023,8 @@ The files the run wrote.
 
 Route: `GET /runs/{run_id}/files`.
 
+- `--cut run` (string, one of these): `run`: each file also has its `name`, its path under the run's own cut (each value the cut holds and each secret shape replaced by `[redacted]` in place, as a cut read cuts a file's text), whatever its type. A run whose cut can't be read is `403 forbidden`, as without `cut`. A server that doesn't know `cut` lists no `name`.
+
 ### `agentrun runs get RUN_ID`
 
 One run.
@@ -1561,6 +1563,16 @@ Route: `GET /triggers/{trigger_id}`.
 The triggers: schedules and signed webhooks that start an agent's capped runs or message a run.
 
 Route: `GET /triggers`.
+
+### `agentrun triggers release-firing TRIGGER_ID FIRING_ID`
+
+The launch hook's host releases a firing it took and will start no run for.
+
+Route: `POST /triggers/{trigger_id}/firings/{firing_id}/release`.
+
+- `--error STRING` (string, required): Why the host starts no run for the firing, in plain words: a failure's code or reason, never a person's data or a key.
+- `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
+- `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
 
 ### `agentrun triggers update TRIGGER_ID`
 

@@ -752,6 +752,10 @@ export interface FiringChange {
    *  transaction: a host start that pushed a startBy out and wrote no run puts it back (triggers.ts handedStart), unless
    *  its run started, or another start moved it, meanwhile. */
   readonly startByWas?: number;
+  /** Written only while the firing has no run, read in the settle's own transaction (with `from`, a firing's start by a
+   *  run written apart from it, triggers.ts handedRan): one a release failed, or another run started, meanwhile is left
+   *  as it is. */
+  readonly noRun?: true;
 }
 /** What a settle does to the firing's trigger besides: `reset` its failure streak (a run started, a message sent), or
  *  count a `failure` toward it, turning it off at `pauseAt` in a row (auto-pause, the firing marked paused). */
@@ -962,9 +966,12 @@ export interface Runs {
    *  `expectedCurrent` checks the agent's current revision under its lock (RevisionMoved on mismatch); this is separate
    *  from the pinned revisionId. Settings guards are locked before the agent. Refusal writes no run, origin or launch.
    *  `startedAt` (ms) is when the run began, for one reported after it began elsewhere (a backend SDK run's
-   *  `started_at`); absent, now. */
+   *  `started_at`); absent, now. With `firing` (a launch hook's host starting the firing it was handed), that firing is
+   *  started with the run in the same transaction, its trigger's last run and failure streak as a started firing's
+   *  are, only while it has no run and is still due or sent with a start_by: any other (released, failed, settled) is
+   *  refused (FiringMoved), and nothing is written. */
   create(run:{ id: string; agentId: string; revisionId: string; origin?: RunOrigin; labels?: RunLabels;
-    expectedCurrent?: string | null; settingsGuards?: readonly SettingsGuard[]; startedAt?: number }, launch?: RunLaunchInput): Promise<RunRow>;
+    expectedCurrent?: string | null; settingsGuards?: readonly SettingsGuard[]; startedAt?: number; firing?: { triggerId: string; key: string } }, launch?: RunLaunchInput): Promise<RunRow>;
   /** A run whose agent is given inline and mapped to a source system by `agent.ref` and `revision.version`. In one
    *  transaction: the agent (one per `ref`, written on its first run, its name and description brought up to the version
    *  whose first use this is) and the revision (one per `version`, made current on its first use) are written or read, then
@@ -2155,6 +2162,14 @@ export class RunsMadeFromLeft extends StoreConstraint {
   constructor(readonly runId: string, readonly runs: readonly string[]) {
     super(`run ${runId} has runs made from it not purged (${runs.join(", ")}): each is purged first`);
     this.name = "RunsMadeFromLeft";
+  }
+}
+
+/** A run's firing (Runs.create `firing`) that no longer takes it: no longer due or sent with a start_by, or it has a run. */
+export class FiringMoved extends Error {
+  constructor(readonly triggerId: string, readonly key: string) {
+    super(`firing ${key} of trigger ${triggerId} no longer takes a run: nothing was written`);
+    this.name = "FiringMoved";
   }
 }
 
