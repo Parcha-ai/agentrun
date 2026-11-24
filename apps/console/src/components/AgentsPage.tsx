@@ -135,7 +135,7 @@ export function AgentEditPage({ v2, caps, choices = [], gates = [], focusTool, a
       <Banner>{cliLearningOf(agent.definition) ? "This agent runs in your CLI. Edit its original project configuration; manage self-improving in its Learning tab." : "This agent runs in your backend. Edit its application code with your coding agent; manage self-improving in its Learning tab."}</Banner>
       <CodingAgentAction label="Edit agent" prompt={editAgentPrompt(location.origin, agent.agent_id, false, backendSdkOf(agent.definition), cliLearningOf(agent.definition)?.runtime)} />
       <a href={agentHash(agent.agent_id)} className="block text-body underline underline-offset-2">Back to agent</a>
-    </section> : <AgentEditor key={`${agent?.agent_id ?? "new"}:${version}`} agent={agent} revisions={revisions} caps={{ ...caps, computers }} providerChoices={choices} permissionGates={gates} mcpServers={mcpServers} serverToolSettings={serverTools} onRetryMcp={loadMcp} {...(focusTool ? { focusTool, step: "tools" as const } : {})} notice={notice} validate={v2.validateWorkflow} onBack={() => goBack(agent ? agentHash(agent.agent_id) : "#/agents", go)} onReload={() => { void load(); loadMcp(); }}
+    </section> : <AgentEditor key={`${agent?.agent_id ?? "new"}:${version}`} agent={agent} revisions={revisions} caps={{ ...caps, computers }} providerChoices={choices} permissionGates={gates} mcpServers={mcpServers} serverToolSettings={serverTools} onRetryMcp={loadMcp} {...(focusTool ? { focusTool, step: "tools" as const } : {})} notice={notice} validate={v2.validateWorkflow} onBack={() => goBack(agent ? agentHash(agent.agent_id) : "#/agents")} onReload={() => { void load(); loadMcp(); }}
       onSave={async (fields, note) => {
         let saved;
         try {

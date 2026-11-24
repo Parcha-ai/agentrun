@@ -167,6 +167,13 @@ describe("Build agent page", () => {
     expect(cards[0]!.getAttribute("aria-label")).toBe("KYB due diligence");
     expect(cards[0]!.textContent).toContain("Checks who owns and runs a company.");
     expect([...host.querySelectorAll('[role="status"]')].map((s) => s.textContent)).toContain("1 of 1");
+    // A word only the marketplace's summary has, which the card shows, finds it.
+    await act(async () => {
+      const input = host.querySelector<HTMLInputElement>('input[aria-label="Search templates"]')!;
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "owns");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect([...host.querySelectorAll("article h3")].map((h) => h.textContent)).toEqual(["KYB due diligence"]);
   });
 
   it("leads every card with its harness's icon, the one the Templates page and an agent's card show, not an icon picked per template", async () => {

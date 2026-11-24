@@ -38,10 +38,11 @@ export function BuildAgent({ origin, v2 }: { origin: string; v2: Pick<Client, "l
     return () => { live = false; };
   }, [v2, tries]);
   const listed = packages?.filter(inCatalog) ?? null;
-  const shown = (listed ?? []).filter((template) => matchesFilter(search, titleOf(template), template.description, template.name, template.id, template.publisher));
   const market = useMarketplace(v2);
   // A card the marketplace lists reads its one line there, as the marketplace's card does; else its description.
   const lineOf = (template: TemplateView) => market.list?.templates.find((m) => m.here === template.id)?.summary ?? template.description;
+  // A word the card shows finds it: its line (the marketplace's summary where it lists it) is searched too.
+  const shown = (listed ?? []).filter((template) => matchesFilter(search, titleOf(template), template.description, lineOf(template), template.name, template.id, template.publisher));
   const elsewhere = notHere(market.list);
   const others = elsewhere.filter((template) => marketplaceMatches(search, template));
   const note = marketplaceNote(market.list);

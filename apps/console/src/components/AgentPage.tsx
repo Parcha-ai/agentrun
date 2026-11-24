@@ -5,6 +5,7 @@ import { useScrollQuiet } from "@/lib/useScrollQuiet";
 import { workflowGraph } from "@dsl/graph";
 import { ArrowLeft, ArrowUpRight, ChevronRight, RefreshCw, Workflow } from "lucide-react";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import type { Upload } from "@/lib/uploads";
 import { AgentVersions } from "@/components/AgentVersions";
 import { AnalyticsTab, FIRST_RANGE } from "@/components/AgentAnalytics";
 import type { UploadLimits } from "@/components/FilePicker";
@@ -71,7 +72,7 @@ export const agentHash = (id: string, view?: string) => `#/agents/${encodeURICom
 /** One agent's page (`#/agents/{id}`): its current revision's harness, model and thinking, a compact overview and a tab per thing it has. `efforts` are the server's (capabilities `features.efforts`).
  *  `learning`: the server's learning switch, undefined until its capabilities are read and null when it has none;
  *  `places`: the server's places (capabilities `places`), for where a revision that names no place runs. */
-export function AgentPage({ v2, agentId, routePrefix, harnesses, efforts = [], go, tab, limits, learning, places }: { v2: Client; agentId: string; routePrefix?: string | null; harnesses?: HarnessInfo[]; efforts?: string[]; go: (hash: string) => void; tab?: string; limits?: UploadLimits & { free_model_requests?: number }; learning?: "on" | "off" | null; places?: Places | null }) {
+export function AgentPage({ v2, agentId, routePrefix, harnesses, efforts = [], go, tab, limits, learning, places, upload }: { v2: Client; agentId: string; routePrefix?: string | null; harnesses?: HarnessInfo[]; efforts?: string[]; go: (hash: string) => void; tab?: string; limits?: UploadLimits & { free_model_requests?: number }; learning?: "on" | "off" | null; places?: Places | null; upload?: Upload }) {
   const [agent, setAgent] = useState<Agent | null>(null);
   // The agent's read failed: a 404 is an agent this server has no record of; anything else is said in words.
   const [error, setError] = useState<{ cause: unknown } | null>(null);
@@ -121,13 +122,13 @@ export function AgentPage({ v2, agentId, routePrefix, harnesses, efforts = [], g
     ? <NotHere what="agent" id={agentId} list={{ href: "#/agents", label: "Open the agents list" }} />
     : <ProblemCard problem={problem(error.cause, "the agent")} onRetry={() => setTries((n) => n + 1)} />;
   if (!agent) return <AgentSkeleton />;
-  return <AgentDetail key={agent.agent_id} agent={agent} onAgent={onAgent} onSignInsAgent={setAgent} reread={reread} onChanged={onChanged} poll={poll} afterForget={afterForget} stale={stale} v2={v2} go={go} stats={stats} analytics={analytics} places={places} routePrefix={routePrefix} harnesses={harnesses} tab={tab} learning={learning} efforts={efforts} limits={limits} />;
+  return <AgentDetail key={agent.agent_id} upload={upload} agent={agent} onAgent={onAgent} onSignInsAgent={setAgent} reread={reread} onChanged={onChanged} poll={poll} afterForget={afterForget} stale={stale} v2={v2} go={go} stats={stats} analytics={analytics} places={places} routePrefix={routePrefix} harnesses={harnesses} tab={tab} learning={learning} efforts={efforts} limits={limits} />;
 }
 
-function AgentDetail({ agent, onAgent, onSignInsAgent, reread, onChanged, poll, afterForget, stale, v2, go, stats, analytics, routePrefix, harnesses, tab, learning, places, efforts, limits }: {
+function AgentDetail({ agent, onAgent, onSignInsAgent, reread, onChanged, poll, afterForget, stale, v2, go, stats, analytics, routePrefix, harnesses, tab, learning, places, efforts, limits, upload }: {
   agent: Agent; onAgent: (agent: Agent) => void; onSignInsAgent: (agent: Agent) => void; reread: (quiet?: boolean, raise?: boolean) => Promise<boolean>; onChanged: () => void; poll: () => void; afterForget: () => Promise<boolean>; stale: boolean; v2: Client; go: (hash: string) => void;
   stats: Stats | null | undefined; analytics: boolean | undefined; routePrefix?: string | null; harnesses?: HarnessInfo[]; tab?: string; learning?: "on" | "off" | null; places?: Places | null;
-  efforts: string[]; limits?: UploadLimits & { free_model_requests?: number };
+  efforts: string[]; limits?: UploadLimits & { free_model_requests?: number }; upload?: Upload;
 }) {
   const history = useRunHistory(agent, v2, reread, () => reread(false, false));
   const [factsOpen, setFactsOpen] = useState(false);
@@ -196,11 +197,13 @@ function AgentDetail({ agent, onAgent, onSignInsAgent, reread, onChanged, poll, 
   const waiting = tab === "analytics" && analytics === undefined;
   const live = history.runs?.filter(isLiveRun) ?? [];
   const liveCount = agent.runs?.live ?? (history.runs ? `${live.length}${history.cursor ? "+" : ""}` : "—");
+  // The facts drawn as more than words (a harness's icon and name), in words: the phone's one-line summary reads these.
+  const factWords: Record<string, string> = cli ? { Runtime: cliLearningLabel(cli.runtime) } : sdk ? { Runtime: backendSdkLabel(sdk) } : native ? { Runtime: nativeRuntimeLabel(native.runtime) } : workflow ? {} : { Harness: harnessLabel(d.harness ?? "pi") };
   const overviewFacts: [string, ReactNode, string?][] = [["Status", agent.archived_at ? "Archived" : native ? nativeStateLabel(native) : "Active"], ["Live jobs", String(liveCount)], ...facts];
   return (
     <NativeMutationProvider native={native}><section className="flex h-full min-h-0 flex-col" aria-label="Agent detail">
       <header className={cn(pageToolbarClass, "flex-wrap gap-2 px-5 lg:flex-nowrap")} aria-label="Agent toolbar">
-        <Button size="icon" variant="ghost" aria-label="Back" title="Back" onClick={() => goBack(agent.archived_at ? "#/agents?archived=true" : "#/agents", go)}><ArrowLeft aria-hidden /></Button>
+        <Button size="icon" variant="ghost" aria-label="Back" title="Back" onClick={() => goBack(agent.archived_at ? "#/agents?archived=true" : "#/agents")}><ArrowLeft aria-hidden /></Button>
         {/* The agent's runtime, as its card on the list shows it. */}
         <span data-agent-icon className="flex shrink-0 items-center"><HarnessIcon harness={agentHarness(agent)} /></span>
         <strong className="min-w-0 truncate text-body font-semibold">{d.name}</strong>
@@ -232,7 +235,7 @@ function AgentDetail({ agent, onAgent, onSignInsAgent, reread, onChanged, poll, 
           </div>
           <div ref={detailsScroll} data-agent-details className="scroll-quiet min-w-0 space-y-6 lg:-ml-1 lg:-mr-4 lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:overflow-x-hidden lg:pb-6 lg:pl-1 lg:pr-2.5">
           <button type="button" aria-expanded={factsOpen} aria-controls={d.description ? "agent-description agent-facts" : "agent-facts"} onClick={() => setFactsOpen((value) => !value)} className="flex w-full min-w-0 items-center gap-2 text-left font-mono text-small text-muted-foreground sm:hidden">
-            <ChevronRight className={cn("size-3.5 shrink-0 transition-transform", factsOpen && "rotate-90")} aria-hidden /><span className="truncate">{overviewFacts.map(([, value]) => value).join(" · ")}</span>
+            <ChevronRight className={cn("size-3.5 shrink-0 transition-transform", factsOpen && "rotate-90")} aria-hidden /><span className="truncate">{overviewFacts.map(([label, value]) => factWords[label] ?? (typeof value === "string" ? value : "")).filter(Boolean).join(" · ")}</span>
           </button>
           <dl id="agent-facts" className={cn("grid grid-cols-2 gap-3", !factsOpen && "max-sm:hidden")} aria-label="Current revision">
             {overviewFacts.map(([k, v, title]) => (
@@ -277,7 +280,7 @@ function AgentDetail({ agent, onAgent, onSignInsAgent, reread, onChanged, poll, 
         <section ref={workspaceScroll} className="scroll-quiet min-w-0 lg:-ml-1 lg:-mr-4 lg:min-h-0 lg:overflow-y-auto lg:overflow-x-hidden lg:pb-6 lg:pl-1 lg:pr-2.5" aria-label="Agent workspace">
           {/* Run it here: type, Run, and the run's page opens. Handing it to a coding agent and the API playground are the
               run box's second line. */}
-          {runHere && <div className="mb-6" data-run-here><RunBar className="border-b-0 px-0 py-0 max-sm:py-0 md:px-0" agent={agent} efforts={efforts} v2={v2} go={go} blocked={offText} limits={limits}
+          {runHere && <div className="mb-6" data-run-here><RunBar className="border-b-0 px-0 py-0 max-sm:py-0 md:px-0" agent={agent} efforts={efforts} v2={v2} go={go} blocked={offText} limits={limits} {...(upload ? { upload } : {})}
             freeNote={workflow ? null : freeRequestsNote(d.model ?? fallback, d.harness ?? "pi", harnesses, limits?.free_model_requests)} playgroundHref={`#/playground?agent=${encodeURIComponent(agent.agent_id)}`} /></div>}
           <Tabs id="agent-views" label="Agent views" value={at.id} onChange={(value) => go(agentHash(agent.agent_id, value))} tabs={tabs.map((t) => ({ id: t.id, label: <>{t.label}{t.id === "learning" && <WaitingCount n={itemsWaiting} className="ml-1.5" />}</> }))} className="mb-5 overflow-x-auto px-0 md:px-0" />
           <div {...tabPanelProps("agent-views", at.id)} aria-label={waiting ? undefined : at.label}>

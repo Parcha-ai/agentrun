@@ -1,3 +1,4 @@
+import { cardTitleOf } from "@/lib/templatePackages";
 import { act, createElement, StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -60,7 +61,7 @@ const LEAD_TRIGGERS = [{ trigger_id: "trg_hook", name: "lead-webhook", kind: "we
 
 // A saved MCP server as the list reads it: its name, and the source and toolkit a need is matched on.
 type Saved = { name: string; source: "composio" | "github" | "url"; toolkit: string | null };
-type Fake = { apply?: (name: string, body: unknown, key: string) => Promise<unknown>; servers?: Saved[]; serversDown?: { now: boolean }; templates?: TemplateView[]; triggers?: Record<string, unknown>; stallTriggers?: boolean; triggersAfter?: Promise<void>; imported?: (source: string, options: { dryRun?: boolean; trustPublisher?: boolean }) => Promise<unknown>; install?: string; playground?: boolean; marketplace?: () => Promise<MarketplaceList> };
+type Fake = { onDelete?: (id: string) => void; apply?: (name: string, body: unknown, key: string) => Promise<unknown>; servers?: Saved[]; serversDown?: { now: boolean }; templates?: TemplateView[]; triggers?: Record<string, unknown>; stallTriggers?: boolean; triggersAfter?: Promise<void>; imported?: (source: string, options: { dryRun?: boolean; trustPublisher?: boolean }) => Promise<unknown>; install?: string; playground?: boolean; marketplace?: () => Promise<MarketplaceList> };
 async function open(name?: string, fake: Fake = {}) {
   const went: string[] = [];
   const sent: { name: string; body: { parameters?: Record<string, unknown>; grants?: string[]; servers?: Record<string, string>; overrides?: Record<string, unknown> }; key: string }[] = [];
@@ -73,7 +74,7 @@ async function open(name?: string, fake: Fake = {}) {
     // A bundled package's id is its name, as the server serves it: the fixtures spread one under a new name.
     listTemplates: async () => ({ templates: (fake.templates ?? [REVIEWER, NOTES]).map((t) => (t.bundled ? { ...t, id: t.name } : t)) }),
     importTemplate: async (source: string, options: { dryRun?: boolean; trustPublisher?: boolean } = {}) => { imports.push({ source, options }); return fake.imported!(source, options); },
-    deleteTemplate: async (id: string) => { deleted.push(id); },
+    deleteTemplate: async (id: string) => { deleted.push(id); fake.onDelete?.(id); },
     listMcpServers: async () => {
       if (fake.serversDown?.now) throw new ClientError(503, "unavailable", "The store is not answering.");
       return { servers: (fake.servers ?? [{ name: "github", source: "github", toolkit: "github" }]).map((s) => ({ ...s, url: `https://${s.name}.example/mcp`, auth: { type: "none" }, tools: [], credential: null })) };
@@ -1084,6 +1085,31 @@ describe("the Templates page's marketplace (GRE-4834)", () => {
     const watch = market.querySelector<HTMLElement>('[data-marketplace-template="vendor-outage-watch"]')!;
     expect(watch.querySelector("[data-template-icon] [role=\"img\"]")!.getAttribute("aria-label"), "a list that does not say is not read as any").toBe("Harness not listed");
     expect(watch.querySelector("dl"), "and has no Harness row").toBeNull();
+  });
+
+  it("a search finds a card by the marketplace's summary it shows, not only by the package's own words", async () => {
+    const said: MarketplaceList = { ...MARKETPLACE, templates: MARKETPLACE.templates.map((t) => t.name === "pr-reviewer" ? { ...t, summary: "Flags risky diffs before they merge." } : t) };
+    const t = await open(undefined, { marketplace: async () => said });
+    await t.type(t.host.querySelector('input[aria-label="Search templates"]'), "risky");
+    await t.settle();
+    expect([...t.host.querySelectorAll("article h3")].map((h) => h.textContent)).toContain(cardTitleOf(REVIEWER));
+  });
+
+  it("removing a template the marketplace lists reads the marketplace again: the template goes back to its section", async () => {
+    const IMPORTED: TemplateView = { ...NOTES, id: "github:acme/kit/company-brief", bundled: false, source: `${SOURCE}`, sha: "a".repeat(40), publisher: "acme", name: "company-brief", display_name: "Company research brief", description: "Imported here." };
+    let current: TemplateView[] = [REVIEWER, IMPORTED];
+    const t = await open(undefined, {
+      get templates() { return current; },
+      onDelete: (id) => { current = current.filter((x) => x.id !== id); },
+      marketplace: async () => ({ ...MARKETPLACE, templates: [{ name: "company-brief", title: "Company research brief", tags: [], needs: [], page_url: "https://marketplace.example/templates/company-brief/", source: SOURCE, ...(current.some((x) => x.id === IMPORTED.id) ? { here: IMPORTED.id } : {}) }] }),
+    });
+    const inMarket = () => section(t.host)?.querySelector('[data-marketplace-template="company-brief"]');
+    expect(inMarket(), "installed here, it is not listed again under the marketplace").toBeFalsy();
+    const reads = t.marketplaceReads.length;
+    await t.click(t.button(/^Remove$/));
+    expect(t.deleted).toEqual([IMPORTED.id]);
+    expect(t.marketplaceReads.length, "the marketplace is read again").toBeGreaterThan(reads);
+    expect(inMarket(), "and the template is back in its section").toBeTruthy();
   });
 
   it("one search filters both lists, saying how many it keeps of all", async () => {

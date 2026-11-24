@@ -9,6 +9,7 @@ import type { Agent } from "@/lib/agentForm";
 import { ClientError } from "@/lib/client";
 import { ANALYTICS, statsWith } from "./AgentAnalytics.sample";
 import type { Run } from "@/lib/v2";
+import type { Upload } from "@/lib/uploads";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 const runsOf = (slug: string) => recorded<{ runs: Run[] }>(`agent.${slug}.runs`).body.runs;
@@ -20,9 +21,9 @@ type Opts = {
   runs?: Run[]; next?: string | null; read?: (cursor: string | null) => Promise<Page>; agentRead?: () => Promise<Agent>; reads?: (n: number) => Promise<Agent>;
   tab?: string; stats?: () => Promise<unknown>; models?: { default: string; source: string; route_prefix?: string | null };
   harnesses?: { id: string; default_model?: string | null; available?: boolean; reason?: string; needs?: ("key" | "chatgpt")[] }[];
-  places?: Places | null; learning?: "on" | "off" | null; strict?: boolean; agentError?: unknown;
+  places?: Places | null; learning?: "on" | "off" | null; strict?: boolean; agentError?: unknown; upload?: Upload;
 };
-async function open(agent: Agent, { runs = runsOf("invoice-checker"), next = null, read, agentRead, reads, tab, stats = async () => statsWith(ANALYTICS), models, harnesses, places, learning, strict, agentError }: Opts = {}) {
+async function open(agent: Agent, { runs = runsOf("invoice-checker"), next = null, read, agentRead, reads, tab, stats = async () => statsWith(ANALYTICS), models, harnesses, places, learning, strict, agentError, upload }: Opts = {}) {
   const went: string[] = [];
   const asked: string[] = [];
   const starts = vi.fn(); const timelines = vi.fn();
@@ -39,7 +40,7 @@ async function open(agent: Agent, { runs = runsOf("invoice-checker"), next = nul
   };
   const host = document.body.appendChild(document.createElement("div"));
   const root = createRoot(host); roots.push(root);
-  const props = { v2: v2 as never, agentId: agent.agent_id, routePrefix: models?.route_prefix, harnesses: harnesses ?? (models ? [{ id: "pi", default_model: models.default }] : editorCaps.harnesses), places, go: (h: string) => went.push(h), tab, learning };
+  const props = { v2: v2 as never, agentId: agent.agent_id, routePrefix: models?.route_prefix, harnesses: harnesses ?? (models ? [{ id: "pi", default_model: models.default }] : editorCaps.harnesses), places, ...(upload ? { upload } : {}), go: (h: string) => went.push(h), tab, learning };
   act(() => root.render(strict ? createElement(StrictMode, null, createElement(AgentPage, props)) : createElement(AgentPage, props)));
   await settle();
   const button = (label: string) => [...document.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.getAttribute("aria-label") === label || b.textContent?.trim() === label)!;
@@ -162,7 +163,8 @@ describe("AgentPage overview and run workspace", () => {
     expect(box.querySelector('a[href="#/playground?agent=invoice-checker"]')?.textContent).toBe("Open in API playground");
     expect(page.starts).not.toHaveBeenCalled();
     await page.click("Back");
-    expect(page.went).toEqual(["#/agents"]);
+    // Opened with no console page before it: Back puts its parent in its place.
+    expect(location.hash).toBe("#/agents");
   });
 
   it("runs an existing agent from its own page in one action: type, Run, and its run's page opens (GRE-4832)", async () => {
@@ -238,6 +240,26 @@ describe("AgentPage overview and run workspace", () => {
     expect(page.asked).toHaveLength(2);
   });
 
+  it("the run box sends its files through the upload it is given: the demo's own store, never the server's", async () => {
+    const upload = vi.fn<Upload>(() => new Promise(() => {}));
+    const page = await open(agentFixture("invoice-checker"), { upload });
+    const input = page.host.querySelector<HTMLInputElement>('[data-run-here] input[type="file"]')!;
+    const picked = new File(["x"], "notes.txt", { type: "text/plain" });
+    await act(async () => {
+      Object.defineProperty(input, "files", { value: [picked], configurable: true });
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(upload).toHaveBeenCalledOnce();
+    expect(upload.mock.calls[0]![0]).toBe(picked);
+  });
+
+  it("the phone's one-line summary says each fact in words, the harness by its name", async () => {
+    const page = await open(agentFixture("invoice-checker"));
+    const summary = page.host.querySelector('button[aria-controls*="agent-facts"]')!.textContent!;
+    expect(summary).not.toContain("[object Object]");
+    expect(summary).toContain("Pi");
+  });
+
   it("preserves archival scope and makes no Run action for archived agents", async () => {
     const page = await open(archivedAgents()[0], { runs: [] });
     expect(page.fact("Status")?.textContent).toBe("Archived");
@@ -249,7 +271,7 @@ describe("AgentPage overview and run workspace", () => {
     expect(document.querySelector<HTMLTextAreaElement>('[aria-label="Prompt to copy"]')?.value).toContain("Current view: all statuses; archived runs.");
     await page.click("Close prompt");
     await page.click("Back");
-    expect(page.went).toEqual(["#/agents?archived=true"]);
+    expect(location.hash).toBe("#/agents?archived=true");
   });
 });
 

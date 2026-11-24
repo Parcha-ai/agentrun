@@ -57,7 +57,7 @@ export function ObservedSessionPage({ v2, sessionId, go }: { v2: Client; session
   const read = useObservations(v2, { sessionId });
   const session = read.data?.sessions.find((s) => s.id === sessionId);
   return <section className="flex min-h-full flex-col" aria-label="Connected agent detail">
-    <header className={cn(pageToolbarClass, "flex-wrap gap-2 px-5")}><Button size="icon" variant="ghost" aria-label="Back" title="Back" onClick={() => goBack("#/agents", go)}><ArrowLeft aria-hidden /></Button><Bot className="size-4" aria-hidden /><strong className="min-w-0 flex-1 truncate text-body">{session?.display_name ?? "Connected agent"}</strong><Button size="icon" aria-label="Refresh agent" disabled={read.loading} onClick={read.refresh}><RefreshCw aria-hidden /></Button>
+    <header className={cn(pageToolbarClass, "flex-wrap gap-2 px-5")}><Button size="icon" variant="ghost" aria-label="Back" title="Back" onClick={() => goBack("#/agents")}><ArrowLeft aria-hidden /></Button><Bot className="size-4" aria-hidden /><strong className="min-w-0 flex-1 truncate text-body">{session?.display_name ?? "Connected agent"}</strong><Button size="icon" aria-label="Refresh agent" disabled={read.loading} onClick={read.refresh}><RefreshCw aria-hidden /></Button>
       {session && <><CodingAgentAction label="Edit agent" prompt={observedAgentPrompt(location.origin, session, "edit")} /><CodingAgentAction variant="primary" label="Run agent" prompt={observedAgentPrompt(location.origin, session, "run")} /></>}
     </header>
     <main className="mx-auto w-full max-w-page space-y-6 p-5 md:p-8">

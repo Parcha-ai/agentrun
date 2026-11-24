@@ -85,7 +85,9 @@ export function TemplateProvenance({ t }: { t: Pick<TemplateView, "source" | "sh
 }
 
 /** Whether a search keeps one of this server's templates, by the words its card shows. */
-const templateMatches = (query: string, t: TemplateView) => matchesFilter(query, titleOf(t), t.name, t.id, t.description, t.publisher, t.category, t.tags.join(" "));
+/** Whether a search keeps a template: by its words, and by `line`, the one line its card shows (the marketplace's summary
+ *  where the marketplace lists it), so a word the card shows always finds it. */
+const templateMatches = (query: string, t: TemplateView, line?: string) => matchesFilter(query, titleOf(t), t.name, t.id, t.description, line, t.publisher, t.category, t.tags.join(" "));
 
 /** The list, with the "Add from URL" box: a package on GitHub is read and shown whole (the install page) before it is
  *  stored. Its own page lists this server's templates, then the marketplace's others (GRE-4834), under one search; the
@@ -96,9 +98,9 @@ function TemplateList({ v2, templates, go, playground, onRemoved }: { v2: Client
   const market = useMarketplace(v2, !playground);
   const [search, setSearch] = useState("");
   const listed = playground ? templates : templates.filter(inCatalog);
-  const here = listed.filter((t) => templateMatches(search, t));
   // A card the marketplace lists reads its one line there, as the marketplace's card does; else its description.
   const lineOf = (t: TemplateView) => market.list?.templates.find((m) => m.here === t.id)?.summary ?? t.description;
+  const here = listed.filter((t) => templateMatches(search, t, lineOf(t)));
   const elsewhere = notHere(market.list);
   const others = elsewhere.filter((t) => marketplaceMatches(search, t));
   const [source, setSource] = useState("");
@@ -106,7 +108,9 @@ function TemplateList({ v2, templates, go, playground, onRemoved }: { v2: Client
   const [said, setSaid] = useState<string | null>(null);
   const remove = async (t: TemplateView) => {
     setRemoving(t.id); setSaid(null);
-    try { await v2.deleteTemplate(t.id); onRemoved(); } catch (e) { setSaid(e instanceof Error ? e.message : String(e)); } finally { setRemoving(null); }
+    // The marketplace's list is read again too: its `here` marks are as of its last read, and the template removed
+    // goes back to the marketplace's section, where it can be installed again.
+    try { await v2.deleteTemplate(t.id); onRemoved(); market.retry(); } catch (e) { setSaid(e instanceof Error ? e.message : String(e)); } finally { setRemoving(null); }
   };
   return (
     <>

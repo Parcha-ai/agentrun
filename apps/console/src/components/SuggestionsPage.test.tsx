@@ -191,6 +191,16 @@ describe("Suggested agents", () => {
       expect(host.textContent).toContain(`One agent from ${REPO}, 3 runs so far.`);
     });
 
+    it("Refresh reads the created agents again: a first call made since shows", async () => {
+      const agents = { agent_77: { runs: 0 } };
+      const { v2 } = server({ connected: true, suggestions: [CREATED({})], readiness: READY, agents });
+      const { click } = await page(v2);
+      expect(step("First call")!.dataset.tone).toBe("waiting");
+      agents.agent_77 = { runs: 2 };
+      await click(/^Read the suggestions and repositories again$/);
+      expect(step("Called")!.textContent).toContain("2 runs");
+    });
+
     it("a pull request that did not open says why, and opening it is the main action", async () => {
       const { v2 } = server({ connected: true, suggestions: [CREATED({ pull_request: null, branch: null, pull_error: "GitHub refused the branch." })], readiness: READY, agents: { agent_77: { runs: 0 } } });
       const { button } = await page(v2);

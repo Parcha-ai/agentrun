@@ -84,7 +84,7 @@ export function SuggestionsPage({ v2, repo, go }: { v2: Client; repo?: string; g
           </div>
         )}
         {[...list.repositories].sort((a, b) => (same(a.repo, repo) ? -1 : same(b.repo, repo) ? 1 : 0)).map((r) => (
-          <RepositorySection key={r.repo} v2={v2} r={r} suggestions={list.suggestions.filter((s) => same(s.repo, r.repo))} busy={busy}
+          <RepositorySection key={r.repo} v2={v2} r={r} round={round} suggestions={list.suggestions.filter((s) => same(s.repo, r.repo))} busy={busy}
             onDiscard={(s) => void discard(s)} onCreate={(s) => { setDiscarded(null); setCreating(s); }} onScanned={() => void read()} />
         ))}
       </div>
@@ -286,7 +286,7 @@ function ScanBox({ v2, repo, round = 0, scanned, onStarted }: { v2: Client; repo
 }
 
 /** One scanned repository: its scan, its open suggestions and the ones created. */
-function RepositorySection({ v2, r, suggestions, busy, onDiscard, onCreate, onScanned }: { v2: Client; r: ScannedRepository; suggestions: Suggestion[]; busy: string | null; onDiscard: (s: Suggestion) => void; onCreate: (s: Suggestion) => void; onScanned: () => void }) {
+function RepositorySection({ v2, r, suggestions, busy, onDiscard, onCreate, onScanned, round = 0 }: { v2: Client; r: ScannedRepository; suggestions: Suggestion[]; busy: string | null; onDiscard: (s: Suggestion) => void; onCreate: (s: Suggestion) => void; onScanned: () => void; round?: number }) {
   const open = suggestions.filter((s) => s.status === "open");
   const created = suggestions.filter((s) => s.status === "created");
   const [rescanning, setRescanning] = useState(false);
@@ -335,7 +335,7 @@ function RepositorySection({ v2, r, suggestions, busy, onDiscard, onCreate, onSc
           {open.map((s) => <li key={s.id} className="min-w-0"><SuggestionCard s={s} busy={busy === s.id} onDiscard={() => onDiscard(s)} onCreate={() => onCreate(s)} /></li>)}
         </ul>
       )}
-      {created.length > 0 && <CreatedSection v2={v2} repo={r.repo} created={created} onRetry={onCreate} />}
+      {created.length > 0 && <CreatedSection v2={v2} repo={r.repo} created={created} onRetry={onCreate} round={round} />}
     </section>
   );
 }
@@ -388,7 +388,7 @@ function SuggestionCard({ s, busy, onDiscard, onCreate }: { s: Suggestion; busy:
 /** The agents created from a repository's suggestions, each read here for its harness and its runs: `undefined` while
  *  it is read, `null` once it is gone (deleted), `"unread"` when the read failed. */
 type CreatedAgent = Agent | null | "unread" | undefined;
-function useCreatedAgents(v2: Pick<Client, "getAgent">, ids: string[]): Record<string, CreatedAgent> {
+function useCreatedAgents(v2: Pick<Client, "getAgent">, ids: string[], round: number): Record<string, CreatedAgent> {
   const [agents, setAgents] = useState<Record<string, CreatedAgent>>({});
   const key = ids.join(" ");
   useEffect(() => {
@@ -398,14 +398,15 @@ function useCreatedAgents(v2: Pick<Client, "getAgent">, ids: string[]): Record<s
         (e) => { if (live) setAgents((a) => ({ ...a, [id]: e instanceof ClientError && e.status === 404 ? null : "unread" })); });
     }
     return () => { live = false; };
-  }, [v2, key]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [v2, key, round]); // eslint-disable-line react-hooks/exhaustive-deps
   return agents;
 }
 
 /** What a repository's suggestions became: one card per created agent, how far along it is (created, its pull request,
  *  its first call), and the one thing to do next. */
-function CreatedSection({ v2, repo, created, onRetry }: { v2: Pick<Client, "getAgent">; repo: string; created: Suggestion[]; onRetry: (s: Suggestion) => void }) {
-  const agents = useCreatedAgents(v2, created.flatMap((s) => s.created ? [s.created.agent_id] : []));
+function CreatedSection({ v2, repo, created, onRetry, round }: { v2: Pick<Client, "getAgent">; repo: string; created: Suggestion[]; onRetry: (s: Suggestion) => void; round: number }) {
+  // Read again on each Refresh (`round`): a first call made since shows, and a read that failed is tried again.
+  const agents = useCreatedAgents(v2, created.flatMap((s) => s.created ? [s.created.agent_id] : []), round);
   const runs = created.reduce((n, s) => { const a = s.created && agents[s.created.agent_id]; return n + (a && typeof a === "object" ? a.runs.count : 0); }, 0);
   const headingId = `created-${repo.replace(/[^A-Za-z0-9]/g, "-")}`;
   return (
