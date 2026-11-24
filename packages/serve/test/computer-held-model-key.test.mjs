@@ -303,9 +303,14 @@ test("served, a model gateway with no key here: a held run whose model was refus
   const keyed = await api("POST", "/agents/gw/runs", { input, hold: true, max_cost_usd: 1, model_key: GATEWAY_KEY });
   assert.equal(keyed.status, 202, `a held run handed a key for the gateway opens: ${JSON.stringify(keyed.body)}`);
   await seam.claimed;
+  // The claim asked for its computer; the owner's call goes through its runner, so its answer comes once the hold is up.
+  const call = await api("POST", `/runs/${keyed.body.run_id}/computer/call`, { method: "files.list", params: { path: "/workspace" } });
+  await withRunRead(api, keyed.body.run_id, () => assert.deepEqual([call.status, call.body.ok], [200, true], `the owner's call reaches the held computer: ${JSON.stringify(call.body)}`));
   const sent = await api("POST", `/runs/${keyed.body.run_id}/messages`, { content: "Go on.", model_key: GATEWAY_KEY });
-  assert.deepEqual([sent.status, sent.body.error?.code], [409, "agent_not_runnable"], `a message with a key to a held run whose model was refused is refused as its start is: ${JSON.stringify(sent.body)}`);
-  assert.equal(sent.body.error.message, unheld.body.error.message, "in the words its create would have given");
+  await withRunRead(api, keyed.body.run_id, () => {
+    assert.deepEqual([sent.status, sent.body.error?.code], [409, "agent_not_runnable"], `a message with a key to a held run whose model was refused is refused as its start is: ${JSON.stringify(sent.body)}`);
+    assert.equal(sent.body.error.message, unheld.body.error.message, "in the words its create would have given");
+  });
   const release = await api("POST", `/runs/${keyed.body.run_id}/computer/release`, {});
   await withRunRead(api, keyed.body.run_id, () => assert.deepEqual([release.status, release.body], [200, { held: { state: "released" } }], `its release lets the computer go: ${JSON.stringify(release.body)}`));
   await seam.released;
