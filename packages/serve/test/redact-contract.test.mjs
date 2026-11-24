@@ -429,6 +429,31 @@ const CASES = [
       exact: { redactedAnswer: "[redacted]", redactedCall: "[redacted]" },
     };
   })(),
+  // A private key block with no held value to cut it by, across the edge of an answer's or a call's result's first
+  // piece: the piece ends before its BEGIN line, so the block is read whole in the next piece and cut whole, and the
+  // text after it shows. A block longer than a piece is read as one run and shown as "[redacted]".
+  ...(() => {
+    const label = ["RSA", "PRIVATE", "KEY"].join(" ");
+    const block = (size) => {
+      const body = Buffer.from(Array.from({ length: size }, (_, i) => (i * 7919 + 13) % 256)).toString("base64").match(/.{1,64}/g);
+      return { body, pem: [`-----BEGIN ${label}-----`, ...body, `-----END ${label}-----`].join("\n") };
+    };
+    const after = " the words after it.".repeat(600);
+    const both = (shown) => ({ redactedAnswer: shown, redactedCall: shown });
+    return [
+      ...[[1190, "a key's block"], [9000, "a block longer than a piece"]].map(([size, what]) => {
+        const { body, pem } = block(size);
+        const text = `${"y ".repeat(3500)}${pem}\n${after}`;
+        return {
+          name: `${what}, no value held, across the edge of an answer's first piece is cut whole; the text after it shows`,
+          text,
+          values: [CUT_KEY],
+          hides: [...body.slice(1).map((line) => line.slice(0, 16)), `-----END ${label}`],
+          exact: both(`${"y ".repeat(3500)}[redacted]\n${after}`),
+        };
+      }),
+    ];
+  })(),
   // A held value of many lines is found by its parts too: each line of 40 characters or more, and its body (the lines
   // between its armor) with the line breaks gone. So the first lines of a held key, or its body without the armor,
   // show no line; and a held JSON value's multi-line string (a service account's private key) is held as itself.
