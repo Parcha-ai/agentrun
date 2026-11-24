@@ -250,7 +250,7 @@ describe("an MCP server's tool cards", () => {
   });
 });
 
-// With no MCP server saved, the tools step says where one is added, as a link there (beta.55 P2-7: plain text, no way on).
+// With no MCP server saved, the tools step says where one is added, as a link there, not as plain text.
 describe("the MCP tools step with no server saved", () => {
   it("links Settings → MCP servers", () => {
     const host = document.body.appendChild(document.createElement("div"));
@@ -262,4 +262,3 @@ describe("the MCP tools step with no server saved", () => {
     expect(link?.textContent).toBe("Settings → MCP servers");
   });
 });
-

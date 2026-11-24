@@ -83,11 +83,6 @@ describe("ModelKeyCard, a server with no key that offers the ChatGPT sign-in", (
     expect(card.host.textContent).toContain("An agent runs on your ChatGPT plan only when it names one of the plan's models (chatgpt/…).");
   });
 
-  it("on a gateway server whose default is a plan model, says what the plan runs as anywhere", async () => {
-    const card = await open({ plan: { state: "signed_out" }, harnesses: HARNESSES, source: "gateway", model: "chatgpt/gpt-6.1-sol" });
-    expect(card.host.textContent).toContain(LINE);
-  });
-
   it("Continue with ChatGPT starts the sign-in and keeps the card while it waits (onPlan)", async () => {
     vi.stubGlobal("open", vi.fn(() => ({ location: { href: "" }, opener: null, close() {} })));
     const seen: ChatGPTView[] = [];
