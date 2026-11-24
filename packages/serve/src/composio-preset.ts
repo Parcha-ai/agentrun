@@ -165,6 +165,71 @@ const likelySlug = (slug: string, slugs: readonly string[]): string | undefined 
   return slugs.find((s) => s.toUpperCase() === want);
 };
 
+/** A toolkit Composio offers, as the console's toolkit picker shows it: its slug and its name. */
+export type ComposioToolkit = { slug: string; name: string };
+/** The most pages of the toolkit list read (PAGE each): Composio offers about a thousand. */
+const MAX_TOOLKIT_PAGES = 20;
+
+/** POST /settings/mcp-servers/composio/toolkits: the toolkits Composio offers, every page (at most MAX_TOOLKIT_PAGES), by
+ *  name: each one's slug, as a save takes it (a slug outside COMPOSIO_TOOLKIT is left out), and its name. Stores nothing. */
+export async function composioToolkits(body: unknown, control: ComposioControl, signal?: AbortSignal): Promise<{ toolkits: ComposioToolkit[] }> {
+  if (!isObject(body)) throw invalid([issue("body", "invalid", "The body is {api_key}.")]);
+  const extra = unknownFields(body, ["api_key"]);
+  if (extra.length) throw invalid(extra);
+  const key = typeof body.api_key === "string" ? body.api_key.trim() : "";
+  if (!key || key.length > 8192) throw invalid([issue("api_key", "missing", "Send your Composio API key.")]);
+  const ask = asking(control, key, signal, "no toolkit was listed");
+  const found = new Map<string, ComposioToolkit>();
+  let cursor: string | undefined;
+  for (let page = 0; page < MAX_TOOLKIT_PAGES; page++) {
+    const listed = await ask("listing the toolkits", "GET", `/api/v3/toolkits?sort_by=alphabetically&limit=${PAGE}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`);
+    for (const item of Array.isArray(listed.items) ? listed.items : []) {
+      const slug = isObject(item) ? text(item.slug).trim().toLowerCase() : "";
+      if (TOOLKIT.test(slug) && !found.has(slug)) found.set(slug, { slug, name: text((item as Json).name).trim() || slug });
+    }
+    cursor = text(listed.next_cursor) || undefined;
+    if (!cursor) break;
+  }
+  return { toolkits: [...found.values()].sort((a, b) => a.name.localeCompare(b.name, "en", { sensitivity: "base" }) || a.slug.localeCompare(b.slug)) };
+}
+
+/** Whether a saved Composio server's account is connected, as a refresh last read it at Composio: `connected`, an ACTIVE
+ *  account under its auth config; `pending`, only one its connect link started and not yet finished; `expired`, only an
+ *  expired one; `none`, no account (or only failed or inactive ones); `unknown`, Composio didn't answer. */
+export type ComposioAccountState = "connected" | "pending" | "expired" | "none" | "unknown";
+export const COMPOSIO_ACCOUNT_STATES: readonly ComposioAccountState[] = ["connected", "pending", "expired", "none", "unknown"];
+/** `labels`: each connected account's own label, for the owner to tell which account it is: the alias the owner gave it,
+ *  else the name Composio shows for it (`state.val.displayName`), else the word id Composio gave it. Never its id (which
+ *  a run's binding names), and nothing else of its state, which holds its tokens. */
+export type ComposioAccount = { state: ComposioAccountState; labels?: string[] };
+/** The longest label kept, and the most labels. */
+const MAX_LABEL = 120;
+const MAX_LABELS = 10;
+
+/** `value` as a label: one line of text, cut to MAX_LABEL; none when empty or shaped as an account's id. */
+export function accountLabel(value: unknown): string | undefined {
+  const line = typeof value === "string" ? value.replace(/[\u0000-\u001f\u007f]+/g, " ").trim().slice(0, MAX_LABEL).trim() : "";
+  return line && !COMPOSIO_ACCOUNT_ID.test(line) ? line : undefined;
+}
+
+const labelOf = (account: Json): string | undefined =>
+  accountLabel(account.alias) ?? (isObject(account.state) && isObject(account.state.val) ? accountLabel(account.state.val.displayName) : undefined) ?? accountLabel(account.word_id);
+
+/** The account of a saved Composio server's user for its toolkit, under its auth config (the one its MCP server serves),
+ *  as Composio lists it now. */
+export async function composioAccount(ask: Ask, of: { user: string; toolkit: string; auth_config: string }): Promise<ComposioAccount> {
+  const listed = await ask("checking the connected account", "GET", `/api/v3/connected_accounts?user_ids=${encodeURIComponent(of.user)}&toolkit_slugs=${encodeURIComponent(of.toolkit)}&auth_config_ids=${encodeURIComponent(of.auth_config)}`);
+  const mine = (Array.isArray(listed.items) ? listed.items : []).filter((a): a is Json => isObject(a) && isObject(a.auth_config) && a.auth_config.id === of.auth_config);
+  const active = mine.filter((a) => a.status === "ACTIVE");
+  if (active.length) {
+    const labels = [...new Set(active.map(labelOf).filter((label): label is string => !!label))].slice(0, MAX_LABELS);
+    return { state: "connected", ...(labels.length ? { labels } : {}) };
+  }
+  if (mine.some((a) => a.status === "INITIATED" || a.status === "INITIALIZING")) return { state: "pending" };
+  if (mine.some((a) => a.status === "EXPIRED")) return { state: "expired" };
+  return { state: "none" };
+}
+
 /** The toolkit's Composio-managed auth config not disabled, the one a save that names none stands on: none, if Composio
  *  has none for it yet. */
 export async function managedConfig(ask: Ask, toolkit: string): Promise<string | undefined> {
