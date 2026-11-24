@@ -262,7 +262,7 @@ function peek(text: string, from: number, count: number): string | undefined {
       span++;
     } else {
       while (end - at <= ANSWER_PIECE && text[end] === "%" && HEX_PAIR.test(text.slice(end + 1, end + 3))) end += 3;
-      if (end > at) found += Buffer.from(text.slice(at, end).replaceAll("%", ""), "hex").toString("utf8").replace(/\s+/g, "").length;
+      if (end > at) found += squeeze(Buffer.from(text.slice(at, end).replaceAll("%", ""), "hex").toString("utf8")).length;
       else if (text[at] === "\\" && (escape = jsonEscapeAt(text, at)) !== undefined) {
         end = escape.end;
         found += squeeze(escape.char).length;
