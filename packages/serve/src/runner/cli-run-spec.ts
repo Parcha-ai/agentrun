@@ -30,7 +30,7 @@ import { effortGuidance } from "../effort-guidance.js";
 import { outputContract } from "../answer-json.js";
 import { wireName } from "../catalog.js";
 import { environmentLine, runZone } from "../environment.js";
-import { factsOf, type HarnessEntry, harnessOf, recipeKeysOf } from "../harness-table.js";
+import { factsOf, type HarnessEntry, harnessOf, planRecipeOf } from "../harness-table.js";
 import { layHarnessKeys, openHarnessKeys, RECIPE_SIGN_IN_PERSON_ONLY, RECIPE_TURN_PERSON_ONLY } from "../harness-keys.js";
 import { laidLearned, learningFolderOf, secretsShown } from "../learning.js";
 import { laidOf, layLearningSeed } from "./learning-seed.js";
@@ -511,11 +511,12 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // is chosen, so it never falls to its owner's sign-in (a row counted at its claim may be gone, or not open, by now).
   // A person's claim that laid none keeps its session on the sign-in (or on nothing) for good: a trigger's message the
   // claim takes later is refused in it (personOnly), keys saved since or not, as no new claim opens them.
-  const recipeKeys = name === undefined ? undefined : recipeKeysOf(deps.env ?? {}, name);
+  const recipe = name === undefined ? undefined : planRecipeOf(deps.env ?? {}, name);
+  const recipeKeys = recipe?.keys;
   let personOnly: string | undefined;
-  if (name !== undefined && recipeKeys?.length) {
+  if (recipe !== undefined && recipeKeys?.length) {
     for (const key of recipeKeys) delete env[key];
-    const opened = deps.sealKey ? await openHarnessKeys(deps.store, deps.sealKey, name, recipeKeys) : ((await runnerSeam()?.harnessKeys()) ?? {});
+    const opened = deps.sealKey ? await openHarnessKeys(deps.store, deps.sealKey, recipe) : ((await runnerSeam()?.harnessKeys(recipe.digest)) ?? {});
     hold(Object.values(opened));
     if (recipeKeys.every((key) => typeof opened[key] === "string" && opened[key] !== "")) layHarnessKeys(env, opened);
     else if (!personStarted(launch)) throw new ClaimRefused(RECIPE_SIGN_IN_PERSON_ONLY);

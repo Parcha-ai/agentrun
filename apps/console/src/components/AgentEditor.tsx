@@ -46,7 +46,7 @@ export type Revision = { revision: string; version: number; current: boolean; no
  *  the server runs for it when a definition names none (null: none). */
 /** `computers`: the server's computers list (capabilities.computers.kinds), the Computer step's kinds; null on a server
  *  that lists none, where the step shows where runs go (places). */
-export type EditorCaps = { computers?: ComputerKindView[] | null; harnesses: { id: string; available: boolean; reason?: string; default_model?: string | null; models?: string[]; free_models?: FreeModel[] }[]; tools: ToolOffer[]; thinking: string[]; routePrefix?: string | null; decisionProvider?: string; places?: Places | null; learning?: "on" | "off"; mcp?: boolean; mcpHarnesses?: string[]; freeRequests?: number };
+export type EditorCaps = { computers?: ComputerKindView[] | null; harnesses: { id: string; available: boolean; reason?: string; needs?: string[]; default_model?: string | null; models?: string[]; free_models?: FreeModel[] }[]; tools: ToolOffer[]; thinking: string[]; routePrefix?: string | null; decisionProvider?: string; places?: Places | null; learning?: "on" | "off"; mcp?: boolean; mcpHarnesses?: string[]; freeRequests?: number };
 
 export type EditorProps = {
   /** The agent being edited, or null for a new one. */
@@ -489,20 +489,23 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
                   <div className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,9rem),1fr))] gap-3" role="radiogroup" aria-label="Harness">
                     {/* A harness this server runs is one label, a click anywhere on the card picks it. One it doesn't run says so
                         briefly (the served `available: false`), and the server's whole reason, an install command in it, is one
-                        tap away in a details line beside the label (so opening it never picks the card), wrapping inside it. */}
+                        tap away in a details line beside the label (so opening it never picks the card), wrapping inside it.
+                        One off only for want of a model key (`wantsKey`) is still a choice: a save of it is taken, with a
+                        warning, and it runs once a key is added. */}
                     {choices.map((h) => {
+                      const pickable = h.available || h.wantsKey === true;
                       const row = (
                         <>
-                          <input type="radio" name="harness" value={h.id} checked={f.harness === h.id} disabled={!h.available && f.harness !== h.id} onChange={() => pickHarness(h.id)} className="mt-1 accent-primary" />
-                          <span className="min-w-0"><span className="block break-words font-mono text-body font-semibold">{h.label}</span><span className="mt-0.5 block font-mono text-label text-muted-foreground">{h.available ? (isStarter(h.id) ? h.id.slice(h.id.indexOf(":") + 1) : h.id) : "Not available here"}</span></span>
+                          <input type="radio" name="harness" value={h.id} checked={f.harness === h.id} disabled={!pickable && f.harness !== h.id} onChange={() => pickHarness(h.id)} className="mt-1 accent-primary" />
+                          <span className="min-w-0"><span className="block break-words font-mono text-body font-semibold">{h.label}</span><span className="mt-0.5 block font-mono text-label text-muted-foreground">{h.available ? (isStarter(h.id) ? h.id.slice(h.id.indexOf(":") + 1) : h.id) : h.wantsKey ? "Needs a model key" : "Not available here"}</span></span>
                         </>
                       );
                       const edge = cn("min-w-0 border px-4 py-3", f.harness === h.id ? "border-foreground" : "border-border");
                       return h.available ? (
                         <label key={h.id} className={cn(edge, "flex cursor-pointer items-start gap-3")}>{row}</label>
                       ) : (
-                        <div key={h.id} className={cn(edge, "opacity-60")}>
-                          <label className="flex cursor-not-allowed items-start gap-3">{row}</label>
+                        <div key={h.id} className={cn(edge, !pickable && "opacity-60")}>
+                          <label className={cn("flex items-start gap-3", pickable ? "cursor-pointer" : "cursor-not-allowed")}>{row}</label>
                           {h.reason && (
                             <details className="mt-2 font-mono text-label text-muted-foreground">
                               <summary className="cursor-pointer select-none hover:text-foreground">Why, and what to do</summary>

@@ -188,7 +188,7 @@ describe("App, Settings", () => {
       if (path === "/v2/capabilities") return json(200, { models: { source: "providers", ready: true }, harnesses: [], tools, features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false }, ...features } });
       if (path === "/v2/settings/tools") return json(200, { web_search: { provider: "auto" }, web_fetch: { provider: "kernel" } });
       if (path === "/v2/settings/tool-keys") return json(200, keys);
-      if (path === "/v2/settings/harness-keys") return json(200, { harnesses: [{ id: "model-agent", label: "Model Agent", ready: false, keys: [{ name: "harness:model-agent:MODEL_AGENT_API_KEY", set: false, source: null, changed_at: null }] }] });
+      if (path === "/v2/settings/harness-keys") return json(200, { harnesses: [{ id: "model-agent", label: "Model Agent", named: true, ready: false, keys: [{ name: "harness:model-agent:MODEL_AGENT_API_KEY", set: false, source: null, changed_at: null }], kept: [], reenter: [] }] });
       if (path === "/v2/settings/api-keys") return json(200, { keys: [{ id: "01a20b30-b53a-7000-9abd-64340ac132cb", name: "billing app", created_at: "2026-11-03T12:00:00.000Z", last_used_at: null, secret: { name: "api-key:01a20b30-b53a-7000-9abd-64340ac132cb", set: true, source: "console", changed_at: "2026-11-03T12:00:00.000Z" } }], limit: 50 });
       if (path === "/v2/settings/webhook") return json(200, { configured: false });
       if (path === "/v2/settings/webhook/deliveries") return json(200, { attempts: [] });
@@ -272,15 +272,20 @@ describe("App, Settings", () => {
   });
 
   it("#/settings/harness-keys opens Harness keys, a tab only on a server started with a plan-billed recipe", async () => {
-    const page = await open({ tool_keys: { routes: true, at_rest: "sealed" }, harness_keys: { routes: true, at_rest: "sealed", harnesses: ["model-agent"] } }, "#/settings/harness-keys");
+    const page = await open({ tool_keys: { routes: true, at_rest: "sealed" }, harness_keys: { routes: true, at_rest: "sealed", harnesses: ["model-agent"], kept: [] } }, "#/settings/harness-keys");
     expect(page.host.querySelector("h1")?.textContent).toBe("Harness keys");
     expect([...page.host.querySelectorAll('nav[aria-label="Settings"] a')].map((a) => [a.textContent, a.getAttribute("aria-current")]).slice(0, 2)).toEqual([["API Keys", null], ["Harness keys", "page"]]);
     expect(page.asked).toContain("GET /v2/settings/harness-keys");
     expect(page.host.querySelector('[data-harness="model-agent"]')?.textContent).toContain("MODEL_AGENT_API_KEY");
     act(() => root?.unmount());
     document.body.innerHTML = "";
-    const none = await open({ tool_keys: { routes: true, at_rest: "sealed" }, harness_keys: { routes: true, at_rest: "sealed", harnesses: [] } }, "#/settings/keys");
+    const none = await open({ tool_keys: { routes: true, at_rest: "sealed" }, harness_keys: { routes: true, at_rest: "sealed", harnesses: [], kept: [] } }, "#/settings/keys");
     expect([...none.host.querySelectorAll('nav[aria-label="Settings"] a')].map((a) => a.textContent)).not.toContain("Harness keys");
+    act(() => root?.unmount());
+    document.body.innerHTML = "";
+    // No recipe named, keys still kept: the tab stays, so its keys can be removed.
+    const kept = await open({ tool_keys: { routes: true, at_rest: "sealed" }, harness_keys: { routes: true, at_rest: "sealed", harnesses: [], kept: ["old-agent"] } }, "#/settings/keys");
+    expect([...kept.host.querySelectorAll('nav[aria-label="Settings"] a')].map((a) => a.textContent)).toContain("Harness keys");
   });
 
   it("a server with a choice of provider and no tool keys has Settings, which opens on Tools", async () => {
