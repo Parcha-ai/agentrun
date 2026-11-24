@@ -2,7 +2,6 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { AgentEditor } from "./AgentEditor";
-import { DECISION, WORKFLOW } from "@/lib/agentForm";
 import { SERVED_AGENT } from "@/test/agent";
 import { optionsOf, pick, picker } from "@/test/picker";
 
@@ -186,81 +185,44 @@ describe("AgentEditor, tools a person chose by hand", () => {
   });
 });
 
-describe("AgentEditor, a new decision agent", () => {
-  const mount = async (props: Record<string, unknown>) => {
+describe("AgentEditor, creation and Settings configuration parity", () => {
+  it("offers the same runtime and thinking choices, including unavailable reasons, before and after creation", async () => {
     const { act } = await import("react");
     const { createRoot } = await import("react-dom/client");
     (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-    const host = document.body.appendChild(document.createElement("div"));
-    const root = createRoot(host);
-    act(() => root.render(createElement(AgentEditor, props as never)));
-    const click = (el: Element | null | undefined) => act(() => { (el as HTMLElement).click(); });
-    const button = (label: RegExp) => [...host.querySelectorAll("button")].find((b) => label.test(b.textContent ?? ""));
-    const type = (el: Element | null, value: string) => act(() => {
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(el, value);
-      el!.dispatchEvent(new Event("input", { bubbles: true }));
+    const sharedCaps = { ...caps, decisionProvider: "jev", thinking: ["low", "high"], harnesses: [{ id: "pi", available: true }, { id: "codex", available: false, reason: "Add a model key in Settings." }] };
+    const agent = { ...SERVED_AGENT, agent_id: "same-agent", revision: "r1", revisions: 1, archived_at: null, kind: "agentic" as const, definition: { version: 1, name: "Same agent", instructions: "Answer.", harness: "pi", skills: [], tools: [] } };
+    const seen: unknown[] = [];
+    for (const current of [null, agent]) {
+      const host = document.body.appendChild(document.createElement("div"));
+      const root = createRoot(host);
+      try {
+        act(() => root.render(createElement(AgentEditor, { agent: current, caps: sharedCaps, step: "settings" })));
+        const runtime = await optionsOf(picker(host, "Runtime")!);
+        expect(runtime.map(o => o.value)).toEqual(["pi", "codex"]);
+        expect(runtime.find(o => o.value === "codex")).toMatchObject({ disabled: true });
+        expect(host.textContent).toContain("Add a model key in Settings.");
+        expect(picker(host, "Model")).toBeTruthy();
+        expect(host.querySelector("#agent-max-cost")).toBeTruthy();
+        seen.push({ runtime, thinking: await optionsOf(picker(host, "Thinking")!), models: await optionsOf(picker(host, "Model")!) });
+      } finally { act(() => root.unmount()); host.remove(); }
+    }
+    expect(seen[0]).toEqual(seen[1]);
+  });
+
+  it.each(["computer", "tools", "skills", "learning"] as const)("uses the same %s controls before and after creation", step => {
+    const agent = { ...SERVED_AGENT, agent_id: "same-agent", revision: "r1", revisions: 1, archived_at: null, kind: "agentic" as const, definition: { version: 1, name: "Same agent", instructions: "Answer.", harness: "pi", skills: [], tools: [] } };
+    const sharedCaps = { ...caps, learning: "on" as const, computers: [{ kind: "none" as const, offered: true, groups: [], tools: ["read"], settings: [], record: { available: false, why: "No screen" }, providers: [] }] };
+    const controls = [null, agent].map(current => {
+      const host = document.createElement("div");
+      host.innerHTML = renderToStaticMarkup(createElement(AgentEditor, { agent: current, caps: sharedCaps, step, skillFiles: {} }));
+      const section = host.querySelector("section")!;
+      return [...section.querySelectorAll("input, textarea, button")].map(el => ({ tag: el.tagName, type: el.getAttribute("type"), name: el.getAttribute("aria-label") ?? el.getAttribute("name") ?? el.textContent, disabled: el.hasAttribute("disabled") }));
     });
-    return { host, click, button, type, act, done: () => act(() => root.unmount()) };
-  };
-
-  it("picks Decision in the harness picker on create: no instructions, tools or thinking to fill, and Create sends the choice", async () => {
-    let saved: { harness?: string; name?: string } | undefined;
-    const { host, click, button, type, act, done } = await mount({ agent: null, caps: { ...caps, decisionProvider: "jev" }, step: "settings", onSave: async (fields: { harness?: string; name?: string }) => { saved = fields; return null; } });
-    expect((await optionsOf(picker(host, "Runtime")!)).find(option => option.value === DECISION)?.disabled).toBe(false);
-    await pick(picker(host, "Runtime")!, DECISION);
-    expect(picker(host, "Thinking")).toBeNull();
-    expect(button(/Tools/)).toBeUndefined();
-    click(button(/General/));
-    expect(host.querySelector("textarea")).toBeNull();
-    expect(host.textContent).toContain("Workflow step");
-    type(host.querySelector('input[placeholder="e.g., Invoice checker"]'), "Gambling check");
-    await act(async () => { button(/^Create$/)!.click(); });
-    expect(saved).toMatchObject({ harness: DECISION, name: "Gambling check" });
-    done();
-  });
-
-  it("shows Decision disabled, with why, when the server runs no decision workflows", async () => {
-    const { host, done } = await mount({ agent: null, caps, step: "settings" });
-    expect((await optionsOf(picker(host, "Runtime")!)).find(option => option.value === DECISION)?.disabled).toBe(true);
-    expect(host.querySelector("details")?.textContent).toContain("decision workflows");
-    done();
-  });
-
-  it("offers five runtime choices when creating, including Decision and Workflow", async () => {
-    const three = { ...caps, harnesses: [{ id: "pi", available: true }, { id: "claude-agent", available: true }, { id: "codex", available: true }], decisionProvider: "jev" };
-    const { host, done } = await mount({ agent: null, caps: three, step: "settings" });
-    expect((await optionsOf(picker(host, "Runtime")!)).map(option => option.value)).toEqual(["pi", "claude-agent", "codex", DECISION, WORKFLOW]);
-    expect(host.querySelector('input[type="radio"][name="harness"]')).toBeNull();
-    done();
-  });
-
-  it("offers no Decision and no Workflow when editing an agent", async () => {
-    const agent = { agent_id: "old", kind: "agentic", revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "Old", instructions: "Answer.", harness: "pi", skills: [], tools: [] } };
-    const { host, done } = await mount({ agent, caps: { ...caps, decisionProvider: "jev" }, step: "settings" });
-    expect((await optionsOf(picker(host, "Runtime")!)).map(option => option.value)).toEqual(["pi", "claude-agent"]);
-    done();
-  });
-
-  it("picks Workflow on a server with no decision provider: enabled where Decision is not, no instructions, tools, thinking or model to fill, and Create sends the choice", async () => {
-    let saved: { harness?: string; name?: string } | undefined;
-    const { host, click, button, type, act, done } = await mount({ agent: null, caps, step: "settings", onSave: async (fields: { harness?: string; name?: string }) => { saved = fields; return null; } });
-    const options = await optionsOf(picker(host, "Runtime")!);
-    expect(options.find(option => option.value === DECISION)?.disabled).toBe(true);
-    expect(options.find(option => option.value === WORKFLOW)?.disabled).toBe(false);
-    await pick(picker(host, "Runtime")!, WORKFLOW);
-    expect(picker(host, "Thinking")).toBeNull();
-    expect(picker(host, "Model")).toBeNull();
-    expect(button(/Tools/)).toBeUndefined();
-    click(button(/General/));
-    expect(host.querySelector("textarea")).toBeNull();
-    expect(host.textContent).toContain("paste a workflow's JSON over it, in the Workflow step");
-    type(host.querySelector('input[placeholder="e.g., Invoice checker"]'), "Next steps");
-    await act(async () => { button(/^Create$/)!.click(); });
-    expect(saved).toMatchObject({ harness: WORKFLOW, name: "Next steps" });
-    done();
+    expect(controls[0].length).toBeGreaterThan(0);
+    expect(controls[0]).toEqual(controls[1]);
   });
 });
-
 
 // Runtime setup remains accessible by keyboard or touch and keeps long install instructions inside the pane.
 describe("AgentEditor, a runtime this server doesn't run", () => {

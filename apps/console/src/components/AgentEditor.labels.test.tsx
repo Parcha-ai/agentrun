@@ -3,7 +3,6 @@ import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
 import { AgentEditor } from "./AgentEditor";
 import { agentFixture, editorCaps } from "@/fixtures";
-import { DECISION, WORKFLOW } from "@/lib/agentForm";
 import { pick, picker } from "@/test/picker";
 
 // Each of the editor's own inputs is named by its label: a screen reader reads "Name" on the name input, a click on the
@@ -107,15 +106,6 @@ describe("the agent editor's composite field groups", () => {
     action.focus();
     expect(document.activeElement).toBe(action);
     expect([...group.querySelectorAll("label")].filter((label) => label.htmlFor && !document.getElementById(label.htmlFor))).toEqual([]);
-  });
-
-  it.each([WORKFLOW, DECISION])("names the new %s starter explanation instead of labelling a nonexistent input", async (harness) => {
-    const { host } = await open({ step: "settings", caps: { ...editorCaps, decisionProvider: "jev" } });
-    await pick(picker(host, "Runtime")!, harness);
-    await act(async () => { [...host.querySelectorAll("button")].find((button) => button.textContent?.includes("General"))!.click(); });
-    const group = namedGroup(host, "Workflow");
-    expect(group.textContent).toContain(harness === DECISION ? "A decision agent is a workflow" : "A workflow agent starts from a one-step workflow");
-    expect(group.querySelector("label")).toBeNull();
   });
 
   it("keeps composite group naming and help IDs unique across Tools and Skills editors", async () => {

@@ -3,7 +3,7 @@ import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
 import { AgentEditor, type EditorCaps, type Revision } from "./AgentEditor";
 import { PerHarness } from "./ToolSettings";
-import { type Agent, DECISION, toolOffers, toolsOnSwitch, WORKFLOW } from "@/lib/agentForm";
+import { type Agent, toolOffers, toolsOnSwitch } from "@/lib/agentForm";
 import { SERVED_AGENT } from "@/test/agent";
 import { placesOf } from "@/lib/place";
 import { optionsOf, pick as pickOption, picker } from "@/test/picker";
@@ -97,18 +97,6 @@ describe("AgentEditor: a harness switch keeps no tool the new harness can't run"
 
   it("keeps a tool capabilities don't list, for the server to judge", () => {
     expect(toolsOnSwitch("claude-agent", ["read", "a_future_tool", "ask_person"], [], caps.tools)).toEqual({ tools: ["read", "a_future_tool"], held: ["ask_person"] });
-  });
-});
-
-describe("AgentEditor: a starter on a new agent", () => {
-  it("names the starters in the picker instead of exposing their internal values", async () => {
-    const host = document.body.appendChild(document.createElement("div"));
-    root = createRoot(host);
-    act(() => root!.render(createElement(AgentEditor, { agent: null, revisions: [], caps: { ...caps, decisionProvider: "openrouter" }, step: "settings", onSave: async () => null } as never)));
-    const options = await optionsOf(picker(host, "Runtime")!);
-    for (const [value, shown] of [[DECISION, "Decision"], [WORKFLOW, "Workflow"]]) {
-      expect(options.find(option => option.value === value)).toMatchObject({ text: shown, disabled: false });
-    }
   });
 });
 

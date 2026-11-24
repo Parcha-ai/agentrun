@@ -3,7 +3,6 @@ import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it } from "vitest";
 import { AgentEditor } from "./AgentEditor";
-import { DECISION } from "@/lib/agentForm";
 import { SERVED_AGENT } from "@/test/agent";
 import { pick, picker } from "@/test/picker";
 
@@ -52,13 +51,11 @@ describe("AgentEditor, the agent's default spend cap per run", () => {
     expect(link?.getAttribute("href")).toBe("https://github.com/Parcha-ai/agentrun/blob/main/packages/serve/README.md#spend-cap");
   });
 
-  it("is offered on a workflow agent as on an agentic one, and not on a new Decision agent, which starts with none", async () => {
+  it("is offered on workflow, existing agentic and new agentic agents", async () => {
     const flow = { ...SERVED_AGENT, agent_id: "wf", kind: "workflow" as const, revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "Flow", workflow: { nodes: [] }, skills: [], tools: [], max_cost_usd: 3 } };
     expect(renderToStaticMarkup(createElement(AgentEditor, { agent: flow, caps, step: "settings" })).match(/<input[^>]*id="agent-max-cost"[^>]*>/)?.[0]).toContain('value="3"');
     const { host } = mount({ agent: null, caps: { ...caps, decisionProvider: "jev" } });
     expect(host.textContent).toContain(LABEL);
-    await pick(picker(host, "Runtime")!, DECISION);
-    expect(host.textContent).not.toContain(LABEL);
   });
 
   it("a workflow agent's save sends its cap with its workflow, as an agentic agent's does", async () => {

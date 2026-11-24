@@ -133,13 +133,11 @@ describe("AgentEditor, Learning settings navigation", () => {
     }
   });
 
-  it("keeps creation learning in its own section and hides it for a workflow starter", async () => {
+  it("keeps creation learning in its own section across runtime settings visits", async () => {
     const e = mount(null, caps("on"));
     expect(e.sw()).toBeTruthy();
     await pick(picker(e.host, "Settings section")!, "settings");
-    await pick(picker(e.host, "Runtime")!, "starter:workflow");
     expect(e.sw()).toBeNull();
-    await pick(picker(e.host, "Runtime")!, "pi");
     await pick(picker(e.host, "Settings section")!, "learning");
     expect(e.sw()).toBeTruthy();
   });
