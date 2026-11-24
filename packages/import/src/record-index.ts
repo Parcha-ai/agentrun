@@ -60,16 +60,14 @@ function bytesHash(b: Uint8Array, from: number, to: number): number {
   return mix(h ^ (to - from));
 }
 
-/** `t`'s tags, built when it has none for its slots (an index saved before tags); none below TAGGED slots. */
-function tagsOf(t: Table, hashOf: (e: number) => number): Uint8Array | undefined {
-  if (t.slots.length < TAGGED) return undefined;
-  if (t.tags !== undefined && t.tags.length === t.slots.length) return t.tags;
+/** `t`'s tags: none below TAGGED slots; built for an index saved before tags (retag). */
+const uuidTags = (t: Uuids): Uint8Array | undefined => (t.slots.length < TAGGED ? undefined : t.tags !== undefined && t.tags.length === t.slots.length ? t.tags : retag(t, (e) => uuidHash(t.words[e * 4]!, t.words[e * 4 + 1]!, t.words[e * 4 + 2]!, t.words[e * 4 + 3]!)));
+const otherTags = (t: Others): Uint8Array | undefined => (t.slots.length < TAGGED ? undefined : t.tags !== undefined && t.tags.length === t.slots.length ? t.tags : retag(t, (e) => bytesHash(t.bytes, e === 0 ? 0 : t.ends[e - 1]!, t.ends[e]!)));
+function retag(t: Table, hashOf: (e: number) => number): Uint8Array {
   const tags = new Uint8Array(t.slots.length);
   for (let s = 0; s < t.slots.length; s += 1) if (t.slots[s] !== 0) tags[s] = hashOf(t.slots[s]! - 1) >>> 24;
   return (t.tags = tags);
 }
-const uuidTags = (t: Uuids) => tagsOf(t, (e) => uuidHash(t.words[e * 4]!, t.words[e * 4 + 1]!, t.words[e * 4 + 2]!, t.words[e * 4 + 3]!));
-const otherTags = (t: Others) => tagsOf(t, (e) => bytesHash(t.bytes, e === 0 ? 0 : t.ends[e - 1]!, t.ends[e]!));
 
 /** The entry of `t` with these words, else -1. */
 function findUuid(t: Uuids, w0: number, w1: number, w2: number, w3: number, h: number): number {
