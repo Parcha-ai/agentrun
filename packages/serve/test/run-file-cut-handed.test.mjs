@@ -8,8 +8,10 @@
 // does. Read raw, a file of a run that is shown is the bytes as written. The model gateway is a loopback stand-in (fixtures/faux-gateway.mjs) behind a front that holds
 // the run's first model call, so the test acts while the run is live.
 import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
 import { createServer } from "node:http";
 import { mkdir, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { join } from "node:path";
 import { test } from "node:test";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
@@ -17,6 +19,8 @@ import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
 import { WITHHELD_TITLE } from "../dist/run-view.js";
 import { raw } from "./store-target.mjs";
 import { agent, follow, runDir, serve, withEnv } from "./support.mjs";
+
+const { Webhook } = createRequire(import.meta.url)("standardwebhooks");
 
 const KEY = `not-a-secret-${"handed-cut-model-key"}-5e09b7`;
 const KEY_TWO = `not-a-secret-${"handed-cut-message-key"}-0d2f91`;
@@ -112,6 +116,14 @@ const setCensus = (data, runId, census) => write(data, "UPDATE run_launch SET ce
 
 /** Run `runId`'s launch sealed part replaced by bytes that don't open under any key. */
 const damageSeal = (data, runId) => write(data, "UPDATE run_launch SET sealed = ? WHERE run_id = ?", new Uint8Array(64).fill(9), runId);
+
+/** `body` posted to trigger `triggerId`'s webhook, signed with its `secret` (Standard Webhooks): its status and answer. */
+async function hook(baseUrl, triggerId, body, secret) {
+  const id = `msg_${randomBytes(8).toString("hex")}`;
+  const at = Math.floor(Date.now() / 1000);
+  const res = await fetch(`${baseUrl}/hooks/${triggerId}`, { method: "POST", headers: { "webhook-id": id, "webhook-timestamp": String(at), "webhook-signature": new Webhook(secret).sign(id, new Date(at * 1000), body) }, body });
+  return { status: res.status, body: await res.json().catch(() => null) };
+}
 
 test("a run's own model_key is cut from its files by a cut read while it runs, and after its end by its census; a file edited or written after the end is withheld; read raw, the bytes as written", { timeout: 180_000 }, async (t) => {
   // The model's answer says the key too: what the runner keeps of the run (its view, its list row) is cut as it is written.
@@ -219,6 +231,21 @@ test("a message's text is cut of the key it hands and of the one the run held, s
   const commands = (await run.store.commands(run.runId, 0)).map((command) => command.body);
   assert.equal(held(JSON.stringify(commands)), false, "not in the message's stored command row");
   assert.match(JSON.stringify(commands), /Again: \[redacted\], not \[redacted\]\./, "cut in place");
+});
+
+test("a trigger's message to a run that says the key the run was handed is cut of it where it is written, as a person's message is", { timeout: 180_000 }, async (t) => {
+  const run = await liveRun(t, { start: { model_key: KEY, max_cost_usd: 1 } });
+  const made = await run.api("POST", "/triggers", { name: "inbox", source: { kind: "webhook" }, target: { kind: "message_run", run_id: run.runId, input: { content: `Use ${KEY} again.` } } });
+  assert.equal(made.status, 201, JSON.stringify(made.body));
+  const fired = await hook(run.baseUrl, made.body.id, "{}", made.body.signing_secret);
+  assert.equal(fired.status, 202, JSON.stringify(fired.body));
+  const bodies = async () => (await run.store.commands(run.runId, 0)).map((command) => command.body);
+  await until(async () => (await bodies()).some((body) => body?.answers === false), "the firing's message row");
+  const commands = JSON.stringify(await bodies());
+  assert.equal(commands.includes(KEY), false, `not in the firing's stored command row: ${commands}`);
+  assert.match(commands, /Use \[redacted\] again\./, "cut in place");
+  assert.equal((await served(run)).text.includes(KEY), false, "not in its view, list row or timeline");
+  run.release();
 });
 
 test("two messages at once, one that hands a new model_key and one that says that key without handing it: the second, written after the first, is cut of it, so it never shows after the run's end", { timeout: 180_000 }, async (t) => {

@@ -2198,6 +2198,16 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     timelineRows: (forStore, runId, context, calls) => servedTimelineRows(servedTimelineDeps, forStore, runId, context, calls),
     runView: (forStore, runId) => viewOverStore(forStore, runId, viewDepsFor(ownOriginOf())),
   });
+  /** `text` as a message to run `runId` is written: cut of `handed` (what the message itself hands) and of what the run
+   *  holds now (its turn's end erases those, and a read after it could no longer cut them); a run whose seal doesn't
+   *  open is withheld till then anyway. Read inside the turn that writes the message (runWrite), never before it: a
+   *  message written first in that turn (one that hands a new key) is in the seal read here, so a message that says
+   *  that key without handing it is cut of it too. Both writers of a message read it: a person's (sendMessage) and a
+   *  trigger's (trigger-targets.ts message_run). */
+  async function cutHeld(runId: string, text: string, handed: readonly string[] = []): Promise<string> {
+    const held = launchValuesOf(sealKey, runId, (await store.runs.launch(runId)).sealed);
+    return cutHanded(text, [...handed, ...(held === "unreadable" ? [] : held)]);
+  }
   const triggerDeps: TriggerTargetDeps = {
     ...(options.beforeSubmit ? { beforeSubmit: options.beforeSubmit } : {}),
     start: startDeps,
@@ -2210,6 +2220,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     planRecipe: (harness: string) => recipeHarness(base, harness) === "plan" && !harnessKeysSavedHere(data, harness),
     // Read when a firing's message is sent (declared below, with the delete turn).
     runWrite: (agentId, runId, work) => runWrite(agentId, runId, work),
+    cutHeld: (runId, text) => cutHeld(runId, text),
     runStatus: async (runId: string) => ((await viewOverStore(store, runId, viewDepsFor(ownOriginOf())))?.status as string | undefined) ?? null,
     completedOutput: async (runId: string) => {
       const view = await viewOverStore(store, runId, viewDepsFor(ownOriginOf()));
@@ -5225,14 +5236,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
           if (given.length > MAX_MESSAGE) throw invalid([{ field: "content", reason: "too_long", message: `content is at most ${MAX_MESSAGE} characters` }]);
           // Its mcp_auth and model_key replace the run's in the steer's own write, so the turn it starts uses them.
           // In its agent's delete turn (runWrite): a message that may open the run again never lands under its purge.
+          // Its text is cut of what it hands and of what the run holds, read in that turn (cutHeld).
           const { mode, messageId } = await runWrite(run.agentId, run.id, async () => {
-            // Its text as written to the run is cut of what it hands and of what the run holds now (its turn's end erases
-            // those, and a read after it could no longer cut them): a run whose seal doesn't open is withheld till then
-            // anyway. What the run holds is read here, in the turn that writes the message, never before it: a message
-            // written first in that turn (one that hands a new key) is in the seal read here, so a message that says that
-            // key without handing it is cut of it too.
-            const held = launchValuesOf(sealKey, run.id, (await store.runs.launch(run.id)).sealed);
-            const content = cutHanded(given, [...handedSecretValues(secrets), ...(held === "unreadable" ? [] : held)]);
+            const content = await cutHeld(run.id, given, handedSecretValues(secrets));
             return message(store, run, content, { ...(seal ? { launchSealed: seal } : {}), ...(options.beforeSubmit ? { beforeSubmit: options.beforeSubmit } : {}) });
           });
           // The run's state after the command row is written (the run view): the runner applies the steer; the client polls.
