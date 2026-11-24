@@ -19,7 +19,7 @@ import { fileURLToPath } from "node:url";
 import { DaemonClient } from "./client.js";
 import { CreateRequests, endedWords, labelsDiffer, otherSpecWords } from "./create-requests.js";
 import { PHONE_GROUPS, PHONE_HARNESS } from "./descriptors/phone-harness.js";
-import { type ComputerClient, type DaemonMethod, type DaemonMethods, type HelloResult, PROTOCOL_VERSION } from "./protocol.js";
+import { type ComputerClient, type DaemonMethod, type DaemonMethods, type HelloResult, helloProblem } from "./protocol.js";
 import {
 	type AttachedComputer,
 	type CallContext,
@@ -1157,7 +1157,8 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		}
 		const { hello } = daemon.value;
 		if (hello.version !== this.#daemonVersion) return letGo(fail("refused", `hello: the daemon reports version ${hello.version}, expected ${this.#daemonVersion}`));
-		if (hello.protocol !== PROTOCOL_VERSION) return letGo(fail("refused", `hello: phoned speaks protocol ${hello.protocol}, and this provider ${PROTOCOL_VERSION}`));
+		const problem = helloProblem(hello.protocol, "provider");
+		if (problem) return letGo(fail("refused", `hello: phoned ${problem}`));
 		const client = new PhoneClient(daemon.value.client, release);
 		return ok({ client, hello, close: () => client.closed() });
 	}

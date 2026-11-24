@@ -354,6 +354,15 @@ test("hello: the provider's version, its kind and exactly its groups, linux, and
 	one(drift(SPEC, inspected(), { ...HELLO, version: "0.0.1" }, EXPECTED), /version 0\.0\.1/);
 });
 
+test("the protocol version rule, written once (helloProblem): exactly this version, older, newer and none refused alike, in the words every hello reader says after whoever answered", () => {
+	const { helloProblem } = computer;
+	assert.equal(helloProblem(PROTOCOL_VERSION, "server"), undefined);
+	for (const other of ["0.1", "0.3", "1.0", `${PROTOCOL_VERSION}.0`]) assert.equal(helloProblem(other, "server"), `speaks protocol ${other}, and this server ${PROTOCOL_VERSION}`, other);
+	assert.equal(helloProblem(undefined, "provider"), `speaks protocol undefined, and this provider ${PROTOCOL_VERSION}`);
+	// The drift list asks the same rule, in its own words.
+	for (const [other, said] of [["0.1", /protocol 0\.1, expected exactly/], ["0.3", /protocol 0\.3, expected exactly/], [undefined, /protocol nothing, expected exactly/]]) one(helloDrift({ ...HELLO, protocol: other }, EXPECTED), said);
+});
+
 test("every mismatch is listed, not only the first", () => {
 	const found = drift(
 		SPEC,

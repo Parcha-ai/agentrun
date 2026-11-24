@@ -26,7 +26,7 @@
 import { createHash, randomBytes, randomInt } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
-import { ATTACH_CLOSE, ATTACH_HEARTBEAT_MS, ATTACH_IDLE_MS, ATTACH_PATH, ATTACH_SUBPROTOCOL, type AttachHub, type AttachSocket, type ComputerKind, type ComputerOs, type HelloResult, hostedDaemonPath, MAX_LINE_BYTES, type MachineTokens, mintedComputer, newMachineToken, type PairedComputer, PAIRING_CODE_PATTERN, PAIRING_CODE_TTL_MS, PROTOCOL_VERSION, RUN_LABEL } from "@parcha/agentrun-computer";
+import { ATTACH_CLOSE, ATTACH_HEARTBEAT_MS, ATTACH_IDLE_MS, ATTACH_PATH, ATTACH_SUBPROTOCOL, type AttachHub, type AttachSocket, type ComputerKind, type ComputerOs, type HelloResult, helloProblem, hostedDaemonPath, MAX_LINE_BYTES, type MachineTokens, mintedComputer, newMachineToken, type PairedComputer, PAIRING_CODE_PATTERN, PAIRING_CODE_TTL_MS, RUN_LABEL } from "@parcha/agentrun-computer";
 import { WebSocket, WebSocketServer } from "ws";
 import { ApiError, type InputIssue, invalid } from "./errors.js";
 import { dialHost, LIVE_PROOF_HEADER, type LiveReach, relayProof } from "./live-reach.js";
@@ -169,8 +169,9 @@ export function pairBodyOf(body: unknown): { code: string; name: string; hello: 
 /** Why a driver's hello may not pair here, in the version rule's words (attach.ts helloMismatch), or undefined: its
  *  protocol version must be this server's. The code stays good, for the driver once it is updated. */
 export function pairRefusal(name: string, hello: HelloResult): string | undefined {
-  if (hello.protocol === PROTOCOL_VERSION) return undefined;
-  return `${name}'s driver ${hello.version} speaks protocol ${hello.protocol}, and this server ${PROTOCOL_VERSION}: update whichever is older (the driver on that computer, or this server, which whoever runs it updates), then pair with the same code`;
+  const problem = helloProblem(hello.protocol, "server");
+  if (!problem) return undefined;
+  return `${name}'s driver ${hello.version} ${problem}: update whichever is older (the driver on that computer, or this server, which whoever runs it updates), then pair with the same code`;
 }
 
 /** A paired computer as GET /v2/computers lists it under `paired`: whatever its hello says it is (its os and version, its

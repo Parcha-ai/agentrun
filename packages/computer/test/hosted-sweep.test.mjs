@@ -75,6 +75,15 @@ test("usage errors, a before file of another provider, and a provider not on the
 	assert.equal(victim.deleted, false);
 });
 
+test("the usage names every provider on the shared machine-host adapter, read from the registry's conformance modules: each one --provider takes, and none it refuses", async () => {
+	const { sweepableProviders } = await import("../dist/conformance/sweep.js");
+	const ids = await sweepableProviders();
+	for (const id of ["e2b", "modal", "cloudflare", "fly", "daytona"]) assert.ok(ids.includes(id), `${id} is on the adapter: ${ids.join(", ")}`);
+	for (const id of ["docker", "browserbase", "kernel"]) assert.ok(!ids.includes(id), `${id} has no createHost: ${ids.join(", ")}`);
+	const { err } = await sweep([], fakeHost().host);
+	assert.ok(err.includes(`a provider on the shared machine-host adapter (${ids.join(", ")})`), err);
+});
+
 test("sweepMachines over a run's label: what the conformance runner calls at a run's end", async () => {
 	const fake = fakeHost();
 	const left = fake.add({ labels: { ...OURS, ...RUN } });

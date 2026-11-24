@@ -251,8 +251,6 @@ export function browserbaseRest({ apiKey, apiUrl = BROWSERBASE_API_URL, projectI
 const DOWNLOADS_PAGE = 100;
 const MAX_PAGES = 100;
 
-/** How long after a saving session ends Browserbase may still be writing its context back. */
-export const BROWSERBASE_PROFILE_SETTLE_MS = 5_000;
 /** The directory Browserbase syncs a session's downloads from: a driver sets the download behaviour into it. */
 export const BROWSERBASE_DOWNLOADS_PATH = "downloads";
 
@@ -274,6 +272,27 @@ export interface BrowserbaseProviderOptions {
 	sleep?: (ms: number) => Promise<void>;
 }
 
+/**
+ * A session's signed CDP URL as a driver dials it: on the gateway that fronts the sessions' sockets where a server is
+ * behind one (BROWSERBASE_CONNECT_BASE_URL), its path under the gateway's and the signing query kept; else as Browserbase
+ * gave it. Only a URL on Browserbase's own domain moves, and a gateway that is no URL moves none.
+ */
+export function throughGateway(connectUrl: string, connectBase: string | undefined): string {
+	if (!connectBase) return connectUrl;
+	try {
+		const target = new URL(connectBase);
+		const url = new URL(connectUrl);
+		const host = url.hostname.toLowerCase();
+		if (host !== CDP_DOMAIN && !host.endsWith(`.${CDP_DOMAIN}`)) return connectUrl;
+		url.protocol = target.protocol;
+		url.host = target.host;
+		url.pathname = target.pathname.replace(/\/$/, "") + url.pathname;
+		return url.toString();
+	} catch {
+		return connectUrl;
+	}
+}
+
 const refOf = (s: BrowserbaseSession): ComputerRef => ({ id: s.id, name: s.id });
 const deadlineOf = (s: BrowserbaseSession) => {
 	const at = typeof s.expiresAt === "string" ? new Date(s.expiresAt) : undefined;
@@ -286,14 +305,16 @@ export class BrowserbaseProvider implements ComputerProvider, BrowserComputerPro
 	readonly version = VERSION;
 	/**
 	 * A session ends at its timeout, a wall clock; it may be stealth (Verified, with the CAPTCHA solver); it opens a
-	 * context as a profile (written back about 5 s after a saving session ends) and keeps what is saved into downloads/.
-	 * capabilities().browser gives it.
+	 * context as a profile (written back within its descriptor's settle window after a saving session ends) and keeps
+	 * what is saved into downloads/. capabilities().browser gives it.
 	 */
 	readonly #browser: BrowserFeatures;
 	readonly profiles: BrowserProfiles;
 	readonly downloads: BrowserDownloads;
 	readonly #api: BrowserbaseApi;
 	readonly #projectId: string | undefined;
+	/** The gateway that fronts the sessions' sockets (BROWSERBASE_CONNECT_BASE_URL), where a server is behind one. */
+	readonly #connectBase: string | undefined;
 	readonly #urls: UrlStore;
 	readonly #confirm: ReleaseConfirm;
 	readonly #sleep: (ms: number) => Promise<void>;
@@ -301,7 +322,8 @@ export class BrowserbaseProvider implements ComputerProvider, BrowserComputerPro
 	constructor({ apiKey, projectId, apiUrl, env = {}, fetch: fetcher, confirm = DEFAULT_CONFIRM, sleep = defaultSleep }: BrowserbaseProviderOptions) {
 		if (typeof apiKey !== "string" || apiKey === "") throw new Error("set options.apiKey to a Browserbase API key: the provider reads no environment");
 		const gateway = env.BROWSERBASE_BASE_URL?.trim() || undefined;
-		const behindGateway = Boolean(gateway || env.BROWSERBASE_CONNECT_BASE_URL?.trim());
+		this.#connectBase = env.BROWSERBASE_CONNECT_BASE_URL?.trim() || undefined;
+		const behindGateway = Boolean(gateway || this.#connectBase);
 		this.#projectId = behindGateway ? undefined : projectId || undefined;
 		const base = apiUrl || gateway;
 		this.#api = browserbaseRest({ apiKey, ...(base ? { apiUrl: base } : {}), ...(this.#projectId ? { projectId: this.#projectId } : {}), ...(fetcher ? { fetch: fetcher } : {}) });
@@ -311,7 +333,7 @@ export class BrowserbaseProvider implements ComputerProvider, BrowserComputerPro
 		this.#browser = {
 			timeout: "wall-clock",
 			stealth: true,
-			profiles: { settleMs: BROWSERBASE_PROFILE_SETTLE_MS },
+			profiles: { settleMs: BROWSERBASE.profiles.settleMs },
 			downloads: { path: BROWSERBASE_DOWNLOADS_PATH },
 		};
 		this.profiles = { create: (context) => this.#createProfile(context), remove: (pointer, context) => this.#removeProfile(pointer, context) };
@@ -619,7 +641,7 @@ export class BrowserbaseProvider implements ComputerProvider, BrowserComputerPro
 		this.#urls.set(id, url);
 		const hello = browserHello(VERSION, this.capabilities().groups);
 		const client = browserClient(hello, (signal) => this.#alive(id, signal));
-		return ok({ client, hello, cdp: { url }, close: async () => client.close() });
+		return ok({ client, hello, cdp: { url: throughGateway(url, this.#connectBase) }, close: async () => client.close() });
 	}
 
 	/** Asks Browserbase to release the session and waits until it reads as ended; one already ended or unknown is released. */

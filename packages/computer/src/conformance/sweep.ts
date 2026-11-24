@@ -24,7 +24,7 @@ import { isCommand } from "../entry.js";
 import type { MachineHost } from "../host.js";
 import { hostCall } from "../hosted/process.js";
 import { foundBy, listedBy, NAME_LABEL, settle } from "../hosted/provider.js";
-import { providerModule } from "../providers.js";
+import { providerIds, providerModule } from "../providers.js";
 import { ok, type Result } from "../result.js";
 import { RUN_LABEL } from "./runner.js";
 
@@ -109,8 +109,21 @@ interface HostModule {
 	sweepScope?(options: { env?: Record<string, string | undefined> }): string;
 }
 
-const USAGE = `usage: node packages/computer/dist/conformance/sweep.js --provider <id> --before <file> | --after <file>
-  --provider <id>  a provider on the shared machine-host adapter (e2b, agent37, morph, daytona, boxd, smolcloud, groundbox)
+/** The registry's providers on the shared machine-host adapter, in its order: each whose conformance module has
+ *  createHost (what moduleOf asks of one). Read from the modules, so a provider added there is listed with no edit. */
+export async function sweepableProviders(): Promise<string[]> {
+	const ids: string[] = [];
+	for (const id of providerIds) {
+		const module = (await providerModule(id)
+			.then((one) => one.conformance?.())
+			.catch(() => undefined)) as HostModule | undefined;
+		if (typeof module?.createHost === "function") ids.push(id);
+	}
+	return ids;
+}
+
+const usage = async () => `usage: node packages/computer/dist/conformance/sweep.js --provider <id> --before <file> | --after <file>
+  --provider <id>  a provider on the shared machine-host adapter (${(await sweepableProviders()).join(", ")})
   --before <file>  record the id of every machine the vendor lists with ${COMPUTER_LABEL}=1 into <file>
   --after <file>   delete every machine listed with ${COMPUTER_LABEL}=1 and ${RUN_LABEL} whose id is not in <file>, read
                    each back until the vendor no longer has it (up to 60 s each), and print
@@ -208,7 +221,7 @@ export async function main(argv: string[], io: SweepIo = {}): Promise<number> {
 		if (args.mode === "after") before = beforeIds(args.file, args.provider, scope);
 		host = io.host ?? (await (module as HostModule & Required<Pick<HostModule, "createHost">>).createHost({ env }));
 	} catch (error) {
-		await write(stderr, `${(error as Error).message}\n${error instanceof Usage ? `${USAGE}\n` : ""}`);
+		await write(stderr, `${(error as Error).message}\n${error instanceof Usage ? `${await usage()}\n` : ""}`);
 		return 2;
 	}
 	if (before === undefined) {

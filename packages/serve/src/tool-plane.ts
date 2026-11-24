@@ -314,6 +314,13 @@ function browserProviderIds(): string[] {
 }
 export const BROWSER_VENDOR_IDS: readonly string[] = Object.freeze(browserProviderIds());
 export const BROWSER_KEYS: Readonly<Record<string, readonly string[]>> = Object.freeze(Object.fromEntries(BROWSER_VENDORS.map((vendor) => [vendor.id, vendor.keys])));
+/** The browser vendor where nothing names one (a run kept before its plane was, a page's key row, the capabilities'
+ *  browser): the registry's first hosted browser, the one `auto` tries first (Browserbase). */
+export const DEFAULT_BROWSER_VENDOR: Resolution = (() => {
+  const first = BROWSER_VENDORS[0];
+  if (!first) throw new Error("the computer registry declares no hosted browser provider");
+  return first.id as Resolution;
+})();
 type BrowserVendor = string;
 const LABELS: Readonly<Record<string, string>> = Object.freeze(Object.fromEntries(BROWSER_VENDORS.map((vendor) => [vendor.id, vendor.label])));
 const isVendor = (name: unknown): name is BrowserVendor => typeof name === "string" && Object.hasOwn(BROWSER_KEYS, name);
@@ -419,10 +426,11 @@ export function recheckPlane(plane: Plane, env: NodeJS.ProcessEnv, now?: { fresh
 }
 
 /** The Plane kept for a run made before its plane was kept, resolved at a later launch (runs.ts): its browser stays
- *  Browserbase, the one vendor there was then, never today's pick, which could check its sessions at another vendor. It
- *  keeps the vendor, never a refusal: the plane each launch hands over is checked again (recheckPlane), so Browserbase's
- *  keys missing make it unavailable for that launch alone, and restored keys make the next one run. */
-export const keptFromBefore = (plane: Plane): Plane => (plane.browser === undefined ? plane : { ...plane, browser: "browserbase" });
+ *  the default vendor (DEFAULT_BROWSER_VENDOR, the one vendor there was then), never today's pick, which could check its
+ *  sessions at another vendor. It keeps the vendor, never a refusal: the plane each launch hands over is checked again
+ *  (recheckPlane), so that vendor's keys missing make it unavailable for that launch alone, and restored keys make the
+ *  next one run. */
+export const keptFromBefore = (plane: Plane): Plane => (plane.browser === undefined ? plane : { ...plane, browser: DEFAULT_BROWSER_VENDOR });
 
 /** A run's saved Plane as a launch reads it: a vendor's missing-key refusal an earlier server saved (noBrowserKey's exact
  *  words, Browserbase's or Kernel's) is that vendor again, which the launch checks again as usual (recheckPlane), so
@@ -434,9 +442,9 @@ export function keptVendor(plane: Plane): Plane {
 }
 
 /** The key row (tool-keys.ts) of the browser's vendor on `resolution` with `picked` the provider in force: the vendor it
- *  resolved to, else the one picked, else the registry's first (Browserbase), so a page links a missing key to the row
+ *  resolved to, else the one picked, else the default (DEFAULT_BROWSER_VENDOR), so a page links a missing key to the row
  *  it is saved on. */
-export const browserKeyRow = (picked: string | undefined, resolution: string | undefined): string => (isVendor(resolution) ? resolution : isVendor(picked) ? picked : BROWSER_VENDORS[0]?.id ?? "browserbase");
+export const browserKeyRow = (picked: string | undefined, resolution: string | undefined): string => (isVendor(resolution) ? resolution : isVendor(picked) ? picked : DEFAULT_BROWSER_VENDOR);
 
 /** The Plane a run's process is handed at a launch, under the server's `settings` now: its kept Plane (as keptVendor
  *  reads it) checked again (recheckPlane) against the one it would get today; with none kept, today's, its browser kept

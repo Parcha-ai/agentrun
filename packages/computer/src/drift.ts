@@ -1,7 +1,7 @@
 // The drift checks every provider shares: the daemon's hello against what the provider declares, and the report of
 // computerd probe from inside a computer. Pure: no vendor call. Each mismatch is one sentence; none is an empty list.
 // Docker's own read-back (docker info, docker inspect) is docker/inspect.ts's.
-import { type ComputerKind, type Group, type HelloResult, NETWORK_FENCES, PROTOCOL_VERSION } from "./protocol.js";
+import { type ComputerKind, type Group, type HelloResult, helloProblem, NETWORK_FENCES, PROTOCOL_VERSION } from "./protocol.js";
 import type { NetworkPolicy, NetworkSpec } from "./provider.js";
 
 /** Where the daemon is mounted in each computer, read-only. */
@@ -100,8 +100,8 @@ export function probeNotes(probe: ProbeReport, network: NetworkSpec | NetworkPol
 export function helloDrift(hello: HelloResult | null | undefined, expected: HelloExpected): string[] {
 	const found: string[] = [];
 	// Exact match (spec/computer/README.md, "Versioning"): the provider ships its daemon, so another protocol version or
-	// daemon version, older or newer, is another wire. A hello that names no protocol is refused too.
-	if (hello?.protocol !== PROTOCOL_VERSION) {
+	// daemon version, older or newer, is another wire (helloProblem). Its words here are the drift list's own.
+	if (helloProblem(hello?.protocol, "provider")) {
 		found.push(`hello: the daemon speaks protocol ${text(hello?.protocol)}, expected exactly ${PROTOCOL_VERSION}`);
 	}
 	if (hello?.version !== expected.version) found.push(`hello: the daemon reports version ${text(hello?.version)}, expected ${expected.version}`);

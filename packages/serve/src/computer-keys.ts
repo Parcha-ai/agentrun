@@ -10,7 +10,7 @@
 // in (workspace/computer-providers.ts makes the computer package's; a test gives stand-ins): a provider with no module
 // here answers that its test is not available. No key is ever in an answer: each value is scrubbed from the provider's
 // words, and the words this module adds name keys only by their names.
-import { PROVIDERS, type ProviderEntry } from "@parcha/agentrun-computer";
+import { type ComputerProvider, PROVIDERS, type ProviderEntry, providerFor } from "@parcha/agentrun-computer";
 import { keyShaped } from "./secret-name.js";
 
 /** One key a provider takes: its name in its descriptor, the create() option it fills, and whether it is needed. */
@@ -111,6 +111,26 @@ export function settingOptions(providerId: string, settings: ProviderSettings = 
     if (value !== undefined && value !== "") options[setting.option] = value;
   }
   return options;
+}
+
+/**
+ * Provider `providerId` of the registry, made from what `env` holds by its descriptor's names: its keys (KEY_TABLE, as
+ * providerOptions takes them) and the server's own variables it reads (hostEnv: the gateway a server behind one reaches
+ * the vendor through), as the claim's providers get them (workspace/computer-deps.ts). `fetch` stands in for the
+ * provider's own where it takes one (the tests' fakes under faux). Refused, in words naming what to save, when a required
+ * key is missing; `invalid`, in the provider's words, when it cannot be made from them.
+ */
+export async function providerFromEnv(providerId: string, env: NodeJS.ProcessEnv, { fetch: fetcher }: { fetch?: typeof fetch } = {}): Promise<KeyResult<ComputerProvider>> {
+  const keys = Object.fromEntries((KEY_TABLE.keys[providerId] ?? []).flatMap((key) => (typeof env[key.name] === "string" && env[key.name] !== "" ? [[key.name, env[key.name] as string]] : [])));
+  const options = providerOptions(providerId, keys);
+  if (!options.ok) return options;
+  const names = PROVIDERS.find((one) => one.id === providerId)?.hostEnv;
+  const hostEnv = names ? { env: Object.fromEntries(names.flatMap((name) => (env[name] === undefined ? [] : [[name, String(env[name])]]))) } : {};
+  try {
+    return { ok: true, value: await providerFor(providerId as never, { ...options.options, ...hostEnv, ...(fetcher ? { fetch: fetcher } : {}) } as never) };
+  } catch (error) {
+    return refused("invalid", scrub(messageOf(error), Object.values(keys)));
+  }
 }
 
 /** `text` with every key value in `values` replaced by "[the key]". */

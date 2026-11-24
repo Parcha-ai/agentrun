@@ -6,6 +6,7 @@
 import { MIN_SECRET } from "./learn/secrets.js";
 import { type Handed, handedMark, handedPointers, type SignInReader } from "./run-view.js";
 import { type RunLaunch, readLaunchBody } from "./run-launch.js";
+import { SIGN_IN_VENDORS } from "./sign-ins-store.js";
 import type { RunRow, Store } from "./store/store.js";
 import { keptVendor, type Plane } from "./tool-plane.js";
 
@@ -37,9 +38,6 @@ export async function handedValuesOf(deps: { readonly signIns?: SignInReader }, 
   const browser = launch?.plane ? keptVendor(launch.plane as Plane).browser : undefined;
   return handedPointers(deps.signIns, runRow.agentId, browser, handedOf(runRow));
 }
-
-/** The browser vendors that keep a sign-in (sign-ins-store.ts vendorOf). */
-const SIGN_IN_VENDORS = ["browserbase", "kernel"] as const;
 
 /** Why what an agent learned is withheld (403): a pointer of its sign-in can't be read here, so the cut would be shorter
  *  than what a note may hold. */

@@ -9,7 +9,7 @@ import { DaemonClient } from "./client.js";
 import { kindServed } from "./kinds.js";
 import { EPOCH_LABEL, epochOf } from "./labels.js";
 import { checkMount, type MountReadBack, WORKSPACE } from "./mount.js";
-import { type ComputerClient, type ComputerKind, type ComputerOs, type DaemonMethod, type DaemonMethods, type HelloResult, PROTOCOL_VERSION } from "./protocol.js";
+import { type ComputerClient, type ComputerKind, type ComputerOs, type DaemonMethod, type DaemonMethods, type HelloResult, helloProblem, PROTOCOL_VERSION } from "./protocol.js";
 import { type ComputerCapabilities, type ComputerConnection, type ComputerProvider, type ComputerRef, checkLifetime, kindRefusals, runLifetimeMs } from "./provider.js";
 import { fail, ok, type Result } from "./result.js";
 
@@ -256,9 +256,10 @@ export function helloMismatch(paired: PairedComputer, hello: HelloResult): { cod
 	if (typeof said !== "object" || said === null || typeof said.protocol !== "string" || typeof said.version !== "string") {
 		return { code: ATTACH_CLOSE.protocol, message: `${paired.name}'s driver answered hello without its protocol and version: ${update}` };
 	}
-	if (hello.protocol !== PROTOCOL_VERSION) {
+	const problem = helloProblem(hello.protocol, "server");
+	if (problem) {
 		const newer = laterProtocol(hello.protocol, PROTOCOL_VERSION) ? "the server is older: it is updated by whoever runs it" : update;
-		return { code: ATTACH_CLOSE.protocol, message: `${paired.name}'s driver ${hello.version} speaks protocol ${hello.protocol}, and this server ${PROTOCOL_VERSION}: ${newer}` };
+		return { code: ATTACH_CLOSE.protocol, message: `${paired.name}'s driver ${hello.version} ${problem}: ${newer}` };
 	}
 	// Every field serve reads off a live hello (the provider's capabilities, the kind check): one missing is refused
 	// here, never met later as a throw.

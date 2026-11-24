@@ -17,7 +17,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ATTACH_CLOSE, ATTACH_HEARTBEAT_MS, ATTACH_IDLE_MS, ATTACH_PATH, ATTACH_REDIAL_MAX_MS, ATTACH_SUBPROTOCOL, AttachHub, type HelloResult, MAX_LINE_BYTES, PROTOCOL_VERSION } from "@parcha/agentrun-computer";
+import { ATTACH_CLOSE, ATTACH_HEARTBEAT_MS, ATTACH_IDLE_MS, ATTACH_PATH, ATTACH_REDIAL_MAX_MS, ATTACH_SUBPROTOCOL, AttachHub, type HelloResult, helloProblem, MAX_LINE_BYTES } from "@parcha/agentrun-computer";
 import WebSocket from "ws";
 import { createAttachRoutes } from "./computer-attach.js";
 import { ApiError } from "./errors.js";
@@ -253,7 +253,8 @@ export async function runAttachConformance(options: ConformanceOptions): Promise
       const dial = await until(() => live(), ms(30_000) + 2_000, "the driver paired but did not dial the attach socket and answer hello");
       const hello = dial.hello!;
       if (dial.ws.protocol !== ATTACH_SUBPROTOCOL) fail(`it asked for ${dial.ws.protocol || "no subprotocol"}, not ${ATTACH_SUBPROTOCOL}`);
-      if (hello.protocol !== PROTOCOL_VERSION) fail(`its hello says protocol ${hello.protocol}, not ${PROTOCOL_VERSION}`);
+      const problem = helloProblem(hello.protocol, "server");
+      if (problem) fail(`its driver ${problem}`);
       if (hello.kind !== paired!.hello.kind || hello.os !== paired!.hello.os) fail(`it paired as ${paired!.hello.os} ${paired!.hello.kind} and its hello says ${hello.os} ${hello.kind}`);
       if (!Array.isArray(hello.groups) || hello.groups.length === 0) fail("its hello offers no groups");
       return `paired and attached as ${hello.os} ${hello.kind} (driver ${hello.version}), offering ${hello.groups.join(", ")}`;

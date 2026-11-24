@@ -68,6 +68,16 @@ export const PROVIDER_GROUPS: readonly Group[] = ["cdp", "stream", "downloads"];
  */
 export const PROTOCOL_VERSION = "0.2";
 
+/**
+ * Why a hello's protocol version is not this one, or undefined: it must be PROTOCOL_VERSION exactly, older or newer
+ * alike, and a hello that names none is refused too. Every place that reads a hello asks this one check. The words,
+ * after whoever answered: "speaks protocol <its>, and this <side> <ours>", `side` naming the reader (server, provider).
+ */
+export function helloProblem(protocol: unknown, side: string): string | undefined {
+	if (protocol === PROTOCOL_VERSION) return undefined;
+	return `speaks protocol ${String(protocol)}, and this ${side} ${PROTOCOL_VERSION}`;
+}
+
 export interface HelloParams {
 	/** Who is asking, for the daemon's log: a name and version. */
 	client: string;
