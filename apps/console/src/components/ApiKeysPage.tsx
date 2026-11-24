@@ -131,7 +131,7 @@ export function ApiKeysPage({ v2, writable, whyNot = "sign_in", origin }: { v2: 
                     <li key={key.id} className="border-b px-4 py-3 text-body last:border-b-0">
                       <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
                         <KeyRound className="size-4 shrink-0 text-muted-foreground" aria-hidden />
-                        <span className="min-w-0 flex-1 break-words font-semibold">{key.name}</span>
+                        <span className="min-w-0 flex-1 basis-40 break-words font-semibold">{key.name}</span>
                         <span className="text-small text-muted-foreground">Made {when(key.created_at)}</span>
                         <span className="text-small text-muted-foreground">{key.last_used_at ? `Last used ${when(key.last_used_at)}` : "Never used"}</span>
                         {writable && revoking !== key.id && (
