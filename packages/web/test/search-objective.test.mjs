@@ -95,7 +95,7 @@ test("keyed Firecrawl's wire bodies: up to 3 of the queries at once, each limit 
   assert.equal(fc.seen.most, 3, "the 3 requests are in flight at once");
   assert.deepEqual(answer.results.map((hit) => hit.url), ["a", "b", "c", "d"].map((letter) => `https://${letter}.example/`), "Firecrawl's results deduped by url, first seen first, cut at n");
   assert.deepEqual(answer.results.map((hit) => hit.snippet), ["# Page a The whole of page a.", "# Page b The whole of page b.", "About c.", "# Page d The whole of page d."], "each snippet the page's markdown, its description where it has none");
-  assert.deepEqual(receipt.cost.lines.map((fee) => fee.basis), Array(3).fill("Firecrawl's list price for a search of 2 results, each scraped: 6 credits at the key's plan price"), "each request priced as a scraping search");
+  assert.deepEqual(receipt.cost.lines.map((fee) => fee.basis), Array(3).fill("Firecrawl's list price for a search of 2 results, each scraped: 4 credits at the key's plan price"), "each request priced as a scraping search");
   const one = keyed(() => firecrawlRows([row("a"), row("b"), row("c")]));
   await web.createWeb({ order: { search: ["firecrawl"], fetch: [] }, keys: { firecrawl: KEY }, send: { firecrawl: one.send } }).search({ objective: OBJECTIVE, queries: ["widgets"] }, { n: 2 });
   assert.deepEqual(one.sent.map(({ body }) => body), [{ query: "widgets", limit: 2, scrapeOptions: SCRAPE }], "one query: one request of limit n");
@@ -155,7 +155,7 @@ test("the classifier ranks a search against its objective, never a query, unless
 
 test("web_fetch's objective is what findInPage looks for; looking_for is its alias, and objective wins over it; with no classifier the part says nothing of it", async () => {
   const page = Array.from({ length: 12 }, (_, i) => `${String(i + 1).padStart(2, "0")} ${"x".repeat(987)}\n\n`).join("");
-  const chunks = web.passagesOf(page, web.FIND_CHUNKS_MAX);
+  const chunks = web.passagesOf(page, web.FIND_CHUNKS_MAX).map(([from, to]) => page.slice(from, to));
   const NEED = "the year Widgets, Inc. was registered";
   for (const [options, need, words] of [[{ objective: NEED }, NEED, "the objective"], [{ lookingFor: NEED }, NEED, "looking_for, its alias"], [{ objective: NEED, lookingFor: "something else" }, NEED, "the objective over looking_for"]]) {
     const { asked, provider } = scoringProvider({});

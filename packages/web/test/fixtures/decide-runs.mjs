@@ -4,7 +4,9 @@
 // zeroed (each try's ms, the record's latency). decide-runs.golden.json was written by this sequence at 36408cca68,
 // before the decider gave scores and the step chose what to show, so the drop policy is held to it byte for byte.
 // decide-runs-pre-guard.golden.json holds the sha256 of each answer, model text and receipt `policySteps` gave at
-// 489a989503, before the page guard, so a web with the guard off is held to it under every policy.
+// 489a989503, before the page guard, so a web with the guard off is held to it under every policy. Both were rewritten
+// once, for web_search's objective: each search answer's `query` became `objective` and `queries`, each search receipt
+// gained `queries`, an empty search's error and a fetch's sift line name the objective; nothing else changed.
 import { deciderFrom, searchText, webFetchText } from "../../dist/index.js";
 import fakeParallel from "./faux-parallel.mjs";
 import { fakeWeb, PUBLIC } from "./web-runs.mjs";

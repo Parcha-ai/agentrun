@@ -2,8 +2,8 @@
 // Pay at its endpoint's price, and a 401 or 403 stops both for the client's life. Nothing is retried; each ends at 60 s.
 import { type ParallelSearchMode, PARALLEL_SEARCH_MODE_USD, type Pay, PaidRefused, parallelFeeOf, unmetered } from "../fees.js";
 import { clip, markdownRead, PAGE_READ_MAX_CHARS, type Read, TITLE_CAP, withoutUserinfo } from "../page.js";
-import { type Failed, failed, failure, type Hit, keyWide, type Limit, type Search, type Searched, SNIPPET_MAX, searchArgs, searchFailed, snippetOf } from "../search.js";
-import { defineProvider, type ProviderRun, settingsOf } from "../provider.js";
+import { type Failed, failed, failure, type Hit, keyWide, type Limit, type Search, type SearchAsk, type Searched, searchArgs, searchFailed, snippetOf } from "../search.js";
+import { defineProvider, type ProviderRun, settingsOf, type WebClient } from "../provider.js";
 import { type Check, domains, matching, oneOf, settingsProblems, wholeIn } from "./keyed.js";
 
 
@@ -108,32 +108,37 @@ const parallelLimit = (response: Response): Limit | undefined => {
   return response.status === 429 ? { kind: "rate", ...(retryAfter ? { retryAfter } : {}) } : undefined;
 };
 
-/** The /v1/search request for `query`, `n` results, under `settings`. */
-export function parallelSearchBody(query: string, n: number, settings: ParallelSettings = {}): Record<string, unknown> {
+/** The /v1/search request for `ask` (searchArgs), under `settings`, as Parallel's guidance for agents asks: the
+ *  objective, a goal in plain words, as its objective; the keyword queries as search_queries; and the model and
+ *  session of `client` where the run knows them. Excerpts are Parallel's own length (max_chars_total where set). */
+export function parallelSearchBody({ objective, queries, n }: SearchAsk, settings: ParallelSettings = {}, client: WebClient = {}): Record<string, unknown> {
   const source = {
     ...(settings.includeDomains ? { include_domains: settings.includeDomains } : {}),
     ...(settings.excludeDomains ? { exclude_domains: settings.excludeDomains } : {}),
     ...(settings.afterDate ? { after_date: settings.afterDate } : {}),
   };
   return {
-    objective: query,
-    search_queries: [query],
+    objective,
+    search_queries: queries,
     mode: settings.mode ?? PARALLEL_DEFAULTS.mode,
     ...(settings.maxCharsTotal === undefined ? {} : { max_chars_total: settings.maxCharsTotal }),
-    advanced_settings: { max_results: n, excerpt_settings: { max_chars_per_result: SNIPPET_MAX }, ...(Object.keys(source).length ? { source_policy: source } : {}), ...fetchPolicy(settings) },
+    advanced_settings: { max_results: n, ...(Object.keys(source).length ? { source_policy: source } : {}), ...fetchPolicy(settings) },
+    ...(client.model ? { client_model: client.model } : {}),
+    ...(client.session ? { session_id: client.session } : {}),
   };
 }
 
-/** `{query, n?}` searched through `parallel` (null: the run holds no key) under `settings`, and the limit Parallel
- *  answered for the run's key, if any. */
-export async function parallelSearched(args: Record<string, unknown>, parallel: Extract | null, signal?: AbortSignal, settings: ParallelSettings = {}): Promise<Searched> {
+/** `{objective, queries?, n?}` (searchArgs) searched through `parallel` (null: the run holds no key) under `settings`,
+ *  told `client`, and the limit Parallel answered for the run's key, if any. */
+export async function parallelSearched(args: Record<string, unknown>, parallel: Extract | null, signal?: AbortSignal, settings: ParallelSettings = {}, client: WebClient = {}): Promise<Searched> {
   const answer = (search: Search): Searched => ({ answer: search });
-  const { query, n } = searchArgs(args);
-  if (!query) return answer({ error: "web_search needs a query" });
+  const ask = searchArgs(args);
+  const { objective, queries, n } = ask;
+  if (!objective) return answer({ error: "web_search needs an objective" });
   if (!parallel) return searchFailed(failed("refused", "NO_KEY", "web_search searches through Parallel, and this run holds no Parallel key (PARALLEL_API_KEY)"));
   if (!parallel.live()) return searchFailed(failed("refused", "KEY_REFUSED", REFUSED));
   try {
-    const response = await parallel.post(PARALLEL_SEARCH_URL, parallelSearchBody(query, n, settings), signal);
+    const response = await parallel.post(PARALLEL_SEARCH_URL, parallelSearchBody(ask, settings, client), signal);
     if (!response.ok) {
       await response.body?.cancel().catch(() => undefined);
       const limit = parallelLimit(response);
@@ -147,7 +152,7 @@ export async function parallelSearched(args: Record<string, unknown>, parallel: 
       const excerpts = Array.isArray(row.excerpts) ? row.excerpts.filter((text): text is string => typeof text === "string") : [];
       return [{ url: row.url, title: typeof row.title === "string" ? clip(row.title, TITLE_CAP) : "", snippet: snippetOf(excerpts.join(" … ")), ...(typeof row.publish_date === "string" ? { published: row.publish_date } : {}) }];
     });
-    return answer({ provider: "parallel", query, results: hits.slice(0, n) });
+    return answer({ provider: "parallel", objective, queries, results: hits.slice(0, n) });
   } catch (error) {
     if (error instanceof PaidRefused) return searchFailed(failed("refused", "CAP_REFUSED", error.message));
     return searchFailed((error as Error)?.name === "TimeoutError" ? failed("infra", "TIMEOUT", "Parallel's search did not answer within 60 s") : failed("infra", "CONNECT", `Parallel's search failed: ${(error as Error)?.message ?? String(error)}`));
@@ -173,9 +178,9 @@ export function parallelReads(client: Extract | null): Required<Pick<ProviderRun
  *  the caller's signal and its own bound; a fetch it gives no page is said on the page. */
 export const parallel = defineProvider(
   { id: "parallel", label: "Parallel", key: { env: "PARALLEL_API_KEY" }, ops: ["search", "fetch"], fetch: { miss: "said" }, settings: settingsOf<ParallelSettings>(parallelSettingsProblems) },
-  ({ key, send, pay, settings }): ProviderRun => {
+  ({ key, send, pay, settings, client: told }): ProviderRun => {
     const asked = (settings ?? {}) as ParallelSettings;
     const client = key === undefined ? null : parallelExtract(key, send ?? fetch, pay, asked);
-    return { search: (ask, _deadline, signal) => parallelSearched(ask, client, signal, asked), ...parallelReads(client) };
+    return { search: (ask, _deadline, signal) => parallelSearched(ask, client, signal, asked, told), ...parallelReads(client) };
   },
 );

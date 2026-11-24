@@ -35,7 +35,7 @@ test("a search is one paid request to Exa's /search on the run's key: auto, the 
   assert.equal(exa.got[0].path, "/search");
   assert.equal(exa.got[0].headers["x-api-key"], EXA_CANARY);
   assert.deepEqual(exa.got[0].body, { query: "widgets", type: "auto", numResults: 3, contents: { highlights: { maxCharacters: 3_000 } } });
-  assert.deepEqual(answer, { provider: "exa", query: "widgets", results: [
+  assert.deepEqual(answer, { provider: "exa", objective: "widgets", queries: ["widgets"], results: [
     { url: "https://first.example/widgets", title: "Widgets, explained", snippet: "Widgets are small parts. … They fit together.", published: "2026-11-01T00:00:00.000Z" },
     { url: "https://second.example/gadgets", title: "Gadgets", snippet: "A second result." },
   ] }, "highlights joined, links as their text, a hit with no URL dropped");

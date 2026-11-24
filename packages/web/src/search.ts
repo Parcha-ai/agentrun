@@ -4,10 +4,15 @@
 // wait. A backend that fails, is held or is off passes the call to the next.
 import type { SearchProvider } from "./providers/registry.js";
 
+/** The most of one keyword query a search sends (Parallel's own bound on a query). */
 export const QUERY_MAX = 200;
+/** The most of a search's objective, its goal in plain words, a search sends. */
+export const OBJECTIVE_MAX = 1_000;
+/** The most keyword queries a search keeps (Parallel's own bound). */
+export const QUERIES_MAX = 5;
 export const RESULTS_MAX = 25;
 export const RESULTS_DEFAULT = 10;
-/** The most of a result's text its snippet keeps; Parallel is asked for as much of each result's excerpts. */
+/** The most of a result's text its snippet keeps. */
 export const SNIPPET_MAX = 3_000;
 /** The most of the provider's own short answer (`text`) a search keeps (serve's hosted-search.ts). */
 export const ANSWER_MAX = 4_000;
@@ -28,7 +33,9 @@ const MAX_WAIT_MS = 15 * 60_000;
 /** `relevance`, under the classifier's rerank+label policy only: how likely the result holds what the search asks
  *  for, 0 to 1. */
 export type Hit = { url: string; title: string; snippet: string; published?: string; relevance?: number };
-export type Search = { provider: SearchProvider; query: string; results: Hit[]; text?: string; omitted?: number } | { error: string };
+/** A search's answer: the provider that served it, the objective and the queries it was asked (searchArgs), and its
+ *  results; or why there are none. */
+export type Search = { provider: SearchProvider; objective: string; queries: string[]; results: Hit[]; text?: string; omitted?: number } | { error: string };
 /** What a provider's failure said of the run's search: out of quota (until the reset `retryAfter` names, if it names
  *  one), or rate-limited, with the wait it named as it handed it back (a Retry-After header's value, delta-seconds or an
  *  HTTP date, or Exa's seconds). `repeatIsQuota`, the
@@ -176,11 +183,21 @@ export function snippetOf(raw: string): string {
   return `${(space > SNIPPET_MAX / 2 ? cut.slice(0, space) : cut).trimEnd()}…`;
 }
 
-/** `{query, n?}` as every provider takes it: the query trimmed and cut at QUERY_MAX, n 1 to RESULTS_MAX. */
-export const searchArgs = (args: Record<string, unknown>) => ({
-  query: typeof args.query === "string" ? args.query.trim().slice(0, QUERY_MAX) : "",
-  n: Math.max(1, Math.min(RESULTS_MAX, Math.floor(Number(args.n) || RESULTS_DEFAULT))),
-});
+/** What a search asks every provider: its objective, its keyword queries, and how many results. */
+export type SearchAsk = { objective: string; queries: string[]; n: number };
+/** `{objective, queries?, n?}` (or the deprecated `{query, n?}`) as every provider takes it: the objective trimmed and
+ *  cut at OBJECTIVE_MAX; the queries a list of strings, each trimmed and cut at QUERY_MAX, blanks and repeats dropped,
+ *  the first QUERIES_MAX kept; n 1 to RESULTS_MAX. A `query` stands for the objective where none is given, and for the
+ *  one query where no queries are; with neither, the one query is the objective's first QUERY_MAX characters. An
+ *  objective of "" asks nothing. */
+export function searchArgs(args: Record<string, unknown>): SearchAsk {
+  const text = (value: unknown, max: number) => (typeof value === "string" ? value.trim().slice(0, max) : "");
+  const query = text(args.query, OBJECTIVE_MAX);
+  const objective = text(args.objective, OBJECTIVE_MAX) || query;
+  const given = Array.isArray(args.queries) ? args.queries.map((one) => text(one, QUERY_MAX)).filter(Boolean) : [];
+  const queries = [...new Set(given.length ? given : [query.slice(0, QUERY_MAX) || objective.slice(0, QUERY_MAX)])].filter(Boolean).slice(0, QUERIES_MAX);
+  return { objective, queries, n: Math.max(1, Math.min(RESULTS_MAX, Math.floor(Number(args.n) || RESULTS_DEFAULT))) };
+}
 
 /** A backend a call of web_search asks: its name (its breaker's), and its one search. The keyless backends end at
  *  `deadline`, the call's one deadline for every backend it asks (searchInTurn); Parallel and a native search keep the

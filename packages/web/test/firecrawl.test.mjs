@@ -28,27 +28,27 @@ async function firecrawlWeb(t, answer, { settings, order = { search: ["firecrawl
 
 const keyless = (label, ...said) => assert.ok(!JSON.stringify(said).includes(FIRECRAWL_CANARY), `${label}: the key is never handed back`);
 
-test("a search is one paid request to Firecrawl's /v2/search on the run's key, the n asked; the hits in the one search shape, at 2 credits per 10 results", async (t) => {
+test("a search is one paid request to Firecrawl's /v2/search on the run's key, the n asked, each result scraped as markdown; the hits in the one search shape, at 2 credits per 10 results and 1 a scraped result", async (t) => {
   const { fc, w, fees, logs } = await firecrawlWeb(t, () => firecrawlResults(FIRECRAWL_HITS));
   const { answer, receipt } = await w.search(" widgets ", { n: 3 });
   assert.equal(fc.got.length, 1);
   assert.equal(fc.got[0].path, "/v2/search");
   assert.equal(fc.got[0].headers.authorization, `Bearer ${FIRECRAWL_CANARY}`);
-  assert.deepEqual(fc.got[0].body, { query: "widgets", limit: 3 });
-  assert.deepEqual(answer, { provider: "firecrawl", query: "widgets", results: [
+  assert.deepEqual(fc.got[0].body, { query: "widgets", limit: 3, scrapeOptions: { formats: ["markdown"], onlyMainContent: true } });
+  assert.deepEqual(answer, { provider: "firecrawl", objective: "widgets", queries: ["widgets"], results: [
     { url: "https://first.example/widgets", title: "Widgets, explained", snippet: "All about widgets and their uses." },
     { url: "https://second.example/gadgets", title: "Gadgets", snippet: "A second result." },
   ] });
   assert.deepEqual([receipt.provider, receipt.tries.map((one) => [one.provider, one.outcome])], ["firecrawl", [["firecrawl", "ok"]]]);
-  assert.deepEqual(fees.map((fee) => [fee.name, fee.by, fee.usd]), [["Firecrawl's search", "firecrawl", 2 * CREDIT]]);
+  assert.deepEqual(fees.map((fee) => [fee.name, fee.by, fee.usd]), [["Firecrawl's search", "firecrawl", Math.round(5 * CREDIT * 1e6) / 1e6]]);
   keyless("search", answer, receipt, logs);
 });
 
-test("Firecrawl's search settings shape the request and its fee: freshness, domains, country, highlights; 25 results are 6 credits", async (t) => {
+test("Firecrawl's search settings shape the request and its fee: freshness, domains, country, highlights; 25 results, each scraped, are 31 credits", async (t) => {
   const { fc, w, fees } = await firecrawlWeb(t, () => firecrawlResults(FIRECRAWL_HITS), { settings: { tbs: "qdr:w", includeDomains: ["first.example"], country: "DE", highlights: false } });
   await w.search("widgets", { n: 25 });
-  assert.deepEqual(fc.got[0].body, { query: "widgets", limit: 25, tbs: "qdr:w", includeDomains: ["first.example"], country: "DE", highlights: false });
-  assert.deepEqual(fees.map((fee) => fee.usd), [Math.round(6 * CREDIT * 1e6) / 1e6]);
+  assert.deepEqual(fc.got[0].body, { query: "widgets", limit: 25, tbs: "qdr:w", includeDomains: ["first.example"], country: "DE", highlights: false, scrapeOptions: { formats: ["markdown"], onlyMainContent: true } });
+  assert.deepEqual(fees.map((fee) => fee.usd), [Math.round(31 * CREDIT * 1e6) / 1e6]);
 });
 
 test("settings Firecrawl does not take are refused when the Web is made, never sent: include and exclude domains together among them", () => {
