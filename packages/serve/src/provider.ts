@@ -15,7 +15,7 @@
 //   claude-agent on Claude Code's login on this machine (claude-login.ts), when the owner turned it on: an Anthropic
 //     model goes on the person's plan, from the CLI itself, with no key of ours and no proxy (`login`).
 import type { HarnessWire as Wire, Wire as ModelWire } from "@parcha/agentrun-kernel";
-import { ROUTE_ORIGIN } from "@parcha/agentrun-kernel/host";
+import { CredentialUnavailable, ROUTE_ORIGIN } from "@parcha/agentrun-kernel/host";
 import type { ClaudeAgentLogin } from "@parcha/agentrun-harness-claude";
 import { CLAUDE_LOGIN_PROVIDER, onClaudeLogin, claudeLoginOf } from "./claude-login.js";
 import { chooseModel, FAUX_ENV, hostModel, MODEL_PROVIDER, type ModelNeeds, type ModelRef, ollamaWouldRun, START_OLLAMA } from "./model.js";
@@ -154,6 +154,21 @@ export function anthropicModelId(model: ModelRef): string {
 /** `fetch`: the route's own, for a model it translates onto the wire (routedProvider): the harness's proxy forwards
  *  with it, to `origin` (ROUTE_ORIGIN), and nothing goes to the network but what the route sends. */
 export type Provider = { origin: string; credential: () => string | Promise<string>; auth: "bearer" | "x-api-key"; modelId: string; priceModel: ModelRef; billing?: "plan"; refused?: (credential: string) => Promise<void>; login?: ClaudeAgentLogin; headers?: Readonly<Record<string, string>>; fetch?: typeof fetch };
+
+/** The provider of a held run its model kept from running at its create (run-launch.ts hold.refused), on pi and on every
+ *  CLI harness's proxy: its model's route chooses no model and reads no key, so a host with no key for its model still
+ *  opens its claim and holds its computer. Its credential refuses in `words`, the create's own: the session's proxy reads it first
+ *  and refuses each request in them (CredentialUnavailable), before the request is admitted, booked or sent. Its origin
+ *  names no host. */
+export const heldRefusedProvider = (model: ModelRef, words: string): Provider => ({
+  origin: "https://held-run.invalid",
+  credential: () => {
+    throw new CredentialUnavailable(words);
+  },
+  auth: "bearer",
+  modelId: model.modelId,
+  priceModel: model,
+});
 
 /** A model the runner's route translates onto a harness's wire (wires.ts routed): its proxy forwards to the route's own
  *  origin (ROUTE_ORIGIN), where the route's fetch answers (runner/model-route.ts routeOf on `env`: the model's own

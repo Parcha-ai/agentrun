@@ -13,10 +13,10 @@ const caps: EditorCaps = { harnesses: [{ id: "pi", available: true }, { id: "cla
 
 let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
-function mount() {
+function mount(served: EditorCaps = caps) {
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
-  act(() => root!.render(createElement(AgentEditor, { agent: null, caps, step: "settings" })));
+  act(() => root!.render(createElement(AgentEditor, { agent: null, caps: served, step: "settings" })));
   const radio = (id: string) => host.querySelector<HTMLInputElement>(`input[name="harness"][value="${id}"]`)!;
   // The card: the radiogroup's child that holds the radio.
   const card = (id: string) => [...host.querySelector('[role="radiogroup"][aria-label="Harness"]')!.children].find((c) => c.contains(radio(id))) as HTMLElement;
@@ -38,5 +38,21 @@ describe("AgentEditor, a harness card's click target", () => {
     await act(async () => { summary.click(); });
     expect(radio("codex").checked).toBe(false);
     expect(radio("pi").checked).toBe(true);
+  });
+
+  // pi on a server with no model key and no ChatGPT sign-in: served `available: false` (no run starts now) with `needs`,
+  // yet a save of it is taken, with a warning, and it runs once a key is added. Its card stays a choice, saying what it
+  // lacks; a harness off for another reason (`needs` absent) stays off.
+  it("keeps a harness that lacks only a model key pickable once another is picked, saying what it needs", async () => {
+    const NO_MODEL = "No model yet: add a model key in Settings → Model keys.";
+    const { radio, card } = mount({ ...caps, harnesses: [{ id: "pi", available: false, reason: NO_MODEL, needs: ["key", "chatgpt"] }, { id: "claude-agent", available: true }, { id: "codex", available: false, reason: "codex is not installed." }] });
+    await act(async () => { card("claude-agent").click(); });
+    expect(radio("claude-agent").checked).toBe(true);
+    expect(radio("pi").disabled).toBe(false);
+    expect(card("pi").textContent).toContain("Needs a model key");
+    expect(card("pi").querySelector("details")?.textContent).toContain(NO_MODEL);
+    await act(async () => { card("pi").querySelector("label")!.click(); });
+    expect(radio("pi").checked).toBe(true);
+    expect(radio("codex").disabled).toBe(true);
   });
 });

@@ -14,8 +14,8 @@ afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
-const unsaved: HarnessKeys = { harnesses: [{ id: "model-agent", label: "Model Agent", ready: false, keys: [{ name: "harness:model-agent:MODEL_AGENT_API_KEY", set: false, source: null, changed_at: null }] }] };
-const saved: HarnessKeys = { harnesses: [{ id: "model-agent", label: "Model Agent", ready: true, keys: [{ name: "harness:model-agent:MODEL_AGENT_API_KEY", set: true, source: "console", changed_at: "2026-11-22T09:00:00Z" }] }] };
+const unsaved: HarnessKeys = { harnesses: [{ id: "model-agent", label: "Model Agent", named: true, ready: false, keys: [{ name: "harness:model-agent:MODEL_AGENT_API_KEY", set: false, source: null, changed_at: null }], kept: [], reenter: [] }] };
+const saved: HarnessKeys = { harnesses: [{ id: "model-agent", label: "Model Agent", named: true, ready: true, keys: [{ name: "harness:model-agent:MODEL_AGENT_API_KEY", set: true, source: "console", changed_at: "2026-11-22T09:00:00Z" }], kept: [], reenter: [] }] };
 
 async function mount(writable: boolean, answers: { list: () => HarnessKeys; put?: (status: number) => Response }, onChange?: () => void) {
   const asked: { method: string; path: string; body?: string }[] = [];
@@ -98,6 +98,43 @@ describe("HarnessKeysPage", () => {
     expect(button(host, "Replace")).toBeUndefined();
     expect(button(host, "Remove")).toBeUndefined();
     expect(host.querySelector("input")).toBeNull();
+  });
+
+  it("a key saved for another version of the recipe file says to paste it again, and a recipe the server no longer names lists its kept keys to remove, with nothing to paste", async () => {
+    const changed: HarnessKeys = { harnesses: [
+      { ...unsaved.harnesses[0]!, reenter: [{ name: "harness:model-agent:MODEL_AGENT_API_KEY", why: "recipe_changed" }] },
+      { id: "old-agent", label: "old-agent", named: false, ready: false, keys: [], kept: [{ name: "harness:old-agent:OLD_AGENT_API_KEY", set: true, source: "console", changed_at: "2026-11-22T09:00:00Z" }], reenter: [] },
+    ] };
+    const { host, asked } = await mount(true, { list: () => changed });
+    expect(host.querySelector('[data-harness="model-agent"]')!.textContent).toContain("Saved for another version of this recipe file: paste it again");
+    const old = host.querySelector('[data-harness="old-agent"]')!;
+    expect(old.textContent).toContain("recipe not named");
+    expect(old.textContent).toContain("OLD_AGENT_API_KEY");
+    expect(button(old, "Paste")).toBeUndefined();
+    expect(button(old, "Replace")).toBeUndefined();
+    await act(async () => { button(old, "Remove")!.click(); });
+    await act(async () => { [...old.querySelectorAll("button")].filter((b) => b.textContent?.trim() === "Remove").at(-1)!.click(); });
+    await settle();
+    expect(asked.find((a) => a.method === "DELETE")).toEqual({ method: "DELETE", path: "/v2/settings/harness-keys/old-agent/OLD_AGENT_API_KEY" });
+  });
+
+  it("a saved key that does not open stays removable: one to enter again for a changed recipe, and a kept one under another seal key", async () => {
+    const unopened: HarnessKeys = { harnesses: [
+      { ...unsaved.harnesses[0]!, reenter: [{ name: "harness:model-agent:MODEL_AGENT_API_KEY", why: "recipe_changed" }] },
+      { id: "old-agent", label: "old-agent", named: false, ready: false, keys: [], kept: [{ name: "harness:old-agent:OLD_AGENT_API_KEY", set: false, source: null, changed_at: null }], reenter: [] },
+    ] };
+    const { host, asked } = await mount(true, { list: () => unopened });
+    const current = host.querySelector('[data-harness="model-agent"]')!;
+    await act(async () => { button(current, "Remove")!.click(); });
+    await act(async () => { [...current.querySelectorAll("button")].filter((b) => b.textContent?.trim() === "Remove").at(-1)!.click(); });
+    await settle();
+    expect(asked.filter((a) => a.method === "DELETE")).toEqual([{ method: "DELETE", path: "/v2/settings/harness-keys/model-agent/MODEL_AGENT_API_KEY" }]);
+    const old = host.querySelector('[data-harness="old-agent"]')!;
+    expect(old.textContent).toContain("Does not open under this server's seal key");
+    await act(async () => { button(old, "Remove")!.click(); });
+    await act(async () => { [...old.querySelectorAll("button")].filter((b) => b.textContent?.trim() === "Remove").at(-1)!.click(); });
+    await settle();
+    expect(asked.filter((a) => a.method === "DELETE").at(-1)).toEqual({ method: "DELETE", path: "/v2/settings/harness-keys/old-agent/OLD_AGENT_API_KEY" });
   });
 
   it("a server with no plan-billed recipe says there is nothing to save", async () => {

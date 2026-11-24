@@ -13,6 +13,7 @@ import { MODAL } from "./descriptors/modal.js";
 import { DEFAULT_CPUS, DEFAULT_MEMORY_MB, WORK } from "./drift.js";
 import { type HostCall, HostError, type HostFacts, type Machine, type MachineHost, type MachineProcess, type MachineRequest } from "./host.js";
 import { HostedProvider, type HostedOptions, type HostedTimeouts } from "./hosted/provider.js";
+import { httpsBase } from "./hosted/rest.js";
 import { AGENTRUN_DIAL, PID_WRAPPER, pidKill, pidStderr } from "./hosted/scripts.js";
 import { connectOf, kindRefusal } from "./descriptor.js";
 import { isWhole } from "./hosted/values.js";
@@ -67,7 +68,7 @@ export interface ModalClientOptions {
 	/** The Modal token's id and secret. Serve passes its MODAL_TOKEN_ID and MODAL_TOKEN_SECRET; the conformance module the token it reads. */
 	tokenId: string;
 	tokenSecret: string;
-	/** The server the token goes to; default the SDK's, https://api.modal.com:443. */
+	/** The server the token goes to, https alone; default the SDK's, https://api.modal.com:443. */
 	serverUrl?: string;
 	/** The SDK's ModalClient; imported from the host's modal package by default. */
 	ModalClient?: ModalClientConstructor;
@@ -101,7 +102,7 @@ export async function modalClient({ tokenId, tokenSecret, serverUrl = MODAL_DEFA
 	if (typeof tokenId !== "string" || tokenId === "" || typeof tokenSecret !== "string" || tokenSecret === "") {
 		throw new Error("the Modal provider needs options.tokenId and options.tokenSecret, a Modal token: it reads none from the environment, so the caller passes it");
 	}
-	if (typeof serverUrl !== "string" || !URL.canParse(serverUrl)) throw new Error("options.serverUrl is the Modal server's URL, such as https://api.modal.com:443");
+	const server = httpsBase(serverUrl, "the Modal server URL (options.serverUrl)");
 	const ambient = `the Modal provider refuses to start while MODAL_SERVER_URL is set: the SDK would send the key there. Unset it, and pass the server as options.serverUrl if it is not ${MODAL_DEFAULT_SERVER_URL}`;
 	if (process.env.MODAL_SERVER_URL) throw new Error(ambient);
 	const Client = ModalClient ?? ((await import(MODAL_PACKAGE)) as { ModalClient: ModalClientConstructor }).ModalClient;
@@ -110,7 +111,7 @@ export async function modalClient({ tokenId, tokenSecret, serverUrl = MODAL_DEFA
 	const turn = constructing.then(() => {
 		if (process.env.MODAL_SERVER_URL) throw new Error(ambient);
 		const before = process.env.MODAL_SERVER_URL;
-		process.env.MODAL_SERVER_URL = serverUrl;
+		process.env.MODAL_SERVER_URL = server;
 		try {
 			return new Client({ tokenId, tokenSecret }) as ModalSdk;
 		} finally {

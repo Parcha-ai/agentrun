@@ -22,6 +22,9 @@ test('unsupported runtimes get the detected version and a recovery command, with
     assert.ok(result.stderr.includes(`you have v${version}`), result.stderr);
     assert.match(result.stderr, /Node\.js 24\.22\.3 or newer/);
     assert.match(result.stderr, /nvm install && nvm use/);
+    // Every way to get it, not only nvm's, and the installer that needs no Node.js at all (GRE-4837).
+    assert.match(result.stderr, /https:\/\/nodejs\.org\/en\/download \(24\.x, 24\.22\.3 or newer\)/);
+    assert.match(result.stderr, /curl -fsSL https:\/\/agentrun\.ai\/install \| sh/);
     assert.doesNotMatch(result.stderr, /ERR_UNKNOWN_FILE_EXTENSION|SyntaxError/);
   }
 });

@@ -379,7 +379,7 @@ async function webPackage(t, name, web, calls, files = {}) {
 const resultOf = (call) => JSON.parse(call.result.split("\n")[0]);
 
 test("a web: unavailable case's run gets the real failed-search words on every web_search, a failed page on every web_fetch, and never the network", { timeout: 300_000 }, async (t) => {
-  const { RATE_LIMITED } = await import("../dist/exa-keyless.js");
+  const { RATE_LIMITED } = await import("../dist/web-run.js");
   const dir = await webPackage(t, "search-failed", "unavailable", [["web_search", { query: "industrial robotics deals this week" }], ["web_search", { query: "robotics funding" }], ["web_fetch", { url: "https://deals.example.test/week" }]]);
   const report = await evalTemplate({ dir, cases: ["search-failed"], serve: { faux: FAUX } });
   const [run] = report.cases[0].runs;
@@ -579,6 +579,126 @@ test("readCases refuses a now that is not a date and time with its offset, and a
   await assert.rejects(evalTemplate({ dir, cases: ["clock"], server: { baseUrl: "http://127.0.0.1:9", token: "x" } }), (thrown) => thrown instanceof CaseError && thrown.problems.includes("evals/clock: now sets its runs' clock on the eval's own server alone: run it without --server"));
 });
 
+/** A copy of the fixture package with a case `resume`: a run that resumes on keys an earlier one made. Its case.yaml
+ *  seeds `files` (YAML text, absent for none) and its fake CRM answers get_contact only for keys of the stem
+ *  k7m2p9qa, by $pattern; its agent asks for a fresh stem's key, then the seeded stem's, then reads the seeded file. */
+async function resumePackage(t, files = '  media/run-keys.json: "{\\"stem\\": \\"k7m2p9qa\\"}\\n"\n') {
+  const dir = join(await scratch(t), "evalpkg");
+  cpSync(PKG, dir, { recursive: true });
+  const at = join(dir, "evals", "resume");
+  mkdirSync(join(at, "graders"), { recursive: true });
+  mkdirSync(join(at, "fixtures"), { recursive: true });
+  writeFileSync(join(at, "case.yaml"), `parameters:\n  team: blue\nmcp:\n  crm: fixtures/crm.json\ngrants:\n  - mcp:crm/get_contact\n${files === undefined ? "" : `files:\n${files}`}`);
+  const text = (text) => ({ content: [{ type: "text", text }] });
+  writeFileSync(join(at, "fixtures", "crm.json"), JSON.stringify({ server: "crm", description: "Keys of the stem k7m2p9qa.", tools: {
+    get_contact: { description: "Read a contact by key.", input: { type: "object", properties: { id: { type: "string" } }, required: ["id"] },
+      answers: [{ when: { id: { $pattern: "ns-k7m2p9qa-[a-z-]+" } }, result: text("resumed k7m2p9qa") }], default: { ...text("no such key"), isError: true } },
+    update_contact: { description: "Set a contact's fields.", input: { type: "object" }, answers: [], default: { ...text("no such contact"), isError: true } },
+  } }));
+  writeFileSync(join(at, "prompt.md"), `---\ndescription: A resumed run reads its stem from the seeded keys file, and the fake answers that stem's keys alone.\n---\nCall mcp__crm__get_contact with {"id": "ns-zz9yx8wv-voice-cold-open"}\nCall mcp__crm__get_contact with {"id": "ns-k7m2p9qa-voice-cold-open"}\nCall read with {"path": "media/run-keys.json"}\nAnswer:\nKeys: {{last-result}}\n\n\`\`\`json\n{"verdict": "good", "score": 50, "summary": "resume"}\n\`\`\`\n`);
+  writeFileSync(join(at, "graders", "keys.md"), `---\ntype: regex\npattern: 'Keys:[\\s\\S]*"stem": "k7m2p9qa"'\n---\n`);
+  writeFileSync(join(at, "graders", "seeded.md"), "---\ntype: file_exists\npath: media/run-keys.json\n---\n");
+  return dir;
+}
+
+test("a case's files are in its run's work folder before its first turn: the run reads them, and its files list them", { timeout: 300_000 }, async (t) => {
+  const report = await evalTemplate({ dir: await resumePackage(t), cases: ["resume"], serve: { faux: FAUX } });
+  const [run] = report.cases[0].runs;
+  assert.equal(run.status, "completed", JSON.stringify(run, null, 1));
+  assert.equal(report.cases[0].pass, true, JSON.stringify(run.graders));
+  assert.match(run.calls.find((call) => call.tool === "read").result, /"stem": "k7m2p9qa"/, "the run read the seeded file");
+  assert.match(graderOf(run, "seeded.md").reason, /^the run's work folder holds media\/run-keys\.json$/);
+  // The fake answers the seeded stem's key by its $pattern, and a fresh stem's gets its default.
+  const asked = run.calls.filter((call) => call.tool === "mcp:crm/get_contact");
+  assert.equal(asked.length, 2, JSON.stringify(run.calls));
+  assert.match(asked[0].result, /no such key/);
+  assert.match(asked[1].result, /resumed k7m2p9qa/);
+});
+
+test("readCases checks a case's files: each a relative path in the work folder, outside inputs/, to its text; and only the eval's own server seeds them", async (t) => {
+  const dir = await resumePackage(t);
+  assert.deepEqual(readCases(dir, ["resume"]).cases[0].files, { "media/run-keys.json": '{"stem": "k7m2p9qa"}\n' });
+  const problems = (files) => {
+    writeFileSync(join(dir, "evals", "resume", "case.yaml"), `parameters:\n  team: blue\nmcp:\n  crm: fixtures/crm.json\nfiles: ${files}\n`);
+    try {
+      readCases(dir, ["resume"]);
+    } catch (thrown) {
+      if (thrown instanceof CaseError) return thrown.problems;
+      throw thrown;
+    }
+    return [];
+  };
+  const unseeded = "is not a path in the run's work folder (relative, with no empty, . or .. segment)";
+  for (const path of ["/etc/keys.json", "media/../../keys.json", "..", "./keys.json", "media//keys.json", "media/", "media\\keys.json"]) {
+    assert.deepEqual(problems(JSON.stringify({ [path]: "x" })), [`evals/resume/case.yaml: files: ${JSON.stringify(path)} ${unseeded}`], path);
+  }
+  assert.deepEqual(problems('{"": "x"}'), [`evals/resume/case.yaml: files: "" ${unseeded}`]);
+  assert.deepEqual(problems('{"inputs/message.md": "x"}'), ["evals/resume/case.yaml: files: \"inputs/message.md\" is under inputs/, where the server puts the run's uploads and its message"]);
+  assert.deepEqual(problems('{"a.json": 5, "b.json": {"stem": "x"}}'), ["evals/resume/case.yaml: files: \"a.json\" is the file's text, a string", "evals/resume/case.yaml: files: \"b.json\" is the file's text, a string"]);
+  assert.deepEqual(problems("[media/run-keys.json]"), ["evals/resume/case.yaml: files is a mapping of a path in the run's work folder to the text that file starts with"]);
+  // A path that names an object's own property is a file like any other: none is lost to the object it is kept in.
+  assert.deepEqual(problems('{"__proto__": "p", "constructor": "c", "a/__proto__": "q"}'), []);
+  const named = readCases(dir, ["resume"]).cases[0].files;
+  assert.deepEqual(Object.keys(named).sort(), ["__proto__", "a/__proto__", "constructor"]);
+  assert.deepEqual([named.__proto__, named.constructor, named["a/__proto__"]], ["p", "c", "q"]);
+  assert.equal(Object.getPrototypeOf(named), Object.prototype);
+  // The eval's own runner writes them at the claim: a named server's runs would start without them.
+  assert.equal(problems('{"media/run-keys.json": "{}"}').length, 0);
+  await assert.rejects(evalTemplate({ dir, cases: ["resume"], server: { baseUrl: "http://127.0.0.1:9", token: "x" } }), (thrown) => thrown instanceof CaseError && thrown.problems.includes("evals/resume: files seeds its runs' work folders on the eval's own server alone: run it without --server"));
+});
+
+test("a fake's when matches a string argument whole by {$pattern}; any other value, a string or an object, still by equality", () => {
+  const text = (text) => ({ content: [{ type: "text", text }] });
+  const fixture = { server: "studio", description: "", tools: {
+    submit: { description: "", input: { type: "object" }, answers: [
+      { when: { submission_key: { $pattern: "ns-[a-z0-9]{8}-voice-cold-open" }, kind: "voice" }, result: text("cold open") },
+      { when: [{ submission_key: { $pattern: "ns-a|ns-b" } }, { ref: { $pattern: "r-\\d+" } }], result: text("either") },
+      { when: { submission_key: "exact" }, result: text("exact") },
+      { when: { submission_key: { pattern: "x" } }, result: text("an object, equal") },
+    ], default: { ...text("none"), isError: true } },
+  } };
+  const said = (args) => fakeAnswer(fixture, "submit", args).content[0].text;
+  assert.equal(said({ submission_key: "ns-k7m2p9qa-voice-cold-open", kind: "voice", more: 1 }), "cold open", "the whole string matches, every other listed argument equal");
+  assert.equal(said({ submission_key: "ns-k7m2p9qa-voice-cold-open", kind: "music" }), "none", "a pattern does not excuse another argument");
+  for (const key of ["ns-k7m2p9qa-voice-cold-open-2", "x-ns-k7m2p9qa-voice-cold-open", "ns-k7m2p9q-voice-cold-open", "ns-K7M2P9QA-voice-cold-open"]) assert.equal(said({ submission_key: key, kind: "voice" }), "none", `${key}: only the whole string matches`);
+  // An alternation is anchored as a whole: ns-a|ns-b takes ns-a and ns-b alone, never a string that starts with ns-a.
+  assert.equal(said({ submission_key: "ns-b" }), "either");
+  assert.equal(said({ submission_key: "ns-a-later" }), "none");
+  assert.equal(said({ ref: "r-12" }), "either", "a when list's entry by pattern");
+  for (const ref of [12, ["r-12"], { r: "r-12" }, null]) assert.equal(said({ ref }), "none", `${JSON.stringify(ref)}: a pattern matches a string alone`);
+  assert.equal(said({ kind: "voice" }), "none", "an argument the call lacks matches no pattern");
+  assert.equal(said({ submission_key: "exact" }), "exact");
+  assert.equal(said({ submission_key: "exactly" }), "none", "a plain string is equality, never a pattern");
+  assert.equal(said({ submission_key: { pattern: "x" } }), "an object, equal");
+});
+
+test("readCases refuses a $pattern that is no string, does not compile, or shares its object with another key, naming the tool and the answer", async (t) => {
+  const dir = join(await scratch(t), "evalpkg");
+  cpSync(PKG, dir, { recursive: true });
+  const at = "evals/mcp-match/fixtures/crm.json";
+  const result = { content: [{ type: "text", text: "x" }] };
+  writeFileSync(join(dir, at), JSON.stringify({ server: "crm", description: "x", tools: {
+    get_contact: { description: "x", input: { type: "object" }, answers: [
+      { when: { id: { $pattern: "(unclosed" } }, result },
+      { when: [{ id: "7" }, { id: { $pattern: 7 } }], result },
+      { when: { id: { $pattern: "ns-[a-z0-9]{8}" } }, result },
+    ] },
+    update_contact: { description: "x", input: { type: "object" }, answers: [{ when: { id: { $pattern: "7", flags: "i" } }, result }] },
+  } }));
+  const error = (() => {
+    try {
+      readCases(dir, ["mcp-match"]);
+    } catch (thrown) {
+      return thrown;
+    }
+  })();
+  assert.ok(error instanceof CaseError, String(error));
+  assert.equal(error.problems.length, 3, error.problems.join("\n"));
+  assert.match(error.problems[0], /^evals\/mcp-match\/fixtures\/crm\.json: tools\.get_contact\.answers\[0\]\.when\.id: its \$pattern does not compile: Invalid regular expression/);
+  assert.equal(error.problems[1], "evals/mcp-match/fixtures/crm.json: tools.get_contact.answers[1].when[1].id: $pattern is a regular expression's source, a string");
+  assert.equal(error.problems[2], "evals/mcp-match/fixtures/crm.json: tools.update_contact.answers[0].when.id: a {\"$pattern\": ...} value holds no other key, and this one holds flags");
+});
+
 test("a correction seeded through the learning API reaches the run", { timeout: 600_000 }, async () => {
   const one = await caseOf("learned");
   assert.equal(one.pass, true, JSON.stringify(one, null, 1));
@@ -760,43 +880,152 @@ test("a run no runner takes fails by name once it has stayed queued past its bou
 });
 
 test("a run a runner holds is waited for while its view still reads queued (its first rows not shown): the queued bound is for a run no runner holds", { timeout: 180_000 }, async (t) => {
-  // The held case's run is claimed and holds in its turn until it is cancelled. Once it is there (the file its faux writes
-  // says so), the proxy serves each of its timeline pages as a held run's view reads before its first rows show: queued.
+  // The held case's run is claimed and holds in its turn until it is cancelled (the file its faux writes there says so).
+  // Until then the proxy holds each of the eval's timeline pages back, so the queued bound is never asked before a runner
+  // holds the run, however long the claim takes; from then on it serves each page as a held run's view reads before its
+  // first rows show: queued. The eval is stopped once it reads the page after a run read that found the run held: it
+  // went on waiting, never cancelling the run as queued, with no wait on any bound of its own.
   const holding = join(await scratch(t), "holding");
   process.env.AGENTRUN_TEST_EVAL_HOLD = holding;
   t.after(() => delete process.env.AGENTRUN_TEST_EVAL_HOLD);
   const { api, baseUrl, token } = await serve(t, { faux: FAUX, templates: FIXTURES });
-  const queued = (req, body) => {
-    if (!/\/runs\/[^/]+\/timeline/.test(req.url) || !existsSync(holding)) return body;
+  const inTurn = untilFile(holding, new Promise((resolve) => t.after(resolve)));
+  const stop = new AbortController();
+  const timeline = (req) => /\/runs\/[^/]+\/timeline/.test(req.url);
+  let heldRead = false;
+  const arrived = (req) => {
+    if (heldRead && timeline(req)) stop.abort();
+    return false;
+  };
+  const queued = async (req, body) => {
+    if (req.method === "GET" && /^\/v2\/runs\/[^/?]+$/.test(req.url)) {
+      if (JSON.parse(String(body)).claim) heldRead = true;
+      return body;
+    }
+    if (!timeline(req)) return body;
+    await inTurn;
     const page = JSON.parse(String(body));
     return page.final ? body : Buffer.from(JSON.stringify({ ...page, status: "queued", state: "working" }));
   };
-  const proxy = await refusing(t, baseUrl, () => false, queued);
-  const report = await evalTemplate({ dir: PKG, cases: ["held"], server: { baseUrl: proxy, token }, queueTimeoutMs: 10_000, runTimeoutMs: 30_000 });
-  const [one] = report.cases[0].runs;
-  assert.ok(one, JSON.stringify(report.cases[0]));
+  const proxy = await refusing(t, baseUrl, arrived, queued);
+  const stopped = evalTemplate({ dir: PKG, cases: ["held"], server: { baseUrl: proxy, token }, queueTimeoutMs: 1_000, signal: stop.signal });
+  // A wait that gave up on the run as queued ends the eval with a report, never this stop.
+  await assert.rejects(stopped, { name: "AbortError" });
   assert.ok(existsSync(holding), "the run reached its turn: a runner held it");
-  // Waited to the run's own bound, never given up on as queued after 10 s. The queued bound is well over the runner's
-  // 1 s fallback poll for a claim (runner.ts), which a disk-bound machine can run past.
-  assert.deepEqual([one.status, one.pass], ["timed_out", false]);
-  assert.match(one.error, /^the run took longer than 30 s \(state working when the wait gave up\) and was cancelled$/);
-  assert.equal((await api("GET", `/runs/${one.run_id}`)).body.status, "cancelled", "the run the eval started is cancelled");
+  assert.ok(heldRead, "a run read found the run held while its view read queued");
+  const runs = (await api("GET", "/runs?archived=true")).body.runs;
+  assert.equal(runs.length, 1);
+  assert.equal((await api("GET", `/runs/${runs[0].run_id}`)).body.status, "cancelled", "the run the eval started is cancelled at the stop");
 });
 
-test("a claim read that stalls doesn't hold the run's deadline: the read is given up on at its own bound, and the deadline ends the wait", { timeout: 120_000 }, async (t) => {
+test("a claim that lapses for one read, between reads that find the run held, doesn't end the wait: the queued bound needs no runner for its whole length", { timeout: 180_000 }, async (t) => {
+  // As the held case above, the run is claimed and holds in its turn, and the proxy serves each timeline page as queued
+  // once it is. The second run read the eval makes answers claim null, as a read in a claim's lapse on a stalled machine
+  // (not renewed in time, then claimed again) would; the reads before and after it find the run held. The eval is stopped
+  // once it reads the page after the third run read: it went on waiting past the lapse, never cancelling the run.
+  const holding = join(await scratch(t), "holding");
+  process.env.AGENTRUN_TEST_EVAL_HOLD = holding;
+  t.after(() => delete process.env.AGENTRUN_TEST_EVAL_HOLD);
+  const { api, baseUrl, token } = await serve(t, { faux: FAUX, templates: FIXTURES });
+  const inTurn = untilFile(holding, new Promise((resolve) => t.after(resolve)));
+  const stop = new AbortController();
+  const timeline = (req) => /\/runs\/[^/]+\/timeline/.test(req.url);
+  const claims = [];
+  const arrived = (req) => {
+    if (claims.length >= 3 && timeline(req)) stop.abort();
+    return false;
+  };
+  const lapsed = async (req, body) => {
+    if (req.method === "GET" && /^\/v2\/runs\/[^/?]+$/.test(req.url)) {
+      const run = JSON.parse(String(body));
+      if (claims.length === 1) {
+        claims.push(null);
+        return Buffer.from(JSON.stringify({ ...run, claim: null }));
+      }
+      claims.push(run.claim ?? null);
+      return body;
+    }
+    if (!timeline(req)) return body;
+    await inTurn;
+    const page = JSON.parse(String(body));
+    return page.final ? body : Buffer.from(JSON.stringify({ ...page, status: "queued", state: "working" }));
+  };
+  const proxy = await refusing(t, baseUrl, arrived, lapsed);
+  const stopped = evalTemplate({ dir: PKG, cases: ["held"], server: { baseUrl: proxy, token }, queueTimeoutMs: 1_000, signal: stop.signal });
+  // A wait that gave up on the run at the lapse ends the eval with a report, never this stop.
+  await assert.rejects(stopped, { name: "AbortError" });
+  assert.deepEqual(claims.slice(0, 3).map((claim) => claim !== null), [true, false, true], "held, then the lapse, then held again");
+  const runs = (await api("GET", "/runs?archived=true")).body.runs;
+  assert.equal(runs.length, 1);
+  assert.equal((await api("GET", `/runs/${runs[0].run_id}`)).body.status, "cancelled", "the run the eval started is cancelled at the stop");
+});
+
+test("a run once held whose claim then stays gone for the whole queued bound is cancelled as queued, and a read that finds it held again starts that bound over", { timeout: 180_000 }, async (t) => {
+  // As the held cases above, the run is claimed and holds in its turn, and the proxy serves each timeline page as queued
+  // once it is. The run reads the eval makes answer held, unclaimed, held, then unclaimed from there on, as a runner that
+  // let the run go would leave it. With a 1 s bound and a read every CLAIM_READ_EVERY_MS (5 s), two unclaimed reads in a
+  // row span the bound: the eval cancels at the fifth read. It would cancel at the fourth if the held third read did not
+  // start the bound over (the second's lapse still counted), and never if a run once held were waited for to its deadline.
+  const holding = join(await scratch(t), "holding");
+  process.env.AGENTRUN_TEST_EVAL_HOLD = holding;
+  t.after(() => delete process.env.AGENTRUN_TEST_EVAL_HOLD);
+  const { api, baseUrl, token } = await serve(t, { faux: FAUX, templates: FIXTURES });
+  const inTurn = untilFile(holding, new Promise((resolve) => t.after(resolve)));
+  const timeline = (req) => /\/runs\/[^/]+\/timeline/.test(req.url);
+  const claims = [];
+  let cancelledAt;
+  const arrived = (req) => {
+    if (req.method === "POST" && /\/runs\/[^/]+\/cancel$/.test(req.url)) cancelledAt ??= claims.length;
+    return false;
+  };
+  const gone = async (req, body) => {
+    if (req.method === "GET" && /^\/v2\/runs\/[^/?]+$/.test(req.url) && cancelledAt === undefined) {
+      const run = JSON.parse(String(body));
+      const held = claims.length === 0 || claims.length === 2;
+      claims.push(held && run.claim ? run.claim : null);
+      return held ? body : Buffer.from(JSON.stringify({ ...run, claim: null }));
+    }
+    if (!timeline(req)) return body;
+    await inTurn;
+    const page = JSON.parse(String(body));
+    return page.final ? body : Buffer.from(JSON.stringify({ ...page, status: "queued", state: "working" }));
+  };
+  const proxy = await refusing(t, baseUrl, arrived, gone);
+  const report = await evalTemplate({ dir: PKG, cases: ["held"], server: { baseUrl: proxy, token }, queueTimeoutMs: 1_000, runTimeoutMs: 90_000 });
+  const [one] = report.cases[0].runs;
+  assert.ok(one, JSON.stringify(report.cases[0]));
+  assert.deepEqual([one.status, one.pass], ["timed_out", false]);
+  assert.match(one.error, /^the run stayed queued for 1 s with no runner holding it, and it was cancelled$/);
+  assert.deepEqual(claims.slice(0, 5).map((claim) => claim !== null), [true, false, true, false, false], "held, gone, held again, then gone");
+  assert.equal(cancelledAt, 5, "cancelled at the fifth read: the held third read started the bound over");
+  assert.equal((await api("GET", `/runs/${one.run_id}`)).body.status, "cancelled");
+});
+
+test("a claim read that stalls doesn't hold the run's deadline: the read is given up on at the deadline, never its own longer bound, and the run cancelled then", { timeout: 120_000 }, async (t) => {
   // No runner: the run stays queued. Until the eval cancels it, the proxy never answers the run read the queued bound
   // asks, as a server that took the request and stalled would.
   const { api, baseUrl, token } = await serve(t, { faux: FAUX, templates: FIXTURES, runner: false });
-  let cancelled = false;
-  const stalled = (req, body) => {
-    if (req.method === "POST" && /\/runs\/[^/]+\/cancel$/.test(req.url)) cancelled = true;
-    return req.method === "GET" && /^\/v2\/runs\/[^/?]+$/.test(req.url) && !cancelled ? new Promise(() => {}) : body;
+  let stalledAt, cancelAt;
+  // The cancel's arrival, timed as it comes in.
+  const arrived = (req) => {
+    if (req.method === "POST" && /\/runs\/[^/]+\/cancel$/.test(req.url)) cancelAt ??= Date.now();
+    return false;
   };
-  const report = await evalTemplate({ dir: PKG, cases: ["learned"], server: { baseUrl: await refusing(t, baseUrl, () => false, stalled), token }, queueTimeoutMs: 1_000, runTimeoutMs: 5_000 });
+  const stalled = (req, body) => {
+    if (req.method !== "GET" || !/^\/v2\/runs\/[^/?]+$/.test(req.url) || cancelAt !== undefined) return body;
+    stalledAt ??= Date.now();
+    return new Promise(() => {});
+  };
+  const report = await evalTemplate({ dir: PKG, cases: ["learned"], server: { baseUrl: await refusing(t, baseUrl, arrived, stalled), token }, queueTimeoutMs: 1_000, runTimeoutMs: 8_000 });
+  // The deadline is 8 s after the run started. The read stalls before it, at the first queued page past the 1 s bound (a
+  // timeline page waits at most 5 s), so the cancel comes at most 7 s after the stall began: at the deadline, never at
+  // the read's own 10 s bound (CLAIM_READ_TIMEOUT_MS), which ends past it.
+  assert.ok(stalledAt !== undefined && cancelAt !== undefined, "a run read stalled, and the run was cancelled");
+  assert.ok(cancelAt - stalledAt < 9_000, `the cancel came ${cancelAt - stalledAt} ms after the stalled read began`);
   const [one] = report.cases[0].runs;
   assert.ok(one, JSON.stringify(report.cases[0]));
   assert.deepEqual([one.status, one.pass], ["timed_out", false]);
-  assert.match(one.error, /^the run took longer than 5 s \(state \w+ when the wait gave up\) and was cancelled$/);
+  assert.match(one.error, /^the run took longer than 8 s \(state \w+ when the wait gave up\) and was cancelled$/);
   assert.equal((await api("GET", `/runs/${one.run_id}`)).body.status, "cancelled", "the run the eval started is cancelled");
 });
 
