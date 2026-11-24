@@ -5,13 +5,15 @@
 // (deploy-parity-read.mjs) is checked against an answering function, and its command against loopback listeners.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import * as parity from "./deploy-parity.mjs";
 import { describeAgent, HOST_SET, parityDiff, readinessOf, unreadFields } from "./deploy-parity.mjs";
 import { readAgent } from "./deploy-parity-read.mjs";
+import { MCP_SERVER_NAME, MCP_TOOL_NAME } from "../packages/serve/dist/tool-names.js";
 import { DEFINITION_FIELDS } from "../packages/serve/dist/validate.js";
 import { cli, keptEnv } from "../packages/agentrun/test/support.mjs";
 
@@ -364,6 +366,9 @@ async function listener(t, answer = () => [404, { error: { code: "not_found", me
   return { base: `http://127.0.0.1:${server.address().port}/v2`, seen };
 }
 
+/** The lock a deploy of agt_b9 to `target` writes (DIR/.agentrun/deploy.json). */
+const lockFor = (target) => ({ target, agent_id: "agt_b9", revision_id: "rev_agt_b9", package_sha256: null, deployed_at: "2026-11-25T10:30:00.000Z" });
+
 /** A scratch folder with `name` holding `text`: its path. Removed at the test's end. */
 function scratchFile(t, name, text) {
   const dir = mkdtempSync(join(tmpdir(), "deploy-parity-"));
@@ -379,7 +384,7 @@ test("--lock gives the target's agent id alone: the target token goes to --targe
   const target = await listener(t, (request) => (request.url === "/v2/agents/agt_b9" ? [200, b] : [404, {}]));
   const env = { ...keptEnv(), AGENTRUN_PARITY_SOURCE_TOKEN: "source-secret", AGENTRUN_PARITY_TARGET_TOKEN: "target-secret" };
   const from = ["--source", source.base, "--source-agent", "agt_a1"];
-  const elsewhere = scratchFile(t, "deploy.json", JSON.stringify({ target: attacker.base, agent_id: "agt_b9" }));
+  const elsewhere = scratchFile(t, "deploy.json", JSON.stringify(lockFor(attacker.base)));
 
   // No --target: the lock's address is never taken, so nothing is sent anywhere.
   const bare = await cli(env, [...from, "--lock", elsewhere], { bin: CHECK });
@@ -391,7 +396,7 @@ test("--lock gives the target's agent id alone: the target token goes to --targe
   assert.equal(crossed.code, 2, crossed.err);
   assert.deepEqual([attacker.seen, source.seen, target.seen], [[], [], []]);
   // The lock of a deploy to --target: its agent id is read, each token goes to its own install.
-  const own = scratchFile(t, "deploy.json", JSON.stringify({ target: `${target.base}/`, agent_id: "agt_b9" }));
+  const own = scratchFile(t, "deploy.json", JSON.stringify(lockFor(`${target.base}/`)));
   const run = await cli(env, [...from, "--target", target.base, "--lock", own], { bin: CHECK });
   assert.equal(run.code, 1, run.err);
   assert.deepEqual([...new Set(source.seen.map((one) => one.authorization))], ["Bearer source-secret"]);
@@ -400,7 +405,7 @@ test("--lock gives the target's agent id alone: the target token goes to --targe
   assert.deepEqual(attacker.seen, []);
 });
 
-test("bad input exits 2 with one line, never a stack trace: an unknown option, a lock not there, a lock that is not JSON", async (t) => {
+test("bad input exits 2 with one line, never a stack trace: an unknown option, a lock not there, a lock that is not JSON, a URL with a user, password, query or fragment", async (t) => {
   const env = keptEnv();
   const from = ["--source", "http://127.0.0.1:9/v2", "--source-agent", "agt_a1", "--target", "http://127.0.0.1:9/v2"];
   for (const args of [[...from, "--target-agent", "agt_b9", "--nope"], [...from, "--lock", join(tmpdir(), "deploy-parity-no-such-lock.json")], [...from, "--lock", scratchFile(t, "deploy.json", "{not json")]]) {
@@ -410,4 +415,126 @@ test("bad input exits 2 with one line, never a stack trace: an unknown option, a
     assert.match(run.err, /^deploy-parity: /);
     assert.equal(run.out, "");
   }
+
+  // A URL the CLI refuses (cli.mjs baseOf) is refused here too, before any request, and never echoed: it may hold a
+  // password. The install answers the source's agent, so a check that reads first would reach the target's URL.
+  const { a } = pair();
+  const install = await listener(t, (request) => (request.url === "/v2/agents/agt_a1" ? [200, a] : [404, {}]));
+  const host = install.base.slice("http://".length);
+  const PASSWORD = "pw-parity-7f3a";
+  const at = (target) => ["--source", install.base, "--source-agent", "agt_a1", "--target", target];
+  const refused = {
+    "a target with a user and password": [...at(`http://ops:${PASSWORD}@${host}`), "--target-agent", "agt_b9"],
+    "a source with a user and password": ["--source", `http://ops:${PASSWORD}@${host}`, "--source-agent", "agt_a1", "--target", install.base, "--target-agent", "agt_b9"],
+    "a target with a query": [...at(`${install.base}?k=1`), "--target-agent", "agt_b9"],
+    "a target with a fragment": [...at(`${install.base}#part`), "--target-agent", "agt_b9"],
+    "a target with a password, and a lock written for another target": [...at(`https://ops:${PASSWORD}@parity.invalid`), "--lock", scratchFile(t, "deploy.json", JSON.stringify(lockFor(install.base)))],
+    "a lock whose target holds a password": [...at(install.base), "--lock", scratchFile(t, "deploy.json", JSON.stringify(lockFor(`http://ops:${PASSWORD}@${host}`)))],
+  };
+  const wrong = [];
+  for (const [what, args] of Object.entries(refused)) {
+    const run = await cli(env, args, { bin: CHECK });
+    if (run.code !== 2) wrong.push(`${what}: exit ${run.code}`);
+    if (`${run.out}${run.err}`.includes(PASSWORD)) wrong.push(`${what}: the password is printed`);
+    if (run.err.trim().split("\n").length !== 1) wrong.push(`${what}: not one line`);
+    if (install.seen.length) wrong.push(`${what}: requests sent before a refusal: ${install.seen.map((one) => one.path).join(" ")}`);
+    install.seen.length = 0;
+  }
+  assert.deepEqual(wrong, [], "each URL is refused with exit 2 and one line, before any request, its password never printed");
+});
+
+test("a difference in a tool's settings shows a digest of each value, never the value: a pin's token is in neither stdout nor stderr", async (t) => {
+  // Joined at run time: a Slack-token-shaped literal in source trips key scanners.
+  const TOKEN = ["xoxb", "parity-test-not-a-real-token"].join("-");
+  const { a, b } = pair();
+  const pinned = structuredClone(a);
+  pinned.definition.tool_settings["mcp:slack/SLACK_SEND_MESSAGE"] = { pin: { channel: "C0PARITY01", token: TOKEN } };
+  pinned.definition.tool_settings.read = { token: TOKEN };
+  const answering = (path, agent, servers) => (request) => (request.url === path ? [200, agent] : request.url === "/v2/settings/mcp-servers" ? [200, { servers }] : [404, {}]);
+  const source = await listener(t, answering("/v2/agents/agt_a1", pinned, serversOn()));
+  const target = await listener(t, answering("/v2/agents/agt_b9", b, serversOn({ slack: "team-slack", github: "gh", docs: "team-docs" })));
+  const run = await cli(keptEnv(), ["--source", source.base, "--source-agent", "agt_a1", "--target", target.base, "--target-agent", "agt_b9"], { bin: CHECK });
+  assert.equal(run.code, 1, run.err);
+  assert.ok(!run.out.includes(TOKEN), "the pin's token is on stdout");
+  assert.ok(!run.err.includes(TOKEN), "the pin's token is on stderr");
+  const digest = /^[0-9a-f]{12}$/;
+  const shown = JSON.parse(run.out).differences.map(({ field, kind, source: from, target: to }) => [field, kind, Object.keys(from ?? {}), digest.test(from?.sha256), Object.keys(to ?? {}), digest.test(to?.sha256)]).sort();
+  assert.deepEqual(shown, [
+    ["mcp_tools.mcp:composio:slack/SLACK_SEND_MESSAGE", "changed", ["sha256"], true, ["sha256"], true],
+    ["tools.read", "changed", ["sha256"], true, ["sha256"], true],
+  ], "each setting difference names its field and shows each side as {sha256: 12 hex} alone");
+});
+
+test("a body the check can't read exits 2 with one line, never a stack trace or the exit of a difference", async (t) => {
+  const { a, b } = pair();
+  const blocked = structuredClone(b);
+  blocked.run_blockers = { message: "Not runnable.", fields: [null] };
+  const source = await listener(t, (request) => (request.url === "/v2/agents/agt_a1" ? [200, a] : [404, {}]));
+  const target = await listener(t, (request) => (request.url === "/v2/agents/agt_b9" ? [200, blocked] : [404, {}]));
+  const run = await cli(keptEnv(), ["--source", source.base, "--source-agent", "agt_a1", "--target", target.base, "--target-agent", "agt_b9"], { bin: CHECK });
+  assert.equal(run.code, 2, `a body the check can't read is exit 2 (could not check), not ${run.code}`);
+  assert.equal(run.err.trim().split("\n").length, 1, `one line on stderr, not ${run.err.trim().split("\n").length}`);
+  assert.match(run.err, /^deploy-parity: /);
+  assert.equal(run.out, "");
+});
+
+test("an agent body with no agent_id owns no trigger: one with no target, or one naming no agent, is never its own", () => {
+  const { readA } = pair();
+  const read = readA();
+  delete read.agent.agent_id;
+  read.triggers.push({ name: "no-target", enabled: true, source: { kind: "webhook" } }, { name: "message", enabled: true, source: { kind: "webhook" }, target: { kind: "message_run" } });
+  let described;
+  assert.doesNotThrow(() => (described = describeAgent(read)), "a trigger with no target is read, not a throw");
+  assert.deepEqual(described.fields.triggers, {}, "with no agent_id, no trigger is the agent's");
+});
+
+test("two grants with the same setting are two grants: the target losing one of them is a difference", () => {
+  const { readA, readB } = pair();
+  const source = readA();
+  source.servers.push({ name: "slack-ops", url: "https://mcp.example/slack-ops", source: "composio", toolkit: "slack" });
+  source.agent.definition.tools.push("mcp:slack-ops/SLACK_SEND_MESSAGE");
+  delete source.agent.definition.tool_settings;
+  const target = readB();
+  delete target.agent.definition.tool_settings;
+  assert.deepEqual(diffOf(source, target).map(({ field, kind }) => [field, kind]), [["mcp_tools.mcp:composio:slack/SLACK_SEND_MESSAGE", "changed"]], "two unpinned slack grants on the source, one on the target: the check must name mcp_tools.mcp:composio:slack/SLACK_SEND_MESSAGE");
+});
+
+test("instructions that name an MCP tool are unread when the servers are, and kept as written", () => {
+  const { readA, readB } = pair();
+  const source = readA();
+  source.servers = null;
+  source.agent.definition.instructions = "Post with mcp:slack/SLACK_SEND_MESSAGE.\n";
+  const target = readB();
+  target.agent.definition.instructions = "Post with mcp:team-slack/SLACK_DELETE_MESSAGE.\n";
+  const described = describeAgent(source);
+  assert.ok(described.unread.some((one) => one.field === "instructions"), "the instructions name a server the check could not read: unread");
+  assert.equal(described.fields.instructions, "Post with mcp:slack/SLACK_SEND_MESSAGE.", "unread instructions are kept as written");
+  assert.ok(!diffOf(source, target).some((one) => one.field === "instructions"), "an unread field is never compared");
+  // Text that names no MCP tool needs no server: read.
+  source.agent.definition.instructions = "Digest the day.\n";
+  assert.ok(!describeAgent(source).unread.some((one) => one.field === "instructions"), "instructions naming no MCP tool are read");
+});
+
+test("MCP names in instructions follow serve's grammar: a tool name past 64 characters is no name, so it is never renamed", () => {
+  const { readA, readB } = pair();
+  const long = "T".repeat(65);
+  const source = readA();
+  source.agent.definition.instructions = `Post with mcp:slack/${long}.\n`;
+  // Serve's apply leaves this text as written on B (its grammar ends a tool at 64 characters): B kept another name.
+  const target = readB();
+  target.agent.definition.instructions = `Post with mcp:team-slack/${long}.\n`;
+  assert.deepEqual(diffOf(source, target).map(({ field }) => field), ["instructions"], "a 65-character tool name is no MCP name, so mcp:team-slack/ stays and differs from mcp:slack/");
+});
+
+test("the check's MCP name pattern is serve's MCP_NAME_IN_TEXT with its server captured", () => {
+  const templates = readFileSync(new URL("../packages/serve/src/templates.ts", import.meta.url), "utf8");
+  for (const line of ["const SERVER_PART = MCP_SERVER_NAME.source.slice(1, -1);", "const TOOL_PART = MCP_TOOL_NAME.source.slice(1, -1);"]) assert.ok(templates.includes(line), `serve's templates.ts no longer has ${line}`);
+  const built = /^const MCP_NAME_IN_TEXT = new RegExp\(`(.+)`, "g"\);$/m.exec(templates);
+  assert.ok(built, "serve's templates.ts no longer builds MCP_NAME_IN_TEXT from one template string");
+  const [server, tool] = [MCP_SERVER_NAME.source.slice(1, -1), MCP_TOOL_NAME.source.slice(1, -1)];
+  const serves = built[1].replaceAll("\\\\", "\\").replace("${SERVER_PART}", `(${server})`).replace("${TOOL_PART}", tool);
+  // A slash reads the same escaped or not.
+  const plain = (source) => source?.replaceAll("\\/", "/");
+  assert.equal(plain(parity.MCP_IN_TEXT?.source), plain(serves), "deploy-parity.mjs's MCP_IN_TEXT is not serve's MCP_NAME_IN_TEXT with its server captured");
+  assert.equal(parity.MCP_IN_TEXT?.flags, "g");
 });
