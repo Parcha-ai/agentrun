@@ -1,15 +1,19 @@
-// The one reading of the links an http(s) text holds: where a URL written in it ends, what tail is not its own, where a
-// markdown link's target ends, and the links a page's text holds. A fetched page's links (page.ts, providers/) read
-// through it, and so do serve's eval link check's cited links (its link-check.ts), so a link a page holds and the same
-// link an answer cites come out in the same shape. Where a URL ends and its tail (the block between "URL tail, begin" and
-// "URL tail, end") are serve's timeline scrub's too, which keeps the same text in its own text-urls.ts.
+// The one reading of an http(s) URL written in text: where it ends, what tail is not its own, where a markdown link's
+// target ends, and the links a page's text holds. A fetched page's links (page.ts, providers/) read through it, and so do
+// serve's timeline scrub (its timeline/util.ts scrubUrls) and its eval link check's cited links (link-check.ts), so a
+// link a page holds and the same link an answer cites come out in the same shape. It imports nothing: serve's console
+// compiles it from source, as `@parcha/agentrun-web/text-urls`.
 //
 // Every reading here is linear in its text: a page is hostile and up to a million characters.
 
-// URL tail, begin: the same text in packages/web/src/text-urls.ts and packages/serve/src/text-urls.ts (the console
-// compiles serve's from source, so it imports nothing); serve's test/text-urls-copy.test.mjs holds the two equal.
 /** What ends a URL written in text, for every reader: whitespace, a quote, an angle bracket, a backtick or a backslash. */
 const URL_ENDS = "\\s\"`<>\\\\";
+/** A URL written in text, as a link is read (a page's links, an answer's cited links): it also ends at "|", so a Slack
+ *  mrkdwn link `<https://a/b|text>` is `https://a/b`. */
+export const TEXT_URL = new RegExp(`https?://[^${URL_ENDS}|]+`, "gi");
+/** A URL written in text, as the timeline scrubs one (scrubUrls): it runs on through a "|", so a query value holding one
+ *  (`?ids=1|2`) is elided whole, never shown past the "|". The scrub's only difference from TEXT_URL. */
+export const SCRUBBED_URL = new RegExp(`https?://[^${URL_ENDS}]+`, "gi");
 /** What a URL found in text may end with that is not its own: a sentence's punctuation, a closing quote, an emphasis's
  *  "*", a closing bracket the URL did not open (trimmed). */
 export const TRAILING = ".,;:!?*)]}'";
@@ -29,11 +33,6 @@ export function trimmed(raw: string): string {
   }
   return raw.slice(0, end);
 }
-// URL tail, end.
-
-/** A URL written in text, as a link is read (a page's links, an answer's cited links): it also ends at "|", so a Slack
- *  mrkdwn link `<https://a/b|text>` is `https://a/b`. */
-export const TEXT_URL = new RegExp(`https?://[^${URL_ENDS}|]+`, "gi");
 
 /** Where a markdown link's target (`text` from `from`, the character after its "](") ends: at the ")" that closes the link,
  *  so parentheses it holds in pairs (a wiki title's) stay, else at whitespace or `to`. `text[end] === ")"` says it closed. */
