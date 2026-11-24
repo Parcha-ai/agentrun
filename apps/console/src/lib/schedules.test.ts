@@ -275,6 +275,14 @@ describe("a schedule's typed input", () => {
     expect(patchOf(t, bodyOf({ ...d, shape: strict, name: "renamed" }).body!)).toEqual({ name: "renamed" });
     expect(patchOf(t, bodyOf({ ...d, shape: strict, values: { ...d.values, company: "Beta AG" } }).body!).target?.input).toEqual({ company: "Beta AG", topics: [{ id: 1 }], urgent: { level: 2 } });
   });
+  // A key no field has, with a value a field could show ("external"), is read into the draft's text too: it stays as
+  // stored whatever that text says, since no field sends it.
+  it("keeps a stored key no field has, though its value reads as text", () => {
+    const t = typed({ company: "Acme GmbH", reference: "external" });
+    const d = draftOf(t);
+    expect(patchOf(t, bodyOf({ ...d, shape, name: "renamed" }).body!)).toEqual({ name: "renamed" });
+    expect(patchOf(t, bodyOf({ ...d, shape, values: { ...d.values, company: "Beta AG" } }).body!).target?.input).toEqual({ company: "Beta AG", reference: "external" });
+  });
   it("needs no message when the schema requires another field, and says a whole input that is no JSON object", () => {
     expect(bodyOf({ ...draft({ content: "", cron: "30 1 * * *" }), shape, values: { company: "Acme GmbH" } }).body?.target?.input).toEqual({ company: "Acme GmbH" });
     const json = agentInputOf({ type: "object", properties: { filters: { type: "object" } } });
