@@ -135,7 +135,7 @@ test("a box this server does not enable names the setting that enables it: in ca
 test("the setting a box names keeps the boxes AGENTRUN_BOXES already lists", async () => {
   const offers = await placeOffers({ AGENTRUN_BOXES: "daytona" });
   assert.equal(offers.find((offer) => offer.id === "docker").reason, "not enabled on this server: start AgentRun with AGENTRUN_BOXES=docker,daytona");
-  assert.equal(offers.find((offer) => offer.id === VM).reason, `not enabled on this server: start AgentRun with AGENTRUN_BOXES=${VM},daytona`);
+  assert.equal(offers.find((offer) => offer.id === VM).reason, `not enabled on this server: start AgentRun with AGENTRUN_BOXES=daytona,${VM}`);
 });
 
 test("docker enabled with no daemon answering: the box's reason says to start Docker or join the docker group, a Docker computer's 409 says there is no Docker here in one sentence, and the banner says no box is ready", async (t) => {
