@@ -237,7 +237,7 @@ test("(b) a draft that says what the agent said on its last runs, alone, is prom
   assert.deepEqual(records.map(({ decided }) => [decided]), [["replaying"], ["promote"]]);
   const { fields, ...check } = records[1].check;
   assert.deepEqual({ ...check, of: [...check.of].sort(), cost_usd: typeof check.cost_usd }, {
-    compile_after: 5, agree_min: 0.8, alone_min: 0.7, attempt: 1, n: 5, agreed: 5, alone: 5,
+    compile_after: 5, agree_min: 0.8, alone_min: 0.7, attempt: 1, n: 5, agreed: 5, alone: 5, agent_agreed: 5,
     of: ["prior-0", "prior-1", "prior-2", "prior-3", "prior-4"], cost_usd: "number", outcomes: { answered: 5, handed_back: 0, failed: 0, skipped_write: 0 },
   });
   assert.deepEqual(Object.entries(fields).map(([name, one]) => [name, one.workflow_right, one.n, one.known, one.pass]), [["answer", 5, 5, "agent", true]]);
