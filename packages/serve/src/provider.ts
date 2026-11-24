@@ -18,7 +18,7 @@ import type { HarnessWire as Wire, Wire as ModelWire } from "@parcha/agentrun-ke
 import { ROUTE_ORIGIN } from "@parcha/agentrun-kernel/host";
 import type { ClaudeAgentLogin } from "@parcha/agentrun-harness-claude";
 import { CLAUDE_LOGIN_PROVIDER, onClaudeLogin, claudeLoginOf } from "./claude-login.js";
-import { chooseModel, FAUX_ENV, hostModel, MODEL_PROVIDER, type ModelNeeds, type ModelRef, ollamaWouldRun, START_OLLAMA } from "./model.js";
+import { chooseModel, FAUX_ENV, harnessRuns, hostModel, MODEL_PROVIDER, type ModelNeeds, type ModelRef, ollamaWouldRun, START_OLLAMA } from "./model.js";
 import { modelWire, routed, routedId, translatesOnto, WIRES, wireOf } from "./wires.js";
 import { modelFormWhy } from "./model-form.js";
 import { gatewayHeadersOf } from "./request-metadata.js";
@@ -193,8 +193,9 @@ export function providerFor(wire: Wire, env: NodeJS.ProcessEnv, model: ModelRef,
   const named = `${model.provider}/${model.modelId}`;
   // A harness on its own plan (Cursor's) calls its vendor itself, on its owner's key: no route of ours is its.
   if (!modelWire(wire)) throw new HarnessUnavailable(`${who} runs its model on its own plan, never through a model route of AgentRun's; ${named} is not one to proxy.`);
-  // A model the route translates onto this wire, for any harness on it; never behind serve's gateway, whose models are its.
-  if (routed(wire, model) && !env.AGENT_MODEL_BASE_URL) return routedProvider(env, wire, model);
+  // A model the route translates onto this wire, for a harness on it that runs it (harnessRuns: one whose proxy forwards
+  // with the route's fetch); never behind serve's gateway, whose models are its.
+  if (routed(wire, model) && !env.AGENT_MODEL_BASE_URL && harnessRuns(env, named, who)) return routedProvider(env, wire, model);
   if (wire === "anthropic-messages") {
     // A model of serve's gateway that the gateway takes on Messages (a Claude model, model.ts gatewayWire): the gateway's
     // own route, as on Responses. No harness of this wire chooses one (claude-agent's model is never the gateway's).

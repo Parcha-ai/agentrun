@@ -227,9 +227,9 @@ function adapterEntry(facts: AdapterFacts, make: (env: NodeJS.ProcessEnv, needs:
     ...extra,
     // Its wire's vendor's model, or that vendor's on OpenRouter; behind serve's gateway, on the wire it serves, any id,
     // which is the gateway's own string and names no provider here. One that runs on a ChatGPT plan, the plan's models.
-    // A model the route translates onto its wire (wires.ts routed: an Ollama model on Messages or Responses), except
-    // behind a gateway.
-    runs: (env, model) => (gateway && Boolean(env.AGENT_MODEL_BASE_URL)) || model.slice(0, Math.max(0, model.indexOf("/"))) === vendor || onOpenRouter(model, vendor) || (onPlan && model.startsWith(`${PLAN_PROVIDER}/`)) || (routedId(wire, model) && !env.AGENT_MODEL_BASE_URL),
+    // A model the route translates onto its wire (wires.ts routed: an Ollama model on Messages or Responses), where its
+    // proxy forwards with the route's fetch (its forwardsRoute fact), except behind a gateway.
+    runs: (env, model) => (gateway && Boolean(env.AGENT_MODEL_BASE_URL)) || model.slice(0, Math.max(0, model.indexOf("/"))) === vendor || onOpenRouter(model, vendor) || (onPlan && model.startsWith(`${PLAN_PROVIDER}/`)) || (facts.forwardsRoute === true && routedId(wire, model) && !env.AGENT_MODEL_BASE_URL),
     onWire: (env) => facts.ownModel || openRouterOnly(wire, env),
     model: async (env, ref, available) => (facts.ownModel && !available ? undefined : modelOn(wire, env, ref, id)),
     priceModel: (env, model) => priceModelFor(wire, env, model, id),
