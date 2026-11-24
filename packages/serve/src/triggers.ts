@@ -379,8 +379,8 @@ export class Triggers {
   private readonly starting = new Map<string, Promise<{ run_id: string } | undefined>>();
   /** Each trigger's removals and the edits that name a target (the one way it moves to another agent), one after another
    *  on this server: a move never lands between a template update's delete of its Composio instance and its conditional
-   *  delete of the row (remove), so a moved trigger never stands on an instance that delete took. Across servers the
-   *  store's conditional write holds the row. Removed from the map once idle. */
+   *  delete of the row (remove), so a moved trigger never stands on an instance that delete took. One server holds a
+   *  store (its owner lock), so this queue orders every edit of a trigger. Removed from the map once idle. */
   private readonly edits = new Map<string, Promise<void>>();
   /** Whether a firing waits for its trigger's room (max_active_runs): the timer then reads the store every WAIT_POLL_MS. */
   private waiting = false;
@@ -1423,11 +1423,13 @@ export class Triggers {
    *  its retry) with room by drive's own check (busy: max_active_runs, the overlap, firings mid-hand), then held mid-hand
    *  until its run starts; or is one its host took with no run, up to its startBy (the host may answer first and start
    *  the run after), then held mid-hand the same way, however long its run takes to write. Its startBy is pushed out to
-   *  at least START_WINDOW_MS from now if it is sooner, so the store holds its room too, for another server's checks.
+   *  at least START_WINDOW_MS from now if it is sooner, so its window never closes while its run is written.
    *  Undefined when the push was not written: the firing moved meanwhile. A start that would be refused once its run is
    *  under its key (`replay`) answers that run: another start of the firing (the host's repeat) wrote it since handedStart
    *  read none. One while another start of the firing on this server is writing its run (starting) follows that start. */
   private async startRoom(trigger: Trigger, key: string): Promise<StartRoom | { replay: string } | { follow: Promise<{ run_id: string } | undefined> } | undefined> {
+    // Before any awaited read: a start whose lookup under the key found no run follows one already writing it in the
+    // same turn. With a read first, it could miss the entry and race that write (the concurrent-start test relies on it).
     const follow = this.starting.get(key);
     if (follow) return { follow };
     const ranOr = async (message: string): Promise<{ replay: string }> => {
