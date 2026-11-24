@@ -1613,8 +1613,10 @@ While it is on, a claude-agent run on an `anthropic/<model>` model goes on the l
 `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN` or key, no model proxy runs, and the CLI's sandbox denies its commands
 reads of the login. A model named on a gateway or OpenRouter keeps its key, and so does a run started with its own
 `model_key`. With no key at all, claude-agent's default
-model is `anthropic/claude-sonnet-5-5`. A run whose login is signed out fails at its start and says so. It never
-switches to a key. The run books its tokens and no dollars (`cost.plan`, `on: "claude_code"`), and the plan's own limits
+model is `anthropic/claude-sonnet-5-5`. A run whose login is signed out fails at its start and says so. A status check
+the CLI outlasts (15 s) is asked once more; still no answer, the run goes on when the same login read signed in within
+the last 10 minutes in this server process (at a run's check or in Settings), else it fails saying the check timed out.
+It never switches to a key. The run books its tokens and no dollars (`cost.plan`, `on: "claude_code"`), and the plan's own limits
 apply. Only a run in a runner place, on the machine the mode was turned on for, goes on the login. A run placed in a
 sandbox, or on another machine, uses the keys. The login is the server's user's, so a run on it needs runs under that
 user: where each run is a user of its own (the image, `run_isolation: "uid"`), a claude-agent run that would go on the
