@@ -58,6 +58,26 @@ test('the request: POST /v1/messages, the key and API version as headers, the Sy
   });
 });
 
+test('an older model that takes a temperature gets 0 and no effort (temperatureFor, takesEffort); the outcome says what was sent and whether it was applied', async () => {
+  const seen = [];
+  const answer = JSON.stringify({ holds: 0.9, pick: { first: 0.7, second: 0.3 } });
+  const fetch = async (url, init) => (seen.push(JSON.parse(init.body)), json(message(answer)));
+  const older = await anthropicProvider({ ...settings, model: 'claude-haiku-4-5', fetch }).decide(request, ctx());
+  const schema = seen[0].output_config.format.schema;
+  assert.deepEqual(seen[0], {
+    model: 'claude-haiku-4-5', max_tokens: 8192, system: ANTHROPIC_SYSTEM,
+    messages: [{ role: 'user', content: JSON.stringify({ state: request.state, questions: QUESTIONS }) }],
+    temperature: 0,
+    output_config: { format: { type: 'json_schema', schema } },
+  });
+  assert.deepEqual([older.temperature_sent, older.temperature_applied], [0, 'unknown'], 'through a root that is not Anthropic\'s, it may have been dropped');
+  const direct = await anthropicProvider({ ...settings, baseURL: 'https://api.anthropic.com/', model: 'claude-haiku-4-5', fetch }).decide(request, ctx());
+  assert.deepEqual([direct.temperature_sent, direct.temperature_applied], [0, true]);
+  const current = await anthropicProvider({ ...settings, fetch }).decide(request, ctx());
+  assert.equal(Object.hasOwn(seen[2], 'temperature'), false);
+  assert.deepEqual([current.temperature_sent, current.temperature_applied], [null, false]);
+});
+
 test('the system prompt states the task and nothing of web search: the questions carry their own words', () => {
   assert.match(ANTHROPIC_SYSTEM, /decision model/);
   assert.match(ANTHROPIC_SYSTEM, /probability, from 0 to 1, that its answer is true/);

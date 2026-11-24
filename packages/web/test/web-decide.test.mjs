@@ -86,7 +86,7 @@ test("a sift keeps what the decider scores as needed and drops at the threshold:
   assert.deepEqual({ ...record, latency_ms: 0 }, {
     provider: "fake", op: "search", ran: true, items: { in: 4, kept: 2 },
     dropped: [{ id: URLS[1], score: 0.05, reason: "needed p=0.05 <= 0.2" }, { id: URLS[2], score: 0.2, reason: "needed p=0.2 <= 0.2" }],
-    model: "fake-1", tokens: { in: 100, out: 4, basis: "reported" }, latency_ms: 0, cost: { usd: 0.0001, basis: "estimate" },
+    model: "fake-1", temperature_sent: null, temperature_applied: false, tokens: { in: 100, out: 4, basis: "reported" }, latency_ms: 0, cost: { usd: 0.0001, basis: "estimate" },
     questions_sha256: sha256(JSON.stringify(siftQuestions())),
   });
 });
@@ -117,7 +117,7 @@ test("a fetched part is judged in passages: the kept passages in order, LEFT_OUT
   assert.deepEqual({ ...receipt.classifier, latency_ms: 0 }, {
     provider: "fake", op: "fetch", ran: true, items: { in: 3, kept: 2 },
     dropped: [{ id: "p2", score: 0.01, reason: "needed p=0.01 <= 0.2", at: [A.length, A.length + B.length] }],
-    model: "fake-1", tokens: { in: 100, out: 4, basis: "reported" }, latency_ms: 0, cost: { usd: 0.0001, basis: "estimate" },
+    model: "fake-1", temperature_sent: null, temperature_applied: false, tokens: { in: 100, out: 4, basis: "reported" }, latency_ms: 0, cost: { usd: 0.0001, basis: "estimate" },
     questions_sha256: sha256(JSON.stringify(judgeRequest(PUBLIC, TASK, [A, B, C]).questions)),
   });
   await web.fetch(PUBLIC, { task: TASK });
@@ -237,6 +237,20 @@ test("tokens are the provider's when it reports them, else counted on the reques
   assert.deepEqual(counted.receipt.classifier.tokens, { in: JSON.stringify({ state: request.state, questions: request.questions }).length, out: null, basis: "counted" });
   const none = await fakeWeb({ decider: deciderFrom(fakeProvider({}, { usage: null }).provider) }).search("widgets delaware", { n: 2 });
   assert.equal(none.receipt.classifier.tokens, null);
+});
+
+test("the temperature a provider sent, and whether it was applied, are the record's: none said is none sent; a failure leaves it unknown, a skip unsent", async () => {
+  const { provider } = fakeProvider();
+  const said = { ...provider, decide: async (request, ctx) => ({ ...(await provider.decide(request, ctx)), temperature_sent: 0, temperature_applied: "unknown" }) };
+  const sent = await fakeWeb({ decider: deciderFrom(said) }).search("widgets delaware", { n: 2, task: TASK });
+  assert.deepEqual([sent.receipt.classifier.temperature_sent, sent.receipt.classifier.temperature_applied], [0, "unknown"]);
+  const quiet = await fakeWeb({ decider: deciderFrom(provider) }).search("widgets delaware", { n: 2, task: TASK });
+  assert.deepEqual([quiet.receipt.classifier.temperature_sent, quiet.receipt.classifier.temperature_applied], [null, false]);
+  const broken = fakeProvider({}, { fail: async () => { throw new Error("down"); } });
+  const failed = await fakeWeb({ decider: deciderFrom(broken.provider) }).search("widgets delaware", { n: 2, task: TASK });
+  assert.deepEqual([failed.receipt.classifier.temperature_sent, failed.receipt.classifier.temperature_applied], [null, "unknown"]);
+  const skipped = await fakeWeb({ decider: deciderFrom(provider) }).search("   ", { task: TASK });
+  assert.deepEqual([skipped.receipt.classifier.temperature_sent, skipped.receipt.classifier.temperature_applied], [null, false]);
 });
 
 test("a pinned model goes on the request", async () => {
