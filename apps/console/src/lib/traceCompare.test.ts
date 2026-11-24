@@ -94,6 +94,15 @@ describe("runs' figures side by side", () => {
     const cost = compareFigures([held, half]).find((row) => row.label === "Cost")!;
     expect([words(cost), cost.cells[0]!.exact, differenceWords(cost)]).toEqual([["at most $1.00", "$0.5000"], false, null]);
   });
+  it("says a cost with a charge that has no price as at least what is priced, as the run's own tab does, and no difference of it", () => {
+    // One request of the run has no price (cut before it answered): the server gives no whole cost, and what is priced so far.
+    const part = sideOf(run("run_part", { cost: { usd: null, basis: "estimate", charge_state: null, cap_usd: null, so_far_usd: 0.0382, unpriced: 1 } }), SMALL, 0);
+    const cost = compareFigures([FIRST, part]).find((row) => row.label === "Cost")!;
+    expect([words(cost), cost.cells[1]!.value, cost.cells[1]!.exact, differenceWords(cost)]).toEqual([["$0.6336", "at least $0.0382"], 0.0382, false, null]);
+    // A run whose cost the server does not say at all stays unknown.
+    const none = sideOf(run("run_none", { cost: { usd: null, basis: "unpriced", charge_state: null, cap_usd: null } }), SMALL, 0);
+    expect(words(compareFigures([FIRST, none]).find((row) => row.label === "Cost")!)).toEqual(["$0.6336", "–"]);
+  });
   it("says tokens as at least where a request reported none, and unknown where none did", () => {
     // The second request was cut before its usage came: its tokens are in no sum.
     const cutLast = { ...SMALL, spans: SMALL.spans.map((s) => (s.id === "m2" ? { ...s, tokens: null, usd: null, status: "interrupted" as const } : s)) };

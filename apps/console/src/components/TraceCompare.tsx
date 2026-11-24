@@ -90,7 +90,7 @@ export function TraceCompare({ v2, ids, now: fixed }: { v2: Pick<Client, "getRun
               </tbody>
             </table>
           </div>
-          <p className="mt-2 max-w-prose text-small text-muted-foreground">Each figure is the one the run's own Dev tools tab shows. A difference is the second run's figure less the first's; its percent is of the first's. None is said of a figure that is not known, or not exact: "at least" is a sum over a part of the run, "at most" a cost that counts a cut request at what was held for it.</p>
+          <p className="mt-2 max-w-prose text-small text-muted-foreground">Each figure is the one the run's own Dev tools tab shows. A difference is the second run's figure less the first's; its percent is of the first's. None is said of a figure that is not known, or not exact: "at least" is a sum over a part of the run, or a cost that leaves out a charge with no price; "at most" is a cost that counts a cut request at what was held for it.</p>
         </section>
 
         {tools.length > 0 && (

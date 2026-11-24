@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { steps } from "./timeline";
-import { recordingStart, stepAt, stepCall, videoClock, videoSteps } from "./runVideo";
+import { recordingStart, stepAt, stepAtClock, stepCall, videoClock, videoSteps } from "./runVideo";
 import type { TimelineRow } from "./v2";
 
 // A recording's steps: the run's timeline put on the video's clock. The server never says when a recording began on the
@@ -135,6 +135,16 @@ describe("stepAt", () => {
   it("is -1 before the first step, and with no steps", () => {
     expect(stepAt(told.slice(1), 1)).toBe(-1);
     expect(stepAt([], 10)).toBe(-1);
+  });
+});
+
+describe("stepAtClock", () => {
+  it("is the step a player was sent to, though its clock reads a hair short of that step's time", () => {
+    const told = [3.963, 4.023, 5.43].map((at, i) => ({ at, step: { row: { id: `s${i}` } } })) as never;
+    // Chrome sent to 4.023 s says 4.022999: read as it is, the step before.
+    expect([stepAt(told, 4.022999), stepAtClock(told, 4.022999)]).toEqual([0, 1]);
+    // A millisecond before a step is still before it, and a clock at a step's own time is at it.
+    expect([stepAtClock(told, 4.022), stepAtClock(told, 4.023), stepAtClock(told, 3.9), stepAtClock(told, 99)]).toEqual([0, 1, -1, 2]);
   });
 });
 
