@@ -1,4 +1,4 @@
-import { act, createElement } from "react";
+import { act, createElement, type ComponentProps } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { BuildAgent } from "./BuildAgent";
@@ -11,6 +11,7 @@ import { createClient } from "@/lib/client";
 import type { McpServer } from "@/lib/mcp";
 import type { TemplateView } from "@/lib/v2";
 import { SERVED_AGENT } from "@/test/agent";
+import { SERVER_DENY } from "@/lib/toolSettings";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 let root: Root | undefined;
@@ -168,12 +169,12 @@ describe("Build agent page, the Tools step", () => {
     tools: [{ name: "GMAIL_SEND_EMAIL", description: "Send an email." }, { name: "GMAIL_FETCH_EMAILS", description: "Read the inbox." }],
   };
   const listMcpServers = vi.fn(async () => ({ servers: [gmail] }));
-  const mountTools = async () => {
+  const mountTools = async (given: ComponentProps<typeof BuildAgent>["caps"] = caps) => {
     localStorage.setItem(CODING_AGENT_PREFERENCE, "codex-cli");
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: copied } });
     host = document.body.appendChild(document.createElement("div"));
     root = createRoot(host);
-    await act(async () => root!.render(createElement(BuildAgent, { origin, v2: { listTemplates, listMcpServers }, caps })));
+    await act(async () => root!.render(createElement(BuildAgent, { origin, v2: { listTemplates, listMcpServers }, caps: given })));
   };
   const toolsStep = () => host.querySelector<HTMLElement>('section[aria-label="Tools"]');
   const openTools = async () => {
@@ -241,6 +242,27 @@ describe("Build agent page, the Tools step", () => {
     const posts = await created(draft!);
     expect(posts[0].body.definition.place, "the created agent's place").toEqual({ mode: "sandbox", box: "docker" });
     expect(posts[0].body.definition.tools).toEqual(["bash"]);
+  });
+
+  it("reads the saved MCP servers when MCP turns on while the step is open, without closing and reopening it", async () => {
+    // The capabilities answer after the step opened: until then the server says nothing of MCP.
+    await mountTools({ ...caps, mcp: false });
+    await openTools();
+    expect(host.querySelector('[data-tool-card="mcp:gmail/GMAIL_SEND_EMAIL"]')).toBeNull();
+    await act(async () => root!.render(createElement(BuildAgent, { origin, v2: { listTemplates, listMcpServers }, caps })));
+    expect(listMcpServers, "the MCP servers are read once MCP is on").toHaveBeenCalledTimes(1);
+    expect(host.querySelector('[data-tool-card="mcp:gmail/GMAIL_SEND_EMAIL"]'), "gmail's tools show in the open step").not.toBeNull();
+  });
+
+  it("says a tool the server denies for every agent is refused, and it can't be ticked", async () => {
+    const denied = { ...caps, tools: [...caps.tools, { name: "read", available: true, harnesses: ["pi"], blurb: "Read a file." }],
+      gates: [{ name: "read", permission: "deny" as const, default_permission: "allow" as const, permissions: ["allow" as const, "ask" as const, "deny" as const] }] };
+    await mountTools(denied);
+    await openTools();
+    const card = host.querySelector<HTMLElement>('[data-tool-card="read"]')!;
+    expect(card.textContent, "the card says the server refuses it").toContain(SERVER_DENY);
+    expect(card.querySelector<HTMLInputElement>('input[type="checkbox"]')!.disabled, "its box can't be ticked").toBe(true);
+    expect(host.querySelector<HTMLInputElement>('[data-tool-card="web_fetch"] input[type="checkbox"]')!.disabled, "an allowed tool still can").toBe(false);
   });
 
   it("skipping the step keeps today's request: no tools picked, no place, the same prompt", async () => {
