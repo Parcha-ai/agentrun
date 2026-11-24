@@ -6,7 +6,8 @@
 // the secret route, is gone: a create or change to it is refused, pointing to New app trigger, and the secret route
 // takes no secret of the sender's.
 import assert from "node:assert/strict";
-import { createHmac, randomBytes } from "node:crypto";
+import { createHash, createHmac, randomBytes } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { test } from "node:test";
 import { composio } from "../dist/trigger-composio.js";
@@ -57,6 +58,24 @@ test("the composio scheme verifies what Composio's SDK signs, keyed by the UTF-8
   // An account event has no slug: its event is the body's type.
   const [expired] = composio.push.parse(headers, Buffer.from(JSON.stringify({ id: "msg_2", type: "composio.connected_account.expired", data: { id: "ca_1" } })));
   assert.equal(expired.event, "composio.connected_account.expired");
+});
+
+test("the composio scheme passes the shared test vector: the whole secret's UTF-8 bytes sign it, and a key decoded from after whsec_ does not", () => {
+  // test/fixtures/composio-webhook-vector.json: fixed bytes another verifier of Composio's deliveries tests against too.
+  const v = JSON.parse(readFileSync(new URL("./fixtures/composio-webhook-vector.json", import.meta.url), "utf8"));
+  const body = Buffer.from(v.body, "utf8");
+  assert.equal(createHash("sha256").update(body).digest("hex"), v.body_sha256, "the body's bytes are the vector's");
+  const now = Number(v.webhook_timestamp) * 1000;
+  const headers = { "webhook-id": v.webhook_id, "webhook-timestamp": v.webhook_timestamp, "webhook-signature": v.signature };
+  assert.equal(composio.push.headers(headers, now), undefined);
+  assert.equal(composio.push.verify(v.secret, headers, body, now), undefined);
+  assert.equal(sign(v.secret, v.webhook_id, v.webhook_timestamp, v.body), v.signature, "the signature is the whole string's, as this file signs");
+  // The negative: what a signer keyed by the base64-decoded part after whsec_ sends for the same message, refused.
+  const decoded = Buffer.from(v.secret.slice("whsec_".length), "base64");
+  assert.equal(decoded.toString("base64"), v.decoded_key_negative.key_base64);
+  const message = Buffer.concat([Buffer.from(`${v.webhook_id}.${v.webhook_timestamp}.`), body]);
+  assert.equal(`v1,${createHmac("sha256", decoded).update(message).digest("base64")}`, v.decoded_key_negative.signature);
+  assert.equal(composio.push.verify(v.secret, { ...headers, "webhook-signature": v.decoded_key_negative.signature }, body, now), "bad_signature");
 });
 
 test("a webhook trigger takes no composio signature: its create and a change to it are refused in words that point to Triggers → New app trigger, and nothing is kept", { timeout: 60_000 }, async (t) => {

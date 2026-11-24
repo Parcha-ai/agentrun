@@ -168,7 +168,7 @@ export async function doctorOf({
       const answer = await getJson(`${base}/capabilities`, { authorization: `Bearer ${token}` });
       if (answer.status === 200 && answer.body && typeof answer.body === "object") caps = answer.body;
       else capsWhy = `GET /v2/capabilities answered ${answer.status || answer.error}`;
-    } else capsWhy ??= `no token to read the server's capabilities with: ${join(data, ".token")} is not there${record?.token_file ? "" : " (the server was started with AGENTRUN_TOKEN; set AGENTRUN_API_KEY to it)"}`;
+    } else capsWhy ??= `no token to read the server's capabilities with: ${join(data, ".token")} is not there${record?.token_file ? "" : " (the server was started with AGENTRUN_TOKEN; set AGENTRUN_API_KEY or AGENTRUN_TOKEN to it)"}`;
   }
   const version = caps?.server?.version;
 
@@ -371,7 +371,7 @@ export const DOCTOR = {
   async run({ values, io, env, cli }) {
     if (values["base-url"] !== undefined) throw cli.fail(2, "agentrun doctor checks the AgentRun on this machine, the server of --data (default ~/.agentrun); it takes no --base-url.");
     const readToken = ({ data, record, env: vars }) => {
-      if (record && !record.token_file) return vars.AGENTRUN_API_KEY || undefined;
+      if (record && !record.token_file) return vars.AGENTRUN_API_KEY || vars.AGENTRUN_TOKEN || undefined;
       return cli.privateFile(join(data, ".token"))?.trim() || undefined;
     };
     const report = await doctorOf({ data: values.data, env, readRecord: cli.privateFile, readToken });

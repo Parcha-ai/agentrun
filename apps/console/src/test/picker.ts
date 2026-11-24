@@ -15,6 +15,14 @@ export const picker = (scope: ParentNode, label: string) => scope.querySelector<
 export const firstPicker = (scope: ParentNode) => scope.querySelector<HTMLButtonElement>(FIELD);
 /** The value a picker shows (its field's data-value). */
 export const valueOf = (field: HTMLButtonElement) => field.getAttribute("data-value");
+/** The words a picker shows: its field's text without the hidden copies of every option's words that a steady one
+ *  holds to size itself (its textContent has those too). Undefined for no field. */
+export function wordsOf(field: Element | null | undefined): string | undefined {
+  if (!field) return undefined;
+  const shown = field.cloneNode(true) as Element;
+  for (const sizer of shown.querySelectorAll("[data-picker-sizer]")) sizer.remove();
+  return shown.textContent ?? "";
+}
 
 async function opened(field: HTMLButtonElement) {
   await act(async () => { field.click(); });

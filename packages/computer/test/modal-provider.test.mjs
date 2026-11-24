@@ -617,6 +617,17 @@ test("the provider's create() reads no environment: the token, the app and the s
 	});
 });
 
+test("the server URL is https alone, loopback included, so the token never crosses in the clear: another is refused before any client is made", async () => {
+	for (const serverUrl of ["http://api.modal.com:443", "http://127.0.0.1:8080", "http://[::1]:8080", "http://localhost:8080", "grpc://api.modal.com:443"]) {
+		const { ModalClient, made } = fakeClient();
+		await assert.rejects(modal.create({ ...TOKEN_OPTIONS, app: APP, serverUrl, ModalClient, daemonPath: DAEMON_PATH }), (error) => /^the Modal server URL \(options\.serverUrl\) must be https, so the key never crosses in the clear/.test(error.message) && !error.message.includes(TOKEN_OPTIONS.tokenId), serverUrl);
+		assert.deepEqual(made, [], serverUrl);
+	}
+	const { ModalClient, made } = fakeClient();
+	await assert.rejects(modal.create({ ...TOKEN_OPTIONS, app: APP, serverUrl: "//api.modal.com:443", ModalClient, daemonPath: DAEMON_PATH }), /the Modal server URL \(options\.serverUrl\) is not a URL/);
+	assert.deepEqual(made, []);
+});
+
 test("the conformance module reads COMPUTER_MODAL_APP and passes it as options.app, and refuses without it in words naming it", async () => {
 	const { createProvider, createDriftedProvider } = await import("../dist/conformance/modal.js");
 	for (const make of [createProvider, createDriftedProvider]) {

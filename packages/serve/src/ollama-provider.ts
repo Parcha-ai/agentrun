@@ -1,5 +1,6 @@
 // Ollama as a model provider: the models the Ollama on this machine (or the one OLLAMA_HOST names) has pulled, listed live
-// from its own API, run by pi alone, at $0, on Ollama's native chat API. No key: Ollama has none.
+// from its own API, run by pi and by every harness on a wire the route translates (wires.ts TRANSLATED), at $0, on
+// Ollama's native chat API. No key: Ollama has none.
 //   Where: OLLAMA_HOST, Ollama's own variable, read as the ollama CLI reads it (ollamaBase), from the server's environment,
 //     never from a provider's auth context, so it is never a held secret. Unset, the server names the default address
 //     itself only on one owner's own machine (ollamaHostOf); unset anywhere else, no Ollama is asked. Plain http only to this machine (provider.ts
@@ -13,6 +14,7 @@
 //     (OLLAMA_NUM_CTX), and the model's window here is that same number.
 // Listing never stalls a caller: one short deadline for the whole listing, no redirects, and a down, hung or refused Ollama
 // lists no models and throws nothing. Each address's answer is kept (OLLAMA_TTL_MS) and refreshed behind the caller.
+import { AsyncLocalStorage } from "node:async_hooks";
 import { calculateCost, collapseSystemMessages, createAssistantMessageEventStream, getCurrentSystemPrompt, getCurrentTools, type AssistantMessage, type AssistantMessageEventStream, type Model, type SimpleStreamOptions, type StreamOptions, type TranscriptContext } from "@earendil-works/pi-ai";
 import { transformMessages } from "@earendil-works/pi-ai/api/transform-messages";
 import { createProvider } from "@earendil-works/pi-ai/models";
@@ -90,6 +92,15 @@ export function ollamaAsking(env: NodeJS.ProcessEnv): Promise<readonly OllamaLis
   const base = baseOf(env);
   return base === undefined ? undefined : asking.get(base);
 }
+
+/** Set inside ollamaReading: a reading no run waits on. */
+const reading = new AsyncLocalStorage<true>();
+
+/** `read` as a reading no run waits on: the offers and the server's model needs, made again at each key save
+ *  (harness.ts harnessOffers, server.ts needsOf). Inside it, ollamaShown answers from the kept listing at any age, which
+ *  is the listing the offers are made from, and asks Ollama nothing when one is kept. So a save never waits on one
+ *  /api/show per model of a stuck Ollama. A run's own choice is never made inside it. */
+export const ollamaReading = <T>(read: () => Promise<T>): Promise<T> => reading.run(true, read);
 
 /** What marks an Ollama cloud model (a `-cloud` tag): it runs on `remote_host` (ollama.com) as `remote_model`. */
 type Remote = { remote_host?: unknown; remote_model?: unknown };
@@ -190,11 +201,13 @@ export const OLLAMA_SHOW_TIMEOUT_MS = 10_000;
 /** Model `tag` of the Ollama `env` names, for a run that names it (`ollama/<tag>`): from its address's kept listing while
  *  that is fresh (OLLAMA_TTL_MS), else its own /api/show within `timeoutMs`, never /api/tags, so a run never waits on a
  *  whole listing and never runs on a model's context from before it was pulled again. Undefined where it is not there,
- *  does not answer, is a cloud model or OLLAMA_HOST is refused. Nothing kept: the listing is the kept one. */
+ *  does not answer, is a cloud model or OLLAMA_HOST is refused. Nothing kept: the listing is the kept one. Inside
+ *  ollamaReading, the kept listing at any age, and nothing asked when one is kept. */
 export async function ollamaShown(env: NodeJS.ProcessEnv, tag: string, { fetch: send = globalThis.fetch, timeoutMs = OLLAMA_SHOW_TIMEOUT_MS }: { fetch?: typeof fetch; timeoutMs?: number } = {}): Promise<OllamaListed | undefined> {
   const base = baseOf(env);
   if (base === undefined) return undefined;
   const known = kept.get(base);
+  if (known && reading.getStore()) return known.models.find((model) => model.name === tag);
   const fresh = known && now() - known.at < OLLAMA_TTL_MS ? known.models.find((model) => model.name === tag) : undefined;
   return fresh ?? shownOf(askerOf(base, send, AbortSignal.timeout(timeoutMs)), tag);
 }
