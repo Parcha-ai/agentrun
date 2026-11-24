@@ -12,13 +12,13 @@ import { Button } from "@/components/ui/button";
 import { Field, Input, Textarea } from "@/components/ui/field";
 import { Chip } from "@/components/ui/chip";
 import { ConfirmDialog } from "@/components/ui/dialog";
-import { ToolCard } from "@/components/ToolCard";
+import { BuiltInToolCards } from "@/components/BuiltInToolCards";
 import { AgentToolSettings } from "@/components/ToolSettings";
 import { WorkflowEditor } from "@/components/WorkflowEditor";
 import { CodingAgentAction } from "@/components/CodingAgentAction";
 import { backendSdkOf } from "@/lib/backendSdk";
 import { buildAgentPrompt, editAgentPrompt } from "@/lib/codingAgentPrompts";
-import { type Agent, type AgentFields, type Definition, capOf, editBody, toolsOnSwitch, runsOn, notOn, DECISION, DEFAULT_INSTRUCTIONS, defaultTools, harnessOptions, defaultPlaceOf, isStarter, reachesWeb, same, sandboxReason, type SaveProblem, type ToolOffer, toolsFor, warningsFor } from "@/lib/agentForm";
+import { type Agent, type AgentFields, type Definition, capOf, editBody, toolsOnSwitch, notOn, DECISION, DEFAULT_INSTRUCTIONS, defaultTools, harnessOptions, isStarter, reachesWeb, same, type SaveProblem, type ToolOffer, toolsFor, warningsFor } from "@/lib/agentForm";
 import type { WorkflowCheck } from "@/lib/client";
 import { markdown, when } from "@/lib/format";
 import { type FreeModel, freeRequestsNote, harnessDefault } from "@/lib/models";
@@ -32,7 +32,7 @@ import { placeOfComputer } from "@/lib/computers";
 import type { ComputerKindView } from "@/lib/v2";
 import type { Places } from "@/lib/place";
 import type { ToolSettings } from "@/lib/v2";
-import { callNodeTools, SERVER_DENY, serverDenies, type ToolChoice, type ToolGate } from "@/lib/toolSettings";
+import { callNodeTools, type ToolChoice, type ToolGate } from "@/lib/toolSettings";
 import { useUnsavedChangesGuard } from "@/lib/useUnsavedChangesGuard";
 import { cn } from "@/lib/utils";
 import { pageToolbarClass } from "@/components/ui/toolbar";
@@ -196,6 +196,10 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
   // and each beside the field it names (one the form does not show, such as a place, only above).
   const { monid: monidWarnings, rest: warnings } = splitMonidWarnings(agent?.warnings ?? [], d?.tools ?? []);
   const fieldWarning = (field: string) => warningsFor(warnings, field).map((w) => w.message).join(" ") || undefined;
+  // Above the form, what refuses a run until this host has it (the server's not_set_up_here) apart from what a run goes on
+  // under (a computer every tool of which is set to deny, which no run starts; a cap below one more step).
+  const refusing = warnings.filter((w) => w.reason === "not_set_up_here");
+  const noted = warnings.filter((w) => w.reason !== "not_set_up_here");
   // While a new agent's Create is under way its form takes no change (its fields are disabled too), so it stays what was sent.
   const set = (patch: AgentFields) => { if (creating && saving) return; setF((x) => ({ ...x, ...patch })); };
   // The Save button, which keeps the focus after a save the server refused, where its reason shows.
@@ -322,7 +326,8 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
       {(warnings.length > 0 || monidWarnings.length > 0) && (
         <div className="space-y-3 border-b bg-card px-5 py-3 md:px-8" role="status" aria-label="Save warnings">
           {[
-            { lines: warnings, head: "Saved. A run of this revision is refused until the server has what each line names:" },
+            { lines: refusing, head: "Saved. A run of this revision is refused until the server has what each line names:" },
+            { lines: noted, head: "Saved. A run of this revision goes on, as each line says:" },
             { lines: monidWarnings.map((m) => m.warning), head: "Saved. What the server said of its monid grants:" },
           ].filter((g) => g.lines.length).map((g) => (
             <div key={g.head}>
@@ -429,27 +434,9 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
                 {/* Columns by a minimum width: as many as fit, one card a row in a narrow pane (a phone on its side). */}
                 {/* Every collapsed card one height, top-aligned: one card's Details grows it alone, never its row. */}
                 <ul className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,18rem),1fr))] items-start gap-2">
-                  {builtIns(toolQuery).map((t) => {
-                    // A call-only tool runs only in a workflow's call node, which needs it in its revision's tools: a
-                    // workflow agent picks it like any other. An agentic agent is never offered one, and one it already
-                    // names shows as such, to untick.
-                    const runs = runsOn(f.harness ?? "pi", t.name, caps.tools, toolOpts);
-                    const on = f.tools?.includes(t.name) ?? false;
-                    // A tool the server's provider leaves unavailable runs here once this agent picks a provider of its own.
-                    const choice = providerChoices.find((c) => c.name === t.name);
-                    const ownPick = (f.tool_settings ?? d?.tool_settings ?? {})[t.name]?.provider;
-                    const pickedOver = !!choice && ownPick !== undefined && ownPick !== choice.provider;
-                    // With no place, ticking a shell tool is what moves the agent to the box: read the place with it ticked.
-                    const sandbox = sandboxReason(t, f.place ?? placeOf(d?.place) ?? defaultPlaceOf(workflow, [...(f.tools ?? []), t.name], caps.places));
-                    const why = serverDenies(t.name, permissionGates, agent?.tools) ? SERVER_DENY : t.call_only && !workflow ? "Workflow-only: a workflow's call node runs it, not an agent" : !runs ? notOn(f.harness ?? "pi", t.name, caps.tools) : sandbox ?? (!t.available && !pickedOver ? (choice?.reason ?? t.reason ?? `Needs ${(t.missing ?? []).join(", ")}`) : undefined);
-                    // The state, as a one-line tag: "Workflow only" or "Sandbox-only" for those two, else the reason itself
-                    // (cut to one line); the reason in full is its title, and in Details.
-                    const tag = !why ? undefined : t.call_only && !workflow ? "Workflow only" : sandbox && runs && why === sandbox ? "Sandbox-only" : why;
-                    return (
-                      <li key={t.name} className="min-w-0"><ToolCard value={t.name} name={t.name} blurb={t.blurb} description={t.summary} why={why} tag={tag} on={on} disabled={!!why && !on}
-                        onToggle={() => { setToolsTouched(true); set({ tools: on ? f.tools!.filter((x) => x !== t.name) : [...(f.tools ?? []), t.name] }); }} /></li>
-                    );
-                  })}
+                  <BuiltInToolCards shown={builtIns(toolQuery)} offers={caps.tools} tools={f.tools ?? []} harness={f.harness ?? "pi"} place={f.place ?? placeOf(d?.place)} places={caps.places}
+                    workflow={workflow} mcpHarnesses={caps.mcpHarnesses} choices={providerChoices} gates={permissionGates} granted={agent?.tools} settings={f.tool_settings ?? d?.tool_settings ?? {}}
+                    onChange={(tools) => { setToolsTouched(true); set({ tools }); }} />
                   {/* The MCP and monid groups span the whole row: each lays out its own cards in the same columns. */}
                   {caps.mcp && !workflow && <li className="col-span-full"><McpToolPicker servers={mcpServers} tools={f.tools ?? []} harness={f.harness ?? "pi"} harnesses={caps.mcpHarnesses} filter={toolQuery} onRetry={onRetryMcp} onChange={(tools) => { setToolsTouched(true); set({ tools }); }} /></li>}
                   {/* monid's endpoints, granted by name (a workflow's nodes bind none): each grant the agent has, and a field for another. */}

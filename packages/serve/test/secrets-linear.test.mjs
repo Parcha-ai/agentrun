@@ -7,26 +7,33 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { redactedAnswer } from "../dist/key-refusal.js";
 import { redactLearned, redactSecrets, secretShapes } from "../dist/learn/secrets.js";
+import { scanned } from "../dist/redact/match.js";
 
 const KEY = ["not-a-secret", "x-0123456789abcdef"].join("-");
-const timed = (text) => {
-  const began = performance.now();
+/** The most characters the shape scanners may visit per character of a text (redact-contract.test.mjs's adversarial
+ *  bound): a scanner that read a run again from each repeat in it passes the run once per repeat. */
+const SCANNED_MAX = 128;
+/** An answer redacted with one held value, and the characters the shape scanners visited (redact/match.ts `scanned`) per
+ *  character of it. Counted, not timed, so a loaded machine can't fail it. */
+const counted = (text) => {
+  scanned.chars = 0;
   const out = redactedAnswer(text, [KEY]);
-  return { out, took: performance.now() - began };
+  return { out, per: scanned.chars / text.length };
 };
 
-test("an answer of about 1 MB made of github_pat_ runs is redacted in linear time, every run whole", () => {
-  const { out, took } = timed(`${"github_pat_".repeat(744)} `.repeat(128));
+test("an answer of about 1 MB made of github_pat_ runs is redacted in linear time, every run whole", (t) => {
+  const { out, per } = counted(`${"github_pat_".repeat(744)} `.repeat(128));
   assert.equal(out, "[redacted] ".repeat(128));
-  // Read again from every repeat it took about 1.3 s here; once, well under a tenth of that.
-  assert.ok(took < 500, `took ${Math.round(took)} ms`);
+  t.diagnostic(`${per.toFixed(1)} characters visited per character`);
+  // Read again from every repeat, each run of 744 is passed hundreds of times over.
+  assert.ok(per <= SCANNED_MAX, `${per.toFixed(1)} characters visited per character, over ${SCANNED_MAX}`);
 });
 
-test("an answer of about 1 MB of JWT-shaped runs whose first part repeats eyJ is redacted in linear time, every run whole", () => {
-  const { out, took } = timed(`${"eyJ".repeat(2715)}.eyJabcdefgh.abcdefgh `.repeat(128));
+test("an answer of about 1 MB of JWT-shaped runs whose first part repeats eyJ is redacted in linear time, every run whole", (t) => {
+  const { out, per } = counted(`${"eyJ".repeat(2715)}.eyJabcdefgh.abcdefgh `.repeat(128));
   assert.equal(out, "[redacted] ".repeat(128));
-  // About 4.7 s here before.
-  assert.ok(took < 500, `took ${Math.round(took)} ms`);
+  t.diagnostic(`${per.toFixed(1)} characters visited per character`);
+  assert.ok(per <= SCANNED_MAX, `${per.toFixed(1)} characters visited per character, over ${SCANNED_MAX}`);
 });
 
 // The shapes as secrets.ts has them (bounded; the JWT from the first "eyJ" of a run), read the way it did before: from
@@ -35,6 +42,8 @@ const SHAPES = [
   /(?:AKIA|ASIA)[0-9A-Z]{16}/, /AIza[0-9A-Za-z_-]{35}/, /-----BEGIN[ A-Z0-9]{0,64}PRIVATE KEY[ A-Z0-9]{0,64}-----/,
   /gh[pousr]_[A-Za-z0-9]{30,16384}|github_pat_[A-Za-z0-9_]{20,16384}/, /(?<![A-Za-z0-9])sk-[A-Za-z0-9_-]{20,16384}/,
   /xox[abposre]-[A-Za-z0-9-]{10,16384}|xapp-[A-Za-z0-9-]{10,16384}/,
+  // A key made in the console (api-keys.ts): 43 or more of its characters to the run's end, a capital or a digit among them.
+  /ar_key_(?=[A-Za-z0-9_-]{0,16384}[A-Z0-9])[A-Za-z0-9_-]{43,16384}/,
   /eyJ(?<!eyJ[A-Za-z0-9_-]{0,16384}?eyJ)[A-Za-z0-9_-]{8,16384}\.eyJ[A-Za-z0-9_-]{8,16384}\.[A-Za-z0-9_-]{8,16384}/,
   /whsec_[A-Za-z0-9+/]{24,16384}={0,2}/,
   /:\/\/[^\s/?#@:]{1,256}:[^\s/?#@]{0,1024}@/,
@@ -77,6 +86,23 @@ test("over 3,000 random texts of the shapes' own pieces, what is redacted is wha
   }
 });
 
+test("over 3,000 random texts of an API key's pieces, what is redacted is what reading from every character redacts", () => {
+  // The prefix whole and in parts; runs long enough to make a key and too short, with a capital or a digit and with
+  // neither (a name); and what ends a run or stands before one.
+  const PIECES = ["ar_key_", "ar_key_", "ar_key_", "ar_", "key_", "ar", "_", "-", "abcdefgh", "abcdefghijklmnopqrstuvwxyz_abcdefghijklmnopqrstuvwxyz", "abcdefghijklmnopqrstuvwxyz_abcdefghijklmnopqrstuvwxyz", "abcdefgh01234567", "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefg", "x9", "a", "a", "Z", " ", " ", "=", ".", "/", "\"", "Bearer "];
+  let seed = 20261124;
+  const random = () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648);
+  let cut = 0;
+  for (let i = 0; i < 3011; i++) {
+    const text = Array.from({ length: 2 + Math.floor(random() * 14) }, () => PIECES[Math.floor(random() * PIECES.length)]).join("");
+    const want = reference(text);
+    assert.equal(redactSecrets(text, [], 1 << 20), want, JSON.stringify(text));
+    if (want !== text) cut++;
+  }
+  // Both happen often: a text with a key in it, and one that only resembles one (a short run, a run of lower case alone).
+  assert.ok(cut > 300 && cut < 2700, `${cut} of 3011 texts were cut`);
+});
+
 test("a JWT whose parts are near the 16384 bound is redacted whole, not only its first 4096 characters", () => {
   const part = (c) => c.repeat(16_380);
   const jwt = `eyJ${part("A")}.eyJ${part("B")}.${part("C")}`;
@@ -112,38 +138,9 @@ test("two whsec_ secrets back to back are both redacted whole: the first's run t
   assert.doesNotMatch(out, /AAAA|BBBB/);
 });
 
-// Each shape's adversarial input of 256 KiB (the cut read's cap, run-files.ts RUN_FILE_CUT_MAX): its prefix repeated with
-// no terminator, and its prefix then its body's class with none. A shape whose match can start anew inside a long run
-// (a JWT's "eyJ" in a dotless run) or that has two unbounded runs (a private key's header) read each in time quadratic in
-// its length: 180 s for "eyJ" x 87k, 24 s for a header of repeated "PRIVATE KEY ", the server's event loop held all
-// that time. Every case, through redactSecrets and redactLearned (which adds the bank shapes), finishes in under 1 s.
-const SIZE = 256 * 1024;
-const fill = (unit) => unit.repeat(Math.ceil(SIZE / unit.length)).slice(0, SIZE);
-const headed = (prefix, body) => prefix + fill(body).slice(prefix.length);
-const ADVERSARIAL = [
-  ["AWS access key id", fill("AKIA")], ["Google API key", fill("AIza")],
-  ["private key block", fill("-----BEGIN ")], ["private key block", headed("-----BEGIN ", "PRIVATE KEY ")], ["private key block", headed("-----BEGIN ", "A")],
-  ["GitHub token", fill("ghp_")], ["GitHub token", fill("github_pat_")], ["sk- key", fill("sk-")],
-  ["Slack token", fill("xoxb-")], ["Slack token", fill("xapp-")],
-  ["JWT", fill("eyJ")], ["JWT", fill("eyJ-")], ["JWT", headed("eyJaaaaaaaa.", "eyJ")], ["JWT", fill("eyJaaaaaaaa.")],
-  // The JWT's lookbehind reads back from each "eyJ" to the one before it in its run: far apart, and each first in a run.
-  ["JWT", fill(`${"a".repeat(1021)}eyJ`)], ["JWT", fill(`${"a".repeat(1020)}eyJ `)],
-  ["webhook signing secret", fill("whsec_")], ["URL with a password", fill("://a:")], ["URL with a password", headed("://a:", "a")],
-  ["bearer token", fill("Bearer ")], ["bearer token", headed("Bearer ", "a")],
-  ["URL parameter named like a credential", fill("?token=")], ["URL parameter named like a credential", headed("?token=", "a")],
-  ["bank account number", headed("account ", "1 ")], ["IBAN", headed("IBAN GB00", "A ")], ["routing number", fill("routing number ")], ["sort code", fill("sort code ")],
-];
-
-for (const [shape, text] of ADVERSARIAL) {
-  test(`${shape}: an adversarial 256 KiB input (${JSON.stringify(text.slice(0, 14))}...) is redacted in under 1 s`, () => {
-    for (const redact of [redactSecrets, redactLearned]) {
-      const began = performance.now();
-      redact(text, [KEY], Buffer.byteLength(text));
-      const took = performance.now() - began;
-      assert.ok(took < 1000, `${redact.name}: took ${Math.round(took)} ms`);
-    }
-  });
-}
+// Each shape's adversarial input (its prefix repeated with no terminator, its prefix then its body's class with none) is
+// counted in redact-contract.test.mjs, "adversarial texts: the characters the shape scanners visit are at most a fixed
+// multiple of the text's length", through redactSecrets and redactLearned alike.
 
 test("a JWT is still found wherever it starts, glued to a word's characters too, and a private key's header with any key type", () => {
   const jwt = ["eyJhbGciOiJIUzI1NiJ9", "eyJzdWIiOiIxMjM0NTY3ODkwIn0", "dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U"].join(".");
