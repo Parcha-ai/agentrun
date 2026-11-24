@@ -16,7 +16,8 @@ export type Span = [start: number, end: number];
 /** The characters the redaction pipeline has visited in this process: the text each prefix search passes over, each
  *  run read, each guard read back (the shape scanners); each form, hex, folded and plain needle's search, and the text
  *  it passes over (find); each view built (its special characters found, its blanks, its decoders' reads, its non-ASCII
- *  stretches squeezed, each cut its cover passes), lowered and flattened; the finds merged and the text cut; and
+ *  stretches squeezed, each cut its cover passes), lowered and flattened; each covered stretch a find in a view is
+ *  checked against (inside); the finds merged and the text cut; and
  *  key-refusal.ts's reads of a text in pieces. A test sets it to 0, redacts, and reads it: a stage that read again from
  *  the start at each find would count the text once per find. */
 export const scanned = { chars: 0 };
@@ -336,6 +337,20 @@ const PRIVATE_KEY: Shape = {
     return lines >= 0 ? { start: at, end: lines, next: lines } : { start: at, end: header, next: at + 1 };
   },
 };
+
+/** Where the private key block whose "-----BEGIN" stands at `at` ends, past its END line, or -1: no key's header there,
+ *  or no END line in reach, as PRIVATE_KEY reads it whole. key-refusal.ts reads it so that no piece of an answer ends
+ *  inside a block. Whether any "-----" stands within KEY_BODY_MAX of the header is read back from there first (the
+ *  header's own closing dashes stop that read), so a header with none after it reads no further. */
+export function privateKeyEnd(text: string, at: number): number {
+  if (!text.startsWith("-----BEGIN", at)) return -1;
+  const header = armorEnd(text, at, 10);
+  if (header < 0) return -1;
+  const reach = Math.min(text.length, header + KEY_BODY_MAX);
+  const last = text.lastIndexOf("-----", reach);
+  scanned.chars += reach - Math.max(last, header - 5);
+  return last < header ? -1 : keyEndLine(text, header);
+}
 
 /** A JWT: three base64url parts, the first two JSON objects ("eyJ"), each 8 characters or more after it. It starts at
  *  the first "eyJ" of a run of a part's characters, wherever that run starts ("token-eyJ…", "x9eyJ…"): a later "eyJ" in
@@ -791,9 +806,12 @@ const jsonEscape = (dropQuote: boolean, levels: 1 | 2 = 2): Decoder => ({
 const JSON_ESCAPE = jsonEscape(true);
 /** JSON's escapes as the base's one-family view read them: an escaped quote is a quote. */
 const JSON_ESCAPE_QUOTED = jsonEscape(false);
-/** One level of JSON's escapes, an escaped quote a quote: a JSON string's text as JSON.parse reads it, so a held value
- *  with a "\" or a quote of its own, written once, reads as itself. */
-const JSON_STRING = jsonEscape(false, 1);
+/** JSON's escapes, decoded once: a "\" that starts an escape and what follows it, as one character, an escaped quote a
+ *  quote: a JSON string's text as JSON.parse reads it. A held value that holds a backslash before a character an escape
+ *  starts with ("\n", "A" as written), written by a JSON writer ("\\n", "\u0041"), reads as itself here, where the
+ *  two levels JSON_ESCAPE reads make the escaped backslash and what follows it one escape; so does one with a quote of
+ *  its own, written once. */
+const JSON_ESCAPE_ONCE = jsonEscape(false, 1);
 /** What JSON_ESCAPE reads at `at`: the character the escape there decodes to, through both levels ("" for an escaped
  *  quote, which decodes to nothing), and where it ends; undefined where no escape starts (the "\" is then itself).
  *  key-refusal.ts's peek counts an escape by it, so the read past a call's stop and the JSON view see the same
@@ -867,9 +885,10 @@ const viewSpec = (when: (has: Families) => boolean, decoders: readonly Decoder[]
 /** The views of a text read for each held value, in order:
  *  - squeezed;
  *  - the views of one family each, as they were before the stacked ones: percent-decoded; percent-decoded with "+" as a
- *    space; JSON's escapes decoded twice, an escaped quote a quote. Each reads a held value that holds another family's
- *    text of its own (a literal "\n", a literal "%41", "&#65;") as itself, which a stacked view decodes, so keeping them
- *    keeps every find they made;
+ *    space; JSON's escapes decoded twice, an escaped quote a quote; and decoded once, where the text holds an escape that
+ *    decodes to a backslash (elsewhere the two levels read as one does). Each reads a held value that holds another
+ *    family's text of its own (a literal "\n", a literal "%41", "&#65;") as itself, which a stacked view decodes, so
+ *    keeping them keeps every find they made;
  *  - stacked: its percent-encoded bytes, JSON's escapes (twice, an escaped quote as nothing) and HTML's numeric character
  *    references each decoded where it stands, so a value split by an encoded space of one family and an escaped one of
  *    another, or written half in each, or split by an escaped quote, reads whole; and the same with "+" as a space. Each
@@ -890,12 +909,13 @@ const VIEWS: readonly ViewSpec[] = [
   viewSpec((has) => has.percent, [PERCENT]),
   viewSpec((has) => has.plus, [PERCENT, PLUS]),
   viewSpec((has) => has.escape, [JSON_ESCAPE_QUOTED]),
+  viewSpec((has) => has.deep, [JSON_ESCAPE_ONCE]),
   viewSpec((has) => has.entity || has.quoteEscape || (has.percent && has.escape), [PERCENT, JSON_ESCAPE, ENTITY]),
   viewSpec((has) => has.plus && (has.entity || has.escape), [PERCENT, PLUS, JSON_ESCAPE, ENTITY]),
   viewSpec((has) => has.quote, [PERCENT, JSON_ESCAPE, ENTITY], "nested"),
-  viewSpec((has) => has.quote, [JSON_STRING], "strings"),
-  viewSpec((has) => has.quote && has.percent, [PERCENT, JSON_STRING], "strings"),
-  viewSpec((has) => has.quote && has.plus, [PERCENT, PLUS, JSON_STRING], "strings"),
+  viewSpec((has) => has.quote, [JSON_ESCAPE_ONCE], "strings"),
+  viewSpec((has) => has.quote && has.percent, [PERCENT, JSON_ESCAPE_ONCE], "strings"),
+  viewSpec((has) => has.quote && has.plus, [PERCENT, PLUS, JSON_ESCAPE_ONCE], "strings"),
   viewSpec((has) => has.quote && has.deep, [JSON_ESCAPE_QUOTED], "strings"),
 ];
 
@@ -1203,11 +1223,13 @@ function flatOf(view: View): View {
   return { text: parts.join(""), covered };
 }
 
-/** Whether [start, end) of a view lies in one of its covered stretches. */
+/** Whether [start, end) of a view lies in one of its covered stretches: a binary search, each stretch it visits
+ *  counted. */
 function inside(covered: readonly Span[], start: number, end: number): boolean {
   let lo = 0;
   let hi = covered.length - 1;
   while (lo <= hi) {
+    scanned.chars++;
     const mid = (lo + hi) >> 1;
     if (covered[mid]![0] <= start) lo = mid + 1;
     else hi = mid - 1;

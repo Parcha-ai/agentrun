@@ -7,7 +7,7 @@ import { harnessOf } from "./harness-table.js";
 import { cutSecrets, endsInScheme, foldsHeld, redactSecrets, secretShapes, valueLeft, valueMatcher } from "./learn/secrets.js";
 import { hostModel, MODEL_KEYS } from "./model.js";
 import { modelWire, openRouterOnly, WIRES } from "./provider.js";
-import { entityAt, jsonEscapeAt, scanned, squeeze, type Span } from "./redact/match.js";
+import { entityAt, jsonEscapeAt, privateKeyEnd, scanned, squeeze, type Span } from "./redact/match.js";
 import { savedGatewayIn } from "./model-gateway.js";
 
 /** The key a run's model requests carry, and who reads it: a provider's (saved in Settings → Model keys, or set where
@@ -90,7 +90,8 @@ export const answerPasses = { count: 0 };
  *  in it, and NEVER cut: an answer is shown whole. The same rule as redacted() (redactSecrets over `secrets`), over the
  *  whole text, read in pieces of about ANSWER_PIECE characters cut at whitespace. No form of a held value redactSecrets
  *  finds as it stands (as written, JSON-escaped, base64, hex) holds whitespace, so a cut there splits none; the one shape
- *  read across whitespace, a Bearer scheme and its token, is never cut between the two (endsInScheme). A run with no
+ *  read across whitespace, a Bearer scheme and its token, is never cut between the two (endsInScheme); nor is a private
+ *  key block, cut whole by its shape from its BEGIN line to its END line (keyWhole). A run with no
  *  whitespace past a piece is cut at the end of a JSON string in it (never in a URL's user and password), or, a run of
  *  a JSON array's numbers only, after a comma (runCut), so compact JSON reads in pieces too. A run of more than ANSWER_PIECE characters with neither is no
  *  person's text and is shown as "[redacted]", unread, from where its run starts. A value or a secret shape split across
@@ -186,14 +187,14 @@ function inPieces(text: string, secrets: readonly string[], enough = Number.POSI
         shapes.splice(run.at);
         reads.splice(run.at);
       }
+      // The run is shown as "[redacted]": its head is read, covered, for the rest of a value split before it, and its
+      // tail (tailOf: `hold` characters the matcher sees, at most a piece), covered too, for the head of a value whose
+      // rest comes after it. One read, the two joined by a line break, as each piece is one.
       const head = peek(text, start, hold, fold);
-      if (head === undefined) unread = true;
+      const tail = head === undefined ? undefined : tailOf(text, start, to, hold, fold);
+      if (head === undefined || tail === undefined) unread = true;
       else {
         shapes.push(`${redactSecrets(head, secrets, Buffer.byteLength(head))}[redacted]`);
-        // The run is shown as "[redacted]": its head is read, covered, for the rest of a value split before it, and its
-        // tail (at most `hold` characters, at most a piece), covered too, for the head of a value whose rest comes after
-        // it. One read, the two joined by a line break, as each piece is one.
-        const tail = text.slice(Math.max(start, to - Math.min(hold, ANSWER_PIECE)), to);
         const both = `${head}\n${tail}`;
         reads.push({ text: both, cuts: [[0, both.length]] });
       }
@@ -254,18 +255,41 @@ function inPieces(text: string, secrets: readonly string[], enough = Number.POSI
  *  Undefined, so the caller withholds the text, when that takes more than a piece of text (a run of whitespace counted
  *  as one): no redaction pass reads more than a piece. */
 function peek(text: string, from: number, count: number, fold: boolean): string | undefined {
+  const read = visible(text, from, count, text.length, fold);
+  return read.span > ANSWER_PIECE ? undefined : read.parts.join("");
+}
+
+/** The end of the run text[start, to) the pass reads for the head of a value whose rest comes after the run: as few of
+ *  its last characters as hold `count` characters the matcher sees (at most a piece's worth), counted as peek counts
+ *  them (with `fold` as peek's), so padding the views read as nothing (whitespace, a zero-width space, a soft hyphen, a
+ *  quote or JSON's punctuation, a separator a folded value drops, an escape, a character reference or encoded bytes
+ *  that decode to any of them) between that head and the run's end never pushes the head out of it. Read forward from
+ *  a start moved back from `to`, twice as far each time, so it reads at most two pieces in all. Undefined, so the
+ *  caller withholds the text, when that takes more than a piece of text. */
+function tailOf(text: string, start: number, to: number, count: number, fold: boolean): string | undefined {
+  const want = Math.min(count, ANSWER_PIECE);
+  for (let width = Math.min(want, to - start); ; width = Math.min(2 * width, ANSWER_PIECE, to - start)) {
+    const from = to - width;
+    if (from === start || visible(text, from, want, to, fold).found >= want) return text.slice(from, to);
+    if (width >= ANSWER_PIECE) return undefined;
+  }
+}
+
+/** text[from, to) read as peek says, until `count` characters the matcher sees are found or the read passes a piece
+ *  of text (`span`, a run of whitespace counted as one): what it read, as peek returns it, and how many it found. */
+function visible(text: string, from: number, count: number, to: number, fold: boolean): { parts: string[]; found: number; span: number } {
   const parts: string[] = [];
   let span = 0;
   let found = 0;
   let escape: { char: string; end: number } | undefined;
-  for (let at = from; at < text.length && found < count; ) {
+  for (let at = from; at < to && found < count && span <= ANSWER_PIECE; ) {
     SPACES.lastIndex = at;
     let end = SPACES.test(text) ? SPACES.lastIndex : at;
     if (end > at) {
       parts.push(" ");
       span++;
     } else {
-      while (end - at <= ANSWER_PIECE && text[end] === "%" && HEX_PAIR.test(text.slice(end + 1, end + 3))) end += 3;
+      while (end - at <= ANSWER_PIECE && end + 3 <= to && text[end] === "%" && HEX_PAIR.test(text.slice(end + 1, end + 3))) end += 3;
       if (end > at) found += kept(Buffer.from(text.slice(at, end).replaceAll("%", ""), "hex").toString("utf8"), fold);
       else if ((text[at] === "\\" && (escape = jsonEscapeAt(text, at)) !== undefined) || (text[at] === "&" && (escape = entityAt(text, at)) !== undefined)) {
         end = escape.end;
@@ -279,10 +303,9 @@ function peek(text: string, from: number, count: number, fold: boolean): string 
     }
     // Each character read, a percent-encoded run's twice more (its hex parsed, then decoded).
     scanned.chars += text[at] === "%" && end > at + 1 ? 3 * (end - at) : end - at;
-    if (span > ANSWER_PIECE) return undefined;
     at = end;
   }
-  return parts.join("");
+  return { parts, found, span };
 }
 const SPACES = /\s+/y;
 const HEX_PAIR = /^[0-9A-Fa-f]{2}$/;
@@ -299,8 +322,34 @@ function kept(chars: string, fold: boolean): number {
 }
 
 /** Where the piece of `text` read from `from` ends: at its last whitespace before ANSWER_PIECE characters; with none, at
- *  runCut's place, else at the next whitespace (a run read as one, or unread past ANSWER_PIECE). */
+ *  runCut's place, else at the next whitespace (a run read as one, or unread past ANSWER_PIECE). Never inside a private
+ *  key block whose END line is in reach (keyWhole). */
 function pieceEnd(text: string, from: number): number {
+  return keyWhole(text, from, spaceEnd(text, from));
+}
+
+/** `end`, the end of the piece read from `from`, or, where a private key block crosses it, where the piece ends instead,
+ *  so the block is read whole in one piece and cut whole by its shape: a piece cut inside it would show the rest of its
+ *  body and its END line in the next piece, where no shape starts. Only the last "-----BEGIN" in the piece (at most a
+ *  piece back from `end`) can start a block that crosses it: the END line an earlier one reads stops at that one's
+ *  dashes. The piece ends at the last whitespace before the block's BEGIN line, so the next piece starts with the block;
+ *  with none in the piece (the block starts it, a run glued to it), at the block's END line, so the block is one piece
+ *  (or, longer than a piece, one run read as "[redacted]"). */
+function keyWhole(text: string, from: number, end: number): number {
+  if (end >= text.length) return end;
+  const start = Math.max(from, end - ANSWER_PIECE);
+  const window = text.slice(start, end);
+  const begin = window.lastIndexOf("-----BEGIN");
+  scanned.chars += window.length;
+  if (begin < 0) return end;
+  const block = privateKeyEnd(text, start + begin);
+  if (block <= end) return end;
+  const space = window.slice(0, begin).search(/\s\S*$/);
+  return space >= 0 ? start + space + 1 : block;
+}
+
+/** pieceEnd's place, before keyWhole moves it. */
+function spaceEnd(text: string, from: number): number {
   const to = Math.min(text.length, from + ANSWER_PIECE);
   if (to === text.length) return to;
   const head = text.slice(from, to);

@@ -226,6 +226,22 @@ test("a UUID or short sha whose hex holds aba and nine digits is served whole by
   }
 });
 
+// The narrowing above, pinned as a choice: a real routing number glued to its word, with nothing between, is not cut
+// either (the word must stand alone), as a hex id holding "aba" and nine digits is not. The same number with a space
+// after its word is cut. A change to this rule changes this test on purpose.
+test("a routing number glued to its label is not cut (the word must stand alone); with a space after the label it is", async () => {
+  const { learnedSecretShapes, redactLearned } = await import("../dist/learn/secrets.js");
+  for (const text of ["ABA021000021", "routing021000021", "Wire it with ABA021000021 today."]) {
+    assert.deepEqual(learnedSecretShapes(text), [], text);
+    assert.equal(redactLearned(text, []), text);
+  }
+  for (const text of ["ABA 021000021", "routing 021000021", "Wire it with ABA 021000021 today."]) {
+    assert.deepEqual(learnedSecretShapes(text), ["routing number"], text);
+    const out = redactLearned(text, []);
+    assert.ok(out.includes("[redacted]") && !out.includes("021000021"), `${text}: ${out}`);
+  }
+});
+
 // A name refused for a bank's number is cut of it where learning prints and serves it: the problem as printed
 // (printable, what a run's learning keeps and serves) and a learning read (secretsShown). A run's own view keeps an
 // account number (secretShapes leaves it): only learning cuts it.

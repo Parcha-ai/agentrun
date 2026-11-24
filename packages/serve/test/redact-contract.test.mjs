@@ -5,6 +5,7 @@
 // an entry point's own contract fixes it. Where the entry points answer differently, the test's diagnostics say which
 // differ, so a change that moves one of them shows up there. Every key-shaped text here is put together at run time.
 import assert from "node:assert/strict";
+import { generateKeyPairSync } from "node:crypto";
 import { test } from "node:test";
 import { addressForms } from "../dist/calendar/address.js";
 import * as refusal from "../dist/key-refusal.js";
@@ -393,15 +394,68 @@ const CASES = [
     hides: [CUT_KEY.slice(16, 24)],
     exact: { redactedAnswer: "[redacted]", redactedCall: "[redacted]", runFile: "[redacted]" },
   },
+  // The same, with padding the matcher reads as nothing between the head and the run's end: the tail read counts
+  // characters as the views see them, so the padding never pushes the head out of it. With no held value in the text,
+  // the same layout shows, the run as "[redacted]" (control).
+  ...[[ZWSP.repeat(300), "zero-width spaces"], [SHY.repeat(300), "soft hyphens"], [`${String.fromCharCode(92)}n`.repeat(300), "\\n escapes"], ["%E2%80%8B".repeat(300), "%E2%80%8B"]].flatMap(([pad, what]) => [
+    {
+      name: `a held value whose head is glued to the end of a run too long to read, then ${what}, its rest past a line break, withholds the text`,
+      text: `the key: ${"z".repeat(9000)}${CUT_KEY.slice(0, 16)}${pad}\n${CUT_KEY.slice(16)} end`,
+      values: [CUT_KEY],
+      hides: [CUT_KEY.slice(16, 24)],
+      exact: { redactedAnswer: "[redacted]", redactedCall: "[redacted]", runFile: "[redacted]" },
+    },
+    {
+      name: `a run too long to read ending in ${what}, with no held value in the text, shows with the run as "[redacted]" (control)`,
+      text: `the key: ${"z".repeat(9000)}${CUT_KEY.slice(0, 16)}${pad}\n${CUT_KEY.slice(16)} end`,
+      values: [SPLIT],
+      hides: [],
+      exact: { redactedAnswer: `the key: [redacted]\n${CUT_KEY.slice(16)} end`, redactedCall: `the key: [redacted]\n${CUT_KEY.slice(16)} end` },
+    },
+  ]),
+  {
+    name: "a held value whose head is glued to the end of a run too long to read, then padding longer than a piece, withholds the text",
+    text: `the key: ${"z".repeat(9000)}${CUT_KEY.slice(0, 16)}${ZWSP.repeat(9000)}\n${CUT_KEY.slice(16)} end`,
+    values: [CUT_KEY],
+    hides: [CUT_KEY.slice(16, 24)],
+    exact: { redactedAnswer: "[redacted]", redactedCall: "[redacted]", runFile: "[redacted]" },
+  },
   (() => {
     const { lines, pem } = fakePem(6);
     return {
-      name: "a held PEM-like value whose armor is glued to the end of a run too long to read withholds the text",
+      // The block is read with the run it is glued to, to its END line (a piece never ends inside a block), so the run
+      // and the block show as one "[redacted]".
+      name: "a held PEM-like value whose armor is glued to the end of a run too long to read is read with the run, as \"[redacted]\"",
       text: `${"Z".repeat(20_000)}${pem} end`,
       values: [pem],
       hides: lines.map((line) => line.slice(0, 12)),
-      exact: { redactedAnswer: "[redacted]", redactedCall: "[redacted]" },
+      exact: { redactedAnswer: "[redacted] end", redactedCall: "[redacted] end" },
     };
+  })(),
+  // A private key block with no held value to cut it by, across the edge of an answer's or a call's result's first
+  // piece: the piece ends before its BEGIN line, so the block is read whole in the next piece and cut whole, and the
+  // text after it shows. A block longer than a piece is read as one run and shown as "[redacted]".
+  ...(() => {
+    const label = ["RSA", "PRIVATE", "KEY"].join(" ");
+    const block = (size) => {
+      const body = Buffer.from(Array.from({ length: size }, (_, i) => (i * 7919 + 13) % 256)).toString("base64").match(/.{1,64}/g);
+      return { body, pem: [`-----BEGIN ${label}-----`, ...body, `-----END ${label}-----`].join("\n") };
+    };
+    const after = " the words after it.".repeat(600);
+    const both = (shown) => ({ redactedAnswer: shown, redactedCall: shown });
+    return [
+      ...[[1190, "a key's block"], [9000, "a block longer than a piece"]].map(([size, what]) => {
+        const { body, pem } = block(size);
+        const text = `${"y ".repeat(3500)}${pem}\n${after}`;
+        return {
+          name: `${what}, no value held, across the edge of an answer's first piece is cut whole; the text after it shows`,
+          text,
+          values: [CUT_KEY],
+          hides: [...body.slice(1).map((line) => line.slice(0, 16)), `-----END ${label}`],
+          exact: both(`${"y ".repeat(3500)}[redacted]\n${after}`),
+        };
+      }),
+    ];
   })(),
   // A held value of many lines is found by its parts too: each line of 40 characters or more, and its body (the lines
   // between its armor) with the line breaks gone. So the first lines of a held key, or its body without the armor,
@@ -442,6 +496,73 @@ const CASES = [
       },
     ];
   })(),
+  // A held key's last body line is mostly shorter than a part's line (40), so it is held with its END line, as written:
+  // the last two lines printed (`tail -n 2`) are cut. The END line alone is no part, and shows (control).
+  ...(() => {
+    const { lines } = fakePem(10);
+    const last = "ZmFrZS1ib2R5LW5vdC1hLXJlYWw=";
+    const end = `-----END ${"PRIVATE KEY"}-----`;
+    const pem = [`-----BEGIN ${"PRIVATE KEY"}-----`, ...lines, last, end].join("\n");
+    const all = (shown) => Object.fromEntries(Object.keys(ENTRIES).map((name) => [name, shown]));
+    return [
+      {
+        name: "the last two lines of a held PEM-like value (tail -n 2), its last body line short, show neither",
+        text: `$ tail -n 2 key.pem\n${last}\n${end}\n`,
+        values: [pem],
+        hides: [last.slice(0, 12)],
+        exact: all("$ tail -n 2 key.pem\n[redacted]\n"),
+      },
+      {
+        name: "the END line of a held PEM-like value, printed alone, shows (control)",
+        text: `$ tail -n 1 key.pem\n${end}\n`,
+        values: [pem],
+        hides: [],
+        exact: all(`$ tail -n 1 key.pem\n${end}\n`),
+      },
+    ];
+  })(),
+  // A held JSON value's own lines are no parts of it: a service account as Google serves it, pretty-printed, has its
+  // public strings on lines of their own, and a text that names them, as written or minified, shows. Its private key's
+  // lines are still parts (heldFields holds the key, and its lines are its parts).
+  ...(() => {
+    const { lines, pem } = fakePem(25);
+    const all = (shown) => Object.fromEntries(Object.keys(ENTRIES).map((name) => [name, shown]));
+    const account = JSON.stringify({
+      type: "service_account",
+      project_id: "made-up-project",
+      private_key_id: "0123456789abcdef0123456789abcdef01234567",
+      private_key: `${pem}\n`,
+      client_email: "probe@made-up-project.iam.gserviceaccount.com",
+      client_id: "123456789012345678901",
+      auth_uri: "https://accounts.google.com/o/oauth2/auth",
+      token_uri: "https://oauth2.googleapis.com/token",
+      auth_provider_x509_cert_url: "https://www.googleapis.com/oauth2/v1/certs",
+    }, null, 2);
+    const pretty = account.split("\n").filter((line) => /"(?:auth_uri|token_uri|auth_provider_x509_cert_url|client_email)"/.test(line)).join("\n");
+    const minified = '{"type":"service_account","auth_uri":"https://accounts.google.com/o/oauth2/auth","token_uri":"https://oauth2.googleapis.com/token","auth_provider_x509_cert_url":"https://www.googleapis.com/oauth2/v1/certs"}';
+    return [
+      {
+        name: "a held pretty-printed service account's public lines, printed as written, show",
+        text: `$ grep _ur sa.json\n${pretty}\n`,
+        values: [account],
+        hides: [],
+        exact: all(`$ grep _ur sa.json\n${pretty}\n`),
+      },
+      {
+        name: "a held pretty-printed service account's public strings, in minified JSON, show",
+        text: `the docs' example: ${minified} ok`,
+        values: [account],
+        hides: [],
+        exact: all(`the docs' example: ${minified} ok`),
+      },
+      {
+        name: "a held pretty-printed service account's private key, printed alone, shows no line of it",
+        text: `$ jq -r .private_key sa.json\n${pem}\n`,
+        values: [account],
+        hides: lines.map((line) => line.slice(0, 12)),
+      },
+    ];
+  })(),
   // A held JSON value's string whose key names a credential (the URL rule's names, the whole key) is held as itself,
   // nested or not: an OAuth client's secret, printed alone, is cut. Its other one-line strings (an id, its URLs) are no
   // secret and stay.
@@ -475,6 +596,53 @@ const CASES = [
         hides: [],
         exact: all(shown),
       },
+    ];
+  })(),
+  // A held JSON value's string is held by its key's name, its separators dropped and lowered: one that names a secret,
+  // a password, a token, a private value, a credential or an API key, or ends in "key" (an AWS secret access key, an STS
+  // session token, a webhook's signing secret, a one-line private key), but none that names a public thing (an id, a
+  // URI or URL, a type, an email, an endpoint, an expiry), a public key, or a token that is no secret (a page's, the
+  // next page's, a token's type). A JWK's private members (d, p, q, dp, dq, qi, k) are held beside its "kty" only. Each printed alone
+  // (`jq -r`) is cut, or shows.
+  ...(() => {
+    const made = (name) => ["made", "up", name, "R2mTq8Vx7kPz"].join("-");
+    const held = {
+      Credentials: { AccessKeyId: "MADEUPACCESSKEYID0001", SecretAccessKey: made("secret-access-key"), SessionToken: made("session-token"), Expiration: "2026-11-24T12:00:00Z" },
+      aws_secret_access_key: made("aws-secret"),
+      secret_key: made("secret-key"),
+      signing_secret: made("signing"),
+      private_key: made("ed25519-seed"),
+      public_key: made("ed25519-public"),
+      okp: { kty: "OKP", crv: "Ed25519", x: made("okp-public-x"), d: made("okp-d") },
+      oct: { kty: "oct", k: made("oct-k") },
+      rsa: { kty: "RSA", n: made("rsa-public-n"), e: "AQAB", d: made("rsa-d"), p: made("rsa-p"), q: made("rsa-q"), dp: made("rsa-dp"), dq: made("rsa-dq"), qi: made("rsa-qi") },
+      client_id: "123456789012-madeupclientid.apps.googleusercontent.com",
+      token_uri: "https://oauth2.googleapis.com/token",
+      page_token: made("page-token"),
+      next_token: made("next-token"),
+      token_type: "urn:ietf:params:oauth:token-type:access_token",
+      notes: { d: made("no-kty-d") },
+    };
+    const value = JSON.stringify(held);
+    const all = (shown) => Object.fromEntries(Object.keys(ENTRIES).map((name) => [name, shown]));
+    const at = (path) => path.split(".").reduce((node, key) => node[key], held);
+    const cut = ["Credentials.SecretAccessKey", "Credentials.SessionToken", "aws_secret_access_key", "secret_key", "signing_secret", "private_key", "okp.d", "oct.k", "rsa.d", "rsa.p", "rsa.q", "rsa.dp", "rsa.dq", "rsa.qi"];
+    const shown = ["Credentials.AccessKeyId", "client_id", "token_uri", "page_token", "next_token", "token_type", "public_key", "okp.x", "rsa.n", "notes.d"];
+    return [
+      ...cut.map((path) => ({
+        name: `a held JSON value's ${path}, printed alone, is cut`,
+        text: `$ jq -r .${path} held.json\n${at(path)}\n`,
+        values: [value],
+        hides: [at(path).slice(-12)],
+        exact: all(`$ jq -r .${path} held.json\n[redacted]\n`),
+      })),
+      ...shown.map((path) => ({
+        name: `a held JSON value's ${path}, printed alone, shows (control)`,
+        text: `$ jq -r .${path} held.json\n${at(path)}\n`,
+        values: [value],
+        hides: [],
+        exact: all(`$ jq -r .${path} held.json\n${at(path)}\n`),
+      })),
     ];
   })(),
   // An array's items have no key: a one-line string in an array is not held by the key the array is under, only by
@@ -542,6 +710,24 @@ const CASES = [
         exact: all("[redacted]"),
       },
     ];
+  })(),
+  // A held value holding a backslash before a character an escape could start with ("n", "u" and four hex digits),
+  // written by a JSON writer: its backslash escaped ("\", "\\"), the character after it as it stands. Read one level
+  // deep, it is the held value; read two levels deep, the escaped backslash and the character after it are one escape,
+  // and the value is gone. So the text is read both ways, and withheld.
+  ...(() => {
+    const B = String.fromCharCode(92);
+    return [
+      ["a backslash written \\u005c, then n", `held: abcd${B}u005cnefgh ok`, `abcd${B}nefgh`],
+      ["a backslash written \\\\, then n, beside a \\u0041", `held: abcd${B}${B}nef${B}u0041gh ok`, `abcd${B}nefAgh`],
+      ["a backslash written \\u005c, then u0041", `held: x-made-up${B}u005cu0041y ok`, `x-made-up${B}u0041y`],
+    ].map(([what, text, value]) => ({
+      name: `a held value holding a backslash, in JSON with ${what}, withholds the text`,
+      text,
+      values: [value],
+      hides: ["abcd", "made-up"],
+      exact: Object.fromEntries(Object.keys(ENTRIES).map((name) => [name, "[redacted]"])),
+    }));
   })(),
   // A character that renders as nothing (a default-ignorable code point: a zero-width space, a soft hyphen) between a
   // held value's characters hides it from no view: the views drop it, as they drop whitespace. A text that holds such
@@ -791,6 +977,9 @@ const BACKSLASH = String.fromCharCode(92);
 const TWO_LINES = [`made-up-first-line-${"q8VxR2mT".repeat(3)}`, `made-up-second-line-${"R2mTq8Vx".repeat(3)}`];
 /** A held value whose longest form needs the most a run's tail read takes (8,192 characters). */
 const LONG = `${CUT_KEY}-${"q8VxR2mT7kPz".repeat(120)}`;
+/** A held key as one is held in practice: a 4096-bit RSA key's PKCS #8 PEM, made here (about 3,270 characters, 50 body
+ *  lines of 64 and a short last one): 51 parts, each a form and a plain needle, beside its whole forms. */
+const RSA_PEM = generateKeyPairSync("rsa", { modulusLength: 4096, privateKeyEncoding: { type: "pkcs8", format: "pem" }, publicKeyEncoding: { type: "spki", format: "pem" } }).privateKey.trim();
 
 /** The adversarial texts of `size` characters, each with the held values it is read with, each text stressing a stage:
  *  - the shapes' prefixes and runs;
@@ -799,8 +988,12 @@ const LONG = `${CUT_KEY}-${"q8VxR2mT7kPz".repeat(120)}`;
  *    stretches for NFKC, characters that render as nothing (zero-width spaces, soft hyphens, both between letters);
  *  - the join view over JSON, well formed and malformed: strings never closed, nesting as deep as the text, strings of
  *    nothing but backslashes;
- *  - a held value found every 9 characters, each find cut in place, and one in every string of a JSON text;
+ *  - a held value found every 9 characters, each find cut in place, and one in every string of a JSON text; and every
+ *    11, a character between each two finds that no cut covers, so each find is checked against its own covered stretch
+ *    of the view;
  *  - a held value of two lines, its lines over and over: its parts found at every line, each cut in place;
+ *  - a held 4096-bit RSA key, over and over, and its body's lines in reverse order (never the key whole, every line a
+ *    part cut in place): its 51 parts searched in each view;
  *  - runs too long to read, each with a held value's head glued to its end: each run's tail read again, 8,192
  *    characters of it, for the held value. */
 const adversarial = (size) => {
@@ -840,7 +1033,10 @@ const adversarial = (size) => {
     // The same in a string never closed, and in one escaped quote after another (JSON written in a string).
     { text: `{"k":"${fill(`${DENSE} `, size - 6)}`, values: [DENSE] },
     { text: f(`${BACKSLASH}"${DENSE}${BACKSLASH}",`), values: [DENSE] },
+    { text: f(`${DENSE} x `), values: [DENSE] },
     { text: f(`${TWO_LINES.join("\n")}\n`), values: [TWO_LINES.join("\n")] },
+    { text: f(`${RSA_PEM}\n`), values: [RSA_PEM] },
+    { text: f(`${RSA_PEM.split("\n").slice(1, -1).reverse().join("\n")}\n`), values: [RSA_PEM] },
     { text: f(`${"z".repeat(9000)}${LONG.slice(0, 16)} `), values: [LONG] },
   ];
 };
@@ -876,6 +1072,15 @@ test("the work count reads each stage: a form's search, a view and its decoders,
   // A text with JSON's escapes is read in the squeezed view and the JSON view: two views built, each searched.
   const json = count(() => holds(escaped, { ...none, plain: [DENSE] }, { cuts: [[0, 3]] }));
   if (json < 3 * escaped.length) problems.push(`the JSON view: ${json} for ${escaped.length}`);
+  // Each find checked against the view's covered stretches visits some of them: F finds, each inside its own cut,
+  // against F covered stretches, visit about log2(F) each; against one covered stretch, one each. The same text and
+  // finds otherwise, so the two counts differ by those visits (and the cover's pass over F cuts, not one).
+  const finds = 4096;
+  const separate = `${DENSE} x `.repeat(finds);
+  const each = Array.from({ length: finds }, (_, i) => [11 * i, 11 * i + DENSE.length]);
+  const apart = count(() => holds(separate, { ...none, plain: [DENSE] }, { cuts: each }));
+  const together = count(() => holds(separate, { ...none, plain: [DENSE] }, { cuts: [[0, separate.length]] }));
+  if (apart - together < 6 * finds) problems.push(`the finds checked against ${finds} covered stretches: ${apart - together} more than against one`);
   assert.deepEqual(problems, []);
 });
 
@@ -921,18 +1126,19 @@ test("adversarial texts: the characters the shape scanners visit are at most a f
 // - the shapes, sought over the text and over its cut, and each run read: 128, the shapes' own bound (the test above);
 // - planCut's finds: the text lowered (1), each form and the hex searched (2 each, a find and the text before it: 16),
 //   the folded search (4), the finds merged (1): about 21;
-// - one whole-text check: what the text holds that a view decodes (7); eleven views at most: the squeezed one and the
+// - one whole-text check: what the text holds that a view decodes (7); twelve views at most: the squeezed one and the
 //   percent-decoded two (one with "+") built in 9 reads each (its special characters found, its blanks, its non-ASCII
-//   stretches squeezed twice, its cover), the view of JSON's escapes alone and the two stacked ones (one with "+") in 23
-//   each (two levels of escapes read per character decoded); the nested join, which reads the text as JSON first (3:
-//   at level 0, again at level 1 inside a string, and the whitespace after a string), writes its join (2: each
-//   character in it at most twice, values then all, or names then all), and one decoding view over that join (46); the
-//   strings join, read at level 0 alone (2) and written (2), and four decoding views over it (one level of JSON's
-//   escapes alone, with percent, with percent and "+", and two levels: 46 each, 184); then each searched for 7 plain
-//   needles, the hex and the fold, lowered and flattened (21 each, 42 over a join): about 678; planCut runs two (the
-//   text with its cuts, then the cut text, at most 10/8 as long): about 1,526;
-// - so planCut is about 1,675; an answer adds its pieces' ends and joins (10), heldIn's check of what it returns (10/8
-//   of a check: 848), of the pieces as they came (678), and its shape pass (64): about 3,275.
+//   stretches squeezed twice, its cover), the views of JSON's escapes alone (two levels, and one where the text has an
+//   escaped backslash) and the two stacked ones (one with "+") in 23 each (two levels of escapes read per character
+//   decoded); the nested join, which reads the text as JSON first (3: at level 0, again at level 1 inside a string, and
+//   the whitespace after a string), writes its join (2: each character in it at most twice, values then all, or names
+//   then all), and one decoding view over that join (46); the strings join, read at level 0 alone (2) and written (2),
+//   and four decoding views over it (one level of JSON's escapes alone, with percent, with percent and "+", and two
+//   levels: 46 each, 184); then each searched for 7 plain needles, the hex and the fold, lowered and flattened, each
+//   find checked against the covered stretches (21 each, 42 over a join): about 722; planCut runs two (the text with
+//   its cuts, then the cut text, at most 10/8 as long): about 1,625;
+// - so planCut is about 1,774; an answer adds its pieces' ends and joins (10), heldIn's check of what it returns (10/8
+//   of a check: 903), of the pieces as they came (722), and its shape pass (64): about 3,473.
 // That sum takes each stage at its most at once, which no text reaches: a text that builds every view decodes most of
 // itself, so each decoded view is far shorter than the text and its searches read far less.
 // A held value of two lines adds its three parts as forms and plain needles (about 30 more). A held value of k long
