@@ -18,6 +18,12 @@ const credentialed = (path = "") => {
   url.password = "not-a-secret";
   return url.href;
 };
+/** PUBLIC with `path`, holding one of them alone: the user name ("username") or the password ("password"). */
+const halfCredentialed = (path, part) => {
+  const url = new URL(`${PUBLIC}${path}`);
+  url[part] = part === "username" ? "web-user" : "not-a-secret";
+  return url.href;
+};
 /** credentialed(path) with an "@" left unencoded in its password ("not@a-secret"): made from the text, as a URL would
  *  encode it ("%40"). */
 const unencoded = (path = "") => credentialed(path).replace("not-a-secret", "not@a-secret");
@@ -66,7 +72,7 @@ test("an error a provider gives that quotes a URL with a user name and password 
   assert.deepEqual(leaks, [], `no part of them in: ${leaks.join("; ")}`);
 });
 
-test("a provider's page whose url, after a redirect, holds a user name and password: the page web_fetch returns and the text the model reads name it without them", async (t) => {
+test("a provider's page whose url, after a redirect, holds a user name, a password or both: the page web_fetch returns and the text the model reads name it without them", async (t) => {
   const landed = credentialed("landed");
   const scraped = { markdown: "# Landed\n\nRead after a redirect.", metadata: { title: "Landed", url: landed, sourceURL: landed, statusCode: 200 } };
   const fc = await firecrawlServer(t, (name) => (name === "firecrawl_scrape" ? { content: [{ type: "text", text: JSON.stringify(scraped) }] } : answers(name)));
@@ -77,6 +83,9 @@ test("a provider's page whose url, after a redirect, holds a user name and passw
     ["firecrawl-keyless", "firecrawl-keyless", { firecrawl: firecrawlFetch({ endpoint: fc.url }) }],
     ["parallel", "parallel", { parallel: parallelExtract("not-a-secret", extract(landed)) }],
     ["parallel, a tab before the user name", "parallel", { parallel: parallelExtract("not-a-secret", extract(tabbed)) }],
+    // Either one alone is cleared too: a url holding a user name with no password, or a password with no user name.
+    ["parallel, a user name only", "parallel", { parallel: parallelExtract("not-a-secret", extract(halfCredentialed("landed", "username"))) }],
+    ["parallel, a password only", "parallel", { parallel: parallelExtract("not-a-secret", extract(halfCredentialed("landed", "password"))) }],
   ];
   const urls = [];
   const leaks = [];
