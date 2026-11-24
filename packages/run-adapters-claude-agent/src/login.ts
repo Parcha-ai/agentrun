@@ -9,7 +9,7 @@
 // hold secrets (an API key, exported variables, MCP servers' tokens) and lasts the check.
 // The check runs in the person's own home, as does a run on macOS, where the CLI's tokens are in the login keychain.
 import { spawn } from "node:child_process";
-import { accessSync, constants, mkdtempSync, rmSync } from "node:fs";
+import { accessSync, closeSync, constants, mkdtempSync, openSync, readSync, rmSync, statSync } from "node:fs";
 import { type FileHandle, lstat, mkdir, open, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
@@ -428,21 +428,59 @@ export interface ClaudeSignIn {
   stop(): void;
 }
 
-/** Throws, in the spawn's words, when `cli` is no program this host can start: the parent watch starts a program of its
- *  own first (setpriv, or node with its shim), which would tell a missing CLI only as its own exit code. A bare name is
- *  looked up on `path` (not on Windows, whose names take an extension; the watch's exit says it there). */
-function startable(cli: string, path: string): void {
-  if (/[\\/]/.test(cli)) return accessSync(cli, constants.X_OK);
-  if (process.platform === "win32") return;
-  for (const dir of path.split(delimiter)) {
-    if (!dir) continue;
-    try {
-      return accessSync(join(dir, cli), constants.X_OK);
-    } catch {
-      // Not here.
-    }
+/** Whether `file` is a regular file this process may execute. */
+function executable(file: string): boolean {
+  try {
+    accessSync(file, constants.X_OK);
+    return statSync(file).isFile();
+  } catch {
+    return false;
   }
-  throw Object.assign(new Error(`spawn ${cli} ENOENT`), { code: "ENOENT" });
+}
+
+/** The first program named `name` on `path`, or undefined. */
+function onPath(name: string, path: string): string | undefined {
+  for (const dir of path.split(delimiter)) if (dir && executable(join(dir, name))) return join(dir, name);
+  return undefined;
+}
+
+/** The first line of `file` (at most 256 bytes), or undefined when it can't be read. */
+function firstLine(file: string): string | undefined {
+  let fd: number | undefined;
+  try {
+    fd = openSync(file, "r");
+    const head = Buffer.alloc(256);
+    return head.subarray(0, readSync(fd, head, 0, head.length, 0)).toString("latin1").split("\n")[0];
+  } catch {
+    return undefined;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
+
+const notStartable = (cli: string, why = ""): Error => Object.assign(new Error(`spawn ${cli} ENOENT${why}`), { code: "ENOENT" });
+
+/** Throws, in the spawn's words, when `cli` is no program this host can start: the parent watch starts a program of its
+ *  own first (setpriv, or node with its shim), which would tell a failed start only as its own exit code (127), and the
+ *  sign-in's output is read by no one. So a script whose first line names an interpreter that is not there (`#!/path`,
+ *  or `#!/usr/bin/env <program>` with the program on no folder of `path`) throws too, naming it. A bare name is looked up
+ *  on `path`. Not on Windows, whose names take an extension and which reads no `#!` line: the watch's exit says it there. */
+function startable(cli: string, path: string): void {
+  if (process.platform === "win32") {
+    if (/[\\/]/.test(cli)) accessSync(cli, constants.X_OK);
+    return;
+  }
+  let file = cli;
+  if (/[\\/]/.test(cli)) accessSync(cli, constants.X_OK);
+  else file = onPath(cli, path) ?? "";
+  if (!file) throw notStartable(cli);
+  const [, interpreter, program] = /^#!\s*(\S+)(?:\s+(\S+))?/.exec(firstLine(file) ?? "") ?? [];
+  if (!interpreter) return;
+  if (!executable(interpreter)) throw notStartable(cli, `: the interpreter its first line names, ${interpreter}, is not there`);
+  // env runs the program it is given, looked up on the sign-in's PATH; an option or a variable is left to env.
+  if (/(^|\/)env$/.test(interpreter) && program && !/^-|=/.test(program) && !(/\//.test(program) ? executable(program) : onPath(program, path))) {
+    throw notStartable(cli, `: the interpreter its first line names, ${program}, is on no folder of its PATH`);
+  }
 }
 
 /** Start the CLI's own sign-in at `login` (`auth login`), with the line's own variables (signInEnv) in the person's home
