@@ -461,16 +461,23 @@ function statusFolder(dir, name, ends, mtime) {
   return path;
 }
 
+/** Writes `ms` as a check's end into the `ends` file it is given, as a check with the server's 15 s limit writes it: at
+ *  its start, its end less the limit and 2 s, which is the file's mtime. An end can't lie before its file was written. */
+const endAt = (ms) => (file) => {
+  writeFileSync(file, String(ms), { mode: 0o600, flag: 'wx' });
+  const start = new Date(ms - 17_000);
+  utimesSync(file, start, start);
+};
+
 // Every status check writes its end in its folder as it starts, so this rule, not the mtime one, is what removes nearly
 // every folder a killed server left. The sweep's margin past that end is 15 s (a check's own limit).
 test("a status folder whose check wrote its end is swept once that end is more than 15 s past, whatever its mtime: 16 s past is swept though changed just now, 14 s past stays though changed long ago, and goes 2 s later", { skip: process.platform === 'win32' ? 'no uid' : false }, async () => {
   const dir = scratch();
   const now = Date.now();
-  const at = (ms) => (file) => writeFileSync(file, String(ms), { mode: 0o600, flag: 'wx' });
   // A fresh mtime, which the mtime rule would keep: only the end can take it.
-  const ended = statusFolder(dir, 'agentrun-claude-status-Ends16', at(now - 16_000), new Date(now));
+  const ended = statusFolder(dir, 'agentrun-claude-status-Ends16', endAt(now - 16_000), new Date(now));
   // An mtime 10 minutes old, which the mtime rule would take: only the end keeps it.
-  const ending = statusFolder(dir, 'agentrun-claude-status-Ends14', at(now - 14_000), new Date(now - 10 * 60_000));
+  const ending = statusFolder(dir, 'agentrun-claude-status-Ends14', endAt(now - 14_000), new Date(now - 10 * 60_000));
   assert.deepEqual(await claude.sweepClaudeStatusFolders({ dir, now }), [ended], 'the folder whose check ended 16 s ago is swept, and the one 14 s past its end is not');
   assert.equal(existsSync(ended), false, 'the ended check\'s folder and the copy in it are gone');
   assert.ok(existsSync(join(ending, 'config', '.claude.json')), 'the folder 14 s past its end stays, copy and all');
@@ -478,7 +485,38 @@ test("a status folder whose check wrote its end is swept once that end is more t
   assert.deepEqual(readdirSync(dir), []);
 });
 
-test("a status folder whose end can't be read as a time (not a number, over 32 bytes, a link to a file holding one, a folder, empty or only blanks as a check's end is between its create and its write) is swept by its mtime, as one with no end: it stays while changed within twice a check's limit, and is swept after", { skip: process.platform === 'win32' ? 'no uid' : false }, async () => {
+// Both rules take a folder only when it is more than its margin past: 15 s past its end, or changed more than twice a
+// check's limit (30 s) ago. Exactly at the margin it stays, by either rule.
+test("a status folder exactly 15 s past its end, or changed exactly 30 s ago with no end, stays; 1 ms later both are swept", { skip: process.platform === 'win32' ? 'no uid' : false }, async () => {
+  const dir = scratch();
+  // A whole second, so the folder's mtime set from it reads back exactly.
+  const now = Math.floor(Date.now() / 1000) * 1000;
+  const byEnd = statusFolder(dir, 'agentrun-claude-status-AtEnd1', endAt(now - 15_000), new Date(now - 10 * 60_000));
+  const byMtime = statusFolder(dir, 'agentrun-claude-status-AtMtm2', () => {}, new Date(now - 30_000));
+  assert.equal(statSync(byMtime).mtimeMs, now - 30_000, 'the folder with no end was changed exactly 30 s before the sweep');
+  assert.deepEqual(await claude.sweepClaudeStatusFolders({ dir, now }), [], 'a folder exactly at its margin, by its end or by its mtime, stays');
+  assert.deepEqual(await claude.sweepClaudeStatusFolders({ dir, now: now + 1 }), [byEnd, byMtime], '1 ms past the margin, both are swept');
+  assert.deepEqual(readdirSync(dir), []);
+});
+
+// A caller's limit is the check's timer and, plus 2 s, the end it writes for the sweep, which reads only a whole number
+// of ms: a fractional limit would leave a live check's folder to the mtime rule, which takes it after 30 s. A limit that
+// is no whole number of ms from 1 to setTimeout's most (2^31 - 1, past which it fires at once) is refused.
+test("a status check whose limit is no whole number of ms from 1 to 2^31 - 1 is refused with a RangeError before it starts the CLI or makes its folder; a whole limit is taken", async () => {
+  const { login } = defaultLogin();
+  const fake = fakeCli();
+  for (const timeoutMs of [60_000.5, 0, -1, Number.NaN, Number.POSITIVE_INFINITY, 2 ** 31]) {
+    const { tmp, outcome } = await inOwnTmp(() => claude.claudeLoginStatus(fake.cli, login, { timeoutMs }));
+    assert.ok(outcome.error instanceof RangeError, `a limit of ${timeoutMs} ms is refused with a RangeError, before the CLI starts: ${outcome.error ?? JSON.stringify(outcome.value)}`);
+    assert.match(String(outcome.error.message), /timeoutMs/, 'its words name the option');
+    assert.deepEqual(readdirSync(tmp), [], `a limit of ${timeoutMs} ms leaves no folder`);
+  }
+  assert.equal(fake.seen().length, 0, 'the CLI was never started for a refused limit');
+  const whole = await inOwnTmp(() => claude.claudeLoginStatus(fake.cli, login, { timeoutMs: 10_000 }));
+  assert.deepEqual(whole.outcome.value, OUT, 'a whole limit is taken');
+});
+
+test("a status folder whose end can't be read as a time (not a number, over 32 bytes, a link to a file holding one, a folder, or one before its own file was written: empty or only blanks as a check's end is between its create and its write, a partial write, a negative or hex one) is swept by its mtime, as one with no end: it stays while changed within twice a check's limit, and is swept after", { skip: process.platform === 'win32' ? 'no uid' : false }, async () => {
   const dir = scratch();
   const now = Date.now();
   // An hour on: a check reading this end would keep its folder through both sweeps below.
@@ -494,6 +532,11 @@ test("a status folder whose end can't be read as a time (not a number, over 32 b
     // a sweep would take the live check's folder.
     ['agentrun-claude-status-Nil005', (file) => writeFileSync(file, '', { mode: 0o600 })],
     ['agentrun-claude-status-Spc006', (file) => writeFileSync(file, ' \n', { mode: 0o600 })],
+    // A number no check writes, as it lies before the file holding it was written: the first byte of an end a torn
+    // write left, a negative, a hex one. Read as times, each would be long past, and a sweep would take the folder.
+    ['agentrun-claude-status-Prt007', (file) => writeFileSync(file, '1', { mode: 0o600 })],
+    ['agentrun-claude-status-Neg008', (file) => writeFileSync(file, '-5', { mode: 0o600 })],
+    ['agentrun-claude-status-Hex009', (file) => writeFileSync(file, '0x1', { mode: 0o600 })],
   ];
   // Changed 20 s ago: inside twice a check's limit (2 x 15 s) at `now`, past it 11 s later.
   const folders = unreadable.map(([name, ends]) => statusFolder(dir, name, ends, new Date(now - 20_000))).sort();
