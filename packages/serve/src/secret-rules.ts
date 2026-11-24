@@ -11,7 +11,7 @@
 // in its length (secret-scrub.test.mjs walks them).
 import { heldNeedles, MIN_SECRET } from "./learn/secrets.js";
 import { cutSpans, SECRET_SHAPES, type Shape, shapeSpans, type Span } from "./redact/match.js";
-import { argWords, commandLimit, lex, type Misses, type Word, wordFrom, wordText } from "./shell-lex.js";
+import { argWords, commandLimit, lex, lexCount, type Misses, type Word, wordFrom, wordText } from "./shell-lex.js";
 
 export type CutKind =
   | "format" // a known format: prefix or checksum (sk-, ghp_, AKIA, JWT, PEM block, secretlint hits)
@@ -600,9 +600,9 @@ const shellEnds = (op: string): boolean => op === ";" || op === "&" || op === "&
 /** curl reads on over a lone `&` (ruling XXIV: an unquoted URL's `?a=1&b=2`). */
 const curlEnds = (op: string): boolean => op !== "&" && shellEnds(op);
 
-/** The characters commandWords may read again, as a share of the text's length: commands named inside an earlier
- *  command's read. */
-const REREAD_SHARE = 1;
+/** What commandWords may spend reading commands named inside an earlier command's read, in the lexer's counted reads,
+ *  as a share of the text's length: at most half a read a character more. */
+const REREAD_SHARE = 0.5;
 /** How commandWords reads a command: `max` characters past its name at least (commandLimit), to the operator `ends`
  *  takes; `own` for curl, whose substitutions' words are no arguments of its own (XCIV, XCV). */
 type CommandRead = { readonly max: number; readonly ends: (op: string) => boolean; readonly own?: boolean };
@@ -613,9 +613,10 @@ type CommandRead = { readonly max: number; readonly ends: (op: string) => boolea
  *  around it; for the others each substitution's words are read as one more list of the command's (parity: an over-cut
  *  kept). The next command is looked for from this one's name on, so a command of the same name that an earlier read
  *  took into a quote it paired (`redis-cli -h o'neil ping; redis-cli -a pw 'x'`) is read too; one inside a substitution
- *  is read once, by the substitution's own read. Such re-reads share a budget of the text's length in characters
- *  (REREAD_SHARE): past it the next command is looked for past the earlier read's end, as before, and the span scan
- *  (inside) still cuts there. The lexer's failed searches are kept across the text (`misses`): linear. */
+ *  is read once, by the substitution's own read. Such re-reads share a budget of the lexer's counted reads
+ *  (lexCount, REREAD_SHARE of the text's length): past it the next command is looked for past the earlier read's end,
+ *  as before, and the span scan (inside) still cuts there. The lexer's failed searches are kept across the text
+ *  (`misses`): linear. */
 function commandWords(text: string, command: RegExp, how: CommandRead): Word[][] {
   const out: Word[][] = [];
   const misses: Misses = new Map();
@@ -633,11 +634,12 @@ function commandWords(text: string, command: RegExp, how: CommandRead): Word[][]
         continue;
       }
       const named = at + m[0].length;
+      const reads = lexCount.read;
       const lexed = lex(text, named, commandLimit(named, how.max, to), how.ends, misses);
-      if (at < readTo) spare -= lexed.end - named;
       out.push(argWords(text, lexed.tokens));
       if (!how.own) substitutionWords(text, lexed.subs, depth, misses, out);
       if (depth < SUBSTITUTION_DEPTH) for (const [start, end] of lexed.subs) read(start, end, depth + 1);
+      if (at < readTo) spare -= lexCount.read - reads;
       subs = lexed.subs;
       readTo = Math.max(readTo, lexed.end);
       re.lastIndex = Math.max(named - from, m.index + 1);
