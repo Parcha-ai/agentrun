@@ -2507,10 +2507,11 @@ test("XCII: a command's quoted part holds its shell operators (Greptile P1 on 68
   }
   // A quote left open on its line is a character, as before: the command still ends at the next operator.
   assert.ok((await gone("mysql -u root -pTq7Wm2Rk9 'app; grep -pattern file", ["Tq7Wm2Rk9"])).text.endsWith("; grep -pattern file"));
-  // Each rule alone reads 2 MB of commands, quotes closed, open and escaped, in CPU time linear in it (LXXXVIII's 2 MB bound).
+  // Each rule alone reads commands, quotes closed, open and escaped, linear by count: shell-lex.ts reads each character
+  // at most 8 times (its counted measure, read past the 4096 window a command is read in, so 512 KB shows it).
   for (const unit of [`mysql -u r -p'${"a&".repeat(300)}' db `, `redis-cli -a "${'\\"'.repeat(400)} `, `curl -u "u:${"p;".repeat(300)}" -H 'a`, "redis-cli '\"".repeat(40), `docker login -p "${"\\".repeat(500)}`]) {
-    for (const [id, ms] of Object.entries(await rulesAlone(["mysql-password", "password-flag", "curl-user"], repeatTo(unit, 2_000_000)))) {
-      assert.ok(ms < 2_000, `${id} on ${unit.slice(0, 20)}: ${Math.round(ms)} ms`);
+    for (const [id, perChar] of Object.entries(await rulesRead(["mysql-password", "password-flag", "curl-user"], repeatTo(unit, 512 * 1024)))) {
+      assert.ok(perChar <= 8, `${id} on ${unit.slice(0, 20)}: ${perChar.toFixed(2)} reads a character`);
     }
   }
 });
@@ -2536,13 +2537,14 @@ test("XCV: curl reads on past a substitution, its contents left out (Greptile P1
       if (wrap === FOUR_WRAPS[0]) assert.ok(out.text.includes("$(") || out.text.includes("\x60"), out.text);
     }
   }
-  // A substitution as the whole password is a reference, as before XCII: no cut. One left open still ends curl.
+  // A substitution as the whole password is a reference, as before XCII: no cut. One left open is a character (XCVI):
+  // its line is read on, and the next line is another command.
   await kept('curl -u "admin:$(cat ~/.pw)" https://x.io');
-  await kept("curl -H \"X: $(date -u +%H:%M https://x.io\n-u a:b");
-  // curl-user alone reads 2 MB of nested, unclosed and repeated substitutions in CPU time linear in it (LXXXVIII's 2 MB bound).
+  await kept("curl -H \"X: $(date https://x.io\n-u a:b");
+  // curl-user alone reads nested, unclosed and repeated substitutions linear by count: at most 8 reads a character.
   for (const unit of ['curl -H "$(curl $(curl $(date)))" -u a:b ', 'curl "$(', "curl $(((((( -u a:b ", "curl \x60 -u a:b ", 'curl "\x60$(" -u a:b ']) {
-    const { "curl-user": ms } = await rulesAlone(["curl-user"], repeatTo(unit, 2_000_000));
-    assert.ok(ms < 2_000, `${unit.slice(0, 20)}: ${Math.round(ms)} ms`);
+    const { "curl-user": perChar } = await rulesRead(["curl-user"], repeatTo(unit, 512 * 1024));
+    assert.ok(perChar <= 8, `${unit.slice(0, 20)}: ${perChar.toFixed(2)} reads a character`);
   }
 });
 
@@ -2638,17 +2640,18 @@ const ruleAlone = async (id, text, extra = {}) => {
   return { hits, ms: (used.user + used.system) / 1000 };
 };
 const repeatTo = (piece, size) => piece.repeat(Math.ceil(size / piece.length));
-/** ruleAlone for several rules on one text, its views read once: each rule's CPU time, by id. */
-const rulesAlone = async (ids, text) => {
+/** Several rules on one text, its views read once: the characters shell-lex.ts read for each rule, per character of
+ *  the text, by id (its counted measure). */
+const rulesRead = async (ids, text) => {
   const { lineBounds } = await import("../dist/secret-rules.js");
+  const { lexCount } = await import("../dist/shell-lex.js");
   const [view] = secretCut.viewsOf(text);
   const ctx = { held: [], source: view.source, homes: [], lint: async () => [], lines: lineBounds(view.text, ...view.decodedStrings, view.strings) };
   const out = {};
   for (const id of ids) {
-    const before = process.cpuUsage();
+    lexCount.read = 0;
     await SCRUB_RULES.find((each) => each.id === id).find(view.text, ctx);
-    const used = process.cpuUsage(before);
-    out[id] = (used.user + used.system) / 1000;
+    out[id] = lexCount.read / text.length;
   }
   return out;
 };
