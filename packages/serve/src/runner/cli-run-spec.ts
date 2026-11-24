@@ -520,10 +520,12 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     else if (!personStarted(launch)) throw new ClaimRefused(RECIPE_SIGN_IN_PERSON_ONLY);
     else personOnly = RECIPE_TURN_PERSON_ONLY;
   }
-  // A held run its model kept from running at its create (hold.refused) chooses no model here and reads no key, plan or
-  // login for it: its adapter's provider is the stand-in that refuses every request in the create's words (adapters.ts
-  // providerOf), so its claim holds the computer on a host with no key for its model, and a key saved since runs a new
-  // run, never this one.
+  // A held run its model kept from running at its create (hold.refused) chooses no model here, and no plan or login is
+  // asked before it: its model's route chooses no model and reads no key, its adapter's provider being the stand-in that
+  // refuses every request in the create's words (adapters.ts providerOf), never a key or the Claude login. Its claim opens
+  // only the keys any claim of the run opens (its tools', a key handed with it: claimSecrets lays it no model key) and
+  // takes no learning step (below), so it holds the computer on a host with no key for its model, and a key saved since
+  // runs a new run, never this one.
   const heldRefusal = launch.hold?.refused?.message;
   const chosen = heldRefusal !== undefined ? heldChoice(launch.model, body.model) : await modelsOf(entry, env, modelAskOf(launch.model, body.model));
   if (heldRefusal === undefined) await planBeforeRun(env, chosen.model);

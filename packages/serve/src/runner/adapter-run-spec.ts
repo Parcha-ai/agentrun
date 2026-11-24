@@ -647,8 +647,10 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // The route reads its model's key from the runner's environment, else the one the claim opened from the store: a key
   // saved in Settings → Model keys runs the next run with no restart (withModelKeys). A run with its own key: that key.
   const modelEnv = claimModelEnv(deps.env, toolEnv, runKey, claim);
-  // A held run its model kept from running at its create is never routed: its claim holds the computer alone, its key
-  // never read, so one saved since runs a new run, never this one (heldRefusedRoute).
+  // A held run its model kept from running at its create is never routed (heldRefusedRoute): its model's route chooses no
+  // model and reads no key, so a key saved since runs a new run, never this one. Its claim opens only the keys any claim
+  // of the run opens (its tools', a key handed with it: claimSecrets lays it no model key), routes no subagent tier and
+  // takes no learning step (below).
   const heldRefusal = launch.hold?.refused?.message;
   const route = heldRefusal !== undefined ? heldRefusedRoute(heldModelOf(launch.model, body.model), heldRefusal) : await deps.routeOf(modelAskOf(launch.model, body.model), modelEnv, "default", PI_WIRES, undefined, cut);
   await planBeforeRun(modelEnv, route.provider.plan ? { provider: PLAN_PROVIDER } : undefined);

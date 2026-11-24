@@ -153,8 +153,8 @@ export function anthropicModelId(model: ModelRef): string {
 export type Provider = { origin: string; credential: () => string | Promise<string>; auth: "bearer" | "x-api-key"; modelId: string; priceModel: ModelRef; billing?: "plan"; refused?: (credential: string) => Promise<void>; login?: ClaudeAgentLogin; headers?: Readonly<Record<string, string>>; fetch?: typeof fetch };
 
 /** The provider of a held run its model kept from running at its create (run-launch.ts hold.refused), on pi and on every
- *  CLI harness's proxy: no model is chosen for it and no key is read, so a host with no key for its model still opens its
- *  claim and holds its computer. Its credential refuses in `words`, the create's own: the session's proxy reads it first
+ *  CLI harness's proxy: its model's route chooses no model and reads no key, so a host with no key for its model still
+ *  opens its claim and holds its computer. Its credential refuses in `words`, the create's own: the session's proxy reads it first
  *  and refuses each request in them (CredentialUnavailable), before the request is admitted, booked or sent. Its origin
  *  names no host. */
 export const heldRefusedProvider = (model: ModelRef, words: string): Provider => ({
