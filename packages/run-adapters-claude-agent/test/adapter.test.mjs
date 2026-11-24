@@ -85,9 +85,10 @@ test("the CLI is started with the host's tools only, no settings, no sign-in and
   const runNode = createHarnessRunner(adapter, { store: memorySessionStore(), tools: [lookup] });
   assert.deepEqual(await runNode({ kind: 'agent', label: 'q', system: ['Be brief.'], user: 'Go.', schema: SCHEMAS.Out, tools: ['lookup'] }), { answer: 'ok' });
   const [options] = seen;
-  // No built-in tool, and the ones that keep state outside the transcript or start other agents are off by name too.
+  // No built-in tool, and the ones that keep state outside the transcript, start other agents or reach the web (WebSearch,
+  // WebFetch: the host's web_search and web_fetch are the session's) are off by name too.
   assert.deepEqual(options.tools, []);
-  for (const name of ['Task', 'Agent', 'WebSearch', 'CronCreate', 'ScheduleWakeup', 'EnterWorktree', 'SendMessage', 'TaskCreate', 'Monitor', 'BashOutput', 'Workflow', 'AskUserQuestion']) assert.ok(options.disallowedTools.includes(name), name);
+  for (const name of ['Task', 'Agent', 'WebSearch', 'WebFetch', 'CronCreate', 'ScheduleWakeup', 'EnterWorktree', 'SendMessage', 'TaskCreate', 'Monitor', 'BashOutput', 'Workflow', 'AskUserQuestion']) assert.ok(options.disallowedTools.includes(name), name);
   assert.deepEqual([...options.allowedTools].sort(), ['mcp__hands__lookup', 'mcp__hands__submit']);
   assert.deepEqual(Object.keys(options.mcpServers), ['hands']);
   assert.deepEqual([options.permissionMode, options.strictMcpConfig, options.settingSources], ['dontAsk', true, []]);
@@ -200,6 +201,7 @@ test("webSearch: the CLI is offered WebSearch alone and told so, the gate lets i
   const [options] = seen;
   assert.deepEqual(options.tools, ['WebSearch']);
   assert.ok(!options.disallowedTools.includes('WebSearch') && options.disallowedTools.includes('Skill'), JSON.stringify(options.disallowedTools));
+  assert.ok(options.disallowedTools.includes('WebFetch'), `WebSearch on leaves WebFetch off by name: ${JSON.stringify(options.disallowedTools)}`);
   assert.match(options.systemPrompt.append, /^Your only tools are this app's \(the mcp__hands__ tools, if it has any\) and WebSearch; you have no shell, file or fetch tools/);
   // The search's intent is in the session's records before it runs, as a read: a crash cut is retried, not reported lost.
   const records = await store.read(store.keys()[0]);
