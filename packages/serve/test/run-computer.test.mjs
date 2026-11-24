@@ -21,7 +21,7 @@ test("the run's computer field: none for no computer; the run's own state; taken
   assert.deepEqual(runComputerField(PHONE, { id: "r1", status: "failed", error: { code: "computer_unavailable", message: why } }), { kind: "phone", provider: "phone-harness", state: "failed", why });
 });
 
-test("a parked run's computer reads released once its claim let it go, and ready while it is kept for the resume", async () => {
+test("a stopped run's computer reads released, and a parked run's once its claim let it go, ready while it is kept for the resume", async () => {
   const { runComputerRead } = await import("../dist/computer-held-routes.js");
   const { keptKeyOf } = await import("../dist/workspace/computer-kept.js");
   const NOW = Date.parse("2026-11-24T12:00:00Z");
@@ -38,5 +38,6 @@ test("a parked run's computer reads released once its claim let it go, and ready
   assert.equal(await stateOf("parked", "input_required"), "ready", "kept for the resume: an answer goes on on the same one");
   kept.set(keptKeyOf("r1"), { provider: "faux-desktop", kind: "desktop", id: "d1", name: "d1", epoch: 1, until: NOW - 1 });
   assert.equal(await stateOf("parked", "input_required"), "released", "its keep's time passed");
+  assert.equal(await stateOf("stopped", "input_required"), "released", "a stop lets it go, though the run takes a follow-up");
   assert.equal(await stateOf("running", "working"), "ready");
 });

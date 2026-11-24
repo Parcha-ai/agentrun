@@ -57,7 +57,7 @@ async function releasedAtPark(store: Pick<Store, "settings">, runId: string, kin
 }
 
 /** The run read's `computer` field (`{ computer }`, or nothing for a run with none): its revision's computer setting, else
- *  the one its place says; released while the run is parked with its computer let go (releasedAtPark); taken_over while the owner holds its desktop or phone (computerHoldOf, read from the run's
+ *  the one its place says; released once a stop let it go, or while the run is parked with it let go (releasedAtPark); taken_over while the owner holds its desktop or phone (computerHoldOf, read from the run's
  *  journal only while that computer is up); with `held` for a run that holds its computer for its owner. The journal is
  *  read at most once, and not at all for a run that neither can be taken over nor holds. `view` is the run read so far. */
 export async function runComputerRead(store: HeldStore & Pick<Store, "agents" | "settings">, runId: string, view: Record<string, unknown>, options: HeldOptions = {}): Promise<{ computer?: Record<string, unknown> }> {
@@ -65,7 +65,9 @@ export async function runComputerRead(store: HeldStore & Pick<Store, "agents" | 
   const setting = run ? settingOfDefinition(((await store.agents.revision(run.revisionId))?.body ?? {}) as Definition)?.computer : undefined;
   if (!setting) return {};
   const error = view.error as { code?: unknown; message?: unknown } | null | undefined;
-  const released = run?.state === "parked" && (await releasedAtPark(store, runId, setting.kind, options.now?.() ?? Date.now()));
+  // A stop lets the run's computer go (the run's row is final until a follow-up queues it again); a park keeps a desktop,
+  // a phone or a sandbox only for its keep's time.
+  const released = run?.state === "stopped" || (run?.state === "parked" && (await releasedAtPark(store, runId, setting.kind, options.now?.() ?? Date.now())));
   const read = { id: runId, status: String(view.status), ...(error && typeof error.code === "string" ? { error: { code: error.code, message: String(error.message ?? "") } } : {}), ...(released ? { released } : {}) };
   // The run's journal, read at most once for the whole field (the hold and `held` both read it), and only when one needs
   // it: a long run's every poll would pay for a read that grows with it.
