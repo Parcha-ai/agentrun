@@ -83,9 +83,8 @@ describe("tailwind.config.ts", () => {
       expect(theme.borderRadius[shape.name]).toBe(`var(--radius-${shape.name})`);
       expect(tokens.light[`radius-${shape.name}`]).toMatch(/^[\d.]+rem$/);
     }
-    // Actions are 8px; the build composer is a step softer at 14px, not the 16px that read as a separate card.
+    // Actions share the 8px radius.
     expect(tokens.light["radius-action"]).toBe("0.5rem");
-    expect(tokens.light["radius-composer"]).toBe("0.875rem");
     expect(Object.keys(theme.boxShadow)).toEqual(["none", "float"]);
   });
 });

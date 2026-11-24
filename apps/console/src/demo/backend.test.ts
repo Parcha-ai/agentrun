@@ -90,6 +90,24 @@ describe("demo mode's backend", () => {
     expect(asked).toEqual([]);
   });
 
+  it("keeps complete skill files by revision and refuses stale edits without touching the server", async () => {
+    const { v2, asked } = demo();
+    const files = { "review/SKILL.md": "Review the change.", "review/rules.md": "Keep the evidence." };
+    const made = await v2.createAgent({ definition: { version: 1, name: "Skill demo", instructions: "Review.", skills: ["review"], tools: [] }, skills: files });
+    expect(await v2.getRevisionSkills(made.agent_id, made.revision!)).toEqual({ revision: made.revision, skills: files });
+    const saved = await v2.updateDefinition(made.agent_id, { definition: {}, skills: { ...files, "review/SKILL.md": "Read the rules first." } }, made.home_etag);
+    expect((await v2.getRevisionSkills(made.agent_id, saved.agent.revision!)).skills).toEqual({ ...files, "review/SKILL.md": "Read the rules first." });
+    expect((await v2.getRevisionSkills(made.agent_id, made.revision!)).skills).toEqual(files);
+    await expect(v2.updateDefinition(made.agent_id, { definition: {}, skills: {} }, made.home_etag)).rejects.toMatchObject({ status: 412 });
+    await expect(v2.getRevisionSkills("refund-desk", made.revision!)).rejects.toMatchObject({ status: 404 });
+    await v2.setCurrent(made.agent_id, made.revision!);
+    const renamed = await v2.updateDefinition(made.agent_id, { definition: { description: "Keep the current files." } }, made.home_etag);
+    expect((await v2.getRevisionSkills(made.agent_id, renamed.agent.revision!)).skills).toEqual(files);
+    const empty = await v2.updateDefinition(made.agent_id, { definition: { skills: [] }, skills: {} }, renamed.etag);
+    expect((await v2.getRevisionSkills(made.agent_id, empty.agent.revision!)).skills).toEqual({});
+    expect(asked).toEqual([]);
+  });
+
   it("lists connected Claude Code and Codex agents beside the server's own, ready to run", async () => {
     const agents = (await demo().v2.listAgents()).agents.filter((a) => a.definition.native);
     expect(agents.map((a) => [a.definition.name, a.definition.native?.runtime, a.native_status?.state])).toEqual([["Architect", "claude-code", "ready"], ["Code reviewer", "codex", "ready"]]);

@@ -99,6 +99,7 @@ export function createWorld({ opened = Date.now(), clock = () => Date.now() }: {
   // A copy of each, nested parts too: what a person changes (a connection, a note) is this world's, never the story's.
   const list: DemoAgent[] = structuredClone(AGENTS);
   const agents = new Map(list.map((a) => [a.id, a]));
+  const skillFiles = new Map<string, Record<string, string>>();
   const held = new Map<string, Held>();
   const hold = (story: RunStory, start = opened - story.startAgo) => {
     const agent = agents.get(story.agent)!;
@@ -255,7 +256,8 @@ export function createWorld({ opened = Date.now(), clock = () => Date.now() }: {
     const runs = all().filter((h) => h.story.agent === a.id && h.start <= now);
     const made = opened - a.madeDaysAgo * DAY;
     return {
-      agent_id: a.id, definition: definitionOf(a), kind: a.kind, mcp_pin: null, revision: revisionOf(a), revisions: a.notes.length, source: null, template: null, skills: [], sign_ins: [],
+      agent_id: a.id, definition: definitionOf(a), kind: a.kind, mcp_pin: null, revision: revisionOf(a), revisions: a.notes.length, source: null, template: null,
+      skills: Object.entries(skillFiles.get(revisionOf(a)) ?? {}).map(([path, text]) => ({ path, sha256: hex(text, 64), size_bytes: new TextEncoder().encode(text).length })), sign_ins: [],
       runs: { count: runs.length, live: runs.filter((h) => !viewOf(h, now).ended_at).length }, own_computer: null, region: "local", home_etag: `"${revisionOf(a)}"`, archived_at: a.archivedAt ? iso(a.archivedAt) : null,
       ...(a.learning ? { learning: { pending: a.id === FULL_STORY && !pendingApproved ? 1 : 0 } } : {}),
       ...(a.native ? { native_status: nativeOf(a) } : {}),
@@ -613,24 +615,27 @@ export function createWorld({ opened = Date.now(), clock = () => Date.now() }: {
     return viewOf(h);
   };
   /** Makes an agent from a definition, as the builder or the playground's create would: kept in this page's memory. */
-  const createAgent = (definition: Record<string, unknown>): Agent => {
+  const createAgent = (definition: Record<string, unknown>, skills: Record<string, string> = {}): Agent => {
     const name = typeof definition.name === "string" && definition.name.trim() ? definition.name.trim() : "New agent";
     const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "agent";
     let id = slug;
     for (let n = 2; agents.has(id); n++) id = `${slug}-${n}`;
     const a: DemoAgent = { id, name, description: typeof definition.description === "string" ? definition.description : "", kind: definition.workflow ? "workflow" : "agentic", harness: typeof definition.harness === "string" ? definition.harness : "pi", model: typeof definition.model === "string" ? definition.model : MODELS.default, tools: Array.isArray(definition.tools) ? (definition.tools as string[]) : [], learning: !!definition.learning, madeDaysAgo: (opened - clock()) / DAY, notes: [null], saved: [{ skills: [], tools: [], ...definition }] };
     list.push(a); agents.set(id, a);
+    skillFiles.set(revisionOf(a), { ...skills });
     return agentOf(a);
   };
   /** Saves an edit as the agent's next revision. A story's agent keeps its earlier revisions as they were. */
-  const saveDefinition = (id: string, definition: Record<string, unknown>, note: string | null): Agent | null => {
+  const saveDefinition = (id: string, definition: Record<string, unknown>, note: string | null, skills?: Record<string, string>): Agent | null => {
     const a = agents.get(id);
     if (!a) return null;
+    const files = skills ?? skillFiles.get(revisionOf(a)) ?? {};
     a.saved ??= a.notes.map((_, i) => definitionOf(a, i + 1) as Record<string, unknown>);
     // An edit is made on the definition that is current, and becomes the current one, whichever revision was before.
     a.saved.push({ ...a.saved[versionOf(a) - 1], ...definition });
     a.notes = [...a.notes, note];
     a.current = undefined;
+    skillFiles.set(revisionOf(a), { ...files });
     if (typeof definition.description === "string") a.description = definition.description;
     if (typeof definition.model === "string") a.model = definition.model;
     if (typeof definition.harness === "string") a.harness = definition.harness;
@@ -863,7 +868,12 @@ export function createWorld({ opened = Date.now(), clock = () => Date.now() }: {
     setTriggerEnabled: (id: string, on: boolean) => { if (!enabled.has(id)) return null; enabled.set(id, on); return triggerOf(TRIGGERS.find((x) => x.id === id)!); },
     fire: (id: string): Firing | null => { const t = TRIGGERS.find((x) => x.id === id); const run = t && start(t.agent, firedInput(t.input), "trigger", id); return run ? { key: `${id}:${run.run_id}`, by: "manual", nominal_at: run.created_at, status: "started", at: run.created_at, run_id: run.run_id, reason: null, error: null } : null; },
     learning: (id: string) => (agents.has(id) ? learningOf(id) : null),
-    createAgent, saveDefinition, learningCost: learningCostOf, promotions: promotionsOf, loop: loopOf, audits: auditsOf, workflowRevisions: workflowRevisionsOf,
+    createAgent, saveDefinition,
+    revisionSkills: (id: string, revision: string) => {
+      const a = agents.get(id);
+      return a && revisionsOf(a).some((r) => r.revision === revision) ? { revision, skills: { ...skillFiles.get(revision) } } : null;
+    },
+    learningCost: learningCostOf, promotions: promotionsOf, loop: loopOf, audits: auditsOf, workflowRevisions: workflowRevisionsOf,
     learningFile: learningFileOf, workflowAction,
     holdScan, applyTemplate, discoverNative, connectNative, disconnectNative, verifyNative, start, answer, stop, archive, message, grade, raiseCap, setPaused, archiveAgent, setCurrent, writeCorrections, createTrigger, updateTrigger, deleteTrigger, rotateTriggerSecret,
     /** A sample page image by its run-relative path, as a data URL. */
