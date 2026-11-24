@@ -59,16 +59,21 @@ test("an end records its ledger row at its run's end (at = ended_at), with why i
 });
 
 test("a run's end again writes its spend rows anew, none left from the end before; healCost records its row again; a purge takes its row and every spend row it booked or that audits it", async (t) => {
-  const { store, end } = await ledgerStore(t);
+  const { store, clock, end } = await ledgerStore(t);
   await end("r1", 1.3, { path: "agent" }, { also: [kept(1, 1, 0.3, { compiled: { workflow: "answer", digest: C } })] });
   assert.deepEqual((await store.learning.ledger("agent-1", ["r1"])).spend.map((one) => [one.round, one.digest, one.usd]), [[1, C, 0.3]]);
   // A follow-up opens it again; its second end drafted D in its second round.
-  await store.runs.reopen("r1", { kind: "steer", body: { text: "again" } });
+  const first = (await store.runs.get("r1")).endedAt;
+  const steer = await store.runs.reopen("r1", { kind: "steer", body: { text: "again" } });
   const claim = await store.claim("r1", "runner-a", { leaseMs: 60_000 });
+  await store.take(claim, steer.id);
+  clock.now += 1_000;
   await store.runs.update(claim, { state: "ended", costUsd: 2, metrics: { path: "agent" } }, { also: [kept(2, 1.5, 0.2, { compiled: { workflow: "answer", digest: D } })] });
   const again = await store.learning.ledger("agent-1", ["r1"]);
   assert.deepEqual(again.spend.map((one) => [one.round, one.digest, one.usd]), [[1, C, 0.3], [2, D, 0.2]], "each round's compile once: the rows of the end before are replaced, not added to");
-  assert.equal(again.rows[0].at, (await store.runs.get("r1")).endedAt, "its row is for its second end");
+  const second = (await store.runs.get("r1")).endedAt;
+  assert.ok(second > first, `a second end: ${first} then ${second}`);
+  assert.equal(again.rows[0].at, second, "its row is for its second end");
 
   await end("r2", null);
   assert.equal((await store.learning.ledger("agent-1", ["r2"])).rows[0].cost, "unknown");
