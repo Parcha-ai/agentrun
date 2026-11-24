@@ -57,7 +57,11 @@ test("Orgo: the provider takes its key and workspace as options, reads no enviro
 	// No workspace named: it is built, and reads the key's account's one workspace when first needed (orgo-workspaces.test.mjs).
 	assert.ok(create({ apiKey: KEY, fetch: api.fetch }) instanceof OrgoProvider);
 	assert.throws(() => create({ apiKey: KEY, workspaceId: "../other", fetch: api.fetch }), (error) => /workspaceId/.test(error.message) && !error.message.includes(KEY));
-	assert.throws(() => create({ apiKey: KEY, workspaceId: WORKSPACE, fetch: api.fetch, apiUrl: "http://orgo.example/api" }), /https/);
+	for (const apiUrl of ["http://orgo.example/api", "http://127.0.0.1:8080/api"]) {
+		assert.throws(() => create({ apiKey: KEY, workspaceId: WORKSPACE, fetch: api.fetch, apiUrl }), /^Error: the Orgo API URL must be https, so the key never crosses in the clear/);
+	}
+	assert.throws(() => create({ apiKey: KEY, workspaceId: WORKSPACE, fetch: api.fetch, apiUrl: "https://agentrun@orgo.example/api" }), /the Orgo API URL holds no credentials/);
+	assert.deepEqual(api.requests, []);
 	assert.throws(() => create({ apiKey: KEY, workspaceId: WORKSPACE, fetch: api.fetch, user: "0:0" }), /root/);
 	const built = create({ apiKey: KEY, workspaceId: WORKSPACE, fetch: api.fetch });
 	assert.ok(built instanceof OrgoProvider);

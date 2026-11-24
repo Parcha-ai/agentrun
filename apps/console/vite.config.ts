@@ -22,8 +22,10 @@ const workers = wanted === "" ? undefined : Number(wanted);
 const alias = {
   "@dsl": fileURLToPath(new URL("../../packages/dsl/src", import.meta.url)),
   // The timeline library's tool names, pi-browser's tool list and serve's tool-name grammar, from their sources (each
-  // imports nothing of Node; tool-names.ts imports nothing at all, as serve's test/tool-names.test.mjs holds it).
+  // imports nothing of Node; tool-names.ts imports nothing at all, as serve's test/tool-names.test.mjs holds it). The
+  // timeline reads URLs in text through web's text-urls.ts, which imports nothing either.
   "@timeline": fileURLToPath(new URL("../../packages/serve/src/timeline", import.meta.url)),
+  "@parcha/agentrun-web/text-urls": fileURLToPath(new URL("../../packages/web/src/text-urls.ts", import.meta.url)),
   "@pi-browser": fileURLToPath(new URL("../../packages/pi-browser/src/core", import.meta.url)),
   "@agentrun/tool-names": fileURLToPath(new URL("../../packages/serve/src/tool-names.ts", import.meta.url)),
   "@":fileURLToPath(new URL("./src", import.meta.url)),
@@ -55,7 +57,10 @@ export default defineConfig({
   resolve: { alias },
   // The server serves scripts, styles and fonts; its CSP also permits data images. Keep the small coding-agent and harness
   // icons in the bundle so their marks work with existing servers, without widening their asset allowlist.
-  build: { outDir: "dist", assetsInlineLimit: (file) => ["coding-agents", "harnesses"].some(dir => file.replaceAll("\\", "/").includes(`/src/assets/${dir}/`)) },
+  // Two pages: the console (index.html) and the share page (share.html: one run's share bundle, served at /share/<run>
+  // by the owner's server), sharing the hashed assets under assets/. share.html imports nothing of the console's
+  // sign-in or settings, so its chunks hold none of it.
+  build: { outDir: "dist", rollupOptions: { input: { index: fileURLToPath(new URL("./index.html", import.meta.url)), share: fileURLToPath(new URL("./share.html", import.meta.url)) } }, assetsInlineLimit: (file) => ["coding-agents", "harnesses"].some(dir => file.replaceAll("\\", "/").includes(`/src/assets/${dir}/`)) },
   // css: tokens.css is read as text (`?raw`) by the design-system test and stories; every other stylesheet stays a stub.
   test: { environment: "jsdom", include: ["src/**/*.test.ts", "src/**/*.test.tsx"], css: { include: [/\.css\?raw$/] }, ...(workers ? { maxWorkers: workers } : {}), ...(projects ? { projects } : {}) },
 });

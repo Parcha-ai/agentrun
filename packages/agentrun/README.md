@@ -26,10 +26,12 @@ It downloads a Node.js from nodejs.org: the newest release on the major line of 
 later security releases come with the next install. It checks the download against that release's `SHASUMS256.txt`
 and installs it and AgentRun under `~/.agentrun` (`node/`, `lib/`, `bin/agentrun`). Any other Node, nvm or Homebrew is
 left alone, and nothing needs sudo. When no line in your shell's startup file puts `~/.agentrun/bin` on `PATH`, it adds
-one and says so. Then it starts AgentRun as a service of your user, a LaunchAgent on macOS or a systemd user unit on
-Linux, which starts again at login and after a crash and logs to `~/.agentrun/logs/agentrun.log`. Where there is no
-service manager (a container, say), it starts AgentRun in the background, logging to the same file. It runs until the
-machine or container stops, and `agentrun stop` stops it (a SIGTERM, then a SIGKILL to the launcher and its server
+one and says so. Then it starts AgentRun. On a terminal it first asks whether to make it a service of your user, a
+LaunchAgent on macOS or a systemd user unit on Linux, which starts again at login and after a crash and logs to
+`~/.agentrun/logs/agentrun.log`. The answer is No unless you say yes, and then AgentRun runs in the background, logging
+to the same file. With no terminal to ask on, or its output captured (CI, a script, an agent's shell), it installs the
+service without asking; `--service` and `--no-service` choose without the question. Where there is no service manager (a
+container, say), it starts AgentRun in the background. In the background it runs until the machine or container stops, and `agentrun stop` stops it (a SIGTERM, then a SIGKILL to the launcher and its server
 after 45 seconds). Either way the installer returns once AgentRun answers, and prints its address. `sh -s -- --no-start`
 installs only, `--version V` installs another version, `--node-version V` installs that Node.js (at least the floor),
 and `--service` fails where there is no service manager. Running it again upgrades, or installs an older version, and
@@ -44,10 +46,12 @@ one when the last has run out) until the password is set, the console after. It 
 
 `agentrun service status` prints the console's address and its health. `start`, `stop`, `restart`, `logs [--follow]`,
 `upgrade [--version V]` (the installer again, then a restart) and `uninstall` (the data stays) do what they say, and
-`agentrun service install [--port N] [--data DIR] [--public-url URL]` installs the service after a `--no-start`. For a local model, such
-as Ollama's, `agentrun service install --env AGENT_MODEL_BASE_URL=<its /v1 address> --env AGENT_MODEL_GATEWAY_IDS=bare --env
-AGENT_MODEL=<tag> --env AGENT_MODEL_PRICE=0,0,0 --env AGENT_MODEL_API_KEY=none` writes those variables into the
-service and restarts it (`none` alone: without a key the server refuses each run, `model_key_required`). They stay through restarts, upgrades and later installs, and `--env KEY=` removes one. On a machine
+`agentrun service install [--port N] [--data DIR] [--public-url URL]` installs the service after a `--no-start`. The
+Ollama on this machine needs nothing here: the server lists its models itself. For an Ollama off its default address,
+`agentrun service install --env OLLAMA_HOST=<host:port>` writes it into the service and restarts it. `--env OLLAMA_CONTEXT_LENGTH=<tokens>` does the same for a lower context than 65,536. For a local model
+behind a gateway, `agentrun service install --env AGENT_MODEL_BASE_URL=<its /v1 address> --env AGENT_MODEL_GATEWAY_IDS=bare
+--env AGENT_MODEL=<tag> --env AGENT_MODEL_PRICE=0,0,0 --env AGENT_MODEL_API_KEY=none` does the same (`none` alone:
+without a key the server refuses each run, `model_key_required`). They stay through restarts, upgrades and later installs, and `--env KEY=` removes one. On a machine
 you alone use, `--env AGENTRUN_MCP_ALLOW_LOOPBACK=1 --env AGENTRUN_WEBHOOK_PRIVATE_TARGETS=1` turns on the two start-time
 switches the same way (a switch takes `1` alone). `--env` takes the names `agentrun service install --help` lists, and
 no others: model keys go in the console, never in a service file. The service never sees the shell that installed it, so
@@ -167,18 +171,18 @@ Every other command is the server's API, from a second terminal: `npx @parcha/ag
 another server, set `AGENTRUN_BASE_URL` and `AGENTRUN_API_KEY`, or sign in once with `agentrun login --to URL`
 (`--to cloud` for AgentRun cloud): when the server offers a device sign-in, it prints an address and a code to approve
 there, then keeps the token in `$XDG_CONFIG_HOME/agentrun/config.json` (0600); else it reads the token from stdin, as
-`agentrun login --base-url URL < FILE` does. The response's JSON goes to stdout and an error's to
+`agentrun login --base-url URL < FILE` does. `agentrun login --base-url URL` typed on a terminal takes the device
+sign-in too, when the server offers one. The response's JSON goes to stdout and an error's to
 stderr; the exit code is 0 when it worked, 1 when the server refused, 2 for bad usage, 3 when the server cannot be
 reached, 4 for a missing or refused token and 5 when the server does not offer the command here (a 501,
 `unsupported_here`, its error saying why). The token is never a flag and never printed. A list command (`agents list`,
 `runs list` and every other that takes `--cursor`) prints one page; `--all` follows `next_cursor` and prints every page
 as one list.
 
-Any other word runs a program from your `PATH`, as git does: `agentrun NAME [args]` runs `agentrun-NAME` with the rest
-of the arguments, no shell between, on this terminal's input and output, and exits with its exit code. A tool adds a
-command to the CLI by installing `agentrun-NAME`. The CLI's own commands always come first, NAME is one plain word, and
-a relative or empty `PATH` entry, which would mean the working directory, is never searched. A signal sent to `agentrun`
-reaches the command, and `agentrun` exits when it does. On Windows it looks for `agentrun-NAME` with `.com`, `.exe`,
+Any other word runs `agentrun-NAME` from an absolute folder of your `PATH`, as git does, when it comes first:
+`agentrun NAME [args]` passes the rest as given, with no shell, on this terminal, and exits with its code. A tool adds a
+command to the CLI by installing `agentrun-NAME`. The server's and the CLI's own commands come first; NAME is letters,
+digits, `-` and `_`. A signal sent to `agentrun` reaches the command, and `agentrun` exits when it does. On Windows it looks for `agentrun-NAME` with `.com`, `.exe`,
 `.bat` or `.cmd`, in that order; a batch file (`.bat`, `.cmd`) is refused, since Node runs one only through `cmd.exe`,
 which would read the arguments again.
 

@@ -19,6 +19,7 @@ import setupPublic from "./setup-public.mjs";
 import setupLinkFollow from "./setup-link-follow.mjs";
 import setupRender from "./setup-render.mjs";
 import signIn from "./sign-in.mjs";
+import demoMode from "./demo-mode.mjs";
 import signOutScope from "./sign-out-scope.mjs";
 import signedOutElsewhere from "./signed-out-elsewhere.mjs";
 import reportJson from "./report-json.mjs";
@@ -26,17 +27,21 @@ import runToEnd from "./run-to-end.mjs";
 import takeOver from "./take-over.mjs";
 import askDone from "./ask-done.mjs";
 import secretsWriteOnly from "./secrets-write-only.mjs";
+import apiKeys from "./api-keys.mjs";
 import templateApply from "./template-apply.mjs";
 import templateUnattended from "./template-unattended.mjs";
 import templateUnattendedNavigation from "./template-unattended-navigation.mjs";
 import watchLive from "./watch-live.mjs";
+import screenSteps from "./screen-steps.mjs";
 import screenUnopened from "./screen-unopened.mjs";
 import serverDeny from "./server-deny.mjs";
 import computersKeys from "./computers-keys.mjs";
+import computersRunning from "./computers-running.mjs";
 import workspaceArchil from "./workspace-archil.mjs";
 import triggerRowLabel from "./trigger-row-label.mjs";
 import computerStep from "./computer-step.mjs";
 import agentCardFooter from "./agent-card-footer.mjs";
+import connectAgentTabs from "./connect-agent-tabs.mjs";
 import costPerRun from "./cost-per-run.mjs";
 import playgroundPaneLines from "./playground-pane-lines.mjs";
 import learningBill from "./learning-bill.mjs";
@@ -47,7 +52,9 @@ import gradeRun from "./grade-run.mjs";
 import toolCards from "./tool-cards.mjs";
 import narrowLayouts from "./narrow-layouts.mjs";
 import playgroundOperationWidth from "./playground-operation-width.mjs";
+import playgroundAgentWidth from "./playground-agent-width.mjs";
 import devToolsPanelWidth from "./dev-tools-panel-width.mjs";
+import suggestAgents from "./suggest-agents.mjs";
 
 export const flows = [
   setupOpen,
@@ -56,6 +63,7 @@ export const flows = [
   setupRender,
   signIn,
   signOutScope,
+  demoMode,
   connectGitHub,
   githubTrigger,
   { name: "github-trigger-create", pending: "waits on a connected GitHub App without GitHub: the server's GitHub API (githubApi) is a programmatic option only, not a flag the built server takes" },
@@ -65,17 +73,21 @@ export const flows = [
   runToEnd,
   reportJson,
   watchLive,
+  screenSteps,
   screenUnopened,
   takeOver,
   askDone,
   signedOutElsewhere,
   serverDeny,
   secretsWriteOnly,
+  apiKeys,
   computersKeys,
+  computersRunning,
   workspaceArchil,
   triggerRowLabel,
   computerStep,
   agentCardFooter,
+  connectAgentTabs,
   costPerRun,
   learningBill,
   workflowReplay,
@@ -85,6 +97,8 @@ export const flows = [
   toolCards,
   ...narrowLayouts,
   playgroundOperationWidth,
+  playgroundAgentWidth,
   devToolsPanelWidth,
   playgroundPaneLines,
+  ...suggestAgents,
 ];

@@ -22,13 +22,36 @@ statistics of real transcripts, computed off-repo; no sampled text was copied.
 | `base64-images.jsonl` | generate.mjs | small valid `data:image/png|gif|svg+xml|jpeg|webp;base64,...` URIs, alone and in markdown, HTML, CSS, a Messages-API image block, a woff2 font |
 | `test-vectors.jsonl` | generate.mjs | published hash/HMAC/AES/Ed25519 vectors (SHA-256 of "abc", RFC 4231, FIPS-197, RFC 8032), git's empty tree and blob |
 | `terminal.jsonl` | hand | ANSI-coloured output: node:test, git log/diff, tsc, eslint, pytest, docker compose, cursor codes, OSC 8 links, 256/true colour |
-| `code.txt` | hand | TS/Python/Go/Rust/shell/YAML/HCL/SQL that names token/password/secret/key, env references (`process.env.X`, `${X}`, `$X`, `${{ secrets.X }}`), `<your-api-key>`, `sk-...`/`sk-xxxx`, secret-detecting regex literals |
+| `code.txt` | hand | TS/Python/Go/Rust/shell/YAML/HCL/SQL that names token/password/secret/key, env references (`process.env.X`, `${X}`, `$X`, `${{ secrets.X }}`), `<your-api-key>`, `sk-...`/`sk-xxxx`, secret-detecting regex literals, npmrc lines with no credential (`always-auth=true` under a Read, grep or diff lead) |
 | `prose.txt` | hand | commit messages, PR bodies, chat, docs and errors about passwords, keys, tokens, bearer authentication |
 | `addresses.txt` | hand | loopback/any/public-DNS/RFC 5737 addresses, version strings that look like IPs, git remotes, noreply trailers, `pkg@1.2.3`, `logo@2x.png`, system and `/tmp` paths, `/home` with no user |
+| `sweep-shapes.txt` | hand | the false-positive classes of the tl-share fp-sweep, each line invented in a class's shape. A-N (FIXES-scrubber.md rulings I-IX): credential words that are not the name's last segment, shell expansions and secret-manager references, elided and punctuation-only values, header names in code, known prefixes inside base64 runs, lone PEM BEGIN lines, bot trailers. O-Y (rulings XVII-XXIV): decorators and LIKE patterns read as emails, systemd units, an escape's letter glued to `git@`, constants equal to their name, fetch's `credentials`, identifiers in object literals, `PASS` as a verdict, cookie expansions, `date -u` after a curl. Z1-Z4 (rulings XXXV-XXXVIII): a bracketed IPv6 host read as userinfo, `pat` meaning a pattern, an escaped `\$VAR`, an address taken from a URL's userinfo. Z5-Z7 (rulings XLV-XLVII): keyword arguments ending in `,` whose value is an identifier or an attribute, a subscript read (`os.environ["X"]`) with an escape later in the text, an environment member chain (`process.env.X`). Z9 (ruling LVII): a string concatenation's operator between blank-edged quotes (`"X=" + v + " run"`, `.`, `,`, `||`, `..`, `&`), the quotes one string's close and the next one's open |
 
 `.jsonl` files hold one `{"id": "...", "text": "..."}` per line (escapes such as `\u001b` for ESC are JSON's).
 `.txt` files hold cases each opened by a `### <id>` line and running to the next; the newline before the next header
-is not part of the case. A case's text must not contain a line starting with `### `.
+is not part of the case. A case's text must not contain a line starting with `### `. `sweep-shapes.txt` is the
+exception: one case per line. A `# ` line is a comment, a `# class X` comment names the class of the lines below it
+(their ids are `class-X-1`, `class-X-2`, ...), and blank lines are skipped.
+
+`sweep-shapes.txt` changed from the TL-reviewed proposal in four lines, each to pass the source export scan, with
+the class shape kept: two class B shell expansions are unquoted (`export WIDGET_API_KEY=$(pass show widgets/api)`,
+`export ACCESS_TOKEN=${ACCESS_TOKEN:-}`), and the two class L lone BEGIN lines name a DSA and an ENCRYPTED key in
+place of RSA and OPENSSH. test/secret-scrub.test.mjs (tests II and V) keeps the quoted and RSA forms, with the literal
+built from parts. The two class Z1 lines changed too, the shape kept (a bracketed IPv6 host, a port, then `;` or `,`
+and a word with an `@`): the proposal's tail was an address (`widgets@corp-widgets.io`) and one host a ULA address
+(`fd00::7`), which the email and private-ip rules cut by their own grammar, apart from Z1's url-password misread. The
+tails are now TLD-less words (`widgets@localhost`, `ops@widgets-gw`) and the host is `2001:db8::7`. To pass the source
+export scan (its credential_url rule reads `http(s)://` userinfo), the Z1 lines use `wss://` and the Z4 line `sftp://`;
+test/secret-scrub.test.mjs (tests XXXV, XXXVI) keeps the http and https forms, with the literal built from parts. The Z9
+lines name no `password` key (the scan's literal_credential rule reads `password="` and 8 characters to a quote):
+they use `WIDGETS_DB_PASS`, `SESSION_TOKEN`, `WIDGETS_SECRET` and `token`; test/secret-scrub.test.mjs (test LV, LVII)
+keeps the `PGPASSWORD` and `password` forms, with the name built from parts.
+
+`code.txt` ends with three YAML cases (FIXES-scrubber.md ruling XII): CloudFormation tags (`!Ref`, `!Sub`,
+`!GetAtt`), an Ansible `!vault |` block, and block indicators, anchors and aliases (`>-`, `|`, `&name`, `*name`,
+`<<: *name`, `~`, `null`). After a YAML key at a line's start a real-shaped bare value is cut, so these pin that the
+YAML node syntax itself stays a placeholder there. `py-pydantic` (`api_key: SecretStr`) pins that a type name in that
+slot is no value.
 
 ## What is and is not a negative here
 
@@ -49,7 +72,8 @@ Decisions this corpus encodes:
   documentation ranges, `git@github.com:org/repo.git`, `noreply@anthropic.com`, `noreply@github.com`, bot
   `users.noreply.github.com` addresses (dependabot, github-actions).
 - Paths with no user in them stay: `/usr/local/...`, `/tmp/...`, `/etc/...`, `/app/...`, `~/.config/...`,
-  `$HOME/...`, and `/home` or `/home/` alone. A user directory under `/home` is personal-kind and not here.
+  `$HOME/...`, `/root/...` (it names no one), `/home` or `/home/` alone, and web routes such as `/home/settings`. A
+  user directory under `/home` or `/Users` is personal-kind (its user segment is rewritten to `<user>`) and not here.
 - Dotted numbers that are not addresses stay: `1.2.3.4` as a version, `10.0.1`, `10.0.19045.3803`,
   `131.0.6778.85`, OIDs.
 

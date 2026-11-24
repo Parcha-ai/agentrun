@@ -3,6 +3,7 @@ import { marked } from "marked";
 import type { MouseEvent } from "react";
 import { PLAN_NO_DOLLARS } from "./chatgpt";
 import { LOGIN_NO_DOLLARS } from "./claudeLogin";
+import { chipRedactions } from "./redaction";
 import type { Cost } from "./v2";
 
 /** The tags DOMPurify keeps: its own allowed-tag config, read once through its uponSanitizeElement hook (the tag list is
@@ -203,6 +204,8 @@ export function markdown(text: string, files?: LinkedFiles): string {
   const body = DOMPurify.sanitize(marked.parse(text, { async: false }) as string, { RETURN_DOM: true }) as HTMLElement;
   // A code block wraps inside its box (a long line breaks, never runs past the page's edge).
   for (const pre of [...body.querySelectorAll("pre")]) pre.classList.add("whitespace-pre-wrap", "break-words", "[overflow-wrap:anywhere]");
+  // A cut value's marker (the scrubber's `[redacted:<rule>]`) reads as a chip, its words kept.
+  chipRedactions(body);
   for (const a of [...body.querySelectorAll("a[href]")]) {
     const href = a.getAttribute("href")!.trim();
     if (/^(https?|ftps?):/i.test(href)) { a.setAttribute("target", "_blank"); a.setAttribute("rel", "noopener noreferrer"); continue; }

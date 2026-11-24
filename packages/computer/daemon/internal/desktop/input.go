@@ -88,8 +88,9 @@ func (d *Display) actions(ctx context.Context, raw json.RawMessage) (any, error)
 		d.remap, d.remapped = remap{}, c
 	}
 	b := &batch{ctx: ctx, d: d, c: c}
-	if b.width, b.height, err = c.RootSize(); err != nil {
-		return nil, d.gone(c, err)
+	// Nothing is held yet, so a cancel here stops the batch at once.
+	if b.width, b.height, err = c.RootSize(ctx); err != nil {
+		return nil, d.failed(ctx, c, "input.actions", err)
 	}
 	// from is the first action the server has not confirmed, and start the sequence number before its requests; ends
 	// is the last sequence number of each action's requests.

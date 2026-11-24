@@ -26,9 +26,11 @@ import { Turns } from "../turns.js";
 /** A run's entries from the one store, in log order (by id across every conversation), as the old "SELECT record FROM
  *  entries ORDER BY id" read them for a settled run. A run with no journal reads as none. */
 export async function runEntries(store: Store, runId: string, context: Context): Promise<EntryLike[]> {
-  const entries = (await journalEntries(store.readJournal(runId), context)) as unknown as EntryLike[];
-  return entries.slice().sort((a, b) => Number(a.id ?? 0) - Number(b.id ?? 0));
+  return inLogOrder(await journalEntries(store.readJournal(runId), context));
 }
+
+/** `entries` (a journal read's, conversation by conversation) in log order: by id across every conversation. */
+const inLogOrder = (entries: readonly unknown[]): EntryLike[] => (entries as EntryLike[]).slice().sort((a, b) => Number(a.id ?? 0) - Number(b.id ?? 0));
 
 /** Where a run's end-of-run turn is in its journal, as the server's Reflect names it for labelled(): its newest round's
  *  `after`, the entry before its input, and `until`, the run's end entry once written; `earlier`, each earlier round's (a
@@ -212,11 +214,13 @@ export function withoutFeedbackRounds<Row extends { readonly id: string; readonl
  *  costIsBooked) has the usage row the renderer folds from its model turns put in its booking's words (bookedUsage): its
  *  model requests at what the run's model proxy booked them at, and its paid tool calls at what they charged, as a pi
  *  run's usage row counts them; its decisions' rows and cost come from their receipts (decision-rows.ts withDecisions),
- *  once. The end-of-run turn's rows are labelled as the server labels them (reflect-range.ts labelled). */
-export async function runTimeline(store: Store, runId: string, context: Context, options: TimelineOptions = {}): Promise<TimelineEvent[]> {
-  const entries = await runEntries(store, runId, context);
+ *  once. The end-of-run turn's rows are labelled as the server labels them (reflect-range.ts labelled). Its journal is
+ *  read once: `given`, the run's records as its caller read them (a view that says more of the same entries, its cost's
+ *  `plan` among them, so both are of one read), else here. */
+export async function runTimeline(store: Store, runId: string, context: Context, options: TimelineOptions = {}, given?: Records): Promise<TimelineEvent[]> {
+  const records = given ?? (await journalRecords(store.readJournal(runId), context));
+  const entries = inLogOrder(records.entries);
   const cli = isCliRecord(entries);
-  const records = await journalRecords(store.readJournal(runId), context);
   const reflect = reflectOf(records) as Reflect | undefined;
   // A CLI names a file by its absolute path under its working directory (CallStartData.cwd): the rows name it by its
   // name in the workspace, never a path on the runner's machine. Its arguments, as the harness sent them, stay.
