@@ -4,9 +4,10 @@
 import assert from "node:assert/strict";
 import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { test } from "node:test";
 import { request } from "node:http";
+import { execFileSync } from "node:child_process";
 import { keptReads } from "../dist/wrapped.js";
 import { agent, follow, serve } from "./support.mjs";
 
@@ -148,6 +149,13 @@ test("a test's server never reads the runner's HOME: support hands it an empty h
   assert.deepEqual([body.requests, body.sessions], [0, 0], "the fixture under HOME is not read");
 });
 
+// support.mjs points HOME at the empty home it hands each server (SESSIONS_HOME), so a CLI a test starts with the test's
+// environment ({ ...process.env }: a `serve` the CLI starts reads sessions under its HOME) never reads the runner's own.
+test("a process a test starts with the test's environment has the empty home for HOME, never the runner's", () => {
+  const home = execFileSync(process.execPath, ["-e", "process.stdout.write(require('node:os').homedir())"], { env: { ...process.env } }).toString();
+  assert.match(basename(home), /^agentrun-home-/);
+});
+
 test("a read past the wait answers 503 with a retry while it goes on; its year then comes at once, kept", { timeout: 120_000 }, async (t) => {
   const home = await homeWith(t);
   const { api } = await serve(t, { sessionsHome: { home }, wrappedWaitMs: 0 });
@@ -239,4 +247,41 @@ test("keptReads drops a read that failed: the next ask reads again", async (t) =
   assert.equal(calls.length, 2);
   calls[1].resolve(READ);
   assert.equal(await again, READ);
+});
+
+// A read of this year that started before New Year holds the year only up to then: once it is over, that read is still
+// not the whole year, so it keeps the minute's rule. A year is kept for good only when it was over before its read began.
+test("keptReads keeps a year for good only when it was over before its read started: one read before New Year is read again", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: new Date(2026, 11, 31, 22, 0).getTime() });
+  const { calls, kept } = keptOver();
+  const first = kept(2026);
+  calls[0].resolve(READ);
+  await first;
+  await settled();
+  t.mock.timers.tick(2 * 3_600_000 + 2 * 60_000);
+  assert.notEqual(kept(2026), first, "read again: the kept read began before 2026 was over");
+  assert.deepEqual(calls.map((call) => call.year), [2026, 2026]);
+});
+
+// Each read is a worker holding a year's sessions (up to 2 GB): one at a time per server, so asking for several years
+// at once never runs several. A year waiting its turn is a read still going: past the route's wait it answers 503.
+test("keptReads reads one year at a time: the next starts when the one before ends, whether it read or failed", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: new Date(2026, 5, 1).getTime() });
+  const { calls, kept } = keptOver();
+  const a = kept(2025);
+  const b = kept(2024);
+  const c = kept(2023);
+  assert.equal(kept(2024), b, "a year waiting its turn is shared too");
+  await settled();
+  assert.deepEqual(calls.map((call) => call.year), [2025], "only the first read runs");
+  calls[0].resolve(READ);
+  await a;
+  await settled();
+  assert.deepEqual(calls.map((call) => call.year), [2025, 2024]);
+  calls[1].reject(new Error("the worker ended"));
+  await assert.rejects(b, /the worker ended/);
+  await settled();
+  assert.deepEqual(calls.map((call) => call.year), [2025, 2024, 2023], "a failed read frees the turn");
+  calls[2].resolve(READ);
+  assert.equal(await c, READ);
 });
