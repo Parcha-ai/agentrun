@@ -1428,8 +1428,11 @@ export class Triggers {
    *  under its key (`replay`) answers that run: another start of the firing (the host's repeat) wrote it since handedStart
    *  read none. One while another start of the firing on this server is writing its run (starting) follows that start. */
   private async startRoom(trigger: Trigger, key: string): Promise<StartRoom | { replay: string } | { follow: Promise<{ run_id: string } | undefined> } | undefined> {
-    // Before any awaited read: a start whose lookup under the key found no run follows one already writing it in the
-    // same turn. With a read first, it could miss the entry and race that write (the concurrent-start test relies on it).
+    // First, with no await before it. Room checks of one trigger run in line (checked), and a start enters starting
+    // inside its own check (startHold), so a start whose lookup under the key (handedStart's runOf) found no run sees
+    // here any start of the firing that is still writing its run. Read after the firing instead, a start that wrote
+    // meanwhile could leave a stale read and no entry, and this start would call its own start rather than answer that
+    // run (the concurrent-start test fails then).
     const follow = this.starting.get(key);
     if (follow) return { follow };
     const ranOr = async (message: string): Promise<{ replay: string }> => {
@@ -1480,8 +1483,8 @@ export class Triggers {
   /** Firing `key` released by the host the launch hook handed it to (`body` `{ error }`, the host's words, which `cut`
    *  takes the server's secrets out of): a firing sent with no run fails at once, host_released, as any failed firing
    *  (the openapi route says the rest). It first waits for a host start of the firing writing its run here, and for the
-   *  engine's own turn on it (a hook's 2xx read but not yet written). Its write and a start's run write are each
-   *  conditional on the firing being sent with no run, so the one that lands second finds it moved. */
+   *  engine's own turn on it (its hook call open, or its 2xx read but not yet written). Its write and a start's run
+   *  write are each conditional on the firing being sent with no run, so the one that lands second finds it moved. */
   async release(triggerId: string, key: string, body: Json, cut: (text: string) => string) {
     if (!this.deps.launchHook) throw invalid([{ field: "firing_id", reason: "not_allowed", message: "This server has no launch hook: only a firing the hook handed to its host is released by that host." }]);
     await this.need(triggerId);
@@ -1497,7 +1500,7 @@ export class Triggers {
         if (run) throw this.ranRefusal(key, run.run_id);
         continue;
       }
-      // The engine's own turn on the firing may have its hook's 2xx and not have written it yet: read once that turn ends.
+      // The engine's own turn on the firing may have its hook open, or its 2xx read and not yet written: read once it ends.
       const turn = this.driving.get(key);
       if (turn) {
         this.deps.say({ condition: "trigger_release_waits", trigger: triggerId, firing: key });
