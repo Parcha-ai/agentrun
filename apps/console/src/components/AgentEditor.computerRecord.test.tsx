@@ -20,7 +20,7 @@ const CAN = { available: true };
 const NO_FFMPEG = "fixture: no ffmpeg on this server";
 const NO_SCREEN = "fixture: a sandbox has no screen to record";
 const KINDS = [
-  { kind: "none", offered: true, groups: [], tools: ["read"], settings: [], record: { available: false, why: "with no computer, there is no screen to record" }, providers: [] },
+  { kind: "none", offered: true, groups: [], tools: ["read"], settings: [], record: { available: false, why: "fixture: no computer" }, providers: [] },
   { kind: "sandbox", offered: true, groups: ["exec", "files", "processes"], tools: ["read", "bash"], settings: ["image", "persistent", "gpu"], record: { available: false, why: NO_SCREEN }, providers: [ready("docker", "Docker")] },
   { kind: "desktop", offered: true, groups: ["screen", "input.pointer", "input.keys"], tools: ["read", "screen.shot"], settings: ["image", "persistent", "surface", "exec", "record"], record: CAN, providers: [ready("orgo", "Orgo"), ready("e2b", "E2B")] },
   { kind: "phone", offered: true, groups: ["screen", "input.touch", "apps"], tools: ["read", "screen.shot"], settings: ["image", "persistent", "surface", "exec", "record"], record: CAN, providers: [ready("phone-harness", "Phone harness")] },

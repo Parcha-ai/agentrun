@@ -110,10 +110,11 @@ function hostVendor(host) {
 const creates = (vendor) => vendor.calls.filter(([verb]) => verb === "create").map(([, id]) => id);
 
 /** `store` with its runs' claimMany counted (`calls.n`, each claim by the number of the call that made it in
- *  `calls.claimed`) and, while `gate.shut`, held until the gate opens: how the test makes A's poll wait while B's polls
- *  run, so a B that may claim the run claims it first whatever the timing. With `keptReads` ({ fail, failed }), the next
- *  `fail` reads of run-1's kept row throw as a store that did not answer, each counted in `failed`. */
-function watchedStore(store, gate = { shut: false }, calls = { n: 0, claimed: [] }, keptReads = undefined) {
+ *  `calls.claimed`) and, while `gate.shut`, held until the gate opens (claimGate; each call counted in flight from the
+ *  gate to its return): how the test makes A's poll wait while B's polls run, so a B that may claim the run claims it
+ *  first whatever the timing. With `keptReads` ({ fail, failed }), the next `fail` reads of run-1's kept row throw as a
+ *  store that did not answer, each counted in `failed`. */
+function watchedStore(store, gate = claimGate(), calls = { n: 0, claimed: [] }, keptReads = undefined) {
   const settings = keptReads && new Proxy(store.settings, {
     get(target, key) {
       const value = Reflect.get(target, key, target);
@@ -135,10 +136,14 @@ function watchedStore(store, gate = { shut: false }, calls = { n: 0, claimed: []
       return async (...args) => {
         calls.n += 1;
         const n = calls.n;
-        if (gate.shut) await gate.opened;
-        const claims = await value.apply(target, args);
-        if (claims.length > 0) calls.claimed.push({ n, runIds: claims.map((claim) => claim.runId) });
-        return claims;
+        await gate.pass();
+        try {
+          const claims = await value.apply(target, args);
+          if (claims.length > 0) calls.claimed.push({ n, runIds: claims.map((claim) => claim.runId) });
+          return claims;
+        } finally {
+          gate.leave();
+        }
       };
     },
   });
@@ -152,9 +157,12 @@ function watchedStore(store, gate = { shut: false }, calls = { n: 0, claimed: []
   });
 }
 
-/** A gate that starts open: close() holds every claimMany behind it until open(). */
+/** A gate that starts open: close() holds every claimMany behind it until open(), and resolves once no claimMany is
+ *  between the gate and its return (`inFlight`, counted by pass() and leave()). A poll already past the gate when it
+ *  closed reads the store as it was before the test's next command: else it could claim the run that command makes
+ *  claimable, as a runner with free loops would, though the test means that runner's loops to be full. */
 function claimGate() {
-  const gate = { shut: false, opened: Promise.resolve() };
+  const gate = { shut: false, opened: Promise.resolve(), inFlight: 0, drained: [] };
   gate.close = () => {
     let open;
     gate.opened = new Promise((resolve) => (open = resolve));
@@ -163,6 +171,19 @@ function claimGate() {
       open();
     };
     gate.shut = true;
+    if (gate.inFlight === 0) return Promise.resolve();
+    return new Promise((resolve) => gate.drained.push(resolve));
+  };
+  /** Into the gate: waits while it is shut, then counts the call in flight. */
+  gate.pass = async () => {
+    while (gate.shut) await gate.opened;
+    gate.inFlight += 1;
+  };
+  /** Out of the gate: the last call in flight lets every close() waiting on it go on. */
+  gate.leave = () => {
+    gate.inFlight -= 1;
+    if (gate.inFlight > 0) return;
+    for (const resolve of gate.drained.splice(0)) resolve();
   };
   return gate;
 }
@@ -218,15 +239,7 @@ async function parkedOnA(t) {
   const [ask] = records.entries.filter((entry) => entry.kind === "agentrun.ask").map((entry) => entry.data);
   assert.ok(ask, "parked on the screenshot's ask");
   assert.deepEqual(creates(hosts.a), ["a-d1"], "runner-a made the desktop on its host");
-  // Shuts the gate and waits for runner-a's next poll to reach it. A runner polls one claimMany at a time (runner.ts
-  // claimMore), so once a poll begun after the shut is held there, none of A's is past the gate any more: a poll that
-  // went through just before the shut can no longer claim what the test does next (a stop, an answer) before B does.
-  const holdA = async () => {
-    const from = claimManyCalls["runner-a"].n;
-    gate.close();
-    await until(() => claimManyCalls["runner-a"].n > from, "runner-a's next poll waits at the shut gate");
-  };
-  return { server, clock, hosts, ask, a, gate, holdA, start, claimManyCalls, parkedEpoch: parked.epoch };
+  return { server, clock, hosts, ask, a, gate, start, claimManyCalls, parkedEpoch: parked.epoch };
 }
 
 /** Until the run ends; its row and its timeline's summaries. */
@@ -242,7 +255,7 @@ async function ends(server, state = "ended") {
 /** B started on host b, A's polls held, the run answered; B polls 25 times (or claims the run). What B's polls did. */
 async function answeredWhileBPolls(one) {
   await one.start("runner-b", "b");
-  await one.holdA();
+  await one.gate.close();
   await one.server.command(RUN, { kind: "approve", body: { approval: one.ask.callId } });
   const from = Date.now();
   const polledFrom = one.claimManyCalls["runner-b"].n;
@@ -312,8 +325,9 @@ test("a stop of a parked run pinned to a live runner whose loops are full ends w
   const one = await parkedOnA(t);
   const [rowA] = (await one.server.runners.list()).filter((row) => row.runner === "runner-a");
   await one.start("runner-b", "b");
-  // A's loops full: its polls claim nothing while the gate is shut (as a runner with no free loop claims nothing).
-  await one.holdA();
+  // A's loops full: its polls claim nothing while the gate is shut (as a runner with no free loop claims nothing), and the
+  // stop is sent once no poll of A's is past the gate.
+  await one.gate.close();
   await one.server.command(RUN, { kind: "stop" });
   const polledFrom = one.claimManyCalls["runner-b"].n;
   // A person's stop never waits on the pin: the poll B had in flight when it landed, or B's next, claims the run.
@@ -355,7 +369,7 @@ test("a stop of a parked run pinned to a live runner, claimed by another runner 
   // started on that failure would read the row again in its claim's computer, take it and try A's machine on B's host.
   const keptReads = { fail: 1, failed: 0 };
   await one.start("runner-b", "b", { keptReads });
-  await one.holdA();
+  await one.gate.close();
   await one.server.command(RUN, { kind: "stop" });
   const ended = await until(async () => {
     const row = await one.server.runs.get(RUN);

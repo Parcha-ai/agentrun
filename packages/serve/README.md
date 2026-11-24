@@ -139,6 +139,40 @@ An id or a secret given twice, or an entry that is not `id:secret`, stops the st
 the launcher hands it over its pipe, and no run's process or runner loop gets it. A rotation adds the new token, moves
 callers, then removes the old one ([deploy/README.md](../../deploy/README.md#rotating-the-api-token)).
 
+### API keys for your apps
+
+An app that calls this server does not need a token from the server's environment. The owner makes a key for it in the
+console, under Settings → AgentRun API keys, or with `POST /v2/settings/api-keys` and `{"name": "billing app"}` from
+their signed-in session:
+
+- **Shown once.** The answer holds the key as `api_key` (`ar_key_` and 32 random bytes in base64url). No read shows it
+  again. A lost key is revoked and replaced.
+- **What it opens.** Everything a token opens on `/v2` and `/mcp`, sent as `Authorization: Bearer <key>`. A key is never
+  the setup code: only a token the server was started with sets the first password.
+- **What is kept.** A keyed hash of the key (HMAC-SHA-256 under a key derived from the seal key), never the key. A row
+  written without the seal key opens nothing.
+- **Who makes and revokes.** Both are secret writes: the owner's signed-in session alone. A token, or a key, gets
+  `403 forbidden` with the console page in `details.console_url`, so a key that leaks cannot make another.
+- **Listing and revoking.** `GET /v2/settings/api-keys` answers each key's `name`, `created_at` and `last_used_at`
+  (written about once a minute). `DELETE /v2/settings/api-keys/{api_key_id}` revokes one, and the next request that
+  carries it is `401`.
+- **Limit.** A server keeps at most 50 keys; the next `POST` is `409 api_keys_full` until one is revoked.
+- **One person's server.** A key is one more caller that starts runs, as a second token is. So a server with Claude
+  Code's login on makes no key (`403 forbidden`, in words), and a server with a key refuses to turn that login on until
+  the key is revoked. A server started with `--harness-sign-in` makes none, and a key made before opens nothing there.
+  Such a key is still listed, so its owner can revoke it, and it still refuses the login. The list says why in
+  `refused`.
+- **In the log.** A request a key opened names it by id (`api_key=<id>`), never by value.
+
+The server keeps no copy of a key, so it finds one in a text by its shape: `ar_key_` and 43 or more base64url
+characters, a capital or a digit among them, are cut wherever a run's views, a shared transcript or a learned note
+would show them, whatever stands before them. A key cut short, or split across lines, is not found, so keep keys out
+of prompts and files a run reads all the same. A row under the keys' name in the store that is no key's (damaged, or
+another version's) opens nothing and counts toward the limit. The list names it in `unreadable`, the console shows it
+with a Remove button, the log says it at the start, and `DELETE` with its id removes it. An
+[API-only](#api-only) server has no owner and serves none of these routes, so it takes no key at all: only the tokens
+it was started with. Its capabilities say `features.api_keys.routes: false`.
+
 ## Sandbox in 60 seconds
 
 An agent with a shell, in a Docker container of its own: on a machine with Docker, in a checkout built as above, with
@@ -208,6 +242,26 @@ once without checking again (a key some harness reads would, with `why=key`).
 whose stored cost was unknown that it read, those whose priced booking it wrote back, and those it could not read (each
 heals on its next read). The rest stay unknown: a charge of no known cost, or a booking with no request to read. It
 names no run, and a store with no such run says nothing; quiet keeps it too.
+
+## Traces (OpenTelemetry)
+
+Set `OTEL_EXPORTER_OTLP_ENDPOINT` (or `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`) and every run on a pi or CLI harness
+exports a GenAI trace over OTLP/HTTP to any backend that takes one, with the official OpenTelemetry SDK: an
+`invoke_agent {harness}` span per claim of the run, under it a `chat {model}` span per model request (provider, model,
+`server.address` (the host the request goes to, OpenRouter's for a model reached through it; none where not known),
+and tokens with the cache: `gen_ai.usage.input_tokens` includes the cache read and write, which are also given on their
+own) and an `execute_tool {tool}` span per tool call. A run is one trace, sampled whole or not at
+all (`OTEL_TRACES_SAMPLER`, `OTEL_TRACES_SAMPLER_ARG`). A request billed to a plan, and every turn of a plan harness,
+has `agentrun.billing=plan` and no token counts. No span holds content (a prompt, a message, a tool's arguments or
+result), whatever `OTEL_INSTRUMENTATION_GENAI_CAPTURE_CONTENT` says; content capture comes later. Reasoning tokens are
+not on chat spans yet: the usage a run's requests are booked with does not count them apart. Nor is
+`gen_ai.response.model`: the model asked for is `gen_ai.request.model`. The exporter takes the standard
+`OTEL_EXPORTER_OTLP_HEADERS` and `OTEL_EXPORTER_OTLP_TIMEOUT`, and the resource `OTEL_SERVICE_NAME` and
+`OTEL_RESOURCE_ATTRIBUTES` (put `deployment.environment.name` there); `service.name` is `agentrun` unless set. Runs never
+receive these settings: no `OTEL_*` variable reaches a run's harness, tools or computer, and a run's own process is
+handed them apart from its environment. Spans are sent in the background, so a run's end never waits on the collector;
+a server or runner that stops waits at most 3 s to send what is left, and a collector that is down costs one log line
+and the dropped spans. Unset, or with `OTEL_SDK_DISABLED=true`, no OpenTelemetry code loads and nothing is sent.
 
 ## Anonymous usage counts
 
@@ -1520,7 +1574,10 @@ The sign-in is the owner's alone, over the owner's signed-in session (the API to
   sign-in tab ends on a page that won't load: copy its whole address into the console, which sends it as
   `POST /v2/settings/chatgpt/sign-in/finish` `{"redirect_url": "..."}`.
 - `GET /v2/settings/chatgpt` says `state`: `signed_out`, `pending` (with `authorize_url` and `expires_at`), `signed_in`
-  (with `email`, `plan` and the plan's `models`) or `expired`.
+  (with `email`, `plan` and the plan's `models`) or `expired`. A `pending` sign-in with no code back after its first
+  minute also carries a `hint`. It names the likely cause first: the ChatGPT workspace's admin has turned off open-source
+  apps (External access → OSS → Use ChatGPT plan). OpenAI shows that refusal on its own page and never sends the browser
+  back.
 - `DELETE /v2/settings/chatgpt` signs out: it removes the sign-in here and revokes it at OpenAI, and answers
   `{"revoked": true}` when OpenAI confirmed it (or nothing was signed in, as when it only cancels a waiting sign-in).
   When OpenAI didn't confirm it, the answer is `{"revoked": false, "message": "Signed out here. OpenAI didn't confirm
@@ -1560,8 +1617,8 @@ has the row **Use Claude Code's login on this machine**, over these routes:
   you opt into by name. Its folder is the one the CLI uses: `CLAUDE_CONFIG_DIR` when the server's environment sets it to
   an absolute path, else `~/.claude`. A Claude Code that keeps its login in another folder is found only when AgentRun
   is started with `CLAUDE_CONFIG_DIR` set to that folder. A server where more than one person can start runs (more
-  than one API token, the API-only profile) refuses it with `403` and one line saying why, and a turn-on saved before
-  is dropped when such a server starts.
+  than one API token, an [API key made for an app](#api-keys-for-your-apps), the API-only profile) refuses it with
+  `403` and one line saying why, and a turn-on saved before is dropped when such a server starts.
 - `GET /v2/settings/claude-login` says `state`: `off`, `signed_in` (with the `account` the CLI names: method, email,
   organization, plan), `signed_out`, `no_cli` (claude-agent's first run installs the pinned CLI), `unknown`, or
   `other_machine`. `folder` is the folder whose login the CLI is asked about, and `machine` is this machine's own
@@ -1706,7 +1763,7 @@ agent_not_runnable`, with `details.unbound` and `details.missing`).
 | `ask_person` | Ask the person who started the run; the turn ends until a message answers | nothing | no, no |
 | `web_fetch` | Read one web page from a public host through the guarded direct fetch, or through Parallel's extract where Parallel is picked ([search and fetch](#search-and-fetch)), a part at a time: `{url, offset?, max_chars?}` in, a Page out, `{ok, url, status, title, text, chars, truncated?, original_chars?, beyond_read?, offset?, next_offset?, html_chars?, converted?, links, links_omitted?, via, parallel?, refused?, error?}` | nothing (`PARALLEL_API_KEY` for Parallel, one billed extract a page a run) | yes, yes |
 | `web_search` | Search the web, natively where the harness or the model's provider can, else through Parallel where the server holds its key, else keyless through Exa, or through the provider picked ([search and fetch](#search-and-fetch)): `{query, n?}` in, `{provider, query, results: [{url, title, snippet, published?}], text?}` or `{error}` out | nothing (`PARALLEL_API_KEY` for Parallel) | yes, yes |
-| `web_save` | Download one file from a public URL into the run's `work/` and keep it there, for a link that expires (a generated image, audio or video): `{url, path}` in, `path` relative to `work/` and a bare name under `media/`; `{ok: true, path, bytes, content_type, duration_s?, url}` or `{ok: false, url, refused \| error}` out, `duration_s` an mp3, wav, mp4 or m4a's length in seconds read from its bytes. Never overwrites | nothing | no, no |
+| `web_save` | Download one file from a public URL into the run's `work/` and keep it there, for a link that expires (a generated image, audio or video): `{url, path}` in, `path` relative to `work/` and a bare name under `media/`; `{ok: true, path, bytes, content_type, duration_s?, url}` or `{ok: false, url, refused \| error}` out, `duration_s` its length in seconds when it is audio or video whose bytes give it (below). Never overwrites | nothing | no, no |
 | `browser` | A hosted browser, Browserbase's or Kernel's, on pi-browser's durable adapter: `snapshot`, `run`, `screenshot`, `browser_read`, `browser_release`, `browser_relaunch`, `browser_downloads` and `browser_upload` (into and from the run's `work/`); Kernel keeps no downloads, so a run on Kernel has no `browser_downloads` | `BROWSERBASE_API_KEY` and `BROWSERBASE_PROJECT_ID`, or `KERNEL_API_KEY` | yes, no |
 | `monid:<provider>/<endpoint>`, `monid:<provider>/*` | One monid endpoint, or every endpoint monid lists for a provider (at most 50), each pinned at the save and run as a tool of its own, paid per call from the monid wallet: `{body?, queryParams?, pathParams?}` in, the run's `output`, `price` and `cost` out ([monid](#monid)) | `MONID_API_KEY` | no, no |
 | `pdf_pages` | A workflow call only: `{path, maxPages?, dpi?}` in, `{name, pageCount, dpi, pages: [{page, image}], text}` out. Draws a document's first pages (3 by default, at 110 dpi) as PNGs under the run's `work/pages/<stem>/<dpi>/` (`<stem>`: the document's path below its directory made one name, with a short hash, so two documents of one file name never share pages), the dpi lowered so a page's long side is at most 1568 px, with its text (`pdftotext`, cut at 20,000 characters). A PNG or JPEG passes through as one page, scaled down to 1568 px. `path` is under `--documents` or the run's `work/`, never outside | `pdftoppm`, `pdftotext` | no, yes |
@@ -1854,14 +1911,15 @@ Each child books on the run's cap, so size the cap for K passes, not one.
 
 `web_search` and `web_fetch` work on every harness with only a model key. Each resolves, for a run, in one order: (1) the
 provider the user picked, optional: the agent's own (`definition.tool_settings`) over the server's
-(`PUT /settings/tools`); (2) the native tool, the harness's own or its model provider's hosted one (on claude-agent
-only where it is picked: `auto` there skips Claude's own search, an explicit `native` pick); (3) for
+(`PUT /settings/tools`); (2) for
 `web_search`, Parallel, where the server holds a Parallel key (`PARALLEL_API_KEY` in its environment, or one saved on Tool
-keys): `auto` then uses that key and bills it, each search booked as the run's cost ($0.001 a search); (4) the keyless
-fallback, Firecrawl's public MCP endpoint (for `web_search` with Exa's behind it). A revision's `tools` (and a pack's grant) names the capability, never a provider. On codex, `auto` is
-Codex's own search, except behind a gateway, on OpenRouter (which runs neither Codex's nor Claude's own search, and
-counts no searches to price) or under a spend cap (its request has no input bound, which a cap cannot
-admit), where it is Parallel on the server's key, else keyless Firecrawl. `off` turns `web_search` off: nothing is
+keys): `auto` then uses that key and bills it, each search booked as the run's cost ($0.001 a search); (3) the keyless
+fallback, Firecrawl's public MCP endpoint (for `web_search` with Exa's behind it). A revision's `tools` (and a pack's grant) names the capability, never a provider.
+`auto` is agentrun's own search on every harness. The native search, the harness's own (Claude's WebSearch, Codex's
+live search) or on pi one request to the run's own model provider with its hosted search, runs only where `native` is
+picked; it is unavailable behind a gateway, on OpenRouter (which runs neither Codex's nor Claude's own search, and
+counts no searches to price) or under a spend cap (Codex's request has no input bound, and Claude's searches have
+per-use fees, which a cap cannot reserve yet). `off` turns `web_search` off: nothing is
 searched, and an agent naming it is refused (`409`) until it is turned on again. A pick of `firecrawl-keyless` is keyless
 Firecrawl with keyless Exa behind it, and a pick of `exa-keyless` is keyless Exa alone, the key held or not.
 A workflow's model nodes may each run on another tier's model, so a workflow's `web_search` never searches natively:
@@ -1870,8 +1928,8 @@ unavailable for a workflow.
 
 | | `claude-agent` | `codex` | pi |
 | --- | --- | --- | --- |
-| `web_search`, `auto` (the default) | Parallel on the server's key, else keyless Firecrawl: Claude's own WebSearch is the `native` pick | Codex's own search, each search booked; behind a gateway, on OpenRouter or under a spend cap, Parallel on the server's key, else keyless Firecrawl, a host tool | one request to the run's own model provider with its hosted search (Anthropic, OpenAI direct); behind a gateway (`AGENT_MODEL_BASE_URL`) or on another provider, Parallel on the server's key, else keyless Firecrawl |
-| `web_search`, `native` | Claude's own WebSearch, unavailable on OpenRouter or under a spend cap | the same, unavailable behind a gateway, on OpenRouter or under a spend cap | the same, unavailable where there is none: never a keyless search |
+| `web_search`, `auto` (the default) | Parallel on the server's key, else keyless Firecrawl, a host tool: Claude's own WebSearch is the `native` pick | the same: Codex's own search is the `native` pick | the same: the model provider's hosted search is the `native` pick |
+| `web_search`, `native` | Claude's own WebSearch, unavailable on OpenRouter or under a spend cap | Codex's own search, each search booked; unavailable behind a gateway, on OpenRouter or under a spend cap | one request to the run's own model provider with its hosted search (Anthropic, OpenAI direct); unavailable behind a gateway (`AGENT_MODEL_BASE_URL`) or on another provider: never a keyless search |
 | `web_search`, `off` | unavailable (`web_search is turned off in settings`): nothing is searched | the same | the same |
 | `web_search`, `firecrawl-keyless` | Firecrawl's public MCP search, keyless Exa's behind it, a host tool | the same | the same |
 | `web_search`, `exa-keyless` | Exa's public MCP search alone, a host tool | the same | the same |
@@ -2372,7 +2430,8 @@ Composio is an MCP server like any other, so it needs no adapter of its own. Set
 preset: you give your Composio API key, a toolkit (`github`, `slack`...), the actions to grant (picked from the
 toolkit's list) and a server name, and the server has Composio make a managed MCP server for them, then saves it as an
 ordinary MCP server with the key sealed as an `x-api-key` header. `POST /v2/settings/mcp-servers/composio/tools`
-`{api_key, toolkit}` lists the actions; `PUT /v2/settings/mcp-servers/{name}/composio` `{api_key, toolkit, tools,
+`{api_key, toolkit}` lists the actions, and `POST /v2/settings/mcp-servers/composio/toolkits` `{api_key}` lists the
+toolkits Composio offers (`{toolkits: [{slug, name}]}`, by name) for the console's toolkit picker; `PUT /v2/settings/mcp-servers/{name}/composio` `{api_key, toolkit, tools,
 user_id?, auth_config_id?, price_usd?}` makes and saves the server. In place of `api_key`, `"api_key_env":
 "COMPOSIO_API_KEY"` reads the key from that variable, as the server and each runner were started with it, at each use and keeps no copy: the
 way an [API-only](#api-only) server's token saves one. That key is only ever sent to Composio's own origin, fixed in
@@ -2387,8 +2446,13 @@ server. `price_usd` (0 or more, as a `prices` value) is what each call costs you
 price, so a call is held under its run's cap and booked as the run's tool cost (its trace span's `usd`, the run's
 `cost.usd`), as any priced MCP tool's. A re-save that names no price keeps the server's prices for the actions it still
 lists. Composio's server can leave out an action it was allowed (it did for `HACKERNEWS_GET_FRONTPAGE`), so the answer's
-`not_served` names any chosen action the saved server doesn't list. Both routes are the owner's session alone, and a
-saved Composio server is gated, approved and shown on the Timeline as any MCP server's tools are, "not metered" until
+`not_served` names any chosen action the saved server doesn't list. These routes are the owner's session alone. A refresh of a saved Composio server also reads its account at Composio,
+and every read of the server then says it as `composio_account: {state, labels?, checked_at}`: `connected` with each
+account's label (its alias, else the name Composio shows, else its word id; never its id or a token), `pending` while
+its connect link is unfinished, `expired`, `none`, or `unknown` when Composio didn't answer. An account Composio answers as
+another user's is never the server's, and a server whose recorded user is empty or `per_run` is never asked about (`unknown`).
+The API token sees `composio_account` too, in a server's full read: its label may be the account's email.
+A saved Composio server is gated, approved and shown on the Timeline as any MCP server's tools are, "not metered" until
 you price them (`price_usd`, or the server's `prices`). Composio's own meta tools stay refused, and the helper actions
 that connect an account are left off the server's address. Deleting the server in Settings deletes what its save made in Composio too, with the saved key: the Composio MCP server, the connected account its connect link started (the link with it) and the auth config it made (Composio's "already gone" is fine). What another saved server uses is kept until the last of them goes, and what was there before the save (an auth config or account you had) is never deleted. The `DELETE` answers `200 {deleted: true, composio: {removed, note}}`: the note says what it removed, what it kept and why, and, when Composio refuses or does not answer, what is left to remove in Composio yourself (`removed: false`; the server is still forgotten here). The console shows it. A save that fails removes in Composio what it made there and never what it found, and its error names what is left when Composio refuses that too (a 422 on a field says it in `details.composio` as well). A save over a preset server removes, once it is saved, the Composio MCP server its earlier save made, and what that save made and the new one no longer stands on (the account of another `user_id`, the auth config of another toolkit), with the key it was made with, unless another saved server uses it, and answers `composio: {removed, note}` saying so. An ordinary `PUT` that moves a preset server to another address makes it another service's server: it removes what the preset made for it in Composio as its delete would, and answers `composio` too. While Composio triggers use the server, that move, and a preset save over it as another `user_id` or auth config, are refused as its delete is (`409 composio_in_use`, naming them). Preset saves and MCP server deletes run one at a time, so a delete never removes what a save in progress reuses; an ordinary save of a preset server lists its tools at once and takes its turn only to write the server and clean up.
 [Connect Composio tools and triggers](../../docs/tutorials/composio.md) walks through the preset and a Composio
@@ -3275,6 +3339,16 @@ warning, as a github trigger is with GitHub not connected. The first package is 
 rules of an apply are in [templates/README.md](https://github.com/Parcha-ai/agentrun/blob/main/packages/serve/templates/README.md);
 `agentrun template validate DIR` checks a folder as the server does.
 
+`GET /v2/marketplace/templates` lists the templates on [marketplace.agentrun.ai](https://marketplace.agentrun.ai), the
+list the marketplace publishes (`/search.json`), each with `here`, the id of the package on this server that it is
+(`x-agentrun-serve: "marketplace/1"`). The server reads the list only when asked, never at its start, keeps it 5
+minutes, and keeps the last good one through a failed read (`state: "stale"`); with none it answers `unreachable` and an
+empty list, always with a 200. Nothing on the list is imported or run: an entry that names its `source` installs with
+`POST /v2/templates/import`, its publisher trusted once, and one that names none from its marketplace page. The
+console's Templates and Build pages list this server's packages, then the marketplace's others.
+`AGENTRUN_MARKETPLACE=off` reads none, as does `--faux` unless it names an address; `AGENTRUN_MARKETPLACE=<https
+address>` reads that site's list.
+
 `agentrun template eval DIR` (`agentrun-serve eval-template DIR`) runs a package's eval cases as real runs of its agent
 and grades each run with the case's graders: by default on a server of its own over a temp data directory, so it never
 touches yours, with each case's fake MCP servers on loopback and its corrections seeded through the learning API. Real
@@ -3310,7 +3384,7 @@ failed, 2 when nothing ran. The runner, the graders and the report are in
 | `POST /agents/{id}/runs`, `GET /agents/{id}/runs` | A run of the current revision, or of `revision`. An agentic run's input is `{content: string}`; a workflow run's is what its workflow's input schema takes. `file_ids` names [uploaded](#uploads) files, copied into the run's `work/inputs/` before it starts and named in its first message. `labels` (this server's own, `runlabels/1`) is the caller's map of its own strings for the run: at most 16 keys, each 1 to 63 letters, digits, `.`, `_`, `-` or `/` starting with a letter or a digit, each value 1 to 256 characters with no control character; kept as given, served as `labels` on every read of the run (`{}` when none), never read by the server otherwise, so no place for a secret. The agent's runs, newest first; `label` filters them as `GET /runs` does. |
 | `GET /runs` | Every agent's runs, newest first, a page of at most 100; `agent`, `revision` and `status` narrow it, `label=<key>:<value>` (`runlabels/1`, split at the first `:`, once per request) keeps the runs holding that label, and `archived=true` lists only archived ones. A failed run's summary carries its `error`, and a waiting run's its `pending`. |
 | `GET /runs/{id}` | The run: its revision, kind, status, state, result, error, `pending` (this server's own, `pending/1`: what a waiting run waits on, by `kind`: `{kind: "question", question, asked_at}` for a question it asked a person; `approval` for a tool call held for a person's approval, with the tool, its arguments and its price; `budget` for a run paused at its cap ([a run paused at its cap](#a-run-paused-at-its-cap)); `{kind: "browser", instruction, completion_condition, asked_at, expires_at}` for its agent's ask for the owner in its browser; or `{kind: "computer", computer: "desktop" \| "phone", instruction, completion_condition, asked_at, expires_at}` for its agent's ask for the owner on its desktop or phone; else null, a stopped turn's included) and cost (`basis` `reported`, `estimate` or `unpriced`, with its model requests' `tokens`: [A run's cost](#a-runs-cost-its-tokens-and-its-basis); $0 before its first model request, a cancelled run's included). |
-| `GET /runs/{id}/timeline` | JSON pages with the change-number cursor (`after`, `next_after`, `reset`, `drop`, `has_more`, `final`, `wait_ms` long poll, and this server's own `limit`, 1 to 500 rows a page, default 500), or server-sent events with `Accept: text/event-stream` (`id` is the cursor, `Last-Event-ID` resumes). Rows sort by `seq`; the usage row (`Cost so far`), the run's running total, is always the last row, and moves to the end when a row comes after it. |
+| `GET /runs/{id}/timeline` | JSON pages with the change-number cursor (`after`, `next_after`, `reset`, `drop`, `has_more`, `final`, `wait_ms` long poll, and this server's own `limit`, 1 to 500 rows a page, default 500), or server-sent events with `Accept: text/event-stream` (`id` is the cursor, `Last-Event-ID` resumes). Rows sort by `seq`; the usage row (`Cost so far`), the run's running total, is always the last row, and moves to the end when a row comes after it. Beside the rows, `in_flight`: what a live run waits on now, each model request sent and not answered (from its booking's `runner.request`, stamped `at` when it left) and each tool call not returned, from when it was sent; empty once the run is final. A request sent or answered is a change of the page, as a row is. |
 | `POST /runs/{id}/messages` | To an agentic run: `steer` while the agent works, `answer` when it asked the person, `follow_up` after a stop or after it completed: a completed run opens again, the same run on its own session and store, takes a place under `--max-runs` (it waits for one when none is free), and completes again. A failed or cancelled run, an archived run and a run of an archived agent are `409 not_continuable` (a run of an agent [being deleted](#deleting-an-agent-another-system-owns), `409 agent_not_runnable`); a workflow run takes none (`501`). |
 | `POST /runs/{id}/stop`, `POST /runs/{id}/cancel` | Stop ends an agentic run's turn and leaves the run `input_required` and idle. Cancel ends a run `cancelled` once its process has exited. |
 | `POST /runs/{id}/archive`, `POST /runs/{id}/unarchive` | [Archiving](#archiving) one run. Answers the run, with `archived_at`. |
@@ -3330,9 +3404,11 @@ failed, 2 when nothing ran. The runner, the graders and the report are in
 | `GET /runs/{id}/browser` | This server's own (`x-agentrun-serve: "liveview/1"`): the run's live browser view for the owner, `{state: "off", reason}`, `{state: "none"}` or `{state: "live", viewer}` ([the live view](#the-browsers-live-view)). |
 | `POST /runs/{id}/browser/hand-back` | This server's own (`liveview/2`): the owner's answer to the agent's ask for them in its browser, `{outcome: "done" \| "cancelled"}`; the first answer wins, a different one is `409 handoff_answered` ([the live view](#the-browsers-live-view)). |
 | `GET /runs/{id}/computer` | This server's own (`computer/1`): the run's live computer view for the owner, one family for every kind, `{state: "off", hold, why?}`, `{state: "none", kind, hold}` or `{state: "live", kind, viewer, hold}`, its viewer under `/runs/{id}/computer/live/`; the browser is kind `browser` here, beside its own route ([the live view](#the-browsers-live-view)). |
+| `GET` and `POST /settings/api-keys`, `DELETE /settings/api-keys/{api_key_id}` | [API keys for your apps](#api-keys-for-your-apps), this server's own routes (`x-agentrun-serve: "apikeys/1"`): the keys the owner makes in the console, each shown once and kept as a keyed hash. Making and revoking take the owner's signed-in session. |
 | `GET`, `PUT` and `DELETE /settings/webhook`, `POST /settings/webhook/test`, `GET /settings/webhook/deliveries` and `POST .../deliveries/{webhook_id}/redeliver` | [Webhooks](#webhooks), this server's own routes (`x-agentrun-serve: "webhook/1"`): the URL run notices are POSTed to, signed by the Standard Webhooks spec; never its secret but once. |
 | `GET` and `POST /triggers`, `GET`, `PATCH` and `DELETE /triggers/{id}`, `POST /triggers/{id}/fire`, `GET /triggers/{id}/firings`, `POST /triggers/{id}/secret`, `POST /hooks/{id}` (no token: [signed](#webhook-triggers)) | [Schedules](#schedules), this server's own routes (`x-agentrun-serve: "trigger/1"`): schedules that start an agent's capped runs, each firing once, and their history. |
 | `GET /templates`, `POST /templates/{name}/apply` | [Templates](#templates), this server's own routes (`x-agentrun-serve: "templates/1"`): the template packages it ships, and an apply that makes one's agent and triggers, all or nothing. |
+| `GET /marketplace/templates` | [Templates](#templates), this server's own route (`x-agentrun-serve: "marketplace/1"`): marketplace.agentrun.ai's templates as this server read them, each with the package here that it is. |
 | `POST /mcp` | This server's own route (`x-agentrun-serve: "mcp/1"`): the [MCP endpoint](#for-coding-agents), Streamable HTTP with one JSON-RPC message per POST (`initialize`, `ping`, `tools/list`, `tools/call`), answered as JSON, stateless. Its ten tools call these routes in process with the caller's token. The Bearer token only, never the page's cookie; a browser `Origin` other than this server's own is `403`; any other method is `405`. |
 | `GET /usage` | The runs' costs, by meter, agent, key, day or region (`key` and `region` are one line, `local`). By meter, `tools` holds the runs' paid tool calls and the workflow decisions Parallel charged on its own API, as `cost.tools_usd` does. A run of unknown cost adds what it is known to have spent so far (its `so_far_usd`: each priced charge, browser time and paid tools included) and is counted in `unpriced_runs` (in the total and in each line it is unknown on), so no sum is ever null, it never passes as $0, and a total is never below a line of its own: with `unpriced_runs` above 0 the total is a lower bound. `basis` says how the costs were reached ([A run's cost](#a-runs-cost-its-tokens-and-its-basis)). |
 
@@ -3498,11 +3574,28 @@ serves these routes alone:
     refused with `412` leaves it the token's), and one that lands while the token's is under way wins: the token's is
     `412`.
 
-  The names route above is the listing: there is no list or read of a server's address, auth or tools here, and no
-  generic save (`PUT /settings/mcp-servers/{name}`), so the token saves no server at an address or with headers of its
-  own. The preview, refresh, sign-in, Composio tool listing and every other MCP settings route stay refused. On the full
+  The names route above is the listing: there is no list or read of a server's address, auth or tools here. The
+  generic save (`PUT /settings/mcp-servers/{name}`) is a `404` unless the operator names the MCP origins it may save at,
+  so by default the token saves no server at an address or with headers of its own. The preview, refresh, sign-in, Composio tool listing and every other MCP settings route stay refused. On the full
   server the token's `api_key_env` is `403`, as `api_key` is: the owner's session saves a Composio server there either
   way;
+- a per_run MCP server's save at an origin the operator names, for a backend whose runs each bring their own
+  credential for a gateway it runs (such as a loopback forwarder): `AGENTRUN_API_ONLY_MCP_ORIGINS`, comma-separated
+  origins (`https://mcp.example.com`), a plain setting. With it, the token's `PUT /settings/mcp-servers/{name}` saves
+  `"auth": {"type": "per_run"}` at one of those origins, a new name or over a server the token saved that seals no
+  credential, and each run hands its own credential in `mcp_auth`. A body that sends a credential (a bearer token, or
+  headers with any other auth type) is `403`, as is a save over a server saved any other way or one that seals a
+  credential. A per_run body at any other origin, any other auth type, and a Composio server's name (its own route
+  saves it) are this profile's `404`. Each refusal comes before anything is sent to the address.
+  `AGENTRUN_MCP_ALLOW_LOOPBACK=1` is still needed for a loopback origin. Unset or blank, the save is a `404` as before;
+  an entry that is not an http or https origin alone, or a wildcard, stops the start, in words. The list holds past
+  the save: drop an origin and restart, and a per_run server the token saved there is refused at a run's start, at
+  an agent's save and at the next call of a run already going, and nothing is sent to it. Unset, the list is empty, so
+  a per_run server the token saved with API-only off is refused until its origin is listed: list it before upgrading,
+  or re-save it from the owner's signed-in session with API-only off, which makes it the owner's and leaves the save
+  closed. The start logs one line (`api_only_mcp_off_list`) with the count and names of the servers off the list,
+  never their addresses, and nothing when there are none. A server saved from the owner's signed-in session (which an
+  API-only server doesn't serve) is the owner's, whenever it was saved, and the list does not govern it;
 - a run's desktop or phone, for a backend that shows its user the live view and lets them take over: see below.
 
 Here a run's computer routes take the server's token. `POST /runs/{id}/computer/viewer` mints a 5-minute link on
@@ -3731,7 +3824,9 @@ back.
 `GET /v2/capabilities` lists each in `harnesses`, with `available` and, when not, the `reason`, and `default_model`: the
 model the harness runs when a definition names none (`provider/model-id`, as a save and a run resolve it), or null where
 it runs none (the harness does not run here, or no default model here runs on it: claude-agent never takes a gateway's
-model). A definition naming a
+model). Its `models` are those a save takes; `ready_models`, those of them a run takes now, their provider connected here
+(its key set, or the ChatGPT sign-in where that is how the harness runs them). One that lacks only its key is in `models`
+and not in `ready_models`: a save of it warns, and the console's Model picker lists it only when asked. A definition naming a
 harness this server does not run yet saves with a warning on `definition.harness`, and a run of it is
 `409 agent_not_runnable` with `details.harness`; it never runs on pi instead. This server runs pi always, and
 `claude-agent`, `codex` and `opencode` when each adapter's package, pins and provider endpoint check out; the harness's
@@ -4771,13 +4866,27 @@ not metered and bills its own account outside the cap. fal is counted: a job sen
 toolkit `fal`, or at `mcp.fal.ai`) through `run_model`, `submit_job` or `submit_jobs` is priced before it is sent, at
 fal's unit price for its endpoint (the server's own `get_pricing`, read with the run's credential and kept five
 minutes) times the units the job's input states: its images, their megapixels, its text's characters, the seconds it
-names, or, for dubbing, lip-sync, voice isolation and speech-to-text, which fal bills by the length of the media they
-are given, that length, read from the file first. That price is held under the cap, a
+names (only on an endpoint whose input sets the length fal bills, such as Kling's or Veo's `duration`, and only in
+that field), or, for dubbing, lip-sync, voice isolation and speech-to-text, which fal bills by the length of the media they
+are given, that length, read from the file first. A length fal rounds up is rounded up the same way: a talking head's
+voice to whole seconds, ElevenLabs Music and dubbing to whole minutes. That price is held under the cap, a
 job the cap can't take is refused before it is submitted, and the job is booked as the run's tool cost, charged by the
 server, with the price and the count it came from. It is an estimate at fal's list price, not fal's invoice: fal
-reports no cost for a job, and a minimum charge, a discount or a rate that depends on a setting `get_pricing` does not
-list are not in it. A job whose units can't be known before it runs (one billed by compute time or tokens, one that
-names no size or length, media whose length can't be read, an endpoint with no listed price) is refused under a cap,
+reports no cost for a job, and a minimum charge or a discount `get_pricing` does not list is not in it. Where fal's rate
+depends on a setting and `get_pricing` states one rate (Ideogram v3's and Ideogram character's `rendering_speed`,
+Veo's audio and resolution, Kling v3's audio and voice control, sync-lipsync's pro model, Nano Banana Pro's and Nano
+Banana 2's resolution, web search and thinking, Fabric's resolution), a job is priced at `get_pricing`'s rate times the ratio fal's model page gives its
+settings, a setting it leaves out at its default, plus any charge the page adds per unit (a web search, per image).
+Where the page and `get_pricing` disagree, the higher is held. The endpoints of those families (Ideogram v3 and
+character, Nano Banana Pro and 2, each also served as a Gemini image preview, Veo 3 and 3.1, Kling v3, sync-lipsync v2,
+Fabric 1.0) are each decided: priced by their settings or at one rate. Some of their video endpoints have no reader for
+the length fal bills (the changelog lists them). These endpoints' rates are decided, but their holds aren't yet: under a cap, a job on one is refused until its length can be read. Ideogram v4, v4.5 and v4.6 and Nano Banana
+2.1 are such families with no rate decided, so all of them are refused under a cap. An image job whose `limit_generations` is anything but `true` or
+left out is refused under a cap too: `false` lets its prompt ask for more images than it names, each billed. A variant fal adds to one of them is refused under a cap until it is decided, in words that
+name it, never held at `get_pricing`'s one rate. Any other endpoint is priced at `get_pricing`'s one rate, whatever its
+settings. A job whose units can't be known before it runs (one billed by compute time or tokens,
+one that names no size or length, media whose length can't be read, an endpoint with no listed price, a setting value
+the model page names no rate for, a variant whose rate is not decided) is refused under a cap,
 in words that say why; with no cap it runs, booked as an unknown charge. A price saved for a fal tool takes the place
 of this. A request costs its input, plus the output it
 is sent with at the output price, plus any fee its tokens do not show (below). Its input is priced at its worst case:

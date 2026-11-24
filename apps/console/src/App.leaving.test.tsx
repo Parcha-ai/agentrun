@@ -171,7 +171,7 @@ describe("App, leaving the agent editor with unsaved changes", () => {
   it("asks for the editor's own back arrow, and for an address typed or linked", async () => {
     const page = await editing();
     await page.type(page.instructions(), "Answer, then check the sum.");
-    await page.click(page.button(/^Back to agents$/));
+    await page.click(page.button(/^Back$/));
     expect(confirms).toEqual([LEAVE]);
     await page.wait(() => location.hash === "#/agents/calc/edit", "still the editor");
     await act(async () => { location.hash = "#/runs"; });
@@ -324,8 +324,27 @@ describe("App, Back or Forward cancelled with unsaved changes", () => {
     await page.wait(() => !!arrow(), "the run's page");
     await page.click(arrow());
     await page.wait(() => location.hash === "#/agents/calc/edit", "the arrow goes back to the editor");
-    await page.click(page.button(/^Back to agents$/));
+    // The editor's arrow goes back where it came from: the list the console opened at.
+    await page.click(page.button(/^Back$/));
     await page.wait(() => location.hash === "#/agents", "and on to the list");
+  });
+});
+
+// The page you came from: an agent's page opens its editor, and the editor's arrow goes back to that page, not the list
+// (it went to the list whatever came before it); the agent's page's arrow then goes back to the list it came from.
+describe("App, back arrows", () => {
+  it("goes back from an agent's editor to the agent's page it was opened from, and from there to the list", async () => {
+    const page = await open("#/agents");
+    await page.wait(() => !!page.sidebar("Agents"), "the console is open");
+    await act(async () => { location.hash = "#/agents/calc"; });
+    await page.wait(() => !!page.button(/^Back$/), "the agent's page");
+    await act(async () => { location.hash = "#/agents/calc/edit"; });
+    await page.wait(() => !!page.instructions(), "the editor is open");
+    await page.click(page.button(/^Back$/));
+    await page.wait(() => location.hash === "#/agents/calc", "back on the agent's page, not the list");
+    await page.wait(() => !page.instructions() && !!page.button(/^Back$/), "the agent's page, with its own arrow");
+    await page.click(page.button(/^Back$/));
+    await page.wait(() => location.hash === "#/agents", "and on back to the list");
   });
 });
 

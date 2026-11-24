@@ -79,6 +79,14 @@ test("with no step on the spec, the deps' end-of-run step runs", async (t) => {
   assert.equal(kept?.proposal?.detail, "deps");
 });
 
+test("a spec that says none (endOfRun null, a held run its model kept from running): the deps' end-of-run step is not asked and nothing is kept", async (t) => {
+  const order = [];
+  const { row, kept } = await runWith(t, { onSpec: { endOfRun: null, release: async () => order.push("release") }, deps: { endOfRun: stepOf("deps", order) } });
+  assert.equal(row.state, "ended");
+  assert.deepEqual(order, ["release"], "no end-of-run step ran: the spec's none wins over the deps' step");
+  assert.ok(!kept, "no learning kept");
+});
+
 test("with neither, no end-of-run step runs and nothing is kept", async (t) => {
   const order = [];
   const { row, kept } = await runWith(t, { onSpec: { release: async () => order.push("release") } });
