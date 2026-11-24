@@ -1054,13 +1054,19 @@ const made = await docker.create({ image: image.value, lifetimeMs: 600_000, netw
   image (`DEFAULT_DOCKER_IMAGE`): `python:3.12-slim` pinned by its index digest (`DOCKER_BASE`), with git, curl,
   nodejs, npm, ripgrep and socat from apt. `docker.image({ signal?, timeoutMs?, onWait? })` is `ensureImage` of it with the
   provider's docker CLI. A source that is neither throws at construction, in words.
-- **The docker CLI gets only what it reads.** Every docker call the provider makes (`dockerArch`, `ensureImage`, the
-  provider's own) is started with the names of this process's environment docker reads, and none of the rest: PATH,
-  HOME, TMPDIR, `DOCKER_HOST`, `DOCKER_CONTEXT`, `DOCKER_CONFIG` and Docker's TLS, API and buildx settings, ssh's agent
-  socket and the proxy, for a daemon that is not local, and the places a pull's credential helper
-  (`docker-credential-<name>` on PATH) reads: the Secret Service's bus, pass's store and GnuPG home, a cloud profile,
-  region, config or credential file. No key passes, so a helper that reads a key from the environment
-  (`AWS_SECRET_ACCESS_KEY`) reads it from a file or a profile instead.
+- **The docker CLI gets only what it reads.** The provider reads no environment: its `env` option is the host's (serve
+  passes its own values of the docker descriptor's `hostEnv`), and every docker call it makes (`dockerArch`,
+  `ensureImage` and the provider's own, each taking `env` too) is started with the names of it docker reads
+  (`DOCKER_ENV_NAMES`), and none of the rest. Without `env`, docker starts with none. The names: PATH, HOME, TMPDIR, the
+  locale, `DOCKER_HOST`, `DOCKER_CONTEXT`, `DOCKER_CONFIG` and Docker's TLS, API and buildx settings, ssh's agent socket,
+  `XDG_RUNTIME_DIR` and the proxy (either case), for a daemon or registry that is not local, and the places a pull's
+  credential helper (`docker-credential-<name>` on PATH) looks: the Secret Service's bus, GnuPG's home and agent, an AWS
+  profile, region and config file, gcloud's config. No key passes (`AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`,
+  `AZURE_CLIENT_SECRET`, `DOCKER_CUSTOM_HEADERS`, a content trust passphrase), nor a name shaped as one, a pointer to a
+  credential included (`AWS_SHARED_CREDENTIALS_FILE`, `AWS_WEB_IDENTITY_TOKEN_FILE`,
+  `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI`, `GOOGLE_APPLICATION_CREDENTIALS`, `PASSWORD_STORE_DIR`). A helper that
+  signs in from keys in the server's environment (ECR's, with access keys in env) gets none: give it a profile, the
+  default credentials file or a role instead.
 - **The image is an option only; there is no env name for it.** Another image is named with the `image` option, to
   `new DockerProvider(...)` or to `create({ image: { image: "..." } })`. The library reads no environment (see
   [Settings](#settings)), and Docker's conformance module reads no image name either: a `COMPUTER_DOCKER_IMAGE` in its
@@ -2593,7 +2599,11 @@ deadline, so the janitor's `sweep` also ends a browser whose supervisor was kill
 
 Finding Chrome: the `executablePath` option, else `PI_BROWSER_CHROME` or `CHROME_PATH` in the `env` option, else the
 first `google-chrome`, `google-chrome-stable`, `chromium` or `chromium-browser` on that env's `PATH`, else the usual
-install places. The library reads no environment of its own: the host passes `env`. With none found, `check()`,
+install places. The library reads no environment of its own: the host passes `env`. Of it, the supervisor and the Chrome
+it starts, and `testConnection()`'s Chrome, hold the names Chrome reads (`CHROME_ENV_NAMES`: PATH, HOME, TMPDIR, the
+locale, the display and `XAUTHORITY`, the XDG directories, fontconfig's files, the session bus, `CHROME_DEVEL_SANDBOX`)
+and nothing else, so no key the host holds reaches Chrome; serve passes its own values of these (the descriptor's
+`hostEnv`). With none found, `check()`,
 `create()` and `testConnection()` say what to install and which setting names one. `testConnection()` starts the Chrome
 once, headless on a blank page with a proxy that reaches nothing, to prove it starts here with its sandbox on. It
 keeps nothing.
