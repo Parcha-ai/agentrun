@@ -86,6 +86,20 @@ async function keylessServer(t, seam, env = {}) {
   return serve(t, { faux: undefined, ...(seam ? { computerForClaim: seam.computerForClaim } : {}) });
 }
 
+/** Runs `check` (its asserts); when one fails, its message gains run `id`'s read, so a served run that failed says how:
+ *  its view (GET /runs/{id}: its state and its error's words) and its timeline's last rows (GET /runs/{id}/timeline).
+ *  Read only after a failure. */
+async function withRunRead(api, id, check) {
+  try {
+    await check();
+  } catch (error) {
+    const run = await api("GET", `/runs/${id}`).then((res) => res.body, (failed) => ({ unread: String(failed) }));
+    const page = await api("GET", `/runs/${id}/timeline`).then((res) => res.body, (failed) => ({ unread: String(failed) }));
+    error.message += `\nthe run's read: ${JSON.stringify(run)}\nits last timeline rows: ${JSON.stringify(Array.isArray(page?.rows) ? page.rows.slice(-8) : page)}`;
+    throw error;
+  }
+}
+
 const SANDBOX = { kind: "sandbox", provider: "docker" };
 const SEAL_KEY = Buffer.alloc(32, 7);
 const PROXY_KEY = "session-key-for-tests";
@@ -175,11 +189,13 @@ test("served, no model key: a held run opens and holds its computer, its start a
   const id = held.body.run_id;
   await seam.claimed;
   const call = await api("POST", `/runs/${id}/computer/call`, { method: "files.list", params: { path: "/workspace" } });
-  assert.equal(call.status, 200, `the owner's call reaches the held computer: ${JSON.stringify(call.body)}`);
-  assert.equal(call.body.ok, true, `the computer answered the call itself: ${JSON.stringify(call.body)}`);
+  await withRunRead(api, id, () => {
+    assert.equal(call.status, 200, `the owner's call reaches the held computer: ${JSON.stringify(call.body)}`);
+    assert.equal(call.body.ok, true, `the computer answered the call itself: ${JSON.stringify(call.body)}`);
+  });
   assert.ok(seam.box.calls.some(([method]) => method === "files.list"), "the call ran on the claim's computer");
   const waiting = (await api("GET", `/runs/${id}`)).body.computer?.held;
-  assert.equal(waiting?.state, "waiting", `the claim opened with no model key and holds the computer for its owner: ${JSON.stringify(waiting)}`);
+  await withRunRead(api, id, () => assert.equal(waiting?.state, "waiting", `the claim opened with no model key and holds the computer for its owner: ${JSON.stringify(waiting)}`));
 
   // (c) Every route that would start or feed its agent is refused in the create's words.
   const start = await api("POST", `/runs/${id}/start`, {});
@@ -193,7 +209,7 @@ test("served, no model key: a held run opens and holds its computer, its start a
   assert.deepEqual([again.status, again.body.ok], [200, true], `after the refused start, the computer still takes calls: ${JSON.stringify(again.body)}`);
 
   const release = await api("POST", `/runs/${id}/computer/release`, {});
-  assert.deepEqual([release.status, release.body], [200, { held: { state: "released" } }], `the owner lets the computer go: ${JSON.stringify(release.body)}`);
+  await withRunRead(api, id, () => assert.deepEqual([release.status, release.body], [200, { held: { state: "released" } }], `the owner lets the computer go: ${JSON.stringify(release.body)}`));
   await seam.released;
   const late = await api("POST", `/runs/${id}/start`, {});
   assert.deepEqual([late.status, late.body.error?.code, late.body.error?.message], [409, "agent_not_runnable", said.message], `a start after the release is refused in the create's words too: ${JSON.stringify(late.body)}`);
@@ -289,7 +305,7 @@ test("served, a model gateway with no key here: a held run whose model was refus
   assert.deepEqual([sent.status, sent.body.error?.code], [409, "agent_not_runnable"], `a message with a key to a held run whose model was refused is refused as its start is: ${JSON.stringify(sent.body)}`);
   assert.equal(sent.body.error.message, unheld.body.error.message, "in the words its create would have given");
   const release = await api("POST", `/runs/${keyed.body.run_id}/computer/release`, {});
-  assert.deepEqual([release.status, release.body], [200, { held: { state: "released" } }], `its release lets the computer go: ${JSON.stringify(release.body)}`);
+  await withRunRead(api, keyed.body.run_id, () => assert.deepEqual([release.status, release.body], [200, { held: { state: "released" } }], `its release lets the computer go: ${JSON.stringify(release.body)}`));
   await seam.released;
 });
 
