@@ -70,6 +70,9 @@ const { answer, receipt } = await web.search("widgets delaware", { n: 5, task: "
   fixed words (`siftRequest`, `judgeRequest`): every provider is asked the same thing. The need is only ever what the
   call carries: a search's `task` takes its query's place when the call gives one, else the query is the need; a
   fetch's need is its `lookingFor`, else its `task`.
+- A Jev decider on TypeSafe's route (`jevProvider` reading `TYPESAFE_API_KEY`) sends `JEV_MODEL` (`jev-1.14.0`, the
+  version the thresholds were read on) unless `model` names another; on OpenRouter's route, and for any other provider,
+  no model is sent and the provider's own default holds.
 - Every provider is sent the same states. A request's state is at most `STATE_BUDGET_BYTES` (90,000, within Parallel's
   96,000) and asks at most `QUESTIONS_PER_REQUEST` (100), a judge request at most `PASSAGES_MAX` (50) passages. A
   search over the budget has every snippet cut to the longest length that fits (`trimmed: { snippets, to_chars }`; the

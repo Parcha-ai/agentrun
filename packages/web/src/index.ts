@@ -169,6 +169,7 @@ export {
   deciderFrom,
   GUARD_CHARS,
   holdOf,
+  JEV_MODEL,
   judgeRequest,
   pageGuardRequest,
   QUESTIONS_PER_REQUEST,

@@ -49,6 +49,8 @@ export type DecisionAsk = { label: string; kind: "sift" | "judge"; state: unknow
 /** The part of the DSL's DecisionProvider a decider calls: its DecisionProvider satisfies this as it is. */
 export interface DecisionAsker {
   readonly id: string;
+  /** The keys it reads (DecisionProvider's `needs`): jevProvider's needs name its route, TypeSafe's or OpenRouter's. */
+  readonly needs?: readonly string[];
   decide(request: DecisionAsk, ctx: { decisionId: string; signal: AbortSignal; deadlineMs: number | null }): Promise<{
     answers: Record<string, unknown>;
     model: string | null;
@@ -127,6 +129,14 @@ export const STATE_BUDGET_BYTES = 90_000;
 export const QUESTIONS_PER_REQUEST = 100;
 /** The most requests of one ask in flight at once. */
 export const REQUESTS_AT_ONCE = 4;
+/** The Jev model a decider sends on TypeSafe's own route when the caller names none: the version its thresholds were
+ *  read on (INJECTION_THRESHOLD over 507 pages; THRESHOLD and LOW_RELEVANCE in C1 and D11), never the moving alias.
+ *  TypeSafe: "If you have tuned confidence thresholds against one version, send that version's ID instead of the
+ *  alias." OpenRouter's route names models its own way and is sent none: the provider's own default holds there. */
+export const JEV_MODEL = "jev-1.14.0";
+const TYPESAFE_KEY = "TYPESAFE_API_KEY";
+/** The model `provider`'s requests are sent with when the caller names none: JEV_MODEL for Jev on TypeSafe's route. */
+const pinnedModel = (provider: DecisionAsker): string | undefined => (provider.id === "jev" && provider.needs?.includes(TYPESAFE_KEY) ? JEV_MODEL : undefined);
 
 const stateBytes = (request: DecisionAsk) => Buffer.byteLength(JSON.stringify(request.state));
 const fits = (request: DecisionAsk) => stateBytes(request) <= STATE_BUDGET_BYTES;
@@ -215,9 +225,10 @@ const choiceOf = (answer: Record<string, unknown>): Record<string, number> | und
 export function deciderFrom(provider: DecisionAsker, options: DeciderOptions): WebDecider {
   if (options?.price === null || typeof options?.price !== "object") throw new TypeError(`deciderFrom needs ${provider.id}'s price, so the run's cap can hold each request`);
   const { price } = options;
+  const model = options.model ?? pinnedModel(provider);
   /** `asked` sent through ctx.pay under the fee `name`, and what came back with its cost, tokens and temperature. */
   const send = async (asked: DecisionAsk, ctx: DecideContext, name = `${provider.id}'s decision`) => {
-    const request = options.model ? { ...asked, model: options.model } : asked;
+    const request = model ? { ...asked, model } : asked;
     const text = JSON.stringify({ state: request.state, questions: request.questions });
     const bytes = Buffer.byteLength(text);
     const fee: Fee = { name, by: provider.id, usd: holdOf(price, bytes), basis: `the most a request of ${bytes} bytes may cost at ${provider.id}'s price` };
