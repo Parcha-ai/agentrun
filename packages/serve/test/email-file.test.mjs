@@ -141,6 +141,27 @@ test("the trash and junk folders are refused, by name or special use, and nothin
   }
 });
 
+const KEPT = (to) => `email_file never files into Sent or Drafts: ${to} is the account's sent or drafts mail, which only email_send and email_draft write.`;
+
+test("the Sent and Drafts folders are refused, by name or special use, and nothing changes: a filing can't make mail look sent", { timeout: 150_000 }, async (t) => {
+  for (const [layout, targets] of [["standard", ["Sent", "Drafts", "sent", "\\Sent", "\\Drafts"]], ["gmail", ["[Gmail]/Sent Mail", "[Gmail]/Drafts", "\\Sent", "\\Draft", "Sent", "Drafts"]]]) {
+    const { api } = await serve(t, { faux: FAUX_EMAIL });
+    const faux = await mailbox(t, { layout });
+    faux.seed({ from: "ana@example.com", to: [ADDRESS, "eve@example.com"], subject: "Keep me", messageId: "<s1@example.com>" });
+    faux.seed({ mailbox: "Drafts", from: ADDRESS, to: ["eve@example.com"], subject: "Draft", messageId: "<s2@example.com>", flags: ["\\Draft", "\\Seen"] });
+    await saved(api, faux, layout === "gmail" ? { preset: "gmail" } : {});
+    assert.equal((await api("POST", "/agents", mailAgent("keeper"))).status, 201);
+    const before = holding(faux);
+    const labels = faux.messages().map((m) => m.labels);
+    const list = targets.flatMap((to) => [["email_file", { message_id: "<s1@example.com>", to }], ["email_file", { message_id: "<s2@example.com>", to }]]);
+    const { saw } = await ran(api, "keeper", list);
+    list.forEach(([, args], i) => assert.match(String(saw[i]), new RegExp(KEPT(args.to).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")), `${layout} ${args.message_id} to ${args.to}: ${JSON.stringify(saw[i])}`));
+    assert.deepEqual(holding(faux), before, `${layout}: nothing moved, nothing created`);
+    assert.deepEqual(faux.messages().map((m) => m.labels), labels, `${layout}: no label changed`);
+    assert.ok(!faux.commands().some((c) => /^(UID )?(MOVE|STORE|COPY|EXPUNGE)\b|^CREATE\b/i.test(c)), `${layout}: ${faux.commands().join("\n")}`);
+  }
+});
+
 test("a run an email started files only within its thread; `scope: \"mailbox\"` on email_file widens it", { timeout: 150_000 }, async (t) => {
   const clock = fakeClock("2026-06-01T00:00:30Z");
   const { api } = await serve(t, { faux: FAUX_EMAIL, triggerClock: clock });

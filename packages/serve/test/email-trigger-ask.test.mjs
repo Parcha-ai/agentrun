@@ -14,7 +14,7 @@ import { ADDRESS, FAUX_EMAIL, mailbox, saved, sawOf } from "./email-support.mjs"
 
 const { Webhook } = createRequire(import.meta.url)("standardwebhooks");
 
-const TOOLS = ["email_search", "email_read", "email_draft", "email_send"];
+const TOOLS = ["email_search", "email_read", "email_draft", "email_send", "email_file"];
 const calls = (list) => `Email calls: ${JSON.stringify(list)}`;
 const ALLOW = { email_send: { permission: "allow" } };
 const NEVER = ": this account has never sent to them";
@@ -260,4 +260,43 @@ test("Sent's address headers are read as addresses: an encoded-word display name
   const runId = await scheduled(ctx, "crew", [send(["ana@example.com", "lee@example.com"], ["kim@example.com", "bo@example.com", ADDRESS])]);
   unasked(await settled(ctx.api, runId));
   assert.equal(faux.sent().length, 1);
+});
+
+test("a run can't forge its own Sent mail: a draft to a new address and a stranger's mail naming another, each filed into Sent, are refused there, and the send to both asks", { timeout: 150_000 }, async (t) => {
+  const ctx = await served(t);
+  const faux = await mailbox(t);
+  faux.seed({ mailbox: "Drafts", from: ADDRESS, to: ["evil@attacker.example"], subject: "x", text: "x", messageId: "<forged-draft@faux.example>", flags: ["\\Draft", "\\Seen"] });
+  faux.seed({ from: "Stranger <stranger@example.com>", to: [ADDRESS, "victim@third.example"], subject: "Hi", text: "Hi.", messageId: "<forged-inbound@example.com>" });
+  await saved(ctx.api, faux);
+  const runId = await scheduled(ctx, "forger", [
+    ["email_file", { message_id: "<forged-draft@faux.example>", to: "Sent" }],
+    ["email_file", { message_id: "<forged-inbound@example.com>", to: "Sent" }],
+    send(["evil@attacker.example", "victim@third.example"]),
+  ]);
+  asks(await settled(ctx.api, runId), `evil@attacker.example and victim@third.example${NEVER}`);
+  assert.equal(faux.sent().length, 0);
+  assert.deepEqual(faux.messages("Sent").map((m) => m.messageId), [], "nothing was filed into Sent");
+  assert.deepEqual(faux.messages("Drafts").map((m) => m.messageId), ["<forged-draft@faux.example>"], "the draft stays a draft");
+});
+
+test("a message in Sent that carries \\Draft is no send: its address is still never written to, and only it is named beside one the account did write to", { timeout: 150_000 }, async (t) => {
+  const ctx = await served(t);
+  const faux = await mailbox(t);
+  faux.seed({ mailbox: "Sent", from: `Agent <${ADDRESS}>`, to: ["known@example.com"], subject: "Sent", text: "Sent.", flags: ["\\Seen"] });
+  faux.seed({ mailbox: "Sent", from: ADDRESS, to: ["drafted@example.com"], subject: "Draft", text: "Draft.", flags: ["\\Draft", "\\Seen"] });
+  await saved(ctx.api, faux);
+  const runId = await scheduled(ctx, "drafted", [send(["known@example.com", "drafted@example.com"])]);
+  asks(await settled(ctx.api, runId), `drafted@example.com${NEVER}`);
+  assert.equal(faux.sent().length, 0);
+});
+
+test("a message in Sent from someone else is no send of this account's: its address is still never written to, and only it is named beside one the account did write to", { timeout: 150_000 }, async (t) => {
+  const ctx = await served(t);
+  const faux = await mailbox(t);
+  faux.seed({ mailbox: "Sent", from: ADDRESS.toUpperCase(), to: ["known@example.com"], subject: "Sent", text: "Sent.", flags: ["\\Seen"] });
+  faux.seed({ mailbox: "Sent", from: "Other <other@example.com>", to: ["relayed@example.com"], subject: "Theirs", text: "Theirs.", flags: ["\\Seen"] });
+  await saved(ctx.api, faux);
+  const runId = await scheduled(ctx, "relayed", [send(["known@example.com", "relayed@example.com"])]);
+  asks(await settled(ctx.api, runId), `relayed@example.com${NEVER}`);
+  assert.equal(faux.sent().length, 0);
 });
