@@ -114,9 +114,13 @@ const filesBody = (files) => [...files].sort(([a], [b]) => (a < b ? -1 : a > b ?
   return Buffer.from(text, "utf8").equals(data) && Buffer.byteLength(JSON.stringify(text)) <= base64.length + 2 ? { path, encoding: "utf8", content: text } : { path, encoding: "base64", content: base64 };
 });
 
+/** The package folder `dir` as a deploy uploads it (POST /templates/import's `files`); `fail(code, message)` makes the
+ *  refusal a folder that is no package throws. */
+export const packageFiles = async (dir, fail) => filesBody(await readFolder(dir, fail));
+
 /** A lock read back from its file's text (none when there is no file): its fields as written, or a refusal naming the
  *  file. */
-function lockOf(text, file, fail) {
+export function lockOf(text, file, fail) {
   if (text === undefined) return undefined;
   let value;
   try {

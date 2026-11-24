@@ -233,6 +233,17 @@ export async function savedModelKeys(deps: ClaimSecretsDeps): Promise<NodeJS.Pro
   return out;
 }
 
+/** Of `saved` (savedModelKeys'), the keys a route to `model` (`provider/model-id`) reads and no other: its provider's
+ *  (PROVIDER_KEYS), or through a gateway (`env`'s AGENT_MODEL_BASE_URL, as modelKeys reads it) the gateway's key alone.
+ *  None for no model, or one whose provider names no key. What a runner hands a run's process for one route of its
+ *  (run-child-host.ts savedModelKeys): never every key the server holds. */
+export function routeModelKeys(saved: NodeJS.ProcessEnv, env: NodeJS.ProcessEnv, model: string | undefined): NodeJS.ProcessEnv {
+  const out: NodeJS.ProcessEnv = {};
+  if (model === undefined) return out;
+  for (const name of modelKeys(env, model)) if (saved[name] !== undefined) out[name] = saved[name];
+  return out;
+}
+
 /** A run's own model key, held by its claim (run-model-key.ts): `fresh()` opens it from the run's launch again (a message's
  *  new key replaces it, or a run that started on the server's key takes its first); `everHeld()`, whether the claim ever
  *  held one, so spend after the turn never falls to the server's key for a run that brought its own. */

@@ -296,12 +296,20 @@ const SUBAGENT_ROUTE = "subagent-";
 const subagentRoute = (tier: SubagentTier): string => `${SUBAGENT_ROUTE}${tier}`;
 const isSubagentRoute = (key: string): boolean => key.startsWith(SUBAGENT_ROUTE);
 
+/** The model a replay run's or an audit shadow's grader runs on (graderRouteOf): the revision's modelTiers.fast, else
+ *  `env`'s fast tier (AGENT_MODEL_FAST); undefined when there is neither, or the revision names agree_on (no grader). */
+export function graderModelOf(body: { readonly modelTiers?: Readonly<Partial<Record<SubagentTier, string>>>; readonly learning?: unknown }, env: NodeJS.ProcessEnv): string | undefined {
+  if (agreeOnOf(body.learning)?.length) return undefined;
+  return body.modelTiers?.fast ?? tierModelOf(env, "fast");
+}
+
 /** A replay run's or an audit shadow's grader route (runner/compare-end.ts): its fast model (the revision's
  *  modelTiers.fast, else AGENT_MODEL_FAST) when its revision names no agree_on, on pi's wires. A fast model may be another
  *  provider's than the run's own, whose key claimSecrets never opened: so its route reads every model key the server
- *  holds (savedModelKeys) as a subagent's tier does, held by the run's redactor, on the route's env alone. A run with its
- *  own model key carries that key, and no saved key is read. Undefined when there is no fast model, the revision names
- *  agree_on, or no route can be made (logged: the pair is then compared whole). */
+ *  holds (savedModelKeys) as a subagent's tier does, held by the run's redactor, on the route's env alone; in a run's own
+ *  process its runner hands it the fast model's provider's keys alone (run-child-host.ts savedModelKeys, graderModelOf). A
+ *  run with its own model key carries that key, and no saved key is read. Undefined when there is no fast model, the
+ *  revision names agree_on, or no route can be made (logged: the pair is then compared whole). */
 export async function graderRouteOf(
   body: { readonly modelTiers?: Readonly<Partial<Record<SubagentTier, string>>>; readonly learning?: unknown },
   keyed: boolean,
@@ -319,7 +327,7 @@ export async function graderRouteOf(
   // The claim's run, turn and attempt on its grader's requests too (request-metadata.ts): they spend on the run's cap.
   // keysOver, never a spread: the claim's model keys are not enumerable (claimSecrets).
   const env = claimModelEnv(deps.env, keysOver(savedKeys, claimed), runKey, claim);
-  if (body.modelTiers?.fast === undefined && tierModelOf(env, "fast") === undefined) return undefined;
+  if (graderModelOf(body, env) === undefined) return undefined;
   try {
     return await deps.routeOf(body.modelTiers?.fast, env, "fast", PI_WIRES, undefined, cut);
   } catch (error) {
