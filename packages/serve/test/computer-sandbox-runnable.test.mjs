@@ -18,6 +18,7 @@ import { chmod, mkdir, writeFile } from "node:fs/promises";
 import { delimiter, join } from "node:path";
 import { test } from "node:test";
 import { asOwner, scratch, SECRET_WRITE_PATHS, serve, withEnv } from "./support.mjs";
+import { DOCKER_NO_SOCKET } from "../dist/place-offers.js";
 
 const { blockersOf } = await import("../dist/runnable.js");
 const { computerDepsFrom, resolveComputer } = await import("../dist/workspace/index.js");
@@ -272,8 +273,7 @@ test("Mode 1: a daemon that answers only after the server started is not taken: 
   // box network) never ran; a daemon that answers now can't stand in for them. The probe's facts are pinned, so the words
   // do not depend on where the suite runs (place-offers.ts containerReason).
   const HOST_WORDS = "Docker isn't running on this machine, or this user may not use it (docker version failed: exit 1): start Docker, or add this user to the docker group, then restart AgentRun";
-  const NO_SOCKET = "This server runs in a container with no Docker socket, so its agents get file tools and web_fetch but no shell: for a shell in Docker sandboxes, start AgentRun with `docker compose up -d` from compose.yaml at the repository's root, which gives it the socket";
-  for (const [probeContainer, words] of [[{ inside: false }, HOST_WORDS], [{ inside: true, exists: () => false }, NO_SOCKET]]) {
+  for (const [probeContainer, words] of [[{ inside: false }, HOST_WORDS], [{ inside: true, image: true, exists: () => false }, DOCKER_NO_SOCKET]]) {
     const api = await server(t, { archil: false, docker: false, probeContainer });
     const bin = process.env.PATH.split(":")[0];
     await writeFile(join(bin, "docker"), "#!/bin/sh\nif [ \"$1\" = version ]; then echo 27.0.0-fake; exit 0; fi\nexit 0\n", { mode: 0o755 });

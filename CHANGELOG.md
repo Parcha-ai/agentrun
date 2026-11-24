@@ -2,6 +2,67 @@
 
 ## Unreleased
 
+## 0.1.0-beta.56 (2026-11-24)
+
+This release gives a template eval's graders each call's result whole, up to 120,000 characters, and counts an answer that is one JSON object as its json block. The server's redactor finds secret shapes and held values with one matcher whose work grows with a text's length alone. It withholds a held value a cut only partly covers, a value of several lines across the edge of an answer's pieces among them. A ChatGPT sign-in that ends unsigned says why, and the console's Claude sign-in signs in where AgentRun reads and says how it ended. A parked run's kept computer stays with the runner that kept it. `install.sh --vps` waits out apt's locks on a server that just booted. The console draws share cards as images. The store does not move on either backend, so beta.55 opens a store this release opened. The box image is beta.50's.
+
+**Upgrading and going back:**
+
+- The store does not move: Postgres stays at migration `0026_run_disk.sql`, with no migration added, and a SQLite store stays at version 15. A beta.55 server or runner opens a store this release opened, and the runner floor does not rise. Going back to beta.55 is its image or package.
+- Roll the runners with the server: a parked run's kept computer resuming on the runner that kept it (#3604) and a run on "this machine's" Claude login on macOS (#3606) are in the runner.
+- The Python client `parcha-agentrun` is 0.3.24: it adds the ChatGPT sign-in's `problem` and the Claude login's `sign_in`, `folder` and `machine` (#3600, #3606). No name it exported is gone.
+- The box image's recipe did not move since beta.50 (hash `ed5aee54d3ea`), so a Daytona snapshot or a relay set up for beta.50 to beta.55 holds.
+
+**Known issues:**
+
+- Under the image's default command, no run can use a paired computer, a paired Linux sandbox included. Start the image with the server's options alone for one.
+- A learned workflow refused for a host setting (a tool gated, denied or missing) still reads `serving`, while every run it is given hands back to the agent. A workflow this release's DSL refuses is held.
+- For up to about 10 minutes after the release is published, an install can fail while npm shows the new packages one by one. Try again a few minutes later.
+- An API token's `GET /v2/settings/calendar` is refused 403 in the words for saving a secret. Reading the calendar's settings takes the owner's signed-in session in the console, as saving them does.
+- On Postgres a purge does not reach the database's bytes: `VACUUM` only makes a purged row's space reusable, `VACUUM FULL` rewrites the table, and Postgres's WAL, archived WAL and backups keep the old values for their own lifetimes.
+- A Daytona sandbox kept while the listing still leaves it out is found by a retry of its request on the same provider instance alone; `list()` leaves it out until the listing shows it (#3488).
+- A template eval's grader input carries the run's final-file paths uncut (#3556), so a file named after a held value reaches the grader's model with that name. A fix is in progress.
+- An agent's "Edit" buttons open the coding-agent menu, not the tools editor. To edit an agent's tools, open DETAILED EDITOR, then TOOLS & SKILLS.
+
+**Changes:**
+
+Templates and evals
+
+- An `llm` grader in `agentrun-serve eval-template` reads each call's result whole, to 120,000 characters, instead of its first 8,000, so a rubric that checks a cited figure deep in a fetched page sees it; past 120,000 the longest results lose their middle first, as before. A call's result is redacted as it came, then its URLs lose their query values. A timeline read with `calls=whole` returns the same whole results, at most 100 rows a page (a `limit` over 100 is refused, 400). An answer that is one JSON object and nothing else, after trimming, counts as its json block, for `output`, `result.output_error`, a grader's `target` and an `llm` grader's own verdict. Compact JSON past 8,192 characters without whitespace is no longer withheld for its length: it is read in pieces cut at the end of a JSON string, and a held value or a secret shape a piece's edge splits withholds the text whole (#3528). <!-- changes/template-eval-whole-results.md -->
+
+Redaction
+
+- The server's redactor finds secret shapes and held values with one matcher (`redact/match.ts`) whose work grows with a text's length alone. What it cuts is what it cut before, widened: a text that holds a held value only part of which a cut covers is withheld whole, as with a credential parameter's value cut in place and the rest of the same value past a line break, or a value split at the edge of an answer's or a call result's pieces. A held value of several lines (a saved PEM key, a pretty-printed service-account JSON) across that edge no longer shows. An answer or a call's result read in pieces is checked once more as it is about to be shown. A JWT glued to a word (`id_eyJ...`) is found at every site that looks for one, so the console's build gate can now fail a bundle holding one, and the computer's phone words cut it too (#3622). <!-- changes/redact-one-matcher.md -->
+
+Sign-in and models
+
+- A ChatGPT sign-in that ends without signing in says why: `GET /settings/chatgpt` carries `problem` in fixed words (a plan with no use here, a workspace whose admin turned off open-source apps, a refusal a Free plan may explain, a sign-in that waited out its 10 minutes), Settings → API Keys shows it, and the server logs `event=chatgpt chatgpt=sign_in_failed reason=…`, never a token or a code, which `agentrun` started from a terminal now prints. A sign-in saved whose change the server failed to take is taken again at its next read, not after a restart (#3600). <!-- changes/chatgpt-sign-in-says-why.md -->
+- Settings → Model keys' "Open the CLI's sign-in here" signs the claude CLI in at the login's own folder, so the login reads signed in afterwards. `GET /v2/settings/claude-login` says what became of a sign-in the server started (`sign_in`: `waiting`, `signed_in`, `timed_out`, `failed`, `not_started`), one no browser answers within 10 minutes is ended and says so, and the view names the folder it checks (`folder`, and `machine`, which follows `CLAUDE_CONFIG_DIR`). "This machine's" login is signed in and checked as the person's own claude CLI runs, in their home, so on macOS it no longer reads signed out while `claude auth status` says signed in. The status check never runs the CLI on the person's own `.claude.json`: it reads a copy without its secret fields (#3606). <!-- changes/claude-sign-in-folder.md -->
+- The approvals route's description says what an allowed call does when the runner loses its claim mid-call: a read may run again on the next claim; a call with a side effect never does, and is answered as interrupted. A test pins both (#3548). <!-- changes/approved-call-lost-claim.md -->
+
+Computers
+
+- A parked run whose desktop, phone or sandbox was kept at its park on a Docker engine, or on a machine that dials the server, resumes on the runner that kept it while that runner is live, so a server with several runners gets the same machine back and no longer leaves the kept container running. A stop or a cancel never waits for that runner. Once it is gone, any runner claims the run and starts a new machine, and the timeline says so. No schema change (#3604). <!-- changes/claim-affinity.md -->
+- The Docker reason a server in a container gives depends on which container it is: AgentRun's image says so itself (`AGENTRUN_IN_IMAGE=1`), so a Kubernetes pod gets the socket advice too, which now says the host's Docker socket is root on the host; any other container gets the host's words, prefixed "This server runs in a container." (#3625). <!-- changes/box-reason-image-marker.md -->
+
+Import
+
+- `wrappedHome(home, year)` reports a year of work under a home: tokens, requests, days, hours of the day, weekdays and time at work, by model, harness and source, each bucketed by its request's time in the machine's local zone, with cost at the catalog's list price and `unpricedRequests` counting the rest. It holds counts, names and times only. `parseHome` takes a `requests` option, called with each session's totals and its requests (#3559). <!-- changes/import-wrapped-home.md -->
+
+Install and deploy
+
+- `install.sh --vps` waits again for apt's other locks on a server that has just booted, the archives lock apt-daily's download holds included, which made the Docker install fail at once; it still stops on dpkg's lock after apt-get's own 600 s wait, and apt-get runs under `LC_ALL=C`, so the lock messages match on a server set to any language (#3621). <!-- changes/apt-archives-lock.md -->
+- `deploy/fly/launch.sh` stops before it makes a secret when `fly secrets list --json` has entries without a `name`; `install.sh --vps` no longer tries dpkg's lock again after apt-get's own 600 s wait; a start refused for an earlier version's data in a folder the installer set up says moving it takes the installed agentrun with it; `GET /v2/openapi.json` names the owner's session cookie as the console sets it (#3615). <!-- changes/b46-low-bugs.md -->
+
+Console
+
+- The console draws a share card as an image, with one renderer for every picture card, a free run's receipt and each Wrapped card among them: a 1200 by 675 SVG and data URL in the console's tokens and fonts that loads nothing, dark unless asked for light, and a PNG for a download in the browser (#3582). <!-- changes/card-image.md -->
+- The build composer on `#/agents/new` has a 14px corner, down from 16px (#3586). <!-- changes/console-composer-radius.md -->
+
+Tests and CI
+
+- CI reports its required checks sooner: a branch's pull request runs its test shards on Blacksmith, the `any` pool has sixteen shards, `lean` waits for its two shards alone, the store's suite on Postgres runs as four jobs (`npm run test:pg -- --shard=<k>/<n>`), and `npm run test:affected` no longer picks tests by a file name alone (#3618). <!-- changes/ci-required-checks-sooner.md --> The fake Slack and store-mcp-claim's M7 are steadied (#3587, #3571).
+
 ## 0.1.0-beta.55 (2026-11-23)
 
 This release runs agents on the models of the machine's own Ollama, with no key and at $0, and gives a server with no Parallel key web search and fetch out of the box, through Firecrawl's keyless endpoint with keyless Exa behind it (see Breaking). A plan-billed harness recipe's own keys are saved on the server, sealed for that harness, so its scheduled and triggered runs run. The session readers behind import are a package of their own, `@parcha/agentrun-import`, published for the first time. The console gains a demo mode filled with a sample company's agents and runs, a race view of runs side by side, and a Running now list of every run holding a computer, read through the new `GET /v2/computers/running`. A launch hook's host start now keeps the trigger's target, cap and effort, `agentrun deploy` no longer makes a second agent on a target it has no lock for, and every command takes the server's address with or without `/v2`. A template eval's grader reads the run's files whole, cut on the server through the new `?cut=run`, and AgentRun Server deploys to Fly.io in one command and to a DigitalOcean Droplet from its first boot. The store does not move on either backend, so beta.54 opens a store this release opened. The box image is beta.50's.

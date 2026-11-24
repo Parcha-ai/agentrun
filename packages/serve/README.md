@@ -416,7 +416,16 @@ A run's runner renews its claim on the run every 10 s, for a claim of 30 s. A ru
 time, writes nothing more to the run, and the store refuses any write under a claim the run has moved past. Once the
 claim lapses another runner claims the run and resumes it from its journal. A run's own computer doesn't survive a
 runner loss, a crash, a server stop or a park (the claim that resumes the run starts a new one, and says so on the
-timeline and, once, to the model as an "AgentRun server note"), and the agent's own computer, a persistent setting, does. `agentrun-serve runner --check --data DIR --name N`
+timeline and, once, to the model as an "AgentRun server note"), and the agent's own computer, a persistent setting, does.
+The exception is a park's keep: a desktop, phone or sandbox a park keeps for 10 minutes comes back to the run's resume.
+One that only the runner that kept it can reach again (a Docker container, a machine that dials the server) holds the
+parked run for that runner while it is there under the same process (its word in the last 30 s, not refusing) and the
+keep lasts: no other runner claims the run to resume it, so a runner whose loops are full makes an answer wait until
+then. A stop or a cancel never waits: any runner claims the run at once and ends it without taking the kept machine
+(also when the kept row can't be read then), which the runner that kept it ends at its time, or sooner at its janitor's
+next pass once the run is over; another runner's janitor leaves both the row and the machine. Once that runner
+is gone, any runner claims it, starts a new one, and the timeline says `The desktop wasn't kept: the runner that kept it
+is gone.` `agentrun-serve runner --check --data DIR --name N`
 (or `AGENTRUN_RUNNER_NAME=N` in place of `--name`) checks the runner's environment by name (its store, its seal key,
 every run-facing name its server holds, a forwarder on loopback) and whether the runner named `N` has a fresh
 heartbeat: it exits 0 when both hold, 1 when either does not, and 2 when no name is given. `--check --env` checks the
@@ -1224,7 +1233,7 @@ this host's default, `AGENT_MODEL`. With no `AGENT_MODEL`, a model provider's ke
 [tool key](#tool-keys), gives the default, the first of: `anthropic/claude-sonnet-5-5` with `ANTHROPIC_API_KEY`,
 `openai/gpt-6.1-sol` with `OPENAI_API_KEY`, `particle/particle-1` with `PARTICLE_API_KEY`, then
 `openrouter/openai/gpt-6.1-sol` with `OPENROUTER_API_KEY`. With none of those, pi's default is the first model of this
-machine's Ollama that calls tools ([below](#on-this-machines-ollama)). Set `AGENT_MODEL` for another. Direct Particle runs on Pi;
+machine's Ollama that calls tools ([below](#on-this-machines-ollama)), and so is claude-agent's and Goose's. Set `AGENT_MODEL` for another. Direct Particle runs on Pi;
 claude-agent takes the Anthropic one and codex the OpenAI one. A workflow revision names no model: each model node names a tier (`fast`, `default`
 or `strong`), and the host maps it, `fast` to `AGENT_MODEL_FAST` and `strong` to `AGENT_MODEL_STRONG`, each falling back
 to `AGENT_MODEL`. Capabilities show the mapping in `models` (`{source, route_prefix, fast, default, strong}`):
@@ -1542,20 +1551,45 @@ run agents on it.
 
 On a server one person runs on their own machine, Claude Agent can run on that person's Claude plan through the Claude
 Code CLI's own login. The CLI holds the login and calls Anthropic itself. AgentRun never reads, copies, stores or relays
-the login. It tells the CLI where the login is and asks it `claude auth status`, nothing else. Settings → Model keys
+the login's tokens. It tells the CLI where the login is and asks it `claude auth status`, nothing else. Settings → Model keys
 has the row **Use Claude Code's login on this machine**, over these routes:
 
 - `PUT /v2/settings/claude-login` `{"only_me": true, "place": "agentrun"}` turns it on. `only_me` is the owner's word
   that they alone run agents on this server. `place` is where the login is: `agentrun` (the default) is AgentRun's own
-  login directory in the data folder, which you sign in once; `machine` is this machine's own Claude Code login
-  (`~/.claude`), which you opt into by name. A server where more than one person can start runs (more than one API
-  token, the API-only profile) refuses it with `403` and one line saying why, and a turn-on saved before is dropped
-  when such a server starts.
+  login directory in the data folder, which you sign in once; `machine` is this machine's own Claude Code login, which
+  you opt into by name. Its folder is the one the CLI uses: `CLAUDE_CONFIG_DIR` when the server's environment sets it to
+  an absolute path, else `~/.claude`. A Claude Code that keeps its login in another folder is found only when AgentRun
+  is started with `CLAUDE_CONFIG_DIR` set to that folder. A server where more than one person can start runs (more
+  than one API token, the API-only profile) refuses it with `403` and one line saying why, and a turn-on saved before
+  is dropped when such a server starts.
 - `GET /v2/settings/claude-login` says `state`: `off`, `signed_in` (with the `account` the CLI names: method, email,
   organization, plan), `signed_out`, `no_cli` (claude-agent's first run installs the pinned CLI), `unknown`, or
-  `other_machine`. `command` is the line that signs the CLI in at the login's place, for a terminal on the server's
-  machine. Where the console is on that machine (a server on loopback with no public address), `can_start` is true and
-  `POST /v2/settings/claude-login/login` starts the pinned CLI's own `auth login`, which opens a browser there.
+  `other_machine`. `folder` is the folder whose login the CLI is asked about, and `machine` is this machine's own
+  login folder (`machine.source`: `CLAUDE_CONFIG_DIR` or `default`). `command` is the line that signs the CLI in at
+  the login's place, for a terminal on the server's machine. Where the console is on that machine (a server on loopback
+  with no public address), `can_start` is true and `POST /v2/settings/claude-login/login` starts the pinned CLI's own
+  `auth login`, which opens a browser there. It runs with the same variables as `command`, so it signs in at `folder`,
+  and the status is read there too, since `auth login` writes the account it signed in to its config dir. On
+  `machine` with the default `~/.claude`, the CLI is signed in as the person's own `claude` runs: no
+  `CLAUDE_CONFIG_DIR` or `CLAUDE_SECURESTORAGE_CONFIG_DIR`, in their home, so it writes the account in `~/.claude.json`
+  and the tokens where their Claude Code keeps them (in `~/.claude`; on macOS the Keychain item `Claude Code-credentials`).
+  `command` there starts with `env -u CLAUDE_CONFIG_DIR -u CLAUDE_SECURESTORAGE_CONFIG_DIR`, so a terminal that exports
+  either still signs in at that login. A run
+  there reaches the same tokens: on macOS with `CLAUDE_SECURESTORAGE_CONFIG_DIR` set and empty, the CLI's way to name
+  that item while the run has a config dir of its own; elsewhere with it set to `~/.claude`. On `machine`, either
+  folder, the status check never runs the CLI on the person's own account file, which the CLI rewrites on every start
+  whose config version is not its own: each check copies `.claude.json` (`~/.claude.json`, or the `CLAUDE_CONFIG_DIR`
+  folder's), opening the original only to read it, into a folder of its own, gives the CLI that folder as its config
+  dir and the tokens as a run reads them, and removes the folder however the check ends. The copy (0600, in a 0700
+  folder) leaves out the fields that hold secrets: `primaryApiKey` (the API key an older Claude Code signed in with),
+  `env` and every `mcpServers`, whose env and headers hold tokens; a file that doesn't parse as a JSON object is not
+  copied at all. A run's config dir has none of them either, so the status says what a run gets. The status check
+  runs in the person's home (the server's `HOME`) on every place, as the sign-in does, and so does a run on the login
+  on macOS: the CLI reads its tokens there from the login keychain, which is under that home. `sign_in`
+  says what became of that sign-in while the server runs: `waiting` for the browser since `started_at`, `signed_in`,
+  `timed_out` (no answer from the browser within 10 minutes, so it was ended and a sign-in page still open can't
+  finish), `failed` (the CLI ended without signing in, with its `exit_code`), or `not_started`. A second start ends a
+  sign-in that still waits, and so do turning the mode off and stopping the server, which waits for that CLI to exit.
 - `DELETE /v2/settings/claude-login` turns it off. The login stays as the CLI keeps it.
 
 While it is on, a claude-agent run on an `anthropic/<model>` model goes on the login: its CLI gets no
@@ -1580,7 +1614,8 @@ saved earlier is dropped when the server starts, and claude-agent runs on the mo
 
 Start Ollama (`ollama serve`, or its app) beside your own server and it lists Ollama's models itself, with no key, no
 gateway and no restart: `GET /api/tags` for the tags, `POST /api/show` for each one's capabilities and trained context. Each chat model
-is `ollama/<tag>` in `harnesses[].models` and `harnesses[].free_models` for pi, and the console names it
+is `ollama/<tag>` in `harnesses[].models` and `harnesses[].free_models` for pi and for every harness on a wire the
+route translates, and the console names it
 `<tag> · local (Ollama)`, on a run's page too (from the run's `tokens` usage line, `provider` `ollama` and `model` the
 tag), so a run on the default says which model it ran on. An embedding model is left out. A model pulled or an Ollama started after the server shows in capabilities
 within half a minute (the listing is kept that long, and asked again behind the next answer). A down or stuck Ollama
@@ -1601,7 +1636,8 @@ seconds), and a run on any other model, a key's default included, never asks Oll
 - Context: each request is Ollama's own `/api/chat`, streamed, with `options.num_ctx` the least of 65,536, the model's
   trained context (where `/api/show` names one) and `OLLAMA_CONTEXT_LENGTH` (where the server's environment sets it to a
   whole number above 0, as a person short of memory does for Ollama itself). The model's context window here is the same
-  number, so pi compacts before Ollama would cut the prompt.
+  number, so pi compacts before Ollama would cut the prompt. `agentrun service install --env
+  OLLAMA_CONTEXT_LENGTH=<tokens>` gives the limit to the service.
 - Thinking: a model whose capabilities include `thinking` has its reasoning split out by Ollama. For any other, an
   answer that opens with `<think>` has that part as thinking up to `</think>`, the split Ollama makes for a thinking
   model, so the tags never reach the answer.
@@ -1610,11 +1646,16 @@ seconds), and a run on any other model, a key's default included, never asks Oll
 - Cost: $0, booked as a known cost. Its requests never count toward the server's [limit on free
   requests](#a-limit-on-free-requests): there is no shared quota behind them. An agent's own `max_requests` counts them,
   with its other free requests, so a run on Ollama that keeps calling tools still stops there.
-- Harness: pi alone. claude-agent, codex and opencode never list them.
+- Harness: pi, and every harness on a wire the route translates. That wire is Anthropic's Messages: claude-agent,
+  Goose, and a harness module on it. Its requests go through the same translation as pi's: the same `/api/chat`,
+  `num_ctx`, tools and cost. A Messages client's token count (`/v1/messages/count_tokens`) is answered there without
+  asking the model, an answer it asks for unstreamed comes back whole (or as a 500 error with words when part of the
+  stream doesn't read), and every model id it sends (Claude Code's small model too) runs the one tag. claude-agent turns its own tool search off on these models. codex and opencode, on
+  OpenAI's Responses, never list them.
 - Cloud models: an Ollama cloud model (a `-cloud` tag, with `remote_host` and `remote_model` in `/api/tags` or
   `/api/show`) runs on ollama.com, not here, so it is never listed: never local, never $0, never the default.
-- Default: with no model key held (and no `AGENT_MODEL`, ChatGPT sign-in or gateway), pi runs on the first model Ollama
-  lists that calls tools. Any key wins. A model without tools is pickable, never the default. Ollama lists the model
+- Default: with no model key held (and no `AGENT_MODEL`, ChatGPT sign-in or gateway), pi and every harness on a wire the
+  route translates run on the first model Ollama lists that calls tools. Any key wins. A model without tools is pickable, never the default. Ollama lists the model
   pulled last first, so pulling one can change that default, and a saved agent that names no model follows it. Name the
   model (`ollama/<tag>`) to pin it.
 

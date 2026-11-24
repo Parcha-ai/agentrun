@@ -720,8 +720,8 @@ test("a host start for a firing that waits on its retry is refused while its tri
  *  its trigger's room, or no longer due); `poll()` steps the triggers' clock to the engine's timer and waits for the next,
  *  so a waiting firing has been read again. `cut`: each POST's bound is a signal the test holds (`bounds`, in order), cut
  *  by hand, so a hook that never answers fails its try with no wait on the wall clock; `failedTries(key)` is the firing
- *  once its try has failed. */
-async function webhookHook(t, answer, extra = {}, { runner = false, cut = false } = {}) {
+ *  once its try has failed. `options`: the server's other options. */
+async function webhookHook(t, answer, extra = {}, { runner = false, cut = false, options = {} } = {}) {
   const clock = fakeClock("2026-06-01T00:00:00Z");
   const hook = await hookServer(t, answer);
   const bounds = [];
@@ -730,7 +730,7 @@ async function webhookHook(t, answer, extra = {}, { runner = false, cut = false 
     bounds.push(signal);
     return signal.signal;
   };
-  const server = await serve(t, { triggerClock: clock, ...(runner ? {} : { runner: false }), launchHook: { url: hook.url, secret: mintSecret(), ...(cut ? { timeoutMs: 300, bound } : {}) } });
+  const server = await serve(t, { ...options, triggerClock: clock, ...(runner ? {} : { runner: false }), launchHook: { url: hook.url, secret: mintSecret(), ...(cut ? { timeoutMs: 300, bound } : {}) } });
   await made(server.api, "triage");
   const created = await server.api("POST", "/triggers", { name: "on push", source: { kind: "webhook" }, target: { kind: "start_run", agent_id: "triage", input: { content: "Triage it." }, max_cost_usd: 0.5 }, ...extra });
   assert.equal(created.status, 201, JSON.stringify(created.body));
@@ -943,6 +943,128 @@ test("the host's start for a firing takes no revision, hold or hold_minutes: it 
   assert.deepEqual(await runsOf(api, "nightly"), [], "no run started");
   const taken = await hostStart(api, "nightly", id, sent.key);
   assert.equal(taken.status, 202, JSON.stringify(taken.body));
+});
+
+/** The host's release of firing `key` of trigger `id`: it answered the firing 2xx and will start no run for it. */
+const release = (api, id, key, body = { error: "The job failed before its run started (launch_failed)." }) => api("POST", `/triggers/${id}/firings/${key}/release`, body);
+/** The trigger.failed messages `receiver` got, as sent. */
+const failedMessages = (receiver) => receiver.got.filter((got) => got.method === "POST").map((got) => JSON.parse(got.body.toString("utf8"))).filter((message) => message.type === "trigger.failed");
+
+test("a host releases a firing it answered 2xx and will start no run for: with max_active_runs 1 it reads failed (host_released, the host's words cut of the server's secrets), its room frees, and the next firing is handed on the engine's next tick, long before start_by; one failure in the streak, and a trigger.failed", { timeout: 120_000 }, async (t) => {
+  const planted = `planted-${randomBytes(16).toString("hex")}`;
+  withEnv(t, { RELEASE_CASE_API_KEY: planted });
+  const w = await webhookHook(t, (res) => answerJson(res, 200, {}), { max_active_runs: 1 }, { options: { webhookPrivateTargets: true } });
+  const receiver = await hookServer(t, (res) => answerJson(res, 200, {}));
+  assert.equal((await w.api("PUT", "/settings/webhook", { url: receiver.url })).status, 201);
+  const a = await w.deliver("evt-a");
+  const sent = await w.decided(a);
+  assert.deepEqual([sent.status, sent.runId], ["sent", null], JSON.stringify(sent));
+  const c = await w.deliver("evt-c");
+  const waits = await w.decided(c);
+  assert.deepEqual([waits.status, waits.waitsOn], ["due", a], "the later firing waits on the handed one");
+
+  // The waiting firing has not been handed yet: there is nothing of it to release.
+  const early = await release(w.api, w.id, c);
+  assert.equal(early.status, 422, JSON.stringify(early.body));
+  assert.deepEqual(early.body.error.fields.map((f) => [f.field, f.reason]), [["firing_id", "not_due"]]);
+  assert.match(early.body.error.fields[0].message, /not been handed/);
+
+  const words = `The job failed at launch (launch_failed); its log held ${planted}.`;
+  const released = await release(w.api, w.id, a, { error: words });
+  assert.equal(released.status, 200, JSON.stringify(released.body));
+  assert.deepEqual([released.body.key, released.body.status, released.body.run_id, released.body.error?.code, "start_by" in released.body], [a, "failed", null, "host_released", false], JSON.stringify(released.body));
+  assert.ok(!JSON.stringify(released.body).includes(planted), "the host's words are cut of the server's secrets");
+  assert.match(released.body.error.message, /^The job failed at launch \(launch_failed\); its log held \[redacted\]/);
+  const listed = (await w.api("GET", `/triggers/${w.id}/firings`)).body.firings.find((f) => f.key === a);
+  assert.deepEqual(released.body, listed, "answered as the firings list shows it");
+  // One failure in the streak toward the trigger's auto-pause (the next firing's hand, a success, clears it).
+  assert.equal((await w.api("GET", `/triggers/${w.id}`)).body.failures_in_a_row, 1, "one failure in the trigger's streak, toward its auto-pause");
+  // A released firing takes no run after it: its host's start is refused naming the release, and nothing is written.
+  const late = await hostStart(w.api, "triage", w.id, a);
+  assert.equal(late.status, 422, JSON.stringify(late.body));
+  assert.deepEqual([late.body.error.code, late.body.error.retryable, late.body.error.details], ["input_invalid", false, { reason: "host_released" }], JSON.stringify(late.body));
+  assert.deepEqual(late.body.error.fields.map((f) => [f.field, f.reason]), [["trigger_firing.firing_id", "not_due"]], JSON.stringify(late.body));
+  assert.match(late.body.error.message, /its host released it: The job failed at launch \(launch_failed\); its log held \[redacted\]/);
+  assert.ok(!JSON.stringify(late.body).includes(planted), "the refusal holds no secret");
+  assert.deepEqual(await runsOf(w.api, "triage"), [], "no run written");
+
+  // Its room is free: the waiting firing goes on the engine's next poll, not at start_by.
+  await w.poll();
+  assert.ok(await until(() => w.handed().length === 2), "the next firing was handed on the engine's next tick");
+  assert.deepEqual(w.handed(), [a, c]);
+  assert.ok(w.clock.now() < sent.startBy - 9 * 60_000, `handed at ${new Date(w.clock.now()).toISOString()}, start_by ${new Date(sent.startBy).toISOString()}`);
+  // The host has its POST before the engine writes its answer: wait for the write, not the POST.
+  assert.ok(await until(async () => (await w.firing(c)).status === "sent"), "the next firing's host took it");
+
+  const told = await until(() => failedMessages(receiver).find((message) => message.data?.firing_key === a), 10_000, "no trigger.failed for the released firing");
+  assert.deepEqual([told.data.trigger_id, told.data.error.code], [w.id, "host_released"], JSON.stringify(told));
+  assert.ok(!JSON.stringify(told).includes(planted), "trigger.failed holds no secret");
+});
+
+test("a release is refused in words where it does not fit: its run started (not_due naming the run), skipped, a body with no words, another trigger's firing or an unknown one (404); past start_by it is taken, and the same call again answers the firing unchanged", { timeout: 120_000 }, async (t) => {
+  const clock = fakeClock("2026-06-01T00:00:00Z");
+  let api;
+  // The host starts the run of each "nightly" firing before it answers, and none for "other".
+  const hook = await hookServer(t, async (res, sent) => {
+    if (sent.agent_id === "nightly") await api("POST", `/agents/${sent.agent_id}/runs`, { input: sent.input, max_cost_usd: 0.5, trigger_firing: { trigger_id: sent.trigger_id, firing_id: sent.firing_id } });
+    answerJson(res, 200, {});
+  });
+  // No runner: the host's run stays queued, so it is still active at the next time.
+  ({ api } = await serve(t, { triggerClock: clock, runner: false, launchHook: { url: hook.url, secret: mintSecret() } }));
+  await made(api, "nightly");
+  await made(api, "other");
+  const nightly = (await api("POST", "/triggers", schedule("nightly", { every_s: 600, start_at: "2026-06-01T00:10:00Z" }))).body.id;
+  const other = (await api("POST", "/triggers", { ...schedule("other", { every_s: 3600, start_at: "2026-06-01T00:15:00Z" }), name: "hourly" })).body.id;
+  clock.to("2026-06-01T00:10:00Z");
+  const [first] = await firings(api, nightly, 1);
+  assert.equal(first.status, "started", JSON.stringify(first));
+  const ran = await release(api, nightly, first.key);
+  assert.equal(ran.status, 422, JSON.stringify(ran.body));
+  assert.deepEqual(ran.body.error.fields.map((f) => [f.field, f.reason]), [["firing_id", "not_due"]]);
+  assert.deepEqual([ran.body.error.code, ran.body.error.retryable, ran.body.error.details], ["input_invalid", false, { reason: "run_started", run_id: first.run_id }], "a reason and the run the host matches, beside the words, never retried");
+  assert.match(ran.body.error.fields[0].message, new RegExp(`its run ${first.run_id} started`));
+
+  clock.to("2026-06-01T00:15:00Z");
+  const [handed] = await firings(api, other, 1);
+  assert.deepEqual([handed.status, handed.run_id, handed.start_by], ["sent", null, "2026-06-01T00:25:00.000Z"], JSON.stringify(handed));
+  clock.to("2026-06-01T00:20:00Z");
+  const [skipped] = await firings(api, nightly, 2);
+  assert.equal(skipped.status, "skipped", JSON.stringify(skipped));
+  const notHanded = await release(api, nightly, skipped.key);
+  assert.deepEqual([notHanded.status, notHanded.body.error?.fields?.[0]?.reason], [422, "not_due"], JSON.stringify(notHanded.body));
+  assert.match(notHanded.body.error.fields[0].message, /skipped/);
+
+  for (const [body, field] of [[{}, "error"], [{ error: "  " }, "error"], [{ error: "x".repeat(501) }, "error"], [{ error: 7 }, "error"], [{ error: "Failed.", why: "no" }, "why"]]) {
+    const refused = await release(api, other, handed.key, body);
+    assert.equal(refused.status, 422, `${JSON.stringify(body)}: ${JSON.stringify(refused.body)}`);
+    assert.deepEqual(refused.body.error.fields.map((f) => f.field), [field], JSON.stringify(refused.body));
+  }
+  assert.equal((await release(api, nightly, handed.key)).status, 404, "another trigger's firing is no firing of this one");
+  assert.equal((await release(api, other, `fir_${"0".repeat(32)}`)).status, 404, "an unknown firing");
+  assert.equal((await release(api, "trg_0123456789abcdef01234567", handed.key)).status, 404, "an unknown trigger");
+  const [still] = (await api("GET", `/triggers/${other}/firings`)).body.firings;
+  assert.deepEqual([still.status, still.start_by], ["sent", "2026-06-01T00:25:00.000Z"], "no refusal touched it");
+
+  // Past start_by the firing no longer holds its trigger's room, but its host may still say it started none.
+  clock.to("2026-06-01T00:26:00Z");
+  const released = await release(api, other, handed.key);
+  assert.equal(released.status, 200, JSON.stringify(released.body));
+  assert.deepEqual([released.body.status, released.body.error?.code, released.body.error?.message], ["failed", "host_released", "The job failed before its run started (launch_failed)."]);
+  const again = await release(api, other, handed.key, { error: "Other words." });
+  assert.equal(again.status, 200, JSON.stringify(again.body));
+  assert.deepEqual(again.body, released.body, "the same release again answers the firing unchanged");
+  assert.equal((await api("GET", `/triggers/${other}`)).body.failures_in_a_row, 1, "counted once");
+});
+
+test("a server without the launch hook refuses a firing's release: 422 not_allowed, in words", { timeout: 60_000 }, async (t) => {
+  const { api } = await serve(t, {});
+  await made(api, "nightly");
+  const created = await api("POST", "/triggers", schedule("nightly", { every_s: 3600, start_at: "2026-06-01T00:10:00Z" }));
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  const refused = await release(api, created.body.id, `fir_${"0".repeat(32)}`);
+  assert.equal(refused.status, 422, JSON.stringify(refused.body));
+  assert.deepEqual(refused.body.error.fields.map((f) => [f.field, f.reason]), [["firing_id", "not_allowed"]]);
+  assert.match(refused.body.error.fields[0].message, /no launch hook/);
 });
 
 test("a server without the launch hook refuses a run for a trigger firing", { timeout: 60_000 }, async (t) => {

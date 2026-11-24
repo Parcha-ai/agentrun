@@ -411,6 +411,8 @@ __all__ = [
     "GetChatGPTSignInResponse",
     "GetClaudeLoginResponse",
     "GetClaudeLoginResponseAccount",
+    "GetClaudeLoginResponseMachine",
+    "GetClaudeLoginResponseSignIn",
     "GetCliLearningRunResponse",
     "GetEmailAccountResponse",
     "GetEmailAccountResponseImap",
@@ -928,6 +930,9 @@ __all__ = [
     "ReleaseRunComputerBody",
     "ReleaseRunComputerResponse",
     "ReleaseRunComputerResponseHeld",
+    "ReleaseTriggerFiringBody",
+    "ReleaseTriggerFiringResponse",
+    "ReleaseTriggerFiringResponseError",
     "RemoteCommandEventsBody",
     "RemoteCommandEventsResponse",
     "RequestAction",
@@ -1125,6 +1130,8 @@ __all__ = [
     "StartChatGPTSignInResponse",
     "StartClaudeLoginResponse",
     "StartClaudeLoginResponseAccount",
+    "StartClaudeLoginResponseMachine",
+    "StartClaudeLoginResponseSignIn",
     "StartCliLearningRunBody",
     "StartCliLearningRunResponse",
     "StartCliLearningRunResponseLearning",
@@ -1185,9 +1192,13 @@ __all__ = [
     "TriggersResource",
     "TurnOffClaudeLoginResponse",
     "TurnOffClaudeLoginResponseAccount",
+    "TurnOffClaudeLoginResponseMachine",
+    "TurnOffClaudeLoginResponseSignIn",
     "TurnOnClaudeLoginBody",
     "TurnOnClaudeLoginResponse",
     "TurnOnClaudeLoginResponseAccount",
+    "TurnOnClaudeLoginResponseMachine",
+    "TurnOnClaudeLoginResponseSignIn",
     "UnarchiveAgentResponse",
     "UnarchiveRunResponse",
     "UpdateDefinitionBody",
@@ -4946,11 +4957,14 @@ class _GetClaudeLoginResponseRequired(TypedDict):
     place: Literal["agentrun", "machine"]
     command: str
     can_start: bool
+    folder: str
+    machine: GetClaudeLoginResponseMachine
 
 
 class GetClaudeLoginResponse(_GetClaudeLoginResponseRequired, total=False):
     refused: str
     account: GetClaudeLoginResponseAccount
+    sign_in: GetClaudeLoginResponseSignIn
 
 
 class GetClaudeLoginResponseAccount(TypedDict, total=False):
@@ -4958,6 +4972,24 @@ class GetClaudeLoginResponseAccount(TypedDict, total=False):
     email: str
     organization: str
     plan: str
+
+
+class GetClaudeLoginResponseMachine(TypedDict):
+    folder: str
+    source: Literal["CLAUDE_CONFIG_DIR", "default"]
+
+
+class _GetClaudeLoginResponseSignInRequired(TypedDict):
+    state: Literal["waiting", "signed_in", "timed_out", "failed", "not_started"]
+    started_at: str
+    limit_ms: int
+
+
+class GetClaudeLoginResponseSignIn(_GetClaudeLoginResponseSignInRequired, total=False):
+    ended_at: str
+    exit_code: int
+    signal: str
+    error: str
 
 
 class GetEmailAccountResponse(TypedDict):
@@ -6279,11 +6311,14 @@ class _StartClaudeLoginResponseRequired(TypedDict):
     place: Literal["agentrun", "machine"]
     command: str
     can_start: bool
+    folder: str
+    machine: StartClaudeLoginResponseMachine
 
 
 class StartClaudeLoginResponse(_StartClaudeLoginResponseRequired, total=False):
     refused: str
     account: StartClaudeLoginResponseAccount
+    sign_in: StartClaudeLoginResponseSignIn
 
 
 class StartClaudeLoginResponseAccount(TypedDict, total=False):
@@ -6291,6 +6326,24 @@ class StartClaudeLoginResponseAccount(TypedDict, total=False):
     email: str
     organization: str
     plan: str
+
+
+class StartClaudeLoginResponseMachine(TypedDict):
+    folder: str
+    source: Literal["CLAUDE_CONFIG_DIR", "default"]
+
+
+class _StartClaudeLoginResponseSignInRequired(TypedDict):
+    state: Literal["waiting", "signed_in", "timed_out", "failed", "not_started"]
+    started_at: str
+    limit_ms: int
+
+
+class StartClaudeLoginResponseSignIn(_StartClaudeLoginResponseSignInRequired, total=False):
+    ended_at: str
+    exit_code: int
+    signal: str
+    error: str
 
 
 class _StartMcpOAuthBodyRequired(TypedDict):
@@ -6401,11 +6454,14 @@ class _TurnOffClaudeLoginResponseRequired(TypedDict):
     place: Literal["agentrun", "machine"]
     command: str
     can_start: bool
+    folder: str
+    machine: TurnOffClaudeLoginResponseMachine
 
 
 class TurnOffClaudeLoginResponse(_TurnOffClaudeLoginResponseRequired, total=False):
     refused: str
     account: TurnOffClaudeLoginResponseAccount
+    sign_in: TurnOffClaudeLoginResponseSignIn
 
 
 class TurnOffClaudeLoginResponseAccount(TypedDict, total=False):
@@ -6413,6 +6469,24 @@ class TurnOffClaudeLoginResponseAccount(TypedDict, total=False):
     email: str
     organization: str
     plan: str
+
+
+class TurnOffClaudeLoginResponseMachine(TypedDict):
+    folder: str
+    source: Literal["CLAUDE_CONFIG_DIR", "default"]
+
+
+class _TurnOffClaudeLoginResponseSignInRequired(TypedDict):
+    state: Literal["waiting", "signed_in", "timed_out", "failed", "not_started"]
+    started_at: str
+    limit_ms: int
+
+
+class TurnOffClaudeLoginResponseSignIn(_TurnOffClaudeLoginResponseSignInRequired, total=False):
+    ended_at: str
+    exit_code: int
+    signal: str
+    error: str
 
 
 class _TurnOnClaudeLoginBodyRequired(TypedDict):
@@ -6428,11 +6502,14 @@ class _TurnOnClaudeLoginResponseRequired(TypedDict):
     place: Literal["agentrun", "machine"]
     command: str
     can_start: bool
+    folder: str
+    machine: TurnOnClaudeLoginResponseMachine
 
 
 class TurnOnClaudeLoginResponse(_TurnOnClaudeLoginResponseRequired, total=False):
     refused: str
     account: TurnOnClaudeLoginResponseAccount
+    sign_in: TurnOnClaudeLoginResponseSignIn
 
 
 class TurnOnClaudeLoginResponseAccount(TypedDict, total=False):
@@ -6440,6 +6517,24 @@ class TurnOnClaudeLoginResponseAccount(TypedDict, total=False):
     email: str
     organization: str
     plan: str
+
+
+class TurnOnClaudeLoginResponseMachine(TypedDict):
+    folder: str
+    source: Literal["CLAUDE_CONFIG_DIR", "default"]
+
+
+class _TurnOnClaudeLoginResponseSignInRequired(TypedDict):
+    state: Literal["waiting", "signed_in", "timed_out", "failed", "not_started"]
+    started_at: str
+    limit_ms: int
+
+
+class TurnOnClaudeLoginResponseSignIn(_TurnOnClaudeLoginResponseSignInRequired, total=False):
+    ended_at: str
+    exit_code: int
+    signal: str
+    error: str
 
 
 class DeleteMcpServerResponse(TypedDict):
@@ -7086,6 +7181,7 @@ class _RunFileRequired(TypedDict):
 class RunFile(_RunFileRequired, total=False):
     content_type: str | None
     unreadable: Literal[True]
+    name: str
 
 
 GetRunResponse: TypeAlias = "Run"
@@ -10506,6 +10602,34 @@ class ListTriggersResponseTriggersItemLastCheck(TypedDict):
     message: str
 
 
+class ReleaseTriggerFiringBody(TypedDict):
+    error: str
+
+
+class _ReleaseTriggerFiringResponseRequired(TypedDict):
+    key: str
+    by: Literal["schedule", "email", "feed", "manual", "webhook", "github", "composio"]
+    nominal_at: str
+    status: Literal["due", "started", "sent", "skipped", "failed", "missed"]
+    at: str
+    run_id: str | None
+    reason: str | None
+    error: ReleaseTriggerFiringResponseError | None
+
+
+class ReleaseTriggerFiringResponse(_ReleaseTriggerFiringResponseRequired, total=False):
+    count: int
+    attempts: int
+    retry_at: str
+    start_by: str
+    catch_up: Literal[True]
+
+
+class ReleaseTriggerFiringResponseError(TypedDict):
+    code: str
+    message: str
+
+
 class _RotateTriggerSecretResponseRequired(TypedDict):
     secret: SecretMeta
 
@@ -11395,7 +11519,7 @@ OPERATIONS: dict[str, Operation] = {
     "createInlineRun": Operation(method="POST", path="/runs", path_params=(), multi_segment=(), query=(), headers=("Idempotency-Key",), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "createRunComputerViewer": Operation(method="POST", path="/runs/{run_id}/computer/viewer", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=False, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "deleteRun": Operation(method="DELETE", path="/runs/{run_id}", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=None, answer="none", secret=False, public_fields=(), tagged=False),
-    "listRunFiles": Operation(method="GET", path="/runs/{run_id}/files", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "listRunFiles": Operation(method="GET", path="/runs/{run_id}/files", path_params=("run_id",), multi_segment=(), query=("cut",), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getRun": Operation(method="GET", path="/runs/{run_id}", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "gradeRun": Operation(method="PUT", path="/runs/{run_id}/grade", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "getRunGraph": Operation(method="GET", path="/runs/{run_id}/graph", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
@@ -11447,6 +11571,7 @@ OPERATIONS: dict[str, Operation] = {
     "listTriggerFirings": Operation(method="GET", path="/triggers/{trigger_id}/firings", path_params=("trigger_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getTrigger": Operation(method="GET", path="/triggers/{trigger_id}", path_params=("trigger_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "listTriggers": Operation(method="GET", path="/triggers", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "releaseTriggerFiring": Operation(method="POST", path="/triggers/{trigger_id}/firings/{firing_id}/release", path_params=("trigger_id", "firing_id"), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "rotateTriggerSecret": Operation(method="POST", path="/triggers/{trigger_id}/secret", path_params=("trigger_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=True, public_fields=(), tagged=False),
     "updateTrigger": Operation(method="PATCH", path="/triggers/{trigger_id}", path_params=("trigger_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "getUsage": Operation(method="GET", path="/usage", path_params=(), multi_segment=(), query=("from", "to", "group_by"), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
@@ -12053,9 +12178,9 @@ class RunsResource(Group):
         """Purge a run's content and keep its cost (DELETE /runs/{run_id})."""
         return self._call("deleteRun", (run_id,), None, None, timeout=timeout)
 
-    def files(self, run_id: str, *, timeout: float | None = None) -> ListRunFilesResponse:
+    def files(self, run_id: str, *, cut: Literal["run"] | None = None, timeout: float | None = None) -> ListRunFilesResponse:
         """The files the run wrote (GET /runs/{run_id}/files)."""
-        return self._call("listRunFiles", (run_id,), None, None, timeout=timeout)
+        return self._call("listRunFiles", (run_id,), None, {"cut": cut}, timeout=timeout)
 
     def get(self, run_id: str, *, timeout: float | None = None) -> GetRunResponse:
         """One run (GET /runs/{run_id})."""
@@ -12288,6 +12413,10 @@ class TriggersResource(Group):
     def list(self, *, timeout: float | None = None) -> ListTriggersResponse:
         """The triggers: schedules and signed webhooks that start an agent's capped runs or message a run (GET /triggers)."""
         return self._call("listTriggers", (), None, None, timeout=timeout)
+
+    def release_firing(self, trigger_id: str, firing_id: str, body: ReleaseTriggerFiringBody, *, timeout: float | None = None) -> ReleaseTriggerFiringResponse:
+        """The launch hook's host releases a firing it took and will start no run for (POST /triggers/{trigger_id}/firings/{firing_id}/release)."""
+        return self._call("releaseTriggerFiring", (trigger_id, firing_id), body, None, timeout=timeout)
 
     def rotate_secret(self, trigger_id: str, *, timeout: float | None = None) -> RotateTriggerSecretResponse:
         """A webhook trigger's new secret, shown once; the old one signs nothing from now on (POST /triggers/{trigger_id}/secret). Its body's string values are secrets: each copy is cut from the answer, and a refusal keeps only its code."""

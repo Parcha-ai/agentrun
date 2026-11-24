@@ -135,7 +135,7 @@ import { championOf, forgetRunCopies, type Grade, GRADE_SOURCES, GRADES_KEPT, ty
 import { workflowNodesOf } from "./learn/workflow-nodes.js";
 import { deleteLearning } from "./learn/delete.js";
 import { runModelRef } from "./model.js";
-import { ollamaHostOf, ollamaHostRefused, ollamaListing, ollamaModels } from "./ollama-provider.js";
+import { ollamaHostOf, ollamaHostRefused, ollamaListing, ollamaModels, ollamaReading } from "./ollama-provider.js";
 import { REDACTED } from "./secret-cut.js";
 // The v2 run statuses, as the run view names them (run-view.ts Status), for the list filter's validation. */
 const STATUSES = ["queued", "working", "paused", "input_required", "completed", "failed", "cancelled"] as const;
@@ -151,6 +151,7 @@ import { isSecretWriteOperation, type SecretRequest, secretPageFor, secretsWrita
 import { ChatGPTPlan, planOf, PlanSignInRefused, SIGN_OUT_UNCONFIRMED, withPlan } from "./chatgpt-plan.js";
 import { modelGatewayRoute, readSavedGateway, type SavedGateway, withSavedGateway } from "./model-gateway.js";
 import { CLAUDE_LOGIN_ROUTES, ClaudeLoginRefused, claudeLoginOf, claudeLoginRouteOff, claudeLoginSwitchedOff, claudeLoginSetting, claudeLoginView, type ClaudeLoginDeps, dropRefusedLogin, envAtPlace, LOGIN_HARNESS, loginOf, loopback, startLoginHere, turnOffClaudeLogin, turnOnClaudeLogin, whyNotOneOwner, withClaudeLogin } from "./claude-login.js";
+import { ClaudeSignIns } from "./claude-sign-in.js";
 import { bootSealKey, parametersDigest, withSealKey } from "./seal-key.js";
 import { ServerLockHeldError, takeServerLock } from "./server-lock.js";
 import { recordDataRoot } from "./runner/disk-free.js";
@@ -203,7 +204,7 @@ import { webhook } from "./trigger-webhook.js";
 import { SCHEME_NAMES } from "./trigger-signatures.js";
 import { permissionFrom, pinnedEffect, toolEffect } from "./tool-gate.js";
 import { mcpNameOf as mcpToolOf, mcpToolName } from "./tool-names.js";
-import { CATCHUP_WINDOW_S, FAILURES_TO_PAUSE, HISTORY_KEPT, MIN_EVERY_S, SOURCE_KINDS, TARGET_KINDS, type TriggerClock, Triggers } from "./triggers.js";
+import { CATCHUP_WINDOW_S, FAILURES_TO_PAUSE, HISTORY_KEPT, MIN_EVERY_S, RELEASE_WORDS_MAX, SOURCE_KINDS, TARGET_KINDS, type TriggerClock, Triggers } from "./triggers.js";
 import type { LaunchHook } from "./trigger-launch-hook.js";
 import { PAYLOAD_KEPT_BYTES } from "./trigger-adapter.js";
 import { applyBodyOf, choiceUnrunnable, COMPOSIO_TRIGGER_FIX, composioTriggerSkipped, COMPUTER_FIX, compiled, feedLeftEmpty, feedTriggerEmpty, githubTriggerUnconnected, githubTriggerWords, madeTriggerIssues, mcpSetUp, type McpServed, onServerName, onServers, type Package, packageDetail, packageModel, packageTiers, packageView, pickComputer, readPackages, notSetUpYet, serversFor, type ShellHere, TemplateRegistry, type TemplatesDeps } from "./templates.js";
@@ -247,6 +248,7 @@ import { sdkRunKey } from "./sdk/runs.js";
 import { waitEndedKey } from "./browser-wait-ended.js";
 import { agentComputerOf, agentComputerView, agentDirName, agentFolder, agentHomeFolder, claimKinds, runFolder, scratchFolder, computerProviderFactories, computerProviderMakers, computerReadiness, dockerHostAddressesOf, isWorkspaceError, localWorkspace, reconcileAgentComputer, registryHere, runShellOf, serverRunWorkspace, type ShellPlace, storeLedger, type Workspace } from "./workspace/index.js";
 import { keyReader } from "./key-meta.js";
+import { redacted } from "./key-refusal.js";
 
 export const CONTRACT = "agentrun.v2/0";
 
@@ -430,6 +432,9 @@ export type ServeOptions = {
   harnessSignIn?: boolean;
   /** With `faux` only: Docker answers, so docker is available, and nothing asks Docker (place-offers.ts). */
   fauxDocker?: boolean;
+  /** For tests: how long the Claude Code CLI's own sign-in this server starts waits for its browser before it is ended
+   *  (claude-sign-in.ts), in place of 10 minutes. */
+  claudeSignInLimitMs?: number;
   /** For tests: the lock each harness's first use installs by (harness-install.ts), by harness, with the package.json it
    *  locks beside it, in place of the one AgentRun ships, whose packages a test's own registry serves. */
   harnessLocks?: Readonly<Record<string, string>>;
@@ -840,6 +845,7 @@ export const ROUTES: readonly Route[] = [
   { method: "DELETE", pattern: /^\/triggers\/([^/]+)$/, name: "deleteTrigger" },
   { method: "POST", pattern: /^\/triggers\/([^/]+)\/fire$/, name: "fireTrigger" },
   { method: "GET", pattern: /^\/triggers\/([^/]+)\/firings$/, name: "listTriggerFirings" },
+  { method: "POST", pattern: /^\/triggers\/([^/]+)\/firings\/([^/]+)\/release$/, name: "releaseTriggerFiring" },
   { method: "POST", pattern: /^\/triggers\/([^/]+)\/secret$/, name: "rotateTriggerSecret" },
   { method: "GET", pattern: /^\/templates$/, name: "listTemplates" },
   { method: "POST", pattern: /^\/templates\/import$/, name: "importTemplate" },
@@ -979,10 +985,13 @@ async function planStep<T>(step: () => Promise<T>): Promise<T> {
  *  Made from `env` alone, so it is remade only when env is. */
 type ModelState = { needs: ModelNeeds | null; priced: boolean | null; learning_model: LearningModel };
 async function needsOf(env: NodeJS.ProcessEnv): Promise<ModelState> {
-  const chosen = await chooseModel(env, undefined);
-  const learning_model = await learningModelOf(env);
-  if ("why" in chosen) return { needs: chosen.needs, priced: null, learning_model };
-  return { needs: null, priced: (await unpricedModels(env, undefined)).length === 0, learning_model };
+  // A reading no run waits on, as the offers are (ollamaReading): a key's save never waits on a stuck Ollama's /api/show.
+  return ollamaReading(async () => {
+    const chosen = await chooseModel(env, undefined);
+    const learning_model = await learningModelOf(env);
+    if ("why" in chosen) return { needs: chosen.needs, priced: null, learning_model };
+    return { needs: null, priced: (await unpricedModels(env, undefined)).length === 0, learning_model };
+  });
 }
 
 /** The server's reading of `base`, whole: its secrets, saved keys among them (`env`), the harnesses' offers, probed from
@@ -1499,7 +1508,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // where it is signed in. A sign-in, a sign-out or an expiry it sees makes the reading again, as a key's save does.
   const plan = new ChatGPTPlan({ store, sealKey: seal.key, log: (fields) => (log ? log(logLine("chatgpt", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("chatgpt", fields)}\n`)), changed: () => keysChanged() });
   await plan.load();
-  stops.push(async () => plan.close());
+  stops.push(async () => void plan.close());
   // Claude Code's login on this machine (claude-login.ts): env carries where it is while the owner has it on, so
   // claude-agent's model checks see a model without a key. Unset, its switch follows the listen address: there on
   // loopback, off past it. A setting kept where the mode is now off or refused goes first.
@@ -1593,16 +1602,16 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     savedGateway = await readSavedGateway(store, seal.key);
     await keysChanged();
   };
-  /** The sign-in as the store holds it now: a runner may have renewed it, or found it expired. A change reads env again;
-   *  so does a sign-in's change this server failed to take (changed_failed), until it takes. */
-  const planNow = async () => {
-    const was = plan.state;
-    if ((await plan.load()).state !== was) await keysChanged();
-    else await plan.changeAgain();
-  };
+  /** The sign-in as the store holds it now (ChatGPTPlan.refresh): a change reads env again, and so does one this server
+   *  failed to take (changed_failed), until it takes. */
+  const planNow = () => plan.refresh();
   /** What Claude Code's login routes use: a turn on or off reads the setting again, then env, as a key's save does. A
-   *  sign-in this server starts opens a browser on its machine, so only where the console is on loopback here. */
+   *  sign-in this server starts opens a browser on its machine, so only where the console is on loopback here; it is
+   *  kept for this process (claude-sign-in.ts), and one still waiting is ended at the stop. */
+  const claudeSignIns = new ClaudeSignIns({ limitMs: options.claudeSignInLimitMs });
+  stops.push(async () => claudeSignIns.close());
   const loginDeps = (): ClaudeLoginDeps => ({
+    signIns: claudeSignIns,
     settings: store.settings,
     data,
     env: base,
@@ -5437,7 +5446,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         await needRun(id);
         // A run's files through the server's read-only Workspace of its folder (serverRunWorkspace); a run with no folder
         // lists none, a withheld run refuses (403), as the base did (filesShown). Same shape and cap the file route answered.
-        return send(res, 200, await listRunFilesOverStore(store, id, runReadsDeps));
+        // With ?cut=run, each file's name under the run's cut too.
+        return send(res, 200, await listRunFilesOverStore(store, id, runReadsDeps, url.searchParams.get("cut")));
       }
       // An archived agent's home is read and written as any other's: as its definition is.
       case "listHomeFiles": {
@@ -6203,6 +6213,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       }
       case "listTriggerFirings":
         return send(res, 200, await triggers.firings(id));
+      case "releaseTriggerFiring":
+        // The launch hook's host took the firing and will start no run for it: failed now, its trigger's room free. Its
+        // words are kept and sent on (trigger.failed) as any stored string is, cut of every secret the server holds.
+        return send(res, 200, await triggers.release(id, decodeURIComponent(second!), await bodyOf(req), (text) => redacted(text, serverSecrets(), RELEASE_WORDS_MAX)));
     }
     throw new ApiError("not_found", `no route ${path}`);
   }
@@ -6719,8 +6733,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     closing = true;
     stopping.abort();
     clearInterval(localSourceTimer);
-    // Cancel a pending ChatGPT callback without signing out or changing the saved credential.
-    plan.close();
+    // Cancel a pending ChatGPT callback without signing out or changing the saved credential (not waited for).
+    void plan.close();
+    // The CLI's sign-in still waiting for its browser ends with the server, which forgets it: left running, its CLI would
+    // keep the browser's callback port from the next server's sign-in. Awaited until its process is gone.
+    const signInStopped = claudeSignIns.close();
     const observationStopped = stopObservationRetention();
     // A harness install under way stops with the server: npm gets SIGTERM, then SIGKILL, and nothing half installed stays.
     const installStopped = Promise.all(Object.values(installs).map((install) => install.stop()));
@@ -6738,6 +6755,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     await importing;
     await schemaSealed;
     await installStopped;
+    await signInStopped;
     await observationStopped;
     await localSourceSweep;
     // The ends' follower stops before the webhooks it feeds and the store it reads.

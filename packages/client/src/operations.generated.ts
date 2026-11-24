@@ -886,6 +886,7 @@ export type RunFile = {
   modified_at: Timestamp;
   content_type?: string | null;
   unreadable?: true;
+  name?: string;
 };
 
 export type MessageCreate = {
@@ -3197,6 +3198,20 @@ export type GetClaudeLoginResponse = {
     organization?: string;
     plan?: string;
   };
+  folder: string;
+  machine: {
+    folder: string;
+    source: "CLAUDE_CONFIG_DIR" | "default";
+  };
+  sign_in?: {
+    state: "waiting" | "signed_in" | "timed_out" | "failed" | "not_started";
+    started_at: string;
+    ended_at?: string;
+    limit_ms: number;
+    exit_code?: number;
+    signal?: string;
+    error?: string;
+  };
 };
 
 /** This server's email account: its address, servers and who signs in, never its password (GET /settings/email). */
@@ -3996,6 +4011,20 @@ export type StartClaudeLoginResponse = {
     organization?: string;
     plan?: string;
   };
+  folder: string;
+  machine: {
+    folder: string;
+    source: "CLAUDE_CONFIG_DIR" | "default";
+  };
+  sign_in?: {
+    state: "waiting" | "signed_in" | "timed_out" | "failed" | "not_started";
+    started_at: string;
+    ended_at?: string;
+    limit_ms: number;
+    exit_code?: number;
+    signal?: string;
+    error?: string;
+  };
 };
 
 /** Start signing in to an MCP server with OAuth: the page the owner opens (POST /settings/mcp-servers/{name}/oauth/start). Its body's string values are secrets: each copy is cut from the answer, and a refusal keeps only its code. */
@@ -4090,6 +4119,20 @@ export type TurnOffClaudeLoginResponse = {
     organization?: string;
     plan?: string;
   };
+  folder: string;
+  machine: {
+    folder: string;
+    source: "CLAUDE_CONFIG_DIR" | "default";
+  };
+  sign_in?: {
+    state: "waiting" | "signed_in" | "timed_out" | "failed" | "not_started";
+    started_at: string;
+    ended_at?: string;
+    limit_ms: number;
+    exit_code?: number;
+    signal?: string;
+    error?: string;
+  };
 };
 
 /** Turn on Claude Code's login on this machine for claude-agent's runs (PUT /settings/claude-login). */
@@ -4108,6 +4151,20 @@ export type TurnOnClaudeLoginResponse = {
     email?: string;
     organization?: string;
     plan?: string;
+  };
+  folder: string;
+  machine: {
+    folder: string;
+    source: "CLAUDE_CONFIG_DIR" | "default";
+  };
+  sign_in?: {
+    state: "waiting" | "signed_in" | "timed_out" | "failed" | "not_started";
+    started_at: string;
+    ended_at?: string;
+    limit_ms: number;
+    exit_code?: number;
+    signal?: string;
+    error?: string;
   };
 };
 
@@ -4540,6 +4597,9 @@ export type CreateRunComputerViewerResponse = {
 /** Purge a run's content and keep its cost (DELETE /runs/{run_id}). */
 
 /** The files the run wrote (GET /runs/{run_id}/files). */
+export interface ListRunFilesParams {
+  cut?: "run";
+}
 export type ListRunFilesResponse = RunFileList;
 
 /** One run (GET /runs/{run_id}). */
@@ -6560,6 +6620,29 @@ export type ListTriggersResponse = {
   }>;
 };
 
+/** The launch hook's host releases a firing it took and will start no run for (POST /triggers/{trigger_id}/firings/{firing_id}/release). */
+export type ReleaseTriggerFiringBody = {
+  error: string;
+};
+export type ReleaseTriggerFiringResponse = {
+  key: string;
+  by: "schedule" | "email" | "feed" | "manual" | "webhook" | "github" | "composio";
+  nominal_at: string;
+  status: "due" | "started" | "sent" | "skipped" | "failed" | "missed";
+  at: string;
+  run_id: string | null;
+  reason: string | null;
+  error: {
+    code: string;
+    message: string;
+  } | null;
+  count?: number;
+  attempts?: number;
+  retry_at?: string;
+  start_by?: string;
+  catch_up?: true;
+};
+
 /** A webhook trigger's new secret, shown once; the old one signs nothing from now on (POST /triggers/{trigger_id}/secret). Its body's string values are secrets: each copy is cut from the answer, and a refusal keeps only its code. */
 export type RotateTriggerSecretResponse = {
   secret: SecretMeta;
@@ -7200,7 +7283,7 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   createInlineRun: {"method":"POST","path":"/runs","pathParams":[],"multiSegment":[],"query":[],"headers":["Idempotency-Key"],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   createRunComputerViewer: {"method":"POST","path":"/runs/{run_id}/computer/viewer","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":false,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   deleteRun: {"method":"DELETE","path":"/runs/{run_id}","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"none","secret":false,"publicFields":[],"tagged":false},
-  listRunFiles: {"method":"GET","path":"/runs/{run_id}/files","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  listRunFiles: {"method":"GET","path":"/runs/{run_id}/files","pathParams":["run_id"],"multiSegment":[],"query":["cut"],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getRun: {"method":"GET","path":"/runs/{run_id}","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   gradeRun: {"method":"PUT","path":"/runs/{run_id}/grade","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getRunGraph: {"method":"GET","path":"/runs/{run_id}/graph","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
@@ -7252,6 +7335,7 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   listTriggerFirings: {"method":"GET","path":"/triggers/{trigger_id}/firings","pathParams":["trigger_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getTrigger: {"method":"GET","path":"/triggers/{trigger_id}","pathParams":["trigger_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   listTriggers: {"method":"GET","path":"/triggers","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  releaseTriggerFiring: {"method":"POST","path":"/triggers/{trigger_id}/firings/{firing_id}/release","pathParams":["trigger_id","firing_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   rotateTriggerSecret: {"method":"POST","path":"/triggers/{trigger_id}/secret","pathParams":["trigger_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":true,"publicFields":[],"tagged":false},
   updateTrigger: {"method":"PATCH","path":"/triggers/{trigger_id}","pathParams":["trigger_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getUsage: {"method":"GET","path":"/usage","pathParams":[],"multiSegment":[],"query":["from","to","group_by"],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
@@ -7563,7 +7647,7 @@ export function resources(call: Call) {
       /** Purge a run's content and keep its cost (DELETE /runs/{run_id}). */
       delete: (runId: string, options?: RequestOptions): Promise<void> => call("deleteRun", [runId], undefined, undefined, options),
       /** The files the run wrote (GET /runs/{run_id}/files). */
-      files: (runId: string, options?: RequestOptions): Promise<ListRunFilesResponse> => call("listRunFiles", [runId], undefined, undefined, options),
+      files: (runId: string, params?: ListRunFilesParams, options?: RequestOptions): Promise<ListRunFilesResponse> => call("listRunFiles", [runId], undefined, params, options),
       /** One run (GET /runs/{run_id}). */
       get: (runId: string, options?: RequestOptions): Promise<GetRunResponse> => call("getRun", [runId], undefined, undefined, options),
       /** Grade an ended run's answer: right or wrong, and the fields a right answer holds (PUT /runs/{run_id}/grade). */
@@ -7684,6 +7768,8 @@ export function resources(call: Call) {
       get: (triggerId: string, options?: RequestOptions): Promise<GetTriggerResponse> => call("getTrigger", [triggerId], undefined, undefined, options),
       /** The triggers: schedules and signed webhooks that start an agent's capped runs or message a run (GET /triggers). */
       list: (options?: RequestOptions): Promise<ListTriggersResponse> => call("listTriggers", [], undefined, undefined, options),
+      /** The launch hook's host releases a firing it took and will start no run for (POST /triggers/{trigger_id}/firings/{firing_id}/release). */
+      releaseFiring: (triggerId: string, firingId: string, body: ReleaseTriggerFiringBody, options?: RequestOptions): Promise<ReleaseTriggerFiringResponse> => call("releaseTriggerFiring", [triggerId, firingId], body, undefined, options),
       /** A webhook trigger's new secret, shown once; the old one signs nothing from now on (POST /triggers/{trigger_id}/secret). */
       rotateSecret: (triggerId: string, options?: RequestOptions): Promise<RotateTriggerSecretResponse> => call("rotateTriggerSecret", [triggerId], undefined, undefined, options),
       /** Change a trigger, or turn it off and on (PATCH /triggers/{trigger_id}). */
