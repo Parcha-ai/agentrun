@@ -344,7 +344,7 @@ export async function testGateway(deps: ModelGatewayDeps, body: unknown, signal?
   const issues: InputIssue[] = unknownFields(given, ["base_url", "api_key"]);
   if (given.base_url !== undefined && (typeof given.base_url !== "string" || !given.base_url.trim())) issues.push({ field: "base_url", reason: "wrong_type", message: "base_url is the gateway's address as text" });
   else if (typeof given.base_url === "string") {
-    const problem = baseProblem("base_url", given.base_url.trim());
+    const problem = runProblem("base_url", given.base_url.trim());
     if (problem) issues.push({ field: "base_url", reason: "invalid", message: problem });
   }
   // null: test with no key (the form's "Use no key"), never the saved one.
@@ -360,7 +360,8 @@ export async function testGateway(deps: ModelGatewayDeps, body: unknown, signal?
   const base = typeof given.base_url === "string" ? given.base_url.trim() : inForce?.base;
   if (base === undefined) return { ok: false, why: "No model gateway is saved here: enter its address to test it." };
   const field = typeof given.base_url === "string" ? "base_url" : inForce!.field;
-  const problem = baseProblem(field, base);
+  // A run's rule, as Save's: an address no run could use is said so, and never asked.
+  const problem = runProblem(field, base);
   if (problem) return { ok: false, why: problem };
   const root = gatewayBase(field, base);
   const sameOrigin = inForce !== undefined && !baseProblem(inForce.field, inForce.base) && new URL(gatewayBase(inForce.field, inForce.base)).origin === new URL(root).origin;
