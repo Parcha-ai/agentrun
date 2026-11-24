@@ -62,3 +62,21 @@ test("a held value split across two strings of a web call's JSON withholds the c
   assert.ok(webWithin(webShownOf("web_search", split), 1000).includes(HEAD));
   assert.equal(webWithin(webShownOf("web_search", split, (part) => part, (joined) => withheldWhole(joined, [KEY])), 1000), "[redacted]");
 });
+
+test("a held value split where a call's read stops, its rest past \\uXXXX escapes of whitespace, shows none of it; other escapes count as one character each", () => {
+  // The matcher decodes each escape, so the value reads whole across escaped whitespace: the read past the stop counts
+  // an escape as the character it decodes to, so padding of them up to a piece never hides the rest.
+  for (const pad of ["\\u0020".repeat(100), "\\u000a".repeat(100), "\\u3000".repeat(100), `${" ".repeat(3000)}${"\\u0020".repeat(100)}`]) {
+    const text = `${"y ".repeat(59_940)}${HEAD}\n${pad}${REST}${"z".repeat(9000)} end`;
+    const shown = redactedCall(text, [KEY], CALL_RESULT_CHARS).slice(0, CALL_RESULT_CHARS);
+    assert.ok(!shown.includes(HEAD.slice(0, 8)), `${pad.slice(0, 7)}: ${shown.slice(-60)}`);
+  }
+  // A value written as escapes after the stop is read as its 32 characters, not its 192 raw ones.
+  const written = `${"y ".repeat(59_940)}${HEAD}\n${"\\u0020".repeat(30)}${escaped(REST)}${"z".repeat(9000)} end`;
+  assert.ok(!redactedCall(written, [KEY], CALL_RESULT_CHARS).slice(0, CALL_RESULT_CHARS).includes(HEAD.slice(0, 8)));
+  // Padding of escapes longer than a piece is more than the read past the stop reads: the text is withheld.
+  assert.equal(redactedCall(`${"y ".repeat(59_940)}${HEAD}${"\\u0020".repeat(1400)}${REST} end`, [KEY], CALL_RESULT_CHARS), "[redacted]");
+  // The same text with no held value split there is served, cut where the read stopped.
+  const plain = `${"y ".repeat(59_940)}${"q".repeat(16)}\n${"\\u0020".repeat(100)}${"z".repeat(9000)} end`;
+  assert.ok(redactedCall(plain, [KEY], CALL_RESULT_CHARS).startsWith("y y "));
+});
