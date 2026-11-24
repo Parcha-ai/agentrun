@@ -844,7 +844,7 @@ function ConsolePage({ v2, onSignedOut, demo = false }: ConsoleProps) {
           // A new decision agent's judge names the server's decision provider (agentForm's decisionProvider).
           : <AgentEditPage key={`${where.agent ?? "new"}:${where.tool ?? ""}`} v2={v2} choices={choices} gates={gates} focusTool={where.tool} caps={{ ...editorCaps, routePrefix: c?.models?.route_prefix, decisionProvider: decisionProvider((caps as unknown as { workflows?: Parameters<typeof decisionProvider>[0] } | null)?.workflows), places: placesOf(caps), mcp: !!caps?.features?.mcp_client, mcpHarnesses: caps?.features?.mcp_client?.harnesses }} agentId={where.agent} go={go} />
         // The form picks its lanes from the harnesses once, so it waits for the capabilities' first read.
-        : where.newRace ? (caps ? <RaceStart v2={v2} harnesses={editorCaps.harnesses} go={go} />
+        : where.newRace ? (caps ? <RaceStart v2={v2} harnesses={editorCaps.harnesses} tools={editorCaps.tools} places={placesOf(caps)} go={go} />
           : capsFailed ? <div className="p-5 md:p-8"><Banner tone="error" actions={<Button size="xs" onClick={() => void readCaps()}>Try again</Button>}>The server's harnesses could not be read, so there is nothing to pick a lane from yet.</Banner></div>
           : <RunSkeleton />)
         : where.race ? <Race key={where.race} v2={v2} label={where.race} />

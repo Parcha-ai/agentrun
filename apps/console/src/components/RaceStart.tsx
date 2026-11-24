@@ -4,9 +4,11 @@ import { Chip } from "@/components/ui/chip";
 import { Field, Input, Textarea } from "@/components/ui/field";
 import { Picker } from "@/components/ui/picker";
 import { pageTitleClass, pageToolbarClass } from "@/components/ui/toolbar";
+import type { ToolOffer } from "@/lib/agentForm";
 import { type Client, ClientError } from "@/lib/client";
 import { keepersByRun } from "@/lib/idempotency";
-import { type LaneChoice, laneStart, MAX_LANES, MIN_LANES, newRaceLabel, raceFilter } from "@/lib/race";
+import type { Places } from "@/lib/place";
+import { type LaneChoice, laneKit, laneStart, MAX_LANES, MIN_LANES, newRaceLabel, raceFilter } from "@/lib/race";
 import { cn } from "@/lib/utils";
 import type { Run } from "@/lib/v2";
 
@@ -34,8 +36,9 @@ const refused = (e: unknown): e is ClientError =>
  *  lane (lib/race.ts laneStart), each under its own Idempotency-Key, all at once; a lane the server refuses says why in
  *  its own place and the others start all the same. Once every lane has a run it opens the race (#/races/<label>). A
  *  second Start sends only the lanes left, each under the key its request had, so no lane ever starts twice. `label`: the
- *  race's (a test's), else a new one (newRaceLabel). */
-export function RaceStart({ v2, harnesses, go, label: given }: { v2: Pick<Client, "startInlineRun">; harnesses: RaceHarness[]; go: (to: string) => void; label?: string }) {
+ *  race's (a test's), else a new one (newRaceLabel). `tools` and `places`: capabilities' tool offers and places, which
+ *  give each lane a new agent's tools and box (laneKit). */
+export function RaceStart({ v2, harnesses, tools, places, go, label: given }: { v2: Pick<Client, "startInlineRun">; harnesses: RaceHarness[]; tools: ToolOffer[]; places: Places | null; go: (to: string) => void; label?: string }) {
   const runnable = harnesses.filter((h) => h.available && (h.models?.length ?? 0) > 0);
   const label = useRef(given ?? newRaceLabel()).current;
   const keys = useRef(keepersByRun()).current;
@@ -81,7 +84,7 @@ export function RaceStart({ v2, harnesses, go, label: given }: { v2: Pick<Client
     setSending(true);
     const done = await Promise.all(left.map(async (i): Promise<[number, Outcome]> => {
       const was = outcomes[i];
-      const body = was && "unsure" in was ? was.unsure : laneStart(label, i + 1, lanes[i], task.trim(), capUsd);
+      const body = was && "unsure" in was ? was.unsure : laneStart(label, i + 1, lanes[i], task.trim(), capUsd, laneKit(lanes[i].harness, tools, places));
       try {
         return [i, { run: await v2.startInlineRun(body, keys(String(i + 1)).keyFor("race", body)) }];
       } catch (e) {

@@ -1,11 +1,13 @@
 // A race: 2 to 4 runs of one task, each on its own harness and model, grouped by one `race:<label>` label and watched side
 // by side (#/races/<label>). The label is the race's only record: no table, no server change. A lane's own label
 // (`lane:<n>`) orders the lanes, never their start times, so the order says nothing about who started first.
+import { defaultTools, type ToolOffer } from "./agentForm";
 import type { Client } from "./client";
 import { tokensWords } from "./format";
 import { uuid } from "./idempotency";
+import { computerOfPlace, newAgentPlace, type Places } from "./place";
 import { steps } from "./timeline";
-import type { Run, RunCreateInline, TimelineRow } from "./v2";
+import type { Computer, Run, RunCreateInline, TimelineRow } from "./v2";
 
 /** The label key that names a race, and the one that numbers its lanes. */
 export const RACE_KEY = "race";
@@ -58,15 +60,25 @@ export const MIN_LANES = 2;
 const LANE_INSTRUCTIONS = "Do the task you are given.";
 /** What one lane runs on. */
 export type LaneChoice = { harness: string; model: string };
+/** What a lane works with: its tools, and the computer they run on (none named: the runner). */
+export type LaneKit = { tools: string[]; computer?: Computer };
+
+/** A lane's kit, a new agent's on this server: every tool its harness runs here (agentForm.ts defaultTools), in the
+ *  server's default box when it has one (with the shell), else on the runner. The inline route gives a definition no
+ *  tools and no place of its own, so the lane names both, or it has nothing to do its task with. */
+export function laneKit(harness: string, offers: ToolOffer[], places: Places | null | undefined): LaneKit {
+  const place = newAgentPlace(places);
+  return { tools: defaultTools(harness, offers, place), ...(place ? { computer: computerOfPlace(place) } : {}) };
+}
 
 /** The inline run (POST /v2/runs) lane `n` of race `label` starts: an agent of its own (external `race-<label>-<n>`),
  *  one revision per harness and model (the external version), so a lane changed after a refusal is a new revision, never
  *  a conflict with the one refused. Every lane gets the race's task (its input) and cap, the same short instructions (a
- *  definition needs instructions or a workflow), and the labels the race view reads. */
-export function laneStart(label: string, n: number, lane: LaneChoice, task: string, maxCostUsd: number): RunCreateInline {
+ *  definition needs instructions or a workflow), its kit (laneKit), and the labels the race view reads. */
+export function laneStart(label: string, n: number, lane: LaneChoice, task: string, maxCostUsd: number, kit: LaneKit): RunCreateInline {
   return {
     external: { source: "console", kind: "race", id: `race-${label}-${n}`, version: `${lane.harness} ${lane.model}` },
-    definition: { name: `Race ${label}, lane ${n}`, instructions: LANE_INSTRUCTIONS, harness: lane.harness, model: lane.model },
+    definition: { name: `Race ${label}, lane ${n}`, instructions: LANE_INSTRUCTIONS, harness: lane.harness, model: lane.model, tools: kit.tools, ...(kit.computer ? { computer: kit.computer } : {}) },
     input: { content: task },
     max_cost_usd: maxCostUsd,
     labels: { [RACE_KEY]: label, [LANE_KEY]: String(n), harness: lane.harness, model: lane.model },
