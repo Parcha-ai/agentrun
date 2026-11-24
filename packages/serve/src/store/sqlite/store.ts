@@ -520,6 +520,11 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
     if (role === "runner" && (await connection.all<{ name: string }>("SELECT name FROM pragma_table_info('run_attempts')")).length === 0) {
       throw new StoreAwaitsServer("keep each claim's turn and attempt (run_attempts)");
     }
+    // A run's end writes its ledger row and spend rows (schema.ts LEARNING_LEDGER, LEARNING_SPEND) in its own transaction:
+    // a runner waits for the server that adds the tables (STORE_DDL at its start).
+    if (role === "runner" && (await connection.all("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name IN ('learning_ledger', 'learning_spend')")).length < 2) {
+      throw new StoreAwaitsServer("keep each run's learning ledger row and spend (learning_ledger, learning_spend)");
+    }
     // The per-run viewer table was renamed browser_viewers → computer_viewers (schema.ts). Its rows are ephemeral, so none
     // migrate; the server drops a stale browser_viewers an earlier build of this version left, so none lingers beside it.
     // An earlier build of this version made no one-answer index on commands (schema.ts COMMANDS_ONE_ANSWER), or one that
