@@ -19,10 +19,10 @@ import { registryPin, storeOn } from "./store-helpers.mjs";
 
 const { SECRET_WRITE_REFUSAL } = await import("../dist/secret-writes.js");
 const { apiOnlyRefusal } = await import("../dist/api-only.js");
-const { API_ONLY_MCP_ORIGINS_ENV, apiOnlyMcpOriginsFrom } = await import("../dist/env-switch.js");
+const { apiOnlyMcpOriginsFrom } = await import("../dist/env-switch.js");
 const { mcpSourceKey, ownersRecord, storedSource } = await import("../dist/mcp-sources.js");
 const { sealMcpCredential, sealRunMcpAuth } = await import("../dist/store/index.js");
-const { holdApiOnlyMcpOrigins } = await import("../dist/mcp-api-only-origins.js");
+const { holdApiOnlyMcpOrigins, offApiOnlyMcpOriginsWords } = await import("../dist/mcp-api-only-origins.js");
 const { mcpClaim } = await import("../dist/runner/mcp-claim.js");
 
 const LIST = `not-a-secret-${"cf-list-token-0001"}`;
@@ -52,7 +52,7 @@ async function setup(t, origins, more = {}) {
 }
 
 const perRun = (url) => ({ url, auth: { type: "per_run", headers: { authorization: `Bearer ${LIST}` } } });
-const OFF_LIST = "The MCP server contextforge can't be used: the API token saved it at an origin that is no longer on this server's AGENTRUN_API_ONLY_MCP_ORIGINS. Nothing was sent.";
+const OFF_LIST = offApiOnlyMcpOriginsWords("contextforge");
 /** An inline run (external `id`) granted contextforge's add, handed the run's own token. */
 const runAdd = (s, id) => s.token("POST", "/runs", {
   external: { source: "backend", kind: "expert", id, version: 1 },

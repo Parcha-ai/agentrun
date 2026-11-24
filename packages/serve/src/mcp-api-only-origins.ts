@@ -44,5 +44,9 @@ export async function offApiOnlyMcpOrigins(store: SettingsReader, name: string, 
     origin = "";
   }
   if (origins.includes(origin)) return undefined;
-  return `The MCP server ${name} can't be used: the API token saved it at an origin that is no longer on this server's AGENTRUN_API_ONLY_MCP_ORIGINS. Nothing was sent.`;
+  return offApiOnlyMcpOriginsWords(name);
 }
+
+/** The words a per_run server the token saved at an origin off the list is refused with (offApiOnlyMcpOrigins). */
+export const offApiOnlyMcpOriginsWords = (name: string): string =>
+  `The MCP server ${name} can't be used: the API token saved it at an origin that is no longer on this server's AGENTRUN_API_ONLY_MCP_ORIGINS. Nothing was sent.`;
