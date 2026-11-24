@@ -104,6 +104,19 @@ test("the CLI is started with the host's tools only, no settings, no sign-in and
   assert.equal(env.CLAUDE_AGENT_SDK_CLIENT_APP, 'agentrun-claude-agent');
 });
 
+// A host tool the host marks deferred (its catalog past the threshold, found by the host's tools_search and run by its
+// tools_call) is never listed to the CLI, as no harness lists one (the kernel's tool bridge): a run whose own tool search
+// is off (a model the host's route translates) keeps its context for the tools it lists.
+test("a host tool marked deferred is never listed to the CLI: not among the tools it is allowed", async (t) => {
+  const seen = [];
+  const { adapter } = await claude(t, { script: ['call submit {"value":{"answer":"ok"}}'], sdk: { onQuery: (options) => seen.push(options) } });
+  const lookup = { name: 'lookup', description: 'Look.', inputSchema: { type: 'object' }, replay: 'safe', call: async () => ({ text: 'x' }) };
+  const hidden = { name: 'mcp__probe__hidden', description: 'Hidden.', inputSchema: { type: 'object' }, replay: 'safe', deferred: true, call: async () => ({ text: 'y' }) };
+  const runNode = createHarnessRunner(adapter, { store: memorySessionStore(), tools: [lookup, hidden] });
+  assert.deepEqual(await runNode({ kind: 'agent', label: 'q', system: ['Be brief.'], user: 'Go.', schema: SCHEMAS.Out, tools: ['lookup', 'mcp__probe__hidden'] }), { answer: 'ok' });
+  assert.deepEqual([...seen[0].allowedTools].sort(), ['mcp__hands__lookup', 'mcp__hands__submit']);
+});
+
 // The Skill gate apart from the CLI. On the pinned CLI a name that is no skill of the session's never reaches the hook (the
 // CLI refuses it first), so the hook's own deny is the last line should a later CLI check in another order; and the
 // rewrite of a bare name is pinned here without the CLI too.
