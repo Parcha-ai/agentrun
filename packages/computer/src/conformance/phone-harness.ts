@@ -17,9 +17,9 @@ export const PHONE_ENV = {
 	key: "COMPUTER_PHONE_HARNESS_API_KEY",
 	/** android (the default); ios is refused until it is built. */
 	platform: "COMPUTER_PHONE_HARNESS_PLATFORM",
-	/** The adb CLI's path. */
+	/** The adb CLI's path; default adb on PATH. */
 	adb: "COMPUTER_PHONE_HARNESS_ADB",
-	/** The ledger's JSON file. */
+	/** The ledger's JSON file; default agentrun-phone-ledger.json in the temp dir. */
 	ledger: "COMPUTER_PHONE_HARNESS_LEDGER",
 	/** 1 to rent phones at all: each one is billed by the minute. */
 	live: "AGENTRUN_COMPUTER_LIVE_PHONE_HARNESS",

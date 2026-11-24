@@ -2,6 +2,10 @@
 // token from COMPUTER_MODAL_TOKEN_ID and COMPUTER_MODAL_TOKEN_SECRET alone (never MODAL_TOKEN_ID or MODAL_TOKEN_SECRET,
 // which may hold a production token); the provider gives the token to the client explicitly, pins the server it goes to
 // and refuses an ambient MODAL_SERVER_URL (see modalClient in ../modal.ts).
+// For the mount cases, mountFor("archil") makes a fresh run folder on the Archil disk COMPUTER_ARCHIL_DISK names (in
+// COMPUTER_ARCHIL_REGION, mounted with the disk token COMPUTER_ARCHIL_TOKEN), and reaches it from outside with the
+// host's disk SDK (COMPUTER_ARCHIL_API_KEY and COMPUTER_ARCHIL_S3_URL, ./archil.ts); with no disk named the cases are
+// skipped.
 import { boxImageRef } from "../box-image.js";
 import { MODAL } from "../descriptors/modal.js";
 import { create, MODAL_DEFAULT_SERVER_URL, type ModalClientConstructor, type ModalCreateOptions, type ModalProvider } from "../modal.js";

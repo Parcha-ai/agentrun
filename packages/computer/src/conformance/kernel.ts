@@ -8,7 +8,7 @@ export const KERNEL_ENV = {
 	live: "AGENTRUN_COMPUTER_LIVE_KERNEL",
 	/** apiKey, required: the Kernel API key. */
 	key: "COMPUTER_KERNEL_API_KEY",
-	/** apiUrl: Kernel's API. */
+	/** apiUrl: Kernel's API; default https://api.onkernel.com. */
 	url: "COMPUTER_KERNEL_API_URL",
 } as const;
 

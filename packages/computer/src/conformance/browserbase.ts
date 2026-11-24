@@ -12,7 +12,7 @@ export const BROWSERBASE_ENV = {
 	key: "COMPUTER_BROWSERBASE_API_KEY",
 	/** projectId: the project sessions are made in; a key behind a credential proxy names none. */
 	project: "COMPUTER_BROWSERBASE_PROJECT_ID",
-	/** apiUrl: Browserbase's API. */
+	/** apiUrl: Browserbase's API; default https://api.browserbase.com. */
 	url: "COMPUTER_BROWSERBASE_API_URL",
 } as const;
 

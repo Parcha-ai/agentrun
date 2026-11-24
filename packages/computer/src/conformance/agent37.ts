@@ -2,7 +2,8 @@
 // It makes real instances, which bill per minute until deleted, so it runs only with AGENTRUN_COMPUTER_LIVE_AGENT37=1
 // and a key for an account you can bill, under COMPUTER_AGENT37_API_KEY (never AGENT37_API_KEY, which may hold another
 // team's key). Agent37 never ends an instance on its own: every computer of a run lives at most 30 minutes, by init's
-// deadline and the janitor's label, and the run's sweep deletes what is left.
+// deadline and the janitor's label, and the run's sweep deletes what is left. An Archil computer (mountFor("archil"),
+// ./archil.ts) needs a provider whose daemon user is the tool user: COMPUTER_AGENT37_USER=2510:2510, the default.
 import { type Agent37Options, type Agent37Provider, create, workspaceOf } from "../agent37.js";
 import { AGENT37_BASE_TEMPLATE } from "../descriptors/agent37.js";
 import { type ArchilMountOptions, archilMountFor } from "./archil.js";
@@ -27,13 +28,13 @@ export const AGENT37_ENV = {
 	type: "COMPUTER_AGENT37_TYPE",
 	/** region: us (default), eu or ap-south. */
 	region: "COMPUTER_AGENT37_REGION",
-	/** apiUrl: Agent37's REST API. */
+	/** apiUrl: Agent37's REST API; default https://api.agent37.com. */
 	apiUrl: "COMPUTER_AGENT37_API_URL",
-	/** daemonPath: the daemon binary. */
+	/** daemonPath: the daemon binary; default this package's dist/computerd-linux-amd64. */
 	daemon: "COMPUTER_AGENT37_DAEMON",
 	/** maxLifetimeMs: the cap, in ms, at most 86400000; a run takes it when it is under 30 minutes, else 30 minutes. */
 	maxLifetimeMs: "COMPUTER_AGENT37_MAX_LIFETIME_MS",
-	/** daemonUser: uid:gid the daemon runs as. */
+	/** daemonUser: uid:gid the daemon runs as; default 2510:2510. */
 	user: "COMPUTER_AGENT37_USER",
 } as const;
 

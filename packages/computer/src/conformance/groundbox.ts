@@ -12,13 +12,13 @@ export const GROUNDBOX_ENV = {
 	live: "AGENTRUN_COMPUTER_LIVE_GROUNDBOX",
 	/** apiKey, required: the Groundbox API key. */
 	key: "COMPUTER_GROUNDBOX_API_KEY",
-	/** apiUrl: the REST API, ending in /v1. */
+	/** apiUrl: the REST API, ending in /v1; default https://api.groundbox.dev/v1. */
 	apiUrl: "COMPUTER_GROUNDBOX_API_URL",
 	/** The image every computer of the run starts from: a public image, a template, or "default" (Groundbox's own); default the box image (boxImageRef). */
 	image: "COMPUTER_GROUNDBOX_IMAGE",
-	/** daemonPath: the daemon binary. */
+	/** daemonPath: the daemon binary; default this package's dist/computerd-linux-amd64. */
 	daemon: "COMPUTER_GROUNDBOX_DAEMON",
-	/** daemonUser: uid:gid the daemon runs as. */
+	/** daemonUser: uid:gid the daemon runs as; default 2510:2510. */
 	user: "COMPUTER_GROUNDBOX_USER",
 	/** kind: linux (default) or desktop. */
 	kind: "COMPUTER_GROUNDBOX_KIND",

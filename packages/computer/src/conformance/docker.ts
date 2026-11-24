@@ -2,6 +2,7 @@
 // reads (COMPUTER_DOCKER_DAEMON, COMPUTER_DOCKER_DAEMON_CACHE, COMPUTER_DOCKER_USER), and its drifted twin, the same
 // provider with a daemon of another version, built with Go for Docker's architecture when the drift case first asks.
 // With desktop, both are desktops (kind desktop) on an image with an X server, such as test/fixtures/desktop/Dockerfile's.
+// For the mount cases, mountFor("bind") makes a run folder on this host, owned by the computer's user.
 import { chownSync, mkdtempSync, realpathSync } from "node:fs";
 import { readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -13,9 +14,9 @@ import { type Env, setOptions } from "./module-kit.js";
 import type { RunFolder } from "./types.js";
 
 export const DOCKER_ENV = {
-	/** The daemon binary for Docker's architecture. */
+	/** The daemon binary for Docker's architecture; default this package's dist/computerd-linux-<arch>. */
 	daemon: "COMPUTER_DOCKER_DAEMON",
-	/** The directory of the provider's 0755 copy of the daemon. See DockerProviderOptions.daemonCache. */
+	/** The directory of the provider's 0755 copy of the daemon; default ~/.cache/agentrun-computer. See DockerProviderOptions.daemonCache. */
 	daemonCache: "COMPUTER_DOCKER_DAEMON_CACHE",
 	/** Who a computer runs as when its spec does not say, uid or uid:gid in numbers; see DockerProviderOptions.user. */
 	user: "COMPUTER_DOCKER_USER",

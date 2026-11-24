@@ -12,7 +12,7 @@ export const SMOLCLOUD_ENV = {
 	live: "AGENTRUN_COMPUTER_LIVE_SMOLCLOUD",
 	/** apiKey, required: the smol cloud API key. */
 	key: "COMPUTER_SMOLCLOUD_API_KEY",
-	/** apiUrl: the REST API. */
+	/** apiUrl: the REST API; default https://api.smolmachines.com. */
 	apiUrl: "COMPUTER_SMOLCLOUD_API_URL",
 	/** The OCI image every computer of the run starts from; default the box image (boxImageRef). */
 	image: "COMPUTER_SMOLCLOUD_IMAGE",

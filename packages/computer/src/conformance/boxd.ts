@@ -18,11 +18,11 @@ export const BOXD_ENV = {
 	org: "COMPUTER_BOXD_ORG",
 	/** region: fra, nyc, ...; default the API's home region. */
 	region: "COMPUTER_BOXD_REGION",
-	/** daemonPath: the daemon binary. */
+	/** daemonPath: the daemon binary; default this package's dist/computerd-linux-amd64. */
 	daemon: "COMPUTER_BOXD_DAEMON",
 	/** kind: linux (default) or desktop. */
 	kind: "COMPUTER_BOXD_KIND",
-	/** daemonUser: uid:gid the daemon runs as. */
+	/** daemonUser: uid:gid the daemon runs as; default 2510:2510. */
 	user: "COMPUTER_BOXD_USER",
 } as const;
 

@@ -3,7 +3,10 @@
 // COMPUTER_E2B_API_KEY (never E2B_API_KEY, which may hold another team's key); the provider gives the SDK the key, domain
 // and API URL explicitly, and refuses an ambient E2B_SANDBOX_URL (see create in ../e2b.ts). Every computer of a run
 // lives at most 30 minutes, E2B Hobby's plan for conformance: E2B's timeout is the lifetime, and a longer one is refused.
-// An Archil computer needs a provider whose daemon user is the tool user: COMPUTER_E2B_USER=2510:2510.
+// For the mount cases, mountFor("archil") makes a fresh run folder on the Archil disk COMPUTER_ARCHIL_DISK names (in
+// COMPUTER_ARCHIL_REGION, mounted with the disk token COMPUTER_ARCHIL_TOKEN), and reaches it from outside with the
+// host's disk SDK (COMPUTER_ARCHIL_API_KEY and COMPUTER_ARCHIL_S3_URL, ./archil.ts); with no disk named the cases are
+// skipped. An Archil computer needs a provider whose daemon user is the tool user: COMPUTER_E2B_USER=2510:2510.
 import { boxE2bTemplate } from "../box-image.js";
 import { E2B } from "../descriptors/e2b.js";
 import { create, type E2BOptions, type E2BProvider } from "../e2b.js";
@@ -18,19 +21,19 @@ export { ARCHIL_ENV } from "./archil.js";
 
 export const E2B_ENV = {
 	live: "AGENTRUN_COMPUTER_LIVE_E2B",
-	/** The template every computer of the run starts from. */
+	/** The template every computer of the run starts from; default "desktop", E2B Desktop's. */
 	template: "COMPUTER_E2B_TEMPLATE",
 	/** apiKey, required: the E2B API key. */
 	key: "COMPUTER_E2B_API_KEY",
-	/** domain: E2B's domain. */
+	/** domain: E2B's domain; default e2b.app. */
 	domain: "COMPUTER_E2B_DOMAIN",
-	/** daemonPath: the daemon binary. */
+	/** daemonPath: the daemon binary; default this package's dist/computerd-linux-amd64. */
 	daemon: "COMPUTER_E2B_DAEMON",
 	/** kind: desktop (default) or linux. */
 	kind: "COMPUTER_E2B_KIND",
 	/** maxLifetimeMs: the cap, in ms, 3600000 (Hobby, default) up to 86400000 (Pro); a run takes it when it is under 30 minutes, else 30 minutes. */
 	maxLifetimeMs: "COMPUTER_E2B_MAX_LIFETIME_MS",
-	/** daemonUser: uid:gid the daemon runs as. */
+	/** daemonUser: uid:gid the daemon runs as; default 2510:2510. */
 	user: "COMPUTER_E2B_USER",
 	/** connect: exec (default) or dial, which needs the public server's process (dialKit). */
 	connect: "COMPUTER_E2B_CONNECT",

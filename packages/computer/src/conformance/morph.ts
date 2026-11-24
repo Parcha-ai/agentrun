@@ -14,9 +14,9 @@ export const MORPH_ENV = {
 	key: "COMPUTER_MORPH_API_KEY",
 	/** The snapshot every computer of the run starts from; default the box snapshot (prepareImage). */
 	snapshot: "COMPUTER_MORPH_SNAPSHOT",
-	/** apiUrl: Morph's REST API. */
+	/** apiUrl: Morph's REST API; default https://cloud.morph.so/api. */
 	apiUrl: "COMPUTER_MORPH_API_URL",
-	/** daemonPath: the daemon binary. */
+	/** daemonPath: the daemon binary; default this package's dist/computerd-linux-amd64. */
 	daemon: "COMPUTER_MORPH_DAEMON",
 	/** maxLifetimeMs: the cap, in ms, at most 86400000; a run takes it when it is under 30 minutes, else 30 minutes. */
 	maxLifetimeMs: "COMPUTER_MORPH_MAX_LIFETIME_MS",

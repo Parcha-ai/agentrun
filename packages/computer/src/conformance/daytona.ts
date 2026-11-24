@@ -19,9 +19,9 @@ export { ARCHIL_ENV } from "./archil.js";
 export const DAYTONA_ENV = {
 	/** apiKey, required: the Daytona API key. */
 	key: "COMPUTER_DAYTONA_API_KEY",
-	/** apiUrl. */
+	/** apiUrl; default https://app.daytona.io/api. */
 	url: "COMPUTER_DAYTONA_API_URL",
-	/** daemonPath. */
+	/** daemonPath; default this package's dist/computerd-linux-<arch>. */
 	daemon: "COMPUTER_DAYTONA_DAEMON",
 	/** arch: amd64 (default) or arm64, the sandboxes' architecture. */
 	arch: "COMPUTER_DAYTONA_ARCH",
@@ -29,7 +29,7 @@ export const DAYTONA_ENV = {
 	target: "COMPUTER_DAYTONA_TARGET",
 	/** sandboxClass: container (default) or linux-vm, the class the snapshot makes. */
 	sandboxClass: "COMPUTER_DAYTONA_CLASS",
-	/** daemonUser: uid:gid the daemon runs as. */
+	/** daemonUser: uid:gid the daemon runs as; default 2510:2510. */
 	user: "COMPUTER_DAYTONA_USER",
 	/** The snapshot every computer of the run starts from; default "default", Daytona's default snapshot. */
 	snapshot: "COMPUTER_DAYTONA_SNAPSHOT",

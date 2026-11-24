@@ -1,6 +1,8 @@
 // Orgo for the conformance CLI: `npm run conformance -w @parcha/agentrun-computer -- --provider orgo [--image <template>]`.
 // It makes real Orgo desktops, under COMPUTER_ORGO_API_KEY (never ORGO_API_KEY). COMPUTER_ORGO_OS picks the desktop:
-// linux (the default), windows or macos; on Windows and macOS no daemon runs, and the provider answers over Orgo's API.
+// linux (the default), windows or macos; on Windows and macOS no daemon runs, and the provider answers over Orgo's API:
+// the run's image is "windows" or "macos", and `--kind desktop` runs the desktop's cases, with the Windows fixture this
+// package carries.
 // Every computer of a run lives at most 1 h (on Linux and Windows Orgo's shortest end, ends_in_hours 1, deletes it then
 // whatever happens to the run; macOS has no Orgo end, so the janitor alone ends it).
 import { ORGO_BASE_IMAGE, ORGO_MACOS_IMAGE, ORGO_WINDOWS_IMAGE } from "../descriptors/orgo.js";
@@ -17,7 +19,7 @@ export const ENV = {
 	key: "COMPUTER_ORGO_API_KEY",
 	/** The workspace the run's computers live in; default the key's account's one workspace (several are refused in words). */
 	workspace: "COMPUTER_ORGO_WORKSPACE",
-	/** Orgo's API. */
+	/** Orgo's API; default https://www.orgo.ai/api. */
 	apiUrl: "COMPUTER_ORGO_API_URL",
 	/** The desktop: linux (default), windows or macos. */
 	os: "COMPUTER_ORGO_OS",
