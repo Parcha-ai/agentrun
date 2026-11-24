@@ -390,7 +390,17 @@ test("a request after the first that fails keeps the step from running, at what 
   ]) {
     const { asked, provider } = fakeProvider();
     const decide = provider.decide;
-    provider.decide = async (request, ctx) => (asked.length ? (asked.push({ request, ctx }), Promise.reject(failure)) : decide(request, ctx));
+    // Request 1 answers 5 ms late, after 2 to 4 have failed, so its worker sees the failure before it could take request 5.
+    // Answering at once would race the failures, and request 5 could go out before any failure is known.
+    provider.decide = async (request, ctx) => {
+      if (asked.length) {
+        asked.push({ request, ctx });
+        throw failure;
+      }
+      const answered = decide(request, ctx);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      return answered;
+    };
     const { classifier } = await judgePart(priced(provider), PUBLIC, { ok: true, url: PUBLIC, text: passages.join("") }, { task: TASK });
     assert.ok(Number(/^request 2 of (\d+): /.exec(classifier.error.message)?.[1]) > REQUESTS_AT_ONCE, `the page makes more requests than go at once: ${classifier.error.message}`);
     // The first REQUESTS_AT_ONCE go out together: request 1 answers, 2 to 4 fail, and no more are sent.
