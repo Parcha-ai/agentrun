@@ -4,7 +4,7 @@
 import type { JsonValue } from "@earendil-works/chord/json";
 import type { TSchema } from "typebox";
 import { defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
-import { clip, type FetchOptions, HTML_READ_CHARS, MAX_CHARS_MIN, PAGE_CHARS, PAGE_READ_MAX_CHARS, type Page, type Part, partProblem, TEXT_CAP, URL_MAX, webFetchText, type WebPage } from "@parcha/agentrun-web";
+import { clip, type FetchOptions, type FoundPage, HTML_READ_CHARS, MAX_CHARS_MIN, PAGE_CHARS, PAGE_READ_MAX_CHARS, type Page, type Part, partProblem, TEXT_CAP, URL_MAX, webFetchText, type WebPage } from "@parcha/agentrun-web";
 import { fetchOptions, URL_PARAMETERS, webOf } from "./web-run.js";
 import { FAUX_ENV } from "./model.js";
 import { forModel } from "./result.js";
@@ -12,9 +12,10 @@ import { isUnavailable, planeOf, whyUnavailable } from "./tool-plane.js";
 
 export const WEB_FETCH_TOOL = "web_fetch";
 
-/** The part `options` names of the page at `url`, through the run's Web; a failed Page saying why where web_fetch does
- *  not run here. A part a call may not ask for is refused first. */
-export async function fetchFor(env: NodeJS.ProcessEnv, url: unknown, options: FetchOptions = {}): Promise<WebPage | Page> {
+/** The part `options` names of the page at `url`, through the run's Web (where `options.lookingFor` is given and a
+ *  decider runs, the page's likeliest chunks); a failed Page saying why where web_fetch does not run here. A part a
+ *  call may not ask for is refused first. */
+export async function fetchFor(env: NodeJS.ProcessEnv, url: unknown, options: FetchOptions = {}): Promise<WebPage | Page | FoundPage> {
   const resolved = planeOf(env).web_fetch;
   if (isUnavailable(resolved) && !partProblem(options)) return { ok: false, url: typeof url === "string" ? clip(url, URL_MAX) : "", status: 0, title: "", text: "", links: [], error: `web_fetch does not run here: ${whyUnavailable(resolved)}` };
   return (await webOf(env).fetch(url, options)).answer;
