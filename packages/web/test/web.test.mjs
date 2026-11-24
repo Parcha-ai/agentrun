@@ -308,6 +308,16 @@ test("a provider is sent the URL the guard checked, as parsed, never the string 
   assert.deepEqual(extracts.map((call) => call.urls), [[checked]], "Parallel is sent the parsed URL");
 });
 
+test("a URL short as asked but longer than 4,096 characters as sent (its href) is refused unsent, by the providers and by the direct fetch", async (t) => {
+  const f = await fakes(t);
+  const url = `${PUBLIC}${"\u00e9".repeat(1_500)}`;
+  assert.ok(url.length < web.URL_MAX && new URL(url).href.length > web.URL_MAX, "short as asked, long as sent");
+  const providers = web.createWeb({ ...f.config, keys: { parallel: CANARY }, order: { search: [], fetch: ["firecrawl-keyless", "parallel"] } });
+  await run(f, providers, [{ url, asks: [], tries: [["parallel", "error"]], by: null }], "providers");
+  const direct = web.createWeb({ ...f.config, order: { search: [], fetch: ["direct"] } });
+  await run(f, direct, [{ url, asks: [], tries: [["direct", "error"]], by: null, check: (answer) => assert.equal(answer.error, "url is longer than 4,096 characters") }], "direct");
+});
+
 test("the package's root entry is its named API: none of the internals it is built from", async () => {
   const names = Object.keys(await import("../dist/index.js"));
   const internal = ["sleep", "callTool", "textBlocks", "MAX_BYTES", "PROTOCOL", "TIMEOUT_MS", "retryAfterMs", "waitOf", "searchBusy", "partOfRead", "markdownRead", "isRefused"];
