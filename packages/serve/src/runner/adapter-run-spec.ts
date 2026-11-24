@@ -266,10 +266,10 @@ export function capModelOf(route: ModelRoute): CapModel {
   return { id: route.model, api: route.provider.api, price, outputCeiling: route.outputCeiling ?? null, ...(route.local ? { local: true } : {}) };
 }
 
-/** The model of a held run its model kept from running at its create (run-launch.ts hold.refused): as its start pinned
- *  it, else as its revision names it (`provider/model-id`). Nothing chooses it and nothing prices it. */
-export function heldModelOf(pinned: ModelRef | undefined, ref: string | undefined): ModelRef {
-  if (pinned) return pinned;
+/** The model of a held run its model kept from running at its create (run-launch.ts hold.refused): as its revision names
+ *  it (`provider/model-id`). Its launch pins none (runs-over-store.ts skips modelOf for it). Nothing chooses it and
+ *  nothing prices it. */
+export function heldModelOf(ref: string | undefined): ModelRef {
   const at = ref?.indexOf("/") ?? -1;
   return ref && at > 0 ? { provider: ref.slice(0, at), modelId: ref.slice(at + 1) } : { provider: "none", modelId: ref ?? "none" };
 }
@@ -652,7 +652,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // of the run opens (its tools', a key handed with it: claimSecrets lays it no model key), routes no subagent tier and
   // takes no learning step (below).
   const heldRefusal = launch.hold?.refused?.message;
-  const route = heldRefusal !== undefined ? heldRefusedRoute(heldModelOf(launch.model, body.model), heldRefusal) : await deps.routeOf(modelAskOf(launch.model, body.model), modelEnv, "default", PI_WIRES, undefined, cut);
+  const route = heldRefusal !== undefined ? heldRefusedRoute(heldModelOf(body.model), heldRefusal) : await deps.routeOf(modelAskOf(launch.model, body.model), modelEnv, "default", PI_WIRES, undefined, cut);
   await planBeforeRun(modelEnv, route.provider.plan ? { provider: PLAN_PROVIDER } : undefined);
   // The run's models of other tiers, for its learned workflows' nodes of a tier (learnedTierRoutes, filled once the seed's
   // lay chose the workflows, below): read when the session opens (pi.ts options.tiers), each on a proxy of its own.

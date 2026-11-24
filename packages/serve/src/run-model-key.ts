@@ -86,7 +86,11 @@ export function keyTargetOf(env: NodeJS.ProcessEnv, launch: Pick<RunLaunch, "mod
 /** The model a run on `harness` of `ref` (its revision's; none, the host's default for the harness) is keyed by, read
  *  from the name alone (no model resolved, no key read): on the gateway, pi's model and a model on a wire the gateway
  *  serves are the gateway's (model.ts chooseModel, wires.ts WIRES), a ChatGPT plan's excepted; else the provider the
- *  name gives. None on a harness billed to its own plan, or for a name with no provider. */
+ *  name gives. None on a harness billed to its own plan, or for a name with no provider.
+ *  It mirrors the router's gateway rule by name, so it moves with it: model.ts chooseModel (a ChatGPT plan's name goes to
+ *  the plan, any other on AGENT_MODEL_BASE_URL to MODEL_PROVIDER), provider.ts modelOn (a harness on its own plan, no
+ *  modelWire, chooses none) and wires.ts WIRES[wire].gateway (which CLI wires the gateway serves). A change to which
+ *  names or wires go to the gateway there must be made here too, or a held run is checked for the wrong key. */
 function heldKeyModel(env: NodeJS.ProcessEnv, harness: string, ref: string | undefined): ModelKeyTarget["model"] {
   const wire = harnessOf(env, harness)?.facts?.wire;
   if (wire && !modelWire(wire)) return undefined;

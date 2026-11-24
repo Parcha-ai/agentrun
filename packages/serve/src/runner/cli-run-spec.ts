@@ -124,10 +124,10 @@ async function modelsOf(entry: HarnessEntry, env: NodeJS.ProcessEnv, ref: string
   return { model: chosen.model, models: chosen.models as unknown as AdapterNeeds["models"], unpriced: chosen.unpriced };
 }
 
-/** A held run's model, its model refused at its create (hold.refused): named as its start or revision named it
- *  (heldModelOf), chosen by nothing, in no catalog, unpriced. */
-function heldChoice(pinned: ModelRef | undefined, ref: string | undefined): Awaited<ReturnType<typeof modelsOf>> {
-  const model = heldModelOf(pinned, ref);
+/** A held run's model, its model refused at its create (hold.refused): named as its revision names it (heldModelOf),
+ *  chosen by nothing, in no catalog, unpriced. */
+function heldChoice(ref: string | undefined): Awaited<ReturnType<typeof modelsOf>> {
+  const model = heldModelOf(ref);
   return { model, models: { getModel: () => undefined }, unpriced: new Set([model.modelId]) };
 }
 
@@ -527,11 +527,13 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // takes no learning step (below), so it holds the computer on a host with no key for its model, and a key saved since
   // runs a new run, never this one.
   const heldRefusal = launch.hold?.refused?.message;
-  const chosen = heldRefusal !== undefined ? heldChoice(launch.model, body.model) : await modelsOf(entry, env, modelAskOf(launch.model, body.model));
-  if (heldRefusal === undefined) await planBeforeRun(env, chosen.model);
-  if (login && heldRefusal === undefined && entry.priceModel(env, chosen.model).provider === CLAUDE_LOGIN_PROVIDER) {
-    const claude = await import("@parcha/agentrun-harness-claude");
-    await loginBeforeRun(login, loginCli(claudeCliIn(installDirOf(deps.data, name!), claude.claudeAgentPlatform()), env), (cli, at) => claude.claudeLoginStatus(cli, at, env.PATH ? { path: env.PATH } : {}));
+  const chosen = heldRefusal !== undefined ? heldChoice(body.model) : await modelsOf(entry, env, modelAskOf(launch.model, body.model));
+  if (heldRefusal === undefined) {
+    await planBeforeRun(env, chosen.model);
+    if (login && entry.priceModel(env, chosen.model).provider === CLAUDE_LOGIN_PROVIDER) {
+      const claude = await import("@parcha/agentrun-harness-claude");
+      await loginBeforeRun(login, loginCli(claudeCliIn(installDirOf(deps.data, name!), claude.claudeAgentPlatform()), env), (cli, at) => claude.claudeLoginStatus(cli, at, env.PATH ? { path: env.PATH } : {}));
+    }
   }
   // The CLI's own process (the Claude CLI, Codex, OpenCode) starts under the no_new_privs pi's commands start under
   // (adapters.ts' noNewPrivsPrefix): on Linux, setpriv --no-new-privs, so a setuid program or file capability it

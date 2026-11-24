@@ -233,7 +233,7 @@ test("served, no model key: a held run opens and holds its computer, its start a
 test("served, no model key: a held run that a non-model blocker keeps from running is still refused at its create", async (t) => {
   const { api } = await keylessServer(t);
   const saved = await api("POST", "/agents", agent("searcher", { model: MODEL, computer: SANDBOX, tools: ["web_search"], tool_settings: { web_search: { provider: "parallel" } } }));
-  assert.equal(saved.status, 201, JSON.stringify(saved.body));
+  assert.equal(saved.status, 201, `the searcher agent saves, its tool's key unchecked at a save: ${JSON.stringify(saved.body)}`);
   const held = await api("POST", "/agents/searcher/runs", { input: { content: "Find it." }, hold: true });
   assert.deepEqual([held.status, held.body.error?.code], [409, "agent_not_runnable"], `a hold defers the model's refusal only: ${JSON.stringify(held.body)}`);
   assert.deepEqual(held.body.error.details?.missing?.web_search, ["PARALLEL_API_KEY"], "the tool's missing key still refuses the held create");
@@ -289,7 +289,7 @@ test("served, a model gateway with no key here: a held run whose model was refus
   // A gateway on loopback that nothing listens on: nothing here asks it. No price is set, so its model has none.
   withEnv(t, {}, ["AGENT_MODEL_PRICE"]);
   const { api } = await keylessServer(t, seam, { AGENT_MODEL_BASE_URL: "http://127.0.0.1:9" });
-  assert.equal((await api("POST", "/agents", agent("gw", { model: "agent-model/not-a-catalog-model", computer: SANDBOX }))).status, 201);
+  assert.equal((await api("POST", "/agents", agent("gw", { model: "agent-model/not-a-catalog-model", computer: SANDBOX }))).status, 201, "the gateway agent saves");
   const input = { content: "Do the task." };
   const wordsOf = (error) => ({ code: error?.code, message: error?.message, fields: error?.fields });
 
@@ -353,7 +353,7 @@ test("a grade's feedback round never opens a held run its model kept from runnin
   const grade = { run: "run-1", correct: false, source: "feedback", at: "2026-11-24T00:00:00Z", path: "agent" };
   const control = of({ minutes: 5 });
   assert.deepEqual(await openFeedbackRound(control.store, grade, "Wrong answer."), { round: "correction", command: 7 }, "a held run that ran opens on its grade's round");
-  assert.deepEqual(control.reopened, ["run-1"]);
+  assert.deepEqual(control.reopened, ["run-1"], "the control's round reopened it");
   const refused = of({ minutes: 5, refused: REFUSAL });
   assert.equal(await openFeedbackRound(refused.store, grade, "Wrong answer."), null, "one its model kept from running opens no round");
   assert.deepEqual(refused.reopened, [], "and is never opened again");
@@ -469,7 +469,7 @@ test("a held claim that can never start lets its computer go once no call came f
   let clock = 1_000;
   const minutes = 0.01; // 600 ms of the hold's clock: no time passes for real.
   const held = journalHeld({ minutes }, async (entries) => void written.push(...entries), () => clock);
-  assert.equal(await held.up([]), "held");
+  assert.equal(await held.up([]), "held", "the first pass writes the hold waiting");
   // The owner's calls keep it: each starts the count again.
   for (const at of [1_300, 1_700]) {
     clock = at;
