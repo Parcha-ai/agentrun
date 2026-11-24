@@ -353,17 +353,27 @@ test("readAgent reads the agent's package and hashes each file's bytes, text or 
 });
 
 /** A loopback listener answering with `answer(request)` (`[status, body]`), each request's method, path and
- *  Authorization header kept in `seen`: `{base, seen}`, `base` ending /v2. Closed at the test's end. */
+ *  Authorization header kept in `seen`: `{base, seen, stray}`, `base` ending /v2. Closed at the test's end.
+ *  Every request the check sends is under `base`, so a request outside /v2 with no Authorization header is not the
+ *  check's: a local port prober can send `GET /` to any new listener. It goes to `stray` with a 404. A request
+ *  carrying a token is counted on any path, so a leaked token is never missed. */
 async function listener(t, answer = () => [404, { error: { code: "not_found", message: "Not found." } }]) {
   const seen = [];
+  const stray = [];
   const server = createServer((request, response) => {
-    seen.push({ method: request.method, path: request.url, authorization: request.headers.authorization ?? null });
+    const one = { method: request.method, path: request.url, authorization: request.headers.authorization ?? null };
+    if (!/^\/v2(?:[/?#]|$)/.test(request.url) && one.authorization === null) {
+      stray.push(one);
+      response.writeHead(404, { "content-type": "application/json" }).end("{}");
+      return;
+    }
+    seen.push(one);
     const [status, body] = answer(request);
     response.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body));
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   t.after(() => new Promise((resolve) => server.close(resolve)));
-  return { base: `http://127.0.0.1:${server.address().port}/v2`, seen };
+  return { base: `http://127.0.0.1:${server.address().port}/v2`, seen, stray };
 }
 
 /** The lock a deploy of agt_b9 to `target` writes (DIR/.agentrun/deploy.json). */
@@ -617,4 +627,15 @@ test("a lock the check can't use is refused with the check's own advice, never a
     if (!run.err.includes("pass --target-agent ID, or a lock deploy wrote for this target")) wrong.push(`${what}: not the check's advice`);
   }
   assert.deepEqual(wrong, [], "each lock is refused with exit 2 and the check's advice (pass --target-agent ID, or a lock deploy wrote for this target)");
+});
+
+test("the fake install counts the check's requests, never a port probe's: a keyless GET / is stray, a token on any path is counted", async (t) => {
+  const install = await listener(t);
+  const root = new URL("/", install.base);
+  await (await fetch(root)).text();
+  assert.deepEqual(install.seen, [], "a port probe's GET / is counted as the check's request");
+  await (await fetch(root, { headers: { authorization: "Bearer probe-test" } })).text();
+  assert.deepEqual(install.seen.map((one) => one.path), ["/"], "a request carrying a token outside /v2 is not counted");
+  await (await fetch(`${install.base}/agents/agt_a1`)).text();
+  assert.deepEqual(install.seen.map((one) => one.path), ["/", "/v2/agents/agt_a1"], "a keyless request under /v2 is not counted");
 });
