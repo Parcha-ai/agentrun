@@ -6,14 +6,14 @@
 // AGENTRUN_CLAUDE_CODE_LOGIN=off, where claude-agent runs on the model keys as it does without it.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { constants, existsSync, mkdirSync, openSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, constants, existsSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { mkdtemp } from "node:fs/promises";
 import { createRequire, syncBuiltinESMExports } from "node:module";
 import { homedir, hostname, tmpdir } from "node:os";
 import { delimiter, dirname, join, relative } from "node:path";
 import { test } from "node:test";
 import * as claude from "@parcha/agentrun-harness-claude";
-import { CLAUDE_LOGIN_ENV, CLAUDE_LOGIN_SETTING, claudeLoginOf, claudeLoginSwitchedOff, claudeLoginView, envAtPlace, LOGIN_SIGNED_OUT, LOGIN_UNKNOWN, loginAt, loginBeforeRun, loginForRun, settingFor, startLoginHere, turnOffClaudeLogin, turnOnBody, turnOnClaudeLogin, whyNotOneOwner, withClaudeLogin } from "../dist/claude-login.js";
+import { CLAUDE_LOGIN_ENV, CLAUDE_LOGIN_SETTING, claudeLoginOf, claudeLoginSwitchedOff, claudeLoginView, envAtPlace, LOGIN_ANSWERS_DIR, LOGIN_SIGNED_OUT, LOGIN_UNKNOWN, loginAt, loginBeforeRun, loginForRun, settingFor, startLoginHere, turnOffClaudeLogin, turnOnBody, turnOnClaudeLogin, whyNotOneOwner, withClaudeLogin } from "../dist/claude-login.js";
 import { ClaudeSignIns } from "../dist/claude-sign-in.js";
 import { MODEL_KEYS, hostModel } from "../dist/model.js";
 import { providerFor } from "../dist/provider.js";
@@ -1355,12 +1355,12 @@ try {
   process.stdout.write(error.message);
 }`;
 /** A run's check of `login` in a runner process of its own on `data`, whose two status checks time out: "went on", or the
- *  refusal's words. */
-function runnerCheck(data, login) {
+ *  refusal's words. The process is ended after `limitMs`, which fails the test in the words `held`. */
+function runnerCheck(data, login, { limitMs = 60_000, held } = {}) {
   const env = { ...process.env };
   delete env.NODE_TEST_CONTEXT;
-  const ran = spawnSync(process.execPath, ["--input-type=module", "-e", RUNNER_CHECK, new URL("../dist/claude-login.js", import.meta.url).href, data, JSON.stringify(login)], { env, encoding: "utf8", timeout: 60_000 });
-  assert.equal(ran.status, 0, ran.stderr);
+  const ran = spawnSync(process.execPath, ["--input-type=module", "-e", RUNNER_CHECK, new URL("../dist/claude-login.js", import.meta.url).href, data, JSON.stringify(login)], { env, encoding: "utf8", timeout: limitMs });
+  assert.equal(ran.status, 0, ran.signal ? `${held ?? "the runner's check never ended"} (ended after ${limitMs / 1000} s)` : ran.stderr);
   return ran.stdout;
 }
 test("a runner in a process of its own on the same data folder takes the Settings view's signed-in answer when its two checks time out; one on another data folder does not, and a signed-out answer in the view takes it away", async (t) => {
@@ -1391,6 +1391,71 @@ test("a runner in a process of its own on the same data folder takes the Setting
   said = SAID_OUT;
   assert.equal((await claudeLoginView(deps)).state, "signed_out");
   assert.ok(runnerCheck(data, login).startsWith(LOGIN_UNKNOWN), "a runner process took a signed-in answer the Settings view had since read signed out");
+});
+
+// The answer file is the server's own note: a run's check reads it only as a small regular file at its name (never
+// through a link, never a FIFO, which would hold the check's read, and so the server's event loop, for ever), and a
+// note keeps the answers folder at 0700 and leaves nothing beside the file when it can't be put in place.
+/** A data folder of its own where `login` answered signed in now, and the answers folder and file name that holds it. */
+async function noted(t, login) {
+  const data = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-login-note-"));
+  t.after(() => rmSync(data, { recursive: true, force: true }));
+  await loginBeforeRun(login, "claude", statusOf(SAID_IN).status, { data });
+  const dir = join(data, LOGIN_ANSWERS_DIR);
+  const names = readdirSync(dir);
+  assert.equal(names.length, 1, `one answer file: ${names}`);
+  return { data, dir, name: names[0], file: join(dir, names[0]) };
+}
+
+test("a FIFO at the answer file's name holds no run's check: it is no answer, and the run whose checks time out is refused", { skip: process.platform === "win32" ? "no mkfifo" : false }, async (t) => {
+  const login = await ownLogin();
+  const { data, file } = await noted(t, login);
+  rmSync(file);
+  assert.equal(spawnSync("mkfifo", [file]).status, 0);
+  const said = runnerCheck(data, login, { limitMs: 10_000, held: "a run's check held on a FIFO at the answer file's name, reading it as an answer" });
+  assert.ok(said.startsWith(LOGIN_UNKNOWN), said);
+});
+
+test("a link, or a file longer than a time, at the answer file's name stands for no answer", async (t) => {
+  const login = await ownLogin();
+  const { data, file } = await noted(t, login);
+  const elsewhere = join(data, "elsewhere");
+  writeFileSync(elsewhere, `${Date.now()}\n`);
+  rmSync(file);
+  symlinkSync(elsewhere, file);
+  await assert.rejects(loginBeforeRun(login, "claude", statusOf(timedOut(), timedOut()).status, { data }), unknownByTimeout, "a link at the answer file's name, to a fresh time, stood for a run whose checks timed out");
+  rmSync(file);
+  writeFileSync(file, `${Date.now()}`.padEnd(4096, " ") + "\n", { mode: 0o600 });
+  await assert.rejects(loginBeforeRun(login, "claude", statusOf(timedOut(), timedOut()).status, { data }), unknownByTimeout, "a 4 KiB file at the answer file's name stood for a run whose checks timed out");
+});
+
+test("a note keeps the answers folder at 0700: one made wider before is tightened, and a link in its place is not written through", { skip: process.platform === "win32" ? "no modes" : false }, async (t) => {
+  const login = await ownLogin();
+  const data = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-login-note-"));
+  t.after(() => rmSync(data, { recursive: true, force: true }));
+  const dir = join(data, LOGIN_ANSWERS_DIR);
+  mkdirSync(dir, { mode: 0o755 });
+  chmodSync(dir, 0o755);
+  await loginBeforeRun(login, "claude", statusOf(SAID_IN).status, { data });
+  assert.equal((statSync(dir).mode & 0o777).toString(8), "700", "an answers folder made 0755 before kept its mode after a note");
+  assert.equal(readdirSync(dir).length, 1, "the answer was noted");
+
+  const away = join(data, "away");
+  mkdirSync(away, { mode: 0o700 });
+  rmSync(dir, { recursive: true });
+  symlinkSync(away, dir);
+  await loginBeforeRun(login, "claude", statusOf(SAID_IN).status, { data });
+  assert.deepEqual(readdirSync(away), [], "a note went through a link at the answers folder's name");
+});
+
+test("a note whose file can't be put in place leaves nothing beside it", async (t) => {
+  const login = await ownLogin();
+  const { dir, name, file } = await noted(t, login);
+  rmSync(file);
+  mkdirSync(file);
+  writeFileSync(join(file, "in-the-way"), "");
+  await loginBeforeRun(login, "claude", statusOf(SAID_IN).status, { data: dirname(dir) });
+  assert.deepEqual(readdirSync(dir), [name], "a note whose rename failed left the file it wrote aside");
 });
 
 test("only a check that gave no answer is asked again or goes on by an earlier signed-in answer: a CLI that is not there, or any other failure, refuses the run at once with LOGIN_UNKNOWN in its own words", async () => {
