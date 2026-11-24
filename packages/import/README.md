@@ -36,8 +36,8 @@ const sessions = await parseHome(homedir(), { sources: ["claude-code", "codex"] 
 - `workerOldMb` caps each worker's old generation (default 64). A line over an eighth of it, or a file that runs a worker
   out of memory, is read on the calling thread instead; past two such losses a thread, the calling thread reads the rest.
 
-  On a 73.7 GB home, 8 threads took 126.6 s at a peak of 1.76 GiB, 4 threads 201.1 s at 1.41 GiB, and 1 thread 365.1 s
-  at 1.05 GiB.
+  On a 73.7 GB home, 8 threads took 90.9 s (median of 5) at a peak of 1.83 GiB, and 1 thread 441.1 s at 1.05 GiB;
+  with `readAhead` at 256 MiB, 8 threads took 136.5 s.
 
 ## A year of work
 
