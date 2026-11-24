@@ -180,6 +180,20 @@ test("a write inside a list of files is cut as one at the top is, and the cut st
   assert.match(shown, /3\. write \{"path":"three\.md","content":"g{1997}\.\.\."\}/);
 });
 
+test("a write whose text the cut of its file takes from <files> is not cut at 2,000 in its call: the grader still sees its end", () => {
+  const added = `${"p".repeat(10_000)}APPENDMK`;
+  const file = { name: "big.md", bytes: 300_008, text: `${"h".repeat(145_000)}${added}${"t".repeat(145_000)}` };
+  const calls = [{ tool: "append", arguments: { path: "big.md", content: added }, status: "ok", result: "appended" }];
+  const input = graderInput(GRADER, "Add it.", record(calls, [file]));
+  assert.ok(input.length <= GRADER_PROMPT_MAX, String(input.length));
+  const files = input.slice(input.indexOf("<files untrusted>"), input.indexOf("</files>"));
+  assert.match(files, /h \[\.\.\. \d+ characters cut \.\.\.\] t/);
+  assert.doesNotMatch(files, /APPENDMK/);
+  const shown = input.slice(input.indexOf("<tool-calls untrusted>"));
+  assert.doesNotMatch(shown, /"p{1997}\.\.\."/);
+  assert.match(shown, /1\. append \{"path":"big\.md","content":"p+ \[\.\.\. \d+ characters cut \.\.\.\] p+APPENDMK"\}/);
+});
+
 test("a long argument stays whole when the calls fit", () => {
   const calls = [{ tool: "create_issue", arguments: { title: "Release notes", body: `${"b".repeat(30_000)}BODYEND` }, status: "ok", result: "created #12" }];
   const input = graderInput(GRADER, "File it.", record(calls, []));
