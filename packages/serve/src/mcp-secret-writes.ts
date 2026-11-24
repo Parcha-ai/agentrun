@@ -50,11 +50,12 @@ export async function ownersAuthConfig(store: SavedServers, id: string): Promise
   return undefined;
 }
 
-/** Whether a server the API token saved holds the Composio connected account `id` (its record of what it stands on
- *  there): the one account, besides those its own connect links start, that the token's Composio save may stand on. */
+/** Whether a server the API token saved holds the Composio connected account `id` as made here (its record of what it
+ *  stands on there): the one account, besides those its own connect links start, that the token's Composio save may
+ *  stand on. One recorded as found (made: false) is not the token's: a save before this rule could record the owner's. */
 export async function tokensAccount(store: SavedServers, id: string): Promise<boolean> {
   for (const row of await store.mcp.servers()) {
-    if (!recordedMade(await store.settings.get(composioMadeKey(row.name)), row.createdAt)?.accounts.some((account) => account.id === id)) continue;
+    if (!recordedMade(await store.settings.get(composioMadeKey(row.name)), row.createdAt)?.accounts.some((account) => account.id === id && account.made)) continue;
     if (savedByToken(await store.settings.get(mcpSourceKey(row.name)), row.createdAt)) return true;
   }
   return false;
