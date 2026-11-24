@@ -616,7 +616,7 @@ test("a proxy that is gone, or that is not as create makes one, reads back other
 });
 
 test("attach() refuses an allowlist computer whose proxy an earlier release put on Docker's default bridge, saying so and what to do; release(delete) still removes it all", async () => {
-	const seeded = allowed({ name: A, allow: ALLOW, proxy: {} });
+	const seeded = allowed({ name: A, allow: ALLOW });
 	const [, made] = seeded.containers;
 	made.HostConfig = { ...made.HostConfig, NetworkMode: "bridge" };
 	made.NetworkSettings = { ...made.NetworkSettings, Networks: { bridge: {} } };
@@ -624,10 +624,9 @@ test("attach() refuses an allowlist computer whose proxy an earlier release put 
 	const attached = await provider.attach({ id: A });
 	assert.equal(attached.ok, false);
 	assert.equal(attached.error.code, "refused");
-	assert.equal(
-		attached.error.message,
-		`the computer ${A} does not match this provider, so attach refuses it and it is left as it is: network: network allow, but its egress proxy ${A}-egress is on Docker's default bridge: an earlier release of this provider made it there, before the egress bridge agentrun-egress; delete the computer and create it again`,
-	);
+	// The network first; the egress volume and relay a network read back as other doesn't declare follow it as drift.
+	const first = `the computer ${A} does not match this provider, so attach refuses it and it is left as it is: network: network allow, but its egress proxy ${A}-egress is on Docker's default bridge: an earlier release of this provider made it there, before the egress bridge agentrun-egress; delete the computer and create it again; `;
+	assert.ok(attached.error.message.startsWith(first), attached.error.message);
 	const released = await provider.release(ref(A), "delete");
 	assert.equal(released.ok, true, JSON.stringify(released));
 	assert.deepEqual([names(), volumeNames()], [[], []]);
