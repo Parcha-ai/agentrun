@@ -1148,28 +1148,32 @@ export class Triggers {
    *  next safe point, within the bound per (trigger, run): a clock's firings coalesce to one waiting message, a pushed
    *  source's or a run now's keep each, up to DUE_KEPT; past it the firing is skipped in words. A target run that is gone
    *  or purged (its row kept as a tombstone: Runs.purge) turns the trigger off at once, the firing skipped and no failure
-   *  counted. */
+   *  counted: read before the message, and again when the message fails, for a purge that landed in between. */
   private async send(trigger: Trigger, firing: FiringRow): Promise<void> {
     if (trigger.target.kind !== "message_run") return;
     const { target } = trigger;
-    if (gone(await this.store.runs.get(target.run_id))) {
-      await this.store.triggers.update(trigger.id, { enabled: false, nextAt: null, disabled: { at: iso(this.clock.now()), reason: "source_unreadable", detail: RUN_DELETED } });
-      await this.store.triggers.settle(trigger.id, firing.key, { status: "skipped", reason: RUN_DELETED });
-      this.deps.say({ condition: "trigger_source_unreadable", trigger: trigger.id, error: RUN_DELETED });
-      await this.offThere([trigger]);
-      return;
-    }
+    if (gone(await this.store.runs.get(target.run_id))) return this.runDeleted(trigger, firing);
     const bound = adapterIn(this.adapters, firing.by)?.delivery === "clock" && !eventful(adapterIn(this.adapters, firing.by)) ? { max: 1, reason: "A message from this trigger is already waiting." } : { max: DUE_KEPT, reason: `${DUE_KEPT} messages from this trigger are already waiting for its run.` };
     let skipped: string | undefined;
     try {
       skipped = (await this.deps.message(target, this.inputOf(trigger, firing), firing.key, this.originOf(trigger), bound))?.skipped;
     } catch (error) {
       if (this.closed) return;
+      if (gone(await this.store.runs.get(target.run_id))) return this.runDeleted(trigger, firing);
       return this.answered(trigger.id, firing.key, error, target.run_id);
     }
     if (this.closed) return;
     if (skipped) return void (await this.store.triggers.settle(trigger.id, firing.key, { status: "skipped", reason: skipped }));
     await this.store.triggers.settle(trigger.id, firing.key, { status: "sent", runId: target.run_id }, { reset: true });
+  }
+
+  /** A message_run trigger whose run is gone or purged: turned off (source_unreadable), its firing skipped, no failure
+   *  counted. */
+  private async runDeleted(trigger: Trigger, firing: FiringRow): Promise<void> {
+    await this.store.triggers.update(trigger.id, { enabled: false, nextAt: null, disabled: { at: iso(this.clock.now()), reason: "source_unreadable", detail: RUN_DELETED } });
+    await this.store.triggers.settle(trigger.id, firing.key, { status: "skipped", reason: RUN_DELETED });
+    this.deps.say({ condition: "trigger_source_unreadable", trigger: trigger.id, error: RUN_DELETED });
+    await this.offThere([trigger]);
   }
 
   /** The firing kept due, waiting for its trigger's room (no try counted, no retry time): a tick drives it once the store
