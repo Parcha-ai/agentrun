@@ -245,3 +245,17 @@ test("a search stopped while Exa's body is read: the call answers, its Exa turn 
   assert.deepEqual(turns(found.receipt), [["exa", "error", "infra", "STOPPED"]], "Firecrawl is not started on a spent deadline");
   assert.equal(exa.asked, 1);
 });
+
+test("a fetch turn Exa is not asked, its key refused earlier or the URL refused by the guard, is on the receipt as search's is", async (t) => {
+  const { exa, w } = await exaWeb(t, () => refused(401, { error: "Invalid API key", tag: "INVALID_API_KEY" }), { order: { search: ["exa"], fetch: ["exa", "direct"] } });
+  const first = await w.fetch(PUBLIC);
+  assert.deepEqual(turns(first.receipt), [["exa", "error", "refused", "INVALID_API_KEY"], ["direct", "ok", undefined, undefined]]);
+  const second = await w.fetch(NOTES);
+  assert.deepEqual(turns(second.receipt), [["exa", "error", "refused", "KEY_REFUSED"], ["direct", "ok", undefined, undefined]], "refused earlier: a turn, unsent");
+  const found = await w.search("widgets");
+  assert.deepEqual(turns(found.receipt), [["exa", "error", "refused", "KEY_REFUSED"]], "search's turn, for the same refusal");
+  assert.equal(exa.got.length, 1);
+  const { w: fresh } = await exaWeb(t, (_path, body) => exaPage(body.urls[0], "never"), { order: { search: [], fetch: ["exa", "direct"] } });
+  const evil = await fresh.fetch(EVIL);
+  assert.deepEqual(turns(evil.receipt)[0], ["exa", "error", "refused", "GUARD"], "the guard's refusal: a turn, unsent");
+});
