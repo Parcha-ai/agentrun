@@ -19,7 +19,7 @@ import { paidBookings, toolLedger } from "./support.mjs";
 const { searchFor, webSearchTool } = await import("../dist/web-search.js");
 const { webFetchTool } = await import("../dist/web-fetch.js");
 const { webOf } = await import("../dist/web-run.js");
-const { handsJevWeb, explainsView, TOOL_PLANE_ENV } = await import("../dist/tool-plane.js");
+const { handsJevWeb, explainsView, planeFor, TOOL_PLANE_ENV } = await import("../dist/tool-plane.js");
 const { decisionKeysFor } = await import("../dist/decisions.js");
 const { bookedIn } = await import("../dist/paid-calls.js");
 const { claimSecrets } = await import("../dist/runner/claim-secrets.js");
@@ -226,6 +226,14 @@ test("a codex run on its own (native) search with no web_fetch is not handed Typ
 test("a pi run on native search is handed TypeSafe's key: its hosted search goes through the run's own web_search", async (t) => {
   const claim = await nativeClaims(t);
   assert.equal(await claim("pi", ["web_search"], { web_search: "native" }), "the key", "pi native search is ours, ranked by Jev");
+});
+
+test("a codex run on auto with web_search alone is handed TypeSafe's key: auto is the run's own search on every harness", async (t) => {
+  const claim = await nativeClaims(t);
+  // The plane the server resolves for the run at launch, on a server whose codex has its own search (OpenAI's key).
+  const plane = planeFor({ OPENAI_API_KEY: "not-a-secret" }, { harness: "codex", tools: ["web_search"] }, {});
+  assert.notEqual(plane.web_search, "native", `auto resolves to the run's own search on codex, not Codex's: ${JSON.stringify(plane)}`);
+  assert.equal(await claim("codex", ["web_search"], plane), "the key", "the run's own web_search is ranked by Jev, so its key is handed");
 });
 
 test("capabilities' why says what Jev does with web_search: on with TypeSafe's key, off with an OpenRouter key alone or AGENTRUN_WEB_JEV_OFF; nothing with no key", () => {
