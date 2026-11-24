@@ -545,6 +545,7 @@ const CLAUDE_LOGIN = {
       properties: {
         folder: { type: "string", description: "This machine's own Claude Code login folder, as the CLI finds it for this server's user." },
         source: { enum: ["CLAUDE_CONFIG_DIR", "default"], description: "`CLAUDE_CONFIG_DIR`: the server's environment names the folder (an absolute path). `default`: it does not, so the folder is the CLI's default, `~/.claude`; a Claude Code that keeps its login in another folder is found only when this server is started with `CLAUDE_CONFIG_DIR` set to it." },
+        credentials: { type: "string", description: "Where this server's environment sets `CLAUDE_SECURESTORAGE_CONFIG_DIR` (an absolute path, or empty): its value. The CLI keeps the login's tokens there rather than in `folder` (empty: in `~/.claude`, and on macOS in the Keychain item with no suffix), and `place: machine` is asked, signed in and run with it, as the person's own Claude Code with that variable. Absent when the environment sets none (a relative one is not taken)." },
       },
       description: "This machine's own Claude Code login, the folder `place: machine` uses.",
     },
@@ -2377,11 +2378,11 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
   "/wrapped": {
     get: {
       operationId: "getWrapped", tags: ["runs"], summary: "A year of the work under this machine's session files",
-      description: "Reads the Claude Code, Codex, pi and other session files under the home of the machine this server runs on, and answers numbers and names only (no prompt, title, path or project). Everything is bucketed by each request's time in the server's local zone, so a session that spans New Year splits; a session counts for the year of its first request. Answered only by a server bound to loopback with no public URL: any other, and the API-only profile, is 403. The answer is kept for a minute.",
+      description: "Reads the Claude Code, Codex, pi and other session files under the home of the machine this server runs on, and answers numbers and names only (no prompt, title, path or project). Everything is bucketed by each request's time in the server's local zone, so a session that spans New Year splits; a session counts for the year of its first request. Answered only by one owner's server on their own machine, reached at a loopback name: one bound past loopback, with a public URL, the API-only profile, more than one API token or a Postgres store is 403. The home is read on a worker thread; a read not done within 15 seconds is 503 `unavailable` with `retry_after_ms` while it goes on. The current year's answer is kept for a minute, an earlier year's until the server stops. A year after the current one is 400.",
       parameters: [
         { name: "year", in: "query", required: false, description: "A four-digit year, in the server's local zone. Default the current year.", schema: { type: "integer", minimum: 1000, maximum: 9999 } },
       ],
-      responses: { "200": json(WRAPPED, "The year, read now."), ...errors(400, 401, 403, 429, 500) },
+      responses: { "200": json(WRAPPED, "The year, read now."), ...errors(400, 401, 403, 429, 500, 503) },
       "x-agentrun-serve": "wrapped/1",
     },
   },
