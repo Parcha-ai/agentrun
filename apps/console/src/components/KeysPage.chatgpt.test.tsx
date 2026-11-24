@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { KeysPage } from "./KeysPage";
 import { ChatGPTRow, WhatRunsHere } from "./ChatGPTSignIn";
 import { MANAGE_USAGE_URL } from "@/lib/chatgpt";
-import { createClient } from "@/lib/client";
+import { type Capabilities, createClient } from "@/lib/client";
 import type { ChatGPTView, ToolKeys } from "@/lib/v2";
 import { servedKey } from "@/test/keys";
 
@@ -40,7 +40,7 @@ function server(plan: () => ChatGPTView | Response, write: (call: Call) => Respo
 let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; vi.unstubAllGlobals(); });
 
-async function open(v2: ReturnType<typeof createClient>, onChange?: () => void, source?: string) {
+async function open(v2: ReturnType<typeof createClient>, onChange?: () => void, source?: Capabilities["models"]["source"]) {
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
   act(() => root!.render(createElement(KeysPage, { v2, onChange, writable: true, harnesses: HARNESSES, plan: createElement(ChatGPTRow, { v2, writable: true, onChange, ...(source ? { source } : {}) }) })));
