@@ -1,7 +1,7 @@
 import type { WebPage } from "../fetch.js";
 import type { Page } from "../page.js";
 import type { Search } from "../search.js";
-import type { Cost, Tokens, Verdicts, WebDecider } from "./decider.js";
+import type { Cost, Temperature, Tokens, Verdicts, WebDecider } from "./decider.js";
 import { passagesOf } from "./passages.js";
 
 /** What one call's classifier step did. `ran` false: the items passed unsifted, and `error` or `skipped` says why. */
@@ -12,6 +12,9 @@ export type DecisionRecord = {
   items: { in: number; kept: number };
   dropped: { id: string; score: number | null; reason: string; at?: [number, number] }[];
   model: string | null;
+  temperature_sent: Temperature["temperature_sent"];
+  /** Unknown after a failure: the request may have gone out with one. */
+  temperature_applied: Temperature["temperature_applied"];
   tokens: Tokens | null;
   latency_ms: number;
   cost: Cost;
@@ -60,17 +63,17 @@ async function bounded(ask: (signal: AbortSignal, ms: number) => Promise<Verdict
 }
 
 const skipped = (decider: WebDecider, op: DecisionRecord["op"], why: NonNullable<DecisionRecord["skipped"]>, n = 0): DecisionRecord => ({
-  provider: decider.id, op, ran: false, items: { in: n, kept: n }, dropped: [], model: null, tokens: null, latency_ms: 0, cost: { usd: 0, basis: "none" }, questions_sha256: null, skipped: why,
+  provider: decider.id, op, ran: false, items: { in: n, kept: n }, dropped: [], model: null, temperature_sent: null, temperature_applied: false, tokens: null, latency_ms: 0, cost: { usd: 0, basis: "none" }, questions_sha256: null, skipped: why,
 });
 
 function failed(decider: WebDecider, op: DecisionRecord["op"], n: number, ms: number, failure: Failure): DecisionRecord {
   const { code, message, cost } = failure;
-  return { provider: decider.id, op, ran: false, items: { in: n, kept: n }, dropped: [], model: null, tokens: null, latency_ms: ms, cost, questions_sha256: null, error: { code, message } };
+  return { provider: decider.id, op, ran: false, items: { in: n, kept: n }, dropped: [], model: null, temperature_sent: null, temperature_applied: "unknown", tokens: null, latency_ms: ms, cost, questions_sha256: null, error: { code, message } };
 }
 
 function ran(decider: WebDecider, op: DecisionRecord["op"], got: Verdicts, ms: number, dropped: DecisionRecord["dropped"]): DecisionRecord {
   const n = got.verdicts.length;
-  return { provider: decider.id, op, ran: true, items: { in: n, kept: n - dropped.length }, dropped, model: got.model, tokens: got.tokens, latency_ms: ms, cost: got.cost, questions_sha256: got.questions_sha256 };
+  return { provider: decider.id, op, ran: true, items: { in: n, kept: n - dropped.length }, dropped, model: got.model, temperature_sent: got.temperature_sent, temperature_applied: got.temperature_applied, tokens: got.tokens, latency_ms: ms, cost: got.cost, questions_sha256: got.questions_sha256 };
 }
 
 const since = (start: number) => Math.round(performance.now() - start);

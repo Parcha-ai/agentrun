@@ -67,8 +67,11 @@ request is made, or `apiKey` and `baseURL`.
 
 - **Types.** `noul` and `choice`. A choice's probabilities are read per option and normalized; its `choice` is the
   likeliest. Probabilities are the model's own (`probability: "self_reported"`).
-- **Sampling.** No temperature, top_p or top_k is sent: current Claude models take none but their default. The request
-  asks for low effort.
+- **Sampling.** One table decides, by model, what is sent (`temperatureFor`, `takesEffort`): temperature 0 to a model
+  that takes one, none to Opus 4.7 and later, the Claude 5 family, Fable or Mythos, which refuse it; low effort to a
+  model that takes effort (not Haiku 4.5 or Sonnet 4.5). No top_p or top_k. The outcome carries `temperature_sent` and
+  `temperature_applied`: true direct to Anthropic, "unknown" through any other root (a proxy may drop the field),
+  false when none was sent.
 - **Refusal.** `stop_reason: "refusal"` refuses every question, booked at its cost.
 - **Cost.** Usage at Anthropic's published price (`ANTHROPIC_PUBLISHED_PRICING`), as an estimate; long-prompt rates past
   100,000 input tokens. A model it lists no price for costs null (unknown) unless `pricing` is given.

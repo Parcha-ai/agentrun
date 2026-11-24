@@ -67,8 +67,10 @@ const { answer, receipt } = await web.search("widgets delaware", { n: 5, task: "
   are unsifted"`. A decider that fails, refuses every question, answers out of shape or passes `bounds.decideMs`
   (`DECIDE_MS`, 30 s) never drops anything silently: the items pass unsifted and the record says why.
 - `receipt.classifier` is the decision's record: `{ provider, op, ran, items: { in, kept }, dropped: [{ id, score,
-  reason, at? }], model, tokens: { in, out, basis }, latency_ms, cost: { usd, basis }, questions_sha256, error?,
-  skipped? }`. `tokens` are the provider's when it reports them, else counted on the request by `count`, else null.
+  reason, at? }], model, temperature_sent, temperature_applied, tokens: { in, out, basis }, latency_ms, cost: { usd,
+  basis }, questions_sha256, error?, skipped? }`. `tokens` are the provider's when it reports them, else counted on
+  the request by `count`, else null. `temperature_sent` and `temperature_applied` (true, false or "unknown") are what
+  the provider says its request carried; one that says nothing sent none.
   The decider's cost is the record's; `receipt.cost` stays the search and fetch fees.
 
 The pieces `createWeb` is built from are exported too: `searchInTurn` and `breakers` for search,

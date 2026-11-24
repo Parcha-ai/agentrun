@@ -7,8 +7,10 @@ export type Verdict = { keep: boolean; score: number | null; reason: string };
 export type Tokens = { in: number; out: number | null; basis: "reported" | "counted" };
 /** "none": nothing was billed (the request was never sent, or refused unanswered). usd is null only when unknown. */
 export type Cost = { usd: number | null; basis: "reported" | "estimate" | "unknown" | "none" };
+/** What the provider says its request carried: a provider that says nothing sent no temperature. */
+export type Temperature = { temperature_sent: number | null; temperature_applied: boolean | "unknown" };
 /** One verdict per item asked about, in order. */
-export type Verdicts = { verdicts: Verdict[]; model: string | null; tokens: Tokens | null; cost: Cost; questions_sha256: string };
+export type Verdicts = { verdicts: Verdict[]; model: string | null; tokens: Tokens | null; cost: Cost; questions_sha256: string } & Temperature;
 export type DecideContext = { signal: AbortSignal; deadlineMs: number };
 
 export interface WebDecider {
@@ -36,6 +38,8 @@ export interface DecisionAsker {
     usage: { input_tokens: number; output_tokens: number } | null;
     cost_usd: number | null;
     cost_basis: "reported" | "estimate" | "unknown";
+    temperature_sent?: number | null;
+    temperature_applied?: boolean | "unknown";
   }>;
 }
 
@@ -90,7 +94,9 @@ export function deciderFrom(provider: DecisionAsker, options: DeciderOptions = {
     const tokens: Tokens | null = outcome.usage
       ? { in: outcome.usage.input_tokens, out: outcome.usage.output_tokens, basis: "reported" }
       : options.count ? { in: options.count(text), out: null, basis: "counted" } : null;
-    return { verdicts, model: outcome.model, tokens, cost, questions_sha256: sha256(JSON.stringify(request.questions)) };
+    const temperature_sent = outcome.temperature_sent ?? null;
+    const temperature_applied = temperature_sent === null ? false : outcome.temperature_applied ?? "unknown";
+    return { verdicts, model: outcome.model, temperature_sent, temperature_applied, tokens, cost, questions_sha256: sha256(JSON.stringify(request.questions)) };
   };
   return {
     id: provider.id,

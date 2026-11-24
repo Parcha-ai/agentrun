@@ -4,6 +4,7 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import { checkCapabilities, DecisionProviderError } from "@parcha/agentrun-dsl";
 import type { DecisionCapabilities, DecisionContext, DecisionOutcome, DecisionProvider, DecisionRequest, ProviderAnswer } from "@parcha/agentrun-dsl";
+import { takesEffort, temperatureFor, type TemperatureRecord, temperatureRecord } from "./claude-models.js";
 
 const KEY_VARIABLE = "ANTHROPIC_API_KEY";
 const BASE_VARIABLE = "ANTHROPIC_BASE_URL";
@@ -114,7 +115,11 @@ function answersOf(text: string, questions: DecisionRequest["questions"]): Recor
   return answers;
 }
 
-export function anthropicProvider(options: AnthropicOptions = {}): DecisionProvider {
+/** An outcome, and the temperature its request carried (temperatureFor) with whether the model applied it. */
+export type AnthropicOutcome = DecisionOutcome & TemperatureRecord;
+export type AnthropicProvider = DecisionProvider & { decide(request: DecisionRequest, ctx: DecisionContext): Promise<AnthropicOutcome> };
+
+export function anthropicProvider(options: AnthropicOptions = {}): AnthropicProvider {
   const capabilities: DecisionCapabilities = {
     types: ["noul", "choice"], inputs: ["text", "json"], evidence: "none", probability: "self_reported", grounding: false,
     replay: "never", maxQuestions: null, maxStateBytes: null,
@@ -126,20 +131,24 @@ export function anthropicProvider(options: AnthropicOptions = {}): DecisionProvi
   const fetcher = options.fetch ?? fetch;
   return {
     id: "anthropic", needs: [KEY_VARIABLE], capabilities,
-    async decide(request: DecisionRequest, ctx: DecisionContext): Promise<DecisionOutcome> {
+    async decide(request: DecisionRequest, ctx: DecisionContext): Promise<AnthropicOutcome> {
       checkCapabilities(capabilities, request);
       const key = options.apiKey ?? process.env[KEY_VARIABLE];
       if (typeof key !== "string" || !key.trim()) throw new DecisionProviderError("configuration", `${KEY_VARIABLE} is not set.`);
       const root = (options.baseURL ?? process.env[BASE_VARIABLE] ?? BASE_URL).replace(/\/+$/, "");
       const model = request.model ?? options.model ?? MODEL;
       const price = ANTHROPIC_PUBLISHED_PRICING[model] ?? options.pricing;
+      const temperature = temperatureFor(model);
+      const format = { type: "json_schema", schema: schemaOf(request.questions) };
       const body = JSON.stringify({
         model,
         max_tokens: MAX_TOKENS,
         system: ANTHROPIC_SYSTEM,
         messages: [{ role: "user", content: JSON.stringify({ state: request.state ?? null, questions: request.questions }) }],
-        output_config: { effort: "low", format: { type: "json_schema", schema: schemaOf(request.questions) } },
+        temperature,
+        output_config: takesEffort(model) ? { effort: "low", format } : { format },
       });
+      const sampled = temperatureRecord(temperature, root === BASE_URL);
       const headers = { "content-type": "application/json", "anthropic-version": API_VERSION, "x-api-key": key };
       const budgetMs = Math.min(timeoutMs, ctx.deadlineMs ?? Infinity);
       const deadlineAt = Date.now() + budgetMs;
@@ -163,7 +172,7 @@ export function anthropicProvider(options: AnthropicOptions = {}): DecisionProvi
           let text: string;
           try { text = await response.text(); }
           catch { throw ctx.signal.aborted ? stopped(attempt) : lost(attempt, signal.aborted ? "passed its deadline" : "lost the connection while the answer was read"); }
-          return readMessage(text, request.questions, price, attempt);
+          return { ...readMessage(text, request.questions, price, attempt), ...sampled };
         }
         const status = response.status;
         if (status === 408 || (status >= 500 && status <= 599)) { void response.body?.cancel().catch(() => {}); throw lost(attempt, `answered HTTP ${status}`, status); }
