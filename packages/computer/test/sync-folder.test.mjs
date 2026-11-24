@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { after, before, describe, it, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { DaemonClient, FolderSync, folderPathProblem, SYNC_MAX_BYTES, SYNC_MAX_ENTRIES } from "../dist/index.js";
+import { computerdListening } from "./computerd-listening.mjs";
 import { CASES, fakeSink, folderOf } from "./sync-folder-cases.mjs";
 
 const ARCH = { x64: "amd64", arm64: "arm64" }[process.arch];
@@ -33,10 +34,7 @@ describe("the synced folder's delta against computerd in a user namespace", { sk
 		// Under umask 077, as init on the exec path runs (hosted/scripts.ts): computerd keeps it.
 		init = spawn("sh", ["-c", 'umask 077 && exec "$@"', "sh", "unshare", "-Ur", DAEMON, "init", "--deadline", deadline], { env: { PATH: process.env.PATH, AGENTRUN_COMPUTERD_SOCKET: socket }, stdio: ["ignore", "ignore", "pipe"] });
 		init.stderr.on("data", (chunk) => (stderr += chunk));
-		for (let tries = 0; !existsSync(socket); tries++) {
-			assert.ok(tries < 200 && init.exitCode === null, `computerd's init did not listen at ${socket}: ${stderr}`);
-			await new Promise((resolve) => setTimeout(resolve, 25));
-		}
+		await computerdListening(socket, init, () => stderr);
 		stream = connect(socket);
 		await new Promise((resolve, reject) => stream.once("connect", resolve).once("error", reject));
 		client = new DaemonClient({ readable: stream, writable: stream });
@@ -352,7 +350,7 @@ test("push: each file is stamped with the pushed mtime in the tar, a directory i
 	assert.deepEqual(await sync.sync(), { ok: true, value: { put: 0, mkdir: 0, removed: 0, meta: false } }, "the listing it took is the manifest: nothing to put");
 });
 
-test("push: a push that fails says it was the push, its code kept, and takes no baseline; a listing that fails says it was the listing; no entries push nothing", async () => {
+test("push: a push that fails says it was the push, its code kept, and takes no baseline; a listing that fails says it was the listing; no entries push an empty tar", async () => {
 	const down = pushing({ pushFails: "the computer is full" });
 	const pushed = await new FolderSync(down, fakeSink()).push([{ name: "f", type: "file", mode: 0o644, body: Buffer.from("x") }]);
 	assert.deepEqual(pushed, { ok: false, error: { code: "refused", message: "could not be pushed into the computer: the computer is full" } });

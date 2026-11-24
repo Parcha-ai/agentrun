@@ -88,6 +88,7 @@ const spec: LineSource<"pi", undefined> = {
   },
   start: () => undefined,
   record,
+  totals: true,
   idOf: (file) => basename(file, ".jsonl").split("_").pop()!,
 };
 

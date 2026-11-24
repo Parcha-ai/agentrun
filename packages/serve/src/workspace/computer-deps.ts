@@ -273,12 +273,19 @@ export const computerStartingWords = ({ provider, kind }: Pick<ComputerSaid, "pr
  *  server's stop, a park: the words fit each), and, where the run's folder is on Archil and mounted in it
  *  (`folderKept`), that the folder is kept. The one kept through the run's park (`kept`) says it is the same; a new one
  *  after a kept one's time passed (`replaced.lapsed`) says why first, as does one after a kept one pinned to a runner
- *  that was gone by the resume (`replaced.lost`, computerLostWords). */
+ *  that was gone by the resume (`replaced.lost`, computerLostWords), and one after the kept one's provider refused to
+ *  attach it again (`replaced.refused`, in the provider's words). */
 export const computerReadyWords = ({ provider, kind, hello, replaced, kept }: ComputerSaid): string => {
   const ready = `The ${kind} is ready: ${[OS_NAMES[hello.os] ?? hello.os, hello.osVersion].filter(Boolean).join(" ")} (${hello.arch}), from ${provider}.`;
   if (kept) return `${ready} It's the same ${kind}, as the wait left it.`;
   if (!replaced) return ready;
-  const why = replaced.lost ? ` ${computerLostWords(kind)}` : replaced.lapsed ? ` ${computerLapsedWords(kind)}` : "";
+  const why = replaced.refused
+    ? ` The ${kind} kept before could not be taken back: ${replaced.refused.replace(/[.!?]+$/, "")}.`
+    : replaced.lost
+      ? ` ${computerLostWords(kind)}`
+      : replaced.lapsed
+        ? ` ${computerLapsedWords(kind)}`
+        : "";
   return `${ready}${why} It's a new ${kind}: the one before is gone, with what was on it.${replaced.folderKept ? " The run folder is kept." : ""}`;
 };
 

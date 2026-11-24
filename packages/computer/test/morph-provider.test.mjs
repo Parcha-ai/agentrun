@@ -106,10 +106,16 @@ test("the provider takes the key as an option, checks ssh2, fetch, the API URL a
 	await assert.rejects(create({ ssh2 }), /options\.apiKey/);
 	assert.throws(() => new MorphProvider({ apiKey: KEY, ssh2: {} }), /ssh2 package/);
 	assert.throws(() => new MorphProvider({ apiKey: KEY, ssh2, fetch: "no" }), /options\.fetch/);
-	for (const apiUrl of ["http://cloud.morph.so/api", "not a url", "https://cloud.morph.so/api?x=1"]) {
+	const refusals = {
+		"http://cloud.morph.so/api": /must be https/,
+		"http://127.0.0.1:8080/api": /must be https/,
+		"not a url": /is not a URL/,
+		"https://cloud.morph.so/api?x=1": /takes no query or fragment/,
+	};
+	for (const [apiUrl, words] of Object.entries(refusals)) {
 		assert.throws(
 			() => new MorphProvider({ apiKey: KEY, ssh2, apiUrl }),
-			(error) => /https URL/.test(error.message) && !error.message.includes(KEY),
+			(error) => /^the Morph API URL /.test(error.message) && words.test(error.message) && !error.message.includes(KEY),
 			apiUrl,
 		);
 	}
