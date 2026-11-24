@@ -35,7 +35,7 @@ check ids are unique, regexes compile, `exit` only on `exec.run`, a task whose c
 | `exec` | `allow` (default) or `deny`: a task done through the UI. The agent gets no `exec` or `processes` group and no shell (on serve, its own agent with `computer.exec: false`). Every "In the X app, ..." task says deny |
 | `budget` | `steps` (computer calls, not tool calls: a code-mode script of six calls spends six), `usd`, `wall_s` |
 | `checks` | stage 1 (below) |
-| `sufficient` | default true: the checks decide alone. False: the grader decides, and `rubric` is required |
+| `sufficient` | default true: the checks decide alone. False: the grader decides a run whose checks pass (a failing check still fails it), and `rubric` is required |
 | `source` | a ported task's suite, id, revision, licence and changes |
 
 Placeholders: `{{param}}`, `{{param.field}}`, `{{seed}}`, `{{nonce}}` (6 hex characters from task and seed: put it in
@@ -147,7 +147,8 @@ folder: a run refuses a folder that already holds `results.jsonl`, so a report n
 
 Stage 1 is the checks. When they are sufficient they decide; the grader runs on failures (`--grade auto`, the default)
 to name the failure's locus and catch a check's false negative, or on every run (`always`) to measure false positives.
-When a task's checks are not sufficient, the grader decides.
+When a task's checks are not sufficient, the grader decides a run whose checks pass. The grader never turns a failing
+check into a pass: it reads the agent's own answer, which could talk it into one, while the checks read the computer.
 
 Stage 2 is one grader, with the rules stated once in [templates/grader-prompt.md](templates/grader-prompt.md) and only
 what is task-specific in the task's `rubric.md` ([template](templates/rubric.md)). It is given the instruction, the
@@ -159,9 +160,9 @@ confidence}`. The locus is the earliest decisive error: `planning`, `grounding`,
 | checks | grader | final | queued for a person |
 | --- | --- | --- | --- |
 | sufficient pass | fail | pass | yes |
-| sufficient fail | pass or unknown | fail | yes |
-| not sufficient | pass or fail | the grader's | when it differs from the checks |
-| not sufficient | unknown, or none ran | fail (unknown) or the checks' (none) | yes |
+| fail, sufficient or not | pass or unknown | fail | yes |
+| not sufficient pass | pass or fail | the grader's | when it says fail |
+| not sufficient pass | unknown, or none ran | fail (unknown) or pass (none) | yes |
 
 A person labels a queued run in `labels.jsonl` (`{run, verdict: pass|fail|infra, note}`), and the report applies it.
 The judge is a seam (`Judge`); `messagesJudge` calls an Anthropic Messages endpoint and asks once more when the answer

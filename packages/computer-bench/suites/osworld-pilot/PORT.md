@@ -152,9 +152,9 @@ Arms: `arms.json` here, Sonnet 5.5 and GPT-6.1 Terra on pi with the code surface
 model names are the ones serve lists for pi when OPENROUTER_API_KEY is its model key; check `GET /v2/capabilities`
 before the run and fix a name there, not the arm's id.
 
-The provider is E2B: linux-desktop verified 30 of 30 on it and the 11-14 Sonnet against Terra run went through it, and
-serve reaches an E2B desktop over E2B's exec, so a serve on the same host as the bench works with no public URL. Fly, Cloudflare and
-Modal desktops dial back to the server, which needs a public URL.
+The provider is E2B: linux-desktop verified 30 of 30 on it, and serve reaches an E2B desktop over E2B's exec, so a
+serve on the same host as the bench works with no public URL. Fly, Cloudflare and Modal desktops dial back to the
+server, which needs a public URL.
 
 Environment, by name only:
 
@@ -172,9 +172,14 @@ node $B/dist/cli.js run --suite $S --arms $S/arms.json --backend serve --serve $
 node $B/dist/cli.js report $OUT/run --split heldout
 ```
 
-Budget per task: 100 computer steps (OSWorld's longest setting), $3 of model, 900 s. Cost, from the 11-14 E2B run of
-linux-desktop (Sonnet about $0.04 an episode, at most $0.19 for 28 steps; Terra about $0.016; E2B under $2 for about
+Budget per task: 100 computer steps (OSWorld's longest setting), $3 of model, 900 s. Cost, from an earlier linux-desktop
+run on E2B (Sonnet about $0.04 an episode, at most $0.19 for 28 steps; Terra about $0.016; E2B under $2 for about
 120 desktops of 1 to 2 minutes) scaled for OSWorld tasks being several times longer: Sonnet $0.10 to $0.30 an
 episode, Terra $0.03 to $0.08. Three seeds, two arms, 20 tasks: 120 episodes, about $8 to $23 of model; $3 to $6 of judge
 (`--grade auto` grades the infeasible task and every failed episode, say 60 at $0.05 to $0.10 each); and about $3 to
-$6 of E2B for the 60 verify desktops and 120 run desktops: $14 to $35 in all. The per-episode cap bounds the worst case at $360 of model.
+$6 of E2B for the 60 verify desktops and 120 run desktops: $14 to $35 in all.
+
+Worst case: serve's $3 hold caps each attempt, not each episode. With `--retries 2`, an attempt that ends infra after
+its agent ran gets a fresh serve run and a fresh $3, so the bound is about 3 × 120 × $3 = $1,080 of model, plus the
+judge (up to 2 requests a grade). computer-bench has no whole-run cap: a run-wide cap has to come from outside, such
+as a watcher that sends the bench a SIGINT, which stops the run before its next episode.
