@@ -84,6 +84,14 @@ test("the setting: unset or blank is no origin; each comma-separated entry is an
   }
 });
 
+test("the setting: a plain http entry is taken only for a loopback host; any other host's stops the start, naming the entry by place, never its text", () => {
+  const PRIVATE = "http://10.0.0.1:4001"; // key-gate: denylist a private literal the setting refuses as plain http
+  for (const plain of ["http://gw.example", PRIVATE, "http://gw.example:8080"]) {
+    assert.throws(() => apiOnlyMcpOriginsFrom(`https://ok.example,${plain}`), (error) => error instanceof TypeError && /AGENTRUN_API_ONLY_MCP_ORIGINS/.test(error.message) && /entry 2 is plain http to a host off this machine/.test(error.message) && !error.message.includes(plain), plain);
+  }
+  assert.deepEqual(apiOnlyMcpOriginsFrom("http://127.0.0.1:4001,http://[::1]:4001,http://localhost:4001"), ["http://127.0.0.1:4001", "http://[::1]:4001", "http://localhost:4001"]);
+});
+
 test("ServeOptions.apiOnlyMcpOrigins is read as the setting is: an origin written in capitals and with a trailing slash is the same origin, and the save is 200", async (t) => {
   const gw = await gateway(t);
   const s = await setup(t, [`${gw.origin.replace("http:", "HTTP:")}/`]);
