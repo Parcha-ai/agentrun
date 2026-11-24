@@ -159,3 +159,47 @@ describe("the Playground's No model bar follows the picked revision", () => {
     expect(page.bar()?.textContent, "the bar over a picked revision that runs on this server").toContain("No model yet.");
   });
 });
+
+// The login is a model only for a run on the runner (serve's loginForRun): a run in a sandbox box goes on the model keys
+// whatever the login says, so with no key it still needs one, and the bar stays. Where the run goes is its definition's
+// own place, else where the server runs a revision that names none: its default place when the revision names a shell
+// tool (bash), else the runner (serve's defaultPlaceOf). The server sends its default place in capabilities' `places`.
+const placesWith = (place: Record<string, unknown>) => ({ ...CAPS, places: { modes: ["runner", "sandbox"], boxes: [{ id: "docker", available: true, state: "ready" }], default_place: place } });
+const SANDBOX_DEFAULT = placesWith({ mode: "sandbox", box: "docker" });
+const RUNNER_DEFAULT = placesWith({ mode: "runner" });
+const claudeAgentWith = (definition: Record<string, unknown>): Agent => ({ ...CLAUDE_AGENT, agent_id: "placed", definition: { ...CLAUDE_AGENT.definition, ...definition } as Agent["definition"] });
+const BAR = "No model yet.";
+
+describe("the Playground's No model bar heeds the login only for a run on the runner", () => {
+  it("an agent on Claude Agent placed in a sandbox box needs a model though the login reads signed in: the bar stays", async () => {
+    const page = await open(SIGNED_IN, RUNNER_DEFAULT, [claudeAgentWith({ place: { mode: "sandbox", box: "docker" }, tools: ["bash"] })]);
+    expect(page.bar()?.textContent ?? "", "the bar over a Claude Agent run in a sandbox box").toContain(BAR);
+  });
+
+  it("an agent on Claude Agent that names no place, with a shell tool, on a server whose default place is a sandbox box needs a model: the bar stays", async () => {
+    const page = await open(SIGNED_IN, SANDBOX_DEFAULT, [claudeAgentWith({ tools: ["bash"] })]);
+    expect(page.bar()?.textContent ?? "", "the bar over a Claude Agent run in the server's default sandbox box").toContain(BAR);
+  });
+
+  it("an older revision placed in a sandbox box needs a model though the current one runs on the runner: the bar comes up", async () => {
+    const page = await open(SIGNED_IN, RUNNER_DEFAULT, [CLAUDE_AGENT], twoRevisions({ harness: "claude-agent", place: { mode: "runner" } }, { harness: "claude-agent", place: { mode: "sandbox", box: "docker" }, tools: ["bash"] }));
+    expect(page.bar()?.textContent ?? null, "the bar over the current revision, on the runner").toBeNull();
+    await pickRevision(page.host, "End");
+    expect(page.bar()?.textContent ?? "", "the bar over a picked revision in a sandbox box").toContain(BAR);
+  });
+
+  it("a run on the runner goes on the login: placed there, naming no place on a server whose default is the runner, or naming no shell tool on one whose default is a sandbox box; no bar", async () => {
+    const cases: [string, unknown, Record<string, unknown>][] = [
+      ["placed on the runner", SANDBOX_DEFAULT, { place: { mode: "runner" }, tools: [] }],
+      ["no place, a shell tool, the runner by default", RUNNER_DEFAULT, { tools: ["bash"] }],
+      ["no place, no shell tool, a sandbox box by default", SANDBOX_DEFAULT, { tools: [] }],
+    ];
+    for (const [what, caps, definition] of cases) {
+      const page = await open(SIGNED_IN, caps, [claudeAgentWith(definition)]);
+      expect(page.bar()?.textContent ?? null, what).toBeNull();
+      act(() => root?.unmount());
+      root = undefined;
+      document.body.innerHTML = "";
+    }
+  });
+});

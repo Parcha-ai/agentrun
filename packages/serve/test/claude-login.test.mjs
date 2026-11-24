@@ -13,7 +13,7 @@ import { homedir, hostname, tmpdir } from "node:os";
 import { delimiter, dirname, join, relative } from "node:path";
 import { test } from "node:test";
 import * as claude from "@parcha/agentrun-harness-claude";
-import { CLAUDE_LOGIN_ENV, CLAUDE_LOGIN_SETTING, claudeLoginSwitchedOff, claudeLoginView, envAtPlace, LOGIN_SIGNED_OUT, LOGIN_UNKNOWN, loginAt, loginBeforeRun, loginForRun, settingFor, startLoginHere, turnOnBody, whyNotOneOwner, withClaudeLogin } from "../dist/claude-login.js";
+import { CLAUDE_LOGIN_ENV, CLAUDE_LOGIN_SETTING, claudeLoginSwitchedOff, claudeLoginView, envAtPlace, LOGIN_SIGNED_OUT, LOGIN_UNKNOWN, loginAt, loginBeforeRun, loginForRun, settingFor, startLoginHere, turnOffClaudeLogin, turnOnBody, turnOnClaudeLogin, whyNotOneOwner, withClaudeLogin } from "../dist/claude-login.js";
 import { ClaudeSignIns } from "../dist/claude-sign-in.js";
 import { MODEL_KEYS, hostModel } from "../dist/model.js";
 import { providerFor } from "../dist/provider.js";
@@ -644,6 +644,69 @@ test("the CLI's sign-in is refused for a login turned on over another data folde
   assert.equal(own.sign_in?.state, "waiting", JSON.stringify(own));
   assert.deepEqual(started, [{ cli: pinned, dir: join(one, "claude-login") }]);
 });
+
+// A sign-in reads the setting, then looks up the CLI, then starts it. A move of the login or a turn-off that lands in
+// between must not leave that sign-in waiting with what it read before: at a place the login no longer reads, or for a
+// login that is off, holding the browser's callback port. Here the sign-in is held inside that gap (its lookup of the
+// pinned CLI waits on the test), and the change is asked while it is held. Where nothing holds the change, it answers
+// inside the gap; where the change waits its turn behind the sign-in on the sign-ins' queue (ClaudeSignIns.serial), it
+// cannot answer first, and the sign-in is let go then. Either way, once both have answered no sign-in may wait at the
+// old place.
+const RACE_CHANGES = [
+  ["a turn-on that moves the login to the other place", (deps) => turnOnClaudeLogin(deps, { only_me: true, place: "machine" }), "machine"],
+  ["a turn-off", (deps) => turnOffClaudeLogin(deps), undefined],
+];
+for (const [change, ask, place] of RACE_CHANGES) {
+  test(`${change}, asked while a sign-in's start is between its read of the setting and the CLI's start, leaves no sign-in waiting with the setting it read`, { timeout: 30_000 }, async (t) => {
+    const data = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-login-race-"));
+    const signIns = new ClaudeSignIns();
+    t.after(async () => {
+      await signIns.close();
+      rmSync(data, { recursive: true, force: true });
+    });
+    const pinned = join(data, "claude");
+    writeFileSync(pinned, "", { mode: 0o755 });
+    const env = { HOME: data, PATH: "/usr/bin:/bin" };
+    const rows = new Map([[CLAUDE_LOGIN_SETTING, settingFor("agentrun", data)]]);
+    const settings = { get: async (key) => rows.get(key) ?? null, put: async (key, value) => void rows.set(key, value), remove: async (key) => void rows.delete(key) };
+    // Each sign-in's CLI is a stand-in that waits until it is stopped: the folder it signs in at, and whether it was.
+    const started = [];
+    const cli = {
+      claudeLoginCommand: () => "claude auth login",
+      claudeLoginStatus: async () => ({ signedIn: false, method: "none" }),
+      startClaudeLogin: (_cli, login) => {
+        const one = { dir: login.dir, stopped: false };
+        started.push(one);
+        let end;
+        const ended = new Promise((resolve) => { end = resolve; });
+        return { ended, stop: () => { one.stopped = true; end({ end: "stopped" }); } };
+      },
+    };
+    const deps = (over) => ({ signIns, settings, data, env, pinned: async () => pinned, refused: undefined, sameMachine: true, claude: async () => cli, changed: async () => {}, ...over });
+    // The pause point: the sign-in's first lookup of the pinned CLI, after its read of the setting and before its start.
+    let reached;
+    const inGap = new Promise((resolve) => { reached = resolve; });
+    let release;
+    const released = new Promise((resolve) => { release = resolve; });
+    let held = false;
+    const pressed = startLoginHere(deps({ pinned: async () => { if (!held) { held = true; reached(); await released; } return pinned; } }));
+    await inGap;
+    // The change's own request: the same sign-ins, seen through a wrapper that says when it asks for its turn.
+    let queued;
+    const waits = new Promise((resolve) => { queued = resolve; });
+    const watched = { view: () => signIns.view(), start: (begin) => signIns.start(begin), stop: () => signIns.stop(), close: () => signIns.close(), serial: (work) => { queued(); return signIns.serial(work); } };
+    const changing = ask(deps({ signIns: watched }));
+    const first = await Promise.race([changing.then(() => "answered inside the gap"), waits.then(() => "waited its turn")]);
+    release();
+    const [, answer] = await Promise.all([pressed, changing]);
+    assert.equal(answer.state, place === undefined ? "off" : "signed_out", JSON.stringify(answer));
+    assert.equal(rows.get(CLAUDE_LOGIN_SETTING)?.place, place, "the change was saved");
+    const keeps = place === undefined ? undefined : loginAt(place, data, env).dir;
+    const stale = started.filter((one) => !one.stopped && one.dir !== keeps);
+    assert.deepEqual(stale, [], `${change} (it ${first}): a sign-in still waits where the login no longer is`);
+    assert.ok(started.length >= 1, "the sign-in started");
+  });
+}
 
 test("the machine's id is a file of the owner's alone (0600) in the data folder, kept across a restart, so the login stays this machine's; a setting saved with a hostname and no id reads as another machine's until turned on again", { timeout: 180_000 }, async (t) => {
   const fake = await fakeCli(t);
