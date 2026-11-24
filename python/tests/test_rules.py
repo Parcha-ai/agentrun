@@ -208,6 +208,30 @@ class Rules(unittest.TestCase):
             assert isinstance(missing, AgentRunAuthError)
             self.assertEqual(missing.reason, "no_token", "an empty AGENTRUN_TOKEN is no key")
 
+    def test_agentrun_token_goes_only_to_a_server_on_this_machine_and_any_other_base_a_lookalike_host_among_them_takes_agentrun_api_key_or_api_key_and_with_neither_is_refused_before_any_request(self) -> None:
+        server = Listener(self)
+        with mock.patch.dict(os.environ, {"AGENTRUN_TOKEN": KEY}):
+            os.environ.pop("AGENTRUN_API_KEY", None)
+            os.environ.pop("AGENTRUN_BASE_URL", None)
+            # On this machine (the CLI's hosts): the token is its key, and it reaches the server.
+            AgentRun(base_url=server.base).agents.list()
+            self.assertEqual(server.requests[-1].headers["authorization"], f"Bearer {KEY}")
+            for base_url in ("http://localhost:7340", "http://[::1]:7340/v2", "HTTP://LocalHost:7340"):
+                AgentRun(base_url=base_url)  # no_token were the token not taken
+            # Anywhere else: refused before any request, naming AGENTRUN_API_KEY, never the token.
+            seen = len(server.requests)
+            for base_url in ("https://agentrun.example", "http://localhost.evil.example:7340", "http://127.0.0.1.nip.io:7340", "http://127.0.0.2:7340", "http://192.0.2.5:7340"):
+                error = self.thrown(AgentRun, base_url=base_url)
+                assert isinstance(error, AgentRunAuthError), f"{base_url}: {error!r}"
+                self.assertEqual(error.reason, "no_token", base_url)
+                self.assertIn("AGENTRUN_API_KEY", str(error), base_url)
+                self.assertNotIn(KEY, str(error), f"{base_url}: the token is in no message")
+            self.assertEqual(len(server.requests), seen, "nothing was sent")
+            # There, AGENTRUN_API_KEY or api_key is the key.
+            os.environ["AGENTRUN_API_KEY"] = f"{KEY}-api"
+            AgentRun(base_url="https://agentrun.example")
+            AgentRun(base_url="https://agentrun.example", api_key=f"{KEY}-given")
+
     def test_a_path_argument_is_encoded_whole_a_file_path_keeps_its_slashes_and_one_that_would_read_as_another_route_is_refused_before_any_request(self) -> None:
         def answer(request: Request, reply: Reply) -> Any:
             if "/files/" in request.url and "learning" not in request.url:

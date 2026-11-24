@@ -143,6 +143,37 @@ test("the base URL is the server's address with or without /v2, as the CLI takes
   assert.equal(thrownSync(() => new AgentRun()).reason, "no_token", "an empty AGENTRUN_TOKEN is no key");
 });
 
+test("AGENTRUN_TOKEN goes only to a server on this machine (localhost, 127.0.0.1, [::1], the CLI's hosts): any other base, a lookalike host among them, takes AGENTRUN_API_KEY or apiKey, and with neither is refused before any request, in words that name AGENTRUN_API_KEY and never the token", async (t) => {
+  const names = ["AGENTRUN_BASE_URL", "AGENTRUN_API_KEY", "AGENTRUN_TOKEN"];
+  const saved = names.map((name) => process.env[name]);
+  t.after(() => names.forEach((name, i) => (saved[i] === undefined ? delete process.env[name] : (process.env[name] = saved[i]))));
+  delete process.env.AGENTRUN_BASE_URL;
+  delete process.env.AGENTRUN_API_KEY;
+  process.env.AGENTRUN_TOKEN = KEY;
+  const sent = [];
+  const fetch = async (url, init) => (sent.push([String(url), new Headers(init?.headers).get("authorization")]), new Response("{\"agents\":[]}", { status: 200, headers: JSON_HEADERS }));
+  // On this machine: the token is its key.
+  for (const baseUrl of ["http://localhost:7340", "http://127.0.0.1:7340/v2", "http://[::1]:7340", "HTTP://LocalHost:7340"]) {
+    await new AgentRun({ baseUrl, fetch }).agents.list();
+    assert.equal(sent.at(-1)[1], `Bearer ${KEY}`, baseUrl);
+  }
+  const from = sent.length;
+  // Anywhere else: refused before any request, naming AGENTRUN_API_KEY, never the token.
+  for (const baseUrl of ["https://agentrun.example", "http://localhost.evil.example:7340", "http://127.0.0.1.nip.io:7340", "http://127.0.0.2:7340", "http://192.0.2.5:7340"]) {
+    const error = thrownSync(() => new AgentRun({ baseUrl, fetch }));
+    assert.ok(error instanceof AgentRunAuthError, `${baseUrl}: ${error}`);
+    assert.equal(error.reason, "no_token", baseUrl);
+    assert.match(error.message, /AGENTRUN_API_KEY/, baseUrl);
+    assert.equal(error.message.includes(KEY), false, `${baseUrl}: the token is in no message`);
+  }
+  assert.deepEqual(sent.slice(from), [], "nothing was sent");
+  // There, AGENTRUN_API_KEY or apiKey is the key, and the token is not sent.
+  process.env.AGENTRUN_API_KEY = `${KEY}-api`;
+  await new AgentRun({ baseUrl: "https://agentrun.example", fetch }).agents.list();
+  await new AgentRun({ baseUrl: "https://agentrun.example", apiKey: `${KEY}-given`, fetch }).agents.list();
+  assert.deepEqual(sent.slice(from).map(([, authorization]) => authorization), [`Bearer ${KEY}-api`, `Bearer ${KEY}-given`]);
+});
+
 test("a path argument is encoded whole, a file path keeps its slashes, and one that would read as another route is refused before any request", async (t) => {
   const server = await listener(t, (req) => (/\/files\//.test(req.url) && !req.url.includes("learning") ? [200, { "content-type": "application/octet-stream" }, "x"] : json(200, {})));
   const client = new AgentRun({ baseUrl: server.base, apiKey: KEY });
