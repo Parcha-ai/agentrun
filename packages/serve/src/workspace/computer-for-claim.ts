@@ -58,7 +58,7 @@ import { type AttachedComputers, pairedProvider, withPaired } from "./attached-c
 import { computerHold, type HeldComputer, heldHands } from "./computer-hold.js";
 import { endingDeletes, figuresOf, type IntervalWrites, intervalWrites } from "./computer-intervals.js";
 import { type ComputeLedger, type ComputeMeter, computeMeter, type ComputeMeterOptions } from "../compute-cost.js";
-import { deleteKept, endKept, KEEP_MS, type Kept, keptBy, type KeptHolder, type ParkCause, type ParkedEnd, pinnedOf, readKept, takeKept, writeKept } from "./computer-kept.js";
+import { deleteKept, endKept, heldElsewhere, KEEP_MS, type Kept, keptBy, type KeptHolder, type ParkCause, type ParkedEnd, pinnedOf, readKept, restoreKept, takeKept, writeKept } from "./computer-kept.js";
 import { type ProviderLedger, storeLedger } from "./computer-ledger.js";
 import { type ClaimBrowser, type ClaimSide, type ComputerSetting, type ComputerSettingKind, type KindCapabilities, type KindRegistry, type LaunchedComputer, type ProviderEntry, providerKeys, registryHere, resolveComputer } from "./resolve-computer.js";
 import type { RunComputer, RunHold } from "./run-tools.js";
@@ -858,8 +858,9 @@ export async function computerForClaim(
   // `settings` and `runs`: the agent's own computer's record and its holder's run row, for a persistent setting; and the
   // run's own row, whose epoch and runner fence every write of the run's folder to its disk.
   // `computerIntervals`: where each computer the claim makes is written, from its create to its proven delete
-  // (computer-intervals.ts); absent, none is.
-  store: Pick<Store, "agents" | "sealedKeys" | "computerLedger"> & { readonly settings?: Store["settings"]; readonly runs?: Pick<Store["runs"], "get">; readonly computerIntervals?: Store["computerIntervals"] },
+  // (computer-intervals.ts); absent, none is. `runners`: who is there now, read when this claim took a kept row pinned to
+  // another runner and could not reach its machine (reattach): the row goes back to a runner still there.
+  store: Pick<Store, "agents" | "sealedKeys" | "computerLedger"> & { readonly settings?: Store["settings"]; readonly runs?: Pick<Store["runs"], "get">; readonly computerIntervals?: Store["computerIntervals"]; readonly runners?: Pick<Store["runners"], "live"> },
   deps: ComputerForClaimDeps,
 ): Promise<ClaimComputer> {
   // The run's disk as this claim writes the folder on it: each write refused once a later claim has taken the run (Q1).
@@ -1030,12 +1031,27 @@ export async function computerForClaim(
       if (!record || !store.settings) return undefined;
       if (persistent || paired.some((row) => row.id === entry.id) || (deps.launch && (deps.launches?.(entry.id) ?? true)) || record.provider !== entry.id || record.kind !== kind || record.folder !== folder) return undefined;
       // Kept pinned to another runner (or another process of this runner's name): the claim rule let this claim have the
-      // run only once that runner was gone. Taken off its row, it is tried here all the same (a runner on the same host,
-      // sharing its Docker engine, finds it); one this claim cannot reach is lost with that runner, said so.
+      // run only once that runner was gone, or no longer claiming. Taken off its row, it is tried here all the same (a
+      // runner on the same host, sharing its Docker engine, finds it); one this claim cannot reach is lost to this claim,
+      // said so.
       const elsewhere = record.runner !== undefined && !keptBy(record, launch.holder);
+      const settings = store.settings;
+      /** Whether this claim took the row off (takeKept) and has not given it back. */
+      let took = false;
+      // Taken and not reached here: while the runner it is pinned to is still there (heldElsewhere: refusing claims or
+      // not), the row goes back as that runner's park wrote it, so that runner's own end at its time (or its janitor's)
+      // still finds it and deletes the machine. A row left off would leave the machine running with nothing to end it.
+      // Once that runner is gone, the row stays off: the machine went with it, or its host's janitor ends it. A failed
+      // read of who is there puts it back: any janitor ends a row whose runner is gone.
+      const giveBack = async (): Promise<void> => {
+        if (!took || !elsewhere) return;
+        took = false;
+        const there = await heldElsewhere({ ...(store.runners ? { runners: store.runners } : {}), ...(launch.holder ? { self: launch.holder } : {}) })(record);
+        if (there) await restoreKept(settings, launch.runId, record).catch(() => false);
+      };
       try {
         // Its time over, or its end took it first (ending or ended): a new one, said so.
-        if (record.ending || record.ended || now() >= record.until || !(await takeKept(store.settings, launch.runId, record))) {
+        if (record.ending || record.ended || now() >= record.until || !(took = await takeKept(settings, launch.runId, record))) {
           lapsed = true;
           return undefined;
         }
@@ -1043,6 +1059,7 @@ export async function computerForClaim(
         const taken = await keptLaunch(provider, record, signal, () => writes.ended(entry.id, record.id));
         if (!taken) {
           lost = elsewhere;
+          await giveBack();
           return undefined;
         }
         // Metered again from here, with what its interval says it was made with: the time it was kept is no claim's.
@@ -1061,8 +1078,10 @@ export async function computerForClaim(
         deps.onConnected?.({ provider: entry.label, kind: record.kind, hello: { os, ...(osVersion ? { osVersion } : {}), arch }, kept: true });
         return { ...again, epoch: record.epoch };
       } catch {
-        // Taken off its row (or not), and not reached here: lost with its runner where it was pinned to another.
+        // Taken off its row (or not), and not reached here: lost to this claim where it was pinned to another runner, its
+        // row given back while that runner is there.
         lost = elsewhere && !lapsed;
+        await giveBack().catch(() => undefined);
         return undefined;
       }
     },

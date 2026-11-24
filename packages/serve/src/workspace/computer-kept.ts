@@ -166,7 +166,7 @@ export async function sparedKept(deps: KeptHolders & { readonly settings: Pick<K
  *  ending, and the next pass deletes it again (a Docker command has no timeout of its own). */
 export const KEPT_DELETE_MS = 60_000;
 /** The settings the kept rows live in. */
-export type KeptSettings = Pick<Settings, "get" | "put" | "replaceIf" | "removeIf" | "remove" | "all">;
+export type KeptSettings = Pick<Settings, "get" | "put" | "putIfAbsent" | "replaceIf" | "removeIf" | "remove" | "all">;
 
 /** A row's value as a Kept, or undefined for anything else. */
 export function keptOf(value: unknown): Kept | undefined {
@@ -208,6 +208,15 @@ export async function writeKept(settings: Pick<KeptSettings, "put">, runId: stri
  *  another claim) had it first. */
 export async function takeKept(settings: Pick<KeptSettings, "removeIf">, runId: string, kept: Kept): Promise<boolean> {
   return settings.removeIf(keptKeyOf(runId), kept);
+}
+
+/** Puts `kept` back on `runId`'s row after a claim took it (takeKept) and could not reach its machine, while the runner
+ *  it is pinned to is still there: that runner's end at its time (endKept) compares the row with the text its park wrote,
+ *  so the row goes back as that same text (rowOf), and only while the key has no row (nothing written since is
+ *  replaced). True when the row reads `kept` after. */
+export async function restoreKept(settings: Pick<KeptSettings, "putIfAbsent">, runId: string, kept: Kept): Promise<boolean> {
+  const row = rowOf(kept);
+  return JSON.stringify(await settings.putIfAbsent(keptKeyOf(runId), row)) === JSON.stringify(row);
 }
 
 /** Ends a kept computer at its time: its row marked ending, only while it still reads `kept` (a claim that took it since
