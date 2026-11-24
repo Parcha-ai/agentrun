@@ -31,7 +31,7 @@ import {
   waitForSubmissions,
 } from './host/process.js';
 import { durableEnv, nativeModelId } from './env.js';
-import { type ClaudeAgentLogin, type ClaudeLoginToken, LOGIN_TOKEN_REFUSED, loginBooking, loginByToken } from './login.js';
+import { type ClaudeAgentLogin, type ClaudeLoginToken, LOGIN_TOKEN_REFUSED, loginBooking, loginByToken, loginEnv } from './login.js';
 import type { ModelPort } from '@parcha/agentrun-kernel';
 import { uuidFrom } from './ids.js';
 import { MessageQueue } from './inbox.js';
@@ -413,16 +413,24 @@ export function builtinTools(builtins: ClaudeBuiltins | undefined): string[] | u
   throw new TypeError("agentrun-harness-claude: builtins takes true, a list of tool names, or { type: 'preset', preset: 'claude_code' }");
 }
 
-/** The Claude Code sandbox settings for the VM (§5.5 "Claude Code runs under its own sandbox"; P0.10, P0.16). */
-export function claudeSandboxSettings(machine: Pick<SessionMachine, 'root' | 'dirs'>, network: ClaudeSandboxNetwork, login?: ClaudeAgentLogin): NonNullable<QueryOptions['sandbox']> {
+/** The Claude Code sandbox settings for the VM (§5.5 "Claude Code runs under its own sandbox"; P0.10, P0.16).
+ *  `platform`: the one the CLI runs on, as loginEnv takes it. */
+export function claudeSandboxSettings(machine: Pick<SessionMachine, 'root' | 'dirs'>, network: ClaudeSandboxNetwork, login?: ClaudeAgentLogin, platform: NodeJS.Platform = process.platform): NonNullable<QueryOptions['sandbox']> {
   const { dirs } = machine;
   const open = [dirs.tmp, dirs.home, dirs.cache];
+  const denyRead = [dirname(dirs.config), ...(login ? [login.dir, login.profiles] : [])];
+  // The folder the CLI reads the login's credentials from (loginEnv's own value), when the server's env sets it apart.
+  // Empty on macOS it names a Keychain item, no folder.
+  const secure = login ? loginEnv(login, platform).CLAUDE_SECURESTORAGE_CONFIG_DIR : '';
+  if (secure && !denyRead.includes(secure)) denyRead.push(secure);
   return {
     enabled: true,
     failIfUnavailable: true,
     allowUnsandboxedCommands: false,
-    // A person's login is the CLI's alone: no command it runs reads it.
-    filesystem: { allowWrite: [machine.root, ...open], denyRead: [dirname(dirs.config), ...(login ? [login.dir, login.profiles] : [])], allowRead: open },
+    // A run on a person's login comes through claudeAgentAdapter, which passes builtins: false (the CLI has no Bash),
+    // and AgentRun's own tools never run on the server host. Where commands do run, denyRead keeps them from the login's
+    // files on Linux. On macOS the token is a Keychain item, which denyRead does not cover.
+    filesystem: { allowWrite: [machine.root, ...open], denyRead, allowRead: open },
     credentials: { envVars: [{ name: 'ANTHROPIC_AUTH_TOKEN', mode: 'deny' }] },
     network: {
       ...(network === 'allow-all' ? { allowedDomains: ['*'] } : network === 'deny-all' ? { allowedDomains: [], strictAllowlist: true } : { allowedDomains: [...network.allow], strictAllowlist: true }),

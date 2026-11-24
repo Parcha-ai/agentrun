@@ -1,7 +1,7 @@
 import type { Capabilities } from "@/lib/client";
 
 /** The bar every page but the first screen shows while capabilities' `models.ready` is false (the first screen has the key
- *  card, ModelKeyCard): no agent that names no model runs here yet, and what would fix it. `needs` `model`: the server's
+ *  card, ModelKeyCard), unless Claude Code's login on this machine is on and signed in, which is a model (App): no agent that names no model runs here yet, and what would fix it. `needs` `model`: the server's
  *  AGENT_MODEL names a model it does not run, which no key fixes. `settings`: the server keeps keys (its key routes), so
  *  one can be added in Settings, which the bar leads with: a saved key reaches the next
  *  run with no restart. `model`: the server's default model (`models.default`); when one is named, only its provider's key
