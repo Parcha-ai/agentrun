@@ -514,7 +514,7 @@ test("the local browser's provider is built with the server's Chrome lookup (CHR
 
 test("the Docker provider is built with what the docker CLI reads of the server's environment (where the daemon and its config are, PATH, HOME, a proxy), and no key or other variable", async () => {
   const built = [];
-  const reads = { PATH: "/opt/bin:/usr/bin", HOME: "/home/agentrun", DOCKER_HOST: "unix:///run/docker.sock", DOCKER_CONFIG: "/home/agentrun/.docker", HTTPS_PROXY: "http://proxy.example.com:3128" };
+  const reads = { PATH: "/opt/bin:/usr/bin", HOME: "/home/agentrun", DOCKER_HOST: "unix:///run/docker.sock", DOCKER_CONFIG: "/etc/agentrun/docker", HTTPS_PROXY: "http://proxy.example.com:3128" };
   const env = { ...reads, ANTHROPIC_API_KEY: mark("model-key"), AWS_SECRET_ACCESS_KEY: mark("aws-key"), AGENTRUN_UNLISTED_SETTING: "plain" };
   const { computerDeps, factories } = computerDepsFrom({ env, store: memoryStore(), sealKey: undefined, kinds: KINDS, load: async (id, options) => (built.push([id, options]), {}) });
   await computerDeps.providers.docker({}, { ledger: {} });
