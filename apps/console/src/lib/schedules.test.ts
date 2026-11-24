@@ -266,6 +266,15 @@ describe("a schedule's typed input", () => {
     // Another field edited: the ones left alone still go as stored.
     expect(patchOf(t, bodyOf({ ...d, shape, values: { ...d.values, company: "Beta AG" } }).body!).target?.input).toEqual({ company: "Beta AG", note: "", topics: ["a\nb", " c ", ""] });
   });
+  // A stored value its field can't show (an object where the schema now asks for text) is no field's text, so a
+  // required field rebuilt from the form read as "", [] or false and replaced it: a rename alone changed the input.
+  it("keeps a stored value its field can't show until that field is edited", () => {
+    const strict = agentInputOf({ type: "object", properties: { company: { type: "string" }, topics: { type: "array", items: { type: "string" } }, urgent: { type: "boolean" } }, required: ["company", "topics", "urgent"] });
+    const t = typed({ company: { name: "Acme GmbH" }, topics: [{ id: 1 }], urgent: { level: 2 } });
+    const d = draftOf(t);
+    expect(patchOf(t, bodyOf({ ...d, shape: strict, name: "renamed" }).body!)).toEqual({ name: "renamed" });
+    expect(patchOf(t, bodyOf({ ...d, shape: strict, values: { ...d.values, company: "Beta AG" } }).body!).target?.input).toEqual({ company: "Beta AG", topics: [{ id: 1 }], urgent: { level: 2 } });
+  });
   it("needs no message when the schema requires another field, and says a whole input that is no JSON object", () => {
     expect(bodyOf({ ...draft({ content: "", cron: "30 1 * * *" }), shape, values: { company: "Acme GmbH" } }).body?.target?.input).toEqual({ company: "Acme GmbH" });
     const json = agentInputOf({ type: "object", properties: { filters: { type: "object" } } });
