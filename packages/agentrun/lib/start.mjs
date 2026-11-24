@@ -569,8 +569,9 @@ export async function main(argv, env = process.env) {
     return ended?.code || 1;
   }
   started = true;
-  // Kept open for a sign-in's failure (tell), until the server ends.
-  void exit.then(closeLog);
+  // Kept open for a sign-in's failure (tell) until the server's output has all been read: its exit can come before the
+  // last lines in the pipe.
+  void closed.then(closeLog);
   console.log(`AgentRun is running at ${url}`);
   // For the person at the terminal (stderr, so stdout stays the one line a script reads): how to stop it, and where its
   // data is kept, which the next start opens again.
