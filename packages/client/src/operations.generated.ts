@@ -953,6 +953,14 @@ export type TimelinePage = {
   final: boolean;
   cost: Cost;
   poll_after_ms?: number;
+  in_flight?: Array<{
+    kind: "model" | "tool";
+    name: string;
+    started_at: string | null;
+    tool_use_id?: string;
+    for_tool?: string;
+    input_tokens_max?: number;
+  }>;
 };
 
 export type TimelineRow = {
