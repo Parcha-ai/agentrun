@@ -4,10 +4,10 @@
 // table (fixtures/fake-network.mjs) and each provider's send a stub: no socket leaves the machine, no real key.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { firecrawlFetch, parallelExtract, webFetchText } from "../dist/index.js";
+import { firecrawlFetch, firecrawlScrape, parallelExtract, webFetchText } from "../dist/index.js";
 import { answers, firecrawlServer } from "./fixtures/fake-firecrawl.mjs";
 import { network } from "./fixtures/fake-network.mjs";
-import { webFetch } from "./support.mjs";
+import { fetchPage, readDirect, webFetch } from "./support.mjs";
 
 const PUBLIC = "http://public.example/";
 
@@ -81,4 +81,32 @@ test("a provider's page whose url, after a redirect, holds a user name and passw
   }
   assert.deepEqual(leaks, [], `no part of them in: ${leaks.join("; ")}`);
   assert.deepEqual(urls, rows.map(([provider]) => [provider, `${PUBLIC}landed`]), "the url of each page, without them");
+});
+
+// undici's fetch builds a Request for each hop, and Request refuses a URL holding a user name or password with an error
+// that quotes the URL whole. The transport here builds one too (Node's Request is undici's), so the words are undici's.
+test("the root's own reads quote no user name or password from an error: fetchPage and readDirect redirected to one, Firecrawl's scrape and Parallel's extract failing with one past their cut", async () => {
+  const moved = `${PUBLIC}moved`;
+  const net = network();
+  const fetchImpl = async (url, init) => {
+    new Request(url);
+    if (String(url) === moved) return new Response(null, { status: 302, headers: { location: credentialed() } });
+    return net.fetchImpl(url, init);
+  };
+  const said = {};
+  for (const [name, read] of [["fetchPage", fetchPage], ["readDirect", readDirect]]) {
+    const page = await read(moved, { lookup: net.lookup, fetchImpl });
+    assert.equal(page.ok, false, `${name}: no page`);
+    said[name] = page;
+  }
+  // Firecrawl's scrape cuts the transport's words at 300, Parallel's extract at 200.
+  const scrapeWords = quoting(280);
+  assert.ok(straddles(scrapeWords, 300), "the cut of Firecrawl words ends inside them");
+  said.firecrawlScrape = await firecrawlScrape(PUBLIC, { send: failing(scrapeWords) });
+  assert.match(said.firecrawlScrape.error ?? "", /^Firecrawl's fetch failed: x{280}/, "the scrape failed");
+  said.parallelExtract = await parallelExtract("not-a-secret", failing(quoting(180))).read(PUBLIC);
+  assert.match(said.parallelExtract, /^failed: x{180}/, "the extract failed");
+  const leaks = leaking(said);
+  assert.deepEqual(leaks, [], `no part of them in: ${leaks.join("; ")}`);
+  for (const name of ["fetchPage", "readDirect"]) assert.match(said[name].error ?? "", /includes credentials: http:\/\/public\.example\/$/, `${name}: the refusal of undici, its URL without them`);
 });
