@@ -185,8 +185,10 @@ test("Test refuses what Save refuses: a Particle API base, typed or in force, is
   const particle = "https://api.particle.ai/v1";
   const asked = [];
   const fetch = async (url) => (asked.push(String(url)), new Response(JSON.stringify({ data: [{ id: "particle-1" }] }), { status: 200 }));
-  await assert.rejects(testGateway({ env: {}, fetch }, { base_url: particle }), (error) => error.details?.fields?.[0]?.field === "base_url" && /Particle.*Chat Completions/.test(error.details.fields[0].message));
-  const inForce = await testGateway({ env: { AGENT_MODEL_BASE_URL: particle }, fetch }, undefined);
+  // A store with no gateway saved and no key sealed.
+  const store = { settings: { get: async () => undefined }, sealedKeys: { get: async () => undefined } };
+  await assert.rejects(testGateway({ store, env: {}, fetch }, { base_url: particle }), (error) => error.details?.fields?.[0]?.field === "base_url" && /Particle.*Chat Completions/.test(error.details.fields[0].message));
+  const inForce = await testGateway({ store, env: { AGENT_MODEL_BASE_URL: particle }, fetch }, undefined);
   assert.equal(inForce.ok, false);
   assert.match(inForce.why, /Particle.*Chat Completions.*remove AGENT_MODEL_BASE_URL/);
   assert.deepEqual(asked, [], "Particle's API was never asked");
