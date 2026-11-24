@@ -66,6 +66,9 @@ type Credential = { type: "oauth"; access: string; refresh: string; expires: num
  *  fallback list until OpenAI's list is read; `retired`, the pairs of the sign-ins it replaced, until OpenAI confirms
  *  their revocation. */
 type Row = { v: 1; state: "signed_in" | "expired"; credential: Credential; email?: string; plan?: string; models: string[]; unlisted?: true; retired?: Credential[]; lease?: { holder: string; until: number } };
+/** What a settle did (settle): `revoked`, whether OpenAI confirmed every carried pair (none when the row carried none);
+ *  `listed`, whether it wrote the models OpenAI listed. */
+type Settled = { revoked?: boolean; listed?: boolean };
 
 /** The words a run or a request gets when there is no plan token to send. */
 export const SIGNED_OUT = "This server is not signed in to ChatGPT: sign in under Settings → Model keys, or name a model on a key.";
@@ -233,7 +236,7 @@ export class ChatGPTPlan implements PlanReader {
   /** The server's read in flight (refresh), which a read while it is out waits for. */
   #refreshing: Promise<void> | undefined;
   /** The last settle queued (settle): each waits for the one before it. */
-  #settling: Promise<boolean | undefined> | undefined;
+  #settling: Promise<Settled> | undefined;
   /** The ends of the sign-ins cancelled and not yet ended (close waits for them). */
   readonly #ending = new Set<Promise<void>>();
   readonly #watchers = new Set<(tokens: string[]) => void>();
@@ -346,10 +349,12 @@ export class ChatGPTPlan implements PlanReader {
   }
 
   /** What a stop left in the row (a sign-in it cut off after its save: keep) settled, out of the caller's way: the
-   *  server's, once, at its start. A runner's reader (planReaderOf, at each claim) never calls it, so no runner lists the
-   *  plan's models or sends a refresh token to OpenAI's revocation endpoint. */
+   *  server's, once, at its start, once its first offers are made. Models it lists are told to the server (its change
+   *  callback, as a sign-in's are), so the offers made from the fallback list are made again. A runner's reader
+   *  (planReaderOf, at each claim) never calls it, so no runner lists the plan's models or sends a refresh token to
+   *  OpenAI's revocation endpoint. */
   settleLeft(): void {
-    void this.settle();
+    void this.settle().then(({ listed }) => (listed ? this.tellChanged() : undefined));
   }
 
   view(): PlanView {
@@ -509,47 +514,48 @@ export class ChatGPTPlan implements PlanReader {
     // Saved: no longer waiting, so it reads signed in while it settles and the server takes the change (`saved`, the
     // sign-in's settle).
     saved?.();
-    const previousRevoked = await this.settle();
+    const { revoked: previousRevoked } = await this.settle();
     if (previousRevoked !== undefined) this.#deps.log?.({ chatgpt: "previous_revoked", revoked: String(previousRevoked) });
     await this.tellChanged();
   }
 
   /** What a saved sign-in leaves (keep), done: its models listed (`unlisted`), and each pair it carries (`retired`)
-   *  revoked at OpenAI and dropped from the row once OpenAI confirms it. Whether every carried pair was confirmed; none
-   *  when the row carried none. The server's alone, one at a time: only a sign-in (keep) and the server's start
-   *  (settleLeft) settle, and a runner does neither. The row is written only while it holds what was read and no
-   *  renewal's lease is live (a renewal writes back over the row it leased, and carries these fields); what is left
-   *  stays for the server's next start. Never throws. */
-  private settle(): Promise<boolean | undefined> {
-    const run = (this.#settling ?? Promise.resolve(undefined)).then(() => this.settleOnce()).catch(() => undefined);
+   *  revoked at OpenAI and dropped from the row once OpenAI confirms it. `revoked`: whether every carried pair was
+   *  confirmed, none when the row carried none; `listed`: whether it wrote the models OpenAI listed. The server's alone,
+   *  one at a time: only a sign-in (keep) and the server's start (settleLeft) settle, and a runner does neither. The row
+   *  is written only while it holds what was read and no renewal's lease is live (a renewal writes back over the row it
+   *  leased, and carries these fields); what is left stays for the server's next start. Never throws. */
+  private settle(): Promise<Settled> {
+    const run = (this.#settling ?? Promise.resolve({})).then(() => this.settleOnce()).catch((): Settled => ({}));
     this.#settling = run;
     void run.then(() => (this.#settling === run ? (this.#settling = undefined) : undefined));
     return run;
   }
 
-  private async settleOnce(): Promise<boolean | undefined> {
+  private async settleOnce(): Promise<Settled> {
     const read = await this.readSealed();
-    if (!read || (!read.row.unlisted && !read.row.retired?.length)) return undefined;
+    if (!read || (!read.row.unlisted && !read.row.retired?.length)) return {};
     const signedIn = read.row.credential.refresh;
     const models = read.row.unlisted && read.row.state === "signed_in" ? await this.listModels(read.row.credential.access) : undefined;
     const confirmed = new Set<string>();
     for (const old of read.row.retired ?? []) if (await this.revoke(old)) confirmed.add(old.refresh);
-    const allConfirmed = read.row.retired?.length ? confirmed.size === read.row.retired.length : undefined;
+    const revoked = read.row.retired?.length ? confirmed.size === read.row.retired.length : undefined;
+    const done: Settled = revoked === undefined ? {} : { revoked };
     for (;;) {
       const now = await this.readSealed();
       // Signed out meanwhile: the sign-out revoked what the row held.
-      if (!now) return allConfirmed;
-      if (now.row.lease && now.row.lease.until > (await this.storeNow())) return allConfirmed;
+      if (!now) return done;
+      if (now.row.lease && now.row.lease.until > (await this.storeNow())) return done;
       const { unlisted, retired: carried, ...rest } = now.row;
       const retired = (carried ?? []).filter((old) => !confirmed.has(old.refresh));
       // The models listed are this sign-in's: a newer sign-in's row lists its own.
-      const listed = unlisted && models && now.row.credential.refresh === signedIn;
+      const listed = Boolean(unlisted && models && now.row.credential.refresh === signedIn);
       const next: Row = { ...rest, ...(listed ? { models } : unlisted ? { unlisted } : {}), ...(retired.length ? { retired } : {}) };
-      if (!listed && retired.length === (carried ?? []).length) return allConfirmed;
+      if (!listed && retired.length === (carried ?? []).length) return done;
       const bytes = await this.swap(now.bytes, next);
       if (bytes) {
         this.wrote(next);
-        return allConfirmed;
+        return { ...done, listed };
       }
     }
   }
