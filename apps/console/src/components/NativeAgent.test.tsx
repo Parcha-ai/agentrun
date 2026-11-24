@@ -125,3 +125,22 @@ it("fails closed on a remote status read failure instead of presenting persisted
   expect(host.querySelector<HTMLButtonElement>('[role="switch"]')!.disabled).toBe(true);
   expect(host.textContent).not.toContain("Ready to run");
 });
+
+it("says its facts a line each, with the long ones whole on hover, and keeps verification and capabilities in one closed disclosure", async () => {
+  const host = document.body.appendChild(document.createElement("div")); root = createRoot(host);
+  const files = { ...agent, definition: { ...agent.definition, native: { ...native, verified_at: "2026-11-23T20:09:10.683Z", configuration: [{ path: "/workspace/app/.codex/config.toml", sha256: "0".repeat(64) }] } } };
+  await act(async () => root.render(createElement(NativeAgent, { agent: files, v2: {} as never, learning: "on", onAgent: () => {}, onChanged: async () => {} })));
+  const facts = host.querySelector("section > dl")!;
+  expect([...facts.querySelectorAll("dt")].map((dt) => dt.textContent)).toEqual(["Runtime", "Project", "Launches", "Model", "Machine"]);
+  for (const dd of facts.querySelectorAll("dd")) expect(dd.getAttribute("title"), dd.textContent ?? "").toBe(dd.textContent);
+  expect(facts.querySelector("dd")!.textContent).toBe("Codex · 0.167.2");
+  const more = [...host.querySelectorAll("details")].find((d) => d.querySelector("summary")?.textContent === "Verification and capabilities")!;
+  expect(more.open).toBe(false);
+  expect(more.textContent).not.toContain("2026-11-23T20:09:10.683Z");
+  expect(more.querySelector('dd[title="SHA-256 ' + "0".repeat(64) + '"]')).not.toBeNull();
+  // No paragraph of what launches and verification do: Verify and Disconnect say theirs on hover.
+  expect(host.textContent).not.toContain("Future launches resolve");
+  const disconnect = [...host.querySelectorAll("button")].find((b) => b.textContent === "Disconnect")!;
+  expect(disconnect.title).toContain("Original files and run history are preserved");
+  expect(host.textContent).not.toContain("Original files and run history are preserved");
+});

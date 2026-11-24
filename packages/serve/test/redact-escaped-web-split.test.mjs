@@ -133,3 +133,26 @@ test("a web call's property names are read: a held value in one is cut (two cut 
   const split = JSON.stringify({ query: "q", results: [{ url: "https://h.example/a", [`n ${HEAD}`]: `${REST} v` }] });
   assert.equal(webWithin(webShownOf("web_search", split, callEach([KEY]), holds), 1000), "[redacted]");
 });
+
+test("a held value split where a call's read stops, its rest past JSON's one-character escapes of whitespace (one level and two) or past characters that render as nothing, shows none of it; escaped quotes and backslashes count as one character each", () => {
+  // The JSON view decodes "\n", "\t", "\r" (and "\\n", JSON in JSON) to whitespace, so the value reads whole across
+  // them: the read past the stop counts each as the character it decodes to, whitespace as nothing. Counted as their
+  // raw characters (2 or 3 each), 300 of them are more than the read past the stop reads, and the rest is never read.
+  // The views drop characters that render as nothing too: a zero-width space or a soft hyphen, written as it is, counts
+  // as nothing, so 500 of them (more than the read reads at one each) never hide the rest either. Nor do 400 of them
+  // percent-encoded (%E2%80%8B): the percent view decodes each to a zero-width space and drops it.
+  const B = String.fromCharCode(92);
+  const [ZWSP, SHY] = [0x200b, 0xad].map((code) => String.fromCharCode(code));
+  for (const pad of [`${B}n`.repeat(300), `${B}t`.repeat(300), `${B}r`.repeat(300), `${B}r${B}n`.repeat(150), `${B}${B}n`.repeat(300), `${B}${B}t${B}${B}r`.repeat(150), ZWSP.repeat(500), SHY.repeat(500), "%E2%80%8B".repeat(400)]) {
+    const text = `${"y ".repeat(59_940)}${HEAD}\n${pad}${REST}${"z".repeat(9000)} end`;
+    const shown = redactedCall(text, [KEY], CALL_RESULT_CHARS).slice(0, CALL_RESULT_CHARS);
+    assert.ok(!shown.includes(HEAD.slice(0, 8)), `${pad.slice(0, 6)}: ${shown.slice(-60)}`);
+  }
+  // Control: an escaped quote or backslash decodes to a character the view keeps, so 300 of them stand between the
+  // head and the rest, no held value reads across them, and the text is served, the head in it as written.
+  for (const pad of [`${B}"`.repeat(300), `${B}${B}`.repeat(300)]) {
+    const text = `${"y ".repeat(59_940)}${HEAD}\n${pad}${REST}${"z".repeat(9000)} end`;
+    const shown = redactedCall(text, [KEY], CALL_RESULT_CHARS).slice(0, CALL_RESULT_CHARS);
+    assert.ok(shown.startsWith("y y ") && shown.includes(HEAD), `${pad.slice(0, 4)}: ${shown.slice(-60)}`);
+  }
+});

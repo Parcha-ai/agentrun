@@ -87,6 +87,12 @@ export function diskUpgrade(runColumns: ReadonlySet<string>): readonly string[] 
  *  for one a person made. In STORE_DDL, and added at a server open to a store an earlier build of this version made, as
  *  RUNS_LABELS is (a trigger made before reads as no package's). */
 export const TRIGGERS_TEMPLATE_ID = "ALTER TABLE triggers ADD COLUMN template_id TEXT";
+/** A run's census (RunLaunchRow.census, run-census.ts): in STORE_DDL, and added at a server open to a store an earlier
+ *  build of this version made, as RUNS_LABELS is (a run ended before reads as never handed a secret). */
+export const RUN_LAUNCH_CENSUS = `ALTER TABLE run_launch ADD COLUMN ${json("census", true)}`;
+/** Every launch holding sealed bytes when the census was added (RUN_LAUNCH_CENSUS) marked CENSUS_PENDING (store.ts): its
+ *  end counts them, or its files read as uncounted. */
+export const RUN_LAUNCH_CENSUS_PENDING = `UPDATE run_launch SET census = '"pending"' WHERE sealed IS NOT NULL AND census IS NULL`;
 
 /** A template package imported from GitHub (POST /v2/templates/import), by its id (`github:<owner>/<repo>[/<path>]`): its
  *  source as given (ref and all), the full commit SHA read, the GitHub account that publishes it, and its files as read
@@ -824,11 +830,15 @@ export const STORE_DDL: readonly string[] = [
   // its claim to build the run's spec. It replaces the per-run serve.json the old per-run process read: one row per run,
   // written in the same transaction as the queued run, never after. `body` is the launch JSON (run-launch.ts: the first
   // input, title, place, effort, cap, and the trigger and origin that started it); `sealed` holds any secret sealed with
-  // the server's key outside the store (AAD run_launch|<run_id>|sealed), or null when the launch holds none.
+  // the server's key outside the store (AAD run_launch|<run_id>|sealed), or null when the launch holds none. `census` is
+  // null when the launch never held any; "pending" from when it first does until an end counts them; then where in the
+  // run's files they sat when that end erased them (run-census.ts), never the secrets, or "unscanned" when it erased them
+  // with no census made under them (store.ts CENSUS_PENDING, CENSUS_UNSCANNED).
   `CREATE TABLE IF NOT EXISTS run_launch (
     run_id TEXT PRIMARY KEY REFERENCES runs (id),
     ${json("body")},
     sealed BLOB,
+    ${json("census", true)},
     created_at INTEGER NOT NULL
   ) STRICT`,
 

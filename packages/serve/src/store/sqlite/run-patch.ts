@@ -3,7 +3,7 @@
 // runs.update and for the journal's commit (store/journal), which stages the patch and calls this inside its own
 // transaction: the run's end and its outbox rows commit with the journal's last entry, or none of them do. The fence is
 // the first statement: `WHERE id = ? AND epoch = ?` changing no row throws Fenced, and the caller's transaction rolls back.
-import { endedReason, FINAL_STATES, Fenced, type AlsoRow, type Claim, type ImportedFrom, type RunOutcome, type RunLabels, type RunPatch, type RunRow, type RunState } from "../store.js";
+import { CENSUS_UNSCANNED, endedReason, FINAL_STATES, Fenced, type AlsoRow, type Claim, type ImportedFrom, type RunOutcome, type RunLabels, type RunPatch, type RunRow, type RunState } from "../store.js";
 import { type Dialect, settledBody, SQLITE } from "../dialect.js";
 import type { SqliteExecutor, SqliteValue } from "./connection.js";
 import { claimFence, storeNow, type StoreNow } from "../fence.js";
@@ -170,7 +170,7 @@ export const reopenableWhere = (d: Dialect): string => `(state = 'ended' OR (sta
  *  while the run looked back: a cancel at it cut the look-back alone and is refused with the rest. Only with a person's
  *  message waiting (the run read as going on from it, as a completed run a message opens again) is a cancel, waiting or
  *  taken in this commit, that message's run's: it ends cancelled, at this commit's time. */
-export async function refuseLeftovers(tx: Pick<SqliteExecutor, "run" | "get">, runId: string, state: RunState | undefined, now: number, dialect: Dialect = SQLITE, keepsEnd = false): Promise<void> {
+export async function refuseLeftovers(tx: Pick<SqliteExecutor, "run" | "get">, runId: string, state: RunState | undefined, now: number, dialect: Dialect = SQLITE, keepsEnd = false, census?: RunPatch["census"]): Promise<void> {
   if (state !== "ended" && state !== "stopped" && state !== "failed") return;
   // A cancel the API accepted (202, not refused) promised a cancelled run, and the view reads cancelled from that 202 on.
   // A normal end that commits with it still waiting is the cancel's: the run is stopped with outcome 'cancelled' (stopEnd's
@@ -190,7 +190,7 @@ export async function refuseLeftovers(tx: Pick<SqliteExecutor, "run" | "get">, r
     if (won) {
       await tx.run("UPDATE commands SET taken_at = ? WHERE run_id = ? AND taken_at IS NULL AND refused IS NULL AND kind = 'cancel'", now, runId);
       await tx.run("UPDATE commands SET taken_at = ?, refused = ? WHERE run_id = ? AND taken_at IS NULL", now, endedReason("stopped"), runId);
-      await tx.run("UPDATE run_launch SET sealed = NULL WHERE run_id = ? AND sealed IS NOT NULL", runId);
+      await eraseLaunchSecrets(tx, runId, census);
       return;
     }
   }
@@ -208,5 +208,14 @@ export async function refuseLeftovers(tx: Pick<SqliteExecutor, "run" | "get">, r
   await tx.run(`UPDATE commands SET taken_at = ?, refused = ?, ${settledBody(dialect)} WHERE run_id = ? AND taken_at IS NULL`, now, endedReason(state), runId);
   // The run is over: the secrets its launch held for its life go with this same commit. A message that opens it again
   // hands its own (runs.reopen).
-  await tx.run("UPDATE run_launch SET sealed = NULL WHERE run_id = ? AND sealed IS NOT NULL", runId);
+  await eraseLaunchSecrets(tx, runId, census);
+}
+
+/** A final run's launch secrets erased, in its end's commit, and what that end knew of where they sat written in their
+ *  place: `census` when it was made under the sealed bytes erased here, else CENSUS_UNSCANNED (an end with none, or one
+ *  whose launch a message sealed anew after the census read it). A launch with no sealed bytes is left as it is: its
+ *  census, if any, is the end's that erased them. */
+async function eraseLaunchSecrets(tx: Pick<SqliteExecutor, "run">, runId: string, census: RunPatch["census"] | undefined): Promise<void> {
+  if (census) await tx.run("UPDATE run_launch SET census = ?, sealed = NULL WHERE run_id = ? AND sealed = ?", census.json, runId, census.sealed);
+  await tx.run("UPDATE run_launch SET census = ?, sealed = NULL WHERE run_id = ? AND sealed IS NOT NULL", CENSUS_UNSCANNED, runId);
 }

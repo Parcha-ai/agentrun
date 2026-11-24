@@ -347,6 +347,10 @@ export interface RunPatch {
    *  cancel waiting at its commit cut the look-back, never the job's end, and is refused (refuseLeftovers), unless a
    *  person's message waits too: that message's run is the one they stop or cancel. */
   readonly keepsEnd?: boolean;
+  /** A final patch's census (run-census.ts): where in the run's files the secrets its launch holds sit, made under the
+   *  launch's `sealed` bytes as they were then. The end that erases them writes it as the launch's census when its sealed
+   *  bytes are still those, else the marker "unscanned" (refuseLeftovers), as it does for an end with none. */
+  readonly census?: { readonly json: string; readonly sealed: Uint8Array };
 }
 
 /** The row runs.update answers. When the patch wrote `signInHanded` (the runner's bind at its claim), `save` rides with it:
@@ -365,12 +369,25 @@ export interface RunLaunchInput {
   readonly sealed?: Uint8Array | null;
 }
 
+/** The census a launch takes when sealed bytes are first written on it (RunLaunchRow.census): it holds secrets its caller
+ *  handed it, and no end has counted where they sit. An end erases them and writes its census in its place; an end that
+ *  wrote none (a runner from before the census, during a rolling deploy) leaves it, and an ended run's files under it are
+ *  withheld from a cut read, as under CENSUS_UNSCANNED. */
+export const CENSUS_PENDING = JSON.stringify("pending");
+/** The census an end that erased a launch's sealed bytes writes when it has none made under them (RunLaunchRow.census), and
+ *  a message's seal writes over CENSUS_PENDING left by such an end: what the run was handed may be in its files, and
+ *  nothing says where. */
+export const CENSUS_UNSCANNED = JSON.stringify("unscanned");
+
 /** A run's launch as the store holds it: the body the runner reads at its claim, and its sealed bytes, which the store never
- *  opens. */
+ *  opens. `census`: null when its launch never held sealed bytes (none handed, or a run ended before the census was kept);
+ *  CENSUS_PENDING from when they were first written until an end counted them; then the JSON text the last end that
+ *  erased them wrote (RunPatch.census, run-census.ts), or CENSUS_UNSCANNED when that end had none made under them. */
 export interface RunLaunchRow {
   readonly runId: string;
   readonly body: unknown;
   readonly sealed: Uint8Array | null;
+  readonly census: string | null;
   readonly createdAt: number;
 }
 

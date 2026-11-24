@@ -70,9 +70,9 @@ export function scratch(name) {
 }
 
 /** The CLI in a child process, `input` on its stdin (no terminal): `{code, signal, out, err, json()}`. Killed after
- *  `timeout` ms, its code then null: a guard for a command that hangs, never a wait. */
-export const cli = (env, args, { input = "", timeout = 60_000, cwd } = {}) => new Promise((resolve) => {
-  const child = spawn(process.execPath, [BIN, ...args], { env, cwd, stdio: ["pipe", "pipe", "pipe"] });
+ *  `timeout` ms, its code then null: a guard for a command that hangs, never a wait. `bin` runs another script so. */
+export const cli = (env, args, { input = "", timeout = 60_000, cwd, bin = BIN } = {}) => new Promise((resolve) => {
+  const child = spawn(process.execPath, [bin, ...args], { env, cwd, stdio: ["pipe", "pipe", "pipe"] });
   const timer = setTimeout(() => child.kill("SIGKILL"), timeout);
   let out = "";
   let err = "";

@@ -25,7 +25,8 @@ import type { installForClaim, installSettled } from "../harness-install.js";
 import type { LiveHandover, LiveViewerStore } from "../browser-live.js";
 import { dropLiveViewer, putLiveViewer } from "../browser-live.js";
 import { liveForRun, type RunnerLive, runnerLiveOf } from "../live-reach.js";
-import { llmTiers, nodeTiers, type PinnedModel, type Tier, thinkingLevel, TIERS, tierModelOf, workflowNodes } from "../model.js";
+import { llmTiers, type ModelRef, nodeTiers, type PinnedModel, type Tier, thinkingLevel, TIERS, tierModelOf, workflowNodes } from "../model.js";
+import { heldRefusedProvider } from "../provider.js";
 import { firstMessage, inputMessage, messageText } from "../run-manifest.js";
 import { learningStartOf, seedFailed, type RunLaunch } from "../run-launch.js";
 import type { Store } from "../store/store.js";
@@ -60,7 +61,7 @@ import { filesToCopy, placeRunInputs } from "../uploads.js";
 import { handedSignInReadsBack, signInReads } from "../sign-ins-store.js";
 import { UNREADABLE_SIGN_IN } from "../run-view.js";
 import { durableWait } from "../workflow/pi-versions.js";
-import { type ClaimModelKey, claimModelEnv, claimModelKey, claimSecrets, claimSpendOff, holdRunKey, keyedAtClaim, hostDecisionKeys, keysOver, learnedDecisionKeys, savedModelKeys, tierModelKeys, underClaimed, withoutModelKeys } from "./claim-secrets.js";
+import { type ClaimModelKey, claimModelEnv, claimModelKey, claimSecrets, claimSpendOff, heldSpendOff, holdRunKey, keyedAtClaim, hostDecisionKeys, keysOver, learnedDecisionKeys, savedModelKeys, tierModelKeys, underClaimed, withoutModelKeys } from "./claim-secrets.js";
 import { compareEndOfRun, GRADER, withGrader } from "./compare-end.js";
 import { agreeOnOf } from "../learning-setting.js";
 import { catalogSessionNames, type ClaimMcp, mcpWhereHeld } from "./mcp-run.js";
@@ -75,7 +76,7 @@ import { bookedSpend, cliRunMetrics, costBasisOf, endCostOf, runCostOf, runMetri
 import { journalEntries } from "./journal-reader.js";
 import { hashedMcpOf, piShaped } from "../store-reads/journal.js";
 import { replayCallsOver } from "./promotion.js";
-import { learnedFirstWhereHeld } from "./learned-first.js";
+import { type LearnedFirst, learnedFirstWhereHeld } from "./learned-first.js";
 import type { ReplayCalls } from "../learn/replay-calls.js";
 import { pathMetrics, servedOf } from "./workflow-first.js";
 import { AUDIT_PARKED, withAudit } from "./audit.js";
@@ -242,8 +243,24 @@ export interface AdapterSpecDeps {
  *  case, and its harness's own search is never offered (web-fake.ts, fakedPlane). `now`: its clock, the date and time it
  *  is told wherever it reads "now" (environment.ts environmentLine, claude-agent's turn date); absent, the real clock.
  *  `monid`: its monid endpoints answer as monid unreachable does, never sent (monid-run.ts monidForClaim). `email`: the
- *  case's fake mail account's servers (eval-mailbox.ts), the only account its email tools open (email/tools.ts). */
-export type EvalFakes = { readonly web?: WebFake; readonly now?: Date; readonly monid?: MonidFake; readonly email?: EmailFake };
+ *  case's fake mail account's servers (eval-mailbox.ts), the only account its email tools open (email/tools.ts). `files`:
+ *  the case's files, by their path in the run's work folder, written there at its claim (seedEvalFiles). */
+export type EvalFakes = { readonly web?: WebFake; readonly now?: Date; readonly monid?: MonidFake; readonly email?: EmailFake; readonly files?: Readonly<Record<string, string>> };
+
+/** A template eval case's files (EvalFakes.files) written into the run's work folder at its claim, after its inputs and
+ *  before its computer and its first turn, so they reach a computer's /workspace as its uploads do. Each one the folder
+ *  does not hold yet: a claim that resumes the run keeps what the run made of it. A write that fails ends the run failed,
+ *  saying which file. */
+export async function seedEvalFiles(workspace: Workspace, files: Readonly<Record<string, string>> | undefined): Promise<void> {
+  for (const [path, text] of Object.entries(files ?? {})) {
+    if (await workspace.stat(path)) continue;
+    try {
+      await workspace.write(path, text);
+    } catch (error) {
+      throw new Error(`The eval case's file ${path} could not be written in the run's work folder: ${(error as Error).message}`, { cause: error });
+    }
+  }
+}
 
 /** A model as the cap prices it, from the route's catalog cost: its price WITH TIERS (the money rule — a request past a
  *  model's tier is held and booked at the tier, as main's calculateCost does). `api` is the proxy's shape, for the
@@ -266,6 +283,23 @@ export function capModelOf(route: ModelRoute): CapModel {
   return { id: route.model, api: route.provider.api, price, outputCeiling: route.outputCeiling ?? null, ...(route.local ? { local: true } : {}) };
 }
 
+/** The model of a held run its model kept from running at its create (run-launch.ts hold.refused): as its revision names
+ *  it (`provider/model-id`). Its launch pins none (runs-over-store.ts skips modelOf for it). Nothing chooses it and
+ *  nothing prices it. */
+export function heldModelOf(ref: string | undefined): ModelRef {
+  const at = ref?.indexOf("/") ?? -1;
+  return ref && at > 0 ? { provider: ref.slice(0, at), modelId: ref.slice(at + 1) } : { provider: "none", modelId: ref ?? "none" };
+}
+
+/** The route of a held run its model kept from running at its create (run-launch.ts hold.refused): its provider is the
+ *  stand-in (provider.ts heldRefusedProvider), so a host with no key for its model still opens its claim and holds its
+ *  computer. Its agent never starts (its start and every message are refused in `why`, its create's words:
+ *  computer-held.ts), and a request that reached its proxy anyway is refused in them too, and never sent. */
+export function heldRefusedRoute(model: ModelRef, why: string): ModelRoute {
+  const { origin, credential } = heldRefusedProvider(model, why);
+  return { model: model.modelId, named: `${model.provider}/${model.modelId}`, provider: { api: "anthropic-messages", origin, credential }, price: () => null, unpriced: true, outputCeiling: null };
+}
+
 /** Particle requests are never automatically replayed after an uncertain failure. Retry is a harness-wide setting,
  *  so a claim with any Particle route disables it for all its conversations, including subagents on other tiers. */
 export function modelRetryOf(routes: Iterable<Pick<ModelRoute, "like">>): Pick<AdapterRunSpec, "retry"> {
@@ -278,12 +312,20 @@ const SUBAGENT_ROUTE = "subagent-";
 const subagentRoute = (tier: SubagentTier): string => `${SUBAGENT_ROUTE}${tier}`;
 const isSubagentRoute = (key: string): boolean => key.startsWith(SUBAGENT_ROUTE);
 
+/** The model a replay run's or an audit shadow's grader runs on (graderRouteOf): the revision's modelTiers.fast, else
+ *  `env`'s fast tier (AGENT_MODEL_FAST); undefined when there is neither, or the revision names agree_on (no grader). */
+export function graderModelOf(body: { readonly modelTiers?: Readonly<Partial<Record<SubagentTier, string>>>; readonly learning?: unknown }, env: NodeJS.ProcessEnv): string | undefined {
+  if (agreeOnOf(body.learning)?.length) return undefined;
+  return body.modelTiers?.fast ?? tierModelOf(env, "fast");
+}
+
 /** A replay run's or an audit shadow's grader route (runner/compare-end.ts): its fast model (the revision's
  *  modelTiers.fast, else AGENT_MODEL_FAST) when its revision names no agree_on, on pi's wires. A fast model may be another
  *  provider's than the run's own, whose key claimSecrets never opened: so its route reads every model key the server
- *  holds (savedModelKeys) as a subagent's tier does, held by the run's redactor, on the route's env alone. A run with its
- *  own model key carries that key, and no saved key is read. Undefined when there is no fast model, the revision names
- *  agree_on, or no route can be made (logged: the pair is then compared whole). */
+ *  holds (savedModelKeys) as a subagent's tier does, held by the run's redactor, on the route's env alone; in a run's own
+ *  process its runner hands it the fast model's provider's keys alone (run-child-host.ts savedModelKeys, graderModelOf). A
+ *  run with its own model key carries that key, and no saved key is read. Undefined when there is no fast model, the
+ *  revision names agree_on, or no route can be made (logged: the pair is then compared whole). */
 export async function graderRouteOf(
   body: { readonly modelTiers?: Readonly<Partial<Record<SubagentTier, string>>>; readonly learning?: unknown },
   keyed: boolean,
@@ -301,7 +343,7 @@ export async function graderRouteOf(
   // The claim's run, turn and attempt on its grader's requests too (request-metadata.ts): they spend on the run's cap.
   // keysOver, never a spread: the claim's model keys are not enumerable (claimSecrets).
   const env = claimModelEnv(deps.env, keysOver(savedKeys, claimed), runKey, claim);
-  if (body.modelTiers?.fast === undefined && tierModelOf(env, "fast") === undefined) return undefined;
+  if (graderModelOf(body, env) === undefined) return undefined;
   try {
     return await deps.routeOf(body.modelTiers?.fast, env, "fast", PI_WIRES, undefined, cut);
   } catch (error) {
@@ -529,6 +571,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // a copy that fails ends the run failed, saying why. A run's own process copies nothing: its runner placed them before
   // the process started (run-child-host.ts), as the server's held uploads are never the run's to read.
   if (!(deps.sealKey === undefined && runnerSeam())) await placeRunInputs(deps.data, claim.runId, ws.workspace, filesToCopy(launch), messageText(launch.input));
+  await seedEvalFiles(ws.workspace, deps.evalFakes?.(runRow.agentId)?.files);
 
   // The pull request's checkout, when the revision asks for one (pr-checkout.ts): the server's own fetch before the first
   // turn, with the GitHub App's read-only token for that one repository (or none); the run is told what it holds, or why
@@ -631,7 +674,12 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // The route reads its model's key from the runner's environment, else the one the claim opened from the store: a key
   // saved in Settings → Model keys runs the next run with no restart (withModelKeys). A run with its own key: that key.
   const modelEnv = claimModelEnv(deps.env, toolEnv, runKey, claim);
-  const route = await deps.routeOf(modelAskOf(launch.model, body.model), modelEnv, "default", PI_WIRES, undefined, cut);
+  // A held run its model kept from running at its create is never routed (heldRefusedRoute): its model's route chooses no
+  // model and reads no key, so a key saved since runs a new run, never this one. Its claim lays only the keys any claim
+  // of the run lays (its tools', a key handed with it: claimSecrets lays it no model key), routes no subagent tier and
+  // takes no learning step (below).
+  const heldRefusal = launch.hold?.refused?.message;
+  const route = heldRefusal !== undefined ? heldRefusedRoute(heldModelOf(body.model), heldRefusal) : await deps.routeOf(modelAskOf(launch.model, body.model), modelEnv, "default", PI_WIRES, undefined, cut);
   await planBeforeRun(modelEnv, route.provider.plan ? { provider: PLAN_PROVIDER } : undefined);
   // The run's models of other tiers, for its learned workflows' nodes of a tier (learnedTierRoutes, filled once the seed's
   // lay chose the workflows, below): read when the session opens (pi.ts options.tiers), each on a proxy of its own.
@@ -656,9 +704,10 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // credential, never the run's tools (toolEnv).
   // Each is in tierRoutes under its own key (subagentRoute: never a learned workflow's tier, whose nodes keep their own
   // routes and fallback), on a proxy of its own that names that key on each request, so the cap prices a child's
-  // requests as that route books them.
+  // requests as that route books them. A held run its model kept from running routes none: its subagent's calls run on
+  // the stand-in, refused in its create's words.
   const tierWhy = new Map<SubagentTier, string>();
-  if (revision.kind === "agentic" && granted.includes(SUBAGENT_TOOL)) {
+  if (revision.kind === "agentic" && granted.includes(SUBAGENT_TOOL) && heldRefusal === undefined) {
     // A run with its own model key: its subagents' models carry that key too, and no saved key is read.
     const savedKeys = keyed ? {} : await savedModelKeys({ store: deps.store, sealKey: deps.sealKey, env: deps.env });
     holdClaimed(cut, savedKeys);
@@ -767,13 +816,16 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // (laidFor). Or the one the money rule stopped, over the agent's past runs (costLineOf): the agent takes the run.
   // The audits that finished since are written first (runner/audit.ts settleAudits): a hold they make decides this claim.
   // Model spend beside the run that its caller's key does not pay for (claimSpendOff): a shadow audit and a replay check
-  // are skipped, in words, where the run brought its own key or the server holds none.
-  const spendOff = await claimSpendOff({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, runKey);
+  // are skipped, in words, where the run brought its own key or the server holds none. A held run its model kept from
+  // running reads no saved key for it (serverKeyless): any such spend is skipped (heldSpendOff), and it starts none.
+  const spendOff = heldRefusal === undefined ? await claimSpendOff({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, runKey) : heldSpendOff;
   const admitAuxiliary = runnerSeam() ? undefined : sourceAuxiliaryAdmitter(deps.store, { data: deps.data, sealKey: deps.sealKey, env: deps.env, control: { ...deps.mountControl, ...(deps.makeArchilDisk ? { makeDisk: deps.makeArchilDisk } : {}) } });
   const audits = { store: deps.store, agentId: runRow.agentId, revisionId: runRow.revisionId, context, log, folder: learningFolder, shown, sealKey: deps.sealKey, spendOff, admitAuxiliary };
   // Each step writes the store or reads another run (runner/learned-first.ts): in a run's own process its runner takes
-  // them (held.ts learnedFirst), over the workflows it reads at the claim's seed itself.
-  const learned = await learnedFirstWhereHeld(deps, { agentId: runRow.agentId, runId: claim.runId, revisionId: runRow.revisionId, kind: revision.kind, outputSchema: (revision.body as { outputSchema?: unknown }).outputSchema, launch, context, log, folder: learningFolder, shown, spendOff, admitAuxiliary }, seedLaid?.workflows ?? []);
+  // them (held.ts learnedFirst), over the workflows it reads at the claim's seed itself. A held run its model kept from
+  // running takes none of them: it settles no audit and starts no replay run, starts on no workflow, and its tool runs
+  // none (so no learned tier is routed, below).
+  const learned: LearnedFirst = heldRefusal === undefined ? await learnedFirstWhereHeld(deps, { agentId: runRow.agentId, runId: claim.runId, revisionId: runRow.revisionId, kind: revision.kind, outputSchema: (revision.body as { outputSchema?: unknown }).outputSchema, launch, context, log, folder: learningFolder, shown, spendOff, admitAuxiliary }, seedLaid?.workflows ?? []) : { choice: {}, workflows: [] };
   const firstChoice = learned.choice;
   // A replay run's call nodes: reads live through a cache seeded from the graded run's recorded calls, writes only ever
   // answered from that recording (runner/promotion.ts replayCallsOver, learn/replay-calls.ts).
@@ -801,8 +853,9 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     underClaimed(toolEnv, learnedKeys);
   }
   // A replay run's or a shadow's grader (runner/compare-end.ts), on a route of its own beside the session's, on the
-  // session's booking under the run's one cap. None: the pair is compared whole, in words saying so.
-  const graderRoute = launch.replay || launch.audit ? await graderRouteOf(body as RevisionBody & { learning?: unknown }, keyed, runKey, toolEnv, cut, log, deps, [cut], claim) : undefined;
+  // session's booking under the run's one cap. None: the pair is compared whole, in words saying so. None for a held run
+  // its model kept from running, whose model runs nowhere.
+  const graderRoute = (launch.replay || launch.audit) && heldRefusal === undefined ? await graderRouteOf(body as RevisionBody & { learning?: unknown }, keyed, runKey, toolEnv, cut, log, deps, [cut], claim) : undefined;
   if (graderRoute) tierRoutes.set(GRADER, graderRoute);
 
   // The tool host's install lifecycle: what a binding registers to run in each conversation's creating commit, once the
@@ -907,7 +960,10 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // from. With a grader it compares its answer with the other one (runner/compare-end.ts), on its own cap.
   // A run the promoted workflow answered (path `workflow`) starts its shadow audit after the step, drawn at 1 in k (runner/audit.ts
   // withAudit): at its end, so the shadow's cap is what the run's own left.
-  const endOfRun = launch.replay || launch.audit ? withGrader(compareEndOfRun(launch, { store: deps.store, folder: learningFolder, log, ...(run.redact ? { redact: run.redact } : {}) }), graderRoute ? { model: graderRoute.model, models: () => run.ledger.models(GRADER, GRADER) } : undefined) : withAudit(learningEndOfRun(launch, {
+  // A held run its model kept from running takes none: its model runs nowhere, so it has no turn to learn from, and its end
+  // reads no saved key and starts no audit (in a run's own process, its runner refuses the step too: run-child-host.ts heldFor).
+  // `null`, so the loop asks no step of its own deps either (adapter-loop.ts stepOf), nor one when the run is cut (cutRows).
+  const endOfRun = heldRefusal !== undefined ? null : launch.replay || launch.audit ? withGrader(compareEndOfRun(launch, { store: deps.store, folder: learningFolder, log, ...(run.redact ? { redact: run.redact } : {}) }), graderRoute ? { model: graderRoute.model, models: () => run.ledger.models(GRADER, GRADER) } : undefined) : withAudit(learningEndOfRun(launch, {
     store: deps.store,
     data: deps.data,
     ...(deps.env ? { env: deps.env } : {}),
@@ -947,8 +1003,9 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     ...(catalog ? { mcp: catalog } : {}),
     // The run's own model key: a command row opens it again before the next model request (a message's new key).
     ...(runKey ? { modelKey: runKey } : {}),
-    // The run's end-of-run step, when it learns (the spec's, which the loop prefers over its deps': adapter-loop.ts stepOf).
-    ...(endOfRun ? { endOfRun } : {}),
+    // The run's end-of-run step, when it learns (the spec's, which the loop prefers over its deps': adapter-loop.ts stepOf),
+    // or null, none at all.
+    ...(endOfRun === undefined ? {} : { endOfRun }),
     ...(start ? { learningLaid: laidOf(seedLaid) } : {}),
     ...(workflowFirst ? { workflowFirst } : {}),
     ...(workflowRevise ? { workflowRevise } : {}),
@@ -1178,19 +1235,25 @@ export function liveViewersOf(store: LiveViewerStore, sealKey: Buffer | undefine
  *  string by string inside its JSON (timeline/web-calls.ts webCut), so what the harness stores still parses and keeps
  *  its links whole for a grader's link check; one whose strings, read joined, hold a held value no cut in place takes (a
  *  value split across two of them) is "[redacted]" (webHeld). The join is read against the values `cut` holds
- *  (key-refusal.ts withheldWhole), or through `cut` itself when it does not know them: withheld when it withholds the
- *  join whole. */
+ *  (key-refusal.ts withheldWhole), or through `cut` itself when it does not know them (joinCut). Each string is cut once
+ *  in a call, for the join's read and the answer both. */
 export function answersCut(tool: HostTool, cut: Redact): HostTool {
-  const holds = (joined: string): boolean => {
-    const values = cut.heldValues?.();
-    return values ? withheldWhole(joined, values) : cut(joined) === "[redacted]";
-  };
   return {
     ...tool,
     call: async (args, context) => {
       try {
         const answer = await tool.call(args, context);
-        return { ...answer, text: webCut(tool.name, answer.text, cut, holds) ?? cut(answer.text) };
+        const seen = new Map<string, string>();
+        const once = (text: string): string => {
+          let out = seen.get(text);
+          if (out === undefined) seen.set(text, (out = cut(text)));
+          return out;
+        };
+        const holds = (joined: string, parts: readonly string[]): boolean => {
+          const values = cut.heldValues?.();
+          return values ? withheldWhole(joined, values) : joinCut(joined, parts, once);
+        };
+        return { ...answer, text: webCut(tool.name, answer.text, once, holds) ?? cut(answer.text) };
       } catch (error) {
         if (error instanceof Error) {
           error.message = cut(error.message);
@@ -1201,6 +1264,19 @@ export function answersCut(tool: HostTool, cut: Redact): HostTool {
       }
     },
   };
+}
+
+/** Whether `cut`, a redactor that does not know its values, takes from `joined` (`parts` joined by line breaks) what it
+ *  does not take from the parts each read alone: a held value split across two parts. Its cut of the join whole being
+ *  "[redacted]" is not enough: it reads a text longer than a piece in pieces of 8,192 characters (key-refusal.ts
+ *  redactedAnswer), and a value split inside one piece withholds only that piece, the rest of the join served. So the
+ *  join's cut is set beside the parts' cuts joined: no value split across parts is in any part to cut, so the two differ
+ *  wherever the join holds one, in one piece or across two. Where nothing spans two parts they are the same: every piece
+ *  ends at whitespace or inside a run of more than a piece (the same run in a part as in the join, cut at the same
+ *  places), and a line break ends each part. */
+function joinCut(joined: string, parts: readonly string[], cut: (text: string) => string): boolean {
+  const whole = cut(joined);
+  return whole === "[redacted]" || whole !== parts.map(cut).join("\n");
 }
 
 /** The ToolHost a run's non-hand tools bind through, the one both the pi spec and the CLI spec build: the run's folder and

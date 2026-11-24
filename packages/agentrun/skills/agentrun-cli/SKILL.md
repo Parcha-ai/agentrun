@@ -132,6 +132,7 @@ Two clients call the same API from code, with the same server and token. `@parch
 ## Commands
 
 - `agentrun agents`: archive, bind-source-tool, connect-native, create, delete-agent, delete-agent-archil, disconnect-native, discover-native, forget-sign-in, get, get-agent-archil, get-learning-loop, get-native, get-source-sync, list, list-learning-audits, list-learning-promotions, move-source-agent, package, resolve-source-sync, review-source-project, runs, set-source-sync, unarchive, update, verify-native
+- `agentrun api-keys`: list
 - `agentrun capabilities`: get-capacity
 - `agentrun cli-learning`: complete, enroll, events, get, list, revoke, start
 - `agentrun connectors`: complete-remote-command, enroll-remote-connector, grant-source-sync, import-remote-history, import-remote-target, list-remote-connectors, poll-remote-connector, publish-source-sync, register-remote-connector, remote-command-events, revoke-remote-connector, source-sync-failure
@@ -144,7 +145,7 @@ Two clients call the same API from code, with the same server and token. `@parch
 - `agentrun harness-keys`: list
 - `agentrun home`: delete, list, read, write
 - `agentrun learning`: corrections, cost, get, log, read, replay, reset, retire, workflow-revisions, write-corrections
-- `agentrun local`: create-pairing, create-suggested-agent, delete-composio-subscription, delete-computer, delete-workspace-archil, discard-suggestion, disconnect-git-hub, get-git-hub-connection, get-model-gateway, get-suggestion, get-workspace-archil, list-composio-events, list-composio-triggers, list-computer-choices, list-computers, list-git-hub-repositories, list-mcp-server-names, list-running-computers, list-suggestions, receive-hook-composio, restore-suggestion, rotate-composio-secret, scan-for-suggestions, test-computer, test-workspace-archil
+- `agentrun local`: create-pairing, create-suggested-agent, delete-composio-subscription, delete-computer, delete-workspace-archil, discard-suggestion, disconnect-git-hub, get-git-hub-connection, get-model-gateway, get-suggestion, get-workspace-archil, list-composio-events, list-composio-triggers, list-computer-choices, list-computers, list-git-hub-repositories, list-marketplace-templates, list-mcp-server-names, list-running-computers, list-suggestions, receive-hook-composio, restore-suggestion, rotate-composio-secret, scan-for-suggestions, test-computer, test-workspace-archil
 - `agentrun login`: Sign in to a server, with a device code when it offers one, else a token read from stdin, and keep the token with the server's address in the config file
 - `agentrun logout`: Remove the config file login wrote, its address and token
 - `agentrun mcp-servers`: delete, get, list, oauth-client, private-hosts, refresh

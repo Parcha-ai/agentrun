@@ -25,7 +25,7 @@ function wasDismissed(): boolean {
 }
 
 /** A compact introduction alongside Mission Control. Importing and viewing history needs no provider key;
- *  execution setup and the example runs appear only when the person chooses to run an agent here. */
+ *  execution setup and the example runs appear only when the person opens the templates. */
 export function StartHere({ harnesses, tools, onTry, imported = 0, keySettings = false, importAction, modelSetup }: StartHereProps) {
   const [dismissed, setDismissed] = useState(wasDismissed);
   const [expanded, setExpanded] = useState(false);
@@ -56,7 +56,7 @@ export function StartHere({ harnesses, tools, onTry, imported = 0, keySettings =
         <ConnectExistingAgents />
         {importAction}
         <button type="button" className="flex items-center gap-1.5 text-body text-muted-foreground hover:text-foreground" aria-expanded={expanded} onClick={() => { setOpened(true); setExpanded((value) => !value); }}>
-          Run an agent here <ChevronDown className={`size-3.5 transition-transform ${expanded ? "rotate-180" : ""}`} aria-hidden />
+          See templates <ChevronDown className={`size-3.5 transition-transform ${expanded ? "rotate-180" : ""}`} aria-hidden />
         </button>
       </div>
       {/* Keep a started sign-in mounted when the person collapses these controls. */}
@@ -70,7 +70,6 @@ export function StartHere({ harnesses, tools, onTry, imported = 0, keySettings =
               return (
                 <li key={t.id} className="flex flex-col border bg-background p-4">
                   <p className="flex items-center gap-2 text-prose font-semibold"><Icon className="size-4 text-primary-text" aria-hidden />{t.name}</p>
-                  <p className="mt-1 font-mono text-label text-muted-foreground">{t.shows}</p>
                   <p className="mt-2 flex-1 text-lead leading-relaxed text-muted-foreground">{t.description}</p>
                   {offer.ok
                     ? <Button type="button" size="sm" className="mt-4 self-start" disabled={trying !== null} onClick={() => void tryIt(t)}>{trying === t.id ? "Starting…" : "Try it"}</Button>

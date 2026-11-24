@@ -1,7 +1,7 @@
 import { dollars } from "./format";
 import type { Client, FieldIssue } from "./client";
 import { type FieldSpec, fieldValues, schemaFields } from "./inputForm";
-import { MCP_URL_PRESETS, type McpServer, SOURCE_LABEL } from "./mcp";
+import { MCP_URL_PRESETS, type McpServer } from "./mcp";
 import { browserZone } from "./schedules";
 import type { TemplateApply, TemplateView } from "./v2";
 
@@ -12,6 +12,22 @@ import type { TemplateApply, TemplateView } from "./v2";
  *  apply) reads as the value typed for it so far (`values`), else "…": never as the raw placeholder. */
 export const titleOf = (t: TemplateView, values: ParameterText = {}) =>
   (t.display_name || t.name).replace(/\$\{parameters\.([A-Za-z0-9_]+)\}/g, (_, key: string) => (Object.hasOwn(values, key) ? linesOf(values[key]).join(", ") : "") || "…");
+
+/** The Suggested page's scanner (serve's SCOUT_TEMPLATE): shipped so a scan can run it, not a template to start from, and
+ *  not on the marketplace. The catalog (the Templates and Build pages) leaves it out so it lists what the marketplace
+ *  lists; the API playground, which lists what an apply takes, keeps it. */
+export const SCOUT_TEMPLATE = "agent-scout";
+export const inCatalog = (t: Pick<TemplateView, "bundled" | "name">): boolean => !(t.bundled && t.name === SCOUT_TEMPLATE);
+
+/** A catalog card's title, as the marketplace's card reads it: a display name up to its first parameter, cut at the ":" or
+ *  "(" before it ("Code review: ${parameters.owner}/…" is "Code review"). One that starts with a parameter reads as
+ *  `titleOf`. The template's own page fills the parameters in. */
+export function cardTitleOf(t: TemplateView): string {
+  const name = t.display_name || t.name;
+  const at = name.indexOf("${");
+  if (at < 0) return name.trim();
+  return /^(.*?\S)\s*[:(]/.exec(name.slice(0, at))?.[1] ?? titleOf(t);
+}
 
 /** A template's Apply screen. */
 export const templateHash = (id: string) => `#/templates/${encodeURIComponent(id)}`;
@@ -64,13 +80,12 @@ export function readTemplateDraft(raw: string | undefined, t: TemplateView): { b
 
 const count = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`;
 
-/** What a template needs and makes, in words, by line: its keys by name, its MCP servers (required or optional), its
- *  triggers, its budget a run, the harness and model it runs on. `secrets` / `mcp` false leave those lines out (the Apply
- *  screen shows them as their own rows). */
-export function needsOf(t: TemplateView, { secrets = true, mcp = true } = {}): [string, string][] {
+/** What a template needs and makes, in words, by line: its keys by name, its triggers, its budget a run, the harness and
+ *  model it runs on. Its MCP servers are no line here: a card shows them as icons (ToolkitIcons), the Apply screen as
+ *  rows of their own. `secrets` false leaves the keys out (the Apply screen shows them as their own rows too). */
+export function needsOf(t: TemplateView, { secrets = true } = {}): [string, string][] {
   const out: [string, string][] = [];
   if (secrets && t.secrets.length) out.push(["Keys", t.secrets.join(", ")]);
-  if (mcp && t.mcp.length) out.push(["MCP", t.mcp.map((m) => `${m.toolkit} (${SOURCE_LABEL[m.source]}${m.required ? "" : ", optional"})`).join(", ")]);
   if (t.triggers.length) out.push(["Triggers", count(t.triggers.length, "trigger")]);
   if (t.budget?.per_run_usd) out.push(["Budget", `${dollars(t.budget.per_run_usd)} a run`]);
   // A dollar cap can't stop a free model, so the package may cap its requests (the server's limit still holds).
