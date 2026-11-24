@@ -37,7 +37,8 @@ async function containerDocker(t, { mounts, volumes = {}, marks = {}, own = true
   const state = join(dir, "state");
   await mkdir(bin);
   await mkdir(join(state, "containers"), { recursive: true });
-  await writeFile(join(bin, "docker"), `#!/bin/sh\nexec '${process.execPath}' '${FAKE}' "$@"\n`, { mode: 0o755 });
+  // Its state is set in its own program: the Docker provider hands docker only the names docker reads.
+  await writeFile(join(bin, "docker"), `#!/bin/sh\nexport FAKE_DOCKER_STATE='${state}'\nexec '${process.execPath}' '${FAKE}' "$@"\n`, { mode: 0o755 });
   await writeFile(join(state, "docker-info"), `linux|${release()}|/var/lib/docker|Docker Engine - Community\n`);
   await writeFile(join(state, "volumes.json"), JSON.stringify(volumes));
   for (const [name, text] of Object.entries(marks)) await writeFile(join(state, name), text);

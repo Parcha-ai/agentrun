@@ -162,7 +162,8 @@ test("the composer builds a working claim on a docker box: the real Docker provi
   const store = await savedKeysStore(sealKey);
   // The production builder (providerFor), told only where the fake daemon file and its cache are; docker is the one on PATH.
   const load = (id, options) => providerFor(id, { ...options, daemonPath: fake.daemonPath, daemonCache: fake.cache });
-  const { computerForClaim, computerDeps } = computerDepsFrom({ env: ENV, store, sealKey, load });
+  // The server's environment holds the PATH the fake is first on: the provider hands docker that PATH, never this process's.
+  const { computerForClaim, computerDeps } = computerDepsFrom({ env: { ...ENV, PATH: process.env.PATH }, store, sealKey, load });
   const answer = await computerForClaim({ runId: "run-1", epoch: 3, computer: { kind: "sandbox", provider: "docker" } }, store, { ...computerDeps, mode: 1, workspace: localWorkspace(root), sealKey });
   assert.equal(answer.computer?.kind, "sandbox", "a kinded RunComputer");
   const run = fake.calls().find((args) => args[0] === "run");
