@@ -237,10 +237,10 @@ test("a new digest is checked before it serves: the agent takes the run meanwhil
   assert.equal(gw.requests.filter((request) => !isNode(request)).length, agentRequests, "no agent request for the served run");
   const records = await promotionsOf(server.settings, "agent-1");
   assert.deepEqual(records.map(({ decided }) => [decided]), [["replaying"], ["promote"]]);
-  const { check } = records[1];
+  const { fields, ...check } = records[1].check;
   assert.deepEqual({ ...check, of: [...check.of].sort() }, { compile_after: 20, agree_min: 0.8, alone_min: 0.7, attempt: 1, n: 6, agreed: 6, alone: 6, of: PRIORS, cost_usd: check.cost_usd, outcomes: { answered: 6, handed_back: 0, failed: 0, skipped_write: 0 } });
   assert.ok(check.cost_usd > 0, "what the check cost is on its record");
-  assert.equal(records[1].reason, "checked on 6 of the agent's inputs: answered 6 alone (100.0%, the bar 70.0%), and 6 of those said what the agent said (100.0%, the bar 80.0%): promoted");
+  assert.deepEqual(Object.entries(fields).map(([name, one]) => [name, one.n, one.workflow_right, one.known, one.pass]), [["answer", 6, 6, "agent", true]], "the whole answer, judged against the agent's own");
   assert.equal(records[1].digest, DIGEST);
 });
 
@@ -271,7 +271,8 @@ test("a check whose answers differ from the agent's holds the digest: the next r
   const decided = (await heldThenRevisionFailed(server)).at(-1);
   assert.deepEqual({ decided: decided.decided, n: decided.check.n, alone: decided.check.alone, agreed: decided.check.agreed }, { decided: "hold", n: 6, alone: 6, agreed: 0 });
   assert.deepEqual(decided.check.disagreements.map((one) => [one.agent, one.draft]), decided.check.disagreements.map(() => [AGENT_SAYS, JSON.stringify({ answer: 41, sure: true })]));
-  assert.match(decided.reason, /answered 6 alone \(100\.0%, the bar 70\.0%\), and 0 of those said what the agent said \(0\.0%, the bar 80\.0%\): held/);
+  assert.deepEqual([decided.check.fields.answer.workflow_right, decided.check.fields.answer.pass], [0, false]);
+  assert.deepEqual(decided.check.disagreements.map((one) => one.fields), decided.check.disagreements.map(() => ["answer"]), "each disagreement names the field it had wrong");
   assert.ok(logs.some((line) => line.includes(`answer at ${DIGEST} held:`)), logs.join("\n"));
 });
 
@@ -329,7 +330,7 @@ test("a check whose launch was interrupted after 1 of its 20 runs, decided past 
   const decided = (await heldThenRevisionFailed(server)).at(-1);
   assert.deepEqual({ decided: decided.decided, n: decided.check.n, alone: decided.check.alone, agreed: decided.check.agreed }, { decided: "hold", n: 20, alone: 1, agreed: 1 }, JSON.stringify(decided));
   assert.equal(decided.check.disagreements.filter((one) => one.failed).length, 19, "each one never created is a failed input");
-  assert.match(decided.reason, /^checked on 20 of the agent's inputs: answered 1 alone \(5\.0%, the bar 70\.0%\), and 1 of those said what the agent said \(100\.0%, the bar 80\.0%\) \(19 never started by the check's deadline/);
+  assert.match(decided.reason, /^checked on 20 of the agent's inputs: answered 1 alone \(5\.0%, the bar 70\.0%\); .* \(19 never started by the check's deadline/);
   assert.equal(await server.runs.get(missing[0]), undefined, "past its deadline nothing is created for it");
   // Carried from #3032 (PRRT_kwDOUmdVMs64NjVq): the outcomes are the check's rows, so they add up to its n: the 19 never
   // created are failed, on the record and over v2's replay read.

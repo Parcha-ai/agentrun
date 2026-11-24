@@ -32,7 +32,7 @@ const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { adapterRunSpecFromLaunch } = await import("../dist/runner/adapter-run-spec.js");
 const { readLaunchBody } = await import("../dist/run-launch.js");
 const { promotionsOf, GRADER_PROMPT, graderVerdictOf, gradeAnswers, compareAnswers, answersPair, COMPARE_UNREAD, COMPARE_CAP_HELD, COMPARE_STALE } = await import("../dist/learn/promote.js");
-const { decideCheck, NEVER_WORD_FOR_WORD } = await import("../dist/runner/promotion.js");
+const { decideCheck, differentDecisionWords, NEVER_WORD_FOR_WORD } = await import("../dist/runner/promotion.js");
 const { graderAsk } = await import("../dist/runner/compare-end.js");
 const { learningWorkspace } = await import("../dist/workspace/index.js");
 const { learningCommit } = await import("../dist/learn/commit.js");
@@ -388,24 +388,22 @@ async function decide(bar, compared) {
   return (await decideCheck(deps, "answer", "d1", { compile_after: 3, agree_min: 0.8, alone_min: 0.7, attempt: 1, ...bar }, read, () => true, {})).record;
 }
 
-test("the check's words: compared by the fast model, a different decision on k of n with an example, never 'word for word' when a grader ran", async () => {
+test("with no agree_on the grader's verdicts judge the whole answer's field: promoted on 3 of 3, held on 1 of 3 with each disagreement's decision; none and never equal is the hint; agree_on decides alone", async () => {
   const same = { same: true, grader: "fast-1" };
   const differ = { same: false, grader: "fast-1", differs_on: "the answer's number" };
+  const numbers = (record) => Object.entries(record.check.fields).map(([name, one]) => [name, one.workflow_right, one.n, one.known, one.pass]);
   const promoted = await decide({}, [same, same, same]);
-  assert.equal(promoted.decided, "promote");
-  assert.equal(promoted.check.grader, "fast-1");
-  assert.match(promoted.reason, /3 of those said what the agent said, compared by the fast model \(fast-1\)/);
+  assert.deepEqual([promoted.decided, promoted.check.grader, numbers(promoted)], ["promote", "fast-1", [["answer", 3, 3, "agent", true]]]);
   const held = await decide({}, [same, differ, differ]);
-  assert.equal(held.decided, "hold");
-  assert.match(held.reason, /its answers reached a different decision from the agent's on 2 of 3 \(for example: the answer's number\)/);
-  assert.ok(!held.reason.includes("word for word"), held.reason);
-  assert.deepEqual(held.check.disagreements.map((one) => one.differs_on), ["the answer's number", "the answer's number"]);
+  assert.deepEqual([held.decided, numbers(held)], ["hold", [["answer", 1, 3, "agent", false]]]);
+  assert.deepEqual(held.check.disagreements.map((one) => [one.differs_on, one.fields]), [["the answer's number", ["answer"]], ["the answer's number", ["answer"]]]);
+  assert.ok(held.reason.includes(differentDecisionWords(2, 3, "the answer's number")), held.reason);
+  assert.ok(!held.reason.includes(NEVER_WORD_FOR_WORD), "a grader ran: no hint");
   const whole = await decide({}, [undefined, undefined, undefined]);
+  assert.deepEqual([whole.decided, whole.check.grader, numbers(whole)], ["hold", undefined, [["answer", 0, 3, "agent", false]]]);
   assert.ok(whole.reason.includes(NEVER_WORD_FOR_WORD), whole.reason);
-  assert.equal(whole.check.grader, undefined);
   const on = await decide({ agree_on: ["answer"] }, [differ, differ, differ]);
-  assert.equal(on.decided, "promote", "agree_on decides alone");
-  assert.equal(on.check.grader, undefined);
+  assert.deepEqual([on.decided, on.check.grader, numbers(on)], ["promote", undefined, [["answer", 3, 3, "agent", true]]], "agree_on decides alone");
 });
 
 test("graderAsk: a reply's text, a cap refusal as refused (nothing sent), any other failure as failed, with pi-ai's retries off", async () => {

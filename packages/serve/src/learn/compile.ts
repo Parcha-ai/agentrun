@@ -388,6 +388,7 @@ const disagreementText = (one: CheckDisagreement, i: number): string => clean([
   `Input ${i + 1}: ${one.input}`,
   `Your answer: ${one.agent ?? "(none recorded)"}`,
   one.draft !== undefined ? `The draft's answer: ${one.draft}` : one.escalated !== undefined ? `The draft handed it back: ${one.escalated}` : "The draft failed on it: a step did not finish.",
+  ...(one.fields?.length ? [`The fields it had wrong: ${one.fields.join(", ")}`] : []),
 ].join("\n"), TRACE_MAX);
 
 /** An audited run the workflow disagreed on, as the prompt fences it: its input, the agent's answer on its shadow run (or
@@ -507,8 +508,9 @@ export function compilePrompt(ask: CompileAsk): string {
   ].join("\n");
 }
 
-/** Why a held workflow does not run first, in its check's numbers (how many inputs it answered alone, and how many of
- *  those said what the agent said), else the hold's own reason (host-written). */
+/** Why a held workflow does not run first, in its check's numbers (how many inputs it answered alone, and each field's
+ *  verdict with the fields it fell short on, or for a record with none how many said what the agent said), else the
+ *  hold's own reason (host-written). */
 function heldLine(workflow: string, held: HeldAsk): string {
   const pct = (value: number) => `${(value * 100).toFixed(1)}%`;
   const { check, audit } = held;
@@ -519,7 +521,12 @@ function heldLine(workflow: string, held: HeldAsk): string {
   // A check on no input has no numbers to say: its hold's reason says why.
   if (check?.n) {
     const shares = checkShares({ n: check.n, agreed: check.agreed ?? 0, alone: check.alone ?? 0 });
-    return `Your learned workflow \`${workflow}\` does not run first: checked on ${check.n} ${check.n === 1 ? "input" : "inputs"} of your last ${check.compile_after} completed runs, it answered ${check.alone ?? 0} alone (${pct(shares.alone)}, at least ${pct(check.alone_min)} needed), and ${check.agreed ?? 0} of those said what you said${check.agree_on?.length ? ` on ${listed(check.agree_on)}` : ""} (${pct(shares.agreement)}, at least ${pct(check.agree_min)} needed).`;
+    const fields = Object.entries(check.fields ?? {});
+    const failing = fields.filter(([, one]) => !one.pass).map(([name]) => name);
+    const judged = fields.length
+      ? `; field by field: ${fields.map(([, one]) => one.reason).join("; ")}${failing.length ? `. It fell short on ${listed(failing)}` : ""}`
+      : `, and ${check.agreed ?? 0} of those said what you said${check.agree_on?.length ? ` on ${listed(check.agree_on)}` : ""} (${pct(shares.agreement)}, at least ${pct(check.agree_min)} needed)`;
+    return `Your learned workflow \`${workflow}\` does not run first: checked on ${check.n} ${check.n === 1 ? "input" : "inputs"} of your last ${check.compile_after} completed runs, it answered ${check.alone ?? 0} alone (${pct(shares.alone)}, at least ${pct(check.alone_min)} needed)${judged}.`;
   }
   const why = `it was held (${clean(held.reason, 400).replace(/\n/g, " ").replace(/\.$/, "")}).`;
   return `Your learned workflow \`${workflow}\` does not run first: ${why} It stays held until a new revision of it.`;

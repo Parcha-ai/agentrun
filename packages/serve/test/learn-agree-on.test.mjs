@@ -8,7 +8,7 @@ import { test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { agent, serve } from "./support.mjs";
 
-const { decideCheck } = await import("../dist/runner/promotion.js");
+const { decideCheck, NEVER_WORD_FOR_WORD } = await import("../dist/runner/promotion.js");
 const { promotionsOf, recordPromotion, sameAnswer } = await import("../dist/learn/promote.js");
 const { learningSettingIssue, learningSettingOf, loopOf } = await import("../dist/learning-setting.js");
 const { secretsShown } = await import("../dist/learning.js");
@@ -49,14 +49,14 @@ test("check on live-shaped answers: same mcc and riskTier, other rationale, evid
   const on = await decide({ agree_on: ["mcc", "riskTier"] }, readOf(() => draftSays(DRAFT)));
   assert.equal(on.record.decided, "promote", on.record.reason);
   assert.deepEqual([on.stored.check.agreed, on.stored.check.alone, on.stored.check.agree_on], [5, 5, ["mcc", "riskTier"]], "the record says what it compared");
-  assert.equal("agree_from" in on.stored.check, false, "one source: the definition's list");
-  assert.match(on.record.reason, /5 of those said what the agent said on mcc and riskTier \(100\.0%, the bar 80\.0%\): promoted$/);
+  assert.deepEqual(Object.entries(on.stored.check.fields).map(([name, one]) => [name, one.workflow_right, one.n, one.pass]), [["mcc", 5, 5, true], ["riskTier", 5, 5, true]], "one verdict per field");
 
   const whole = await decide({}, readOf(() => draftSays(DRAFT)));
   assert.equal(whole.record.decided, "hold", "today's whole-answer rule stands with no agree_on");
   assert.equal(whole.stored.check.agreed, 0);
   assert.equal(whole.stored.check.agree_on, undefined);
-  assert.match(whole.record.reason, /0 of those said what the agent said \(0\.0%, the bar 80\.0%\): held; its answers never matched the agent's word for word, and no fast model compared their decisions \(a learning agent with no agree_on wants one: AGENT_MODEL_FAST, or its model_tiers\.fast\); name the fields that carry the decision \(learning\.agree_on\); the agent's next run recompiles/);
+  assert.deepEqual(Object.entries(whole.stored.check.fields).map(([name, one]) => [name, one.workflow_right, one.n, one.pass]), [["answer", 0, 5, false]]);
+  assert.ok(whole.record.reason.includes(NEVER_WORD_FOR_WORD), `compared whole and never once the same: the owner is told to name the fields: ${whole.record.reason}`);
 });
 
 test("check on dotted paths: verdict.decision agrees though the rationale differs; a draft that differs on it disagrees, counted per input", async () => {
@@ -66,9 +66,9 @@ test("check on dotted paths: verdict.decision agrees though the rationale differ
   const held = await decide({ agree_on: ["verdict.decision"] }, read);
   assert.equal(held.record.decided, "hold");
   assert.equal(held.stored.check.agreed, 3);
-  assert.deepEqual(held.stored.check.disagreements.map((one) => one.run), ["r-0", "r-1"]);
-  assert.match(held.record.reason, /3 of those said what the agent said on verdict\.decision \(60\.0%/);
-  assert.doesNotMatch(held.record.reason, /word for word/, "it agreed on some: no hint");
+  assert.deepEqual(held.stored.check.disagreements.map((one) => [one.run, one.fields]), [["r-0", ["verdict.decision"]], ["r-1", ["verdict.decision"]]]);
+  assert.deepEqual([held.stored.check.fields["verdict.decision"].workflow_right, held.stored.check.fields["verdict.decision"].pass], [3, false]);
+  assert.ok(!held.record.reason.includes(NEVER_WORD_FOR_WORD), "compared on agree_on: no hint");
   const promoted = await decide({ agree_on: ["verdict.decision"] }, readOf(() => draftSays(draft("approve")), 5, said));
   assert.equal(promoted.record.decided, "promote", promoted.record.reason);
 });

@@ -2,10 +2,11 @@
 // serves first only when its digest is promoted (learn/promote.ts). Promote once: a digest with no record yet, the learning
 // folder's newest revision, is checked once (startCheck): a replay run of it (RunLaunch.replay, at workflow cost) on the
 // input of each of the agent's last compile_after completed runs of its own (its definition's `learning`,
-// learning-setting.ts), the agent taking the runs meanwhile. A later claim that finds every check run ended scores each
-// against the agent's own recorded answer (learn/promote.ts sameAnswer; no grade is read) and promotes the digest when,
-// of the inputs it ran on, it answered at least alone_min alone and at least agree_min of those said what the agent said
-// (checkPasses); else it is held, its record keeping the inputs it disagreed on, which the agent's next run's compile
+// learning-setting.ts), the agent taking the runs meanwhile. A later claim that finds every check run ended judges each
+// field (agree_on's, else the whole answer) against its best known answer, the agent run's grade's expected answer, else
+// the agent's own recorded answer (learn/field-check.ts check), and promotes the digest when, of the inputs it ran on, it
+// answered at least alone_min alone and every field passes; else it is held, its record naming the failing fields and
+// keeping the inputs it disagreed on, which the agent's next run's compile
 // turn reads to write its one recompile (learn/compile.ts); that revision is checked the same way, once, and a hold of
 // it stops (nothing compiles again). A check-promoted digest is never checked again: no grade, no refit, no queue, no
 // second replay. Every reserved input counts: one whose replay run was never created, or never ended, by the check's
@@ -59,7 +60,8 @@ import { pinAnnotations, type Recorded, recordedCalls, type ReplayCalls, replayC
 import { listed } from "../learning-words.js";
 import { isObject, type Json } from "../validate.js";
 import { agentRun, lastOwnRuns, newCompileAttempt, sinceReset } from "../learn/compile.js";
-import { type CheckBar, type CheckDisagreement, type CheckRecord, type CheckTurns, checkPasses, checkShares, CHECK_TEXT_MAX, championOf, compareAnswers, type Compared, comparedOf, type PromotionRecord, promotionOf, promotionsOf, recordPromotion, type Refused, type ReplayLaunch, type ReplayOutcomes, type ReplayScore, replayingOf, type SkippedTool, skippedToolsOf } from "../learn/promote.js";
+import { answerAt, answerPicked, type CheckBar, type CheckDisagreement, type CheckRecord, type CheckTurns, checkShares, CHECK_TEXT_MAX, championOf, compareAnswers, type Compared, comparedOf, gradesOf, type PromotionRecord, promotionOf, promotionsOf, recordPromotion, type Refused, type ReplayLaunch, type ReplayOutcomes, type ReplayScore, replayingOf, type SkippedTool, skippedToolsOf, valueAtPath } from "../learn/promote.js";
+import { check as checkFields, type CheckInput, type FieldAnswers } from "../learn/field-check.js";
 import { refusedIn } from "../purged-workflow.js";
 import { sendCommand } from "./commands.js";
 import { ClaimRefused } from "./loop-contract.js";
@@ -495,8 +497,32 @@ const stopUnchecked = (deps: DecideDeps, name: string, digest: string, bar: Chec
 /** One input a check ran its draft on: the agent's run (`of`) and its input, the agent's recorded answer, and what the
  *  draft did: its answer when it answered alone, why it handed the input back, or failed (or skipped a write). A
  *  reserved input whose replay run was never created, or never ended, by the check's deadline failed (`unstarted` for
- *  the first). */
-export type CheckRow = { readonly of: string; readonly input: string; readonly agent: string | null; readonly outcome: ReplayOutcome; readonly answer: string | null; readonly escalated?: string; readonly skipped?: Skipped; readonly unstarted?: true; readonly compared?: Compared };
+ *  the first). `expected`: the agent run's grade's expected answer (learn/promote.ts Grade.expected), when it has one:
+ *  the known answer of the fields it holds, before the agent's own. */
+export type CheckRow = { readonly of: string; readonly input: string; readonly agent: string | null; readonly outcome: ReplayOutcome; readonly answer: string | null; readonly escalated?: string; readonly skipped?: Skipped; readonly unstarted?: true; readonly compared?: Compared; readonly expected?: Readonly<Record<string, unknown>> };
+
+/** The field a check judges a whole answer as, with no agree_on. */
+export const WHOLE_ANSWER = "answer";
+
+/** A check row as learn/field-check.ts judges it: an input answered alone with one field per agree_on path (the draft's,
+ *  the agent's and the grade's value there), else one field for the whole answer, known from a grade's expected answer
+ *  (the answers cut to its keys) where there is one, else agreeing with the agent's as compareAnswers says (equal, or the
+ *  same decision by the grader's verdict its replay run kept: `compared`, compareAnswers of its answers). */
+function checkInputOf(row: CheckRow, on: readonly string[] | undefined, compared: Compared): CheckInput {
+  const outcome = row.outcome === "skipped_write" ? "skipped" : row.outcome;
+  if (outcome !== "answered") return { input_id: row.of, outcome };
+  if (on?.length) {
+    return { input_id: row.of, outcome, fields: Object.fromEntries(on.map((path): [string, FieldAnswers] => {
+      const grade = row.expected ? valueAtPath(row.expected, path) : undefined;
+      return [path, { workflow: answerAt(row.answer, path), agent: answerAt(row.agent, path), ...(grade !== undefined ? { grade } : {}) }];
+    })) };
+  }
+  const keys = row.expected ? Object.keys(row.expected) : [];
+  const whole: FieldAnswers = keys.length
+    ? { workflow: answerPicked(row.answer, keys), agent: answerPicked(row.agent, keys), grade: row.expected }
+    : { workflow: row.answer ?? undefined, agent: row.agent ?? undefined, agrees: compared.same };
+  return { input_id: row.of, outcome, fields: { [WHOLE_ANSWER]: whole } };
+}
 
 /** Decides `ahead`, the check at work for a revision older than the laid (newest) one, as a claim laying it would
  *  (relaunch, then settleCheck) once its runs ended: its text read at its record's commit, its verdict standing (promote
@@ -516,13 +542,15 @@ async function settleAhead(deps: PromotionDeps, name: string, ahead: PromotionRe
  *  created yet. One row per reserved input, so every one counts: a run not ended by the deadline failed, and so did one
  *  never created by then (`unstarted`: the server stopped after reserving it, say), its input read from the agent's run
  *  the record names for it. With what its runs cost, the rows' outcomes (one per row, the never created failed), and how
- *  many were never created by the deadline.
- *  No grade is read: the label is the agent's own recorded answer. */
-async function checkRows(deps: Pick<PromotionDeps, "store" | "context" | "now">, record: PromotionRecord): Promise<{ rows: CheckRow[]; cost: number | null; outcomes: ReplayOutcomes; unstarted: number } | undefined> {
+ *  many were never created by the deadline. Each row carries its agent run's grade's expected answer, when it has one
+ *  (CheckRow.expected). */
+async function checkRows(deps: Pick<PromotionDeps, "store" | "agentId" | "context" | "now">, record: PromotionRecord): Promise<{ rows: CheckRow[]; cost: number | null; outcomes: ReplayOutcomes; unstarted: number } | undefined> {
   const { store, context } = deps;
   const runs = await Promise.all((record.runs ?? []).map((id) => store.runs.get(id)));
   const late = (deps.now ?? Date.now)() - Date.parse(record.at) > REPLAY_DEADLINE_MS;
   if (!late && runs.some((row) => !row || !FINAL_STATES.includes(row.state))) return undefined;
+  const expected = new Map((await gradesOf(store.settings, deps.agentId)).flatMap((grade) => (grade.expected && Object.keys(grade.expected).length ? [[grade.run, grade.expected] as const] : [])));
+  const graded = (of: string) => (expected.has(of) ? { expected: expected.get(of)! } : {});
   const rows: CheckRow[] = [];
   for (const [i, run] of runs.entries()) {
     const reservedOf = record.inputs?.[i];
@@ -545,6 +573,7 @@ async function checkRows(deps: Pick<PromotionDeps, "store" | "context" | "now">,
       answer: outcome === "answered" ? await answerOf(store, run.id, context) : null,
       ...(outcome === "handed_back" ? { escalated: (await handedBackOf(store, run.id, context)) ?? "" } : {}),
       ...(stoppedAt ? { skipped: stoppedAt } : {}),
+      ...graded(replayed),
     });
   }
   // The outcomes are the rows', so they add up to its n: a reserved run never created is a failed input there too.
@@ -580,49 +609,54 @@ async function settleCheck(deps: PromotionDeps, workflow: LearnedWorkflow, diges
   return decided.record?.decided === "replaying" ? undefined : decided.record;
 }
 
-/** A check's rows scored on its bar, added to `before` (a connected agent's turns checked so far): each input it ran on
- *  (a skipped write is none) agreed when the draft answered it alone with the agent's recorded answer (learn/promote.ts
- *  compareAnswers, the audit's one comparison: on the bar's agree_on when it names fields, else equal, or the same
- *  decision by the grader's verdict its replay run kept), alone when it answered it with no escalate and no failed step;
- *  the inputs it did not agree on, each text cut of the host's secrets whole, then shortened (learn/secrets.ts
- *  excerptShown); and the fast model that compared, when it read any input's answers. */
-async function scoreRows(deps: Pick<DecideDeps, "shown">, bar: CheckBar, rows: readonly CheckRow[], before: CheckTurns | undefined) {
+/** A check's rows judged field by field (learn/field-check.ts check) on its bar, added to `before` (a connected agent's
+ *  turns checked so far): each field of agree_on, else the whole answer (checkInputOf), against its best known answer;
+ *  the inputs it did not agree on (not answered alone, or a field wrong), each naming the fields it had wrong, each text
+ *  cut of the host's secrets whole, then shortened (learn/secrets.ts excerptShown); and the fast model that compared,
+ *  when it read any input's answers. */
+async function judgeRows(deps: Pick<DecideDeps, "shown">, bar: CheckBar, rows: readonly CheckRow[], before: CheckTurns | undefined) {
   const ran = rows.filter((row) => row.outcome !== "skipped_write");
-  const alone = (row: CheckRow) => row.outcome === "answered";
-  // Compared on the bar's agree_on when it names paths (the definition's), else equal answers agree and the grader's
-  // verdict decides the rest; with no grader (no fast model), the whole answer.
-  const compared = new Map(ran.map((row) => [row, compareAnswers(row.answer, row.agent, bar.agree_on, row.compared)]));
-  const agrees = (row: CheckRow) => alone(row) && compared.get(row)!.same;
-  const score = { n: (before?.n ?? 0) + ran.length, agreed: (before?.agreed ?? 0) + ran.filter(agrees).length, alone: (before?.alone ?? 0) + ran.filter(alone).length };
+  // With no agree_on and no grade, equal answers agree with the agent's and the grader's verdict decides the rest; with no
+  // grader (no fast model), the whole answer. Fields and grades are compared as values (checkInputOf).
+  const asValues = (row: CheckRow) => Boolean(bar.agree_on?.length) || Object.keys(row.expected ?? {}).length > 0;
+  const compared = new Map(ran.map((row): [CheckRow, Compared] => [row, asValues(row) ? { same: false } : compareAnswers(row.answer, row.agent, undefined, row.compared)]));
+  const verdict = checkFields(rows.map((row) => checkInputOf(row, bar.agree_on, compared.get(row) ?? { same: false })), bar,
+    before ? { n: before.n, alone: before.alone, agreed: before.agreed, fields: before.fields ?? {} } : undefined);
+  const missed = new Map<string, string[]>();
+  for (const miss of verdict.misses) missed.set(miss.input_id, [...(missed.get(miss.input_id) ?? []), miss.field]);
   const grader = [...compared.values()].find((one) => one.grader !== undefined)?.grader;
   const shown = await deps.shown();
   const cut = (text: string) => excerptShown(text, shown, CHECK_TEXT_MAX);
-  const disagreements: CheckDisagreement[] = [...(before?.disagreements ?? []), ...ran.filter((row) => !agrees(row)).map((row) => {
+  const disagreements: CheckDisagreement[] = [...(before?.disagreements ?? []), ...ran.filter((row) => row.outcome !== "answered" || missed.has(row.of)).map((row) => {
     const differs = row.outcome === "answered" ? compared.get(row)!.differs_on : undefined;
+    const fields = row.outcome === "answered" ? missed.get(row.of) : undefined;
     return {
       run: row.of, input: cut(row.input), agent: row.agent === null ? null : cut(row.agent),
       ...(row.outcome === "answered" ? { draft: cut(row.answer ?? "") } : row.outcome === "handed_back" ? { escalated: cut(row.escalated ?? "") } : { failed: true as const }),
       ...(differs ? { differs_on: cut(differs) } : {}),
+      ...(fields ? { fields } : {}),
     };
   })];
-  return { score, disagreements, grader };
+  return { verdict, disagreements, grader };
 }
 
 /** Two outcome counts added. */
 const outcomesAdded = (a: ReplayOutcomes, b: ReplayOutcomes | undefined): ReplayOutcomes =>
   b ? { answered: a.answered + b.answered, handed_back: a.handed_back + b.handed_back, failed: a.failed + b.failed, skipped_write: a.skipped_write + b.skipped_write } : a;
 
-/** Decides a check on its rows, with a connected agent's turns checked before them (`before`), scored on its bar
- *  (scoreRows). Promoted when it clears the bar (checkPasses) and the purge gate lets its revision through at its commit
- *  (`refused`: else held, a purged run's text); else held with the inputs it did not agree on, which the
- *  agent's next run's compile turn reads as data (its one recompile); a recompile's check that holds it too stops:
- *  nothing compiles again. No grade, refit, queue or second replay. Kept only while `still` holds of the digest's record
- *  (the one write: of two claims at once, one decides). */
+/** Decides a check on its rows, with a connected agent's turns checked before them (`before`), judged field by field on
+ *  its bar (judgeRows). Promoted when it serves (learn/field-check.ts: enough answered alone, every field passes) and the
+ *  purge gate lets its revision through at its commit (`refused`: else held, a purged run's text); else held on its
+ *  failing fields with the inputs it did not agree on, which the agent's next run's compile turn reads as data (its one
+ *  recompile); a recompile's check that holds it too stops: nothing compiles again. No refit, queue or second replay.
+ *  Kept only while `still` holds of the digest's record (the one write: of two claims at once, one decides). */
 export async function decideCheck(deps: DecideDeps, name: string, digest: string, bar: CheckBar, read: { rows: readonly CheckRow[]; cost: number | null; outcomes: ReplayOutcomes; unstarted: number; exactMismatchReason?: string; fresh_reads?: number; before?: CheckTurns }, still: Parameters<typeof recordPromotion>[3], extra: Partial<PromotionRecord>) {
   const now = deps.now ?? Date.now;
   const { before } = read;
-  const { score, disagreements, grader } = await scoreRows(deps, bar, read.rows, before);
-  const ok = checkPasses(score, bar);
+  const { verdict, disagreements, grader } = await judgeRows(deps, bar, read.rows, before);
+  const { tally, fields, failing } = verdict;
+  const score = { n: tally.n, agreed: tally.agreed, alone: tally.alone };
+  const ok = verdict.verdict === "serve";
   const stopped = !ok && bar.attempt === 2;
   const pct = (value: number) => `${(value * 100).toFixed(1)}%`;
   const shares = checkShares(score);
@@ -647,14 +681,17 @@ export async function decideCheck(deps: DecideDeps, name: string, digest: string
   // and the words say none ran.
   const said = read.unstarted === score.n
     ? `none of its ${plural(score.n, "check run")} started by the check's deadline (its launch was interrupted: the server stopped after reserving it, say): nothing was checked`
-    : `checked on ${score.n} of the agent's inputs: answered ${score.alone} alone (${pct(shares.alone)}, the bar ${pct(bar.alone_min)}), and ${score.agreed} of those said what the agent said${bar.agree_on?.length ? ` on ${listed(bar.agree_on)}` : grader ? `, compared by the fast model (${grader})` : ""} (${pct(shares.agreement)}, the bar ${pct(bar.agree_min)})${aside ? ` (${aside})` : ""}`;
-  // The grader compared: how many answered alone reached another decision, with one it named. Compared whole and never
-  // once the same (no grader): free text two runs never repeat, most likely, so the owner is told what to set.
-  const differed = score.alone - score.agreed;
+    : `checked on ${score.n} of the agent's inputs: answered ${score.alone} alone (${pct(shares.alone)}, the bar ${pct(bar.alone_min)})${Object.keys(fields).length ? `; ${Object.values(fields).map((one) => one.reason).join("; ")}` : ""}${grader ? `; compared by the fast model (${grader})` : ""}${aside ? ` (${aside})` : ""}`;
+  // The whole answer compared with the agent's: with the grader, how many answered alone reached another decision, with
+  // one it named; never once the same and no grader: free text two runs never repeat, most likely, so the owner is told
+  // what to set.
+  const whole = bar.agree_on?.length ? undefined : fields[WHOLE_ANSWER]?.by.agent;
+  const differed = whole ? whole.n - whole.workflow_right : 0;
   const example = disagreements.find((one) => one.differs_on !== undefined)?.differs_on;
-  const verbatim = ok || bar.agree_on?.length ? "" : grader ? (differed > 0 ? `; ${differentDecisionWords(differed, score.alone, example)}` : "") : score.alone > 0 && score.agreed === 0 ? `; ${read.exactMismatchReason ?? NEVER_WORD_FOR_WORD}` : "";
-  const reason = ok ? `${said}: promoted` : stopped ? `${said}: held${verbatim}, and this was the recompile's check, so it stops: nothing compiles again until a hold or its owner acts` : `${said}: held${verbatim}; the agent's next run recompiles it once with the inputs it did not agree on`;
-  const check: CheckRecord = { ...bar, ...score, ...numbers, ...(disagreements.length ? { disagreements } : {}), ...(stopped ? { stopped: true as const } : {}), ...(grader ? { grader } : {}) };
+  const verbatim = ok || !whole ? "" : grader ? (differed > 0 ? `; ${differentDecisionWords(differed, whole.n, example)}` : "") : whole.workflow_right === 0 ? `; ${read.exactMismatchReason ?? NEVER_WORD_FOR_WORD}` : "";
+  const heldOn = `held${failing.length ? ` on ${listed(failing)}` : ""}${verbatim}`;
+  const reason = ok ? `${said}: promoted` : stopped ? `${said}: ${heldOn}, and this was the recompile's check, so it stops: nothing compiles again until a hold or its owner acts` : `${said}: ${heldOn}; the agent's next run recompiles it once with the inputs it did not agree on`;
+  const check: CheckRecord = { ...bar, ...score, ...(Object.keys(fields).length ? { fields } : {}), ...numbers, ...(disagreements.length ? { disagreements } : {}), ...(stopped ? { stopped: true as const } : {}), ...(grader ? { grader } : {}) };
   const record: PromotionRecord = { workflow: name, digest, at: iso(now()), decided: ok ? "promote" : "hold", reason, check, ...seedOf(deps), ...extra };
   // A check that outlives its revision's run: the run's purge never stops it (it replays other runs' inputs), and the
   // purge gate refuses the revision at the commit it was checked at (purged-workflow.ts refusedOf). It is held, never
@@ -788,9 +825,9 @@ export async function sdkCheckTurn(deps: DecideDeps, record: PromotionRecord & {
     deps.log(`workflow-first: ${record.workflow} at ${record.digest} checked a native turn; a newer revision has a record since, so it is left as it is`);
     return;
   }
-  const { score, disagreements } = await scoreRows(deps, bar, [row], before);
+  const { verdict: { tally }, disagreements } = await judgeRows(deps, bar, [row], before);
   const fresh = (before?.fresh_reads ?? 0) + (read.fresh_reads ?? 0);
-  const turns: CheckTurns = { ...score, of: [row.of, ...(before?.of ?? [])], outcomes: outcomesAdded(outcomes, before?.outcomes), ...(disagreements.length ? { disagreements } : {}), ...(fresh ? { fresh_reads: fresh } : {}) };
+  const turns: CheckTurns = { n: tally.n, agreed: tally.agreed, alone: tally.alone, ...(Object.keys(tally.fields).length ? { fields: tally.fields } : {}), of: [row.of, ...(before?.of ?? [])], outcomes: outcomesAdded(outcomes, before?.outcomes), ...(disagreements.length ? { disagreements } : {}), ...(fresh ? { fresh_reads: fresh } : {}) };
   const check = { ...bar, turns };
   const kept = await waitAgain(deps, record, check, `Waiting for the next native turn of the connected agent that it takes: ${sdkTurnsWords(check)}. Nothing was promoted.`, still);
   if (kept.won) deps.log(`workflow-first: ${record.workflow} at ${record.digest}: ${sdkTurnsWords(check)}`);
