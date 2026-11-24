@@ -242,13 +242,15 @@ function heldFields(value: string): string[] {
     return [];
   }
   const out: string[] = [];
-  const walk = (node: unknown, key: string | undefined): void => {
+  // Walked with a stack of its own, not a call per level: a value nested thousands deep is read as any other.
+  const stack: [node: unknown, key: string | undefined][] = [[parsed, undefined]];
+  for (let next = stack.pop(); next !== undefined; next = stack.pop()) {
+    const [node, key] = next;
     if (typeof node === "string") {
       if (/[\r\n]/.test(node) || (key !== undefined && CREDENTIAL_NAMES.has(key.toLowerCase()))) out.push(node.trim());
-    } else if (Array.isArray(node)) for (const item of node) walk(item, undefined);
-    else if (node !== null && typeof node === "object") for (const [name, item] of Object.entries(node)) walk(item, name);
-  };
-  walk(parsed, undefined);
+    } else if (Array.isArray(node)) for (const item of node) stack.push([item, undefined]);
+    else if (node !== null && typeof node === "object") for (const [name, item] of Object.entries(node)) stack.push([item, name]);
+  }
   return out.filter(longEnough);
 }
 
