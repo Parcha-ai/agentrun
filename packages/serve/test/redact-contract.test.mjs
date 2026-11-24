@@ -425,6 +425,10 @@ test("valueLeft: a held value only a view finds, wholly inside a cut in place, i
 });
 
 const ADVERSARIAL = [
+  // A console-made API key's prefix (match.ts AGENTRUN_API_KEY): repeated; heading a run of lower case alone, which is
+  // no key, and a run of capitals, which is one; before a space; and before runs of lower case that a space ends, one
+  // character short of a key's length and past it, neither of them a key.
+  fill("ar_key_"), `ar_key_${fill("a", SIZE - 7)}`, `ar_key_${fill("A", SIZE - 7)}`, fill("ar_key_ "), fill(`ar_key_${"a".repeat(42)} `), fill(`ar_key_${"a".repeat(60)} `),
   fill("eyJ"), fill("eyJ-"), `-----BEGIN ${fill("A", SIZE - 11)}`, `-----BEGIN ${fill("PRIVATE KEY ", SIZE - 11)}`, `://a:${fill("a", SIZE - 5)}`, fill("://a:"),
   fill("sk-"), fill("github_pat_"), fill("ghp_"), fill("xoxb-"), fill("whsec_"), fill("Bearer "), `Bearer ${fill("a", SIZE - 7)}`, fill("?token="),
   `?token=${fill("a", SIZE - 7)}`, fill(`${"a".repeat(1021)}eyJ`), fill("eyJaaaaaaaa."), `account ${fill("1 ", SIZE - 8)}`, fill("routing number "), fill("sort code "),

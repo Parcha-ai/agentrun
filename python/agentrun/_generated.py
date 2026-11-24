@@ -26,6 +26,7 @@ __all__ = [
     "AgentTemplate",
     "AgentToolsItem",
     "AgentsResource",
+    "ApiKeysResource",
     "ApplyTemplateBody",
     "ApplyTemplateBodyOverrides",
     "ApplyTemplateResponse",
@@ -121,6 +122,8 @@ __all__ = [
     "CostTokens",
     "CreateAgentBody",
     "CreateAgentResponse",
+    "CreateApiKeyBody",
+    "CreateApiKeyResponse",
     "CreateFileBody",
     "CreateFileResponse",
     "CreateInlineRunBody",
@@ -337,6 +340,7 @@ __all__ = [
     "ExternalRef",
     "Features",
     "FeaturesAgents",
+    "FeaturesApiKeys",
     "FeaturesArchive",
     "FeaturesBrowserLive",
     "FeaturesComputers",
@@ -665,6 +669,8 @@ __all__ = [
     "LimitsMaxCostUsd",
     "ListAgentsResponse",
     "ListAllRunsResponse",
+    "ListApiKeysResponse",
+    "ListApiKeysResponseKeysItem",
     "ListCliLearningResponse",
     "ListCliLearningResponseConnectionsItem",
     "ListComposioEventsResponse",
@@ -3684,6 +3690,24 @@ class VerifyNativeResponseNativeRemote(TypedDict):
     target_id: str
 
 
+class _ListApiKeysResponseRequired(TypedDict):
+    keys: list[ListApiKeysResponseKeysItem]
+    limit: int
+
+
+class ListApiKeysResponse(_ListApiKeysResponseRequired, total=False):
+    refused: str
+    unreadable: list[str]
+
+
+class ListApiKeysResponseKeysItem(TypedDict):
+    id: str
+    name: str
+    created_at: str
+    last_used_at: str | None
+    secret: SecretMeta
+
+
 class GetCapacityResponse(TypedDict):
     at: str
     runs: GetCapacityResponseRuns
@@ -4679,6 +4703,19 @@ class ConnectGitHubResponse(TypedDict):
     action: str
     manifest: dict[str, Any]
     state: str
+
+
+class CreateApiKeyBody(TypedDict):
+    name: str
+
+
+class CreateApiKeyResponse(TypedDict):
+    id: str
+    name: str
+    created_at: str
+    last_used_at: str | None
+    secret: SecretMeta
+    api_key: str
 
 
 class CreatePairingResponse(TypedDict):
@@ -8083,6 +8120,7 @@ class Features(_FeaturesRequired, total=False):
     mcp_client: FeaturesMcpClient
     tool_permissions: bool
     webhooks: FeaturesWebhooks
+    api_keys: FeaturesApiKeys
     slack: FeaturesSlack
     triggers: FeaturesTriggers
     sdk_runs: FeaturesSdkRuns
@@ -8179,6 +8217,12 @@ class FeaturesWebhooks(TypedDict):
     events: list[Literal["run.needs_input", "run.ended", "trigger.failed"]]
     signing: Literal["standard-webhooks/v1"]
     at_rest: Literal["sealed"]
+
+
+class FeaturesApiKeys(TypedDict):
+    routes: bool
+    limit: int
+    at_rest: Literal["hashed"]
 
 
 class FeaturesSlack(TypedDict):
@@ -11422,6 +11466,7 @@ OPERATIONS: dict[str, Operation] = {
     "unarchiveAgent": Operation(method="POST", path="/agents/{agent_id}/unarchive", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "updateDefinition": Operation(method="PUT", path="/agents/{agent_id}/definition", path_params=("agent_id",), multi_segment=(), query=(), headers=("If-Match",), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=True),
     "verifyNative": Operation(method="POST", path="/agents/{agent_id}/native/verify", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "listApiKeys": Operation(method="GET", path="/settings/api-keys", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getCapacity": Operation(method="GET", path="/capacity", path_params=(), multi_segment=(), query=("window",), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "completeCliLearningRun": Operation(method="POST", path="/cli-learning/runs/{run_id}/complete", path_params=("run_id",), multi_segment=(), query=(), headers=("Idempotency-Key",), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "enrollCliLearning": Operation(method="POST", path="/cli-learning/connections", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
@@ -11463,6 +11508,7 @@ OPERATIONS: dict[str, Operation] = {
     "listLearnedWorkflowRevisions": Operation(method="GET", path="/agents/{agent_id}/learning/workflows/{name}/revisions", path_params=("agent_id", "name"), multi_segment=(), query=("limit",), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "putLearningCorrections": Operation(method="PUT", path="/agents/{agent_id}/learning/corrections", path_params=("agent_id",), multi_segment=(), query=(), headers=("If-Match",), body=OperationBody(required=True, types=("text/markdown", "text/plain", "application/json")), answer="json", secret=False, public_fields=(), tagged=True),
     "connectGitHub": Operation(method="POST", path="/integrations/github/connect", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=False, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
+    "createApiKey": Operation(method="POST", path="/settings/api-keys", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "createPairing": Operation(method="POST", path="/computers/pairings", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "createSuggestedAgent": Operation(method="POST", path="/suggestions/{suggestion_id}/create", path_params=("suggestion_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=False, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "deleteCalendar": Operation(method="DELETE", path="/settings/calendar", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="none", secret=False, public_fields=(), tagged=False),
@@ -11497,6 +11543,7 @@ OPERATIONS: dict[str, Operation] = {
     "putWorkspaceArchil": Operation(method="PUT", path="/workspace/archil", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "receiveHook_composio": Operation(method="POST", path="/hooks/composio/{hook}", path_params=("hook",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("*/*",)), answer="json", secret=False, public_fields=(), tagged=False),
     "restoreSuggestion": Operation(method="POST", path="/suggestions/{suggestion_id}/restore", path_params=("suggestion_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "revokeApiKey": Operation(method="DELETE", path="/settings/api-keys/{api_key_id}", path_params=("api_key_id",), multi_segment=(), query=(), headers=(), body=None, answer="none", secret=False, public_fields=(), tagged=False),
     "rotateComposioSecret": Operation(method="POST", path="/settings/mcp-servers/{name}/composio/rotate-secret", path_params=("name",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "saveCalendar": Operation(method="PUT", path="/settings/calendar", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "saveComposioServer": Operation(method="PUT", path="/settings/mcp-servers/{name}/composio", path_params=("name",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=True, public_fields=("toolkit", "tools.[]", "user_id"), tagged=False),
@@ -11710,6 +11757,14 @@ class AgentsResource(Group):
         return self._call("verifyNative", (agent_id,), None, None, timeout=timeout)
 
 
+class ApiKeysResource(Group):
+    """client.api_keys: one method per operation."""
+
+    def list(self, *, timeout: float | None = None) -> ListApiKeysResponse:
+        """The API keys made for this server's apps; never a key (GET /settings/api-keys)."""
+        return self._call("listApiKeys", (), None, None, timeout=timeout)
+
+
 class CapabilitiesResource(Group):
     """client.capabilities: one method per operation."""
 
@@ -11905,6 +11960,10 @@ class LearningResource(Group):
 class LocalResource(Group):
     """client.local: one method per operation."""
 
+    def create_api_key(self, body: CreateApiKeyBody, *, timeout: float | None = None) -> CreateApiKeyResponse:
+        """Make an API key, shown once (POST /settings/api-keys)."""
+        return self._call("createApiKey", (), body, None, timeout=timeout)
+
     def create_pairing(self, *, timeout: float | None = None) -> CreatePairingResponse:
         """A code that pairs a person's own computer with this server (POST /computers/pairings)."""
         return self._call("createPairing", (), None, None, timeout=timeout)
@@ -12032,6 +12091,10 @@ class LocalResource(Group):
     def restore_suggestion(self, suggestion_id: str, *, timeout: float | None = None) -> RestoreSuggestionResponse:
         """Bring a discarded suggestion back (an undo) (POST /suggestions/{suggestion_id}/restore)."""
         return self._call("restoreSuggestion", (suggestion_id,), None, None, timeout=timeout)
+
+    def revoke_api_key(self, api_key_id: str, *, timeout: float | None = None) -> None:
+        """Revoke an API key; it opens nothing from now on (DELETE /settings/api-keys/{api_key_id})."""
+        return self._call("revokeApiKey", (api_key_id,), None, None, timeout=timeout)
 
     def rotate_composio_secret(self, name: str, *, timeout: float | None = None) -> RotateComposioSecretResponse:
         """Rotate the Composio project's webhook subscription's secret, and keep the new one (POST /settings/mcp-servers/{name}/composio/rotate-secret)."""
@@ -12486,6 +12549,7 @@ class Resources:
     """The resource groups, each operation a method that sends it through `call`. `runs` is the client's own: RunsResource with the methods it writes by hand."""
 
     agents: AgentsResource
+    api_keys: ApiKeysResource
     capabilities: CapabilitiesResource
     cli_learning: CliLearningResource
     connectors: ConnectorsResource
@@ -12510,6 +12574,7 @@ class Resources:
     def __init__(self, call: Call) -> None:
         self._operation = call
         self.agents = AgentsResource(call)
+        self.api_keys = ApiKeysResource(call)
         self.capabilities = CapabilitiesResource(call)
         self.cli_learning = CliLearningResource(call)
         self.connectors = ConnectorsResource(call)
