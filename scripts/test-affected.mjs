@@ -18,9 +18,9 @@
 //   package   a package's package.json, tsconfig*.json, vite or vitest config, or a file its build or test script names,
 //             picks every test file of the package.
 //   fallback  where the parse tree cannot be sure (a computed import(), a path built from strings, a fixture read by path),
-//             a file of the path's package that names the path's file (its basename; for a source file its path under
-//             src/, as .ts or .js) picks the tests that are or import that file; for a code file, only a file outside the
-//             package's source counts. A code file no test reaches either way
+//             a file of the path's package that names the path's file (its basename, alone or after folders that could be
+//             its own; for a source file its path under src/, as .ts or .js) picks the tests that are or import that
+//             file; for a code file, only a file outside the package's source counts. A code file no test reaches either way
 //             picks its package's test files that import by a computed path themselves.
 //   smoke     SMOKE below, a fast file per package, always (--no-smoke drops it), so a round catches a gross break.
 //   A shared root (SHARED_ROOTS: the root manifests, lockfile, scripts/, .github/) picks the tests that import it and the
@@ -313,16 +313,49 @@ function reachers(reverse, tests, start) {
 // What names a file where a test reads it by path. A file of a package's source goes by its path under the source folder,
 // as source or built (src/store/runs.ts: store/runs.ts or store/runs.js), right after the source or built folder's name or
 // standing alone; a bare basename would match every same-named file (dist/runs.js is not src/store/runs.ts). Any other
-// file goes by its basename.
+// file goes by its basename, standing alone or after folders that could be its own (ownFolders below): many folders hold a
+// file of one name (each package's readme, say), and a path written through other folders names another of them. Returns
+// whether a text names the file.
 function mentionOf(path, pkg) {
   const escape = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  if (!pkg || !path.startsWith(`${pkg.rootDir}/`)) return new RegExp(`(?<![\\w.-])${escape(basename(path))}(?![\\w-])`);
+  if (!pkg || !path.startsWith(`${pkg.rootDir}/`)) {
+    const named = new RegExp(`(?<![\\w.-])${escape(basename(path))}(?![\\w-])`, 'g');
+    const folders = posix.dirname(path).split('/').filter((folder) => folder !== '.');
+    return (text) => text.matchAll(named).some((match) => ownFolders(text.slice(Math.max(0, match.index - 400), match.index), folders));
+  }
   const under = path.slice(pkg.rootDir.length + 1);
   const forms = [under];
   if (/\.(?:tsx?|mts|cts)$/.test(under) && !/\.d\.[cm]?ts$/.test(under)) forms.push(under.replace(/\.tsx?$/, '.js').replace(/\.mts$/, '.mjs').replace(/\.cts$/, '.cjs'));
   const folders = [basename(pkg.rootDir), ...(pkg.outDir ? [basename(pkg.outDir)] : [])];
   const either = forms.map(escape).join('|');
-  return new RegExp(`(?:(?<![\\w.-])(?:${folders.map(escape).join('|')})/|(?<![\\w./-]))(?:${either})(?![\\w-])`);
+  const named = new RegExp(`(?:(?<![\\w.-])(?:${folders.map(escape).join('|')})/|(?<![\\w./-]))(?:${either})(?![\\w-])`);
+  return (text) => named.test(text);
+}
+
+/**
+ * Whether the folders written right before a file's basename (`before` ends where the basename starts) could be the file's
+ * own, `folders` from the root. Read from the basename backwards, each is the file's next folder up, a part the text
+ * computes (`${dir}`, `*`), or a step that cannot be placed (`.`, `..`), which ends the reading. A computed part stands for
+ * one folder or several (`dir` may be `nested/deep`), so the folders written above it may sit at any depth that leaves it
+ * at least one; they must still be the file's own. A folder of another name means another file. No folder written, or
+ * more of them than the file has, could be it.
+ */
+export function ownFolders(before, folders) {
+  const written = /(?:[\w.@$*{}-]+\/)+$/.exec(before)?.[0].split('/').filter(Boolean) ?? [];
+  // Whether the first `w` written parts can be the file's first `f` folders.
+  const fits = (w, f) => {
+    if (w === 0) return true;
+    const part = written[w - 1];
+    if (part === '.' || part === '..') return true;
+    if (f === 0) return true;
+    if (/[$*{}]/.test(part)) {
+      if (w === 1) return true;
+      for (let span = 1; span < f; span++) if (fits(w - 1, f - span)) return true;
+      return false;
+    }
+    return part === folders[f - 1] && fits(w - 1, f - 1);
+  };
+  return fits(written.length, folders.length);
 }
 
 /**
@@ -382,7 +415,7 @@ export function select(root, changed, { sets = readTestSets(root), packages = re
       const code = CODE.test(path);
       const scope = (file) => (pkg ? inside(file, pkg.dir) && !(code && inside(file, pkg.rootDir)) : !ownerOf(file));
       for (const [file, text] of graph.texts) {
-        if (file === path || !scope(file) || !named.test(text)) continue;
+        if (file === path || !scope(file) || !named(text)) continue;
         for (const { test, chain } of reachers(reverse, tests, file)) {
           if (byImport.has(test) || test === path) continue;
           add(test, { kind: 'fallback', changed: path, chain: [...chain, path] });

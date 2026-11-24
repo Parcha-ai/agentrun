@@ -11,7 +11,9 @@ const CITE = "Cite the URL of each result you rely on.";
 /** A held key, made at runtime: no credential-shaped literal for the source export. */
 const KEY = ["not-a-secret", "held-web-key", "0123456789ab"].join("-");
 const redact = (text) => text.split(KEY).join("[redacted]");
-const options = { calls: { result: CALL_RESULT_CHARS, redact } };
+/** The room these cut tests give a call's output: a web call's rows are cut to fit what a reader is shown. */
+const ROOM = 8000;
+const options = { calls: { result: ROOM, redact } };
 
 /** Ten results, each with a snippet of about 3,000 characters, as web_search answers them (searchText). */
 const hits = Array.from({ length: 10 }, (_, i) => ({ url: `https://vendor.example/customers/story-${i + 1}`, title: `Customer story ${i + 1}`, snippet: `Story ${i + 1}: ${"the team closed its books faster ".repeat(94)}`, published: `2026-0${(i % 9) + 1}-01` }));
@@ -21,10 +23,10 @@ const rowOf = (rows, kind = "tool_result") => rows.find((row) => row.kind === ki
 test("a web_search's ten long results: every url, title and date whole, its snippets cut to fit, so its 9th result's url is in the row", () => {
   const search = { provider: "parallel", query: "ramp customers", results: hits };
   const text = searchText(search);
-  assert.ok(text.length > 3 * CALL_RESULT_CHARS, String(text.length));
+  assert.ok(text.length > 3 * ROOM, String(text.length));
   const rows = timelineOf([user("Find customer stories."), assistant([call("c1", "web_search", { query: "ramp customers" })]), result("c1", "web_search", text)], options);
   const shown = rowOf(rows).tool_result_text;
-  assert.ok(shown.length <= CALL_RESULT_CHARS, String(shown.length));
+  assert.ok(shown.length <= ROOM, String(shown.length));
   assert.ok(shown.includes("https://vendor.example/customers/story-9"), shown);
   const [json, ...after] = shown.split("\n");
   assert.deepEqual(after, [CITE]);
@@ -37,7 +39,7 @@ test("a web_search's ten long results: every url, title and date whole, its snip
   }
   // Each snippet keeps as much as the room leaves: the same length each, the room nearly filled.
   assert.equal(new Set(read.results.map((hit) => hit.snippet.length)).size, 1);
-  assert.ok(shown.length > CALL_RESULT_CHARS - 200, String(shown.length));
+  assert.ok(shown.length > ROOM - 200, String(shown.length));
 });
 
 test("a search that fits is served as it came, and one whose rows alone pass the room keeps every url, with no snippet", () => {
@@ -48,7 +50,7 @@ test("a search that fits is served as it came, and one whose rows alone pass the
   const many = Array.from({ length: 25 }, (_, i) => ({ ...hits[i % 10], url: `https://vendor.example/customers/long-${i + 1}`, title: `${"A long page title ".repeat(25)}${i + 1}` }));
   const wide = timelineOf([user("Search."), assistant([call("c1", "web_search", { query: "q", n: 25 })]), result("c1", "web_search", searchText({ provider: "parallel", query: "q", results: many }))], options);
   const shown = rowOf(wide).tool_result_text;
-  assert.ok(shown.length > CALL_RESULT_CHARS, String(shown.length));
+  assert.ok(shown.length > ROOM, String(shown.length));
   const read = JSON.parse(shown.split("\n")[0]);
   assert.deepEqual(read.results.map((hit) => [hit.url, hit.title]), many.map((hit) => [hit.url, hit.title]));
   assert.ok(read.results.every((hit) => hit.snippet === "…"), JSON.stringify(read.results[0]));
@@ -59,7 +61,7 @@ test("a web_fetch's long page: its url and title whole, its text cut, the line a
   const where = "Characters 0-33600 of 90000: call web_fetch again with offset=33600 for the rest.";
   const rows = timelineOf([user("Read it."), assistant([call("c1", "web_fetch", { url: page.url })]), result("c1", "web_fetch", `${JSON.stringify(page)}\n${where}`)], options);
   const shown = rowOf(rows).tool_result_text;
-  assert.ok(shown.length <= CALL_RESULT_CHARS, String(shown.length));
+  assert.ok(shown.length <= ROOM, String(shown.length));
   const [json, line] = shown.split("\n");
   assert.equal(line, where);
   const read = JSON.parse(json);
@@ -79,10 +81,23 @@ test("a web call's output still goes through the run's redaction and its URLs' q
   const shown = rowOf(rows).tool_result_text;
   assert.ok(!shown.includes(KEY), shown);
   assert.ok(shown.includes("https://vendor.example/customers/story-9?token=…"), shown);
-  const bash = "x".repeat(CALL_RESULT_CHARS * 2);
+  const bash = "x".repeat(ROOM * 2);
   const other = timelineOf([user("Run it."), assistant([call("c1", "bash", { command: "yes" })]), result("c1", "bash", bash)], options);
-  assert.equal(rowOf(other).tool_result_text, `${"x".repeat(CALL_RESULT_CHARS - 3)}...`);
+  assert.equal(rowOf(other).tool_result_text, `${"x".repeat(ROOM - 3)}...`);
   // An output that is not its tool's JSON (a search's error words) is cut at its head, as any other.
-  const words = timelineOf([user("Search."), assistant([call("c1", "web_search", { query: "q" })]), result("c1", "web_search", `not json ${"y".repeat(CALL_RESULT_CHARS)}`)], options);
-  assert.equal(rowOf(words).tool_result_text.length, CALL_RESULT_CHARS);
+  const words = timelineOf([user("Search."), assistant([call("c1", "web_search", { query: "q" })]), result("c1", "web_search", `not json ${"y".repeat(ROOM)}`)], options);
+  assert.equal(rowOf(words).tool_result_text.length, ROOM);
+});
+
+test("a grader's read shows a web_fetch page of 20,000 characters whole: a figure 15,000 characters in is in its row", () => {
+  const text = `${"The parallel frontend speeds up builds. ".repeat(375)}With 8 threads, cargo check ran about 2x faster. ${"More on the design. ".repeat(250)}`;
+  assert.ok(text.length > 19_000 && text.indexOf("2x faster") > 14_000, String(text.length));
+  const page = { ok: true, url: "https://blog.example/parallel", status: 200, title: "Faster builds", text, chars: text.length };
+  const rows = timelineOf([user("Read it."), assistant([call("c1", "web_fetch", { url: page.url })]), result("c1", "web_fetch", JSON.stringify(page))], { calls: { result: CALL_RESULT_CHARS, redact } });
+  const shown = rowOf(rows).tool_result_text;
+  assert.equal(JSON.parse(shown).text, text, "the page's text whole");
+  // Another tool's long output too: whole to CALL_RESULT_CHARS, not its head.
+  const log = `${"line of build output\n".repeat(1000)}error: the figure at the end`;
+  const other = timelineOf([user("Run it."), assistant([call("c1", "bash", { command: "make" })]), result("c1", "bash", log)], { calls: { result: CALL_RESULT_CHARS, redact } });
+  assert.equal(rowOf(other).tool_result_text, log);
 });

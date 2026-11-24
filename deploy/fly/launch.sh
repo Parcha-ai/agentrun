@@ -30,14 +30,30 @@ config=$(cd "$(dirname "$0")" && pwd)/fly.toml
 
 fly status -a "$app" > /dev/null 2>&1 || fly apps create "$app"
 
+# flyctl's JSON list in $1, its blanks taken out, when this script can read it: [] or null, or entries that each hold
+# every key named after it ("name":"...). An entry that spells one another way (a flyctl that writes "Name") would
+# read as no volume or no secret, and a deploy would then start on a new, empty volume, or new secrets be made over
+# the ones Fly has; so such a list, or anything else, is no list (status 1).
+readable_list() {
+  list=$(printf '%s' "$1" | tr -d ' \t\r\n')
+  shift
+  case $list in
+    "[]" | null) ;;
+    "[{"*"}]")
+      entries=$(printf '%s' "$list" | tr -cd '{' | wc -c)
+      for key in "$@"; do
+        named=$(printf '%s' "$list" | grep -o "\"$key\":\"" | wc -l)
+        [ $((entries)) -eq $((named)) ] || return 1
+      done ;;
+    *) return 1 ;;
+  esac
+  printf '%s' "$list"
+}
+
 # The first deploy made the volume in its region. A deploy to another region would make a second, empty one there, so a
 # run with no region deploys where the volume is, and one naming another region stops.
 volumes=$(fly volumes list -a "$app" --json) || { echo "launch.sh: fly volumes list -a $app failed" >&2; exit 1; }
-volumes=$(printf '%s' "$volumes" | tr -d ' \t\r\n')
-case $volumes in
-  "[]" | null | "[{"*"}]") ;;
-  *) echo "launch.sh: fly volumes list -a $app --json gave no list of volumes this script can read" >&2; exit 1 ;;
-esac
+volumes=$(readable_list "$volumes" name region) || { echo "launch.sh: fly volumes list -a $app --json gave no list of volumes this script can read" >&2; exit 1; }
 at=$(printf '%s' "$volumes" | tr '{' '\n' | grep '"name":"agentrun_data"' | sed -n 's/.*"region":"\([a-z0-9]*\)".*/\1/p' | sort -u)
 case $at in
   *"
@@ -56,11 +72,7 @@ names=$(fly secrets list -a "$app" --json) || {
   echo "launch.sh: fly secrets list -a $app failed, so no secret was made (a new seal key over the one Fly has would lose what it sealed)" >&2
   exit 1
 }
-names=$(printf '%s' "$names" | tr -d ' \t\r\n')
-case $names in
-  "[]" | null | "[{"*"}]") ;;
-  *) echo "launch.sh: fly secrets list -a $app --json gave no list of secrets this script can read, so no secret was made" >&2; exit 1 ;;
-esac
+names=$(readable_list "$names" name) || { echo "launch.sh: fly secrets list -a $app --json gave no list of secrets this script can read, so no secret was made" >&2; exit 1; }
 has() { case $names in *"\"name\":\"$1\""*) return 0 ;; esac; return 1; }
 token= seal= url=
 has AGENTRUN_TOKEN || token=$(openssl rand -hex 32)

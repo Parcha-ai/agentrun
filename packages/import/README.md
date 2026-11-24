@@ -28,6 +28,22 @@ const sessions = await parseHome(homedir(), { sources: ["claude-code", "codex"] 
   totalled; without it, parseHome throws `ReadFailures`. An unreadable file is never taken for an empty one.
 - `env` names where a source keeps its own directory (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`); without it the home's.
 
+## A year of work
+
+```js
+import { wrappedHome } from "@parcha/agentrun-import";
+
+const year = await wrappedHome(homedir(), 2026); // the same options as parseHome, but `state`
+```
+
+`wrappedHome(home, year)` buckets by each request's time, in the machine's local zone, so a session that spans New Year
+splits: `tokens`, `requests`, `days` (`{day, requests, tokens}`), `hours` (24) and `weekdays` (7, Sunday first),
+`activeMs` (the gaps between a session's requests of the year, each counted when under 15 minutes), `models`,
+`harnesses` and `sources`. A session counts in `sessions` (and its prompts in `turns`) for the year its first request is in.
+`cost` is the catalog's list price of the requests it could price; `unpricedRequests` counts the rest. Like the totals, it
+holds counts, names and times only: no prompt, title, path or project. `parseHome`'s `requests` option is the hook it is
+built on: each session's totals and its requests, as they are totalled.
+
 ## Known answer
 
 ```sh
