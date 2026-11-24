@@ -46,12 +46,19 @@ export type Limit = { kind: "quota" } | { kind: "rate"; retryAfter?: string | nu
  *  Search alone. */
 export type Searched = { answer: Search; limit?: Limit };
 
-/** The wait `retryAfter` names, in ms from `nowMs`: delta-seconds, an HTTP date, or Exa's seconds. None, or words that
- *  read as neither, 60 s; a date already passed, none; never more than 15 minutes (MAX_WAIT_MS). */
-export function waitOf(retryAfter: string | number | undefined, nowMs: number): number {
+/** The wait a Retry-After names, in ms from `nowMs` (negative for a date already passed): delta-seconds or an HTTP date,
+ *  or a number of seconds; undefined when it names neither. The one reading of a Retry-After here. */
+export function retryAfterMs(retryAfter: string | number | undefined, nowMs: number): number | undefined {
   const said = typeof retryAfter === "string" ? retryAfter.trim() : retryAfter;
   const ms = typeof said === "number" ? said * 1_000 : said && /^\d+$/.test(said) ? Number(said) * 1_000 : said ? Date.parse(said) - nowMs : Number.NaN;
-  return Number.isFinite(ms) ? Math.min(Math.max(ms, 0), MAX_WAIT_MS) : DEFAULT_WAIT_MS;
+  return Number.isFinite(ms) ? ms : undefined;
+}
+
+/** The wait a breaker holds for `retryAfter` (retryAfterMs): none named, 60 s; a date already passed, none; never more
+ *  than 15 minutes (MAX_WAIT_MS). */
+export function waitOf(retryAfter: string | number | undefined, nowMs: number): number {
+  const ms = retryAfterMs(retryAfter, nowMs);
+  return ms === undefined ? DEFAULT_WAIT_MS : Math.min(Math.max(ms, 0), MAX_WAIT_MS);
 }
 
 /** A run's breaker on its web_search, read at `now`. `held` is what a call answers unsent while it holds: SEARCH_UNAVAILABLE

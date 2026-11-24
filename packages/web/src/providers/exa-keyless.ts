@@ -49,7 +49,7 @@ export type ExaLimited = { error: string; limit: "rate_limited"; retryAfterS?: n
 
 /** The wait before the one retry: the Retry-After Exa named, else 1 to 3 s, each with jitter so runs limited together
  *  do not all ask again at once. */
-const waitOf = (retryAfterS: number | undefined) => (retryAfterS === undefined ? 1_000 + Math.random() * 2_000 : retryAfterS * 1_000 + Math.random() * 500);
+const retryPause = (retryAfterS: number | undefined) => (retryAfterS === undefined ? 1_000 + Math.random() * 2_000 : retryAfterS * 1_000 + Math.random() * 500);
 
 /** A fetch that reaches hosts over IPv4 alone: each name looked up for family 4 (through `lookup`, default the system
  *  resolver) and the connection dialled at the address found, never an IPv6 one. undici loads at the first request, so
@@ -107,7 +107,7 @@ export async function exaSearch(query: string, n: number, { send, signal, pause 
   try {
     const first = await once();
     if (!("limit" in first) || first.limit !== "rate_limited" || (first.retryAfterS ?? 0) > RETRY_AFTER_MAX_S) return first;
-    await pause(waitOf(first.retryAfterS), deadline);
+    await pause(retryPause(first.retryAfterS), deadline);
     return await once();
   } catch (error) {
     const name = (error as Error)?.name;

@@ -4,6 +4,8 @@
 // answer is JSON or an event stream's `data:` lines, and no more than 1 MiB of one is read, but for a call's answer given
 // its own bound: one past that bound is `over`, never parsed cut. No key and no header beyond
 // the transport's own is sent. What a refusal means (a free limit, a connection refused) is each backend's to read.
+import { retryAfterMs } from "../search.js";
+
 /** The MCP revision this client speaks; the server answers the one it takes. */
 export const PROTOCOL = "2025-06-18";
 const ACCEPT = "application/json, text/event-stream";
@@ -27,13 +29,10 @@ export type Called = { status: number; retryAfterS?: number; step: "initialize" 
 /** A call given its own bound: as Called, or `over`, its answer ran past that bound (in bytes), unread. */
 export type Bounded = Called | { over: number };
 
-/** The seconds a Retry-After names, as seconds or a date; undefined when it names none. */
-export function retryAfterOf(response: Response): number | undefined {
-  const said = response.headers.get("retry-after")?.trim();
-  if (!said) return undefined;
-  if (/^\d+$/.test(said)) return Number(said);
-  const at = Date.parse(said);
-  return Number.isNaN(at) ? undefined : Math.max(0, Math.ceil((at - Date.now()) / 1000));
+/** The whole seconds an answer's Retry-After names (retryAfterMs), none below 0; undefined when it names none. */
+function retryAfterOf(response: Response): number | undefined {
+  const ms = retryAfterMs(response.headers.get("retry-after") ?? undefined, Date.now());
+  return ms === undefined ? undefined : Math.max(0, Math.ceil(ms / 1_000));
 }
 
 /** `ms` of waiting that `signal` ends, rejecting with its reason. */
@@ -51,22 +50,9 @@ export const sleep = (ms: number, signal: AbortSignal) =>
     signal.addEventListener("abort", stop, { once: true });
   });
 
-/** At most MAX_BYTES of a body, as text; the rest is not read. */
-async function boundedText(response: Response): Promise<string> {
-  const reader = response.body?.getReader();
-  const chunks: Uint8Array[] = [];
-  for (let size = 0; reader && size < MAX_BYTES; ) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    chunks.push(value);
-    size += value.byteLength;
-  }
-  await reader?.cancel().catch(() => undefined);
-  return Buffer.concat(chunks).subarray(0, MAX_BYTES).toString("utf8");
-}
-
-/** A body of at most `max` bytes, as text; undefined where it runs past them (the rest is not read). */
-async function cappedText(response: Response, max: number): Promise<string | undefined> {
+/** A body as text, read to at most `max` bytes; the rest is never read. `cut`: a longer body's first `max` bytes; else
+ *  undefined for one that runs past them. */
+async function bodyText(response: Response, max: number, cut: boolean): Promise<string | undefined> {
   const reader = response.body?.getReader();
   const chunks: Uint8Array[] = [];
   for (let size = 0; reader; ) {
@@ -74,9 +60,9 @@ async function cappedText(response: Response, max: number): Promise<string | und
     if (done) break;
     chunks.push(value);
     size += value.byteLength;
-    if (size > max) {
+    if (cut ? size >= max : size > max) {
       await reader.cancel().catch(() => undefined);
-      return undefined;
+      return cut ? Buffer.concat(chunks).subarray(0, max).toString("utf8") : undefined;
     }
   }
   return Buffer.concat(chunks).toString("utf8");
@@ -85,7 +71,7 @@ async function cappedText(response: Response, max: number): Promise<string | und
 /** A JSON-RPC answer's body: JSON, or the `data:` lines of an event stream, the one answering `id`. With `max`, a body
  *  past it is "over"; without, its first MAX_BYTES are read. */
 async function answerOf(response: Response, id: number, max?: number): Promise<Rpc | "over" | undefined> {
-  const text = max === undefined ? await boundedText(response) : await cappedText(response, max);
+  const text = await bodyText(response, max ?? MAX_BYTES, max === undefined);
   if (text === undefined) return "over";
   const messages = /event-stream/i.test(response.headers.get("content-type") ?? "")
     ? text.split("\n").filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trim())
@@ -123,7 +109,7 @@ export async function callTool(endpoint: string, dial: typeof fetch, deadline: A
     const retryAfterS = retryAfterOf(response);
     return { status: response.status, step, ...(retryAfterS === undefined ? {} : { retryAfterS }) };
   };
-  const opened = await post({ id: 1, method: "initialize", params: { protocolVersion: PROTOCOL, capabilities: {}, clientInfo: { name: "agentrun-serve", version: "1" } } });
+  const opened = await post({ id: 1, method: "initialize", params: { protocolVersion: PROTOCOL, capabilities: {}, clientInfo: { name: "agentrun-web", version: "1" } } });
   const failed = await refused(opened, "initialize");
   if (failed) return failed;
   session = opened.headers.get("mcp-session-id") ?? undefined;

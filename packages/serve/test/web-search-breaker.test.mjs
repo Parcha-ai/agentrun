@@ -13,7 +13,7 @@ import { test } from "node:test";
 import { bookedIn } from "../dist/paid-calls.js";
 import { TOOLS } from "../dist/tools.js";
 import { TOOL_PLANE_ENV } from "../dist/tool-plane.js";
-import { RATE_LIMITED } from "../dist/exa-keyless.js";
+import { RATE_LIMITED } from "../dist/web-run.js";
 import { runModels } from "../dist/model.js";
 import { callFailed, labelOf } from "../dist/timeline/index.js";
 import { outcomeOf } from "../dist/timeline/labels.js";

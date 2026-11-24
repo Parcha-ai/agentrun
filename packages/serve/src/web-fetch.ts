@@ -12,7 +12,7 @@
 // of another kind.
 // The key is the one the server hands the run's process on its decision descriptor (decisions.ts) when one of its
 // capabilities resolves to Parallel, read once and held in this module's memory: never in an environment, a child or a
-// file. Serve binds web's pieces to its own here: the guard is pi-browser's (web-fetch-direct.ts GUARD), a Parallel
+// file. Serve binds web's pieces to its own here: the guard is pi-browser's (web-run.ts GUARD), a Parallel
 // request is paid on the run's ledger (paid-calls.ts paidRequest), and what the model is not told goes to the server's
 // log as a log line. A run's pages (web's Pages) are kept by the environment its calls are given.
 import type { JsonValue } from "@earendil-works/chord/json";
@@ -22,11 +22,9 @@ import type { PublicFetchOptions } from "@parcha/pi-browser";
 import * as web from "@parcha/agentrun-web";
 import { clip, type Extract, type FetchProvider, firecrawlFetch, HTML_READ_CHARS, type KeylessFetch, MAX_CHARS_MIN, PAGE_CHARS, PAGE_READ_MAX_CHARS, type Page, type Pages, type Part, partProblem, TEXT_CAP, URL_MAX, type WebFetchOptions, webFetchText, type WebPage } from "@parcha/agentrun-web";
 import { FAUX_PARALLEL_ENV, fauxFetch, parallelKeyOf } from "./decisions.js";
-import { fetchOptions, GUARD, URL_PARAMETERS } from "./web-fetch-direct.js";
-import { FAUX_FIRECRAWL_ENV } from "./firecrawl-keyless.js";
-import { RATE_LIMITED } from "./keyless-mcp.js";
+import { FAUX_FIRECRAWL_ENV, fetchOptions, GUARD, RATE_LIMITED, URL_PARAMETERS } from "./web-run.js";
 import { FAUX_ENV } from "./model.js";
-import { PaidRefused, paidRequest } from "./paid-calls.js";
+import { paidRequest } from "./paid-calls.js";
 import { logLine } from "./print.js";
 import { forModel } from "./result.js";
 import { isUnavailable, planeOf, whyUnavailable } from "./tool-plane.js";
@@ -34,19 +32,8 @@ import { isUnavailable, planeOf, whyUnavailable } from "./tool-plane.js";
 export const WEB_FETCH_TOOL = "web_fetch";
 type GuardOptions = Omit<PublicFetchOptions, "maxBytes">;
 
-/** Parallel's extract on `apiKey` (web's parallelExtract), each request paid on the run's ledger (paid-calls.ts): held
- *  by the run's cap and booked as the call's cost at its endpoint's price. One the cap refuses is not sent. Every
- *  refusal its `post` throws is serve's PaidRefused: web's client refuses a request to an endpoint with no price itself,
- *  before it reaches paidRequest, and throws web's PayRefused for it, so that one is thrown again as PaidRefused, its
- *  words the same. A read answers a refusal's words either way. */
-export function parallelExtract(apiKey: string, send: typeof fetch = fetch): Extract {
-  const client = web.parallelExtract(apiKey, send, paidRequest);
-  const post: Extract["post"] = (url, body, signal) =>
-    client.post(url, body, signal).catch((error: unknown) => {
-      throw error instanceof web.PayRefused && !(error instanceof PaidRefused) ? new PaidRefused(error.message) : error;
-    });
-  return { live: client.live, read: client.read, post };
-}
+/** Parallel's extract on `apiKey` (web's parallelExtract), each request paid on the run's ledger (paid-calls.ts). */
+export const parallelExtract = (apiKey: string, send: typeof fetch = fetch): Extract => web.parallelExtract(apiKey, send, paidRequest);
 
 /** The server's log, where a web_fetch notes what the model is not told (browser-cost.ts' lines go there too). */
 const serverLog = (line: string): void => void process.stderr.write(`agentrun-serve: ${line}\n`);

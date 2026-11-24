@@ -14,8 +14,8 @@ import { bookedIn } from "../dist/paid-calls.js";
 import { parallelExtract, webFetch } from "../dist/web-fetch.js";
 import * as kernel from "@parcha/agentrun-kernel";
 import * as web from "@parcha/agentrun-web";
-import { PARALLEL_EXTRACT_USD, PARALLEL_SEARCH_URL, PARALLEL_SEARCH_USD, webSearch } from "@parcha/agentrun-web";
-import * as keyless from "../dist/exa-keyless.js";
+import { PARALLEL_EXTRACT_USD, PARALLEL_SEARCH_URL, PARALLEL_SEARCH_USD, parallelSearched } from "@parcha/agentrun-web";
+import * as keyless from "../dist/web-run.js";
 import { hostedSearch } from "../dist/hosted-search.js";
 import { runModels } from "../dist/model.js";
 import fakeParallel, { CANARY } from "./fixtures/faux-parallel.mjs";
@@ -24,6 +24,8 @@ import { network } from "./fixtures/fake-network.mjs";
 import { FAUX, follow, journalOf, paidBookings, paidCallsOf, runDir, scratch, serve, toolLedger, withEnv } from "./support.mjs";
 
 const searches = { ...web, ...(await import("../dist/web-search.js")) };
+/** Parallel's search as the model reads it: parallelSearched's answer, its limit left to the breaker. */
+const webSearch = async (args, parallel, signal) => (await parallelSearched(args, parallel, signal)).answer;
 /** Web's keyless Exa search in serve's words for its free limit (keyless.RATE_LIMITED), as serve's search asks it. */
 const exaSearch = (query, n, options = {}) => web.exaSearch(query, n, { words: { rateLimited: keyless.RATE_LIMITED }, ...options });
 

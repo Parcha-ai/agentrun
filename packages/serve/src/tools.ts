@@ -22,7 +22,7 @@ import { BACKGROUND_LOG_BYTES, BACKGROUND_MAX, BACKGROUND_PAGE_BYTES } from "./b
 import { isWorkspaceError, localWorkspace, type Workspace } from "./workspace/index.js";
 import type { ClaimBrowser } from "./workspace/resolve-computer.js";
 import { HTML_READ_CHARS, TEXT_CAP } from "@parcha/agentrun-web";
-import { fetchOptions } from "./web-fetch-direct.js";
+import { fetchOptions } from "./web-run.js";
 import { harnessIds, onAdapter } from "./harness-table.js";
 import { META_TOOLS } from "./meta-tool-names.js";
 import { localFolderOf } from "./workspace/local.js";

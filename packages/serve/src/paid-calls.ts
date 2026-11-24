@@ -3,7 +3,7 @@
 // before it is sent (refused unsent in the cap's words when the cap does not hold it) and settled after at what it
 // charged. A charge is the run's cost, a line of its own on its timeline and /usage's `tools` meter. Every request goes
 // through the run's one Parallel client's `post` (web-fetch.ts parallelExtract), which books it here at the fee web's
-// fees.ts prices it at. PaidRefused is web's PayRefused, so web's client reads a refusal as its own.
+// fees.ts prices it at. PaidRefused is web's, so web's client reads a refusal as its own.
 // Parallel's answers report what they used as SKU counts, never an amount, so each request is booked at Parallel's
 // published price, an estimate: its price on a 2xx; nothing on a 4xx other than a 408 (Parallel refused it before any
 // work); and its price on a 408, a 5xx or a request that failed or was stopped after it was sent, which Parallel may
@@ -18,14 +18,8 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import type { Context } from "@earendil-works/chord/context";
 import type { Refusal } from "@parcha/agentrun-kernel";
 import type { ToolExecutionApi, ToolRegistration } from "@earendil-works/pi-durable";
-import { type Fee, PayRefused } from "@parcha/agentrun-web";
+import { type Fee, PaidRefused } from "@parcha/agentrun-web";
 import { SPEND_CAP_REACHED } from "./cap.js";
-
-/** A paid request the run's cap refused, whose hold could not be kept, or that has no run's ledger to book it on:
- *  nothing was sent. Its message is the refusal, in the cap's words. */
-export class PaidRefused extends PayRefused {
-  override readonly name = "PaidRefused";
-}
 
 /** Where a paid request is booked: the call it is booked under, and the run's one ledger. */
 export type Ledger = {

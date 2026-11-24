@@ -15,7 +15,7 @@ import { network } from "./fixtures/fake-network.mjs";
 import { TOOLS } from "../dist/tools.js";
 import { follow, paidBookings, scratch, serve, toolLedger, withEnv } from "./support.mjs";
 
-const pages = { ...(await import("@parcha/agentrun-web")), ...(await import("../dist/web-fetch-direct.js")) };
+const pages = { ...(await import("@parcha/agentrun-web")), ...(await import("../dist/web-run.js")) };
 const web = { ...(await import("@parcha/agentrun-web")), ...(await import("../dist/web-fetch.js")) };
 
 const FAUX_WEB = new URL("./fixtures/faux-web.mjs", import.meta.url).pathname;

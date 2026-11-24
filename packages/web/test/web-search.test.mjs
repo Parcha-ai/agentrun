@@ -5,10 +5,13 @@
 // cap, and its runs, stay in serve's web-search test.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { PARALLEL_SEARCH_URL, parallelExtract, webSearch } from "../dist/index.js";
+import { PARALLEL_SEARCH_URL, parallelExtract, parallelSearched } from "../dist/index.js";
 import fakeParallel, { CANARY } from "./fixtures/faux-parallel.mjs";
 import { network } from "./fixtures/fake-network.mjs";
 import { webFetch, withEnv } from "./support.mjs";
+
+/** Parallel's search as the model reads it: parallelSearched's answer, its limit left to the breaker. */
+const webSearch = async (args, parallel, signal) => (await parallelSearched(args, parallel, signal)).answer;
 
 const MODE = "AGENTRUN_TEST_FAUX_PARALLEL_SEARCH";
 const EXTRACT_MODE = "AGENTRUN_TEST_FAUX_PARALLEL_EXTRACT";

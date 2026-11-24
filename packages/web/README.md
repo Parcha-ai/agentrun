@@ -27,7 +27,7 @@ const page = await web.fetch("https://example.org/", { offset: 0, maxChars: 20_0
   provider: the read fails closed. A guard failure shaped `{ failure: { code: "refused" } }` is a refusal: the page is
   not read, and the model is told why.
 - `keys.parallel` is Parallel's key. `pay(fee, send)` is the run's cap: it sends the request when the fee fits, or
-  throws a `PayRefused`. Without it, a request is unmetered.
+  throws a `PaidRefused`. Without it, a request is unmetered.
 - `words.rateLimited` is what a keyless provider's rate limit says to the model.
 - `native` is the model's own hosted search, as a function. `send` and `endpoints` replace a provider's fetch or address
   (a test's fakes). `now` is the breakers' clock. `bounds` sets a search's deadline. `log` receives what a fetch notes

@@ -2,7 +2,7 @@
 // the Fee every paid request carries, and Pay, the injected hook a request is sent through. Serve passes its ledger's
 // paidRequest as Pay (the run's cap admits the request at its price before it is sent, and books it after); with none,
 // a request is sent unmetered and its fee is only recorded. A request the cap refuses is never sent: Pay throws
-// PayRefused (serve's PaidRefused is one), whose message is the refusal.
+// PaidRefused, whose message is the refusal.
 
 /** The modes Parallel's Search API is priced in here; a request in any other mode (or naming none) has no price. */
 export type ParallelSearchMode = "turbo" | "fast" | "basic" | "advanced";
@@ -46,11 +46,11 @@ export function parallelFeeOf(url: string, body: unknown): Fee | undefined {
 
 /** A paid request that was not sent: the run's cap refused it, or it has no price here. Its message says why, in the
  *  cap's words. */
-export class PayRefused extends Error {
-  override readonly name: string = "PayRefused";
+export class PaidRefused extends Error {
+  override readonly name = "PaidRefused";
 }
 
-/** How a paid request is sent: `send` once the run's cap admits `fee`, or a throw of PayRefused when it does not. */
+/** How a paid request is sent: `send` once the run's cap admits `fee`, or a throw of PaidRefused when it does not. */
 export type Pay = (fee: Fee, send: () => Promise<Response>) => Promise<Response>;
 /** No cap: the request is sent as it is. */
 export const unmetered: Pay = (_fee, send) => send();

@@ -3,12 +3,12 @@
 // https://docs.parallel.ai/api-reference/search/search) in its fast mode, the one Parallel recommends for an agent's
 // tool calls (about 700 ms, $0.001 a search). One client a run (Extract): a 401 or 403 to either web tool stops both
 // for the rest of the run. No request is retried, and each stops at 60 s. Each is a paid request, sent through the
-// injected Pay (fees.ts) at Parallel's price: one the run's cap refuses answers its words (PayRefused).
+// injected Pay (fees.ts) at Parallel's price: one the run's cap refuses answers its words (PaidRefused).
 // Parallel's extract has no offset (its full content always starts at the page's start), so it is asked once for the
 // most of a page web_fetch reads (PAGE_READ_MAX_CHARS) and one character more, so a page it cut there shows as going
 // on; the page's whole length is known only when Parallel gave less than it was asked for (a cut text can be longer, in
 // UTF-16 units, where Parallel counts code points).
-import { type Pay, PayRefused, parallelFeeOf, unmetered } from "../fees.js";
+import { type Pay, PaidRefused, parallelFeeOf, unmetered } from "../fees.js";
 import { clip, linksWithin, PAGE_READ_MAX_CHARS, type Read, TITLE_CAP, textOf, URL_MAX } from "../page.js";
 import { type Hit, type Limit, type Search, type Searched, SNIPPET_MAX, searchArgs, snippetOf } from "../search.js";
 import { linksOf } from "../text-urls.js";
@@ -30,7 +30,7 @@ export type Extract = { live(): boolean; read(url: string, signal?: AbortSignal)
 export function parallelExtract(apiKey: string, send: typeof fetch = fetch, pay: Pay = unmetered): Extract {
   let refused = false;
   // Each request is a paid one, sent through `pay` (fees.ts; serve's paid-calls.ts holds it to the run's cap and books it
-  // as the call's cost at its endpoint's price). One the cap refuses is not sent: it throws its refusal (PayRefused).
+  // as the call's cost at its endpoint's price). One the cap refuses is not sent: it throws its refusal (PaidRefused).
   const post: Extract["post"] = async (url, body, signal) => {
     const sent = async () => {
       const response = await send(url, {
@@ -43,7 +43,7 @@ export function parallelExtract(apiKey: string, send: typeof fetch = fetch, pay:
       return response;
     };
     const fee = parallelFeeOf(url, body);
-    if (!fee) throw new PayRefused(`Parallel's ${URL.parse(url)?.pathname ?? url} was not sent: it has no price here`);
+    if (!fee) throw new PaidRefused(`Parallel's ${URL.parse(url)?.pathname ?? url} was not sent: it has no price here`);
     return pay(fee, sent);
   };
   return {
@@ -64,7 +64,7 @@ export function parallelExtract(apiKey: string, send: typeof fetch = fetch, pay:
         const text = row.full_content as string;
         return { ok: true, url: clip(row.url as string, URL_MAX), status: 200, title: clip(typeof row.title === "string" ? row.title : "", TITLE_CAP), ...textOf(text, text.length < asked), ...linksWithin(linksOf(text)) };
       } catch (error) {
-        if (error instanceof PayRefused) return error.message;
+        if (error instanceof PaidRefused) return error.message;
         const name = (error as Error)?.name;
         return name === "TimeoutError" ? "timed out" : name === "AbortError" ? "was stopped" : `failed: ${String((error as Error)?.message ?? error).slice(0, 200)}`;
       }
@@ -80,12 +80,8 @@ const parallelLimit = (response: Response): Limit | undefined => {
   return response.status === 429 ? { kind: "rate", ...(retryAfter ? { retryAfter } : {}) } : undefined;
 };
 
-/** `{query, n?}` searched through `parallel` (null: the run holds no key), as a Search. */
-export async function webSearch(args: Record<string, unknown>, parallel: Extract | null, signal?: AbortSignal): Promise<Search> {
-  return (await parallelSearched(args, parallel, signal)).answer;
-}
-
-/** webSearch, and the limit Parallel answered for the run's key, if any. */
+/** `{query, n?}` searched through `parallel` (null: the run holds no key), and the limit Parallel answered for the run's
+ *  key, if any. */
 export async function parallelSearched(args: Record<string, unknown>, parallel: Extract | null, signal?: AbortSignal): Promise<Searched> {
   const answer = (search: Search): Searched => ({ answer: search });
   const { query, n } = searchArgs(args);
@@ -107,7 +103,7 @@ export async function parallelSearched(args: Record<string, unknown>, parallel: 
     });
     return answer({ provider: "parallel", query, results: hits.slice(0, n) });
   } catch (error) {
-    if (error instanceof PayRefused) return answer({ error: error.message });
+    if (error instanceof PaidRefused) return answer({ error: error.message });
     return answer({ error: (error as Error)?.name === "TimeoutError" ? "Parallel's search did not answer within 60 s" : `Parallel's search failed: ${(error as Error)?.message ?? String(error)}` });
   }
 }

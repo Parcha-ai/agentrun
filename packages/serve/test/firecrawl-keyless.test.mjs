@@ -10,12 +10,10 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { explainCapability, planeFor, PROVIDERS, TOOL_PLANE_ENV } from "../dist/tool-plane.js";
-import { FAUX_FIRECRAWL_ENV } from "../dist/firecrawl-keyless.js";
+import { FAUX_FIRECRAWL_ENV, RATE_LIMITED } from "../dist/web-run.js";
 import { firecrawlFetch, firecrawlScrape, firecrawlSearch } from "@parcha/agentrun-web";
 import { fetchFor, firecrawlOf, webFetch, webFetchTool } from "../dist/web-fetch.js";
 import { webSearchTool } from "../dist/web-search.js";
-import { RATE_LIMITED } from "../dist/keyless-mcp.js";
-import { RATE_LIMITED as EXA_RATE_LIMITED } from "../dist/exa-keyless.js";
 import { fauxEnvOf } from "../dist/server.js";
 import { withoutFaux } from "../dist/model.js";
 import { firecrawlServer, FIRECRAWL_SIGNUP, PAGE, refusal, answers } from "./fixtures/fake-firecrawl.mjs";
@@ -149,7 +147,6 @@ test("an HTTP 429 from Firecrawl is a rate limit with its Retry-After; Firecrawl
   const quota = await firecrawlServer(t, () => refusal("KEYLESS_QUOTA_EXHAUSTED"));
   const answer = await searchRun({ ...env, [FAUX_FIRECRAWL_ENV]: quota.url })("widgets");
   assert.doesNotMatch(answer.output[0].text, /signup|Sign up|firecrawl\.dev/i, answer.output[0].text);
-  assert.equal(RATE_LIMITED, EXA_RATE_LIMITED, "Firecrawl's rate limit reads in keyless Exa's words");
 });
 
 test("Firecrawl out of quota for web_fetch: the page comes from the guarded direct fetch, and the run's later fetches go straight there", async (t) => {
