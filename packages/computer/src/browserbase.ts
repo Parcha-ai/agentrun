@@ -293,6 +293,23 @@ export function throughGateway(connectUrl: string, connectBase: string | undefin
 	}
 }
 
+/**
+ * The gateway that fronts the sessions' sockets (BROWSERBASE_CONNECT_BASE_URL), held to wss: or https: as httpsBase holds
+ * an API URL, since every session's signed CDP URL rides it; throws in words on another, loopback included. One that is
+ * no URL is not echoed: it may carry the gateway's own token.
+ */
+function connectBaseOf(url: string | undefined): string | undefined {
+	if (url === undefined) return undefined;
+	let parsed: URL;
+	try {
+		parsed = new URL(url);
+	} catch {
+		throw new Error("BROWSERBASE_CONNECT_BASE_URL is not a URL");
+	}
+	if (parsed.protocol !== "wss:" && parsed.protocol !== "https:") throw new Error(`BROWSERBASE_CONNECT_BASE_URL must be wss or https, so a session's signed URL never crosses in the clear: ${parsed.protocol}`);
+	return url;
+}
+
 const refOf = (s: BrowserbaseSession): ComputerRef => ({ id: s.id, name: s.id });
 const deadlineOf = (s: BrowserbaseSession) => {
 	const at = typeof s.expiresAt === "string" ? new Date(s.expiresAt) : undefined;
@@ -322,7 +339,7 @@ export class BrowserbaseProvider implements ComputerProvider, BrowserComputerPro
 	constructor({ apiKey, projectId, apiUrl, env = {}, fetch: fetcher, confirm = DEFAULT_CONFIRM, sleep = defaultSleep }: BrowserbaseProviderOptions) {
 		if (typeof apiKey !== "string" || apiKey === "") throw new Error("set options.apiKey to a Browserbase API key: the provider reads no environment");
 		const gateway = env.BROWSERBASE_BASE_URL?.trim() || undefined;
-		this.#connectBase = env.BROWSERBASE_CONNECT_BASE_URL?.trim() || undefined;
+		this.#connectBase = connectBaseOf(env.BROWSERBASE_CONNECT_BASE_URL?.trim() || undefined);
 		const behindGateway = Boolean(gateway || this.#connectBase);
 		this.#projectId = behindGateway ? undefined : projectId || undefined;
 		const base = apiUrl || gateway;

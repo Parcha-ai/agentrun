@@ -1,6 +1,6 @@
 // The daemon answers: hello, ping, and an error in words for a method it does not have; the computer is the kind it
-// says it is; what the provider declares of itself, its capabilities() and each hello agree, at this protocol's
-// major (helloProblem); and no error the provider answers holds a key.
+// says it is; what the provider declares of itself, its capabilities() and each hello agree, at a
+// protocol the suite takes (helloProblem); and no error the provider answers holds a key.
 import { GROUPS, helloProblem } from "../../protocol.js";
 import { kindServed } from "../../kinds.js";
 import { kindRefusals } from "../../provider.js";

@@ -35,10 +35,12 @@ const SUBPROTOCOL_PREFIX = "agentrun.computer.";
 export const ATTACH_SUBPROTOCOL = `${SUBPROTOCOL_PREFIX}${PROTOCOL_VERSION}`;
 
 /**
- * The subprotocol of those a driver asked for that serve answers with: the first naming a protocol version that works
- * with this one (helloProblem: this major, any minor), or undefined, and serve refuses the upgrade.
+ * The subprotocol of those a driver asked for that serve answers with: this server's own when it is asked for, as the
+ * answer tells the driver what the server speaks; else the first naming a protocol version that works with this one
+ * (helloProblem: 0.2 or a later 0.x); else undefined, and serve refuses the upgrade.
  */
 export function attachSubprotocolOf(asked: readonly string[]): string | undefined {
+	if (asked.includes(ATTACH_SUBPROTOCOL)) return ATTACH_SUBPROTOCOL;
 	return asked.find((one) => one.startsWith(SUBPROTOCOL_PREFIX) && helloProblem(one.slice(SUBPROTOCOL_PREFIX.length), "server") === undefined);
 }
 /** Each side pings this often (WebSocket ping frames, not JSON-RPC), so a NAT keeps the path open. */
@@ -71,7 +73,7 @@ export const ATTACH_CLOSE = {
 	idle: 4408,
 	/** The same computer dialed again; the older socket is closed. */
 	replaced: 4409,
-	/** The driver speaks another protocol major, or its hello lacks a group its kind needs (kindServed): update it. */
+	/** The driver speaks a protocol the server does not take (helloProblem), or its hello lacks a group its kind needs (kindServed): update it. */
 	protocol: 4426,
 } as const;
 
@@ -245,8 +247,11 @@ export function mintedComputer(machine: string, { kind, os, arch }: Pick<Machine
 	return { id: machine, name: machine, hello: { protocol: PROTOCOL_VERSION, version: "", os, kind, arch, groups: [] }, labels: {}, minted: true };
 }
 
-/** Whether protocol version a ("0.3") comes after b ("0.2"), part by part as numbers. */
-function laterProtocol(a: string, b: string): boolean {
+/**
+ * Whether protocol version a ("0.3") comes after b ("0.2"), part by part as numbers: of a refused driver, which side to
+ * update (serve's pairing says the same).
+ */
+export function laterProtocol(a: string, b: string): boolean {
 	const [x, y] = [a, b].map((version) => version.split(".").map((part) => Number.parseInt(part, 10) || 0));
 	for (let i = 0; i < Math.max(x.length, y.length); i++) if ((x[i] ?? 0) !== (y[i] ?? 0)) return (x[i] ?? 0) > (y[i] ?? 0);
 	return false;
@@ -254,8 +259,7 @@ function laterProtocol(a: string, b: string): boolean {
 
 /**
  * Why a hello may not stand for a paired computer, or undefined. The protocol version must work with the server's
- * (helloProblem: its major, any minor); the
- * driver's own version may be any: a person's installed app updates on its own schedule, and the server cannot
+ * (helloProblem: 0.2 or a later 0.x); the driver's own version may be any: a person's installed app updates on its own schedule, and the server cannot
  * replace it the way a provider replaces a copied daemon.
  */
 export function helloMismatch(paired: PairedComputer, hello: HelloResult): { code: number; message: string } | undefined {

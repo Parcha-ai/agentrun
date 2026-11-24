@@ -1,7 +1,7 @@
 // The drift checks every provider shares: the daemon's hello against what the provider declares, and the report of
 // computerd probe from inside a computer. Pure: no vendor call. Each mismatch is one sentence; none is an empty list.
 // Docker's own read-back (docker info, docker inspect) is docker/inspect.ts's.
-import { type ComputerKind, type Group, type HelloResult, helloProblem, NETWORK_FENCES, PROTOCOL_VERSION } from "./protocol.js";
+import { type ComputerKind, type Group, type HelloResult, helloProblem, NETWORK_FENCES } from "./protocol.js";
 import type { NetworkPolicy, NetworkSpec } from "./provider.js";
 
 /** Where the daemon is mounted in each computer, read-only. */
@@ -99,12 +99,10 @@ export function probeNotes(probe: ProbeReport, network: NetworkSpec | NetworkPol
 /** Every way hello differs from what the provider expects. */
 export function helloDrift(hello: HelloResult | null | undefined, expected: HelloExpected): string[] {
 	const found: string[] = [];
-	// spec/computer/README.md, "Versioning": another protocol major is another wire (helloProblem), and the daemon's own
-	// version, which pins the build the provider ships, must match exactly. Their words here are the drift list's own.
-	if (helloProblem(hello?.protocol, "provider")) {
-		const major = PROTOCOL_VERSION.split(".")[0];
-		found.push(`hello: the daemon speaks protocol ${text(hello?.protocol)}, expected protocol ${major}.x (major ${major})`);
-	}
+	// spec/computer/README.md, "Versioning": a protocol helloProblem refuses is another wire, in its words, and the
+	// daemon's own version, which pins the build the provider ships, must match exactly.
+	const protocol = helloProblem(hello?.protocol, "provider");
+	if (protocol) found.push(`hello: the daemon ${protocol}`);
 	if (hello?.version !== expected.version) found.push(`hello: the daemon reports version ${text(hello?.version)}, expected ${expected.version}`);
 	if (hello?.os !== "linux") found.push(`hello: the daemon reports os ${text(hello?.os)}, expected linux`);
 	if (expected.arch !== undefined && hello?.arch !== expected.arch) {

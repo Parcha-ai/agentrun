@@ -125,9 +125,9 @@ generated file is right, and the document is the bug.
 ## Versioning
 
 `hello` carries `protocol`, this protocol's version, apart from the daemon's own `version`. A protocol version is
-`<major>.<minor>`. Two sides work together when the majors match, whatever the minors: a minor step only adds (a method,
-an optional field, a group), and `hello`'s groups and features say what each side has. Another major, a version of
-another shape, or none is refused. The daemon's own version is exact: a provider hands out a computer only when its
+`<major>.<minor>`. Two sides work together when the majors match and both are 0.2 or later: from 0.2 on, a minor step
+only adds (a method, an optional field, a group), and `hello`'s groups and features say what each side has. 0.1 is
+refused, because 0.2 broke it (below). Another major, a version of another shape, or none is refused. The daemon's own version is exact: a provider hands out a computer only when its
 `hello` names the provider's daemon version, character for character. AgentRun puts the daemon in every computer, so a
 daemon of any other version is one it didn't put there. An attached driver is the one exception: its own version may be
 any ([`attach.md`](attach.md#versions)).
@@ -142,7 +142,7 @@ method are gone, replaced by `ui`.
 included, and reports Core and Full per kind ([`kinds.md`](kinds.md#levels-core-and-full)). Among its contract cases:
 
 - **`health.declared`:** a provider's descriptor, its `capabilities()` and each computer's `hello` agree, and `hello`
-  carries a protocol version of this one's major ([Versioning](#versioning)).
+  carries a protocol version this one takes ([Versioning](#versioning)).
 - **`health.no-key-in-errors`:** a provider built with planted keys answers every refusal path with none of them in its
   words.
 - **`screen.watch`:** a computer with a screen gives its live view.
