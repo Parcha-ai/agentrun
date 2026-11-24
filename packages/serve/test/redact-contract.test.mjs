@@ -568,10 +568,6 @@ for (const c of CASES) {
   });
 }
 
-// The adversarial texts, read by the shape scanners in work linear in their length: the characters the scanners visit,
-// counted by match.ts, are at most a fixed multiple of the text's length, through both shape sets. The multiple, 128,
-// covers each of the shapes' 30-odd prefixes sought once over the text and once over its cut, and each scanner's own
-// reads; a scanner that read a run again at each place in it would pass it many times over at this size.
 test("valueLeft: a held value only a view finds, wholly inside a cut in place, is not left; split by a cut's edge, it is", async () => {
   // New with valueLeft (learn/secrets.ts): imported where it is read, so the cases above still run on a build without it.
   const { valueLeft } = await import("../dist/learn/secrets.js");
@@ -581,26 +577,101 @@ test("valueLeft: a held value only a view finds, wholly inside a cut in place, i
   assert.equal(valueLeft(`cb?token=${P24.join("")} ok`, [P24.join("")]), false);
 });
 
-const ADVERSARIAL = [
-  fill("eyJ"), fill("eyJ-"), `-----BEGIN ${fill("A", SIZE - 11)}`, `-----BEGIN ${fill("PRIVATE KEY ", SIZE - 11)}`, `://a:${fill("a", SIZE - 5)}`, fill("://a:"),
-  fill("sk-"), fill("github_pat_"), fill("ghp_"), fill("xoxb-"), fill("whsec_"), fill("Bearer "), `Bearer ${fill("a", SIZE - 7)}`, fill("?token="),
-  `?token=${fill("a", SIZE - 7)}`, fill(`${"a".repeat(1021)}eyJ`), fill("eyJaaaaaaaa."), `account ${fill("1 ", SIZE - 8)}`, fill("routing number "), fill("sort code "),
-  `IBAN GB00${fill("A ", SIZE - 9)}`, fill("AKIA"), fill("AIza"), fill("-----BEGIN "), fill("a-sk-"), fill("Bearer a-Bearer "),
-];
+/** A held value of MIN_SECRET (8) characters in no secret's shape, for a text that holds it every few characters. */
+const DENSE = ["q8Vx", "R2mT"].join("");
+const BACKSLASH = String.fromCharCode(92);
 
-test("adversarial texts: the characters the shape scanners visit are at most a fixed multiple of the text's length", async (t) => {
+/** The adversarial texts of `size` characters, each with the held values it is read with: the shapes' prefixes and
+ *  runs; each view's decoders over a text of nothing but what they decode (percent-encoded bytes, ASCII and not, "+",
+ *  JSON's escapes at one level and two, a second level that starts and fails, non-ASCII stretches for NFKC, characters
+ *  that render as nothing); and a held value found every 9 characters, each find cut in place. */
+const adversarial = (size) => {
+  const f = (unit) => fill(unit, size);
+  const shapes = [
+    f("eyJ"), f("eyJ-"), `-----BEGIN ${fill("A", size - 11)}`, `-----BEGIN ${fill("PRIVATE KEY ", size - 11)}`, `://a:${fill("a", size - 5)}`, f("://a:"),
+    f("sk-"), f("github_pat_"), f("ghp_"), f("xoxb-"), f("whsec_"), f("Bearer "), `Bearer ${fill("a", size - 7)}`, f("?token="),
+    `?token=${fill("a", size - 7)}`, f(`${"a".repeat(1021)}eyJ`), f("eyJaaaaaaaa."), `account ${fill("1 ", size - 8)}`, f("routing number "), f("sort code "),
+    `IBAN GB00${fill("A ", size - 9)}`, f("AKIA"), f("AIza"), f("-----BEGIN "), f("a-sk-"), f("Bearer a-Bearer "),
+  ];
+  const B = BACKSLASH;
+  const views = [
+    f("%41"), f("%e9"), f("a+"), f(`${B}n`), f(`${B}${B}n`), f(`${B}u0041`), f(`${B}${B}u0041`), f(`${B}${B}u004`),
+    f(String.fromCharCode(0xe9)), f(`a${String.fromCharCode(0x301)}`), f(ZWSP),
+  ];
+  return [...[...shapes, ...views].map((text) => ({ text, values: [CUT_KEY] })), { text: f(`${DENSE} `), values: [DENSE] }];
+};
+
+/** Each entry point that reads a text whole or in pieces, as the work count drives it: redactSecrets and redactLearned
+ *  with no byte bound, an answer, a call's result and a row's head. */
+const READERS = {
+  redactSecrets: (text, values) => redactSecrets(text, values, Buffer.byteLength(text)),
+  redactLearned: (text, values) => redactLearned(text, values, Buffer.byteLength(text)),
+  redactedAnswer: ENTRIES.redactedAnswer,
+  redactedCall: ENTRIES.redactedCall,
+  redacted: ENTRIES.redacted,
+};
+
+// The work count reads every stage: a text no shape's prefix is in, read with forms and needles only, still counts.
+test("the work count reads each stage: a form's search, a view and its decoders, the whole-text check", async () => {
+  const { cutSpans, holds, scanned } = await import("../dist/redact/match.js");
+  const none = { forms: [], hexes: [], folds: [], plain: [] };
+  const count = (read) => {
+    scanned.chars = 0;
+    read();
+    return scanned.chars;
+  };
+  const text = fill("abcdefg ", 64 * 1024);
+  const escaped = fill(`abc${BACKSLASH}ndefg `, 64 * 1024);
+  const problems = [];
+  // A form searched for over the text it is not in passes the whole text.
+  const forms = count(() => cutSpans(text, { ...none, forms: [DENSE] }, []));
+  if (forms < text.length) problems.push(`a form's search: ${forms} for ${text.length}`);
+  // The whole-text check builds the squeezed view (every character read) and searches it.
+  const check = count(() => holds(text, { ...none, plain: [DENSE] }));
+  if (check < 2 * text.length * (7 / 8)) problems.push(`the whole-text check: ${check} for ${text.length}`);
+  // A text with JSON's escapes is read in the squeezed view and the JSON view: two views built, each searched.
+  const json = count(() => holds(escaped, { ...none, plain: [DENSE] }, { cuts: [[0, 3]] }));
+  if (json < 3 * escaped.length) problems.push(`the JSON view: ${json} for ${escaped.length}`);
+  assert.deepEqual(problems, []);
+});
+
+// The whole pipeline reads a text in work linear in its length: every character a stage visits, counted by match.ts
+// (the shapes' prefixes and runs, each form, hex and folded search, each view built, its decoders and its cover, each
+// needle searched in it, the cut) and by key-refusal.ts (each piece's end found, each peek, the pass's join), is at most
+// WORK per character of the text, at 128 KiB and at 512 KiB, through each reader, for one held value.
+//
+// WORK, from the code's structure, per character of the text, one held value (at most 7 forms and 7 plain needles: as
+// written, and its base64 at three alignments in two alphabets; one hex; at most one folded):
+// - the shapes, sought over the text and over its cut, and each run read: 128, the shapes' own bound before;
+// - planCut's finds: the text lowered (1), each form and the hex searched (2 each, a find and the text before it: 16),
+//   the folded search (4), the finds merged (1): about 21;
+// - one whole-text check: four views at most, each built in 9 reads (its special characters found, its blanks, its
+//   non-ASCII stretches squeezed twice, its cover) and the JSON view in 23 (two levels of escapes read per character
+//   decoded), then each searched for 7 plain needles, the hex and the fold, lowered and flattened (21 each): about 134;
+//   planCut runs two (the text with its cuts, then the cut text, at most 10/8 as long): about 302;
+// - so planCut is about 452; an answer adds its pieces' ends and joins (6), heldIn's check of what it returns (10/8 of a
+//   check: 168), of the pieces as they came (134), and its shape pass (64): about 824.
+// 1024 is that, rounded up to a power of two. A stage that read again from the start at each find passes the text once
+// per find: a held value found every 9 characters is found 14,563 times in 128 KiB.
+const WORK = 1024;
+
+test("adversarial texts: the characters the whole pipeline visits are at most WORK per character, at 128 KiB and 512 KiB", { timeout: 900_000 }, async (t) => {
   const { scanned } = await import("../dist/redact/match.js");
   const over = [];
-  let most = 0;
-  for (const text of ADVERSARIAL) {
-    for (const redact of [redactSecrets, redactLearned]) {
-      scanned.chars = 0;
-      redact(text, [CUT_KEY], Buffer.byteLength(text));
-      most = Math.max(most, scanned.chars / text.length);
-      if (scanned.chars > 128 * text.length) over.push(`${redact.name} ${short(text)}: ${scanned.chars} for ${text.length}`);
+  for (const size of [128 * 1024, 512 * 1024]) {
+    let most = 0;
+    let where = "";
+    for (const { text, values } of adversarial(size)) {
+      for (const [name, read] of Object.entries(READERS)) {
+        scanned.chars = 0;
+        read(text, values);
+        const per = scanned.chars / text.length;
+        if (per > most) [most, where] = [per, `${name} ${short(text)}`];
+        if (scanned.chars > WORK * text.length) over.push(`${size}: ${name} ${short(text)}: ${scanned.chars} for ${text.length}`);
+      }
     }
+    t.diagnostic(`${size / 1024} KiB: the most characters visited per character of a text: ${most.toFixed(1)}, ${where}`);
   }
-  t.diagnostic(`the most characters visited per character of a text: ${most.toFixed(1)}`);
   assert.deepEqual(over, []);
 });
 
