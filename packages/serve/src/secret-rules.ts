@@ -298,7 +298,9 @@ function quotesOf(source: string): number[] {
   return out;
 }
 
-/** `text`'s views: the raw text, then each JSON decoding of it up to VIEW_DEPTH times, while a decoding changes it. */
+/** `text`'s views: the raw text, then each JSON decoding of it up to VIEW_DEPTH times, while a decoding changes it. At a
+ *  level where a Windows path kept an escape as written, a second view of that level, every escape blanked, follows
+ *  it (the beside view below). */
 export function viewsOf(text: string): View[] {
   const views: View[] = [];
   let source = text;

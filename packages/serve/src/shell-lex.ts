@@ -66,7 +66,7 @@ export type Lexed = { readonly tokens: readonly Token[]; readonly end: number; r
 
 /** Characters read by lex and its closer searches, over every call: the counted guard's measure (shell-lex.test.mjs);
  *  the most words secret-rules' commandWords held at once, handed out and not yet let go; and the words its
- *  subcommandAt looked at between a path's words (secret-scrub.test.mjs). Tests' measures: nothing reads them to decide
+ *  subcommandAt looked at to find a path's words (secret-scrub.test.mjs). Tests' measures: nothing reads them to decide
  *  (each Lexed carries its own `reads`). */
 export const lexCount = { read: 0, held: 0, passed: 0 };
 
