@@ -2512,8 +2512,10 @@ its authorization server refused: sign in again), null for `auth.type` none. No 
 credential; a server's error text is cut of the values sent before it is shown. `POST .../{name}/refresh` lists the
 tools again with the saved URL and credential, keeps them, and answers `{added, removed, changed, server}`: `changed`
 names a tool whose title, description, schemas or annotations differ. `DELETE .../{name}` forgets the server and its
-credential. Capabilities' `features.mcp_client` says `transports: ["streamable-http"]`, the `auth` types and `at_rest:
-"sealed"`.
+credential. Capabilities' `features.mcp_client` says `transports: ["streamable-http"]`, the `auth` types, `at_rest:
+"sealed"`, and `composio_per_run: true`: a per-run Composio server takes each run's own Composio account, named in the
+run's `mcp_auth`. A backend in front of an API-only server reads it there, since that server does not serve the API
+document.
 
 ### A credential handed with each run
 

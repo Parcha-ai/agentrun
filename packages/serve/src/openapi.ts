@@ -4473,8 +4473,8 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       "x-agentrun-serve": "harnesskeys/1",
     },
     mcp_client: {
-      type: "object", additionalProperties: false, required: ["transports", "auth", "at_rest", "harnesses"],
-      properties: { transports: { type: "array", items: { const: "streamable-http" } }, auth: { type: "array", items: { enum: [...MCP_AUTH_TYPES] } }, at_rest: { const: "sealed" }, harnesses: { type: "array", items: { type: "string" }, description: "The harnesses whose agents call a saved server's tools, each granted as mcp:<server>/<tool> in definition.tools."} },
+      type: "object", additionalProperties: false, required: ["transports", "auth", "at_rest", "harnesses", "composio_per_run"],
+      properties: { transports: { type: "array", items: { const: "streamable-http" } }, auth: { type: "array", items: { enum: [...MCP_AUTH_TYPES] } }, at_rest: { const: "sealed" }, harnesses: { type: "array", items: { type: "string" }, description: "The harnesses whose agents call a saved server's tools, each granted as mcp:<server>/<tool> in definition.tools."}, composio_per_run: { type: "boolean", description: "Whether a per-run Composio server (saved through the Composio preset with `user_id` \"per_run\") takes each run's own Composio account, named in the run's mcp_auth as a ComposioRunBinding. A caller learns it here rather than from the API document.", "x-agentrun-serve": "composioperrun/1" } },
       description: "/settings/mcp-servers: remote MCP servers over Streamable HTTP, previewed and saved with the auth types listed; a credential kept `sealed` under the server's seal key, which always exists.",
       "x-agentrun-serve": "mcpservers/1",
     },
@@ -4672,6 +4672,8 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
   // generated for it before (RunCreateMcpAuthValue and the rest).
   schemas.ComposioRunBinding = structuredClone(COMPOSIO_RUN_BINDING);
   const fields: string[] = [];
+  // composioperrun/1 again: capabilities' mcp_client.composio_per_run says this server takes that binding (Features).
+  fields.push("Features.mcp_client.composio_per_run");
   for (const [where, added] of Object.entries(FIELD_EXTENSIONS)) {
     const [name, ...down] = where.split("/");
     let object = schemas[name!] as Json & { properties: Record<string, Json> };

@@ -627,6 +627,7 @@ export interface components {
       auth: ("none" | "bearer" | "headers" | "oauth" | "github_app" | "per_run")[];
       at_rest: "sealed";
       harnesses: string[];
+      composio_per_run: boolean;
     };
     tool_permissions?: boolean;
     webhooks?: {

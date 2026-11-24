@@ -1148,8 +1148,10 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
       harness_keys: { routes: true, at_rest: "sealed", harnesses: planRecipesOf(env).map((recipe) => recipe.id), kept: [] as string[] },
       /** /settings/mcp-servers: remote MCP servers previewed and saved, each credential sealed under the server's seal key,
        *  which always exists (seal-key.ts), so MCP credentials are always kept sealed. Every harness of the table runs a
-       *  grant (runnable.ts takes one on any), a module's among them. */
-      mcp_client: { transports: ["streamable-http"], auth: [...MCP_AUTH_TYPES], at_rest: "sealed", harnesses: [...harnessIds(env)] },
+       *  grant (runnable.ts takes one on any), a module's among them. `composio_per_run`: a per-run Composio server takes
+       *  each run's own Composio account (mcp_auth's ComposioRunBinding, composioperrun/1), said here so a backend in
+       *  front learns it from this answer, which an API-only server serves, not from the API document, which it refuses. */
+      mcp_client: { transports: ["streamable-http"], auth: [...MCP_AUTH_TYPES], at_rest: "sealed", harnesses: [...harnessIds(env)], composio_per_run: true },
       /** This server's learning switch (`--learning`): on, a run learns when its agent says `learning: true`; off, none does. */
       learning,
       /** /settings/webhook: one URL POSTed, signed by the Standard Webhooks spec, when a run needs its person and when it

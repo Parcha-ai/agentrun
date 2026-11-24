@@ -8323,6 +8323,7 @@ class FeaturesMcpClient(TypedDict):
     auth: list[Literal["none", "bearer", "headers", "oauth", "github_app", "per_run"]]
     at_rest: Literal["sealed"]
     harnesses: list[str]
+    composio_per_run: bool
 
 
 class FeaturesWebhooks(TypedDict):
