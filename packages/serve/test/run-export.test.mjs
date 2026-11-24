@@ -7,10 +7,11 @@ import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
-import { EXPORT_CAPS, ExportFailed, exportBundle, restoreIdsOf, SHARE_FORMAT, SHARE_RUN_FIELDS } from "../dist/run-export.js";
+import { EXPORT_CAPS, ExportFailed, exportBundle, restoreIdsOf, runExport, SHARE_FORMAT, SHARE_RUN_FIELDS } from "../dist/run-export.js";
 import { ApiError } from "../dist/errors.js";
 import { SCRUB_RULES, scrub } from "../dist/secret-cut.js";
 import { stable } from "../dist/validate.js";
+import { unixHome } from "./scrub-positives.mjs";
 
 const GOLDEN = fileURLToPath(new URL("./fixtures/run-export/golden.json", import.meta.url));
 const hex = (seed, n) => createHash("sha256").update(`run-export test ${seed}`).digest("hex").repeat(4).slice(0, n);
@@ -24,7 +25,7 @@ const planted = (salt = "") => ({
   pg: `Pw${hex(`pg${salt}`, 18)}`, // label (PGPASSWORD=)
   user: `qa${hex(`user${salt}`, 6)}`, // personal (a home path's user)
   email: `qa.${hex(`email${salt}`, 8)}@mailbox-synthetic.zz`, // personal
-  ip: salt ? "10.20.30.42" : "10.20.30.41", // personal (a private address)
+  ip: salt ? "10.20.30.42" : "10.20.30.41", // key-gate: denylist a private literal the scrubber cuts (personal)
   envValue: `envdump${hex(`env${salt}`, 12)}`, // in a dump
 });
 const PLANTED = planted();
@@ -37,7 +38,7 @@ function viewOf(p = PLANTED) {
     title: `Connect with PGPASSWORD=${p.pg} psql -h db`, input: { content: "the first message" }, file_ids: ["file_1"],
     place: { mode: "runner" }, claim: null, effort: "medium", created_at: "2026-11-23T10:00:00.000Z", updated_at: "2026-11-23T10:05:00.000Z",
     ended_at: "2026-11-23T10:05:00.000Z",
-    result: { output: null, final_answer: `Done. Mail ${p.email} about /home/${p.user}/work; key ${p.sk}.` },
+    result: { output: null, final_answer: `Done. Mail ${p.email} about ${unixHome(p.user)}/work; key ${p.sk}.` },
     error: null, review: null, pending: null, cost: { usd: 0.0123, basis: "booked" }, stopped_for: null, budget_refused_calls: 0,
     audit_of: null, approvals: "ask", archived_at: null, imported_from: { source: "claude-code", session: "session-golden" },
     trigger: { id: "trg_1", firing_key: "firing-golden" }, labels: { team: "golden" }, learning: null, recordings: [],
@@ -51,9 +52,9 @@ function rowsOf(p = PLANTED) {
   return [
     row(1, "message", `Connect with PGPASSWORD=${p.pg} psql -h db, then mail ${p.email}`),
     row(2, "text_block", `Set OPENAI_API_KEY=${p.sk} and GITHUB_TOKEN=${p.ghp}; the AWS id ${p.aws}.`),
-    row(3, "tool_result", ["$ env", `HOME=/home/${p.user}`, "PATH=/usr/bin", `SECRET_THING=${p.envValue}`, "SHELL=/bin/sh", "$ echo done"].join("\n")),
-    row(4, "text_block", `The host ${p.ip} answered from /home/${p.user}/work.`),
-    row(5, "final_answer", `Done. Mail ${p.email} about /home/${p.user}/work; key ${p.sk}.`),
+    row(3, "tool_result", ["$ env", `HOME=${unixHome(p.user)}`, "PATH=/usr/bin", `SECRET_THING=${p.envValue}`, "SHELL=/bin/sh", "$ echo done"].join("\n")),
+    row(4, "text_block", `The host ${p.ip} answered from ${unixHome(p.user)}/work.`),
+    row(5, "final_answer", `Done. Mail ${p.email} about ${unixHome(p.user)}/work; key ${p.sk}.`),
   ];
 }
 
@@ -103,7 +104,8 @@ const valueAt = (doc, pointer) => pointer.split("/").slice(1).map((part) => part
 
 test("golden: the bundle of a synthetic run with a planted secret of every kind is the document on file", async () => {
   const { body } = await build();
-  const actual = `${JSON.stringify(JSON.parse(body), null, 2)}\n`;
+  // On file with the home root folded to `{home}/`: no file of the repository holds a home folder's path, a cut one's too.
+  const actual = `${JSON.stringify(JSON.parse(body), null, 2)}\n`.replaceAll(unixHome(""), "{home}/");
   if (process.env.UPDATE_GOLDEN) writeFileSync(GOLDEN, actual);
   assert.equal(actual, readFileSync(GOLDEN, "utf8"));
 });
@@ -268,4 +270,163 @@ test("a workflow run's graph is carried, every string in it cut", async () => {
   assert.match(doc.graph.nodes[0].label, /^Ask \[redacted:email\]$/);
   assert.ok(doc.cuts.some((cut) => cut.at === "/graph/nodes/0/items/0/label" && cut.kind === "format"));
   assertNoPlanted(body);
+});
+
+// --- A call's output with its call's context (ruling LVI). The export reads the run's rows twice: as served (the bundle's
+// rows) and with their calls' arguments (`calls`, read for each call's context alone). A result's preview, an approval
+// outcome's text and a workflow call's output are cut knowing the file the call read or the command it ran, so a
+// credential file's or a dump command's output is one dump cut. Every value is synthetic, derived from a fixed seed. ---
+
+const CTX_PW = `Cu${hex("ctx-pw", 18)}`;
+const CTX_PGPASS = `db:5432:app:svc:${CTX_PW}`;
+const CTX_ENV = `APP_REGION=north\nAPP_SEED=${CTX_PW}`;
+const AT = "2026-11-23T10:00:01.000Z";
+
+/** One call `name` with `input` that printed `output`, as a run's served rows show it (its call's row, its result's row,
+ *  the output alone in the result's preview) and as the calls read shows it (the call's row with its whole input, the
+ *  result's longer head). `approved`: the call waited for a person, who allowed it, so its outcome row (id `outcome`)
+ *  shows the output again. */
+function callRows(name, input, output, { id = "toolu_01", approved = false, outcome = `approval:${id}:after:outcome` } = {}) {
+  const base = { timestamp: AT, created_at: AT, tool_name: name, tool_use_id: id, tool_status: null, tool_input_preview: null, tool_result_preview: null };
+  const call = { ...base, id: `${id}:call`, kind: "tool_use", summary: `${name} ${JSON.stringify(input)}`, text: "", tool_input_preview: JSON.stringify(input) };
+  const result = { ...base, id: `${id}:result`, kind: "tool_result", summary: name, text: "", tool_status: "completed", tool_result_preview: output };
+  const asked = { ...base, id: `approval:${id}`, kind: "approval", summary: `Asked your approval: ${name}`, text: JSON.stringify(input), tool_input_preview: JSON.stringify(input) };
+  const told = { ...base, id: outcome, kind: "phase", summary: `AgentRun: ${name} ran once you allowed it; its result went to the agent`, text: `${name} ran once you allowed it. Its result:\n${output}`, tool_name: null, tool_use_id: null };
+  const rows = approved ? [call, asked, result, told] : [call, result];
+  const calls = rows.map((row) => (row.kind === "tool_use" ? { ...row, tool_input: input } : row.kind === "tool_result" ? { ...row, tool_result_text: output } : row));
+  return { rows, calls };
+}
+
+/** The reads of an ended run (run-export.ts ExportReads), its rows and calls as given; a workflow's `graph`. */
+function readsOf({ rows = [], calls = rows, graph = null }) {
+  return {
+    view: async () => ({ kind: graph ? "workflow" : "agentic", status: "completed", state: "completed", title: "Look", agent_id: "agent_ctx", poll_after_ms: 0 }),
+    withheld: async () => false,
+    rows: async () => rows,
+    calls: async () => calls,
+    graph: async () => graph,
+    files: async () => ({ files: [], truncated: false }),
+    agentName: async () => "Context agent",
+    cut: async () => ({ values: [] }),
+  };
+}
+
+const exported = async (reads, restore = []) => {
+  const { body } = await runExport("run_ctx", reads, { restore, version: "0.0.0-ctx" });
+  return { body, doc: JSON.parse(body) };
+};
+
+/** The cuts at `pointer`. */
+const cutsAt = (doc, pointer) => doc.cuts.filter((cut) => cut.at === pointer);
+
+/** `text` is one dump marker of `rule`, whole. */
+const oneDump = (doc, pointer, rule) => {
+  const cuts = cutsAt(doc, pointer);
+  assert.deepEqual(cuts.map((cut) => [cut.kind, cut.rule, cut.restorable]), [["dump", rule, false]], `${pointer}: ${JSON.stringify(doc.cuts)}`);
+  assert.match(valueAt(doc, pointer), new RegExp(`^\\[redacted:${rule}( \\d+ lines)?\\]$`), pointer);
+};
+
+/** Every call ruling LVI reads as a dump, its tool, input, output and the dump's rule. */
+const DUMP_CALLS = [
+  ["Read ~/.pgpass", "Read", { file_path: "~/.pgpass" }, CTX_PGPASS, "credential-file"],
+  ["Read ~/.netrc", "Read", { file_path: "~/.netrc" }, `machine api.sample-host.zz login svc password ${CTX_PW}`, "credential-file"],
+  ["Read .env", "Read", { file_path: ".env" }, CTX_ENV, "env-file"],
+  ["Read ~/.ssh/id_ed25519", "Read", { file_path: "~/.ssh/id_ed25519" }, `Host build\n  HostName 10.0.0.1\n  User svc\n  # seed ${CTX_PW}`, "ssh-file"], // key-gate: denylist a private literal in the ssh config the scrubber cuts as one dump
+  ["Bash cat ~/.pgpass", "Bash", { command: "cat ~/.pgpass", description: "Show the pgpass file" }, CTX_PGPASS, "credential-file"],
+  ["Bash env | sort", "Bash", { command: "env | sort", description: "List the environment" }, CTX_ENV, "env-dump"],
+  ["bash -lc printenv", "shell", { command: ["bash", "-lc", "printenv"] }, CTX_ENV, "env-dump"],
+];
+
+test("LVI: a call's output is cut with its call's context, so a credential file's read or a dump command's output is one dump cut, not line-by-line cuts", async () => {
+  for (const [name, tool, input, output, rule] of DUMP_CALLS) {
+    const { doc, body } = await exported(readsOf(callRows(tool, input, output)));
+    assert.equal(doc.rows[1].kind, "tool_result", name);
+    oneDump(doc, "/rows/1/tool_result_preview", rule);
+    assertNoPlanted(body, { pw: CTX_PW });
+    // The call's own row (its arguments) is cut as it was, with no context: its command is no output.
+    assert.equal(doc.rows[0].tool_input_preview, JSON.stringify(input), name);
+  }
+});
+
+test("LVI: a read of an unrelated file, or a command that is no read or dump, is cut as it was: its prose kept as is", async () => {
+  for (const [name, tool, input, output] of [
+    ["Read notes.txt, prose", "Read", { file_path: "notes.txt" }, "The notes say: meet at noon by the north door."],
+    ["Read notes.txt, a pgpass-shaped line", "Read", { file_path: "notes.txt" }, CTX_PGPASS],
+    ["Bash cat notes.txt", "Bash", { command: "cat notes.txt" }, CTX_PGPASS],
+    ["Bash echo ok", "Bash", { command: "echo ok" }, "ok"],
+  ]) {
+    const { doc } = await exported(readsOf(callRows(tool, input, output)));
+    assert.deepEqual(cutsAt(doc, "/rows/1/tool_result_preview"), [], `${name}: ${JSON.stringify(doc.cuts)}`);
+    assert.equal(doc.rows[1].tool_result_preview, output, name);
+  }
+});
+
+test("LVI: the rows read with their calls' arguments name each call's context and nothing else: none of their strings is carried", async () => {
+  const marker = `callsonly${hex("calls-only", 16)}`;
+  const { rows, calls } = callRows("Read", { file_path: "~/.pgpass" }, CTX_PGPASS);
+  // The calls read holds more than the served rows: the call's whole input, its result's longer head.
+  const more = calls.map((row) => (row.kind === "tool_use" ? { ...row, tool_input: { ...row.tool_input, note: marker } } : { ...row, tool_result_text: `${CTX_PGPASS}\n${marker}` }));
+  const { doc, body } = await exported(readsOf({ rows, calls: more }));
+  oneDump(doc, "/rows/1/tool_result_preview", "credential-file");
+  assert.ok(!body.includes(marker), "a calls row's string is not in the bundle");
+  assert.ok(!body.includes("tool_input\""), "no row carries tool_input");
+  assert.deepEqual(doc.rows.map((row) => row.id), rows.map((row) => row.id), "the served rows, in order");
+});
+
+test("LVI: a .pgpass read a person approved: its outcome row's whole text is cut by the same rule, under either outcome id", async () => {
+  for (const outcome of ["approval:toolu_01:after:outcome", "approval:toolu_01:outcome"]) {
+    for (const [tool, input] of [["Read", { file_path: "~/.pgpass" }], ["Bash", { command: "cat ~/.pgpass" }]]) {
+      const { doc, body } = await exported(readsOf(callRows(tool, input, CTX_PGPASS, { approved: true, outcome })));
+      const at = doc.rows.findIndex((row) => row.id === outcome);
+      assert.equal(doc.rows[at].tool_use_id, null, "the outcome row names no call of its own");
+      oneDump(doc, `/rows/${at}/text`, "credential-file");
+      oneDump(doc, `/rows/${doc.rows.findIndex((row) => row.kind === "tool_result")}/tool_result_preview`, "credential-file");
+      assertNoPlanted(body, { pw: CTX_PW });
+    }
+  }
+});
+
+test("LVI: a workflow call's output is cut with its own tool's and input's context, every string in it", async () => {
+  const effect = (tool, input, output) => ({ node: "n1", executionPath: "0", item: null, tool, status: "done", input, output, error: null, startedAt: AT, endedAt: AT });
+  const graph = {
+    read_at: AT,
+    run: { id: "run_ctx", status: "completed", paused: false, startedAt: AT, endedAt: AT },
+    nodes: [{ id: "n1", label: "Look" }],
+    effects: [
+      effect("read", { file_path: "~/.pgpass" }, CTX_PGPASS),
+      effect("shell", { command: "env" }, CTX_ENV),
+      effect("shell", { command: ["bash", "-lc", "printenv"] }, { stdout: CTX_ENV, code: 0 }),
+      effect("read", { file_path: "notes.txt" }, "The notes say: meet at noon by the north door."),
+    ],
+  };
+  const { doc, body } = await exported(readsOf({ graph }));
+  assert.equal(doc.agent.kind, "workflow");
+  oneDump(doc, "/graph/effects/0/output", "credential-file");
+  oneDump(doc, "/graph/effects/1/output", "env-dump");
+  oneDump(doc, "/graph/effects/2/output/stdout", "env-dump");
+  assert.deepEqual(cutsAt(doc, "/graph/effects/3/output"), []);
+  assert.equal(doc.graph.effects[3].output, graph.effects[3].output);
+  // Its input is the call's arguments, cut as it was: the command is no output.
+  assert.equal(doc.graph.effects[1].input.command, "env");
+  assertNoPlanted(body, { pw: CTX_PW });
+});
+
+test("LVI: a restore of a cut id a context-free read named on a call's output answers 400 no cut: the export cuts it as one dump now", async () => {
+  const { rows, calls } = callRows("Read", { file_path: "~/.netrc" }, `machine api.sample-host.zz login svc password ${CTX_PW}`);
+  // The same rows read with no call's context (no calls read): what a context-free count would list.
+  const { doc: bare } = await exported(readsOf({ rows, calls: [] }));
+  const label = cutsAt(bare, "/rows/1/tool_result_preview").find((cut) => cut.restorable);
+  assert.ok(label, `a restorable cut there without context: ${JSON.stringify(bare.cuts)}`);
+  await assert.rejects(exported(readsOf({ rows, calls }), [label.id]), (error) => error instanceof ApiError && error.status === 400 && /no cut/.test(error.message) && !error.message.includes(CTX_PW));
+});
+
+test("LVI: an env command a person approved: its outcome row's text holds one env-dump cut below the outcome's head line, and no planted value", async () => {
+  for (const [tool, input] of [["Bash", { command: "env | sort" }], ["shell", { command: ["bash", "-lc", "printenv"] }], ["Bash", { command: "printenv" }]]) {
+    const { doc, body } = await exported(readsOf(callRows(tool, input, CTX_ENV, { approved: true })));
+    const at = doc.rows.findIndex((row) => row.id === "approval:toolu_01:after:outcome");
+    assert.deepEqual(cutsAt(doc, `/rows/${at}/text`).map((cut) => [cut.kind, cut.rule, cut.restorable]), [["dump", "env-dump", false]], `${JSON.stringify(input)}: ${JSON.stringify(doc.cuts)}`);
+    assert.equal(doc.rows[at].text, `${tool} ran once you allowed it. Its result:\n[redacted:env-dump 2 lines]`);
+    oneDump(doc, `/rows/${doc.rows.findIndex((row) => row.kind === "tool_result")}/tool_result_preview`, "env-dump");
+    assertNoPlanted(body, { pw: CTX_PW });
+  }
 });
