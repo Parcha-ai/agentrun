@@ -48,9 +48,9 @@ describe("the agent page's header on a phone", () => {
     expect(classes(link)).toEqual(expect.arrayContaining(["min-w-0", "truncate", "py-1"]));
     expect(breadcrumb.querySelector('[aria-current="page"]')?.textContent).toBe("Settings");
     expect(classes(breadcrumb.querySelector("h1"))).toContain("shrink-0");
-    expect(header.querySelector('button[aria-label="Back to agent"]')).toBeTruthy();
+    expect(header.querySelector('button[aria-label="Back"]')).toBeTruthy();
     expect(header.querySelector('button[aria-label="Choose coding agent for Edit agent"]')).toBeTruthy();
-    expect(header.querySelector('button[aria-label="Choose coding agent for Run agent"]')).toBeTruthy();
+    expect(header.querySelector('button[aria-label="Choose coding agent for Run agent"]')).toBeNull();
     expect(host.querySelectorAll("h1")).toHaveLength(1);
   });
 

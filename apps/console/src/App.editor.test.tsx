@@ -111,7 +111,7 @@ it("opens creation from the Agents toolbar and keeps Templates accessible withou
   expect(host.querySelector("h1")?.textContent).toBe("New agent");
   expect(host.textContent).not.toContain("What do you want to build?");
   expect(entryButton(host, "Create")?.disabled).toBe(true);
-  await act(async () => entryButton(host, "Back to agents")!.click());
+  await act(async () => entryButton(host, "Back")!.click());
   await waitForEntry(() => location.hash === "#/agents" && host.querySelector("h1")?.textContent === "Agents");
   await act(async () => entryButton(nav, "Templates")!.click());
   await waitForEntry(() => location.hash === "#/templates" && host.querySelector("h1")?.textContent === "Templates");
@@ -125,13 +125,13 @@ it.each(["#/agents/new", "#/agents/new?editor=true"])("opens %s directly as a cl
   expect(host.querySelector<HTMLInputElement>("#agent-name")?.value).toBe("");
   expect(host.textContent).not.toContain("What do you want to build?");
   expect(entryButton(host, "Back to Build")).toBeUndefined();
-  await act(async () => entryButton(host, "Back to agents")!.click());
+  await act(async () => entryButton(host, "Back")!.click());
   await waitForEntry(() => location.hash === "#/agents");
   expect(document.querySelector('[role="dialog"]')).toBeNull();
   expect(writes).toEqual([]);
 });
 
-it("discards a confirmed legacy editor move and guards the next draft before returning to Agents", async () => {
+it("discards a confirmed legacy editor move and guards the next draft while Back retraces editor navigation", async () => {
   const { host, writes } = await openAgentEntry("#/agents/new?editor=true");
   await waitForEntry(() => !!host.querySelector("#agent-instructions"));
   const input = () => host.querySelector<HTMLTextAreaElement>("#agent-instructions")!;
@@ -146,14 +146,17 @@ it("discards a confirmed legacy editor move and guards the next draft before ret
   await act(async () => entryButton(document.body, "Leave")!.click());
   await waitForEntry(() => location.hash === "#/agents/new" && input()?.value === initial);
   await type("Keep this next draft.");
-  await act(async () => entryButton(host, "Back to agents")!.click());
+  await act(async () => entryButton(host, "Back")!.click());
   await waitForEntry(() => !!entryButton(document.body, "Stay"));
   await act(async () => entryButton(document.body, "Stay")!.click());
   expect(location.hash).toBe("#/agents/new");
   expect(input().value).toBe("Keep this next draft.");
-  await act(async () => entryButton(host, "Back to agents")!.click());
+  await act(async () => entryButton(host, "Back")!.click());
   await waitForEntry(() => !!entryButton(document.body, "Leave"));
   await act(async () => entryButton(document.body, "Leave")!.click());
+  // Back follows the prior console address; the old legacy entry has a fresh, discarded draft.
+  await waitForEntry(() => location.hash === "#/agents/new?editor=true" && input()?.value === initial);
+  await act(async () => entryButton(host, "Back")!.click());
   await waitForEntry(() => location.hash === "#/agents" && !host.querySelector("#agent-name"));
   expect(writes).toEqual([]);
 });

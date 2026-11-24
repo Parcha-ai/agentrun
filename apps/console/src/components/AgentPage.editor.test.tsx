@@ -180,9 +180,10 @@ describe("AgentPage settings navigation", () => {
     const toolbar = () => host.querySelector<HTMLElement>('header[aria-label="Agent toolbar"]')!;
     const actions = () => [...toolbar().querySelectorAll("button")]
       .map(control => control.getAttribute("aria-label") ?? control.textContent?.trim())
-      .filter(label => !label?.startsWith("Back to agent"));
+      .filter(label => !label?.startsWith("Back"));
+    expect(host.querySelector("[data-run-here]")).toBeTruthy();
     const before = actions();
-    expect(before).toEqual(["Agent settings", "Refresh agent", "Edit agent", "Choose coding agent for Edit agent", "Run agent", "Choose coding agent for Run agent"]);
+    expect(before).toEqual(["Agent settings", "Refresh agent", "Edit agent", "Choose coding agent for Edit agent"]);
     const edit = () => toolbar().querySelector<HTMLButtonElement>('[role="group"][aria-label="Edit agent options"] button')!;
     await act(async () => edit().click());
     const overviewPrompt = copied.mock.calls.at(-1)![0];
@@ -190,6 +191,7 @@ describe("AgentPage settings navigation", () => {
     await act(async () => settingsButton(host)!.click());
     await until(() => !!host.querySelector("#agent-instructions"));
     expect(actions()).toEqual(before.filter(label => label !== "Agent settings"));
+    expect(host.querySelector("[data-run-here]")).toBeNull();
     expect(settingsButton(host)).toBeNull();
     expect(host.querySelectorAll('[role="group"][aria-label="Edit agent options"]')).toHaveLength(1);
     expect(host.querySelector('[aria-label="Use your agent options"]')).toBeNull();
@@ -209,7 +211,7 @@ describe("AgentPage settings navigation", () => {
     expect(copied.mock.calls.at(-1)![0]).toContain("Latest unsaved instructions.");
     expect(copied.mock.calls.at(-1)![0]).not.toContain("First unsaved instructions.");
     expect(writes).toEqual([]);
-    await act(async () => button(host, "Back to agent")!.click());
+    await act(async () => button(host, "Back")!.click());
     await until(() => !!button(document.body, "Leave"));
     await act(async () => button(document.body, "Leave")!.click());
     await until(() => host.querySelector('[role="tab"][aria-selected="true"]')?.textContent === "Runs");
@@ -231,13 +233,13 @@ describe("AgentPage settings navigation", () => {
     const panel = host.querySelector<HTMLElement>('[role="region"][aria-label="Agent settings"]')!;
     await act(async () => settingsSection(host, "Tools")!.click());
     expect(panel.querySelector("h2")?.textContent).toBe("Tools");
-    expect(panel.querySelector('fieldset[aria-label="Approvals"]')).toBeTruthy();
+    expect(panel.querySelector('fieldset[aria-label="Tool approvals"]')).toBeTruthy();
     expect(panel.textContent).not.toContain("reviewing");
     expect(settingsSection(host, "Skills")).toBeTruthy();
     await act(async () => settingsSection(host, "Skills")!.click());
     expect(panel.querySelector("h2")?.textContent).toBe("Skills");
     expect(panel.textContent).toContain("reviewing");
-    expect(panel.querySelector('fieldset[aria-label="Approvals"]')).toBeNull();
+    expect(panel.querySelector('fieldset[aria-label="Tool approvals"]')).toBeNull();
     expect(settingsMenu(host)?.querySelector('[aria-current="page"]')?.textContent?.trim()).toMatch(/^Skills/);
     expect(document.querySelector('[role="dialog"]')).toBeNull();
     expect(writes).toEqual([]);
@@ -306,7 +308,7 @@ describe("AgentPage settings navigation", () => {
     await until(() => location.hash === "#/agents/inspect%2Fa%20%2B%20b/settings" && host.querySelector<HTMLTextAreaElement>("#agent-instructions")?.value === "Current instructions.");
     expect(writes).toEqual([]);
     await type("Changes to keep.");
-    await act(async () => button(host, "Back to agent")!.click());
+    await act(async () => button(host, "Back")!.click());
     await until(() => document.querySelector('[role="dialog"]')?.textContent?.includes("Leave without saving?") === true);
     await act(async () => button(document.body, "Stay")!.click());
     expect(location.hash).toBe("#/agents/inspect%2Fa%20%2B%20b/settings");
@@ -348,9 +350,9 @@ describe("AgentPage settings navigation", () => {
     expect(writes).toHaveLength(1);
     expect(writes[0]).toMatchObject({ method: "PUT", path: `${path}/definition`, body: { definition: { version: 3, instructions: "Explain every result." } } });
     expectSettingsOpen(host);
-    // The same page owns the revision outside the editor too; visiting Runs needs no full-page reload.
-    await act(async () => button(host, "Back to agent")!.click());
-    await until(() => host.querySelector('[role="tab"][aria-selected="true"]')?.textContent === "Runs");
+    // Back returns to Versions, where Settings was opened; the saved revision needs no full-page reload.
+    await act(async () => button(host, "Back")!.click());
+    await until(() => host.querySelector('[role="tab"][aria-selected="true"]')?.textContent === "Versions");
     const revision = [...host.querySelectorAll("dt")].find(term => term.textContent === "Revision");
     expect(revision?.nextElementSibling?.textContent).toBe("rev 3 of 3");
     const details = host.querySelector<HTMLElement>("[data-agent-details]")!;
@@ -388,15 +390,15 @@ describe("AgentPage settings navigation", () => {
     expect(compactMenu.textContent).toBe("General");
     expect(host.querySelector<HTMLTextAreaElement>("#agent-instructions")?.value).toBe("Unsaved instructions.");
     expect(writes).toEqual([]);
-    await act(async () => button(host, "Back to agent")!.click());
+    await act(async () => button(host, "Back")!.click());
     await until(() => document.querySelector('[role="dialog"]')?.textContent?.includes("Leave without saving?") === true);
     await act(async () => button(document.body, "Stay")!.click());
     expect(location.hash).toBe("#/agents/inspect%2Fa%20%2B%20b/settings");
     expect(host.querySelector<HTMLTextAreaElement>("#agent-instructions")?.value).toBe("Unsaved instructions.");
-    await act(async () => button(host, "Back to agent")!.click());
+    await act(async () => button(host, "Back")!.click());
     await until(() => !!button(document.body, "Leave"));
     await act(async () => button(document.body, "Leave")!.click());
-    await until(() => host.querySelector('[role="tab"][aria-selected="true"]')?.textContent === "Runs");
+    await until(() => host.querySelector('[role="tab"][aria-selected="true"]')?.textContent === "Versions");
     expect(writes).toEqual([]);
   });
 

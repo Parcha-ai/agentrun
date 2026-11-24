@@ -64,7 +64,6 @@ export type EditorProps = {
   onArchive?: (archive: boolean) => void;
   onReload?: () => void;
   onBack?: () => void;
-  backLabel?: string;
   /** Inside an agent page: its toolbar already names the agent and provides navigation. */
   embedded?: boolean;
   /** The surrounding toolbar's coding-agent handoff, including the live form draft; cleared when the editor leaves. */
@@ -133,7 +132,7 @@ const STEPS: { id: Step; label: string; note: string; Icon: typeof FileText }[] 
 /** Create and configure agents with one settings editor and one set of configuration controls. A save makes a
  *  new revision. A save made on a revision that is no longer current is refused (If-Match), and the editor says so
  *  instead of overwriting the other save. */
-export function AgentEditor({ agent, revisions = [], skillFiles, skillFilesError, onRetrySkills, caps, onSave, onMakeCurrent, onArchive, onReload, onBack, backLabel = "Back to agents", embedded = false, onEditPromptChange, initialInstructions, step: initialStep, problem: initialProblem = null, notice, draft, validate, providerChoices = [], permissionGates = [], focusTool, mcpServers = null, serverToolSettings, onRetryMcp }: EditorProps) {
+export function AgentEditor({ agent, revisions = [], skillFiles, skillFilesError, onRetrySkills, caps, onSave, onMakeCurrent, onArchive, onReload, onBack, embedded = false, onEditPromptChange, initialInstructions, step: initialStep, problem: initialProblem = null, notice, draft, validate, providerChoices = [], permissionGates = [], focusTool, mcpServers = null, serverToolSettings, onRetryMcp }: EditorProps) {
   const creating = !agent;
   const d = agent?.definition;
   const sdk = backendSdkOf(d);

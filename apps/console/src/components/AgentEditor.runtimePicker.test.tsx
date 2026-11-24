@@ -64,6 +64,23 @@ describe("AgentEditor runtime and thinking pickers", () => {
     expect(host.querySelector("details")?.open).toBe(false);
   });
 
+  it.each([null, agentOn("claude-agent")])("keeps a runtime missing only a model key selectable in creation and settings", async agent => {
+    const reason = "No model yet: add a model key in Settings → Model keys.";
+    const { host } = mount(agent, { ...caps, harnesses: [
+      { id: "pi", available: false, reason, needs: ["key", "chatgpt"] },
+      { id: "claude-agent", available: true },
+      { id: "codex", available: false, reason: "Codex is not installed." },
+    ] });
+    const runtime = picker(host, "Runtime")!;
+    await pick(runtime, "claude-agent");
+    const options = await optionsOf(runtime);
+    expect(options.find(option => option.value === "pi")).toMatchObject({ disabled: false, text: expect.stringContaining("Needs a model key") });
+    expect(options.find(option => option.value === "pi")?.text).toContain(reason);
+    expect(options.find(option => option.value === "codex")?.disabled).toBe(true);
+    await pick(runtime, "pi");
+    expect(valueOf(runtime)).toBe("pi");
+  });
+
   it("supplies a visible fallback when the server marks a runtime unavailable without a reason", async () => {
     const { host } = mount(null, { ...caps, harnesses: [{ id: "pi", available: true }, { id: "codex", available: false }] });
     const codex = (await optionsOf(picker(host, "Runtime")!)).find(option => option.value === "codex");

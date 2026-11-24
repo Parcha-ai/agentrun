@@ -111,7 +111,7 @@ describe("managed agent skill settings", () => {
     expect(button(page.host, "Save revision")?.disabled).toBe(false);
     await type(page.content()!, readme);
     expect(button(page.host, "Saved · rev 2")?.disabled).toBe(true);
-    await act(async () => button(page.host, "Back to agent")!.click());
+    await act(async () => button(page.host, "Back")!.click());
     await until(() => !page.content());
     expect(document.querySelector('[role="dialog"]')).toBeNull();
     expect(page.writes).toEqual([]);
@@ -185,7 +185,7 @@ describe("managed agent skill settings", () => {
     expect(copied.mock.calls.at(-1)![0]).toContain("Latest skill draft.");
     expect(copied.mock.calls.at(-1)![0]).toContain("reviewing/references/checklist.md");
     expect(copied.mock.calls.at(-1)![0]).not.toContain("Initial draft.");
-    await act(async () => button(page.host, "Back to agent")!.click());
+    await act(async () => button(page.host, "Back")!.click());
     await until(() => !!button(document.body, "Stay"));
     await act(async () => button(document.body, "Stay")!.click());
     expect(page.content()?.value).toContain("Latest skill draft.");
