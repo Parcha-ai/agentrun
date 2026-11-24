@@ -792,10 +792,16 @@ export class McpServersOverStore {
   /** A body's URL for the saved row `saved` (savedOrGiven: its shown address sent back unchanged is its saved one), but
    *  over a row the API token saved, whose address the token chose and every read shows only the origin of, for anyone
    *  but the token (`byToken`): refused on `url`, so the owner's credential, a sign-in's or a header's, goes only to an
-   *  address the owner named whole. An address with nothing hidden (shown as it is) is taken as given. */
+   *  address the owner named whole. An address with nothing hidden (shown as it is) is taken as given. Who saved it is
+   *  read for the row `saved` as it still is: the row read again after its record, unchanged (every save moves its last
+   *  edit, and the owner's drops the token's mark in the transaction that writes the row), or the request is refused
+   *  (412), so a record read after a save moved the row never vouches for the address read before it. */
   private async givenUrl(given: unknown, saved: McpServerRow | undefined, byToken = false): Promise<unknown> {
     if (byToken || !saved || typeof given !== "string" || given !== shownUrl(saved.url) || given === saved.url) return savedOrGiven(given, saved?.url);
-    if (!savedByToken(await this.store.settings.get(mcpSourceKey(saved.name)), saved.createdAt)) return savedOrGiven(given, saved.url);
+    const recorded = await this.store.settings.get(mcpSourceKey(saved.name));
+    const now = await this.store.mcp.server(saved.name);
+    if (now?.url !== saved.url || now.createdAt !== saved.createdAt || now.updatedAt !== saved.updatedAt) throw new ApiError("precondition_failed", `The MCP server ${saved.name} changed while this request read it (another save, a sign-in or a removal): read it again, then send it again.`);
+    if (!savedByToken(recorded, saved.createdAt)) return savedOrGiven(given, saved.url);
     throw invalid([{ field: "url", reason: "not_an_option", message: `The MCP server ${saved.name} was saved by an API token, which chose its address, and reads show only its origin: give its full URL, so your credential goes only to an address you named.` }]);
   }
 
