@@ -31,7 +31,7 @@ const { journalRecords } = await import("../dist/runner/journal-reader.js");
 const { adapterRunSpecFromLaunch } = await import("../dist/runner/adapter-run-spec.js");
 const { computerForClaim } = await import("../dist/workspace/index.js");
 const { fauxComputers } = await import("../dist/faux-computers.js");
-const { endKept, keptKeyOf, readKept, sweepKept } = await import("../dist/workspace/computer-kept.js");
+const { endKept, KEEP_MS, keptKeyOf, readKept, sweepKept } = await import("../dist/workspace/computer-kept.js");
 const { PRESENCE_STALE_MS } = await import("../dist/runner/presence.js");
 const { runTimeline } = await import("../dist/store-reads/journal.js");
 
@@ -266,6 +266,24 @@ test("park on A, answered while A is alive and B polls: B claims nothing and mov
   assert.deepEqual(creates(one.hosts.b), [], "nothing on B's host");
   assert.equal(said.filter((summary) => summary.endsWith(SAME)).length, 1, `the resume said it is the same one: ${JSON.stringify(said)}`);
   assert.deepEqual(said.filter((summary) => summary.includes(NEW)), [], "never called a new one");
+});
+
+test("park on A with the runners' clocks a keep and more behind the store's: the keep's end is stamped on the store's clock, so B claims nothing while A is live, and A gets the same desktop back", { timeout: 120_000 }, async (t) => {
+  // The store's clock (the deadlines', the one the claim rule judges the keep by) runs KEEP_MS and a minute ahead of the
+  // runners' own from the start.
+  const one = await parkedOnA(t, { skewMs: KEEP_MS + 60_000 });
+  const kept = await readKept(one.server.settings, RUN);
+  assert.ok(kept, "kept at the park");
+  const storeNow = Date.now() + one.clock.skewMs;
+  assert.ok(kept.until > storeNow && kept.until <= storeNow + KEEP_MS, `the keep's end is stamped on the store's clock, KEEP_MS from the park: ${kept.until - storeNow} ms ahead of the store's now`);
+  const { elapsed, polls } = await answeredWhileBPolls(one);
+  assert.equal((await one.server.runs.get(RUN)).epoch, one.parkedEpoch, "B claimed nothing: the pin holds on the store's clock");
+  assert.ok(polls <= Math.ceil(elapsed / POLL_MS) + 3, `B polled at its pace: ${polls} polls in ${elapsed} ms`);
+  assert.deepEqual(creates(one.hosts.b), [], "B made no desktop");
+  one.gate.open();
+  const said = await ends(one.server);
+  assert.deepEqual(creates(one.hosts.a), ["a-d1"], "the same desktop: A's resume judged the keep on the store's clock too");
+  assert.equal(said.filter((summary) => summary.endsWith(SAME)).length, 1, `said the same one: ${JSON.stringify(said)}`);
 });
 
 test("leak (a): another runner's resume never orphans A's kept container: once the run ends, A's timer's end finds every machine on A's host gone or still named by its row", { timeout: 120_000 }, async (t) => {
