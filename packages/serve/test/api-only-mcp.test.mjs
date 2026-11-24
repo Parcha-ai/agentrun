@@ -393,7 +393,7 @@ for (const [shape, arrange] of ACCOUNT_SHAPES) {
     const from = s.composio.calls.length;
     const res = await s.token("PUT", "/settings/mcp-servers/notes/composio", { ...SAVE, user_id: TOKEN_USER });
     assert.equal(res.status, 403, JSON.stringify(res.body));
-    assert.match(res.body.error?.message, new RegExp(`user_id ${TOKEN_USER} already has a connected account here.*Name a user_id of the token's own`), res.body.error?.message);
+    assert.match(res.body.error?.message, new RegExp(`user_id ${TOKEN_USER} already has a connected account here that no server the API token saved holds as one it connected.*Name a user_id of the token's own`), res.body.error?.message);
     assert.deepEqual(s.composio.calls.slice(from).filter((call) => call.method !== "GET"), [], "nothing made or removed at Composio");
     assert.deepEqual(s.composio.mcpIds, [], "no MCP server made");
     assert.equal(await s.server.store.mcp.server("notes"), undefined, "no server saved");

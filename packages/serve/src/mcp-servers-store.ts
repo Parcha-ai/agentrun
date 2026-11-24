@@ -823,12 +823,12 @@ export class McpServersOverStore {
   }
 
   /** The API token's Composio save stands on no ACTIVE account it found for its user unless a server the token saved
-   *  holds it (tokensAccount, mcp-secret-writes.ts): one no record here names may be the owner's, saved by hand, connected
-   *  in Composio's dashboard, or kept after its server's delete. Checked before anything is made (composio-preset.ts
-   *  composioSave `accountOn`): 403, nothing saved. */
+   *  holds it as made here (tokensAccount, mcp-secret-writes.ts): one no record here names may be the owner's, saved by
+   *  hand, connected in Composio's dashboard, or kept after its server's delete. Checked for each ACTIVE one before
+   *  anything is made (composio-preset.ts composioSave `accountOn`): 403, nothing saved. */
   async tokenAccountOn(user: string, account: string): Promise<void> {
     if (account && (await tokensAccount(this.store, account))) return;
-    throw new ApiError("forbidden", `The Composio user_id ${user} already has a connected account here that no server the API token saved connected: an API token's server never acts as it. Name a user_id of the token's own. Nothing was saved.`);
+    throw new ApiError("forbidden", `The Composio user_id ${user} already has a connected account here that no server the API token saved holds as one it connected: an API token's server never acts as it. Name a user_id of the token's own. Nothing was saved.`);
   }
 
   /** A body's URL for the saved row `saved` (savedOrGiven: its shown address sent back unchanged is its saved one), but
