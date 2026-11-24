@@ -52,6 +52,8 @@ const SAME = "It's the same desktop, as the wait left it.";
 const NEW = "It's a new desktop";
 /** Why the resume's desktop is a new one, once the runner that kept it is gone: it names no runner. */
 const LOST = "The desktop wasn't kept: the runner that kept it is gone.";
+/** Why, while that runner is there but could not take the run back: it ends the kept one itself. */
+const HELD = "The desktop wasn't kept: another runner kept it and couldn't take the run, so that runner ends it.";
 
 const until = async (done, what, ms = 60_000) => {
   const end = Date.now() + ms;
@@ -371,8 +373,11 @@ test("park on A, A still there but refusing claims: B claims on the answer, can'
   await until(async () => (await one.server.runners.list()).find((row) => row.runner === "runner-a")?.refused, "runner-a's word says it refuses", 10_000);
   await one.start("runner-b", "b");
   await one.server.command(RUN, { kind: "approve", body: { approval: one.ask.callId } });
-  await ends(one.server);
+  const said = await ends(one.server);
   assert.deepEqual(creates(one.hosts.b), ["b-d1"], "B went on on a new desktop of its own host");
+  // runner-a is there: the words say it kept the desktop and ends it, never that it is gone.
+  assert.equal(said.filter((summary) => summary.includes(`${HELD} ${NEW}`)).length, 1, `said once, with why: ${JSON.stringify(said)}`);
+  assert.deepEqual(said.filter((summary) => summary.includes(LOST)), [], "never said the runner that kept it is gone");
   assert.ok(one.hosts.a.computers.has("a-d1"), "A's desktop still runs on A's host");
   assert.ok((await one.server.runners.live(PRESENCE_STALE_MS)).some((row) => row.runner === "runner-a"), "runner-a is still there");
   // B took the row and could not reach the machine: the row is back as A's park wrote it, marked ending (B went on on a

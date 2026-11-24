@@ -558,13 +558,17 @@ test("a park never writes over a kept row pinned to another runner still there: 
     const written = await one.store.settings.get(key);
     one.account.computers.delete("c1");
     one.clock.now = T0 + 60_000;
-    const resumed = await one.claim(5, { hadComputer: async () => true }, { holder: RUNNER_B }, runners);
+    const said = [];
+    const resumed = await one.claim(5, { hadComputer: async () => true, onConnected: (words) => void said.push(words) }, { holder: RUNNER_B }, runners);
     assert.deepEqual(creates(one.account), ["c1", "c2"], "runner-b went on on a new sandbox");
-    return { one, atPark, written, resumed };
+    assert.equal(said.length, 1, "said once");
+    return { one, atPark, written, resumed, said };
   };
 
-  // runner-a there: runner-b gave its row back marked ending, and its park leaves it so.
+  // runner-a there: runner-b gave its row back marked ending, said so, and its park leaves the row so.
   const there = await reclaimed(refusing);
+  assert.deepEqual(there.resumed.replaced, { kind: "sandbox", folderKept: false, elsewhere: true });
+  assert.equal(computerReadyWords(there.said[0]), "The sandbox is ready: Linux (amd64), from Docker. The sandbox wasn't kept: another runner kept it and couldn't take the run, so that runner ends it. It's a new sandbox: the one before is gone, with what was on it.");
   assert.equal(JSON.stringify(await there.one.store.settings.get(key)), JSON.stringify({ ...there.written, ending: true }), "runner-a's row given back, marked ending");
   assert.equal(await there.resumed.park("approval"), false, "runner-b's park keeps nothing");
   assert.equal(JSON.stringify(await there.one.store.settings.get(key)), JSON.stringify({ ...there.written, ending: true }), "runner-a's row stands");
@@ -583,6 +587,7 @@ test("a park never writes over a kept row pinned to another runner still there: 
 
   // runner-a gone: its row (left as its park wrote it) is replaced by runner-b's park, as before.
   const gone = await reclaimed({ live: async () => [] });
+  assert.deepEqual(gone.resumed.replaced, { kind: "sandbox", folderKept: false, lost: true }, "lost with its runner, said so");
   assert.equal(await gone.one.store.settings.get(key), undefined, "runner-a gone: its row stays off");
   await gone.one.store.settings.put(key, gone.written);
   assert.equal(await gone.resumed.park("approval"), true, "runner-b's park keeps its sandbox");
