@@ -9,7 +9,7 @@
     "id": "vs_code/0ed39f63-6049-43d4-ba4d-5fa2fe04a951",
     "revision": "0ad41bee56565efe7bb3c3a5ebc67590a1b8276f",
     "licence": "Apache-2.0 (Copyright 2024 XLANG NLP Lab); the instruction is copied word for word with one sentence added, and vscode_replace_text.txt and vscode_replace_text_gold.txt are OSWorld's (from its file cache), unchanged",
-    "changes": "The box has no VS Code: the document opens in Mousepad, the desktop's text editor, on the run's Desktop folder (/tmp/computer-bench-<nonce>/Desktop) instead of /home/user/Desktop. OSWorld pressed Ctrl+S for the agent before checking; here the instruction asks the agent to save. The check compares the saved file with OSWorld's gold copy, as OSWorld did, less blank space at both ends (Mousepad may add a newline at the end)."
+    "changes": "The box has no VS Code: the document opens in Mousepad, the desktop's text editor, on the run's Desktop folder (/tmp/computer-bench-<nonce>/Desktop) instead of OSWorld's ~/Desktop. OSWorld pressed Ctrl+S for the agent before checking; here the instruction asks the agent to save. The check compares the saved file with OSWorld's gold copy, as OSWorld did, less blank space at both ends (Mousepad may add a newline at the end)."
   },
   "tags": ["osworld", "vs-code", "mousepad"],
   "needs": {

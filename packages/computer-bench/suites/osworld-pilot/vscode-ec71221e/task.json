@@ -9,7 +9,7 @@
     "id": "vs_code/ec71221e-ac43-46f9-89b8-ee7d80f7e1c5",
     "revision": "0ad41bee56565efe7bb3c3a5ebc67590a1b8276f",
     "licence": "Apache-2.0 (Copyright 2024 XLANG NLP Lab); the instruction is copied word for word with one sentence added, and test.py is OSWorld's (from its file cache), unchanged",
-    "changes": "The box has no VS Code: test.py opens in Mousepad, the desktop's text editor, on the run's Desktop folder (/tmp/computer-bench-<nonce>/Desktop) instead of /home/user/Desktop. OSWorld pressed Ctrl+S for the agent before checking; here the instruction asks the agent to save. OSWorld compared the file with a gold copy indented by four spaces; Mousepad's Tab inserts a tab character, so the check takes either, the same on all nine lines."
+    "changes": "The box has no VS Code: test.py opens in Mousepad, the desktop's text editor, on the run's Desktop folder (/tmp/computer-bench-<nonce>/Desktop) instead of OSWorld's ~/Desktop. OSWorld pressed Ctrl+S for the agent before checking; here the instruction asks the agent to save. OSWorld compared the file with a gold copy indented by four spaces; Mousepad's Tab inserts a tab character, so the check takes either, the same on all nine lines."
   },
   "tags": ["osworld", "vs-code", "mousepad"],
   "needs": {

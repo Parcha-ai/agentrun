@@ -9,7 +9,7 @@
     "id": "vs_code/57242fad-77ca-454f-b71b-f187181a9f23",
     "revision": "0ad41bee56565efe7bb3c3a5ebc67590a1b8276f",
     "licence": "Apache-2.0 (Copyright 2024 XLANG NLP Lab); the instruction is copied with the editor's name and the folder changed",
-    "changes": "The box has no VS Code: the instruction says Mousepad, the desktop's text editor, which setup opens on a new document, and the Desktop folder is the run's (/tmp/computer-bench-<nonce>/Desktop) instead of /home/user/Desktop. OSWorld only checked that test.py is in the folder; the agent here keeps file tools, so a second check proves Mousepad saved it (its window is titled test.py)."
+    "changes": "The box has no VS Code: the instruction says Mousepad, the desktop's text editor, which setup opens on a new document, and the Desktop folder is the run's (/tmp/computer-bench-<nonce>/Desktop) instead of OSWorld's ~/Desktop. OSWorld only checked that test.py is in the folder; the agent here keeps file tools, so a second check proves Mousepad saved it (its window is titled test.py)."
   },
   "tags": ["osworld", "vs-code", "mousepad"],
   "needs": {
