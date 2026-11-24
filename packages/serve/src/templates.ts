@@ -589,6 +589,21 @@ function fieldsSchema(value: unknown, of: "inputs" | "parameters", bad: (message
   return { type: "object", additionalProperties: false, ...(required.length ? { required } : {}), properties };
 }
 
+/** A spend cap a run can hold: a number above 0 and finite (0, a negative, NaN and Infinity are none). */
+const isCap = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value) && value > 0;
+
+/** Each of a package's triggers (POST /v2/triggers bodies, as its manifest or an export writes them) with no spend cap of
+ *  its own (target.max_cost_usd, read by isCap here, not left to the trigger's schema), by its index and name. A package
+ *  with triggers and no budget.per_run_usd is taken only when this is empty, so every run a trigger starts is capped by
+ *  the budget or by its trigger. readPackage refuses by it, and an export blocks by it (agent-package.ts). */
+export function uncappedTriggers(triggers: readonly unknown[]): { index: number; name: string }[] {
+  return triggers.flatMap((trigger, index) => {
+    const target = isObject(trigger) ? trigger.target : undefined;
+    if (isObject(target) && isCap(target.max_cost_usd)) return [];
+    return [{ index, name: isObject(trigger) && typeof trigger.name === "string" ? trigger.name.trim() : "" }];
+  });
+}
+
 /** Reads the package at `from` (its folder, or its files: PackageFiles) checked whole: a valid package, or PackageError
  *  with every problem found. */
 export function readPackage(from: string | PackageFiles, { evalFixtures = true }: { evalFixtures?: boolean } = {}): Package {
@@ -628,8 +643,10 @@ export function readPackage(from: string | PackageFiles, { evalFixtures = true }
     if (new Set(value).size !== value.length) bad(MANIFEST, `${field} names one item twice`);
     return value as string[];
   };
-  /** `path` is a regular file inside the package. */
-  const inside = (path: unknown) => typeof path === "string" && !path.startsWith("/") && !path.split("/").some((part) => part === ".." || part === "." || part === "") && kind(path) === "file";
+  /** `path`, named in agent.md, passes through a hidden file or folder: one the package leaves out (entries), so never read. */
+  const hidden = (path: unknown) => typeof path === "string" && path.split("/").some((part) => part.startsWith("."));
+  /** `path` is a regular file inside the package, none of its parts hidden (".", ".." and ".env" alike) or empty. */
+  const inside = (path: unknown) => typeof path === "string" && !path.startsWith("/") && !hidden(path) && !path.split("/").includes("") && kind(path) === "file";
 
   const name = src.name;
   if (src.kind("") !== "dir") throw new PackageError(dir, ["it is not a folder: a package is one"]);
@@ -665,7 +682,7 @@ export function readPackage(from: string | PackageFiles, { evalFixtures = true }
   if (f.author !== undefined && !(isObject(f.author) && !unknownFields(f.author, ["name", "email", "url"]).length && typeof f.author.name === "string" && Object.values(f.author).every((v) => typeof v === "string"))) bad(MANIFEST, "author is {name, email?, url?}");
   if (f.repository !== undefined && !(typeof f.repository === "string" && URL.canParse(f.repository) && /^https?:$/.test(new URL(f.repository).protocol))) bad(MANIFEST, "repository is an http(s) URL");
   // Display only: what a marketplace page and the console's list file it under, and its tags.
-  if (f.category !== undefined && !(CATEGORIES as readonly unknown[]).includes(f.category)) bad(MANIFEST, `category is one of ${CATEGORIES.join(", ")}`);
+  if (f.category !== undefined && !(CATEGORIES as readonly unknown[]).includes(f.category)) bad(MANIFEST, `category is one of ${CATEGORIES.join(", ")}, not ${JSON.stringify(f.category)}`);
   const tags = f.tags === undefined ? [] : Array.isArray(f.tags) && f.tags.length <= MAX_TAGS && f.tags.every((tag) => typeof tag === "string" && TAG.test(tag)) && new Set(f.tags).size === f.tags.length ? (f.tags as string[]) : (bad(MANIFEST, `tags is a list of at most ${MAX_TAGS} tags, each once, each lowercase letters, digits and dashes (${TAG.source})`), []);
   const harness = f.harness === undefined ? undefined : list(f.harness, "harness", (id) => (HARNESSES as readonly string[]).includes(id));
   if (harness && !harness.length) bad(MANIFEST, `harness is a non-empty preference list of ${HARNESSES.join(", ")}; leave it out for any`);
@@ -744,9 +761,8 @@ export function readPackage(from: string | PackageFiles, { evalFixtures = true }
   for (const secret of secrets.filter((name) => !PACKAGE_SECRETS.includes(name))) bad(MANIFEST, `secrets names ${secret}, a key this server cannot hold: a package needs the keys Settings saves and a run is handed (${PACKAGE_SECRETS.join(", ")})`);
   // Each run's limits: its spend cap (per_run_usd, the agent's max_cost_usd), required once a budget is given, and the most
   // requests on free models it makes (max_requests, the agent's max_requests), which a dollar cap cannot bound.
-  const perRun = (value: unknown) => typeof value === "number" && Number.isFinite(value) && value > 0;
   const requests = (value: unknown) => value === undefined || (typeof value === "number" && Number.isSafeInteger(value) && value >= 1);
-  if (f.budget !== undefined && !(isObject(f.budget) && !unknownFields(f.budget, ["per_run_usd", "max_requests"]).length && perRun(f.budget.per_run_usd) && requests(f.budget.max_requests))) bad(MANIFEST, "budget is {per_run_usd: a number above 0, max_requests: a whole number of free-model requests above 0, when given}");
+  if (f.budget !== undefined && !(isObject(f.budget) && !unknownFields(f.budget, ["per_run_usd", "max_requests"]).length && isCap(f.budget.per_run_usd) && requests(f.budget.max_requests))) bad(MANIFEST, "budget is {per_run_usd: a number above 0, max_requests: a whole number of free-model requests above 0, when given}");
   const learningIssue = f.learning === undefined ? undefined : learningSettingIssue(f.learning, "learning");
   if (learningIssue) bad(MANIFEST, learningIssue);
   if (f.approvals !== undefined && f.approvals !== "ask" && f.approvals !== "never") bad(MANIFEST, "approvals is ask (the agent asks its person before a tool runs) or never (it runs unattended; deny and pins still hold)");
@@ -775,12 +791,16 @@ export function readPackage(from: string | PackageFiles, { evalFixtures = true }
       else if (!need.required) bad(MANIFEST, `triggers[${i}].source.server ${need.toolkit}: the trigger's server is the mcp need of the toolkit ${need.toolkit}, so that need is required: true. An optional one may have no saved server here, and the trigger would have none`);
     }
   });
-  if (triggers.length && !(isObject(f.budget) && f.budget.per_run_usd !== undefined)) bad(MANIFEST, "budget is required when the package has triggers: {per_run_usd}, each run's cap");
+  // Every run a trigger starts is capped: by the package's budget, else by each trigger's own max_cost_usd.
+  if (triggers.length && !(isObject(f.budget) && f.budget.per_run_usd !== undefined)) {
+    for (const { index, name } of uncappedTriggers(triggers)) bad(MANIFEST, `triggers[${index}]${name ? ` (${name})` : ""} has no max_cost_usd of its own, and the package has no budget: every run a trigger starts is capped, so give the trigger's target a max_cost_usd above 0, or the package a budget: {per_run_usd}, each run's cap`);
+  }
   let outputSchema: unknown;
   if (f.output !== undefined) {
     const at = isObject(f.output) ? f.output.schema : undefined;
     const evalSize = typeof at === "string" && at.startsWith("evals/") && inside(at) ? src.size(at) : 0;
-    if (!isObject(f.output) || unknownFields(f.output, ["schema"]).length || !inside(at)) bad(MANIFEST, "output is {schema: a JSON Schema file in the package}");
+    if (isObject(f.output) && typeof at === "string" && hidden(at) && !at.split("/").some((part) => part === "." || part === "..")) bad(MANIFEST, `output.schema ${at} is a hidden file: a hidden file or folder is no part of a package, so it is never read. Name a file with no part of its path starting with "."`);
+    else if (!isObject(f.output) || unknownFields(f.output, ["schema"]).length || !inside(at)) bad(MANIFEST, "output is {schema: a JSON Schema file in the package}");
     else if (evalSize > MAX_FILE_BYTES || agentBytes + evalSize > MAX_PACKAGE_BYTES) {
       bad(at as string, evalSize > MAX_FILE_BYTES ? `is over ${MAX_FILE_BYTES} bytes, a package file's limit: the answer's schema is given to the agent, so it keeps an agent file's limits, under evals/ too` : `takes the agent's files over ${MAX_PACKAGE_BYTES} bytes together, POST /v2/agents' own limit: the answer's schema is given to the agent, so it counts as an agent file, under evals/ too`);
     } else {

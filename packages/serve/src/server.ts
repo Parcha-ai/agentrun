@@ -34,8 +34,9 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { Duplex } from "node:stream";
 import type { AddressInfo } from "node:net";
 import proxyaddr from "proxy-addr";
-import { API_ONLY_HOOKED_KINDS, apiOnlyRefusal, apiOnlyTriggerSkipped, servedApiOnly } from "./api-only.js";
-import { RUN_KEYS_ENV } from "./env-switch.js";
+import { API_ONLY_HOOKED_KINDS, apiOnlyMcpSave, apiOnlyRefusal, apiOnlyTriggerSkipped, servedApiOnly } from "./api-only.js";
+import { API_ONLY_MCP_ORIGINS_ENV, apiOnlyMcpOriginsFrom, RUN_KEYS_ENV } from "./env-switch.js";
+import { holdApiOnlyMcpOrigins, offApiOnlyMcpServers } from "./mcp-api-only-origins.js";
 import { declaredKeys, keysOwed, keysOwedRefusal, type RunKeys, runKeysOf, runKeysTriggerSkipped, undeclaredKeys, withCarried } from "./run-keys.js";
 import { capacityOverStore, capacityWindowOf } from "./capacity.js";
 import { carriedFields } from "./answer-json.js";
@@ -141,9 +142,10 @@ import { runLines } from "./usage-lines.js";
 import { type BoxOffer, boxesByDefault, boxesLog, type ContainerFacts, enabledBoxes, placeOffers, withNetworks } from "./place-offers.js";
 import { dockerComputerRefusal, type DockerPaths, dockerPathsOf, FAUX_MOUNTINFO_ENV, remoteDockerOnce } from "./box-paths.js";
 import { dockerDaemonCheck, type DockerDaemon } from "./docker-daemon.js";
-import { hostAddressesOnce, noHostAddresses, retryHostAddresses, unionOf, type Wait } from "./docker-host-addresses.js";
+import { type HostRead, hostAddressesOnce, noHostAddresses, retryHostAddresses, unionOf, type Wait } from "./docker-host-addresses.js";
 import { DOCUMENTS_ENV } from "./pdf-pages.js";
-import { type Blocker, blockersOf, CODE_NODES_ENV, issueOf, NOT_SET_UP, type RevisionShape } from "./runnable.js";
+import { type Blocker, blockersOf, CODE_NODES_ENV, deniedComputer, issueOf, NOT_SET_UP, type RevisionShape } from "./runnable.js";
+import { computerDeniedWords } from "./refusal-words.js";
 import { hostSecrets, SECRET_NAMES, secret, type StoredKeys, withSecrets } from "./secrets.js";
 import { isSecretWriteOperation, type SecretRequest, secretPageFor, secretsWritableFields, secretWriteRefusal, secretWriterFacts, writesSecretFor, writesSecretsAllowed } from "./secret-writes.js";
 import { ChatGPTPlan, planOf, PlanSignInRefused, SIGN_OUT_UNCONFIRMED, withPlan } from "./chatgpt-plan.js";
@@ -359,6 +361,10 @@ export type ServeOptions = {
    *  (the console, sign-in, setup, settings, MCP, triggers, hooks, ...) with a 404 before anything reads the request.
    *  It has no owner: accounts and open setup are off, there being no page to sign in to. */
   apiOnly?: boolean;
+  /** The MCP origins an API-only server's token may save a per_run MCP server at through the generic save
+   *  (AGENTRUN_API_ONLY_MCP_ORIGINS, api-only.ts apiOnlyMcpSave), normalized as the environment's are (a bad entry
+   *  stops the start). None, that save is refused as any route outside the profile's. Read only with apiOnly. */
+  apiOnlyMcpOrigins?: readonly string[];
   /** The launch hook (AGENTRUN_LAUNCH_HOOK_URL and _SECRET, trigger-launch-hook.ts): each trigger firing that would start
    *  a run is handed to the host instead, which starts it through the API. None, firings start their runs here. */
   launchHook?: LaunchHook;
@@ -1462,6 +1468,18 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const storedKeys: StoredKeys = (name) => toolKeys.value(name);
   // A stored key that does not open is said once at the start, never a refusal to start.
   toolKeys.view();
+  // The API-only profile's MCP origins, normalized as the environment's are (a list passed in code included), and held in
+  // the store for every reader of a saved server there (mcp-api-only-origins.ts); removed when the profile is off.
+  const apiOnlyMcpOrigins = options.apiOnly ? apiOnlyMcpOriginsFrom((options.apiOnlyMcpOrigins ?? []).join(",")) : [];
+  await holdApiOnlyMcpOrigins(store, options.apiOnly === true, apiOnlyMcpOrigins);
+  // Said once at an API-only start: the per_run servers the token saved whose origin is off that list (with the setting
+  // unset, every one, as on an upgrade whose operator has not listed them), whose runs are refused until it lists them.
+  // Their names alone, never an address. Nothing is said when there are none.
+  const offList = options.apiOnly ? await offApiOnlyMcpServers(store) : [];
+  if (offList.length) {
+    const fields = { count: offList.length, servers: offList.join(","), line: `runs that grant these per_run MCP servers the API token saved are refused, nothing sent, until ${API_ONLY_MCP_ORIGINS_ENV} lists their origin` };
+    log ? log(logLine("api_only_mcp_off_list", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("api_only_mcp_off_list", fields)}\n`);
+  }
   const mcpServers = mcpServersOverStore(store, own(withSecrets(base, "own")), VERSION);
   if (options.githubMcpOrigin) mcpServers.appOrigin = options.githubMcpOrigin;
   if (options.composioMcpOrigin) mcpServers.composioOrigin = options.composioMcpOrigin;
@@ -1651,7 +1669,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // A read that failed with none known is read again in the background (retryHostAddresses) until one answers and the
   // helper containers the failed reads left are gone, or this server stops: the boxes are made again from the answer and
   // said again, so Docker is offered with no restart. Every reader of boxOffers reads it when it is called; capabilities
-  // are composed again.
+  // are composed again. One that failed with the operator's addresses known changes no box: the retry only removes the
+  // containers it left. The close cuts a read in flight (its client killed) and stop() awaits the retry last, so the
+  // read's container is removed within the stop's deadline (docker-host-addresses.ts REMOVE_MS).
   const boxesOf = (hostAddresses: { addresses: readonly string[]; why?: string } | undefined): BoxOffer[] => {
     if (hostAddresses) log?.(logLine("docker_host_addresses", { addresses: hostAddresses.addresses.join(",") || "none", ...(hostAddresses.why ? { read: hostAddresses.why } : {}) }));
     const dockerRefused = dockerElsewhere ?? (hostAddresses && hostAddresses.addresses.length === 0 ? noHostAddresses(hostAddresses.why ?? "the read through Docker's socket found none") : undefined);
@@ -1662,19 +1682,24 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   };
   const hostAddresses = dockerElsewhere === undefined && "paths" in dockerPaths && boxAllow !== "none" ? unionOf(await hostAddressesOnce(env), dockerHostAddressesOf(env)) : undefined;
   let boxOffers = boxesOf(hostAddresses);
-  if (hostAddresses?.why !== undefined && hostAddresses.addresses.length === 0) {
-    void retryHostAddresses({
-      env,
-      read: () => hostAddressesOnce(env),
-      found: (read) => {
-        boxOffers = boxesOf(unionOf(read, dockerHostAddressesOf(env)));
-        // Capabilities are first composed at the start's probe, below; before it, there is nothing to compose again.
-        if (caps) recompose();
-      },
-      signal: stopping.signal,
-      ...(options.hostReadWait ? { wait: options.hostReadWait } : {}),
-    });
-  }
+  const hostRetried: Promise<void> =
+    hostAddresses === undefined || hostAddresses.why === undefined
+      ? Promise.resolve()
+      : retryHostAddresses({
+          env,
+          ...(hostAddresses.addresses.length === 0
+            ? {
+                read: () => hostAddressesOnce(env, stopping.signal),
+                found: (read: HostRead) => {
+                  boxOffers = boxesOf(unionOf(read, dockerHostAddressesOf(env)));
+                  // Capabilities are first composed at the start's probe, below; before it, there is nothing to compose again.
+                  if (caps) recompose();
+                },
+              }
+            : {}),
+          signal: stopping.signal,
+          ...(options.hostReadWait ? { wait: options.hostReadWait } : {}),
+        }).catch(() => undefined);
   const adapters = options.triggerAdapters ?? TRIGGER_ADAPTERS;
   const openapi = openapiDocument((operationId) => ROUTES.find((r) => r.name === operationId)?.capability, adapters);
   const sealKey = seal.key;
@@ -3286,7 +3311,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const never = blockers.filter((b) => !b.host);
     if (never.length) throw invalid(never.map(issueOf));
     const mcpPin = listing.pin();
-    return { warnings: [...blockers.map(issueOf), ...usage], stamp: { ...(mcpPin ? { mcpPin } : {}), ...(monid ? { monidPin: monid } : {}) } };
+    // A computer every tool of which is set to deny, here or in the agent's own settings: its runs never start it.
+    const denied = await deniedComputer(shape, settings.get(), shellOf);
+    const off: InputIssue[] = denied ? [{ field: "definition.computer", reason: "not_allowed", message: computerDeniedWords(denied) }] : [];
+    return { warnings: [...blockers.map(issueOf), ...off, ...usage], stamp: { ...(mcpPin ? { mcpPin } : {}), ...(monid ? { monidPin: monid } : {}) } };
   }
 
   /** An agentic `revision`'s monid pin (monid.ts pinMonid) and a warning per endpoint priced by usage; a grant that
@@ -5729,8 +5757,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         return send(res, 200, await mcpServers.preview(await bodyOf(req), stopping.signal));
       case "saveMcpServer": {
         const body = await bodyOf(req);
+        const preset = await mcpServers.composioPreset(id);
+        // API-only, where this route is served only with the operator's MCP origins: a per_run server at one of them alone,
+        // under a name no Composio preset has (api-only.ts apiOnlyMcpSave). Anything else is the refused route's own 404,
+        // before anything reaches the address. The secret-write gate has already refused a credential, and a save over a
+        // server the token did not save or one that seals a credential (403).
+        if (options.apiOnly && !apiOnlyMcpSave(body, preset, apiOnlyMcpOrigins)) throw new ApiError("not_found", apiOnlyRefusal(`/v2${path}`));
         // A server that isn't a Composio preset's is saved at once, as ever: no save waits on another's listing.
-        if (!(await mcpServers.composioPreset(id))) {
+        if (!preset) {
           const saved = await mcpServers.save(id, body, stopping.signal, secretSeen as McpCredentialMark | undefined, undefined, undefined, undefined, undefined, byToken);
           await refreshMcpMeta();
           return send(res, 200, saved);
@@ -6349,7 +6383,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const raw = (req.url ?? "/").split("?")[0]!;
     // API-only (api-only.ts): any address but the run routes is refused here, before the page, the owner's routes, the
     // MCP endpoint, the token-less hooks or the token check read anything of the request.
-    if (options.apiOnly && !servedApiOnly(ROUTES, req.method, raw)) return fail(new ApiError("not_found", apiOnlyRefusal(raw)));
+    if (options.apiOnly && !servedApiOnly(ROUTES, req.method, raw, apiOnlyMcpOrigins.length > 0)) return fail(new ApiError("not_found", apiOnlyRefusal(raw)));
     // Before the page: its cookie must not stand in for the token on the owner's own routes, nor on the MCP endpoint.
     if (owner && (raw === "/v2/setup" || raw === "/v2/setup/import" || raw === "/v2/setup/code" || raw.startsWith("/v2/auth/"))) return void ownerRoute(req, res, raw.slice(3), owner).catch(fail);
     if (raw === MCP_PATH) return void mcp(req, res).catch(fail);
@@ -6785,6 +6819,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     await store.close();
     dataLock.release();
     seal.release();
+    // Last, so a stop cut at its deadline has closed the rest: the host-address retry, aborted above, its read in flight
+    // cut then and its container's removal running since, within two REMOVE_MS.
+    await hostRetried;
   }
   return {
     url,
