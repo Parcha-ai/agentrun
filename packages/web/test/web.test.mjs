@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { publicCheck, publicFetch, readPage } from "@parcha/pi-browser";
 import * as web from "../dist/index.js";
+import { SEARCH_UNAVAILABLE, searchBusy } from "../dist/search.js";
 import { answers, firecrawlServer, refusal } from "./fixtures/fake-firecrawl.mjs";
 import fakeExa, { resetFauxExa } from "./fixtures/faux-exa.mjs";
 import fakeParallel, { CANARY, resetFauxParallel } from "./fixtures/faux-parallel.mjs";
@@ -107,7 +108,7 @@ test("keyless Exa alone: its free limit answers the caller's words and holds it 
   await run(f, w, [
     { query: "widgets", at: 0, asks: ["exa-keyless"], tries: [["exa-keyless", "ok"]], by: "exa-keyless" },
     { query: "gadgets", at: 0, asks: ["exa-keyless"], tries: [["exa-keyless", "error"]], by: null, check: (answer) => assert.deepEqual(answer, { error: WORDS.rateLimited }) },
-    { query: "sprockets", at: 10_000, asks: [], tries: [["exa-keyless", "held"]], by: null, check: (answer) => assert.equal(answer.error, web.searchBusy(20)) },
+    { query: "sprockets", at: 10_000, asks: [], tries: [["exa-keyless", "held"]], by: null, check: (answer) => assert.equal(answer.error, searchBusy(20)) },
     { query: "widgets", at: 31_000, asks: ["exa-keyless"], tries: [["exa-keyless", "error"]], by: null },
   ], "exa-keyless");
 });
@@ -120,9 +121,9 @@ test("Parallel on the run's key, each search sent through the cap at its price: 
   await run(f, w, [
     { query: "widgets", at: 0, asks: ["parallel"], tries: [["parallel", "ok"]], by: "parallel", usd: price },
     { query: "gadgets", at: 0, asks: ["parallel"], tries: [["parallel", "error"]], by: null, usd: price },
-    { query: "sprockets", at: 5_000, asks: [], tries: [["parallel", "held"]], by: null, usd: 0, check: (answer) => assert.equal(answer.error, web.searchBusy(15)) },
+    { query: "sprockets", at: 5_000, asks: [], tries: [["parallel", "held"]], by: null, usd: 0, check: (answer) => assert.equal(answer.error, searchBusy(15)) },
     { query: "widgets", at: 21_000, asks: ["parallel"], tries: [["parallel", "error"]], by: null, usd: price },
-    { query: "gadgets", at: 22_000, asks: [], tries: [["parallel", "held"]], by: null, usd: 0, check: (answer) => assert.equal(answer.error, web.SEARCH_UNAVAILABLE) },
+    { query: "gadgets", at: 22_000, asks: [], tries: [["parallel", "held"]], by: null, usd: 0, check: (answer) => assert.equal(answer.error, SEARCH_UNAVAILABLE) },
   ], "parallel");
   assert.deepEqual(f.cap.fees.map((fee) => fee.usd), [price, price, price], "the cap was asked once for each search sent");
 });
@@ -264,4 +265,11 @@ test("a provider is sent the URL the guard checked, as parsed, never the string 
   assert.deepEqual(f.fc.toolCalls().map((one) => one.body.params.arguments.url), [checked], "Firecrawl is sent the parsed URL");
   const extracts = (await lines(process.env.AGENTRUN_TEST_FAUX_PARALLEL_CALLS)).filter((call) => call.urls);
   assert.deepEqual(extracts.map((call) => call.urls), [[checked]], "Parallel is sent the parsed URL");
+});
+
+test("the package's root entry is its named API: none of the internals it is built from", async () => {
+  const names = Object.keys(await import("../dist/index.js"));
+  const internal = ["sleep", "callTool", "textBlocks", "MAX_BYTES", "PROTOCOL", "TIMEOUT_MS", "retryAfterMs", "waitOf", "searchBusy", "partOfRead", "markdownRead", "isRefused"];
+  assert.deepEqual(internal.filter((name) => names.includes(name)), []);
+  for (const name of ["createWeb", "webFetch", "webFetchText", "fetchPage", "searchInTurn", "breakers", "linksOf", "parallelExtract", "parallelSearched", "exaSearch", "firecrawlSearch", "firecrawlScrape", "firecrawlFetch", "PaidRefused"]) assert.ok(names.includes(name), name);
 });
