@@ -79,7 +79,7 @@ export type TimelineEvent = {
   computer_calls?: readonly ComputerCallRow[];
   computer_calls_dropped?: number;
   /** On a `tool_use` row of a timeline read with `calls` (TimelineOptions): the call's arguments, each string as `redact`
-   *  makes it where the call is first seen, cut at CAPS.text. */
+   *  makes it where the call is first seen, cut at CAPS.text. Absent when `calls.holds` withholds them whole. */
   tool_input?: Obj;
   /** On a `tool_result` row of a timeline read with `calls`: the call's output whole to `calls.result` characters (its
    *  head past that), as `calls.redact` makes it, its URLs' query values elided as the preview's are; a web call's every
@@ -312,8 +312,10 @@ export type TimelineOptions = {
    *  far (the rows' own `redact` stops at the head a row shows).
    *  Without `redact`, the rows' own. `held`: whether a number in the arguments shows a held value (a key that is all
    *  digits); such a number is shown as "[redacted]". `holds`: whether a text holds a held value no cut in place takes
-   *  (key-refusal.ts withheldWhole); a web call's strings, each redacted on its own, are read joined with it, so a value
-   *  split across two withholds the result (web-calls.ts webShownOf). */
+   *  (key-refusal.ts withheldWhole, whose join view reads a JSON text's strings joined). A call's arguments, each string
+   *  redacted on its own, are read with it as their JSON, and a web call's output, each string of it redacted on its own,
+   *  as it came: a value split across two strings, or across a property name and its value, withholds the arguments
+   *  (argsOf) or the result (web-calls.ts webShownOf). */
   calls?: { result: number; redact?: (text: string) => string; held?: (value: number | bigint) => boolean; holds?: (text: string) => boolean };
 };
 
@@ -796,8 +798,30 @@ function createProjector(options: TimelineOptions) {
     if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, redactValue(item)]));
     return value;
   };
-  /** A call's arguments as its rows may show them: redacted once, where the call is first seen (redactValue). */
-  const argsOf = (args: Obj): Obj => (options.redact ? (redactValue(args) as Obj) : args);
+  /** The arguments of calls a `calls` read withholds whole (argsOf). */
+  const withheldArgs = new WeakSet<Obj>();
+  /** A call's arguments as its rows may show them: redacted once, where the call is first seen (redactValue). In a
+   *  `calls` read, arguments whose JSON holds a held value no cut in place takes (`calls.holds`: split across two of
+   *  their strings, or across a property name and its value, which redactValue reads one at a time) are withheld whole:
+   *  the call's rows read it as one with no arguments, its `tool_input` is left out and its preview is "[redacted]". */
+  const argsOf = (args: Obj): Obj => {
+    if (argsHeld(args)) {
+      const none: Obj = {};
+      withheldArgs.add(none);
+      return none;
+    }
+    return options.redact ? (redactValue(args) as Obj) : args;
+  };
+  /** Whether a `calls` read withholds `args` whole (argsOf); arguments that cannot be read as JSON are. */
+  const argsHeld = (args: Obj): boolean => {
+    const holds = options.calls?.holds;
+    if (!holds) return false;
+    try {
+      return holds(JSON.stringify(args));
+    } catch {
+      return true;
+    }
+  };
   /** An outcome's words as the summary shows them: its verdict (`failed:`, `refused:`) as read, and only what follows it
    *  redacted, so a redaction that takes the whole detail still leaves the verdict, as the row's status says. */
   const saidOf = (text: string): string => {
@@ -818,10 +842,10 @@ function createProjector(options: TimelineOptions) {
   const nameFor = (tool: string, args: Obj, view: ToolResultView, result: ToolResultView) => (refused(view) ? refusedLabel(labelled(tool), shown(args)) : label(tool, args, result));
   /** The `tool_use` row of a call; `fields` is what differs between a stored call and a nested one. */
   const useRow = (conv: number, rowId: string, callId: string, name: string, args: Obj, fields: Partial<TimelineEvent>) =>
-    make("tool_use", conv, rowId, { summary: label(name, args), tool_name: name, tool_use_id: callId, tool_input_preview: inputPreview(args, caps.preview), ...inputOf(args), ...fields });
-  /** A `calls` read's `tool_input` (inputShown); none when the arguments themselves are withheld. */
+    make("tool_use", conv, rowId, { summary: label(name, args), tool_name: name, tool_use_id: callId, tool_input_preview: withheldArgs.has(args) ? "[redacted]" : inputPreview(args, caps.preview), ...inputOf(args), ...fields });
+  /** A `calls` read's `tool_input` (inputShown); none when the arguments themselves are withheld (argsOf, inputShown). */
   const inputOf = (args: Obj): { tool_input?: Obj } => {
-    const shown = options.calls ? obj(inputShown(args, caps.text, options.redact, options.calls.held)) : undefined;
+    const shown = options.calls && !withheldArgs.has(args) ? obj(inputShown(args, caps.text, options.redact, options.calls.held)) : undefined;
     return shown ? { tool_input: shown } : {};
   };
   /** A call's output as a `calls` read shows it (tool_result_text): redacted by its redactor, else the rows' own, then its

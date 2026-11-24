@@ -1,6 +1,6 @@
 // The one matcher served text is redacted with (learn/secrets.ts redactSecrets and redactLearned run on it): the secret
 // and bank shapes as scanners, the held values' forms found as they stand, and the whole-text check over the views a
-// value can hide in (whitespace gone, NFKC, percent-decoded, folded). Nothing here reads attacker text with a
+// value can hide in (whitespace gone, NFKC, percent-decoded, folded, a JSON text's strings joined). Nothing here reads attacker text with a
 // backtracking regex: each shape is a prefix found with indexOf, then runs of a character class read forward, and a
 // start inside a run already read is not read again. So a text costs time in proportion to its length, whatever it
 // repeats. The few bank shapes that stay regexes are tried only at their words, each reading a bounded head and one
@@ -738,26 +738,26 @@ function unescaped(text: string, at: number): Char | undefined {
   for (let i = at + 2; i < at + 6; i++) if (!HEX(text.charCodeAt(i))) return undefined;
   return { char: String.fromCharCode(Number.parseInt(text.slice(at + 2, at + 6), 16)), end: at + 6 };
 }
-/** JSON's escapes, decoded twice: a held value a JSON writer wrote, every character or some ("\n", "\"", a "\u" and
- *  four hex digits), and one written again as a JSON string's text (JSON in JSON: "\\n", "\\\""). Where one level's "\"
+/** JSON's escapes, decoded twice: a held value a JSON writer wrote, every character or some ("\n", a "\u" and four hex
+ *  digits), and one written again as a JSON string's text (JSON in JSON: "\\n", "\\u0041"). Where one level's "\"
  *  starts an escape of the next, each character that escape decodes to comes from all of the raw text the two levels
  *  read; a "\" that starts none is itself. A surrogate pair is two escapes, two units, NFKC'd together as any non-ASCII
- *  stretch is. Line breaks written "\r\n" decode to whitespace, gone from the view. */
+ *  stretch is. Line breaks written "\r\n" decode to whitespace, gone from the view. An escaped quote, at either level
+ *  ("\"", "\\\"", """), decodes to nothing: it is where a string written in a string starts or ends, and a held value
+ *  split across it reads whole, as one split across two strings does in the join view (joinView). */
 const JSON_ESCAPE: Decoder = {
   trigger: "\\",
   decode(text, at, unit) {
+    const put = (char: string, end: number) => {
+      if (char !== '"') unit(char, at, end);
+      return end;
+    };
     const first = unescaped(text, at);
     if (!first) return -1;
-    if (first.char !== "\\") {
-      unit(first.char, at, first.end);
-      return first.end;
-    }
+    if (first.char !== "\\") return put(first.char, first.end);
     // The first level decoded a "\": what follows it, itself read through the first level, may be a second escape.
     const second = unescaped(text, first.end);
-    if (second && ESCAPED[second.char] !== undefined) {
-      unit(ESCAPED[second.char]!, at, second.end);
-      return second.end;
-    }
+    if (second && ESCAPED[second.char] !== undefined) return put(ESCAPED[second.char]!, second.end);
     if (second?.char === "u") {
       let end = second.end;
       let digits = "";
@@ -767,42 +767,165 @@ const JSON_ESCAPE: Decoder = {
         digits += digit.char;
         end = digit.end;
       }
-      if (digits.length === 4) {
-        unit(String.fromCharCode(Number.parseInt(digits, 16)), at, end);
-        return end;
-      }
+      if (digits.length === 4) return put(String.fromCharCode(Number.parseInt(digits, 16)), end);
     }
     unit("\\", at, first.end);
     return first.end;
   },
 };
-/** What JSON_ESCAPE reads at `at`: the character the escape there decodes to, through both levels, and where it ends;
- *  undefined where no escape starts (the "\" is then itself). key-refusal.ts's peek counts an escape by it, so the
- *  read past a call's stop and the JSON view see the same characters. */
+/** What JSON_ESCAPE reads at `at`: the character the escape there decodes to, through both levels ("" for an escaped
+ *  quote, which decodes to nothing), and where it ends; undefined where no escape starts (the "\" is then itself).
+ *  key-refusal.ts's peek counts an escape by it, so the read past a call's stop and the JSON view see the same
+ *  characters. */
 export function jsonEscapeAt(text: string, at: number): { char: string; end: number } | undefined {
-  let char: string | undefined;
+  let char = "";
   const end = JSON_ESCAPE.decode(text, at, (decoded) => {
     char = decoded;
   });
-  return end < 0 || char === undefined ? undefined : { char, end };
+  return end < 0 ? undefined : { char, end };
 }
 
 /** A view the whole-text check reads: the text decoded by `decoders`, then squeezed (viewOf), read only where `when`
- *  says the text holds what a decoder decodes. `special`: where viewOf stops to do more than copy. */
-type ViewSpec = { readonly when: (text: string) => boolean; readonly decoders: readonly Decoder[]; readonly special: RegExp };
-const viewSpec = (when: (text: string) => boolean, decoders: readonly Decoder[]): ViewSpec => ({
+ *  says the text holds what a decoder decodes. `special`: where viewOf stops to do more than copy. `join`: the view
+ *  reads the text's JSON strings joined (joinView). */
+type ViewSpec = { readonly when: (text: string) => boolean; readonly decoders: readonly Decoder[]; readonly special: RegExp; readonly join?: boolean };
+const viewSpec = (when: (text: string) => boolean, decoders: readonly Decoder[], join = false): ViewSpec => ({
   when,
   decoders,
   special: new RegExp(`[\\s${decoders.map((decoder) => `\\${decoder.trigger}`).join("")}\\u0080-\\uffff]`, "g"),
+  ...(join ? { join } : {}),
 });
 /** The views of a text read for each held value, in order: squeezed; percent-decoded; percent-decoded with "+" as a
- *  space; JSON's escapes decoded twice. Each is lowered for hexes and flattened for folded identifiers in holds. */
+ *  space; JSON's escapes decoded twice; and, for a text with a quote in it, its JSON strings joined (joinView), JSON's
+ *  escapes decoded. Each is lowered for hexes and flattened for folded identifiers in holds. */
 const VIEWS: readonly ViewSpec[] = [
   viewSpec(() => true, []),
   viewSpec((text) => /%[0-9a-fA-F]{2}/.test(text), [PERCENT]),
   viewSpec((text) => text.includes("+"), [PERCENT, PLUS]),
   viewSpec((text) => /\\(?:u[0-9a-fA-F]{4}|["\\/bfnrt])/.test(text), [JSON_ESCAPE]),
+  viewSpec((text) => text.includes('"'), [JSON_ESCAPE], true),
 ];
+
+// ---- The join view: a JSON text's strings read joined, so a held value split across two of them reads whole.
+
+/** A stretch of a text the join view reads: a string's contents (a property name's, `name`), or a run of characters
+ *  outside any string (a number, a word, a line after the JSON). */
+type Part = { from: number; to: number; name: boolean };
+
+/** JSON's punctuation between its values. */
+const STRUCTURE = only("{}[],:");
+
+/** The character of a JSON text at `at` (before `to`) as `level` reads it, and where it ends: at level 0 each raw
+ *  character is itself; at level 1, the text of a string, an escape is the character it stands for ("\" and one
+ *  character, "\u" and four hex digits), so a string written in that string has its quotes as "\"". */
+function unitAt(text: string, at: number, to: number, level: 0 | 1): { char: string; end: number } {
+  if (level === 0 || text[at] !== "\\" || at + 1 >= to) {
+    scanned.chars++;
+    return { char: text[at]!, end: at + 1 };
+  }
+  const next = text[at + 1]!;
+  if (next === "u" && at + 6 <= to) {
+    scanned.chars += 6;
+    let hex = true;
+    for (let i = at + 2; i < at + 6; i++) hex &&= HEX(text.charCodeAt(i));
+    if (hex) return { char: String.fromCharCode(Number.parseInt(text.slice(at + 2, at + 6), 16)), end: at + 6 };
+  }
+  scanned.chars += 2;
+  return { char: ESCAPED[next] ?? next, end: at + 2 };
+}
+
+/** The parts of text[from, to) as JSON at `level`, in order, added to `out`: each string's contents, a property name's
+ *  (a string the next character after whitespace of which is ":") whole; a value's, at level 0, read again at level 1
+ *  for the strings written in it (JSON in a string), each of its parts added in its place; and each run of characters
+ *  outside a string that are neither whitespace nor JSON's punctuation. A string with no closing quote runs to `to`.
+ *  Any text is read so, JSON or not: a quote in prose opens a string as one in JSON does. Each character is read at
+ *  most three times (at level 0, at level 1, and in the whitespace after a string looking for a ":"). */
+function partsOf(text: string, from: number, to: number, level: 0 | 1, out: Part[]): void {
+  let bare = -1;
+  const endBare = (end: number) => {
+    if (bare >= 0) out.push({ from: bare, to: end, name: false });
+    bare = -1;
+  };
+  for (let at = from; at < to; ) {
+    const { char, end } = unitAt(text, at, to, level);
+    const code = char.charCodeAt(0);
+    if (char !== '"') {
+      if (isSpace(code) || STRUCTURE(code)) endBare(at);
+      else if (bare < 0) bare = at;
+      at = end;
+      continue;
+    }
+    endBare(at);
+    // The string: to its closing quote, each escape (a "\" and the character after it) passed over whole.
+    let close = end;
+    while (close < to) {
+      const inner = unitAt(text, close, to, level);
+      if (inner.char === '"') break;
+      close = inner.char === "\\" && inner.end < to ? unitAt(text, inner.end, to, level).end : inner.end;
+    }
+    const after = close < to ? unitAt(text, close, to, level).end : to;
+    // A name, when the next character past whitespace is a ":".
+    let ahead = after;
+    let next = "";
+    while (ahead < to) {
+      const unit = unitAt(text, ahead, to, level);
+      if (!isSpace(unit.char.charCodeAt(0))) {
+        next = unit.char;
+        break;
+      }
+      ahead = unit.end;
+    }
+    if (next === ":") out.push({ from: end, to: close, name: true });
+    else if (level === 0) partsOf(text, end, close, 1, out);
+    else out.push({ from: end, to: close, name: false });
+    at = after;
+  }
+  endBare(to);
+}
+
+/** `text`'s join view: its parts (partsOf) read three times over, each time joined, each part followed by a space (gone
+ *  from the view, and no escape reads past it): the values and the runs outside strings; the property names; then all
+ *  of them. Each pass is closed by a NUL, which the view keeps and no held value holds, so no value reads across two
+ *  passes. A held value split across two values with a name between them ({"title":"see <H>","snippet":"<R> more"}),
+ *  across two names, across a name and its value, across a quote of JSON written in a string, or across a string and
+ *  the line after the JSON reads whole in one of them. Then decoded and squeezed by `spec` as any view (viewOf), each
+ *  part's characters keeping their source: with `cuts` (merged spans of `text`), the spans of each part a cut covers
+ *  are moved to where the part stands in the join, so a value the finds cut in place in each string is covered here
+ *  too. The cuts' cursor only goes forward within a pass: each cut is passed once a pass. */
+function joinView(text: string, spec: ViewSpec, cuts?: readonly Span[]): View {
+  const parts: Part[] = [];
+  partsOf(text, 0, text.length, 0, parts);
+  const pieces: string[] = [];
+  const moved: Span[] = [];
+  let length = 0;
+  const passes: readonly ((part: Part) => boolean)[] = [(part) => !part.name, (part) => part.name, () => true];
+  for (const pass of passes) {
+    let cut = 0;
+    for (const part of parts) {
+      if (!pass(part)) continue;
+      scanned.chars++;
+      if (cuts) {
+        while (cut < cuts.length && cuts[cut]![1] <= part.from) {
+          cut++;
+          scanned.chars++;
+        }
+        for (let k = cut; k < cuts.length && cuts[k]![0] < part.to; k++) {
+          scanned.chars++;
+          const start = Math.max(part.from, cuts[k]![0]);
+          const end = Math.min(part.to, cuts[k]![1]);
+          if (start < end) moved.push([length + start - part.from, length + end - part.from]);
+        }
+      }
+      pieces.push(text.slice(part.from, part.to), " ");
+      length += part.to - part.from + 1;
+    }
+    pieces.push("\u0000");
+    length++;
+  }
+  // The join written once.
+  scanned.chars += length;
+  return viewOf(pieces.join(""), spec, cuts ? moved : undefined);
+}
 
 /** `text` as the whole-text check reads it: decoded by `spec`'s decoders, then squeezed (squeeze: NFKC, its whitespace
  *  and its characters that render as nothing gone), as a held value's needles are. The squeeze is applied to each
@@ -1011,7 +1134,8 @@ function holdsIn(view: string, covered: readonly Span[] | undefined, needles: re
 }
 
 /** Whether `text` holds a held value in a form the cut does not find as it stands: split by whitespace, percent or
- *  form encoded, an NFKC variant, its hex in any case, a hex identifier folded (`fold`). With `cuts`, a value whose
+ *  form encoded, an NFKC variant, its hex in any case, a hex identifier folded (`fold`), split across two strings of a
+ *  JSON text (joinView). With `cuts`, a value whose
  *  every character the view read comes from inside the cuts is not held: it is cut in place. */
 export function holds(text: string, needles: Needles, { fold = true, cuts }: { fold?: boolean; cuts?: readonly Span[] } = {}): boolean {
   const folds = fold ? needles.folds : [];
@@ -1020,7 +1144,7 @@ export function holds(text: string, needles: Needles, { fold = true, cuts }: { f
     // Whether a decoding view is read: its test reads the text to its first trigger at most.
     if (spec.decoders.length) scanned.chars += text.length;
     if (!spec.when(text)) continue;
-    const view = viewOf(text, spec, cuts);
+    const view = spec.join ? joinView(text, spec, cuts) : viewOf(text, spec, cuts);
     const covered = cuts ? view.covered : undefined;
     if (holdsIn(view.text, covered, needles.plain)) return true;
     if (!needles.hexes.length && !folds.length) continue;

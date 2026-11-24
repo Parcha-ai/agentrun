@@ -30,14 +30,6 @@ function eachString(value: unknown, each: (text: string) => string): unknown {
   return value;
 }
 
-/** Every string in `value`, property names aside, in order. */
-function stringsOf(value: unknown, out: string[] = []): string[] {
-  if (typeof value === "string") out.push(value);
-  else if (Array.isArray(value)) for (const item of value) stringsOf(item, out);
-  else if (isObj(value)) for (const item of Object.values(value)) stringsOf(item, out);
-  return out;
-}
-
 /** What a web call withheld whole shows. */
 const WITHHELD: WebShown = () => "[redacted]";
 
@@ -74,8 +66,10 @@ export function webCut(tool: string, text: string, cut: (text: string) => string
  *  run's redaction, its URLs' query values elided), so a cut never falls inside what that takes out. Undefined for a
  *  tool other than web_search and web_fetch, or an output that is not its JSON. A page's links past a cut are counted
  *  in `links_cut`. `holds`, whether a text holds a held value no cut in place takes (key-refusal.ts withheldWhole): it
- *  reads the strings as they came, joined by line breaks, then the lines after the JSON, so a held value split across
- *  two strings, which `each` reads one at a time, withholds the output whole, as "[redacted]". */
+ *  reads the output as it came, its JSON line and the lines after it, through the matcher's join view, the one check
+ *  every tool's output and every call's arguments read through (redact/match.ts joinView), so a held value split
+ *  across two strings, or across a property name and its value, which `each` reads one at a time, withholds the output
+ *  whole, as "[redacted]". */
 export function webShownOf(tool: string, text: string, each: (text: string) => string = (part) => part, holds?: (text: string) => boolean): WebShown | undefined {
   if (tool !== WEB_SEARCH && tool !== WEB_FETCH) return undefined;
   const end = text.indexOf("\n");
@@ -88,7 +82,7 @@ export function webShownOf(tool: string, text: string, each: (text: string) => s
   const shown = eachString(read, each);
   if (!isObj(shown)) return undefined;
   const after = end < 0 ? "" : each(text.slice(end));
-  const withheld = () => holds?.(`${stringsOf(read).join("\n")}${end < 0 ? "" : text.slice(end)}`) ?? false;
+  const withheld = () => holds?.(text) ?? false;
   if (tool === WEB_SEARCH) {
     const results = shown.results;
     if (!Array.isArray(results) || !results.every(isObj)) return undefined;
