@@ -29,13 +29,14 @@ export const FETCH_ORDER: readonly FetchProvider[] = ["firecrawl-keyless", "para
 /** Where a read notes what the model is not told: an event and its fields (serve writes them as a log line). */
 export type WebLog = (event: string, fields: Record<string, string>) => void;
 
-/** Whether `url` may go to a provider: readDirect's own refusals (port, length, a user name or password) pass it, and so
- *  does the guard's check within `ms` and the caller's signal. No guard, or a check out of time, does not pass. */
-async function passes(url: string, guard: Guard | undefined, options: GuardOptions, ms: number): Promise<boolean> {
+/** The URL a provider is sent for `url`, as parsed (its href), so the provider reads the host the guard checked; null
+ *  where it may not go: it fails readDirect's own refusals (port, length, a user name or password), or the guard's check
+ *  within `ms` and the caller's signal. No guard, or a check out of time, does not pass. */
+async function passes(url: string, guard: Guard | undefined, options: GuardOptions, ms: number): Promise<string | null> {
   const target = URL.parse(url);
-  if (!guard || !target || !PORTS.has(target.port) || url.length > URL_MAX || target.username || target.password) return false;
+  if (!guard || !target || !PORTS.has(target.port) || url.length > URL_MAX || target.username || target.password) return null;
   const signal = AbortSignal.any([AbortSignal.timeout(ms), ...(options.signal ? [options.signal] : [])]);
-  return guard.check(url, { ...(options.lookup ? { lookup: options.lookup } : {}), signal }).then(() => true, () => false);
+  return guard.check(target.href, { ...(options.lookup ? { lookup: options.lookup } : {}), signal }).then(() => target.href, () => null);
 }
 
 /** What one read is given: the provider clients, the order they are asked in, the guard, the check's bound and the log. */
@@ -50,16 +51,18 @@ async function readOnce(url: unknown, { parallel, firecrawl, order, guard, check
   let why: string | undefined;
   for (const provider of order) {
     if (provider === "firecrawl-keyless") {
-      if (firecrawl?.live() && typeof url === "string" && (await passes(url, guard, options, checkMs))) {
-        const read = await firecrawl.read(url, options.signal);
+      const sent = firecrawl?.live() && typeof url === "string" ? await passes(url, guard, options, checkMs) : null;
+      if (firecrawl && sent) {
+        const read = await firecrawl.read(sent, options.signal);
         if (typeof read !== "string") return { ...read, via: "firecrawl-keyless" };
         firecrawlSaid = read;
       }
     } else if (provider === "parallel") {
+      const sent = parallel?.live() && typeof url === "string" ? await passes(url, guard, options, checkMs) : null;
       if (parallel && !parallel.live()) why = "not tried: refused earlier in this run";
-      else if (parallel && !(typeof url === "string" && (await passes(url, guard, options, checkMs)))) why = "not tried: the URL did not pass the public-host guard";
-      else if (parallel) {
-        const read = await parallel.read(url as string, options.signal);
+      else if (parallel && !sent) why = "not tried: the URL did not pass the public-host guard";
+      else if (parallel && sent) {
+        const read = await parallel.read(sent, options.signal);
         if (typeof read !== "string") return { ...read, via: "parallel" };
         why = read;
       }
