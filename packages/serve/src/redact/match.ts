@@ -749,14 +749,15 @@ function unescaped(text: string, at: number): Char | undefined {
  *  starts an escape of the next, each character that escape decodes to comes from all of the raw text the two levels
  *  read; a "\" that starts none is itself. A surrogate pair is two escapes, two units, NFKC'd together as any non-ASCII
  *  stretch is. Line breaks written "\r\n" decode to whitespace, gone from the view. An escaped quote, at either level
- *  (a backslash and a quote, or one more level of it, or the "\u" escape whose digits are 0022), decodes to nothing:
- *  it is where a string written in a string starts or ends, and a held value
- *  split across it reads whole, as one split across two strings does in the join view (joinView). */
-const JSON_ESCAPE: Decoder = {
+ *  (a backslash and a quote, or one more level of it, or the "\u" escape whose digits are 0022), decodes to nothing
+ *  with `dropQuote`: it is where a string written in a string starts or ends, and a held value split across it reads
+ *  whole, as one split across two strings does in the join view (joinView). Without it, a quote, as the base's view of
+ *  JSON's escapes alone read it (a held value with a quote of its own, written escaped). */
+const jsonEscape = (dropQuote: boolean): Decoder => ({
   trigger: "\\",
   decode(text, at, unit) {
     const put = (char: string, end: number) => {
-      if (char !== '"') unit(char, at, end);
+      if (!dropQuote || char !== '"') unit(char, at, end);
       return end;
     };
     const first = unescaped(text, at);
@@ -779,7 +780,10 @@ const JSON_ESCAPE: Decoder = {
     unit("\\", at, first.end);
     return first.end;
   },
-};
+});
+const JSON_ESCAPE = jsonEscape(true);
+/** JSON's escapes as the base's one-family view read them: an escaped quote is a quote. */
+const JSON_ESCAPE_QUOTED = jsonEscape(false);
 /** What JSON_ESCAPE reads at `at`: the character the escape there decodes to, through both levels ("" for an escaped
  *  quote, which decodes to nothing), and where it ends; undefined where no escape starts (the "\" is then itself).
  *  key-refusal.ts's peek counts an escape by it, so the read past a call's stop and the JSON view see the same
@@ -822,27 +826,51 @@ const ENTITY: Decoder = {
   },
 };
 
+/** What a text holds that a view decodes or joins, each found by one read of the text (familiesOf): a percent-encoded
+ *  byte, one of JSON's escapes, an escaped quote (at either level, or as its "\u" escape), an HTML numeric character
+ *  reference's start, a "+", a quote. */
+type Families = { percent: boolean; escape: boolean; quoteEscape: boolean; entity: boolean; plus: boolean; quote: boolean };
+const PERCENT_BYTE = /%[0-9a-fA-F]{2}/;
+const JSON_ESCAPED = /\\(?:u[0-9a-fA-F]{4}|["\\/bfnrt])/;
+const QUOTE_ESCAPED = /\\"|\\u00[2]2/;
+function familiesOf(text: string): Families {
+  // Six reads of the text, each to its first find at most.
+  scanned.chars += 6 * text.length;
+  return { percent: PERCENT_BYTE.test(text), escape: JSON_ESCAPED.test(text), quoteEscape: QUOTE_ESCAPED.test(text), entity: text.includes("&#"), plus: text.includes("+"), quote: text.includes('"') };
+}
+
 /** A view the whole-text check reads: the text decoded by `decoders`, then squeezed (viewOf), read only where `when`
- *  says the text holds what a decoder decodes. `special`: where viewOf stops to do more than copy. `join`: the view
- *  reads the text's JSON strings joined (joinView). */
-type ViewSpec = { readonly when: (text: string) => boolean; readonly decoders: readonly Decoder[]; readonly special: RegExp; readonly join?: boolean };
-const viewSpec = (when: (text: string) => boolean, decoders: readonly Decoder[], join = false): ViewSpec => ({
+ *  says the text holds what a decoder decodes (familiesOf). `special`: where viewOf stops to do more than copy. `join`:
+ *  the view reads the text's JSON strings joined (joinView). */
+type ViewSpec = { readonly when: (has: Families) => boolean; readonly decoders: readonly Decoder[]; readonly special: RegExp; readonly join?: boolean };
+const viewSpec = (when: (has: Families) => boolean, decoders: readonly Decoder[], join = false): ViewSpec => ({
   when,
   decoders,
   special: new RegExp(`[\\s${decoders.map((decoder) => `\\${decoder.trigger}`).join("")}\\u0080-\\uffff]`, "g"),
   ...(join ? { join } : {}),
 });
-/** The views of a text read for each held value, in order: squeezed; decoded, its percent-encoded bytes, JSON's
- *  escapes (twice) and HTML's numeric character references each where it stands, so a value split by an encoded space
- *  of one and an escaped one of another, or written half in each, reads whole; the same with "+" as a space; and, for a
- *  text with a quote in it, its JSON strings joined (joinView), decoded the same. The decoders stack in one pass: each
- *  reads at its own trigger character, so a view costs one read of the text whatever it decodes. Each is lowered for
- *  hexes and flattened for folded identifiers in holds. */
+/** The views of a text read for each held value, in order:
+ *  - squeezed;
+ *  - the views of one family each, as they were before the stacked ones: percent-decoded; percent-decoded with "+" as a
+ *    space; JSON's escapes decoded twice, an escaped quote a quote. Each reads a held value that holds another family's
+ *    text of its own (a literal "\n", a literal "%41", "&#65;") as itself, which a stacked view decodes, so keeping them
+ *    keeps every find they made;
+ *  - stacked: its percent-encoded bytes, JSON's escapes (twice, an escaped quote as nothing) and HTML's numeric character
+ *    references each decoded where it stands, so a value split by an encoded space of one family and an escaped one of
+ *    another, or written half in each, or split by an escaped quote, reads whole; and the same with "+" as a space. Each
+ *    is read only where it can read otherwise than the one-family views: the text has a character reference, an escaped
+ *    quote, or both percent-encoding and JSON's escapes (and, with "+", any of JSON's escapes);
+ *  - for a text with a quote in it, its JSON strings joined (joinView), decoded as the stacked view.
+ *  The decoders of a view decode in one pass: each reads at its own trigger character, so a view costs one read of the
+ *  text whatever it decodes. Each view is lowered for hexes and flattened for folded identifiers in holds. */
 const VIEWS: readonly ViewSpec[] = [
   viewSpec(() => true, []),
-  viewSpec((text) => /%[0-9a-fA-F]{2}|\\(?:u[0-9a-fA-F]{4}|["\\/bfnrt])|&#/.test(text), [PERCENT, JSON_ESCAPE, ENTITY]),
-  viewSpec((text) => text.includes("+"), [PERCENT, PLUS, JSON_ESCAPE, ENTITY]),
-  viewSpec((text) => text.includes('"'), [PERCENT, JSON_ESCAPE, ENTITY], true),
+  viewSpec((has) => has.percent, [PERCENT]),
+  viewSpec((has) => has.plus, [PERCENT, PLUS]),
+  viewSpec((has) => has.escape, [JSON_ESCAPE_QUOTED]),
+  viewSpec((has) => has.entity || has.quoteEscape || (has.percent && has.escape), [PERCENT, JSON_ESCAPE, ENTITY]),
+  viewSpec((has) => has.plus && (has.entity || has.escape), [PERCENT, PLUS, JSON_ESCAPE, ENTITY]),
+  viewSpec((has) => has.quote, [PERCENT, JSON_ESCAPE, ENTITY], true),
 ];
 
 // ---- The join view: a JSON text's strings read joined, so a held value split across two of them reads whole.
@@ -1179,10 +1207,9 @@ function holdsIn(view: string, covered: readonly Span[] | undefined, needles: re
 export function holds(text: string, needles: Needles, { fold = true, cuts }: { fold?: boolean; cuts?: readonly Span[] } = {}): boolean {
   const folds = fold ? needles.folds : [];
   if (!needles.plain.length && !needles.hexes.length && !folds.length) return false;
+  const has = familiesOf(text);
   for (const spec of VIEWS) {
-    // Whether a decoding view is read: its test reads the text to its first trigger at most.
-    if (spec.decoders.length) scanned.chars += text.length;
-    if (!spec.when(text)) continue;
+    if (!spec.when(has)) continue;
     const view = spec.join ? joinView(text, spec, cuts) : viewOf(text, spec, cuts);
     const covered = cuts ? view.covered : undefined;
     if (holdsIn(view.text, covered, needles.plain)) return true;

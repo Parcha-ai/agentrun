@@ -898,21 +898,22 @@ test("adversarial texts: the characters the shape scanners visit are at most a f
 // - the shapes, sought over the text and over its cut, and each run read: 128, the shapes' own bound (the test above);
 // - planCut's finds: the text lowered (1), each form and the hex searched (2 each, a find and the text before it: 16),
 //   the folded search (4), the finds merged (1): about 21;
-// - one whole-text check: whether each of the three decoding views is read (3); four views at most: the squeezed one
-//   built in 9 reads (its special characters found, its blanks, its non-ASCII stretches squeezed twice, its cover), the
-//   two stacked decoding views (one with "+") in 23 each (two levels of escapes read per character decoded), and the
-//   join view, which reads the text as JSON first (3: at level 0, again at level 1 inside a string, and the whitespace
-//   after a string), writes its join (2: each character in it at most twice, values then all, or names then all) and
-//   builds a decoding view over that join (46); then each searched for 7 plain needles, the hex and the fold, lowered
-//   and flattened (21 each, 42 over the join): about 214; planCut runs two (the text with its cuts, then the cut text,
-//   at most 10/8 as long): about 482;
-// - so planCut is about 632; an answer adds its pieces' ends and joins (10), heldIn's check of what it returns (10/8 of
-//   a check: 268), of the pieces as they came (214), and its shape pass (64): about 1,190.
+// - one whole-text check: what the text holds that a view decodes (6); seven views at most: the squeezed one and the
+//   percent-decoded two (one with "+") built in 9 reads each (its special characters found, its blanks, its non-ASCII
+//   stretches squeezed twice, its cover), the view of JSON's escapes alone and the two stacked ones (one with "+") in 23
+//   each (two levels of escapes read per character decoded), and the join view, which reads the text as JSON first (3:
+//   at level 0, again at level 1 inside a string, and the whitespace after a string), writes its join (2: each
+//   character in it at most twice, values then all, or names then all) and builds a decoding view over that join (46);
+//   then each searched for 7 plain needles, the hex and the fold, lowered and flattened (21 each, 42 over the join):
+//   about 321; planCut runs two (the text with its cuts, then the cut text, at most 10/8 as long): about 722;
+// - so planCut is about 871; an answer adds its pieces' ends and joins (10), heldIn's check of what it returns (10/8 of
+//   a check: 401), of the pieces as they came (321), and its shape pass (64): about 1,667.
+// That sum takes each stage at its most at once, which no text reaches: a text that builds every view decodes most of
+// itself, so each decoded view is far shorter than the text and its searches read far less.
 // A held value of two lines adds its three parts as forms and plain needles (about 30 more). A held value of k long
 // lines adds k + 1 of each: its work grows with k, linear in the text all the same.
-// WORK stays 1,024, the bound from before the stacked and join views. The sum above counts every view built and read
-// at its most for one text, and the most measured is in the test's diagnostics; a text that passes 1,024 is a finding,
-// not a reason to raise the bound. A stage that read again from the start at each find passes the text once per find:
+// WORK stays 1,024, the bound from before the stacked and join views. The most measured, and each text's most, are in
+// the test's diagnostics; a text that passes 1,024 is a finding, not a reason to raise the bound. A stage that read again from the start at each find passes the text once per find:
 // a held value found every 9 characters is found 14,563 times in 128 KiB, and one in every string of a JSON text (every
 // 11 characters) 47,662 times in 512 KiB, which a join that passed the cuts from the first at each string reads about
 // 2.3 billion times over.
@@ -925,13 +926,18 @@ test("adversarial texts: the characters the whole pipeline visits are at most WO
     let most = 0;
     let where = "";
     for (const { text, values } of adversarial(size)) {
+      let its = 0;
+      let by = "";
       for (const [name, read] of Object.entries(READERS)) {
         scanned.chars = 0;
         read(text, values);
         const per = scanned.chars / text.length;
+        if (per > its) [its, by] = [per, name];
         if (per > most) [most, where] = [per, `${name} ${short(text)}`];
         if (scanned.chars > WORK * text.length) over.push(`${size}: ${name} ${short(text)}: ${scanned.chars} for ${text.length}`);
       }
+      // Each text's most, so a change that moves one text shows up here.
+      t.diagnostic(`${size / 1024} KiB: ${its.toFixed(1)} per character, ${by}, ${short(text)}`);
     }
     t.diagnostic(`${size / 1024} KiB: the most characters visited per character of a text: ${most.toFixed(1)}, ${where}`);
   }
