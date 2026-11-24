@@ -20,6 +20,6 @@ test("a run's Web writes one start line naming each tool's order, keyed or keyle
   const env = { [TOOL_PLANE_ENV]: JSON.stringify({ web_search: "parallel", web_fetch: "firecrawl-keyless" }), PARALLEL_API_KEY: CANARY };
   const lines = stderrOf(t, () => (webOf(env), webOf(env)));
   assert.equal(lines.length, 1, lines.join("\n"));
-  assert.match(lines[0], /^agentrun-serve: at=\S+ event=web_destinations search="parallel \(keyed\)" fetch="firecrawl-keyless \(keyless\) > direct"$/);
+  assert.match(lines[0], /^agentrun-serve: at=\S+ event=web_destinations search="parallel \(keyed\)" fetch="firecrawl-keyless \(keyless\) > direct" classifier=off$/);
   assert.doesNotMatch(lines[0], new RegExp(CANARY));
 });
