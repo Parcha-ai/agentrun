@@ -8,7 +8,7 @@ import type { AgentLearning, Corrections, LearningChange, LearningDiff, Learning
 import type { ComposioTools, McpAuth, McpPreview, McpRefresh, McpServer } from "./mcp";
 import type { RunGraph } from "./runGraph";
 import { applyPage } from "./timeline";
-import type { ApiError, Capabilities, HarnessKeys, HarnessOfferView, ChatGPTSignOut, ChatGPTStart, ChatGPTView, ClaudeLoginView, ModelGateway, ModelGatewayBody, ModelGatewayTest, EmailAccount, EmailAccountBody, EmailTest, EmailTestBody, Firing, GitHubConnectStart, GitHubDisconnected, GitHubRepositories, GitHubStatus, ScanStarted, Suggestion, SuggestionCreated, SuggestionDetail, SuggestionsList, InputIssue, McpPrivateHosts, TemplateApplied, TemplateApply, TemplateImported, TemplateView, RaiseAnswer, GradeAnswer, GradeBody, Run, RunComputer, RunLearningRead, LearningAudits, LearningCost, LearningLoop, Promotions, WorkflowRevisions, ReplayStarted, ReplayRead, ComputerHoldAnswer, HandBackOutcome, RunFiles, RunStatus, RunTrace, RunUsage, TimelinePage, TimelineRow, SessionSecrets, SignInForgotten, ToolKeys, ToolSettings, Trigger, TriggerCreate, TriggerDeleted, TriggerInput, TriggerMade, TriggerSecret, TriggerUpdated, ComposioEvents, ComposioTriggers, Slack, SlackAttempt, SlackBody, Webhook, WebhookAttempt, WebhookRotated, WebhookSaved, Archil, ArchilBody, ArchilTest, Computers, ComputerChoices, ComputerKeysBody, ComputerProvider, ComputerTest, Pairing } from "./v2";
+import type { ApiError, ApiKeyMade, ApiKeys, Capabilities, HarnessKeys, HarnessOfferView, ChatGPTSignOut, ChatGPTStart, ChatGPTView, ClaudeLoginView, ModelGateway, ModelGatewayBody, ModelGatewayTest, EmailAccount, EmailAccountBody, EmailTest, EmailTestBody, Firing, GitHubConnectStart, GitHubDisconnected, GitHubRepositories, GitHubStatus, ScanStarted, Suggestion, SuggestionCreated, SuggestionDetail, SuggestionsList, InputIssue, McpPrivateHosts, MarketplaceList, TemplateApplied, TemplateApply, TemplateImported, TemplateView, RaiseAnswer, GradeAnswer, GradeBody, Run, RunComputer, RunningComputers, RunLearningRead, LearningAudits, LearningCost, LearningLoop, Promotions, WorkflowRevisions, ReplayStarted, ReplayRead, ComputerHoldAnswer, HandBackOutcome, RunFiles, RunStatus, RunTrace, RunUsage, TimelinePage, TimelineRow, SessionSecrets, SignInForgotten, ToolKeys, ToolSettings, Trigger, TriggerCreate, TriggerDeleted, TriggerInput, TriggerMade, TriggerSecret, TriggerUpdated, ComposioEvents, ComposioTriggers, Slack, SlackAttempt, SlackBody, Webhook, WebhookAttempt, WebhookRotated, WebhookSaved, Archil, ArchilBody, ArchilTest, Computers, ComputerChoices, ComputerKeysBody, ComputerProvider, ComputerTest, Pairing } from "./v2";
 
 /** A request AgentRun Server refused: its HTTP status and its typed error (`code`, `message`, `retryable`). */
 /** A refusal's issue at one field, as the server names it (with its `fix`, when it says one). Its `reason` is any string, as
@@ -332,6 +332,7 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     /** Each kind of computer, whether this server offers it and why not, and its providers with their keys by name, never a
      *  value. */
     computers: () => call<Computers>("GET", "/computers"),
+    runningComputers: () => call<RunningComputers>("GET", "/computers/running"),
     /** Saves a provider's keys, declared names only; null removes one. No Idempotency-Key: the same PUT twice is the same
      *  state. The answer is the provider, never a value. */
     saveComputerKeys: (provider: string, keys: ComputerKeysBody) => call<ComputerProvider>("PUT", `/computers/${encodeURIComponent(provider)}/keys`, { body: keys }),
@@ -353,6 +354,13 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     archilOff: () => call<Archil>("DELETE", "/workspace/archil"),
     /** One listing of the disk's root with the saved key. */
     testArchil: () => call<ArchilTest>("POST", "/workspace/archil/test"),
+    /** The API keys made for this server's apps, never a key (a serve extension). */
+    apiKeys: () => call<ApiKeys>("GET", "/settings/api-keys"),
+    /** Makes a key named `name`: its value is in the answer (`api_key`), this once. No Idempotency-Key: its record would
+     *  keep the key, and a second POST is a second key. */
+    createApiKey: (name: string) => call<ApiKeyMade>("POST", "/settings/api-keys", { body: { name } }),
+    /** Revokes a key (204): it opens nothing from now on. */
+    revokeApiKey: (id: string) => call<unknown>("DELETE", `/settings/api-keys/${encodeURIComponent(id)}`),
     /** The webhook, never its secret (a serve extension). */
     webhook: () => call<Webhook>("GET", "/settings/webhook"),
     /** Sets the webhook's URL; the first PUT makes its secret and answers it, once (`secret`). */
@@ -407,6 +415,8 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
      *  nothing; a save with no credential in `auth` keeps the sealed one. */
     /** The templates this server offers. */
     listTemplates: () => call<{ templates: TemplateView[] }>("GET", "/templates"),
+    /** The marketplace's templates, as the server read them: always 200, its `state` saying whether it could. */
+    listMarketplaceTemplates: () => call<MarketplaceList>("GET", "/marketplace/templates"),
     /** Makes a template's agent (and its triggers) under one Idempotency-Key: the same request again answers what it did. */
     applyTemplate: (name: string, body: TemplateApply, idempotencyKey: string) =>
       call<TemplateApplied>("POST", `/templates/${encodeURIComponent(name)}/apply`, { body, headers: { "idempotency-key": idempotencyKey } }),

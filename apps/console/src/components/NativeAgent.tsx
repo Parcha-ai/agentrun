@@ -1,7 +1,9 @@
-import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
+import { createContext, Fragment, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { Banner, Button, Chip, Dialog, Switch } from "@/components/ui";
 import { type Agent, editBody, learningOn } from "@/lib/agentForm";
 import { type Client, problemOf } from "@/lib/client";
+import { when } from "@/lib/format";
+import { cn } from "@/lib/utils";
 import { type NativeBinding, nativeReadinessOf, nativeRemoteSource, nativeRuntimeLabel, nativeSelectorLabel, nativeStateLabel } from "@/lib/native";
 
 type NativeMutations = { busy: boolean; begin: () => boolean; end: () => void };
@@ -92,6 +94,16 @@ export function NativeLearningSwitch({ agent, v2, learning, onAgent }: { agent: 
   </div>;
 }
 
+/** What Disconnect keeps: said on its button, and again once it is disconnected. */
+const KEPT = "Disconnect stops future native jobs. Original files and run history are preserved.";
+
+/** Facts as one line each: a name, and a value cut to the line with the whole of it on hover. */
+function Facts({ rows, className }: { rows: readonly (readonly [string, string])[]; className?: string }) {
+  return <dl className={cn("grid grid-cols-[minmax(0,auto)_minmax(0,1fr)] gap-x-4 gap-y-1.5 text-small", className)}>
+    {rows.map(([label, value]) => <Fragment key={label}><dt className="max-w-40 truncate text-muted-foreground" title={label}>{label}</dt><dd className="truncate font-mono" title={value}>{value}</dd></Fragment>)}
+  </dl>;
+}
+
 export function NativeAgent({ agent, v2, learning, onAgent, onChanged }: { agent: Agent; v2: Client; learning?: "on" | "off" | null; onAgent: (agent: Agent) => void; onChanged: () => Promise<void> }) {
   const native = useContext(NativeReadinessContext) ?? agent.definition.native!;
   const remote = nativeRemoteSource(native);
@@ -111,17 +123,31 @@ export function NativeAgent({ agent, v2, learning, onAgent, onChanged }: { agent
   };
   return <NativeMutationContext.Provider value={mutations}><section className="space-y-4 border bg-card p-4" aria-label="Native connection">
     <div className="flex flex-wrap items-center gap-3"><h2 className="mr-auto text-body font-semibold">{remote ? "Remote connection" : "Native connection"}</h2><Chip tone={native.connected && native.state === "ready" ? "success" : "warning"}>{nativeStateLabel(native)}</Chip></div>
-    <div className="flex flex-wrap gap-2"><Button size="sm" disabled={busy || !native.connected} aria-busy={busy} onClick={() => void change("verify")}>Verify connection</Button><Button size="sm" disabled={busy || !native.connected} onClick={() => void change("disconnect")}>Disconnect</Button></div>
+    <div className="flex flex-wrap gap-2">
+      <Button size="sm" disabled={busy || !native.connected} aria-busy={busy} title="Checks its configuration and sign-in, without a paid run" onClick={() => void change("verify")}>Verify connection</Button>
+      <Button size="sm" disabled={busy || !native.connected} title={KEPT} onClick={() => void change("disconnect")}>Disconnect</Button>
+    </div>
     {error && <Banner tone="error">{error}</Banner>}
     <div className="border-y py-4"><NativeLearningSwitch agent={agent} v2={v2} learning={learning} onAgent={onAgent} /></div>
     {native.issues.length > 0 && <Banner tone="warning">{native.issues[0]}{native.issues.length > 1 && <details className="mt-2"><summary className="cursor-pointer text-small">{native.issues.length - 1} more compatibility {native.issues.length === 2 ? "note" : "notes"}</summary><ul className="mt-2 space-y-2">{native.issues.slice(1).map((issue) => <li key={issue}>{issue}</li>)}</ul></details>}</Banner>}
-    <dl className="space-y-3 text-small">{[["Runtime", `${nativeRuntimeLabel(native.runtime)} · ${native.version ?? "Version unknown"}`], ["Project", native.project], ["Selector", nativeSelectorLabel(native.selector)], ["Model", native.model ?? "Native default · unknown until launch"], ["Machine", native.machine_id]].map(([label, value]) => <div key={label}><dt className="text-muted-foreground">{label}</dt><dd className="break-all font-mono">{value}</dd></div>)}</dl>
+    {/* A fact a line: its name in a narrow column, its value beside it, cut with the whole of it on hover. */}
+    <Facts rows={[["Runtime", `${nativeRuntimeLabel(native.runtime)} · ${native.version ?? "version unknown"}`], ["Project", native.project], ["Launches", nativeSelectorLabel(native.selector)], ["Model", native.model ?? "Native default"], ["Machine", native.machine_id]]} />
     <details><summary className="cursor-pointer text-small">Skills · {native.skills.length} detected</summary>{native.skills.length ? <ul className="mt-2 space-y-1 text-small">{native.skills.map((skill) => <li key={skill} className="break-all font-mono">{skill}</li>)}</ul> : <p className="mt-2 text-small text-muted-foreground">None detected.</p>}</details>
     <details><summary className="cursor-pointer text-small">MCP servers · {native.mcp_servers.length} configured</summary>{native.mcp_servers.length ? <ul className="mt-2 space-y-1 text-small">{native.mcp_servers.map((server) => <li key={server} className="break-all font-mono">{server}</li>)}</ul> : <p className="mt-2 text-small text-muted-foreground">None configured.</p>}</details>
-    <details><summary className="cursor-pointer text-small">Configuration provenance · {native.configuration.length} files</summary><dl className="mt-2 space-y-3 text-small"><div><dt className="text-muted-foreground">Verified</dt><dd className="break-all font-mono">{native.verified_at ?? "Not yet verified"}</dd></div><div><dt className="text-muted-foreground">Fingerprint</dt><dd className="break-all font-mono">{native.fingerprint}</dd></div></dl><ul className="mt-3 space-y-2 text-small">{native.configuration.map((file) => <li key={file.path} className="break-all font-mono">{file.path}<span className="block text-muted-foreground">SHA-256 {file.sha256}</span></li>)}</ul></details>
-    {remote && <p className="text-small text-muted-foreground">Jobs execute on the source machine through its connector. Native sign-in and project files stay there. <a href="#/agents/connect?source=remote" className="underline underline-offset-2">Manage remote machines</a></p>}
-    <details><summary className="cursor-pointer text-small">Capabilities and source machine</summary><p className="mt-2 text-small text-muted-foreground">Future launches resolve the latest original configuration. Verification checks metadata and authentication separately from a paid run. {remote ? "Keep the source CLI worker online for verification, execution and learning delivery. Connection status refreshes every 15 seconds." : "This project runs on the AgentRun server's machine."}</p><p className="mt-2 text-small text-muted-foreground">Launch: {native.capabilities.launch ? "supported" : "unavailable"} · Approvals: {native.capabilities.approval} · Usage: {native.capabilities.usage ? "supported counters only; dollar cost may be unknown" : "unavailable"} · Spend caps: unavailable · Learned workflows: unavailable</p></details>
-    <p className="text-small text-muted-foreground">Disconnect prevents future native jobs. Original files and run history are preserved.</p>
-    {!native.connected && <a href={remote ? "#/agents/connect?source=remote" : "#/agents/connect"} className="block text-small underline underline-offset-2">Connect agent</a>}
+    <details><summary className="cursor-pointer text-small">Verification and capabilities</summary>
+      <Facts className="mt-2" rows={[
+        ["Verified", native.verified_at ? when(native.verified_at) : "Not yet"],
+        ["Fingerprint", native.fingerprint],
+        ...native.configuration.map((file): [string, string] => [file.path, `SHA-256 ${file.sha256}`]),
+        ["Launch", native.capabilities.launch ? "Supported" : "Unavailable"],
+        ["Approvals", native.capabilities.approval],
+        ["Usage", native.capabilities.usage ? "Counters; cost may be unknown" : "Unavailable"],
+        ["Spend caps", "Unavailable"],
+        ["Learned workflows", "Unavailable"],
+      ]} />
+      {remote && <p className="mt-2 text-small text-muted-foreground">Keep the source CLI worker online for verification, runs and learning. Its status refreshes every 15 seconds.</p>}
+    </details>
+    {remote && <p className="text-small text-muted-foreground">Runs on the source machine; its sign-in and files stay there. <a href="#/agents/connect?source=remote" className="underline underline-offset-2">Manage remote machines</a></p>}
+    {!native.connected && <p className="text-small text-muted-foreground">{KEPT} <a href={remote ? "#/agents/connect?source=remote" : "#/agents/connect"} className="underline underline-offset-2">Connect agent</a></p>}
   </section></NativeMutationContext.Provider>;
 }

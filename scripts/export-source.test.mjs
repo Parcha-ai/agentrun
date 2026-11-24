@@ -48,7 +48,7 @@ async function fixture(t) {
   await write('scripts/machine-path.mjs', machinePathRule);
   await write('package.json', JSON.stringify({ name: 'fixture', private: true }));
   await write('package-lock.json', JSON.stringify({ lockfileVersion: 3, packages: {
-    '': {}, 'packages/dsl': {}, 'packages/jev': {}, 'packages/pi-browser': {}, 'packages/import': {}, 'packages/serve': {}, 'packages/decisions': {}, 'packages/computer': {}, 'packages/client': {}, 'packages/run-adapters': {}, 'packages/run-adapters-claude-agent': {}, 'packages/run-adapters-codex': {}, 'packages/run-adapters-acp': {}, 'packages/agentrun': {},
+    '': {}, 'packages/dsl': {}, 'packages/jev': {}, 'packages/pi-browser': {}, 'packages/import': {}, 'packages/web': {}, 'packages/serve': {}, 'packages/decisions': {}, 'packages/computer': {}, 'packages/client': {}, 'packages/run-adapters': {}, 'packages/run-adapters-claude-agent': {}, 'packages/run-adapters-codex': {}, 'packages/run-adapters-acp': {}, 'packages/agentrun': {},
   } }));
   await write('docs/guide.md', '# Public fixture\n');
   await write('packages/dsl/schema/workflow.schema.json', '{}\n');
@@ -163,7 +163,7 @@ test('the removed website output flag is rejected before writing artifacts', asy
 
 test('root and package license notices are scanned and retained byte-for-byte', async t => {
   const f = await fixture(t);
-  const notices = ['LICENSE', 'NOTICE'].flatMap(name => [name, ...['dsl', 'jev', 'import', 'serve', 'run-adapters-acp'].map(pkg => `packages/${pkg}/${name}`)]);
+  const notices = ['LICENSE', 'NOTICE'].flatMap(name => [name, ...['dsl', 'jev', 'import', 'web', 'serve', 'run-adapters-acp'].map(pkg => `packages/${pkg}/${name}`)]);
   for (const path of notices) await f.write(path, `Notice fixture: ${path}\n`);
   await f.run();
   for (const path of notices) {
@@ -360,7 +360,7 @@ test('inventory generation works without build output and does not produce an ar
 
 test('the dependency inventory follows the runtime graph only: a lock that changes a dev-only entry gives the same bytes, a runtime dependency changes them', async t => {
   const f = await fixture(t);
-  const workspaces = Object.fromEntries(['dsl', 'jev', 'pi-browser', 'import', 'serve', 'decisions', 'computer', 'client', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'run-adapters-acp', 'agentrun'].map(name => [`packages/${name}`, {}]));
+  const workspaces = Object.fromEntries(['dsl', 'jev', 'pi-browser', 'import', 'web', 'serve', 'decisions', 'computer', 'client', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'run-adapters-acp', 'agentrun'].map(name => [`packages/${name}`, {}]));
   const lock = ({ dev, runtime } = {}) => JSON.stringify({ lockfileVersion: 3, packages: {
     '': dev ? { devDependencies: { 'dev-tool': dev } } : {},
     ...workspaces,
@@ -382,7 +382,7 @@ test('the dependency inventory follows the runtime graph only: a lock that chang
 
 test('the ACP harness package is an inventory root: its runtime dependency ships in the source archive and is listed for it', async t => {
   const f = await fixture(t);
-  const workspaces = Object.fromEntries(['dsl', 'jev', 'pi-browser', 'import', 'serve', 'decisions', 'computer', 'client', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'run-adapters-acp', 'agentrun'].map(name => [`packages/${name}`, {}]));
+  const workspaces = Object.fromEntries(['dsl', 'jev', 'pi-browser', 'import', 'web', 'serve', 'decisions', 'computer', 'client', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'run-adapters-acp', 'agentrun'].map(name => [`packages/${name}`, {}]));
   await f.write('package-lock.json', JSON.stringify({ lockfileVersion: 3, packages: {
     '': {},
     ...workspaces,
@@ -399,7 +399,7 @@ test('the ACP harness package is an inventory root: its runtime dependency ships
 // version is read as its manifest says again (UNKNOWN until it is checked), never carried over.
 test('the inventory reads the pinned OpenCode binaries as MIT, flags nothing for them, and reads a bumped one as its manifest says', async t => {
   const f = await fixture(t);
-  const workspaces = Object.fromEntries(['dsl', 'jev', 'pi-browser', 'import', 'serve', 'decisions', 'computer', 'client', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'run-adapters-acp', 'agentrun'].map(name => [`packages/${name}`, {}]));
+  const workspaces = Object.fromEntries(['dsl', 'jev', 'pi-browser', 'import', 'web', 'serve', 'decisions', 'computer', 'client', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'run-adapters-acp', 'agentrun'].map(name => [`packages/${name}`, {}]));
   const lock = version => JSON.stringify({ lockfileVersion: 3, packages: {
     '': {},
     ...workspaces,
@@ -426,7 +426,7 @@ test('the inventory reads the pinned OpenCode binaries as MIT, flags nothing for
 // package names the host it runs in as an optional peer, which the inventory keeps.
 const optionalPeerLock = ({ requiredBy } = {}) => JSON.stringify({ lockfileVersion: 3, packages: {
   '': { devDependencies: { 'test-runner': '1.0.0', 'host-agent': '1.0.0' } },
-  ...Object.fromEntries(['dsl', 'jev', 'pi-browser', 'import', 'serve', 'decisions', 'computer', 'client', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'run-adapters-acp', 'agentrun'].map(name => [`packages/${name}`, {}])),
+  ...Object.fromEntries(['dsl', 'jev', 'pi-browser', 'import', 'web', 'serve', 'decisions', 'computer', 'client', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'run-adapters-acp', 'agentrun'].map(name => [`packages/${name}`, {}])),
   'packages/serve': { dependencies: { 'auth-lib': '1.0.0' } },
   'packages/pi-browser': { peerDependencies: { 'host-agent': '*', 'absent-host': '*' }, peerDependenciesMeta: { 'host-agent': { optional: true }, 'absent-host': { optional: true } } },
   'node_modules/host-agent': { version: '1.0.0', license: 'MIT', dev: true },

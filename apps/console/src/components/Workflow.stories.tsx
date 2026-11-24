@@ -6,14 +6,14 @@ import { RunDetail } from "@/components/RunDetail";
 import { RunGraphView } from "@/components/RunGraphView";
 import { Shell } from "@/components/Shell";
 import { editorCaps, messageFeatures } from "@/fixtures";
-import { BATCH_DURATION, BATCH_MID, batchDoneRun, batchMidRun, batchPausedRun, batchRunAt, fixtureFileUrl, juryRun, kybRun } from "@/fixtures/dwf/runs";
-import { batchWorkflow, kybWorkflow } from "@/fixtures/dwf/workflows";
+import { BATCH_DURATION, BATCH_MID, batchDoneRun, batchMidRun, batchPausedRun, batchRunAt, fixtureFileUrl, juryRun, kybRun } from "@/demo/dwf/runs";
+import { batchWorkflow, kybWorkflow } from "@/demo/dwf/workflows";
 import type { Agent } from "@/lib/agentForm";
 import { SERVED_AGENT } from "@/test/agent";
 import type { RunGraph, Selection } from "@/lib/runGraph";
 import type { Run } from "@/lib/v2";
 
-// The decision-workflow views over the C4 fixtures (src/fixtures/dwf): synthetic runs, invented companies.
+// The decision-workflow views over the C4 fixtures (src/demo/dwf): synthetic runs, invented companies.
 const meta: Meta = { title: "Workflow" };
 export default meta;
 type Story = StoryObj;

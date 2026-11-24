@@ -10,6 +10,7 @@ import { after, test } from "node:test";
 import { defineExtension, defineTool } from "@earendil-works/pi-durable";
 import { InMemorySpanExporter } from "@opentelemetry/sdk-trace";
 import { normalizeUsage } from "@parcha/agentrun-import";
+import { ROUTE_ORIGIN } from "@parcha/agentrun-kernel/host";
 import { closeOpenSessions, MODEL, scriptedOrigin } from "./conformance-pi-adapter.mjs";
 import { queue, stores, until } from "./runner-support.mjs";
 
@@ -23,6 +24,8 @@ const { runEnv } = await import("../dist/runner/main.js");
 const { cliRunEnv } = await import("../dist/runner/cli-run-spec.js");
 const { otelPair } = await import("../dist/runner/run-child-host.js");
 const { encode } = await import("../dist/secrets.js");
+const { routeOf } = await import("../dist/runner/model-route.js");
+const { traceOfRoute } = await import("../dist/runner/adapter-run-spec.js");
 after(closeOpenSessions);
 const TIMING = { leaseMs: 60_000, renewEveryMs: 10_000, stopMarginMs: 200, pollMs: 20, commandPollMs: 30 };
 const quiet = { beforeIntent: async () => {}, beforeResult: async () => {} };
@@ -263,6 +266,21 @@ test("the mapping: a request that came by another route (a subagent's tier) name
   const unknown = chatAttributes(run, { model: "x", route: "strong" });
   assert.equal(unknown["gen_ai.provider.name"], undefined);
   assert.equal(unknown["server.address"], undefined);
+});
+
+test("a translated route's trace names the host its requests go to (OpenRouter's), never the route's own placeholder origin; the faux model's names none", async () => {
+  // OpenRouter speaks Chat Completions, which pi's session does not: the runner's route translates it, its proxy on the
+  // route's own origin. The trace is the one a run's spec carries (adapter-run-spec.ts), its chat span's server.address.
+  const routed = await routeOf("openrouter/openai/gpt-6.1-sol", { OPENROUTER_API_KEY: `not-a-secret-${"openrouter"}` });
+  assert.equal(routed.provider.origin, ROUTE_ORIGIN);
+  const trace = traceOfRoute(routed);
+  assert.deepEqual(trace, { provider: "openrouter", serverAddress: "openrouter.ai", model: "openai/gpt-6.1-sol" });
+  const chat = chatAttributes({ runId: "run-1", harness: "pi", ...trace }, { model: "openai/gpt-6.1-sol" });
+  assert.equal(chat["server.address"], "openrouter.ai");
+  // The faux model's requests go nowhere: no host at all, never its stand-in's or the route's.
+  const faux = traceOfRoute(await routeOf(undefined, { AGENTRUN_SERVE_FAUX: new URL("./fixtures/faux-at-once.mjs", import.meta.url).pathname }));
+  assert.equal(faux.serverAddress, undefined);
+  for (const each of [trace, faux]) assert.doesNotMatch(JSON.stringify(each), /model-route\.invalid|localhost/);
 });
 
 /** A trace made directly (no run), into memory: its finished spans once `steps` ran on it and it ended. */

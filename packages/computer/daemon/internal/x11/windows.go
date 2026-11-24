@@ -1,6 +1,9 @@
 package x11
 
-import "fmt"
+import (
+	"context"
+	"fmt"
+)
 
 // The requests below are the apps group's: which top-level windows there are, whose they are and which is in front,
 // and bringing one to the front. Each is one round trip, or none for those that answer nothing.
@@ -36,7 +39,7 @@ func (c *Conn) InternAtom(name string, onlyIfExists bool) (uint32, error) {
 	body := le.AppendUint16(nil, uint16(len(name)))
 	body = append(body, 0, 0)
 	body = append(body, name...)
-	r, err := c.call(opInternAtom, only, body, smallReply)
+	r, err := c.call(context.Background(), opInternAtom, only, body, smallReply)
 	if err != nil {
 		return 0, err
 	}
@@ -58,7 +61,7 @@ func (c *Conn) GetProperty(window, property uint32) (Property, error) {
 	body = le.AppendUint32(body, 0) // AnyPropertyType
 	body = le.AppendUint32(body, 0) // long-offset
 	body = le.AppendUint32(body, MaxProperty/4)
-	r, err := c.call(opGetProperty, 0, body, MaxProperty)
+	r, err := c.call(context.Background(), opGetProperty, 0, body, MaxProperty)
 	if err != nil {
 		return Property{}, err
 	}
@@ -90,7 +93,7 @@ func (p Property) Cardinals() []uint32 {
 
 // QueryTree is a window's children, bottom of the stack first.
 func (c *Conn) QueryTree(window uint32) ([]uint32, error) {
-	r, err := c.call(opQueryTree, 0, le.AppendUint32(nil, window), MaxProperty*4)
+	r, err := c.call(context.Background(), opQueryTree, 0, le.AppendUint32(nil, window), MaxProperty*4)
 	if err != nil {
 		return nil, err
 	}
@@ -120,7 +123,7 @@ type Attributes struct {
 
 // GetWindowAttributes reads whether a window is mapped and viewable, and whether it bypasses the window manager.
 func (c *Conn) GetWindowAttributes(window uint32) (Attributes, error) {
-	r, err := c.call(opGetWindowAttributes, 0, le.AppendUint32(nil, window), smallReply)
+	r, err := c.call(context.Background(), opGetWindowAttributes, 0, le.AppendUint32(nil, window), smallReply)
 	if err != nil {
 		return Attributes{}, err
 	}

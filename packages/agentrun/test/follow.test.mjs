@@ -6,11 +6,10 @@ import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { createServer, request } from "node:http";
-import { createServer as createNetServer } from "node:net";
 import { join } from "node:path";
 import { test } from "node:test";
 import { backoff } from "../lib/follow.mjs";
-import { keptEnv, scratch, server } from "./support.mjs";
+import { dropping, keptEnv, scratch, server } from "./support.mjs";
 
 const BIN = new URL("../bin/agentrun.mjs", import.meta.url).pathname;
 
@@ -121,15 +120,6 @@ function applied(pages) {
   return [...rows.values()].sort((a, b) => a.seq - b.seq);
 }
 
-/** A server that is never reached: a listener of this test's own, open until the test ends, that drops every connection
- *  it takes (Node 24's fetch then fails with the cause UND_ERR_SOCKET). */
-async function dropping(t) {
-  const server = createNetServer((socket) => socket.destroy());
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  t.after(() => new Promise((resolve) => server.close(resolve)));
-  return `http://127.0.0.1:${server.address().port}/v2`;
-}
-
 test("runs start --wait, runs wait and runs timeline --follow: exit by how the run ended, the stream resumed with no change twice, the token in no output", { timeout: 180_000 }, async (t) => {
   const server = await serve(t);
   const seen = [readFileSync(join(server.data, ".server.json"), "utf8")];
@@ -208,7 +198,7 @@ test("runs start --wait, runs wait and runs timeline --follow: exit by how the r
     const cancelled = await cli(["runs", "wait", id, ...data]);
     assert.deepEqual([cancelled.code, cancelled.json().status], [1, "cancelled"]);
 
-    const nowhere = await cli(["runs", "wait", id, "--base-url", await dropping(t)], { AGENTRUN_API_KEY: "fake-test-key" });
+    const nowhere = await cli(["runs", "wait", id, "--base-url", (await dropping(t)).base], { AGENTRUN_API_KEY: "fake-test-key" });
     assert.equal(nowhere.code, 3, nowhere.err);
     assert.match(nowhere.err, /Cannot reach the server at .+ \(UND_ERR_SOCKET\)/);
     assert.equal((await cli(["runs", "wait", id, "--timeout", "soon", ...data])).code, 2);

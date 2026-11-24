@@ -8,7 +8,7 @@ import { type Client, problemOf } from "@/lib/client";
 import { type NativeTarget, nativeRuntimeLabel, nativeSelectorLabel, nativeStateLabel } from "@/lib/native";
 
 export function ConnectExistingAgents({ variant }: Pick<CodingAgentActionProps, "variant">) {
-  return <CodingAgentAction variant={variant} label="Connect agent" prompt={connectExistingAgentsPrompt(location.origin)} playgroundHref="#/agents/connect" playgroundLabel="Connection setup" />;
+  return <CodingAgentAction variant={variant} label="Connect your agents" prompt={connectExistingAgentsPrompt(location.origin)} playgroundHref="#/agents/connect" playgroundLabel="Connection setup" />;
 }
 
 /** Reads only the server host's explicitly selected project. It never presents browser-local discovery as possible. */
@@ -47,16 +47,17 @@ export function NativeConnections({ v2, go, initialSource = "server" }: { v2: Cl
       <h2 className="text-lg font-semibold">Observe your existing agent</h2>
       <p className="max-w-prose text-body text-muted-foreground">Connect Claude Code or Codex running locally, in Docker, or on another server. Your application continues to start and control its jobs; AgentRun receives session activity, model and token usage.</p>
       <p className="max-w-prose text-small text-muted-foreground">Observation reports activity without sending conversations or enabling learning.</p>
-      <CodingAgentAction label="Connect agent" prompt={`${connectExistingAgentsPrompt(location.origin)}\n\nI selected observation of an existing application. Preserve its current job trigger and SDK configuration; do not import or launch a replacement agent.`} />
+      <CodingAgentAction label="Connect your agents" prompt={`${connectExistingAgentsPrompt(location.origin)}\n\nI selected observation of an existing application. Preserve its current job trigger and SDK configuration; do not import or launch a replacement agent.`} />
     </section><section className="space-y-4 border bg-card p-4" aria-label="Learn from existing CLI sessions">
       <h2 className="text-lg font-semibold">Learn as you code</h2>
       <p className="max-w-prose text-body text-muted-foreground">Keep starting Codex CLI and Claude Code normally. Capture prompt windows for a selected project and deliver owner corrections on later prompts.</p>
       <p className="max-w-prose text-small text-muted-foreground">Uses your local AgentRun server. No SDK wrapper required. Add and review corrections in the agent’s Learning tab.</p>
       <CodingAgentAction variant="primary" label="Enable learning" prompt={enableCliLearningPrompt(location.origin)} />
     </section></> : source === "remote" ? <RemoteConnections v2={v2} /> : <>
-    <ConnectExistingAgents />
+    {/* The hand-off heads its tab's section, at the right of its title, as Another machine's does: under the tabs, never
+        on their line (both are inline, and stood touching there). */}
     <section className="space-y-4 border bg-card p-4" aria-label="Discover native setups">
-      <h2 className="text-lg font-semibold">Discover on this server</h2>
+      <div className="flex flex-wrap items-center gap-3"><h2 className="mr-auto text-lg font-semibold">Discover on this server</h2><ConnectExistingAgents /></div>
       <p className="text-body text-muted-foreground">Read-only discovery checks configuration without launching a model or executing project hooks. No model API key is needed to connect.</p>
       <Field label="Project on server host" hint="Enter the absolute path on the machine running AgentRun."><Input aria-label="Project on server host" value={project} onChange={(event) => { setProject(event.target.value); setTargets(null); }} placeholder="/path/to/project" disabled={busy} /></Field>
       <Button variant={targets ? "outline" : "solid"} size="sm" disabled={busy || !project.trim().startsWith("/")} aria-busy={busy} onClick={() => void discover()}>{busy && !targets ? "Discovering…" : "Discover"}</Button>
