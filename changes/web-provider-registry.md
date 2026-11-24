@@ -1,6 +1,6 @@
 ---
 packages: @parcha/agentrun-web, @parcha/agentrun-serve
-kind: refactor
+kind: fix
 ---
 One provider contract and one registry. Each provider is one `WebProvider` object in its own file (`defineProvider`: its id, label, key variable, the tools it serves, what its fetch does on a miss, its settings check, and `make`, the provider for one Web), registered once in `providers/registry.ts` (`PROVIDERS`). `createWeb` makes each provider an order names once per Web and asks it through one loop per tool: `searchInTurn` for web_search, and one read loop in `fetch.ts` for web_fetch, where each turn is recorded on the receipt as it is taken. `ProviderId`, `SearchProvider`, `FetchProvider`, `KeyedProvider`, a search's `provider`, a page's `via` and `ProviderSettings` are read from the registry, and `keys`, `endpoints`, `send` and `settings` are keyed by its ids. Every fetch provider sits behind the one breaker (`readerOf` on `searchBreaker`); keyless Firecrawl's and the keyed providers' own fetch breakers (`firecrawlFetch`'s, `keyedFetch`) are gone. web_search's breakers and web_fetch's stay separate per tool, as before; a refused key is refused for both tools, which share the provider's one client. `webFetch` and `webRead` take `readers` by provider id in place of `parallel`, `firecrawl` and `keyed`; `parallelReads` makes Parallel's. serve reads the registry for each resolution's chain, the fakes it names under --faux, the keys it reads for a run and the search tool's description.
 
