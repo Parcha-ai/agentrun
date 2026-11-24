@@ -3,7 +3,7 @@ import type { Fee, Pay } from "../fees.js";
 import type { WebPage, WebRead, WebUnread } from "../fetch.js";
 import { clip, type Page } from "../page.js";
 import { QUERY_MAX } from "../search.js";
-import type { WebDecider } from "./decider.js";
+import type { Verdict, WebDecider } from "./decider.js";
 import type { PageGuard, Warned } from "./page-guard.js";
 import { passagesOf } from "./passages.js";
 import { bounded, byScore, decisionPay, type DecisionRecord, droppedOf, drops, failed, ran, relevanceOf, type Scored, type Sift, type Sifted, since, skipped, type StepOptions } from "./record.js";
@@ -38,7 +38,7 @@ async function judgeSpans(decider: WebDecider, url: string, need: string, text: 
   const { got, requests } = await bounded((ctx) => decider.judge(url, need, texts, ctx), options);
   if ("code" in got) return { failure: failed(decider, "fetch", spans.length, since(start), requests, got) };
   const ms = since(start);
-  const scored: Scored[] = spans.map(([s, e], i) => ({ id: `p${i + 1}`, score: got.verdicts[i]!.score, at: [base + s, base + e] }));
+  const scored: Scored[] = spans.map(([s, e], i) => ({ id: `p${i + 1}`, score: got.verdicts[i] as Verdict, at: [base + s, base + e] }));
   return { texts, scored, record: (dropped: DecisionRecord["dropped"], kept?: number) => ran(decider, "fetch", got, ms, requests, scored, dropped, kept) };
 }
 

@@ -6,7 +6,7 @@ import { codeOf, costOf, costTogether } from "./failure.js";
 
 /** What a provider said of one item: p(needed), or null where it refused the question. What is done with it is the
  *  step's (search.ts, fetch.ts), never the decider's. */
-export type Verdict = { score: number | null };
+export type Verdict = number | null;
 /** "counted": the provider reported none, and the request's text was counted by the host's counter. */
 export type Tokens = { in: number; out: number | null; basis: "reported" | "counted" };
 /** "none": nothing was billed (the request was never sent, or refused unanswered). usd is null only when unknown. */
@@ -235,8 +235,8 @@ export function deciderFrom(provider: DecisionAsker, options: DeciderOptions): W
   };
   const ask = async (asked: DecisionAsk, ctx: DecideContext): Promise<Verdicts> => {
     const { ids, answerOf, meta, cost } = await send(asked, ctx);
-    const verdicts = ids.map((id): Verdict => ({ score: answerOf(id, noulOf) }));
-    if (ids.length && verdicts.every((verdict) => verdict.score === null)) throw new DecideError("refused", `${provider.id} refused every question`, cost.usd, cost.basis);
+    const verdicts = ids.map((id): Verdict => answerOf(id, noulOf));
+    if (ids.length && verdicts.every((verdict) => verdict === null)) throw new DecideError("refused", `${provider.id} refused every question`, cost.usd, cost.basis);
     return { verdicts, ...meta };
   };
   // Asked one after another, each through ctx.pay; a failure after the first carries what the requests before it cost.

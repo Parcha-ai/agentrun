@@ -109,7 +109,7 @@ function siftQuestions() {
 test("the decider gives scores, not decisions: each verdict is the provider's p, or null where it refused", async () => {
   const { provider } = fakeProvider({ r1: 0.9, r2: { type: "refusal" } });
   const got = await priced(provider).sift("widgets delaware", URLS.slice(0, 2).map((url) => ({ url, title: "", snippet: "" })), TASK, CTX());
-  assert.deepEqual(got.verdicts, [{ score: 0.9 }, { score: null }]);
+  assert.deepEqual(got.verdicts, [0.9, null]);
 });
 
 test("a fetched part is judged in passages: the kept passages in order, LEFT_OUT where any were dropped, the part's place in the page unchanged", async () => {
@@ -352,7 +352,7 @@ test("passages over the state budget go in several requests, each within it and 
     first += n;
   }
   assert.equal(first, 200);
-  assert.deepEqual(got.verdicts.map((v) => v.score), passages.map((_, i) => (i % 2 ? 0.9 : 0.01)));
+  assert.deepEqual(got.verdicts, passages.map((_, i) => (i % 2 ? 0.9 : 0.01)));
   assert.deepEqual(got.questions_sha256, asked.map(({ request }) => sha256(JSON.stringify(request.questions))));
   assert.deepEqual([got.tokens, got.cost], [{ in: 100 * asked.length, out: 4 * asked.length, basis: "reported" }, { usd: Math.round(0.0001 * asked.length * 1e6) / 1e6, basis: "estimate" }]);
 });

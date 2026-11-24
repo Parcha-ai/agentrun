@@ -1,7 +1,7 @@
 // The search step: a search's results sifted under a policy.
 import { clip } from "../page.js";
 import { QUERY_MAX, type Search } from "../search.js";
-import type { WebDecider } from "./decider.js";
+import type { Verdict, WebDecider } from "./decider.js";
 import { bounded, byScore, droppedOf, drops, failed, ran, relevanceOf, type Scored, type Sifted, since, skipped, type StepOptions } from "./record.js";
 
 /** Under label or rerank+label, the score at least one result must reach for the search not to be called a miss. */
@@ -27,7 +27,7 @@ export async function siftSearch(decider: WebDecider, answer: Search, options: S
   const { got, requests } = await bounded((ctx) => decider.sift(answer.query, answer.results, options.task, ctx), options);
   const n = answer.results.length;
   if ("code" in got) return { answer: { ...answer, sift: `not run (${got.code}); these results are unsifted` }, classifier: failed(decider, "search", n, since(start), requests, got) };
-  const scored: Scored[] = answer.results.map((hit, i) => ({ id: hit.url, score: got.verdicts[i]!.score }));
+  const scored: Scored[] = answer.results.map((hit, i) => ({ id: hit.url, score: got.verdicts[i] as Verdict }));
   if (policy !== "drop") return { answer: labelled(decider.id, answer, scored, options.task, policy === "rerank+label"), classifier: ran(decider, "search", got, since(start), requests, scored, []) };
   const results = answer.results.filter((_, i) => !drops(scored[i]!.score));
   return { answer: { ...answer, results, sift: `${decider.id} kept ${results.length} of ${n} results` }, classifier: ran(decider, "search", got, since(start), requests, scored, droppedOf(scored)) };
