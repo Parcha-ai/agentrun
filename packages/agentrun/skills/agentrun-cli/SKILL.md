@@ -166,4 +166,5 @@ Two clients call the same API from code, with the same server and token. `@parch
 - `agentrun usage`: Usage by meter over a period
 - `agentrun webhook`: delete, deliveries, get, redeliver, save, test
 - `agentrun workflows`: validate
+- `agentrun wrapped`: A year of the work under this machine's session files
 - `agentrun api METHOD PATH [--body JSON|@FILE|-]`: any route, PATH under the base URL

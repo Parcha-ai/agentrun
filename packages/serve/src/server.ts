@@ -85,7 +85,7 @@ import { dockerLimitsOf } from "./workspace/computer-deps.js";
 import { Owner, passwordProblem, SESSION_MS } from "./owner.js";
 import { acceptedTokens, type ApiToken, bearerCheck, tokenProblem } from "./api-token.js";
 import { answerPage, byConsoleSession, byOwnerSession, ConsoleSessions, consoleEntry, heldSessions, isJson, overHttps, ownerCookie, ownerCookieName, ownOrigin, sessionsAtEveryPort, sendHostRefused, sendMoved, sendMovedPage, signedIn } from "./page.js";
-import { hostFix, hostName, loopbackNames, movedFix } from "./host-check.js";
+import { hostFix, hostName, isLoopbackName, loopbackNames, movedFix } from "./host-check.js";
 import { movedAddress, publicAddressChanged, readPublicAddress } from "./public-address.js";
 import { computerViewerLink, familyReaches, type LiveFamily, type LiveHandover, liveViewerById, liveViewerFor, liveViewerLink, OpenViewers, proxyLiveUpgrade, serveViewerFile, viewerAnswers } from "./browser-live.js";
 import { browserHandBack, handBackTarget } from "./browser-commands.js";
@@ -151,12 +151,14 @@ import { isSecretWriteOperation, type SecretRequest, secretPageFor, secretsWrita
 import { ChatGPTPlan, planOf, PlanSignInRefused, SIGN_OUT_UNCONFIRMED, withPlan } from "./chatgpt-plan.js";
 import { modelGatewayRoute, readSavedGateway, type SavedGateway, withSavedGateway } from "./model-gateway.js";
 import { CLAUDE_LOGIN_ROUTES, ClaudeLoginRefused, claudeLoginOf, claudeLoginRouteOff, claudeLoginSwitchedOff, claudeLoginSetting, claudeLoginView, type ClaudeLoginDeps, dropRefusedLogin, envAtPlace, LOGIN_HARNESS, loginOf, loopback, startLoginHere, turnOffClaudeLogin, turnOnClaudeLogin, whyNotOneOwner, withClaudeLogin } from "./claude-login.js";
+import { ClaudeSignIns } from "./claude-sign-in.js";
 import { bootSealKey, parametersDigest, withSealKey } from "./seal-key.js";
 import { ServerLockHeldError, takeServerLock } from "./server-lock.js";
 import { recordDataRoot } from "./runner/disk-free.js";
 import { recordRunEnv, runFacingNames } from "./runner/runner-check.js";
 import { DRAIN_TIMEOUT } from "./runner/beside.js";
 import { analyticsFilter, analyticsView, statsView } from "./stats.js";
+import { readWrapped, wrappedView } from "./wrapped.js";
 import { type CostBasis, joinedBasis } from "./runner/metrics.js";
 import { unifiedUsage } from "./unified-usage.js";
 import { agentLoopOverStore } from "./store-reads/loop.js";
@@ -429,6 +431,9 @@ export type ServeOptions = {
   harnessSignIn?: boolean;
   /** With `faux` only: Docker answers, so docker is available, and nothing asks Docker (place-offers.ts). */
   fauxDocker?: boolean;
+  /** For tests: how long the Claude Code CLI's own sign-in this server starts waits for its browser before it is ended
+   *  (claude-sign-in.ts), in place of 10 minutes. */
+  claudeSignInLimitMs?: number;
   /** For tests: the lock each harness's first use installs by (harness-install.ts), by harness, with the package.json it
    *  locks beside it, in place of the one AgentRun ships, whose packages a test's own registry serves. */
   harnessLocks?: Readonly<Record<string, string>>;
@@ -762,6 +767,8 @@ export const ROUTES: readonly Route[] = [
   { method: "GET", pattern: /^\/stats$/, name: "getStats" },
   // The runs waiting and held, the live runners and their free slots, and the recent hand-backs (capacity.ts).
   { method: "GET", pattern: /^\/capacity$/, name: "getCapacity" },
+  // A year of the work under this machine's home (wrapped.ts), on a server on the person's own machine alone.
+  { method: "GET", pattern: /^\/wrapped$/, name: "getWrapped" },
   { method: "GET", pattern: /^\/settings\/tool-keys$/, name: "listToolKeys" },
   { method: "PUT", pattern: /^\/settings\/tool-keys\/([^/]+)$/, name: "saveToolKey" },
   { method: "DELETE", pattern: /^\/settings\/tool-keys\/([^/]+)$/, name: "deleteToolKey" },
@@ -1598,8 +1605,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     else await plan.changeAgain();
   };
   /** What Claude Code's login routes use: a turn on or off reads the setting again, then env, as a key's save does. A
-   *  sign-in this server starts opens a browser on its machine, so only where the console is on loopback here. */
+   *  sign-in this server starts opens a browser on its machine, so only where the console is on loopback here; it is
+   *  kept for this process (claude-sign-in.ts), and one still waiting is ended at the stop. */
+  const claudeSignIns = new ClaudeSignIns({ limitMs: options.claudeSignInLimitMs });
+  stops.push(async () => claudeSignIns.close());
   const loginDeps = (): ClaudeLoginDeps => ({
+    signIns: claudeSignIns,
     settings: store.settings,
     data,
     env: base,
@@ -5573,6 +5584,17 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         return send(res, 200, await usage(url));
       case "getCapacity":
         return send(res, 200, await capacityOverStore(store.runners, capacityWindowOf(url)));
+      case "getWrapped": {
+        // The session files of the machine this server runs on: only a server bound to loopback with no public URL answers.
+        // A name an operator allowed (--allow-host) passes the server's Host check for its other routes, but a page that rebound
+        // one to this address must not read the machine's files: here the Host is a loopback name or address, or it is refused.
+        if (options.apiOnly || options.publicUrl || !isLoopback(host) || !isLoopbackName(hostName(req.headers.host))) throw new ApiError("forbidden", "wrapped reads this machine's own session files, so only a server on loopback with no public URL, reached by a loopback name, answers it");
+        const given = url.searchParams.get("year");
+        const year = given === null ? new Date().getFullYear() : Number(given);
+        if (given !== null && !/^[1-9]\d{3}$/.test(given)) throw new ApiError("bad_request", "year is a four-digit year");
+        const [{ wrapped, unread }, analytics] = await Promise.all([readWrapped(year), analyticsOverStore(store, { from: new Date(year, 0, 1).toISOString(), to: new Date(year + 1, 0, 1).toISOString() })]);
+        return send(res, 200, wrappedView(wrapped, analytics.bySource.filter((g) => g.source !== "live").map((g) => ({ source: g.source, runs: g.runs })), unread));
+      }
       case "getStats": {
         const filter = analyticsFilter(url);
         // The store's counts and cost sums (store-reads/stats), the runs' metrics summed (store-reads/analytics), and the
@@ -6709,6 +6731,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     clearInterval(localSourceTimer);
     // Cancel a pending ChatGPT callback without signing out or changing the saved credential.
     plan.close();
+    // The CLI's sign-in still waiting for its browser ends with the server, which forgets it: left running, its CLI would
+    // keep the browser's callback port from the next server's sign-in. Awaited until its process is gone.
+    const signInStopped = claudeSignIns.close();
     const observationStopped = stopObservationRetention();
     // A harness install under way stops with the server: npm gets SIGTERM, then SIGKILL, and nothing half installed stays.
     const installStopped = Promise.all(Object.values(installs).map((install) => install.stop()));
@@ -6726,6 +6751,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     await importing;
     await schemaSealed;
     await installStopped;
+    await signInStopped;
     await observationStopped;
     await localSourceSweep;
     // The ends' follower stops before the webhooks it feeds and the store it reads.

@@ -2761,6 +2761,20 @@ export interface operations {
         organization?: string;
         plan?: string;
       };
+      folder: string;
+      machine: {
+        folder: string;
+        source: "CLAUDE_CONFIG_DIR" | "default";
+      };
+      sign_in?: {
+        state: "waiting" | "signed_in" | "timed_out" | "failed" | "not_started";
+        started_at: string;
+        ended_at?: string;
+        limit_ms: number;
+        exit_code?: number;
+        signal?: string;
+        error?: string;
+      };
     };
   };
   getCliLearningRun: {
@@ -4113,6 +4127,53 @@ export interface operations {
       region?: string;
       s3Url?: string;
       image?: string;
+    };
+  };
+  getWrapped: {
+    body: never;
+    answer: {
+      year: number;
+      sessions: number;
+      turns: number;
+      requests: number;
+      tokens: {
+        input: number;
+        output: number;
+        cache_read: number;
+        cache_write: number;
+      };
+      cost_usd: number;
+      unpriced_requests: number;
+      days: {
+        day: string;
+        requests: number;
+        tokens: number;
+      }[];
+      hours: number[];
+      weekdays: number[];
+      active_ms: number;
+      harnesses: {
+        harness: string;
+        sessions: number;
+        requests: number;
+        tokens: number;
+      }[];
+      models: {
+        model: string;
+        requests: number;
+        tokens: number;
+        cost_usd: number;
+      }[];
+      sources: {
+        source: string;
+        sessions: number;
+        requests: number;
+      }[];
+      imported: {
+        source: string;
+        runs: number;
+      }[];
+      unread_files: number;
     };
   };
   gitHubCallback: {
@@ -6716,6 +6777,20 @@ export interface operations {
         organization?: string;
         plan?: string;
       };
+      folder: string;
+      machine: {
+        folder: string;
+        source: "CLAUDE_CONFIG_DIR" | "default";
+      };
+      sign_in?: {
+        state: "waiting" | "signed_in" | "timed_out" | "failed" | "not_started";
+        started_at: string;
+        ended_at?: string;
+        limit_ms: number;
+        exit_code?: number;
+        signal?: string;
+        error?: string;
+      };
     };
   };
   startCliLearningRun: {
@@ -6958,6 +7033,20 @@ export interface operations {
         organization?: string;
         plan?: string;
       };
+      folder: string;
+      machine: {
+        folder: string;
+        source: "CLAUDE_CONFIG_DIR" | "default";
+      };
+      sign_in?: {
+        state: "waiting" | "signed_in" | "timed_out" | "failed" | "not_started";
+        started_at: string;
+        ended_at?: string;
+        limit_ms: number;
+        exit_code?: number;
+        signal?: string;
+        error?: string;
+      };
     };
   };
   turnOnClaudeLogin: {
@@ -6976,6 +7065,20 @@ export interface operations {
         email?: string;
         organization?: string;
         plan?: string;
+      };
+      folder: string;
+      machine: {
+        folder: string;
+        source: "CLAUDE_CONFIG_DIR" | "default";
+      };
+      sign_in?: {
+        state: "waiting" | "signed_in" | "timed_out" | "failed" | "not_started";
+        started_at: string;
+        ended_at?: string;
+        limit_ms: number;
+        exit_code?: number;
+        signal?: string;
+        error?: string;
       };
     };
   };
