@@ -1,21 +1,17 @@
 // The API keys a person makes in the console (Settings → AgentRun API keys, /v2/settings/api-keys, api-keys.ts): a key
 // is made by the owner's signed-in session alone, shown once in the answer that made it, and opens /v2 and /mcp as the
 // server's own token does, from then until it is revoked, across a restart too. No read shows it again; the store keeps
-// a keyed hash of it and never the key; a token, or a key, is refused making or revoking one; a key is never the setup
-// code; and every presented header is compared with every key, with no early return.
+// a keyed hash of it and never the key; a token, or a key, is refused making or revoking one; and a key is never the
+// setup code. The keys over the store alone, on SQLite and on Postgres, are api-keys-store.test.mjs's.
 import assert from "node:assert/strict";
-import crypto, { createHash, randomBytes } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
-import { syncBuiltinESMExports } from "node:module";
-import { hostname, tmpdir } from "node:os";
-import { join } from "node:path";
-import { mock, test } from "node:test";
-import { openSqliteStore } from "../dist/store/index.js";
+import { createHash, randomBytes } from "node:crypto";
+import { hostname } from "node:os";
+import { test } from "node:test";
 import { findPlanted } from "./fixtures/planted-secrets.mjs";
 import { asOwner, call, client, cookieOf, launchFor, serve, withEnv } from "./support.mjs";
 import { meetsDocument } from "./webhook-support.mjs";
 
-const { API_KEY_PREFIX, API_KEY_SETTING, API_KEYS_LIMIT, ApiKeys, USED_EVERY_MS } = await import("../dist/api-keys.js");
+const { API_KEY_PREFIX, API_KEY_SETTING, API_KEYS_LIMIT } = await import("../dist/api-keys.js");
 const { CLAUDE_LOGIN_SETTING, LOGIN_REFUSES_API_KEYS } = await import("../dist/claude-login.js");
 const { HARNESS_SIGN_IN_REFUSES_API_KEYS } = await import("../dist/server.js");
 
@@ -195,6 +191,7 @@ test("an API-only server takes no key made before the profile: it has no owner, 
   assert.equal((await client(server.baseUrl, server.token)("GET", "/runs")).status, 200, "the token it was started with opens it");
   assert.equal((await client(server.baseUrl, made.body.api_key)("GET", "/runs")).status, 401, "the key does not");
   assert.equal((await client(server.baseUrl, server.token)("GET", "/settings/api-keys")).status, 404, "and the keys' routes are not served");
+  assert.deepEqual((await client(server.baseUrl, server.token)("GET", "/capabilities")).body.features.api_keys, { routes: false, limit: API_KEYS_LIMIT, at_rest: "hashed" }, "its capabilities say so");
   await server.stop();
 
   const back = await serve(t, { data: first.data, accounts: true, runner: false });
@@ -285,96 +282,4 @@ test(`a server keeps at most ${API_KEYS_LIMIT} keys: the next is 409 api_keys_fu
   assert.deepEqual((await server.token("GET", "/settings/api-keys")).body.keys.map((one) => one.name), made.map((one) => one.name), "listed oldest first");
   assert.equal((await server.page("DELETE", `/settings/api-keys/${made[0].id}`)).status, 204);
   assert.equal((await server.page("POST", "/settings/api-keys", { name: "now it fits" })).status, 201);
-});
-
-// ---- the keys over a store, with no server ---------------------------------------------------------------------------
-
-/** A store of its own, and the keys over it under a seal key, with a clock the test moves. */
-function place(t, wrap = (settings) => settings) {
-  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "api-keys-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const clock = { at: Date.parse("2026-11-24T12:00:00.000Z") };
-  const sealKey = randomBytes(32);
-  const open = async () => {
-    const store = await openSqliteStore({ dataDir: dir });
-    const keys = new ApiKeys({ settings: wrap(store.settings) }, sealKey, { now: () => clock.at });
-    await keys.load();
-    return { store, keys, stop: async () => (await keys.close(), await store.close()) };
-  };
-  return { open, clock };
-}
-
-test("every check compares the header with every key, on two 32-byte digests, with no early return on a match", async (t) => {
-  const { open } = place(t);
-  const { keys, stop } = await open();
-  t.after(stop);
-  const made = [];
-  for (const name of ["a", "b", "c"]) made.push(await keys.create({ name }));
-  const spied = mock.method(crypto, "timingSafeEqual");
-  syncBuiltinESMExports();
-  t.after(() => (spied.mock.restore(), syncBuiltinESMExports()));
-  for (const [header, expected] of [[`Bearer ${made[0].api_key}`, made[0].id], [`Bearer ${made[2].api_key}`, made[2].id], ["Bearer nope", undefined], [undefined, undefined], [made[1].api_key, undefined], [`bearer ${made[1].api_key}`, undefined], [`Bearer ${made[1].api_key} `, undefined], ["x".repeat(10_000), undefined]]) {
-    spied.mock.resetCalls();
-    assert.equal(keys.used(header), expected, String(header).slice(0, 20));
-    assert.deepEqual(spied.mock.calls.map((one) => one.arguments.map((buffer) => buffer.length)), [[32, 32], [32, 32], [32, 32]], `three comparisons, whatever was sent (${String(header).slice(0, 20)})`);
-  }
-});
-
-test("a key's last use is written to the store once a minute at most, and read back at the next start", async (t) => {
-  const { open, clock } = place(t);
-  let { store, keys, stop } = await open();
-  const made = await keys.create({ name: "busy" });
-  const row = async () => (await store.settings.get(`${API_KEY_SETTING}${made.id}`)).last_used_at;
-  const start = clock.at;
-  const iso = (ms) => new Date(ms).toISOString();
-
-  assert.equal(keys.used(`Bearer ${made.api_key}`), made.id);
-  await keys.close();
-  assert.equal(await row(), iso(start), "the first use is written");
-
-  clock.at = start + USED_EVERY_MS - 1;
-  keys.used(`Bearer ${made.api_key}`);
-  await keys.close();
-  assert.equal(await row(), iso(start), "a use within the minute is not");
-  assert.equal(keys.list().keys[0].last_used_at, iso(clock.at), "though the list says it");
-
-  clock.at = start + USED_EVERY_MS;
-  keys.used(`Bearer ${made.api_key}`);
-  await keys.close();
-  assert.equal(await row(), iso(clock.at), "a minute on, it is written again");
-  await stop();
-
-  ({ store, keys, stop } = await open());
-  t.after(stop);
-  assert.equal(keys.list().keys[0].last_used_at, iso(start + USED_EVERY_MS), "the next start reads what was written");
-  assert.equal(keys.used(`Bearer ${made.api_key}`), made.id, "and the key opens under the same seal key");
-});
-
-test("a last-use write that loses to a revocation writes nothing: the revoked key's row stays gone", async (t) => {
-  let release;
-  const held = new Promise((resolve) => (release = resolve));
-  // The store's write of a last use waits here until the test lets it go.
-  const { open } = place(t, (settings) => ({ ...settings, replaceIf: async (...args) => (await held, settings.replaceIf(...args)) }));
-  const { store, keys, stop } = await open();
-  t.after(stop);
-  const made = await keys.create({ name: "revoked while in use" });
-  assert.equal(keys.used(`Bearer ${made.api_key}`), made.id, "its use starts a write");
-  await keys.revoke(made.id);
-  release();
-  await keys.close();
-  assert.equal(await store.settings.get(`${API_KEY_SETTING}${made.id}`), undefined, "the late write did not bring the row back");
-  assert.equal(keys.used(`Bearer ${made.api_key}`), undefined, "and the key opens nothing");
-});
-
-test("a key made under one seal key opens nothing under another", async (t) => {
-  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "api-keys-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const store = await openSqliteStore({ dataDir: dir });
-  t.after(() => store.close());
-  const first = new ApiKeys(store, randomBytes(32));
-  const made = await first.create({ name: "sealed" });
-  const other = new ApiKeys(store, randomBytes(32));
-  await other.load();
-  assert.equal(other.list().keys.length, 1, "it is listed, so its owner can revoke it");
-  assert.equal(other.used(`Bearer ${made.api_key}`), undefined, "and opens nothing");
 });

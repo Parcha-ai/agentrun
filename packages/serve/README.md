@@ -167,7 +167,7 @@ The server keeps no copy of a key, so it finds one in a text by its shape: `ar_k
 characters are cut wherever a run's views, a shared transcript or a learned note would show them. A key cut short, or
 split across lines, is not found, so keep keys out of prompts and files a run reads all the same. An
 [API-only](#api-only) server has no owner and serves none of these routes, so it takes no key at all: only the tokens
-it was started with.
+it was started with. Its capabilities say `features.api_keys.routes: false`.
 
 ## Sandbox in 60 seconds
 

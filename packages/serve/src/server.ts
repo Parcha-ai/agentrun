@@ -1542,14 +1542,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  recipe on the owner's own sign-in, and Claude Code's login on this machine while it is on, are one person's. */
   const apiKeysRefused = async (): Promise<string | undefined> =>
     options.harnessSignIn ? HARNESS_SIGN_IN_REFUSES_API_KEYS : (await claudeLoginSetting(store.settings)) ? LOGIN_REFUSES_API_KEYS : undefined;
-  // Making a key and turning the login on each ask whether the other holds: one at a time, so neither answers before the
-  // other's write lands.
-  let oneOwnerTurn: Promise<unknown> = Promise.resolve();
-  const oneOwnerAtATime = <T>(work: () => Promise<T>): Promise<T> => {
-    const mine = oneOwnerTurn.then(work, work);
-    oneOwnerTurn = mine.catch(() => undefined);
-    return mine;
-  };
+  // Making a key, revoking one and turning the login on each take a turn (ApiKeys.inTurn), one at a time: each decides by
+  // what the others left once their writes landed or were undone, never by a key taken out for a removal that then fails.
   await dropRefusedLogin(store.settings, loginOff ?? loginRefused(), (line) => (log ? log(logLine("claude_login", { line })) : void process.stderr.write(`agentrun-serve: ${line}\n`)));
   let claudeLogin = loginOf(await claudeLoginSetting(store.settings), data, base);
   // The model gateway saved in the console (model-gateway.ts), its key opened: laid over every reading of env, where the
@@ -4658,7 +4652,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       // skew check; left out when the store cannot say (a read that failed).
       const state = await store.schemaState?.().catch(() => undefined);
       const storeSchema = state ? { store_schema: { version: state.version, runner_floor: state.runnerFloor, known: state.known } } : {};
-      return send(res, 200, { ...answer, ...storeSchema, runner_refused: runnerRefused, features: { ...answer.features, computers: await computerCapabilities(computersOf()), triggers: { ...answer.features.triggers, public_url: Boolean(options.publicUrl) }, claude_login: !loginOff && !options.apiOnly } });
+      // features.api_keys.routes: false on an API-only server, which serves none of the keys' routes and reads no key.
+      return send(res, 200, { ...answer, ...storeSchema, runner_refused: runnerRefused, features: { ...answer.features, computers: await computerCapabilities(computersOf()), triggers: { ...answer.features.triggers, public_url: Boolean(options.publicUrl) }, claude_login: !loginOff && !options.apiOnly, api_keys: { ...answer.features.api_keys, routes: !options.apiOnly } } });
     }
     if (found.name === "getOpenapi") return send(res, 200, servedOpenapi(openapi, ownerCookieName(req)));
     // With accounts off there is no owner, and the console still asks whether it may save a secret: secret-writes.ts'
@@ -5755,8 +5750,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const body = found.name === "turnOnClaudeLogin" ? await bodyOf(req) : undefined;
         const deps = loginDeps();
         try {
-          // Turned on in its turn with a key's making (oneOwnerAtATime), its refusal read then, not when the request came.
-          const view = found.name === "getClaudeLogin" ? await claudeLoginView(deps) : found.name === "turnOnClaudeLogin" ? await oneOwnerAtATime(() => turnOnClaudeLogin(loginDeps(), body)) : found.name === "turnOffClaudeLogin" ? await turnOffClaudeLogin(deps) : await startLoginHere(deps);
+          // Turned on in a turn of the keys' (ApiKeys.inTurn), its refusal read then, not when the request came: a key
+          // being made or revoked has landed, or been undone, by the time the keys are counted.
+          const view = found.name === "getClaudeLogin" ? await claudeLoginView(deps) : found.name === "turnOnClaudeLogin" ? await apiKeys.inTurn(() => turnOnClaudeLogin(loginDeps(), body)) : found.name === "turnOffClaudeLogin" ? await turnOffClaudeLogin(deps) : await startLoginHere(deps);
           return send(res, 200, view, { "cache-control": "no-store" });
         } catch (error) {
           if (error instanceof ClaudeLoginRefused) throw new ApiError(error.code, error.message);
@@ -6136,14 +6132,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "createApiKey": {
         // A secret write: the dispatch's one check let only the owner's session this far (api-keys.ts). Never through
         // `idempotent`, whose record would keep the answer, and the answer holds the key. Refused, in words, where the
-        // server is one person's (apiKeysRefused), asked in its turn with the login's turning on.
-        const body = await bodyOf(req);
-        const made = await oneOwnerAtATime(async () => {
-          const refused = await apiKeysRefused();
-          if (refused) throw new ApiError("forbidden", refused);
-          return apiKeys.create(body);
-        });
-        return send(res, 201, made);
+        // server is one person's (apiKeysRefused), asked in the create's own turn.
+        return send(res, 201, await apiKeys.create(await bodyOf(req), apiKeysRefused));
       }
       case "revokeApiKey":
         await apiKeys.revoke(id);

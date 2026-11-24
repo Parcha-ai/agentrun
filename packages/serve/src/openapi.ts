@@ -4408,7 +4408,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
     },
     api_keys: {
       type: "object", additionalProperties: false, required: ["routes", "limit", "at_rest"],
-      properties: { routes: { type: "boolean" }, limit: { type: "integer", minimum: 1, description: "The most keys the server keeps at once." }, at_rest: { const: "hashed" } },
+      properties: { routes: { type: "boolean", description: "Whether this server serves the keys' routes: false on an API-only server, which has no owner to make one and takes no key." }, limit: { type: "integer", minimum: 1, description: "The most keys the server keeps at once." }, at_rest: { const: "hashed" } },
       description: "/settings/api-keys: the keys a person makes in the console for their apps, each shown once; the server keeps a keyed hash of each (`hashed`), never the key.",
       "x-agentrun-serve": "apikeys/1",
     },

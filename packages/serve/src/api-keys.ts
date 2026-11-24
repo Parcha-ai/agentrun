@@ -69,6 +69,8 @@ export class ApiKeys {
   readonly #say: (fields: Record<string, string | number>) => void;
   readonly #keys = new Map<string, Held>();
   readonly #writes = new Set<Promise<void>>();
+  /** The turn now taken (inTurn): settled before the next one starts, whatever it did. */
+  #turn: Promise<unknown> = Promise.resolve();
 
   constructor(store: { settings: Settings }, sealKey: Buffer, options: ApiKeysOptions = {}) {
     this.#settings = store.settings;
@@ -100,9 +102,19 @@ export class ApiKeys {
     return { id, name, created_at, last_used_at: held.usedAt === null ? null : new Date(held.usedAt).toISOString(), secret: apiKeySecretMeta(id, created_at) };
   }
 
-  /** How many keys open this server now: what the one-owner rule counts (server.ts loginRefused). */
+  /** How many keys open this server now: what the one-owner rule counts (server.ts loginRefused). Read it in a turn
+   *  (inTurn) to decide by it: outside one, a revocation under way has taken its key out and may yet put it back. */
   get count(): number {
     return this.#keys.size;
+  }
+
+  /** One at a time: every change to which keys open the server (create, revoke) takes a turn, and so does whatever
+   *  must decide by the keys as they stand once those changes have landed or been undone (the server turns Claude
+   *  Code's login on in one). A turn starts when the one before it has settled, whether it kept its write or not. */
+  inTurn<T>(work: () => Promise<T>): Promise<T> {
+    const mine = this.#turn.then(work, work);
+    this.#turn = mine.catch(() => undefined);
+    return mine;
   }
 
   /** GET /settings/api-keys: every key, oldest first, and the most a server keeps. `refused`: why this server makes
@@ -111,8 +123,10 @@ export class ApiKeys {
     return { keys: [...this.#keys.values()].sort((a, b) => (a.row.id < b.row.id ? -1 : 1)).map((held) => this.#view(held)), limit: API_KEYS_LIMIT, ...(refused ? { refused } : {}) };
   }
 
-  /** POST /settings/api-keys: a new key named `name`, its value as `api_key`, this once. */
-  async create(body: unknown): Promise<ApiKeyView & { api_key: string }> {
+  /** POST /settings/api-keys: a new key named `name`, its value as `api_key`, this once. `refused`: why this server
+   *  makes no key now, asked in the create's own turn, so nothing that would refuse it starts between the answer and
+   *  the write; its words are the 403's. */
+  async create(body: unknown, refused?: () => Promise<string | undefined>): Promise<ApiKeyView & { api_key: string }> {
     if (!isObject(body)) throw invalid([{ field: "body", reason: "wrong_type", message: "The body is an object: {\"name\": \"...\"}." }]);
     const unknown = unknownFields(body, ["name"]);
     if (unknown.length) throw invalid(unknown);
@@ -122,30 +136,38 @@ export class ApiKeys {
     if (name === "" || name.length > API_KEY_NAME_MAX || /[\u0000-\u001f\u007f]/.test(name)) {
       throw invalid([{ field: "name", reason: "out_of_range", message: `name is 1 to ${API_KEY_NAME_MAX} characters, on one line.` }]);
     }
-    const id = uuidv7(this.#now());
-    const value = `${API_KEY_PREFIX}${randomBytes(32).toString("base64url")}`;
-    const mac = this.#mac(`Bearer ${value}`);
-    const kept: Kept = { v: 1, id, name, mac: mac.toString("hex"), created_at: new Date(this.#now()).toISOString(), last_used_at: null };
-    const saved = await this.#settings.putIfAbsent(API_KEY_SETTING + id, kept, { prefix: API_KEY_SETTING, limit: API_KEYS_LIMIT });
-    if (saved === undefined) throw new ApiError("api_keys_full", `This server keeps at most ${API_KEYS_LIMIT} API keys. Revoke one you no longer use, then make this one.`);
-    const held: Held = { row: kept, mac, usedAt: null, savedAt: null, saving: false };
-    this.#keys.set(id, held);
-    return { ...this.#view(held), api_key: value };
+    return this.inTurn(async () => {
+      const why = await refused?.();
+      if (why) throw new ApiError("forbidden", why);
+      const id = uuidv7(this.#now());
+      const value = `${API_KEY_PREFIX}${randomBytes(32).toString("base64url")}`;
+      const mac = this.#mac(`Bearer ${value}`);
+      const kept: Kept = { v: 1, id, name, mac: mac.toString("hex"), created_at: new Date(this.#now()).toISOString(), last_used_at: null };
+      const saved = await this.#settings.putIfAbsent(API_KEY_SETTING + id, kept, { prefix: API_KEY_SETTING, limit: API_KEYS_LIMIT });
+      if (saved === undefined) throw new ApiError("api_keys_full", `This server keeps at most ${API_KEYS_LIMIT} API keys. Revoke one you no longer use, then make this one.`);
+      const held: Held = { row: kept, mac, usedAt: null, savedAt: null, saving: false };
+      this.#keys.set(id, held);
+      return { ...this.#view(held), api_key: value };
+    });
   }
 
-  /** DELETE /settings/api-keys/{id}: the key opens nothing from now on. */
+  /** DELETE /settings/api-keys/{id}: the key opens nothing from now on. In a turn of its own (inTurn): while its
+   *  removal is under way the key is out of this process, and a removal that fails puts it back, so nothing decides by
+   *  the count in between. */
   async revoke(id: string): Promise<void> {
-    const held = this.#keys.get(id);
-    if (!held) throw new ApiError("not_found", "No API key has that id: it was revoked, or never made.");
-    // Out of this process first, so a request that races the store's write is refused already.
-    this.#keys.delete(id);
-    try {
-      await this.#settings.remove(API_KEY_SETTING + id);
-    } catch (error) {
-      // Not removed from the store: it would open again at the next start, so it stays listed, to be revoked again.
-      this.#keys.set(id, held);
-      throw error;
-    }
+    return this.inTurn(async () => {
+      const held = this.#keys.get(id);
+      if (!held) throw new ApiError("not_found", "No API key has that id: it was revoked, or never made.");
+      // Out of this process first, so a request that races the store's write is refused already.
+      this.#keys.delete(id);
+      try {
+        await this.#settings.remove(API_KEY_SETTING + id);
+      } catch (error) {
+        // Not removed from the store: it would open again at the next start, so it stays listed, to be revoked again.
+        this.#keys.set(id, held);
+        throw error;
+      }
+    });
   }
 
   /** The id of the key whose `Bearer` line `header` is, else undefined. Every key is compared on every call, with no
