@@ -31,6 +31,9 @@ export type Receipt = {
   out: { bytes: number; chars: number };
   cost: { usd: number; lines: Fee[] };
   cache?: "hit";
+  /** With a classifier in the run: the text a web with none would have given the model for this call (a fetch's part
+   *  as asked, without looking_for), set beside what it read to see what the step saved. */
+  unsifted?: string;
 };
 
 /** `order.fetch` names the providers ahead of the direct fetch ("direct" in it). No `keys.parallel`: Parallel answers
@@ -79,6 +82,8 @@ const failedWith = (error: string, limit: Searched["limit"]): Searched => ({ ans
 export function createWeb(config: WebConfig): Web {
   const now = config.now ?? Date.now;
   const policy = policyOf(config.policy);
+  /** A receipt's `unsifted`, only in a run with a classifier. */
+  const unsifted = (text: () => string) => (config.decider ? { unsifted: text() } : {});
   const runBreakers = breakers(now);
   const pages: Pages = new Map();
   // A fee goes on the call's receipt once its request is sent, whatever the cap then books.
@@ -129,7 +134,7 @@ export function createWeb(config: WebConfig): Web {
       const sifted = config.decider ? await siftSearch(config.decider, found, { task, signal, ms: config.bounds?.decideMs, pay: decisionPay(config.pay ?? unmetered, lines), policy }) : { answer: found, classifier: "off" as const };
       const answer: Search & Sift = fitSearch(sifted.answer);
       const { classifier } = sifted;
-      const receipt: Receipt = { op: "search", asked: query, provider: "error" in answer ? null : answer.provider, tries, classifier, ...unjudged, out: outOf(searchText(answer)), cost: { usd: usd(lines), lines } };
+      const receipt: Receipt = { op: "search", asked: query, provider: "error" in answer ? null : answer.provider, tries, classifier, ...unjudged, out: outOf(searchText(answer)), cost: { usd: usd(lines), lines }, ...unsifted(() => searchText(fitSearch(found))) };
       return { answer, receipt };
     },
     async fetch(url, { offset, maxChars, task, lookingFor, ...guarded } = {}) {
@@ -141,7 +146,7 @@ export function createWeb(config: WebConfig): Web {
       if (problem) {
         const refused: Page = { ok: false, url: clip(asked, URL_MAX), status: 0, title: "", text: "", links: [], error: problem };
         const classifier = config.decider ? (await judgePart(config.decider, asked, refused, {})).classifier : "off";
-        return { answer: refused, receipt: { op: "fetch", asked, provider: null, tries, classifier, ...unjudged, out: outOf(webFetchText(refused)), cost: { usd: 0, lines } } };
+        return { answer: refused, receipt: { op: "fetch", asked, provider: null, tries, classifier, ...unjudged, out: outOf(webFetchText(refused)), cost: { usd: 0, lines }, ...unsifted(() => webFetchText(refused)) } };
       }
       const cached = typeof url === "string" && pages.has(url);
       const log: WebLog = (event, fields) => {
@@ -180,7 +185,7 @@ export function createWeb(config: WebConfig): Web {
         classifier = found.classifier;
       } else if (need && whole.ok && whole.text) answer = notApplied("no classifier in this run");
       else if (config.decider) ({ answer, classifier } = await judgePart(config.decider, asked, part, { task, ...step }));
-      const receipt: Receipt = { op: "fetch", asked, provider, tries, classifier, ...unjudged, out: outOf(webFetchText(answer)), cost: { usd: usd(lines), lines }, ...(cached ? { cache: "hit" as const } : {}) };
+      const receipt: Receipt = { op: "fetch", asked, provider, tries, classifier, ...unjudged, out: outOf(webFetchText(answer)), cost: { usd: usd(lines), lines }, ...(cached ? { cache: "hit" as const } : {}), ...unsifted(() => webFetchText(part)) };
       return { answer, receipt };
     },
   };
