@@ -6,7 +6,7 @@ import { test } from "node:test";
 
 const { MACHINE_TOKEN_SOURCE, newMachineToken } = await import("@parcha/agentrun-computer");
 const { closeReason, createAttachRoutes, newPairedId, newPairingCode, PAIR_TRIES_PER_MINUTE, pairBodyOf, pairedView, pairingCodeOf, pairRefusal, pairTries } = await import("../dist/computer-attach.js");
-const { ROUTE_PREFIX } = await import("../dist/workspace/paired-route.js");
+const { notAttachedWords, ROUTE_PREFIX } = await import("../dist/workspace/paired-route.js");
 const { AttachHub } = await import("@parcha/agentrun-computer");
 const { helloLacks, pairedEntry, servesNoKind, withPaired, ONE_PROCESS_WORDS, pairedProvider } = await import("../dist/workspace/attached-computers.js");
 const { resolveComputer } = await import("../dist/workspace/resolve-computer.js");
@@ -190,4 +190,81 @@ test("the server's route tick with its runner beside it: while no route row is t
   await attach.tick();
   assert.deepEqual(calls, [["all", ROUTE_PREFIX], ["removeIf", `${ROUTE_PREFIX}cmp-desk`]], "a row there is judged: an empty one goes");
   await attach.close();
+});
+
+/** The route tick over store fakes, on a server whose runner runs apart: `settings` keeps its writes (`writes`) and
+ *  lists `rows`; the paired computers' `list()` answers one held read, which lands when the test calls `release` with
+ *  the snapshot it took. `paired` adds the paired store's other calls a test needs. */
+function heldFirstRead(paired = {}) {
+  const writes = [];
+  const rows = [];
+  let lists = 0;
+  let alls = 0;
+  let release;
+  const read = new Promise((done) => (release = done));
+  const settings = {
+    get: async () => undefined,
+    putIfAbsent: async (key, value) => (writes.push(["putIfAbsent", key, value]), undefined),
+    replaceIf: async (key, _seen, value) => (writes.push(["replaceIf", key, value]), true),
+    removeIf: async (key) => (writes.push(["removeIf", key]), true),
+    remove: async (key) => void writes.push(["remove", key]),
+    all: async () => (alls++, [...rows]),
+  };
+  const pairedComputers = { list: () => (lists++, read), ...paired };
+  const attach = createAttachRoutes({ store: { pairedComputers, mintedTokens: {}, settings }, hub: new AttachHub(), runnerApart: true });
+  return { attach, writes, rows, release: (snapshot) => release(snapshot), lists: () => lists, alls: () => alls };
+}
+
+/** A run's route on a runner apart. */
+const APART_ROUTE = { runner: "runner-a", incarnation: "inc-a", run: "run-1", until: 1_000_000 };
+
+test("the route tick's first read of the paired computers, held while a computer pairs, keeps that pair over the earlier snapshot it lands with: the new computer's route to a runner apart is noted not attached now, never emptied, the snapshot empty or not", { timeout: 10_000 }, async () => {
+  for (const snapshot of [[], [{ id: "cmp-old", name: "desk-old" }]]) {
+    const side = heldFirstRead({ pair: async () => true });
+    const ticked = side.attach.tick();
+    assert.equal(side.lists(), 1, "the first tick is reading the paired computers");
+    const { computer } = await side.attach.pair({ code: newPairingCode(), name: "desk-new", hello: HELLO }, "203.0.113.7");
+    const key = `${ROUTE_PREFIX}${computer}`;
+    side.rows.push({ key, value: { ...APART_ROUTE, refused: null }, updatedAt: 0 });
+    // The read lands only now, with the snapshot it took before the pair committed: the new computer is not in it.
+    side.release(snapshot);
+    await ticked;
+    const noted = { ...APART_ROUTE, refused: notAttachedWords("desk-new") };
+    assert.deepEqual(side.writes, [["replaceIf", key, noted]], `the computer paired during the first read is known (a snapshot of ${snapshot.length}): its route to the runner apart is noted not attached now, never emptied`);
+    side.writes.length = 0;
+    side.rows[0] = { key, value: noted, updatedAt: 1 };
+    await side.attach.tick();
+    assert.deepEqual(side.writes, [], "the next tick leaves its noted route as it is");
+    await side.attach.close();
+  }
+});
+
+test("the route tick's first read of the paired computers, held while a computer is removed, keeps that removal over the earlier snapshot that still lists it: its route goes, never noted as a known box's", { timeout: 10_000 }, async () => {
+  const side = heldFirstRead({ get: async (id) => ({ id, name: "desk-gone", revokedAt: null }), revoke: async () => true });
+  const ticked = side.attach.tick();
+  assert.equal(side.lists(), 1, "the first tick is reading the paired computers");
+  await side.attach.remove("cmp-gone");
+  const key = `${ROUTE_PREFIX}cmp-gone`;
+  assert.deepEqual(side.writes, [["remove", key]], "the remove takes its route away");
+  side.writes.length = 0;
+  // A route row naming it is there again (a take that read the row before the revoke committed), and the read lands
+  // with the snapshot it took before the revoke: the removed computer still in it.
+  side.rows.push({ key, value: { ...APART_ROUTE, refused: null }, updatedAt: 0 });
+  side.release([{ id: "cmp-old", name: "desk-old" }, { id: "cmp-gone", name: "desk-gone" }]);
+  await ticked;
+  assert.deepEqual(side.writes, [["removeIf", key]], "the computer removed during the first read is not known: its route goes");
+  await side.attach.close();
+});
+
+test("two route ticks at once: a tick while another is still running does nothing, so two first reads of the paired computers never overwrite each other", { timeout: 10_000 }, async () => {
+  const side = heldFirstRead();
+  const first = side.attach.tick();
+  const second = side.attach.tick();
+  assert.equal(side.lists(), 1, "a tick while the first is still reading reads the paired computers no second time");
+  side.release([{ id: "cmp-desk", name: "desk-1" }]);
+  await Promise.all([first, second]);
+  assert.equal(side.alls(), 1, "nor the routes: one tick runs at a time");
+  await side.attach.tick();
+  assert.deepEqual([side.lists(), side.alls()], [1, 2], "the next tick, once the first is done, runs: the paired computers kept, the routes read again");
+  await side.attach.close();
 });
