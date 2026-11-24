@@ -104,3 +104,30 @@ test("a held value split where a call's read stops, its rest past JSON's one-cha
     assert.ok(shown.startsWith("y y ") && shown.includes(HEAD), `${pad.slice(0, 4)}: ${shown.slice(-60)}`);
   }
 });
+
+test("a held hex identifier split where a call's read stops, its rest past dots or dashes, shows none of it: the read past the stop counts separators as nothing when a held value folds", () => {
+  // The fold view drops "-", "_", ":" and "." however many stand in a row, so a held UUID reads whole across 300 dots
+  // (the #3626 review's text). Counted as one each, they were more than the read past the stop reads (hold, 232 for a
+  // UUID), the rest was never read, and the head showed while withheldWhole withheld the same text.
+  const U = ["3f9a1c2e", "7b4d", "4e8f", "9a01", "b2c3d4e5f607"].join("-");
+  for (const pad of [".".repeat(300), "-".repeat(300)]) {
+    const text = `${"y ".repeat(59_940)}${U.slice(0, 18)}\n${pad}${U.slice(18)}${"z".repeat(9000)} end`;
+    assert.equal(withheldWhole(text, [U]), true);
+    const shown = redactedCall(text, [U], CALL_RESULT_CHARS).slice(0, CALL_RESULT_CHARS);
+    assert.ok(!shown.includes(U.slice(0, 8)), `${pad[0]}: ${shown.slice(-60)}`);
+  }
+  // Control: a held value with no hex identifier in it folds nowhere, so no view reads it across the dashes; they count
+  // one each, and the text is served, the head in it as written.
+  const text = `${"y ".repeat(59_940)}${HEAD}\n${"-".repeat(300)}${REST}${"z".repeat(9000)} end`;
+  const shown = redactedCall(text, [KEY], CALL_RESULT_CHARS).slice(0, CALL_RESULT_CHARS);
+  assert.ok(shown.startsWith("y y ") && shown.includes(HEAD), shown.slice(-60));
+});
+
+test("a held value split across two strings where a call's read stops, empty strings between, shows none of it: the read past the stop counts quotes and JSON's punctuation as nothing", () => {
+  // The join view reads a JSON text's strings joined and drops its quotes and punctuation, so ["<H>", "", "", ..., "<R>"]
+  // reads the value whole. The read stops right after the head's string; counted as one each, 900 characters of empty
+  // strings were more than the read past the stop reads, and the rest was never read.
+  const text = `${"y ".repeat(59_990)}["${HEAD}",\n${'"",'.repeat(300)}"${REST}"]${"z".repeat(9000)} end`;
+  const shown = redactedCall(text, [KEY], CALL_RESULT_CHARS).slice(0, CALL_RESULT_CHARS);
+  assert.ok(!shown.includes(HEAD.slice(0, 8)), shown.slice(-60));
+});
