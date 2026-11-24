@@ -2859,11 +2859,12 @@ test("CVII: a password after `npm config set` is cut whatever option words stand
     }
   }
   assert.deepEqual(left, [], `npm config set behind option words: password left on ${left.length} of ${rows} rows: ${left.join(", ")}`);
-  // The read ends 1024 to 3072 characters past `npm` (shell-lex.ts commandLimit). Named at 2047, it ends 1025 past
-  // `npm`, short of a `set` about 1300 characters on: a documented miss, the password left. Named at 0, the same
-  // command's read reaches 3072 and the password is cut.
+  // The read ends 1024 to 3072 characters past the end of `npm` (shell-lex.ts commandLimit, from where the name's
+  // match ends). With `npm` ending at offset 2047 the read ends at 3072, 1025 on, short of a `set` about 1330
+  // characters on: a documented miss, the password left. At the text's start the same command's read reaches 3072
+  // and the password is cut.
   const long = ["npm", "config", ...Array.from({ length: 220 }, () => "--x=y"), "set", "//r/:_authToken", pw].join(" ");
-  for (const [where, pad, cut] of [["at 0", "", true], ["at 2047", `${"#".repeat(2046)}\n`, false]]) {
+  for (const [where, pad, cut] of [["at 0", "", true], ["ending at 2047", `${"#".repeat(2043)}\n`, false]]) {
     const out = await scrub(`${pad}${long}\n`, { mode: "cut" });
     assert.equal(out.ok, true, `failed closed on npm named ${where}`);
     assert.equal(!out.text.includes(pw), cut, `npm config set with 220 options, npm named ${where}: password ${cut ? "left, expected cut" : "cut, expected left (documented miss past the read)"}`);
