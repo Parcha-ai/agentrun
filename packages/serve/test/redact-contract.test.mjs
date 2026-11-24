@@ -673,7 +673,8 @@ const LONG = `${CUT_KEY}-${"q8VxR2mT7kPz".repeat(120)}`;
  *  - each view's decoders over a text of nothing but what they decode: percent-encoded bytes, ASCII and not, "+",
  *    JSON's escapes at one level and two (each kind, back to back), a second level that starts and fails, non-ASCII
  *    stretches for NFKC, characters that render as nothing (zero-width spaces, soft hyphens, both between letters);
- *  - a held value found every 9 characters, each find cut in place;
+ *  - a held value found every 9 characters, each find cut in place; and every 11, a character between each two finds
+ *    that no cut covers, so each find is checked against its own covered stretch of the view;
  *  - a held value of two lines, its lines over and over: its parts found at every line, each cut in place;
  *  - runs too long to read, each with a held value's head glued to its end: each run's tail read again, 8,192
  *    characters of it, for the held value. */
@@ -695,6 +696,7 @@ const adversarial = (size) => {
   return [
     ...[...shapes, ...views].map((text) => ({ text, values: [CUT_KEY] })),
     { text: f(`${DENSE} `), values: [DENSE] },
+    { text: f(`${DENSE} x `), values: [DENSE] },
     { text: f(`${TWO_LINES.join("\n")}\n`), values: [TWO_LINES.join("\n")] },
     { text: f(`${"z".repeat(9000)}${LONG.slice(0, 16)} `), values: [LONG] },
   ];
@@ -731,6 +733,15 @@ test("the work count reads each stage: a form's search, a view and its decoders,
   // A text with JSON's escapes is read in the squeezed view and the JSON view: two views built, each searched.
   const json = count(() => holds(escaped, { ...none, plain: [DENSE] }, { cuts: [[0, 3]] }));
   if (json < 3 * escaped.length) problems.push(`the JSON view: ${json} for ${escaped.length}`);
+  // Each find checked against the view's covered stretches visits some of them: F finds, each inside its own cut,
+  // against F covered stretches, visit about log2(F) each; against one covered stretch, one each. The same text and
+  // finds otherwise, so the two counts differ by those visits (and the cover's pass over F cuts, not one).
+  const finds = 4096;
+  const separate = `${DENSE} x `.repeat(finds);
+  const each = Array.from({ length: finds }, (_, i) => [11 * i, 11 * i + DENSE.length]);
+  const apart = count(() => holds(separate, { ...none, plain: [DENSE] }, { cuts: each }));
+  const together = count(() => holds(separate, { ...none, plain: [DENSE] }, { cuts: [[0, separate.length]] }));
+  if (apart - together < 6 * finds) problems.push(`the finds checked against ${finds} covered stretches: ${apart - together} more than against one`);
   assert.deepEqual(problems, []);
 });
 
