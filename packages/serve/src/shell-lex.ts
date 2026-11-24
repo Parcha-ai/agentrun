@@ -30,6 +30,25 @@ export type Op = { readonly op: string; readonly start: number; readonly end: nu
 export type Token = Word | Op;
 export const isWord = (token: Token): token is Word => "parts" in token;
 
+/** A command's arguments: its words, without a redirection's target (the word after `>`, `>>`, `<`, `<<`, `&>` and the
+ *  rest; `>&2` and `<&-` name theirs in the operator) or a descriptor written against one (the `2` of `2>`). Bash
+ *  gives the command neither. A substitution in a target is still in lex's `subs`. */
+export function argWords(text: string, tokens: readonly Token[]): Word[] {
+  const out: Word[] = [];
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i]!;
+    if (isWord(token)) {
+      const next = tokens[i + 1];
+      if (next && !isWord(next) && next.op === "redir" && next.start === token.end && DESCRIPTOR.test(text.slice(token.start, token.end))) continue;
+      out.push(token);
+    } else if (token.op === "redir" && !OWN_TARGET.test(text.slice(token.start, token.end)) && tokens[i + 1] && isWord(tokens[i + 1]!)) i++;
+  }
+  return out;
+}
+const DESCRIPTOR = /^[0-9]{1,4}$/;
+/** A redirection that duplicates or closes a descriptor (`>&2`, `2<&-`) and so takes no word after it. */
+const OWN_TARGET = /&(?:-|[0-9]{1,4})$/;
+
 /** The limit of a command named at `named`: `max` characters past the end of its stretch of `2 * max`, never past `to`.
  *  Every command named in one stretch shares it, and each reads at least `max` characters on and at most three times
  *  that. */
@@ -39,7 +58,8 @@ export function commandLimit(named: number, max: number, to: number): number {
 }
 
 /** What lex read: its tokens to the first operator `ends` accepts (not included), where it stopped, and the body spans
- *  of the command substitutions (`$(…)`, backticks, `<(…)`, `>(…)`) in its words, nested ones not listed. */
+ *  of the command substitutions (`$(…)`, backticks, `<(…)`, `>(…)`) in its words, inside quotes and `${…}` too; a
+ *  substitution nested in another's body is not listed (its body is read for it). */
 export type Lexed = { readonly tokens: readonly Token[]; readonly end: number; readonly subs: readonly (readonly [number, number])[] };
 
 /** Characters read by lex and its closer searches: the counted guard's measure (shell-lex.test.mjs). */
@@ -161,20 +181,25 @@ class Reader {
   }
 
   /** A double-quoted part from its first quote (`"` at `quote`, `open` its start: `$"` starts one before): the index
-   *  past its closer, or -1; `inner` gets its expansions. */
-  double(open: number, quote: number, nest: number, inner: Part[]): number {
+   *  past its closer, or -1; `inner` gets its expansions, and `subs` the substitution bodies inside them once it closes
+   *  (one that does not close is characters, read again as such). */
+  double(open: number, quote: number, nest: number, inner: Part[], subs?: [number, number][]): number {
     if (this.missed("dq", open)) return -1;
+    const found: [number, number][] | undefined = subs && [];
     for (let i = quote + 1; ; ) {
       lexCount.read++;
       const c = this.at(i);
-      if (c === DQ) return this.closes(open, i + 1);
+      if (c === DQ) {
+        if (found) subs!.push(...found);
+        return this.closes(open, i + 1);
+      }
       if (c === END || c === NL) return this.fail("dq", open, i);
       if (c === BS) {
         i += this.at(i + 1) === END ? 1 : 2;
         continue;
       }
       if (c === DOLLAR || c === BT) {
-        const part = this.expansion(i, nest, false);
+        const part = this.expansion(i, nest, false, found);
         this.groupFail = -1;
         if (part) {
           inner.push(part);
@@ -209,7 +234,7 @@ class Reader {
       return { kind: "sub", start: i, end };
     }
     if (d === LB) {
-      const end = this.brace(i, nest);
+      const end = this.brace(i, nest, subs);
       return end < 0 ? undefined : { kind: "brace", start: i, end };
     }
     if (quotes && d === SQ) {
@@ -218,7 +243,7 @@ class Reader {
     }
     if (quotes && d === DQ) {
       const inner: Part[] = [];
-      const end = this.double(i, i + 1, nest, inner);
+      const end = this.double(i, i + 1, nest, inner, subs);
       return end < 0 ? undefined : { kind: "dq", start: i, end, inner };
     }
     if (is(d, NAME_START)) {
@@ -245,15 +270,20 @@ class Reader {
     }
   }
 
-  /** `${…}` from its `$`: to the `}` that closes it, quotes and nested expansions read whole. */
-  brace(open: number, nest: number): number {
+  /** `${…}` from its `$`: to the `}` that closes it, quotes and nested expansions read whole; `subs` gets the
+   *  substitution bodies inside it once it closes. */
+  brace(open: number, nest: number, subs?: [number, number][]): number {
     if (this.missed("brace", open) || nest >= NEST_MAX) return -1;
+    const found: [number, number][] | undefined = subs && [];
     for (let i = open + 2; ; ) {
       lexCount.read++;
       const c = this.at(i);
-      if (c === RB) return this.closes(open, i + 1);
+      if (c === RB) {
+        if (found) subs!.push(...found);
+        return this.closes(open, i + 1);
+      }
       if (c === END || c === NL) return this.fail("brace", open, i);
-      const end = this.quoted(i, nest + 1);
+      const end = this.quoted(i, nest + 1, found);
       if (end > 0) {
         i = end;
         continue;
@@ -281,13 +311,14 @@ class Reader {
     return result;
   }
 
-  /** A quote or expansion at `i` read whole: the index past it, or 0 when there is none there. */
-  private quoted(i: number, nest: number): number {
+  /** A quote or expansion at `i` read whole: the index past it, or 0 when there is none there. `subs` gets the
+   *  substitution bodies in it. */
+  private quoted(i: number, nest: number, subs?: [number, number][]): number {
     const c = this.at(i);
     if (c === SQ) return Math.max(this.single(i), 0);
-    if (c === DQ) return Math.max(this.double(i, i, nest, []), 0);
+    if (c === DQ) return Math.max(this.double(i, i, nest, [], subs), 0);
     if (c === DOLLAR || c === BT) {
-      const end = this.expansion(i, nest, true)?.end ?? 0;
+      const end = this.expansion(i, nest, true, subs)?.end ?? 0;
       this.groupFail = -1;
       return end;
     }
@@ -385,9 +416,8 @@ class Reader {
         if (end > 0) part = { kind: "sq", start: i, end };
       } else if (c === DQ) {
         const inner: Part[] = [];
-        const end = this.double(i, i, nest, inner);
+        const end = this.double(i, i, nest, inner, subs);
         if (end > 0) part = { kind: "dq", start: i, end, inner };
-        if (part && subs) for (const p of inner) if (p.kind === "sub" || p.kind === "tick") subs.push(p.kind === "sub" ? [p.start + 2, p.end - 1] : [p.start + 1, p.end - 1]);
       } else if (c === DOLLAR || c === BT) {
         part = this.expansion(i, nest, true, subs);
       } else if (c === LT || c === GT) {
