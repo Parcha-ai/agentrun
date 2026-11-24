@@ -6,8 +6,11 @@
 import { type Packed, UUID } from "./record-key.js";
 
 /** One kind of key's entries, in the order added, and the open-addressing slots (linear probing) that find them:
- *  0 an empty slot, else an entry's index + 1. */
-type Table = { count: number; slots: Int32Array; owners: Int32Array };
+ *  0 an empty slot, else an entry's index + 1. Each slot's tag is its entry's hash's top byte: a probe passes a slot
+ *  whose tag differs without reading the entry (a miss walks the whole run). A table of fewer than TAGGED slots has
+ *  none (a file's own index, saved in its cursor, stays as small as it was); an index saved without them (an older
+ *  HomeState) has them built the first time it is probed. */
+type Table = { count: number; slots: Int32Array; tags?: Uint8Array; owners: Int32Array };
 /** A uuid's keys: four 32-bit words an entry. */
 type Uuids = Table & { words: Int32Array };
 /** Any other key's: entry i's bytes are bytes[ends[i - 1] (0 for the first), ends[i]). */
@@ -22,8 +25,10 @@ export type RecordIndex = {
 };
 
 const LOAD = 0.75;
+/** The slots from which a table's slots carry tags. */
+const TAGGED = 1024;
 
-const table = (slots: number) => ({ count: 0, slots: new Int32Array(slots), owners: new Int32Array(slots >> 1) });
+const table = (slots: number) => ({ count: 0, slots: new Int32Array(slots), ...(slots >= TAGGED ? { tags: new Uint8Array(slots) } : {}), owners: new Int32Array(slots >> 1) });
 
 /** An empty index, its slots `slots` (a power of 2) to start with. */
 export const recordIndex = (slots = 1024): RecordIndex => ({
@@ -55,12 +60,26 @@ function bytesHash(b: Uint8Array, from: number, to: number): number {
   return mix(h ^ (to - from));
 }
 
+/** `t`'s tags, built when it has none for its slots (an index saved before tags); none below TAGGED slots. */
+function tagsOf(t: Table, hashOf: (e: number) => number): Uint8Array | undefined {
+  if (t.slots.length < TAGGED) return undefined;
+  if (t.tags !== undefined && t.tags.length === t.slots.length) return t.tags;
+  const tags = new Uint8Array(t.slots.length);
+  for (let s = 0; s < t.slots.length; s += 1) if (t.slots[s] !== 0) tags[s] = hashOf(t.slots[s]! - 1) >>> 24;
+  return (t.tags = tags);
+}
+const uuidTags = (t: Uuids) => tagsOf(t, (e) => uuidHash(t.words[e * 4]!, t.words[e * 4 + 1]!, t.words[e * 4 + 2]!, t.words[e * 4 + 3]!));
+const otherTags = (t: Others) => tagsOf(t, (e) => bytesHash(t.bytes, e === 0 ? 0 : t.ends[e - 1]!, t.ends[e]!));
+
 /** The entry of `t` with these words, else -1. */
 function findUuid(t: Uuids, w0: number, w1: number, w2: number, w3: number, h: number): number {
   const mask = t.slots.length - 1;
+  const tags = uuidTags(t);
+  const tag = h >>> 24;
   for (let s = h & mask; ; s = (s + 1) & mask) {
     const e = t.slots[s]!;
     if (e === 0) return -1;
+    if (tags !== undefined && tags[s] !== tag) continue;
     const at = (e - 1) * 4;
     if (t.words[at] === w0 && t.words[at + 1] === w1 && t.words[at + 2] === w2 && t.words[at + 3] === w3) return e - 1;
   }
@@ -70,9 +89,12 @@ function findUuid(t: Uuids, w0: number, w1: number, w2: number, w3: number, h: n
 function findOther(t: Others, b: Uint8Array, from: number, to: number, h: number): number {
   const mask = t.slots.length - 1;
   const n = to - from;
+  const tags = otherTags(t);
+  const tag = h >>> 24;
   for (let s = h & mask; ; s = (s + 1) & mask) {
     const e = t.slots[s]!;
     if (e === 0) return -1;
+    if (tags !== undefined && tags[s] !== tag) continue;
     const end = t.ends[e - 1]!;
     const start = e === 1 ? 0 : t.ends[e - 2]!;
     if (end - start !== n) continue;
@@ -82,12 +104,13 @@ function findOther(t: Others, b: Uint8Array, from: number, to: number, h: number
   }
 }
 
-/** A free slot of `t` for a key hashed `h`. */
-function freeSlot(t: Table, h: number): number {
+/** Entry `e` put in a free slot of `t` for its key's hash `h`, with its tag. */
+function put(t: Table, tags: Uint8Array | undefined, h: number, e: number): void {
   const mask = t.slots.length - 1;
   let s = h & mask;
   while (t.slots[s] !== 0) s = (s + 1) & mask;
-  return s;
+  t.slots[s] = e + 1;
+  if (tags !== undefined) tags[s] = h >>> 24;
 }
 
 /** Room in `t` for one more entry: its entries' arrays and its slots doubled when full. */
@@ -98,7 +121,8 @@ function roomUuid(t: Uuids): void {
   }
   if (t.count + 1 > t.slots.length * LOAD) {
     t.slots = new Int32Array(t.slots.length * 2);
-    for (let i = 0; i < t.count; i += 1) t.slots[freeSlot(t, uuidHash(t.words[i * 4]!, t.words[i * 4 + 1]!, t.words[i * 4 + 2]!, t.words[i * 4 + 3]!))] = i + 1;
+    const tags = t.slots.length >= TAGGED ? (t.tags = new Uint8Array(t.slots.length)) : undefined;
+    for (let i = 0; i < t.count; i += 1) put(t, tags, uuidHash(t.words[i * 4]!, t.words[i * 4 + 1]!, t.words[i * 4 + 2]!, t.words[i * 4 + 3]!), i);
   }
 }
 
@@ -110,10 +134,8 @@ function roomOther(t: Others, n: number): void {
   if (t.used + n > t.bytes.length) t.bytes = grown(t.bytes, Math.max(t.bytes.length * 2, t.used + n)) as Uint8Array;
   if (t.count + 1 > t.slots.length * LOAD) {
     t.slots = new Int32Array(t.slots.length * 2);
-    for (let i = 0; i < t.count; i += 1) {
-      const start = i === 0 ? 0 : t.ends[i - 1]!;
-      t.slots[freeSlot(t, bytesHash(t.bytes, start, t.ends[i]!))] = i + 1;
-    }
+    const tags = t.slots.length >= TAGGED ? (t.tags = new Uint8Array(t.slots.length)) : undefined;
+    for (let i = 0; i < t.count; i += 1) put(t, tags, bytesHash(t.bytes, i === 0 ? 0 : t.ends[i - 1]!, t.ends[i]!), i);
   }
 }
 
@@ -131,7 +153,7 @@ function addUuid(t: Uuids, w0: number, w1: number, w2: number, w3: number, owner
   t.words[i * 4 + 2] = w2;
   t.words[i * 4 + 3] = w3;
   t.owners[i] = owner;
-  t.slots[freeSlot(t, uuidHash(w0, w1, w2, w3))] = i + 1;
+  put(t, uuidTags(t), uuidHash(w0, w1, w2, w3), i);
 }
 
 function addOther(t: Others, b: Uint8Array, from: number, to: number, owner: number): void {
@@ -141,7 +163,7 @@ function addOther(t: Others, b: Uint8Array, from: number, to: number, owner: num
   t.used += to - from;
   t.ends[i] = t.used;
   t.owners[i] = owner;
-  t.slots[freeSlot(t, bytesHash(b, from, to))] = i + 1;
+  put(t, otherTags(t), bytesHash(b, from, to), i);
 }
 
 /** The owner (its number) of the record packed as `key`, else -1. */
@@ -161,7 +183,12 @@ export function ownerOf(index: RecordIndex, { bytes, length }: Packed): number {
 /** The record packed as `key` added, owned by `owner` (a number of the index the owners refer to); one held already is
  *  left as it is. */
 export function addRecord(index: RecordIndex, key: Packed, owner: number): void {
-  if (ownerOf(index, key) !== -1) return;
+  if (ownerOf(index, key) === -1) addNew(index, key, owner);
+}
+
+/** The record packed as `key` added, owned by `owner`, where `index` is known not to hold it (ownerOf gave -1 for it,
+ *  and nothing was added since): addRecord without looking it up again. */
+export function addNew(index: RecordIndex, key: Packed, owner: number): void {
   const { bytes, length } = key;
   if (bytes[0] === UUID && length === 17) addUuid(index.uuids, word(bytes, 1), word(bytes, 5), word(bytes, 9), word(bytes, 13), owner);
   else addOther(index.others, bytes, 0, length, owner);

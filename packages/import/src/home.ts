@@ -12,7 +12,7 @@ import { type Env, type Locator, locatorKey, type SessionRead } from "./reader.j
 import { READERS, SOURCES, type Source } from "./readers/index.js";
 import { AT, HAS_LONG, HAS_REASONING, HAS_USAGE, STRIDE, USAGE_FIELDS } from "./counts.js";
 import { OLD_MB, type PoolRead, ReadPool, readAheadBytes } from "./pool.js";
-import { addDisjoint, addRecord, dropOwner, locatorNumber, markOf, ownAll, ownerOf, type RecordIndex, recordIndex, someRecord, undoTo } from "./record-index.js";
+import { addDisjoint, addNew, addRecord, dropOwner, locatorNumber, markOf, ownAll, ownerOf, type RecordIndex, recordIndex, someRecord, undoTo } from "./record-index.js";
 import { type Packed, packed, packInto } from "./record-key.js";
 import type { Usage } from "./types.js";
 import { addTokens, noTokens, type Tokens } from "./usage.js";
@@ -398,18 +398,41 @@ async function readSource(home: string, source: string, readers: Readers, env: E
       const me = locatorNumber(owners, key);
       const mark = markOf(owners);
       const found = new Set<string>();
+      // A reader asks for a record and then adds it: the last record packed is kept packed, and when the last question
+      // of it found none and the index has taken nothing since (its tables and their counts as they were), it is added
+      // without another lookup.
       const at = packed();
+      let asked: string | undefined;
+      let missedU: RecordIndex["uuids"] | undefined;
+      let missedO: RecordIndex["others"] | undefined;
+      let missedCount = -1;
+      const pack = (record: string) => {
+        if (record !== asked) {
+          packInto(record, at);
+          asked = record;
+          missedCount = -1;
+        }
+      };
+      const unchanged = () => missedCount !== -1 && missedU === owners.uuids && missedO === owners.others && missedCount === owners.uuids.count + owners.others.count;
       const seen = {
         has: (record: string) => {
-          packInto(record, at);
+          pack(record);
           const owner = ownerOf(owners, at);
-          if (owner === -1) return false;
+          if (owner === -1) {
+            missedU = owners.uuids;
+            missedO = owners.others;
+            missedCount = owners.uuids.count + owners.others.count;
+            return false;
+          }
+          missedCount = -1;
           if (owner !== me) found.add(owners.locators[owner]!);
           return true;
         },
         add(record: string) {
-          packInto(record, at);
-          addRecord(owners, at, me);
+          pack(record);
+          if (unchanged()) addNew(owners, at, me);
+          else addRecord(owners, at, me);
+          missedCount = -1;
           return this;
         },
       } as Set<string>;

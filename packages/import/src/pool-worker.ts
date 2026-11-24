@@ -5,7 +5,7 @@
 // is in mine), so the read is the one it would have made.
 import { parentPort, workerData } from "node:worker_threads";
 import { type Packed, packed, packInto } from "./record-key.js";
-import { addRecord, ownerOf, recordIndex } from "./record-index.js";
+import { addNew, addRecord, ownerOf, recordIndex } from "./record-index.js";
 import { READERS } from "./readers/index.js";
 import type { Locator } from "./reader.js";
 
@@ -45,8 +45,10 @@ parentPort!.on("message", async ({ id, source, locator }: PoolAsk) => {
     },
     add(record: string) {
       pack(record);
+      // open: the last question was of this record, and mine held none (nothing is added to mine in between).
+      if (open) addNew(mine, at, 0);
+      else addRecord(mine, at, 0);
       open = false;
-      addRecord(mine, at, 0);
       return this;
     },
   } as unknown as Set<string>;

@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { deserialize, serialize } from "node:v8";
 import { parseHome, READERS } from "../dist/index.js";
-import { addAll, addDisjoint, addRecord, dropOwner, locatorNumber, markOf, ownerOf, recordIndex, undoTo } from "../dist/record-index.js";
+import { addAll, addDisjoint, addNew, addRecord, dropOwner, locatorNumber, markOf, ownerOf, recordIndex, undoTo } from "../dist/record-index.js";
 import { packed, packInto } from "../dist/record-key.js";
 import { anthropicUsage, claudeAnswer, claudeFile, claudeUser, tempHome, writeJsonl } from "./fixtures.mjs";
 
@@ -103,6 +103,44 @@ test("an index kept as bytes (v8 serialize) finds what it held", () => {
   for (let i = 0; i < 2000; i += 1) assert.equal(copy.locators[owner(copy, i % 2 ? uuidKey(i) : `m:msg_${i}:req_${i}`)], `f${i % 5}`);
   add(copy, uuidKey(2001), 0);
   assert.equal(owner(copy, uuidKey(2001)), 0);
+});
+
+test("an index saved before its slots carried tags (an older HomeState) finds what it held, and takes more", () => {
+  const index = recordIndex(16);
+  const keys = [];
+  for (let i = 0; i < 20_000; i += 1) keys.push(uuidKey(i), `m:msg_01${hex(i, 6)}:req_011C${i}`);
+  keys.forEach((key, i) => add(index, key, i % 100));
+  assert.ok(index.uuids.tags && index.others.tags, "a table of 1024 slots or more is tagged");
+  const old = deserialize(serialize(index));
+  delete old.uuids.tags;
+  delete old.others.tags;
+  keys.forEach((key, i) => assert.equal(owner(old, key), i % 100, key));
+  assert.equal(owner(old, uuidKey(20_000)), -1);
+  const more = [];
+  for (let i = 20_000; i < 40_000; i += 1) more.push(uuidKey(i), `m:msg_01${hex(i, 6)}:req_011C${i}`);
+  more.forEach((key, i) => add(old, key, i % 100));
+  [...keys, ...more].forEach((key, i) => assert.equal(owner(old, key), i % keys.length % 100, key));
+  // A small table carries none: a file's own index, kept in its cursor, is no larger than before tags.
+  assert.equal("tags" in recordIndex(2).uuids, false);
+});
+
+test("addNew adds a key ownerOf found none for as addRecord does, from a table too small for tags to one past them", () => {
+  const a = recordIndex(2);
+  const b = recordIndex(2);
+  const keys = [];
+  for (let i = 0; i < 5_000; i += 1) keys.push(uuidKey(i), `m:msg_01${hex(i, 6)}:req_011C${i}`, `l:msg_${i}`);
+  keys.forEach((key, i) => {
+    const packedKey = packInto(key, at);
+    assert.equal(ownerOf(b, packedKey), -1);
+    addNew(b, packedKey, i % 9);
+    add(a, key, i % 9);
+  });
+  assert.equal(recordCount(b), recordCount(a));
+  keys.forEach((key, i) => {
+    assert.equal(owner(a, key), i % 9, key);
+    assert.equal(owner(b, key), i % 9, key);
+  });
+  assert.deepEqual(serialize(b), serialize(a));
 });
 
 test("from 4 slots, every key is found with its owner across each doubling of the index", () => {

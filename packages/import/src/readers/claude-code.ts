@@ -4,7 +4,7 @@ import { basename, dirname, join } from "node:path";
 import { addRequest, setUsage } from "../counts.js";
 import { type LineSource, lineReader, type ReadContext } from "../lines.js";
 import { type Env, entries } from "../reader.js";
-import { addRecord, ownerOf, type RecordIndex, recordIndex } from "../record-index.js";
+import { addNew, ownerOf, type RecordIndex, recordIndex } from "../record-index.js";
 import { packed, packInto } from "../record-key.js";
 import { argsOf, effortOf, INTERRUPTED, isObject, str, textOf } from "../text.js";
 import type { Answer, SessionOf, ToolCall } from "../types.js";
@@ -123,7 +123,8 @@ function record(value: Record<string, unknown>, at: number, { state, seen, keep,
       if (!key && !text && calls.length === 0) return;
       const added = addRequest(counts, session.model, usage, at);
       if (packed) {
-        addRecord(indexes, packed, added);
+        // ownerOf found none above, and nothing has been added to this file's index since.
+        addNew(indexes, packed, added);
         seen.add(`m:${key}`);
       }
       return;
