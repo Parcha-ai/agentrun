@@ -64,6 +64,21 @@ test("store: a woken run kept on a live runner is that runner's alone; B's polls
   assert.deepEqual(taken.map((claim) => [claim.runId, claim.runner, claim.epoch]), [[RUN, "runner-b", one.epoch + 1]], "B's next poll claims it, once");
 });
 
+test("store: the pin's runner is there at exactly the stale time since its word and gone 1 ms later, in the claim rule and in the runners' live read alike", async (t) => {
+  const one = await pinnedParked(t);
+  assert.equal(await one.store.runners.renew("runner-a", "inc-a", null), true);
+  // Its word exactly PRESENCE_STALE_MS old on the store's clock: still there, so still pinned.
+  one.clock.now += PRESENCE_STALE_MS;
+  assert.deepEqual(await one.store.runs.claimMany("runner-b", 1), [], "at the stale time, B's poll claims nothing");
+  assert.deepEqual((await one.store.runners.live(PRESENCE_STALE_MS)).map((row) => row.runner), ["runner-a"], "and the live read counts runner-a there");
+  assert.equal((await one.store.runs.get(RUN)).epoch, one.epoch, "the epoch did not move");
+  // 1 ms past it: gone, in both.
+  one.clock.now += 1;
+  assert.deepEqual(await one.store.runners.live(PRESENCE_STALE_MS), [], "1 ms past, the live read counts no runner");
+  const taken = await one.store.runs.claimMany("runner-b", 1);
+  assert.deepEqual(taken.map((claim) => [claim.runId, claim.runner, claim.epoch]), [[RUN, "runner-b", one.epoch + 1]], "1 ms past, B's poll claims it");
+});
+
 test("store: the runner the keep names claims it while it is live; a new incarnation of the same name unpins it for any runner", async (t) => {
   const live = await pinnedParked(t);
   assert.deepEqual(await live.store.runs.claimable({ runner: "runner-a" }), [RUN], "runner-a's memory path sees its own");
