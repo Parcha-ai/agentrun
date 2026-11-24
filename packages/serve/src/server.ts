@@ -249,6 +249,7 @@ import { type LearningResetHost, resetLearning } from "./learning-reset.js";
 import { agentComputerHoldKey } from "./workspace/agent-computer.js";
 import { sdkRunKey } from "./sdk/runs.js";
 import { waitEndedKey } from "./browser-wait-ended.js";
+import { browserHoldKey } from "./browser-hold.js";
 import { agentComputerOf, agentComputerView, agentDirName, agentFolder, agentHomeFolder, claimKinds, runFolder, scratchFolder, computerProviderFactories, computerProviderMakers, computerReadiness, dockerHostAddressesOf, isWorkspaceError, localWorkspace, reconcileAgentComputer, registryHere, runShellOf, serverRunWorkspace, type ShellPlace, storeLedger, type Workspace } from "./workspace/index.js";
 import { keyReader } from "./key-meta.js";
 import { redacted } from "./key-refusal.js";
@@ -3042,11 +3043,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       }
       // The run's folder (its work and what sits beside it), its scratch and its native context, on this machine.
       for (const folder of [dirname(runFolder(data, agentId, runId)), scratchFolder(data, agentId, runId), join(data, "native-context", runId)]) await rm(folder, { recursive: true, force: true });
-      // Its settings: an SDK run's row, its browser wait's end, the Archil disk it resolved to. Its kept computer's row
+      // Its settings: an SDK run's row, its browser wait's end and take, the Archil disk it resolved to. Its kept computer's row
       // (workspace/computer-kept.ts) is left to the janitor, which deletes the computer of a run no longer there and then
       // the row: removed here, the computer would have nothing left to reach it.
       await store.settings.remove(sdkRunKey(runId));
       await store.settings.remove(waitEndedKey(runId));
+      await store.settings.remove(browserHoldKey(runId));
       await store.settings.remove(runDiskKey(runId));
       await forgetKept("run", runId);
     },

@@ -55,6 +55,7 @@ import { HANDOVER_WAITING, type HandoverAnswered } from "./runner/journal-kinds.
 import type { LiveHandover, LiveViewerStore } from "./browser-live.js";
 import { provenFor, type RunnerLive } from "./live-reach.js";
 import { clearWaitEnded, markWaitEnded } from "./browser-wait-ended.js";
+import { browserHoldWriter } from "./browser-hold.js";
 import type { Claim, Store } from "./store/store.js";
 import { type RunSignIn, runSignIn, verifyRunSignIn } from "./sign-ins-store.js";
 import { held } from "./runner/held.js";
@@ -508,6 +509,8 @@ const browserTool: ToolEntry = {
         cursor = page.next;
       }
     }, context)) ?? [];
+    // The browser's take as the server reads it: written in order, and none from an earlier process of the run kept.
+    const holdWriter = host.store && host.claim ? browserHoldWriter(host.store.settings, host.claim.runId, host.claim.epoch) : undefined;
     const hands = person.personHands({
       gates,
       personTime: (what, seconds, options) => spend.personTime(what, seconds, options),
@@ -521,6 +524,8 @@ const browserTool: ToolEntry = {
       waitEnded: (at, why) => {
         if (host.store && host.claim) void markWaitEnded(host.store.settings, host.claim.runId, { at: new Date(at).toISOString(), why }, host.claim.epoch).catch(() => undefined);
       },
+      // Who drives the browser, for the run read's computer state (browser-hold.ts): one settings row while a take is live.
+      held: (tag, on, at) => void holdWriter?.held(tag, on, at),
       note: async (kind, data) => {
         // A hand-over's waiting entry, on the runner: the row says the run waits on the person in its browser from that
         // commit (the server tells run.needs_input by it), and no more from its answer's, whoever writes it.
