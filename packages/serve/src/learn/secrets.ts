@@ -222,13 +222,22 @@ const ARMOR_END = /^-----END [^-]*-----$/;
 /** The parts of a held value of many lines that a reader may print without the rest (`head -n 11 key.pem`, a body
  *  with its armor stripped), each held as itself, found as it stands and cut in place, and found in each view: each
  *  line of its body of LINE_MIN characters or more, and its body with its line breaks gone. Its body is its lines but
- *  a first "-----BEGIN …-----" and a last "-----END …-----", its armor. A value of one line has none: it is matched
- *  whole. */
+ *  a first "-----BEGIN …-----" and a last "-----END …-----", its armor. A key's last body line is mostly shorter than
+ *  LINE_MIN: one of MIN_SECRET characters or more is held with the END line after it, as written (`tail -n 2 key.pem`).
+ *  A value of one line has none: it is matched whole. */
 function partsOf(value: string): string[] {
   const lines = value.split(/\r\n|\r|\n/).map((line) => line.trim()).filter((line) => line.length > 0);
   if (lines.length < 2) return [];
-  const body = lines.slice(ARMOR_BEGIN.test(lines[0]!) ? 1 : 0, ARMOR_END.test(lines.at(-1)!) ? -1 : lines.length);
-  return [...body.filter((line) => line.length >= LINE_MIN), body.join("")].filter(longEnough);
+  const armored = ARMOR_END.test(lines.at(-1)!);
+  const body = lines.slice(ARMOR_BEGIN.test(lines[0]!) ? 1 : 0, armored ? -1 : lines.length);
+  const parts = [...body.filter((line) => line.length >= LINE_MIN), body.join("")];
+  const last = body.at(-1);
+  if (armored && last !== undefined && last.length >= MIN_SECRET && last.length < LINE_MIN) {
+    const end = lines.at(-1)!;
+    const endAt = value.lastIndexOf(end);
+    parts.push(value.slice(value.lastIndexOf(last, endAt), endAt + end.length));
+  }
+  return parts.filter(longEnough);
 }
 
 /** Whether a held JSON value's string under the key `name` is a secret by its name (heldFields): its name with its
