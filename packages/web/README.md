@@ -63,9 +63,10 @@ const { answer, receipt } = await web.search("widgets delaware", { n: 5, task: "
   call carries: a search's `task` takes its query's place when the call gives one, else the query is the need; a
   fetch's need is its `lookingFor`, else its `task`.
 - Every provider is sent the same states. A request's state is at most `STATE_BUDGET_BYTES` (90,000, within Parallel's
-  96,000) and asks at most `QUESTIONS_PER_REQUEST` (100). A search over the budget has every snippet cut to the longest
-  length that fits (`trimmed: { snippets, to_chars }`; the model still reads them whole). Passages over it are asked
-  in several requests, one after another, ids counted across the part, and the verdicts merged in order.
+  96,000) and asks at most `QUESTIONS_PER_REQUEST` (100), a judge request at most `PASSAGES_MAX` (50) passages. A
+  search over the budget has every snippet cut to the longest length that fits (`trimmed: { snippets, to_chars }`; the
+  model still reads them whole). Passages over either are asked in several requests, `REQUESTS_AT_ONCE` (4) at a time,
+  ids counted across the page, and the verdicts merged in order; one failed request fails the step.
 - The decider only asks: it gives one score per item, `p(needed)`, or null where the provider refused the question. The
   step decides what the model reads: an item is dropped when `1 - p(needed) >= THRESHOLD` (0.8). A refused question
   keeps its item.
