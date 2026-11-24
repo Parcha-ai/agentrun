@@ -544,6 +544,26 @@ test("a Docker sandbox's park names the runner that claimed it and its incarnati
   await resumed.release();
 });
 
+test("a resume whose clock read fails before it takes a kept row pinned to another runner says neither that runner is gone nor that it ends it: who is there was never read, so a plain new one", async () => {
+  for (const runners of [{ live: async () => [{ ...RUNNER_A, refused: "draining" }] }, { live: async () => [] }]) {
+    const one = await server(SANDBOX);
+    await (await one.claim(3, {}, { holder: RUNNER_A })).park("approval");
+    one.account.computers.delete("c1");
+    one.clock.now = T0 + 60_000;
+    // The store's clock does not answer for the resume's claim: its take never runs.
+    const clock = one.store.sealedKeys.clock;
+    one.store.sealedKeys.clock = async () => {
+      throw new Error("the store's clock did not answer");
+    };
+    const said = [];
+    const resumed = await one.claim(5, { hadComputer: async () => true, onConnected: (words) => void said.push(words) }, { holder: RUNNER_B }, runners);
+    one.store.sealedKeys.clock = clock;
+    assert.deepEqual(resumed.replaced, { kind: "sandbox", folderKept: false }, `neither lost nor elsewhere: ${JSON.stringify(resumed.replaced)}`);
+    assert.equal(computerReadyWords(said[0]), "The sandbox is ready: Linux (amd64), from Docker. It's a new sandbox: the one before is gone, with what was on it.");
+    await resumed.release();
+  }
+});
+
 // A park after a claim went on without a kept machine pinned to another runner (keepKept): never over that runner's row
 // while it is there, which its end compares; the park's own machine then goes as at the run's end.
 test("a park never writes over a kept row pinned to another runner still there: it keeps nothing, its own machine goes as at the run's end, and that row is left ending for its runner's end; once that runner is gone, the park's row replaces it", async () => {
