@@ -664,8 +664,8 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
    *  handed none of the server's (claim-secrets.ts keyedAtClaim, held here for the runner's answers). */
   const runKeyed = async () => (await openRunModelKey(keys, claim.runId)) !== undefined;
   /** Whether the claim's run is held, its model kept from running at its create (hold.refused): it routes no model, so
-   *  whatever its process asks, the runner hands it no model key, answers it keyless and refuses it a learning step, as
-   *  its spec asks for none of them (adapter-run-spec.ts, cli-run-spec.ts). */
+   *  whatever its process asks, the runner hands it no model key, answers it keyless and refuses it a learning step (its
+   *  learned workflows and its end-of-run step), as its spec asks for none of them (adapter-run-spec.ts, cli-run-spec.ts). */
   const modelRefused = launch.hold?.refused !== undefined;
   const refusedSpend = (): ClaimRefused => new ClaimRefused("a held run its model kept from running asks its runner for no model spend: it routes no model and takes no learning step");
   const learningFolder = async () => {
@@ -884,6 +884,9 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
         revoke: () => cleanProject(() => made.revoke()), inherit: () => projectCall(async () => made.inherit()), release: async () => {} };
     }),
     endOfRun: async (input) => {
+      // None for a held run its model kept from running: its spec builds no end-of-run step, and its runner reads no saved
+      // key and starts no audit for one, whatever its process asks.
+      if (modelRefused) throw refusedSpend();
       // The step as the run's spec builds it in a runner (adapter-run-spec.ts), over the runner's reads of the claim: what
       // the run must never learn is every secret this runner holds, the keys its claim handed it, every secret the server
       // keeps sealed and its sign-in's pointers, none of which the run's process is given.

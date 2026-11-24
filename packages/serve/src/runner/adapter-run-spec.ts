@@ -960,7 +960,10 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // from. With a grader it compares its answer with the other one (runner/compare-end.ts), on its own cap.
   // A run the promoted workflow answered (path `workflow`) starts its shadow audit after the step, drawn at 1 in k (runner/audit.ts
   // withAudit): at its end, so the shadow's cap is what the run's own left.
-  const endOfRun = launch.replay || launch.audit ? withGrader(compareEndOfRun(launch, { store: deps.store, folder: learningFolder, log, ...(run.redact ? { redact: run.redact } : {}) }), graderRoute ? { model: graderRoute.model, models: () => run.ledger.models(GRADER, GRADER) } : undefined) : withAudit(learningEndOfRun(launch, {
+  // A held run its model kept from running takes none: its model runs nowhere, so it has no turn to learn from, and its end
+  // reads no saved key and starts no audit (in a run's own process, its runner refuses the step too: run-child-host.ts heldFor).
+  // `null`, so the loop asks no step of its own deps either (adapter-loop.ts stepOf), nor one when the run is cut (cutRows).
+  const endOfRun = heldRefusal !== undefined ? null : launch.replay || launch.audit ? withGrader(compareEndOfRun(launch, { store: deps.store, folder: learningFolder, log, ...(run.redact ? { redact: run.redact } : {}) }), graderRoute ? { model: graderRoute.model, models: () => run.ledger.models(GRADER, GRADER) } : undefined) : withAudit(learningEndOfRun(launch, {
     store: deps.store,
     data: deps.data,
     ...(deps.env ? { env: deps.env } : {}),
@@ -1000,8 +1003,9 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     ...(catalog ? { mcp: catalog } : {}),
     // The run's own model key: a command row opens it again before the next model request (a message's new key).
     ...(runKey ? { modelKey: runKey } : {}),
-    // The run's end-of-run step, when it learns (the spec's, which the loop prefers over its deps': adapter-loop.ts stepOf).
-    ...(endOfRun ? { endOfRun } : {}),
+    // The run's end-of-run step, when it learns (the spec's, which the loop prefers over its deps': adapter-loop.ts stepOf),
+    // or null, none at all.
+    ...(endOfRun === undefined ? {} : { endOfRun }),
     ...(start ? { learningLaid: laidOf(seedLaid) } : {}),
     ...(workflowFirst ? { workflowFirst } : {}),
     ...(workflowRevise ? { workflowRevise } : {}),
