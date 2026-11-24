@@ -7,12 +7,13 @@ The scrubber reads a password typed in a command (`redis-cli -a`, a registry `lo
 - after a substitution longer than 256 characters, or one left open on its line (`curl -H "X: $(… -u admin:…`);
 - in ANSI-C quoting (`curl $'-u' admin:…`, `login -p $'…'`);
 - after a backslash line continuation: between a command's arguments for all five, and between `docker` and `login` or `npm` and `config set`;
-- with anything else between a program and its subcommand: a redirection (`docker >out.txt login …`), an option (`docker -D login …`, `npm -g set …`), an escaped blank;
-- under a command name written quoted (`"curl"`, `'redis-cli'`, `$'curl'`), with `.exe` or `.cmd`, or after a path, a quoted one holding blanks too (`"C:\Program Files\Docker\docker.exe" login …`);
+- with anything else between a program and its subcommand: a redirection (`docker >out.txt login …`), an option (`docker -D login …`, `npm -g set …`, `npm config --global set …`), an escaped blank;
+- in a registry login's `-p` with the password glued on (`docker login -p<pw>`);
+- under a command name written quoted (`"curl"`, `'redis-cli'`, `$'curl'`), with `.exe`, `.cmd`, `.bat` or `.ps1` in any case (`Docker.exe`), or after a path: a quoted one holding blanks (`"C:\Program Files\Redis\redis-cli.exe" -a …`) or a relative one (`.\redis-cli.exe`). Inside such a path a backslash is a separator, not the start of an escape (`\r`, `\n`);
 - after a non-ASCII blank (NBSP, the ideographic space, the other Unicode spaces) before or after a flag, a value or a subcommand;
 - inside a substitution nested in `${…}` or `$"…"`;
 - in a curl `-u` password glued to `&`, `(`, `)`, `<` or `>`, however long.
 
-A fixed corpus (`test/fixtures/scrub-differential`) records which characters the scrubber on main cut in each row, and a test requires each of them cut still and every row's password gone, but for two rows it names with the reason (`\r` and `\n` before a name read as escapes). Once the lexer's cuts alone cover the scans' on every row, a later change can delete the scans.
+A fixed corpus (`test/fixtures/scrub-differential`) records which characters the scrubber on main cut in each row, and a test requires each of them cut still and every row's password gone, but for two rows it names with the reason (a backslash before a name outside a Windows path, `\redis-cli`, reads as an escape). Once the lexer's cuts alone cover the scans' on every row, a later change can delete the scans.
 
 The lexer's work is counted: it reads each character of a text at most 8 times, and at most 12 when commands are named inside quotes the lexer pairs. The tests assert those counts, and CPU-time ceilings on every rule they time.

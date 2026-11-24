@@ -165,6 +165,24 @@ const CONTROLS = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g;
 /** A Windows path from its drive, written as typed (one backslash a separator, never `C:\\`: that is a path a JSON
  *  string holds, its backslashes escapes the next view decodes), through every character a path holds. */
 const DRIVE_PATH = /(?<![A-Za-z0-9])[A-Za-z]:\\(?!\\)[^\s"'\x60<>|]{0,4096}/g;
+/** The same inside quotes, blanks and all, to the closing quote or the line's end (`"C:\Program Files\Redis\redis-cli.exe"`:
+ *  `\R` and `\r` there are separators, and a blank does not end the path). */
+const QUOTED_DRIVE_PATH = /(?<=["'])[A-Za-z]:\\(?!\\)[^"'\n]{0,4096}/g;
+/** A relative Windows path (`.\redis-cli.exe`, `..\bin\npm.cmd`), as written: its backslashes are separators too. */
+const DOT_PATH = /(?<![^\s"'=(])\.{1,2}\\(?!\\)[^\s"'\x60<>|]{0,4096}/g;
+/** The spans of `text` that are Windows paths (DRIVE_PATH, QUOTED_DRIVE_PATH, DOT_PATH), merged and sorted. */
+function windowsPaths(text: string): (readonly [number, number])[] {
+  const spans = [DRIVE_PATH, QUOTED_DRIVE_PATH, DOT_PATH]
+    .flatMap((re) => [...text.matchAll(re)].map((m) => [m.index, m.index + m[0].length] as [number, number]))
+    .sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  const out: [number, number][] = [];
+  for (const span of spans) {
+    const last = out[out.length - 1];
+    if (last && span[0] <= last[1]) last[1] = Math.max(last[1], span[1]);
+    else out.push(span);
+  }
+  return out;
+}
 const DECODED: Readonly<Record<string, string>> = { '"': '"', "\\": "\\", "/": "/", b: "\b", f: "\f", n: "\n", r: "\r", t: "\t" };
 
 /** One reading of a text: `text` is what every rule reads (the decoded text with each escape still in it blanked, and
@@ -236,8 +254,9 @@ function decodeOnce(text: string): { out: string; escapes: [number, number][]; a
 /** `text` as the rules read it: each of `delimiters` blanked (the quotes the text it was decoded from held as written:
  *  that text's JSON strings' delimiters, which would otherwise close a quoted value that was never one), each escape in
  *  it blanked (a blank for each of its characters, so offsets hold), but one
- *  that stands whole inside a Windows path (`C:\Users\nina`: there a backslash is the path's separator, read as
- *  written: the next view decodes it), and each control character a blank. So no value starts on an escape's letter
+ *  that stands whole inside a Windows path (`C:\Users\nina`, `"C:\Program Files\Redis\redis-cli.exe"`, `.\npm.cmd`:
+ *  there a backslash is the path's separator, read as written: the next view decodes it), and each control character a
+ *  blank. So no value starts on an escape's letter
  *  (`\tgit@...` reads a blank and `git@...`) and none runs through one. */
 function blanked(text: string, escapes: readonly (readonly [number, number])[], delimiters: readonly number[] = []): { text: string; escapes: (readonly [number, number])[] } {
   let plain = text.replace(CONTROLS, " ");
@@ -247,7 +266,7 @@ function blanked(text: string, escapes: readonly (readonly [number, number])[], 
     plain = chars.join("");
   }
   if (!escapes.length) return { text: plain, escapes: [] };
-  const drives = [...text.matchAll(DRIVE_PATH)].map((m) => [m.index, m.index + m[0].length] as const);
+  const drives = windowsPaths(text);
   const parts: string[] = [];
   const cut: (readonly [number, number])[] = [];
   let from = 0;
@@ -584,13 +603,18 @@ const CURL_MAX = 4096;
 /** How deep a command inside a substitution of the same command is read on its own (`curl -H "$(curl -u a:pw …)"`). */
 const SUBSTITUTION_DEPTH = 4;
 /** A program's name as the shell reads it, for the lexer's readers: after a word boundary (a path before it too,
- *  `/usr/bin/curl`, `C:\tools\curl.exe`), `.exe` or `.cmd` maybe after it, and no word character or `-` glued on
- *  (`curl-user` names no curl); or the same quoted whole (`"curl"`, `'curl'`, `$'curl'`), with a path before it that
- *  may hold blanks inside the quotes (`"C:\Program Files\Docker\docker.exe"`, at most 256 characters on its line),
- *  the match taking the closing quote so the read starts past it. A subcommand (`login`, `set`) is no name: the
- *  reader takes it from the command's words (subcommandAt). */
-const shellName = (names: string): string => {
-  const name = String.raw`(?:${names})(?:\.(?:exe|cmd))?`;
+ *  `/usr/bin/curl`, `C:\tools\curl.exe`), a Windows extension maybe after it (`.exe`, `.cmd`, `.bat`, `.ps1`, in any
+ *  case), and no word character or `-` glued on (`curl-user` names no curl); or the same quoted whole (`"curl"`,
+ *  `'curl'`, `$'curl'`), with a path before it that may hold blanks inside the quotes
+ *  (`"C:\Program Files\Docker\docker.exe"`, at most 256 characters on its line), the match taking the closing quote so
+ *  the read starts past it. With an extension the name is read in any case too (`Docker.exe`, `MYSQL.EXE`): Windows
+ *  names files without case; a bare name keeps its case (`Docker login` in prose names no command). A subcommand
+ *  (`login`, `set`) is no name: the reader takes it from the command's words (subcommandAt). `names` is plain names
+ *  joined by `|` (letters and `-`), so each letter maps to its two cases as written. */
+const shellName =(names: string): string => {
+  const extension = String.raw`\.(?:[eE][xX][eE]|[cC][mM][dD]|[bB][aA][tT]|[pP][sS]1)`;
+  const anyCase = [...names].map((c) => (c >= "a" && c <= "z" ? `[${c}${c.toUpperCase()}]` : c)).join("");
+  const name = String.raw`(?:(?:${names})(?:${extension})?|(?:${anyCase})${extension})`;
   const path = (quote: string): string => String.raw`(?:[^${quote}\n]{0,256}[/\\])?`;
   return String.raw`(?:\b${name}(?![\w-])|"${path('"')}${name}"|'${path("'")}${name}')`;
 };
@@ -613,23 +637,50 @@ type CommandRead = {
   readonly after?: (text: string, words: readonly Word[]) => number;
 };
 
+/** The most words of options subcommandAt passes over between a path's words (`npm config --global set`). */
+const PATH_GAP = 8;
 /** Where a subcommand's words end in a program's arguments (`login`; `set`, `config set`), or -1. Options before it
  *  are passed over (`docker --config ~/.docker login`, `docker -D login`): a word starting with `-` and the word after
  *  one without `=` (its value, when it takes one). Any other word first is another subcommand (`docker run … login`).
- *  A word's blanks at its ends are no part of it here (`docker\ login`: bash names no such program, the text still
- *  holds a login's password). */
+ *  Options between a path's words are passed over the same way (`npm config --global set`), at most PATH_GAP words of
+ *  them, so a read is linear in its words however many `config` it holds. Where a word could be an
+ *  option's value or the subcommand, it is read as the subcommand: a list of which options take a value would leak
+ *  past every option it lacks. A word's blanks at its ends are no part of it here (`docker\ login`: bash names no such
+ *  program, the text still holds a login's password). */
 const subcommandAt =
   (paths: readonly (readonly string[])[]) =>
   (text: string, words: readonly Word[]): number => {
+    const at = (i: number): string => wordText(text, words[i]!).trim();
+    /** Where `path` ends when its first word is words[i], options passed over between its words, or -1. */
+    const pathEnd = (path: readonly string[], i: number): number => {
+      if (at(i) !== path[0]) return -1;
+      let j = i + 1;
+      for (const name of path.slice(1)) {
+        let value = false;
+        for (let gap = 0; j < words.length && at(j) !== name; gap++) {
+          if (gap >= PATH_GAP) return -1;
+          const word = at(j);
+          if (word.startsWith("-")) value = !word.includes("=");
+          else if (value) value = false;
+          else return -1;
+          j++;
+        }
+        if (j >= words.length) return -1;
+        j++;
+      }
+      return j;
+    };
     let value = false;
     for (let i = 0; i < words.length; i++) {
-      const word = wordText(text, words[i]!).trim();
+      const word = at(i);
       if (word.startsWith("-")) {
         value = !word.includes("=");
         continue;
       }
-      const path = paths.find((each) => each.every((name, k) => i + k < words.length && wordText(text, words[i + k]!).trim() === name));
-      if (path) return i + path.length;
+      for (const path of paths) {
+        const end = pathEnd(path, i);
+        if (end >= 0) return end;
+      }
       if (!value) return -1;
       value = false;
     }
@@ -878,8 +929,9 @@ function wordValue(text: string, word: Word, skip: number, min: number, name: st
   return value && value.length - skip >= min ? { start: value.start, end: value.end, name } : undefined;
 }
 
-/** `flag <pw>`, and with `equals` `flag=<pw>`, in each command's words: the password word, at least `min` long. */
-function flagWords(text: string, commands: readonly Word[][], flag: string, equals: boolean, min: number): Hit[] {
+/** `flag <pw>`, with `equals` `flag=<pw>` too, and with `glued` `flag<pw>` (a registry login's `-p<pw>`: its CLI reads
+ *  a short flag's value glued on), in each command's words: the password, at least `min` long. */
+function flagWords(text: string, commands: readonly Word[][], flag: string, equals: boolean, min: number, glued = false): Hit[] {
   const out: Hit[] = [];
   for (const words of commands) {
     for (let i = 0; i < words.length; i++) {
@@ -887,6 +939,7 @@ function flagWords(text: string, commands: readonly Word[][], flag: string, equa
       const hit =
         value === flag && i + 1 < words.length ? wordValue(text, words[i + 1]!, 0, min, flag)
         : equals && value.startsWith(`${flag}=`) ? wordValue(text, words[i]!, flag.length + 1, min, flag)
+        : glued && value.startsWith(flag) && value.length > flag.length ? wordValue(text, words[i]!, flag.length, min, flag)
         : undefined;
       if (hit) out.push(flagValue(hit)!);
     }
@@ -2217,7 +2270,7 @@ const mysqlPasswords = (text: string): Hit[] => {
 
 /** --password=<pw> or --password <pw>, and the same of --*-password, --passwd, --token, --api-key and kin. */
 const PASSWORD_FLAG = new RegExp(String.raw`(?<![A-Za-z0-9-])(--(?:[a-z0-9]{1,20}-){0,3}(?:password|passwd|pass|token|api-key|apikey|auth-token|secret-key|access-key))(?:=|[ \t]{1,3}(?!-))${VALUE}`, "gdi");
-/** A registry login (`docker login -p <pw>`), redis-cli's `-a <pw>`: each command read as one (commandWords), its
+/** A registry login (`docker login -p <pw>`, `-p<pw>`), redis-cli's `-a <pw>`: each command read as one (commandWords), its
  *  short password flag inside; a registry tool's only when it runs `login`. */
 const LOGIN_COMMAND = new RegExp(shellName("docker|podman|nerdctl|buildah|skopeo"), "g");
 const LOGIN = subcommandAt([["login"]]);
@@ -2231,7 +2284,7 @@ const flagValue = (hit: Hit | undefined): Hit | undefined => (hit ? { ...hit, co
 function passwordFlags(text: string): Hit[] {
   return [
     ...each(text, PASSWORD_FLAG, (m) => flagValue(valueHit(m, 2, 3, m[1]))),
-    ...flagWords(text, commandWords(text, LOGIN_COMMAND, { max: SHELL_LINE_MAX, ends: shellEnds, after: LOGIN }), "-p", true, 1),
+    ...flagWords(text, commandWords(text, LOGIN_COMMAND, { max: SHELL_LINE_MAX, ends: shellEnds, after: LOGIN }), "-p", true, 1, true),
     ...flagWords(text, commandWords(text, REDIS_COMMAND, { max: SHELL_LINE_MAX, ends: shellEnds }), "-a", false, 1),
     ...scanLogin(text),
     ...scanRedis(text),
@@ -2722,7 +2775,7 @@ export const SCRUB_RULES: readonly ScrubRule[] = Object.freeze([
 /** Every module-level pattern the rules read, by name: secret-scrub.test.mjs walks each (redact/match.ts SECRET_SHAPES are scanners, linear by construction)
  *  and fails on an unbounded quantifier outside its allowlist, and fails on a module-level pattern missing here. */
 export const RULE_PATTERNS: Readonly<Record<string, RegExp>> = Object.freeze({
-  ESCAPE, CONTROLS, DRIVE_PATH, NOT_DIGIT, NOT_HEX, NOT_ALNUM, NOT_BASE64, PLACEHOLDER, ELLIPSIS, TYPE_WORD, GENERIC, PASCAL_TYPE, METAVAR, NAME_PARTS, LEADING_DASHES,
+  ESCAPE, CONTROLS, DRIVE_PATH, QUOTED_DRIVE_PATH, DOT_PATH, NOT_DIGIT, NOT_HEX, NOT_ALNUM, NOT_BASE64, PLACEHOLDER, ELLIPSIS, TYPE_WORD, GENERIC, PASCAL_TYPE, METAVAR, NAME_PARTS, LEADING_DASHES,
   CODE_CALL, IDENT_CHAIN, MEMBER_CHAIN, CODE_CASE, CAMEL_OR_SNAKE, CALL_AFTER, LITERAL_START, YAML_NODE, ELIDED_AFTER, REFERENCE, ELIDED, TRAILING_PUNCTUATION, SENTENCE_END, BARE_START, EDGE_BLANK, EDGE_TOKEN_PUNCT, SLUG_OFF, SLUG_ENDS, PEM_END, PEM_BEGIN, PEM_OFF, PEM_TAIL, PEM_BODY_LINE, PEM_LAST_LINE, PEM_END_LINE, LEAD_TOKEN, DIGIT_START, BASE64_CHAR, BACKSLASH_RUN, BARE_STOP, URL_USERINFO, NAME_KEY_OFF, IDENTIFIER, ENDS_ENTRY, ENTRY_END_AFTER, TYPE_SUFFIX, TYPE_AFTER, LOCAL_LEAD, LOCAL_END, NESTED_ESCAPE, COOKIE_SPLIT, LINT_URL, CAMEL_HUMP, NAME_SEPARATORS, DIGITS_ONLY,
   UPPER_NAME, LEAD_AT_START, LINE_PREFIX, LINE_REST, CODE_KEYWORD, CODE_EXPRESSION, OPENERS, CLOSERS, INI_HEADER, INI_LINE, NPMRC_AUTH, NPM_COMMAND, NPM_SET_SCAN, NPM_SET_AUTH, NPM_AUTH_KEY, ESCAPED_QUOTE_BEFORE, ESCAPED_QUOTE_AFTER, DOTTED_KEY_BEFORE, CODE_END, MEMBER_OBJECT_BEFORE, CODE_ROOT_BEFORE, STATEMENT_END_AFTER, REFERENCE_START, ENV_ASSIGN, HF_TOKEN, DIGITALOCEAN_TOKEN, PYPI_TOKEN, SENDGRID_KEY, ASSIGN, ASSIGN_SPACED, ASSIGN_COLON, SSHPASS, MYSQL_COMMAND, PASSWORD_FLAG, LOGIN_COMMAND,
   REDIS_COMMAND, LOGIN_SCAN, LOGIN_P, REDIS_SCAN, REDIS_A, MYSQL_SCAN, MYSQL_P, OPENSSL_PASS, NETRC, AUTH_HEADER, TOKEN_RUN, CODE_KEY_BEFORE, URL_SAFE_RUN, BASE64_RUN_BEFORE, BASE64_RUN_AFTER, LETTER_OR_DIGIT, ENV_NAME_RUN, BASE64_CHARS, COOKIE_HEADER, COOKIE_PAIR, CURL_COMMAND, CURL_SCAN, CURL_USER, GLUED_STOP, NUMBERED, JSON_FIELD_OPEN, PROMPT_LINE,
