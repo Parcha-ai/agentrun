@@ -8,8 +8,9 @@
 // The first test runs the pinned CLI: without it this skips; with AGENTRUN_CLAUDE_AGENT_REQUIRE_BINARY=1 (CI) a missing
 // or different one fails. The others use stand-in CLIs that note what they were started with beside themselves.
 import assert from 'node:assert/strict';
+import { execFileSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync, writeSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { homedir, tmpdir } from 'node:os';
 import { isAbsolute, join, relative } from 'node:path';
@@ -385,4 +386,48 @@ test('two status checks at once (two tabs) each get a folder of their own, and b
   assert.notEqual(folders[0], folders[1], 'two checks never share a folder');
   for (const s of seen) assert.deepEqual(JSON.parse(copyText(s)), JSON.parse(bytes.toString('utf8')));
   for (const folder of folders) assert.equal(existsSync(folder), false, `${folder} is gone`);
+});
+
+// The account file is the person's, so it can be anything: a FIFO, a link to a device, a very big file. Reading one of
+// those whole on the server's own thread stops every request (a FIFO's open waits for a writer; /dev/zero never ends), and
+// a big one is parsed on every poll. The copy takes a regular file of at most 32 MiB, and nothing else.
+
+test("an account file that is a FIFO is copied as nothing, at once: the check never waits on it for a writer, which would stop the server's event loop", { skip: process.platform === 'win32' ? 'no mkfifo' : false, timeout: 30_000 }, async (t) => {
+  const { home, login } = defaultLogin();
+  const file = join(home, '.claude.json');
+  rmSync(file);
+  execFileSync('mkfifo', [file]);
+  // A writer that comes only after 3 s, with an account a copy would hold: a check that opens the FIFO to read waits that
+  // long for it (its thread stopped), then copies what it wrote.
+  const writer = spawn(process.execPath, ['-e', `setTimeout(() => require('node:fs').writeFileSync(${JSON.stringify(file)}, '{"numStartups":1}'), 3000)`], { stdio: 'ignore' });
+  t.after(() => writer.kill('SIGKILL'));
+  const fake = fakeCli();
+  const started = Date.now();
+  assert.deepEqual(await claude.claudeLoginStatus(fake.cli, login), OUT);
+  const took = Date.now() - started;
+  const [seen] = fake.seen();
+  assert.deepEqual([seen.folder, seen.copy], [[], null], 'a FIFO is copied as nothing');
+  assert.ok(took < 2500, `the check answered in ${took} ms, without waiting for the FIFO's writer`);
+});
+
+test("an account file over 32 MiB is copied as nothing, though it reads as a JSON object; one under it is copied", { timeout: 60_000 }, async () => {
+  const { home, login } = defaultLogin();
+  const file = join(home, '.claude.json');
+  // An object, then spaces: JSON all through, so only its size keeps it from the copy. A sparse file would hold NULs,
+  // which no JSON reading takes, and would be copied as nothing for that alone.
+  const fd = openSync(file, 'w', 0o600);
+  writeSync(fd, '{"numStartups":3}');
+  const spaces = Buffer.alloc(1024 * 1024, 0x20);
+  for (let i = 0; i < 32; i++) writeSync(fd, spaces);
+  closeSync(fd);
+  assert.ok(statSync(file).size > 32 * 1024 * 1024);
+  const big = fakeCli();
+  assert.deepEqual(await claude.claudeLoginStatus(big.cli, login), OUT);
+  const [seen] = big.seen();
+  assert.deepEqual([seen.folder, seen.copy], [[], null], 'a file over 32 MiB is copied as nothing');
+  // The same account in a small file: copied.
+  writeFileSync(file, '{"numStartups":3}\n', { mode: 0o600 });
+  const small = fakeCli();
+  assert.deepEqual(await claude.claudeLoginStatus(small.cli, login), OUT);
+  assert.deepEqual(JSON.parse(copyText(small.seen()[0])), { numStartups: 3 }, 'a regular file under the cap is copied');
 });
