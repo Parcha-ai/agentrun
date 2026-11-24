@@ -181,6 +181,17 @@ test("an announcement naming no tool with empty input (Cursor's untitled `MCP: t
   assert.equal(await ids.take('look_up', {}, signal, 50), 'call_cursor');
 });
 
+test("arguments the field holds as anything but an object are matched as none: a call its tool_call names as ours with such arguments is matched by its tool at once, as one a late update names", async () => {
+  // Before: announceCall keyed `"rawInput.args": "oops"` as {} (so it waited out the wait for any call with arguments),
+  // while nameCall keyed the same arguments by the tool alone.
+  const ids = new CallIds();
+  calls.announceCall(ids, { toolCallId: 'c', title: 'agentrun: look_up', kind: 'other', rawInput: { providerIdentifier: 'agentrun', toolName: 'look_up', args: 'oops' } }, CURSOR, TOOLS);
+  assert.equal(ids.announced('c'), 'look_up');
+  const started = Date.now();
+  assert.equal(await ids.take('look_up', { q: 'x' }, new AbortController().signal, 300), 'c');
+  assert.ok(Date.now() - started < 50, `matched at once, not after the wait (${Date.now() - started} ms)`);
+});
+
 test('on a recipe with no announces field, a call with no arguments is matched by its arguments at once: its {} announcement waits for no name', async () => {
   // Before: every {} announcement that named no tool waited for a later update to name it, a name only a recipe with
   // announces gives. On any other recipe (antigravity.json's) a no-argument call of ours waited out the 10 s and ran
