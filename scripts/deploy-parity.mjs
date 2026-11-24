@@ -2,15 +2,31 @@
 // nothing its host set on its own, and two descriptions diffed into named differences. No I/O and no imports, so the
 // check runs anywhere: against two local servers in a test, or a local install and a hosted one before a release.
 //
-// A description is `{fields, unread}`. `fields` holds what a deploy carries, by a name that means the same on any host:
-// an MCP tool by its server's source and toolkit (mcp:<source>:<toolkit>/<tool>), never the name an owner saved the
-// server under; a skill by its files' content hashes; a trigger by its name, without its id, times, hook or the agent it
-// names. `unread` lists each field the install did not serve, with why: such a field is never compared, and a pass
-// needs none (unreadFields). What a deploy legitimately changes (ids, revisions, timestamps, links, the place and
-// computer provider a host picks, the pins of a host's listings) is not in a description at all.
+// A description is `{fields, unread}`. `fields` holds every field of the agent's definition but the few HOST_SET names,
+// so a field serve adds is compared by default, each by a name that means the same on any host: an MCP tool by its
+// server's source and toolkit (mcp:<source>:<toolkit>/<tool>), never the name an owner saved the server under, and one
+// the instructions name by its toolkit, as the export writes it; the computer by its kind and needs; a skill by its
+// files' content hashes, read from the agent's package (whose texts name MCP tools by toolkit too); a trigger by its
+// name, without its id, times, hook or the agent it names. `unread` lists each field the install did not serve, with
+// why: such a field is never compared, and a pass needs none (unreadFields). What a deploy legitimately changes (ids,
+// revisions, timestamps, links, the place and computer provider a host picks, the pins of a host's listings) is not in
+// a description at all.
 
 /** A granted MCP tool: mcp:<server>/<tool>. */
 const MCP_TOOL = /^mcp:([^/]+)\/(.+)$/;
+/** An MCP tool named in prose, whole, as serve's apply finds it (templates.ts MCP_NAME_IN_TEXT): `mcp:<server>/` before a
+ *  tool or `*`, not the tail of a longer word. */
+const MCP_IN_TEXT = /(?<![A-Za-z0-9_.:/-])mcp:([a-z][a-z0-9-]{0,31})\/(?=\*|[A-Za-z0-9_-])/g;
+const SHA256 = /^[0-9a-f]{64}$/;
+
+/** The definition's fields an install sets on its own, never compared, each with why. Every other field is. */
+export const HOST_SET = {
+  id: "the agent's id on that install",
+  version: "how many revisions the agent has on that install",
+  place: "where that install runs the agent: its own pick",
+};
+/** The definition's fields read into the description under another form: the rest go by their own names. */
+const MAPPED = new Set(["instructions", "thinking", "max_cost_usd", "max_requests", "computer", "skills", "tools", "tool_settings"]);
 /** What a composio trigger's source holds of the server it runs on, which never travels (agent-package.ts). */
 const COMPOSIO_HOST = ["instance_id", "hook", "sealed_config"];
 const SEALED_MASK = "[sealed]";
@@ -50,22 +66,43 @@ function portableSource(source, byName) {
   return rest;
 }
 
-/** The agent's skills by folder (a SKILL.md and the files beside it), each file's path to its content hash. */
-function skillsOf(skills) {
-  const folders = new Map();
-  for (const skill of Array.isArray(skills) ? skills : []) {
-    const path = String(skill.path).replace(/^skills\//, "");
+/** `[name, setting]` entries by name. A name two grants share (two saved servers of one source and toolkit) holds each
+ *  one's setting, sorted, so neither is lost to the other. */
+function grouped(entries) {
+  const byName = new Map();
+  for (const [name, setting] of entries) byName.set(name, [...(byName.get(name) ?? []), setting]);
+  const order = (x, y) => (stable(x) < stable(y) ? -1 : stable(x) > stable(y) ? 1 : 0);
+  return sortedObject([...byName].map(([name, settings]) => [name, settings.length === 1 ? settings[0] : settings.sort(order)]));
+}
+
+/** `text` with each MCP tool it names on a saved server named by that server's toolkit, as the export writes it
+ *  (agent-package.ts), so the name an apply gave it on one install reads the same on another. */
+const byToolkit = (text, byName) => text.replace(MCP_IN_TEXT, (whole, server) => (byName.has(server) ? `mcp:${byName.get(server).toolkit ?? server}/` : whole));
+
+/** The agent's skills by folder from its package's files (`[{path, sha256}]`, readAgent): each file under skills/, and
+ *  each rules/ file beside every SKILL.md, as an apply puts it, by path to its content hash. Or why they can't be read:
+ *  no package, or a file without a sha256 hash. */
+function skillFilesOf(files) {
+  if (!Array.isArray(files)) return { why: "GET /v2/agents/{id}/package is not served here, so the skills' files can't be read" };
+  const tree = files.filter((file) => /^(skills|rules)\//.test(file?.path));
+  const unhashed = tree.filter((file) => !SHA256.test(file.sha256 ?? ""));
+  if (unhashed.length) return { why: `the package's ${unhashed.map((file) => file.path).join(", ")} has no sha256 content hash` };
+  const skills = tree.filter((file) => file.path.startsWith("skills/")).map((file) => [file.path.slice("skills/".length), file.sha256]);
+  const folders = skills.filter(([path]) => /^[^/]+\/SKILL\.md$/.test(path)).map(([path]) => path.split("/")[0]);
+  const rules = tree.filter((file) => file.path.startsWith("rules/")).flatMap((file) => folders.map((folder) => [`${folder}/${file.path.slice("rules/".length)}`, file.sha256]));
+  const byFolder = new Map();
+  for (const [path, sha] of [...skills, ...rules]) {
     const folder = path.split("/")[0];
-    if (!folders.has(folder)) folders.set(folder, []);
-    folders.get(folder).push([path, skill.sha256]);
+    byFolder.set(folder, [...(byFolder.get(folder) ?? []), [path, sha]]);
   }
-  return sortedObject([...folders].map(([folder, files]) => [folder, sortedObject(files)]));
+  return { skillFiles: sortedObject([...byFolder].map(([folder, entries]) => [folder, sortedObject(entries)])) };
 }
 
 /** The agent `read.agent` (GET /v2/agents/{id}) with what else its install answered: `triggers` (GET /v2/triggers),
- *  `servers` (GET /v2/settings/mcp-servers) and `template` (GET /v2/templates/{id} for the package it came from), each
- *  null when that install does not serve it. `{fields, unread: [{field, why}]}`. */
-export function describeAgent({ agent, triggers = null, servers = null, template = null }) {
+ *  `servers` (GET /v2/settings/mcp-servers), `template` (GET /v2/templates/{id} for the package it came from) and
+ *  `packageFiles` (GET /v2/agents/{id}/package's files, each by its content hash), each null when that install does not
+ *  serve it. `{fields, unread: [{field, why}]}`. */
+export function describeAgent({ agent, triggers = null, servers = null, template = null, packageFiles = null }) {
   const definition = isObject(agent?.definition) ? agent.definition : {};
   const unread = [];
 
@@ -73,15 +110,19 @@ export function describeAgent({ agent, triggers = null, servers = null, template
   const settings = isObject(definition.tool_settings) ? definition.tool_settings : {};
   const isMcp = (tool) => MCP_TOOL.test(tool);
   const mcpServers = [...new Set([...granted, ...Object.keys(settings)].filter(isMcp).map((tool) => MCP_TOOL.exec(tool)[1]))];
-  const sources = serversBy(servers, mcpServers);
+  const named = typeof definition.instructions === "string" ? [...definition.instructions.matchAll(MCP_IN_TEXT)].map((match) => match[1]) : [];
+  const sources = serversBy(servers, [...new Set([...mcpServers, ...named])]);
   if (mcpServers.length && sources.why) unread.push({ field: "mcp_tools", why: sources.why });
+  if (named.length && sources.why) unread.push({ field: "instructions", why: `${sources.why}, nor the saved servers the instructions name MCP tools on` });
   const byName = sources.byName;
 
   const tools = sortedObject(granted.filter((tool) => !isMcp(tool)).map((tool) => [tool, settings[tool] ?? null]));
-  const mcpTools = byName ? sortedObject(granted.filter(isMcp).map((tool) => [portableTool(byName, tool), settings[tool] ?? null])) : {};
+  const mcpTools = byName ? grouped(granted.filter(isMcp).map((tool) => [portableTool(byName, tool), settings[tool] ?? null])) : {};
   // A setting of a tool the agent is not granted (an MCP one by its portable name, when the servers were read).
   const loose = Object.keys(settings).filter((tool) => !granted.includes(tool) && (!isMcp(tool) || byName));
-  const toolSettings = sortedObject(loose.map((tool) => [isMcp(tool) ? portableTool(byName, tool) : tool, settings[tool]]));
+  const toolSettings = grouped(loose.map((tool) => [isMcp(tool) ? portableTool(byName, tool) : tool, settings[tool]]));
+  const files = skillFilesOf(packageFiles);
+  if (files.why) unread.push({ field: "skill_files", why: files.why });
 
   // The keys its package declares, from the package this agent was made from (the same upload: its sha), else unread.
   let secrets = [];
@@ -103,29 +144,29 @@ export function describeAgent({ agent, triggers = null, servers = null, template
 
   const computer = isObject(definition.computer) ? { kind: definition.computer.kind, ...(definition.computer.needs !== undefined ? { needs: definition.computer.needs } : {}) } : definition.computer;
   const budget = { ...(definition.max_cost_usd !== undefined ? { max_cost_usd: definition.max_cost_usd } : {}), ...(definition.max_requests !== undefined ? { max_requests: definition.max_requests } : {}) };
-  const fields = {
-    name: definition.name,
-    description: definition.description,
+  const text = definition.instructions;
+  const mapped = {
     // A package's body is read trimmed, so the instructions' outer whitespace never travels.
-    instructions: typeof definition.instructions === "string" ? definition.instructions.trim() : definition.instructions,
-    harness: definition.harness,
-    model: definition.model,
-    model_tiers: definition.model_tiers,
+    instructions: typeof text === "string" ? (byName ? byToolkit(text, byName) : text).trim() : text,
     effort: definition.thinking,
-    approvals: definition.approvals,
-    learning: definition.learning,
-    input_schema: definition.input_schema,
-    output_schema: definition.output_schema,
-    checkout: definition.checkout,
-    computer,
     budget,
+    computer,
+    skills: Array.isArray(definition.skills) ? [...definition.skills].sort() : definition.skills,
     tools,
     mcp_tools: mcpTools,
     tool_settings: toolSettings,
-    skills: skillsOf(agent?.skills),
+    skill_files: files.skillFiles,
     secrets,
     triggers: triggersOf,
   };
+  // Every other field of the definition by its own name; one that shares a name with a field above goes under
+  // definition.<name>, so neither hides the other.
+  const fields = {};
+  for (const [key, value] of Object.entries(definition)) {
+    if (Object.hasOwn(HOST_SET, key) || MAPPED.has(key)) continue;
+    fields[Object.hasOwn(mapped, key) ? `definition.${key}` : key] = value;
+  }
+  Object.assign(fields, mapped);
   unread.sort((a, b) => (a.field < b.field ? -1 : 1));
   // A field the agent does not set is absent, as JSON carries it.
   return { fields: Object.fromEntries(Object.entries(fields).filter(([, value]) => value !== undefined)), unread };
@@ -133,7 +174,7 @@ export function describeAgent({ agent, triggers = null, servers = null, template
 
 /** Fields compared key by key: a key on one side alone is missing (the source's) or extra (the target's). Triggers go
  *  one level further, so a trigger's changed bound names that bound. */
-const KEYED = new Set(["tools", "mcp_tools", "tool_settings", "skills", "triggers"]);
+const KEYED = new Set(["tools", "mcp_tools", "tool_settings", "skill_files", "triggers"]);
 
 /** The differences from the source `a` to the target `b`: `[{field, kind: missing | changed | extra, source, target}]`,
  *  [] when the agent is the same. A field either side left unread is not compared (unreadFields names it). */

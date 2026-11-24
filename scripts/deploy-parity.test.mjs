@@ -1,7 +1,7 @@
 // The deploy parity check's pure half (deploy-parity.mjs): one agent as two installs answer for it, described without
 // anything either host set on its own, and diffed into named differences. The same agent read twice is []. Each change a
-// deploy could make (a skill dropped, the model swapped, a tool kind lost, a trigger dropped, a key renamed) is exactly
-// one difference naming its field. A field a side does not serve is unread, never counted as equal. The reader
+// deploy could make (a skill dropped, the model swapped, a tool kind lost, a trigger dropped, a key renamed) is a
+// difference naming each field it touches, and nothing else. A field a side does not serve is unread, never counted as equal. The reader
 // (deploy-parity-read.mjs) is checked against an answering function, and its command against loopback listeners.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
@@ -10,12 +10,11 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import * as parity from "./deploy-parity.mjs";
+import { describeAgent, HOST_SET, parityDiff, readinessOf, unreadFields } from "./deploy-parity.mjs";
 import { readAgent } from "./deploy-parity-read.mjs";
 import { DEFINITION_FIELDS } from "../packages/serve/dist/validate.js";
 import { cli, keptEnv } from "../packages/agentrun/test/support.mjs";
 
-const { describeAgent, parityDiff, readinessOf, unreadFields } = parity;
 const CHECK = new URL("./deploy-parity-read.mjs", import.meta.url).pathname;
 const sha256 = (text) => createHash("sha256").update(text).digest("hex");
 /** The package files' content hashes, by what each file holds. */
@@ -97,14 +96,14 @@ test("the same agent on two hosts is [] once each host's ids, times, links, plac
 
 test("the description holds every field a deploy carries, by its portable name", () => {
   const { fields } = describeAgent(pair().readA());
-  // Every field a deploy carries but checkout, which this agent does not set (a field not set is absent, as in JSON).
-  assert.deepEqual(Object.keys(fields).sort(), ["approvals", "budget", "computer", "description", "effort", "harness", "input_schema", "instructions", "learning", "mcp_tools", "model", "model_tiers", "name", "output_schema", "secrets", "skills", "tool_settings", "tools", "triggers"]);
+  // Every field the definition sets but HOST_SET's (id, version, place), and what else the install answered for it.
+  assert.deepEqual(Object.keys(fields).sort(), ["approvals", "budget", "computer", "description", "effort", "harness", "input_schema", "instructions", "learning", "mcp_tools", "model", "model_tiers", "name", "output_schema", "secrets", "skill_files", "skills", "tool_settings", "tools", "triggers"]);
   assert.deepEqual(fields.harness, "codex");
   assert.deepEqual(fields.effort, "high");
   assert.deepEqual(fields.tools, { "monid:apollo/people/match": null, read: null, web_fetch: null });
   assert.deepEqual(fields.mcp_tools, { "mcp:composio:slack/SLACK_SEND_MESSAGE": { channel: "C0PARITY01" }, "mcp:github:github/get_file_contents": null, "mcp:url:docs/search_docs": null });
-  assert.deepEqual(Object.keys(fields.skills), ["digest", "triage"]);
-  assert.deepEqual(fields.skills.digest, { "digest/SKILL.md": "d1", "digest/STYLE.md": "r1", "digest/reference.md": "d2" });
+  assert.deepEqual(fields.skills, ["digest", "triage"]);
+  assert.deepEqual(fields.skill_files.digest, { "digest/SKILL.md": H.digest, "digest/STYLE.md": H.style, "digest/reference.md": H.reference });
   assert.deepEqual(fields.secrets, ["MONID_API_KEY", "PARALLEL_API_KEY"]);
   assert.deepEqual(Object.keys(fields.triggers), ["inbound", "weekday-digest"], "the other agent's trigger is not this one's");
   assert.deepEqual(fields.triggers.inbound, { enabled: true, source: { kind: "webhook" }, target: { kind: "start_run", input: { content: "Triage what arrived." } }, catchup_window_s: 3600, max_active_runs: 2 });
@@ -113,17 +112,20 @@ test("the description holds every field a deploy carries, by its portable name",
   assert.equal(fields.instructions, "Digest the day.", "trimmed, as a package's body is read");
 });
 
-/** Each mutant: what a deploy that drops or changes one field leaves on the target, and the one difference it is. */
+/** Each mutant: what a deploy that drops or changes one field leaves on the target, and the differences it is. */
 const MUTANTS = [
   {
     name: "a skill dropped",
-    mutate: (read) => { read.agent.skills = read.agent.skills.filter((skill) => !skill.path.startsWith("triage/")); read.agent.definition.skills = ["digest"]; },
-    want: [{ field: "skills.triage", kind: "missing", source: { "triage/SKILL.md": "t1", "triage/STYLE.md": "r1" }, target: undefined }],
+    mutate: (read) => { read.packageFiles = read.packageFiles.filter((file) => !file.path.startsWith("skills/triage/")); read.agent.definition.skills = ["digest"]; },
+    want: [
+      { field: "skills", kind: "changed", source: ["digest", "triage"], target: ["digest"] },
+      { field: "skill_files.triage", kind: "missing", source: { "triage/SKILL.md": H.triage, "triage/STYLE.md": H.style }, target: undefined },
+    ],
   },
   {
     name: "a skill file's bytes changed",
-    mutate: (read) => { read.agent.skills.find((skill) => skill.path === "digest/reference.md").sha256 = "d2-other"; },
-    want: [{ field: "skills.digest", kind: "changed", source: { "digest/SKILL.md": "d1", "digest/STYLE.md": "r1", "digest/reference.md": "d2" }, target: { "digest/SKILL.md": "d1", "digest/STYLE.md": "r1", "digest/reference.md": "d2-other" } }],
+    mutate: (read) => { read.packageFiles.find((file) => file.path === "skills/digest/reference.md").sha256 = sha256("other"); },
+    want: [{ field: "skill_files.digest", kind: "changed", source: { "digest/SKILL.md": H.digest, "digest/STYLE.md": H.style, "digest/reference.md": H.reference }, target: { "digest/SKILL.md": H.digest, "digest/STYLE.md": H.style, "digest/reference.md": sha256("other") } }],
   },
   {
     name: "the model swapped",
@@ -183,7 +185,7 @@ const MUTANTS = [
 ];
 
 for (const mutant of MUTANTS) {
-  test(`one difference, named: ${mutant.name}`, () => {
+  test(`named differences: ${mutant.name}`, () => {
     const { readA, readB } = pair();
     const target = readB();
     mutant.mutate(target);
@@ -249,20 +251,20 @@ test("readAgent reads the agent, its triggers, its servers, its package's keys a
     return { status, body: value };
   };
   const read = await readAgent(api, "agt_a1");
-  assert.deepEqual(read, { agent: a, triggers: triggersOn(), servers: serversOn(), template: templateOf(a), plan: { missing_secrets: [], unmatched_mcp: [] } });
+  assert.deepEqual(read, { agent: a, triggers: triggersOn(), servers: serversOn(), template: templateOf(a), plan: { missing_secrets: [], unmatched_mcp: [] }, packageFiles: null });
   assert.deepEqual(seen.find(([method]) => method === "POST")[2], { dry_run: true, agent_id: "agt_a1" }, "the plan is a dry run onto the agent itself");
   assert.ok(seen.every(([method, path]) => method === "GET" || path.endsWith("/apply")), "nothing but reads and a dry run");
 
   // An install that serves none of the rest (an API-only one): each is null, so the description says it is unread.
   for (const key of ["GET /triggers", "GET /settings/mcp-servers", `GET /templates/${encodeURIComponent(a.template.id)}`, `POST /templates/${encodeURIComponent(a.template.id)}/apply`]) delete answers[key];
-  assert.deepEqual(await readAgent(api, "agt_a1"), { agent: a, triggers: null, servers: null, template: null, plan: null });
+  assert.deepEqual(await readAgent(api, "agt_a1"), { agent: a, triggers: null, servers: null, template: null, plan: null, packageFiles: null });
 
   // No agent: a refusal naming it, never a description of nothing.
   await assert.rejects(readAgent(api, "agt_nope"), /agt_nope: 404 Not found\./);
 });
 
 test("every field of a definition is compared, but those HOST_SET names with why: a field serve adds later is compared by default", () => {
-  const host = parity.HOST_SET ?? {};
+  const host = HOST_SET;
   for (const [field, why] of Object.entries(host)) assert.ok(DEFINITION_FIELDS.includes(field) && typeof why === "string" && why.length > 0, `${field}: ${why}`);
   const ignored = [];
   for (const field of [...DEFINITION_FIELDS, "a_field_serve_adds_later"]) {
