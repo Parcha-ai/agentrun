@@ -1,7 +1,8 @@
 // A held value split across two strings of a JSON text, where each string alone holds half of it: a call's result of any
 // tool (its rows and the text a grader reads of it), a call's arguments (tool_input, and the grader's prompt built from
-// them), a web call's property name and value, a workflow's output in its graph and in the run's view, a run's input,
-// a running tool's live args and a workflow run's title. Each withholds what holds it, never showing a half.
+// them), a web call's property name and value, a workflow's output in its graph (a web call's JSON text among it) and in
+// the run's view, a run's input, a running tool's live args, a workflow run's title, and an SDK run's tool events and
+// completion as stored. Each withholds what holds it, never showing a half.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -10,10 +11,12 @@ import { servedGraphView } from "../dist/graph-served.js";
 import { redacted, redactedCall, withheldWhole } from "../dist/key-refusal.js";
 import { withLiveTicker } from "../dist/runner/live-ticker.js";
 import { prepareLaunch } from "../dist/runs-over-store.js";
+import { SdkRuns, sdkInbox } from "../dist/sdk/runs.js";
 import { viewOverStore } from "../dist/store-view.js";
 import { callsOf, graderInput } from "../dist/template-eval.js";
 import { CALL_RESULT_CHARS, scrubUrls, timelineOf } from "../dist/timeline/index.js";
 import { storeOn, T0 } from "./store-helpers.mjs";
+import { serve } from "./support.mjs";
 import { assistant, call, result, user } from "./timeline-lib-support.mjs";
 
 // A held value of 32 characters in no secret's shape, made at runtime, and its two halves.
@@ -143,6 +146,30 @@ test("the graph: a held value whole in one field of a call's output is cut in pl
   assert.deepEqual(shown.later, cut);
 });
 
+// A web call's output in the graph is its JSON written as a string in the call's part: the join reads the strings inside
+// that string too, so a held value split across two of them withholds the part; one whole in a string is cut in place,
+// the JSON still parsing (control).
+const webPartOf = (title, snippet) => ({
+  read_at: "2026-11-24T00:00:00.000Z",
+  run: { id: "run-1", agent: "a1", revision: "r1", status: "completed", paused: false, startedAt: "2026-11-24T00:00:00.000Z", endedAt: null },
+  nodes: {},
+  decisions: [],
+  effects: [{ tool: "web_search", status: "done", output: JSON.stringify({ query: "q", results: [{ url: "https://h.example/a", title, snippet }] }) }],
+});
+
+test("the graph: a web call's output, its JSON text in a call's part, with a held value split across two of its strings shows no half", () => {
+  const view = webPartOf(`see ${HEAD}`, `${REST} more`);
+  const shown = servedGraphView(view, SECRETS);
+  assert.deepEqual(shows(JSON.stringify(shown)), []);
+  assert.deepEqual(shown.run, view.run);
+});
+
+test("the graph: a web call's output with a held value whole in one of its strings is cut in place, its JSON still parsing (control)", () => {
+  const [part] = servedGraphView(webPartOf(`see ${KEY}`, "ok"), SECRETS).effects;
+  assert.equal(part.tool, "web_search");
+  assert.deepEqual(JSON.parse(part.output).results[0], { url: "https://h.example/a", title: "see [redacted]", snippet: "ok" });
+});
+
 // Every other read of a value with fields (key-refusal.ts redactedOutput) reads it whole too: a workflow run's output in
 // its run's view, the input "Run again" sends, a running tool's args in the live view, the input a workflow run's title
 // is made of. A held value split across two of its fields withholds it; one whole in a field is cut in place (controls).
@@ -254,4 +281,52 @@ test("a workflow run's title: an input split across two of its fields gives the 
 
 test("a workflow run's title: an input with no held value gives the title its fields (control)", async () => {
   assert.deepEqual(await titleInputOf({ command: "ls", note: "fine" }), { command: "ls", note: "fine" });
+});
+
+// What an SDK-run agent reports is stored as the server cuts it (sdk/runs.ts): a tool event's input and output (a web
+// tool's answer among them) and the completion's answer and error. A held value split across two strings of one of
+// them withholds that one, and one split across two of them withholds both; the event's or the completion's own facts
+// (sequence, type, id, name, status) stay. A held value whole in one string is cut in place (controls).
+async function sdkRunOf(t) {
+  const server = await serve(t, { runner: false });
+  const definition = { id: "sdk-split", name: "SDK split", instructions: "Use the policy.", sdk: { runtime: "claude-agent-sdk" }, learning: false, tools: [] };
+  assert.equal((await server.api("POST", "/agents", { definition })).status, 201);
+  const started = await server.api("POST", "/agents/sdk-split/sdk-runs", { runtime: "claude-agent-sdk", input: "A task.", instructions: "Keep the policy." }, { "Idempotency-Key": "split" });
+  assert.equal(started.status, 201, JSON.stringify(started.body));
+  const id = started.body.run_id;
+  return { id, sdk: new SdkRuns(server.store, server.data, "fake-test-key", () => [...SECRETS]), inbox: () => sdkInbox(server.store, id) };
+}
+const toolEvent = (id, input, output) => ({ type: "tool", id, name: "web_search", status: "completed", input, output });
+
+test("an SDK run's tool event: a held value split across two strings of its output, or across its input and its output, is stored as no half", async (t) => {
+  const run = await sdkRunOf(t);
+  const input = { query: "q" };
+  const output = { results: [{ url: "https://h.example/a", title: `see ${HEAD}`, snippet: `${REST} more` }] };
+  const events = [toolEvent("t1", input, output), toolEvent("t2", { command: `echo ${HEAD}` }, { note: `${REST} more` })];
+  assert.deepEqual(await run.sdk.events(run.id, { sequence: 1, events }), { accepted: true });
+  const inbox = await run.inbox();
+  assert.deepEqual(shows(JSON.stringify(inbox)), []);
+  assert.deepEqual(inbox.batches[0], { sequence: 1, events: [toolEvent("t1", input, "[redacted]"), toolEvent("t2", "[redacted]", "[redacted]")] });
+  assert.equal(inbox.check_redacted, true);
+});
+
+test("an SDK run's tool event with a held value whole in one string of its output is cut in place (control)", async (t) => {
+  const run = await sdkRunOf(t);
+  const events = [toolEvent("t1", { query: "q" }, { results: [{ title: `see ${KEY}`, snippet: "ok" }] })];
+  assert.deepEqual(await run.sdk.events(run.id, { sequence: 1, events }), { accepted: true });
+  assert.deepEqual((await run.inbox()).batches[0].events, [toolEvent("t1", { query: "q" }, { results: [{ title: "see [redacted]", snippet: "ok" }] })]);
+});
+
+test("an SDK run's completion: a held value split across its answer and its error is stored as no half", async (t) => {
+  const run = await sdkRunOf(t);
+  assert.deepEqual(await run.sdk.complete(run.id, { status: "failed", answer: `stopped at ${HEAD}`, error: `${REST} was refused` }), { accepted: true });
+  const { completion } = await run.inbox();
+  assert.deepEqual(shows(JSON.stringify(completion)), []);
+  assert.deepEqual(completion, { status: "failed", answer: "[redacted]", error: "[redacted]" });
+});
+
+test("an SDK run's completion with a held value whole in its answer is cut in place, its error as given (control)", async (t) => {
+  const run = await sdkRunOf(t);
+  assert.deepEqual(await run.sdk.complete(run.id, { status: "failed", answer: `see ${KEY}`, error: "the search was refused" }), { accepted: true });
+  assert.deepEqual((await run.inbox()).completion, { status: "failed", answer: "see [redacted]", error: "the search was refused" });
 });
