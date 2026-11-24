@@ -1,7 +1,7 @@
 // web_fetch's core: a page read once a run by the providers named in order, the guarded direct fetch behind them, given
 // in parts. A URL goes to a provider only once the guard's check passes it, and a read that fails is not kept.
 import type { Guard, GuardOptions } from "./guard.js";
-import { clip, HTML_READ_CHARS, PAGE_READ_MAX_CHARS, type Page, type Part, partOfRead, type Read, TIMEOUT_MS, type Unread, URL_MAX, withoutCredentials, withoutUserinfo } from "./page.js";
+import { askedUrl, HTML_READ_CHARS, PAGE_READ_MAX_CHARS, type Page, type Part, partOfRead, type Read, TIMEOUT_MS, type Unread, URL_MAX, withoutCredentials, withoutUserinfo } from "./page.js";
 import { readDirect } from "./providers/direct.js";
 import type { KeylessFetch } from "./providers/firecrawl-keyless.js";
 import type { Extract } from "./providers/parallel.js";
@@ -101,7 +101,7 @@ async function readOnce(url: unknown, { parallel, firecrawl, order, guard, check
       return { ...direct, url: withoutCredentials(direct.url), via: "direct", ...(why ? { parallel: why } : {}) };
     }
   }
-  return { ok: false, url: typeof url === "string" ? clip(withoutCredentials(url), URL_MAX) : "", status: 0, title: "", text: "", links: [], error: "no provider in the order read the page, and it holds no direct fetch", via: "none", ...(why ? { parallel: why } : {}) };
+  return { ok: false, url: askedUrl(url), status: 0, title: "", text: "", links: [], error: "no provider in the order read the page, and it holds no direct fetch", via: "none", ...(why ? { parallel: why } : {}) };
 }
 
 /** The reads that have ended: only these leave `pages` past its bound (trim). */
@@ -124,7 +124,7 @@ function trim(pages: Pages): void {
 function untilStopped(url: unknown, reading: Promise<WebRead | WebUnread>, signal?: AbortSignal): Promise<WebRead | WebUnread> {
   if (!signal) return reading;
   // No page came for this call, by any path: never "direct", which says the host was fetched.
-  const stopped = (): WebUnread => ({ ok: false, url: typeof url === "string" ? clip(withoutCredentials(url), URL_MAX) : "", status: 0, title: "", text: "", links: [], error: "the call was stopped before the page arrived", via: "stopped" });
+  const stopped = (): WebUnread => ({ ok: false, url: askedUrl(url), status: 0, title: "", text: "", links: [], error: "the call was stopped before the page arrived", via: "stopped" });
   if (signal.aborted) return Promise.resolve(stopped());
   return new Promise((resolve, reject) => {
     const onStop = () => resolve(stopped());

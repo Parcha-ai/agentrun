@@ -4,7 +4,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { type WebLog, type FetchProvider, type Pages, type WebPage, webFetch, webFetchText } from "./fetch.js";
 import { type Fee, type Pay, unmetered } from "./fees.js";
 import type { Guard, GuardOptions } from "./guard.js";
-import { clip, type Page, type Part, partProblem, URL_MAX, withoutCredentials } from "./page.js";
+import { askedUrl, type Page, type Part, partProblem } from "./page.js";
 import { exaLimitOf, exaSearch } from "./providers/exa-keyless.js";
 import { firecrawlFetch, type FirecrawlOptions, firecrawlSearch, type KeylessFetch } from "./providers/firecrawl-keyless.js";
 import type { Words } from "./providers/mcp.js";
@@ -124,7 +124,7 @@ export function createWeb(config: WebConfig): Web {
       // A part a call may not ask for is refused before anything is fetched.
       const problem = partProblem({ offset, maxChars });
       if (problem) {
-        const refused: Page = { ok: false, url: clip(withoutCredentials(asked), URL_MAX), status: 0, title: "", text: "", links: [], error: problem };
+        const refused: Page = { ok: false, url: askedUrl(asked), status: 0, title: "", text: "", links: [], error: problem };
         return { answer: refused, receipt: { op: "fetch", asked, provider: null, tries, ...judged, out: outOf(webFetchText(refused)), cost: { usd: 0, lines } } };
       }
       const cached = typeof url === "string" && pages.has(url);

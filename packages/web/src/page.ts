@@ -54,6 +54,9 @@ export function withoutCredentials(url: string): string {
   parsed.password = "";
   return clip(parsed.href, URL_MAX);
 }
+/** The URL a call asked for, as a page names it: with no user name or password, and cut. One that does not parse is no
+ *  URL, and a scrub of its text can stop short of them (at a space), so a page names none: "". */
+export const askedUrl = (url: unknown) => (typeof url === "string" && URL.canParse(url) ? clip(withoutCredentials(url), URL_MAX) : "");
 
 /** Which part of a page's text an answer holds: from `offset` (0 by default), about `maxChars` characters (PAGE_CHARS by
  *  default, at most TEXT_CAP). */
