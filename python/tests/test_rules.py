@@ -155,6 +155,7 @@ class Rules(unittest.TestCase):
             self.assertNotIn(api_key, printed(error))
         with mock.patch.dict(os.environ, {"AGENTRUN_BASE_URL": server.base}):
             os.environ.pop("AGENTRUN_API_KEY", None)
+            os.environ.pop("AGENTRUN_TOKEN", None)
             missing = self.thrown(AgentRun)
             assert isinstance(missing, AgentRunAuthError)
             self.assertEqual(missing.reason, "no_token")

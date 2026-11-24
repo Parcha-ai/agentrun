@@ -91,11 +91,12 @@ test("a key that is not a valid header value, a missing key and a base URL that 
     assert.equal(error.reason, "bad_header");
     assert.ok(!printed(error).includes(apiKey));
   }
-  const saved = { base: process.env.AGENTRUN_BASE_URL, key: process.env.AGENTRUN_API_KEY };
+  const saved = { base: process.env.AGENTRUN_BASE_URL, key: process.env.AGENTRUN_API_KEY, token: process.env.AGENTRUN_TOKEN };
   t.after(() => {
-    for (const [name, value] of [["AGENTRUN_BASE_URL", saved.base], ["AGENTRUN_API_KEY", saved.key]]) value === undefined ? delete process.env[name] : (process.env[name] = value);
+    for (const [name, value] of [["AGENTRUN_BASE_URL", saved.base], ["AGENTRUN_API_KEY", saved.key], ["AGENTRUN_TOKEN", saved.token]]) value === undefined ? delete process.env[name] : (process.env[name] = value);
   });
   delete process.env.AGENTRUN_API_KEY;
+  delete process.env.AGENTRUN_TOKEN;
   process.env.AGENTRUN_BASE_URL = server.base;
   assert.equal(thrownSync(() => new AgentRun()).reason, "no_token");
   assert.equal(thrownSync(() => new AgentRun({ apiKey: "" })).reason, "no_token");
