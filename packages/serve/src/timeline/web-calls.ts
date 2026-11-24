@@ -56,7 +56,7 @@ function webRead(tool: string, text: string): { read: Obj; end: number } | undef
 /** Whether `text`, a web call's output, is withheld whole: `holds` (whether a text holds a held value no cut in place
  *  takes: key-refusal.ts withheldWhole) reads the output as it came, its JSON line and the lines after it, through the
  *  matcher's join view, the one check every tool's output and every call's arguments read through (redact/match.ts
- *  joinView: a JSON text's strings joined, its values alone, its names with them, then all of it). Each string is cut on
+ *  joinOf: a JSON text's strings joined, its values alone, its names with them, then all of it). Each string is cut on
  *  its own wherever the output is shown (webCut, webShownOf), so a held value split across two of them, or across a
  *  property name and its value, is found only here. Every reader of a web call's output asks this first: the runner
  *  before it stores the answer (adapter-run-spec.ts answersCut), a timeline before its row shows any of it (timeline.ts

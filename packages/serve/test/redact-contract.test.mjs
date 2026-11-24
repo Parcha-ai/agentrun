@@ -828,6 +828,8 @@ const adversarial = (size) => {
     // lone one escaping the quote after it), and a text that builds every view at once.
     `{"k":"${fill("ab ", size - 6)}`, `"${fill("a", size - 1)}`, f("["), f('{"a":'), f('[{"a":['), `${fill("[", size / 2)}${fill("]", size / 2)}`,
     `"${fill(B, size - 2)}"`, `"${fill(B, size - 1)}`, f(`"${B}${B}${B}"`), f(`"${B}`), f(`"%41+${B}u0041&#65;",`),
+    // The strings join's four views at once: a quote, percent, "+", an escaped quote and an escaped backslash.
+    f(`"%41+${B}"${B}${B}n&#65;",`), f(`"a+${B}${B}",`),
   ];
   return [
     ...[...shapes, ...views].map((text) => ({ text, values: [CUT_KEY] })),
@@ -919,16 +921,18 @@ test("adversarial texts: the characters the shape scanners visit are at most a f
 // - the shapes, sought over the text and over its cut, and each run read: 128, the shapes' own bound (the test above);
 // - planCut's finds: the text lowered (1), each form and the hex searched (2 each, a find and the text before it: 16),
 //   the folded search (4), the finds merged (1): about 21;
-// - one whole-text check: what the text holds that a view decodes (6); seven views at most: the squeezed one and the
+// - one whole-text check: what the text holds that a view decodes (7); eleven views at most: the squeezed one and the
 //   percent-decoded two (one with "+") built in 9 reads each (its special characters found, its blanks, its non-ASCII
 //   stretches squeezed twice, its cover), the view of JSON's escapes alone and the two stacked ones (one with "+") in 23
-//   each (two levels of escapes read per character decoded), and the join view, which reads the text as JSON first (3:
+//   each (two levels of escapes read per character decoded); the nested join, which reads the text as JSON first (3:
 //   at level 0, again at level 1 inside a string, and the whitespace after a string), writes its join (2: each
-//   character in it at most twice, values then all, or names then all) and builds a decoding view over that join (46);
-//   then each searched for 7 plain needles, the hex and the fold, lowered and flattened (21 each, 42 over the join):
-//   about 321; planCut runs two (the text with its cuts, then the cut text, at most 10/8 as long): about 722;
-// - so planCut is about 871; an answer adds its pieces' ends and joins (10), heldIn's check of what it returns (10/8 of
-//   a check: 401), of the pieces as they came (321), and its shape pass (64): about 1,667.
+//   character in it at most twice, values then all, or names then all), and one decoding view over that join (46); the
+//   strings join, read at level 0 alone (2) and written (2), and four decoding views over it (one level of JSON's
+//   escapes alone, with percent, with percent and "+", and two levels: 46 each, 184); then each searched for 7 plain
+//   needles, the hex and the fold, lowered and flattened (21 each, 42 over a join): about 678; planCut runs two (the
+//   text with its cuts, then the cut text, at most 10/8 as long): about 1,526;
+// - so planCut is about 1,675; an answer adds its pieces' ends and joins (10), heldIn's check of what it returns (10/8
+//   of a check: 848), of the pieces as they came (678), and its shape pass (64): about 3,275.
 // That sum takes each stage at its most at once, which no text reaches: a text that builds every view decodes most of
 // itself, so each decoded view is far shorter than the text and its searches read far less.
 // A held value of two lines adds its three parts as forms and plain needles (about 30 more). A held value of k long
