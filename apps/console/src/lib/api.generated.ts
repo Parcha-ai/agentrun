@@ -1111,6 +1111,7 @@ export interface components {
     modified_at: components["Timestamp"];
     content_type?: string | null;
     unreadable?: true;
+    name?: string;
   };
   RunFileList: {
     run_id: components["Id"];
@@ -6069,6 +6070,29 @@ export interface operations {
       held: {
         state: "released";
       };
+    };
+  };
+  releaseTriggerFiring: {
+    body: {
+      error: string;
+    };
+    answer: {
+      key: string;
+      by: "schedule" | "email" | "feed" | "manual" | "webhook" | "github" | "composio";
+      nominal_at: string;
+      status: "due" | "started" | "sent" | "skipped" | "failed" | "missed";
+      at: string;
+      run_id: string | null;
+      reason: string | null;
+      error: {
+        code: string;
+        message: string;
+      } | null;
+      count?: number;
+      attempts?: number;
+      retry_at?: string;
+      start_by?: string;
+      catch_up?: true;
     };
   };
   remoteCommandEvents: {

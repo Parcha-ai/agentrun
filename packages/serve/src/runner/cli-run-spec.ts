@@ -20,7 +20,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { type CapModel, type CapRefused, checkRaise, followUpOf, freeRequestLimitOf, maxRequestsOf, parkOf, planCapModel } from "@parcha/agentrun-kernel/kernel/cap";
 import { type AdapterFacts, type HarnessWire, type HostTool, PLAN_LIMIT_WORDS, type Refusal, type SessionSpec } from "@parcha/agentrun-kernel";
-import { modelWire } from "../wires.js";
+import { modelWire, routed } from "../wires.js";
 import type { AdapterNeeds } from "../adapters.js";
 import { confineOf, noNewPrivsPrefix, standsIn, thinkingFor } from "../adapters.js";
 import { claimSettled, claudeCliIn, installDirOf, installForClaim, installingWords } from "../harness-install.js";
@@ -37,6 +37,7 @@ import { laidOf, layLearningSeed } from "./learning-seed.js";
 import { learningWorkspace } from "../learn/folder.js";
 import { learningEndOfRun, spentBesideOf } from "./learning-end.js";
 import { type ModelRef, ollamaTagsOf, type PinnedModel, providerModels, runModels, type Tier } from "../model.js";
+import { OLLAMA_PROVIDER } from "../ollama-provider.js";
 import { firstMessage, inputMessage, messageText } from "../run-manifest.js";
 import { learningStartOf, personStarted, seedFailed, type RunLaunch } from "../run-launch.js";
 import { readsFiles, systemOf } from "../skills.js";
@@ -122,6 +123,16 @@ async function modelsOf(entry: HarnessEntry, env: NodeJS.ProcessEnv, ref: string
   return { model: chosen.model, models: chosen.models as unknown as AdapterNeeds["models"], unpriced: chosen.unpriced };
 }
 
+/** A harness's facts for a run on `model`: on a model the route translates onto its wire (an Ollama model), its own tool
+ *  search is not its (AdapterFacts.ownToolSearch dropped): what it sends (deferred tools, a tool search's references) is
+ *  the provider's to read, and the translation's model has none. The host's own tools_search and tools_call are offered
+ *  in its place, as to a harness with none of its own. */
+export const factsOn = <T extends AdapterFacts | undefined>(facts: T, model: ModelRef): T => {
+  if (!facts?.ownToolSearch || !routed(facts.wire, model)) return facts;
+  const { ownToolSearch: _own, ...rest } = facts;
+  return rest as unknown as T;
+};
+
 /** The model a CLI run is capped at: the catalog entry that bills it (its entry's priceModel), its cost WITH TIERS (the
  *  money rule: a request past a tier is held and booked at it, as main's calculateCost does), on the harness's wire. A
  *  model the catalog does not price is held at no price: its requests are unknown, never $0. A ChatGPT plan's model
@@ -148,7 +159,10 @@ type CapPrice = { input: number; output: number; cacheRead: number; cacheWrite: 
 function chosenCapModel(entry: HarnessEntry, env: NodeJS.ProcessEnv, chosen: Awaited<ReturnType<typeof modelsOf>>, wire: HarnessWire): CapModel {
   const priced = entry.priceModel(env, chosen.model);
   const listed = chosen.models.getModel(priced.provider, priced.modelId) as { cost?: Partial<CapPrice>; maxTokens?: number } | undefined;
-  return capModelOf(priced.modelId, wire, listed, chosen.unpriced.has(priced.modelId) || listed === undefined, priced.provider === PLAN_PROVIDER || priced.provider === CLAUDE_LOGIN_PROVIDER || !modelWire(wire));
+  const capped = capModelOf(priced.modelId, wire, listed, chosen.unpriced.has(priced.modelId) || listed === undefined, priced.provider === PLAN_PROVIDER || priced.provider === CLAUDE_LOGIN_PROVIDER || !modelWire(wire));
+  // A model of this machine's own Ollama (the route's translation, provider.ts routedProvider): its requests never count
+  // toward the run's free-model limit, as pi's on the same route do (model-route.ts ModelRoute.local).
+  return priced.provider === OLLAMA_PROVIDER ? { ...capped, local: true } : capped;
 }
 
 /** The model a run of the CLI harness `entry` on `ref` (a revision's model; none, this host's default for it) is capped
@@ -743,7 +757,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
 
   return {
     adapter,
-    facts: ownerFacts,
+    facts: factsOn(ownerFacts, chosen.model),
     session,
     input,
     // A trigger's first input is its origin's, the launch's own owner flag kept (run-launch.ts keepInputOrigin).
