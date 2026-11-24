@@ -7,7 +7,7 @@ import { harnessOf } from "./harness-table.js";
 import { cutSecrets, endsInScheme, redactSecrets, secretShapes, valueLeft, valueMatcher } from "./learn/secrets.js";
 import { hostModel, MODEL_KEYS } from "./model.js";
 import { modelWire, openRouterOnly, WIRES } from "./provider.js";
-import { jsonEscapeAt, scanned, squeeze, type Span } from "./redact/match.js";
+import { jsonEscapeAt, privateKeyEnd, scanned, squeeze, type Span } from "./redact/match.js";
 import { savedGatewayIn } from "./model-gateway.js";
 
 /** The key a run's model requests carry, and who reads it: a provider's (saved in Settings → Model keys, or set where
@@ -90,7 +90,8 @@ export const answerPasses = { count: 0 };
  *  in it, and NEVER cut: an answer is shown whole. The same rule as redacted() (redactSecrets over `secrets`), over the
  *  whole text, read in pieces of about ANSWER_PIECE characters cut at whitespace. No form of a held value redactSecrets
  *  finds as it stands (as written, JSON-escaped, base64, hex) holds whitespace, so a cut there splits none; the one shape
- *  read across whitespace, a Bearer scheme and its token, is never cut between the two (endsInScheme). A run with no
+ *  read across whitespace, a Bearer scheme and its token, is never cut between the two (endsInScheme); nor is a private
+ *  key block, cut whole by its shape from its BEGIN line to its END line (keyWhole). A run with no
  *  whitespace past a piece is cut at the end of a JSON string in it (never in a URL's user and password), or, a run of
  *  a JSON array's numbers only, after a comma (runCut), so compact JSON reads in pieces too. A run of more than ANSWER_PIECE characters with neither is no
  *  person's text and is shown as "[redacted]", unread, from where its run starts. A value or a secret shape split across
@@ -305,8 +306,34 @@ const SPACES = /\s+/y;
 const HEX_PAIR = /^[0-9A-Fa-f]{2}$/;
 
 /** Where the piece of `text` read from `from` ends: at its last whitespace before ANSWER_PIECE characters; with none, at
- *  runCut's place, else at the next whitespace (a run read as one, or unread past ANSWER_PIECE). */
+ *  runCut's place, else at the next whitespace (a run read as one, or unread past ANSWER_PIECE). Never inside a private
+ *  key block whose END line is in reach (keyWhole). */
 function pieceEnd(text: string, from: number): number {
+  return keyWhole(text, from, spaceEnd(text, from));
+}
+
+/** `end`, the end of the piece read from `from`, or, where a private key block crosses it, where the piece ends instead,
+ *  so the block is read whole in one piece and cut whole by its shape: a piece cut inside it would show the rest of its
+ *  body and its END line in the next piece, where no shape starts. Only the last "-----BEGIN" in the piece (at most a
+ *  piece back from `end`) can start a block that crosses it: the END line an earlier one reads stops at that one's
+ *  dashes. The piece ends at the last whitespace before the block's BEGIN line, so the next piece starts with the block;
+ *  with none in the piece (the block starts it, a run glued to it), at the block's END line, so the block is one piece
+ *  (or, longer than a piece, one run read as "[redacted]"). */
+function keyWhole(text: string, from: number, end: number): number {
+  if (end >= text.length) return end;
+  const start = Math.max(from, end - ANSWER_PIECE);
+  const window = text.slice(start, end);
+  const begin = window.lastIndexOf("-----BEGIN");
+  scanned.chars += window.length;
+  if (begin < 0) return end;
+  const block = privateKeyEnd(text, start + begin);
+  if (block <= end) return end;
+  const space = window.slice(0, begin).search(/\s\S*$/);
+  return space >= 0 ? start + space + 1 : block;
+}
+
+/** pieceEnd's place, before keyWhole moves it. */
+function spaceEnd(text: string, from: number): number {
   const to = Math.min(text.length, from + ANSWER_PIECE);
   if (to === text.length) return to;
   const head = text.slice(from, to);

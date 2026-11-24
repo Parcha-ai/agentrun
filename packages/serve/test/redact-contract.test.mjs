@@ -422,11 +422,13 @@ const CASES = [
   (() => {
     const { lines, pem } = fakePem(6);
     return {
-      name: "a held PEM-like value whose armor is glued to the end of a run too long to read withholds the text",
+      // The block is read with the run it is glued to, to its END line (a piece never ends inside a block), so the run
+      // and the block show as one "[redacted]".
+      name: "a held PEM-like value whose armor is glued to the end of a run too long to read is read with the run, as \"[redacted]\"",
       text: `${"Z".repeat(20_000)}${pem} end`,
       values: [pem],
       hides: lines.map((line) => line.slice(0, 12)),
-      exact: { redactedAnswer: "[redacted]", redactedCall: "[redacted]" },
+      exact: { redactedAnswer: "[redacted] end", redactedCall: "[redacted] end" },
     };
   })(),
   // A private key block with no held value to cut it by, across the edge of an answer's or a call's result's first

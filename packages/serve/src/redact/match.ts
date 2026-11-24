@@ -338,6 +338,20 @@ const PRIVATE_KEY: Shape = {
   },
 };
 
+/** Where the private key block whose "-----BEGIN" stands at `at` ends, past its END line, or -1: no key's header there,
+ *  or no END line in reach, as PRIVATE_KEY reads it whole. key-refusal.ts reads it so that no piece of an answer ends
+ *  inside a block. Whether any "-----" stands within KEY_BODY_MAX of the header is read back from there first (the
+ *  header's own closing dashes stop that read), so a header with none after it reads no further. */
+export function privateKeyEnd(text: string, at: number): number {
+  if (!text.startsWith("-----BEGIN", at)) return -1;
+  const header = armorEnd(text, at, 10);
+  if (header < 0) return -1;
+  const reach = Math.min(text.length, header + KEY_BODY_MAX);
+  const last = text.lastIndexOf("-----", reach);
+  scanned.chars += reach - Math.max(last, header - 5);
+  return last < header ? -1 : keyEndLine(text, header);
+}
+
 /** A JWT: three base64url parts, the first two JSON objects ("eyJ"), each 8 characters or more after it. It starts at
  *  the first "eyJ" of a run of a part's characters, wherever that run starts ("token-eyJ…", "x9eyJ…"): a later "eyJ" in
  *  the same run reaches the same "." with fewer characters. Whether an "eyJ" is the first is read back to the "eyJ"
