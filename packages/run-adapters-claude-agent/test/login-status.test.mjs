@@ -516,7 +516,7 @@ test("a status check whose limit is no whole number of ms from 1 to 2^31 - 1 is 
   assert.deepEqual(whole.outcome.value, OUT, 'a whole limit is taken');
 });
 
-test("a status folder whose end can't be read as a time (not a number, over 32 bytes, a link to a file holding one, a folder, or one before its own file was written: empty or only blanks as a check's end is between its create and its write, a partial write, a negative or hex one) is swept by its mtime, as one with no end: it stays while changed within twice a check's limit, and is swept after", { skip: process.platform === 'win32' ? 'no uid' : false }, async () => {
+test("a status folder whose end can't be read as a time (not a number, over 32 bytes, a link to a file holding one, a folder, or one before its own file was written: empty or only blanks as a check's end is between its create and its write, a partial write, a negative or hex one, a time a minute before the file) is swept by its mtime, as one with no end: it stays while changed within twice a check's limit, and is swept after", { skip: process.platform === 'win32' ? 'no uid' : false }, async () => {
   const dir = scratch();
   const now = Date.now();
   // An hour on: a check reading this end would keep its folder through both sweeps below.
@@ -537,6 +537,9 @@ test("a status folder whose end can't be read as a time (not a number, over 32 b
     ['agentrun-claude-status-Prt007', (file) => writeFileSync(file, '1', { mode: 0o600 })],
     ['agentrun-claude-status-Neg008', (file) => writeFileSync(file, '-5', { mode: 0o600 })],
     ['agentrun-claude-status-Hex009', (file) => writeFileSync(file, '0x1', { mode: 0o600 })],
+    // A plausible time, but a minute before the file holding it was written: no check writes its end before its start.
+    // Read as a time, it would be 45 s past its margin, and a sweep would take the folder.
+    ['agentrun-claude-status-Ago010', (file) => writeFileSync(file, String(now - 60_000), { mode: 0o600 })],
   ];
   // Changed 20 s ago: inside twice a check's limit (2 x 15 s) at `now`, past it 11 s later.
   const folders = unreadable.map(([name, ends]) => statusFolder(dir, name, ends, new Date(now - 20_000))).sort();

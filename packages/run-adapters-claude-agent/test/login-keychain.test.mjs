@@ -97,12 +97,14 @@ async function asServerOf(m, fn) {
   }
 }
 
-/** The logins serve makes (its loginAt), on that Mac. */
+/** The logins serve makes (its loginAt), on that Mac: each carries the person's home as `userHome`, as serve's do. */
 const PLACES = {
-  "AgentRun's own folder": (m) => ({ dir: join(m.home, '.agentrun', 'claude-login'), profiles: join(m.home, '.agentrun', 'claude-login', 'anthropic') }),
-  "this machine's login on the CLI's default folder": (m) => ({ dir: join(m.home, '.claude'), profiles: join(m.home, '.config', 'anthropic'), home: m.home, shared: true }),
-  "this machine's login in a CLAUDE_CONFIG_DIR folder": (m) => ({ dir: join(m.home, 'work-claude'), profiles: join(m.home, '.config', 'anthropic'), shared: true }),
+  "AgentRun's own folder": (m) => ({ dir: join(m.home, '.agentrun', 'claude-login'), profiles: join(m.home, '.agentrun', 'claude-login', 'anthropic'), userHome: m.home }),
+  "this machine's login on the CLI's default folder": (m) => ({ dir: join(m.home, '.claude'), profiles: join(m.home, '.config', 'anthropic'), home: m.home, userHome: m.home }),
+  "this machine's login in a CLAUDE_CONFIG_DIR folder": (m) => ({ dir: join(m.home, 'work-claude'), profiles: join(m.home, '.config', 'anthropic'), userHome: m.home }),
 };
+/** The places that are the person's own CLI's login, which their own claude signs in to and reads as well. */
+const THEIRS = new Set(["this machine's login on the CLI's default folder", "this machine's login in a CLAUDE_CONFIG_DIR folder"]);
 
 /** The status check as serve asks it: the server's PATH, and no home but the server's own. */
 const status = (m, login) => claude.claudeLoginStatus(m.cli, login, { path: m.path, platform: 'darwin' });
@@ -116,12 +118,13 @@ function runSays(m, login) {
   return JSON.parse(said.stdout).loggedIn;
 }
 
-/** Their own `claude auth login`: a way to sign in only where their own CLI uses the login too (`shared`). */
+/** Their own `claude auth login`: a way to sign in only at this machine's login, the one their own CLI uses (THEIRS). */
 const OWN = "their own claude, with no variable of AgentRun's";
 /** Each way a person signs in at `login`. */
 const WAYS = {
   // The console's button (serve's startLoginHere): the server's PATH and HOME. The sign-in runs in the person's home
-  // (personHome): the login's userHome, else the server's own, so it is started as the server of that person (asServerOf).
+  // (personHome): the login's userHome, which every login here carries as serve's do, and it is started as the server of
+  // that person (asServerOf) as well.
   'the sign-in this host starts': async (m, login) => assert.deepEqual(await claude.startClaudeLogin(m.cli, login, { path: m.path, display: {} }).ended, { end: 'exited', code: 0, signal: null }),
   'the shown line, run in their terminal': (m, login) => assert.equal(spawnSync('/bin/sh', ['-c', claude.claudeLoginCommand(login, m.cli)], { env: m.terminal }).status, 0),
   // As they run the CLI: their CLAUDE_CONFIG_DIR where they use one, nothing else.
@@ -133,7 +136,7 @@ test('on macOS a login reads signed out until it is signed in, then signed in to
     for (const [way, signIn] of Object.entries(WAYS)) {
       const m = mac();
       const login = at(m);
-      if (way === OWN && !login.shared) continue;
+      if (way === OWN && !THEIRS.has(place)) continue;
       await asServerOf(m, async () => {
         assert.deepEqual(await status(m, login), { signedIn: false, method: 'none' }, `${place}, before ${way}`);
         assert.equal(runSays(m, login), false, `${place}, a run before ${way}`);
@@ -151,7 +154,7 @@ test("on macOS the person's own claude reads signed in on this machine's login a
   for (const [place, at] of Object.entries(PLACES)) {
     const m = mac();
     const login = at(m);
-    if (!login.shared) continue;
+    if (!THEIRS.has(place)) continue;
     const theirs = () => JSON.parse(spawnSync(m.cli, ['auth', 'status', '--json'], { env: { ...m.terminal, ...(login.home === undefined ? { CLAUDE_CONFIG_DIR: login.dir } : {}) }, encoding: 'utf8' }).stdout);
     assert.equal(theirs().loggedIn, false, place);
     await asServerOf(m, () => WAYS['the sign-in this host starts'](m, login));
