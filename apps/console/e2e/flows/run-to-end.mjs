@@ -14,14 +14,15 @@ export default {
     check(made.status === 201, `creating the agent answered ${made.status}: ${JSON.stringify(made.body)}`);
     const agentId = made.body.agent_id;
 
-    // The agent's shared dropdown carries this agent to the playground, where the first message starts the run.
+    // The run box's second line carries this agent to the playground, where the first message starts the run.
     await page.goto(`${base}/#/agents/${encodeURIComponent(agentId)}`);
-    await page.getByRole("button", { name: "Choose coding agent for Run agent", exact: true }).click();
-    await page.getByRole("menuitem", { name: "API playground", exact: true }).click();
+    await page.getByRole("link", { name: "Open in API playground", exact: true }).click();
     await page.waitForURL((url) => url.hash === `#/playground?agent=${encodeURIComponent(agentId)}`);
-    await page.getByPlaceholder(/^The run's first message/).fill(PROMPT);
+    // The hash can move before React replaces the agent page, whose run box has the same message placeholder.
+    const request = page.getByRole("region", { name: "Request", exact: true });
+    await request.getByPlaceholder(/^The run's first message/).fill(PROMPT);
     const started = page.waitForResponse((r) => r.request().method() === "POST" && new URL(r.url()).pathname === `/v2/agents/${encodeURIComponent(agentId)}/runs`);
-    await page.getByRole("button", { name: "Send request", exact: true }).click();
+    await request.getByRole("button", { name: "Send request", exact: true }).click();
     const response = await started;
     check(response.ok(), `the start answered ${response.status()}: ${await response.text()}`);
     check(JSON.parse(response.request().postData() ?? "{}").input?.content === PROMPT, "the playground changed the first message");

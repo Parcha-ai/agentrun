@@ -127,7 +127,7 @@ describe("AgentEditor: Save follows the form", () => {
 
   it("is off again once a saved setting the form sets only on a change (approvals) is changed and set back", () => {
     const t = mount(agent({ definition: { ...agent().definition, approvals: "never" } }), "tools");
-    const radio = (v: string) => t.host.querySelector<HTMLInputElement>(`fieldset[aria-label="Approvals"] input[type="radio"][value="${v}"]`)!;
+    const radio = (v: string) => t.host.querySelector<HTMLInputElement>(`fieldset[aria-label="Tool approvals"] input[type="radio"][value="${v}"]`)!;
     act(() => { radio("ask").click(); });
     expect(t.saveButton().disabled).toBe(false);
     act(() => { radio("never").click(); });

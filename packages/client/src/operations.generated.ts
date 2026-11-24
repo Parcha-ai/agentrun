@@ -1112,6 +1112,7 @@ export type Capabilities = {
       billing: "proxy" | "plan";
     };
     available: boolean;
+    ready_models: Array<string>;
     free_models: Array<{
       id: string;
       context_window: number;
@@ -1272,6 +1273,7 @@ export type Features = {
     routes: boolean;
     at_rest: "sealed";
     harnesses: Array<string>;
+    kept: Array<string>;
   };
   mcp_client?: {
     transports: Array<"streamable-http">;
@@ -2661,8 +2663,14 @@ export type ListHarnessKeysResponse = {
   harnesses: Array<{
     id: string;
     label: string;
+    named: boolean;
     keys: Array<SecretMeta>;
+    kept: Array<SecretMeta>;
     ready: boolean;
+    reenter: Array<{
+      name: string;
+      why: "recipe_changed" | "seal_key_changed" | "file_unreadable";
+    }>;
   }>;
 };
 
@@ -3585,6 +3593,27 @@ export type ListGitHubRepositoriesResponse = {
     account: string;
     why: string;
   }>;
+};
+
+/** The marketplace's templates: every package on marketplace.agentrun.ai, each with the package here that it is (GET /marketplace/templates). */
+export type ListMarketplaceTemplatesResponse = {
+  url: string | null;
+  state: "read" | "stale" | "unreachable" | "off";
+  read_at: string | null;
+  templates: Array<{
+    name: string;
+    title: string;
+    tags: Array<string>;
+    needs: Array<string>;
+    page_url: string;
+    summary?: string;
+    description?: string;
+    category?: "engineering" | "security" | "sales" | "marketing" | "research" | "finance" | "operations" | "compliance" | "personal";
+    harness?: Array<string>;
+    source?: string;
+    here?: string;
+  }>;
+  problem?: string;
 };
 
 /** The names of the MCP servers saved here, and nothing else of them (GET /settings/mcp-server-names). */
@@ -7287,6 +7316,7 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   listComputerChoices: {"method":"GET","path":"/computers/{provider}/choices","pathParams":["provider"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   listComputers: {"method":"GET","path":"/computers","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   listGitHubRepositories: {"method":"GET","path":"/integrations/github/repositories","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  listMarketplaceTemplates: {"method":"GET","path":"/marketplace/templates","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   listMcpServerNames: {"method":"GET","path":"/settings/mcp-server-names","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   listRunningComputers: {"method":"GET","path":"/computers/running","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   listSuggestions: {"method":"GET","path":"/suggestions","pathParams":[],"multiSegment":[],"query":["repo","status"],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
@@ -7608,6 +7638,8 @@ export function resources(call: Call) {
       listComputers: (options?: RequestOptions): Promise<ListComputersResponse> => call("listComputers", [], undefined, undefined, options),
       /** The repositories this server's GitHub App is installed on (GET /integrations/github/repositories). */
       listGitHubRepositories: (options?: RequestOptions): Promise<ListGitHubRepositoriesResponse> => call("listGitHubRepositories", [], undefined, undefined, options),
+      /** The marketplace's templates: every package on marketplace.agentrun.ai, each with the package here that it is (GET /marketplace/templates). */
+      listMarketplaceTemplates: (options?: RequestOptions): Promise<ListMarketplaceTemplatesResponse> => call("listMarketplaceTemplates", [], undefined, undefined, options),
       /** The names of the MCP servers saved here, and nothing else of them (GET /settings/mcp-server-names). */
       listMcpServerNames: (options?: RequestOptions): Promise<ListMcpServerNamesResponse> => call("listMcpServerNames", [], undefined, undefined, options),
       /** Every run still going that has a computer (GET /computers/running). */

@@ -18,7 +18,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Harness } from "@earendil-works/pi-durable";
 import { wireName } from "../catalog.js";
 import { mcpGateway, type McpGatewayOptions } from "../mcp-gateway.js";
-import { meterFor, publicMedia } from "../fal-price.js";
+import { falBills, meterNamed, publicMedia } from "../fal-price.js";
 import { FAUX_ENV } from "../model.js";
 import { fetchOptions } from "../web-run.js";
 import { fakeSaveOptions, type WebFake } from "../web-fake.js";
@@ -89,6 +89,14 @@ export interface McpForClaimOptions {
   readonly media?: { readonly env: NodeJS.ProcessEnv; readonly web?: WebFake; readonly slots?: SaveSlots };
   /** Each credential value the claim opens, refreshes or mints, for the run's redactors (mcp-claim.ts `hold`). */
   readonly hold?: (values: string[]) => void;
+}
+
+/** What a spec builder gives a claim's MCP for its metered jobs (`capped` and `media`), the same for every builder:
+ *  whether its launch has a cap, and where a job's input media are read from: the agent's eval web fake, else the
+ *  builder's `env`, in web_save's slots. */
+export function claimMetering(deps: { readonly env: NodeJS.ProcessEnv; readonly evalFakes?: (agentId: string) => { readonly web?: WebFake } | undefined; readonly saveSlots?: SaveSlots }, agentId: string, launch: { readonly maxCostUsd?: number | undefined }): Pick<McpForClaimOptions, "capped" | "media"> {
+  const web = deps.evalFakes?.(agentId)?.web;
+  return { capped: launch.maxCostUsd !== undefined, media: { env: deps.env, ...(web ? { web } : {}), ...(deps.saveSlots ? { slots: deps.saveSlots } : {}) } };
 }
 
 /** A claim's MCP (AdapterRunSpec.mcp): what the loop reaches the gateway by, and the claim step's own hooks. */
@@ -187,7 +195,7 @@ export async function mcpForClaim(options: McpForClaimOptions): Promise<ClaimMcp
     commit: () => <T>(change: (tx: unknown) => Promise<T>) => options.harness.commit(change as never, BACKGROUND_CONTEXT) as Promise<T>,
     ...(options.fetch ? { fetch: options.fetch } : {}),
     ...(options.callBounds ? { bounds: options.callBounds } : {}),
-    capped: () => options.capped !== false,
+    capped: options.capped !== false,
     ...(media ? { media: publicMedia(async () => (media.web ? fakeSaveOptions(media.web) : fetchOptions(media.env, FAUX_ENV)), media.slots) } : {}),
   });
   const catalog = new Map<string, string>();
@@ -226,8 +234,8 @@ export async function mcpForClaim(options: McpForClaimOptions): Promise<ClaimMcp
       const pinned = parsed && Object.hasOwn(pin, parsed.server) ? pin[parsed.server] : undefined;
       if (!pinned?.tools.some((tool) => tool.name === parsed!.tool)) return undefined;
       if (pinned.prices && Object.hasOwn(pinned.prices, parsed!.tool)) return pinned.prices[parsed!.tool]!;
-      // A metered server's job is priced from its input, when the call runs: no price to show before it.
-      return meterFor(pinned)?.bills(parsed!.tool) ? undefined : "not metered";
+      // fal's job is priced from its input when the call runs, after the person's allow.
+      return meterNamed(pinned.url, pinned.meter) && falBills(parsed!.tool) ? "priced by usage" : "not metered";
     },
     effectOf: (name) => pinnedEffect(pin, name),
     fresh: () => step.fresh(),
