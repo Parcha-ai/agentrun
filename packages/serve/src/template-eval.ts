@@ -734,10 +734,10 @@ export function graderInput(grader: Extract<Grader, { type: "llm" }>, input: str
   const files = run.finalFiles ?? [];
   const texts = files.filter((file) => file.text !== undefined);
   // Each call with its arguments (else its input's preview), its status and its output's head; a call that names a file
-  // shown whole says where it is. A string argument the text of a file in <files> holds (a write's content) is cut at
+  // says where it is. A string argument `held` names (one <files> shows whole: a write's content) is cut at
   // FILE_ARG_CHARS there, so the grader's room never holds those bytes twice.
-  const calls = run.calls.map((call, i) => {
-    const args = call.arguments ? JSON.stringify(inFiles(call.arguments, texts)) : undefined;
+  const callsOf = (held: (text: string) => boolean) => run.calls.map((call, i) => {
+    const args = call.arguments ? JSON.stringify(inFiles(call.arguments, held)) : undefined;
     const tail = call.status ? ` -> ${call.status}` : "";
     const result = call.result ?? "";
     const whole = `${i + 1}. ${call.tool}${args !== undefined ? ` ${args}` : call.preview ? ` (${call.preview})` : ""}${tail}`;
@@ -746,7 +746,7 @@ export function graderInput(grader: Extract<Grader, { type: "llm" }>, input: str
     const head = (shown: string | undefined) => `${i + 1}. ${call.tool}${shown !== undefined ? ` ${shown}` : call.preview ? ` (${call.preview})` : ""}${tail}${pointer}`;
     return { args, head, result, tool: call.name ?? call.tool };
   });
-  const lines = calls.map((call) => ({ head: call.head(call.args), result: call.result, tool: call.tool }));
+  const linesOf = (list: ReturnType<typeof callsOf>) => list.map((call) => ({ head: call.head(call.args), result: call.result, tool: call.tool }));
   // Each call a fake MCP server received, its arguments as the run's timeline shows them (RunRecord.mcpCalls, under the
   // run's cut; never the fake's own log): they are the part a cut of this prompt may take.
   const mcpLines = run.mcpCalls.map((call, i) => ({ head: `${i + 1}. ${call.tool}`, result: call.arguments !== undefined ? JSON.stringify(call.arguments) : (call.preview ?? "{}") }));
@@ -758,10 +758,17 @@ export function graderInput(grader: Extract<Grader, { type: "llm" }>, input: str
   const wrapFiles = (text: string) => `<files untrusted>\nThe files in the run's work folder when it ended, each text file whole unless marked cut (a call below that shows one only in part shows a cut of it):\n${text}\n</files>`;
   const room = max - [...before, wrap(""), ...linked, ...(mcpLines.length ? [wrapMcp("")] : []), ...(files.length ? [wrapFiles("")] : [])].reduce((sum, part) => sum + part.length + 2, 0);
   const wholeOf = (list: readonly { head: string; result: string }[]) => list.reduce((sum, one) => sum + one.head.length + one.result.length + 3, 0);
-  const [callsWhole, mcpWhole] = [wholeOf(lines), wholeOf(mcpLines)];
+  const mcpWhole = wholeOf(mcpLines);
   // The files come first: they take what they need of the room, but no more than leaves the calls a quarter of it (or
-  // all they need, when that is less), so a call's result is cut before a file is.
-  const shownFiles = files.length ? fitFiles(files, Math.max(0, room - Math.min(callsWhole + mcpWhole, Math.floor(room / 4)))) : undefined;
+  // all they need, when that is less), so a call's result is cut before a file is. What the calls need counts each
+  // argument a file's text holds cut, as it is when <files> shows that file whole.
+  const need = wholeOf(linesOf(callsOf((text) => texts.some((file) => file.text?.includes(text)))));
+  const shownFiles = files.length ? fitFiles(files, Math.max(0, room - Math.min(need + mcpWhole, Math.floor(room / 4)))) : undefined;
+  // An argument is cut only when <files> as shown holds it whole: one the cut of its file takes from there stays in its
+  // call, cut as fitArgs cuts it.
+  const calls = callsOf((text) => shownFiles?.includes(text) ?? false);
+  const lines = linesOf(calls);
+  const callsWhole = wholeOf(lines);
   // Both call lists share the room the rest leave, each in proportion to its whole size.
   const left = room - (shownFiles === undefined ? 0 : shownFiles.length);
   const mcpRoom = callsWhole + mcpWhole <= left ? mcpWhole : Math.floor((left * mcpWhole) / Math.max(1, callsWhole + mcpWhole));
@@ -779,13 +786,13 @@ export function graderInput(grader: Extract<Grader, { type: "llm" }>, input: str
 /** How much of a write's content a grader's call line shows when a file in <files> holds it whole. */
 const FILE_ARG_CHARS = 2000;
 
-/** A call's arguments with each string past FILE_ARG_CHARS that the text of a file in <files> holds cut there, ending
- *  "...": <files> shows that file, whole unless marked cut, as the call's pointer says. */
-function inFiles(value: unknown, texts: readonly FinalFile[]): unknown {
-  if (typeof value === "string") return value.length > FILE_ARG_CHARS && texts.some((file) => file.text?.includes(value)) ? `${value.slice(0, FILE_ARG_CHARS - 3)}...` : value;
-  if (Array.isArray(value)) return value.map((item) => inFiles(item, texts));
+/** A call's arguments with each string past FILE_ARG_CHARS that `held` names (one <files> shows whole) cut there, ending
+ *  "...", in a list or an object at any depth. */
+function inFiles(value: unknown, held: (text: string) => boolean): unknown {
+  if (typeof value === "string") return value.length > FILE_ARG_CHARS && held(value) ? `${value.slice(0, FILE_ARG_CHARS - 3)}...` : value;
+  if (Array.isArray(value)) return value.map((item) => inFiles(item, held));
   if (!value || typeof value !== "object") return value;
-  return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, inFiles(item, texts)]));
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, inFiles(item, held)]));
 }
 
 /** Each call's arguments (their JSON, none for a call with none) in at most `room` characters in all: undefined when they
