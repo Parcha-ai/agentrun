@@ -143,7 +143,9 @@ export function record(end: RunEnd): { row: LedgerRow; spend: SpendRow[] } {
   const audited = path === "audit";
   const workflow = textOrNull(audited ? audit.workflow : metrics.workflow);
   const digest = textOrNull(audited ? audit.digest : metrics.workflow_digest);
-  const notServed = NOT_SERVED.includes(metrics.not_served as NotServed) ? (metrics.not_served as NotServed) : null;
+  // A hand-back a restart cut (pathMetrics workflow_cut) is `cut`, never the workflow's own `back`.
+  const cut = path === "handed_back" && metrics.workflow_cut === true;
+  const notServed = cut ? "cut" : NOT_SERVED.includes(metrics.not_served as NotServed) ? (metrics.not_served as NotServed) : null;
   const row: LedgerRow = {
     runId: end.id, agentId: end.agentId, startedAt: end.startedAt, path, workflow, digest, notServed,
     jobUsd: job === null ? null : noiseOff(job), lookBackUsd: back === null ? null : noiseOff(back), cost,
@@ -284,7 +286,7 @@ export function summarize(read: LedgerRead): Summarized {
       compile_usd: figures.compile_usd, followup_usd: figures.followup_usd, shadow_usd: figures.shadow_usd, share_usd: 0, not_served: row.notServed,
     };
   });
-  const summary = costSummary(tookOverOf(series));
+  const summary = costSummary(tookOverOf(series), null, new Set(series.flatMap((run) => (run.not_served === "cut" ? [run.run_id] : []))));
   const booked = billOf(tookOverOf(series), summary);
   // Each revision's compile and check, in spend order (the runs' order, then the rounds').
   const key = (workflow: string, digest: string) => `${workflow}\0${digest}`;

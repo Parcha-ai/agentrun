@@ -2899,7 +2899,7 @@ export interface operations {
         followup_usd?: number | null;
         shadow_usd?: number | null;
         share_usd?: number | null;
-        not_served?: "cost_stop" | null;
+        not_served?: "cost_stop" | "cut" | null;
       }[];
       total_runs: number;
       unknown_cost_runs: number;
@@ -2936,6 +2936,7 @@ export interface operations {
         hand_backs: {
           ran: number;
           back: number;
+          cut: number;
         } | null;
         withheld: {
           unknown: number;

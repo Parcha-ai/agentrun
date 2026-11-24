@@ -19,7 +19,7 @@ const unknownRun: LearningCost = {
   ...sample,
   runs: sample.runs.map((r) => (r.n === 44 ? { ...r, cost_usd: null, total_usd: null } : r)),
   unknown_cost_runs: 1,
-  summary: { ...sample.summary, after: { runs: 58, mean_usd: 0.115695 }, times_cheaper: null, hand_backs: { ran: 59, back: 3 }, withheld: { unknown: 1, at_most: 0 } },
+  summary: { ...sample.summary, after: { runs: 58, mean_usd: 0.115695 }, times_cheaper: null, hand_backs: { ran: 59, back: 3, cut: 0 }, withheld: { unknown: 1, at_most: 0 } },
 };
 let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); root = undefined; document.body.innerHTML = ""; });
@@ -132,8 +132,12 @@ describe("CostChart", () => {
   });
   it("the hand-back rate is the server's, over every run since the takeover, never the latest runs the chart read", () => {
     // The chart read only runs it answered alone; the summary counts the hand-backs before them.
-    const host = draw(series([run(1, "agent", 0.9), run(2, "workflow", 0.1), run(3, "workflow", 0.1)], { takeover: { n: 2, run_id: "r2" }, before: { runs: 1, mean_usd: 0.9 }, after: { runs: 2, mean_usd: 0.1 }, hand_backs: { ran: 40, back: 10 } }));
+    const host = draw(series([run(1, "agent", 0.9), run(2, "workflow", 0.1), run(3, "workflow", 0.1)], { takeover: { n: 2, run_id: "r2" }, before: { runs: 1, mean_usd: 0.9 }, after: { runs: 2, mean_usd: 0.1 }, hand_backs: { ran: 40, back: 10, cut: 0 } }));
     expect(text(host)).toContain("25% handed back since");
+    // A run a restart cut mid-call is no hand-back of the workflow's: said apart, never in the rate.
+    act(() => root?.unmount());
+    const cut = draw(series([run(1, "agent", 0.9), run(2, "workflow", 0.1), run(3, "workflow", 0.1)], { takeover: { n: 2, run_id: "r2" }, before: { runs: 1, mean_usd: 0.9 }, after: { runs: 2, mean_usd: 0.1 }, hand_backs: { ran: 40, back: 10, cut: 2 } }));
+    expect(text(cut)).toContain("25% handed back since; 2 cut by a restart");
   });
   it("before any workflow has finished a run, the mix's last words say who did, not 0% by the workflow", () => {
     const host = draw(series([run(1, "agent", 0.002), run(2, "agent", 0.003), run(3, "handed_back", 0.002)]));
@@ -262,7 +266,7 @@ describe("CostChart", () => {
   // in words, never a figure.
   it("with no served run priced, says so in words, never a level after", () => {
     const runs = [...Array.from({ length: 10 }, (_, i) => run(i + 1, "agent", 1)), run(11, "workflow", null), ...Array.from({ length: 30 }, (_, i) => replayRun(`p${i}`, 11, 0.3))];
-    const host = draw(series(runs, { takeover: { n: 11, run_id: "run_11" }, before: { runs: 10, mean_usd: 1 }, after: null, after_state: "cost_unknown", hand_backs: { ran: 1, back: 0 }, withheld: { unknown: 1, at_most: 0 } }));
+    const host = draw(series(runs, { takeover: { n: 11, run_id: "run_11" }, before: { runs: 10, mean_usd: 1 }, after: null, after_state: "cost_unknown", hand_backs: { ran: 1, back: 0, cut: 0 }, withheld: { unknown: 1, at_most: 0 } }));
     expect(text(host)).toContain("$1.00 a run before takeover, no served run's cost known yet");
     expect(text(host)).not.toMatch(/Served after takeover|all-in over/);
     const none = draw(series(runs.map((r) => (r.path === "workflow" ? { ...r, path: "replay" as const, total_usd: 0.3 } : r)), { before: { runs: 10, mean_usd: 1 } }));

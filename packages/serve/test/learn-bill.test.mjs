@@ -7,13 +7,14 @@
 //   - amortize: a revision's check spend split over its first K served runs (K its check's compile_after), to the
 //     micro-dollar; what a revision that stops, or has not yet served K runs, has not passed on is unattributed;
 //   - over the store: each run's all-in, the series and the invariant (the sum of every run's all-in and the
-//     unattributed remainder is the booked total).
+//     unattributed remainder is the booked total);
+//   - the money rule's by-hand side (runner/workflow-first.ts costLineOf) reads an agent run's all-in as the run view does.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { storeOn } from "./store-helpers.mjs";
 
 const { billOf, amortize, costSummary } = await import("../dist/learning-cost.js");
-const { agentCostOverStore, runAllInOverStore } = await import("../dist/store-reads/learning.js");
+const { agentCostOverStore, costStopOverStore, runAllInOverStore } = await import("../dist/store-reads/learning.js");
 
 const A = "a".repeat(16);
 const B = "b".repeat(16);
@@ -399,4 +400,32 @@ test("a revision's served count is every run it served (its first K carry its sp
   ], "the workflow revision that ran each run, never the learning folder's commit");
   assert.equal("learned_revision" in cost.runs[0], false, "one revision a run: the workflow's");
   assert.equal(cost.bill.learning_usd, 1.9, "the three replays ($1.10) and the two shadows ($0.80): the booked total less the jobs' own $");
+});
+
+// The money rule (runner/workflow-first.ts costLineOf, overLine) holds a workflow to the agent's by-hand cost: an agent
+// run read as the run view reads it (runAllInOverStore), its compile turn its revision's, never the agent's by hand.
+
+test("money rule: the by-hand mean is the run view's (a compile turn is its revision's), so a workflow priced between it and the compile-laden mean stops serving, on the cost page and at a launch", async (t) => {
+  const clock = { now: Date.parse(at(0)) };
+  const { store } = await storeOn(t, { clock });
+  await store.agents.create({ id: "agent-1", name: "Learns" }, { id: "rev-1", kind: "agentic", body: { instructions: "Go.", learning: true } });
+  let minute = 0;
+  const end = async (id, cost, metrics, round) => {
+    clock.now = Date.parse(at((minute += 1)));
+    await store.runs.create({ id, agentId: "agent-1", revisionId: "rev-1" }, { body: LEARNS });
+    const claim = await store.claim(id, "runner-a", { leaseMs: 60_000 });
+    await store.runs.update(claim, { state: "ended", costUsd: cost, metrics }, round ? { also: [{ table: "learning_proposals", row: { turn: {}, proposal: round } }] } : undefined);
+  };
+  // Three agent runs, the job $1.00 each; run-02's end compiled C ($0.30 compile turn: its row $1.30).
+  await end("run-01", 1, { path: "agent" });
+  await end("run-02", 1.3, { path: "agent" }, kept({ job: 1, look: 0.3, digest: C }));
+  await end("run-03", 1, { path: "agent" });
+  // COST_WINDOW (10) runs C served at $1.05 each: over the $1.00 by hand, under the $1.10 a compile-laden mean says.
+  for (let i = 1; i <= 10; i++) await end(`served-${String(i).padStart(2, "0")}`, 1.05, { path: "workflow", workflow: "answer", workflow_digest: C });
+  const hand = await Promise.all(["run-01", "run-02", "run-03"].map((id) => runAllInOverStore(store, id)));
+  assert.deepEqual(hand.map((one) => one.all_in_usd), [1, 1, 1], "the run view: run-02's compile turn is C's");
+  const cost = await agentCostOverStore(store, "agent-1");
+  assert.deepEqual(cost.workflows.map((one) => [one.workflow, one.digest, one.by_hand, one.served, one.state]), [["answer", C, { runs: 3, mean_usd: 1 }, { runs: 10, mean_usd: 1.05 }, "needs_revision"]],
+    "by hand is the run view's mean ($1.00), never $1.10 with run-02's compile turn: C costs more a run than doing the job by hand");
+  assert.equal((await costStopOverStore(store, "agent-1"))("answer", C), true, "a launch's read (no cost page figures) stops it too");
 });

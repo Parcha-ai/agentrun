@@ -104,8 +104,11 @@ const until = async (done, what, ms = 40_000) => {
  *  or `submitted` when given; the agent, when asked, answers AGENT_SAYS. `toolSettings` on the revision; `approve`: answer the run's first ask ("stop":
  *  stop the run while it waits instead). `followUp`: once the run ends, a person's follow-up (a teacher's label on its
  *  answer) reopens it, and the run read is the follow-up's end; `first` is the row of the end before it. `maxCostUsd`:
- *  the run's cap; `settleOn`: the run states it is read at once its runner lets it go (a park for a raise is "parked"). */
-async function piRun(t, { input = { content: `${QUESTION}?`, question: QUESTION }, sure = true, learned = true, workflowFirst, toolSettings, approve = false, past = [], promotions, keptBefore: earlier = [], followUp, flows = FLOWS, saved = {}, answer, submitted, outputSchema, crashOnHandback = false, pastFromSecondClaim = false, agentCall, holdNode, agentText, beforeRun, crashBeforeEnd, onCompileAsk, maxCostUsd, settleOn = ["ended", "failed", "stopped"] } = {}) {
+ *  the run's cap; `settleOn`: the run states it is read at once its runner lets it go (a park for a raise is "parked").
+ *  `crashInCall`: the first runner is lost while the workflow's node request is out (nothing more it writes lands), and a
+ *  second runner takes the run. */
+async function piRun(t, { input = { content: `${QUESTION}?`, question: QUESTION }, sure = true, learned = true, workflowFirst, toolSettings, approve = false, past = [], promotions, keptBefore: earlier = [], followUp, flows = FLOWS, saved = {}, answer, submitted, outputSchema, crashOnHandback = false, pastFromSecondClaim = false, agentCall, holdNode: givenHold, agentText, beforeRun, crashBeforeEnd, crashInCall = false, onCompileAsk, maxCostUsd, settleOn = ["ended", "failed", "stopped"] } = {}) {
+  const holdNode = givenHold ?? (crashInCall ? async () => crash() : undefined);
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-workflow-first-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -179,7 +182,9 @@ async function piRun(t, { input = { content: `${QUESTION}?`, question: QUESTION 
   };
   const route = { model: MODEL, provider: { api: "anthropic-messages", origin: gw.url, credential: () => `not-a-secret-${"pi"}` }, cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 }, outputCeiling: 8_192, price, fetch: upstream };
   const logs = [];
-  const crashingJournal = (journal) => new Proxy(journal, { get: (target, key) => (key === "commit" ? async (...args) => {
+  const crashingJournal = (journal, claim) => new Proxy(journal, { get: (target, key) => (key === "commit" ? async (...args) => {
+    // `crashInCall`: the lost runner's writes never land.
+    if (crashed && crashInCall && claim.runner === "runner-a") throw new Error("runner-a was lost");
     // `crashBeforeEnd`: the first runner is closed as its run's end is about to land, and that end never does (its commit
     // fails once the close has cut the claim, so the claim returns interrupted); `crashBeforeEnd(dir)` runs first, then a
     // second runner takes the run.
@@ -230,7 +235,7 @@ async function piRun(t, { input = { content: `${QUESTION}?`, question: QUESTION 
   // run, and the money rule (past runs, `pastFromSecondClaim`) now stops the workflow.
   let crashed = false;
   // The store the runners hold: its journals tell the crash when the workflow's end is committed.
-  const runnerStore = crashOnHandback || crashBeforeEnd ? new Proxy(store, { get: (target, key) => (key === "journal" ? (claim) => crashingJournal(target.journal(claim)) : typeof target[key] === "function" ? target[key].bind(target) : target[key]) }) : store;
+  const runnerStore = crashOnHandback || crashBeforeEnd || crashInCall ? new Proxy(store, { get: (target, key) => (key === "journal" ? (claim) => crashingJournal(target.journal(claim), claim) : typeof target[key] === "function" ? target[key].bind(target) : target[key]) }) : store;
   const crash = () => {
     crashed = true;
     void runner.close();
@@ -322,6 +327,25 @@ test("handed back: the guard holds, the same run goes on to the agent with the w
   assert.equal(row.metrics?.workflow_digest, DIGEST, "the digest is the workflow text's");
   assert.ok(requests.some((request) => request.host === LEARNED_WORKFLOW_TOOL) && requests.some((request) => request.host === undefined), `node and agent requests both booked: ${JSON.stringify(requests)}`);
   assert.ok((row.costUsd ?? 0) > 0, `the run's cost: ${row.costUsd}`);
+});
+
+// A workflow call a restart cut (its runner lost mid-call): the next claim ends the call interrupted and hands the job back,
+// never running it again. The run's path is handed_back and the agent did its job, but the workflow handed nothing back
+// itself: the summary counts it `cut`, never `back`. An escalate is the workflow's own hand-back: `back`.
+test("a workflow call a restart cut is a hand-back the summary counts as `cut`, never `back`; an escalate is `back`", async (t) => {
+  const cut = await piRun(t, { crashInCall: true });
+  assert.equal(cut.row.state, "ended", `the run ended: ${JSON.stringify(cut.row)}`);
+  // The lost runner wrote nothing past the call's start; the second runner's claim ended it.
+  assert.equal(cut.claims, 2, "a second claim took the run");
+  const end = cut.entries.find((entry) => entry.kind === "agentrun.call.end" && entry.data?.callId === "workflow-first");
+  assert.equal(end?.data?.status, "interrupted", `the next claim ends the call interrupted: ${kindsOf(cut.entries)}`);
+  assert.deepEqual(cut.entries.filter((entry) => entry.kind === WORKFLOW_FIRST).map((entry) => entry.data.outcome), ["handed_back"]);
+  assert.equal(cut.held.requests, 1, "the cut call never ran again");
+  assert.deepEqual([cut.row.metrics?.path, cut.row.metrics?.workflow_cut], ["handed_back", true], JSON.stringify(cut.row.metrics));
+  assert.deepEqual((await agentCostOverStore(cut.server, "agent-1")).summary.hand_backs, { ran: 1, back: 0, cut: 1 }, "cut by the restart, not handed back by the workflow");
+  const escalated = await piRun(t, { sure: false });
+  assert.deepEqual([escalated.row.metrics?.path, escalated.row.metrics?.workflow_cut], ["handed_back", undefined], JSON.stringify(escalated.row.metrics));
+  assert.deepEqual((await agentCostOverStore(escalated.server, "agent-1")).summary.hand_backs, { ran: 1, back: 1, cut: 0 }, "the workflow's own escalate");
 });
 
 // The quote check is code (the DSL's quote_missing): an answer quoting text the run's page does not hold hands the job

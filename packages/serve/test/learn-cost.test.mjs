@@ -71,14 +71,14 @@ const PRICED = { after_state: "priced" };
 test("what the series shows: the takeover, the mean before it (agent runs, learning left out), the mean after it (the runs it served, learning kept in), and times cheaper only once 20 runs follow the takeover", () => {
   assert.deepEqual(costSummary([]), EMPTY);
   const learning = series([["agent", 0.9, 0.2], ["agent", 0.8, 0.3], ["handed_back", 0.5, 0.1], ["agent", null], ["workflow", 0.1], ["handed_back", 0.6, 0.1]]);
-  assert.deepEqual(costSummary(learning), { ...EMPTY, ...PRICED, takeover: { n: 3, run_id: "r3" }, before: { runs: 2, mean_usd: 0.85 }, after: { runs: 3, mean_usd: 0.466667 }, hand_backs: { ran: 3, back: 2 } }, "the first run a learned workflow served, handed back or alone, is the takeover (the bill's promoted); a run by hand after it is on neither side");
+  assert.deepEqual(costSummary(learning), { ...EMPTY, ...PRICED, takeover: { n: 3, run_id: "r3" }, before: { runs: 2, mean_usd: 0.85 }, after: { runs: 3, mean_usd: 0.466667 }, hand_backs: { ran: 3, back: 2, cut: 0 } }, "the first run a learned workflow served, handed back or alone, is the takeover (the bill's promoted); a run by hand after it is on neither side");
   const unknownBefore = series([["agent", 0.9], ["agent", null], ["workflow", 0.1]]);
   assert.deepEqual(costSummary(unknownBefore).withheld, { unknown: 1, at_most: 0 }, "an unknown cost before it is named, never read");
   assert.deepEqual(costSummary(series([["agent", 1], ["agent", 0.5]])), { ...EMPTY, before: { runs: 2, mean_usd: 0.75 } }, "no takeover yet: every agent run is before");
   const held = series([["agent", 0.9], ["agent", 0.9], ...Array.from({ length: CHEAPER_AFTER_RUNS - 1 }, () => ["workflow", 0.1, 0.05])]);
   assert.equal(costSummary(held).times_cheaper, null, "19 runs after say too little");
   const enough = series([["agent", 0.9], ["agent", 0.9], ...Array.from({ length: CHEAPER_AFTER_RUNS }, () => ["workflow", 0.1, 0.05])]);
-  assert.deepEqual(costSummary(enough), { ...EMPTY, ...PRICED, takeover: { n: 3, run_id: "r3" }, before: { runs: 2, mean_usd: 0.9 }, after: { runs: 20, mean_usd: 0.15 }, times_cheaper: 6, hand_backs: { ran: 20, back: 0 } });
+  assert.deepEqual(costSummary(enough), { ...EMPTY, ...PRICED, takeover: { n: 3, run_id: "r3" }, before: { runs: 2, mean_usd: 0.9 }, after: { runs: 20, mean_usd: 0.15 }, times_cheaper: 6, hand_backs: { ran: 20, back: 0, cut: 0 } });
 });
 
 test("times cheaper is withheld when a run it reads has an unknown cost or one known only as at most, and the summary names how many", () => {
@@ -101,7 +101,11 @@ test("the after side is the runs a learned workflow served (answered alone or ha
   const s = costSummary(runs);
   assert.deepEqual([s.before, s.after, s.after_state], [{ runs: 8, mean_usd: 1 }, { runs: 21, mean_usd: 0.971429 }, "priced"], "the 300 cheaper replays never pull the after side down");
   assert.equal(s.times_cheaper, 1, "about as cheap as by hand, not 2.9x");
-  assert.deepEqual(s.hand_backs, { ran: 21, back: 5 });
+  assert.deepEqual(s.hand_backs, { ran: 21, back: 5, cut: 0 });
+  // Two of the hand-backs a restart cut (the run ids given): counted as `cut`, never as the workflow's own `back`; a cut
+  // run id that is no hand-back counts nowhere. Its path and cost stay as they are: the after side is unchanged.
+  const cut = costSummary(runs, null, new Set(["r10", "r14", "r11"]));
+  assert.deepEqual([cut.hand_backs, cut.after], [{ ran: 21, back: 3, cut: 2 }, s.after]);
   // A replay or a run by hand after the takeover whose cost is unknown withholds nothing: neither side reads it.
   const unread = costSummary(series([...Array.from({ length: 2 }, () => ["agent", 1]), ...Array.from({ length: 20 }, () => ["workflow", 0.5]), ["replay", null], ["agent", null, 0, true]]));
   assert.deepEqual([unread.withheld, unread.times_cheaper], [null, 2]);
@@ -150,7 +154,7 @@ test("the serving promotion's check: the champion of the workflow the newest ser
 test("the summary's hand-backs are over every run since the takeover, never only the latest a read lists", () => {
   // The takeover, 30 hand-backs, then 1,000 runs it answered alone: a read of the latest 1,000 sees none handed back.
   const runs = series([["agent", 0.9], ["workflow", 0.1], ...Array.from({ length: 30 }, () => ["handed_back", 0.5]), ...Array.from({ length: 1000 }, () => ["workflow", 0.1])]);
-  assert.deepEqual(costSummary(runs).hand_backs, { ran: 1031, back: 30 });
+  assert.deepEqual(costSummary(runs).hand_backs, { ran: 1031, back: 30, cut: 0 });
 });
 
 test("the series as CSV: a header line, one row a run, an unknown figure empty, a field with a comma quoted", () => {
@@ -247,7 +251,7 @@ test("GET /agents/{id}/learning/cost: the agent's runs in order, by hand until a
   // promoteChecked's specified prior check compared one input, answered it alone and agreed: the summary must show
   // that evidence once the checked revision serves, without changing which runs make up the cost series.
   const replay = { n: 1, workflow_pct: 100, agent_pct: 100, cleared: true, agreed: 1, alone: 1, agree_min: 0.8 };
-  assert.deepEqual(body.summary, { ...EMPTY, ...PRICED, takeover: { n: 3, run_id: alone }, before: { runs: 2, mean_usd: before }, after: { runs: 2, mean_usd: after }, hand_backs: { ran: 2, back: 1 }, replay });
+  assert.deepEqual(body.summary, { ...EMPTY, ...PRICED, takeover: { n: 3, run_id: alone }, before: { runs: 2, mean_usd: before }, after: { runs: 2, mean_usd: after }, hand_backs: { ran: 2, back: 1, cut: 0 }, replay });
   assert.ok(body.runs.every((run) => run.cost_upper_bound === false), "no run's stored cost is a bound");
   assert.deepEqual([body.total_runs, body.unknown_cost_runs, body.unknown_path_runs], [4, 0, 0], "every run that learns ended with its path");
   assert.deepEqual(body.workflows, [], "the money rule holds a workflow that ran first; the agent calling one is the agent's own run");

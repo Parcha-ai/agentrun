@@ -4372,7 +4372,7 @@ class GetLearningCostResponseRunsItem(_GetLearningCostResponseRunsItemRequired, 
     followup_usd: float | None
     shadow_usd: float | None
     share_usd: float | None
-    not_served: Literal["cost_stop"] | None
+    not_served: Literal["cost_stop", "cut"] | None
 
 
 class GetLearningCostResponseWorkflowsItem(TypedDict):
@@ -4423,6 +4423,7 @@ class GetLearningCostResponseSummaryAfter(TypedDict):
 class GetLearningCostResponseSummaryHandBacks(TypedDict):
     ran: int
     back: int
+    cut: int
 
 
 class GetLearningCostResponseSummaryWithheld(TypedDict):

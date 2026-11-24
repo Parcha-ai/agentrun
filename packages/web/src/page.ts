@@ -1,23 +1,6 @@
-// The guarded direct fetch: one web page from a public host, as a Page: { ok, url, status, title, text, chars, links,
-// refused?, error? }. web_fetch reads a page through it (web-fetch.ts). The
-// fetch is pi-browser's public-host guard (publicFetch): every redirect hop resolved, checked and dialled at the address
-// checked, http(s) only, a byte cap and a timeout. Before it, a URL on a port other than 80 or 443, or longer than
-// URL_MAX, is refused here as well. A refusal or a failure is a Page with ok false, never a throw, so an agent reads why
-// and a workflow can branch on it.
-//
-// A page is read once (a Read: its first PAGE_READ_MAX_CHARS characters of text, and what is known of the rest), and its
-// text comes in parts of that: about max_chars characters from offset (a Part), counted as the answer holds them, so a
-// part is within its bound whatever the page holds (web_fetch keeps a run's reads, web-fetch.ts). A part that is not the whole page says so: truncated while more
-// follows, with the offset that reads on (next_offset), and the page's whole length (original_chars) where it is known.
-// Every field of a Page is held to a cap (its text, its title, its URL, its links), so one answer is too: serve's
-// host-bounds test holds it to the host's result bound.
-import { pathToFileURL } from "node:url";
-import type { TSchema } from "typebox";
-import type { PublicFetchOptions } from "@parcha/pi-browser";
+// A page as web_fetch answers it. A page is read once (a Read, at most PAGE_READ_MAX_CHARS characters of text) and
+// answered in parts (offset, maxChars). Every field of a Page is capped, so one answer stays under the host's bound.
 import { linksOf } from "./text-urls.js";
-
-/** A page's text read for its links (text-urls.ts): web_fetch's Parallel read takes it from here. */
-export { linksOf };
 
 /** On a page that was read, `chars`: the length of `text`, the part of the page's text this answer holds. `truncated`
  *  while more of it follows this part, and `next_offset` where that begins; `offset` where this part begins, when not 0;
@@ -29,9 +12,6 @@ export { linksOf };
  *  cut. `converted: "text"` when the text is the page's plain text, its conversion to markdown having run out of time. */
 export type Page = { ok: boolean; url: string; status: number; title: string; text: string; chars?: number; truncated?: true; original_chars?: number; beyond_read?: true; offset?: number; next_offset?: number; html_chars?: number; converted?: "text"; links: string[]; links_omitted?: number; refused?: string; error?: string };
 
-/** Under `--faux` only: a module whose default export gives `{ lookup, fetchImpl }` for the fetch (the tests' fake
- *  network), in place of the system's resolver and undici. */
-export const FAUX_WEB_ENV = "AGENTRUN_SERVE_FAUX_WEB";
 /** The most of a page's text one answer holds (max_chars at most), what it holds when max_chars is not given, and the
  *  least max_chars a tool's call may ask for (a smaller one is refused, saying so). */
 export const TEXT_CAP = 50_000;
@@ -39,7 +19,7 @@ export const PAGE_CHARS = 20_000;
 export const MAX_CHARS_MIN = 200;
 /** The most of a page's TEXT web_fetch reads, from either provider: its first million characters (not HTML_READ_CHARS,
  *  readPage's cut of the HTML before any text is read). A part reads within it, Parallel is never asked for more of a
- *  page than that and one character (web-fetch.ts), and an offset at or past it is refused. */
+ *  page than that and one character (providers/parallel.ts), and an offset at or past it is refused. */
 export const PAGE_READ_MAX_CHARS = 1_000_000;
 /** A page's links, with its first part only: at most LINKS_CAP of them, in at most LINKS_CHARS characters of the answer. */
 export const LINKS_CAP = 200;
@@ -48,12 +28,35 @@ export const TITLE_CAP = 500;
 /** The longest URL fetched: a longer one is refused before anything is sent. */
 export const URL_MAX = 4_096;
 export const TIMEOUT_MS = 30_000;
-/** Where readPage cuts a page's HTML before it reads it, scripts and styles aside (not PAGE_READ_MAX_CHARS, the most of
- *  the text read): pi-browser's READ_MAX_CHARS, held here so the tool's words name it without loading pi-browser where
- *  nothing is fetched (web-fetch-direct-cut.test holds the two equal). */
+/** Where the HTML reader cuts a page's HTML before it reads it, scripts and styles aside (not PAGE_READ_MAX_CHARS, the
+ *  most of the text read): pi-browser's READ_MAX_CHARS, the reader serve injects, held here so the tool's words name it
+ *  without loading a reader where nothing is fetched (web-fetch-direct-cut.test holds the two equal). */
 export const HTML_READ_CHARS = 1_000_000;
+/** The most bytes of a page any path reads: the guarded direct fetch's bound (pi-browser's PUBLIC_MAX_BYTES, 5 MiB,
+ *  held equal by web-fetch-direct-cut.test), and keyless Firecrawl's scrape's too. */
+export const PAGE_MAX_BYTES = 5 * 1024 * 1024;
 
 export const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
+/** `text` with any URL in it stripped of its user name and password (`//user:pass@host` to `//host`). An error may quote
+ *  a URL that holds them (undici's refusal of a redirect to one quotes it whole). Run it on the whole text, before any
+ *  cut: a cut can end inside them, leaving no "@" for it to find. It reads on to the last "@" before the host, as a URL
+ *  does: a password may hold an "@" left unencoded. */
+export const withoutUserinfo = (text: string) => text.replace(/\/\/[^\s/?#]*@/g, "//");
+/** `url`, a page's, with no user name or password, cleared as a URL (a URL drops a tab or a newline in them and encodes a
+ *  space, where withoutUserinfo, reading free text, stops); "" where it does not parse, as no URL to name: a scrub of its
+ *  text can stop short of them (at a space). A provider that followed a redirect names the URL it ended at, which may
+ *  hold them. Run it before a url is cut: a cut can end inside them, leaving a url that does not parse. */
+export function withoutCredentials(url: string): string {
+  const parsed = URL.parse(url);
+  if (!parsed) return "";
+  if (!parsed.username && !parsed.password) return url;
+  parsed.username = "";
+  parsed.password = "";
+  return clip(parsed.href, URL_MAX);
+}
+/** The URL a call asked for, as a page names it: with no user name or password, and cut; "" where it is no string or
+ *  does not parse (withoutCredentials). */
+export const askedUrl = (url: unknown) => (typeof url === "string" ? clip(withoutCredentials(url), URL_MAX) : "");
 
 /** Which part of a page's text an answer holds: from `offset` (0 by default), about `maxChars` characters (PAGE_CHARS by
  *  default, at most TEXT_CAP). */
@@ -157,57 +160,6 @@ export function partOfRead({ text, beyond, length, links, links_omitted, html_ch
   return { ...page, ...pageText({ text, beyond, length }, part), ...(html_chars === undefined ? {} : { html_chars }), ...(converted ? { converted } : {}), links: first ? links : [], ...(first && links_omitted ? { links_omitted } : {}) };
 }
 
-/** A page a provider read for us as markdown (Parallel's extract, keyless Firecrawl's scrape, keyless Exa's fetch), as a
- *  Read: its url, title and status, the text (`whole`: all of the page's, so its length is the page's) and the links it
- *  holds. */
-export const markdownRead = (url: string, title: string, text: string, whole: boolean, status = 200): Read => ({ ok: true, url: clip(url, URL_MAX), status, title: clip(title, TITLE_CAP), ...textOf(text, whole), ...linksWithin(linksOf(text)) });
-
-/** The page at `url`, read once through the guarded direct fetch, or why it was not. The rest of `options` are the
- *  guard's resolver and fetch, for a test; a signal ends it early. */
-export async function readDirect(url: unknown, options: Omit<PublicFetchOptions, "maxBytes"> = {}): Promise<Read | Unread> {
-  const failed = (fields: Partial<Omit<Page, "ok">> & ({ refused: string } | { error: string })): Unread => ({ ok: false, url: typeof url === "string" ? clip(url, URL_MAX) : "", status: 0, title: "", text: "", links: [], ...fields });
-  if (typeof url !== "string" || !URL.canParse(url)) return failed({ error: "url is not an absolute URL" });
-  if (url.length > URL_MAX) return failed({ error: `url is longer than ${URL_MAX.toLocaleString("en-US")} characters` });
-  const { port, username, password } = new URL(url);
-  if (port && port !== "80" && port !== "443") return failed({ refused: `refused: port ${port} is not 80 or 443` });
-  // A URL's user name and password are never sent anywhere: a fetch refuses them, never a third party's read of them.
-  if (username || password) return failed({ refused: "refused: the URL holds a user name or password" });
-  const { BrowserFailureError, publicFetch, readPage } = await import("@parcha/pi-browser");
-  try {
-    const signal = AbortSignal.any([AbortSignal.timeout(TIMEOUT_MS), ...(options.signal ? [options.signal] : [])]);
-    const answer = await publicFetch(url, { ...options, signal });
-    if (answer.body === null) return failed({ url: clip(answer.url, URL_MAX), status: answer.status, error: `the page answered ${answer.status}` });
-    // The caller's stop reaches the read too; the timeout is the network's, and readPage keeps its own deadline.
-    const read = /html/i.test(answer.contentType) ? await readPage(answer.body, answer.url, options.signal ? { signal: options.signal } : {}) : null;
-    const page = read ?? { title: "", text: answer.body, links: linksOf(answer.body) };
-    return { ok: true, url: clip(answer.url, URL_MAX), status: answer.status, title: clip(page.title, TITLE_CAP), ...textOf(page.text, !read?.truncated), ...(read?.truncated ? { html_chars: read.html_chars! } : {}), ...(read?.converted === "text" ? { converted: "text" as const } : {}), ...linksWithin(page.links) };
-  } catch (error) {
-    if (error instanceof BrowserFailureError && error.failure.code === "refused") return failed({ refused: error.message });
-    return failed({ error: (error as Error)?.message ?? String(error) });
-  }
-}
-
-/** The part `options` names of the page at `url`, as a Page, read through the guarded direct fetch. */
-export async function fetchPage(url: unknown, { offset, maxChars, ...options }: Omit<PublicFetchOptions, "maxBytes"> & Part = {}): Promise<Page> {
-  const read = await readDirect(url, options);
-  return read.ok ? partOfRead(read, { offset, maxChars }) : read;
-}
-
-/** The fetch's resolver and fetch in the run's process: the faux module's under `--faux` with one named, else none. */
-export async function fetchOptions(env: NodeJS.ProcessEnv, fauxEnv: string): Promise<Omit<PublicFetchOptions, "maxBytes" | "signal">> {
-  const faux = env[fauxEnv] ? env[FAUX_WEB_ENV] : undefined;
-  if (!faux) return {};
-  return ((await import(pathToFileURL(faux).href)) as { default: () => Omit<PublicFetchOptions, "maxBytes" | "signal"> }).default();
-}
-
-/** A page tool's arguments: `url`, and the part of its text to read (`offset`, `max_chars`). */
-export const URL_PARAMETERS = {
-  type: "object",
-  additionalProperties: false,
-  properties: {
-    url: { type: "string", minLength: 1, description: "An absolute http(s) URL." },
-    offset: { type: "integer", minimum: 0, description: "Where in the page's text to start, in characters (default 0). An answer that stops short of the page's end gives the offset that reads on." },
-    max_chars: { type: "integer", minimum: MAX_CHARS_MIN, maximum: TEXT_CAP, description: `About how many characters of the page's text to read (default ${PAGE_CHARS.toLocaleString("en-US")}, at least ${MAX_CHARS_MIN}, at most ${TEXT_CAP.toLocaleString("en-US")}).` },
-  },
-  required: ["url"],
-} as unknown as TSchema;
+/** A page a provider read for us as markdown (Parallel's extract, keyless Firecrawl's scrape), as a Read: its url,
+ *  title and status, the text (`whole`: all of the page's, so its length is the page's) and the links it holds. */
+export const markdownRead = (url: string, title: string, text: string, whole: boolean, status = 200): Read => ({ ok: true, url: clip(withoutCredentials(url), URL_MAX), status, title: clip(title, TITLE_CAP), ...textOf(text, whole), ...linksWithin(linksOf(text)) });

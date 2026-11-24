@@ -242,7 +242,7 @@ export const LEARNING_LEDGER = `CREATE TABLE IF NOT EXISTS learning_ledger (
     path TEXT CHECK (path IS NULL OR path IN ('agent', 'handed_back', 'workflow', 'replay', 'audit')),
     workflow TEXT,
     digest TEXT,
-    not_served TEXT CHECK (not_served IS NULL OR not_served IN ('cost_stop')),
+    not_served TEXT CHECK (not_served IS NULL OR not_served IN ('cost_stop', 'cut')),
     job_usd REAL,
     look_back_usd REAL,
     cost TEXT NOT NULL CHECK (cost IN ('known', 'unknown', 'at_most')),

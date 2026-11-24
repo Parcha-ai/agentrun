@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS learning_ledger (
   path TEXT COLLATE "C" CHECK (path IS NULL OR path IN ('agent', 'handed_back', 'workflow', 'replay', 'audit')),
   workflow TEXT COLLATE "C",
   digest TEXT COLLATE "C",
-  not_served TEXT COLLATE "C" CHECK (not_served IS NULL OR not_served IN ('cost_stop')),
+  not_served TEXT COLLATE "C" CHECK (not_served IS NULL OR not_served IN ('cost_stop', 'cut')),
   job_usd DOUBLE PRECISION,
   look_back_usd DOUBLE PRECISION,
   cost TEXT COLLATE "C" NOT NULL CHECK (cost IN ('known', 'unknown', 'at_most')),

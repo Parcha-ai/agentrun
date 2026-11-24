@@ -62,9 +62,11 @@ export type CostRun = {
   not_served: NotServed | null;
 };
 
-/** Why a run's learned workflow did not serve it: `cost_stop`, the money rule stopped it from running first
- *  (runner/workflow-first.ts costLineOf: its WORKFLOW_FIRST entry's `needs_revision`, metrics.not_served). */
-export const NOT_SERVED = ["cost_stop"] as const;
+/** Why a run's learned workflow did not serve it alone: `cost_stop`, the money rule stopped it from running first
+ *  (runner/workflow-first.ts costLineOf: its WORKFLOW_FIRST entry's `needs_revision`, metrics.not_served); `cut`, a
+ *  restart cut its call and the run was handed back (metrics.workflow_cut, servedOf `cut`), never the workflow's own
+ *  hand-back: costSummary counts it in `hand_backs.cut`, not `back`. */
+export const NOT_SERVED = ["cost_stop", "cut"] as const;
 export type NotServed = (typeof NOT_SERVED)[number];
 
 /** The by-hand side, the one baseline both the cost page's `before` and the money rule read (costSummary,
@@ -124,20 +126,22 @@ export type AfterState = (typeof AFTER_STATES)[number];
  *  leaves learning out and the after side keeps it in, so the figure never flatters learning. `withheld`: after a
  *  takeover, how many runs either side reads have an unknown cost and how many one known only as at most
  *  (`cost_upper_bound`); while any does there is no ratio, null when none does. `hand_backs`: of the served runs from
- *  the takeover on, how many handed back; null before a takeover. `replay`: the serving promotion's, as given. Every one
- *  is over every run, never only the latest a read lists. */
+ *  the takeover on (`ran`), how many the workflow handed back itself (`back`: an escalate, a failed step, an answer cut
+ *  by size or schema) and how many a restart cut (`cut`: the run ids `cut` names, its call ended `interrupted`,
+ *  metrics.workflow_cut); null before a takeover. A cut run stays `handed_back` at agent cost: only the count moves.
+ *  `replay`: the serving promotion's, as given. Every one is over every run, never only the latest a read lists. */
 export type CostSummary = {
   takeover: { n: number; run_id: string } | null;
   before: { runs: number; mean_usd: number } | null;
   after: { runs: number; mean_usd: number } | null;
   after_state: AfterState;
   times_cheaper: number | null;
-  hand_backs: { ran: number; back: number } | null;
+  hand_backs: { ran: number; back: number; cut: number } | null;
   withheld: { unknown: number; at_most: number } | null;
   replay: CostReplay | null;
 };
 
-export function costSummary(runs: readonly CostRun[], replay: CostReplay | null = null): CostSummary {
+export function costSummary(runs: readonly CostRun[], replay: CostReplay | null = null, cut: ReadonlySet<string> = new Set()): CostSummary {
   const first = runs.findIndex((run) => SERVED_PATHS.includes(run.path));
   // Each side's figures: the job's own $ before, all-in after; `bound`, known only as at most.
   type Figure = { value: number | null; bound: boolean };
@@ -157,7 +161,9 @@ export function costSummary(runs: readonly CostRun[], replay: CostReplay | null 
   const atMost = read.filter(({ bound }) => bound).length;
   const withheld = first >= 0 && unknown + atMost > 0 ? { unknown, at_most: atMost } : null;
   const times = !withheld && before && after && after.runs >= CHEAPER_AFTER_RUNS && after.mean_usd > 0 ? Math.round((before.mean_usd / after.mean_usd) * 10) / 10 : null;
-  const handBacks = first < 0 ? null : { ran: served.length, back: served.filter((run) => run.path === "handed_back").length };
+  const handedBack = served.filter((run) => run.path === "handed_back");
+  const cutBack = handedBack.filter((run) => cut.has(run.run_id)).length;
+  const handBacks = first < 0 ? null : { ran: served.length, back: handedBack.length - cutBack, cut: cutBack };
   const afterState: AfterState = after ? "priced" : first < 0 ? "no_served_runs" : "cost_unknown";
   return { takeover: first < 0 ? null : { n: runs[first]!.n!, run_id: runs[first]!.run_id }, before, after, after_state: afterState, times_cheaper: times, hand_backs: handBacks, withheld, replay };
 }

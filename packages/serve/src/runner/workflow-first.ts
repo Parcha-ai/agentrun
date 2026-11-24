@@ -15,8 +15,8 @@
 // cost. Both are the cost page's own (store-reads/learning.ts, over learn/ledger.ts summarize): the served side reads a
 // run's all-in (its booked cost, the workflow and any handback's agent work together, and every learning round booked
 // for it), and the by-hand cost is the page's `before`, the job's own cost of the agent's runs before a learned workflow
-// first served (learning-cost.ts byHandSide). A run whose cost is unknown is left out of its side's mean and counted,
-// never read as 0. Over that line it stops running
+// first served (learning-cost.ts byHandSide), so a compile turn is never by hand: it is its revision's spend. A run
+// whose cost is unknown is left out of its side's mean and counted, never read as 0. Over that line it stops running
 // first: the agent takes the run, the run's journal keeps why with the two numbers (WORKFLOW_FIRST, outcome
 // needs_revision), and the agent's cost per run shows it stopped. The stop asks for no compile. A new revision of it (a
 // new digest: one its hold asked, or its owner's) serves again from zero. Fewer than
@@ -32,7 +32,7 @@ import { COST_WINDOW, type RunPath, SERVED_PATHS } from "../learning-cost.js";
 import { auditableLaunch } from "../learn/audit.js";
 
 export { COST_WINDOW };
-import { KINDS } from "./journal-kinds.js";
+import { type CallEndData, KINDS } from "./journal-kinds.js";
 import { inputIssues, isObject, type Json } from "../validate.js";
 import { endedIn, type LoopRow, loopsOf, replaySkippedIn } from "../learned-nodes.js";
 import { type Compared, comparedOf, type CostStop, sameAnswer } from "../learn/promote.js";
@@ -291,27 +291,32 @@ export async function workflowFirstOf(kind: string, workflows: readonly LearnedW
 
 /** What a run's workflow-first step did, from its root entries (the WORKFLOW_FIRST entry): the workflow, its digest, the
  *  promotion it served under (WorkflowFirst.promotion), and whether it answered or handed back; undefined when it served
- *  none. The run's path is the run-end classifier's (store-reads/learning.ts runPathOverStore), which reads this first. */
-export function servedOf(entries: readonly { readonly kind: string; readonly data?: unknown }[]): { outcome: "answered" | "handed_back"; workflow: string; digest?: string; promotion?: number } | undefined {
+ *  none. `cut` on a hand-back the workflow never made itself: its call's end (WORKFLOW_FIRST_CALL) is `interrupted`, a
+ *  crash or a lost runner cut it and the next claim ended it, never running it again (adapter-loop.ts serveFirst). The
+ *  run's path is the run-end classifier's (store-reads/learning.ts runPathOverStore), which reads this first. */
+export function servedOf(entries: readonly { readonly kind: string; readonly data?: unknown }[]): { outcome: "answered" | "handed_back"; workflow: string; digest?: string; promotion?: number; cut?: true } | undefined {
   const served = entries.findLast((entry) => entry.kind === WORKFLOW_FIRST && ((entry.data as { outcome?: unknown } | undefined)?.outcome === "answered" || (entry.data as { outcome?: unknown } | undefined)?.outcome === "handed_back"))?.data as { workflow?: unknown; digest?: unknown; promotion?: unknown; outcome: "answered" | "handed_back" } | undefined;
   if (!served || typeof served.workflow !== "string") return undefined;
-  return { outcome: served.outcome, workflow: served.workflow, ...(typeof served.digest === "string" ? { digest: served.digest } : {}), ...(typeof served.promotion === "number" ? { promotion: served.promotion } : {}) };
+  const end = entries.findLast((entry) => entry.kind === KINDS.callEnd && (entry.data as CallEndData | undefined)?.callId === WORKFLOW_FIRST_CALL)?.data as CallEndData | undefined;
+  const cut = served.outcome === "handed_back" && end?.status === "interrupted";
+  return { outcome: served.outcome, workflow: served.workflow, ...(typeof served.digest === "string" ? { digest: served.digest } : {}), ...(typeof served.promotion === "number" ? { promotion: served.promotion } : {}), ...(cut ? { cut: true as const } : {}) };
 }
 
 /** The run-record fields a learning run's metrics carry, from the run-end classifier's `classified` path
  *  (runPathOverStore): the path it took, the learned revision it ran on, the learned workflow it ran (served first, or
  *  called by its agent) and, for one served first, its digest and the promotion it served under (`workflow_promotion`,
- *  which its grade keeps), and `not_auditable` when a trigger started it (never audited); and from its root `entries`,
+ *  which its grade keeps), `workflow_cut` on a hand-back a restart cut (servedOf `cut`: the workflow handed nothing back
+ *  itself), and `not_auditable` when a trigger started it (never audited); and from its root `entries`,
  *  each loop's exit (`loops`, loopsOf: a quote re-pick is a loop's second pass), when one ran. learning-cost reads path
  *  and workflow from here. None for a run that does not learn. */
-export function pathMetrics(launch: RunLaunch, classified: { path: RunPath; workflow: string | null; digest?: string; promotion?: number } | undefined, entries: readonly { readonly kind: string; readonly data?: unknown }[] = []): { path?: RunPath; learned_revision?: string; workflow?: string; workflow_digest?: string; workflow_promotion?: number; not_auditable?: true; not_served?: "cost_stop"; loops?: LoopRow[]; replay?: ReplayMetrics; audit?: NonNullable<RunLaunch["audit"]> & { readonly compared?: Compared } } {
+export function pathMetrics(launch: RunLaunch, classified: { path: RunPath; workflow: string | null; digest?: string; promotion?: number; cut?: true } | undefined, entries: readonly { readonly kind: string; readonly data?: unknown }[] = []): { path?: RunPath; learned_revision?: string; workflow?: string; workflow_digest?: string; workflow_promotion?: number; workflow_cut?: true; not_auditable?: true; not_served?: "cost_stop"; loops?: LoopRow[]; replay?: ReplayMetrics; audit?: NonNullable<RunLaunch["audit"]> & { readonly compared?: Compared } } {
   // The grader's verdict its end-of-run step kept (runner/compare-end.ts), for a replay run and a shadow.
   const compared = comparedOf(entries.findLast((entry) => entry.kind === KINDS.compared)?.data);
   const verdict = compared ? { compared } : {};
   // A shadow run (runner/audit.ts): path `audit` and the run it audits, whatever it did: no learning, no money rule.
   if (launch.audit) return { path: "audit", audit: { of: launch.audit.of, workflow: launch.audit.workflow, digest: launch.audit.digest, ...verdict } };
   if (!launch.learning) return {};
-  const { path, workflow, digest, promotion } = classified ?? { path: "agent" as const, workflow: null };
+  const { path, workflow, digest, promotion, cut } = classified ?? { path: "agent" as const, workflow: null };
   const loops = loopsOf(entries);
   const rows = loops.length ? { loops } : {};
   if (launch.replay) {
@@ -331,7 +336,7 @@ export function pathMetrics(launch: RunLaunch, classified: { path: RunPath; work
   // The money rule stopped its workflow from running first (its WORKFLOW_FIRST entry asks for a revision): why it was not
   // served, the ledger's (learn/ledger.ts record).
   const costStop = path === "agent" && entries.some((entry) => entry.kind === WORKFLOW_FIRST && (entry.data as { outcome?: unknown } | undefined)?.outcome === "needs_revision");
-  return { path, ...(launch.learning.seed ? { learned_revision: launch.learning.seed } : {}), ...(workflow ? { workflow } : {}), ...(digest ? { workflow_digest: digest } : {}), ...(promotion !== undefined ? { workflow_promotion: promotion } : {}), ...(notAuditable ? { not_auditable: true as const } : {}), ...(costStop ? { not_served: "cost_stop" as const } : {}), ...rows };
+  return { path, ...(launch.learning.seed ? { learned_revision: launch.learning.seed } : {}), ...(workflow ? { workflow } : {}), ...(digest ? { workflow_digest: digest } : {}), ...(promotion !== undefined ? { workflow_promotion: promotion } : {}), ...(cut && path === "handed_back" ? { workflow_cut: true as const } : {}), ...(notAuditable ? { not_auditable: true as const } : {}), ...(costStop ? { not_served: "cost_stop" as const } : {}), ...rows };
 }
 
 /** A replay run's record (metrics.replay): the graded run it replayed and how its workflow ended there. */
