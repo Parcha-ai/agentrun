@@ -3209,7 +3209,14 @@ after asks, saying "this run has sent 5 emails" (the count is the run's own reco
 stops two auto-responders answering each other. On a run an email started whose `email_read` is thread-scoped (no
 `scope: "mailbox"`), a send to anyone outside the thread's people
 (the account's own address and every From, To and Cc of the thread's messages) asks too, naming them ("eve@example.com
-is outside this email's thread"). The pending approval carries the reason as `asks_because`, which the console's card
+is outside this email's thread"). On any run a trigger started (schedule, webhook, Slack, GitHub, Composio, email or
+feed), a send to an address this account has never sent to asks too, naming it ("someone@example.com: this account has
+never sent to them"). Never sent to means no message in the account's own Sent folder (Gmail's Sent Mail) has the
+address in its To, Cc or Bcc: the exact address, case-blind, as far back as Sent goes. Mail received from someone
+doesn't count, so a scheduled run replying to a first-time sender asks once. The account's own address, and an address
+the run already sent to (unasked or approved), never ask. A Sent folder that can't be read asks, saying so. `scope:
+"mailbox"` doesn't lift this ask; it only turns the thread ask off. A playground or API run has neither ask, only the
+cap. The pending approval carries the reason as `asks_because`, which the console's card
 says above the call's arguments ("Asks because ..."). With accounts off, where no one can
 approve, such a send is refused in those words.
 

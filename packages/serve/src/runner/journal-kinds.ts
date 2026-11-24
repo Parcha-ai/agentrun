@@ -313,8 +313,9 @@ export interface AnswerData {
 }
 
 /** The calls of a tool a run's journal shows (toolCalls): `ran`, the ids run to a good end, and `unnamed`, those pi
- *  recorded with no id; `ended`, every id with a result of any kind (done, an error, a refusal or a deny). */
-export type ToolCalls = { readonly ran: ReadonlySet<string>; readonly unnamed: number; readonly ended: ReadonlySet<string> };
+ *  recorded with no id; `ended`, every id with a result of any kind (done, an error, a refusal or a deny); `args`, each
+ *  call's arguments by its id, as its start (a CLI's) or its model's tool call (pi's) wrote them. */
+export type ToolCalls = { readonly ran: ReadonlySet<string>; readonly unnamed: number; readonly ended: ReadonlySet<string>; readonly args: ReadonlyMap<string, unknown> };
 
 /** The calls of `tool` `entries` show: a CLI's (agentrun.call.start and its end) and pi's (a pi.tool-result of it), each
  *  call id once, however many records say it. Run to a good end: a CLI's end done, a pi result that is no error. */
@@ -322,10 +323,18 @@ export function toolCalls(entries: readonly { readonly kind: string; readonly da
   const started = new Set<string>();
   const ran = new Set<string>();
   const ended = new Set<string>();
+  const args = new Map<string, unknown>();
   let unnamed = 0;
   for (const entry of entries) {
-    if (entry.kind === KINDS.callStart && (entry.data as CallStartData).tool === tool) started.add((entry.data as CallStartData).callId);
-    else if (entry.kind === KINDS.callEnd && started.has((entry.data as CallEndData).callId)) {
+    if (entry.kind === KINDS.callStart && (entry.data as CallStartData).tool === tool) {
+      started.add((entry.data as CallStartData).callId);
+      args.set((entry.data as CallStartData).callId, (entry.data as CallStartData).input);
+    } else if (entry.kind === "pi.assistant") {
+      const content = (entry.model as { content?: unknown }[] | undefined)?.[0]?.content;
+      for (const block of Array.isArray(content) ? (content as { type?: unknown; id?: unknown; name?: unknown; arguments?: unknown }[]) : []) {
+        if (block?.type === "toolCall" && block.name === tool && typeof block.id === "string" && block.id) args.set(block.id, block.arguments);
+      }
+    } else if (entry.kind === KINDS.callEnd && started.has((entry.data as CallEndData).callId)) {
       ended.add((entry.data as CallEndData).callId);
       if ((entry.data as CallEndData).status === "done") ran.add((entry.data as CallEndData).callId);
     } else if (entry.kind === "pi.tool-result") {
@@ -338,7 +347,7 @@ export function toolCalls(entries: readonly { readonly kind: string; readonly da
       else unnamed++;
     }
   }
-  return { ran, unnamed, ended };
+  return { ran, unnamed, ended, args };
 }
 
 /** How many calls of `tool` `entries` show run to a good end (toolCalls): a call refused, denied, failed or not ended is

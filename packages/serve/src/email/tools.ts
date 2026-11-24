@@ -27,7 +27,7 @@ const opens = (host: ToolHost): boolean => host.store !== undefined && (host.sea
 const accountOf = async (host: ToolHost): Promise<OpenedAccount | undefined> => (host.sealKey ? openAccount(host.store!, host.sealKey) : held()?.emailAccount());
 import { EMAIL_ANSWER_MAX_CHARS, emailError, emailText } from "./answer.js";
 import { archiveDescription, EMAIL_ADDRESS, EMAIL_DESCRIPTIONS, EMAIL_DRAFT, EMAIL_FILE, EMAIL_READ, EMAIL_SEARCH, EMAIL_SEND, fileDescription, LIMIT_DEFAULT, LIMIT_MAX, OUTSIDE_THREAD, SEND_CAP, type ServerKind } from "./names.js";
-import { composed, foundOf, type ImapSession, inThread, involves, MailError, type MailHead, type MailMessage, READ_BYTES, readOf, SEARCH_BYTES, SENT_HEADER, smtpSend, TOOL_SOCKET_TIMEOUT_MS, withImap } from "./mail.js";
+import { composed, foundOf, type ImapSession, inThread, involves, MailError, type MailHead, type MailMessage, neverSentTo, READ_BYTES, readOf, SEARCH_BYTES, SENT_HEADER, smtpSend, TOOL_SOCKET_TIMEOUT_MS, withImap } from "./mail.js";
 
 export { EMAIL_DRAFT, EMAIL_FILE, EMAIL_READ, EMAIL_SCOPES, EMAIL_SEARCH, EMAIL_SEND, OUTSIDE_THREAD, SCOPED_TOOLS, SEND_CAP, sendSummary } from "./names.js";
 
@@ -385,15 +385,56 @@ const listed = (names: readonly string[]) => (names.length < 2 ? names.join("") 
 
 /** Why an email_send its setting allows asks a person anyway (tools.ts ToolEntry.asks), or nothing: the run has sent
  *  SEND_CAP emails or more (its record's count, across pauses); or, on a run that reads only its email's thread (email_read's
- *  scope), it sends to someone outside the thread's people (Mail.people), each named. Both, when both. A thread that can't
- *  be read asks too, saying so. A call whose arguments don't read asks nothing: the tool refuses it in its own words. */
+ *  scope), it sends to someone outside the thread's people (Mail.people), each named; or, on any other run a trigger
+ *  started, it sends to an address the account has never sent to (newWords), each named. Each that holds, joined. A thread
+ *  or a Sent folder that can't be read asks too, saying so. A call whose arguments don't read asks nothing: the tool
+ *  refuses it in its own words. */
 export async function sendAsks(args: Record<string, unknown>, ctx: AskContext): Promise<string | undefined> {
   const why: string[] = [];
   const sent = await ctx.ran(EMAIL_SEND);
   if (sent >= SEND_CAP) why.push(`this run has sent ${sent} emails`);
   const outside = await outsideWords(ctx.host, args);
   if (outside) why.push(outside);
+  const fresh = await newWords(ctx, args);
+  if (fresh) why.push(fresh);
   return why.length ? why.join("; ") : undefined;
+}
+
+/** The recipients of a send's arguments (to and cc), lowercased, once each; none when they don't read. */
+function recipientsOf(args: Record<string, unknown>): string[] {
+  const list = (value: unknown) => (typeof value === "string" ? [value] : Array.isArray(value) ? value.filter((one): one is string => typeof one === "string") : []);
+  return [...new Set([...list(args.to), ...list(args.cc)].map((one) => one.trim().toLowerCase()))];
+}
+
+/** On a run a trigger started (host.startedBy: a schedule, a webhook, an email, any source), the recipients of the send
+ *  `args` this account has never sent to, in words: none of its Sent mail is to them (mail.ts neverSentTo, To, Cc or Bcc,
+ *  the exact address). The account's own address is never new, nor one this run already sent to (its earlier sends,
+ *  unasked or approved, from its record: a copy in Sent or not). A Sent folder that can't be read asks, saying so (fail
+ *  closed). Nothing on a run no trigger started, nor on one that reads only its email's thread, whose ask (outsideWords)
+ *  already holds every address outside it and leaves the thread's people, its sender first, unasked. */
+async function newWords(ctx: AskContext, args: Record<string, unknown>): Promise<string | undefined> {
+  const host = ctx.host;
+  if (!host.startedBy || !opens(host)) return undefined;
+  if ((await scopeOf(host, EMAIL_READ)).kind === "thread") return undefined;
+  let recipients: string[];
+  try {
+    const letter = letterOf(args);
+    recipients = [...new Set([...letter.to, ...letter.cc].map((one) => one.toLowerCase()))];
+  } catch {
+    return undefined;
+  }
+  try {
+    const account = await accountOf(host);
+    // No account, or one a template eval's run may not open: the send itself is refused in its own words.
+    if (!account || !fakeHeld(host, account)) return undefined;
+    const known = new Set([account.address.trim().toLowerCase(), ...(await ctx.made(EMAIL_SEND)).flatMap((one) => (isObject(one) ? recipientsOf(one) : []))]);
+    const unknown = recipients.filter((one) => !known.has(one));
+    if (!unknown.length) return undefined;
+    const never = await withImap(account, (session) => neverSentTo(session, unknown), { socketTimeoutMs: TOOL_SOCKET_TIMEOUT_MS });
+    return never.length ? `${listed(never)}: this account has never sent to them` : undefined;
+  } catch (error) {
+    return `its recipients couldn't be checked against this account's sent mail (${(error as Error)?.message ?? String(error)})`;
+  }
 }
 
 /** The recipients of the send `args` outside the run's thread, in words; nothing on a run that reads the whole account. */

@@ -134,7 +134,7 @@ test("the server's TO/CC/BCC search is a substring: Sent to data@example.com and
   const now = await settled(ctx.api, runId);
   // The fake's search took the lookalikes (a real server's would too), and only their address headers were read.
   const commands = faux.commands();
-  assert.ok(commands.some((c) => /SEARCH .*BCC "bob@example\.com"/i.test(c)), `searched by To, Cc and Bcc: ${commands.join(" | ")}`);
+  assert.ok(commands.some((c) => /SEARCH .*BCC "?bob@example\.com"?/i.test(c)), `searched by To, Cc and Bcc: ${commands.join(" | ")}`);
   assert.ok(commands.some((c) => /FETCH .*HEADER\.FIELDS \(TO CC BCC\)/i.test(c)), `read the hits' To, Cc and Bcc: ${commands.join(" | ")}`);
   asks(now, `a@example.co and bob@example.com${NEVER}`);
   assert.equal(faux.sent().length, 0);

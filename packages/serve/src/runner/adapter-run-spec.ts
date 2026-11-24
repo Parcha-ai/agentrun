@@ -422,18 +422,30 @@ export async function adapterRunGate(store: Pick<Store, "settings">, claim: Pick
   // count. Its calls are asked about one at a time (asking, a chain by tool): the count read and the reservation with
   // nothing between. A reserved call whose result is in the journal leaves it: counted there, or its slot freed (an
   // error, a deny). A new claim's gate starts with none: what finished is the journal's.
-  const reserved = new Map<string, Set<string>>();
+  // Each reserved call is kept with its arguments: a tool's own ask reads what the run's calls of it were made with
+  // (AskContext.made), those let through here among them.
+  const reserved = new Map<string, Map<string, unknown>>();
   const asking = new Map<string, Promise<unknown>>();
-  const counted = (ran: NonNullable<NonNullable<Parameters<NonNullable<AdapterRunSpec["gate"]>>[1]>["ran"]>) => async (tool: string): Promise<number> => {
+  type Ran = NonNullable<NonNullable<Parameters<NonNullable<AdapterRunSpec["gate"]>>[1]>["ran"]>;
+  /** The journal's calls of `tool`, the reserved ones that have a result there let go. */
+  const read = async (ran: Ran, tool: string) => {
     const calls = await ran(tool);
     const held = reserved.get(tool);
-    for (const id of held ?? []) if (calls.ran.has(id) || calls.ended.has(id)) held!.delete(id);
+    for (const id of [...(held?.keys() ?? [])]) if (calls.ran.has(id) || calls.ended.has(id)) held!.delete(id);
+    return { calls, held };
+  };
+  const counted = (ran: Ran) => async (tool: string): Promise<number> => {
+    const { calls, held } = await read(ran, tool);
     return calls.ran.size + calls.unnamed + (held?.size ?? 0);
   };
-  const askedOne = (call: Parameters<NonNullable<AdapterRunSpec["gate"]>>[0], asks: NonNullable<ToolEntry["asks"]>, made: ToolHost, ran: Parameters<typeof counted>[0]): Promise<string | undefined> => {
+  const madeWith = (ran: Ran) => async (tool: string): Promise<unknown[]> => {
+    const { calls, held } = await read(ran, tool);
+    return [...[...calls.ran].flatMap((id) => (calls.args.has(id) ? [calls.args.get(id)] : [])), ...(held?.values() ?? [])];
+  };
+  const askedOne = (call: Parameters<NonNullable<AdapterRunSpec["gate"]>>[0], asks: NonNullable<ToolEntry["asks"]>, made: ToolHost, ran: Ran): Promise<string | undefined> => {
     const turn = (asking.get(call.tool) ?? Promise.resolve()).then(async () => {
-      const because = await asks((call.args ?? {}) as Record<string, unknown>, { host: made, ran: counted(ran) });
-      if (because === undefined && call.callId) reserved.set(call.tool, (reserved.get(call.tool) ?? new Set()).add(call.callId));
+      const because = await asks((call.args ?? {}) as Record<string, unknown>, { host: made, ran: counted(ran), made: madeWith(ran) });
+      if (because === undefined && call.callId) reserved.set(call.tool, (reserved.get(call.tool) ?? new Map()).set(call.callId, call.args));
       return because;
     });
     asking.set(call.tool, turn.catch(() => undefined));
