@@ -18,13 +18,13 @@ export default {
 
     // A template that asks (kyb) opens on Ask me.
     await page.goto(`${base}/#/templates/kyb`);
-    const kyb = page.getByRole("group", { name: "Approvals" });
+    const kyb = page.getByRole("group", { name: "Tool approvals" });
     await kyb.waitFor();
     check(await kyb.getByRole("radio", { name: /^Ask me/ }).isChecked(), "kyb's setup did not open on Ask me");
 
     // market-monitor runs unattended by its own default: its setup opens on Never ask, saying what that grants.
     await page.goto(`${base}/#/templates/${TEMPLATE}`);
-    const approvals = page.getByRole("group", { name: "Approvals" });
+    const approvals = page.getByRole("group", { name: "Tool approvals" });
     await approvals.waitFor();
     check(await approvals.getByRole("radio", { name: /^Never ask/ }).isChecked(), "market-monitor's setup did not open on Never ask");
     await approvals.getByText("every tool this agent has runs without waiting for you", { exact: false }).waitFor();
@@ -39,7 +39,7 @@ export default {
     });
     await page.getByRole("button", { name: "Apply", exact: true }).waitFor();
     check(await page.locator('[data-field="parameters.competitors"] input').inputValue() === "Acme (acme.com)", "the playground lost the configured competitors");
-    check(await page.getByRole("group", { name: "Approvals" }).getByRole("radio", { name: /^Never ask/ }).isChecked(), "the playground lost the unattended approval choice");
+    check(await page.getByRole("group", { name: "Tool approvals" }).getByRole("radio", { name: /^Never ask/ }).isChecked(), "the playground lost the unattended approval choice");
     const [response] = await Promise.all([
       page.waitForResponse((r) => r.request().method() === "POST" && new URL(r.url()).pathname === `/v2/templates/${TEMPLATE}/apply`),
       page.getByRole("button", { name: "Apply", exact: true }).click(),
@@ -56,9 +56,8 @@ export default {
     const agent = await api("GET", `/agents/${encodeURIComponent(agentId)}`);
     check(agent.body.definition.approvals === "never", `the agent's approvals are ${JSON.stringify(agent.body.definition.approvals)}, not never`);
 
-    // The agent's dropdown opens its playground. Its read is set to ask, but the agent's unattended run ends without waiting.
-    await page.getByRole("button", { name: "Choose coding agent for Run agent", exact: true }).click();
-    await page.getByRole("menuitem", { name: "API playground", exact: true }).click();
+    // The run box's second line opens its playground. Its read is set to ask, but the agent's unattended run ends without waiting.
+    await page.getByRole("link", { name: "Open in API playground", exact: true }).click();
     await page.waitForURL((url) => url.hash === `#/playground?agent=${encodeURIComponent(agentId)}`);
     // The hash can move before React replaces the agent page, whose RunBar has the same message placeholder.
     const request = page.getByRole("region", { name: "Request", exact: true });

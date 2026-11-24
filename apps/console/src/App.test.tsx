@@ -29,6 +29,9 @@ describe("route", () => {
     expect(route("#/races/bench-1")).toEqual({ section: "runs", race: "bench-1" });
     expect(route("#/races/fix%20the%20test")).toEqual({ section: "runs", race: "fix the test" });
   });
+  it("opens the form that starts a race under Runs, never a race labeled new", () => {
+    expect(route("#/races/new")).toEqual({ section: "runs", newRace: true });
+  });
   it("keeps the selected agent in a Playground link", () => {
     expect(route("#/playground?agent=agent%20two")).toEqual({ section: "playground", playgroundAgent: "agent two" });
     expect(route("#/playground")).toEqual({ section: "playground" });
@@ -53,6 +56,7 @@ describe("route", () => {
   it("opens Settings → API Keys at its own address, and at #/settings", () => {
     expect(route("#/settings/keys")).toEqual({ section: "settings", settings: "keys" });
     expect(route("#/settings/harness-keys")).toEqual({ section: "settings", settings: "harness-keys" });
+    expect(route("#/settings/api-keys")).toEqual({ section: "settings", settings: "api-keys" });
     expect(route("#/settings")).toEqual({ section: "settings", settings: "keys" });
     expect(route("#/settings/webhook")).toEqual({ section: "settings", settings: "webhook" });
     expect(route("#/settings/email")).toEqual({ section: "settings", settings: "email" });
@@ -139,6 +143,74 @@ describe("App, Mission Control when the stats can't be read", () => {
   });
 });
 
+describe("App, the race form when the capabilities can't be read", () => {
+  it("says so with Try again, not Loading for ever, and Try again reads them and shows the form", async () => {
+    let fail = true;
+    const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+    vi.stubGlobal("fetch", async (url: string) => {
+      const path = new URL(url, "http://serve.test").pathname;
+      if (path === "/v2/auth/session") return json(200, { password_set: true, signed_in: true, secrets_writable: true });
+      if (path === "/v2/capabilities") return fail
+        ? json(503, { error: { code: "unavailable", message: "The server is starting.", retryable: true } })
+        : json(200, { models: { source: "providers", ready: true }, harnesses: [{ id: "pi", available: true, default_model: "anthropic/claude-sonnet-5-5", models: ["anthropic/claude-sonnet-5-5"] }], features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false } } });
+      if (path === "/v2/runs" || path === "/v2/agents") return json(200, { runs: [], agents: [], next_cursor: null });
+      return json(404, { error: { code: "not_found", message: path, retryable: false } });
+    });
+    location.hash = "#/races/new";
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(App)));
+    const until = async (text: string) => {
+      const end = Date.now() + 4000;
+      while (!host.textContent?.includes(text) && Date.now() < end) await act(async () => { await new Promise((r) => setTimeout(r, 25)); });
+    };
+    await until("could not be read");
+    expect(host.textContent).toContain("The server's harnesses could not be read");
+    fail = false;
+    await act(async () => { [...host.querySelectorAll("button")].find((b) => b.textContent?.trim() === "Try again")!.click(); });
+    await until("Start the race");
+    expect(host.textContent).toContain("Start the race");
+  });
+
+  it("gives the form the server's tool offers and places: a started lane carries the tools a new agent gets there", async () => {
+    const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+    const started: Record<string, unknown>[] = [];
+    vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
+      const path = new URL(url, "http://serve.test").pathname;
+      if (path === "/v2/auth/session") return json(200, { password_set: true, signed_in: true, secrets_writable: true });
+      if (path === "/v2/capabilities") return json(200, {
+        models: { source: "providers", ready: true }, features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false } },
+        harnesses: [{ id: "pi", available: true, default_model: "anthropic/claude-sonnet-5-5", models: ["anthropic/claude-sonnet-5-5"] }],
+        tools: [{ name: "read", available: true, harnesses: ["pi"] }, { name: "bash", available: true, sandbox_only: true, harnesses: ["pi"] }],
+        places: { modes: ["runner", "sandbox"], boxes: [{ id: "local", available: true }], default_place: { mode: "sandbox", box: "local" } },
+      });
+      if (path === "/v2/runs" && init?.method === "POST") {
+        const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+        started.push(body);
+        return json(202, { run_id: `run-${started.length}`, agent_id: `agent-${started.length}`, status: "queued", state: "working", labels: body.labels });
+      }
+      if (path === "/v2/runs" || path === "/v2/agents") return json(200, { runs: [], agents: [], next_cursor: null });
+      return json(404, { error: { code: "not_found", message: path, retryable: false } });
+    });
+    location.hash = "#/races/new";
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(App)));
+    const end = Date.now() + 4000;
+    while (!host.querySelector("textarea") && Date.now() < end) await act(async () => { await new Promise((r) => setTimeout(r, 25)); });
+    const area = host.querySelector<HTMLTextAreaElement>("textarea")!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(area, "Fix the failing test");
+      area.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => { [...host.querySelectorAll("button")].find((b) => b.textContent?.trim() === "Start the race")!.click(); });
+    const sent = Date.now() + 4000;
+    while (started.length < 2 && Date.now() < sent) await act(async () => { await new Promise((r) => setTimeout(r, 25)); });
+    // The offers give read; the box by default gives bash too (with no places read, a lane gets no shell).
+    expect(started.map((b) => (b.definition as { tools?: string[] }).tools)).toEqual([["read", "bash"], ["read", "bash"]]);
+  });
+});
+
 describe("App, Mission Control after a failed read", () => {
   it("Try again reads the stats and the latest runs again, and shows them", async () => {
     let statsCalls = 0;
@@ -187,7 +259,8 @@ describe("App, Settings", () => {
       if (path === "/v2/capabilities") return json(200, { models: { source: "providers", ready: true }, harnesses: [], tools, features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false }, ...features } });
       if (path === "/v2/settings/tools") return json(200, { web_search: { provider: "auto" }, web_fetch: { provider: "kernel" } });
       if (path === "/v2/settings/tool-keys") return json(200, keys);
-      if (path === "/v2/settings/harness-keys") return json(200, { harnesses: [{ id: "model-agent", label: "Model Agent", ready: false, keys: [{ name: "harness:model-agent:MODEL_AGENT_API_KEY", set: false, source: null, changed_at: null }] }] });
+      if (path === "/v2/settings/harness-keys") return json(200, { harnesses: [{ id: "model-agent", label: "Model Agent", named: true, ready: false, keys: [{ name: "harness:model-agent:MODEL_AGENT_API_KEY", set: false, source: null, changed_at: null }], kept: [], reenter: [] }] });
+      if (path === "/v2/settings/api-keys") return json(200, { keys: [{ id: "01a20b30-b53a-7000-9abd-64340ac132cb", name: "billing app", created_at: "2026-11-03T12:00:00.000Z", last_used_at: null, secret: { name: "api-key:01a20b30-b53a-7000-9abd-64340ac132cb", set: true, source: "console", changed_at: "2026-11-03T12:00:00.000Z" } }], limit: 50 });
       if (path === "/v2/settings/webhook") return json(200, { configured: false });
       if (path === "/v2/settings/webhook/deliveries") return json(200, { attempts: [] });
       if (path === "/v2/settings/mcp-servers") return json(200, { servers: [] });
@@ -255,16 +328,35 @@ describe("App, Settings", () => {
     expect(page.asked).toContain("GET /v2/settings/tools");
   });
 
+  it("#/settings/api-keys opens AgentRun API keys, a tab only on a server that makes them", async () => {
+    const page = await open({ tool_keys: { routes: true, at_rest: "sealed" }, api_keys: { routes: true, limit: 50, at_rest: "hashed" } }, "#/settings/api-keys");
+    expect(page.host.querySelector("h1")?.textContent).toBe("AgentRun API keys");
+    expect([...page.host.querySelectorAll('nav[aria-label="Settings"] a')].map((a) => [a.textContent, a.getAttribute("aria-current")]).slice(0, 2)).toEqual([["API Keys", null], ["AgentRun API keys", "page"]]);
+    expect(page.asked).toContain("GET /v2/settings/api-keys");
+    expect(page.host.querySelector('[aria-label="Keys"]')?.textContent).toContain("billing app");
+    // The owner's session (the session read's secrets_writable) makes one here.
+    expect([...page.host.querySelectorAll("button")].some((b) => b.textContent === "Create key")).toBe(true);
+    act(() => root?.unmount());
+    document.body.innerHTML = "";
+    const none = await open({ tool_keys: { routes: true, at_rest: "sealed" } }, "#/settings/keys");
+    expect([...none.host.querySelectorAll('nav[aria-label="Settings"] a')].map((a) => a.textContent)).not.toContain("AgentRun API keys");
+  });
+
   it("#/settings/harness-keys opens Harness keys, a tab only on a server started with a plan-billed recipe", async () => {
-    const page = await open({ tool_keys: { routes: true, at_rest: "sealed" }, harness_keys: { routes: true, at_rest: "sealed", harnesses: ["model-agent"] } }, "#/settings/harness-keys");
+    const page = await open({ tool_keys: { routes: true, at_rest: "sealed" }, harness_keys: { routes: true, at_rest: "sealed", harnesses: ["model-agent"], kept: [] } }, "#/settings/harness-keys");
     expect(page.host.querySelector("h1")?.textContent).toBe("Harness keys");
     expect([...page.host.querySelectorAll('nav[aria-label="Settings"] a')].map((a) => [a.textContent, a.getAttribute("aria-current")]).slice(0, 2)).toEqual([["API Keys", null], ["Harness keys", "page"]]);
     expect(page.asked).toContain("GET /v2/settings/harness-keys");
     expect(page.host.querySelector('[data-harness="model-agent"]')?.textContent).toContain("MODEL_AGENT_API_KEY");
     act(() => root?.unmount());
     document.body.innerHTML = "";
-    const none = await open({ tool_keys: { routes: true, at_rest: "sealed" }, harness_keys: { routes: true, at_rest: "sealed", harnesses: [] } }, "#/settings/keys");
+    const none = await open({ tool_keys: { routes: true, at_rest: "sealed" }, harness_keys: { routes: true, at_rest: "sealed", harnesses: [], kept: [] } }, "#/settings/keys");
     expect([...none.host.querySelectorAll('nav[aria-label="Settings"] a')].map((a) => a.textContent)).not.toContain("Harness keys");
+    act(() => root?.unmount());
+    document.body.innerHTML = "";
+    // No recipe named, keys still kept: the tab stays, so its keys can be removed.
+    const kept = await open({ tool_keys: { routes: true, at_rest: "sealed" }, harness_keys: { routes: true, at_rest: "sealed", harnesses: [], kept: ["old-agent"] } }, "#/settings/keys");
+    expect([...kept.host.querySelectorAll('nav[aria-label="Settings"] a')].map((a) => a.textContent)).toContain("Harness keys");
   });
 
   it("a server with a choice of provider and no tool keys has Settings, which opens on Tools", async () => {
@@ -562,6 +654,23 @@ describe("App, the agents' names", () => {
     await until(() => crumb().includes(`Run ${runLabel(started.run_id)}`));
     await until(() => crumb().includes(made.definition.name!));
     expect(crumb()).not.toContain(made.agent_id);
+  });
+
+  it("puts Start a run's agent beside the operation on one row, and names the path once", async () => {
+    const [first] = agentsList();
+    server({ active: [first] });
+    const { host, until } = await open("#/playground");
+    const agent = () => host.querySelector('button[aria-haspopup="listbox"][aria-label="Agent"]');
+    await until(() => !!agent());
+    const row = host.querySelector<HTMLElement>('[aria-label="Playground agent"]')!;
+    expect(host.querySelectorAll("#api-operation"), "one operation picker").toHaveLength(1);
+    expect(row.contains(host.querySelector("#api-operation")), "on the agent's row").toBe(true);
+    expect(row.contains(agent())).toBe(true);
+    expect(row.textContent!.match(/\/v2\/agents\//g), "the path once, with the agent's id").toHaveLength(1);
+    expect(row.textContent).toContain(`/v2/agents/${first.agent_id}/runs`);
+    await act(async () => { location.hash = "#/playground?operation=list-runs"; });
+    await until(() => !host.querySelector('[aria-label="Playground agent"]'));
+    expect(host.querySelectorAll("#api-operation"), "another operation keeps the page's row").toHaveLength(1);
   });
 
   it("updates the Playground target when its URL changes and never substitutes a missing agent", async () => {
