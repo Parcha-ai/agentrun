@@ -3148,7 +3148,17 @@ export const COMMANDS = [
       "run_id"
     ],
     "multiSegment": [],
-    "query": [],
+    "query": [
+      {
+        "name": "cut",
+        "type": "string",
+        "enum": [
+          "run"
+        ],
+        "required": false,
+        "description": "`run`: each file also has its `name`, its path under the run's own cut (each value the cut holds and each secret shape replaced by `[redacted]` in place, as a cut read cuts a file's text), whatever its type. A run whose cut can't be read is `403 forbidden`, as without `cut`. A server that doesn't know `cut` lists no `name`."
+      }
+    ],
     "headers": [],
     "bodyFlags": [],
     "hasBody": false,

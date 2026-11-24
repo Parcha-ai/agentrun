@@ -886,6 +886,7 @@ export type RunFile = {
   modified_at: Timestamp;
   content_type?: string | null;
   unreadable?: true;
+  name?: string;
 };
 
 export type MessageCreate = {
@@ -4596,6 +4597,9 @@ export type CreateRunComputerViewerResponse = {
 /** Purge a run's content and keep its cost (DELETE /runs/{run_id}). */
 
 /** The files the run wrote (GET /runs/{run_id}/files). */
+export interface ListRunFilesParams {
+  cut?: "run";
+}
 export type ListRunFilesResponse = RunFileList;
 
 /** One run (GET /runs/{run_id}). */
@@ -7256,7 +7260,7 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   createInlineRun: {"method":"POST","path":"/runs","pathParams":[],"multiSegment":[],"query":[],"headers":["Idempotency-Key"],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   createRunComputerViewer: {"method":"POST","path":"/runs/{run_id}/computer/viewer","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":false,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   deleteRun: {"method":"DELETE","path":"/runs/{run_id}","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"none","secret":false,"publicFields":[],"tagged":false},
-  listRunFiles: {"method":"GET","path":"/runs/{run_id}/files","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  listRunFiles: {"method":"GET","path":"/runs/{run_id}/files","pathParams":["run_id"],"multiSegment":[],"query":["cut"],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getRun: {"method":"GET","path":"/runs/{run_id}","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   gradeRun: {"method":"PUT","path":"/runs/{run_id}/grade","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getRunGraph: {"method":"GET","path":"/runs/{run_id}/graph","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
@@ -7619,7 +7623,7 @@ export function resources(call: Call) {
       /** Purge a run's content and keep its cost (DELETE /runs/{run_id}). */
       delete: (runId: string, options?: RequestOptions): Promise<void> => call("deleteRun", [runId], undefined, undefined, options),
       /** The files the run wrote (GET /runs/{run_id}/files). */
-      files: (runId: string, options?: RequestOptions): Promise<ListRunFilesResponse> => call("listRunFiles", [runId], undefined, undefined, options),
+      files: (runId: string, params?: ListRunFilesParams, options?: RequestOptions): Promise<ListRunFilesResponse> => call("listRunFiles", [runId], undefined, params, options),
       /** One run (GET /runs/{run_id}). */
       get: (runId: string, options?: RequestOptions): Promise<GetRunResponse> => call("getRun", [runId], undefined, undefined, options),
       /** Grade an ended run's answer: right or wrong, and the fields a right answer holds (PUT /runs/{run_id}/grade). */

@@ -5445,7 +5445,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         await needRun(id);
         // A run's files through the server's read-only Workspace of its folder (serverRunWorkspace); a run with no folder
         // lists none, a withheld run refuses (403), as the base did (filesShown). Same shape and cap the file route answered.
-        return send(res, 200, await listRunFilesOverStore(store, id, runReadsDeps));
+        // With ?cut=run, each file's name under the run's cut too.
+        return send(res, 200, await listRunFilesOverStore(store, id, runReadsDeps, url.searchParams.get("cut")));
       }
       // An archived agent's home is read and written as any other's: as its definition is.
       case "listHomeFiles": {

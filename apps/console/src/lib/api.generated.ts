@@ -1111,6 +1111,7 @@ export interface components {
     modified_at: components["Timestamp"];
     content_type?: string | null;
     unreadable?: true;
+    name?: string;
   };
   RunFileList: {
     run_id: components["Id"];
