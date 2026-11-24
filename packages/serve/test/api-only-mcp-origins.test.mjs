@@ -13,11 +13,14 @@ import { test } from "node:test";
 import { startFakeComposio } from "./fixtures/fake-composio.mjs";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { follow, serve, storeBytes, withEnv } from "./support.mjs";
+import { registryPin, storeOn } from "./store-helpers.mjs";
 
 const { SECRET_WRITE_REFUSAL } = await import("../dist/secret-writes.js");
 const { apiOnlyRefusal, apiOnlyMcpOriginsFrom } = await import("../dist/api-only.js");
-const { mcpSourceKey, ownersRecord } = await import("../dist/mcp-sources.js");
-const { sealMcpCredential } = await import("../dist/store/index.js");
+const { mcpSourceKey, ownersRecord, storedSource } = await import("../dist/mcp-sources.js");
+const { sealMcpCredential, sealRunMcpAuth } = await import("../dist/store/index.js");
+const { holdApiOnlyMcpOrigins } = await import("../dist/mcp-api-only-origins.js");
+const { mcpClaim } = await import("../dist/runner/mcp-claim.js");
 
 const LIST = `not-a-secret-${"cf-list-token-0001"}`;
 const RUN = `not-a-secret-${"cf-run-token-0002"}`;
@@ -196,4 +199,35 @@ test("API-only with Composio's MCP origin listed: a Composio preset's name throu
   assert.deepEqual([refused.status, refused.body.error?.message], [404, apiOnlyRefusal("/v2/settings/mcp-servers/mail")], JSON.stringify(refused.body));
   assert.deepEqual(listed.composio.calls.slice(from), [], "nothing reached Composio");
   assert.deepEqual(await rowOf(listed.server.store, "mail"), before, "the row is unchanged");
+});
+
+test("a run already going: before each call of a per_run server the token saved, the origin list is read again; dropped since the claim (a runner of its own outlives the server's restart), the call gets only the refusal's words and no header; listed again, the run's own header is back", async (t) => {
+  const { store } = await storeOn(t);
+  const sealKey = Buffer.alloc(32, 7);
+  const url = "https://mcp.example.com/mcp";
+  const origin = new URL(url).origin;
+  const add = { name: "add", description: "Add two numbers.", inputSchema: { type: "object", properties: { a: { type: "number" }, b: { type: "number" } }, required: ["a", "b"] } };
+  await store.mcp.put({ name: "contextforge", url, auth: "per_run", tools: [add], sealed: null });
+  // Saved by the API token, as the per_run save records it.
+  await store.settings.put(mcpSourceKey("contextforge"), storedSource({ source: "url", toolkit: null }, await store.mcp.server("contextforge"), false, true));
+  await holdApiOnlyMcpOrigins(store, true, [origin]);
+  await store.agents.create({ id: "agent-1", name: "a" }, { id: "rev-1", kind: "agentic", body: {}, mcpPin: await registryPin(store) });
+  await store.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { content: "go" }, title: "go", place: { mode: "runner" } }, sealed: sealRunMcpAuth(sealKey, "run-1", { contextforge: { headers: { authorization: `Bearer ${RUN}` }, origin } }) });
+  const claim = await store.claim("run-1", "runner-a", { leaseMs: 600_000 });
+  const step = await mcpClaim({ loopback: true, store, claim, grants: ["mcp:contextforge/add"], sealKey, signal: new AbortController().signal });
+  t.after(() => step.release());
+  const call = () => step.beforeCall("contextforge", new AbortController().signal);
+  const handed = { url, headers: { authorization: `Bearer ${RUN}` } };
+  assert.deepEqual({ ...step.credentials.contextforge }, handed, "claimed with the origin listed: the run's own header");
+  await call();
+  assert.deepEqual({ ...step.credentials.contextforge }, handed, "still listed: a call keeps it");
+  // The server restarted with the origin dropped; this runner's claim goes on.
+  await holdApiOnlyMcpOrigins(store, true, ["https://other.example.com"]);
+  await call();
+  assert.deepEqual({ ...step.credentials.contextforge }, { url, unopened: OFF_LIST }, "dropped: the next call gets the words, no header");
+  await call();
+  assert.deepEqual({ ...step.credentials.contextforge }, { url, unopened: OFF_LIST }, "and every call after it");
+  await holdApiOnlyMcpOrigins(store, true, [origin]);
+  await call();
+  assert.deepEqual({ ...step.credentials.contextforge }, handed, "listed again: the run's own header is back");
 });
