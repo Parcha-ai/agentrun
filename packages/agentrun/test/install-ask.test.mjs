@@ -95,6 +95,19 @@ test("the installer refuses --no-service over a service before it downloads anyt
   assert.match(none.stderr, /missing\.tgz: no such file/);
 });
 
+// --service installs the service and --no-service never does: given both, in either order, the installer refuses before
+// it writes or downloads anything (the --package it is given does not exist, so getting past the check fails on that).
+test("the installer refuses --service with --no-service, in either order, before it writes anything", async (t) => {
+  const home = await mkdtemp(join(tmpdir(), "install-both-"));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  for (const flags of [["--service", "--no-service"], ["--no-service", "--service"]]) {
+    const { code = 0, stderr } = await promisify(execFile)("sh", [fileURLToPath(INSTALL), ...flags, "--package", join(home, "missing.tgz")], { env: { ...process.env, HOME: home } }).catch((e) => e);
+    assert.equal(code, 1, flags.join(" "));
+    assert.match(stderr, /--service and --no-service ask for opposite things/, flags.join(" "));
+    assert.deepEqual(await readdir(home), [], flags.join(" "));
+  }
+});
+
 test("without --no-service an installed service restarts; with none, a No runs in the background and a Yes installs it", async (t) => {
   assert.deepEqual(await started(t, { status: 0 }), ["agentrun service restart"]);
   assert.deepEqual(await started(t, { status: 3 }), ["start_background"]);

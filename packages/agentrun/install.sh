@@ -73,6 +73,7 @@ main() {
     return 0
   fi
   [ -z "$vps_public$image" ] || fail "--public and --image go with --vps (see --help)"
+  [ -z "$no_service" ] || [ "$start" != service ] || fail "--service and --no-service ask for opposite things; give one of them (see --help)"
   if [ -n "$node_version" ] && ! printf '%s\n' "$node_version" | grep -qx '[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*'; then
     fail "--node-version $node_version is not a Node.js version (X.Y.Z)"
   fi
