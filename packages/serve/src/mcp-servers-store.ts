@@ -7,7 +7,7 @@
 // (runner/mcp-claim.ts), including the OAuth token refresh. So this server-side registry has NO headers()/headersForRun()
 // and does NO token refresh: it is the owner's create/preview/save/refresh(tools)/remove and the OAuth sign-in, and nothing
 // a run's launch calls.
-import { offApiOnlyMcpOrigins } from "./mcp-api-only-origins.js";
+import { heldApiOnlyMcpOrigins, offApiOnlyMcpOrigins } from "./mcp-api-only-origins.js";
 import { ApiError, invalid, type InputIssue } from "./errors.js";
 import {
   type Auth, authOf, canonical, credentialInQuery, credentialInQueryWords, credentialMissing, type HeaderMap, savedOrGiven, shownUrl, type Listed, listServer, marked, MAX_OAUTH_VALUE_BYTES, type McpPrices,
@@ -16,7 +16,7 @@ import {
 import { listMcpServers, openMcpRow, putPendingSignIn, removeMcpServer, removeMcpServerIfCredential, rewriteMcpServer, saveMcpServerIfCredential, takePendingSignIn, type RemovedMcpServer } from "./mcp-store.js";
 import { checkPrivateHosts, privateOAuthHosts, savePrivateOAuthHosts } from "./mcp-private-hosts.js";
 // MCP's secret writes, registered with the one gate as the registry loads (the server's dispatch reads them).
-import { credentialMark } from "./mcp-secret-writes.js";
+import { credentialMark, ownersAuthConfig, tokensAccount } from "./mcp-secret-writes.js";
 import { type SecretMeta, secretMeta, secretName } from "./secret-writes.js";
 import { type ClientKind, dialAt, issuerOf, LOOPBACK, MAX_PENDING, MCP_SETTINGS_PAGE, mcpServerAt, McpSignIns, type OAuthNetwork, type Pending, type PendingStore, reasonOf, SIGN_IN_AGAIN, systemNetwork, type TokenSet } from "./mcp-oauth.js";
 import { type Cleanup, cleanupOf, COMPOSIO_KEY_ENV, COMPOSIO_ORIGIN, composioEnvKey, composioKeyFromEnv, composioMadeKey, type ComposioMade, composioPerRun, droppedOf, madeToWrite, recordedMade, releasedOf, storedMade } from "./composio-made.js";
@@ -365,6 +365,10 @@ export class McpServersOverStore {
     // The token keeps no sealed credential: the secret-write gate lets its save over no sealed row (mcp-secret-writes.ts
     // tokenWriteOverRefused), so one read here is an owner's, saved since. Refused as changed meanwhile, nothing written.
     if (byToken && keeping) changedMeanwhile(name, undefined);
+    // The API-only token's ordinary save (no `made`, on a store that holds the API-only list): its gate let it over no row
+    // but one the token saved (mcp-secret-writes.ts tokenWriteOverRefused), so a row read here that the token did not save
+    // is one written since. Checked in the write below, on the row this save read.
+    const held = byToken && made === undefined && (await heldApiOnlyMcpOrigins(this.store)) !== undefined;
     // A per-run Composio server, made so now (`stands`) or saved so and kept at its address by an ordinary save.
     const perRun = Boolean(stands?.per_run) || (!made && was !== undefined && auth.type === "headers" && was.url === url.href && (await this.perRunComposio(name, was)));
     const listed = await this.listServer(url, await this.withAppToken(auth.type, url, headers ?? {}, stop), send, stop, perRun);
@@ -399,6 +403,9 @@ export class McpServersOverStore {
       const recorded = was ? await this.store.settings.get(mcpSourceKey(name)) : undefined;
       const wasToken = was !== undefined && savedByToken(recorded, was.createdAt);
       const mark = byToken && (was === undefined || wasToken);
+      // The API-only token's save lands only on a row it saved, or none: one another wrote is refused, unwritten, even
+      // when the token's own row holds the name by the write (the store's statement compares only that row's mark).
+      if (held && !mark) changedMeanwhile(name, undefined);
       const owns = !byToken && was !== undefined ? { record: mcpSourceKey(name) } : undefined;
       const saved = keeping
         // Re-applied only onto a row that still holds a credential of this auth type, at the address this save read: never
@@ -422,9 +429,11 @@ export class McpServersOverStore {
       // made. A row moved off Composio stands on nothing there: its delete removes nothing at Composio.
       if (made && stands) {
         // An auth config the owner named (auth_config_id) is theirs from this save on: every other saved server's claim to
-        // have made it is let go first, so neither this record nor theirs, nor what they hand on, ever removes it.
+        // have made it is let go first, so neither this record nor theirs, nor what they hand on, ever removes it. One the
+        // token names it only uses: its naming lets go no other server's claim (an owner's server that made it still
+        // removes it at its delete, or hands it on as any shared one), and its own record says it made none.
         const listed = (await this.composioRecords()).filter(([other]) => other !== name);
-        const released = stands.auth_config?.named ? releasedOf(stands.auth_config.id, listed) : [];
+        const released = stands.auth_config?.named && !byToken ? releasedOf(stands.auth_config.id, listed) : [];
         await this.handOver(listed, released);
         const others = listed.map(([other, record, at]): [string, ComposioMade, number] => [other, released.find(([one]) => one === other)?.[1] ?? record, at]);
         const before = was ? recordedMade(await this.store.settings.get(composioMadeKey(name)), was.createdAt) : undefined;
@@ -779,6 +788,23 @@ export class McpServersOverStore {
    *  tokens, else its record, else url with none. */
   async sourceOf(row: RecordedRow & { name: string }): Promise<SourceRecord> {
     return sourceOf(row, await this.store.settings.get(mcpSourceKey(row.name)));
+  }
+
+  /** The API token's Composio save stands on no auth config a server the owner saved stands on (ownersAuthConfig,
+   *  mcp-secret-writes.ts), named (before anything is sent) or found as the toolkit's own (before anything is made):
+   *  composio-preset.ts composioSave `standsOn`. 403, naming the owner's server, nothing saved. */
+  async tokenStandsOn(authConfig: string): Promise<void> {
+    const owners = await ownersAuthConfig(this.store, authConfig);
+    if (owners) throw new ApiError("forbidden", `The Composio auth config ${authConfig} is the one the owner's MCP server ${owners} stands on: an API token's server never uses it, so it never acts as the owner's connected account or removes what the owner's server made. Name an auth config of the token's own (auth_config_id). Nothing was saved.`);
+  }
+
+  /** The API token's Composio save stands on no ACTIVE account it found for its user unless a server the token saved
+   *  holds it as made here (tokensAccount, mcp-secret-writes.ts): one no record here names may be the owner's, saved by
+   *  hand, connected in Composio's dashboard, or kept after its server's delete. Checked for each ACTIVE one before
+   *  anything is made (composio-preset.ts composioSave `accountOn`): 403, nothing saved. */
+  async tokenAccountOn(user: string, account: string): Promise<void> {
+    if (account && (await tokensAccount(this.store, account))) return;
+    throw new ApiError("forbidden", `The Composio user_id ${user} already has a connected account here that no server the API token saved holds as one it connected: an API token's server never acts as it. Name a user_id of the token's own. Nothing was saved.`);
   }
 
   private async view(row: McpServerRow) {

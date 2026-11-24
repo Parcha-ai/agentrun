@@ -172,7 +172,7 @@ import { SIGN_INS_DIR, vendorsOver } from "./sign-ins.js";
 import { signInsOverStore } from "./sign-ins-store.js";
 import { boundTool, MCP_AUTH_TYPES, marked, mcpAuthOf, type McpTool, nameOf as mcpNameOf } from "./mcp-probe.js";
 import { type COMPOSIO_KEY_ENV, composioEnvKey, composioMadeKey, composioPerRun } from "./composio-made.js";
-import { COMPOSIO_PER_RUN, type ComposioControl, composioForget, composioNote, composioSave, composioTools } from "./composio-preset.js";
+import { COMPOSIO_PER_RUN, type ComposioControl, composioForget, composioNote, composioSave, composioTokenUser, composioTools } from "./composio-preset.js";
 import { ComposioTriggers, composioNoPublicUrl } from "./composio-triggers.js";
 import { type ComposioDropped, loopbackWords, mcpServersOverStore, type SaveGuard } from "./mcp-servers-store.js";
 import { MCP_ALLOW_LOOPBACK_ENV, startSwitches, WEBHOOK_PRIVATE_TARGETS_ENV } from "./start-switches.js";
@@ -1023,8 +1023,9 @@ export async function capabilities(env: NodeJS.ProcessEnv = withSecrets(process.
 /** A run body's launch secrets, checked (handedLaunchSecrets): its MCP credentials, its own model key and tool keys. */
 type Handed = { mcp?: RunMcpAuth; model?: string; keys?: RunKeys };
 
-/** The start-time switches a server takes as options (ServeOptions mcpLoopback, webhookPrivateTargets). */
-type SwitchedOn = { mcpLoopback: boolean; webhookPrivateTargets: boolean };
+/** The start-time switches a server takes as options (ServeOptions mcpLoopback, webhookPrivateTargets, and the API-only
+ *  profile's MCP origins as the server holds them). */
+type SwitchedOn = { mcpLoopback: boolean; webhookPrivateTargets: boolean; apiOnlyMcpOrigins?: readonly string[] };
 /** Those switches as `env` sets them, the CLI's way, for a server whose options name neither. */
 const switchedOnBy = (env: NodeJS.ProcessEnv, options: { mcpLoopback?: boolean; webhookPrivateTargets?: boolean } = {}): SwitchedOn => ({
   mcpLoopback: options.mcpLoopback ?? env[MCP_ALLOW_LOOPBACK_ENV] === "1",
@@ -1555,7 +1556,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const isolation = await runIsolationOf(base, 1, () => {}).then(runIsolationName, () => "process" as const);
   // The start-time switches as this server was started: its options, else the CLI's variables. mcpLoopback is the
   // option alone, as everywhere it is read here (localInstall): the CLI sets it from AGENTRUN_MCP_ALLOW_LOOPBACK.
-  const switched: SwitchedOn = { mcpLoopback: options.mcpLoopback === true, webhookPrivateTargets: switchedOnBy(process.env, options).webhookPrivateTargets };
+  const switched: SwitchedOn = { mcpLoopback: options.mcpLoopback === true, webhookPrivateTargets: switchedOnBy(process.env, options).webhookPrivateTargets, apiOnlyMcpOrigins };
   const compose = (runnerShell?: ReadonlySet<string>) => askNeeds(capabilitiesWith(env, maxRuns, offers, learning, needs, settings.get(), boxOffers, toolKeys.refused(), runnerShell, isolation, switched));
   const recompose = () => void (caps = compose());
   // What the offers held now were made from (offersInputs), and the latest probe: one a later probe overtook is dropped.
@@ -5799,11 +5800,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // server, in the delete's words, checked in its project's turn before the row is written. An API-only server's token
         // saves one that names its key by api_key_env (the secret-write gate), and over a saved server only one it saved
         // (mcp-secret-writes.ts tokenWriteOverRefused), landing only while the row still has the credential the gate read
-        // (secretSeen) and the token's mark. The body names no address or headers (composioSave refuses them).
+        // (secretSeen) and the token's mark. The token's save stands on no auth config or ACTIVE account that no server it
+        // saved holds (tokenStandsOn, tokenAccountOn), as a Composio user in its own namespace (composioTokenUser). The body
+        // names no address or headers (composioSave refuses them).
         const answer = await inComposioTurn(async () => {
           const over: { dropped?: ComposioDropped } = {};
           const guard: SaveGuard = { turn: (work) => composioTriggers.inTurnOf(id, work), inUse: () => composioTriggers.inUse(id, SAVE_AFTER_TRIGGERS) };
-          const saved = await composioSave(body, options.composioControl ?? {}, (mcp, made, stands) => mcpServers.save(id, mcp, stopping.signal, secretSeen as McpCredentialMark | undefined, made, stands, (left) => (over.dropped = left), guard, byToken), id, stopping.signal, async () => (await mcpServers.get(id)).url);
+          const saved = await composioSave(body, options.composioControl ?? {}, (mcp, made, stands) => mcpServers.save(id, mcp, stopping.signal, secretSeen as McpCredentialMark | undefined, made, stands, (left) => (over.dropped = left), guard, byToken), id, stopping.signal, async () => (await mcpServers.get(id)).url, byToken ? (config) => mcpServers.tokenStandsOn(config) : undefined, byToken ? (user, account) => mcpServers.tokenAccountOn(user, account) : undefined, byToken ? composioTokenUser : undefined);
           await refreshMcpMeta();
           return over.dropped ? { ...saved, composio: await composioLeft(id, over.dropped) } : saved;
         });

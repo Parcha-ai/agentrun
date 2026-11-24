@@ -3476,7 +3476,30 @@ serves these routes alone:
     One saved any other way (by the owner, sealing a credential or not) is `403` to both, it stays as it was, and
     nothing is sent to Composio. An owner's save over a server the token saved makes it the owner's once it lands (one
     refused with `412` leaves it the token's), and one that lands while the token's is under way wins: the token's is
-    `412`.
+    `412`;
+  - the token's Composio save never uses an auth config a server the owner saved uses: an `auth_config_id` naming one
+    is `403`, and so is the save when the toolkit's own auth config, as Composio answers it, is that one, before
+    anything is made at Composio; both say so in the same words. An `auth_config_id` Composio answers under another id
+    (another letter case, say) is `422` under it, for any save. An `auth_config_id` naming one that another server the
+    token saved made is used, and that server's record still says it made it, so only its delete removes the auth
+    config at Composio, or, while this server still uses it, hands it to this one, whose delete then removes it;
+  - the token's Composio user has a namespace of its own: a save that is not `per_run` reaches Composio, and its server
+    calls, as `agentrun.token.<user_id>` (no `user_id`: `agentrun.token.agentrun`), a user that, through this install,
+    only the token's own connect link connects (the Composio dashboard, or another client of the same Composio project,
+    can connect any user id), so its `user_id` is at most 113 characters. No save names a `user_id` starting
+    `agentrun.token.`, the owner's included: `422` under `user_id`, before anything is sent;
+  - nor does the token's save stand on a connected account it did not connect: when Composio already has ACTIVE
+    accounts for that user under its auth config, the save is `403` before anything is made, unless a server the token
+    saved holds each of them as one it made (connected through the token's own link). The lookup reads 50 accounts a
+    page, at most 10 pages (500 for that user and auth config): past that the token's save is `403`, since it can't
+    check them all, and an owner's save goes on with the ones it read. That check sees the accounts there when the token
+    saves; the namespace is what keeps the user the token's after it, since no save here names it;
+  - a server the token saved before the namespace (0.1.0-beta.56 and earlier) keeps calling as its bare `user_id` until
+    it is saved again. Its next save moves it to the namespaced user and returns a connect link for it: connect the
+    account again there. That save deletes at Composio every account the server's record holds as made here under the bare user (the
+    one its own link connected, or one handed to it), unless another saved server stands on it (that one then owns it),
+    and keeps an account it found there, which was never its own. Or delete the server. A `per_run` save names no user,
+    so none of this applies to it: each run calls as the user and account it names.
 
   The names route above is the listing: there is no list or read of a server's address, auth or tools here. The
   generic save (`PUT /settings/mcp-servers/{name}`) is a `404` unless the operator names the MCP origins it may save at,
@@ -3490,7 +3513,9 @@ serves these routes alone:
   credential, and each run hands its own credential in `mcp_auth`. A body that sends a credential (a bearer token, or
   headers with any other auth type) is `403`, as is a save over a server saved any other way or one that seals a
   credential. A per_run body at any other origin, any other auth type, and a Composio server's name (its own route
-  saves it) are this profile's `404`. Each refusal comes before anything is sent to the address.
+  saves it) are this profile's `404`. Each refusal comes before anything is sent to the address. The list is no secret
+  from the token: a save at a guessed origin answers whether it is listed (the `404`, or a save or a listing's failure
+  at that address), while capabilities (`switches`) say only whether the list is set, never its origins.
   `AGENTRUN_MCP_ALLOW_LOOPBACK=1` is still needed for a loopback origin. Unset or blank, the save is a `404` as before;
   an entry that is not an http or https origin alone, or a wildcard, stops the start, in words. The list holds past
   the save: drop an origin and restart, and a per_run server the token saved there is refused at a run's start, at

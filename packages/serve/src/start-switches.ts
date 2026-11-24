@@ -3,6 +3,7 @@
 // them causes names it, the value that allows it and the restart it takes (restartWith).
 
 import { BOX_ALLOW_ENV, boxAllowOf, boxAllowSetIn } from "./box-settings.js";
+import { API_ONLY_MCP_ORIGINS_ENV } from "./env-switch.js";
 import { PRIVATE_HOSTS_ENV, privateHostsSwitchValue } from "./mcp-private-hosts.js";
 
 /** The env that says this server is a local install (cli.ts), the one kind an MCP server may be on loopback for. */
@@ -22,13 +23,13 @@ export const restartWith = (setting: string): string => `restart the server with
 export const restartToAllow = (name: string): string => `${restartWith(`${name}=1`)} to allow it, ${ALONE_WORDS}`;
 
 /** One switch as capabilities list it: `on`, whether the operator set it (a yes-or-no one, to 1); `value`, what the server
- *  read (a host list, `none` or a size), null when unset; `allows`, what it allows, in an operator's words. */
+ *  read (a host list, `none` or a size), null when unset or withheld; `allows`, what it allows, in an operator's words. */
 export type StartSwitch = { on: boolean; value: string | null; allows: string };
 
-/** The switches as this server was started: from `env`, but for the two the server takes as options (ServeOptions
- *  mcpLoopback and webhookPrivateTargets, which the CLI sets from their variables). Never a secret: each is a yes or no,
- *  a host list or a size. */
-export function startSwitches(env: NodeJS.ProcessEnv, { mcpLoopback, webhookPrivateTargets }: { mcpLoopback: boolean; webhookPrivateTargets: boolean }): Record<string, StartSwitch> {
+/** The switches as this server was started: from `env`, but for those the server takes as options (ServeOptions
+ *  mcpLoopback and webhookPrivateTargets, which the CLI sets from their variables, and the API-only profile's MCP origins
+ *  as the server holds them, `apiOnlyMcpOrigins`). Never a secret: each is a yes or no, a host list or a size. */
+export function startSwitches(env: NodeJS.ProcessEnv, { mcpLoopback, webhookPrivateTargets, apiOnlyMcpOrigins = [] }: { mcpLoopback: boolean; webhookPrivateTargets: boolean; apiOnlyMcpOrigins?: readonly string[] }): Record<string, StartSwitch> {
   const flag = (on: boolean, allows: string): StartSwitch => ({ on, value: on ? "1" : null, allows });
   const allow = boxAllowOf(env);
   const size = (name: string, allows: string): StartSwitch => {
@@ -43,5 +44,8 @@ export function startSwitches(env: NodeJS.ProcessEnv, { mcpLoopback, webhookPriv
     [BOX_CPUS_ENV]: size(BOX_CPUS_ENV, "A Docker computer's CPUs, such as 2 or 1.5. Unset, the Docker provider's default."),
     [BOX_MEMORY_ENV]: size(BOX_MEMORY_ENV, "A Docker computer's memory, swap included, such as 512m or 4g. Unset, the Docker provider's default."),
     [BOX_PIDS_ENV]: size(BOX_PIDS_ENV, "How many processes and threads a Docker computer may hold at once, such as 1024. Unset, the Docker provider's default."),
+    // Its origins are withheld: every caller of an API-only server is its token, which learns only whether an origin it
+    // saves at is listed (the save's 404 or not). A full server holds no list: off.
+    [API_ONLY_MCP_ORIGINS_ENV]: { on: apiOnlyMcpOrigins.length > 0, value: null, allows: "On an API-only server (AGENTRUN_API_ONLY=1), the exact origins (scheme, host and port) its token may save a per_run MCP server at, which keeps no credential: a comma list of http or https origins. Unset, none. The server keeps the list it started with in its store, and each run's claim of a server the token saved checks it. The list itself is never shown here." },
   };
 }
