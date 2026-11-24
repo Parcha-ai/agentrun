@@ -68,6 +68,8 @@ const PHONE = { kind: "phone", provider: "phone-harness" };
 const GATEWAY_KEY = "not-a-secret-held-gateway-key";
 /** A model key and a tool key this host holds, a test's: never real ones. */
 const HOST_MODEL_KEY = "not-a-secret-held-host-model-key";
+/** Another provider's key the host holds, which no tier of the run routes. */
+const UNROUTED_KEY = "not-a-secret-held-unrouted-provider-key";
 const HOST_TOOL_KEY = "not-a-secret-held-host-tool-key";
 /** OpenCode's stand-in (fixtures/fake-opencode-serve.mjs), which speaks `opencode serve`'s protocol: no CLI is installed
  *  for the served opencode cases. */
@@ -582,7 +584,7 @@ test("per-run process (run-child-host heldFor): the runner answers a held run it
   // A run granted subagent whose fast tier runs on OpenRouter: its process asks the runner for its tiers' saved model keys.
   const revision = { kind: "agentic", body: { instructions: "Answer.", model: MODEL, tools: ["subagent"], modelTiers: { fast: "openrouter/anthropic/claude-haiku-5.5" } } };
   // The host holds another provider's key too, which no tier of it runs on.
-  const seam = (launch) => heldFor({ store, sealKey: SEAL_KEY, env: { OPENROUTER_API_KEY: HOST_MODEL_KEY, OPENAI_API_KEY: "not-a-secret-unrouted-provider-key" }, data: dir }, { claim: { runId: "run-1", epoch: 1 }, run: { agentId: "agent-1", revisionId: "rev-1", signInHanded: null }, launch, revision, claimed: {} }, (text) => text, () => {}).held;
+  const seam = (launch) => heldFor({ store, sealKey: SEAL_KEY, env: { OPENROUTER_API_KEY: HOST_MODEL_KEY, OPENAI_API_KEY: UNROUTED_KEY }, data: dir }, { claim: { runId: "run-1", epoch: 1 }, run: { agentId: "agent-1", revisionId: "rev-1", signInHanded: null }, launch, revision, claimed: {} }, (text) => text, () => {}).held;
   const launch = { input: { content: "Do the task." }, title: "t", place: { mode: "runner" }, harness: "pi" };
   assert.deepEqual(await seam(launch).subagentTierKeys(), { OPENROUTER_API_KEY: HOST_MODEL_KEY }, "a run not held, granted subagent, is answered the host's model key for its fast tier and no other provider's");
   const held = seam({ ...launch, hold: { minutes: 5, refused: REFUSAL } });
