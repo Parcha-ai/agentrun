@@ -236,3 +236,30 @@ describe("the No model bar with no agent picked", () => {
     expect(unknown.bar()?.textContent ?? "", "the bar over a Playground with no agents before the server's places are known, while the login reads signed in").toContain(BAR);
   });
 });
+
+// The login serves only Anthropic's own models (serve's providerFor): a claude-agent run that names one, or names none
+// (the login's default is Anthropic's), goes on it. One that names an OpenRouter model, Anthropic's through OpenRouter
+// included, goes to OpenRouter on its key whatever the login says, so with no key it still needs one, and the bar stays.
+describe("the Playground's No model bar heeds the login only for a model it serves", () => {
+  it("an agent on Claude Agent on the runner that names an OpenRouter model needs its key though the login reads signed in: the bar stays", async () => {
+    const page = await open(SIGNED_IN, RUNNER_DEFAULT, [claudeAgentWith({ model: "openrouter/anthropic/claude-opus-5.5" })]);
+    expect(page.bar()?.textContent ?? "", "the bar over a Claude Agent run on an OpenRouter model").toContain(BAR);
+  });
+
+  it("an agent on Claude Agent on the runner that names Anthropic's model, or none, goes on the login: no bar", async () => {
+    for (const [what, definition] of [["Anthropic's model", { model: "anthropic/claude-opus-5-5" }], ["no model", {}]] as const) {
+      const page = await open(SIGNED_IN, RUNNER_DEFAULT, [claudeAgentWith(definition)]);
+      expect(page.bar()?.textContent ?? null, what).toBeNull();
+      act(() => root?.unmount());
+      root = undefined;
+      document.body.innerHTML = "";
+    }
+  });
+
+  it("an older revision that names an OpenRouter model needs its key though the current one goes on the login: the bar comes up", async () => {
+    const page = await open(SIGNED_IN, RUNNER_DEFAULT, [CLAUDE_AGENT], twoRevisions({ harness: "claude-agent" }, { harness: "claude-agent", model: "openrouter/anthropic/claude-opus-5.5" }));
+    expect(page.bar()?.textContent ?? null, "the bar over the current revision, naming no model").toBeNull();
+    await pickRevision(page.host, "End");
+    expect(page.bar()?.textContent ?? "", "the bar over a picked revision on an OpenRouter model").toContain(BAR);
+  });
+});

@@ -356,8 +356,10 @@ export async function claudeLoginView(deps: ClaudeLoginDeps): Promise<ClaudeLogi
  *  old place, which the login no longer reads. One at the same place leaves it waiting, as it still signs in there. */
 export async function turnOnClaudeLogin(deps: ClaudeLoginDeps, body: unknown): Promise<ClaudeLoginView> {
   // `refused` is asked only in the keys' turn (deps.turn), where a key being made or revoked has landed, or been undone.
-  // Asked once before the sign-in is touched, so a turn-on refused or malformed leaves a waiting sign-in as it was; and
-  // again with the write, in one turn, so no key is made between the decision and the setting. The sign-in's stop and
+  // Asked once before the sign-in is touched, so a turn-on refused or malformed then leaves a waiting sign-in as it was;
+  // and again with the write, in one turn, so no key is made between the decision and the setting. A key made between
+  // the two turns, on a turn-on that moves the place, is the one case that both stops the sign-in and refuses: nothing
+  // is written, and the person starts the sign-in again once the key is revoked. The sign-in's stop and
   // what follows the write (the reading again, the CLI's status) are outside the keys' turn, so a key's revocation never
   // waits on the CLI.
   const refusal = () => {

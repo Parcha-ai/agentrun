@@ -65,7 +65,7 @@ import { stepsBack, trackHistory } from "@/lib/back";
 import { holdsMove } from "@/lib/useUnsavedChangesGuard";
 import { allPages, type Capabilities, ClientError, createClient, type ImportOffer, type ImportState, problemOf, type RunsFilter } from "@/lib/client";
 import { chatGPTView } from "@/lib/chatgpt";
-import { claudeLoginView, LOGIN_HARNESS } from "@/lib/claudeLogin";
+import { claudeLoginView, LOGIN_HARNESS, loginServes } from "@/lib/claudeLogin";
 import { createConnection } from "@/lib/connection";
 import type { ChatGPTView } from "@/lib/v2";
 import { appendRuns, keeper, keepersByRun, sendOnce, uuid } from "@/lib/idempotency";
@@ -808,9 +808,10 @@ function ConsolePage({ v2, onSignedOut, demo = false }: ConsoleProps) {
   // The bar renders only in the Playground. With no agent picked there (no agents yet, or the agents still being read)
   // there is no run to read, only where a first agent would run: the new-agent form puts it on the server's default
   // place (newAgentPlace). So the bar goes only when that place is the runner, where a first agent on Claude Agent runs
-  // on the login; on a box, or with the places not read yet, it stays, for every harness.
+  // on the login; on a box, or with the places not read yet, it stays, for every harness. A picked agent's run goes on
+  // the login only for a model the login serves (loginServes): one naming an OpenRouter model still needs its key.
   const noAgentOnRunner = placesOf(caps)?.defaultPlace.mode === "runner";
-  const onClaudeLogin = claudeSignedIn && caps?.models?.needs !== "model" && (!selectedAgent ? noAgentOnRunner : (runDefinition?.harness === LOGIN_HARNESS && runPlace?.mode === "runner"));
+  const onClaudeLogin = claudeSignedIn && caps?.models?.needs !== "model" && (!selectedAgent ? noAgentOnRunner : (runDefinition?.harness === LOGIN_HARNESS && loginServes(runDefinition.model) && runPlace?.mode === "runner"));
   const playgroundTarget = where.operation ? where.playgroundAgent : pick ?? where.playgroundAgent;
   return (
     <ScheduleNames.Provider value={scheduleNames}>
