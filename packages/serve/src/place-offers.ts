@@ -94,30 +94,33 @@ const ownGroups = () => {
   } catch {}
   return { file: "/etc/group", user, ids: process.getgroups?.() ?? [] };
 };
-/** Why docker is unavailable to a server in AgentRun's image that has no Docker socket: the one-container `docker run`,
- *  deploy/'s compose file and a Kubernetes pod give it none, so it asks a daemon that is not there. Starting Docker or
- *  joining its group would not help: compose.yaml at the repository's root mounts the host's socket, which is root on
- *  that host (compose.yaml's own header says so), so the words say that too. */
-export const DOCKER_NO_SOCKET = "This server runs in a container with no Docker socket, so its agents get file tools and web_fetch but no shell: for a shell in Docker sandboxes, give it the host's Docker socket, as `docker compose up -d` with compose.yaml at the repository's root does. That socket is root on the host, so give it only where you would give AgentRun root";
+/** No Docker daemon for this server, as Settings → Computers says it (docker-daemon.ts noDockerWords). */
+export const NO_DOCKER_HERE = "No Docker on this server: Render and most hosted services run none.";
+/** Why docker is unavailable to a server in AgentRun's image that has no Docker socket: a hosted service (Fly.io, Render,
+ *  a Kubernetes pod), the one-container `docker run` and deploy/'s compose file give it none, so it asks a daemon that is
+ *  not there. Starting Docker or joining its group would not help. Hosted, there is no host socket to give, so the way is
+ *  a vendor's computer, as Settings → Computers says (its opening sentence is the same); on a machine the person runs,
+ *  compose.yaml at the repository's root mounts the host's socket, which is root on that host (compose.yaml's own header
+ *  says so), so the words say that too. */
+export const DOCKER_NO_SOCKET = `${NO_DOCKER_HERE} Its agents get file tools and web_fetch but no shell. For a shell, use a vendor computer (Settings → Computers); or, on a machine you run, give this server the host's Docker socket, as \`docker compose up -d\` with compose.yaml at the repository's root does. That socket is root on the host, so give it only where you would give AgentRun root`;
 /** The same, for a container given the socket and refused it: the group compose.yaml adds (DOCKER_GID) is not the
  *  socket's. usermod in the container would not last past its restart. */
 export const DOCKER_SOCKET_GROUP = "This server's container may not use the Docker socket: set DOCKER_GID in .env to the socket's group, as compose.yaml says, then run `docker compose up -d` again";
 
-/** Whether this server runs in a container, whether it is AgentRun's own image (IMAGE_ENV), and how it tells whether a
- *  path is there (`exists`: the socket a failed probe names). What a failed probe says to do. */
-export type ContainerFacts = { inside: boolean; image?: boolean; exists?: (path: string) => boolean };
+/** Where this server runs: on a host, in AgentRun's own image (IMAGE_ENV), or in some other container; and how it tells
+ *  whether a path is there (`exists`: the socket a failed probe names). What a failed probe says to do. */
+export type ContainerFacts = { where: "host" | "image" | "other"; exists?: (path: string) => boolean };
 /** Set by AgentRun's image (packages/serve/docker/Dockerfile): the socket advice (DOCKER_NO_SOCKET, DOCKER_SOCKET_GROUP)
  *  is for it alone, and Kubernetes and other containerd runtimes, which write no mark of their own, run it too. */
 export const IMAGE_ENV = "AGENTRUN_IN_IMAGE";
 /** A container: AgentRun's image (IMAGE_ENV), or a runtime's mark (/.dockerenv, Podman's /run/.containerenv), which alone
  *  is some other container (a dev container). */
-export const containerOf = (env: NodeJS.ProcessEnv, exists: (path: string) => boolean = existsSync): ContainerFacts => {
-  const image = env[IMAGE_ENV] === "1";
-  return { inside: image || exists("/.dockerenv") || exists("/run/.containerenv"), image };
-};
+export const containerOf = (env: NodeJS.ProcessEnv, exists: (path: string) => boolean = existsSync): ContainerFacts => ({
+  where: env[IMAGE_ENV] === "1" ? "image" : exists("/.dockerenv") || exists("/run/.containerenv") ? "other" : "host",
+});
 /** A reason in a container that is not AgentRun's image: the host's words, said to be the container's (its own Docker, its
  *  own docker group), never compose.yaml's, which is not there to use. */
-const inOtherContainer = (container: ContainerFacts, reason: string): string => (container.inside && !container.image ? `This server runs in a container. ${reason}` : reason);
+const inOtherContainer = (container: ContainerFacts, reason: string): string => (container.where === "other" ? `This server runs in a container. ${reason}` : reason);
 /** The daemon address docker names when it cannot connect ("Cannot connect to the Docker daemon at unix:///….sock."):
  *  the one its DOCKER_HOST or current context resolved to. Matched, never shown. */
 const DAEMON_AT = /docker daemon at ([a-z]+:\/\/\S+?)\.?(?:\s|$)/i;
@@ -132,7 +135,7 @@ function socketThere(endpoint: string | undefined, env: NodeJS.ProcessEnv, exist
  *  a host and in another container (inOtherContainer), and for a socket that is there and whose daemon does not answer
  *  (the host's Docker is down). */
 const containerReason = (answer: { failed?: string; denied?: true; endpoint?: string }, env: NodeJS.ProcessEnv, container: ContainerFacts): string | undefined => {
-  if (!container.inside || !container.image || answer.failed === undefined) return undefined;
+  if (container.where !== "image" || answer.failed === undefined) return undefined;
   if (answer.denied) return DOCKER_SOCKET_GROUP;
   return socketThere(answer.endpoint, env, container.exists ?? existsSync) ? undefined : DOCKER_NO_SOCKET;
 };
@@ -172,7 +175,9 @@ export async function askDockerDaemon(env: NodeJS.ProcessEnv, signal: AbortSigna
       resolve({ ...(error ? { failed: typeof code === "number" ? `exit ${code}` : errorName(error), ...(SOCKET_DENIED.test(String(stderr)) ? { denied: true as const } : {}), ...endpointIn(stderr) } : {}), out: String(stdout) });
     }),
   );
-  const absent = (reason: string): DockerDaemon => ({ up: false, absent: true, reason: inOtherContainer(container, reason) });
+  // An absent daemon's reason is read by no one: Settings → Computers and a run's start say noDockerWords instead
+  // (computers.ts, resolve-computer.ts), so only a refused socket's words are said to be another container's.
+  const absent = (reason: string): DockerDaemon => ({ up: false, absent: true, reason });
   // The box's probe runs once, at the start: each fix takes a restart. Docker is on by default, so its reason is often a
   // first-time user's first read: what is wrong in plain words, what the probe saw, then what to do.
   // In a container, the fix is its socket or that socket's group (containerReason), never the host's.
