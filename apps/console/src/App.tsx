@@ -538,6 +538,9 @@ function ConsolePage({ v2, onSignedOut, demo = false }: ConsoleProps) {
   const [agents, setAgents] = useState<Agent[] | null>(null);
   const [revs, setRevs] = useState<{ revision: string; version: number; current: boolean; note: string | null }[]>([]);
   const [pick, setPick] = useState<string | null>(null);
+  // The revision picked in the Playground ("" for the current one) and its definition, undefined when the page does not
+  // hold it (Playground's onRevision). Another agent starts on its current revision.
+  const [playgroundRevision, setPlaygroundRevision] = useState<{ revision: string; definition?: Record<string, unknown> }>({ revision: "" });
   const pickedAgent = useRef(pick);
   pickedAgent.current = pick;
   const [startError, setStartError] = useState<string | null>(null);
@@ -692,6 +695,7 @@ function ConsolePage({ v2, onSignedOut, demo = false }: ConsoleProps) {
     // The picked agent's revisions only: the old ones go at once, and an answer for an earlier pick is dropped.
     const n = ++revsAsked.current;
     setRevs([]);
+    setPlaygroundRevision({ revision: "" });
     if (pick) allPages((cursor) => v2.listRevisions(pick, cursor), (p) => p.revisions).then((r) => { if (n === revsAsked.current) setRevs(r); }).catch(() => {});
   }, [v2, pick]);
   // Runs the Playground started: the Claude login is read again after each (claudeSignedIn below).
@@ -762,7 +766,11 @@ function ConsolePage({ v2, onSignedOut, demo = false }: ConsoleProps) {
     if (v.state === "signed_in") void readCaps();
   };
   const selectedDefinition = agents?.find((agent) => agent.agent_id === pick)?.definition;
-  const externalPlayground = selectedDefinition?.native || backendSdkOf(selectedDefinition);
+  // The run the Playground starts is the picked revision's: the "No model" bar reads its definition, the agent's current
+  // one when none is picked. A picked revision the page holds no definition for is not known to run natively, on a
+  // backend SDK or on the login, so the bar stays.
+  const runDefinition: Record<string, unknown> | undefined = playgroundRevision.revision ? playgroundRevision.definition : selectedDefinition;
+  const externalPlayground = runDefinition?.native || backendSdkOf(runDefinition);
   const playgroundTarget = where.operation ? where.playgroundAgent : pick ?? where.playgroundAgent;
   return (
     <ScheduleNames.Provider value={scheduleNames}>
@@ -840,9 +848,9 @@ function ConsolePage({ v2, onSignedOut, demo = false }: ConsoleProps) {
               <span className="min-w-0 break-all font-mono text-small text-muted-foreground">{where.operation === "apply-template" ? `/v2/templates/${where.template ? encodeURIComponent(where.template) : "{template}"}/apply` : where.operation === "list-runs" ? (where.playgroundAgent ? `/v2/agents/${where.playgroundAgent}/runs` : "/v2/runs") : where.operation === "create-agent" ? "/v2/agents" : where.operation === "edit-agent" ? `/v2/agents/${where.playgroundAgent ?? "{agent_id}"}/definition` : "/v2/agents/{agent_id}/runs"}</span>
             </div>
             {where.operation === "apply-template" ? <div className="min-h-0 flex-1 overflow-auto"><TemplatesPage key={where.template ?? ""} v2={v2} name={where.template} go={go} playground draft={where.draft} /></div> : where.operation === "list-runs" ? <RunsRequest key={`list:${where.playgroundAgent ?? ""}:${where.status ?? ""}:${where.archived ?? false}`} v2={v2} origin={location.origin} agentId={where.playgroundAgent} filter={{ status: where.status, archived: where.archived }} /> : where.operation ? <AgentRequest key={`${where.operation}:${where.playgroundAgent ?? ""}:${where.draft ?? ""}`} v2={v2} operation={where.operation} origin={location.origin} agentId={where.playgroundAgent} draft={where.draft} harnesses={editorCaps.harnesses} routePrefix={c?.models?.route_prefix} /> : <>
-              {!externalPlayground && caps?.models?.ready === false && !(claudeSignedIn && caps.models.needs !== "model" && selectedDefinition?.harness === LOGIN_HARNESS) && <NoModelBanner needs={caps.models.needs} source={caps.models.source} model={caps.models.default} settings={caps.features?.tool_keys?.routes === true && caps.features.tool_keys.at_rest === "sealed"} chatgpt={plan?.state === "signed_out" || plan?.state === "expired"} />}
+              {!externalPlayground && caps?.models?.ready === false && !(claudeSignedIn && caps.models.needs !== "model" && runDefinition?.harness === LOGIN_HARNESS) && <NoModelBanner needs={caps.models.needs} source={caps.models.source} model={caps.models.default} settings={caps.features?.tool_keys?.routes === true && caps.features.tool_keys.at_rest === "sealed"} chatgpt={plan?.state === "signed_out" || plan?.state === "expired"} />}
               {startError && <div className="m-8 border p-4" role="alert"><p className="text-lead text-destructive-text">The agents could not be read: {startError}</p><Button size="sm" className="mt-3" type="button" onClick={() => setRetry((n) => n + 1)}>Try again</Button></div>}
-              {agents && <Playground agents={agents.filter((a) => !a.archived_at)} revisions={revs} efforts={efforts} origin={location.origin} agentId={pick ?? undefined} onAgent={setPick} onSend={send} limits={caps?.limits} {...(demo ? { upload: demoUpload } : {})} removeUpload={v2.deleteUpload} onOpenRun={(id) => go(`#/runs/${encodeURIComponent(id)}`)}
+              {agents && <Playground agents={agents.filter((a) => !a.archived_at)} revisions={revs} efforts={efforts} origin={location.origin} agentId={pick ?? undefined} onAgent={setPick} onRevision={(revision, definition) => setPlaygroundRevision({ revision, definition })} onSend={send} limits={caps?.limits} {...(demo ? { upload: demoUpload } : {})} removeUpload={v2.deleteUpload} onOpenRun={(id) => go(`#/runs/${encodeURIComponent(id)}`)}
                 live={(id) => <LiveRun key={id} v2={v2} runId={id} caps={caps} agentName={agentName} />} />}
             </>}
           </section>
