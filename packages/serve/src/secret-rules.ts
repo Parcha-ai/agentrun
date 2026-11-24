@@ -2211,11 +2211,25 @@ const readPath = (body: string): string | undefined => READ_COMMAND.exec(body)?.
 export const commandReadPath = (command: string | undefined): string | undefined => (command === undefined ? undefined : readPath(command));
 
 /** envDumps with `command` as the line before the text (ruling LVI): the output of `env`, `printenv NAME` or
- *  `echo $KEY`, given apart from its command, is cut as it is when the command stands in the text. */
+ *  `echo $KEY`, given apart from its command, is cut as it is when the command stands in the text. A caller's text may
+ *  open with one line of its own above the command's output (an approval outcome's head line, run-view.ts outcomeShows),
+ *  so the text after its first line is read with the command before it too, whatever that line says, and the hits of both
+ *  reads are cut. */
 function commandDumps(text: string, command: string | undefined): Hit[] {
   if (command === undefined || command.trim() === "") return [];
   const shift = command.length + 1;
-  return envDumps(`${command}\n${text}`).filter((hit) => hit.end > shift).map((hit) => ({ ...hit, start: Math.max(hit.start - shift, 0), end: hit.end - shift }));
+  const read = (body: string, offset: number): Hit[] =>
+    envDumps(`${command}\n${body}`).filter((hit) => hit.end > shift).map((hit) => ({ ...hit, start: Math.max(hit.start - shift, 0) + offset, end: hit.end - shift + offset }));
+  const hits = read(text, 0);
+  const firstLine = text.indexOf("\n");
+  if (firstLine < 0) return hits;
+  const seen = new Set(hits.map((hit) => `${hit.start}:${hit.end}`));
+  for (const hit of read(text.slice(firstLine + 1), firstLine + 1)) {
+    if (seen.has(`${hit.start}:${hit.end}`)) continue;
+    seen.add(`${hit.start}:${hit.end}`);
+    hits.push(hit);
+  }
+  return hits;
 }
 
 const PATH_SEPARATOR = /[\\/]/;
