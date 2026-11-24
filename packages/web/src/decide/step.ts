@@ -9,16 +9,17 @@ import { passagesOf } from "./passages.js";
 
 /** How sure a decider must be that an item is not needed before drop leaves it out: when 1 - p(needed) >= it. */
 export const THRESHOLD = 0.8;
-/** Under rerank+label, the score at least one result must reach for the search not to be called a miss. */
+/** Under label or rerank+label, the score at least one result must reach for the search not to be called a miss. */
 export const LOW_RELEVANCE = 0.3;
 
 /** How a search's results reach the model. "drop": those scored below THRESHOLD are left out, the rest in the
- *  provider's order. "rerank+label": every one is kept, the most relevant first, each with its `relevance`. */
-export type DecidePolicy = "drop" | "rerank+label";
-const POLICIES: readonly DecidePolicy[] = ["drop", "rerank+label"];
+ *  provider's order. "label": every one is kept in the provider's order, each with its `relevance`. "rerank+label":
+ *  as label, the most relevant first. */
+export type DecidePolicy = "drop" | "label" | "rerank+label";
+const POLICIES: readonly DecidePolicy[] = ["drop", "label", "rerank+label"];
 /** `policy`, "drop" when none is given; any other value throws. */
 export function policyOf(policy: unknown = "drop"): DecidePolicy {
-  if (!POLICIES.includes(policy as DecidePolicy)) throw new RangeError(`the classifier's policy must be "drop" or "rerank+label" (it was ${JSON.stringify(policy)})`);
+  if (!POLICIES.includes(policy as DecidePolicy)) throw new RangeError(`the classifier's policy must be "drop", "label" or "rerank+label" (it was ${JSON.stringify(policy)})`);
   return policy as DecidePolicy;
 }
 
@@ -140,22 +141,22 @@ export async function siftSearch(decider: WebDecider, answer: Search, options: S
   const n = answer.results.length;
   if ("code" in got) return { answer: { ...answer, sift: `not run (${got.code}); these results are unsifted` }, classifier: failed(decider, "search", n, since(start), requests, got) };
   const scored: Scored[] = answer.results.map((hit, i) => ({ id: hit.url, score: got.verdicts[i]!.score }));
-  if (policy === "rerank+label") return { answer: ranked(decider.id, answer, scored, options.task), classifier: ran(decider, "search", got, since(start), requests, scored, []) };
+  if (policy !== "drop") return { answer: labelled(decider.id, answer, scored, options.task, policy === "rerank+label"), classifier: ran(decider, "search", got, since(start), requests, scored, []) };
   const results = answer.results.filter((_, i) => !drops(scored[i]!.score));
   return { answer: { ...answer, results, sift: `${decider.id} kept ${results.length} of ${n} results` }, classifier: ran(decider, "search", got, since(start), requests, scored, droppedOf(scored)) };
 }
 
-/** `answer`'s results, every one, the most relevant first (a stable sort: ties in the provider's order, a refused one
- *  last), each scored one with `relevance`, its score to two places; the sift line says so, and that nothing looks
- *  relevant to the need when no result reaches LOW_RELEVANCE. */
-function ranked(id: string, answer: Extract<Search, { results: unknown }>, scored: Scored[], task: string | undefined): Search & { sift: string } {
-  const results = answer.results
-    .map((hit, i) => ({ hit, score: scored[i]!.score }))
-    .sort((a, b) => (b.score ?? -1) - (a.score ?? -1))
-    .map(({ hit, score }) => (score === null ? hit : { ...hit, relevance: Math.round(score * 100) / 100 }));
+/** `answer`'s results, every one, each scored one with `relevance`, its score to two places; when `rerank`, the most
+ *  relevant first (a stable sort: ties in the provider's order, a refused one last). The sift line says which, and that
+ *  nothing looks relevant to the need when no result reaches LOW_RELEVANCE. */
+function labelled(id: string, answer: Extract<Search, { results: unknown }>, scored: Scored[], task: string | undefined, rerank: boolean): Search & { sift: string } {
+  const pairs = answer.results.map((hit, i) => ({ hit, score: scored[i]!.score }));
+  if (rerank) pairs.sort((a, b) => (b.score ?? -1) - (a.score ?? -1));
+  const results = pairs.map(({ hit, score }) => (score === null ? hit : { ...hit, relevance: Math.round(score * 100) / 100 }));
   const best = Math.max(...scored.map((item) => item.score ?? 0));
   const miss = best < LOW_RELEVANCE ? `; nothing here looks relevant to ${JSON.stringify(clip(task ?? answer.query, QUERY_MAX))}; consider rephrasing` : "";
-  return { ...answer, results, sift: `${id} ordered ${results.length} results by relevance, how likely each holds what the search asks for (0 to 1)${miss}` };
+  const done = rerank ? `ordered ${results.length} results by relevance` : `labelled ${results.length} results with their relevance`;
+  return { ...answer, results, sift: `${id} ${done}, how likely each holds what the search asks for (0 to 1)${miss}` };
 }
 
 /** A fetched part judged by `decider` in passages: the kept ones in order, LEFT_OUT for each run left out, the part's

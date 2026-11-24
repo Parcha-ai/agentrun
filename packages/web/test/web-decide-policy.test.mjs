@@ -106,6 +106,27 @@ test("rerank+label that fails leaves the results as the provider gave them, unla
   assert.deepEqual(answer, { ...plain.answer, sift: "not run (provider_error); these results are unsifted" });
 });
 
+// label: every result kept in the provider's order, each labelled; the ablation that tells the label from the reorder.
+const LABELLED = { policy: "label" };
+const LABELS = "fake labelled 4 results with their relevance, how likely each holds what the search asks for (0 to 1)";
+
+test("label keeps every result in the provider's order, each scored one labelled, a refused one not; nothing dropped", async () => {
+  const plain = await decideWeb({ decider: undefined }).search("widgets delaware", { n: 4 });
+  const { answer, receipt } = await decideWeb(LABELLED, { ...SCORES, r3: { type: "refusal" } }).search("widgets delaware", { n: 4, task: TASK });
+  assert.deepEqual(answer.results.map(unlabelled), plain.answer.results);
+  assert.deepEqual(answer.results.map((hit) => hit.relevance), [0.9, 0.05, undefined, 0.21]);
+  assert.equal(Object.hasOwn(answer.results[2], "relevance"), false);
+  assert.equal(answer.sift, LABELS);
+  assert.deepEqual([receipt.classifier.items, receipt.classifier.dropped], [{ in: 4, kept: 4 }, []]);
+  assert.deepEqual(receipt.classifier.scored.map((item) => item.score), [0.9, 0.05, null, 0.21]);
+});
+
+test("label says nothing here looks relevant when no result scores LOW_RELEVANCE or more", async () => {
+  const low = await decideWeb(LABELLED, { r1: 0.29, r2: 0.1, r3: 0.1, r4: 0.05 }).search("widgets delaware", { n: 4 });
+  assert.equal(low.answer.sift, `${LABELS}; nothing here looks relevant to "widgets delaware"; consider rephrasing`);
+  assert.deepEqual(low.answer.results.map((hit) => hit.relevance), [0.29, 0.1, 0.1, 0.05], "still in the provider's order");
+});
+
 test("the policy shapes a search only: a fetched part judged against a task is cut as drop cuts it", async () => {
   const drop = await decideWeb().fetch(PUBLIC, { task: TASK });
   const ranked = await decideWeb(RANKED).fetch(PUBLIC, { task: TASK });
@@ -114,15 +135,16 @@ test("the policy shapes a search only: a fetched part judged against a task is c
 
 test("the decider is asked the same request under either policy", async () => {
   const requests = [];
-  for (const extra of [{}, RANKED]) {
+  for (const extra of [{}, RANKED, LABELLED]) {
     const { asked, provider } = scoringProvider();
     await decideWeb({ decider: priced(provider), ...extra }).search("widgets delaware", { n: 4, task: TASK });
     requests.push(asked.map(({ request }) => request));
   }
   assert.deepEqual(requests[1], requests[0]);
+  assert.deepEqual(requests[2], requests[0]);
 });
 
-test("a policy that is not drop or rerank+label is refused when the web is made, and by siftSearch", async () => {
+test("a policy that is not drop, label or rerank+label is refused when the web is made, and by siftSearch", async () => {
   assert.throws(() => createWeb({ order: { search: [], fetch: [] }, policy: "annotate" }), /policy/);
   const search = { provider: "parallel", query: "widgets", results: URLS.map((url) => ({ url, title: "", snippet: "" })) };
   await assert.rejects(siftSearch(priced(scoringProvider().provider), search, { policy: "keep" }), /policy/);
