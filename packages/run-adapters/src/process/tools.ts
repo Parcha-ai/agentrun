@@ -82,6 +82,9 @@ export interface ToolBridgeOptions {
   /** What the harness's model can take of one result (its context window): every result is held to `resultMaxChars` of
    *  it, and, with its turn, a call the model made to its share of what the turn has left. Absent: HOST_RESULT_MAX_CHARS alone. */
   budget?: ResultBudget;
+  /** A call whose result goes to something of the harness's own, not to the model (a code-mode script's call, which the
+   *  script reads): held to the per-result bound alone, never a claim on the turn, whose split is the model's calls'. */
+  outsideTurn?: (callId: string) => boolean;
 }
 
 export interface ToolBridge {
@@ -168,7 +171,7 @@ export function toolBridge(ctx: DriveContext, tools: HostTool[], options: ToolBr
     const key = boundKey(callId);
     const recorded = ctx.state().effects.get(key);
     const known = recorded?.status === 'completed' && isBound(recorded.output) ? recorded.output : undefined;
-    const claims = known || nested ? undefined : turn;
+    const claims = known || nested || options.outsideTurn?.(callId) ? undefined : turn;
     if (claims) await claims.ready();
     const max = known ? known.max : Math.min(resultMaxChars(options.budget), claims ? claims.claim(callId, options.budget?.contextWindow) : HOST_RESULT_MAX_CHARS);
     const { text, truncated, bound } = boundTo(whole, max);

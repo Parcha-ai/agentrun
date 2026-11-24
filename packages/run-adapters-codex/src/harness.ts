@@ -36,6 +36,7 @@ import {
 import { acknowledgeInDrive, attachInDrive, cliPath, CODEX_CLI, DriveFiles, SANDBOX_DOC } from './host/sandbox.js';
 import { AppServer, type RpcNotification, type RpcServerRequest } from './app-server.js';
 import { codeMode } from './code-mode.js';
+import { NESTED_CALL } from './scripts.js';
 import { danglingCalls, nextRolloutOrdinal, settleCall } from './transcript.js';
 import { BUILTINS_ON, checkConfig, codexConfig, type TomlValue, toToml } from './config.js';
 import {
@@ -442,7 +443,8 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
     // A `never` tool waits for the journal: its call is in the log before its intent (the barrier ran first, below).
     // The host's gate first, inside the bridge: after the call's line is in the log (the barrier) and before its intent, so
     // a refused or parked call leaves no intent, and a parked one's line is there for the resume to settle it.
-    const bridge = toolBridge(ctx, tools, { beforeNever: () => journal.flush(), ...(options.gate ? { gate: options.gate } : {}), ...(options.resultBudget ? { budget: options.resultBudget } : {}) });
+    // A code-mode script's calls (Codex's own `exec-<uuid>` ids) answer the script, not the model: outside the turn's split.
+    const bridge = toolBridge(ctx, tools, { beforeNever: () => journal.flush(), ...(options.gate ? { gate: options.gate } : {}), ...(options.resultBudget ? { budget: options.resultBudget } : {}), outsideTurn: (callId) => NESTED_CALL.test(callId) });
     /** What the model must hear about this attach (a lost Drive), once per invocation, with its first message; acknowledged after that turn. */
     let notes = machine.notes.length && !invocation.notesShown ? machine.notes.map((n) => `[Sandbox] ${n}`).join('\n') : undefined;
     let proc: SessionProcess | undefined;
