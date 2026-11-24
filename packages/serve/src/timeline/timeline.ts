@@ -79,8 +79,8 @@ export type TimelineEvent = {
   computer_calls?: readonly ComputerCallRow[];
   computer_calls_dropped?: number;
   /** On a `tool_use` row of a timeline read with `calls` (TimelineOptions): the call's arguments, each string as
-   *  `calls.input` makes it of the arguments as the call came (else as the rows show them), its strings together cut at
-   *  `calls.result` characters, the bound its output has (a grader reads a long write whole: an issue body, a note, a
+   *  `calls.input` makes it of the arguments as the call came (else as the rows show them), its names and values
+   *  together cut at `calls.result` characters (inputShown), the bound its output has (a grader reads a long write whole: an issue body, a note, a
    *  posted digest). */
   tool_input?: Obj;
   /** On a `tool_result` row of a timeline read with `calls`: the call's output whole to `calls.result` characters (its
@@ -111,8 +111,8 @@ export const CAPS = { summary: 500, preview: 500, text: 2000, thinking: 100 };
  *  and page text cut to fit (web-calls.ts), past this only when its urls alone pass it. */
 export const CALL_RESULT_CHARS = 120_000;
 
-/** The most rows a `calls=whole` timeline page holds, and its default: each row's result, or the strings of its call's
- *  arguments together (tool_input), may be CALL_RESULT_CHARS long. */
+/** The most rows a `calls=whole` timeline page holds, and its default: each row's result, or the names and values of
+ *  its call's arguments together (tool_input, inputShown), may be CALL_RESULT_CHARS long. */
 export const CALLS_PAGE_ROWS = 100;
 
 /** A host's marks of a model request: as it leaves (written before it does), and as its stream ends aborted. A request
@@ -646,27 +646,56 @@ const textOf = (message: Obj | undefined, type = "text", field = "text") =>
   blocksOf(message).filter((block) => block.type === type).map((block) => str(block[field]) ?? "").join("\n").trim();
 /** Every string a row shows goes through here: a URL keeps its origin, path and query keys, then the text is cut. */
 const clean = (text: string, max: number) => cut(scrubUrls(text), max);
-/** A call's arguments as `tool_input` carries them: each string as `read` makes it of the head it is given, the row's
- *  strings together at most `budget` characters, taken in order (the string that reaches it is cut there; each non-empty
- *  one after it shows as "...", unread), so a row is as long as one result at most however many strings its call
- *  holds. Each property name goes through `redact` too, as only this field shows them, and each number `held` names
- *  shows as "[redacted]". An object two of whose names come out the same is withheld whole, as "[redacted]", never one
- *  value merged over the other. */
+/** A call's arguments as `tool_input` carries them, at most `budget` characters of names and values a row, taken in
+ *  order: each property name as `redact` makes it, as only this field shows them, each string as `read` makes it of the
+ *  head it is given, each number as its text (one `held` names shows as "[redacted]"), and every name and value costs at
+ *  least one character, so a row holds at most `budget` of them. The name or string that reaches the budget is cut
+ *  there; an array or object then ends with one "..." (an item, or a "..." name), and a value reached past it shows as
+ *  "...", unread, however much it holds. So a row's names and values come to `budget` characters, past which only a
+ *  "..." for the value it stopped in and one for each array or object still open, whatever its call holds. An object two of whose names come out the same is withheld
+ *  whole, as "[redacted]", never one value merged over the other. */
 const inputShown = (args: unknown, budget: number, read: (text: string, shown: number) => string, redact: (text: string) => string = (text) => text, held: (value: number | bigint) => boolean = () => false): unknown => {
   let left = budget;
+  const spend = (size: number) => (left -= Math.max(1, size));
   const shown = (value: unknown): unknown => {
+    if (left <= 3) return "...";
     if (typeof value === "string") {
-      if (!value) return value;
-      if (left <= 3) return "...";
       const text = cut(read(value, left), left);
-      left -= text.length;
+      spend(text.length);
       return text;
     }
-    if (typeof value === "number" || typeof value === "bigint") return held(value) ? "[redacted]" : value;
-    if (Array.isArray(value)) return value.map(shown);
-    if (!value || typeof value !== "object") return value;
-    const entries = Object.entries(value).map(([key, item]) => [redact(key), shown(item)] as const);
-    return new Set(entries.map(([key]) => key)).size === entries.length ? Object.fromEntries(entries) : "[redacted]";
+    if (typeof value === "number" || typeof value === "bigint") {
+      const out = held(value) ? "[redacted]" : value;
+      spend(String(out).length);
+      return out;
+    }
+    if (Array.isArray(value)) {
+      const out: unknown[] = [];
+      for (const item of value) {
+        if (left <= 3) return [...out, "..."];
+        out.push(shown(item));
+      }
+      return out;
+    }
+    if (!value || typeof value !== "object") {
+      spend(String(value).length);
+      return value;
+    }
+    const entries: (readonly [string, unknown])[] = [];
+    let ended = false;
+    for (const [key, item] of Object.entries(value)) {
+      if (left <= 3) {
+        ended = true;
+        break;
+      }
+      const name = cut(redact(key), left);
+      spend(name.length);
+      entries.push([name, shown(item)]);
+    }
+    if (new Set(entries.map(([key]) => key)).size !== entries.length) return "[redacted]";
+    const out = Object.fromEntries(entries);
+    if (ended && !Object.hasOwn(out, "...")) out["..."] = "...";
+    return out;
   };
   return shown(args);
 };
