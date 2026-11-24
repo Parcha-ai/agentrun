@@ -2567,6 +2567,11 @@ test("XCVI: commands are read by one shell lexer (shell-lex.ts; GRE-4791): an op
   await gone("curl https://x.io/?a=1&b=2 -u admin:Copper9lumen9", ["Copper9lumen9"]);
   // A line break still ends a command.
   await kept("redis-cli -h db\n-a Copper9lumen9");
+  // A command's name ends at a blank, as before the lexer: `curl-user:label` is one word, not curl and `-user:label`.
+  // And a substitution that closed inside one left open is still a substitution to the next curl that reaches it.
+  for (const text of ["auth-header:label curl-user:label home-path:personal", '  "curl-user": "label",', '{ id: "curl-user", text: "curl https://x.io" }', "curl -s $(cat f; curl -s x $(date -u +%H:%MZ)"]) {
+    for (const wrap of FOUR_WRAPS) await kept(wrap(text));
+  }
 });
 
 test("XCIII: a query or form password past 1024 characters is cut to its end (Greptile P1 on 683391d4fd): QUERY_PASSWORD's bound no longer leaves its tail", async () => {

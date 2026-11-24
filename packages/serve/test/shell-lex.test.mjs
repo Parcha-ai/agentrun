@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { isWord, lex, lexCount, NEST_MAX, wordChars, wordFrom, wordText } from "../dist/shell-lex.js";
+import { commandLimit, isWord, lex, lexCount, NEST_MAX, wordChars, wordFrom, wordText } from "../dist/shell-lex.js";
 
 const shellEnds = (op) => op === ";" || op === "&" || op === "&&" || op === "||" || op === "|" || op === "|&";
 const curlEnds = (op) => op !== "&" && shellEnds(op);
@@ -118,6 +118,20 @@ test("a construct that does not close on its line or before the limit is a chara
   assert.equal(sub.tokens[1].parts[0].kind, "sub");
 });
 
+test("a construct that closed inside an unclosed one of its kind is read again later, never failed from that one's span", () => {
+  for (const [text, inner, kind] of [
+    ["x $(a $(b) c", "$(b)", "sub"],
+    ['x "a $(echo "b") c', '"b"', "dq"],
+    ["x ${a:-${b} c", "${b}", "brace"],
+  ]) {
+    const misses = new Map();
+    lex(text, 0, text.length, never, misses);
+    const later = lex(text, text.indexOf(inner), text.length, never, misses);
+    const part = later.tokens[0].parts[0];
+    assert.deepEqual([part.kind, text.slice(part.start, part.end)], [kind, inner], JSON.stringify(text));
+  }
+});
+
 test("`#` is a character, a backslash-newline joins lines, and reading starts where the caller says", () => {
   assert.deepEqual(shown("x # -u a:b", read("x # -u a:b")), ["x", "#", "-u", "a:b"]);
   for (const text of ["-a \\\n  pw", "-a \\\r\n pw", "-a\\\n pw"]) assert.deepEqual(values(text, read(text)), ["-a", "pw"], JSON.stringify(text));
@@ -160,7 +174,7 @@ function readsPerChar(text, name, bound, max = 4096, ends = curlEnds) {
   lexCount.read = 0;
   for (let m = re.exec(text); m; m = re.exec(text)) {
     const named = m.index + m[0].length;
-    const lexed = lex(text, named, Math.min(text.length, named + max), ends, misses);
+    const lexed = lex(text, named, commandLimit(named, max, text.length), ends, misses);
     for (const [start, end] of lexed.subs) lex(text, start, end, never, misses);
     re.lastIndex = Math.max(lexed.end, m.index + 1);
     if (lexCount.read > bound * text.length) break;
@@ -192,6 +206,15 @@ test("reading is linear by count: 1 MB of nested, unclosed and repeated construc
     "curl $((",
     "curl $( $( ",
     'curl "$(\x60',
+    // One that closed inside one left open: read again by each later command that reaches it.
+    "curl $( $(a) ",
+    'curl "$(echo "b") ',
+    "curl ${a:-${b} ",
+    "curl -s $(cat f; curl -s x $(date -u +%H:%MZ) ",
+    // A command that ends early, after a search that read to the limit: the next shares that limit (commandLimit).
+    "curl $(a; ",
+    'curl "$(a; ',
+    "curl $(a $(b); ",
   ];
   for (const unit of units) {
     const text = unit.repeat(Math.ceil(1_000_000 / unit.length));
