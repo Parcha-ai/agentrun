@@ -5,7 +5,7 @@
 // time, so a build without them fails on the assertion that needs them, not at the import.
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
@@ -118,6 +118,25 @@ for (const watch of ['pdeathsig', 'shim']) {
     }
   });
 }
+
+// The kernel reads a `#!` line as bytes: an interpreter under a folder whose name is not ASCII (`José`, or `à`, whose
+// UTF-8 holds the byte 0xA0, which Latin-1 reads as a no-break space) runs the script, so the sign-in starts it. Named
+// by its path, or by its name through env on the sign-in's PATH.
+test('a sign-in whose CLI names an interpreter under a non-ASCII path, directly or through env, starts it', { skip: process.platform === 'win32' ? 'no #! line on Windows' : false, timeout: 30_000 }, async () => {
+  const dir = scratch();
+  const bin = join(dir, 'José-à');
+  mkdirSync(bin);
+  const node = join(bin, 'nodé-à');
+  symlinkSync(process.execPath, node);
+  for (const [name, line, path] of [['direct', `#!${node}`, '/usr/bin:/bin'], ['env', '#!/usr/bin/env nodé-à', `${bin}:/usr/bin:/bin`]]) {
+    const seen = join(dir, `seen-${name}`);
+    const cli = join(dir, `claude-${name}`);
+    writeFileSync(cli, `${line}\nrequire('node:fs').writeFileSync(${JSON.stringify(seen)}, 'ran');\n`, { mode: 0o755 });
+    const ended = await claude.startClaudeLogin(cli, login(), { path }).ended;
+    assert.deepEqual(ended, { end: 'exited', code: 0, signal: null }, `a CLI whose interpreter is under a non-ASCII path (${name}) did not start: ${JSON.stringify(ended)}`);
+    assert.ok(existsSync(seen), `the CLI's script did not run (${name})`);
+  }
+});
 
 // A server that is SIGKILLed (the OOM killer, say) runs no stop and no limit timer, so a sign-in it started must die
 // with it: started under ./host's parent watch (@parcha/agentrun-kernel/host parentWatched), as a session's CLI is. The
