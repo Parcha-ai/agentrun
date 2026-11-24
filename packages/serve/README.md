@@ -3495,10 +3495,11 @@ serves these routes alone:
   an entry that is not an http or https origin alone, or a wildcard, stops the start, in words. The list holds past
   the save: drop an origin and restart, and a per_run server the token saved there is refused at a run's start, at
   an agent's save and at the next call of a run already going, and nothing is sent to it. Unset, the list is empty, so
-  a per_run server the token saved with API-only off is refused until its origin is listed: list it before upgrading.
-  The start logs one line (`api_only_mcp_off_list`) with the count and names of the servers off the list, never their
-  addresses, and nothing when there are none. A server saved any other way (by the owner, before the profile was on)
-  is the owner's, and the list does not govern it;
+  a per_run server the token saved with API-only off is refused until its origin is listed: list it before upgrading,
+  or re-save it from the owner's signed-in session with API-only off, which makes it the owner's and leaves the save
+  closed. The start logs one line (`api_only_mcp_off_list`) with the count and names of the servers off the list,
+  never their addresses, and nothing when there are none. A server saved from the owner's signed-in session (which an
+  API-only server doesn't serve) is the owner's, whenever it was saved, and the list does not govern it;
 - a run's desktop or phone, for a backend that shows its user the live view and lets them take over: see below.
 
 Here a run's computer routes take the server's token. `POST /runs/{id}/computer/viewer` mints a 5-minute link on

@@ -2,8 +2,9 @@
 // writes the list it started with into the store (`mcp.api_only_origins`), and removes it when it starts without the
 // profile, so every reader on that store holds a per_run server the token saved to the list as it is now. The readers
 // are the server's pin at an agent's save, a runner's first pin, a run's claim and each of its calls. Drop an origin and restart, and a
-// server the token saved there sends nothing more: no listing, no run's mcp_auth. A server saved any other way (by the
-// owner before the profile was on) is the owner's, and the list does not govern it. An API-only start with the setting
+// server the token saved there sends nothing more: no listing, no run's mcp_auth. A server saved from the owner's
+// signed-in session (which an API-only server doesn't serve) is the owner's, whenever it was saved, and the list does not
+// govern it. An API-only start with the setting
 // unset holds an empty list, so a per_run server the token saved with the profile off is refused until its origin is
 // listed; that start says so once in its log, naming each such server (offApiOnlyMcpServers).
 import { mcpSourceKey, savedByToken } from "./mcp-sources.js";
