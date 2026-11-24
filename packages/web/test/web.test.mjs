@@ -318,6 +318,27 @@ test("a URL short as asked but longer than 4,096 characters as sent (its href) i
   await run(f, direct, [{ url, asks: [], tries: [["direct", "error"]], by: null, check: (answer) => assert.equal(answer.error, "url is longer than 4,096 characters") }], "direct");
 });
 
+test("Parallel passed over for a URL it may not be sent says the real reason, in the direct fetch's words: an href too long, a port, a user name and password", async (t) => {
+  const f = await fakes(t);
+  const credentialed = new URL(PUBLIC);
+  credentialed.username = "u";
+  credentialed.password = "p";
+  const cases = [
+    [`${PUBLIC}${"é".repeat(1_500)}`, "url is longer than 4,096 characters"],
+    ["http://public.example:8080/", "port 8080 is not 80 or 443"],
+    [credentialed.href, "the URL holds a user name or password"],
+  ];
+  const w = web.createWeb({ ...f.config, keys: { parallel: CANARY }, order: { search: [], fetch: ["parallel", "direct"] } });
+  for (const [url, why] of cases) {
+    const at = why.split(" ").slice(0, 2).join(" ");
+    await run(f, w, [{ url, asks: [], tries: [["parallel", "error"], ["direct", "error"]], by: null, usd: 0, check: (answer, receipt) => {
+      assert.equal(answer.parallel, `not tried: ${why}`, `${at}: the page says why Parallel was not tried`);
+      assert.equal(receipt.tries[0].error, `not tried: ${why}`, `${at}: the receipt says why Parallel was not tried`);
+      assert.doesNotMatch(web.webFetchText(answer), /public-host guard/, `${at}: no word of the guard, which was never asked`);
+    } }], at);
+  }
+});
+
 // A call stops waiting at its signal; the read it started is the run's and goes on. Here the read waits on the guard's
 // name lookup for Parallel (released by hand) when the call is stopped, then Parallel reads the page and is paid.
 test("a fetch stopped while the guard checks its URL for Parallel: the receipt it returned stays as it was, though the read goes on and pays", async (t) => {

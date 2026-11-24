@@ -100,7 +100,9 @@ test("a URL the guard refuses is never sent to Parallel: refused as the guarded 
   for (const url of hostile) {
     const net = network();
     const page = await webFetch(url, { ...net, parallel: extract });
-    assert.deepEqual([page.ok, page.via, page.parallel], [false, "direct", "not tried: the URL did not pass the public-host guard"], url);
+    // A port is refused before the guard is asked, in the direct fetch's words.
+    const why = url === "http://public.example:8080/" ? "port 8080 is not 80 or 443" : "the URL did not pass the public-host guard";
+    assert.deepEqual([page.ok, page.via, page.parallel], [false, "direct", `not tried: ${why}`], url);
     assert.match(page.refused ?? "", /^refused: /, `${url}: ${JSON.stringify(page)}`);
     assert.deepEqual(net.dialled, [], url);
   }
