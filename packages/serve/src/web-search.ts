@@ -24,7 +24,8 @@ export async function searchFor(env: NodeJS.ProcessEnv, args: Record<string, unk
 
 async function searched(env: NodeJS.ProcessEnv, args: Record<string, unknown>, breakerOf: (name: string) => Breaker, signal?: AbortSignal, models?: SearchOn, keyLimits: "web" | "call" = "call"): Promise<Search> {
   const resolved = planeOf(env).web_search;
-  if (!serves(resolved, "search")) return { error: `web_search does not run here: ${resolved === undefined ? "no provider was resolved for it" : whyUnavailable(resolved)}` };
+  // The chain table (web-run.ts searchChainOf) is the one source of what a resolution searches.
+  if (!searchChainOf(resolved).length) return { error: `web_search does not run here: ${resolved === undefined ? "no provider was resolved for it" : whyUnavailable(resolved)}` };
   const { query, n } = searchArgs(args);
   // Under --faux, an order with every keyless provider left out (web-run.ts ordersOf) asks none.
   if (query && !ordersOf(env).search.length) return { error: "web_search: under --faux, the keyless search endpoints are fakes', and this server names none" };

@@ -9,7 +9,7 @@ import type { Guard, GuardOptions } from "./guard.js";
 import { clip, type Page, type Part, partProblem, URL_MAX } from "./page.js";
 import { holdingWords, type NativeSearch, type ProviderRun, readerOf } from "./provider.js";
 import type { Words } from "./providers/mcp.js";
-import { type FetchProvider, type KeyedProvider, type ProviderId, providerOf, type ProviderSettings, type SearchProvider, serves, settingsProblemsOf } from "./providers/registry.js";
+import { type FetchProvider, type KeyedProvider, type ProviderId, providerOf, type ProviderSettings, type SearchProvider, settingsProblemsOf } from "./providers/registry.js";
 import { type Breaker, breakers, fitSearch, type Holding, withKeyBreaker, QUERY_MAX, type Search, type SearchBounds, searchArgs, searchInTurn, searchText, type Try } from "./search.js";
 
 /** What an answer took and cost. `out` is the answer as the model reads it; `cache` is "hit" when a fetch came from the
@@ -100,7 +100,7 @@ const unjudged = { wall: { verdict: "unjudged" }, injection: "unjudged" } as con
 export function createWeb(config: WebConfig): Web {
   const problems = settingsProblemsOf(config.settings);
   if (problems.length) throw new Error(`web settings: ${problems.join("; ")}`);
-  for (const op of ["search", "fetch"] as const) for (const id of config.order[op]) if (!serves(providerOf(id).id, op)) throw new Error(`web: ${id} gives no ${op}`);
+  for (const op of ["search", "fetch"] as const) for (const id of config.order[op]) if (!providerOf(id).ops.includes(op)) throw new Error(`web: ${id} gives no ${op}`);
   const now = config.now ?? Date.now;
   const policy = policyOf(config.policy);
   const runBreakers = breakers(now);
@@ -138,7 +138,8 @@ export function createWeb(config: WebConfig): Web {
     return run;
   };
   let readers: Readers | undefined;
-  const readersOf = (): Readers => (readers ??= Object.fromEntries(config.order.fetch.map((id) => [id, readerOf(runOf(id), withKeyBreaker(fetchBreakers(id), keyBreakers(id)))])));
+  // A provider that ends the order is made by webRead for each read, never here.
+  const readersOf = (): Readers => (readers ??= Object.fromEntries(config.order.fetch.filter((id) => !providerOf(id).fetch?.ends).map((id) => [id, readerOf(runOf(id), withKeyBreaker(fetchBreakers(id), keyBreakers(id)))])));
 
   const destinationOf = (id: ProviderId, own: (name: string) => Breaker): Destination => {
     const provider = providerOf(id);
