@@ -8,6 +8,8 @@ import { COMPUTER_UNAVAILABLE } from "./computers.js";
 
 /** What a computer is doing, as a run reads it. */
 export type ComputerState = "starting" | "ready" | "taken_over" | "ended" | "failed";
+/** The states of a computer its run still has. */
+export const COMPUTER_UP: ReadonlySet<ComputerState> = new Set(["starting", "ready", "taken_over"]);
 
 /** The port the run read's computer field reads: run `runId`'s computer state with the owner's hold, "taken_over" while
  *  the owner holds it, else `state` as given. */

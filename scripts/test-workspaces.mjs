@@ -37,7 +37,7 @@ const SEED = {
   '@parcha/agentrun-serve': 260, '@parcha/agentrun-dsl': 172, '@parcha/pi-browser': 83,
   '@parcha/agentrun-harness-codex': 76,
   '@parcha/agentrun-harness-claude': 33, '@parcha/agentrun-jev': 6, '@parcha/agentrun-kernel': 3,
-  '@parcha/agentrun-decisions': 3,
+  '@parcha/agentrun-decisions': 3, '@parcha/agentrun-import': 2,
 };
 const TIMES = join(root, 'node_modules', '.cache', 'agentrun-test-times.json');
 // Files outside the workspaces that no workspace test reads: changing only these runs nothing. Any other file outside

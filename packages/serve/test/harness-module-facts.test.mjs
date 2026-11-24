@@ -111,7 +111,8 @@ test("a module's adapter harness is offered its wire's vendor's models only, nam
   assert.ok(onAnthropic.length > 0 && onAnthropic.every((id) => id.startsWith("anthropic/")), onAnthropic.join(", "));
   const onOpenAI = modelForm.pickerCandidates({ ...openai, ...keys }, "acme-oai");
   assert.ok(onOpenAI.length > 0 && onOpenAI.every((id) => id.startsWith("openai/")), onOpenAI.join(", "));
-  assert.deepEqual(await modelForm.freeCandidates({ ...anthropic, ...keys }, "acme"), [], "an adapter harness runs its wire's vendor's models, never pi's free ones");
+  assert.deepEqual(await modelForm.freeCandidates({ ...anthropic, ...keys }, "acme"), [], "an adapter harness is never offered pi's free models on OpenRouter: on Messages, only the Ollama here's (none in the suites, which turn Ollama off)");
+  assert.deepEqual(await modelForm.freeCandidates({ ...openai, ...keys }, "acme-oai"), [], "nor on a wire the route translates no free model onto");
 
   const rowsOf = (env, id) => model.MODEL_KEYS.filter((row) => model.keyHarnesses(row, env).includes(id)).map((row) => row.id);
   assert.deepEqual(rowsOf(anthropic, "acme"), ["anthropic", "openrouter"]);

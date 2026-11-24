@@ -12,13 +12,19 @@ test("ourTool ties each agent's title for our tool: `agentrun__<tool>`, `agentru
   assert.equal(ourTool({ title: 'agentrun: lookup', kind: 'other' }, TOOLS), 'lookup');
   assert.equal(ourTool({ title: 'agentrun__look_up' }, TOOLS), 'look_up');
   assert.equal(ourTool({ title: 'agentrun-look_up: look_up' }, TOOLS), 'look_up');
+  // Goose 1.59.2 writes a summary of the call's arguments (a path) after the title: `agentrun: write · proof.txt`.
+  assert.equal(ourTool({ title: 'agentrun: look up · proof.txt', kind: 'other' }, TOOLS), 'look_up');
+  assert.equal(ourTool({ title: 'agentrun: check echo · a · b' }, TOOLS), 'check_echo', 'cut at the first');
 });
 
 test("ourTool leaves another server's tool named like ours, and a call with effects of its own, as the agent's own", () => {
-  for (const title of ['github: look up', 'agentrun-github: look up', 'agentrun github: look up', 'Agentrun: look up', 'agentrun: Look Up', 'agentrun: look  up', 'agentrun: look up now', 'xagentrun: look up', 'agentrun: look_up_', 'agentrun:look up']) {
+  for (const title of ['github: look up', 'agentrun-github: look up', 'agentrun github: look up', 'Agentrun: look up', 'agentrun: Look Up', 'agentrun: look  up', 'agentrun: look up now', 'xagentrun: look up', 'agentrun: look_up_', 'agentrun:look up', 'agentrun: look up now · x', 'agentrun: look up·x', ' · agentrun: look up', 'github: look up · proof.txt']) {
     assert.equal(ourTool({ title, kind: 'other' }, TOOLS), undefined, title);
   }
-  for (const kind of ['execute', 'edit', 'delete', 'move', 'fetch']) assert.equal(ourTool({ title: 'agentrun: look up', kind }, TOOLS), undefined, kind);
+  for (const kind of ['execute', 'edit', 'delete', 'move', 'fetch']) {
+    assert.equal(ourTool({ title: 'agentrun: look up', kind }, TOOLS), undefined, kind);
+    assert.equal(ourTool({ title: 'agentrun: look up · proof.txt', kind }, TOOLS), undefined, `${kind}, with a summary`);
+  }
   assert.equal(ourTool({ title: 'agentrun: drop tables', kind: 'other' }, TOOLS), undefined, 'a tool that is not ours, under our server name');
 });
 
