@@ -100,6 +100,15 @@ test("recordingsOf lists each file: its computer, its seconds from its fragments
   assert.deepEqual(await recordingsOf(join(data, "none"), null), [], "no folder: nothing recorded");
 });
 
+test("recordingsOf lists a run's computers in the order they recorded, not by name", async () => {
+  const folder = tempDir("agentrun-rec-order-");
+  // A run's desktop released at its question and a new one taken at its answer: the second's id sorts first by name.
+  writeFileSync(join(folder, "faux-desktop-7.mp4"), fmp4([[1000]]));
+  await sleep(20);
+  writeFileSync(join(folder, "faux-desktop-17.mp4"), fmp4([[1000]]));
+  assert.deepEqual((await recordingsOf(folder, null)).map((one) => one.computer), ["faux-desktop-7", "faux-desktop-17"]);
+});
+
 test("recordingsOf reads ffmpeg's own fragmented MP4 the length ffprobe says", async (t) => {
   if (spawnSync("ffprobe", ["-version"]).status !== 0 || spawnSync("ffmpeg", ["-version"]).status !== 0) return t.skip("ffmpeg and ffprobe aren't on this machine's PATH, so ffmpeg's own file isn't read here");
   const folder = tempDir("agentrun-rec-ffmpeg-");

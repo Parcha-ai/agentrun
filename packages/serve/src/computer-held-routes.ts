@@ -18,6 +18,7 @@ import { runComputerField } from "./run-computer.js";
 import { readLaunchBody } from "./run-launch.js";
 import type { Store } from "./store/index.js";
 import { unknownFields } from "./validate.js";
+import { readKept } from "./workspace/computer-kept.js";
 
 export { holdIssues };
 
@@ -47,16 +48,25 @@ export async function heldField(store: HeldStore, runId: string, options: HeldOp
   return { state, minutes: read.minutes, ...(state === "released" ? {} : { until: new Date(read.until).toISOString() }), ...(read.why ? { why: read.why } : {}) };
 }
 
+/** Whether parked run `runId`'s computer of `kind` was let go: a park's claim releases it but for a desktop, a phone or a
+ *  sandbox kept for the resume, until its keep's time (workspace/computer-kept.ts). A browser's is said on its own read. */
+async function releasedAtPark(store: Pick<Store, "settings">, runId: string, kind: string, now: number): Promise<boolean> {
+  if (kind === "browser") return false;
+  const kept = await readKept(store.settings, runId).catch(() => undefined);
+  return !kept || kept.kind !== kind || kept.ended === true || kept.ending === true || now >= kept.until;
+}
+
 /** The run read's `computer` field (`{ computer }`, or nothing for a run with none): its revision's computer setting, else
- *  the one its place says; taken_over while the owner holds its desktop or phone (computerHoldOf, read from the run's
+ *  the one its place says; released while the run is parked with its computer let go (releasedAtPark); taken_over while the owner holds its desktop or phone (computerHoldOf, read from the run's
  *  journal only while that computer is up); with `held` for a run that holds its computer for its owner. The journal is
  *  read at most once, and not at all for a run that neither can be taken over nor holds. `view` is the run read so far. */
-export async function runComputerRead(store: HeldStore & Pick<Store, "agents">, runId: string, view: Record<string, unknown>, options: HeldOptions = {}): Promise<{ computer?: Record<string, unknown> }> {
+export async function runComputerRead(store: HeldStore & Pick<Store, "agents" | "settings">, runId: string, view: Record<string, unknown>, options: HeldOptions = {}): Promise<{ computer?: Record<string, unknown> }> {
   const run = await store.runs.get(runId);
   const setting = run ? settingOfDefinition(((await store.agents.revision(run.revisionId))?.body ?? {}) as Definition)?.computer : undefined;
   if (!setting) return {};
   const error = view.error as { code?: unknown; message?: unknown } | null | undefined;
-  const read = { id: runId, status: String(view.status), ...(error && typeof error.code === "string" ? { error: { code: error.code, message: String(error.message ?? "") } } : {}) };
+  const released = run?.state === "parked" && (await releasedAtPark(store, runId, setting.kind, options.now?.() ?? Date.now()));
+  const read = { id: runId, status: String(view.status), ...(error && typeof error.code === "string" ? { error: { code: error.code, message: String(error.message ?? "") } } : {}), ...(released ? { released } : {}) };
   // The run's journal, read at most once for the whole field (the hold and `held` both read it), and only when one needs
   // it: a long run's every poll would pay for a read that grows with it.
   let journal: Promise<Awaited<ReturnType<typeof entriesOf>>> | undefined;

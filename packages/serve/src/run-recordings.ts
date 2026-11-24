@@ -99,7 +99,8 @@ async function readOf(path: string, size: number, mtimeMs: number): Promise<Read
   return read;
 }
 
-/** The recordings in `folder`, each computer's files in the order it recorded them: its path on the files route, its
+/** The recordings in `folder`, in the order they were recorded: computers by when their first file was made, each
+ *  computer's files in the order it recorded them. Each is its path on the files route, its
  *  computer (its ref id, as its file is named: computer-record.ts names a computer's later files <computer>-2.mp4 and
  *  on), its length in seconds, its size, and whether it is finished: its trailer is there, or the run ended at `endedAt`
  *  and neither that end nor the file's last change is within twice the time the recorder gives ffmpeg to finish it
@@ -114,11 +115,21 @@ export async function recordingsOf(folder: string, endedAt: number | null): Prom
     const later = /^(.+)-(\d+)$/.exec(base);
     return later && Number(later[2]) >= 2 && files.has(`${later[1]}.mp4`) ? { name, computer: later[1]!, n: Number(later[2]) } : { name, computer: base, n: 1 };
   });
-  series.sort((a, b) => (a.computer === b.computer ? a.n - b.n : a.computer < b.computer ? -1 : 1));
+  const stats = new Map(await Promise.all(series.map(async ({ name }) => [name, await lstat(join(folder, name)).catch(() => undefined)] as const)));
+  // A file's making: its birth time, or its last change where the file system keeps none (a computer's first file is
+  // done before the next computer's starts, so the order holds).
+  const made = (name: string) => {
+    const file = stats.get(name);
+    return file ? file.birthtimeMs || file.mtimeMs : Number.POSITIVE_INFINITY;
+  };
+  const firstMade = new Map<string, number>();
+  for (const { name, computer, n } of series) if (n === 1) firstMade.set(computer, made(name));
+  const startOf = (computer: string) => firstMade.get(computer) ?? Number.POSITIVE_INFINITY;
+  series.sort((a, b) => (a.computer === b.computer ? a.n - b.n : startOf(a.computer) - startOf(b.computer) || (a.computer < b.computer ? -1 : 1)));
   const listed: RecordingView[] = [];
   for (const { name, computer } of series) {
     const path = join(folder, name);
-    const file = await lstat(path).catch(() => undefined);
+    const file = stats.get(name);
     if (!file?.isFile()) continue;
     const read = await readOf(path, file.size, file.mtimeMs).catch(() => undefined);
     const seconds = read?.timescale ? Math.round((read.end / read.timescale) * 10) / 10 : 0;

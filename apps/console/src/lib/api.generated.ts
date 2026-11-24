@@ -961,7 +961,7 @@ export interface components {
     computer?: {
       kind: "sandbox" | "desktop" | "phone" | "browser";
       provider: string;
-      state: "starting" | "ready" | "taken_over" | "ended" | "failed";
+      state: "starting" | "ready" | "taken_over" | "released" | "ended" | "failed";
       why?: string;
       held?: {
         state: "starting" | "waiting" | "started" | "ended" | "released";
