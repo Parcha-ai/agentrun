@@ -755,7 +755,9 @@ const LONG = `${CUT_KEY}-${"q8VxR2mT7kPz".repeat(120)}`;
  *  - each view's decoders over a text of nothing but what they decode: percent-encoded bytes, ASCII and not, "+",
  *    JSON's escapes at one level and two (each kind, back to back), a second level that starts and fails, non-ASCII
  *    stretches for NFKC, characters that render as nothing (zero-width spaces, soft hyphens, both between letters);
- *  - a held value found every 9 characters, each find cut in place;
+ *  - the join view over JSON, well formed and malformed: strings never closed, nesting as deep as the text, strings of
+ *    nothing but backslashes;
+ *  - a held value found every 9 characters, each find cut in place, and one in every string of a JSON text;
  *  - a held value of two lines, its lines over and over: its parts found at every line, each cut in place;
  *  - runs too long to read, each with a held value's head glued to its end: each run's tail read again, 8,192
  *    characters of it, for the held value. */
@@ -778,6 +780,11 @@ const adversarial = (size) => {
     // The join view: strings, names and values, empty strings, a lone quote, escaped quotes, JSON written in a string,
     // a name with no value, and runs between JSON's punctuation.
     f('"a",'), f('{"k":"v"},'), f('"",'), f('"'), f(`${B}"`), `"${fill(`[${B}"a${B}",${B}"b${B}"],`, size - 1)}`, f('":'), f('"a"   '), f("a,"),
+    // Malformed JSON: a string never closed (with words, and one run of the text's whole length), nesting as deep as
+    // the text (arrays, objects, both, opened and closed), strings of nothing but backslashes (closed, never closed, a
+    // lone one escaping the quote after it), and a text that builds every view at once.
+    `{"k":"${fill("ab ", size - 6)}`, `"${fill("a", size - 1)}`, f("["), f('{"a":'), f('[{"a":['), `${fill("[", size / 2)}${fill("]", size / 2)}`,
+    `"${fill(B, size - 2)}"`, `"${fill(B, size - 1)}`, f(`"${B}${B}${B}"`), f(`"${B}`), f(`"%41+${B}u0041&#65;",`),
   ];
   return [
     ...[...shapes, ...views].map((text) => ({ text, values: [CUT_KEY] })),
@@ -785,6 +792,9 @@ const adversarial = (size) => {
     // A held value found in every string of a JSON text, each find cut in place: the join view moves each cut to where
     // its string stands in the join, its cursor passing each cut once a pass.
     { text: f(`"${DENSE}",`), values: [DENSE] },
+    // The same in a string never closed, and in one escaped quote after another (JSON written in a string).
+    { text: `{"k":"${fill(`${DENSE} `, size - 6)}`, values: [DENSE] },
+    { text: f(`${BACKSLASH}"${DENSE}${BACKSLASH}",`), values: [DENSE] },
     { text: f(`${TWO_LINES.join("\n")}\n`), values: [TWO_LINES.join("\n")] },
     { text: f(`${"z".repeat(9000)}${LONG.slice(0, 16)} `), values: [LONG] },
   ];
@@ -875,12 +885,13 @@ test("adversarial texts: the characters the shape scanners visit are at most a f
 //   a check: 268), of the pieces as they came (214), and its shape pass (64): about 1,190.
 // A held value of two lines adds its three parts as forms and plain needles (about 30 more). A held value of k long
 // lines adds k + 1 of each: its work grows with k, linear in the text all the same.
-// 2048 is that, rounded up to a power of two (the most any reader visits here is far less: the bound counts every view
-// read for every text). A stage that read again from the start at each find passes the text once per find: a held
-// value found every 9 characters is found 14,563 times in 128 KiB, and one in every string of a JSON text (every 11
-// characters) 47,662 times in 512 KiB, which a join that passed the cuts from the first at each string reads about 2.3
-// billion times over.
-const WORK = 2048;
+// WORK stays 1,024, the bound from before the stacked and join views. The sum above counts every view built and read
+// at its most for one text, and the most measured is in the test's diagnostics; a text that passes 1,024 is a finding,
+// not a reason to raise the bound. A stage that read again from the start at each find passes the text once per find:
+// a held value found every 9 characters is found 14,563 times in 128 KiB, and one in every string of a JSON text (every
+// 11 characters) 47,662 times in 512 KiB, which a join that passed the cuts from the first at each string reads about
+// 2.3 billion times over.
+const WORK = 1024;
 
 test("adversarial texts: the characters the whole pipeline visits are at most WORK per character, at 128 KiB and 512 KiB", async (t) => {
   const { scanned } = await import("../dist/redact/match.js");
