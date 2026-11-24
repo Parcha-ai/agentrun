@@ -185,7 +185,14 @@ export function hostAddressesOnce(env: NodeJS.ProcessEnv, signal?: AbortSignal):
   const cut = cuts.get(key);
   if (signal && cut) {
     if (signal.aborted) cut.abort();
-    else signal.addEventListener("abort", () => cut.abort(), { once: true });
+    else {
+      // The server's retry asks again on its one stop signal for every read while Docker stays down: the handler goes
+      // when this read settles, or a long outage piles one up per read.
+      const onAbort = () => cut.abort();
+      signal.addEventListener("abort", onAbort, { once: true });
+      const drop = () => signal.removeEventListener("abort", onAbort);
+      void read.then(drop, drop);
+    }
   }
   return read;
 }

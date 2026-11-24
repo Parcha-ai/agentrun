@@ -1378,7 +1378,7 @@ unless they start with `modal_proto/`. Docs: modal.com, read 2026-11-05.
 provider in `options.app` (required: without it, it refuses in words naming the option, before any client). It reads no
 setting from the environment (see [Settings](#settings)) and passes the token to `ModalClient` explicitly, so a
 `MODAL_TOKEN_ID` or `MODAL_TOKEN_SECRET` on the host is never used. The key goes only to `options.serverUrl` (https
-alone), else the SDK's default `https://api.modal.com:443`: since the client cannot take a server, it refuses while `MODAL_SERVER_URL`
+alone), else the SDK's default `https://api.modal.com`: since the client cannot take a server, it refuses while `MODAL_SERVER_URL`
 is set, and sets it to its choice only while it constructs the client, one construction at a time and put back after
 each, so neither `MODAL_PROFILE` nor a profile in `MODAL_CONFIG_PATH` or `~/.modal.toml` can redirect the key. The
 daemon is uploaded from `options.daemonPath`, else `dist/computerd-linux-amd64`, so a run publishes nothing.

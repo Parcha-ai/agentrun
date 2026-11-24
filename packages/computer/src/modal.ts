@@ -51,8 +51,9 @@ export interface ModalProviderOptions extends Omit<HostedOptions, "desktop" | "m
 /** A GPU as the SDK takes it: the type, then :count past one ("T4", "H100:8"). */
 const modalGpu = ({ type, count }: GpuSpec) => (count === 1 ? type : `${type}:${count}`);
 
-/** The SDK's default server (modal-client@64880502:js/src/config.ts:143). */
-export const MODAL_DEFAULT_SERVER_URL = "https://api.modal.com:443";
+/** The SDK's default server (modal-client@64880502:js/src/config.ts:143, which writes https's own port, :443), as
+ *  httpsBase hands it to the client. */
+export const MODAL_DEFAULT_SERVER_URL = "https://api.modal.com";
 
 /** What modalClient gives the SDK's ModalClient: the token, explicitly, so the SDK fills none of it in. */
 export interface ModalClientParams {
@@ -68,7 +69,7 @@ export interface ModalClientOptions {
 	/** The Modal token's id and secret. Serve passes its MODAL_TOKEN_ID and MODAL_TOKEN_SECRET; the conformance module the token it reads. */
 	tokenId: string;
 	tokenSecret: string;
-	/** The server the token goes to, https alone; default the SDK's, https://api.modal.com:443. */
+	/** The server the token goes to, https alone; default the SDK's, https://api.modal.com. */
 	serverUrl?: string;
 	/** The SDK's ModalClient; imported from the host's modal package by default. */
 	ModalClient?: ModalClientConstructor;
