@@ -66,13 +66,13 @@ async function heldFront(t, gw) {
 
 /** A run started with `start` (extra start fields) on a server whose model gateway answers `text`, held at its first model
  *  call: the server, the run, its work folder, and `release` to let its turn go on. `serverKey`: the server's own key.
- *  `setup`: what to do on the server before the run starts. */
-async function liveRun(t, { start = {}, serverKey, text = "Answered.", setup } = {}) {
+ *  `setup`: what to do on the server before the run starts. `options`: the server's own, a test's seams among them. */
+async function liveRun(t, { start = {}, serverKey, text = "Answered.", setup, options = {} } = {}) {
   const gw = await startFauxGateway({ text });
   t.after(() => gw.close());
   const front = await heldFront(t, gw);
   withEnv(t, { AGENT_MODEL_BASE_URL: front.url, AGENT_MODEL: "claude-sonnet-5-5", ...(serverKey ? { AGENT_MODEL_API_KEY: serverKey } : {}) }, NAMES);
-  const server = await serve(t, { faux: undefined });
+  const server = await serve(t, { faux: undefined, ...options });
   if (setup) await setup(server);
   assert.equal((await server.api("POST", "/agents", agent("handed"))).status, 201);
   const started = await server.api("POST", "/agents/handed/runs", { input: { content: "Answer." }, ...start });
@@ -219,6 +219,39 @@ test("a message's text is cut of the key it hands and of the one the run held, s
   const commands = (await run.store.commands(run.runId, 0)).map((command) => command.body);
   assert.equal(held(JSON.stringify(commands)), false, "not in the message's stored command row");
   assert.match(JSON.stringify(commands), /Again: \[redacted\], not \[redacted\]\./, "cut in place");
+});
+
+test("two messages at once, one that hands a new model_key and one that says that key without handing it: the second, written after the first, is cut of it, so it never shows after the run's end", { timeout: 180_000 }, async (t) => {
+  // The first message is held at its door (beforeSubmit), inside its agent's turn, before its seal is written; the second
+  // is sent then, and the first let go once the second waits behind it for that turn (deleteTurnQueued).
+  let reached;
+  const atDoor = new Promise((resolve) => (reached = resolve));
+  let open;
+  const door = new Promise((resolve) => (open = resolve));
+  let behind;
+  const waiting = new Promise((resolve) => (behind = resolve));
+  const options = {
+    beforeSubmit: async (_runId, content) => {
+      if (content !== "First.") return;
+      reached();
+      await door;
+    },
+    deleteTurnQueued: () => behind(),
+  };
+  const run = await liveRun(t, { start: { model_key: KEY }, options });
+  const first = run.api("POST", `/runs/${run.runId}/messages`, { content: "First.", model_key: KEY_TWO });
+  await atDoor;
+  const second = run.api("POST", `/runs/${run.runId}/messages`, { content: `Second: ${KEY_TWO}.` });
+  await waiting;
+  open();
+  const [one, two] = await Promise.all([first, second]);
+  assert.equal(one.status, 202, JSON.stringify(one.body));
+  assert.equal(two.status, 202, JSON.stringify(two.body));
+  const commands = JSON.stringify((await run.store.commands(run.runId, 0)).map((command) => command.body));
+  assert.equal(commands.includes(KEY_TWO), false, `not in the second message's stored command row: ${commands}`);
+  assert.match(commands, /Second: \[redacted\]\./, "cut in place");
+  await run.ended();
+  assert.equal((await served(run)).text.includes(KEY_TWO), false, "after the end erased it: not in its view, list row or timeline");
 });
 
 test("a message that hands a new model_key mid-turn keeps the one it replaced cut from the run's files, live and after its end by its census", { timeout: 180_000 }, async (t) => {

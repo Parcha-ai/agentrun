@@ -5212,13 +5212,18 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
           const given = body.content;
           if (typeof given !== "string" || !/\S/.test(given)) throw invalid([{ field: "content", reason: given === undefined ? "missing" : "wrong_type", message: "content is a non-empty string" }]);
           if (given.length > MAX_MESSAGE) throw invalid([{ field: "content", reason: "too_long", message: `content is at most ${MAX_MESSAGE} characters` }]);
-          // Its text as written to the run is cut of what it hands and of what the run holds now (its turn's end erases
-          // those, and a read after it could no longer cut them): a run whose seal doesn't open is withheld till then anyway.
-          const held = launchValuesOf(sealKey, run.id, (await store.runs.launch(run.id)).sealed);
-          const content = cutHanded(given, [...handedSecretValues(secrets), ...(held === "unreadable" ? [] : held)]);
           // Its mcp_auth and model_key replace the run's in the steer's own write, so the turn it starts uses them.
           // In its agent's delete turn (runWrite): a message that may open the run again never lands under its purge.
-          const { mode, messageId } = await runWrite(run.agentId, run.id, () => message(store, run, content, { ...(seal ? { launchSealed: seal } : {}), ...(options.beforeSubmit ? { beforeSubmit: options.beforeSubmit } : {}) }));
+          const { mode, messageId } = await runWrite(run.agentId, run.id, async () => {
+            // Its text as written to the run is cut of what it hands and of what the run holds now (its turn's end erases
+            // those, and a read after it could no longer cut them): a run whose seal doesn't open is withheld till then
+            // anyway. What the run holds is read here, in the turn that writes the message, never before it: a message
+            // written first in that turn (one that hands a new key) is in the seal read here, so a message that says that
+            // key without handing it is cut of it too.
+            const held = launchValuesOf(sealKey, run.id, (await store.runs.launch(run.id)).sealed);
+            const content = cutHanded(given, [...handedSecretValues(secrets), ...(held === "unreadable" ? [] : held)]);
+            return message(store, run, content, { ...(seal ? { launchSealed: seal } : {}), ...(options.beforeSubmit ? { beforeSubmit: options.beforeSubmit } : {}) });
+          });
           // The run's state after the command row is written (the run view): the runner applies the steer; the client polls.
           const { status, state } = await runStatusState(run.id);
           return { status: 202, body: { run_id: run.id, message_id: messageId, mode, status, state, poll_after_ms: 1000 } };
