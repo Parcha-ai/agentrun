@@ -88,6 +88,42 @@ test("a read that fails partway leaves the state as it was: a retry with the sam
   assert.deepEqual(retry, fresh);
 });
 
+test("a read that fails partway, with no state, leaves its records to the file read after it: it counts them, as if the failed file were not there", async (t) => {
+  const dir = await tempHome(t);
+  const OTHER = "00000000-0000-4000-8000-0000000000c3";
+  const shared = [
+    claudeUser({ uuid: "u1", text: PROMPT, i: 0 }),
+    claudeAnswer({ uuid: "a1", msg: "msg_1", req: "req_1", usage: anthropicUsage(10, 20), i: 1 }),
+    claudeUser({ uuid: "u2", text: "More.", i: 2 }),
+    claudeAnswer({ uuid: "a2", msg: "msg_2", req: "req_2", usage: anthropicUsage(5, 6), i: 3 }),
+  ];
+  const first = await writeJsonl(claudeFile(dir), shared);
+  const second = await writeJsonl(claudeFile(dir, OTHER), shared.map((r) => ({ ...r, sessionId: OTHER })));
+  await utimes(first, 1_000, 1_000);
+  await utimes(second, 2_000, 2_000);
+  // Claude Code's reader, the first file failing after it has noted three records.
+  const real = READERS["claude-code"];
+  const failing = {
+    ...real,
+    read: (locator, cursor, options) => {
+      let noted = 0;
+      const seen = {
+        has: (key) => options.seen.has(key),
+        add(key) {
+          if (locator.file === first && ++noted > 3) throw Object.assign(new Error("injected"), { code: "EIO" });
+          options.seen.add(key);
+          return this;
+        },
+      };
+      return real.read(locator, cursor, { ...options, seen });
+    },
+  };
+  const failures = [];
+  const read = await parseHome(dir, { sources: ["claude-code"], readers: { "claude-code": failing }, failures, catalog: false });
+  assert.equal(failures.length, 1);
+  assert.deepEqual(read.map((s) => [s.id, s.calls]), [[OTHER, 2]], "the second file counts both requests");
+});
+
 test("a resumed read that fails gives up the records it held: copies in later files count, as in a fresh pass, and the next pass reads it from its start", async (t) => {
   const dir = await tempHome(t);
   const ORIGINAL = "00000000-0000-4000-8000-0000000000a1";

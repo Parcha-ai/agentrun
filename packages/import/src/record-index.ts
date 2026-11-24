@@ -185,6 +185,42 @@ export function addAll(into: RecordIndex, from: RecordIndex): void {
   }
 }
 
+/** Every record of `from` added to `into`, where the two hold no record in common: per kind of key, the table with more
+ *  entries keeps its arrays and the other's entries are added to it, so a big read's records are not copied (and held
+ *  twice) to join a smaller index. `from` is used up: it holds what `into` held. */
+export function addDisjoint(into: RecordIndex, from: RecordIndex): void {
+  if (from.uuids.count > into.uuids.count) [into.uuids, from.uuids] = [from.uuids, into.uuids];
+  if (from.others.count > into.others.count) [into.others, from.others] = [from.others, into.others];
+  addAll(into, from);
+}
+
+/** Where `index`'s entries end now: undoTo takes it back there. */
+export type Mark = { uuids: number; others: number; used: number };
+export const markOf = (index: RecordIndex): Mark => ({ uuids: index.uuids.count, others: index.others.count, used: index.others.used });
+
+/** The slot of `t` holding entry `e`, found from the key's hash. */
+function slotOf(t: Table, e: number, h: number): number {
+  const mask = t.slots.length - 1;
+  let s = h & mask;
+  while (t.slots[s] !== e + 1) s = (s + 1) & mask;
+  return s;
+}
+
+/** `index` as it was at `mark`: the entries added since taken out, last first. With linear probing, taking out the
+ *  last entry added leaves the slots as they were before it (a grow puts the entries back in their order, so this holds
+ *  across one), at the cost of the entries taken out, where dropOwner rebuilds the whole index. */
+export function undoTo(index: RecordIndex, mark: Mark): void {
+  const u = index.uuids;
+  for (let i = u.count - 1; i >= mark.uuids; i -= 1) u.slots[slotOf(u, i, uuidHash(u.words[i * 4]!, u.words[i * 4 + 1]!, u.words[i * 4 + 2]!, u.words[i * 4 + 3]!))] = 0;
+  u.count = Math.min(u.count, mark.uuids);
+  const o = index.others;
+  for (let i = o.count - 1; i >= mark.others; i -= 1) o.slots[slotOf(o, i, bytesHash(o.bytes, i === 0 ? 0 : o.ends[i - 1]!, o.ends[i]!))] = 0;
+  if (o.count > mark.others) {
+    o.count = mark.others;
+    o.used = mark.used;
+  }
+}
+
 /** `index` without the records `owner` owns: the rest kept in their order. */
 export function dropOwner(index: RecordIndex, owner: number): void {
   const u = index.uuids;

@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { deserialize, serialize } from "node:v8";
 import { parseHome, READERS } from "../dist/index.js";
-import { addAll, addRecord, dropOwner, locatorNumber, ownerOf, recordIndex } from "../dist/record-index.js";
+import { addAll, addDisjoint, addRecord, dropOwner, locatorNumber, markOf, ownerOf, recordIndex, undoTo } from "../dist/record-index.js";
 import { packed, packInto } from "../dist/record-key.js";
 import { anthropicUsage, claudeAnswer, claudeFile, claudeUser, tempHome, writeJsonl } from "./fixtures.mjs";
 
@@ -14,6 +14,7 @@ const uuidKey = (i) => `u:${hex(i >>> 0, 8)}-0000-4000-8000-${hex(Math.floor(i /
 const at = packed();
 const owner = (index, key) => ownerOf(index, packInto(key, at));
 const add = (index, key, n) => addRecord(index, packInto(key, at), n);
+const recordCount = (index) => index.uuids.count + index.others.count;
 
 test("each key is found with its owner, and only its own: uuids, message keys, and keys of any other shape", () => {
   const index = recordIndex(16);
@@ -47,6 +48,52 @@ test("dropOwner removes one owner's records and keeps the rest; addAll adds what
   addAll(index, staged);
   assert.deepEqual([owner(index, uuidKey(1)), owner(index, uuidKey(0)), owner(index, "m:msg_1:req_1")], [a, b, a]);
   assert.deepEqual(index.locators, ["a.jsonl", "b.jsonl"]);
+});
+
+test("undoTo takes out what was added since the mark, and only that: the slots as they were, across the index's growing too", () => {
+  const index = recordIndex(16);
+  const key = (i) => (i % 3 === 0 ? uuidKey(i) : `m:msg_${i}:req_${i}`);
+  for (let i = 0; i < 1000; i += 1) add(index, key(i), 1);
+  const slots = [index.uuids.slots.slice(), index.others.slots.slice()];
+  const mark = markOf(index);
+  // A few, so no table grows: the slots come back as they were, bit for bit.
+  for (let i = 1000; i < 1003; i += 1) add(index, key(i), 2);
+  undoTo(index, mark);
+  assert.deepEqual([index.uuids.slots, index.others.slots], slots);
+  assert.deepEqual(markOf(index), mark);
+  // Many, so both tables grow, and some held already (left as they are): those added since go, the rest stay.
+  for (let i = 500; i < 9000; i += 1) add(index, key(i), 2);
+  undoTo(index, mark);
+  assert.equal(recordCount(index), 1000);
+  assert.deepEqual(markOf(index), mark);
+  for (let i = 0; i < 9000; i += 1) assert.equal(owner(index, key(i)), i < 1000 ? 1 : -1, key(i));
+  // And they can be added again, with another owner.
+  for (let i = 1000; i < 9000; i += 1) add(index, key(i), 3);
+  for (let i = 0; i < 9000; i += 1) assert.equal(owner(index, key(i)), i < 1000 ? 1 : 3, key(i));
+  // A mark at the index's end takes out nothing.
+  undoTo(index, markOf(index));
+  assert.equal(recordCount(index), 9000);
+});
+
+test("addDisjoint joins two indexes with no record in common, either the larger: each record found with its owner, the locators the first's", () => {
+  const key = (i) => (i % 3 === 0 ? uuidKey(i) : `m:msg_${i}:req_${i}`);
+  for (const [small, big] of [[30, 5000], [5000, 30]]) {
+    const into = recordIndex();
+    const [a, b] = [locatorNumber(into, "a.jsonl"), locatorNumber(into, "b.jsonl")];
+    for (let i = 0; i < small; i += 1) add(into, key(i), a);
+    const from = recordIndex(64);
+    for (let i = small; i < small + big; i += 1) add(from, key(i), b);
+    const bigUuids = from.uuids;
+    addDisjoint(into, from);
+    assert.equal(recordCount(into), small + big);
+    for (let i = 0; i < small + big + 10; i += 1) assert.equal(owner(into, key(i)), i < small ? a : i < small + big ? b : -1, key(i));
+    // The larger table is kept, not copied.
+    assert.equal(into.uuids === bigUuids, big > small);
+    assert.deepEqual(into.locators, ["a.jsonl", "b.jsonl"]);
+    // Records added after it are found too.
+    add(into, key(small + big), a);
+    assert.equal(owner(into, key(small + big)), a);
+  }
 });
 
 test("an index kept as bytes (v8 serialize) finds what it held", () => {

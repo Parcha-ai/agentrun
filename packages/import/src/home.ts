@@ -12,7 +12,7 @@ import { type Env, type Locator, locatorKey, type SessionRead } from "./reader.j
 import { READERS, SOURCES, type Source } from "./readers/index.js";
 import { AT, HAS_LONG, HAS_REASONING, HAS_USAGE, STRIDE, USAGE_FIELDS } from "./counts.js";
 import { OLD_MB, type PoolRead, ReadPool, readAheadBytes } from "./pool.js";
-import { addAll, addRecord, dropOwner, locatorNumber, ownAll, ownerOf, type RecordIndex, recordIndex, someRecord } from "./record-index.js";
+import { addDisjoint, addRecord, dropOwner, locatorNumber, markOf, ownAll, ownerOf, type RecordIndex, recordIndex, someRecord, undoTo } from "./record-index.js";
 import { type Packed, packed, packInto } from "./record-key.js";
 import type { Usage } from "./types.js";
 import { addTokens, noTokens, type Tokens } from "./usage.js";
@@ -389,26 +389,27 @@ async function readSource(home: string, source: string, readers: Readers, env: E
     const read = async (locator: Locator, pooled?: () => Promise<PoolRead>): Promise<SessionRead[]> => {
       const key = locatorKey(locator);
       const cursor = kept?.cursors.get(key);
-      // The records read so far, as the reader asks for them, each new one this locator's, each found one noted. Both are
-      // staged and kept only when the read succeeds: a read that fails partway leaves no record owned that no cursor
-      // holds, which a retry would take for a copy.
+      // The records read so far, as the reader asks for them, each new one this locator's, each found one noted. A new
+      // record goes into the source's index at once (locators are read one at a time, so no other read adds to it before
+      // this one ends); a read that fails partway takes its records out again (undoTo the mark), so none is left owned
+      // that no cursor holds, which a retry would take for a copy. Staging them in an index of their own, then copying
+      // it in, held a big file's records twice.
       // Records are held by their packed keys (packInto), each packed as it is asked for.
       const me = locatorNumber(owners, key);
-      const mine = recordIndex(64);
+      const mark = markOf(owners);
       const found = new Set<string>();
       const at = packed();
       const seen = {
         has: (record: string) => {
           packInto(record, at);
-          let owner = ownerOf(owners, at);
-          if (owner === -1) owner = ownerOf(mine, at);
+          const owner = ownerOf(owners, at);
           if (owner === -1) return false;
           if (owner !== me) found.add(owners.locators[owner]!);
           return true;
         },
         add(record: string) {
           packInto(record, at);
-          if (ownerOf(owners, at) === -1) addRecord(mine, at, me);
+          addRecord(owners, at, me);
           return this;
         },
       } as Set<string>;
@@ -417,8 +418,9 @@ async function readSource(home: string, source: string, readers: Readers, env: E
         const made = await pooled();
         const held = (record: Packed) => ownerOf(owners, record) !== -1;
         if (made.ok && !someRecord(made.mine, held) && !someRecord(made.missed, held)) {
+          // None of its records is held (someRecord above): the larger index keeps its arrays, the other's records go in.
           ownAll(made.mine, me);
-          addAll(owners, made.mine);
+          addDisjoint(owners, made.mine);
           return made.sessions;
         }
       }
@@ -427,6 +429,8 @@ async function readSource(home: string, source: string, readers: Readers, env: E
         // A locator read before that cannot be read now gives up its cursor and the records it held, as a fresh pass
         // would hold none of them: the next pass reads it from its start. A locator that found them already read (a
         // copy) skipped them, though the fresh pass counts them there: the source is read again.
+        // This read's records go, and with them, for a locator read before, those of its earlier reads.
+        undoTo(owners, mark);
         if (kept && cursor !== undefined) {
           kept.cursors.delete(key);
           dropOwner(owners, me);
@@ -435,7 +439,6 @@ async function readSource(home: string, source: string, readers: Readers, env: E
         }
         return [];
       }
-      addAll(owners, mine);
       if (found.size) for (const owner of found) (copied.get(key) ?? copied.set(key, new Set()).get(key)!).add(owner);
       if (cursor !== undefined && !result.resumed) restarted = true;
       if (state) state.read! += result.read;
