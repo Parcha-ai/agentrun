@@ -1908,6 +1908,11 @@ export interface Store {
   /** Reads the store's schema version and its runner floor now, without a lock or a write: a runner reads it at each
    *  renewal (runner/main.ts), and stops once the floor is above the version its build knows. */
   schemaState?(): Promise<StoreSchemaState>;
+  /** The clock a claim's lease is judged and stamped on (its `until`), when it is this process's own: the store's clock on
+   *  SQLite (one host), or a test's. A runner reckons a claim's deadline from its `until` on it, so a claim or renew that
+   *  waited for the writer lock keeps the lease the store granted from the lock. Absent when the lease is the database's
+   *  clock (Postgres), which this process cannot read: the runner reckons from when it asked. */
+  readonly leaseClock?: () => number;
   /** Claims the run for `runner` until now + `leaseMs`: the run's epoch + 1 when it is claimable (runs.claimable); null when
    *  another claim holds it, or it is final, or parked with nothing to wake it. A queued or parked run becomes running. */
   claim(runId: string, runner: string, options?: { leaseMs?: number }): Promise<Claim | null>;

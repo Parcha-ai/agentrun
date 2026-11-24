@@ -63,7 +63,7 @@ import { deref, explain } from "./explain.js";
 import { HOME_HOST_OWNED } from "./files.js";
 import { DATA_ENV, syncDir, TOKEN_FILE, writeDurable } from "./server-fs.js";
 import { homePath, hostOwnedOf, type OwnedReadAt } from "./home-path.js";
-import { asksOllama, chooseModel, EFFORTS, FAUX_ENV, FAUX_UPSTREAM_ENV, MODEL_NODES, type ModelNeeds, modelSource, THINKING_LEVELS, unpricedModels, withoutFaux } from "./model.js";
+import { asksOllama, chooseModel, EFFORTS, FAUX_ENV, MODEL_NODES, type ModelNeeds, modelSource, THINKING_LEVELS, unpricedModels, withoutFaux } from "./model.js";
 import { DEFAULT_HARNESS, HARNESSES, type HarnessCapability, harnessOfBody, harnessOffers } from "./harness.js";
 import { HARNESS_MODULES_ENV, HARNESS_MODULES_SETTING, HARNESS_RECIPES_ENV, HARNESS_RECIPES_SETTING, HARNESS_TABLE_ENV, harnessIds, harnessModulesEnv, harnessOf, harnessRecipesEnv, harnessTable, planRecipesOf, recipeHarness, tableIds } from "./harness-table.js";
 import { claudeCliIn, HarnessInstall, type HarnessInstaller, installDirOf, NPM_STOP_GRACE_MS, npmInstall } from "./harness-install.js";
@@ -161,7 +161,7 @@ import { recordDataRoot } from "./runner/disk-free.js";
 import { recordRunEnv, runFacingNames } from "./runner/runner-check.js";
 import { DRAIN_TIMEOUT } from "./runner/beside.js";
 import { analyticsFilter, analyticsView, statsView } from "./stats.js";
-import { readWrapped, wrappedView } from "./wrapped.js";
+import { keptReads, within, WRAPPED_WAIT_MS, wrappedView } from "./wrapped.js";
 import { type CostBasis, joinedBasis } from "./runner/metrics.js";
 import { unifiedUsage } from "./unified-usage.js";
 import { agentLoopOverStore } from "./store-reads/loop.js";
@@ -315,9 +315,12 @@ export type ServeOptions = {
   openSetup?: boolean;
   /** With accounts: the address people open (AGENTRUN_PUBLIC_URL), which the printed setup link uses. */
   publicUrl?: string;
-  /** With open setup: the home whose Claude Code, Codex and pi sessions setup offers to import (default this user's),
-   *  and the temp directory whose projects it leaves out (default the OS's). */
+  /** The home whose Claude Code, Codex and pi sessions setup offers to import and GET /v2/wrapped reads (default this
+   *  user's), and the temp directory whose projects setup leaves out (default the OS's). */
   sessionsHome?: { home: string; temp?: string };
+  /** How long GET /v2/wrapped waits for its read of `sessionsHome`'s home before it answers 503 with a retry, while the
+   *  read goes on (default WRAPPED_WAIT_MS, 15 s). */
+  wrappedWaitMs?: number;
   /** With open setup on this machine, and no owner yet: count the sessions setup would import as the server starts, so
    *  the offer has its numbers by the time the page opens (the CLI sets it). */
   countSessions?: boolean;
@@ -417,9 +420,6 @@ export type ServeOptions = {
    *  with goes through (the tests' fake for that check alone), in place of monid's API; the runs' calls go through
    *  `fauxMonid`'s. */
   fauxMonidCheck?: string;
-  /** With `faux` only: a module whose default export is the fetch the Anthropic and OpenAI providers send through, in
-   *  place of their APIs, for web_search's own request to the provider the revision's model names (model.ts). */
-  fauxUpstream?: string;
   /** With `faux` only: a module whose default export is the fetch web_search's keyless Exa search sends through, in place
    *  of Exa's MCP endpoint (web-run.ts FAUX_EXA_ENV). */
   fauxExa?: string;
@@ -562,7 +562,7 @@ export type ServeOptions = {
 
 /** Each test switch a run's process reads, by the variable it reads it from: set only under `faux`, but the faux
  *  harness's, which scripts the harnesses with or without it. */
-const FAUX_SWITCHES = [["fauxBrowser", FAUX_BROWSER_ENV], ["fauxWeb", FAUX_WEB_ENV], ["fauxJev", FAUX_JEV_ENV], ["fauxParallel", FAUX_PARALLEL_ENV], ["fauxOpenrouter", FAUX_OPENROUTER_ENV], ["fauxMonid", FAUX_MONID_ENV], ["fauxUpstream", FAUX_UPSTREAM_ENV], ["fauxExa", FAUX_EXA_ENV]] as const;
+const FAUX_SWITCHES = [["fauxBrowser", FAUX_BROWSER_ENV], ["fauxWeb", FAUX_WEB_ENV], ["fauxJev", FAUX_JEV_ENV], ["fauxParallel", FAUX_PARALLEL_ENV], ["fauxOpenrouter", FAUX_OPENROUTER_ENV], ["fauxMonid", FAUX_MONID_ENV], ["fauxExa", FAUX_EXA_ENV]] as const;
 
 /** The switches a run's process gets, each module path resolved: the owner's harness modules (harnessModules), and the test
  *  switches, which are empty outside tests. A test's in-process runner takes the same (test/support.mjs
@@ -1156,8 +1156,10 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
       harness_keys: { routes: true, at_rest: "sealed", harnesses: planRecipesOf(env).map((recipe) => recipe.id), kept: [] as string[] },
       /** /settings/mcp-servers: remote MCP servers previewed and saved, each credential sealed under the server's seal key,
        *  which always exists (seal-key.ts), so MCP credentials are always kept sealed. Every harness of the table runs a
-       *  grant (runnable.ts takes one on any), a module's among them. */
-      mcp_client: { transports: ["streamable-http"], auth: [...MCP_AUTH_TYPES], at_rest: "sealed", harnesses: [...harnessIds(env)] },
+       *  grant (runnable.ts takes one on any), a module's among them. `composio_per_run`: a per-run Composio server takes
+       *  each run's own Composio account (mcp_auth's ComposioRunBinding, composioperrun/1), said here so a backend in
+       *  front learns it from this answer, which an API-only server serves, not from the API document, which it refuses. */
+      mcp_client: { transports: ["streamable-http"], auth: [...MCP_AUTH_TYPES], at_rest: "sealed", harnesses: [...harnessIds(env)], composio_per_run: true },
       /** This server's learning switch (`--learning`): on, a run learns when its agent says `learning: true`; off, none does. */
       learning,
       /** /settings/webhook: one URL POSTed, signed by the Standard Webhooks spec, when a run needs its person and when it
@@ -1235,6 +1237,17 @@ export const HARNESS_SIGN_IN_NOT_LOCAL = "HARNESS_SIGN_IN_NOT_LOCAL";
  *  starts under (harnessSignInRefusal), and where the Ollama at this machine's default address is a model of the person
  *  who starts runs (ollama-provider.ts ollamaHostOf). */
 export function whyNotOwnMachine(options: Pick<ServeOptions, "host" | "publicUrl" | "runnerApart" | "apiOnly" | "token" | "tokens">, data: string, ownUser: boolean): string[] {
+  return [
+    ...whyNotOwnersServer(options, data),
+    ...(options.runnerApart ? ["runs no runner beside it (--no-runner)"] : []),
+    ...(ownUser ? [] : ["runs each run as a user of its own (unset AGENTRUN_RUN_USER=slot, or set AGENTRUN_RUN_USER=same)"]),
+  ];
+}
+
+/** Why `options` on `data` is not one owner's server on their own machine as far as who reaches it goes, each reason in
+ *  words: whyNotOwnMachine's facts but its runner's. What may read this machine's own files for whoever asks (GET
+ *  /v2/wrapped). */
+export function whyNotOwnersServer(options: Pick<ServeOptions, "host" | "publicUrl" | "apiOnly" | "token" | "tokens">, data: string): string[] {
   const host = options.host ?? DEFAULT_HOST;
   // Every token the server takes (acceptedTokens): AGENTRUN_TOKEN's as `default` beside the list's, or else DIR/.token's alone.
   const tokens = (options.token === undefined ? 0 : 1) + (options.tokens?.length ?? 0);
@@ -1244,8 +1257,6 @@ export function whyNotOwnMachine(options: Pick<ServeOptions, "host" | "publicUrl
     ...(options.apiOnly ? ["has no owner (the API-only profile), so anyone with its token starts runs"] : []),
     ...(tokens > 1 ? [`takes ${tokens} API tokens (AGENTRUN_TOKEN and AGENTRUN_TOKENS together), so more than one person starts runs`] : []),
     ...(storeTarget(data).kind === "sqlite" ? [] : ["keeps its store in Postgres (AGENTRUN_STORE_URL), which servers elsewhere share"]),
-    ...(options.runnerApart ? ["runs no runner beside it (--no-runner)"] : []),
-    ...(ownUser ? [] : ["runs each run as a user of its own (unset AGENTRUN_RUN_USER=slot, or set AGENTRUN_RUN_USER=same)"]),
   ];
 }
 
@@ -1582,7 +1593,15 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // Making a key, revoking one and turning the login on each take a turn (ApiKeys.inTurn; the login's is taken in
   // turnOnClaudeLogin, through oneOwnerDeps' `turn`), one at a time: each decides by what the others left once their writes
   // landed or were undone, never by a key taken out for a removal that then fails.
-  await dropRefusedLogin(store.settings, loginOff ?? oneOwner.refused(), (line) => (log ? log(logLine("claude_login", { line })) : void process.stderr.write(`agentrun-serve: ${line}\n`)));
+  // The sign-in this server starts, kept for this process (claude-sign-in.ts). Its queue is the one way the login's
+  // setting changes, the drop here included.
+  const claudeSignIns = new ClaudeSignIns({ limitMs: options.claudeSignInLimitMs });
+  await dropRefusedLogin(claudeSignIns, store.settings, loginOff ?? oneOwner.refused(), (line) => (log ? log(logLine("claude_login", { line })) : void process.stderr.write(`agentrun-serve: ${line}\n`)));
+  // The status checks' folders a server killed mid-check left in the temporary folder, each with a copy of the account
+  // file (the harness's sweepClaudeStatusFolders): this user's alone, and only once the check has ended by the end it
+  // wrote in its folder, so a check another server on this host runs now stays. Where the mode is there, as status
+  // checks are; a sweep that fails never stops the start.
+  if (loginOff === undefined) await import("@parcha/agentrun-harness-claude").then((claude) => claude.sweepClaudeStatusFolders()).catch(() => []);
   let claudeLogin = loginOf(await claudeLoginSetting(store.settings), data, base);
   // The model gateway saved in the console (model-gateway.ts), its key opened: laid over every reading of env, where the
   // environment names no gateway of its own. Read again at each save or removal (gatewayChanged).
@@ -1617,18 +1636,26 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // What the offers held now were made from (offersInputs), and the latest probe: one a later probe overtook is dropped.
   let offersFrom: readonly (string | undefined)[] | undefined;
   let probes = 0;
+  // What the latest probe is made from, once it has read it, until it lands: none while no probe is out. A probe that
+  // failed never lands and leaves this at the inputs it read: a later change with those inputs reuses the offers held
+  // when they are made from them, and a change with any other inputs probes again.
+  let probing: readonly (string | undefined)[] | undefined;
   const probe = async (why: string) => {
     const mine = ++probes;
+    probing = undefined;
     // The Ollama listing the offers are made from is read before they are, so the first capabilities do not remake them.
     if (asksOllama(env)) await ollamaModels(env);
     const from = offersInputs(env);
+    if (mine === probes) probing = from;
     const started = performance.now();
     const next = await harnessOffers(offersEnvOf(env));
     log?.(logLine("harness_offers", { why, ms: Math.round(performance.now() - started) }));
     if (mine !== probes) return;
-    [offers, offersFrom] = [next, from];
+    [offers, offersFrom, probing] = [next, from, undefined];
     recompose();
   };
+  /** Whether `a` and `b` are the same offers' inputs (offersInputs). */
+  const sameInputs = (a: readonly (string | undefined)[], b: readonly (string | undefined)[]): boolean => a.length === b.length && a.every((value, i) => value === b[i]);
   /** After a save or delete of a key, the one writer of its file: env again, then what reads it. Writes can overlap
    *  (needsOf may wait, and another write lands meanwhile): the latest write's `needs` stands, an earlier one's that
    *  finishes after it is dropped. */
@@ -1642,7 +1669,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     ...(options.listerIdleMs !== undefined ? { idleMs: options.listerIdleMs } : {}),
   });
   /** Whether the offers held now were made from `inputs` (offersInputs). */
-  const offersMadeFrom = (inputs: readonly (string | undefined)[]): boolean => offersFrom !== undefined && inputs.length === offersFrom.length && inputs.every((value, i) => value === offersFrom![i]);
+  const offersMadeFrom = (inputs: readonly (string | undefined)[]): boolean => offersFrom !== undefined && sameInputs(inputs, offersFrom);
   const keysChanged = async () => {
     // A run's learning, view, list and timeline row are cut of the keys saved now by the run view at read time (it reads
     // serverSecrets live, store-view), and a list builds a listing cut of other keys again (builtOfNow). A failed run's error words
@@ -1652,7 +1679,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const mine = ++needsAsked;
     const next = await needsOf(env);
     if (mine === needsAsked) needs = next;
-    if (offersMadeFrom(offersInputs(env))) recompose();
+    const inputs = offersInputs(env);
+    // A probe still out from other inputs (a turn-on's, after its turn-off) would put back offers made from them as it
+    // lands: a probe of these overtakes it. Only a change starts one, one per change, so nothing loops. A change that
+    // leaves the inputs as they are (a tool key's) starts no probe only when the offers held are current: while they are
+    // behind the inputs, it probes too and drops the probe out, and the offers still end made from the inputs read now.
+    if (offersMadeFrom(inputs) && (probing === undefined || sameInputs(probing, inputs))) recompose();
     else await probe("key");
   };
   /** The Ollama here, as capabilities read it: its listing asked again behind the answer once stale (ollamaModels), and
@@ -1677,10 +1709,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   /** The sign-in as the store holds it now (ChatGPTPlan.refresh): a change reads env again, and so does one this server
    *  failed to take (changed_failed), until it takes. */
   const planNow = () => plan.refresh();
-  /** What Claude Code's login routes use: a turn on or off reads the setting again, then env, as a key's save does. A
-   *  sign-in this server starts opens a browser on its machine, so only where the console is on loopback here; it is
-   *  kept for this process (claude-sign-in.ts), and one still waiting is ended at the stop. */
-  const claudeSignIns = new ClaudeSignIns({ limitMs: options.claudeSignInLimitMs });
+  /** What Claude Code's login routes use: a turn on or off hands over the login it saved, then env is read again, as a
+   *  key's save does. A sign-in this server starts opens a browser on its machine, so only where the console is on
+   *  loopback here; it is kept for this process (claudeSignIns, above), and one still waiting is ended at the stop. */
   stops.push(async () => claudeSignIns.close());
   const loginDeps = (): ClaudeLoginDeps => ({
     signIns: claudeSignIns,
@@ -1692,10 +1723,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     ...oneOwner,
     sameMachine: isLoopback(host) && !options.publicUrl,
     claude: () => import("@parcha/agentrun-harness-claude"),
-    changed: async () => {
-      claudeLogin = loginOf(await claudeLoginSetting(store.settings), data, base);
-      await keysChanged();
+    saved: (login) => {
+      claudeLogin = login;
     },
+    changed: keysChanged,
   });
   // The boxes a place may name, read once from the computers runs execute on (place-offers.ts): AGENTRUN_BOXES lists
   // them, docker alone when it is not set; docker by its probe, daytona and modal by their providers' keys, read as a
@@ -2675,14 +2706,15 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   let closing = false;
   const workers = new Map<Worker, { task: ImportTask["task"]; exit: Promise<unknown> }>();
   // Once the server closes, no worker starts: a setup still being answered then leaves its yes for the next start.
-  const onWorker = (task: ImportTask["task"], projects?: readonly string[]): Promise<ImportAnswer> =>
+  const onWorker = (task: ImportTask["task"], projects?: readonly string[], year?: number): Promise<ImportAnswer> =>
     closing ? Promise.resolve({ stopped: true }) : new Promise((answered, failed) => {
       const worker = new Worker(new URL("./import-worker.js", import.meta.url), {
         // The secrets this process holds (secrets.ts keeps them out of every environment, so the worker's has none), in the
         // worker's memory alone: what the import cuts out of everything it writes. The keys saved on the Tool keys page are
         // not passed; the worker reads them from the store over the port (sealed rows it opens with the seal key among these
         // secrets), the same cut as the CLI's import, where a saved key and the server's own of the same name may differ.
-        workerData: { task, data, ...(projects ? { projects } : {}), home: options.sessionsHome?.home ?? homedir(), ...(options.sessionsHome?.temp ? { temp: options.sessionsHome.temp } : {}), secrets: Object.fromEntries(SECRET_NAMES.flatMap((name) => { const value = name === SEAL_KEY_ENV ? seal.text : secret(name); return value === undefined ? [] : [[name, value]]; })) } satisfies ImportTask,
+        // A Wrapped read (`year`) writes nothing, so it is handed no secret.
+        workerData: { task, data, ...(projects ? { projects } : {}), ...(year !== undefined ? { year } : {}), home: options.sessionsHome?.home ?? homedir(), ...(options.sessionsHome?.temp ? { temp: options.sessionsHome.temp } : {}), ...(task === "wrapped" ? {} : { secrets: Object.fromEntries(SECRET_NAMES.flatMap((name) => { const value = name === SEAL_KEY_ENV ? seal.text : secret(name); return value === undefined ? [] : [[name, value]]; })) }) } satisfies ImportTask,
         // Started from a string (node --input-type=module -e, as a test or a `--` command may), the server's flags are given again
         // without that string and its type: a worker started from a file with them is refused. Otherwise the worker
         // inherits them as Node passes them on, which leaves out the flags a worker may not take (on Node 24 a test
@@ -2705,10 +2737,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         workers.delete(worker);
         if (answer) answered(answer);
         // A count the close ended: stopped, not failed (the next start counts again).
-        else if (closing && task === "plan") answered({ stopped: true });
+        else if (closing && task !== "import") answered({ stopped: true });
         else failed(new Error(`the import's worker ended (${code}) with no answer`));
       });
     });
+  // GET /v2/wrapped's reads of this machine's home (wrapped.ts), each year's on the import worker, so its parsing never holds
+  // up a request; shared and kept as keptReads says. A read the close ended answers `stopped`: a failed read, not kept.
+  const readWrapped = keptReads((year) => onWorker("wrapped", undefined, year).then((answer) => ("wrapped" in answer ? answer : Promise.reject(new Error("the server stopped before this machine's session history was read")))));
   // The count of what setup would import: started once (at start, or by the page's first read), read as it stands. One
   // stopped (by close, or by setup) starts again on the next read; one that failed stays failed.
   let count: { state: "counting" } | { state: "counted"; projects: number; sessions: number; candidates: ImportCandidate[] } | { state: "failed" } | undefined;
@@ -3373,6 +3408,15 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       return { warnings: [], stamp: {} };
     }
     if (cliLearningOf(body) || sdkOf(body)) return { warnings: [], stamp: {} };
+    // A workflow's own issues, as POST /workflows/validate lists them (workflowIssues: the DSL's checks, the durable
+    // runner's refusal), refuse its save before anything is written, each at its path under definition.workflow. Asked
+    // with no tools list: its run binds every tool its call nodes name whether `tools` lists it or not (tools.ts
+    // grantedTools), so a call node's unlisted tool is validate's hint, never a reason to refuse a runnable workflow.
+    if (revision.kind === "workflow") {
+      const { workflowIssues } = await import("./workflow-run.js");
+      const { issues } = await workflowIssues(body.workflow);
+      if (issues.length) throw invalid(issues.map(({ path, code, message }) => ({ field: `definition.workflow${path}`, reason: "invalid", code, message })));
+    }
     // An agent on a harness that installs on first use starts its install, if it is not in yet: its first run waits for less.
     const harnessId = revision.kind === "agentic" ? harnessOfBody(body) : undefined;
     const install = harnessId !== undefined && Object.hasOwn(installs, harnessId) ? installs[harnessId] : undefined;
@@ -5763,15 +5807,22 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "getCapacity":
         return send(res, 200, await capacityOverStore(store.runners, capacityWindowOf(url)));
       case "getWrapped": {
-        // The session files of the machine this server runs on: only a server bound to loopback with no public URL answers.
-        // A name an operator allowed (--allow-host) passes the server's Host check for its other routes, but a page that rebound
-        // one to this address must not read the machine's files: here the Host is a loopback name or address, or it is refused.
-        if (options.apiOnly || options.publicUrl || !isLoopback(host) || !isLoopbackName(hostName(req.headers.host))) throw new ApiError("forbidden", "wrapped reads this machine's own session files, so only a server on loopback with no public URL, reached by a loopback name, answers it");
+        // The session files of the machine this server runs on, read for whoever holds a token: only one owner's server on
+        // their own machine answers (whyNotOwnersServer: loopback, no public URL, an owner, one API token, its own SQLite
+        // store). A name an operator allowed (--allow-host) passes the server's Host check for its other routes, but a page
+        // that rebound one to this address must not read the machine's files: here the Host is a loopback name or address.
+        const notOwn = whyNotOwnersServer(options, data);
+        if (!isLoopbackName(hostName(req.headers.host))) notOwn.push("was reached at a name that is not this machine's own");
+        if (notOwn.length) throw new ApiError("forbidden", `wrapped reads this machine's own session files, so only one owner's server on their own machine, reached by a loopback name, answers it. This one ${notOwn.join("; ")}.`);
         const given = url.searchParams.get("year");
         const year = given === null ? new Date().getFullYear() : Number(given);
         if (given !== null && !/^[1-9]\d{3}$/.test(given)) throw new ApiError("bad_request", "year is a four-digit year");
-        const [{ wrapped, unread }, analytics] = await Promise.all([readWrapped(year), analyticsOverStore(store, { from: new Date(year, 0, 1).toISOString(), to: new Date(year + 1, 0, 1).toISOString() })]);
-        return send(res, 200, wrappedView(wrapped, analytics.bySource.filter((g) => g.source !== "live").map((g) => ({ source: g.source, runs: g.runs })), unread));
+        if (year > new Date().getFullYear()) throw new ApiError("bad_request", "year is this year or an earlier one");
+        // A long home is read on, shared, past the wait: the answer says when to ask again rather than hold the request.
+        const read = await within(readWrapped(year), options.wrappedWaitMs ?? WRAPPED_WAIT_MS);
+        if (!read) throw new ApiError("unavailable", `This machine's session history for ${year} is still being read: ask again in a few seconds.`, { retry_after_ms: 5_000 });
+        const analytics = await analyticsOverStore(store, { from: new Date(year, 0, 1).toISOString(), to: new Date(year + 1, 0, 1).toISOString() });
+        return send(res, 200, wrappedView(read.wrapped, analytics.bySource.filter((g) => g.source !== "live").map((g) => ({ source: g.source, runs: g.runs })), read.unread));
       }
       case "getStats": {
         const filter = analyticsFilter(url);
@@ -6950,9 +7001,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // triggers close, so it never turns one off into a closed file.
     const githubStopped = githubConnect.close();
     triggers.close();
+    // A count and a Wrapped read write nothing: ended outright. An import stops between two files and keeps what it wrote.
     for (const [worker, { task }] of workers) {
-      if (task === "plan") void worker.terminate();
-      else worker.postMessage("stop");
+      if (task === "import") worker.postMessage("stop");
+      else void worker.terminate();
     }
     await Promise.all([...workers.values()].map((w) => w.exit));
     await importing;
