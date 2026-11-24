@@ -121,6 +121,15 @@ test("a create answered by a redirect keeps its request key and is looked up by 
 	noKey(failed);
 });
 
+test("an error answer keeps its status's code when its words break off, and one with no words says its status's name", async () => {
+	const listed = async (status, body) => (await create({ apiKey: KEY, fetch: async () => new Response(body, { status }), phoned: PHONED_JAR })).list({});
+	const broken = () => new ReadableStream({ start: (controller) => controller.error(new Error("socket hang up")) });
+	assert.deepEqual((await listed(401, broken())).error, { code: "denied", message: "GET /sessions: the phone harness refused the API key (401): Unauthorized" });
+	assert.deepEqual((await listed(403, broken())).error, { code: "denied", message: "GET /sessions: Forbidden (403)" });
+	assert.deepEqual((await listed(404, broken())).error, { code: "not_found", message: "GET /sessions: Not Found (404)" });
+	assert.deepEqual((await listed(502, "")).error, { code: "vendor", vendor: "phone-harness", message: "GET /sessions: Bad Gateway (502)" });
+});
+
 test("check() refuses in words what a cloud phone cannot be, with no call", async () => {
 	const { provider, fake } = await setup();
 	assert.deepEqual(provider.check(SPEC), []);

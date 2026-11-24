@@ -2688,10 +2688,10 @@ the API's control URL) is a later change: `platform: "ios"` is refused in words.
 - **create** asks for `timeout_seconds` = the lifetime, and the phone harness ends the session then, whatever happens.
   The lifetime includes the boot, so a phone ready past its deadline fails `timeout`.
   - Each POST carries an Idempotency-Key, and a create whose answer is uncertain is found by it, never sent twice.
-    Only a refusal (a 4xx, or `phones_busy`) says nothing was made. No answer, a 5xx, or a 2xx with no session is
-    uncertain: create asks `GET /sessions/requests/<key>` before it forgets the key, and records the phone it finds.
-    A redirect is never followed: the API's calls go through the shared REST client (`hosted/rest.ts`), which refuses
-    it in its own words, and create takes it as a refusal, not a lost answer.
+    Only a refusal (a 4xx, or `phones_busy`) says nothing was made. No answer, a 5xx, a redirect, or a 2xx with no
+    session is uncertain: create asks `GET /sessions/requests/<key>` before it forgets the key, and records the phone it
+    finds. A redirect is never followed: the API's calls go through the shared REST client (`hosted/rest.ts`), which
+    refuses it in its own words. Its answer is unread, and a 303 after a create is the usual answer to a POST.
   - A create cancelled during its POST is recovered by its key all the same, and the phone the service made is ended.
   - A phone that fails, or is not ready within `readyMs` (240 s), is ended.
   - Each request has a bound of its own, `requestMs` (30 s), beside the caller's signal, and a readiness read takes no

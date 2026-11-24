@@ -1,7 +1,10 @@
-// The shared REST client (src/hosted/rest.ts): status table, retry rules, accept, redirect refusal, cursor pages. No vendor, no network.
+// The shared REST client (src/hosted/rest.ts): status table, retry rules, accept, redirect refusal, cursor pages. No
+// vendor; the network is two loopback servers, for a redirect real fetch refuses.
 import assert from "node:assert/strict";
+import { once } from "node:events";
+import { createServer } from "node:http";
 import test from "node:test";
-import { allPages, httpCode, refusedRedirect, rest } from "../dist/hosted/rest.js";
+import { allPages, httpCode, rest } from "../dist/hosted/rest.js";
 
 const answers = (...replies) => {
 	const calls = [];
@@ -46,11 +49,40 @@ test("a call carries the header, a JSON Content-Type, and never follows a redire
 	const redirect = await client(answers(new TypeError("fetch failed", { cause: new Error("unexpected redirect") })).fetch).api.call("GET", "https://api.example.test/z");
 	assert.equal(redirect.error.code, "vendor");
 	assert.match(redirect.error.message, /redirect, which is never followed/);
-	// A refused redirect is an answer; no answer at all is not one.
-	assert.equal(refusedRedirect(redirect.error), true);
+	// A refused redirect is marked on the error, by the client, not by its words; no answer at all is not one.
+	assert.equal(redirect.error.redirect, true);
 	const lost = await client(answers(new TypeError("fetch failed", { cause: new Error("connection reset") })).fetch).api.call("GET", "https://api.example.test/z");
 	assert.equal(lost.error.code, "vendor");
-	assert.equal(refusedRedirect(lost.error), false);
+	assert.equal(lost.error.redirect, undefined);
+});
+
+test("a real fetch answered 303 is refused unfollowed and marked: the key never reaches the Location", async (t) => {
+	const reached = [];
+	const elsewhere = createServer((request, response) => {
+		// Another process may probe a new loopback port: only the Location's path, or a call with a key, counts.
+		if (request.url === "/sessions/sess_x" || request.headers.authorization !== undefined) reached.push(`${request.method} ${request.url}`);
+		response.end("{}");
+	});
+	const api = createServer((request, response) => {
+		response.writeHead(303, { location: `http://127.0.0.1:${elsewhere.address().port}/sessions/sess_x` });
+		response.end();
+	});
+	for (const server of [elsewhere, api]) {
+		server.listen(0, "127.0.0.1");
+		await once(server, "listening");
+		t.after(() => (server.closeAllConnections(), server.close()));
+	}
+	const real = rest({ base: `http://127.0.0.1:${api.address().port}`, headers: () => ({ Authorization: "Bearer k" }), vendor: "acme", timeoutMs: 5000 });
+	const got = await real.call("POST", real.url("/sessions"), { json: { a: 1 }, accept: () => true });
+	assert.deepEqual(got, { ok: false, error: { code: "vendor", vendor: "acme", message: "POST /sessions: the API answered with a redirect, which is never followed: it would carry the key", redirect: true } });
+	assert.deepEqual(reached, [], "nothing reached the Location, so neither did the key");
+});
+
+test("an answer that is not a 2xx keeps its status when its words break off; a 2xx whose body breaks is no answer", async () => {
+	const broken = (status) => async () => new Response(new ReadableStream({ start: (controller) => controller.error(new Error("socket hang up")) }), { status });
+	assert.deepEqual(await client(broken(401)).api.call("GET", "https://api.example.test/a"), { ok: false, error: { code: "denied", message: "GET /a: 401 " } });
+	assert.deepEqual(await client(broken(404)).api.call("GET", "https://api.example.test/a", { accept: () => true }), { ok: true, value: { status: 404, bytes: new Uint8Array() } });
+	assert.deepEqual(await client(broken(200)).api.call("GET", "https://api.example.test/a"), { ok: false, error: { code: "vendor", vendor: "acme", message: "GET /a: socket hang up" } });
 });
 
 test("retry: true sends again on 429, 5xx and no answer with doubling pauses, up to the attempts; no retry flag sends once", async () => {
@@ -116,6 +148,9 @@ test("the timeout option is the bound: a signal the caller fires, asked for each
 	const quick = client(answers({ status: 200, body: "{}" }).fetch, { timeout });
 	assert.deepEqual(await quick.api.json("GET", "https://api.example.test/b"), { ok: true, value: {} });
 	assert.equal(made[1].ms, 1000, "the client's own timeoutMs when the call gives none");
+	// The words round to a tenth of a second: a readiness read is bounded by what its wait has left, in odd ms.
+	const cut = client(async () => assert.fail("no answer"), { timeout: () => AbortSignal.abort() });
+	assert.deepEqual((await cut.api.call("GET", "https://api.example.test/c", { timeoutMs: 5437 })).error, { code: "timeout", message: "GET /c did not answer within 5.4 s" });
 });
 
 test("allPages reads every page, refuses a repeated cursor, and refuses a listing past max", async () => {

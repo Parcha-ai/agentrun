@@ -12,6 +12,7 @@ import { execFile } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
+import { STATUS_CODES } from "node:http";
 import { createConnection } from "node:net";
 import type { Duplex } from "node:stream";
 import { basename, isAbsolute } from "node:path";
@@ -19,7 +20,7 @@ import { fileURLToPath } from "node:url";
 import { DaemonClient } from "./client.js";
 import { CreateRequests, endedWords, labelsDiffer, otherSpecWords } from "./create-requests.js";
 import { PHONE_GROUPS, PHONE_HARNESS } from "./descriptors/phone-harness.js";
-import { httpsBase, type Rest, refusedRedirect, rest } from "./hosted/rest.js";
+import { httpsBase, type Rest, rest } from "./hosted/rest.js";
 import { type ComputerClient, type DaemonMethod, type DaemonMethods, type HelloResult, PROTOCOL_VERSION } from "./protocol.js";
 import {
 	type AttachedComputer,
@@ -608,7 +609,8 @@ export class PhoneHarnessProvider implements ComputerProvider {
 	/**
 	 * One request, bounded by ms (default requestMs) and by the caller's signal. A failure is `uncertain` when the
 	 * service may have acted on the request all the same: no answer (lost, or cut off by its bound), or a 5xx other than
-	 * phones_busy, the service's own word that nothing was made. A redirect is an answer, refused unfollowed.
+	 * phones_busy, the service's own word that nothing was made. A redirect is refused unfollowed, and is uncertain too:
+	 * its answer is never read, and a 303 after a create is the usual answer to a POST.
 	 */
 	async #api(
 		method: string,
@@ -616,12 +618,15 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		{ body, headers, signal, ms = this.#requestMs }: { body?: unknown; headers?: Record<string, string>; signal?: AbortSignal; ms?: number } = {},
 	): Promise<Result<{ status: number; json: unknown }> & { uncertain?: boolean }> {
 		const api = headers === undefined ? this.#rest : this.#client(headers);
-		// Every answer is a value here, read below in the service's own words: what the client fails is no answer at all.
+		// Every answer is a value here, read below in the service's own words: what the client fails is no answer at all,
+		// or a redirect it would not follow.
 		const got = await api.call(method, api.url(path), { ...(body === undefined ? {} : { json: body }), timeoutMs: Math.max(1, Math.ceil(ms)), accept: () => true }, signal);
 		if (!got.ok) {
 			const words = this.#clean(got.error.message);
-			if (got.error.code === "aborted" || refusedRedirect(got.error)) return failAs(got.error, words);
-			return { ...failAs(got.error, words, got.error.code === "timeout" ? "timeout" : "unreachable"), uncertain: true };
+			if (got.error.code === "aborted") return failAs(got.error, words);
+			// A redirect keeps the client's code and words: the API answered, though the answer is unknown.
+			const code = got.error.redirect ? got.error.code : got.error.code === "timeout" ? "timeout" : "unreachable";
+			return { ...failAs(got.error, words, code), uncertain: true };
 		}
 		const { status } = got.value;
 		const text = decoder.decode(got.value.bytes);
@@ -633,7 +638,7 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		}
 		if (status >= 200 && status < 300) return ok({ status, json });
 		const answer = (typeof json === "object" && json !== null ? json : {}) as { error?: string; code?: string; retry_after_seconds?: number };
-		const said = this.#clean(answer.error ?? (text.slice(0, 200) || "no words"));
+		const said = this.#clean(answer.error ?? (text.slice(0, 200) || STATUS_CODES[status] || "no words"));
 		const where = `${method} ${path}`;
 		if (status === 401) return fail("denied", `${where}: the phone harness refused the API key (401): ${said}`);
 		if (status === 403) return fail("denied", `${where}: ${said} (403)`);
@@ -830,8 +835,8 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		const posted = await this.#api("POST", "/sessions", { body, headers: { "Idempotency-Key": requestKey }, ...(signal ? { signal } : {}) });
 		const cancelled = !posted.ok && posted.error.code === "aborted";
 		let first = posted.ok ? sessionOf(posted.value.json, "POST /sessions") : undefined;
-		// Only a refusal (a 4xx, or phones_busy) says nothing was made. No answer, a cancel, a 5xx, or a 2xx with no
-		// session in it leaves the request uncertain: the service may have made the phone.
+		// Only a refusal (a 4xx, or phones_busy) says nothing was made. No answer, a cancel, a 5xx, a redirect, or a 2xx
+		// with no session in it leaves the request uncertain: the service may have made the phone.
 		const uncertain = posted.ok ? !first?.ok : posted.uncertain === true || cancelled;
 		if (uncertain) {
 			// Ask by its key, never POST again, before the key is forgotten. The ask is create's own, not under the
