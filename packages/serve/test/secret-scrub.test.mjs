@@ -2546,6 +2546,27 @@ test("XCV: curl reads on past a substitution, its contents left out (Greptile P1
   }
 });
 
+test("XCVI: commands are read by one shell lexer (shell-lex.ts; GRE-4791): an operator inside a substitution, a substitution of any length or left open, ANSI-C quoting and a continuation line no longer end a command before its password", async () => {
+  for (const text of [
+    "redis-cli -h $(hostname; true) -a Copper9lumen9 ping",
+    "mysql -h \x60hostname;true\x60 -pCopper9lumen9 app",
+    `curl -H "X: $(printf '%s' ${"a".repeat(300)})" -u admin:Copper9lumen9 https://x.io`,
+    "curl $'-u' admin:Copper9lumen9 https://x.io",
+    "docker login -u bot -p $'Copper9lumen9' registry.example.io",
+    'curl -H "X: $(date https://x.io -u admin:Copper9lumen9',
+    "redis-cli -h db \\\n  -a Copper9lumen9 ping",
+    "redis-cli -h db -a \\\n  Copper9lumen9 ping",
+  ]) {
+    for (const wrap of FOUR_WRAPS) await gone(wrap(text), ["Copper9lumen9"]);
+  }
+  // As before the lexer, redis-cli (not curl, XCIV) reads a substitution's words as its own: an over-cut kept for parity.
+  await gone("redis-cli -h $(vault read -field=x -a Copper9lumen9) ping", ["Copper9lumen9"]);
+  // As before (XXIV), a lone `&` does not end curl: it is a URL's query far more often than a background job.
+  await gone("curl https://x.io/?a=1&b=2 -u admin:Copper9lumen9", ["Copper9lumen9"]);
+  // A line break still ends a command.
+  await kept("redis-cli -h db\n-a Copper9lumen9");
+});
+
 test("XCIII: a query or form password past 1024 characters is cut to its end (Greptile P1 on 683391d4fd): QUERY_PASSWORD's bound no longer leaves its tail", async () => {
   const long = "Tq7Wm2Rk9Zx".repeat(137);
   const [head, tail] = [long.slice(0, 200), long.slice(-200)];
