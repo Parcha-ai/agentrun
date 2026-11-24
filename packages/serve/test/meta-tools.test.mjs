@@ -24,7 +24,8 @@ const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { openSqliteStore } = await import("../dist/store/index.js");
 const { fillerTools, MAX_RESTARTS, suiteTools } = await import("../dist/runner/conformance/harness.js");
 const { deniedText } = await import("../dist/refusal-words.js");
-const { paidRequest, parallelSearchFee } = await import("../dist/paid-calls.js");
+const { paidRequest } = await import("../dist/paid-calls.js");
+const { parallelSearchFee } = await import("@parcha/agentrun-web");
 const TIMING = { ...STEADY_LEASE, pollMs: 20, commandPollMs: 30 };
 const quiet = { beforeIntent: async () => {}, beforeResult: async () => {} };
 after(async () => {

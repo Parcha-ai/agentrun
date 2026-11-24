@@ -44,6 +44,7 @@ import { openRunMcpAuth, sealRunMcpAuth } from "../store/seal.js";
 import { runZone } from "../environment.js";
 import { shadowRunId } from "../learn/audit.js";
 import { LEARNING_SCRIPT, learningWorkspace } from "../learn/folder.js";
+import { agreeOnOf } from "../learning-setting.js";
 import { openRunWorkspace } from "../workspace/run-workspace.js";
 import { archilClaim, MOUNT_TTL_MS } from "../workspace/archil-claim.js";
 import { agentDirName, recordingsFolder, runFolder, scratchFolder } from "../workspace/paths.js";
@@ -765,13 +766,18 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
       // A subagent's tiers alone: an agentic run granted the subagent tool routes each tier its revision's modelTiers or
       // the host's tier variable names, and no other (adapter-run-spec.ts), so its process is handed those tiers' models'
       // keys (tierModelKeys, the revision's model of a tier over the host's): never a provider's no tier of it reaches, nor
-      // a key for a tier it routes no model on. A learning run's grade and an SDK run's compile turn stay in the runner
-      // (runsInRunner): their process never asks, and gets none. And never for a run that holds a key of its own (its
-      // launch's, read now): the server's keys are not its to spend, whatever its process asks.
-      if (revision.kind !== "agentic" || !granted.includes(SUBAGENT_TOOL)) return {};
+      // a key for a tier it routes no model on. A replay's or an audit's grade (adapter-run-spec.ts graderRouteOf) routes
+      // the fast tier of that same answer, whose model may be another provider's than its agent's: its process is handed
+      // that tier's model's key alone (through a gateway, the gateway's), none when the revision names agree_on (no
+      // grader). A learning run's grade and an SDK run's compile turn stay in the runner (runsInRunner): their process
+      // never asks, and gets none. And never for a run that holds a key of its own (its launch's, read now): the server's
+      // keys are not its to spend, whatever its process asks.
+      const subagent = revision.kind === "agentic" && granted.includes(SUBAGENT_TOOL);
+      const grades = (launch.replay !== undefined || launch.audit !== undefined) && !agreeOnOf((revision.body as { readonly learning?: unknown }).learning)?.length;
+      if (!subagent && !grades) return {};
       const { tiers, refs } = routedSubagentTiers(revision.body, keys.env ?? {});
       const keyed = await runKeyed();
-      return stringsOf(keyed ? {} : await tierModelKeys(keys, tiers, refs));
+      return stringsOf(keyed ? {} : await tierModelKeys(keys, subagent ? tiers : tiers.filter((tier) => tier === "fast"), refs));
     },
     tierModelKeys: async (tiers) => {
       // The tiers the claim's learned workflows name (learnedTiers), as this runner chose them (learnedFirst below): a

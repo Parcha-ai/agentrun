@@ -289,6 +289,53 @@ test("in a run's own process, with no seal key, the subagent tiers' keys are its
   assert.deepEqual(asked, ["subagentTierKeys"], "a run's process: its runner asked once");
   assert.deepEqual(await subagentTierKeys(deps, [], {}), {}, "a run's process: no tier, nothing asked");
   assert.deepEqual(asked, ["subagentTierKeys"], "a run's process: no tier, its runner not asked again");
+test("a replay's or audit's process is handed the saved key of its grader's provider alone: an Anthropic agent's OpenAI fast tier, with Anthropic's, OpenAI's and Mistral's keys saved, gets OpenAI's and grades on it; a gateway route its key alone; no fast tier, a run that is neither, or a replay that brings its own key, none", async (t) => {
+  const { store } = await storeOn(t);
+  const { setHeld } = await import("../dist/runner/held.js");
+  const { graderRouteOf } = await import("../dist/runner/adapter-run-spec.js");
+  const { routeOf } = await import("../dist/runner/model-route.js");
+  const { launchBody } = await import("../dist/run-launch.js");
+  const MISTRAL_DUMMY = `not-a-secret-${"mistral-key"}`;
+  const GATEWAY_DUMMY = `not-a-secret-${"gateway-key"}`;
+  for (const [name, value] of [["OPENAI_API_KEY", OPENAI_DUMMY], ["ANTHROPIC_API_KEY", ANTHROPIC_DUMMY], ["MISTRAL_API_KEY", MISTRAL_DUMMY], ["AGENT_MODEL_API_KEY", GATEWAY_DUMMY]]) await putSealedKey(store, KEY, name, value);
+  // The runner's environment: the agent's model Anthropic's, the fast tier OpenAI's, every key saved alone.
+  const env = { AGENT_MODEL: "anthropic/claude-sonnet-5-5", AGENT_MODEL_FAST: "openai/gpt-6-luna" };
+  const replay = { of: "run-asked", workflow: "answer", digest: "d".repeat(16) };
+  const ask = { input: { content: "Hello." } };
+  // The grader's route as the run's own process makes it: no seal key, its env the claim's keys (its agent's model's,
+  // no OpenAI key), its fast tier's saved key asked of its runner (held.subagentTierKeys).
+  const cut = heldRedactor((text) => text);
+  const graded = async (held, lines) => {
+    setHeld(held);
+    try {
+      return await graderRouteOf({}, false, undefined, {}, cut, (line) => void lines.push(line), { store: undefined, sealKey: undefined, env: { ...env, ANTHROPIC_API_KEY: ANTHROPIC_DUMMY }, routeOf }, [cut]);
+    } finally {
+      setHeld(undefined);
+    }
+  };
+  for (const [what, launch] of [["a replay", { ...ask, replay }], ["an audit", { ...ask, audit: replay }]]) {
+    const held = heldOf(store, { env, launch });
+    assert.deepEqual(await tierKeysHanded(held), { OPENAI_API_KEY: OPENAI_DUMMY }, `${what}: its fast tier's provider's saved key, and no other`);
+    const lines = [];
+    const route = await graded(held, lines);
+    assert.ok(route, `${what}: a grader route (${lines.join("; ")})`);
+    assert.deepEqual([route.provider.origin, route.model, await route.provider.credential()], ["https://api.openai.com", "gpt-6-luna", OPENAI_DUMMY], what);
+    assert.deepEqual(lines, [], what);
+  }
+  // The revision's own fast tier first, as the grader's route takes it.
+  const tiered = { kind: "agentic", body: { modelTiers: { fast: "mistral/mistral-large-latest" } } };
+  assert.deepEqual(await tierKeysHanded(heldOf(store, { env, revision: tiered, launch: { ...ask, audit: replay } })), { MISTRAL_API_KEY: MISTRAL_DUMMY }, "the revision's fast tier's provider");
+  // Through a gateway, where every model is the gateway's: its key alone.
+  assert.deepEqual(await tierKeysHanded(heldOf(store, { env: { ...env, AGENT_MODEL_BASE_URL: "https://gateway.invalid/v1" }, launch: { ...ask, replay } })), { AGENT_MODEL_API_KEY: GATEWAY_DUMMY }, "a gateway route");
+  // No fast tier named by the revision or the runner: the grader has no route, and no key is handed.
+  assert.deepEqual(await tierKeysHanded(heldOf(store, { env: { AGENT_MODEL: env.AGENT_MODEL }, launch: { ...ask, replay } })), {}, "no fast tier");
+  // A run that is no replay or audit (no subagent, no learning harness, no SDK): none of the server's keys.
+  assert.deepEqual(await tierKeysHanded(heldOf(store, { env, launch: ask })), {}, "a run of its own");
+  // A replay whose launch holds a model key of its own: the server's keys are not its to spend.
+  await store.agents.create({ id: "agent-own", name: "Own" }, { id: "rev-own", kind: "agentic", body: {} });
+  const keyed = { ...ask, replay };
+  await store.runs.create({ id: "run-own", agentId: "agent-own", revisionId: "rev-own" }, { body: launchBody(keyed), sealed: sealRunLaunch(KEY, "run-own", { model: { key: "sk-fake-run-own", origin: "https://gateway.invalid" } }) });
+  assert.deepEqual(await tierKeysHanded(heldOf(store, { env, launch: keyed })), {}, "a replay keyed by its own launch");
 });
 
 test("the settings a run's process reads are the server's shared configuration and its own run's and agent's rows: another run's SDK record is refused unread, and a listing holds only the readable rows", async () => {
