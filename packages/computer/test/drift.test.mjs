@@ -362,7 +362,7 @@ test("the protocol version rule, written once (helloProblem): this major at any 
 	for (const other of [undefined, null, 0.2, 0, ["0", "2"]]) assert.equal(helloProblem(other, "provider"), `speaks protocol ${String(other)}, and this provider 0.2`, String(other));
 	// The drift list asks the same rule, in its own words.
 	for (const minor of ["0.1", "0.3"]) assert.deepEqual(helloDrift({ ...HELLO, protocol: minor }, EXPECTED), [], minor);
-	for (const [other, said] of [["1.0", /protocol 1\.0, expected exactly/], [undefined, /protocol nothing, expected exactly/]]) one(helloDrift({ ...HELLO, protocol: other }, EXPECTED), said);
+	for (const [other, said] of [["1.0", /protocol 1\.0, expected protocol 0\.x \(major 0\)$/], [undefined, /protocol nothing, expected protocol 0\.x \(major 0\)$/]]) one(helloDrift({ ...HELLO, protocol: other }, EXPECTED), said);
 });
 
 test("every mismatch is listed, not only the first", () => {

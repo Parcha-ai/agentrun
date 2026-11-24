@@ -1041,7 +1041,7 @@ test("connect checks hello against the provider: one that drifted is refused; a 
 	m.box.helloPatch = { protocol: "1.0" };
 	const ahead = await provider.connect(ref);
 	assert.equal(ahead.error?.code, "refused");
-	assert.match(ahead.error.message, /hello: the daemon speaks protocol 1\.0, expected exactly 0\.2/);
+	assert.match(ahead.error.message, /hello: the daemon speaks protocol 1\.0, expected protocol 0\.x \(major 0\)/);
 	m.state = "stopped";
 	assert.equal((await provider.connect(ref)).error?.code, "refused");
 });
