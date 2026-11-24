@@ -1459,21 +1459,11 @@ export class Triggers {
     return notDue("trigger_firing.firing_id", `Firing ${key} moved while its run was written, and is ${now}: no run started for it.`);
   }
 
-  /** Firing `key` of trigger `triggerId` released by the host the launch hook handed it to: the host answered it 2xx and
-   *  says it will start no run for it (its job failed before any run started). `body` is `{ error }`, the host's words
-   *  (1 to RELEASE_WORDS_MAX characters), which `cut` takes the server's secrets out of before they are kept. A firing
-   *  sent with no run, before or after its start_by, fails at once: host_released with those words, one failure in its
-   *  trigger's streak and a trigger.failed, as any failed firing. Its trigger's room is free from that write, so a firing
-   *  waiting on it is driven on the next tick. The same call on a firing it released already answers that firing as it
-   *  is. Refused in words: 422 not_allowed on a server with no launch hook, not_due for a firing whose run started, one
-   *  still due once the engine's turn on it ends (not handed yet) or any other, with `details` { reason: RUN_STARTED,
-   *  run_id } when its run started; 404 for a trigger or firing this server does not have. A release during the engine's
-   *  own turn on the firing (its hook's answer read but not yet written) waits for that turn and reads the firing again,
-   *  so a 2xx it writes is released. A host start of the firing already writing its run on this server is waited for
-   *  first: a run it writes makes the firing started, and refused. Any other start, on this server (its room check
-   *  landing after that wait) or another, is decided by the store: its run's write and this release's are each
-   *  conditional on the firing being sent with no run, so the one that lands second finds it moved (a start, FiringMoved;
-   *  this release, the firing read again and refused). */
+  /** Firing `key` released by the host the launch hook handed it to (`body` `{ error }`, the host's words, which `cut`
+   *  takes the server's secrets out of): a firing sent with no run fails at once, host_released, as any failed firing
+   *  (the openapi route says the rest). It first waits for a host start of the firing writing its run here, and for the
+   *  engine's own turn on it (a hook's 2xx read but not yet written). Its write and a start's run write are each
+   *  conditional on the firing being sent with no run, so the one that lands second finds it moved. */
   async release(triggerId: string, key: string, body: Json, cut: (text: string) => string) {
     if (!this.deps.launchHook) throw invalid([{ field: "firing_id", reason: "not_allowed", message: "This server has no launch hook: only a firing the hook handed to its host is released by that host." }]);
     await this.need(triggerId);
