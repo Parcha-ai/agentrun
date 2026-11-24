@@ -2828,10 +2828,10 @@ test("CIV: the command readers hold one command's words at a time, however long 
   }
 });
 
-test("CVI: a subcommand read passes over at most PATH_GAP option words between `config` and `set`: on `npm -x config -x ` at 512 KB, at most 4 words looked at a character", async () => {
-  // Every `config` here is an option's value, so each one is tried as the start of `config set` and walks the options
-  // after it. Bounded by PATH_GAP: 0.73 words a character (measured, lexCount.passed). Unbounded, each walk runs to the
-  // end of its command's read: 20.7 a character, constant in the text's size (the read is capped), so a time bound
+test("CVI: a subcommand read looks a path's next word up through one index per command read: on `npm -x config -x ` at 512 KB, at most 4 words looked at a character", async () => {
+  // Every `config` here is an option's value, so each one is tried as the start of `config set` and looks `set` up.
+  // The index is built once a read: 0.33 words a character (measured, lexCount.passed). Built afresh for each
+  // `config`, it costs a read's words for each one: a constant factor (the read is capped) far past 4, so a time bound
   // catches it only sometimes and this count always.
   const { lexCount } = await import("../dist/shell-lex.js");
   const text = repeatTo("npm -x config -x ", 512 * 1024);
