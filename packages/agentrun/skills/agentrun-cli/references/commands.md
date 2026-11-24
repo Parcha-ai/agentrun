@@ -212,6 +212,14 @@ Check native CLI and sign-in without a paid model call.
 
 Route: `POST /agents/{agent_id}/native/verify`.
 
+## api-keys
+
+### `agentrun api-keys list`
+
+The API keys made for this server's apps; never a key.
+
+Route: `GET /settings/api-keys`.
+
 ## capabilities
 
 ### `agentrun capabilities get-capacity`
@@ -433,8 +441,8 @@ Route: `POST /templates/import`, `POST /templates/{template}/apply`.
 - `--yes` (boolean, this CLI's own): apply without asking (needed off a terminal)
 - `--force` (boolean, this CLI's own): replace an agent edited on the target since the last deploy
 - `--params FILE` (string, this CLI's own): the package's parameters, a JSON object
-- `--pause-source` (boolean, this CLI's own): an install agent: turn its schedules off on this install once deployed (else they fire in both places)
-- `--agent ID|new` (string, this CLI's own): with no lock for the target: deploy onto its agent ID, or make another agent (new), where it has one this package made with these parameters; with a lock, only the lock's agent
+- `--pause-source` (boolean, this CLI's own): an install agent: turn its schedules off on this install once deployed (else they fire in both places); exits 1, once deployed, when it could not turn every one off
+- `--agent ID|new` (string, this CLI's own): with no lock for the target: deploy onto its agent ID, or make another agent (new), where it has one this package made with these parameters; with a lock, only the lock's agent while it is there (one gone from the target, any)
 
 ### `agentrun deploy delete SOURCE`
 
@@ -472,7 +480,7 @@ Write an agent's current revision as a template package folder, and say what the
 
 Route: `GET /agents/{agent_id}/package`.
 
-- `--out DIR` (string, this CLI's own): the folder to write: a new one, or an empty one
+- `--out DIR` (string, this CLI's own): the folder to write: a new one, or an empty one, named as the package is (another name is refused, naming the folder to use)
 
 ## files
 
@@ -783,6 +791,12 @@ Route: `GET /computers`.
 The repositories this server's GitHub App is installed on.
 
 Route: `GET /integrations/github/repositories`.
+
+### `agentrun local list-marketplace-templates`
+
+The marketplace's templates: every package on marketplace.agentrun.ai, each with the package here that it is.
+
+Route: `GET /marketplace/templates`.
 
 ### `agentrun local list-mcp-server-names`
 
@@ -1309,7 +1323,7 @@ Route: none, it runs on this machine.
 - `--port N` (string, this CLI's own): the port to listen on (default: the first free from 7340; 7340 with --tailscale)
 - `--data DIR` (string, this CLI's own): the data directory (default ~/.agentrun)
 - `--tailscale` (boolean, this CLI's own): also serve it over HTTPS on your own tailnet only (tailscale serve, never Funnel); --no-tailscale takes it off
-- `--env KEY=VALUE` (string, this CLI's own): a local model's variable for the server or where Ollama listens, a start-time switch or the usage counts' switch: AGENT_MODEL_BASE_URL, AGENT_MODEL_GATEWAY_IDS, AGENT_MODEL, AGENT_MODEL_PRICE, AGENT_MODEL_API_KEY (none), OLLAMA_HOST, OLLAMA_CONTEXT_LENGTH, AGENTRUN_MCP_ALLOW_LOOPBACK (1), AGENTRUN_WEBHOOK_PRIVATE_TARGETS (1), AGENTRUN_TELEMETRY, DO_NOT_TRACK; kept until KEY= removes it; repeatable
+- `--env KEY=VALUE` (string, this CLI's own): a local model's variable for the server or where Ollama listens, a start-time switch, the marketplace the server reads or the usage counts' switch: AGENT_MODEL_BASE_URL, AGENT_MODEL_GATEWAY_IDS, AGENT_MODEL, AGENT_MODEL_PRICE, AGENT_MODEL_API_KEY (none), OLLAMA_HOST, OLLAMA_CONTEXT_LENGTH, AGENTRUN_MCP_ALLOW_LOOPBACK (1), AGENTRUN_WEBHOOK_PRIVATE_TARGETS (1), AGENTRUN_MARKETPLACE, AGENTRUN_TELEMETRY, DO_NOT_TRACK; kept until KEY= removes it; repeatable
 - `--public-url URL` (string, this CLI's own): the https address people open it at, through a proxy you run in front of it (your own tailscale serve, a reverse proxy); kept for every restart
 
 ### `agentrun service logs`

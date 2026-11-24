@@ -104,6 +104,7 @@ type packet struct {
 }
 
 // waiter is a request that waits for its reply: where to hand it, and the most bytes it may carry past its first 32.
+// A nil ch is a request whose call stopped waiting (forget).
 type waiter struct {
 	ch    chan packet
 	limit int
@@ -412,7 +413,9 @@ func (c *Conn) read() {
 			c.mu.Lock()
 			if w, ok := c.pending[seq]; ok {
 				delete(c.pending, seq)
-				w.ch <- packet{err: e}
+				if w.ch != nil {
+					w.ch <- packet{err: e}
+				}
 			} else {
 				c.unasked++
 				if sent := c.sent.Load(); c.unasked > sent {
@@ -425,6 +428,10 @@ func (c *Conn) read() {
 		case 1:
 			c.mu.Lock()
 			w, waited := c.pending[seq]
+			if waited && w.ch == nil { // its call stopped waiting: read past it
+				delete(c.pending, seq)
+				waited = false
+			}
 			c.mu.Unlock()
 			limit := maxReply
 			if waited {
@@ -450,7 +457,9 @@ func (c *Conn) read() {
 			c.mu.Lock()
 			if w, ok := c.pending[seq]; ok {
 				delete(c.pending, seq)
-				w.ch <- packet{data: data}
+				if w.ch != nil {
+					w.ch <- packet{data: data}
+				}
 			}
 			c.mu.Unlock()
 		default:
@@ -478,7 +487,9 @@ func (c *Conn) read() {
 	c.fail(failure)
 	c.mu.Lock()
 	for seq, w := range c.pending {
-		w.ch <- packet{err: c.err}
+		if w.ch != nil {
+			w.ch <- packet{err: c.err}
+		}
 		delete(c.pending, seq)
 	}
 	c.cond.Broadcast()
@@ -573,8 +584,13 @@ func (c *Conn) fail(why error) error {
 	return err
 }
 
-// call sends a request with a reply of at most limit bytes past its first 32, and waits for it.
-func (c *Conn) call(opcode, data byte, body []byte, limit int) ([]byte, error) {
+// call sends a request with a reply of at most limit bytes past its first 32, and waits for it until ctx ends. A call
+// whose ctx ends stops waiting at once and answers ctx's error: the connection stays open, and its reply, when it comes,
+// is read past and never kept.
+func (c *Conn) call(ctx context.Context, opcode, data byte, body []byte, limit int) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	ch, err := c.buffer(opcode, data, body, limit)
 	if err != nil {
 		return nil, err
@@ -585,15 +601,31 @@ func (c *Conn) call(opcode, data byte, body []byte, limit int) ([]byte, error) {
 			return nil, p.err
 		}
 		return p.data, nil
+	case <-ctx.Done():
+		c.forget(ch)
+		return nil, ctx.Err()
 	case <-time.After(ioTimeout):
 		return nil, c.fail(fmt.Errorf("the X server did not answer within %v", ioTimeout))
+	}
+}
+
+// forget leaves the request waiting on ch with no one to hand its answer to: its reply is read past and its error
+// dropped, never taken for the error of a request with no reply. An answer already handed over stays in ch, unread.
+func (c *Conn) forget(ch chan packet) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for seq, w := range c.pending {
+		if w.ch == ch {
+			c.pending[seq] = waiter{limit: w.limit}
+			return
+		}
 	}
 }
 
 // Sync waits until the server has handled every request sent before it, with one round trip (GetInputFocus), and
 // returns the errors of requests with no reply since the last Sync, in order: the first maxErrors of them.
 func (c *Conn) Sync() ([]*Error, error) {
-	if _, err := c.call(43, 0, nil, smallReply); err != nil {
+	if _, err := c.call(context.Background(), 43, 0, nil, smallReply); err != nil {
 		return nil, err
 	}
 	c.mu.Lock()

@@ -737,6 +737,26 @@ export const COMMANDS = [
   },
   {
     "command": [
+      "api-keys",
+      "list"
+    ],
+    "operationId": "listApiKeys",
+    "method": "GET",
+    "path": "/settings/api-keys",
+    "pathParams": [],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "The API keys made for this server's apps; never a key"
+  },
+  {
+    "command": [
       "capabilities",
       "get-capacity"
     ],
@@ -2392,6 +2412,26 @@ export const COMMANDS = [
     "secretBody": false,
     "raw": false,
     "summary": "The repositories this server's GitHub App is installed on"
+  },
+  {
+    "command": [
+      "local",
+      "list-marketplace-templates"
+    ],
+    "operationId": "listMarketplaceTemplates",
+    "method": "GET",
+    "path": "/marketplace/templates",
+    "pathParams": [],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "The marketplace's templates: every package on marketplace.agentrun.ai, each with the package here that it is"
   },
   {
     "command": [

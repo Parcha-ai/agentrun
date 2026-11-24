@@ -6,6 +6,7 @@ import { test } from "node:test";
 import * as dsl from "@parcha/agentrun-dsl";
 import * as checks from "../dist/learn/check.js";
 import { PRINT_MAX } from "../dist/learn/secrets.js";
+import { scanned } from "../dist/redact/match.js";
 import { draftMcpTools, unpricedCalls, unpricedLine } from "../dist/learn/workflow-draft.js";
 import * as words from "../dist/learning-words.js";
 import * as tools from "../dist/tools.js";
@@ -78,7 +79,7 @@ test("a file that is not UTF-8, or holds a hidden character, is refused", () => 
 });
 
 // Secret-shaped literals are built from parts, so this file holds none.
-const SHAPED = { "AWS access key id": ["AK", "IA", "ABCDEFGHIJKLMNOP"].join(""), "GitHub token": ["gh", "p_", "a1B2".repeat(9)].join(""), "sk- key": ["s", "k-", "Zx9".repeat(10)].join("") };
+const SHAPED = { "AWS access key id": ["AK", "IA", "ABCDEFGHIJKLMNOP"].join(""), "GitHub token": ["gh", "p_", "a1B2".repeat(9)].join(""), "sk- key": ["s", "k-", "Zx9".repeat(10)].join(""), "AgentRun API key": ["ar", "_key_", "Zx9".repeat(15)].join("") };
 const VALUE = ["s3cret", "store", "pass", "7731"].join("-");
 
 test("text shaped like a secret, or a value the host holds, is refused in a draft or its name, plain or encoded, and never printed", () => {
@@ -102,11 +103,19 @@ test("a printed field over 4 KiB is redacted whole and never scanned", () => {
   const long = `${"a".repeat(PRINT_MAX)}.md`;
   assert.deepEqual(printable({ rule: "outside", path: long, detail: "d".repeat(PRINT_MAX + 1) }, [VALUE]), { rule: "outside", path: "[redacted]", detail: "[redacted]" });
   assert.deepEqual(printable({ rule: "outside", path: "a".repeat(PRINT_MAX), detail: "d" }, []).path, "a".repeat(PRINT_MAX), "at the cap, printed");
-  // A crafted path of a megabyte costs no scan: its problem is printed at once.
-  const started = process.hrtime.bigint();
-  const problems = check([added(`${"ab".repeat(1 << 19)}`, readme)], { refuseValues: [VALUE] });
-  assert.ok(Number(process.hrtime.bigint() - started) / 1e9 < 2);
+  // A crafted path of a megabyte: its name is checked once for a shape and a held value, and its problem is printed at
+  // once, the path never read for it. Counted, not timed (redact/match.ts `scanned`): the check visits at most WORK
+  // characters per character of the path, the whole pipeline's bound with a held value (redact-contract.test.mjs), and
+  // printing the problem visits fewer characters than the path holds, so none of the path.
+  const WORK = 1024;
+  const path = "ab".repeat(1 << 19);
+  scanned.chars = 0;
+  const problems = check([added(path, readme)], { refuseValues: [VALUE] });
+  assert.ok(scanned.chars <= WORK * path.length, `${(scanned.chars / path.length).toFixed(1)} per character of the path`);
   assert.ok(problems.every((problem) => problem.path === "[redacted]"), JSON.stringify(problems).slice(0, 200));
+  scanned.chars = 0;
+  assert.equal(printable({ rule: "outside", path, detail: "d" }, [VALUE]).path, "[redacted]");
+  assert.ok(scanned.chars < path.length, `printing read ${scanned.chars} characters`);
 });
 
 test("the checker reports and never changes what it was given", () => {
@@ -139,7 +148,7 @@ test("what must never be stored is found in every file's name and text, whatever
 // An account, IBAN, routing or sort-code number in a money context is a secret shape: a draft that holds one is refused
 // by the checker. Narrow: a count of accounts, a date, a year, a short ending are no number.
 test("a bank account, IBAN, routing or sort-code number beside its word is a secret shape and refused; a count of accounts, a date or a short number is not", async () => {
-  const { learnedSecretShapes, secretShapes } = await import("../dist/learn/secrets.js");
+  const { learnedSecretShapes, redactLearned, secretShapes } = await import("../dist/learn/secrets.js");
   const held = [
     "Always send vendor refunds to account 4471-0098 (Harbor Credit Union).",
     "Account number: 0012 3456 789 at the credit union.",
@@ -166,13 +175,70 @@ test("a bank account, IBAN, routing or sort-code number beside its word is a sec
     "Account for 3 retries before giving up.",
     "Invoice INV-2026-004471 is the one to reconcile.",
   ];
-  // Linear enough on a hostile text: long runs of spaces and digits after the words, never a number.
-  const started = Date.now();
-  for (const word of ["account", "IBAN", "routing", "sort code"]) learnedSecretShapes(`${word}${" ".repeat(20_000)}x ${word} ${"1-".repeat(20_000)}`.repeat(4));
-  assert.ok(Date.now() - started < 2_000, `read in ${Date.now() - started} ms`);
+  // Linear on a hostile text: long runs of spaces and digits after the words, never a number. Counted, not timed: the
+  // characters the bank shapes' reading visits (redact/match.ts `scanned`) are at most 128 per character of the text,
+  // the shapes' own bound (redact-contract.test.mjs, secrets-private-key.test.mjs). Beside each hostile text, one of
+  // the word and a digit repeated (32 KiB): every word a start, so a rule that read on past its bounded reach from each
+  // start would visit the rest of the text from every one.
+  const WORK = 128;
+  for (const word of ["account", "IBAN", "routing", "sort code"]) {
+    const hostile = `${word}${" ".repeat(20_000)}x ${word} ${"1-".repeat(20_000)}`.repeat(4);
+    const starts = `${word} 1 `.repeat(Math.ceil(32_768 / (word.length + 3)));
+    for (const text of [hostile, starts]) {
+      for (const read of [learnedSecretShapes, (all) => redactLearned(all, [], Number.POSITIVE_INFINITY)]) {
+        scanned.chars = 0;
+        read(text);
+        assert.ok(scanned.chars <= WORK * text.length, `${word}, ${text === hostile ? "hostile" : "starts"}: ${scanned.chars} for ${text.length} (${(scanned.chars / text.length).toFixed(1)} per character)`);
+      }
+    }
+  }
   for (const text of plain) {
     assert.deepEqual(learnedSecretShapes(text), [], `no secret: ${text}`);
     assert.deepEqual(check(draft(undefined, described(text))), [], text);
+  }
+});
+
+// The routing number's word ends at a word end: an id or hash whose hex holds "aba" and nine digits after a word start
+// (a UUID's last group, a sha cut to twelve characters) is no routing number, and learning serves it whole. Every
+// spaced, colon, "#" and "is" form stays cut.
+test("a UUID or short sha whose hex holds aba and nine digits is served whole by redactLearned; ABA or routing beside nine digits is still cut", async () => {
+  const { learnedSecretShapes, redactLearned } = await import("../dist/learn/secrets.js");
+  const sha = `aba123456789${"0123456789abcdef".repeat(2)}`.slice(0, 40);
+  const glued = [
+    // The run id the learn-replay test got back as "01a20b88-e657-7000-a0af-[redacted]", alone and in a sentence.
+    "01a20b88-e657-7000-a0af-aba592512040",
+    "run 01a20b88-e657-7000-a0af-aba592512040 replayed",
+    "RUN 01A20B88-E657-7000-A0AF-ABA592512040",
+    `commit ${sha.slice(0, 12)} on main`,
+    `build-${sha.slice(0, 12)}`,
+    `commit ${sha}`,
+    `ref-${sha}`,
+  ];
+  assert.deepEqual(glued.map((text) => redactLearned(text, [])), glued);
+  for (const text of glued) assert.deepEqual(learnedSecretShapes(text), [], text);
+  const routing = ["ABA 123456789", "ABA: 123456789", "ABA#123456789", "ABA is 123456789", "aba number 123456789", "routing number 123456789", "routing: 123456789"];
+  for (const number of routing) {
+    for (const text of [number, `Wire it with ${number} today.`]) {
+      assert.deepEqual(learnedSecretShapes(text), ["routing number"], text);
+      const out = redactLearned(text, []);
+      assert.ok(out.includes("[redacted]") && !out.includes("123456789"), `${text}: ${out}`);
+    }
+  }
+});
+
+// The narrowing above, pinned as a choice: a real routing number glued to its word, with nothing between, is not cut
+// either (the word must stand alone), as a hex id holding "aba" and nine digits is not. The same number with a space
+// after its word is cut. A change to this rule changes this test on purpose.
+test("a routing number glued to its label is not cut (the word must stand alone); with a space after the label it is", async () => {
+  const { learnedSecretShapes, redactLearned } = await import("../dist/learn/secrets.js");
+  for (const text of ["ABA021000021", "routing021000021", "Wire it with ABA021000021 today."]) {
+    assert.deepEqual(learnedSecretShapes(text), [], text);
+    assert.equal(redactLearned(text, []), text);
+  }
+  for (const text of ["ABA 021000021", "routing 021000021", "Wire it with ABA 021000021 today."]) {
+    assert.deepEqual(learnedSecretShapes(text), ["routing number"], text);
+    const out = redactLearned(text, []);
+    assert.ok(out.includes("[redacted]") && !out.includes("021000021"), `${text}: ${out}`);
   }
 });
 

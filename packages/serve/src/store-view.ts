@@ -8,7 +8,7 @@ import { isDeepStrictEqual } from "node:util";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { CAPS, type EntryLike, isMessageRow, type TimelineEvent } from "./timeline/index.js";
 import { runLink } from "./console-links.js";
-import { redacted, redactedAnswer, redactedOutput, withoutLoopback } from "./key-refusal.js";
+import { redacted, redactedAnswer, redactedOutput, withheldWhole, withoutLoopback } from "./key-refusal.js";
 import { structuredAnswer } from "./answer-json.js";
 import { isObject } from "./validate.js";
 import { currentLearning, holdsForOk, type ItemStatus, type Learning, learningView, LEARNING_LABEL, secretsShown, shortOf, type Shown } from "./learning.js";
@@ -403,7 +403,7 @@ async function storeRunIn(store: Store, runId: string, deps: ViewDeps, cut: Awai
   // Its final answer whole (store-reads/journal.ts wholeAnswers), as main served a run's answer: a row's cut is no answer's.
   // A run that ended reads settled, and its usage row says its cost ("Cost: …"), never what it has cost so far. One
   // looking back is still going: its look-back's rows come yet.
-  const timelineOptions = { settled: terminal && !lookingBack, ended: terminal && !lookingBack, redact: (text: string) => redacted(text, values) };
+  const timelineOptions = { settled: terminal && !lookingBack, ended: terminal && !lookingBack, redact: (text: string) => redacted(text, values), holds: (text: string) => withheldWhole(text, values) };
   // Rendered from the records read above, so its usage row and the cost's `plan` (bookedSpend over the same entries) are
   // of one read.
   const timeline = withAsks(await wholeAnswers(store, runId, context, await runTimeline(store, runId, context, timelineOptions, records), timelineOptions, wholeAnswerFor(values), since));

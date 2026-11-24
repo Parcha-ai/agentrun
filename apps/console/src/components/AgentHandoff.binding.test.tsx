@@ -133,7 +133,14 @@ describe("rendered handoffs follow the loaded agent's execution binding", () => 
       else expect(prompt).toContain("flushLearning()");
     });
   }
-  for (const [name, agent] of [["managed", managed], ["native", native]] as const) {
+  it("AgentPage runs a managed agent from its run box: the bar has no Run hand-off, the box hands it over on its second line (GRE-4832)", async () => {
+    await mount(createElement(AgentPage, { v2: client(managed), agentId: managed.agent_id, go: write }));
+    expect(host.querySelector('[aria-label="Run agent options"]')).toBeNull();
+    const box = host.querySelector("[data-run-here]")!;
+    expect([...box.querySelectorAll("button")].some((b) => /Run with your coding agent/.test(b.textContent ?? ""))).toBe(true);
+    expect(write).not.toHaveBeenCalled();
+  });
+  for (const [name, agent] of [["native", native]] as const) {
     it(`AgentPage retains ${name} run guidance`, async () => {
       await mount(createElement(AgentPage, { v2: client(agent), agentId: agent.agent_id, go: write }));
       const prompt = await copy("Run agent"); expect(prompt).toContain("Start once, follow its progress"); expect(prompt).toContain("native sign-in"); expect(prompt).toContain("do not promise a dollar limit");

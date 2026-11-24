@@ -10,11 +10,11 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { explainCapability, planeFor, PROVIDERS, TOOL_PLANE_ENV } from "../dist/tool-plane.js";
-import { FAUX_FIRECRAWL_ENV, firecrawlFetch, firecrawlScrape, firecrawlSearch } from "../dist/firecrawl-keyless.js";
-import { fetchFor, firecrawlOf, webFetch, webFetchTool } from "../dist/web-fetch.js";
-import { SEARCH_UNAVAILABLE, searchBreaker, searchInTurn, webSearchTool } from "../dist/web-search.js";
-import { RATE_LIMITED } from "../dist/keyless-mcp.js";
-import { RATE_LIMITED as EXA_RATE_LIMITED } from "../dist/exa-keyless.js";
+import { FAUX_FIRECRAWL_ENV, ordersOf, RATE_LIMITED } from "../dist/web-run.js";
+import { firecrawlFetch, firecrawlScrape, firecrawlSearch } from "@parcha/agentrun-web";
+import { fetchFor, webFetchTool } from "../dist/web-fetch.js";
+import { webFetch } from "./fixtures/serve-web.mjs";
+import { searchFor, webSearchTool } from "../dist/web-search.js";
 import { fauxEnvOf } from "../dist/server.js";
 import { withoutFaux } from "../dist/model.js";
 import { firecrawlServer, FIRECRAWL_SIGNUP, PAGE, refusal, answers } from "./fixtures/fake-firecrawl.mjs";
@@ -148,19 +148,6 @@ test("an HTTP 429 from Firecrawl is a rate limit with its Retry-After; Firecrawl
   const quota = await firecrawlServer(t, () => refusal("KEYLESS_QUOTA_EXHAUSTED"));
   const answer = await searchRun({ ...env, [FAUX_FIRECRAWL_ENV]: quota.url })("widgets");
   assert.doesNotMatch(answer.output[0].text, /signup|Sign up|firecrawl\.dev/i, answer.output[0].text);
-  assert.equal(RATE_LIMITED, EXA_RATE_LIMITED, "Firecrawl's rate limit reads in keyless Exa's words");
-});
-
-test("both keyless backends out for the run: web_search answers SEARCH_UNAVAILABLE, unsent", async () => {
-  const breakers = new Map();
-  const breakerOf = (name) => breakers.get(name) ?? breakers.set(name, searchBreaker(() => 0)).get(name);
-  let asked = 0;
-  const out = (name) => ({ name, ask: async () => ((asked += 1), { answer: { error: `${name} out` }, limit: { kind: "quota" } }) });
-  const backends = [out("firecrawl-keyless"), out("exa-keyless")];
-  assert.deepEqual(await searchInTurn(backends, breakerOf), { error: SEARCH_UNAVAILABLE });
-  assert.equal(asked, 2, "each asked once");
-  assert.deepEqual(await searchInTurn(backends, breakerOf), { error: SEARCH_UNAVAILABLE });
-  assert.equal(asked, 2, "neither asked again");
 });
 
 test("Firecrawl out of quota for web_fetch: the page comes from the guarded direct fetch, and the run's later fetches go straight there", async (t) => {
@@ -174,22 +161,6 @@ test("Firecrawl out of quota for web_fetch: the page comes from the guarded dire
   assert.deepEqual([other.ok, other.via, other.text], [true, "direct", "Plain notes."]);
   assert.equal(fc.calls("firecrawl_scrape"), 1, "off for the run after the first");
   assert.deepEqual(net.dialled, [PUBLIC, "http://public.example/notes.txt"]);
-});
-
-test("a fetch Firecrawl rate-limits goes direct for the wait it named, and to Firecrawl again past it", async (t) => {
-  let limited = true;
-  const fc = await firecrawlServer(t, (name) => (limited ? refusal("KEYLESS_LIMIT_REACHED", { retryAfter: 10 }) : answers(name)));
-  let now = Date.parse("2026-11-23T12:00:00Z");
-  const firecrawl = firecrawlFetch({ endpoint: fc.url }, () => now);
-  const read = (url) => webFetch(url, { ...network(), firecrawl });
-  assert.equal((await read(PUBLIC)).via, "direct");
-  limited = false;
-  now += 5_000;
-  assert.equal((await read("http://public.example/notes.txt")).via, "direct", "within the wait");
-  assert.equal(fc.calls("firecrawl_scrape"), 1);
-  now += 6_000;
-  assert.equal((await read(PUBLIC)).via, "firecrawl-keyless", "past it");
-  assert.equal(fc.calls("firecrawl_scrape"), 2);
 });
 
 test("a page Firecrawl scraped with a status that is not 2xx is no read: the fetch goes direct, as for a refusal, and Firecrawl's breaker stays shut", async (t) => {
@@ -214,6 +185,20 @@ test("one deadline for a whole search: a Firecrawl that never answers and spends
   const answer = said(await searchRun(env, Date.now, { searchMs: 50 })("widgets"));
   assert.equal(await exaSearches(), 0, "the search's one deadline was spent: Exa is not started on it");
   assert.equal(typeof answer.error, "string", JSON.stringify(answer));
+});
+
+// A search deadline belongs to the binding given it. Firecrawl answers in 500 ms here: past a 50 ms deadline, far inside
+// the default's 60 s. The test fails on a deadline not applied, or applied to a search that was not given it.
+test("a binding's search deadline is its own, whichever binding made the run's Web: a bound binding gives up within it, and the run's other searches are not held to it", { timeout: 15_000 }, async (t) => {
+  const fc = await firecrawlServer(t, async (name) => (await new Promise((resolve) => setTimeout(resolve, 500)), answers(name)));
+  const { env } = await keyless(t, fc.url);
+  webSearchTool(env);
+  const bound = said(await searchRun(env, Date.now, { searchMs: 50 })("widgets"));
+  assert.equal(typeof bound.error, "string", `a binding bound after the run's Web was made still gives up within its deadline: ${JSON.stringify(bound)}`);
+  const other = { ...env };
+  said(await searchRun(other, Date.now, { searchMs: 50 })("widgets"));
+  const node = await searchFor(other, { query: "widgets" });
+  assert.equal(node.provider, "firecrawl-keyless", `a call node of the run is not held to a binding's deadline: ${JSON.stringify(node)}`);
 });
 
 // The test's own timeout is far past the bound it injects and far short of the default's 30 s: it fails on a bound not
@@ -300,19 +285,9 @@ test("a private, loopback, link-local or intranet URL, or one holding a user nam
   assert.equal(fc.calls("firecrawl_scrape"), 1);
 });
 
-test("Parallel picked: a URL holding a user name or password is never sent to Parallel's extract; the direct fetch refuses it in words", async () => {
-  const asked = [];
-  const parallel = { live: () => true, read: async (url) => { asked.push(url); return "should not be asked"; }, post: async () => { throw new Error("not posted"); } };
-  for (const url of CREDENTIALED) {
-    const page = await webFetch(url, { ...network(), parallel });
-    assert.deepEqual([page.ok, page.via, page.parallel, page.refused], [false, "direct", "not tried: the URL did not pass the public-host guard", "refused: the URL holds a user name or password"], url);
-  }
-  assert.deepEqual(asked, [], "Parallel was sent none of them");
-});
-
 test("under --faux with no fake named, keyless Firecrawl is never asked: web_fetch fetches directly and web_search answers why it cannot search", async () => {
   const env = { [TOOL_PLANE_ENV]: JSON.stringify({ web_search: "firecrawl-keyless", web_fetch: "firecrawl-keyless" }), AGENTRUN_SERVE_FAUX: FAUX };
-  assert.equal(await firecrawlOf(env), null);
+  assert.deepEqual(ordersOf(env), { search: [], fetch: ["direct"] });
   const net = network();
   assert.equal((await fetchFor(env, PUBLIC, net)).via, "direct");
   assert.match(said(await searchRun(env)("widgets")).error, /under --faux/);
