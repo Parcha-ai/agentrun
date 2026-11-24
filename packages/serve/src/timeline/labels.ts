@@ -93,9 +93,9 @@ export function foldLabel(tool: string, calls: readonly { input: string | null; 
 }
 
 /** The input worth showing: the base keys first, then the browser and file ones, and last the app a computer's look or act
- *  names (never what an act types: its steps; nor a codemode script, which can hold it). */
+ *  names (never what an act types: its steps; nor a codemode script, which can hold it), then a search's objective. */
 export function inputPreview(args: Obj, max: number): string | null {
-  for (const key of ["description", "command", "query", "file_path", "url", "path", "code", "app"]) {
+  for (const key of ["description", "command", "query", "file_path", "url", "path", "code", "app", "objective"]) {
     const value = str(args[key]);
     if (value) return cut(scrubUrls(value), max);
   }
@@ -177,7 +177,8 @@ const fromHost = (a: Obj) => {
 registerLabel("web_save", (a, result) => `${unfetched(result) ? "Tried to save" : "Saved"} ${savedAt(a, result)}${fromHost(a)}`, { many: (n) => `Saved ${n} files from the web`, subject: (input) => input ?? undefined }, { name: "Save files from the web" });
 registerOutcome("web_save", fetchOutcome);
 registerLabel("web_search", (a) => {
-  const query = str(a.query);
+  // Its first keyword query, else its objective, else the deprecated query alone.
+  const query = (Array.isArray(a.queries) ? a.queries.map(str).find(Boolean) : undefined) ?? str(a.objective) ?? str(a.query);
   return query ? `Searched the web for "${cut(scrubUrls(query), 60)}"` : "Searched the web";
 }, { many: (n) => `Searched the web ${n} times`, subject: (input) => (input ? `"${cut(input, 40)}"` : undefined) }, { name: "Search the web" });
 // web_search answers its results and a line asking for citations, or `{error}` when the search gave no answer: failed.

@@ -12,7 +12,7 @@ import { isUnavailable, planeOf, whyUnavailable } from "./tool-plane.js";
 
 export const WEB_FETCH_TOOL = "web_fetch";
 
-/** The part `options` names of the page at `url`, through the run's Web (where `options.lookingFor` is given and a
+/** The part `options` names of the page at `url`, through the run's Web (where `options.objective` is given and a
  *  decider runs, the page's likeliest chunks); a failed Page saying why where web_fetch does not run here. A part a
  *  call may not ask for is refused first. */
 export async function fetchFor(env: NodeJS.ProcessEnv, url: unknown, options: FetchOptions = {}): Promise<WebPage | Page | FoundPage> {
@@ -32,9 +32,9 @@ export function webFetchTool(env: NodeJS.ProcessEnv, name = WEB_FETCH_TOOL, fake
     parameters: URL_PARAMETERS,
     replay: "safe",
     execute: async (args, _api, context) => {
-      const { url, offset, max_chars } = args as { url?: unknown; offset?: number; max_chars?: number };
+      const { url, offset, max_chars, objective } = args as { url?: unknown; offset?: number; max_chars?: number; objective?: unknown };
       const signal = context?.abortSignal ? { signal: context.abortSignal } : {};
-      const page = fake ? await fake(url, { offset, maxChars: max_chars, ...signal }) : await fetchFor(env, url, { ...(await fetchOptions(env, FAUX_ENV)), offset, maxChars: max_chars, ...signal });
+      const page = fake ? await fake(url, { offset, maxChars: max_chars, ...signal }) : await fetchFor(env, url, { ...(await fetchOptions(env, FAUX_ENV)), offset, maxChars: max_chars, ...(typeof objective === "string" ? { objective } : {}), ...signal });
       return forModel(webFetchText(page, name), { details: page });
     },
   });

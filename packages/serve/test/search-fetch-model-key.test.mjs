@@ -76,7 +76,7 @@ test.skip("with only model keys: native search on pi, claude-agent and codex, an
 
   // pi on Anthropic: its search is one request to the provider with exactly the hosted tool, booked with its fee.
   const pi = await research(api, "pi-anthropic", {});
-  assert.match(pi.results.web_search, /^\{"provider":"native","query":"widgets","results":\[\{"url":"http:\/\/public\.example\/","title":"Public page","snippet":"The answer is forty-two\.","published":"October 1, 2026"\}/);
+  assert.match(pi.results.web_search, /^\{"provider":"native","objective":"widgets","queries":\["widgets"\],"results":\[\{"url":"http:\/\/public\.example\/","title":"Public page","snippet":"The answer is forty-two\.","published":"October 1, 2026"\}/);
   assert.match(pi.results.web_search, /"text":"The public page says the answer is forty-two\."\}\nCite the URL of each result you rely on\.$/, "the provider's answer, then the line asking for citations");
   assert.match(pi.results.web_fetch, /"title":"Public page".*"via":"direct"/s, "the kernel's guarded fetch");
   assert.match(pi.report, /The answer is forty-two \(Public page, http:\/\/public\.example\/\)/);
@@ -122,7 +122,7 @@ test.skip("with only model keys: native search on pi, claude-agent and codex, an
   assert.deepEqual([put.status, put.body], [200, { web_search: { provider: "parallel" }, web_fetch: { provider: "parallel" }, browser: { provider: "auto" } }]);
   assert.deepEqual(await resolves(api), { web_search: each("parallel"), web_fetch: each("parallel") });
   const viaParallel = await research(api, "pi-parallel", {});
-  assert.match(viaParallel.results.web_search, /^\{"provider":"parallel","query":"widgets","results":\[\{"url":"https:\/\/registry\.example\/widgets"/, "Parallel's results, in the one shape");
+  assert.match(viaParallel.results.web_search, /^\{"provider":"parallel","objective":"widgets","queries":\["widgets"\],"results":\[\{"url":"https:\/\/registry\.example\/widgets"/, "Parallel's results, in the one shape");
   assert.match(viaParallel.results.web_fetch, /"title":"Read by Parallel".*"via":"parallel"/s);
   for (const harness of ["claude-agent", "codex"]) {
     const before = (await seen()).opened.length;
@@ -142,7 +142,7 @@ test("a pi run on keyless Exa past its free limit: Exa is asked once more and it
   const { seen } = await setting(t, { AGENT_MODEL_BASE_URL: "https://gateway.example/v1", AGENTRUN_TEST_FAUX_EXA: "limited,ok" });
   const { api } = await serve(t, FAUX);
   const retried = await research(api, "limited-once", {});
-  assert.match(retried.results.web_search, /^\{"provider":"exa-keyless","query":"widgets","results":\[\{"url":"http:\/\/public\.example\/"/);
+  assert.match(retried.results.web_search, /^\{"provider":"exa-keyless","objective":"widgets","queries":\["widgets"\],"results":\[\{"url":"http:\/\/public\.example\/"/);
   assert.equal((await seen()).exa.filter((call) => call.method === "tools/call").length, 2, "Exa's notice, then the one more search");
 
   process.env.AGENTRUN_TEST_FAUX_EXA = "limited";
@@ -164,7 +164,7 @@ test("with a Parallel key saved on Tool keys, auto is Parallel where there is no
   assert.deepEqual((await resolves(api)).web_search, each("parallel"), "the saved key, with no restart: Parallel before keyless Exa, on claude-agent too");
   assert.deepEqual((await resolves(api)).web_fetch, each("kernel"), "web_fetch stays the kernel's fetch");
   const run = await research(api, "auto-parallel", {});
-  assert.match(run.results.web_search, /^\{"provider":"parallel","query":"widgets","results":\[\{"url":"https:\/\/registry\.example\/widgets"/);
+  assert.match(run.results.web_search, /^\{"provider":"parallel","objective":"widgets","queries":\["widgets"\],"results":\[\{"url":"https:\/\/registry\.example\/widgets"/);
   assert.deepEqual(run.rows.filter((row) => row.kind === "phase" && row.tool_name === "web_search").map((row) => row.summary), ["Tool cost: parallel charged $0.0010 for web_search"], "its fee booked");
   let calls = await seen();
   assert.deepEqual([calls.parallel.slice(checked).map((call) => [call.path, call.authorized]), calls.exa], [[["/v1/search", true]], []], "Parallel on the saved key; Exa never asked");
@@ -211,7 +211,7 @@ test("a pi run whose model goes through a gateway searches keyless Exa, as claud
   assert.deepEqual((await resolves(api)).web_search, each("firecrawl-keyless"));
   // Keyless Firecrawl's fake is not named here, so under --faux it is never asked: keyless Exa behind it answers.
   const run = await research(api, "gateway-pi", {});
-  assert.match(run.results.web_search, /^\{"provider":"exa-keyless","query":"widgets","results":\[\{"url":"http:\/\/public\.example\/","title":"Public page","snippet":"The answer is forty-two\. See the registry for more\.","published":"2026-10-01T00:00:00.000Z"\},\{"url":"https:\/\/result\.example\/2","title":"Result 2 for widgets","snippet":"Excerpt 2\."\}\]\}\nCite the URL of each result you rely on\.$/);
+  assert.match(run.results.web_search, /^\{"provider":"exa-keyless","objective":"widgets","queries":\["widgets"\],"results":\[\{"url":"http:\/\/public\.example\/","title":"Public page","snippet":"The answer is forty-two\. See the registry for more\.","published":"2026-10-01T00:00:00.000Z"\},\{"url":"https:\/\/result\.example\/2","title":"Result 2 for widgets","snippet":"Excerpt 2\."\}\]\}\nCite the URL of each result you rely on\.$/);
   assert.match(run.report, /Public page, http:\/\/public\.example\//);
   const exa = (await seen()).exa;
   assert.deepEqual(exa.map((call) => [call.method, call.session, call.keyed]), [["initialize", null, false], ["notifications/initialized", "sess-faux-exa-1", false], ["tools/call", "sess-faux-exa-1", false]], "one MCP exchange, no key");
@@ -231,10 +231,10 @@ test("a pi run with no key behind a gateway searches and reads through keyless F
   const { api } = await serve(t, { ...FAUX, fauxFirecrawl: firecrawl.url });
   assert.deepEqual(await resolves(api), { web_search: each("firecrawl-keyless"), web_fetch: each("firecrawl-keyless") });
   const run = await research(api, "firecrawl-pi", {});
-  assert.match(run.results.web_search, /^\{"provider":"firecrawl-keyless","query":"widgets","results":\[\{"url":"https:\/\/first\.example\/widgets"/);
+  assert.match(run.results.web_search, /^\{"provider":"firecrawl-keyless","objective":"widgets","queries":\["widgets"\],"results":\[\{"url":"https:\/\/first\.example\/widgets"/);
   assert.match(run.results.web_fetch, /"via":"firecrawl-keyless"/);
   assert.match(run.report, /The answer is forty-two \(Read by Firecrawl, http:\/\/public\.example\/\)/);
-  assert.deepEqual(firecrawl.toolCalls().map((call) => [call.body.params.name, call.body.params.arguments]), [["firecrawl_search", { query: "widgets", limit: 2 }], ["firecrawl_scrape", { url: "http://public.example/", formats: ["markdown"] }]]);
+  assert.deepEqual(firecrawl.toolCalls().map((call) => [call.body.params.name, call.body.params.arguments]), [["firecrawl_search", { query: "widgets", limit: 2, objective: "widgets", scrapeOptions: { formats: ["markdown"], onlyMainContent: true } }], ["firecrawl_scrape", { url: "http://public.example/", formats: ["markdown"] }]]);
   for (const { headers } of firecrawl.got) assert.equal(headers.authorization, undefined);
   const calls = await seen();
   assert.deepEqual([calls.exa, calls.dialled, calls.upstream], [[], [], []], "Exa not asked, nothing dialled directly, no model provider's search");

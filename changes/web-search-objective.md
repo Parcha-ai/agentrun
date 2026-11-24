@@ -1,0 +1,14 @@
+---
+packages: @parcha/agentrun-serve, @parcha/agentrun-web
+kind: feature
+---
+`web_search` asks for an `objective` and a few keyword `queries`. The objective is what the agent wants to find out, in a sentence, at most 1,000 characters. There are up to 5 queries, and each is cut at 200 characters. The tool's description asks for a goal-style objective and 1 to 3 short queries.
+`query` is deprecated. It is now optional in the schema and marked deprecated. A `query` given alone is still searched, as the objective and its only query. Each provider is sent what it takes:
+- Parallel gets the objective as `objective` and the queries as `search_queries`. Where the run names a model, Parallel also gets that model's bare id as `client_model`. `excerpt_settings` is no longer sent.
+- Exa, keyed and keyless, gets the objective as its query.
+- Firecrawl, keyed and keyless, is sent up to 3 of the queries at once. Each request asks for its share of the results and a markdown scrape of each one. The results are merged by URL, and each snippet is the page's markdown. Keyless Firecrawl is also sent the objective, because its tool requires one. Keyed Firecrawl now costs 1 more credit for each result it scrapes.
+- Native search gets the first query.
+
+A search's answer now carries `objective` and `queries`, and no longer carries `query`. In a receipt from `@parcha/agentrun-web`, `asked` is the search's objective, and a new `queries` field holds the queries. Jev ranks results against the objective.
+`web_fetch` takes an `objective`. In `@parcha/agentrun-web` the option is `FetchOptions.objective`. `lookingFor` stays as an alias, and `objective` wins when both are given. With no classifier in the run, the answer is the part asked for, unchanged. Before, it said `looking_for not applied (no classifier in this run)`.
+`Web.search` takes a string or `{ objective, queries?, n? }`. `WebConfig.client` (`{ model?, session? }`) is sent to the providers that take it, and only when given.
