@@ -4196,6 +4196,7 @@ export interface operations {
         sessions: number;
         requests: number;
         tokens: number;
+        sources: string[];
       }[];
       models: {
         model: string;
