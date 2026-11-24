@@ -115,7 +115,7 @@ test("a write whose file is in <files> shows its content cut at 2,000 in the cal
   assert.ok(shown.includes(JSON.stringify(calls[1].arguments)), "a write no shown file holds is whole");
 });
 
-test("the calls' arguments take at most half their room, each cut marked in place, so every call keeps its result", () => {
+test("the calls' arguments take what their results leave of the room, each cut marked in place, so every call keeps its result", () => {
   const calls = Array.from({ length: 3 }, (_, i) => ({ tool: "create_issue", arguments: { body: `${"a".repeat(100_000)}END${i}` }, status: "ok", result: `${"r".repeat(5_000)}R${i}` }));
   const input = graderInput(GRADER, "File them.", record(calls, []));
   assert.ok(input.length <= GRADER_PROMPT_MAX, String(input.length));
@@ -126,7 +126,58 @@ test("the calls' arguments take at most half their room, each cut marked in plac
   }
   const heads = shown.split("\n").filter((line) => /^\d+\. /.test(line)).map((line) => line.slice(0, line.indexOf(" -> ok: ")));
   assert.equal(heads.length, 3);
-  assert.ok(heads.reduce((sum, head) => sum + head.length, 0) <= GRADER_PROMPT_MAX / 2, String(heads.map((head) => head.length)));
+  // The results need 15,000 of the room, so the arguments get the rest of it: more than half.
+  assert.ok(heads.reduce((sum, head) => sum + head.length, 0) > GRADER_PROMPT_MAX / 2, String(heads.map((head) => head.length)));
+});
+
+test("a call whose arguments pass half the calls' room shows them whole when its result leaves room for them", () => {
+  const calls = [{ tool: "create_issue", arguments: { title: "Notes", body: `${"b".repeat(70_000)}BODYEND` }, status: "ok", result: "created #12" }];
+  const input = graderInput(GRADER, "File it.", record(calls, []));
+  assert.ok(input.includes(`1. create_issue ${JSON.stringify(calls[0].arguments)} -> ok: created #12`));
+  assert.doesNotMatch(input, /characters cut/);
+});
+
+test("with a large file in <files>, a call's 8,000-character argument still shows whole: the calls get what they need first", () => {
+  const file = { name: "big.txt", bytes: 150_000, text: "f".repeat(150_000) };
+  const calls = [{ tool: "create_issue", arguments: { body: `${"b".repeat(8_000)}BODYEND` }, status: "ok", result: "created #12" }];
+  const input = graderInput(GRADER, "File it.", record(calls, [file]));
+  assert.ok(input.length <= GRADER_PROMPT_MAX, String(input.length));
+  assert.match(input.slice(input.indexOf("<files untrusted>"), input.indexOf("</files>")), /f \[\.\.\. \d+ characters cut \.\.\.\] f/);
+  assert.ok(input.includes(`1. create_issue ${JSON.stringify(calls[0].arguments)} -> ok: created #12`));
+});
+
+test("with files and MCP calls, the arguments take half the calls' own room when their results need more than half", () => {
+  const file = { name: "big.txt", bytes: 200_000, text: "f".repeat(200_000) };
+  const calls = Array.from({ length: 3 }, (_, i) => ({ tool: "create_issue", arguments: { body: `${"a".repeat(100_000)}END${i}` }, status: "ok", result: `${"r".repeat(4_000)}R${i}` }));
+  const mcpCalls = Array.from({ length: 3 }, (_, i) => ({ tool: "mcp__crm__lookup", arguments: { note: "m".repeat(100_000), i } }));
+  const input = graderInput(GRADER, "File them.", { ...record(calls, [file]), mcpCalls });
+  assert.ok(input.length <= GRADER_PROMPT_MAX, String(input.length));
+  const open = "<tool-calls untrusted>\n";
+  const block = input.slice(input.indexOf(open) + open.length, input.indexOf("\n</tool-calls>"));
+  const args = [...block.matchAll(/^\d+\. create_issue (.*) -> ok: /gm)].map((match) => match[1]);
+  assert.equal(args.length, 3, block.slice(0, 300));
+  for (const [i, shown] of args.entries()) assert.match(shown, new RegExp(`^\\{"body":"a+ \\[\\.\\.\\. \\d+ characters cut \\.\\.\\.\\] a+END${i}"\\}$`));
+  // Half the block the calls fill (the calls' room, less what a cut's marker leaves unused): not the half of the whole
+  // room or of what the files leave, which the MCP calls share.
+  const share = args.reduce((sum, shown) => sum + shown.length, 0) / block.length;
+  assert.ok(share > 0.45 && share < 0.55, String(share));
+});
+
+test("a write inside a list of files is cut as one at the top is, and the cut starts past 2,000 characters", () => {
+  const file = { name: "out.md", bytes: 5_006, text: `${"c".repeat(5_000)}TAILMK` };
+  const exact = { name: "two.md", bytes: 2_000, text: "e".repeat(2_000) };
+  const over = { name: "three.md", bytes: 2_001, text: "g".repeat(2_001) };
+  const calls = [
+    { tool: "write_files", arguments: { files: [{ path: "out.md", content: file.text }] }, status: "ok", result: "wrote 1" },
+    { tool: "write", arguments: { path: "two.md", content: exact.text }, status: "ok", result: "wrote two.md" },
+    { tool: "write", arguments: { path: "three.md", content: over.text }, status: "ok", result: "wrote three.md" },
+  ];
+  const input = graderInput(GRADER, "Write them.", record(calls, [file, exact, over]));
+  const shown = input.slice(input.indexOf("<tool-calls untrusted>"));
+  assert.equal(input.split("TAILMK").length - 1, 1, "the file's bytes are in the grader's input once, in <files>");
+  assert.match(shown, /1\. write_files \{"files":\[\{"path":"out\.md","content":"c{1997}\.\.\."\}\]\}/);
+  assert.ok(shown.includes(`{"path":"two.md","content":"${exact.text}"}`), "2,000 characters stay whole");
+  assert.match(shown, /3\. write \{"path":"three\.md","content":"g{1997}\.\.\."\}/);
 });
 
 test("a long argument stays whole when the calls fit", () => {

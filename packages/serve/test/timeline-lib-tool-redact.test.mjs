@@ -120,8 +120,9 @@ test("with serve's own redactors, as the served route passes them, a calls read'
   assert.doesNotMatch(JSON.stringify(more), new RegExp(digits));
 });
 
-/** A tool_input's names and values, counted as the budget counts them: each name, each string, each number's text. */
-const size = (value) => (typeof value === "string" ? value.length : Array.isArray(value) ? value.reduce((n, v) => n + size(v), 0) : value && typeof value === "object" ? Object.entries(value).reduce((n, [k, v]) => n + k.length + size(v), 0) : String(value).length);
+/** A tool_input's names, values and brackets, counted as the budget counts them: each name, each string, each number's
+ *  text, and each array's or object's two brackets. */
+const size = (value) => (typeof value === "string" ? value.length : Array.isArray(value) ? value.reduce((n, v) => n + size(v), 2) : value && typeof value === "object" ? Object.entries(value).reduce((n, [k, v]) => n + k.length + size(v), 2) : String(value).length);
 
 test("a calls read's tool_input has one budget of calls.result characters a row, over its names and values in order: the string that reaches it is cut there, and each object still open ends with one ...", async () => {
   const { redactedCall } = await import("../dist/key-refusal.js");
@@ -133,8 +134,8 @@ test("a calls read's tool_input has one budget of calls.result characters a row,
   const input = rows.find((r) => r.kind === "tool_use" && r.tool_use_id === "b1").tool_input;
   assert.equal(input.a, a, "first, whole");
   assert.equal(input.b, b, "second, whole");
-  // 12,000, less a, b and the names a, b, nested and c (9): c is cut at 1,991.
-  assert.deepEqual([input.nested.c.length, input.nested.c.endsWith("..."), input.nested.c.startsWith("ccc")], [1991, true, true], "third, cut where the budget ends");
+  // 12,000, less the two objects' brackets (4), a, b and the names a, b, nested and c (9): c is cut at 1,987.
+  assert.deepEqual([input.nested.c.length, input.nested.c.endsWith("..."), input.nested.c.startsWith("ccc")], [1987, true, true], "third, cut where the budget ends");
   assert.deepEqual(Object.keys(input.nested), ["c", "..."], "the rest of nested, one ...");
   assert.deepEqual(Object.keys(input), ["a", "b", "nested", "..."], "the rest of the row, one ...: count and tail never read");
   assert.deepEqual([input.nested["..."], input["..."]], ["...", "..."]);
@@ -150,11 +151,41 @@ test("a calls read's tool_input counts names and items against its budget too: a
   const rows = timelineOf([user("Go."), assistant([call("n1", "bulk", names), call("n2", "bulk", list)]), result("n1", "bulk", "done"), result("n2", "bulk", "done")], { redact, calls });
   const [named, listed] = ["n1", "n2"].map((id) => rows.find((r) => r.kind === "tool_use" && r.tool_use_id === id).tool_input);
   const keys = Object.keys(named);
-  // Four names of 1,000 and their numbers (4,004), then the fifth name cut at the 996 left, its value past the budget.
+  // The object's brackets (2), four names of 1,000 and their numbers (4,004), then the fifth name cut at the 994 left,
+  // its value past the budget.
   assert.deepEqual(keys.slice(0, 4), Object.keys(names).slice(0, 4));
-  assert.deepEqual([keys.length, keys[4].length, keys[4].endsWith("..."), named[keys[4]], keys[5], named["..."]], [6, 996, true, "...", "...", "..."]);
+  assert.deepEqual([keys.length, keys[4].length, keys[4].endsWith("..."), named[keys[4]], keys[5], named["..."]], [6, 994, true, "...", "...", "..."]);
   assert.ok(size(named) <= calls.result + 12, `${size(named)} characters`);
-  // "data" (4), then the long string cut at the 4,996 left, then one ... for the 1,000 items after it.
-  assert.deepEqual([listed.data.length, listed.data[0].length, listed.data[1]], [2, 4996, "..."]);
+  // The brackets of the object and the array (4) and "data" (4), then the long string cut at the 4,992 left, then one ...
+  // for the 1,000 items after it.
+  assert.deepEqual([listed.data.length, listed.data[0].length, listed.data[1]], [2, 4992, "..."]);
   assert.ok(size(listed) <= calls.result + 12, `${size(listed)} characters`);
+});
+
+test("a calls read's tool_input charges every value at least one character and every array or object its brackets: a million empty items stop at the budget", async () => {
+  const { redactedCall } = await import("../dist/key-refusal.js");
+  const calls = { result: 5000, redact, input: (text, shown) => redactedCall(text, [KEY], shown) };
+  const args = { e1: { a: Array(1_000_000).fill([]) }, e2: { a: Array(1_000_000).fill({}) }, e3: { data: Array(200_000).fill("") } };
+  const rows = timelineOf([user("Go."), assistant(Object.entries(args).map(([id, input]) => call(id, "bulk", input))), ...Object.keys(args).map((id) => result(id, "bulk", "done"))], { redact, calls });
+  for (const id of Object.keys(args)) {
+    const input = rows.find((r) => r.kind === "tool_use" && r.tool_use_id === id).tool_input;
+    const items = Object.values(input)[0];
+    assert.ok(size(input) <= calls.result + 12, `${id}: ${size(input)} characters`);
+    assert.ok(JSON.stringify(input).length <= 4 * calls.result, `${id}: ${JSON.stringify(input).length} characters of JSON`);
+    assert.equal(items.at(-1), "...", `${id}: the items past the budget, one ...`);
+    assert.ok(items.length > 1_000 && items.length < 5_000, `${id}: ${items.length} items`);
+  }
+});
+
+test("a calls read's tool_input shows a number, boolean or null that would pass the budget as ..., never past it", async () => {
+  const { redactedCall } = await import("../dist/key-refusal.js");
+  const digits = "73194628501";
+  const calls = { result: 50, redact, input: (text, shown) => redactedCall(text, [KEY], shown), held: (value) => String(value) === digits };
+  // The object's brackets (2), "s" and its 40 characters (41) leave 7; "n" (1) leaves 6, short of the number's 15
+  // and of "[redacted]"'s 10; with 42 characters, 4 are left after "n", short of "false".
+  const args = { s1: { s: "x".repeat(40), n: 123456789012345 }, s2: { s: "x".repeat(40), n: Number(digits) }, s3: { s: "x".repeat(42), n: false } };
+  const rows = timelineOf([user("Go."), assistant(Object.entries(args).map(([id, input]) => call(id, "bulk", input))), ...Object.keys(args).map((id) => result(id, "bulk", "done"))], { redact, calls });
+  const shown = Object.fromEntries(Object.keys(args).map((id) => [id, rows.find((r) => r.kind === "tool_use" && r.tool_use_id === id).tool_input]));
+  assert.deepEqual(shown, { s1: { s: "x".repeat(40), n: "..." }, s2: { s: "x".repeat(40), n: "..." }, s3: { s: "x".repeat(42), n: "..." } });
+  for (const [id, input] of Object.entries(shown)) assert.ok(size(input) <= calls.result, `${id}: ${size(input)} characters`);
 });
