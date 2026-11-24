@@ -76,6 +76,7 @@ export function createWeb(config: WebConfig): Web {
   if (config.send?.["firecrawl-keyless"]) firecrawl.send = config.send["firecrawl-keyless"];
   if (config.send?.["exa-keyless"]) exa.send = config.send["exa-keyless"];
   if (config.words) firecrawl.words = exa.words = config.words;
+  firecrawl.now = now;
   const firecrawlSearchMs = config.bounds?.firecrawlMs;
 
   let parallel: Extract | null | undefined;
