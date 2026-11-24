@@ -1,7 +1,7 @@
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { useRunGraph } from "@/components/RunGraphView";
+import { RunGraphView, useRunGraph } from "@/components/RunGraphView";
 import { ClientError } from "@/lib/client";
 import type { RunGraph } from "@/lib/runGraph";
 
@@ -34,5 +34,22 @@ describe("useRunGraph", () => {
     await act(async () => { root!.render(createElement(Probe, { load: off, enabled: false })); });
     await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
     expect(off).not.toHaveBeenCalled();
+  });
+});
+
+describe("RunGraphView", () => {
+  it("draws a run whose graph the server withheld (a saved secret split across its words): no nodes, and says so", () => {
+    const data = {
+      run: { id: "r", agent: "a", revision: "1", status: "completed", paused: false, startedAt: "2026-11-24T00:00:00Z", endedAt: "2026-11-24T00:00:09Z" },
+      workflow: "[redacted]",
+      graph: { nodes: [], edges: [], withheld: true },
+      nodes: {}, decisions: [], effects: [], totals: { cost_usd: 0, decisions: 0, effects: 0, elapsed_ms: 9000 },
+    } as unknown as RunGraph;
+    const host = document.createElement("div");
+    document.body.append(host);
+    root = createRoot(host);
+    act(() => root!.render(createElement(RunGraphView, { data, fileUrl: (ref: string) => ref })));
+    expect(host.textContent).toContain("Decisions");
+    expect(host.querySelector('[role="status"]')?.textContent ?? "").toMatch(/graph is withheld/);
   });
 });

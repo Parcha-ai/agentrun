@@ -168,6 +168,26 @@ test("the graph: a held value whole in one field of a call's output is cut in pl
   assert.deepEqual(shown.later, cut);
 });
 
+// The graph's structure (`graph`, the DSL's workflowGraph): a question whose instructions end with a held value's head
+// and whose first option starts with its rest. Withheld, it is served in the shape every reader of the graph reads, no
+// nodes and no edges, marked withheld; never the string "[redacted]" where a graph stands. A held value whole in one
+// question's words is cut in place, the graph keeping its nodes and no mark (control).
+const questionGraph = (instructions, option) => ({
+  nodes: [{ path: "/root", kind: "pick", label: "pick", questions: [{ id: "q", type: "choice", instructions, options: [option, "second"] }] }],
+  edges: [],
+});
+
+test("the graph: a held value split across a question's instructions and its first option serves the graph withheld, with no nodes or edges", () => {
+  const shown = servedGraphView({ ...graphOf({}, {}, "x"), graph: questionGraph(`Which one? ${HEAD}`, `${REST} first`) }, SECRETS);
+  assert.deepEqual(shows(JSON.stringify(shown)), []);
+  assert.deepEqual(shown.graph, { nodes: [], edges: [], withheld: true });
+});
+
+test("the graph: a held value whole in a question's instructions is cut in place, the graph keeping its nodes (control)", () => {
+  const shown = servedGraphView({ ...graphOf({}, {}, "x"), graph: questionGraph(`Which one? ${KEY}`, "first") }, SECRETS);
+  assert.deepEqual(shown.graph, questionGraph("Which one? [redacted]", "first"));
+});
+
 // A web call's output in the graph is its JSON written as a string in the call's part: the join reads the strings inside
 // that string too, so a held value split across two of them withholds the part; one whole in a string is cut in place,
 // the JSON still parsing (control).
