@@ -163,8 +163,9 @@ describe("Settings → Model keys, Claude Code's login on this machine", () => {
   });
 
   it("switched off while it waits for a sign-in it started: the row goes, and no poll or return to the page asks again", async () => {
-    const SIGNED_OUT: ClaudeLoginView = { ...OFF, state: "signed_out", can_start: true };
-    const { v2, calls } = server(() => SIGNED_OUT, () => SIGNED_OUT);
+    // Signed out, then the sign-in the row starts waits for the browser, so the row polls (it polls only then).
+    let view: ClaudeLoginView = { ...OFF, state: "signed_out", can_start: true };
+    const { v2, calls } = server(() => view, () => (view = { ...view, sign_in: { state: "waiting", started_at: STARTED_AT, limit_ms: 600_000 } }));
     // The poll runs on a fake clock, stepped past its interval instead of slept through. setTimeout stays real for settle().
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
     const page = await open(v2, undefined, true);
