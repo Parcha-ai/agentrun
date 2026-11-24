@@ -306,6 +306,10 @@ export type TimelineOptions = {
    *  this for the full protection: a key a stream wraps with only part of its tail streamed is covered by a held-back
    *  tail as long as a key, not by the word holdback. */
   redactLive?: (text: string) => string;
+  /** Whether a text holds a held value no cut in place takes (key-refusal.ts withheldWhole, whose join view reads a
+   *  JSON text's strings joined): a call's arguments, each string of which `redact` reads on its own, are read with it
+   *  as their JSON, and withheld whole when it says so (argsOf), in every read. Default: `calls.holds`, else none. */
+  holds?: (text: string) => boolean;
   /** For a reader that grades the run (a template eval): each `tool_use` row carries its call's arguments whole
    *  (`tool_input`), and each `tool_result` row the head of its output to `result` characters (`tool_result_text`; a
    *  web call's every url, each of its strings redacted on its own), made safe by `redact`, a redactor that reads that
@@ -798,12 +802,13 @@ function createProjector(options: TimelineOptions) {
     if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, redactValue(item)]));
     return value;
   };
-  /** The arguments of calls a `calls` read withholds whole (argsOf). */
+  /** The arguments of calls a read withholds whole (argsOf). */
   const withheldArgs = new WeakSet<Obj>();
-  /** A call's arguments as its rows may show them: redacted once, where the call is first seen (redactValue). In a
-   *  `calls` read, arguments whose JSON holds a held value no cut in place takes (`calls.holds`: split across two of
-   *  their strings, or across a property name and its value, which redactValue reads one at a time) are withheld whole:
-   *  the call's rows read it as one with no arguments, its `tool_input` is left out and its preview is "[redacted]". */
+  /** A call's arguments as its rows may show them: redacted once, where the call is first seen (redactValue). Arguments
+   *  whose JSON holds a held value no cut in place takes (`holds`, else `calls.holds`: split across two of their
+   *  strings, or across a property name and its value, which redactValue reads one at a time) are withheld whole, in a
+   *  read with calls or without: the call's rows read it as one with no arguments, its preview is "[redacted]" and its
+   *  `tool_input` is left out. */
   const argsOf = (args: Obj): Obj => {
     if (argsHeld(args)) {
       const none: Obj = {};
@@ -812,9 +817,9 @@ function createProjector(options: TimelineOptions) {
     }
     return options.redact ? (redactValue(args) as Obj) : args;
   };
-  /** Whether a `calls` read withholds `args` whole (argsOf); arguments that cannot be read as JSON are. */
+  /** Whether the read withholds `args` whole (argsOf); arguments that cannot be read as JSON are. */
   const argsHeld = (args: Obj): boolean => {
-    const holds = options.calls?.holds;
+    const holds = options.holds ?? options.calls?.holds;
     if (!holds) return false;
     try {
       return holds(JSON.stringify(args));
