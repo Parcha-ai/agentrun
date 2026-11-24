@@ -2,7 +2,9 @@
 // carries, on codex with a model that is not the default) installed on A, then deployed by `agentrun deploy` the two ways
 // it deploys (a package folder, and an install's agent by its export), and the agent read back on each target is the
 // same as A's, field by field (scripts/deploy-parity.mjs): no difference, and no field unread. Three servers with the
-// faux model and stand-in MCP servers, each saving the servers under names of its own; the keys are fakes.
+// faux model and stand-in MCP servers, each saving the servers under names of its own; the keys are fakes. Each server
+// takes serve's test harness table (fixtures/faux-table.mjs): codex keeps its facts and runs any model, so the fixture's
+// harness and preferred model are what its agent gets, as on a server with codex and an OpenAI key.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { cpSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
@@ -11,12 +13,14 @@ import { test } from "node:test";
 import { serve, withEnv } from "../../serve/test/support.mjs";
 import { startFakeMcp } from "../../serve/test/fixtures/fake-mcp-server.mjs";
 import { KEY as MONID_KEY } from "../../serve/test/fixtures/faux-monid.mjs";
+import { fauxTable } from "../../serve/test/fixtures/faux-table.mjs";
 import { describeAgent } from "../../../scripts/deploy-parity.mjs";
 import { parityOf, readAgent } from "../../../scripts/deploy-parity-read.mjs";
 import { cli, keptEnv, scratch } from "./support.mjs";
 
 const FIXTURE = new URL("./fixtures/parity-agent/", import.meta.url).pathname;
 const FAUX_MONID = new URL("../../serve/test/fixtures/faux-monid.mjs", import.meta.url).pathname;
+const FAUX_HARNESS = new URL("../../serve/test/fixtures/faux-harness.mjs", import.meta.url).pathname;
 const CHECK = new URL("../../../scripts/deploy-parity-read.mjs", import.meta.url).pathname;
 /** The fixture's MCP needs, as its manifest lists them. */
 const NEEDS = [
@@ -44,7 +48,7 @@ async function standIns(t) {
 /** A server with the stand-ins saved under `names` (toolkit -> the name this install's owner gave it; a toolkit with no
  *  name is not saved there), and monid's fake. */
 async function install(t, fakes, names) {
-  const server = await serve(t, { mcpStandIns: true, runner: false, fauxMonid: FAUX_MONID });
+  const server = await serve(t, { mcpStandIns: true, runner: false, fauxMonid: FAUX_MONID, harnessTable: fauxTable(FAUX_HARNESS) });
   for (const need of NEEDS.filter((one) => names[one.toolkit])) {
     const saved = await server.api("PUT", `/settings/mcp-servers/${names[need.toolkit]}`, { url: fakes[need.toolkit].url, auth: { type: "none" }, source: need.source, toolkit: need.toolkit });
     assert.equal(saved.status, 200, JSON.stringify(saved.body));
