@@ -97,6 +97,7 @@ test("a sift keeps what the decider scores as needed and drops at the threshold:
     dropped: [{ id: URLS[1], score: 0.05, reason: "needed p=0.05 <= 0.2" }, { id: URLS[2], score: 0.2, reason: "needed p=0.2 <= 0.2" }],
     model: "fake-1", temperature_sent: null, temperature_applied: false, tokens: { in: 100, out: 4, basis: "reported" }, latency_ms: 0, cost: { usd: 0.0001, basis: "estimate" },
     requests: 1, questions_sha256: [sha256(JSON.stringify(siftQuestions()))],
+    scored: URLS.map((id, i) => ({ id, score: [0.9, 0.05, 0.2, 0.21][i] })),
   });
 });
 
@@ -105,13 +106,10 @@ function siftQuestions() {
   return siftRequest("widgets delaware", URLS.map((url) => ({ url, title: "", snippet: "" })), TASK).questions;
 }
 
-test("the threshold is how sure the decider must be that a result is not needed: at 0.95 only p <= 0.05 is dropped", async () => {
-  const { provider } = fakeProvider({ r1: 0.9, r2: 0.05, r3: 0.2, r4: 0.06 });
-  const { answer, receipt } = await fakeWeb({ decider: priced(provider, { threshold: 0.95 }) }).search("widgets delaware", { n: 4 });
-  assert.deepEqual(answer.results.map((hit) => hit.url), [URLS[0], URLS[2], URLS[3]]);
-  assert.deepEqual(receipt.classifier.dropped.map((d) => d.id), [URLS[1]]);
-  assert.throws(() => deciderFrom(provider, { price: PRICE, threshold: 0.5 }), /threshold/);
-  assert.throws(() => deciderFrom(provider, { price: PRICE, threshold: 1.2 }), /threshold/);
+test("the decider gives scores, not decisions: each verdict is the provider's p, or null where it refused", async () => {
+  const { provider } = fakeProvider({ r1: 0.9, r2: { type: "refusal" } });
+  const got = await priced(provider).sift("widgets delaware", URLS.slice(0, 2).map((url) => ({ url, title: "", snippet: "" })), TASK, CTX());
+  assert.deepEqual(got.verdicts, [{ score: 0.9 }, { score: null }]);
 });
 
 test("a fetched part is judged in passages: the kept passages in order, LEFT_OUT where any were dropped, the part's place in the page unchanged", async () => {
@@ -128,6 +126,7 @@ test("a fetched part is judged in passages: the kept passages in order, LEFT_OUT
     dropped: [{ id: "p2", score: 0.01, reason: "needed p=0.01 <= 0.2", at: [A.length, A.length + B.length] }],
     model: "fake-1", temperature_sent: null, temperature_applied: false, tokens: { in: 100, out: 4, basis: "reported" }, latency_ms: 0, cost: { usd: 0.0001, basis: "estimate" },
     requests: 1, questions_sha256: [sha256(JSON.stringify(judgeRequest(PUBLIC, TASK, [A, B, C]).questions))],
+    scored: [{ id: "p1", score: 0.9, at: [0, A.length] }, { id: "p2", score: 0.01, at: [A.length, A.length + B.length] }, { id: "p3", score: 0.7, at: [A.length + B.length, LONG.length] }],
   });
   await web.fetch(PUBLIC, { task: TASK });
   assert.equal(asked.length, 2, "each call is judged, one the run's pages answer too");
@@ -353,7 +352,7 @@ test("passages over the state budget go in several requests, each within it and 
     first += n;
   }
   assert.equal(first, 200);
-  assert.deepEqual(got.verdicts.map((v) => v.keep), passages.map((_, i) => i % 2 === 1));
+  assert.deepEqual(got.verdicts.map((v) => v.score), passages.map((_, i) => (i % 2 ? 0.9 : 0.01)));
   assert.deepEqual(got.questions_sha256, asked.map(({ request }) => sha256(JSON.stringify(request.questions))));
   assert.deepEqual([got.tokens, got.cost], [{ in: 100 * asked.length, out: 4 * asked.length, basis: "reported" }, { usd: Math.round(0.0001 * asked.length * 1e6) / 1e6, basis: "estimate" }]);
 });
