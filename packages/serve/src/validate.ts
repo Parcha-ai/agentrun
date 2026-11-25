@@ -224,19 +224,30 @@ export function inputSchemaIssues(schema: unknown, at = "definition.input_schema
  * is always taken, as text: a run's message, which a follow-up and a trigger's line add to. It is required when the
  * schema has no field of its own, as an agent with no schema requires it. A schema whose own fields are all optional
  * (a template's `pr_number`, given by hand and left out of a trigger's runs) leaves `required` empty: a run gives
- * content or one of those fields, which inputIssues checks, so an input that says nothing is still refused.
+ * content or one of those fields, which inputIssues checks, so an input that says nothing is still refused. Neither the
+ * schema's maxProperties nor its propertyNames counts content (X_OWN_FIELDS).
  */
 export function inputSchemaOf(schema: unknown): Json {
   if (!isObject(schema)) return DEFAULT_INPUT_SCHEMA;
   const properties = isObject(schema.properties) ? schema.properties : {};
   const required = Array.isArray(schema.required) ? schema.required.filter((key): key is string => typeof key === "string") : [];
   const ownOptional = required.length === 0 && Object.keys(properties).some((key) => key !== "content");
+  const { maxProperties, propertyNames, ...rest } = schema;
+  const own: Json = { ...(maxProperties === undefined ? {} : { maxProperties }), ...(propertyNames === undefined ? {} : { propertyNames }) };
   return {
-    ...schema,
+    ...rest,
     properties: { ...properties, content: properties.content ?? { type: "string" } },
     required: required.some((key) => key !== "content") || ownOptional ? required : [...new Set([...required, "content"])],
+    ...(Object.keys(own).length ? { [X_OWN_FIELDS]: own } : {}),
   };
 }
+
+/**
+ * Where the schema in force keeps its schema's maxProperties and propertyNames (inputSchemaOf), which count and name the
+ * input's own fields: content is always taken (a trigger's line, its event and a schedule's last answer ride in it), so
+ * inputIssues checks these two against the input without it. A JSON Schema can't leave one property out of them.
+ */
+export const X_OWN_FIELDS = "x-own-fields";
 
 /** Each JSON Schema keyword's issue reason (InputIssue.reason): a keyword not named here is `invalid`. */
 const KEYWORD_REASON: Record<string, string> = {
@@ -258,18 +269,27 @@ export function inputIssues(input: Json, schema: Json, at = "input"): InputIssue
     out.push(issue(path, reason, message, fix));
   };
   // The schema in force compiles: a save checks it (inputSchemaIssues).
-  const compiled = schemaCheck(schema);
-  if ("why" in compiled) throw new Error(`the input schema ${compiled.why}`);
-  for (const error of compiled.validator.Errors(input)[1]) {
-    const where = [at, ...error.instancePath.split("/").slice(1).map((part) => part.replace(/~1/g, "/").replace(/~0/g, "~"))].join(".");
-    const params = error.params as Record<string, unknown>;
-    if (error.keyword === "required") for (const key of (params.requiredProperties as string[] | undefined) ?? []) add(`${where}.${key}`, "missing", `${where}.${key} is required`);
-    else if (error.keyword === "additionalProperties") for (const key of (params.additionalProperties as string[] | undefined) ?? []) add(`${where}.${key}`, "not_allowed", `${where} keeps no field ${key}`, `Remove ${where}.${key}.`);
-    // A closed object's own refusal of each extra property, said once above by its name.
-    else if (error.keyword === "boolean" && error.schemaPath.endsWith("/additionalProperties")) continue;
-    // A required text sent empty is one left blank (a form sends it so): said as a missing one is, never as its length.
-    else if (error.keyword === "minLength" && emptyRequired(input, schema, error.instancePath, error.schemaPath)) add(where, "missing", `${where} is required`);
-    else add(where, KEYWORD_REASON[error.keyword] ?? "invalid", `${where} ${error.message}`);
+  const report = (against: Json, value: Json) => {
+    const compiled = schemaCheck(against);
+    if ("why" in compiled) throw new Error(`the input schema ${compiled.why}`);
+    for (const error of compiled.validator.Errors(value)[1]) {
+      const where = [at, ...error.instancePath.split("/").slice(1).map((part) => part.replace(/~1/g, "/").replace(/~0/g, "~"))].join(".");
+      const params = error.params as Record<string, unknown>;
+      if (error.keyword === "required") for (const key of (params.requiredProperties as string[] | undefined) ?? []) add(`${where}.${key}`, "missing", `${where}.${key} is required`);
+      else if (error.keyword === "additionalProperties") for (const key of (params.additionalProperties as string[] | undefined) ?? []) add(`${where}.${key}`, "not_allowed", `${where} keeps no field ${key}`, `Remove ${where}.${key}.`);
+      // A closed object's own refusal of each extra property, said once above by its name.
+      else if (error.keyword === "boolean" && error.schemaPath.endsWith("/additionalProperties")) continue;
+      // A required text sent empty is one left blank (a form sends it so): said as a missing one is, never as its length.
+      else if (error.keyword === "minLength" && emptyRequired(input, schema, error.instancePath, error.schemaPath)) add(where, "missing", `${where} is required`);
+      else add(where, KEYWORD_REASON[error.keyword] ?? "invalid", `${where} ${error.message}`);
+    }
+  };
+  report(schema, input);
+  // Its maxProperties and propertyNames meet the input's own fields, content left out (X_OWN_FIELDS).
+  const own = schema[X_OWN_FIELDS];
+  if (isObject(own) && isObject(input)) {
+    const { content: _content, ...ownFields } = input;
+    report({ type: "object", ...own }, ownFields);
   }
   // A schema in force that requires nothing (inputSchemaOf: its own fields all optional) takes content or one of them:
   // an input naming none says nothing, said at content, with the fields that would do instead.

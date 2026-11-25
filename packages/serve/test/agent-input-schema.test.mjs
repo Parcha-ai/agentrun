@@ -125,6 +125,25 @@ test("the schema in force: content is reserved as a string; with no field of its
   assert.deepEqual(inputIssues({}, inForce, "target.input").map((i) => i.field), ["target.input.company"]);
 });
 
+test("content is exempt from a schema's maxProperties and propertyNames: a trigger's message and its additions never push an input over them", () => {
+  const COMPANY = { type: "object", required: ["company"], properties: { company: { type: "string" }, note: { type: "string" } } };
+  const capped = inputSchemaOf({ ...COMPANY, maxProperties: 1 });
+  const said = (input, schema) => inputIssues(input, schema).map((i) => [i.field, i.reason]);
+  assert.deepEqual(said({ company: "Acme" }, capped), []);
+  assert.deepEqual(said({ company: "Acme", content: "" }, capped), [], "a blank message beside the field the cap allows");
+  assert.deepEqual(said({ company: "Acme", content: "A webhook fired." }, capped), []);
+  assert.deepEqual(said({ company: "Acme", note: "x" }, capped), [["input", "too_many"]], "the schema's own fields still meet its cap");
+  assert.deepEqual(said({ company: "Acme", note: "x", content: "" }, capped), [["input", "too_many"]]);
+  const named = inputSchemaOf({ ...COMPANY, propertyNames: { enum: ["company"] } });
+  assert.deepEqual(said({ company: "Acme", content: "" }, named), [], "content is a name the schema always takes");
+  assert.deepEqual(said({ company: "Acme", note: "x", content: "" }, named), [["input.note", "not_an_option"], ["input", "invalid"]], "a name the schema refuses is still refused, once");
+  const patterned = inputSchemaOf({ ...COMPANY, propertyNames: { pattern: "^c[a-z]+y$" } });
+  assert.deepEqual(said({ company: "Acme", content: "x" }, patterned), []);
+  assert.deepEqual(said({ company: "Acme", cash: "x" }, patterned), [["input.cash", "bad_format"], ["input", "invalid"]]);
+  assert.deepEqual(inputIssues({ company: "Acme", note: "x" }, capped, "target.input").map((i) => [i.field, i.message]), [["target.input", "target.input must not have more than 1 properties"]], "said at the input, in the schema's own number");
+  assert.deepEqual(inputSchemaOf(COMPANY), { ...COMPANY, properties: { ...COMPANY.properties, content: { type: "string" } } }, "a schema with neither keeps its shape");
+});
+
 test("a required text field left empty is said as missing, in a missing field's words; an optional one or a list's item keeps its length issue", () => {
   const said = (input) => inputIssues(input, inputSchemaOf({ ...SUBJECT, properties: { ...SUBJECT.properties, note: { type: "string", minLength: 2 }, topics: { type: "array", items: { type: "string", minLength: 1 } } } })).map((i) => [i.field, i.reason, i.message]);
   assert.deepEqual(said({ company: "" }), said({}));
@@ -203,4 +222,15 @@ test("a trigger's start_run target is checked against the agent's input schema w
   // A trigger's message is its own row (origin trigger), never a person's user_message.
   const first = rows.find((row) => row.origin === "trigger")?.text;
   assert.match(first, /^Check them\.\n\n\(Started by hand from the schedule "nightly" at [^)]*\)\.?\n\nInput:\n```json\n\{\n {2}"company": "Stripe, Inc\."\n\}\n```$/, first);
+  // A schema capping its input at one field takes that field beside content: a trigger's line rides in content.
+  assert.equal((await api("POST", "/agents", agent("kyb-capped", { input_schema: { ...SUBJECT, maxProperties: 1 } }))).status, 201);
+  const capped = (input) => ({ ...body(input), target: { ...body(input).target, agent_id: "kyb-capped" } });
+  const one = await api("POST", "/triggers", capped({ content: "", company: "Stripe, Inc." }));
+  assert.equal(one.status, 201, JSON.stringify(one.body));
+  const two = await api("POST", "/triggers", capped({ content: "", company: "Stripe, Inc.", limit: 3 }));
+  assert.deepEqual([two.status, fields(two.body)], [422, [["target.input", "too_many"]]], "its own fields still meet the cap");
+  const firedCapped = await api("POST", `/triggers/${one.body.id}/fire`, undefined, { "idempotency-key": "capped-1" });
+  assert.equal(firedCapped.status, 202, JSON.stringify(firedCapped.body));
+  const capRows = (await follow(api, firedCapped.body.run_id, ["completed"], { deadlineMs: 55_000 })).rows;
+  assert.match(capRows.find((row) => row.origin === "trigger")?.text ?? "", /^\(Started by hand from the schedule "nightly" at [^)]*\)\.?\n\nInput:\n```json\n\{\n {2}"company": "Stripe, Inc\."\n\}\n```$/);
 });
