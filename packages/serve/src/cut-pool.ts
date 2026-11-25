@@ -2,9 +2,9 @@
 // that cuts one text at a time. A read waits for its cut at most its deadline, counted from its call, its wait behind
 // another read's cut included. Past it the read's cut is refused (CutUnserved), never answered with the text uncut: a cut
 // still queued is dropped, and a cut running is stopped by terminating its worker, which the next cut makes anew. A
-// worker that fails or stops refuses the cut it held. Kept, the worker cost a cut about 6 ms where a worker made for each
-// read cost about 65 ms (50 files of 20 KiB, 20 values). It never holds a process open: it is unref'd, and a cut waiting
-// on it is held by its own timer.
+// worker that fails or stops refuses the cut it held. Kept, the worker costs a cut about a tenth of what a worker made for
+// each read costs, a few ms over the cut made inline (50 files of 20 KiB, 20 values: about 8, 80 and 5 ms a read). It
+// never holds a process open: it is unref'd, and a cut waiting on it is held by its own timer.
 import { Worker } from "node:worker_threads";
 import type { CutJob, CutReply } from "./cut-worker.js";
 
