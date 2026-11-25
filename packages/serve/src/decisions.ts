@@ -22,6 +22,10 @@ import { FAUX_ENV } from "./model.js";
 import { keyNeeded } from "./key-words.js";
 
 export const JEV_KEY_ENV = "TYPESAFE_API_KEY";
+/** TypeSafe's base in `env`: TYPESAFE_BASE_URL, else TypeSafe's own, held to the rule for a URL a key goes to
+ *  (httpsBase), which throws in words naming the variable and the URL's origin alone. A run's Jev provider and the key's
+ *  check (key-check.ts) both send TYPESAFE_API_KEY to it, so the key goes where it was checked. */
+export const typesafeBase = (env: NodeJS.ProcessEnv) => httpsBase(env.TYPESAFE_BASE_URL?.trim() || "https://api.typesafe.ai", "TYPESAFE_BASE_URL");
 export const JEV_OPENROUTER_KEY_ENV = "OPENROUTER_API_KEY";
 export const PARALLEL_KEY_ENV = "PARALLEL_API_KEY";
 /** The provider a decision node that names none is answered by. */
@@ -243,10 +247,10 @@ export async function decisionProvidersIn(env: NodeJS.ProcessEnv): Promise<{ pro
  *  (the runner's store), so both routes build the same providers. */
 async function decisionProvidersFrom(handed: Record<string, string>, env: NodeJS.ProcessEnv): Promise<{ providers: Record<string, DecisionProvider>; default: string } | undefined> {
   const providers: Record<string, DecisionProvider> = {};
-  // TypeSafe's SDK reads TYPESAFE_BASE_URL itself when given no base, and sends the key there: on TypeSafe's route the
-  // base is given, by the rule of a URL a key goes to (httpsBase), as a saved key's check takes it (key-check.ts).
-  const typesafeBase = env.TYPESAFE_BASE_URL?.trim();
-  const jev = handed[JEV_KEY_ENV] !== undefined ? { apiKey: handed[JEV_KEY_ENV], ...(typesafeBase ? { baseURL: httpsBase(typesafeBase, "TYPESAFE_BASE_URL") } : {}) } : handed[JEV_OPENROUTER_KEY_ENV] !== undefined ? { provider: "openrouter" as const, apiKey: handed[JEV_OPENROUTER_KEY_ENV] } : undefined;
+  // TypeSafe's SDK reads TYPESAFE_BASE_URL from the process's environment when given no base, and sends the key there:
+  // on TypeSafe's route the base is always given, read from `env` by the rule a saved key's check takes it by
+  // (typesafeBase), so the key goes where it was checked.
+  const jev = handed[JEV_KEY_ENV] !== undefined ? { apiKey: handed[JEV_KEY_ENV], baseURL: typesafeBase(env) } : handed[JEV_OPENROUTER_KEY_ENV] !== undefined ? { provider: "openrouter" as const, apiKey: handed[JEV_OPENROUTER_KEY_ENV] } : undefined;
   if (jev) {
     const [{ jevProvider }, faux] = await Promise.all([import("@parcha/agentrun-jev"), fauxFetch(env, FAUX_JEV_ENV)]);
     providers.jev = jevProvider({ ...jev, ...(faux ? { fetch: faux } : {}) });

@@ -8,6 +8,7 @@
 // Never a paid request: each call below cites the provider's pages that show it is not billed. No outcome holds the
 // key: the provider's first sentence is quoted only when it holds no KEY_PIECE characters of the key in a row.
 import { httpsBase } from "@parcha/agentrun-computer";
+import { typesafeBase } from "./decisions.js";
 import { MONID_API } from "./monid.js";
 import { ANTHROPIC_ORIGIN, gatewayBase } from "./provider.js";
 import { isObject } from "./validate.js";
@@ -47,7 +48,7 @@ export const KEY_CHECKS: Record<string, (key: string, env: NodeJS.ProcessEnv) =>
   kernel: (key, env) => ({ url: `${base(env.KERNEL_BASE_URL, "https://api.onkernel.com", "KERNEL_BASE_URL")}/browsers?limit=1`, headers: { authorization: `Bearer ${key}` } }),
   // A list of the account's models: TypeSafe prices a System One request's input tokens
   // (https://docs.typesafe.ai/api/list-models, https://docs.typesafe.ai/models).
-  typesafe: (key, env) => ({ url: `${base(env.TYPESAFE_BASE_URL, "https://api.typesafe.ai", "TYPESAFE_BASE_URL")}/v1/models`, headers: { authorization: `Bearer ${key}` } }),
+  typesafe: (key, env) => ({ url: `${typesafeBase(env)}/v1/models`, headers: { authorization: `Bearer ${key}` } }),
   // A model provider's key: its list of models, or OpenRouter's record of the key; each prices tokens, and these use none
   // (https://platform.claude.com/docs/en/api/models/list, https://openrouter.ai/docs/api-reference/limits). OpenAI's is
   // in NOT_CHECKED. ANTHROPIC_BASE_URL is the gateway the model path sends Anthropic's key to, under that path's rule
