@@ -54,6 +54,37 @@ test("workflow metrics count the requests and tools from every model node in /v2
   assert.deepEqual(tools.map(({ tool, calls, errors }) => ({ tool, calls, errors })), [{ tool: "submit", calls: 2, errors: 0 }]);
 });
 
+test("workflow stats count direct llm calls once, with or without a model node", async (t) => {
+  const faux = fileURLToPath(new URL("./fixtures/faux-workflow-over-bound.mjs", import.meta.url));
+  const { api, store } = await serve(t, { faux });
+  for (const modelNode of [false, true]) {
+    const id = modelNode ? "mixed-model-and-llm" : "direct-llm";
+    const workflow = answerFlow();
+    workflow.schemas.Llm = { type: "object", required: ["text"], properties: { text: { type: "string" } } };
+    const call = { node: "call", label: "ask", via: "tool", tool: "llm", args: { prompt: "{question}" }, out: "Llm", as: "reply", deadline_s: 60 };
+    if (modelNode) workflow.root.steps.push(call);
+    else {
+      workflow.root = call;
+      workflow.output = { schemaId: "Llm", path: "reply" };
+    }
+    assert.equal((await api("POST", "/agents", flowAgent(id, workflow, { tools: ["llm"] }))).status, 201);
+    const started = await api("POST", `/agents/${id}/runs`, { input: { question: "What is six times seven?" } });
+    assert.equal(started.status, 202, JSON.stringify(started.body));
+    const runId = started.body.run_id;
+    const { last } = await follow(api, runId, ["completed", "failed"]);
+    assert.equal(last.status, "completed");
+    const { costUsd, metrics } = await store.runs.get(runId);
+    const requests = modelNode ? 2 : 1;
+    assert.equal(costUsd, 0.04 * requests);
+    assert.deepEqual([metrics.requests, metrics.input, metrics.output, metrics.unmetered], [requests, 1_000_000 * requests, 400 * requests, 0]);
+    assert.deepEqual(metrics.models, { [metrics.model]: requests });
+  }
+  const stats = await api("GET", "/stats");
+  assert.equal(stats.status, 200);
+  const { totals } = stats.body.analytics;
+  assert.deepEqual([totals.runs_with_metrics, totals.requests, totals.tokens], [2, 3, 3_001_200]);
+});
+
 test("a workflow run's input is checked against the workflow's input schema (422), and a workflow run takes a max_cost_usd, as an agentic run does", async (t) => {
   const { api } = await serve(t);
   assert.equal((await api("POST", "/agents", flowAgent("flow"))).status, 201);

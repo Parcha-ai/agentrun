@@ -57,7 +57,7 @@ import type { WorkflowBody } from "../store/agent-body.js";
 import { decisionsInJournal } from "../store-reads/decisions.js";
 import { type EntryLike, runMetricsWithDecisions } from "../timeline/index.js";
 import { SUBMIT_TOOL } from "../workflow/host-tools.js";
-import { type EndCost, endCostOf, runCostOf } from "./metrics.js";
+import { type EndCost, bookedSpend, endCostOf, runCostOf } from "./metrics.js";
 import { journalEntries } from "./journal-reader.js";
 import { warnHoldShort } from "../print.js";
 
@@ -278,7 +278,9 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string;
     // tool definition it is not given, so it admits this whole set by name (as pi's admits its session's tools); main's
     // nodes send their requests straight to the provider (app.ts:117), unfiltered.
     const offered = nodeOffer(claimed.workflow);
+    const modelNames = new Map<string, string>();
     for (const [tier, provider] of providers) {
+      if (!modelNames.has(provider.modelId)) modelNames.set(provider.modelId, provider.named ?? `${providerId(tier)}/${provider.modelId}`);
       const proxy = await startModelProxy({
         // Each request names its tier's route (ModelRequest.route), so the cap prices it as that tier books it: two tiers
         // on one model id (a plan's and a paid one) are held apart, never at the other's price (capModelOf).
@@ -378,7 +380,7 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string;
       agentId: claimed.agentId,
       revisionId: claimed.revisionId,
       ...(claimed.capUsd !== undefined ? { cap: capRuleOf(() => effectiveCapUsd ?? claimed.capUsd!) } : {}),
-      endPatch: async (_, keepCost) => endPatchOf(booking, run?.journal, hasDecisions, keepCost),
+      endPatch: async (_, keepCost) => booking ? endPatchOf(run?.journal, { hasDecisions, modelNames, keepCost }) : {},
       build: (loopHooks: WorkflowHostHooks) => {
         hooks.setPark(loopHooks);
         const hostDeps: WorkflowHostDeps = {
@@ -872,17 +874,17 @@ function runEffectOf(claimed: Claimed, complete: ReturnType<typeof completer>, e
  *  pi and CLI specs store it): every model request of its sessions, its call nodes' paid requests and its decisions, each
  *  at what it was booked at, never the cap's figure for it (an answer with no price of its own is unknown, never its
  *  hold). Unknown once any one is, written as null, never left out (an end that says nothing leaves the $0 the run read
- *  before a response). The end also counts usage and tools from every conversation, plus the decision receipts.
+ *  before a response). Usage comes from those model bookings and decision receipts, tools from their conversations.
  *  With no journal to read, cost is unknown. */
-async function endPatchOf(booking: Awaited<ReturnType<typeof modelPortFor>> | undefined, journalOf: (() => Journal) | undefined, hasDecisions: boolean, keepCost?: (cost: EndCost) => void): Promise<Pick<EndData, "costUsd" | "costUpperBound" | "metrics">> {
-  if (!booking) return {};
+async function endPatchOf(journalOf: (() => Journal) | undefined, { hasDecisions, modelNames, keepCost }: { hasDecisions: boolean; modelNames: ReadonlyMap<string, string>; keepCost: ((cost: EndCost) => void) | undefined }): Promise<Pick<EndData, "costUsd" | "costUpperBound" | "metrics">> {
   if (!journalOf) return { costUsd: null };
   const journal = journalOf();
   const entries = await journalEntries(journal, BACKGROUND_CONTEXT) as unknown as EntryLike[];
-  const cost = endCostOf(runCostOf(entries));
+  const bookedModel = bookedSpend(entries, "model", modelNames);
+  const cost = endCostOf(runCostOf(entries, { bookedModel }));
   keepCost?.(cost);
   const decisions = hasDecisions ? await decisionsInJournal(journal, BACKGROUND_CONTEXT) : [];
-  return { ...cost, metrics: runMetricsWithDecisions(entries, decisions) };
+  return { ...cost, metrics: runMetricsWithDecisions(entries, decisions, bookedModel) };
 }
 
 /** The run's one cap as a WorkflowCap: model nodes and call nodes pass through (their money is on the proxy), and a
