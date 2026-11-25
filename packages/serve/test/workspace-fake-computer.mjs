@@ -4,7 +4,7 @@
 // scripts; process calls answer ok (realProcesses, in workspace-fake-processes.mjs, runs them for real). A handler
 // may answer a promise. It records every call, in order, as [method, params], so a test can show what an
 // attached Workspace asked the computer for, without the computer module's daemon.
-import { appendFileSync, closeSync, fchmodSync, lstatSync, mkdirSync, openSync, readdirSync, readSync, renameSync, rmdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
+import { appendFileSync, closeSync, fchmodSync, linkSync, lstatSync, mkdirSync, openSync, readdirSync, readSync, renameSync, rmdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import { untar } from "@parcha/agentrun-computer";
@@ -20,6 +20,7 @@ const b64 = (bytes) => Buffer.from(bytes).toString("base64");
  * options.page: the most entries one files.list returns. options.chunk: the most bytes one files.read returns.
  * options.exec: (params) => the exec.run value with stdout and stderr as bytes, default an exit 0 with no output.
  * options.onRead: called after each files.read (a test replaces the file between chunks there).
+ * options.onMove: called with each files.move's params before it moves (a test lands a file at its target there).
  */
 export function fakeComputer(root, options = {}) {
   const calls = [];
@@ -67,7 +68,15 @@ export function fakeComputer(root, options = {}) {
       return { entries, truncated: offset + page < names.length };
     },
     "files.mkdir": ({ path, parents }) => { mkdirSync(host(path), { recursive: Boolean(parents) }); return {}; },
-    "files.move": ({ from, to }) => { renameSync(host(from), host(to)); return {}; },
+    // As computerd: what is at `to` is replaced only with overwrite; without it the move never replaces (a link, then
+    // the source unlinked: EEXIST, "exists", when anything is there).
+    "files.move": (params) => {
+      const { from, to, overwrite } = params;
+      options.onMove?.(params);
+      if (overwrite) renameSync(host(from), host(to));
+      else { linkSync(host(from), host(to)); unlinkSync(host(from)); }
+      return {};
+    },
     "files.remove": ({ path, recursive }) => {
       if (!lstatSync(host(path)).isDirectory()) unlinkSync(host(path));
       else if (recursive) rmSync(host(path), { recursive: true });

@@ -109,12 +109,18 @@ export function ollamaHandler({ models: given = SYNTH_MODELS, reply = () => ({ t
  *  address freePort gave, fixtures/ports.mjs), else a new one from freePort, never port 0: serve keeps each address's
  *  listing for OLLAMA_TTL_MS, so a fake handed the port of one closed earlier in its file would be answered for by
  *  that fake's listing and never asked. A port another listener holds rejects with its error (EADDRINUSE), never an
- *  uncaught one. */
-export async function fakeOllama(t, { port: given, ...options } = {}) {
+ *  uncaught one. `down`: its switch, off: every connection is reset as it comes, so it answers nothing, as an Ollama
+ *  that is not running, on a port the test still holds (no other listener can take it, as one can take a port freePort
+ *  gave and nothing holds); `setDown(false)` turns it on. */
+export async function fakeOllama(t, { port: given, down = false, ...options } = {}) {
   const asked = given ?? (await freePort());
   const got = { tags: 0, show: [], chat: [] };
   const handle = ollamaHandler({ ...options, got });
   const server = createServer(handle);
+  let off = down;
+  server.on("connection", (socket) => {
+    if (off) socket.destroy();
+  });
   await new Promise((resolve, reject) => {
     server.once("error", reject);
     server.listen(asked, "127.0.0.1", () => {
@@ -127,5 +133,5 @@ export async function fakeOllama(t, { port: given, ...options } = {}) {
     server.close(() => resolve());
   }));
   const { port } = server.address();
-  return { url: `http://127.0.0.1:${port}`, host: `127.0.0.1:${port}`, got, remove: handle.remove, slowTags: handle.slowTags };
+  return { url: `http://127.0.0.1:${port}`, host: `127.0.0.1:${port}`, got, remove: handle.remove, slowTags: handle.slowTags, setDown: (value) => void (off = value) };
 }

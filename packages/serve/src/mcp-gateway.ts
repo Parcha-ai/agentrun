@@ -26,6 +26,7 @@ import { TOOL_UNMETERED } from "./timeline/index.js";
 import { until } from "./until.js";
 import { type FalMeterName, type MediaReader, meterFor, meterNamed } from "./fal-price.js";
 import { filedAnswer } from "./filed-answer.js";
+import { saveOnce } from "./save-once.js";
 import { paidLedger, paidStep } from "./paid-calls.js";
 import { metaToolOf } from "./mcp-meta.js";
 import { SIGN_IN_AGAIN } from "./mcp-oauth.js";
@@ -61,11 +62,17 @@ export type McpQuote = { holdUsd: number; basis: string; unpriceable?: string; c
  *  be scoped (it is then refused unsent); `out`, a call's arguments as they leave; `back`, the text of its answer or error
  *  as the model reads it, each scoped key read as the agent's own. */
 export type McpKeys = { refused?(tool: string, args: Record<string, unknown>): string | undefined; out(tool: string, args: Record<string, unknown>): Record<string, unknown>; back(text: string): string };
+/** A server's results kept as files: under `dir` (relative to the run's files), what `of` reads from a tool's answer. */
+export type McpResults = { dir: string; of(tool: string, reply: Record<string, unknown>): { name: string; value: unknown }[] };
 /** A server that prices its own calls. `ask` calls one of the server's tools with the run's credential, unbooked and
  *  unrecorded, and answers its raw result (none: it failed). `keys`: the keys it scopes to the run, on every call of
  *  the server, billed or not. */
 export interface McpMeter {
   keys?: McpKeys;
+  /** The results a server's answers carry that the run keeps as data (fal's completed jobs, fal-price.ts falResults):
+   *  each one's `name` (one the meter vouches for as a plain file name: fal's request_id, a UUID) and `value`, filed by
+   *  the gateway at `<dir>/<name>.json` in the run's files, saved once (save-once.ts). */
+  results?: McpResults;
   bills(tool: string): boolean;
   quote(tool: string, args: Record<string, unknown>, ask: (tool: string, args: Record<string, unknown>) => Promise<Record<string, unknown> | undefined>, signal: AbortSignal): Promise<McpQuote>;
 }
@@ -360,6 +367,35 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
     return `${head}the whole answer is in the run's files at evidence/mcp/${server}/${name}.json]`;
   };
 
+  /** The results `result` carries that `server`'s meter keeps (McpMeter.results), each filed at its `<dir>/<name>.json`
+   *  in the run's files, once (save-once.ts): a file, folder or link already there is kept, and a link on the way is never
+   *  followed. Scrubbed as the model's text is. Nothing is said of it in the answer, and a result that could not be filed
+   *  is left out: a filing never fails the call. */
+  const fileResults = async (server: string, tool: string, result: Record<string, unknown>, clean: (text: string) => string): Promise<void> => {
+    const results = meters.get(server)?.results;
+    if (!results) return;
+    let found: { name: string; value: unknown }[];
+    try {
+      found = results.of(tool, result);
+    } catch {
+      return;
+    }
+    if (!found.length) return;
+    let work: Workspace;
+    try {
+      work = workspaceAt(options.work());
+    } catch {
+      return;
+    }
+    for (const { name, value } of found) {
+      try {
+        await saveOnce(work, `${results.dir}/${name}.json`, clean(JSON.stringify(value) ?? "null"));
+      } catch {
+        // Not filed: a link on the way, a write that failed. The answer stands as the server gave it.
+      }
+    }
+  };
+
   /** The call itself, to a server whose address is the pinned one. A gate's decision or a paid call's hold goes around
    *  it, in `call` below: the one place every harness's call passes before anything is sent. */
   /** `sending`, when given, runs once the server is connected and right before the call leaves: its refusal (a text)
@@ -389,7 +425,10 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
         : (await upstream.callTool({ name: tool.name, arguments: args }, { signal, timeout: options.bounds?.callMs ?? CALL_MS, toolDefinition: { name: tool.name, inputSchema: tool.inputSchema } })) as Record<string, unknown>;
       outcome.raw = result;
       // A meter's own read (`quiet`): its raw result is all that is wanted, nothing filed for a model to read.
-      return said(outcome.quiet ? "" : await textOf(server, tool.name, result, clean), result.isError === true);
+      if (outcome.quiet) return said("", result.isError === true);
+      // Filed before the answer is given, so a model that reads it next finds it.
+      await fileResults(server, tool.name, result, clean);
+      return said(await textOf(server, tool.name, result, clean), result.isError === true);
     } catch (error) {
       if (signal.aborted) return said(`The call to the MCP server ${server} was stopped.`, true);
       if (boundedSignal.aborted) return said(`The resource operation on the MCP server ${server} exceeded its deadline.`, true);

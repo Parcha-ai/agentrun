@@ -439,9 +439,9 @@ export async function startInProcessRunner(data, { faux, githubApi, githubWeb, g
     const deps = { env, data: ownData ?? data, journal: (claim) => store.journal(claim), store, sealKey, routeOf, computerForClaim: computerForClaim ?? computers.computerForClaim, computerDeps: computers.computerDeps, mcpLoopback: true, ...(mcpOwn ? { mcpOwn } : {}), ...(githubApi ? { githubApi } : {}), ...(githubWeb ? { githubWeb } : {}), ...(githubMcpOrigin ? { githubMcpOrigin } : {}), ...(composioMcpOrigin ? { composioMcpOrigin } : {}), ...(harnessLocks ? { harnessLocks } : {}), ...(evalFakes ? { evalFakes } : {}), ...(archil ? { makeArchilDisk: archil.makeDisk, mountControl: archil.control } : {}), modelRetry, ...(gradeTimeoutMs ? { gradeBound: () => AbortSignal.timeout(gradeTimeoutMs) } : {}) };
     // `childRuns` (a test's): each run a process of its own (run-child-host.ts childLoops), as the CLI's start runs them,
     // its keys and calls the runner's across the channel; the same user unless `childRuns.isolation` says otherwise (a
-    // stand-in helper's), its lines on `childRuns.log`.
+    // stand-in helper's), its lines on `childRuns.log`, its runs' traces on `childRuns.tracing` (a test's exporter).
     const childLog = childRuns?.log ?? (() => {});
-    const createLoop = childRuns ? childLoops({ deps: { ...deps, log: childLog }, isolation: childRuns.isolation ?? { kind: "process", why: "a test's runner" }, log: childLog }) : dispatchRunner(deps);
+    const createLoop = childRuns ? childLoops({ deps: { ...deps, log: childLog }, isolation: childRuns.isolation ?? { kind: "process", why: "a test's runner" }, log: childLog, ...(childRuns.tracing ? { tracing: childRuns.tracing } : {}) }) : dispatchRunner(deps);
     runner = startRunner({
       ...(runnerTiming ?? {}),
       store,
@@ -501,7 +501,9 @@ export async function serve(t, { harnesses: asked, runner: wantRunner = true, co
   if (harnesses) await linkHarnesses(data, harnesses === true ? {} : harnesses);
   // mcpLoopback: a test's server is a local install, as its operator would say (its fake MCP servers are on loopback);
   // a case that wants the hosted rule passes mcpLoopback: false.
-  const server = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s", mcpLoopback: true, ...options });
+  // probeContainer: Docker's start probe takes a test's server to be on a host, so a suite run in a container reads the
+  // host's words; a case about a container passes its own facts, or undefined for the server's own marks.
+  const server = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s", mcpLoopback: true, probeContainer: { where: "host" }, ...options });
   // A runner beside the server on the same data (the CLI start's server-and-runner): it claims and runs what the server
   // starts, so a test reads a run that runs, not one that queues forever. `runner: false` leaves it off for a test that
   // wants the server alone. Its loop is the switch's dispatch (learning wired; pi/workflow the server's own, E2r).

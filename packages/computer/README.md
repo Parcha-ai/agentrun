@@ -1733,9 +1733,13 @@ launch line E2B's dial runs (`dialLaunch`), with no rootOnly paths here. The URL
 env, which the command inherits, and is on no command line. A session Daytona refuses fails create in its words, and
 the sandbox is deleted. So the snapshot's entrypoint is not relied on: a box snapshot registered without one (name,
 image and resources alone) dials too, and one whose entrypoint is the box CMD sleeps, with no `AGENTRUN_ATTACH_URL` in
-its env, so `agentrun-dial` never runs twice. A machine that does not dial within `createMs` fails with that command's
-log, read once by the id its start returned, its last 10 lines within 800 characters (`dialLog`; the adapter replaces
-every machine token in it by `<token>`), or "agentrun-dial never started" when create started none. No Archil mount, no GPU, and not `image: "default"` (Daytona's default snapshot holds
+its env, so `agentrun-dial` never runs twice on its own. While create waits for the socket, it reads that command's
+exit (`dialExit`, the session's command of the id its start returned): an `agentrun-dial` that exited fails create at
+once, and an exit of 3 (its daemon fetch failed, after its own retries) or 5 (its init never listened, and was ended)
+starts it once more, by the same line, in a session of its own, `agentrun-dial-2` (`redial`), with a create note. One
+that runs and keeps writing is waited for past `createMs`, up to twice it. A machine that does not dial fails with that
+command's log first, its last 10 lines within 800 characters (`dialLog`; the adapter replaces every machine token in it
+by `<token>`), or "agentrun-dial never started" when create started none. No Archil mount, no GPU, and not `image: "default"` (Daytona's default snapshot holds
 no `agentrun-dial`): `check()` refuses each in words. Labels as on exec. A dial sandbox may be a desktop
 (`kind: "desktop"`): the box snapshot's X server, started over the socket it dialed, and xfwm4, which computerd starts
 (init's `--window-manager`), at the snapshot's 2 CPUs and 4 GiB, with no GPU. On exec a Daytona computer is kind
@@ -1790,7 +1794,9 @@ What each part of a dial sandbox rests on:
   `attachEgress` (`DAYTONA_ATTACH_EGRESS` in Settings), `<IPv4 relay>:<port>`, checked at construction: create puts it
   in the boot env as `AGENTRUN_ATTACH_EGRESS`, and `agentrun-dial`'s daemon fetch (curl `--connect-to`) and
   `computerd attach` both open TCP to it and speak TLS and HTTP to the public host through it, so the SNI, the
-  certificate checked and `Host` stay the public host's and TLS is end to end. Unset, nothing changes.
+  certificate checked and `Host` stay the public host's and TLS is end to end. Unset, nothing changes. A relay that
+  closes a connection during TLS (curl exit 35) or resets it (56) costs a retry: the fetch is tried again after 1, 2, 4
+  then 8 s, for at most 45 s, on any failed connection or HTTP 5xx, and never on a 4xx (exit 7).
 - **No GPU on dial**, refused in words: `daytona-gpu` holds no `agentrun-dial`, and Daytona runs a GPU sandbox
   unprivileged (`Privileged: gpuIndex == nil`,
   [runner container_configs.go:205](https://github.com/daytonaio/daytona/blob/b5a5d9e7/apps/runner/pkg/docker/container_configs.go#L205)),
@@ -2748,11 +2754,13 @@ the API's control URL) is a later change: `platform: "ios"` is refused in words.
   the `adb` CLI (Android platform-tools; default `adb` on PATH, which the phone's descriptor names as its
   `hostCommand`, so a server says it is missing before any phone is rented), whose server it starts and speaks to on
   the loopback (port 5037, adb's own, or `adbCli(path, { port })`). Every spawned adb names that port with `-P`, so the CLI and the
-  socket requests reach one server. `adbCli(path, { env })` spawns adb from the environment given, with every
-  `ADB_*`, `ANDROID_ADB_*` and `ANDROID_SERIAL` variable dropped, so nothing in it points the CLI at another server or
-  device. The library reads no environment of its own: the conformance module passes its own, minus its
-  `COMPUTER_PHONE_HARNESS_*` names (the key never reaches adb), and serve should pass one too. Without `env`, a spawned
-  adb inherits the process's environment as it is. Without adb, connect says so in words.
+  socket requests reach one server. `adbCli(path, { env })` spawns adb with only the names in `ADB_ENV_NAMES`
+  taken from the environment given (`adbEnv(env)`): the base names (`PATH`, `HOME`, `TMPDIR`, locale) and the SDK's
+  `ANDROID_HOME`, `ANDROID_SDK_ROOT`, `ANDROID_USER_HOME`, `ANDROID_SDK_HOME`. Nothing else reaches adb or the server it
+  starts: no `ADB_*`, `ANDROID_ADB_*` or `ANDROID_SERIAL` that would point it at another server or device, no proxy, no
+  key. The library reads no environment of its own, so a caller must pass `env`: the conformance module passes its own,
+  and serve passes the phone's `hostEnv`. Without `env`, adb starts with no environment at all, and a bare `adb` is
+  found only on the default path (`/usr/bin:/bin`): pass `env`, or give adb's absolute path. Without adb, connect says so in words.
 - **testConnection** is list(): one `GET /sessions` joined to the ledger, and a GET of any phone the listing leaves out.
   It rents nothing and reaches no phone: ok with the
   count of this provider's phones, `unauthorized` for a refused key, `unreachable` when the phone harness is not
