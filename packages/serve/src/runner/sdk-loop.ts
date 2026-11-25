@@ -203,6 +203,7 @@ export function createSdkLoop(
                         kind: KINDS.callStart,
                         data: { callId: event.id, tool: event.name, input: event.input ?? {}, replaySafe: false,
                           ...(event.parent_tool_use_id ? { parentCallId: event.parent_tool_use_id } : {}),
+                          ...(event.name === "learned_workflow" && inbox.workflow_calls && Object.hasOwn(inbox.workflow_calls, event.id) ? { workflow: inbox.workflow_calls[event.id] } : {}),
                         },
                       });
                     } else {

@@ -204,6 +204,9 @@ export interface CallStartData {
   readonly parentCallId?: string;
   readonly tool: string;
   readonly input: unknown;
+  /** An SDK learned_workflow start whose input is stored withheld: the workflow it names, one the run was given, as the
+   *  server kept it apart from the input (sdk/runs.ts SdkInbox.workflow_calls). Never the caller's text otherwise. */
+  readonly workflow?: string;
   /** May run again after a crash (it changes nothing outside the run): the tool registry's own flag. */
   readonly replaySafe: boolean;
   /** Written as its CLI's tool bridge's gate asked about it (adapter-loop.ts bridgeGate), before any answer: nothing is sent
