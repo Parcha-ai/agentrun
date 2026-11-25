@@ -233,9 +233,9 @@ const heldPairs = new Map<string, HeldPair>();
 
 /** `held` written into `file` as the pinned CLI writes a renewal back (login-refresh.ts): only while the file still holds
  *  the refresh token it spent (or one the CLI cleared), the fields it gives over the file's, the rest kept as they are.
- *  "saved" once written, "held" while the write or the read before it fails (kept in heldPairs), and "dropped" when the
- *  file holds another holder's pair (or is gone, or holds no login the runner reads): the file wins, as the CLI's own
- *  check lets it. */
+ *  "saved" once written (or found written: another ask saved it), "held" while the write or the read before it fails
+ *  (kept in heldPairs), and "dropped" when the file holds another holder's pair (or is gone, or holds no login the
+ *  runner reads): the file wins, as the CLI's own check lets it. */
 async function saveHeld(file: string, held: HeldPair, options: RenewLoginOptions, owned?: () => Promise<LockRead>): Promise<"saved" | "held" | "dropped"> {
   const say = options.log ?? (() => undefined);
   const forget = () => {
@@ -249,6 +249,13 @@ async function saveHeld(file: string, held: HeldPair, options: RenewLoginOptions
     heldPairs.set(file, held);
     say({ claude_login: "renewed", saved: "no", reason: "file_unread" });
     return "held";
+  }
+  // The file holds this very pair: another ask of this process saved it since this one took it from heldPairs. Saved,
+  // and said so, never as a newer pair, which reads as another holder's takeover.
+  if (current !== "gone" && current.oauth.accessToken === held.fields.accessToken && current.oauth.refreshToken === held.fields.refreshToken) {
+    forget();
+    say({ claude_login: "renewed", saved: "yes", reason: "already_saved" });
+    return "saved";
   }
   if (current === "gone" || (current.oauth.refreshToken !== held.posted && current.oauth.refreshToken !== "")) {
     forget();
