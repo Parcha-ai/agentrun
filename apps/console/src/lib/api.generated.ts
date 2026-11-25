@@ -4834,31 +4834,24 @@ export interface operations {
           agreed?: number;
           alone?: number;
           agent_agreed?: number;
+          joint?: boolean;
           fields?: Record<string, {
             n: number;
             workflow_right: number;
             agent_right: number;
-            known: "label" | "grade" | "agent";
+            known: "grade" | "agent";
             pass: boolean;
             reason: string;
             by: {
-              label?: {
-                n: number;
-                workflow_right: number;
-                agent_right: number;
-                pass: boolean;
-              };
               grade?: {
                 n: number;
                 workflow_right: number;
                 agent_right: number;
-                pass: boolean;
               };
               agent?: {
                 n: number;
                 workflow_right: number;
                 agent_right: number;
-                pass: boolean;
               };
             };
             unjudged?: number;
@@ -4888,7 +4881,7 @@ export interface operations {
             fields?: string[];
             expected?: {
               field: string;
-              known: "label" | "grade" | "unknown";
+              known: "grade" | "unknown" | "contradicts";
               value?: string;
             }[];
           }[];
@@ -4899,6 +4892,20 @@ export interface operations {
             n: number;
             agreed: number;
             alone: number;
+            agent_agreed: number;
+            fields: Record<string, {
+              grade?: {
+                n: number;
+                workflow_right: number;
+                agent_right: number;
+              };
+              agent?: {
+                n: number;
+                workflow_right: number;
+                agent_right: number;
+              };
+              unjudged?: number;
+            }>;
             of: string[];
             outcomes: {
               answered: number;
@@ -4917,29 +4924,10 @@ export interface operations {
               fields?: string[];
               expected?: {
                 field: string;
-                known: "label" | "grade" | "unknown";
+                known: "grade" | "unknown" | "contradicts";
                 value?: string;
               }[];
             }[];
-            agent_agreed?: number;
-            fields?: Record<string, {
-              label?: {
-                n: number;
-                workflow_right: number;
-                agent_right: number;
-              };
-              grade?: {
-                n: number;
-                workflow_right: number;
-                agent_right: number;
-              };
-              agent?: {
-                n: number;
-                workflow_right: number;
-                agent_right: number;
-              };
-              unjudged?: number;
-            }>;
             fresh_reads?: number;
           };
         };
@@ -4959,6 +4947,7 @@ export interface operations {
             agent: string | null;
             draft: string | null;
             graded?: true;
+            expected?: string;
           }[];
           stopped?: true;
         };
@@ -5006,31 +4995,24 @@ export interface operations {
             agreed?: number;
             alone?: number;
             agent_agreed?: number;
+            joint?: boolean;
             fields?: Record<string, {
               n: number;
               workflow_right: number;
               agent_right: number;
-              known: "label" | "grade" | "agent";
+              known: "grade" | "agent";
               pass: boolean;
               reason: string;
               by: {
-                label?: {
-                  n: number;
-                  workflow_right: number;
-                  agent_right: number;
-                  pass: boolean;
-                };
                 grade?: {
                   n: number;
                   workflow_right: number;
                   agent_right: number;
-                  pass: boolean;
                 };
                 agent?: {
                   n: number;
                   workflow_right: number;
                   agent_right: number;
-                  pass: boolean;
                 };
               };
               unjudged?: number;
@@ -5060,7 +5042,7 @@ export interface operations {
               fields?: string[];
               expected?: {
                 field: string;
-                known: "label" | "grade" | "unknown";
+                known: "grade" | "unknown" | "contradicts";
                 value?: string;
               }[];
             }[];
@@ -5071,6 +5053,20 @@ export interface operations {
               n: number;
               agreed: number;
               alone: number;
+              agent_agreed: number;
+              fields: Record<string, {
+                grade?: {
+                  n: number;
+                  workflow_right: number;
+                  agent_right: number;
+                };
+                agent?: {
+                  n: number;
+                  workflow_right: number;
+                  agent_right: number;
+                };
+                unjudged?: number;
+              }>;
               of: string[];
               outcomes: {
                 answered: number;
@@ -5089,29 +5085,10 @@ export interface operations {
                 fields?: string[];
                 expected?: {
                   field: string;
-                  known: "label" | "grade" | "unknown";
+                  known: "grade" | "unknown" | "contradicts";
                   value?: string;
                 }[];
               }[];
-              agent_agreed?: number;
-              fields?: Record<string, {
-                label?: {
-                  n: number;
-                  workflow_right: number;
-                  agent_right: number;
-                };
-                grade?: {
-                  n: number;
-                  workflow_right: number;
-                  agent_right: number;
-                };
-                agent?: {
-                  n: number;
-                  workflow_right: number;
-                  agent_right: number;
-                };
-                unjudged?: number;
-              }>;
               fresh_reads?: number;
             };
           } | null;

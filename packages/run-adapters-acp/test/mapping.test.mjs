@@ -63,8 +63,9 @@ for (const http of [true, false]) {
   });
 }
 
-test('a permission request for our own tool is answered allow_once, never allow_always, and the gate decides the call', async (t) => {
-  const recipe = fakeRecipe(scratch(), { script: [{ call: 'lookup' }, { sayLastResult: true }], style: 'goose', askMcp: true });
+test('a permission request for our own tool, on a recipe that declares the title tie (Cursor), is answered allow_once, never allow_always, and the gate decides the call', async (t) => {
+  // Was run as Goose, whose recipe has no tie now: Goose asks nothing for our tools (goose-permission.test.mjs).
+  const recipe = fakeRecipe(scratch(), { script: [{ call: 'lookup' }, { sayLastResult: true }], style: 'cursor', askMcp: true });
   const asked = [];
   const { session, events } = await openSession(t, recipe, {
     tools: [tool('lookup', () => 'found')],

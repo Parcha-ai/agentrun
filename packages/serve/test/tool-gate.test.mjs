@@ -861,7 +861,8 @@ test("a stop while an approval waits and a later turn runs withdraws the call an
   const answer = await owner(server);
   const { api } = server;
   assert.equal((await api("PUT", "/settings/tools", { web_fetch: { permission: "ask" } })).status, 200);
-  for (const end of ["stop", "cancel"]) {
+  // The stop's run and the cancel's, side by side: each waits out its own turn's 8 s.
+  await Promise.all(["stop", "cancel"].map(async (end) => {
     const runId = await fetching(api, `turn-${end}`, "pi");
     const approval = (await parked(api, runId)).view.pending.id;
     // The message declines the waiting call, and the gate's resume is the one turn that follows: it streams for 8 s
@@ -901,7 +902,7 @@ test("a stop while an approval waits and a later turn runs withdraws the call an
       assert.ok(!after.some((row) => (row.text ?? "").includes("Done slowly.")), "the turn was cut");
     }
     assert.equal((await answer(runId, approval, { decision: "allow" })).status, 409, `${end}: a later allow`);
-  }
+  }));
   await sleep(2_000);
   assert.deepEqual(await dialled(), [], "the call never ran");
 });

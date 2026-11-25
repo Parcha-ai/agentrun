@@ -3,7 +3,7 @@
 // module's daemon. Also: the mount a local Workspace asks for, the read-back attach checks, and the background surface
 // with no computer.
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
@@ -410,4 +410,33 @@ test("attached on a bind, with the real host sync: a file the host cannot open (
   assert.deepEqual(ran, ["sync /workspace/locked"], "the target, which the host could not open, was synced in the computer");
   chmodSync(join(root, "locked"), 0o600);
   assert.equal(readFileSync(join(root, "locked"), "utf8"), "new");
+});
+
+test("attached: writeNew makes a file only where nothing is, by a temporary file and a move that never replaces: a file landing at the path before the move is kept, the temporary file removed", async () => {
+  const landed = [];
+  const { root, computer, workspace } = await attached({ onMove: ({ to }) => {
+    const at = landed.shift();
+    if (at && to === `/workspace/${at}`) writeFileSync(join(root, at), "theirs");
+  } });
+  assert.equal(await workspace.writeNew("notes/a.md", "hello"), true, "made where nothing was");
+  assert.equal(readFileSync(join(root, "notes/a.md"), "utf8"), "hello");
+  const move = computer.calls.find(([method]) => method === "files.move");
+  assert.match(move[1].from, /^\/workspace\/notes\/\.workspace-[0-9a-f]{16}\.tmp$/);
+  assert.deepEqual([move[1].to, move[1].overwrite], ["/workspace/notes/a.md", undefined], "the move never replaces");
+  assert.equal(await workspace.writeNew("notes/a.md", "again"), false, "a file there is kept");
+  assert.equal(readFileSync(join(root, "notes/a.md"), "utf8"), "hello");
+  mkdirSync(join(root, "notes/folder"));
+  assert.equal(await workspace.writeNew("notes/folder", "x"), false, "a folder there is kept");
+  assert.ok(statSync(join(root, "notes/folder")).isDirectory());
+  writeFileSync(join(root, "elsewhere.md"), "target");
+  symlinkSync(join(root, "elsewhere.md"), join(root, "notes/link.md"));
+  assert.equal(await workspace.writeNew("notes/link.md", "x"), false, "a link there is kept, never followed");
+  assert.equal(readlinkSync(join(root, "notes/link.md")), join(root, "elsewhere.md"));
+  assert.equal(readFileSync(join(root, "elsewhere.md"), "utf8"), "target");
+  // The window: nothing at the check, then a file lands at the path before the move.
+  landed.push("notes/raced.md");
+  assert.equal(await workspace.writeNew("notes/raced.md", "mine"), false, "the file that landed is held");
+  assert.equal(readFileSync(join(root, "notes/raced.md"), "utf8"), "theirs", "and kept, never replaced");
+  assert.ok(lstatSync(join(root, "notes/raced.md")).isFile());
+  assert.deepEqual(readdirSync(join(root, "notes")).filter((name) => name.endsWith(".tmp")), [], "no temporary file is left");
 });
