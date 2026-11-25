@@ -148,22 +148,49 @@ const STICKY = 0o1000;
 /** The system's account files: its users (name:password:uid:gid:…) and its groups (name:password:gid:members). */
 const PASSWD_FILE = "/etc/passwd";
 const GROUP_FILE = "/etc/group";
+/** The name service switch: for each database (`passwd`, `group`, …), the sources the system asks for its entries. */
+const NSSWITCH_FILE = "/etc/nsswitch.conf";
+/** The sources that serve users and groups from the account files alone. `files` reads them; `compat` reads them too, and
+ *  asks a directory service only at a `+` or `-` line, which privateGroup refuses. Not `systemd`: besides its dynamic
+ *  users it serves systemd's user records (userdb), whose membership records and homed users' `memberOf` put users in a
+ *  group the group file does not list. Nor sss, ldap, nis, winbind, db or any other: their users and groups are not in
+ *  these files. */
+const LOCAL_SOURCES: ReadonlySet<string> = new Set(["files", "compat"]);
+
+/** Whether the name service switch takes users and groups from the account files alone, so that what they say of a group
+ *  is all there is: its `passwd` and `group` lines, and an `initgroups` line where there is one (it, not `group`, then
+ *  gives each user's other groups), name no source but LOCAL_SOURCES. A bracketed action (`[NOTFOUND=return]`) names
+ *  none. False where it cannot say: no `passwd` or `group` line, or one that names no source. Throws where the file
+ *  cannot be read (privateGroup's false). */
+function localAccounts(): boolean {
+  const lines = readFileSync(NSSWITCH_FILE, "utf8").split("\n").map((line) => line.replace(/#.*/, ""));
+  const sourcesOf = (database: string) =>
+    lines.flatMap((line) => {
+      const entry = /^\s*([^\s:]+)\s*:(.*)$/.exec(line);
+      return entry && entry[1]!.toLowerCase() === database ? [entry[2]!.replace(/\[[^\]]*\]/g, " ").split(/\s+/).filter(Boolean)] : [];
+    });
+  const [users, groups, initgroups] = ["passwd", "group", "initgroups"].map(sourcesOf);
+  return users!.length > 0 && groups!.length > 0 && [...users!, ...groups!, ...initgroups!].every((sources) => sources.length > 0 && sources.every((source) => LOCAL_SOURCES.has(source)));
+}
 
 /** A whole decimal id from an account file's field, else undefined (an empty field is no id). */
 const idOf = (field: string | undefined): number | undefined => (field !== undefined && /^\d+$/.test(field) ? Number(field) : undefined);
 
 /** Whether group `gid` is user `uid`'s private group, so a folder only its group and its owner may write in is still the
- *  user's alone (the umask ruling: a umask of 002, under a group of the user's own, makes folders 0775). As the account
- *  files say: `uid` has one entry, and `gid` is its primary group; no other user has `gid` as theirs; and the group file
- *  has `gid`, listing no member but that user. False where it cannot say: a file it cannot read, a `+` or `-` line (the
- *  rest is a directory service's, whose members these files do not show), no entry for `uid`, or `gid` missing from the
- *  group file (a directory service's group). */
+ *  user's alone (the umask ruling: a umask of 002, under a group of the user's own, makes folders 0775). Only where the
+ *  name service switch takes users and groups from the account files alone (localAccounts), and as those files say:
+ *  `uid` has one entry, and `gid` is its primary group; no other user has `gid` as theirs; and the group file has `gid`,
+ *  listing no member but that user. False where it cannot say: a switch that also asks another source (a directory
+ *  service, systemd's user records), or that it cannot read, a file it cannot read, a `+` or `-` line, blanks before it
+ *  or not (the rest is a directory service's, whose members these files do not show), no entry for `uid`, or `gid`
+ *  missing from the group file. */
 function privateGroup(uid: number, gid: number): boolean {
   try {
+    if (!localAccounts()) return false;
     const entries = (file: string) => readFileSync(file, "utf8").split("\n").filter((line) => line.trim() !== "" && !line.startsWith("#"));
     const users = entries(PASSWD_FILE);
     const groups = entries(GROUP_FILE);
-    if ([...users, ...groups].some((line) => line.startsWith("+") || line.startsWith("-"))) return false;
+    if ([...users, ...groups].some((line) => /^\s*[+-]/.test(line))) return false;
     const userFields = users.map((line) => line.split(":"));
     const own = userFields.filter((fields) => idOf(fields[2]) === uid);
     const name = own.length === 1 ? own[0]![0] : undefined;
