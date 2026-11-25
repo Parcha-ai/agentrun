@@ -292,7 +292,7 @@ async function aheadOf(items, threads, ahead) {
   try {
     pool.readAll(items);
     await settled(pool);
-    return { peak: pool.peakWaiting, held: pool.held, waiting: reads };
+    return { peak: pool.peakWaiting, held: pool.waiting, waiting: reads };
   } finally {
     process.off("worker", counted);
     pool.close();
@@ -327,16 +327,16 @@ test("reads dropped let the read-ahead go: the pool reads on past them, and a dr
   try {
     pool.readAll(items);
     await settled(pool);
-    assert.equal(pool.held, 3 * one, "three read ahead");
+    assert.equal(pool.waiting, 3 * one, "three read ahead");
     pool.drop([0, 1, 2]);
-    assert.equal(pool.held, 0, "the reads dropped are the three waiting");
+    assert.equal(pool.waiting, 0, "the reads dropped are the three waiting");
     await settled(pool);
-    assert.equal(pool.held, 3 * one, "three more read ahead");
+    assert.equal(pool.waiting, 3 * one, "three more read ahead");
     // Each of the next three is waiting: taking it lets go of its bytes (one not read yet would be read, and hold none).
     for (const id of [3, 4, 5]) {
-      const held = pool.held;
+      const held = pool.waiting;
       assert.equal((await pool.take(id)).ok, true);
-      assert.equal(pool.held, held - one, `file ${id} was read ahead`);
+      assert.equal(pool.waiting, held - one, `file ${id} was read ahead`);
     }
     assert.deepEqual(await pool.take(0), { ok: false }, "a dropped read is not taken");
   } finally {
@@ -366,7 +366,7 @@ test("a source read again whole lets go of its reads in the pool: once the pool 
   assert.equal(pools.length, 1, "one pool");
   try {
     await settled(pools[0]);
-    assert.equal(pools[0].held, 0, "no read of the source read again waits in the pool");
+    assert.equal(pools[0].waiting, 0, "no read of the source read again waits in the pool");
   } finally {
     pools[0].close();
   }

@@ -140,10 +140,9 @@ export class ReadPool {
   private waiting = 0;
   private losses = 0;
   private broken = false;
-  /** The most bytes of reads waiting at once, and the workers lost (for measuring). The read-ahead is checked before a
-   *  read is sent, so the reads in flight then (at most `threads`) may land past it. */
+  /** The most bytes of reads waiting at once, read by the lane's measuring script alone. The read-ahead is checked before
+   *  a read is sent, so the reads in flight then (at most `threads`) may land past it. */
   peakWaiting = 0;
-  lost = 0;
 
   constructor(private readonly threads: number, private readonly aheadBytes = readAheadBytes(), private readonly oldMb = OLD_MB) {
     // A worker that cannot start (no file descriptors, no memory) stops the pool: parseHome reads every file itself.
@@ -152,11 +151,6 @@ export class ReadPool {
     } catch {
       this.fail();
     }
-  }
-
-  /** The bytes of reads waiting to be taken now. */
-  get held(): number {
-    return this.waiting;
   }
 
   /** The reads in flight now. At none, no read is sent until one is taken or dropped. */
@@ -276,7 +270,6 @@ export class ReadPool {
   /** A worker ended (out of memory, or crashed): its file is parseHome's to read, and another worker takes its place. */
   private gone(worker: Worker): void {
     if (!this.live.delete(worker) || this.broken) return;
-    this.lost += 1;
     const at = this.idle.indexOf(worker);
     if (at !== -1) this.idle.splice(at, 1);
     const job = this.running.get(worker);
