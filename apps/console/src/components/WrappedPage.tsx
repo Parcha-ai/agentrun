@@ -3,7 +3,7 @@ import { ProblemCard } from "@/components/Problem";
 import { ListSkeleton } from "@/components/Skeleton";
 import { Button } from "@/components/ui";
 import { pageTitleClass, pageToolbarClass } from "@/components/ui/toolbar";
-import type { Client } from "@/lib/client";
+import { type Client, ClientError } from "@/lib/client";
 import { compact, dollars } from "@/lib/format";
 import { type Problem, problem } from "@/lib/problem";
 import { cn } from "@/lib/utils";
@@ -46,6 +46,16 @@ function Share({ name, figure, part, of, children }: { name: string; figure: str
   );
 }
 
+/** problem()'s words, with a refusal's own: the server names why it will not read this machine's files (a public URL, more
+ *  than one caller, a Postgres store, the API-only profile), and no sign-in changes that. */
+function wrappedProblem(e: unknown): Problem {
+  const said = problem(e, "your year");
+  if (!(e instanceof ClientError) || e.status !== 403) return said;
+  return { ...said, why: e.message, next: "Wrapped reads this machine's own session files, so it opens only on one owner's server started here, at the address it printed.", said: undefined };
+}
+
+/** A model's price, by its own requests: whole, the priced part of them, or none known. */
+const priceOf = (m: Wrapped["models"][number]) => (m.unpriced_requests >= m.requests && m.requests > 0 ? "no known price" : `${dollars(m.cost_usd)}${m.unpriced_requests > 0 ? " priced only" : ""}`);
 const hours = (ms: number) => `${(ms / 3_600_000).toFixed(1)} h`;
 const monthOf = (day: string) => Number(day.slice(5, 7)) - 1;
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -60,10 +70,17 @@ export function WrappedPage({ v2, year, go, cards = noCards }: { v2: Client; yea
   const [tries, setTries] = useState(0);
   useEffect(() => {
     const abort = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
     setData(null);
     setError(null);
-    v2.wrapped(shown, abort.signal).then(setData, (e: unknown) => { if (!abort.signal.aborted) setError(problem(e, "your year")); });
-    return () => abort.abort();
+    const ask = () => v2.wrapped(shown, abort.signal).then(setData, (e: unknown) => {
+      if (abort.signal.aborted) return;
+      // A long home: the server goes on reading and says when to ask again. The skeleton stays until the year comes.
+      if (e instanceof ClientError && e.status === 503) return void (timer = setTimeout(ask, e.retryAfterMs ?? 5_000));
+      setError(wrappedProblem(e));
+    });
+    void ask();
+    return () => { abort.abort(); clearTimeout(timer); };
   }, [v2, shown, tries]);
   const to = (y: number) => go(`#/wrapped?year=${y}`);
 
@@ -163,7 +180,7 @@ export function WrappedPage({ v2, year, go, cards = noCards }: { v2: Client; yea
                     ))}
                   </ul>
                   <ul className="grid content-start gap-3" aria-label="Models">
-                    {data.models.map((m) => <Share key={m.model} name={m.model} figure={`${compact(m.tokens)} · ${dollars(m.cost_usd)}${data.unpriced_requests > 0 ? " priced only" : ""}`} part={m.tokens} of={modelTokens} />)}
+                    {data.models.map((m) => <Share key={m.model} name={m.model} figure={`${compact(m.tokens)} · ${priceOf(m)}`} part={m.tokens} of={modelTokens} />)}
                   </ul>
                 </div>
               </section>

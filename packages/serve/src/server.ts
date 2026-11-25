@@ -2797,8 +2797,16 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       });
     });
   // GET /v2/wrapped's reads of this machine's home (wrapped.ts), each year's on the import worker, so its parsing never holds
-  // up a request; shared and kept as keptReads says. A read the close ended answers `stopped`: a failed read, not kept.
-  const readWrapped = keptReads((year) => onWorker("wrapped", undefined, year).then((answer) => ("wrapped" in answer ? answer : Promise.reject(new Error("the server stopped before this machine's session history was read")))));
+  // up a request; shared and kept as keptReads says. A read the close ended answers `stopped`, a failure like any other. A
+  // failure is logged here, once per read: the ask that started it may have had its 503 long before.
+  const readWrapped = keptReads((year) =>
+    onWorker("wrapped", undefined, year)
+      .then((answer) => ("wrapped" in answer ? answer : Promise.reject(new Error("the server stopped before this machine's session history was read"))))
+      .catch((error: Error) => {
+        if (!closing) process.stderr.write(`agentrun-serve: the read of this machine's session history for ${year} failed: ${error.message}\n`);
+        throw error;
+      }),
+  );
   // The count of what setup would import: started once (at start, or by the page's first read), read as it stands. One
   // stopped (by close, or by setup) starts again on the next read; one that failed stays failed.
   let count: { state: "counting" } | { state: "counted"; projects: number; sessions: number; candidates: ImportCandidate[] } | { state: "failed" } | undefined;
@@ -5842,7 +5850,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         if (given !== null && !/^[1-9]\d{3}$/.test(given)) throw new ApiError("bad_request", "year is a four-digit year");
         if (year > new Date().getFullYear()) throw new ApiError("bad_request", "year is this year or an earlier one");
         // A long home is read on, shared, past the wait: the answer says when to ask again rather than hold the request.
-        const read = await within(readWrapped(year), options.wrappedWaitMs ?? WRAPPED_WAIT_MS);
+        // A failed read is kept for its minute (keptReads): each ask in it is this 500, the reason in the server's log.
+        const read = await within(readWrapped(year), options.wrappedWaitMs ?? WRAPPED_WAIT_MS).catch(() => {
+          throw new ApiError("internal", `This machine's session history for ${year} could not be read: the server's log says why. Ask again in a minute to read it again.`);
+        });
         if (!read) throw new ApiError("unavailable", `This machine's session history for ${year} is still being read: ask again in a few seconds.`, { retry_after_ms: 5_000 });
         const analytics = await analyticsOverStore(store, { from: new Date(year, 0, 1).toISOString(), to: new Date(year + 1, 0, 1).toISOString() });
         return send(res, 200, wrappedView(read.wrapped, analytics.bySource.filter((g) => g.source !== "live").map((g) => ({ source: g.source, runs: g.runs })), read.unread));

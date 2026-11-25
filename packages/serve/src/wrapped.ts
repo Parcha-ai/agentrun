@@ -23,7 +23,7 @@ export function wrappedView(wrapped: Wrapped, imported: readonly { source: strin
     // The sources behind each harness (several can share one), so the console links a harness's numbers to their runs
     // without a copy of the table, in the order of `sources`: a source of a reader outside it is its own harness, as wrappedHome counts it.
     harnesses: wrapped.harnesses.map((h) => ({ ...h, sources: wrapped.sources.map((s) => s.source).filter((source) => ((HARNESS_OF as Record<string, string | undefined>)[source] ?? source) === h.harness) })),
-    models: wrapped.models.map(({ model, requests, tokens, cost }) => ({ model, requests, tokens: total(tokens), cost_usd: cost })),
+    models: wrapped.models.map(({ model, requests, tokens, cost, unpricedRequests }) => ({ model, requests, tokens: total(tokens), cost_usd: cost, unpriced_requests: unpricedRequests })),
     sources: wrapped.sources,
     imported: imported.map(({ source, runs }) => ({ source, runs })),
     unread_files: unreadFiles,
@@ -42,9 +42,10 @@ export type WrappedRead = { wrapped: Wrapped; unread: number };
  *  is shared however long it takes; once it ends, a year already over when its read began is kept until the server stops
  *  (its requests were all in), and any other (this year's, or one that ended while it was read) for a minute. One read at
  *  a time: each is a worker holding a year's sessions, so a year asked while another is read waits for it to end. A read
- *  that fails is dropped, so the next ask reads again, and frees the turn. One per server. */
+ *  that fails frees the turn and is kept for a minute too, whatever its year: an ask within it gets the same failure, not
+ *  another read of a home that fails it (one past the worker's heap would fail each one). One per server. */
 export function keptReads(read: (year: number) => Promise<WrappedRead>): (year: number) => Promise<WrappedRead> {
-  type Entry = { read: Promise<WrappedRead>; began?: number; at?: number };
+  type Entry = { read: Promise<WrappedRead>; began?: number; at?: number; failed?: boolean };
   const kept = new Map<number, Entry>();
   // The read whose turn it is or the last one given a turn, until it ends: the next starts after it.
   let turn: Promise<void> | undefined;
@@ -63,7 +64,7 @@ export function keptReads(read: (year: number) => Promise<WrappedRead>): (year: 
   return (year) => {
     const held = kept.get(year);
     const now = Date.now();
-    if (held && (held.at === undefined || year < held.began! || now - held.at < KEEP_MS)) return held.read;
+    if (held && (held.at === undefined || (!held.failed && year < held.began!) || now - held.at < KEEP_MS)) return held.read;
     const entry: Entry = {} as Entry;
     entry.read = inTurn(() => {
       entry.began = new Date(Date.now()).getFullYear();
@@ -75,7 +76,8 @@ export function keptReads(read: (year: number) => Promise<WrappedRead>): (year: 
         entry.at = Date.now();
       },
       () => {
-        if (kept.get(year) === entry) kept.delete(year);
+        entry.at = Date.now();
+        entry.failed = true;
       },
     );
     return entry.read;

@@ -11571,6 +11571,7 @@ class GetWrappedResponseModelsItem(TypedDict):
     requests: int
     tokens: int
     cost_usd: float
+    unpriced_requests: int
 
 
 class GetWrappedResponseSourcesItem(TypedDict):

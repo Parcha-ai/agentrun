@@ -7257,6 +7257,7 @@ export type GetWrappedResponse = {
     requests: number;
     tokens: number;
     cost_usd: number;
+    unpriced_requests: number;
   }>;
   sources: Array<{
     source: string;
