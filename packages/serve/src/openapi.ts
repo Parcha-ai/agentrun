@@ -181,6 +181,8 @@ const closed = (properties: Json, description?: string) => ({ type: "object", ad
 const USD = { type: ["number", "null"], minimum: 0, description: "The sum of the known costs, rounded to 1e-6; null when no run's cost is known, never 0 for unknown." };
 /** wrapped/1: GET /wrapped's answer (wrapped.ts). */
 const WRAPPED_TOKENS = closed({ input: COUNT, output: COUNT, cache_read: COUNT, cache_write: COUNT });
+/** One figure per cache cause (the import package's CACHE_CAUSES), each always there. */
+const CACHE_BY_CAUSE = (value: Record<string, unknown>) => closed(Object.fromEntries(["model", "idle", "compaction", "edited", "sidechain", "unknown"].map((cause) => [cause, value])));
 const WRAPPED: Json = closed({
   year: { type: "integer", minimum: 1000, maximum: 9999 },
   sessions: { ...COUNT, description: "Sessions whose first request falls in the year." },
@@ -198,6 +200,19 @@ const WRAPPED: Json = closed({
   sources: { type: "array", items: closed({ source: { type: "string" }, sessions: COUNT, requests: COUNT }), description: "By the tool the sessions were read from." },
   imported: { type: "array", items: closed({ source: { type: "string" }, runs: COUNT }), description: "The runs imported here in the year, by source (never `live`)." },
   unread_files: { ...COUNT, description: "Session files that could not be read (gone since listed, or not openable by this user), so the numbers are short by them. A count only: no path." },
+  cache: {
+    oneOf: [
+      closed({
+        runs: { ...COUNT, description: "The year's imported Claude Code, Codex and pi runs whose cache the import analyzed. A session left out of the import, or imported before it analyzed caches, is not among them." },
+        hit_rate: { type: ["number", "null"], minimum: 0, maximum: 1, description: "Cache read over the whole prompt (input, cache read and cache write) of those runs' requests and their subagents'; null when they sent none." },
+        breaks: { ...CACHE_BY_CAUSE(COUNT), description: "Cache breaks by cause: a turn whose cache read dropped more than 80% against the turn before it." },
+        extra_cost_usd: { ...CACHE_BY_CAUSE({ type: "number", minimum: 0 }), description: "By cause, what the breaks' re-sent tokens cost above a cache read, at list prices (USD); unpriced breaks are not in it." },
+        unpriced_breaks: { ...COUNT, description: "Breaks on a model with no list price: in `breaks`, not in `extra_cost_usd`." },
+      }),
+      { type: "null" },
+    ],
+    description: "The cache of the runs imported here in the year, from what the import kept of each (numbers only); null when none was analyzed.",
+  },
 }, "A year of the work under this machine's home, bucketed by each request's time in the server's local zone.");
 /** Runs counted together (AgentStoreReader.analytics's AnalyticsGroup). */
 const GROUP = {

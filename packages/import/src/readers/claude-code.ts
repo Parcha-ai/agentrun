@@ -6,8 +6,8 @@ import { type LineSource, lineReader, type ReadContext } from "../lines.js";
 import { type Env, entries } from "../reader.js";
 import { addRecord, ownerOf, type RecordIndex, recordIndex } from "../record-index.js";
 import { packed, packInto } from "../record-key.js";
-import { argsOf, effortOf, FAILED, INTERRUPTED, isObject, str, textOf } from "../text.js";
-import type { Answer, SessionOf, ToolCall } from "../types.js";
+import { argsOf, effortOf, FAILED, hashOf, INTERRUPTED, isObject, str, textOf } from "../text.js";
+import type { Answer, ChainRecord, SessionOf, ToolCall } from "../types.js";
 import { normalizeUsage } from "../usage.js";
 
 type Own = {
@@ -50,7 +50,22 @@ const keyOf = (message: Record<string, unknown>, value: Record<string, unknown>)
 const PACKED = packed();
 
 /** Claude Code's record; false for one read already (the import's earlier file, or this file's own repeat). */
-function record(value: Record<string, unknown>, at: number, { state, seen, keep, add }: ReadContext<Own>): boolean | void {
+/** A record of the conversation as the chain holds it (ChainRecord): its uuid, its parent's, a hash of what it put in the
+ *  conversation, and whether it is a compaction (a compact_boundary, which starts a new chain, or the summary after it)
+ *  or a sidechain's. Each record the file holds, a copy too: a later record's chain runs through it. */
+const linkOf = (value: Record<string, unknown>, uuid: string): ChainRecord => {
+  const message = isObject(value.message) ? value.message : undefined;
+  const compact = value.isCompactSummary === true || (value.type === "system" && value.subtype === "compact_boundary");
+  return {
+    id: uuid,
+    ...(str(value.parentUuid) ? { parent: value.parentUuid as string } : {}),
+    hash: hashOf([value.type, value.subtype ?? null, message ? [message.role, message.content] : (value.content ?? value.attachment ?? null)]),
+    ...(compact ? { compact: true as const } : {}),
+    ...(value.isSidechain === true ? { sidechain: true as const } : {}),
+  };
+};
+
+function record(value: Record<string, unknown>, at: number, { state, seen, keep, add, chain }: ReadContext<Own>): boolean | void {
   const { session, names, own, counts } = state;
   // Claude Code names a session's file for its id (<id>.jsonl): the file's own, whatever a record in it says. A resumed
   // session's file can open with records copied from the session it resumed, each still naming that one.
@@ -68,7 +83,14 @@ function record(value: Record<string, unknown>, at: number, { state, seen, keep,
   // A record written twice (a session carried on in its own file, or copied into a resumed one's) is read once, and moves
   // no time a second time, whatever its type.
   const uuid = str(value.uuid);
-  if (uuid && seen.has(`u:${uuid}`)) return false;
+  const link = chain && uuid ? linkOf(value, uuid) : undefined;
+  if (link) chain!.push(link);
+  if (uuid && seen.has(`u:${uuid}`)) {
+    // A copy is in the chain (a later record's runs through it), but happened in the earlier file: a compaction it
+    // repeats is no evidence for a break in this one.
+    if (link) link.copy = true;
+    return false;
+  }
   if (uuid) seen.add(`u:${uuid}`);
   if ((value.type !== "user" && value.type !== "assistant") || !isObject(value.message)) return;
   if (value.isMeta === true || value.isCompactSummary === true || value.isVisibleInTranscriptOnly === true) return;
@@ -151,6 +173,7 @@ function record(value: Record<string, unknown>, at: number, { state, seen, keep,
       seen.add(`m:${key}`);
     }
     add(turn);
+    if (link) link.request = state.answers.length - 1;
     return;
   }
   if (typeof message.content === "string") {

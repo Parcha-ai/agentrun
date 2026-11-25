@@ -6,7 +6,7 @@ import { type FileHandle, open } from "node:fs/promises";
 import { addRequest, type Counts, counts, trimmed } from "./counts.js";
 import { type Env, type Locator, type Reader, type ReadOptions, type ReadResult, rememberUser } from "./reader.js";
 import { isObject, mostEffortOf, timeOf } from "./text.js";
-import { ACTIVE_GAP_MS, type Answer, type SessionOf, type Turn } from "./types.js";
+import { ACTIVE_GAP_MS, type Answer, type ChainRecord, type SessionOf, type Turn } from "./types.js";
 
 /** One file's read so far, all of it plain data (no function, Maps and Sets allowed), so a cursor can carry it and
  *  structuredClone or v8.serialize can copy it. `answers` holds every request read, whether turns are kept or not: what
@@ -40,6 +40,9 @@ export type ReadContext<O = unknown> = {
   seen: Set<string>;
   keep: boolean;
   add: (turn: Turn) => void;
+  /** The session's chain, when the read keeps one (ReadOptions.chain): the source pushes each record of the
+   *  conversation onto it, in the order read, and marks the record that opens each request. */
+  chain?: ChainRecord[];
 };
 
 /** A JSONL source: where its files are, and how it reads one record of one into the session. */
@@ -95,9 +98,11 @@ export type FileCursor = {
   /** The last bytes before `offset` (up to 64, base64): a file rewritten in place to at least the same length no longer
    *  has them there, and is read from its start. */
   mark: string;
-  /** Whether the read kept turns, and whether it was a totals read: a cursor of another kind is no place to go on from. */
+  /** Whether the read kept turns, whether it was a totals read, and whether it kept a chain: a cursor of another kind is
+   *  no place to go on from. */
   keep: boolean;
   totals?: boolean;
+  chain?: boolean;
   state: ReadState;
 };
 
@@ -112,8 +117,8 @@ async function markOf(handle: FileHandle, offset: number): Promise<string> {
 
 /** Whether a read from `cursor` of the open file goes on from it: the same source and kind of read, the same file (device
  *  and inode), no shorter, and the bytes before its offset as they were. Else it reads the file from its start. */
-async function goesOn(source: string, keep: boolean, totals: boolean, cursor: FileCursor, handle: FileHandle, stats: { dev: number; ino: number; size: number }): Promise<boolean> {
-  return cursor.source === source && cursor.keep === keep && (cursor.totals ?? false) === totals && cursor.dev === stats.dev && cursor.ino === stats.ino && stats.size >= cursor.offset && (await markOf(handle, cursor.offset)) === cursor.mark;
+async function goesOn(source: string, keep: boolean, totals: boolean, chained: boolean, cursor: FileCursor, handle: FileHandle, stats: { dev: number; ino: number; size: number }): Promise<boolean> {
+  return cursor.source === source && cursor.keep === keep && (cursor.totals ?? false) === totals && (cursor.chain ?? false) === chained && cursor.dev === stats.dev && cursor.ino === stats.ino && stats.size >= cursor.offset && (await markOf(handle, cursor.offset)) === cursor.mark;
 }
 
 /** Whether a read with these options is a totals read: asked for, with no turns kept, from a source that has one. */
@@ -121,12 +126,12 @@ const totalsRead = <S extends string, O>(spec: LineSource<S, O>, keep: boolean, 
 
 /** Whether `spec`'s line reader would go on from `cursor` in `file` now (a read with `options`), as it decides when it
  *  reads: so a reader built on it can choose how to read before reading. A file it cannot open is no place to go on. */
-export async function resumes<S extends string, O>(spec: LineSource<S, O>, file: string, cursor: FileCursor | undefined, { turns: keep = true, totals: asked = false }: ReadOptions = {}): Promise<boolean> {
+export async function resumes<S extends string, O>(spec: LineSource<S, O>, file: string, cursor: FileCursor | undefined, { turns: keep = true, totals: asked = false, chain = false }: ReadOptions = {}): Promise<boolean> {
   if (cursor === undefined) return false;
   const handle = await open(file, "r").catch(() => undefined);
   if (!handle) return false;
   try {
-    return await goesOn(spec.source, keep, totalsRead(spec, keep, asked), cursor, handle, await handle.stat());
+    return await goesOn(spec.source, keep, totalsRead(spec, keep, asked), chain && keep, cursor, handle, await handle.stat());
   } finally {
     await handle.close();
   }
@@ -139,18 +144,20 @@ const overlay = (base: Set<string>): Set<string> => {
 };
 
 /** One session file of `spec`'s source, read from its start or from `cursor`. */
-async function readLines<S extends string, O>(spec: LineSource<S, O>, file: string, cursor: FileCursor | undefined, { turns: keep = true, totals: asked = false, seen, keepsCursor = true, maxLine = Infinity }: ReadOptions = {}): Promise<ReadResult<S, FileCursor>> {
+async function readLines<S extends string, O>(spec: LineSource<S, O>, file: string, cursor: FileCursor | undefined, { turns: keep = true, totals: asked = false, seen, keepsCursor = true, maxLine = Infinity, chain = false }: ReadOptions = {}): Promise<ReadResult<S, FileCursor>> {
   const { source } = spec;
   const totals = totalsRead(spec, keep, asked);
   const handle = await open(file, "r");
   try {
     const stats = await handle.stat();
+    // A chain is kept with the turns alone.
+    const chained = chain && keep;
     // The cursor's presence checked here, so `resumed` narrows it where its state and offset are read.
-    const resumed = cursor !== undefined && (await goesOn(source, keep, totals, cursor, handle, stats));
+    const resumed = cursor !== undefined && (await goesOn(source, keep, totals, chained, cursor, handle, stats));
     const state = (
       resumed
         ? structuredClone(cursor.state)
-        : { session: { source, id: "", file, state: "completed", child: false, turns: [], users: 0, activeMs: 0, copies: 0 }, turns: [], answers: [], names: new Map(), priced: { sum: 0, unknown: false }, activeMs: 0, own: spec.start(), ...(totals ? { counts: counts() } : {}), ...(seen ? {} : { seen: new Set<string>() }) }
+        : { session: { source, id: "", file, state: "completed", child: false, turns: [], users: 0, activeMs: 0, copies: 0, ...(chained ? { chain: [] } : {}) }, turns: [], answers: [], names: new Map(), priced: { sum: 0, unknown: false }, activeMs: 0, own: spec.start(), ...(totals ? { counts: counts() } : {}), ...(seen ? {} : { seen: new Set<string>() }) }
     ) as ReadState<O>;
     const context: ReadContext<O> = {
       state,
@@ -163,6 +170,7 @@ async function readLines<S extends string, O>(spec: LineSource<S, O>, file: stri
         if (state.counts) addRequest(state.counts, turn.model, turn.usage, turn.at);
         else state.answers.push(turn);
       },
+      ...(state.session.chain ? { chain: state.session.chain } : {}),
     };
     const line = (text: string) => {
       let value: unknown;
@@ -236,7 +244,7 @@ async function readLines<S extends string, O>(spec: LineSource<S, O>, file: stri
       kept = { ...kept, session: withoutText(kept.session), own: spec.forget ? spec.forget(kept.own) : kept.own, ...(kept.counts ? { counts: trimmed(kept.counts) } : {}) };
       if (resumed) session = withoutText(session);
     }
-    return { sessions: [{ locator: { file }, session, requests: state.answers, ...(state.counts ? { counts: state.counts } : {}) }], cursor: { source, dev: stats.dev, ino: stats.ino, offset, mark, keep, ...(totals ? { totals } : {}), state: kept as ReadState }, read, resumed };
+    return { sessions: [{ locator: { file }, session, requests: state.answers, ...(state.counts ? { counts: state.counts } : {}) }], cursor: { source, dev: stats.dev, ino: stats.ino, offset, mark, keep, ...(totals ? { totals } : {}), ...(chained ? { chain: true } : {}), state: kept as ReadState }, read, resumed };
   } finally {
     await handle.close();
   }
@@ -245,6 +253,7 @@ async function readLines<S extends string, O>(spec: LineSource<S, O>, file: stri
 /** The session as read so far, the state left as it is. */
 function finish<S extends string, O>(spec: LineSource<S, O>, file: string, state: ReadState<O>, context: ReadContext<O>): SessionOf<S> {
   const out = { ...state.session, file } as SessionOf<S>;
+  if (out.chain) out.chain = [...out.chain];
   const turns = spec.finish ? spec.finish(out, context.keep ? [...state.turns] : [], context) : context.keep ? [...state.turns] : [];
   if (!out.id) out.id = spec.idOf(file);
   if (state.first !== undefined) out.startedAt = new Date(state.first).toISOString();

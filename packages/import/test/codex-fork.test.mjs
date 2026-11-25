@@ -295,6 +295,19 @@ test("a fork's parent with a line longer than the read's maxLine ends the read w
   assert.equal((await READERS.codex.read({ file })).sessions[0].requests.length, 1);
 });
 
+test("a fork read with a chain from a plain read's cursor starts over with its copy found: as a chain read of the whole file", async (t) => {
+  const home = await tempHome(t);
+  await writeJsonl(rollout(home, PARENT), parentLines());
+  const file = await writeJsonl(rollout(home, FORK), [meta(FORK, 20, { forked_from_id: PARENT }), ...replayed(), ...ownTurn()]);
+  const { cursor } = await READERS.codex.read({ file });
+  const next = await READERS.codex.read({ file }, cursor, { chain: true });
+  assert.equal(next.resumed, false, "a cursor read with no chain does not go on as a chain read");
+  const whole = await READERS.codex.read({ file }, undefined, { chain: true });
+  assert.equal(next.sessions[0].requests.length, whole.sessions[0].requests.length);
+  assert.equal(next.sessions[0].requests.length, 1, "the fork's own request, the copy left to the parent");
+  assert.ok(next.sessions[0].session.chain?.length > 0, "the chain kept");
+});
+
 // Codex 0.152 stamps a thread's records with its id: a thread_settings_applied (or token_usage_record) naming the fork's
 // own thread is the end of its copy, and usage after a marker naming another thread, up to that end, is copied too.
 const settings = (thread, i) => ({ type: "event_msg", timestamp: at(i), payload: { type: "thread_settings_applied", thread_id: thread } });
