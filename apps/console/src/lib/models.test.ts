@@ -20,6 +20,12 @@ describe("model labels", () => {
     expect(modelLabel("chatgpt/gpt-6.1-sol", "agent-model")).toEqual({ text: "gpt-6.1-sol · on your ChatGPT plan", title: "chatgpt/gpt-6.1-sol" });
     expect(modelLabel("chatgpt/", null)).toEqual({ text: "chatgpt/" });
   });
+  it("a plan model a gateway sends under its prefix (agent-model/chatgpt/<id>) reads as the plan's, the full id its title", () => {
+    expect(modelLabel("agent-model/chatgpt/gpt-6.1-sol", "agent-model")).toEqual({ text: "gpt-6.1-sol · on your ChatGPT plan", title: "agent-model/chatgpt/gpt-6.1-sol" });
+    // Only the plan's model: serve sends a chatgpt/ id to the plan before the gateway (chooseModel), but any other id,
+    // an ollama/ one too, goes to the gateway, so it reads as the gateway's id.
+    expect(modelLabel("agent-model/ollama/synth-tools:2b", "agent-model")).toEqual({ text: "ollama/synth-tools:2b", title: "agent-model/ollama/synth-tools:2b" });
+  });
   it("a model on this machine's Ollama (ollama/<tag>) reads its tag and \"local (Ollama)\", the full id its title, whatever the route prefix", () => {
     expect(modelLabel("ollama/synth-tools:2b", null)).toEqual({ text: "synth-tools:2b · local (Ollama)", title: "ollama/synth-tools:2b" });
     expect(modelLabel("ollama/synth-tools:2b", "agent-model")).toEqual({ text: "synth-tools:2b · local (Ollama)", title: "ollama/synth-tools:2b" });

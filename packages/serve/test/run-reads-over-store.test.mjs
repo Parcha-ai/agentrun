@@ -92,6 +92,19 @@ test("listRunFiles with cut run names each file under the run's cut, read again 
   await assert.rejects(() => listRunFiles(store, "run-1", deps({ runWorkspace: async () => localWorkspace(work) }), "whole"), (e) => e.code === "bad_request");
 });
 
+test("listRunFiles with cut run names no file once the run's cut is its census's: a census counts where a value sits in a file's text, never in its name", async () => {
+  const store = await freshStore();
+  await store.runs.create({ id: "run-1", agentId: "a1", revisionId: "r1" });
+  const work = tempDir("agentrun-ws-census-");
+  // The run named a file by the key its caller handed it; its end erased the key, so the cut no longer holds it.
+  writeFileSync(join(work, "handed-key.json"), "{}");
+  writeFileSync(join(work, "plain.txt"), "plain");
+  const cutValues = async () => ({ values: ["server-key"], censusDigest: "d".repeat(64) });
+  const answer = await listRunFiles(store, "run-1", deps({ runWorkspace: async () => localWorkspace(work), cutValues }), "run");
+  assert.deepEqual(answer.files.map((f) => [f.path, "name" in f]), [["handed-key.json", false], ["plain.txt", false]]);
+  assert.equal(answer.truncated, false);
+});
+
 // ---- readRunFile ----------------------------------------------------------------------------------------------------
 
 test("readRunFile is 404 for a run with no folder", async () => {
@@ -298,4 +311,38 @@ test("the page is final when the run is terminal and settled", async () => {
   const page = await tl.page({}, "run-1", 0, 0, 100);
   assert.equal(page.final, true);
   assert.equal(page.status, "completed");
+});
+
+// ---- what a live run waits on (GRE-4835) ----------------------------------------------------------------------------
+
+test("a live run's page names what it waits on, from when it was sent; a request sent or answered is a change that wakes it", async () => {
+  const sent = { kind: "model", name: "ollama/inkling-2-mini", started_at: "2026-11-23T22:48:36.000Z", input_tokens_max: 17355 };
+  const call = { id: "c1", kind: "tool_use", agent_label: null, summary: "web_fetch", text: null, tool_name: "web_fetch", tool_use_id: "call_1", timestamp: "2026-11-23T22:48:35.000Z" };
+  const state = { rows: [call], view: working, models: [] };
+  const tl = runTimelines({ context: BACKGROUND_CONTEXT, pollMs: 5, timelineRows: async () => state.rows, runView: async () => state.view, inFlight: async () => state.models });
+  const first = await tl.page({}, "run-1", 0, 0, 100);
+  assert.deepEqual(first.in_flight, [{ kind: "tool", name: "web_fetch", started_at: "2026-11-23T22:48:35.000Z", tool_use_id: "call_1" }], "the call made and not returned");
+  // The call returns and a model request leaves: no new row for the request, yet the page changes.
+  state.rows = [call, { id: "c1r", kind: "tool_result", agent_label: null, summary: null, text: null, tool_name: "web_fetch", tool_use_id: "call_1", timestamp: "2026-11-23T22:48:36.000Z" }];
+  const second = await tl.page({}, "run-1", first.next_after, 0, 100);
+  assert.deepEqual(second.in_flight, []);
+  state.models = [sent];
+  const third = await tl.page({}, "run-1", second.next_after, 0, 100);
+  assert.equal(third.unchanged, false, "a request sent is a change");
+  assert.deepEqual(third.rows, [], "and no row");
+  assert.deepEqual(third.in_flight, [sent]);
+  // A long poll waiting on the page wakes when the request is answered.
+  const waiting = tl.page({}, "run-1", third.next_after, 2_000, 100);
+  state.models = [];
+  const woke = await waiting;
+  assert.equal(woke.unchanged, false);
+  assert.deepEqual(woke.in_flight, []);
+});
+
+test("a final run's page waits on nothing, and is not read for it", async () => {
+  let asked = 0;
+  const tl = runTimelines({ context: BACKGROUND_CONTEXT, pollMs: 5, timelineRows: async () => [], runView: async () => ({ ...working, status: "completed", state: "idle", poll_after_ms: 0 }), inFlight: async () => (asked++, []) });
+  const page = await tl.page({}, "run-1", 0, 0, 100);
+  assert.deepEqual(page.in_flight, []);
+  assert.equal(asked, 0);
 });

@@ -34,8 +34,9 @@ import { runGate } from "../tool-gate.js";
 import { callNodeAskText, deniedText, modelNodeAskText } from "../refusal-words.js";
 import { loadToolSettings, planeOf, TOOL_PLANE_ENV } from "../tool-plane.js";
 import { AsyncLocalStorage } from "node:async_hooks";
-import { bookedIn, type PaidBooking, parallelExtractFee, parallelSearchFee } from "../paid-calls.js";
-import { searchArgs, WEB_SEARCH_TOOL } from "../web-search.js";
+import { parallelExtractFee, parallelSearchFee, searchArgs } from "@parcha/agentrun-web";
+import { bookedIn, type PaidBooking } from "../paid-calls.js";
+import { WEB_SEARCH_TOOL } from "../web-search.js";
 import { money, pricingOf, requestPrice, type RunTools, TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
 import { claimModelEnv, claimModelKey, claimSecrets, holdRunKey, keyedAtClaim, withoutModelKeys } from "./claim-secrets.js";
 import { type ModelRoute, routeOf } from "./model-route.js";
@@ -250,7 +251,7 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string;
     const runKey = await claimModelKey({ store: deps.store, sealKey: deps.sealKey, env: deps.env ?? process.env }, claim.runId);
     if (keyedAtClaim(runKey)) withoutModelKeys(claimedEnv);
     if (runKey && run?.redact) holdRunKey(run.redact, runKey);
-    const providerOf = deps.providerOf ?? routeProviderOf(claimModelEnv(deps.env ?? process.env, claimedEnv, runKey, claim));
+    const providerOf = deps.providerOf ?? routeProviderOf(claimModelEnv(deps.env ?? process.env, [claimedEnv], runKey, claim));
 
     // Each tier's provider and cap model, resolved once; the proxies start here (before the Harness opens, since the models
     // catalog the Harness takes points at them), their hooks deferred to the booking wired at harnessReady.

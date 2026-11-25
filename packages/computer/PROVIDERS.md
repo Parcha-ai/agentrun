@@ -523,8 +523,10 @@ export class E2BProvider extends HostedProvider {
 ```
 
 The same file exports `create(options)` and `conformance`, as `e2b.ts` does. Load your SDK
-lazily through a constant like `E2B_PACKAGE` and pin it exactly as a root devDependency. `test/vendor-sdks.test.mjs`
-finds that constant in your file and checks the pin.
+lazily with `vendorSdk(label, "<package>")` (`src/vendor-sdk.ts`), never an `import()` of your own, and pin it exactly in
+this package's `optionalDependencies`: a plain `npm install` then brings it, and without it `create` says
+`E2B needs the e2b package: npm install e2b@2.63.0`. `test/vendor-sdks.test.mjs` finds the call in your file and checks
+the pin against the lockfile.
 
 The descriptor is data. AgentRun's Settings page shows it, and the registry loads your file through `load`.
 

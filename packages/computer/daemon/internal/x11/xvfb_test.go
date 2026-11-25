@@ -1,6 +1,7 @@
 package x11_test
 
 import (
+	"context"
 	"image"
 	"testing"
 	"time"
@@ -95,7 +96,7 @@ func TestOnXvfb(t *testing.T) {
 	if err := c.InitXTest(); err != nil {
 		t.Fatal(err)
 	}
-	if w, h, err := c.RootSize(); err != nil || w != 320 || h != 240 {
+	if w, h, err := c.RootSize(context.Background()); err != nil || w != 320 || h != 240 {
 		t.Fatalf("RootSize = %d, %d, %v", w, h, err)
 	}
 	if err := c.FakeInput(x11.MotionNotify, 0, 17, 23); err != nil {
@@ -104,10 +105,10 @@ func TestOnXvfb(t *testing.T) {
 	if errs, err := c.Sync(); err != nil || len(errs) != 0 {
 		t.Fatal(errs, err)
 	}
-	if x, y, err := c.QueryPointer(); err != nil || x != 17 || y != 23 {
+	if x, y, err := c.QueryPointer(context.Background()); err != nil || x != 17 || y != 23 {
 		t.Fatalf("QueryPointer after a motion to (17, 23) = %d, %d, %v", x, y, err)
 	}
-	img, err := c.GetImage(0, 0, 320, 240)
+	img, err := c.GetImage(context.Background(), 0, 0, 320, 240)
 	if err != nil {
 		t.Fatal(err)
 	}

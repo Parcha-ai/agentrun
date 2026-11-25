@@ -188,14 +188,14 @@ export async function askDockerDaemon(env: NodeJS.ProcessEnv, signal: AbortSigna
 }
 
 /** Docker's offer: `docker version` names the daemon's version, so the CLI is on PATH and its daemon answers this user.
- *  Bounded by `timeoutMs`; never rejects. */
-async function probeDocker(env: NodeJS.ProcessEnv, timeoutMs: number, groups: { file: string; user: string; ids: readonly number[] }, container: ContainerFacts): Promise<BoxOffer> {
+ *  The same call names the daemon's architecture, told to `arch` when it does. Bounded by `timeoutMs`; never rejects. */
+async function probeDocker(env: NodeJS.ProcessEnv, timeoutMs: number, groups: { file: string; user: string; ids: readonly number[] }, container: ContainerFacts, arch?: (arch: string) => void): Promise<BoxOffer> {
   const no = (reason: string): BoxOffer => ({ id: "docker", available: false, reason: inOtherContainer(container, reason) });
   // Its environment is the server's through the cut a run's takes (withoutSecrets): no box key, no other secret, no
   // name shaped like a key.
   const dockerEnv = withoutSecrets(env);
   const answer = await new Promise<{ failed?: string; denied?: true; late?: true; endpoint?: string; out: string }>((resolve) =>
-    execFile("docker", ["version", "--format", "{{.Server.Version}}"], { env: dockerEnv, timeout: timeoutMs, killSignal: "SIGKILL", maxBuffer: 64 * 1024 }, (error, stdout, stderr) => {
+    execFile("docker", ["version", "--format", "{{.Server.Version}} {{.Server.Arch}}"], { env: dockerEnv, timeout: timeoutMs, killSignal: "SIGKILL", maxBuffer: 64 * 1024 }, (error, stdout, stderr) => {
       const failed = error as (NodeJS.ErrnoException & { killed?: boolean }) | null;
       const code = failed?.code;
       resolve({ ...(failed ? { failed: typeof code === "number" ? `exit ${code}` : errorName(failed), ...(failed.killed ? { late: true as const } : {}), ...(SOCKET_DENIED.test(String(stderr)) ? { denied: true as const } : {}), ...endpointIn(stderr) } : {}), out: String(stdout) });
@@ -212,6 +212,8 @@ async function probeDocker(env: NodeJS.ProcessEnv, timeoutMs: number, groups: { 
   if (answer.denied) return no((await joinedSince(groups)) ? DOCKER_NOT_IN_GROUP : DOCKER_JOIN_GROUP);
   if (answer.failed) return no(`Docker isn't running on this machine, or this user may not use it (docker version failed: ${answer.failed}): start Docker, or add this user to the docker group, then restart AgentRun`);
   if (!answer.out.trim()) return no("Docker isn't running on this machine (docker version named no daemon): start Docker, then restart AgentRun");
+  const named = /^\S+\s+(\S+)$/.exec(answer.out.trim())?.[1];
+  if (named !== undefined) arch?.(named);
   return { id: "docker", available: true };
 }
 
@@ -239,6 +241,10 @@ export type PlaceOffersOptions = {
   container?: ContainerFacts;
   /** Under --faux only: Docker answers, whatever AGENTRUN_BOXES lists, and nothing asks it. */
   fauxDocker?: boolean;
+  /** Told the architecture of the Docker daemon the probe found (amd64, arm64), when Docker answers and names it: the
+   *  server's check that a Docker computer's daemon is built for it (box-paths.ts dockerComputerRefusal) asks Docker
+   *  nothing more. */
+  dockerArch?: (arch: string) => void;
 };
 
 /** Every box, in BOX_IDS order, as this server has it at its start (`env`: its environment, its secrets readable): a box AGENTRUN_BOXES does not list is not enabled; docker by its probe (or `fauxDocker`); daytona
@@ -251,7 +257,7 @@ export async function placeOffers(env: NodeJS.ProcessEnv, options: PlaceOffersOp
       // The tests' faux docker stands in whatever AGENTRUN_BOXES lists, as the old faux box did.
       if (id === "docker" && options.fauxDocker) return { id, available: true, reason: "a faux docker (tests)" };
       if (!enabled.has(id)) return { id, available: false, reason: notEnabled(id, enabled) };
-      if (id === "docker") return probeDocker(env, options.timeoutMs ?? PROBE_TIMEOUT_MS, options.groups ?? ownGroups(), options.container ?? containerOf(env));
+      if (id === "docker") return probeDocker(env, options.timeoutMs ?? PROBE_TIMEOUT_MS, options.groups ?? ownGroups(), options.container ?? containerOf(env), options.dockerArch);
       return remoteOffer(id, keyOf);
     }),
   );
