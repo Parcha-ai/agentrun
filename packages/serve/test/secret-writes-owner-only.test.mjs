@@ -437,3 +437,32 @@ test("an owner's preview at the token's shown address never sends the credential
   assert.equal(preview.status, 412, preview.text);
   assert.deepEqual([(await server.store.mcp.server("docs"))?.url, (await server.store.settings.get(mcpSourceKey("docs")))?.by], [named.url, undefined], "the server is where the owner moved it, the owner's");
 });
+
+test("the token's first save of a name is the token's from the moment its row is there: an owner's preview at its shown address landing right after the row's write is refused, and the address the token chose gets nothing", async (t) => {
+  const server = await serve(t);
+  const chosen = await startFakeMcp();
+  t.after(() => chosen.close());
+  const page = await asPage(server);
+  const token = asToken(server);
+  // The owner's preview at the address every read shows, landing once the token's first save has written the row and
+  // before its save is answered.
+  let armed = true;
+  let preview;
+  const prototype = onPostgres ? PgConnection.prototype : Connection.prototype;
+  const transaction = prototype.transaction;
+  t.mock.method(prototype, "transaction", async function (...args) {
+    const done = await transaction.apply(this, args);
+    if (armed && (await server.store.mcp.server("docs")) !== undefined) {
+      armed = false;
+      const shown = (await page("GET", "/settings/mcp-servers/docs")).json?.url;
+      preview = await page("POST", "/settings/mcp-servers/preview", { name: "docs", url: shown, auth: { type: "bearer", token: TOKEN } });
+    }
+    return done;
+  });
+  const saved = await token("PUT", "/settings/mcp-servers/docs", { url: chosen.url, auth: { type: "none" } });
+  assert.equal(saved.status, 200, saved.text);
+  assert.equal(armed, false, "the owner's preview landed inside the token's save, after its row was written");
+  assert.deepEqual(chosen.log.filter((one) => one.authorization), [], `the address the token chose got the owner's credential: a preview between the first save's row and its source record took the token's address for one the owner named (${preview.status})`);
+  assert.deepEqual([preview.status, preview.json?.error?.fields?.map((issue) => issue.field)], [422, ["url"]], preview.text);
+  assert.equal((await server.store.settings.get(mcpSourceKey("docs")))?.by, "token", "the server is the token's");
+});
