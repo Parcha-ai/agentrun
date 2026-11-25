@@ -15,6 +15,7 @@ import { toolOf } from "./tools.js";
 import { configSecrets, SEALED_FIELD, SEALED_MASK } from "./trigger-composio.js";
 import { CATCHUP_WINDOW_S } from "./triggers.js";
 import { isObject, type Json, MODEL_TIER_NAMES, stable } from "./validate.js";
+import { fileIssues } from "./filed-tool.js";
 import { PAIRED_ID_PREFIX } from "./workspace/attached-computers.js";
 
 /** A package's file as the API carries it: text as itself, anything else base64. */
@@ -164,9 +165,15 @@ export function agentPackage(input: ExportInput): AgentPackage {
       for (const field of clear) blocked.push({ kind: "pin", name: `${server}: ${field}`, reason: IN_THE_CLEAR });
       if (!clear.length) pin[tool] = held;
     }
+    // A file setting travels as it is: a folder of the run's files and the paths the tool's result shows, never a value.
+    const file: Json = {};
+    for (const tool of granted) {
+      const held = settings[mcpToolName(server, tool)]?.file;
+      if (held !== undefined && !fileIssues(held, `file.${tool}`).length) file[tool] = held;
+    }
     const reason = origin?.mcp.find((need) => need.source === saved.source.source && need.toolkit === toolkit)?.reason;
     // Required where a composio trigger runs on it (as a package's composio trigger must); else skipped where none matches.
-    mcp.push({ source: saved.source.source, toolkit, tools: granted, ...(composioServers.has(server) ? { required: true } : {}), ...(reason ? { reason } : {}), ...(Object.keys(pin).length ? { pin } : {}) });
+    mcp.push({ source: saved.source.source, toolkit, tools: granted, ...(composioServers.has(server) ? { required: true } : {}), ...(reason ? { reason } : {}), ...(Object.keys(pin).length ? { pin } : {}), ...(Object.keys(file).length ? { file } : {}) });
   }
   // What the tool settings hold beyond a pin of a granted MCP tool and bash's policy is this server's.
   for (const [tool, setting] of Object.entries(settings)) {
@@ -177,6 +184,7 @@ export function agentPackage(input: ExportInput): AgentPackage {
       if (parsed?.kind === "mcp" || parsed?.kind === "mcp-server") remade.push({ kind: "pin", name: tool, reason: "A pin on a tool the agent is not granted: pin it again on the target if the tool is granted there." });
       else blocked.push({ kind: "tool_setting", name: tool, reason: "Its arguments are pinned, and a package pins MCP tools alone: without the pin the agent would get more than it has here." });
     }
+    if (setting.file !== undefined && !ofNeed) remade.push({ kind: "tool_setting", name: tool, reason: "Its answers are filed (a file setting) on a tool the agent is not granted: set it again on the target if the tool is granted there." });
     if (setting.permission === "allow") remade.push({ kind: "tool_setting", name: tool, reason: "It runs without asking here: allow it again on the target." });
     const own = ["provider", "scope"].filter((key) => setting[key] !== undefined);
     if (own.length) remade.push({ kind: "tool_setting", name: tool, reason: `Its ${own.join(" and ")} is set on this server: set it again on the target.` });

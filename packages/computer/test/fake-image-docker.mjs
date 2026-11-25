@@ -7,10 +7,11 @@
 //   podman-words                          a missing image is Podman's `image not known`, not Docker's `No such image`
 //   build-race, pull-race                 another process tags the image first: it is there, and this step fails as
 //                                         Docker 29's image store says it (`already exists`)
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after } from "node:test";
+import { records } from "./jsonl.mjs";
 
 const dirs = [];
 after(() => {
@@ -86,8 +87,6 @@ if (args[0] === "image" && args[1] === "inspect") {
 }
 `;
 
-const lines = (path) => (existsSync(path) ? readFileSync(path, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)) : []);
-
 /**
  * A fake docker program in a fresh directory: `docker` is its path, for ensureImage's or the provider's docker option.
  * `keep(name, labels)` gives it an image; `calls()`, `builds()` and `pulls()` read what it was asked.
@@ -108,11 +107,11 @@ export function fakeImageDocker(marks = {}) {
 		clear: (name) => rmSync(join(state, name), { force: true }),
 		keep: (name, labels) => writeFileSync(join(state, "images", `${encodeURIComponent(name)}.json`), JSON.stringify({ labels })),
 		has: (name) => existsSync(join(state, "images", `${encodeURIComponent(name)}.json`)),
-		calls: () => lines(join(state, "calls.jsonl")),
+		calls: () => records(join(state, "calls.jsonl")),
 		/** Each call's environment: { args, names, seen } (seen: PATH, HOME, DOCKER_HOST, DOCKER_CONFIG). */
-		envs: () => lines(join(state, "envs.jsonl")),
-		builds: () => lines(join(state, "builds.jsonl")),
-		pulls: () => lines(join(state, "pulls.jsonl")),
+		envs: () => records(join(state, "envs.jsonl")),
+		builds: () => records(join(state, "builds.jsonl")),
+		pulls: () => records(join(state, "pulls.jsonl")),
 	};
 }
 

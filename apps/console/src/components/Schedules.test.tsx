@@ -196,7 +196,7 @@ describe("the schedules list", () => {
     expect(s.calls.filter((c) => c.path === "/v2/agents/mailer").length).toBe(1);
     expect(s.calls.filter((c) => c.path === "/v2/agents/triage").length).toBe(1);
   });
-  // The page is framed as every list page is (Connected agents, Runs): a header bar with the place's icon and its name in
+  // The page is framed as every list page is (Agents, Runs): a header bar with the place's icon and its name in
   // caps, and the actions in that bar, the one main action last.
   it("has the list pages' header bar: the navigation's icon, the name in caps, the actions at its right", async () => {
     const t = await open(server({ triggers: [NIGHTLY] }).v2, {});
@@ -885,6 +885,19 @@ describe("a trigger's typed input and its agent picker", () => {
     await t.set("agent", "triage");
     await t.click(/^Save changes$/);
     expect(calls.filter((c) => c.method === "PATCH").map((c) => c.body)).toEqual([{ target: { kind: "start_run", agent_id: "triage", input: { content: "Check." }, max_cost_usd: 2 } }]);
+  });
+
+  it("an edit that picks another agent and then the trigger's own again keeps the input it had, the keys no field shows too", async () => {
+    const kyb: Trigger = { ...NIGHTLY, target: { kind: "start_run", agent_id: "kyb_1", input: { content: "Check.", company: "Acme GmbH", country: "DE", note: { from: "api" } }, max_cost_usd: 2 } };
+    const { v2, calls } = server({ triggers: [kyb], agents });
+    const t = await open(v2, { trigger: "trg_1", edit: true });
+    await t.set("agent", "triage");
+    await t.set("agent", "kyb_1");
+    await t.set("name", "kyb nightly");
+    await t.click(/^Save changes$/);
+    // Before: the stored input went with the first pick, so the target was sent again without note (no field shows it).
+    expect(t.issue("target.input")).toBeNull();
+    expect(calls.filter((c) => c.method === "PATCH").map((c) => c.body)).toEqual([{ name: "kyb nightly" }]);
   });
 
   it("a name changed alone leaves a typed input as it is", async () => {

@@ -13,18 +13,19 @@
 // for a server one person runs: it is refused where more than one person can start runs, `on` included, and the owner
 // confirms they alone run agents here. It runs only in a runner place, on the machine the owner turned it on for.
 import { createHash, randomBytes } from "node:crypto";
-import { accessSync, chmodSync, closeSync, constants, existsSync, fstatSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync, readSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { accessSync, chmodSync, closeSync, constants, existsSync, fstatSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync, readSync, realpathSync, renameSync, type RmOptions, rmSync, writeFileSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
-import { delimiter, dirname, isAbsolute, join } from "node:path";
+import { basename, delimiter, dirname, isAbsolute, join } from "node:path";
 import type { ClaudeAgentLogin, ClaudeLoginStatus, ClaudeLoginToken } from "@parcha/agentrun-harness-claude";
-import { facts as claudeFacts } from "@parcha/agentrun-harness-claude/facts";
-import { registerSecretWrite } from "./secret-writes.js";
+import { facts as claudeFacts, loginRefresh } from "@parcha/agentrun-harness-claude/facts";
+import { registerSecretPage, registerSecretWrite } from "./secret-writes.js";
 import type { ClaudeSignIns, SignInView } from "./claude-sign-in.js";
 import type { Settings } from "./store/index.js";
 
 // Every operation here is the owner's session's alone (secret-writes.ts): no answer holds a credential, but turning a
 // person's plan on for this server's runs, and starting its sign-in, are the owner's to do.
-for (const operation of ["getClaudeLogin", "turnOnClaudeLogin", "turnOffClaudeLogin", "startClaudeLogin"]) registerSecretWrite(operation, () => true);
+for (const operation of ["getClaudeLogin", "turnOnClaudeLogin", "turnOffClaudeLogin", "startClaudeLogin", "signOutClaudeLogin"]) registerSecretWrite(operation, () => true);
+registerSecretPage("signOutClaudeLogin", "/#/settings/keys");
 
 /** The switch: `off` (or 0, false, no) turns the mode off on this server, `on` (or 1, true, yes) leaves it there past
  *  loopback; unset, the listen address decides (claudeLoginSwitchedOff). */
@@ -140,10 +141,113 @@ const absolute = (env: Readonly<Record<string, string | undefined>>, name: strin
 
 /** The most links one path may pass through, as Linux's own limit (past it, ELOOP). */
 const MAX_LINKS = 40;
-/** A folder's mode bits that let its group or anyone write in it, and the sticky bit, which keeps each entry in such a
+/** A folder's mode bits that let its group write in it, and anyone, and the sticky bit, which keeps each entry in such a
  *  folder its maker's (/tmp, say). */
-const GROUP_OR_OTHER_WRITE = 0o022;
+const GROUP_WRITE = 0o020;
+const OTHER_WRITE = 0o002;
 const STICKY = 0o1000;
+/** The system's account files: its users (name:password:uid:gid:…) and its groups (name:password:gid:members). */
+const PASSWD_FILE = "/etc/passwd";
+const GROUP_FILE = "/etc/group";
+/** The name service switch: for each database (`passwd`, `group`, …), the sources the system asks for its entries. */
+const NSSWITCH_FILE = "/etc/nsswitch.conf";
+/** The sources that serve users and groups from the account files alone. `files` reads them; `compat` reads them too, and
+ *  asks a directory service only at a `+` or `-` line, which privateGroup refuses. Not `systemd`: besides its dynamic
+ *  users it serves systemd's user records (userdb), whose membership records and homed users' `memberOf` put users in a
+ *  group the group file does not list. Nor sss, ldap, nis, winbind, db or any other: their users and groups are not in
+ *  these files. */
+const LOCAL_SOURCES: ReadonlySet<string> = new Set(["files", "compat"]);
+
+/** Whether the name service switch takes users and groups from the account files alone, so that what they say of a group
+ *  is all there is: its `passwd` and `group` lines, and an `initgroups` line where there is one (it, not `group`, then
+ *  gives each user's other groups), name no source but LOCAL_SOURCES. A bracketed action (`[NOTFOUND=return]`) names
+ *  none. False where it cannot say: no `passwd` or `group` line, or one that names no source. Throws where the file
+ *  cannot be read (privateGroup's false). */
+function localAccounts(): boolean {
+  const lines = readFileSync(NSSWITCH_FILE, "utf8").split("\n").map((line) => line.replace(/#.*/, ""));
+  const sourcesOf = (database: string) =>
+    lines.flatMap((line) => {
+      const entry = /^\s*([^\s:]+)\s*:(.*)$/.exec(line);
+      return entry && entry[1]!.toLowerCase() === database ? [entry[2]!.replace(/\[[^\]]*\]/g, " ").split(/\s+/).filter(Boolean)] : [];
+    });
+  const [users, groups, initgroups] = ["passwd", "group", "initgroups"].map(sourcesOf);
+  return users!.length > 0 && groups!.length > 0 && [...users!, ...groups!, ...initgroups!].every((sources) => sources.length > 0 && sources.every((source) => LOCAL_SOURCES.has(source)));
+}
+
+/** A whole decimal id from an account file's field, else undefined (an empty field is no id). */
+const idOf = (field: string | undefined): number | undefined => (field !== undefined && /^\d+$/.test(field) ? Number(field) : undefined);
+
+/** A group file's password fields that give the group no password there: `x`, `!` and `*` (locked), and none. Any other
+ *  is one, and newgrp lets anyone who knows it into the group. `x` says only that the group's password, if it has one,
+ *  is in /etc/gshadow, with the members newgrp lets in without it; a server without privileges cannot read that file,
+ *  so this check does not, and a password or member gpasswd sets there is not seen (gpasswd -r and gpasswd -d remove
+ *  them). */
+const NO_GROUP_PASSWORD: ReadonlySet<string> = new Set(["x", "!", "*", ""]);
+
+/** The words a group-writable folder's refusal ends in where its group would be the user's private one but for a password
+ *  the group file gives it: which group, and why. */
+const groupPasswordWords = (group: string, gid: number): string =>
+  ` Its group ${group} (gid ${gid}) would be the server's user's private group, but /etc/group gives it a password, which lets anyone who knows it join the group (newgrp); removing the password (gpasswd -r ${group}) mends that too.`;
+
+/** Whether group `gid` is user `uid`'s private group, so a folder only its group and its owner may write in is still the
+ *  user's alone (the umask ruling: a umask of 002, under a group of the user's own, makes folders 0775). Only where the
+ *  name service switch takes users and groups from the account files alone (localAccounts), and as those files say,
+ *  read as the system reads them (blanks before an entry skipped): `uid` has one entry, and no other entry has its name
+ *  (a group's members are named, so a second account so named is in it too; a second entry with `uid`, an alias, is the
+ *  user under a name the group may list); `gid` is its primary group; no other user has `gid` as theirs; the group file
+ *  has `gid`, listing no member but that user, and gives it no password (NO_GROUP_PASSWORD). True where it is; else
+ *  false, or, where only the password stands in the way, the words that say so (groupPasswordWords). False where it
+ *  cannot say: a switch that also asks another source (a directory service, systemd's user records), or that it cannot
+ *  read, a file it cannot read, a `+` or `-` line (the rest is a directory service's, whose members these files do not
+ *  show), an id that is not a plain number (the system reads ` 1000` as 1000, which would hide an alias or a member),
+ *  no entry for `uid`, or `gid` missing from the group file. */
+function privateGroup(uid: number, gid: number): boolean | string {
+  try {
+    if (!localAccounts()) return false;
+    const entries = (file: string) =>
+      readFileSync(file, "utf8")
+        .split("\n")
+        .map((line) => line.trimStart())
+        .filter((line) => line !== "" && !line.startsWith("#"))
+        .map((line) => line.split(":"));
+    const users = entries(PASSWD_FILE);
+    const groups = entries(GROUP_FILE);
+    if ([...users, ...groups].some((fields) => /^[+-]/.test(fields[0]!))) return false;
+    if (users.some((fields) => idOf(fields[2]) === undefined || idOf(fields[3]) === undefined) || groups.some((fields) => idOf(fields[2]) === undefined)) return false;
+    const own = users.filter((fields) => idOf(fields[2]) === uid);
+    const name = own.length === 1 ? own[0]![0] : undefined;
+    if (!name || idOf(own[0]![3]) !== gid) return false;
+    if (users.some((fields) => fields !== own[0] && fields[0] === name)) return false;
+    if (users.some((fields) => fields !== own[0] && idOf(fields[3]) === gid)) return false;
+    const its = groups.filter((fields) => idOf(fields[2]) === gid);
+    if (its.length === 0 || !its.every((fields) => (fields[3] ?? "").split(",").map((member) => member.trim()).every((member) => member === "" || member === name))) return false;
+    const withPassword = its.find((fields) => !NO_GROUP_PASSWORD.has(fields[1] ?? ""));
+    return withPassword ? groupPasswordWords(withPassword[0]!, gid) : true;
+  } catch {
+    return false;
+  }
+}
+
+/** Where a folder with `mode` and group `gid` lets someone other than user `uid` write in it (anyone may, or its group
+ *  may and that group is not the user's private one: privateGroup, asked once per group by `mine`), the words its
+ *  refusal ends in, about its group (privateGroup's, else none: ""). Undefined where no one else may write in it. */
+const openToOthers = (folder: { mode: number; gid: number }, mine: (gid: number) => boolean | string): string | undefined => {
+  if ((folder.mode & OTHER_WRITE) !== 0) return "";
+  if ((folder.mode & GROUP_WRITE) === 0) return undefined;
+  const group = mine(folder.gid);
+  return group === true ? undefined : group || "";
+};
+
+/** privateGroup for user `uid`, each group asked once: one walk (ownedFolder) reads the account files only where a folder
+ *  its group may write in is met, and once per group. */
+function privateGroupsOf(uid: number): (gid: number) => boolean | string {
+  const known = new Map<number, boolean | string>();
+  return (gid) => {
+    let mine = known.get(gid);
+    if (mine === undefined) known.set(gid, (mine = privateGroup(uid, gid)));
+    return mine;
+  };
+}
 
 /** `dir` (absolute) walked one name at a time from the root, as the system walks it: an empty name (a trailing or
  *  doubled slash) and `.` name nothing, `..` goes to the folder above the real one reached so far, and each link is followed where it is met, and must be one user `uid` or root made, as must each
@@ -186,22 +290,25 @@ function followLinks(uid: number, dir: string): { real: string; missing: string[
 
 /** Why a folder is not the login's (ownedFolder): `owned`, it is not the user's own (another user's, through another
  *  user's link or folder, or no way to look); `open`, `at` (a folder on its way, the folder itself, or the one it is to
- *  be made in) has `mode`, which its group or anyone may write in, so a chmod of `at` mends it. Only the mode bits are
- *  read: an ACL that grants another user writes and leaves them alone (macOS's `chmod +a`) is not seen, and a FUSE
- *  mount another user may let others into (`allow_other`) says what owner and mode it likes. */
-type NotHeld = { not: "owned" } | { not: "open"; at: string; mode: number };
+ *  be made in) has `mode`, which anyone may write in, or its group, where that group is not the user's private one
+ *  (openToOthers), so a chmod of `at` mends it; `more`, the words that say more of its group (openToOthers'). Only the
+ *  mode bits are read: an ACL that grants another user writes and leaves them alone (macOS's `chmod +a`) is not seen,
+ *  and a FUSE mount another user may let others into (`allow_other`) says what owner and mode it likes. */
+type NotHeld = { not: "owned" } | { not: "open"; at: string; mode: number; more: string };
 
 /** Undefined where no user but `uid` and root can change what `real` (a real path, followLinks') leads to: each folder
- *  above it, from the root down, is a folder (no link) of that user's or root's that neither its group nor anyone else
- *  may write in, unless the sticky bit keeps each entry there its maker's. Else why not: a folder not theirs first, as
- *  a chmod mends no such folder, else the nearest open one. */
-function wayHeld(uid: number, real: string): NotHeld | undefined {
+ *  above it, from the root down, is a folder (no link) of that user's or root's that no one else may write in (anyone,
+ *  or its group where that is not the user's private one: openToOthers, with `mine`), unless the sticky bit keeps each
+ *  entry there its maker's. Else why not: a folder not theirs first, as a chmod mends no such folder, else the nearest
+ *  open one. */
+function wayHeld(uid: number, real: string, mine: (gid: number) => boolean | string): NotHeld | undefined {
   try {
     let open: NotHeld | undefined;
     for (let at = dirname(real), last = real; at !== last; last = at, at = dirname(at)) {
       const folder = lstatSync(at);
       if (!folder.isDirectory() || (folder.uid !== uid && folder.uid !== 0)) return { not: "owned" };
-      if ((folder.mode & GROUP_OR_OTHER_WRITE) !== 0 && (folder.mode & STICKY) === 0) open ??= { not: "open", at, mode: folder.mode };
+      const more = (folder.mode & STICKY) === 0 ? openToOthers(folder, mine) : undefined;
+      if (more !== undefined) open ??= { not: "open", at, mode: folder.mode, more };
     }
     return open;
   } catch {
@@ -209,23 +316,24 @@ function wayHeld(uid: number, real: string): NotHeld | undefined {
   }
 }
 
-/** Undefined where `real` is a folder (no link) of user `uid`'s that neither its group nor anyone else may write in,
- *  sticky or not: they could put files of theirs in it, or, where the CLI makes a folder in it, make that folder first.
- *  Else why not. */
-function heldFolder(uid: number, real: string): NotHeld | undefined {
+/** Undefined where `real` is a folder (no link) of user `uid`'s that no one else may write in (openToOthers, with
+ *  `mine`), sticky or not: they could put files of theirs in it, or, where the CLI makes a folder in it, make that
+ *  folder first. Else why not. */
+function heldFolder(uid: number, real: string, mine: (gid: number) => boolean | string): NotHeld | undefined {
   try {
     const folder = lstatSync(real);
     if (!folder.isDirectory() || folder.uid !== uid) return { not: "owned" };
-    return (folder.mode & GROUP_OR_OTHER_WRITE) === 0 ? undefined : { not: "open", at: real, mode: folder.mode };
+    const more = openToOthers(folder, mine);
+    return more === undefined ? undefined : { not: "open", at: real, mode: folder.mode, more };
   } catch {
     return { not: "owned" };
   }
 }
 
 /** The end of the words a folder open to others' writes (NotHeld's `open`) is refused in: which folder, its mode, and
- *  the chmod that closes it. */
-const openWords = (open: { at: string; mode: number }): string =>
-  `is open to writes by others than its owner: ${open.at} has mode ${(open.mode & 0o7777).toString(8).padStart(4, "0")}, which its group or anyone may write in. Make it writable by its owner alone (chmod g-w,o-w ${open.at}): a umask of 002 makes new folders so.`;
+ *  the chmod that closes it, then what more it says of its group (`more`). */
+const openWords = (open: { at: string; mode: number; more: string }): string =>
+  `is open to writes by others than its owner: ${open.at} has mode ${(open.mode & 0o7777).toString(8).padStart(4, "0")}, which its group or anyone may write in. Make it writable by its owner alone (chmod g-w,o-w ${open.at}): a umask of 002 makes new folders so.${open.more}`;
 
 /** The folder `dir` names, as the CLI is to get it, where it is one user `uid` owns; else why not. `dir` is walked as
  *  the system walks it, one name at a time (followLinks: a trailing slash or `.` names nothing, and a `..` goes up from
@@ -242,8 +350,9 @@ function ownedFolder(uid: number, dir: string, make: boolean): { real: string; m
   const walked = followLinks(uid, dir);
   if (walked === undefined || (walked.missing.length > 0 && !make)) return { not: "owned" };
   // A folder that is not the user's first, as a chmod mends no such folder; else the open one.
-  const way = wayHeld(uid, walked.real);
-  const folder = heldFolder(uid, walked.real);
+  const mine = privateGroupsOf(uid);
+  const way = wayHeld(uid, walked.real, mine);
+  const folder = heldFolder(uid, walked.real, mine);
   const notHeld = way?.not === "owned" ? way : folder?.not === "owned" ? folder : (way ?? folder);
   if (notHeld) return notHeld;
   return walked.missing.length > 0 ? { real: join(walked.real, ...walked.missing), missing: true } : { real: walked.real, missing: false };
@@ -516,12 +625,11 @@ export async function loginForRun(settings: Pick<Settings, "get">, data: string,
 }
 
 /** The routes here (server.ts): every one answers 404, by its name, while the mode is off (`why`). */
-export const CLAUDE_LOGIN_ROUTES: ReadonlySet<string> = new Set(["getClaudeLogin", "turnOnClaudeLogin", "turnOffClaudeLogin", "startClaudeLogin"]);
+export const CLAUDE_LOGIN_ROUTES: ReadonlySet<string> = new Set(["getClaudeLogin", "turnOnClaudeLogin", "turnOffClaudeLogin", "startClaudeLogin", "signOutClaudeLogin"]);
 /** Whether the claude-login routes answer here, the one rule the routes and capabilities' `features.claude_login` both
- *  read: none while the mode is switched off (`off`, claudeLoginSwitchedOff's reason), and on an API-only server
- *  (`apiOnlyRoutes`, the routes it serves) only if it serves them all. */
-export const claudeLoginServed = (off: string | undefined, apiOnlyRoutes: ReadonlySet<string> | undefined): boolean =>
-  !off && (!apiOnlyRoutes || [...CLAUDE_LOGIN_ROUTES].every((name) => apiOnlyRoutes.has(name)));
+ *  read: none while the mode is switched off (`off`, claudeLoginSwitchedOff's reason), and none on an API-only server
+ *  (`apiOnly`), whose route list holds none of them, so it refuses them before routing (server.ts). */
+export const claudeLoginServed = (off: string | undefined, apiOnly: boolean): boolean => !off && !apiOnly;
 export const claudeLoginRouteOff = (name: string, why: string): string => `${name}: Claude Code's login on this machine is off on this server: ${why}.`;
 
 /** What the routes need of the server. `pinned`: the pinned CLI's path when installed. `refused`: whyNotOneOwner of this
@@ -625,6 +733,22 @@ export async function claudeLoginView(deps: ClaudeLoginDeps): Promise<ClaudeLogi
   }
 }
 
+/** What AgentRun's own login folder (`<data>/claude-login`) leads to where it is a link (the link's text); else
+ *  undefined, a folder or nothing there. */
+function loginFolderLink(data: string): string | undefined {
+  const dir = agentRunLoginDir(data);
+  try {
+    return lstatSync(dir, { throwIfNoEntry: false })?.isSymbolicLink() ? readlinkSync(dir) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Why a turn-on is refused where AgentRun's own login folder (`dir`) is a link (to `to`). A sign-out removes that folder
+ *  whole, so it is one AgentRun keeps itself, and no link leads a sign-out into a folder elsewhere. */
+export const loginFolderIsLink = (dir: string, to: string): string =>
+  `AgentRun's own Claude login folder ${dir} is a link (to ${to}). AgentRun keeps its login in a folder of its own, which a sign-out removes whole, so it never follows a link there: remove the link, then turn it on again.`;
+
 /** PUT /settings/claude-login: turned on, refused in one line where more than one person can start runs. A turn-on that
  *  moves the login to another place first ends a sign-in this server started that still waits: its CLI signs in at the
  *  old place, which the login no longer reads. One at the same place leaves it waiting, as it still signs in there. */
@@ -655,6 +779,8 @@ export async function turnOnClaudeLogin(deps: ClaudeLoginDeps, body: unknown): P
       if (refused) throw new ClaudeLoginRefused("forbidden", refused);
       const at = loginAt(asked.place, deps.data, deps.env, deps.uid);
       if (at.refused !== undefined) throw new ClaudeLoginRefused("forbidden", at.refused);
+      const linked = asked.place === "agentrun" ? loginFolderLink(deps.data) : undefined;
+      if (linked !== undefined) throw new ClaudeLoginRefused("forbidden", loginFolderIsLink(agentRunLoginDir(deps.data), linked));
       // Its folders still to make are made here (madeLogin), so a sign-in from the line shown finds them made 0700.
       const login = madeLogin(at, asked.place, deps);
       const setting = settingFor(asked.place, deps.data);
@@ -676,6 +802,122 @@ export async function turnOffClaudeLogin(deps: ClaudeLoginDeps): Promise<ClaudeL
   });
   await deps.changed();
   return claudeLoginView(deps);
+}
+
+/** What may remain where the CLI didn't confirm its own sign-out (`why`, the CLI's step as it went). */
+const keychainMayRemain = (why: string): string =>
+  `${why}, so on macOS its Keychain item for this login may remain: remove it in Keychain Access (its name starts with "Claude Code-credentials").`;
+const KEYCHAIN_MAY_REMAIN = keychainMayRemain("Claude Code's own sign-out didn't confirm");
+/** The Keychain's words where the CLI's step threw before the CLI ran (`failed`, the error's words), else where it didn't confirm. */
+const keychainWords = (failed: string | undefined): string =>
+  failed === undefined ? KEYCHAIN_MAY_REMAIN : keychainMayRemain(`Claude Code's own sign-out could not run (${failed})`);
+
+/** What a sign-out answers beside `confirmed: false`: the login is gone here, and the CLI said nothing of its own copy. */
+export const LOGIN_SIGN_OUT_UNCONFIRMED = `Signed out here: AgentRun's copy of the login is removed. ${KEYCHAIN_MAY_REMAIN}`;
+
+/** What a sign-out answers beside `confirmed: false` where the CLI's step threw (`failed`, the error's words): the login is
+ *  gone here all the same, and the CLI's own copy may remain. */
+export const signOutCliFailed = (failed: string): string => `Signed out here: AgentRun's copy of the login is removed. ${keychainWords(failed)}`;
+
+/** What a sign-out answers beside `confirmed: false` where some of the login is still there (`left`: each thing, its path
+ *  and why), and the Keychain's words too where the CLI didn't confirm its own sign-out (`keychain`), naming the CLI
+ *  step's failure where it threw (`failed`). */
+export const signOutLeft = (left: readonly string[], keychain: boolean, failed?: string): string =>
+  `Signed out here, and the mode is off, but some of AgentRun's copy of the login remains: ${left.join("; ")}. Remove it by hand before turning the mode on again.${keychain ? ` ${keychainWords(failed)}` : ""}`;
+
+/** Why a sign-out of this machine's own login (`folder`, the person's `~/.claude` or CLAUDE_CONFIG_DIR) is refused. */
+export const machineSignOutRefused = (folder: string): string =>
+  `This is your own Claude Code login on this machine (${folder}), which AgentRun only uses: it never signs it out. Run \`claude auth logout\` in a terminal there to sign it out, or turn the mode off here.`;
+
+/** POST /settings/claude-login/sign-out's answer: whether all of the login is gone (the CLI confirmed its own sign-out and
+ *  every removal landed, whether or not a folder was there), else words saying what may remain
+ *  (LOGIN_SIGN_OUT_UNCONFIRMED, signOutLeft), and the view after it (`off`). */
+export type ClaudeLoginSignOut = { confirmed: boolean; message?: string; login: ClaudeLoginView };
+
+/** POST /settings/claude-login/sign-out: AgentRun's own login (`<data>/claude-login`) signed out and removed, so the next
+ *  turn-on finds none and the person signs in fresh, to the same account or another. In one turn on the sign-ins' queue
+ *  (no sign-in or turn-on lands in between): a sign-in this server started that still waits is ended; the mode is turned
+ *  off, so no new run goes on the login while it goes; the pinned CLI's own sign-out (the harness's claudeLogout) runs on
+ *  the folder, so it removes its credentials file and, on macOS, the Keychain item named from the folder. It runs where
+ *  the folder is gone too: a retry after a sign-out the CLI didn't confirm finds no folder, and the Keychain item may
+ *  remain, so the answer is confirmed only where the CLI confirms. Then the folder is removed whatever the CLI said (a
+ *  folder the CLI made as it signed out too) (credentials, account, profiles, the CLI's refresh lock, and
+ *  the CLI's older lock beside it), with the login's signed-in note (noteAnswer) and this process's token reader of it
+ *  (claude-login-token.ts forgetLoginTokens). Each removal stands alone: one that fails is named in the answer
+ *  (signOutLeft, `confirmed` false), and the others, the reader's drop and the server's reread of the keys still happen.
+ *  So with the CLI's step: a throw finding the CLI or loading the harness is named in the answer (signOutCliFailed), and
+ *  every removal still runs.
+ *  Where the folder is a link (put there after the turn-on, which refuses one), the link alone is removed, with the
+ *  login's signed-in note: no CLI runs through it, nothing it leads to is touched, and the answer names it. Runs already going are left as a turn-off
+ *  leaves them: each keeps the token its CLI holds, and fails in
+ *  LOGIN_SIGNED_OUT's words at its next read of the login; one claimed on it and started while the mode is off is refused
+ *  at its start (claude-login-token.ts LOGIN_CHANGED_SINCE_CLAIM). That check is of the folder, not the account, so one
+ *  started after a turn-on and a new sign-in runs on that sign-in. A run whose CLI reads the folder itself (in the
+ *  runner's process) holds the refresh token and may write a renewed pair back after the folder goes; nothing here
+ *  removes it again. A login on this machine's own folder (`machine`) is the person's:
+ *  refused (machineSignOutRefused), with nothing touched. */
+export async function signOutClaudeLogin(deps: ClaudeLoginDeps): Promise<ClaudeLoginSignOut> {
+  let off = false;
+  let signedOut = true;
+  let cliFailed: string | undefined;
+  const left: string[] = [];
+  const remove = (what: string, path: string, options: RmOptions) => {
+    try {
+      rmSync(path, options);
+    } catch (error) {
+      left.push(`${what} ${path} (${(error as NodeJS.ErrnoException).code ?? String(error)})`);
+    }
+  };
+  try {
+    await deps.signIns.serial(async (turn) => {
+      if ((await claudeLoginSetting(deps.settings))?.place === "machine") throw new ClaudeLoginRefused("forbidden", machineSignOutRefused(machineFolder(deps.env, deps.uid).folder));
+      await turn.stop();
+      await deps.settings.remove(CLAUDE_LOGIN_SETTING);
+      deps.saved(undefined);
+      off = true;
+      const dir = agentRunLoginDir(deps.data);
+      const linked = loginFolderLink(deps.data);
+      const note = answerFile(deps.data, { dir, profiles: join(dir, "anthropic") });
+      try {
+        if (linked !== undefined) {
+          // A link put there after the turn-on (which refuses one, loginFolderIsLink): the link alone goes, no CLI runs
+          // through it, and nothing it leads to is touched. The login's signed-in note, in the data folder, goes too.
+          signedOut = false;
+          remove("the link", dir, { force: true });
+          remove("the login's signed-in note", note, { force: true });
+          left.push(`${linked}, where the link ${dir} led, left as it was`);
+          return;
+        }
+        // The CLI's step in its own try: a throw finding the CLI or loading the harness skips no removal below, and the
+        // answer names it.
+        try {
+          const { login } = loginAt("agentrun", deps.data, deps.env, deps.uid);
+          const cli = loginCli(await deps.pinned(), deps.env);
+          signedOut = login && cli ? await (await deps.claude()).claudeLogout(cli, login, pathOf(deps.env)) : false;
+        } catch (error) {
+          signedOut = false;
+          cliFailed = error instanceof Error ? error.message : String(error);
+        }
+        // The older lock sits beside the folder in the data folder's real path. The folder's own real path is never
+        // followed: a link swapped in during the CLI's await would lead the lock's removal outside the data folder.
+        let beside = dir;
+        try {
+          beside = join(realpathSync(dirname(dir)), basename(dir));
+        } catch {
+          // The folder as named.
+        }
+        remove("the login's folder", dir, { recursive: true, force: true });
+        remove("the CLI's older lock", `${beside}${loginRefresh.legacyLockSuffix}`, { recursive: true, force: true });
+        remove("the login's signed-in note", note, { force: true });
+      } finally {
+        (await import("./claude-login-token.js")).forgetLoginTokens(dir);
+      }
+    });
+  } finally {
+    if (off) await deps.changed();
+  }
+  const message = left.length > 0 ? signOutLeft(left, !signedOut, cliFailed) : signedOut ? undefined : cliFailed !== undefined ? signOutCliFailed(cliFailed) : LOGIN_SIGN_OUT_UNCONFIRMED;
+  return { confirmed: message === undefined, ...(message ? { message } : {}), login: await claudeLoginView(deps) };
 }
 
 /** POST /settings/claude-login/login: the CLI's own sign-in, started on this machine, where it opens a browser, with the
@@ -725,7 +967,7 @@ export async function dropRefusedLogin(signIns: Pick<ClaudeSignIns, "serial">, s
 }
 
 /** What the routes and a run's check use of the harness (its login.ts), loaded only when asked. */
-export type ClaudeLoginCli = Pick<typeof import("@parcha/agentrun-harness-claude"), "claudeLoginStatus" | "startClaudeLogin" | "claudeLoginCommand">;
+export type ClaudeLoginCli = Pick<typeof import("@parcha/agentrun-harness-claude"), "claudeLoginStatus" | "startClaudeLogin" | "claudeLoginCommand" | "claudeLogout">;
 const pathOf = (env: Readonly<Record<string, string | undefined>>): { path?: string } => (env.PATH ? { path: env.PATH } : {});
 
 /** How long a signed-in answer stands in for a check that gives none (loginBeforeRun). */

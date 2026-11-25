@@ -3,7 +3,7 @@
 // GitHub. Hand-written, the IMAP subset a mail client library uses (imapflow): CAPABILITY, LOGIN, LIST and LSUB with
 // special-use flags, STATUS, SELECT and EXAMINE with UIDVALIDITY and UIDNEXT, SEARCH and UID SEARCH, FETCH and UID FETCH
 // (BODY[] and BODY.PEEK[], a part of one, HEADER.FIELDS), STORE, APPEND, CREATE (and SUBSCRIBE), UID MOVE, NOOP, CLOSE,
-// UNSELECT, LOGOUT; on the Gmail layout also X-GM-EXT-1's labels (FETCH and STORE of X-GM-LABELS: a message in INBOX
+// UNSELECT, LOGOUT (SEARCH's FROM, TO, CC, BCC and SUBJECT a substring of the header, as a real server's); on the Gmail layout also X-GM-EXT-1's labels (FETCH and STORE of X-GM-LABELS: a message in INBOX
 // carries \Inbox, and one whose \Inbox is taken off leaves INBOX for [Gmail]/All Mail; a label's mailbox lists every
 // message carrying the label, one message in each mailbox it shows in, so a STORE through any of them shows in all of
 // them, and a message put in a label's mailbox is one in [Gmail]/All Mail under the label), and with `slowInReplyTo`
@@ -13,7 +13,7 @@
 // at RCPT with a 550, as a server refuses an address it won't deliver to, and the rest are delivered. A fetch of BODY[]
 // without PEEK marks the message \Seen, as a
 // real server does, so a test can tell a read that changes the inbox from one that does not. The test seeds the
-// mailboxes, reads them back and what SMTP received, and switches the sign-in off or the UIDVALIDITY to another. Plaintext
+// mailboxes, reads them back and what SMTP received, and switches the sign-in or APPEND off or the UIDVALIDITY to another. Plaintext
 // on the loopback address only: never a server anyone else reaches.
 import { randomBytes } from "node:crypto";
 import { createServer, type Server, type Socket } from "node:net";
@@ -29,6 +29,8 @@ export type FauxMessage = {
   from?: string;
   to?: string | readonly string[];
   cc?: string | readonly string[];
+  /** Its Bcc header: as a sender's own copy in Sent keeps it. */
+  bcc?: string | readonly string[];
   subject?: string;
   text?: string;
   html?: string;
@@ -73,6 +75,8 @@ export type EmailFaux = {
   commands(): string[];
   /** On: every sign-in, IMAP and SMTP, is refused as a wrong password is. */
   refuseLogin(on: boolean): void;
+  /** On: every APPEND is refused, as a mailbox over its quota refuses one (a send's copy is then not filed in Sent). */
+  refuseAppend(on: boolean): void;
   /** The next IMAP command whose logged line `pattern` takes is answered only once the returned release is called: a
    *  mail server that is slow at one step (a trigger's start, held while the trigger is edited). */
   hold(pattern: RegExp): () => void;
@@ -95,9 +99,12 @@ const INBOX_LABEL = "\\Inbox";
 const ALL_MAIL = "[Gmail]/All Mail";
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
+/** A layout: a plain account's, Gmail's, or a plain account's with no Sent folder at all. */
+type Layout = "standard" | "gmail" | "no-sent";
 /** The folders of a layout: a plain account's (Drafts, Sent, Trash at the top), or Gmail's (under [Gmail]/, each with its
- *  special-use flag, its sent folder "Sent Mail"). */
-function layoutOf(layout: "standard" | "gmail"): { name: string; flags: string[]; selectable?: false }[] {
+ *  special-use flag, its sent folder "Sent Mail"); "no-sent", the plain one without Sent. */
+function layoutOf(layout: Layout): { name: string; flags: string[]; selectable?: false }[] {
+  if (layout === "no-sent") return layoutOf("standard").filter((box) => box.name !== "Sent");
   if (layout === "gmail") {
     return [
       { name: "INBOX", flags: [] },
@@ -148,6 +155,7 @@ function compose(message: FauxMessage, messageId: string | undefined, date: Date
   lines.push(`From: ${message.from ?? "Someone <someone@example.com>"}`);
   if (list(message.to).length) lines.push(`To: ${list(message.to).join(", ")}`);
   if (list(message.cc).length) lines.push(`Cc: ${list(message.cc).join(", ")}`);
+  if (list(message.bcc).length) lines.push(`Bcc: ${list(message.bcc).join(", ")}`);
   lines.push(`Subject: ${message.subject ?? ""}`);
   lines.push(`Date: ${date.toUTCString().replace("GMT", "+0000")}`);
   if (messageId) lines.push(`Message-ID: ${messageId}`);
@@ -253,20 +261,25 @@ const literal = (text: string) => `{${Buffer.byteLength(text, "utf8")}}${CRLF}${
 /** Starts the fake account's two servers on loopback. `layout`: the folders it has (default a plain account's); the Gmail
  *  layout's server says X-GM-EXT-1. `now`: its clock. `slowInReplyTo`: a search by HEADER In-Reply-To is never answered,
  *  as Gmail's on a large mailbox (it indexes Message-ID and References, not In-Reply-To). `password`: the one it signs in
- *  with (default a fresh random one). */
-export async function startEmailFaux(options: { imapPort?: number; smtpPort?: number; layout?: "standard" | "gmail"; now?: () => Date; slowInReplyTo?: boolean; password?: string } = {}): Promise<EmailFaux> {
+ *  with (default a fresh random one). `trailingDelimiter`: every mailbox name a command gives is read without one
+ *  trailing `/`, as CREATE always reads it, so `Sent/` is Sent (a server that maps a name onto another's). */
+export async function startEmailFaux(options: { imapPort?: number; smtpPort?: number; layout?: Layout; now?: () => Date; slowInReplyTo?: boolean; password?: string; trailingDelimiter?: boolean } = {}): Promise<EmailFaux> {
   // Its clock: a seeded message's default date and an appended one's arrival (a template eval case's `now`, else the real one).
   const now = options.now ?? (() => new Date());
   const user = "agent@faux.example";
   const password = options.password ?? `faux-${randomBytes(9).toString("hex")}`;
   let refusing = false;
+  let refusingAppend = false;
   const commandLog: string[] = [];
   const holds: { pattern: RegExp; gate: Promise<void> }[] = [];
   const delivered: FauxSent[] = [];
   const gmail = options.layout === "gmail";
   const capabilities = gmail ? GMAIL_CAPABILITIES : CAPABILITIES;
   const boxes: Box[] = layoutOf(options.layout ?? "standard").map((box, i) => ({ name: box.name, flags: box.flags, selectable: box.selectable !== false, uidValidity: 1000 + i, uidNext: 1, messages: [] }));
-  const boxNamed = (name: string): Box | undefined => boxes.find((box) => (name.toUpperCase() === "INBOX" ? box.name === "INBOX" : box.name === name));
+  const boxNamed = (given: string): Box | undefined => {
+    const name = options.trailingDelimiter ? given.replace(/\/$/, "") : given;
+    return boxes.find((box) => (name.toUpperCase() === "INBOX" ? box.name === "INBOX" : box.name === name));
+  };
   /** "Drafts" and "Sent" name the layout's special-use folder; any other name its folder. */
   const resolve = (name: string): Box | undefined => {
     const special = { drafts: "\\Drafts", sent: "\\Sent" }[name.replace(/^\\/, "").toLowerCase()];
@@ -432,7 +445,8 @@ export async function startEmailFaux(options: { imapPort?: number; smtpPort?: nu
           case "DRAFT": return (m) => m.flags.includes("\\Draft");
           case "DELETED": return (m) => m.flags.includes("\\Deleted");
           case "UNDELETED": return (m) => !m.flags.includes("\\Deleted");
-          case "FROM": case "TO": case "CC": case "SUBJECT": { const needle = arg(); return (m) => has(header(m, key), needle); }
+          // A substring of the header's raw value, case-blind, as RFC 3501 has it: TO "a@b.co" takes "data@b.com".
+          case "FROM": case "TO": case "CC": case "BCC": case "SUBJECT": { const needle = arg(); return (m) => has(header(m, key), needle); }
           case "TEXT": { const needle = arg(); return (m) => has(m.raw, needle); }
           case "BODY": { const needle = arg(); return (m) => has(bodyPart(m.raw), needle); }
           case "HEADER": { const name = arg(); const needle = arg(); return (m) => (needle === "" ? header(m, name) !== undefined : has(header(m, name), needle)); }
@@ -526,6 +540,7 @@ export async function startEmailFaux(options: { imapPort?: number; smtpPort?: nu
       if (verb === "APPEND") {
         const box = boxNamed(word(args[0]));
         if (!box || !box.selectable) return send(`${tag} NO [TRYCREATE] no such mailbox`);
+        if (refusingAppend) return send(`${tag} NO [OVERQUOTA] the mailbox is full`);
         let i = 1;
         const flags = args[i] && "list" in args[i]! ? (args[i++] as { list: Token[] }).list.map(word) : [];
         // An optional date-time before the message.
@@ -799,6 +814,9 @@ export async function startEmailFaux(options: { imapPort?: number; smtpPort?: nu
     },
     refuseLogin(on) {
       refusing = on;
+    },
+    refuseAppend(on) {
+      refusingAppend = on;
     },
     setUidValidity(n, mailbox = "INBOX") {
       const box = resolve(mailbox);

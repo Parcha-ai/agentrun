@@ -1,7 +1,7 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Chip, type ChipTone } from "@/components/ui/chip";
-import { checksFolder, claudeLoginView, KEPT_REFUSED, LOGIN_ROW, LOGIN_RUNS, type LoginView, loginSignedInAs, MACHINE_DEFAULT_FOLDER, machineCredentials, NO_CLI, ONLY_ME, ONLY_ME_FIRST, ONLY_ME_WHY, OTHER_MACHINE, placeWords, SIGNED_OUT, signInWords, UNKNOWN } from "@/lib/claudeLogin";
+import { canSignOut, checksFolder, claudeLoginView, KEPT_REFUSED, LOGIN_ROW, LOGIN_RUNS, type LoginView, loginSignedInAs, MACHINE_DEFAULT_FOLDER, machineCredentials, NO_CLI, ONLY_ME, ONLY_ME_FIRST, ONLY_ME_WHY, OTHER_MACHINE, placeWords, SIGN_OUT_ASK, SIGNED_OUT, SIGNED_OUT_HERE, signInWords, UNKNOWN } from "@/lib/claudeLogin";
 import { type Client, ClientError } from "@/lib/client";
 import { type SecretsWhyNot, WHY_NOT_WORDS } from "@/lib/secrets";
 import type { ClaudeLoginView } from "@/lib/v2";
@@ -37,17 +37,23 @@ export function ClaudeLoginRow({ v2, writable, whyNot = "sign_in", onChange, ava
   const onlyMeFirst = useId();
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
+  // Sign out asks first (`confirming`), then says what became of it (`signedOut`) until the mode is on again: the turn-on
+  // (or a read that finds it on) drops the words for good, so a later Turn off never shows them.
+  const [confirming, setConfirming] = useState(false);
+  const [signedOut, setSignedOut] = useState<string | null>(null);
+  const modeOn = view !== null && view.state !== "off";
+  useEffect(() => { if (modeOn) setSignedOut(null); }, [modeOn]);
   // A read's answer is shown only if no other read or write began or ended since it was asked (`asked`), and none starts
   // while a write is out (`writing`): a status read that raced a turn on or off never puts back what it replaced.
   const asked = useRef(0);
   const writing = useRef(false);
   const reading = useRef(false);
-  // Switched off (capabilities changed): the row goes, a sign-in it waited for is dropped, no read starts, and a read
-  // still out never puts the row back.
+  // Switched off (capabilities changed): the row goes, a sign-in it waited for is dropped, no read starts, and a read or
+  // write still out never puts the row back, nor its error (the bump of `asked`).
   const availableNow = useRef(available);
   availableNow.current = available;
   useEffect(() => {
-    if (!available) { asked.current++; setView(null); return; }
+    if (!available) { asked.current++; setView(null); setProblem(null); return; }
     let live = true;
     v2.claudeLogin().then((body) => { if (live) setView(claudeLoginView(body)); }, () => { if (live) setView(null); });
     return () => { live = false; };
@@ -58,7 +64,7 @@ export function ClaudeLoginRow({ v2, writable, whyNot = "sign_in", onChange, ava
     const n = ++asked.current;
     v2.claudeLogin().then((body) => {
       const next = claudeLoginView(body);
-      if (n === asked.current && next && availableNow.current) setView(next);
+      if (n === asked.current && next) setView(next);
     }, () => {}).finally(() => { reading.current = false; });
   };
 
@@ -88,20 +94,36 @@ export function ClaudeLoginRow({ v2, writable, whyNot = "sign_in", onChange, ava
   const act = async (write: () => Promise<ClaudeLoginView>, changes: boolean) => {
     setProblem(null); setBusy(true);
     writing.current = true;
-    asked.current++;
+    // The row switched off while this write was out bumps `asked` (as it drops a read's answer), so neither its answer
+    // nor its failure lands after.
+    const n = ++asked.current;
     try {
       const next = claudeLoginView(await write());
-      if (availableNow.current) setView(next);
+      if (n === asked.current) setView(next);
       if (changes) onChange?.();
       return true;
     } catch (e) {
-      setProblem(words(e));
+      if (n === asked.current) setProblem(words(e));
       return false;
     } finally {
       asked.current++;
       writing.current = false;
       setBusy(false);
     }
+  };
+  // AgentRun's own login removed and the mode off (the answer's view): the row reads off, and Turn on then finds no login
+  // and offers the sign-in. Where the CLI didn't confirm its own sign-out, the server's words say what may remain. An
+  // answer that finds the mode on again (another tab turned it on first) keeps no words: nothing would clear them.
+  const signOut = async () => {
+    let said: string | null = null;
+    const done = await act(async () => {
+      const out = await v2.signOutClaudeLogin();
+      said = out.login.state === "off" ? (out.confirmed ? SIGNED_OUT_HERE : out.message || SIGNED_OUT_HERE) : null;
+      return out.login;
+    }, true);
+    if (!done) return;
+    setConfirming(false);
+    setSignedOut(said);
   };
   const state = STATE[view.state];
   const on = view.state !== "off";
@@ -162,7 +184,7 @@ export function ClaudeLoginRow({ v2, writable, whyNot = "sign_in", onChange, ava
                 </label>
               ))}
             </fieldset>
-            {place === "machine" && view.machine?.source === "default" &&<p className="text-small text-muted-foreground">{MACHINE_DEFAULT_FOLDER}</p>}
+            {place === "machine" && view.machine?.source === "default" && <p className="text-small text-muted-foreground">{MACHINE_DEFAULT_FOLDER}</p>}
             <label className="flex items-center gap-2 text-body">
               <input type="checkbox" name="only_me" className="accent-primary" checked={onlyMe} onChange={(e) => setOnlyMe(e.target.checked)} />
               {ONLY_ME}
@@ -175,7 +197,20 @@ export function ClaudeLoginRow({ v2, writable, whyNot = "sign_in", onChange, ava
             </div>
           </form>
         )}
-        {on && writable && <Button size="sm" disabled={busy} onClick={() => void act(() => v2.turnOffClaudeLogin(), true)}>Turn off</Button>}
+        {on && writable && (
+          <div className="flex flex-wrap gap-2">
+            <Button size="sm" disabled={busy} onClick={() => void act(() => v2.turnOffClaudeLogin(), true)}>Turn off</Button>
+            {canSignOut(view) && !confirming && <Button size="sm" disabled={busy} onClick={() => { setConfirming(true); setProblem(null); }}>Sign out</Button>}
+          </div>
+        )}
+        {writable && confirming && canSignOut(view) && (
+          <div className="flex flex-wrap items-center gap-3 border bg-card p-3">
+            <p className="min-w-0 flex-1 text-body">{SIGN_OUT_ASK}</p>
+            <Button size="sm" variant="destructive" disabled={busy} onClick={() => void signOut()}>Sign out</Button>
+            <Button size="sm" disabled={busy} onClick={() => setConfirming(false)}>Keep</Button>
+          </div>
+        )}
+        {!on && signedOut && <p className="text-body" role="status">{signedOut}</p>}
         {problem && <p className="font-mono text-small text-destructive-text" role="alert">{problem}</p>}
       </div>
     </li>

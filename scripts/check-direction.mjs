@@ -63,6 +63,7 @@ export const EXCEPTIONS = [
   ['packages/run-adapters/src/runner.ts', 'packages/dsl', 1, ...KERNEL_DSL],
   ['packages/run-adapters/src/types.ts', 'packages/dsl', 1, ...KERNEL_DSL],
   ['packages/decisions/package.json', 'packages/dsl', 1, ...PROVIDER_DSL],
+  ['packages/decisions/src/anthropic.ts', 'packages/dsl', 2, ...PROVIDER_DSL],
   ['packages/decisions/src/evidence.ts', 'packages/dsl', 1, ...PROVIDER_DSL],
   ['packages/decisions/src/openrouter.ts', 'packages/dsl', 2, ...PROVIDER_DSL],
   ['packages/decisions/src/parallel.ts', 'packages/dsl', 2, ...PROVIDER_DSL],

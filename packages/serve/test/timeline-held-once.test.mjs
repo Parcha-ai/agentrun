@@ -1,11 +1,11 @@
 // A call's arguments are read whole as JSON on every read of a run's view and its Timeline (TimelineOptions.holds), and
-// a console polls both: the served reads ask store-reads/journal.ts heldWholeFor, which reads a text once per held value
+// a console polls both: the served reads ask store-reads/journal.ts rowCutsOnce, which reads a text once per held value
 // set and keeps the verdict by the digests of the set and the text. A held value saved since makes a new set, read anew.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { redacted } from "../dist/key-refusal.js";
 import { scanned } from "../dist/redact/match.js";
-import { heldWholeFor } from "../dist/store-reads/journal.js";
+import { rowCutsOnce, servedSince } from "../dist/store-reads/journal.js";
 import { timelineOf } from "../dist/timeline/index.js";
 import { assistant, call, result, user } from "./timeline-lib-support.mjs";
 
@@ -15,17 +15,24 @@ const [HEAD, REST] = [["Zq8V", "bN3x", "LmT6", "pR2w"].join(""), ["Yk9H", "sD4f"
 const SECOND = `${HEAD}${REST}`;
 const ARGS = { path: "notes/a.md", content: `see ${HEAD}`, note: `${REST} more` };
 
+// A store as rowCutsOnce keys it: its origin alone.
+const store = {};
+store.origin = store;
+let runs = 0;
+/** The whole-text check of a run of its own under `values`, its verdicts kept by rowCutsOnce. */
+const heldWholeFor = (values, runId = `run-${++runs}`) => rowCutsOnce(store, runId, { values }, servedSince(store)).holds;
+
 const useOf = (values) =>
   timelineOf([user("Write it."), assistant([call("c1", "write", ARGS)]), result("c1", "write", "ok")], {
     redact: (text) => redacted(text, values),
-    holds: heldWholeFor(values),
+    holds: heldWholeFor(values, "run-use"),
   }).find((row) => row.kind === "tool_use");
 
 test("a call's arguments read again with the same held values are not read again: the second read visits no character", () => {
   const text = JSON.stringify({ path: "notes/b.md", content: "nothing held here ".repeat(50) });
-  assert.equal(heldWholeFor([FIRST])(text), false);
+  assert.equal(heldWholeFor([FIRST], "run-again")(text), false);
   scanned.chars = 0;
-  assert.equal(heldWholeFor([FIRST])(text), false);
+  assert.equal(heldWholeFor([FIRST], "run-again")(text), false);
   assert.equal(scanned.chars, 0, "the verdict is kept by the held set's digest and the text's");
 });
 

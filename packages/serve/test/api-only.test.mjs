@@ -2,8 +2,9 @@
 // (api-only-deploy.test.mjs), for a caller's backend, and refuses every other address with a 404 before the request is
 // read further: the console, the store page's data, sign-in, setup, settings writes, the MCP endpoint, triggers and their
 // webhook hooks, the agents list and their writes, and a live view's WebSocket. It has no owner. Its token saves a
-// Composio server by api_key_env and deletes a server, and lists the servers' names (GET /settings/mcp-server-names);
-// their list, read, generic save, previews, refreshes and sign-ins are refused (api-only-mcp.test.mjs). The computer settings' two reads (GET /computers, GET /workspace/archil) are served by the token, their
+// Composio server by api_key_env and a per_run server at an origin AGENTRUN_API_ONLY_MCP_ORIGINS lists, deletes a server,
+// and lists the servers' names (GET /settings/mcp-server-names); their list, read, any other save, previews, refreshes
+// and sign-ins are refused (api-only-mcp.test.mjs). The computer settings' two reads (GET /computers, GET /workspace/archil) are served by the token, their
 // writes, tests and key choices refused. So are an agent's learning reads (the loop, promotions, cost per run and a
 // run's learning) and its reset (DELETE learning), its learning's other writes and its own texts refused. A run's purge
 // (DELETE /runs/{id}) is served wherever the agent's delete is: for a run of an agent its backend made (an inline run's,
@@ -378,7 +379,7 @@ test("an API-only server serves the computers list and the Archil settings with 
   assert.deepEqual([sandbox.secrets[0].name, sandbox.secrets[0].set, sandbox.secrets[0].source, typeof sandbox.ready], ["computer:faux-sandbox:FAUX_SANDBOX_KEY", true, "console", "boolean"], "the key's name and saved, and whether the provider is ready");
   const archil = await send(server, "GET", "/v2/workspace/archil");
   assert.equal(archil.status, 200, JSON.stringify(archil.body));
-  assert.deepEqual(archil.body, { on: true, source: "env", region: "aws-us-east-1", s3Url: "https://s3.archil.example", secret: { name: "workspace:archil", set: true, source: "console", changed_at: archil.body.secret.changed_at } });
+  assert.deepEqual(archil.body, { on: true, source: "env", region: "aws-us-east-1", s3Url: "https://s3.archil.example", s3UrlFrom: "given", regions: archil.body.regions, secret: { name: "workspace:archil", set: true, source: "console", changed_at: archil.body.secret.changed_at } });
   for (const [what, answer] of [["computers", computers], ["archil", archil]]) {
     const text = JSON.stringify(answer.body);
     for (const value of never) assert.ok(!text.includes(value), `${what} carries no planted value, sealed blob, seal key or token`);
@@ -461,6 +462,6 @@ test("off by default: the same routes are served without the profile", async (t)
 
 test("the banner says the server is API-only in place of the console's link", () => {
   const lines = banner({ url: "http://127.0.0.1:7340", baseUrl: "http://127.0.0.1:7340/v2", data: "/data", token: "x".repeat(32), source: "env", apiOnly: true });
-  assert.ok(lines.includes("API only (AGENTRUN_API_ONLY=1): the run and deploy routes, the MCP server names, a Composio server's save and a server's delete are served; the console, sign-in, setup, other settings, the MCP endpoint, triggers and hooks are refused."), lines.join("\n"));
+  assert.ok(lines.includes("API only (AGENTRUN_API_ONLY=1): the run and deploy routes, the MCP server names, a Composio server's save, a per_run server's save at an origin AGENTRUN_API_ONLY_MCP_ORIGINS lists and a server's delete are served; the console, sign-in, setup, other settings, the MCP endpoint, triggers and hooks are refused."), lines.join("\n"));
   assert.ok(!lines.some((line) => line.startsWith("Open ")), "no console link");
 });

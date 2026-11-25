@@ -2,8 +2,7 @@ import cronstrue from "cronstrue";
 import { type Accept, acceptFields, acceptOf, acceptWords, type ConditionDraft, conditionDraftOf, type RuleDraft, ruleDraftOf } from "./accept";
 import { ClientError, type FieldIssue } from "./client";
 import { clock } from "./format";
-import { type AgentInput, agentInputOf, fieldOfIssue, fieldStartText, inputOf } from "./inputForm";
-import { exampleOf, type Schema } from "./runStart";
+import { type AgentInput, fieldOfIssue, fieldStartText, inputOf } from "./inputForm";
 import type { ParameterText } from "./templatePackages";
 import type { Firing, Trigger, TriggerCreate, TriggerInput, TriggerSource, TriggerTarget } from "./v2";
 
@@ -27,8 +26,9 @@ export type Draft = { name: string; kind: WhenKind; cron: string; timezone: stri
  *  `shape`: how the picked agent takes its input, given when the form saves (none: the message alone). `values`: the text
  *  typed in the agent's input fields, by key (none yet: the fields as they start). `json`: the whole input as JSON, for an
  *  agent whose input_schema the fields can't show (none yet: its example). `inputRead`: an edited trigger's input as
- *  read, of which what the form doesn't show is kept. */
-export type InputDraft = { shape?: AgentInput; values?: ParameterText; json?: string; inputRead?: Record<string, unknown> };
+ *  read, of which what the form doesn't show is kept. `stored`: the agent and input it was read with, which picking that
+ *  agent again after another brings back. */
+export type InputDraft = { shape?: AgentInput; values?: ParameterText; json?: string; inputRead?: Record<string, unknown>; stored?: { agentId: string; input: Record<string, unknown> } };
 
 const isRecord = (x: unknown): x is Record<string, unknown> => !!x && typeof x === "object" && !Array.isArray(x);
 const scalar = (x: unknown) => typeof x === "string" || typeof x === "number" || typeof x === "boolean";
@@ -45,14 +45,6 @@ export const inputText = (input: Record<string, unknown>): ParameterText =>
  *  (triggers.ts), and a schedule's last completed answer (trigger-targets.ts previousResultOf). A run whose typed input
  *  left the message out would start without them. */
 const withMessage = (input: Record<string, unknown>): Record<string, unknown> => (Object.hasOwn(input, "content") ? input : { ...input, content: "" });
-
-/** How a trigger's form takes an agent's input: as agentInputOf says, except that a schema limiting how many keys or
- *  which keys its input has (maxProperties, propertyNames) is taken as whole JSON. A trigger's typed fields always go
- *  with the message (withMessage), which such a schema can refuse; in the JSON the person sees `content` and decides. */
-export function triggerInputOf(schema: unknown): AgentInput {
-  const shape = agentInputOf(schema);
-  return shape.kind === "fields" && isRecord(schema) && ("maxProperties" in schema || "propertyNames" in schema) ? { kind: "json", example: exampleOf(schema as Schema) } : shape;
-}
 
 /** The input a trigger's run is given, or what is wrong with it under `target.input`: the message alone; the message
  *  (optional when the agent's schema requires another field) and the typed fields; or, for a schema the fields can't
@@ -730,7 +722,7 @@ export function draftOf(t: Schedule): Draft {
   const s = t.source;
   const zone = "cron" in s ? s.timezone : browserZone();
   const base = { ...emptyDraft(t.target.agent_id), name: t.name, timezone: zone, content: typeof t.target.input.content === "string" ? t.target.input.content : "",
-    values: inputText(t.target.input), json: JSON.stringify(t.target.input, null, 2), inputRead: t.target.input, maxCost: typeof t.target.max_cost_usd === "number" ? String(t.target.max_cost_usd) : "", enabled: t.enabled };
+    values: inputText(t.target.input), json: JSON.stringify(t.target.input, null, 2), inputRead: t.target.input, stored: { agentId: t.target.agent_id, input: t.target.input }, maxCost: typeof t.target.max_cost_usd === "number" ? String(t.target.max_cost_usd) : "", enabled: t.enabled };
   if ("cron" in s) return { ...base, kind: "cron", cron: s.cron };
   if ("at" in s) return { ...base, kind: "at", at: wallOf(s.at), read: { at: s.at } };
   const unit: EveryUnit = s.every_s % 3600 === 0 ? "hours" : s.every_s % 60 === 0 ? "minutes" : "seconds";

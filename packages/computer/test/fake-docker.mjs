@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url";
 import { checkAddress } from "../dist/docker/egress-table.js";
 import { DockerProvider } from "../dist/docker.js";
 import { PROTOCOL_VERSION } from "../dist/protocol.js";
+import { records } from "./jsonl.mjs";
 
 export const VERSION = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 export const HELLO = { protocol: PROTOCOL_VERSION, version: VERSION, os: "linux", kind: "linux", arch: "amd64", groups: ["exec", "files", "processes"] };
@@ -207,9 +208,10 @@ export function egressVolume({ computer, deadline = new Date(Date.now() + 600_00
  * networks there from the start, besides Docker's own ({ Name, ... } as `network inspect` reports one): none by default,
  * so create makes the egress bridge, and a docker run on a network that is not there fails as Docker's does. One with
  * `Late: true` is made by another create between this create's inspect and its own: inspect does not find it, and
- * create finds it there. `networkNames()` reads the networks there besides Docker's own.
+ * create finds it there. `networkNames()` reads the networks there besides Docker's own. `settleMs` and `settleQuietMs`
+ * are the provider's options of those names: a test of a removal that never ends sets the bound it waits out.
  */
-export function fakeDocker({ running = true, gone = false, containers = [], patch = {}, hello = {}, arch = "x86_64", info = {}, vanish = [], noDaemon = false, user, hold = [], desktop, display = "up", binds = {}, daemonMode = 0o755, daemonCache, volumes = [], egress = "ready", proxyPatch = {}, proxyLocal, egressOptions, endpoint = "unix:///var/run/docker.sock", images, pull = "ok", volume, volumeRoots = {}, lateRun = null, sticky = [], removing = {}, runFails = false, computerd = false, networks = [], inspectFails = [], env } = {}) {
+export function fakeDocker({ running = true, gone = false, containers = [], patch = {}, hello = {}, arch = "x86_64", info = {}, vanish = [], noDaemon = false, user, hold = [], desktop, display = "up", binds = {}, daemonMode = 0o755, daemonCache, volumes = [], egress = "ready", proxyPatch = {}, proxyLocal, egressOptions, endpoint = "unix:///var/run/docker.sock", images, pull = "ok", volume, volumeRoots = {}, lateRun = null, sticky = [], removing = {}, runFails = false, computerd = false, networks = [], inspectFails = [], env, settleMs, settleQuietMs } = {}) {
 	const dir = mkdtempSync(join(tmpdir(), "computer-fake-docker-"));
 	dirs.push(dir);
 	const log = join(dir, "calls.jsonl");
@@ -617,12 +619,13 @@ switch (args[0]) {
 `,
 		{ mode: 0o755 },
 	);
-	const calls = () => (existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line)) : []);
+	// The logs each call appends to are read by records(): only whole lines, never one a call is still writing.
+	const calls = () => records(log);
 	/** Each call's environment, as the program recorded it: { args, names, seen } (seen: PATH, HOME, DOCKER_HOST, DOCKER_CONFIG). */
-	const envs = () => (existsSync(join(dir, "envs.jsonl")) ? readFileSync(join(dir, "envs.jsonl"), "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line)) : []);
+	const envs = () => records(join(dir, "envs.jsonl"));
 	const names = () => JSON.parse(readFileSync(state, "utf8")).filter((c) => !(typeof c.RemovalEnds === "number" && c.RemovalEnds <= Date.now())).map((c) => c.Name.slice(1));
 	const proceed = (step) => writeFileSync(join(dir, `proceed-${step}`), "");
-	const started = () => (existsSync(join(dir, "started.jsonl")) ? readFileSync(join(dir, "started.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line)) : []);
+	const started = () => records(join(dir, "started.jsonl"));
 	const volumeNames =() => JSON.parse(readFileSync(volumeState, "utf8")).map((v) => v.Name);
 	const networkNames = () => JSON.parse(readFileSync(networkState, "utf8")).map((n) => n.Name);
 	/** Changes a container in the fake's state, by name: what Docker would do under the provider (a proxy that crashed). */
@@ -645,7 +648,7 @@ switch (args[0]) {
 	// container; egressOptions.hostRoot replaces it.
 	const hostRoot = join(dir, "host-root");
 	mkdirSync(hostRoot);
-	const options = { daemonPath, daemonCache: cache, docker: program, ...(user === undefined ? {} : { user }), ...(desktop === undefined ? {} : { desktop }), egress: { hostRoot, ...egressOptions }, ...(volume === undefined ? {} : { volume }), ...(env === undefined ? {} : { env }) };
+	const options = { daemonPath, daemonCache: cache, docker: program, ...(user === undefined ? {} : { user }), ...(desktop === undefined ? {} : { desktop }), egress: { hostRoot, ...egressOptions }, ...(volume === undefined ? {} : { volume }), ...(env === undefined ? {} : { env }), ...(settleMs === undefined ? {} : { settleMs }), ...(settleQuietMs === undefined ? {} : { settleQuietMs }) };
 	// `options` makes a fresh provider over the same Docker: another process's.
 	/** lateRun's marks: whether the daemon's late create has begun, and the container it made (its name), if it did. */
 	const late = () => ({ started: existsSync(join(dir, "late-started")), committed: existsSync(join(dir, "late-committed")) ? readFileSync(join(dir, "late-committed"), "utf8").replace(/^\//, "") : undefined });

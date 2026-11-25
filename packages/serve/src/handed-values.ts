@@ -12,6 +12,7 @@ import { ServerSecrets } from "./server-secrets.js";
 import { sealedAt, unsealColumn } from "./store/seal.js";
 import { type Handed, handedMark, handedPointers, type SignInReader } from "./run-view.js";
 import { type RunLaunch, readLaunchBody } from "./run-launch.js";
+import { SIGN_IN_VENDORS } from "./sign-ins-store.js";
 import { type RunRow, type Store, StoreLaunchMissing } from "./store/store.js";
 import { keptVendor, type Plane } from "./tool-plane.js";
 
@@ -144,9 +145,6 @@ export function cutHanded<T>(value: T, values: readonly string[]): T {
   };
   return walk(value) as T;
 }
-
-/** The browser vendors that keep a sign-in (sign-ins-store.ts vendorOf). */
-const SIGN_IN_VENDORS = ["browserbase", "kernel"] as const;
 
 /** Why what an agent learned is withheld (403): a pointer of its sign-in can't be read here, so the cut would be shorter
  *  than what a note may hold. */

@@ -7,10 +7,15 @@
 //   nothing.
 // - `claude`: `auth login` keeps a token in the item the pinned CLI would name and writes the account file; `auth status`
 //   says whether it finds that item. It has no plaintext fallback: a sign-in that reaches no keychain fails.
+//   The item's account is the pinned CLI's too: `$USER`, else `os.userInfo().username`. That CLI is a Bun binary, and
+//   Bun's userInfo reads `$USER` as well, and says "unknown" without it (Node's reads the user database): so a CLI
+//   started with no USER saves and reads its tokens under the account "unknown", where a terminal's `claude`, which has
+//   USER, never looks. A name outside [A-Za-z0-9._-] is "claude-code-user".
+// `security` notes the command and account of every call beside itself (asked.jsonl).
 // The stand-ins lead every PATH here and every home is a temporary one, so no real Keychain or login is touched.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir, userInfo } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
@@ -28,6 +33,7 @@ const fs = require('node:fs'), path = require('node:path');
 const file = path.join(process.env.HOME ?? '', 'Library', 'Keychains', 'login.keychain-db');
 const [command, ...args] = process.argv.slice(2);
 const flag = (name) => args[args.indexOf(name) + 1];
+fs.appendFileSync(path.join(__dirname, 'asked.jsonl'), JSON.stringify([command, flag('-a')]) + '\\n');
 if (!fs.existsSync(file)) process.exit(command === 'add-generic-password' ? 50 : 44);
 const items = JSON.parse(fs.readFileSync(file, 'utf8'));
 const key = JSON.stringify([flag('-a'), flag('-s')]);
@@ -36,6 +42,10 @@ if (command === 'find-generic-password') {
   console.log(items[key]);
 } else if (command === 'add-generic-password') {
   items[key] = Buffer.from(flag('-X'), 'hex').toString('utf8');
+  fs.writeFileSync(file, JSON.stringify(items));
+} else if (command === 'delete-generic-password') {
+  if (!(key in items)) process.exit(44);
+  delete items[key];
   fs.writeFileSync(file, JSON.stringify(items));
 } else process.exit(2);
 `;
@@ -49,7 +59,9 @@ const configDir = env.CLAUDE_CONFIG_DIR ?? path.join(os.homedir(), '.claude');
 const secure = env.CLAUDE_SECURESTORAGE_CONFIG_DIR;
 const bare = secure !== undefined ? !secure : !env.CLAUDE_CONFIG_DIR;
 const item = 'Claude Code-credentials' + (bare ? '' : '-' + createHash('sha256').update(secure !== undefined ? secure : configDir).digest('hex').slice(0, 8));
-const user = env.USER || os.userInfo().username;
+const bunUsername = env.USER ?? 'unknown';
+const named = env.USER || bunUsername;
+const user = /^[a-zA-Z0-9._-]+$/.test(named) ? named : 'claude-code-user';
 const accountFile = path.join(env.CLAUDE_CONFIG_DIR || os.homedir(), '.claude.json');
 const [, , group, verb] = process.argv;
 if (group === 'auth' && verb === 'login') {
@@ -67,6 +79,13 @@ if (group === 'auth' && verb === 'status') {
   console.log(JSON.stringify(signedIn ? { loggedIn: true, authMethod: 'claude.ai', ...(email ? { email } : {}) } : { loggedIn: false, authMethod: 'none' }));
   process.exit(signedIn ? 0 : 1);
 }
+if (group === 'auth' && verb === 'logout') {
+  // The item the sign-in kept goes, and the account with it; an item already gone is no failure.
+  const removed = spawnSync('security', ['delete-generic-password', '-a', user, '-s', item]).status;
+  if (removed !== 0 && removed !== 44) process.exit(1);
+  fs.rmSync(accountFile, { force: true });
+  process.exit(0);
+}
 process.exit(2);
 `;
 
@@ -82,7 +101,39 @@ function mac() {
   mkdirSync(join(home, 'Library', 'Keychains'), { recursive: true });
   writeFileSync(join(home, 'Library', 'Keychains', 'login.keychain-db'), '{}');
   const path = `${bin}:/usr/bin:/bin`;
-  return { bin, cli: join(bin, 'claude'), home, path, terminal: { PATH: path, HOME: home, USER: userInfo().username }, items: () => Object.keys(JSON.parse(readFileSync(join(home, 'Library', 'Keychains', 'login.keychain-db'), 'utf8'))).length };
+  const asked = join(bin, 'asked.jsonl');
+  return {
+    bin, cli: join(bin, 'claude'), home, path, terminal: { PATH: path, HOME: home, USER: ACCOUNT, LOGNAME: ACCOUNT },
+    items: () => Object.keys(JSON.parse(readFileSync(join(home, 'Library', 'Keychains', 'login.keychain-db'), 'utf8'))).length,
+    /** Each `security` call so far, as [command, account]. */
+    asked: () => (existsSync(asked) ? readFileSync(asked, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line)) : []),
+  };
+}
+
+/** The user this test runs as, as the system has it: the account a Mac keeps that person's Keychain items under, which
+ *  their terminal's USER names. */
+const ACCOUNT = userInfo().username;
+/** The Keychain account the CLI names for ACCOUNT, by the stand-in's rule above: the name itself, or "claude-code-user"
+ *  for a name with a character outside [A-Za-z0-9._-] (an account such as `alice@example.com`). USER and LOGNAME keep
+ *  ACCOUNT as it is. */
+const KEYCHAIN_ACCOUNT = /^[a-zA-Z0-9._-]+$/.test(ACCOUNT) ? ACCOUNT : 'claude-code-user';
+
+/** `fn` as a server started with `user` as its USER and LOGNAME (undefined: neither set, as a service launchd starts may
+ *  have it). */
+async function withServerUser(user, fn) {
+  const was = { USER: process.env.USER, LOGNAME: process.env.LOGNAME };
+  for (const name of ['USER', 'LOGNAME']) {
+    if (user === undefined) delete process.env[name];
+    else process.env[name] = user;
+  }
+  try {
+    return await fn();
+  } finally {
+    for (const [name, value] of Object.entries(was)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
 }
 
 /** `fn` as the server that person runs: the server's own home (`os.homedir()`, which reads HOME) is theirs. */
@@ -166,7 +217,7 @@ test("the stand-ins keep macOS's rule, the one a status check in a home of its o
   const m = mac();
   const login = PLACES["AgentRun's own folder"](m);
   await asServerOf(m, () => WAYS['the sign-in this host starts'](m, login));
-  const asked = (home) => JSON.parse(spawnSync(m.cli, ['auth', 'status', '--json'], { env: { PATH: m.path, ...claude.claudeSignInEnv(login), HOME: home }, encoding: 'utf8' }).stdout).loggedIn;
+  const asked = (home) => JSON.parse(spawnSync(m.cli, ['auth', 'status', '--json'], { env: { PATH: m.path, USER: ACCOUNT, ...claude.claudeSignInEnv(login), HOME: home }, encoding: 'utf8' }).stdout).loggedIn;
   assert.equal(asked(scratch()), false, "an empty home: no login keychain, so no tokens");
   assert.equal(asked(m.home), true, "the person's home");
 });
@@ -193,5 +244,65 @@ test("on macOS the badge and a plain `claude auth status` in the person's home w
     });
     if (place === "AgentRun's own folder") assert.deepEqual([shown.CLAUDE_CONFIG_DIR, shown.CLAUDE_SECURESTORAGE_CONFIG_DIR], [login.dir, login.dir], "on AgentRun's own folder the line names the folder in both variables");
     if (login.home !== undefined) assert.equal(plainStatus(m, { CLAUDE_CONFIG_DIR: login.dir, CLAUDE_SECURESTORAGE_CONFIG_DIR: login.dir }), false, `${place}: both variables set to the default folder name another Keychain item`);
+  }
+});
+
+// The CLI's own sign-out (claudeLogout) runs with the sign-in's variables in the person's home, so it reaches the one
+// Keychain item the sign-in kept: after it no item is left and the status check reads signed out. Serve runs it on
+// AgentRun's own folder alone; the harness names the item the same way at every place.
+test("on macOS the CLI's own sign-out removes the Keychain item the sign-in kept, at every place: none is left, and the status check reads signed out", { skip }, async () => {
+  assert.equal(typeof claude.claudeLogout, 'function', "the harness has the CLI's own sign-out");
+  for (const [place, at] of Object.entries(PLACES)) {
+    const m = mac();
+    const login = at(m);
+    await asServerOf(m, async () => {
+      await WAYS['the sign-in this host starts'](m, login);
+      assert.equal(m.items(), 1, `${place}: signed in, one item`);
+      assert.equal(await claude.claudeLogout(m.cli, login, { path: m.path, platform: 'darwin' }), true, `${place}: the CLI confirmed its sign-out`);
+      assert.equal(m.items(), 0, `${place}: no Keychain item is left after the sign-out`);
+      assert.deepEqual(await status(m, login), { signedIn: false, method: 'none' }, `${place}: the status check after the sign-out`);
+      assert.equal(runSays(m, login), false, `${place}: a run after the sign-out`);
+    });
+  }
+});
+
+test("the CLI's own sign-out says false, never throws, when the CLI fails it, is no program, or outlasts its limit", { skip }, async () => {
+  assert.equal(typeof claude.claudeLogout, 'function', "the harness has the CLI's own sign-out");
+  const m = mac();
+  const login = PLACES["AgentRun's own folder"](m);
+  const failing = join(m.bin, 'claude-fails');
+  writeFileSync(failing, '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+  const hangs = join(m.bin, 'claude-hangs');
+  writeFileSync(hangs, '#!/bin/sh\nexec sleep 30\n', { mode: 0o755 });
+  await asServerOf(m, async () => {
+    assert.equal(await claude.claudeLogout(failing, login, { path: m.path }), false, 'a CLI that exits 1');
+    assert.equal(await claude.claudeLogout(join(m.bin, 'no-such-claude'), login, { path: m.path }), false, 'no program at the path');
+    const started = Date.now();
+    assert.equal(await claude.claudeLogout(hangs, login, { path: m.path, timeoutMs: 200 }), false, 'a CLI past its limit');
+    assert.ok(Date.now() - started < 5_000, 'ended at its limit, not left running');
+  });
+});
+
+// The finding this holds: a sign-in from the console saved its item under the account "unknown" (the CLI was started
+// with no USER), so the badge, asked the same way, read signed in, while `claude auth status` in the person's terminal,
+// which has USER, read signed out. The server's USER as it was started: from a terminal, unset (a service launchd
+// starts may have none), or naming another user (a server started under sudo, which keeps it): the account is the
+// user the server runs as, as the system has it, in each case.
+const SERVER_USER = { 'as a terminal sets it': ACCOUNT, 'unset': undefined, 'naming another user': 'someone-else' };
+test("on macOS the sign-in this host starts saves its Keychain item under the account of the user the server runs as, never \"unknown\", and the badge, a run and the person's own `claude auth status` all read that account, whatever USER the server was started with", { skip }, async () => {
+  for (const [place, at] of Object.entries(PLACES)) {
+    for (const [how, user] of Object.entries(SERVER_USER)) {
+      const m = mac();
+      const login = at(m);
+      const where = `${place}, the server's USER ${how}`;
+      await withServerUser(user, () => asServerOf(m, async () => {
+        await WAYS['the sign-in this host starts'](m, login);
+        assert.deepEqual(m.asked().filter(([command]) => command === 'add-generic-password'), [['add-generic-password', KEYCHAIN_ACCOUNT]], `${where}: the sign-in saved its item under the account ${KEYCHAIN_ACCOUNT}`);
+        assert.equal((await status(m, login)).signedIn, true, `${where}: the badge after the sign-in`);
+        assert.equal(runSays(m, login), true, `${where}: a run after the sign-in`);
+      }));
+      assert.equal(plainStatus(m, claude.claudeSignInEnv(login)), true, `${where}: the person's own \`claude auth status\` in their terminal (USER ${ACCOUNT}) read signed out after the sign-in`);
+      assert.deepEqual([...new Set(m.asked().map(([, account]) => account))], [KEYCHAIN_ACCOUNT], `${where}: every Keychain write and read named the account ${KEYCHAIN_ACCOUNT}`);
+    }
   }
 });

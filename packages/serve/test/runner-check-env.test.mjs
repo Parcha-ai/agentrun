@@ -69,7 +69,8 @@ test("runner --check --env with no store: a seal key that is not one is bad, by 
   const wrong = "q".repeat(60);
   const bad = await run(["runner", "--check", "--env"], { ...baseEnv(root), AGENTRUN_SEAL_KEY: wrong });
   assert.equal(bad.code, 1, bad.out + bad.err);
-  assert.match(bad.out, /^bad\s+AGENTRUN_SEAL_KEY\s+set, but is not 32 bytes in base64 \(43 characters, or 44 ending in =; it has 60\)$/m);
+  assert.equal(stateOf(bad.out, "AGENTRUN_SEAL_KEY"), "bad", bad.out);
+  assert.match(bad.out, /^bad\s+AGENTRUN_SEAL_KEY\s.*it has 60/m);
   assert.ok(!(bad.out + bad.err).includes(wrong), "the value is never printed");
   const shaped = await run(["runner", "--check", "--env"], { ...baseEnv(root), AGENTRUN_SEAL_KEY: SEAL });
   assert.equal(stateOf(shaped.out, "AGENTRUN_SEAL_KEY"), "skipped", shaped.out);
@@ -87,7 +88,7 @@ test("runner --check --env with settings the runner's start refuses (Archil's S3
   const root = await scratch(t);
   for (const [given, words] of [
     [{ AGENTRUN_ARCHIL_REGION: "r", AGENTRUN_ARCHIL_S3_URL: "http://example.com" }, /AGENTRUN_ARCHIL_S3_URL is the region's S3 endpoint, an https URL/],
-    [{ AGENTRUN_ARCHIL_REGION: "r" }, /set AGENTRUN_ARCHIL_REGION and AGENTRUN_ARCHIL_S3_URL together/],
+    [{ AGENTRUN_ARCHIL_REGION: "r" }, /AGENTRUN_ARCHIL_S3_URL is needed for the region r:/],
     [{ AGENTRUN_MAX_RUNS: "0" }, /max runs is a positive integer/],
     [{ AGENTRUN_RUN_USER: "everyone" }, /AGENTRUN_RUN_USER=everyone is not a setting this runner knows/],
   ]) {

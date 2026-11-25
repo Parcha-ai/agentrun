@@ -167,7 +167,7 @@ export interface components {
     places: {
       modes: ("runner" | "sandbox")[];
       boxes: {
-        id: "docker" | "modal" | "daytona";
+        id: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "boxd" | "groundbox";
         available: boolean;
         state: "ready" | "unavailable";
         reason?: string;
@@ -179,7 +179,7 @@ export interface components {
         mode: "runner";
       } | {
         mode: "sandbox";
-        box: "docker" | "modal" | "daytona";
+        box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "boxd" | "groundbox";
       };
       default_reason?: string;
       allow: string[];
@@ -237,6 +237,13 @@ export interface components {
         codex: string;
         opencode: string;
       };
+      held?: {
+        provider: string;
+        tool: "search" | "fetch" | "key";
+        kind: "quota" | "rate";
+        until: string;
+        words: string;
+      }[];
       permission: "allow" | "ask" | "deny";
       default_permission: "allow" | "ask" | "deny";
       permissions: ("allow" | "ask" | "deny")[];
@@ -385,7 +392,7 @@ export interface components {
       mode: "runner";
     } | {
       mode: "sandbox";
-      box: "docker" | "modal" | "daytona";
+      box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "boxd" | "groundbox";
     };
     computer?: {
       kind: "none" | "sandbox" | "desktop" | "phone" | "browser";
@@ -484,6 +491,10 @@ export interface components {
           keys: string[];
         }>;
         pin_broken?: true;
+        file?: {
+          folder: string;
+          show: string[];
+        };
       } | {
         permission?: "allow" | "ask" | "deny";
       } | {
@@ -969,7 +980,7 @@ export interface components {
       mode: "runner";
     } | {
       mode: "sandbox";
-      box: "docker" | "modal" | "daytona";
+      box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "boxd" | "groundbox";
     };
     computer?: {
       kind: "sandbox" | "desktop" | "phone" | "browser";
@@ -1057,6 +1068,14 @@ export interface components {
       digest: string | null;
       repick: "found" | "missed" | null;
     } | null;
+    workflow_calls?: {
+      workflow: string;
+      digest: string;
+      caller: "platform" | "agent";
+      outcome: "answered" | "handed_back" | "failed" | "refused";
+      usd: number | null;
+    }[] | null;
+    first_choice?: "served" | "replay" | "replay_missing" | "none_laid" | "off" | "none_fit" | "many_fit" | "not_promoted" | "champion_misfit" | "many_champions" | "cost_stop" | "no_by_hand_cost" | "past_unread" | "held" | null;
   };
   RunCreate: {
     input: Record<string, unknown>;
@@ -1308,6 +1327,14 @@ export interface components {
       digest: string | null;
       repick: "found" | "missed" | null;
     } | null;
+    workflow_calls?: {
+      workflow: string;
+      digest: string;
+      caller: "platform" | "agent";
+      outcome: "answered" | "handed_back" | "failed" | "refused";
+      usd: number | null;
+    }[] | null;
+    first_choice?: "served" | "replay" | "replay_missing" | "none_laid" | "off" | "none_fit" | "many_fit" | "not_promoted" | "champion_misfit" | "many_champions" | "cost_stop" | "no_by_hand_cost" | "past_unread" | "held" | null;
   };
   SecretMeta: {
     name: string;
@@ -2364,6 +2391,7 @@ export interface operations {
     body: never;
     answer: {
       on: boolean;
+      regions: Record<string, string>;
       secret: {
         name: string;
         set: boolean;
@@ -2373,6 +2401,7 @@ export interface operations {
       source?: "env" | "console";
       region?: string;
       s3Url?: string;
+      s3UrlFrom?: "region" | "given";
       image?: string;
     };
   };
@@ -2941,6 +2970,7 @@ export interface operations {
         workflow: string;
         digest: string;
         state: "serving" | "needs_revision";
+        reason: "over_line" | "no_by_hand_cost" | null;
         served: {
           runs: number;
           mean_usd: number;
@@ -3248,6 +3278,13 @@ export interface operations {
   getOpenapi: {
     body: never;
     answer: Record<string, unknown>;
+  };
+  getRevisionSkills: {
+    body: never;
+    answer: {
+      revision: string;
+      skills: Record<string, string>;
+    };
   };
   getRun: {
     body: never;
@@ -3956,6 +3993,10 @@ export interface operations {
             pin?: Record<string, string | number | boolean | null | (string | number | boolean | null)[] | {
               keys: string[];
             }>;
+            file?: {
+              folder: string;
+              show: string[];
+            };
           }[];
         }[];
         parameters: Record<string, unknown>;
@@ -4222,6 +4263,7 @@ export interface operations {
     body: never;
     answer: {
       on: boolean;
+      regions: Record<string, string>;
       secret: {
         name: string;
         set: boolean;
@@ -4231,6 +4273,7 @@ export interface operations {
       source?: "env" | "console";
       region?: string;
       s3Url?: string;
+      s3UrlFrom?: "region" | "given";
       image?: string;
     };
   };
@@ -4509,6 +4552,10 @@ export interface operations {
             pin?: Record<string, string | number | boolean | null | (string | number | boolean | null)[] | {
               keys: string[];
             }>;
+            file?: {
+              folder: string;
+              show: string[];
+            };
           }[];
         }[];
         parameters: Record<string, unknown>;
@@ -5471,6 +5518,10 @@ export interface operations {
             pin?: Record<string, string | number | boolean | null | (string | number | boolean | null)[] | {
               keys: string[];
             }>;
+            file?: {
+              folder: string;
+              show: string[];
+            };
           }[];
         }[];
         parameters: Record<string, unknown>;
@@ -6036,7 +6087,7 @@ export interface operations {
   putWorkspaceArchil: {
     body: {
       region: string;
-      s3Url: string;
+      s3Url?: string;
       image?: string;
       keys?: {
         ARCHIL_API_KEY?: string | null;
@@ -6044,6 +6095,7 @@ export interface operations {
     };
     answer: {
       on: boolean;
+      regions: Record<string, string>;
       secret: {
         name: string;
         set: boolean;
@@ -6053,6 +6105,7 @@ export interface operations {
       source?: "env" | "console";
       region?: string;
       s3Url?: string;
+      s3UrlFrom?: "region" | "given";
       image?: string;
     };
   };
@@ -7055,6 +7108,41 @@ export interface operations {
     answer: {
       revoked: boolean;
       message?: string;
+    };
+  };
+  signOutClaudeLogin: {
+    body: never;
+    answer: {
+      confirmed: boolean;
+      message?: string;
+      login: {
+        state: "off" | "other_machine" | "refused" | "signed_in" | "signed_out" | "no_cli" | "unknown";
+        place: "agentrun" | "machine";
+        command: string;
+        can_start: boolean;
+        refused?: string;
+        account?: {
+          method?: string;
+          email?: string;
+          organization?: string;
+          plan?: string;
+        };
+        folder: string;
+        machine: {
+          folder: string;
+          source: "CLAUDE_CONFIG_DIR" | "default";
+          credentials?: string;
+        };
+        sign_in?: {
+          state: "waiting" | "signed_in" | "timed_out" | "failed" | "not_started";
+          started_at: string;
+          ended_at?: string;
+          limit_ms: number;
+          exit_code?: number;
+          signal?: string;
+          error?: string;
+        };
+      };
     };
   };
   sourceSyncFailure: {

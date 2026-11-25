@@ -14,7 +14,7 @@
 import { spawn } from "node:child_process";
 import { accessSync, closeSync, constants, mkdtempSync, openSync, readSync, rmSync, statSync } from "node:fs";
 import { type FileHandle, lstat, mkdir, open, readdir, readFile, rm, writeFile } from "node:fs/promises";
-import { homedir, tmpdir } from "node:os";
+import { homedir, tmpdir, userInfo } from "node:os";
 import { delimiter, join } from "node:path";
 import type { ModelPort, ModelUsage } from "@parcha/agentrun-kernel";
 import { parentWatched, type ParentWatch } from "@parcha/agentrun-kernel/host";
@@ -347,8 +347,27 @@ async function accountCopy(from: string, to: string): Promise<string> {
  *  session's) it finds no keychain and reads signed out, whatever the variables. */
 export const personHome = (login: ClaudeAgentLogin): string => login.userHome ?? login.home ?? homedir();
 
-/** Ask the CLI at `cli` whether it is signed in at `login`: `auth status --json`, with only PATH and the login's
- *  variables beside it, in the person's home (personHome) on every place and platform.
+/** `USER` and `LOGNAME` for a CLI started on a login, built from nothing (the status check, the sign-in this host starts,
+ *  a run, the CLI's own sign-out): the user this process runs as, as the system has it (`os.userInfo()`, which reads the user database, never
+ *  the server's own USER), the user whose home personHome is. On macOS the pinned CLI names its Keychain item's account
+ *  by `$USER`, else by its runtime's `os.userInfo().username`; it is a Bun binary, whose userInfo reads `$USER` too and
+ *  says "unknown" without it. So a CLI started with no USER saves and reads the login's tokens under the account
+ *  "unknown", where the person's own `claude`, run in a terminal that has USER, never looks: it reads signed out while
+ *  the badge reads signed in. A user the system cannot name (no entry in its user database) is the server's USER or
+ *  LOGNAME, when it has one. */
+export function loginUser(): Record<string, string> {
+  let name: string | undefined;
+  try {
+    name = userInfo().username || undefined;
+  } catch {
+    name = undefined;
+  }
+  name ??= process.env.USER || process.env.LOGNAME || undefined;
+  return name === undefined ? {} : { USER: name, LOGNAME: name };
+}
+
+/** Ask the CLI at `cli` whether it is signed in at `login`: `auth status --json`, with only PATH, the user (loginUser)
+ *  and the login's variables beside it, in the person's home (personHome) on every place and platform.
  *  The CLI rewrites its account file (`.claude.json`, in its config dir) whenever that file's migration number is not its
  *  own, and adds a settings file, a backup and a lock beside it the first time, all in its config dir, so the check never
  *  runs it on the login's own file, whatever the caller says of the login: the config dir is a copy of the account file
@@ -378,7 +397,7 @@ export async function claudeLoginStatus(cli: string, login: ClaudeAgentLogin, op
     const where = { HOME, ...loginEnv(login, options.platform), CLAUDE_CONFIG_DIR: await accountCopy(accountFile(login), join(scratch, "config")) };
     const { stdout, timedOut } = await new Promise<{ stdout: string; timedOut: boolean }>((resolve, reject) => {
       const child = spawn(cli, ["auth", "status", "--json"], {
-        env: { PATH: options.path ?? process.env.PATH ?? "/usr/bin:/bin", ...where, DISABLE_AUTOUPDATER: "1", DISABLE_TELEMETRY: "1", DISABLE_ERROR_REPORTING: "1", CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1" },
+        env: { PATH: options.path ?? process.env.PATH ?? "/usr/bin:/bin", ...loginUser(), ...where, DISABLE_AUTOUPDATER: "1", DISABLE_TELEMETRY: "1", DISABLE_ERROR_REPORTING: "1", CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1" },
         stdio: ["ignore", "pipe", "ignore"],
       });
       let out = "";
@@ -533,7 +552,8 @@ function startable(cli: string, path: string): void {
 }
 
 /** Start the CLI's own sign-in at `login` (`auth login`), with the line's own variables (signInEnv) in the person's home
- *  (personHome) and desktop (`display`): it opens a browser on this machine and keeps what it gets in the login's folder.
+ *  (personHome), as that person (loginUser: the account the Keychain item is saved under on macOS, the one their own
+ *  terminal's `claude` reads), and on their desktop (`display`): it opens a browser on this machine and keeps what it gets in the login's folder.
  *  Nothing of it is read here: its output goes nowhere. It is ended after `timeoutMs` (SIGN_IN_MS by default), which
  *  `ended` says apart from any other end.
  *  It dies with this process, as a session's CLI does: started under the kernel's parent watch (parentWatched; `watch`,
@@ -555,7 +575,7 @@ export function startClaudeLogin(cli: string, login: ClaudeAgentLogin, options: 
     startable(cli, path);
     const run = parentWatched({ command: cli, args: ["auth", "login", "--claudeai"] }, options.watch, { termGraceMs: SIGN_IN_TERM_GRACE_MS });
     child = spawn(run.command, run.args, {
-      env: { PATH: path, HOME: personHome(login), ...display, ...signInEnv(login), DISABLE_AUTOUPDATER: "1", DISABLE_TELEMETRY: "1", DISABLE_ERROR_REPORTING: "1" },
+      env: { PATH: path, HOME: personHome(login), ...loginUser(), ...display, ...signInEnv(login), DISABLE_AUTOUPDATER: "1", DISABLE_TELEMETRY: "1", DISABLE_ERROR_REPORTING: "1" },
       stdio: "ignore",
     });
   } catch (error) {
@@ -584,6 +604,44 @@ export function startClaudeLogin(cli: string, login: ClaudeAgentLogin, options: 
   child.once("error", (error) => finish(ending ? { end: ending } : failed(error)));
   child.once("close", (code, signal) => finish(ending ? { end: ending } : { end: "exited", code, signal }));
   return { ended, stop: () => end("stopped") };
+}
+
+/** The longest the CLI's own sign-out may take. */
+export const LOGOUT_MS = LOGIN_STATUS_MS;
+
+/** The CLI's own sign-out at `login` (`auth logout`), with the sign-in's variables (signInEnv) and user (loginUser) in
+ *  the person's home (personHome), so it removes what that sign-in kept where it kept it: the credentials file in the
+ *  login's credentials dir or, on macOS, the Keychain item named from it under that user's account, and the account in
+ *  the config dir's `.claude.json`. Nothing of it
+ *  is read but how it ended: true when it exited 0 within `timeoutMs` (LOGOUT_MS by default), false when it exited
+ *  otherwise, never started, or was ended at the limit (SIGTERM, then SIGKILL a second later). Never throws.
+ *  `platform`: as signInEnv's. */
+export function claudeLogout(cli: string, login: ClaudeAgentLogin, options: { timeoutMs?: number; path?: string; platform?: NodeJS.Platform } = {}): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
+    let child: ReturnType<typeof spawn>;
+    try {
+      child = spawn(cli, ["auth", "logout"], {
+        env: { PATH: options.path ?? process.env.PATH ?? "/usr/bin:/bin", HOME: personHome(login), ...loginUser(), ...signInEnv(login, options.platform), DISABLE_AUTOUPDATER: "1", DISABLE_TELEMETRY: "1", DISABLE_ERROR_REPORTING: "1" },
+        stdio: "ignore",
+      });
+    } catch {
+      return resolve(false);
+    }
+    let timedOut = false;
+    let kill: ReturnType<typeof setTimeout> | undefined;
+    const limit = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGTERM");
+      kill = setTimeout(() => child.kill("SIGKILL"), STATUS_KILL_MS);
+    }, options.timeoutMs ?? LOGOUT_MS);
+    const done = (confirmed: boolean) => {
+      clearTimeout(limit);
+      clearTimeout(kill);
+      resolve(confirmed);
+    };
+    child.once("error", () => done(false));
+    child.once("close", (code) => done(!timedOut && code === 0));
+  });
 }
 
 /** A model response's usage, as Anthropic's stream says it (`message_start`, then `message_delta`). */

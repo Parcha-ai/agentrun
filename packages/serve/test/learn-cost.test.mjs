@@ -14,6 +14,7 @@ import { seedOf } from "../dist/learning.js";
 import { CHEAPER_AFTER_RUNS, costCsv, costSummary } from "../dist/learning-cost.js";
 import { figuresOf, record, summarize } from "../dist/learn/ledger.js";
 import { runPathOf } from "../dist/runner/learning-end.js";
+import { workflowDigest } from "../dist/runner/workflow-first.js";
 import { servingReplayOf } from "../dist/store-reads/learning.js";
 import { git, resnap, savedOf } from "./learn-support.mjs";
 import { agent, answerFlow, follow, serve, storeRun } from "./support.mjs";
@@ -256,7 +257,10 @@ test("GET /agents/{id}/learning/cost: the agent's runs in order, by hand until a
   assert.deepEqual(body.summary, { ...EMPTY, ...PRICED, takeover: { n: 3, run_id: alone }, before: { runs: 2, mean_usd: before }, after: { runs: 2, mean_usd: after }, hand_backs: { ran: 2, back: 1, cut: 0 }, replay });
   assert.ok(body.runs.every((run) => run.cost_upper_bound === false), "no run's stored cost is a bound");
   assert.deepEqual([body.total_runs, body.unknown_cost_runs, body.unknown_path_runs], [4, 0, 0], "every run that learns ended with its path");
-  assert.deepEqual(body.workflows, [], "the money rule holds a workflow that ran first; the agent calling one is the agent's own run");
+  // The money rule holds a workflow to every run that called it, the agent's own call too: `alone` called answer (its one
+  // call that ran a workflow; `back` named one it has not, which ran none).
+  const digest = workflowDigest({ workflow: JSON.stringify(answerFlow()) });
+  assert.deepEqual(body.workflows.map(({ workflow, digest: at, served }) => [workflow, at, served.runs]), [["answer", digest, 1]], "the agent's own call counts on its served side");
 
   const last = await cost("?limit=2");
   assert.deepEqual(last.runs.map((run) => run.n), [3, 4], "the latest runs, each keeping its number");

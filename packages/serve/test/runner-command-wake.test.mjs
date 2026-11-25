@@ -1,6 +1,8 @@
 // A command written for a held run reaches its loop at once, not at the runner's next command poll: with commandPollMs at
 // ten seconds, the row is in the loop's command() with the poll still unfired, and a row written while a delivery is in flight is
-// handed on by the one more delivery that follows it.
+// handed on by the one more delivery that follows it. "Unfired" is counted, not timed: the runner's reads of its runs' rows
+// (store.commandsOf: the poll's) since the write are none when the row arrives. A wall-clock bound in its place (two
+// seconds, and 100 ms before that) failed on a loaded runner whose wake took longer, the poll still eight seconds off.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { fauxLoops, queue, STEADY_LEASE, stores, until } from "./runner-support.mjs";
@@ -9,17 +11,35 @@ import { client, postgresOnly, schemaOf } from "./store-target.mjs";
 const { startRunner } = await import("../dist/runner/runner.js");
 const TIMING = { ...STEADY_LEASE, pollMs: 20, commandPollMs: 10_000 };
 
+/** The runner's reads of every held run's rows through `store` (store.commandsOf): its command poll's (runner.ts
+ *  deliverAll), and a claim's or a close's own. A command's wake reads its one run's (store.commands), not counted. */
+function pollsOf(store) {
+  const polls = { n: 0 };
+  const commandsOf = store.commandsOf.bind(store);
+  store.commandsOf = (...args) => ((polls.n += 1), commandsOf(...args));
+  return polls;
+}
+
+/** Waits until `reached` holds and says how many polls the runner made since `from` (pollsOf) as it did. The wait runs past
+ *  the poll's own time, twice it: a row the wake never brings is brought by the poll then, and the count says so. */
+async function pollsUntil(polls, from, reached, what) {
+  let made;
+  await until(() => reached() && ((made = polls.n - from), true), what, 2 * TIMING.commandPollMs);
+  return made;
+}
+
 test("a row written for a held run reaches its loop's command() before the command poll, set at ten seconds, fires", async (t) => {
   const opened = await stores({ runners: 1 });
   await queue(opened.server, "run-1");
   const faux = fauxLoops({ turns: 1_000, turnMs: 20 });
+  const polls = pollsOf(opened.runners[0]);
   const runner = startRunner({ store: opened.runners[0], createLoop: faux.createLoop, name: "runner-a", ...TIMING });
   t.after(() => runner.close());
   await until(() => faux.loops[0]?.claim !== null && faux.loops[0] !== undefined, "the run is held and its loop started");
   const loop = faux.loops[0];
+  const from = polls.n;
   const row = await opened.server.command("run-1", { kind: "steer", body: { content: "now" } });
-  // The ten-second poll cannot fire inside this wait's two seconds, so a row that arrives did so by the write's own wake.
-  await until(() => loop.received.some((one) => one.id === row.id), "the row reaches the loop", 2_000);
+  assert.equal(await pollsUntil(polls, from, () => loop.received.some((one) => one.id === row.id), "the row reaches the loop"), 0, "it arrived with the command poll unfired: by the write's own wake");
   assert.equal(loop.received.filter((one) => one.id === row.id).length, 1, "handed on once");
 });
 
@@ -27,12 +47,14 @@ test("rows written one after another while deliveries are in flight all reach th
   const opened = await stores({ runners: 1 });
   await queue(opened.server, "run-1");
   const faux = fauxLoops({ turns: 1_000, turnMs: 20 });
+  const polls = pollsOf(opened.runners[0]);
   const runner = startRunner({ store: opened.runners[0], createLoop: faux.createLoop, name: "runner-a", ...TIMING });
   t.after(() => runner.close());
   await until(() => faux.loops[0]?.claim !== null && faux.loops[0] !== undefined, "the run is held and its loop started");
   const loop = faux.loops[0];
+  const from = polls.n;
   const rows = await Promise.all([1, 2, 3, 4, 5].map((n) => opened.server.command("run-1", { kind: "steer", body: { content: `m${n}` } })));
-  await until(() => rows.every((row) => loop.received.some((one) => one.id === row.id)), "every row reaches the loop", 2_000);
+  assert.equal(await pollsUntil(polls, from, () => rows.every((row) => loop.received.some((one) => one.id === row.id)), "every row reaches the loop"), 0, "they arrived with the command poll unfired: by their writes' wakes");
   assert.deepEqual(loop.received.map((one) => one.id), [...loop.received.map((one) => one.id)].sort((a, b) => a - b), "in id order, each once");
   assert.equal(new Set(loop.received.map((one) => one.id)).size, loop.received.length);
 });
