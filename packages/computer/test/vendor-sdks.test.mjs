@@ -32,11 +32,11 @@ function sources(dir) {
  * every `import(NAME)` of an identifier outside src/vendor-sdk.ts (direct), NAME resolved where the file binds it with a
  * top-level `const NAME = "<package>"`. An import of any other expression (a file's URL) loads a file, not a package.
  */
-function scan() {
+function scan(files = sources(SRC).sort().map((file) => [file, readFileSync(join(PACKAGE, file), "utf8")])) {
 	const loads = [];
 	const direct = [];
-	for (const file of sources(SRC).sort()) {
-		const source = ts.createSourceFile(file, readFileSync(join(PACKAGE, file), "utf8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+	for (const [file, text] of files) {
+		const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
 		const consts = new Map();
 		for (const statement of source.statements) {
 			if (!ts.isVariableStatement(statement) || !(statement.declarationList.flags & ts.NodeFlags.Const)) continue;
@@ -71,6 +71,20 @@ test("the SDK scan finds the providers' SDKs", () => {
 
 test("a provider loads its SDK only through vendorSdk, never by an import of its own", () => {
 	assert.deepEqual(scan().direct, [], "each of these imports a package by a name: load it with vendorSdk(vendor, name) instead, so a missing SDK names its install step");
+});
+
+test("the scan catches a package imported by a literal or by a const, and leaves a file's own modules and node's alone", () => {
+	const fixture = [
+		'const SDK = "named-sdk";',
+		'export const a = () => import("another-sdk");',
+		"export const b = () => import(`@scope/template-sdk`);",
+		"export const c = () => import(SDK);",
+		'export const d = () => import("./conformance/runner.js");',
+		'export const e = () => import("../index.js");',
+		'export const f = () => import("node:fs");',
+		'export const g = () => import(new URL("./box.js", import.meta.url).href);',
+	].join("\n");
+	assert.deepEqual(scan([["src/fixture.ts", fixture]]).direct.map(({ name }) => name), ["another-sdk", "@scope/template-sdk", "named-sdk"]);
 });
 
 test("each SDK a provider loads is one of the packed package's optionalDependencies, pinned exactly at the version the lockfile holds; it lists no other", () => {
