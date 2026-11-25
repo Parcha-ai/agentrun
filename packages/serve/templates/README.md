@@ -270,7 +270,10 @@ Each `evals/<case>/` is one test of the package's agent. No eval runs on the ser
     or more, so a run that searches once more than the case needs still passes), `at_most` (that many or fewer, and at
     least one), or both (`at_least: 3` with `at_most: 4` passes on 3 or 4 calls). `at_least` and `at_most` are 1 or more and mean
     `expect: called`; a grader that gives either beside `count` or `expect: not_called`, or an `at_least` above its
-    `at_most`, is refused.
+    `at_most`, is refused. `args_file` names a JSON file the run writes in its work folder (`media/clips.json`), a
+    list of argument objects: each entry must be carried by a call of its own (its arguments hold the entry, as `args`
+    is matched), and the calls number the list's length, or `count` when given. It is refused beside `expect:
+    not_called`, `at_least` or `at_most`.
   - `file_exists`: `path` in the run's work folder.
   - `mailbox`, on an `email` case: `message_id` is `in` a mailbox (or, on gmail, under a label) after the run, and in
     none of `not_in` (a list); `INBOX`, `Drafts` and `Sent` name the account's own on either layout. `in: INBOX` is
@@ -361,15 +364,23 @@ answer when it is one JSON object and nothing else. The report lists it as the g
   that carry each of its arguments (an object's own fields compared the same way, any other value equal), on any
   tool's calls: the eval reads the timeline with `calls=whole`, which carries each call's arguments through the run's
   redaction (a held value or a key-shaped string reads `[redacted]`, and so never matches), each string cut at 2,000
-  characters.
+  characters. With `args_file`, the eval reads that file from the run's work folder after the run (under the run's
+  cut, at most 1,000,000 bytes) and matches its entries to the calls one to one, so two entries never pass on one
+  call: a run that wrote a list of the twelve clips it meant to make, and sent them, passes only when each clip's
+  call carries what its entry says. A file that is missing, not JSON or not a list of objects fails the grader, saying which.
 - `file_exists`: `path`, relative to the run's work folder, among its files.
 - `llm`: a run of a grader agent on the same server, with no tools, a fixed instruction and the `--grader-model`. It is
   given the rubric, the run's input, its answer, its tool calls and the calls each fake received, and with `target`
   that field besides (the whole answer stays, for anything else the rubric checks). Each call shows its arguments as
   `tool_used` reads them, its status, and its result whole to 120,000 characters through the same redaction. The prompt
-  stays under 120,000 characters: past that, the two call lists share what the rest leaves, the longest results (and a
-  fake's longest arguments) lose their middle first (marked), then the middle calls, and each list's first line says
-  what was cut. The rubric, task and answer are never cut, so they alone can pass the cap. Never another grader, the case's
+  stays under 120,000 characters: past that, the run's final files take room first, but never so much that the calls'
+  arguments get less than half of it (or all they need); the files under a folder whose name starts with `.` (a
+  package's skills copied under `.agents/skills`, a tool's cache) are listed by path and size before any file of the
+  run's own is cut. The two call lists share what the rest leaves, each by its whole size, and the fake servers' list
+  gets at least half of it (or all it needs). The longest results (and a fake's longest arguments) lose their middle
+  first (marked), then the middle calls, and each list's first line says what was cut. A `<cuts>` note ahead of the
+  evidence counts every cut, and tells the grader that what a cut left out was not seen; under a cap so tight the note
+  would take more than a twentieth of it, the marks in place say it alone. The rubric, task and answer are never cut, so they alone can pass the cap. Never another grader, the case's
   description or anything the case expects. It answers `{pass, reason}` in a fenced `json` block, or as that one
   object alone; any other answer fails the grader.
 
