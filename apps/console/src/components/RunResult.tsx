@@ -2,6 +2,7 @@ import { AnswerFields, AnswerValue } from "@/components/AnswerFields";
 import { Banner } from "@/components/ui/banner";
 import { answerRecord } from "@/lib/answerJson";
 import { markdown, openLinkedFile } from "@/lib/format";
+import { Redactions } from "@/lib/redaction";
 import type { Run, RunFile, TimelineRow } from "@/lib/v2";
 
 /** The run's answer, as a report. An agentic run whose agent has an output schema: its result.output read with that
@@ -60,7 +61,7 @@ export function RunResult({ run, rows, files = [], onOpen, schema, shared = fals
         {(!written.length || Object.keys(rest as object).length > 0) && (
           <section>
             <p className="caps mb-2 text-label text-muted-foreground">{written.length ? "The rest of the output" : "Output"}</p>
-            <pre className="whitespace-pre-wrap break-words [overflow-wrap:anywhere] border bg-card p-4 font-mono text-small leading-[1.8]">{JSON.stringify(rest, null, 2)}</pre>
+            <pre className="whitespace-pre-wrap break-words [overflow-wrap:anywhere] border bg-card p-4 font-mono text-small leading-[1.8]"><Redactions text={JSON.stringify(rest, null, 2)} /></pre>
           </section>
         )}
       </div>
