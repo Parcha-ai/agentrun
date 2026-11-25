@@ -356,7 +356,8 @@ export function shareOf({ launch = launchOpener, platform = process.platform } =
       const summary = summaryOf(run, bundle, bytes);
       if (publish) return publishTo(cli, io, { host, target: hostTarget, bytes, bundle, summary });
       const origin = new URL(target.base).origin;
-      const page = `${origin}/share/${encodeURIComponent(run)}`;
+      // The page opens with the same restores, so its first read is this bundle.
+      const page = `${origin}/share/${encodeURIComponent(run)}${query}`;
       if (out !== undefined) {
         try {
           writeFileSync(out, bytes, { flag: "wx", mode: 0o600 });
@@ -372,7 +373,7 @@ export function shareOf({ launch = launchOpener, platform = process.platform } =
         // On the server `agentrun start` started with no accounts, the browser opens the page with the start's launch
         // code, which signs it in to the console as the start's link does; the link printed never carries it.
         const code = launchCodeOf(cli, resolve(values.data ?? join(homedir(), ".agentrun")), origin);
-        const link = code === undefined ? page : `${page}?${new URLSearchParams({ launch: code })}`;
+        const link = code === undefined ? page : `${page}${query ? "&" : "?"}${new URLSearchParams({ launch: code })}`;
         opened = values.open !== false && canOpen(env, platform) && (await launch(platform === "darwin" ? "open" : "xdg-open", [link], env));
         lines.push(opened ? `Opened the share preview in your browser. Nothing was sent anywhere.\nIf no browser opened, open ${page}` : `The share preview: ${page}\nNothing was sent anywhere.`);
         if (code !== undefined) lines.push(SIGN_IN_HINT);

@@ -3,7 +3,7 @@ import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { golden } from "./fixtures/golden";
 import { SharePage } from "./SharePage";
-import { exportSource, runIdOf, type ShareBundle, type ShareLoad, type ShareSource } from "./bundle";
+import { exportSource, restoreOf, runIdOf, type ShareBundle, type ShareLoad, type ShareSource } from "./bundle";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 let root: ReturnType<typeof createRoot> | undefined;
@@ -28,10 +28,10 @@ function fakeServer(answer?: (restore: readonly string[]) => ShareLoad | Promise
   return { source, asked };
 }
 
-async function mount(source: ShareSource, runId = "run_golden") {
+async function mount(source: ShareSource, runId = "run_golden", restore?: readonly string[]) {
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
-  await act(async () => root!.render(createElement(SharePage, { source, runId })));
+  await act(async () => root!.render(createElement(SharePage, { source, runId, restore })));
   return host;
 }
 const flip = async (host: HTMLElement, id: string) => {
@@ -61,6 +61,15 @@ describe("SharePage: the export, and a restore as an export again", () => {
     const command = host.querySelector("footer code")?.textContent;
     expect(command).toBe("agentrun share run_golden --to https://agentrun.ai --restore c_74b434b337661b96 --expect sha-of-c_74b434b337661b96");
     expect(host.querySelector<HTMLElement>('[data-cut="c_74b434b337661b96"] [role="switch"]')?.getAttribute("aria-checked")).toBe("true");
+  });
+
+  it("opened with restores (the CLI's --dry-run --restore), its first read is with them: the bundle the CLI summed up", async () => {
+    const { source, asked } = fakeServer();
+    const host = await mount(source, "run_golden", ["c_74b434b337661b96"]);
+    expect(asked).toEqual([["c_74b434b337661b96"]]);
+    expect(host.querySelector("footer code")?.textContent).toBe("agentrun share run_golden --restore c_74b434b337661b96 --expect sha-of-c_74b434b337661b96");
+    await flip(host, "c_74b434b337661b96");
+    expect(asked.at(-1)).toEqual([]);
   });
 
   it("a switch is only ever offered for a restorable cut, so no format, held or dump id is ever asked for", async () => {
@@ -144,6 +153,15 @@ describe("exportSource: the owner's own export, and no other read", () => {
       await act(async () => button.click());
     }
     expect(fetch.mock.calls.map((c) => (c as unknown[])[0])).toEqual(["/v2/runs/run_golden/export"]);
+  });
+});
+
+describe("restoreOf: the restores a page's address names", () => {
+  it("reads ?restore= as cut ids, comma-separated; anything else in it is no id", () => {
+    expect(restoreOf("")).toEqual([]);
+    expect(restoreOf("?restore=c_05af703d64842a4a,c_74b434b337661b96")).toEqual(["c_05af703d64842a4a", "c_74b434b337661b96"]);
+    expect(restoreOf("?restore=c_05af703d64842a4a%2Cc_05af703d64842a4a&tab=files")).toEqual(["c_05af703d64842a4a"]);
+    expect(restoreOf("?restore=c_05af703d64842a4a,PGPASSWORD,c_zz,")).toEqual(["c_05af703d64842a4a"]);
   });
 });
 
