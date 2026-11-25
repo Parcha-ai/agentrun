@@ -637,7 +637,7 @@ Where a new agent with no place goes, by mode:
   edit that would save such a revision: `name a box: this server has no Docker box for a new agent. Set place to {mode:
   sandbox, box: <one of: daytona, e2b>}, or to {mode: runner} to run without a shell.` The words list the boxes this
   server has (`<none is set up>` when it has none) and its `fix` says the same, so no box is picked for it: the default
-  box is Docker's, by its id, never another box that answers. `default_place` is `null`, and `default_reason` carries
+  box is the one whose provider descriptor sets `defaultBox` (Docker's), never another box that answers. `default_place` is `null`, and `default_reason` carries
   those words.
 - **No Docker, in Mode 2:** not refused. The runner's shell is Archil's serverless exec, so a new agent with no place
   saves for the runner as before, and `default_place` is `{"mode": "runner"}`, no `default_reason`. A background tool
