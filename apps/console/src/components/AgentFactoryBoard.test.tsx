@@ -69,17 +69,81 @@ describe("Agent Factory board", () => {
     const { host } = mount();
     const frame = host.querySelector('section[aria-label="Agent Factory"]')!;
     const bar = host.querySelector("header")!;
-    // The frame takes the page's height and never scrolls: its two parts are the bar and the pane under it. A bar that
-    // scrolled with the sessions would leave the edge under the navigation's logo row as soon as the page moved.
+    // The frame takes the page's height and never scrolls: its two parts are the bar and, under it, the box that holds
+    // the pane of sessions (and the open session's panel over it). A bar that scrolled with the sessions would leave
+    // the edge under the navigation's logo row as soon as the page moved.
     expect([...frame.children].map((part) => part.tagName)).toEqual(["HEADER", "DIV"]);
     for (const name of ["flex", "h-full", "min-h-0", "flex-col"]) expect(frame.classList.contains(name), name).toBe(true);
     expect(frame.classList.contains("min-h-full")).toBe(false);
-    const pane = bar.nextElementSibling!;
+    const under = bar.nextElementSibling!;
+    for (const name of ["relative", "flex", "min-h-0", "flex-1", "flex-col"]) expect(under.classList.contains(name), name).toBe(true);
+    expect(under.classList.contains("overflow-auto")).toBe(false);
+    const pane = under.firstElementChild!;
+    expect(pane.hasAttribute("data-factory-pane")).toBe(true);
     for (const name of ["min-h-0", "flex-1", "overflow-auto"]) expect(pane.classList.contains(name), name).toBe(true);
     // Everything under the bar is in that pane, the page's last line included.
     expect(pane.contains(host.querySelector('[aria-label="Loaded active session totals"]'))).toBe(true);
     expect(pane.contains(host.querySelector('[aria-label="Active agent sessions"]'))).toBe(true);
     expect(pane.contains(host.querySelector("footer"))).toBe(true);
+  });
+
+  it("opens a session in the page's panel: its name leads there, its label leads to the run's own page, and the open one says so", () => {
+    const href = (runId: string) => `#/factory?session=${encodeURIComponent(runId)}`;
+    for (const view of ["cards", "list"] as const) {
+      const { host } = mount({ view, sessionHref: href, openSession: "waiting" });
+      const item = (id: string) => host.querySelector(view === "cards" ? `article:has(a[href="${href(id)}"])` : `tr[data-factory-row="${id}"]`)!;
+      // The name is the way into the panel; the run's own page is one press away, on the label that names the run.
+      const links = [...item("run/worker").querySelectorAll("a")].map((a) => [a.getAttribute("href"), a.textContent]);
+      expect(links[0]![0]).toBe("#/factory?session=run%2Fworker");
+      expect(links).toContainEqual(["#/runs/run%2Fworker", "run/worker"]);
+      // Only the open session is marked, for the eye and for a screen reader.
+      expect([...host.querySelectorAll('[aria-current="true"]')]).toEqual([item("waiting")]);
+      expect(host.textContent).toContain("Open one to see its latest activity and act on it.");
+      act(() => root!.unmount());
+      document.body.innerHTML = "";
+    }
+    // Alone, with no panel to open, a session's name still leads to its run's own page, and its label is no link.
+    const { host } = mount();
+    expect(host.querySelector('[data-factory-lane="working"] article h3 a')!.getAttribute("href")).toBe("#/runs/run%2Fworker");
+    expect(host.querySelectorAll('article p a[href^="#/runs/"]')).toHaveLength(0);
+  });
+
+  it("names the next step on a session that waits on a person, as one more way into it, on its card and on its row", () => {
+    const href = (runId: string) => `#/factory?session=${runId}`;
+    const waiting = [card("asked", "attention", { action: "Answer", agentName: "Triage" }), card("call", "attention", { action: "Review" }), card("busy", "working")];
+    for (const view of ["cards", "list"] as const) {
+      const { host } = mount({ view, cards: waiting, review: [], sessionHref: href });
+      const steps = [...host.querySelectorAll<HTMLAnchorElement>("a[data-factory-action]")];
+      expect(steps.map((a) => [a.textContent, a.getAttribute("href"), a.getAttribute("aria-label")])).toEqual([["Answer", "#/factory?session=asked", "Answer: Triage"], ["Review", "#/factory?session=call", "Review: Builder"]]);
+      act(() => root!.unmount());
+      document.body.innerHTML = "";
+    }
+  });
+
+  it("draws the open session's panel over the pane of sessions, never inside the box that scrolls them", () => {
+    const { host } = mount({ panel: createElement("aside", { "aria-label": "Session" }, "the open run") });
+    const panel = host.querySelector('aside[aria-label="Session"]')!;
+    const pane = host.querySelector("[data-factory-pane]")!;
+    expect(panel.parentElement).toBe(pane.parentElement);
+    expect(pane.contains(panel)).toBe(false);
+    expect(panel.previousElementSibling).toBe(pane);
+    // The board under it is whole: the panel takes nothing out of the page.
+    expect(pane.querySelectorAll("article")).toHaveLength(5);
+  });
+
+  it("takes its filters from the page that keeps them in its address, and tells it of each change", async () => {
+    const onFilters = vi.fn();
+    const { host, render } = mount({ filters: { repository: "unreported", control: "all" }, onFilters });
+    expect(host.querySelector('[aria-label="Matching sessions"]')?.textContent).toBe("1 of 4 loaded active sessions match");
+    await pick(picker(host, "Control")!, "control:Managed");
+    expect(onFilters).toHaveBeenLastCalledWith({ repository: "unreported", control: "control:Managed" });
+    // Nothing moves until the page says so: the address is the one place the filters are kept.
+    expect(host.querySelector('[aria-label="Matching sessions"]')?.textContent).toBe("1 of 4 loaded active sessions match");
+    render({ filters: { repository: "all", control: "control:Observed" } });
+    expect(host.querySelector('[aria-label="Matching sessions"]')?.textContent).toBe("1 of 4 loaded active sessions match");
+    expect(host.querySelectorAll('[data-factory-lane="unknown"] article')).toHaveLength(1);
+    await act(async () => { [...host.querySelectorAll("button")].find((b) => b.textContent === "Clear filters")!.click(); });
+    expect(onFilters).toHaveBeenLastCalledWith({ repository: "all", control: "all" });
   });
 
   it("says when the sessions were last read, beside Refresh at the top of the page, and that a failed read left them stale", () => {

@@ -21,6 +21,39 @@ export function saveFactoryView(view: FactoryView, store: ViewStore | null = loc
   try { store?.setItem(FACTORY_VIEW_KEY, view); } catch { /* Refused: the page holds the pick while it is open. */ }
 }
 
+/** What the board's address keeps: its two filters and the session open beside it. The filters are the board's own
+ *  values ("all", "unreported", "repo:<owner/name>"; "all", "control:Managed", "control:Observed"). */
+export type FactoryFilters = { repository: string; control: string };
+export type FactoryPlace = FactoryFilters & { session?: string };
+export const NO_FACTORY_FILTERS: FactoryFilters = { repository: "all", control: "all" };
+const REPOSITORY = /^[A-Za-z0-9_-]+\/[A-Za-z0-9_.-]+$/;
+const CONTROLS: Record<string, string> = { managed: "control:Managed", observed: "control:Observed" };
+
+/** `#/factory`, saying only what is not the default: `?session=<run id>&repo=<owner/name | unreported>&control=<managed |
+ *  observed>`. A reload, a link and a trip to a run's own page and back all open the same board. */
+export function factoryHash(place: Partial<FactoryPlace> = {}): string {
+  const q = new URLSearchParams();
+  if (place.session) q.set("session", place.session);
+  if (place.repository === "unreported") q.set("repo", "unreported");
+  else if (place.repository?.startsWith("repo:")) q.set("repo", place.repository.slice(5));
+  const control = Object.entries(CONTROLS).find(([, value]) => value === place.control)?.[0];
+  if (control) q.set("control", control);
+  const query = q.toString();
+  return query ? `#/factory?${query}` : "#/factory";
+}
+
+/** The place a `#/factory` address's query names. What it does not say, or says in words the board does not have, is
+ *  the default: a mistyped filter widens to every session, never to an empty board no option explains. */
+export function factoryPlace(query: string): FactoryPlace {
+  const q = new URLSearchParams(query);
+  const repo = q.get("repo") ?? "", session = q.get("session") ?? "";
+  return {
+    repository: repo === "unreported" ? "unreported" : REPOSITORY.test(repo) ? `repo:${repo}` : "all",
+    control: CONTROLS[q.get("control") ?? ""] ?? "all",
+    ...(session && session.length <= 200 ? { session } : {}),
+  };
+}
+
 export async function readFactoryScope(client: Pick<Client, "listFactoryRuns">, scope: FactoryScope, pages: number, signal: AbortSignal) {
   const runs = new Map<string, FactoryRun>();
   const seen = new Set<string>();
@@ -51,6 +84,15 @@ function attention(run: FactoryRun): string | null {
   if (isEscalated(run.status, run.error)) return run.error?.message ?? "Open the run to review its escalation.";
   if (run.status === "input_required") return run.state === "idle" ? "Stopped; open the run to continue." : "Open the run to answer.";
   return null;
+}
+
+/** What a person does next for a run that waits on them, as the word on its card: answer its question, or review what
+ *  it asks leave for (a tool call, a computer step, more budget). Null when nothing waits on a person here. */
+function nextStep(run: FactoryRun): FactoryCard["action"] {
+  const kind = run.pending?.kind;
+  if (kind === "question") return "Answer";
+  if (kind === "approval" || kind === "budget" || kind === "browser" || kind === "computer") return "Review";
+  return undefined;
 }
 
 /** Cancellation is optimistic in /v2: the runner can still be withdrawing effects until its end is recorded. */
@@ -132,6 +174,8 @@ export function factoryCards(runs: readonly FactoryRun[], agentName: (id: string
       ...github(run), activityAt: factory.last_activity_at,
       reason: [reason, observation].filter(Boolean).join(" ") || null,
       costLabel: cost(run.cost, { ended }),
+      // An ended run waits on nobody; what it left to look at is in its panel.
+      ...(!review && nextStep(run) ? { action: nextStep(run) } : {}),
     };
     cards.push(card);
     if (!review) for (const child of factory.children) {
@@ -141,7 +185,7 @@ export function factoryCards(runs: readonly FactoryRun[], agentName: (id: string
         title: "Reported child agent", parentLabel: `${card.agentName} · ${runLabel(run.run_id)}`,
         lane: sourceOffline ? "unknown" : "working", stateLabel: sourceOffline ? "Activity unknown" : "Reported active",
         // A parent report is not a child's heartbeat, price, permission or GitHub delivery claim.
-        activityAt: null, costLabel: "Cost not separately reported", controlLabel: "Observed",
+        activityAt: null, costLabel: "Cost not separately reported", controlLabel: "Observed", action: undefined,
         reason: "Reported by the parent run; GitHub context is the parent's. Open its timeline for child activity and controls.",
       });
     }

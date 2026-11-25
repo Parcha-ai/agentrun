@@ -52,6 +52,8 @@ export type RunDetailProps = {
   fileUrl?: (path: string) => string;
   openFile?: RunFile | null;
   actions?: RunActions;
+  /** The run beside another page, which has its own way back: the header has no breadcrumb and its title is a section's. */
+  embedded?: boolean;
   /** Sends a message; resolves false when it failed, so the composer keeps the draft. */
   onMessage?: (text: string) => void | boolean | Promise<void | boolean>;
   /** Answers the tool call the run waits on the owner's approval of (`pending.id`): resolves with the refusal to show,
@@ -130,7 +132,7 @@ function beforeAnswer(run: Pick<Run, "status" | "state" | "pending">, view: RunV
 }
 
 /** The run page: Report / Timeline / Files tabs over AgentRun Server's run, timeline and files. */
-export function RunDetail({ run, agentName, inFlight = [], messages, harnessSteers, rows, files, outputSchema, readFile, fileUrl, openFile = null, actions, onMessage, onApprove, tab: initial, graphView, costText, readLearningDiff, readLearning, readLearningResult, readComputer, computerEvery, onTakeOver, onHandBack, readComputers, onGrade, readTrace, readUsage, traceAt }: RunDetailProps) {
+export function RunDetail({ run, agentName, inFlight = [], messages, harnessSteers, rows, files, outputSchema, readFile, fileUrl, openFile = null, actions, embedded, onMessage, onApprove, tab: initial, graphView, costText, readLearningDiff, readLearning, readLearningResult, readComputer, computerEvery, onTakeOver, onHandBack, readComputers, onGrade, readTrace, readUsage, traceAt }: RunDetailProps) {
   // A run paused at its spend cap takes no message until its cap is raised (409 budget_reached): no composer for it.
   const native = run.native;
   const sdk = backendSdkOf(run);
@@ -292,7 +294,7 @@ export function RunDetail({ run, agentName, inFlight = [], messages, harnessStee
     // On a short screen (a phone on its side) the page scrolls as a whole, in <main>: the header, the tabs and the composer
     // keep their own heights and the tab body takes what it needs, instead of what is left of 390 px (nothing).
     <div className="flex h-full min-h-0 flex-col short:h-auto">
-      <RunHeader run={run} agentName={agentName} actions={actions} costText={costText} raiseBelow={bannerRaise ? toBannerRaise : undefined} readUsage={readUsage} />
+      <RunHeader run={run} agentName={agentName} embedded={embedded} actions={actions} costText={costText} raiseBelow={bannerRaise ? toBannerRaise : undefined} readUsage={readUsage} />
       {/* What it waits on now, each with how long: under the header, whatever tab is open (GRE-4835). */}
       <InFlight items={inFlight} />
       <Tabs id="run-views" label="Run views" value={tab} onChange={(value) => setTab(value as Tab)} tabs={tabs.map(([id, label]) => ({ id, label }))} />
