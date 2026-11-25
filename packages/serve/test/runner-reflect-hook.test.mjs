@@ -6,7 +6,15 @@ import { test } from "node:test";
 import { createReflectHook } from "../dist/runner/reflect-hook.js";
 import { COMPILE_TIMEOUT_MS, compilePrompt } from "../dist/learn/compile.js";
 import { said, STOPPED } from "../dist/learning-words.js";
-import { runCostOf } from "../dist/learning-cost.js";
+import { figuresOf, record } from "../dist/learn/ledger.js";
+
+/** A run's series figures as its ledger row gives them (learn/ledger.ts record, figuresOf): its row's cost `costUsd` and
+ *  the one round its end kept. */
+const runCostOf = (costUsd, end) => {
+  const { row } = record({ id: "run-1", agentId: "a", startedAt: 0, costUsd, costAtMostUsd: null, metrics: { path: "agent" }, rounds: [{ round: 1, proposal: end }] });
+  const figures = figuresOf(row, { compile: 0, shadow: 0, share: 0 });
+  return { cost_usd: figures.usd, learning_usd: figures.series_learning_usd, total_usd: figures.series_total_usd };
+};
 
 const claim = { runId: "run-1", runner: "runner-a", epoch: 1, until: 0, from: "running" };
 /** The hooks' clock; a run's spend reads 0.01 throughout unless a test says otherwise. */

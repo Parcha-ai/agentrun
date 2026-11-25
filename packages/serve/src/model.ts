@@ -203,7 +203,7 @@ export type ModelSource = { source: (typeof MODEL_SOURCES)[number]; route_prefix
  *  revision that names none runs on). */
 export function modelSource(env: NodeJS.ProcessEnv): ModelSource {
   const each = (name: (tier: Tier) => string | null) => Object.fromEntries(TIERS.map((tier) => [tier, name(tier)])) as Record<Tier, string | null>;
-  if (env[FAUX_ENV]) return { source: "faux", route_prefix: null, ...each((tier) => `faux/${fauxModel(env, tier)}`) };
+  if (env[FAUX_ENV]) return { source: "faux", route_prefix: null, ...each((tier) => `${FAUX_PROVIDER}/${fauxModel(env, tier)}`) };
   if (env.AGENT_MODEL_BASE_URL) return { source: "gateway", route_prefix: MODEL_PROVIDER, ...each((tier) => (hostModel(env, tier) ? `${MODEL_PROVIDER}/${hostModel(env, tier)}` : null)) };
   if (signedIn(env) && !Object.values(PROVIDER_KEYS).flat().some((name) => env[name])) return { source: "chatgpt", route_prefix: null, ...each((tier) => hostModel(env, tier) ?? null) };
   return { source: "providers", route_prefix: null, ...each((tier) => hostModel(env, tier) ?? null) };
@@ -410,12 +410,13 @@ const REQUEST_KEYS = PROVIDER_KEYS["amazon-bedrock"]!;
 export const GATEWAY_KEY_ENV = "AGENT_MODEL_API_KEY";
 
 /** The model keys a pi run takes, by the models chooseModel picks for it: the keys of each one's provider (PROVIDER_KEYS),
- *  the default tier's from `ref` (an agentic revision's own) else the host's default, each other tier's the host's model
- *  of that tier; through a gateway (`AGENT_MODEL_BASE_URL`), where every model is the gateway's, its key alone. Asked as
- *  chooseModel is, faux or not, so a run on the faux model is handed what a run on its model would be. */
-export function modelKeys(env: NodeJS.ProcessEnv, ref: string | undefined, tiers: readonly Tier[] = ["default"]): string[] {
+ *  the default tier's from `ref` (an agentic revision's own) else the host's default, each other tier's from `tierRefs`
+ *  (a revision's model_tiers, as runModels takes them) else the host's model of that tier; through a gateway
+ *  (`AGENT_MODEL_BASE_URL`), where every model is the gateway's, its key alone. Asked as chooseModel is, faux or not, so a
+ *  run on the faux model is handed what a run on its model would be. */
+export function modelKeys(env: NodeJS.ProcessEnv, ref: string | undefined, tiers: readonly Tier[] = ["default"], tierRefs: Readonly<Partial<Record<Tier, string>>> = {}): string[] {
   if (env.AGENT_MODEL_BASE_URL) return [GATEWAY_KEY_ENV];
-  const named = tiers.map((tier) => (tier === "default" ? ref : undefined) ?? hostModel(env, tier));
+  const named = tiers.map((tier) => (tier === "default" ? ref : tierRefs[tier]) ?? hostModel(env, tier));
   const providers = named.flatMap((name) => (name && name.indexOf("/") > 0 ? [name.slice(0, name.indexOf("/"))] : []));
   return [...new Set(providers.flatMap((provider) => PROVIDER_KEYS[provider] ?? []))];
 }

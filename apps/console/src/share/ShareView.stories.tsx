@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { golden } from "./golden.fixture";
+import { golden } from "./fixtures/golden";
 import type { ShareBundle, ShareSource } from "./bundle";
 import { SharePage } from "./SharePage";
 import { ShareView } from "./ShareView";

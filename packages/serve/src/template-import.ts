@@ -157,23 +157,17 @@ function bodyOf(body: Json, apiOnly: boolean): { source: GithubSource; dryRun: b
 
 /** An upload: its files checked as an import's are, its id `upload:<name>` (its manifest's name), its sha the package's
  *  sha256; a dry run answers it, storing nothing; else it is stored and served (201), in place of the one of its name. */
-/** An upload's files ({files} of POST /v2/templates/import) checked as the import checks them, storing nothing: the
- *  package's bytes by path (each hidden path left out) and the package read from them; else the refusal the route answers
- *  (422). `agentrun deploy` runs this on the body it is about to send (agentrun-serve check-upload), so a package a target
- *  refuses is refused before anything is sent, by this one check. */
-export function checkUpload(raw: unknown): { files: Map<string, Buffer>; pkg: Package } {
+async function uploadTemplate(deps: TemplateImportDeps, raw: unknown, dryRun: boolean): Promise<{ status: 200 | 201; pkg: Package; trusted: boolean; replaced: string | null }> {
+  let pkg: Package;
+  let files: Map<string, Buffer>;
   try {
-    const files = uploadFiles(raw);
+    files = uploadFiles(raw);
     const name = manifestOf(files.get(MANIFEST)?.toString("utf8") ?? "")?.name;
     const id = `${UPLOAD_PREFIX}${typeof name === "string" ? name : ""}`;
-    return { files, pkg: importedPackage(id, { source: id, sha: uploadSha(files), publisher: "" }, files) };
+    pkg = importedPackage(id, { source: id, sha: uploadSha(files), publisher: "" }, files);
   } catch (error) {
     refusalOf(error);
   }
-}
-
-async function uploadTemplate(deps: TemplateImportDeps, raw: unknown, dryRun: boolean): Promise<{ status: 200 | 201; pkg: Package; trusted: boolean; replaced: string | null }> {
-  const { files, pkg } = checkUpload(raw);
   const replaced = deps.registry.get(pkg.id)?.origin?.sha ?? null;
   if (dryRun) return { status: 200, pkg, trusted: true, replaced };
   await deps.store.importedTemplates.put({ id: pkg.id, source: pkg.origin!.source, sha: pkg.origin!.sha, publisher: "", files: Object.fromEntries([...files].map(([path, data]) => [path, data.toString("base64")])) });
