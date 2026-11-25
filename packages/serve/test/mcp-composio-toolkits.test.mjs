@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { startFakeComposio } from "./fixtures/fake-composio.mjs";
-import { secretWritePath, serve, serverLog, storeBytes } from "./support.mjs";
+import { clientOwnerSession, secretWritePath, serve, serverLog, storeBytes } from "./support.mjs";
 
 secretWritePath(["POST"], /^\/settings\/mcp-servers\/composio\/toolkits$/);
 secretWritePath(["PUT"], /^\/settings\/mcp-servers\/[^/]+\/composio$/);
@@ -141,6 +141,28 @@ test("the toolkits listing has one deadline for every page: a page Composio hold
   const res = await listing;
   assert.equal(res.status, 424, `the listing is cut at its deadline: ${res.status} ${JSON.stringify(res.body)}`);
   assert.match(res.body.error.message, /Composio did not answer while listing the toolkits: no toolkit was listed\./);
+});
+
+test("a toolkits listing the console stops (Cancel, a key edit) stops at Composio too: no page is asked for after it", async (t) => {
+  const s = await setup(t, { toolkitsPage: 1 });
+  const held = s.composio.hold("/api/v3/toolkits", "GET");
+  t.after(() => held.release());
+  const session = await clientOwnerSession(s.server);
+  const stop = new AbortController();
+  const listing = fetch(`${s.server.baseUrl}/settings/mcp-servers/composio/toolkits`, {
+    method: "POST", signal: stop.signal,
+    headers: { "content-type": "application/json", cookie: session.cookie, origin: session.origin },
+    body: JSON.stringify({ api_key: s.composio.apiKey }),
+  }).catch((error) => error);
+  await held.reached;
+  stop.abort();
+  assert.equal((await listing)?.name, "AbortError", "the console's request was stopped");
+  // The server sees the connection close before the held page is let go.
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  held.release();
+  const asked = () => s.composio.to("/api/v3/toolkits", "GET").length;
+  for (let waited = 0; waited < 1500 && asked() === 1; waited += 50) await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(asked(), 1, `no page after the stopped one is asked for: ${asked()} pages were`);
 });
 
 test("an account of another Composio user under the same auth config is never the server's: not connected, and no label shown or kept", async (t) => {
