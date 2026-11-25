@@ -2,7 +2,8 @@
 // nested in the learned_workflow call (NestedCalls), as the harness's own call of it runs, under the same gate and booked
 // on the run's one ledger: allowed, it runs once and its price is the run's tool cost; denied, the workflow is refused
 // before any node runs and the server sees nothing; set to ask, the learned_workflow call itself asks once, the run parks,
-// and the owner's allow runs it once; a stop while it runs cuts the call at the server. pi, on the faux model.
+// and the owner's allow runs it once; a stop while it runs cuts the call at the server. pi, on the faux model (and one
+// CLI, codex on the faux harness, for a call a crash cut and the gate denied when it was issued again).
 import assert from "node:assert/strict";
 import { promoteChecked } from "./learned-workflow-seed-support.mjs";
 import { randomBytes } from "node:crypto";
@@ -12,6 +13,8 @@ import { test } from "node:test";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { agent, call, clientOwnerSession, follow, retried, runRecordOf, scratch, serve as serveOf, withEnv } from "./support.mjs";
 import { NODE_REQUESTS_ENV } from "./fixtures/faux-learned-node.mjs";
+import { fauxTable } from "./fixtures/faux-table.mjs";
+import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
 import { agentFolderOf } from "../dist/files.js";
 import { seedOf } from "../dist/learning.js";
 import { learnedApprovedTools, learnedAskShown, LEARNED_WORKFLOW_TOOL } from "../dist/learned-workflow.js";
@@ -52,10 +55,11 @@ async function owner(server) {
   return async (runId, approvalId, body) => (await call(server.port, { method: "POST", path: `/v2/runs/${runId}/approvals/${encodeURIComponent(approvalId)}`, headers: { ...json, cookie, origin }, body })).status;
 }
 
-/** Agent `id`, learning, granted `tools`, with `flows` learned in its folder; one run of it asking `content`. */
-async function learnedRun(server, id, tools, flows, content, run = {}) {
+/** Agent `id`, learning, granted `tools`, with `flows` learned in its folder (and `definition`'s fields: its harness); one
+ *  run of it asking `content`. */
+async function learnedRun(server, id, tools, flows, content, run = {}, definition = {}) {
   const { api, data } = server;
-  assert.equal((await retried(api)("POST", "/agents",agent(id, { learning: true, tools }))).status, 201);
+  assert.equal((await retried(api)("POST", "/agents",agent(id, { learning: true, tools, ...definition }))).status, 201);
   await seedOf(data, id);
   const repo = join(agentFolderOf(data, id), "learning");
   const files = Object.fromEntries(flows.flatMap((flow) => [[`workflows/${flow.name}/workflow.json`, JSON.stringify(flow)], [`workflows/${flow.name}/README.md`, `---\nname: ${flow.name}\ndescription: Runs ${flow.name}\n---\n`]]));
@@ -518,6 +522,55 @@ test("a model node that ran before a crash cut the call is asked and booked once
   const booked = await nodeBookings(server, runId);
   assert.equal(booked.requests.length, first, `the node's requests are booked once: ${JSON.stringify(booked.requests)}`);
   assert.equal(calls(fake, "slow_write").length, 1, "the cut MCP call is never sent again");
+});
+
+// A CLI's learned_workflow call a crash cut mid-call, its first model node already booked, issued again on the next
+// runner (faux-harness.mjs `again`: through the bridge, asked as `replayed`) and denied there: the deny says the attempt
+// may have run (RAN_UNKNOWN), so it is no proof that nothing ran. Its call is the workflow's, never `refused` at $0, and
+// the run stays charged to the workflow: never the agent's path, whose by-hand line would take the workflow's spend.
+// The CLI's model and the workflow's model nodes go to a faux gateway on loopback, priced, through the session's proxy;
+// the second node's request is held there, unanswered, until the crash cuts it.
+const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
+test("a CLI's learned_workflow call a crash cut after its model node booked, denied when it is issued again on the next runner, is the workflow's failed call, never refused at $0, and the run is never the agent's path", { timeout: 240_000 }, async (t) => {
+  const HELD = "Hold this node.";
+  const submits = ({ body }) => {
+    const offers = (body?.tools ?? []).some((tool) => tool?.name === "submit");
+    const answered = (body?.input ?? []).some((item) => item?.type === "function_call_output");
+    return offers && !answered ? { name: "submit", input: { value: { title: "a note" } } } : undefined;
+  };
+  const heldNode = (request) => JSON.stringify(request.body ?? "").includes(HELD);
+  const gw = await startFauxGateway({ call: submits, hang: heldNode });
+  t.after(() => gw.close());
+  withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), AGENT_MODEL_BASE_URL: gw.url, AGENT_MODEL: "gpt-test", AGENT_MODEL_API_KEY: ["not-a-secret", "gateway"].join("-"), AGENT_MODEL_PRICE: "1,2,0.5" }, ["ANTHROPIC_BASE_URL", "OPENROUTER_API_KEY"]);
+  const server = await serveOf(t, { faux: undefined, harnessTable: fauxTable(FAUX_HARNESS), accounts: true, openSetup: true, runnerTiming: CRASHABLE });
+  const { api, data } = server;
+  assert.equal((await api("PUT", "/settings/tools", { [LEARNED_WORKFLOW_TOOL]: { permission: "allow" } })).status, 200);
+  const flow = titled("title-then-hold", [{ node: "extract", label: "held", instructions: HELD, out: "Title", as: "held" }]);
+  // The faux harness takes its script from the agent's instructions.
+  const ask = `${runOf("title-then-hold", { a: 2, b: 3 })}, again after a crash.`;
+  const runId = await learnedRun(server, "cli-replay-deny", [], [flow], ask, {}, { harness: "codex", instructions: ask });
+  for (let i = 0; !gw.requests.some(heldNode); i++) {
+    // A run that ends before its held node says why, in its rows.
+    const run = (await api("GET", `/runs/${runId}`)).body;
+    if (i >= 900 || ["completed", "failed", "cancelled"].includes(run.status)) {
+      const { rows } = await follow(api, runId, ["completed", "failed", "cancelled"], { deadlineMs: 5_000 }).catch(() => ({ rows: [] }));
+      assert.fail(`the workflow never reached its held node (run ${run.status}): ${JSON.stringify(rows.filter((row) => row.tool_name === LEARNED_WORKFLOW_TOOL))}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  const held = runRecordOf(data, runId);
+  await server.crashRunner();
+  assert.equal((await api("PUT", "/settings/tools", { [LEARNED_WORKFLOW_TOOL]: { permission: "deny" } })).status, 200);
+  await follow(api, runId, ["completed", "failed"], { deadlineMs: 150_000 });
+  assert.ok(runRecordOf(data, runId).epoch > held.epoch, "another runner took the run up");
+  const view = (await api("GET", `/runs/${runId}`)).body;
+  const booked = (await nodeBookings(server, runId)).turns.reduce((sum, turn) => sum + (turn.usd ?? 0), 0);
+  assert.ok(booked > 0, "the first model node's request is booked under the call");
+  assert.equal(view.workflow_calls?.length, 1, JSON.stringify(view.workflow_calls));
+  const [called] = view.workflow_calls;
+  assert.deepEqual({ workflow: called.workflow, caller: called.caller, outcome: called.outcome }, { workflow: "title-then-hold", caller: "agent", outcome: "failed" }, "the workflow's call, failed: never refused");
+  assert.ok(called.usd === null || Math.abs(called.usd - booked) < 1e-9, `its $ is what its call booked, or unknown, never 0: ${called.usd} vs ${booked}`);
+  assert.deepEqual([view.path, view.workflow], ["handed_back", "title-then-hold"], "charged to the workflow, never the agent's path");
 });
 
 test("an approved card covers its own call only: an action an earlier call's card named, asked in a later call of the same workflow whose card did not name it, parks on a card of its own", { timeout: 240_000 }, async (t) => {
