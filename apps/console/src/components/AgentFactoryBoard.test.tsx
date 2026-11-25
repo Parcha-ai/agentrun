@@ -20,7 +20,7 @@ const active = [
   card("native", "unknown", { controlLabel: "Observed", sourceLabel: "Native Codex", repo: null, activityAt: null, reason: "Current activity unavailable" }),
 ];
 const review = [card("ended", "attention", { agentName: "Reviewer", repo: "example/api", stateLabel: "Needs review", reason: "Run ended with an uncertain outcome" })];
-const defaults = (): AgentFactoryBoardProps => ({ cards: active, review, loading: false, refreshing: false, error: null, updatedAt: AT, hasMore: false, onLoadMore: vi.fn(), onRefresh: vi.fn() });
+const defaults = (): AgentFactoryBoardProps => ({ cards: active, review, loading: false, refreshing: false, error: null, updatedAt: AT, hasMore: false, onLoadMore: vi.fn(), onRefresh: vi.fn(), view: "cards", onView: vi.fn() });
 let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); root = undefined; document.body.innerHTML = ""; });
 
@@ -115,6 +115,75 @@ describe("Agent Factory board", () => {
     expect(match.textContent).toBe("1 of 1 loaded active sessions match");
     expect(clear.previousElementSibling?.contains(match)).toBe(true);
     expect(host.querySelector('[aria-label="Loaded active session totals"] [aria-label="Matching sessions"]')).toBeNull();
+  });
+
+  it("offers the sessions as a list or as cards in lanes: one View group of two icon segments in the top bar, on Cards until List is picked", () => {
+    const { host, props } = mount();
+    const group = host.querySelector('header [role="radiogroup"][aria-label="View"]')!;
+    const radios = [...group.querySelectorAll<HTMLInputElement>('input[type="radio"]')];
+    expect(radios.map((radio) => radio.value)).toEqual(["list", "cards"]);
+    // Each segment is an icon: its word is kept for a screen reader and for a pointer's hover, and is not drawn.
+    expect(radios.map((radio) => radio.closest("label")!.textContent)).toEqual(["List", "Cards"]);
+    for (const radio of radios) {
+      const segment = radio.closest("label")!;
+      expect(segment.querySelector("svg[aria-hidden]")).not.toBeNull();
+      expect([...segment.querySelectorAll("span")].every((word) => word.classList.contains("sr-only"))).toBe(true);
+      expect(segment.title).toBe(segment.textContent);
+    }
+    expect(radios.map((radio) => radio.checked)).toEqual([false, true]);
+    expect(host.querySelectorAll("[data-factory-lane]")).toHaveLength(4);
+    expect(host.querySelector("table")).toBeNull();
+    expect(host.querySelector("footer")?.textContent).toContain("One card is one session.");
+    act(() => radios[0]!.click());
+    expect(props.onView).toHaveBeenCalledWith("list");
+  });
+
+  it("lists one row a session: its lane in words, the run's link, control, repository, last activity and cost, a child under its parent", () => {
+    const { host } = mount({ view: "list" });
+    expect([...host.querySelectorAll<HTMLInputElement>('[aria-label="View"] input')].map((radio) => radio.checked)).toEqual([true, false]);
+    expect(host.querySelectorAll("[data-factory-lane]")).toHaveLength(0);
+    expect(host.querySelectorAll("article")).toHaveLength(0);
+    const table = host.querySelector('table[aria-label="Active agent sessions"]')!;
+    expect([...table.querySelectorAll("thead th")].map((th) => th.textContent)).toEqual(["State", "Session", "Control", "Repository", "Last activity", "Cost"]);
+    const rows = [...table.querySelectorAll("tbody tr")];
+    // The loaded order, so a child stays under the session that started it.
+    expect(rows.map((row) => row.querySelector('a[href^="#/runs/"]')?.getAttribute("href"))).toEqual(["#/runs/run%2Fworker", "#/runs/waiting", "#/runs/approval", "#/runs/native"]);
+    const [worker, waiting, approval, native] = rows as [Element, Element, Element, Element];
+    const cells = (row: Element) => [...row.querySelectorAll("td")].map((cell) => cell.textContent ?? "");
+    expect(cells(worker)[0]).toBe("Working");
+    expect(cells(worker)[1]).toContain("Builder");
+    expect(cells(worker)[1]).toContain("Reviewing verification code");
+    expect(cells(worker)[2]).toBe("Managed");
+    expect(worker.querySelector('a[href="https://github.com/example/console/pull/8"]')?.getAttribute("rel")).toBe("noopener noreferrer");
+    expect(cells(worker)[4]).not.toBe("Not reported");
+    expect(cells(worker)[5]).toBe("$1.20 recorded");
+    // A lane the cards say by their column is said in words here; what the source called the state follows when it differs.
+    expect(cells(approval)[0]).toBe("Needs youApproval requested");
+    expect(cells(approval)[1]).toContain("Tool permission required");
+    expect(cells(waiting)[0]).toBe("Waiting");
+    expect(cells(waiting)[1]).toContain("Parent: Coordinator · root-run");
+    expect(waiting.hasAttribute("data-factory-child")).toBe(true);
+    expect(worker.hasAttribute("data-factory-child")).toBe(false);
+    expect(cells(native)[0]).toBe("Unknown");
+    expect(cells(native).slice(2)).toEqual(["Observed", "Not reported", "Not reported", "Cost not reported"]);
+    // An ended run is a row too, under its own heading, in the state its source gave it.
+    const ended = host.querySelector('[aria-label="Ended runs needing attention"]')!;
+    const endedRows = [...ended.querySelectorAll("tbody tr")];
+    expect(endedRows).toHaveLength(1);
+    expect(cells(endedRows[0]!)[0]).toBe("Needs review");
+    expect(endedRows[0]!.textContent).toContain("Run ended with an uncertain outcome");
+    expect(host.querySelector("footer")?.textContent).toContain("One row is one session.");
+  });
+
+  it("filters the list as it filters the cards, and says so when no row is left", async () => {
+    const { host } = mount({ view: "list" });
+    await pick(picker(host, "Repository")!, "unreported");
+    expect(host.querySelectorAll('table[aria-label="Active agent sessions"] tbody tr')).toHaveLength(1);
+    expect(host.querySelector('[aria-label="Matching sessions"]')?.textContent).toBe("1 of 4 loaded active sessions match");
+    expect(host.querySelector('[aria-label="Loaded active session totals"]')?.textContent).toContain("4 active sessions loaded");
+    await pick(picker(host, "Control")!, "control:Managed");
+    expect(host.querySelector('table[aria-label="Active agent sessions"]')).toBeNull();
+    expect(host.textContent).toContain("No matching sessions");
   });
 
   it("filters both active and ended runs without changing the explicitly loaded totals", async () => {

@@ -10,7 +10,7 @@ import running from "../fixtures/run.working.working.1.json";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 let root: ReturnType<typeof createRoot> | undefined;
-afterEach(() => { act(() => root?.unmount()); root = undefined; document.body.innerHTML = ""; vi.useRealTimers(); });
+afterEach(() => { act(() => root?.unmount()); root = undefined; document.body.innerHTML = ""; vi.useRealTimers(); localStorage.clear(); });
 const at = "2026-11-21T10:00:00Z";
 const makeRun = (id: string): Run => ({ ...running.body, run_id: id, title: `Task ${id}`, factory: {
   lifecycle_version: "10", source: "managed", runtime: "pi", control: "managed", controls: { stop: false, cancel: true, approve: false },
@@ -44,6 +44,25 @@ describe("Agent Factory page", () => {
     expect(el.querySelector('[aria-label="Loaded active session totals"]')?.textContent).toContain("2 active sessions loaded");
     expect(el.textContent).toContain("Task older-active");
     expect(el.querySelector('[aria-label="Ended runs needing attention"]')?.textContent).toContain("Inspect result");
+  });
+
+  it("keeps the picked view in this browser: List is still List on the next visit", async () => {
+    const v2 = createClient({ fetch: (async (url) => {
+      const scope = new URL(String(url), "https://serve.example").searchParams.get("scope");
+      return json({ scope, observed_at: at, runs: scope === "active" ? [makeRun("kept")] : [], next_cursor: null });
+    }) as typeof fetch });
+    const list = 'table[aria-label="Active agent sessions"]';
+    const el = host();await act(async () => root!.render(createElement(AgentFactoryPage, { v2, agentName })));await settle();
+    expect(el.querySelectorAll("[data-factory-lane]")).toHaveLength(4);
+    expect(el.querySelector(list)).toBeNull();
+    await act(async () => el.querySelector<HTMLInputElement>('[role="radiogroup"][aria-label="View"] input[value="list"]')!.click());
+    expect(el.querySelector(list)?.textContent).toContain("Task kept");
+    expect(el.querySelectorAll("[data-factory-lane]")).toHaveLength(0);
+    // The page is left and opened again: the view is the one picked, not the default.
+    act(() => root!.unmount()); document.body.innerHTML = "";
+    const again = host();await act(async () => root!.render(createElement(AgentFactoryPage, { v2, agentName })));await settle();
+    expect(again.querySelector(list)?.textContent).toContain("Task kept");
+    expect(again.querySelector<HTMLInputElement>('[aria-label="View"] input[value="list"]')!.checked).toBe(true);
   });
 
   it("retains last-known cards on a failed refresh and labels the counts stale", async () => {

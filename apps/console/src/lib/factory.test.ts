@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import running from "../fixtures/run.working.working.1.json";
 import { createClient } from "./client";
-import { factoryCards, readFactoryScope, reconcileFactoryRuns } from "./factory";
+import { FACTORY_VIEW_KEY, factoryCards, readFactoryScope, reconcileFactoryRuns, savedFactoryView, saveFactoryView } from "./factory";
 import type { FactoryRunPage, Run } from "./v2";
 
 const FACTORY: NonNullable<Run["factory"]> = {
@@ -152,5 +152,28 @@ describe("factory paged reads", () => {
   it("refuses a repeated cursor rather than silently treating a partial fleet as complete", async () => {
     const listFactoryRuns = vi.fn(async () => ({ scope: "active", runs: [run("one")], next_cursor: "same" } as FactoryRunPage));
     await expect(readFactoryScope({ listFactoryRuns }, "active", 5, signal())).rejects.toThrow("repeated a page cursor");
+  });
+});
+
+describe("the factory's view, kept in this browser", () => {
+  const store = (held: Record<string, string> = {}) => ({ held, getItem: (key: string) => held[key] ?? null, setItem: (key: string, value: string) => { held[key] = value; } });
+  it("is cards until List is picked, and reads nothing else as a view", () => {
+    expect(savedFactoryView(store())).toBe("cards");
+    expect(savedFactoryView(store({ [FACTORY_VIEW_KEY]: "list" }))).toBe("list");
+    expect(savedFactoryView(store({ [FACTORY_VIEW_KEY]: "table" }))).toBe("cards");
+    const kept = store();
+    saveFactoryView("list", kept);
+    expect(kept.held).toEqual({ [FACTORY_VIEW_KEY]: "list" });
+    expect(savedFactoryView(kept)).toBe("list");
+    saveFactoryView("cards", kept);
+    expect(savedFactoryView(kept)).toBe("cards");
+  });
+
+  it("reads cards, and keeps nothing, where the browser refuses its storage", () => {
+    const refusing = { getItem: () => { throw new Error("refused"); }, setItem: () => { throw new Error("refused"); } };
+    expect(savedFactoryView(refusing)).toBe("cards");
+    expect(() => saveFactoryView("list", refusing)).not.toThrow();
+    expect(savedFactoryView(null)).toBe("cards");
+    expect(() => saveFactoryView("list", null)).not.toThrow();
   });
 });

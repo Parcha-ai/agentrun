@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
-import { AgentFactoryBoard } from "./AgentFactoryBoard";
+import { AgentFactoryBoard, type FactoryView } from "./AgentFactoryBoard";
 import { useResumed } from "./Connection";
 import type { Client } from "@/lib/client";
 import { problemOf } from "@/lib/client";
-import { FACTORY_PAGE_BATCH, FACTORY_POLL_MS, factoryCards, readFactoryScope, reconcileFactoryRuns } from "@/lib/factory";
+import { FACTORY_PAGE_BATCH, FACTORY_POLL_MS, factoryCards, readFactoryScope, reconcileFactoryRuns, savedFactoryView, saveFactoryView } from "@/lib/factory";
 import type { FactoryRun } from "@/lib/v2";
 
 type ScopeRead = { runs: FactoryRun[]; hasMore: boolean };
@@ -18,6 +18,8 @@ export function AgentFactoryPage({ v2, agentName }: { v2: Pick<Client, "listFact
   const [refresh, setRefresh] = useState(0);
   const [reading, setReading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // List or cards: the pick this browser kept, and kept again as it changes.
+  const [view, setView] = useState<FactoryView>(() => savedFactoryView());
   useResumed(() => setRefresh((n) => n + 1));
   useEffect(() => {
     const controller = new AbortController();
@@ -51,5 +53,6 @@ export function AgentFactoryPage({ v2, agentName }: { v2: Pick<Client, "listFact
   const review = useMemo(() => factoryCards(snapshot.review.runs, agentName, true), [snapshot.review.runs, agentName]);
   return <AgentFactoryBoard cards={cards} review={review} loading={reading && snapshot.updatedAt === null && !cards.length && !review.length}
     refreshing={reading} error={error} updatedAt={snapshot.updatedAt} hasMore={snapshot.active.hasMore || snapshot.review.hasMore}
-    onLoadMore={() => setPages((n) => n + FACTORY_PAGE_BATCH)} onRefresh={() => setRefresh((n) => n + 1)} />;
+    onLoadMore={() => setPages((n) => n + FACTORY_PAGE_BATCH)} onRefresh={() => setRefresh((n) => n + 1)}
+    view={view} onView={(next) => { saveFactoryView(next); setView(next); }} />;
 }

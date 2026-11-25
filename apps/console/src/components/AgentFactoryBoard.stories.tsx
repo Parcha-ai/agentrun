@@ -27,10 +27,13 @@ const cards: FactoryCard[] = ([
   { ...base, id: "native-focus", runId: "native-focus", agentName: "Rowan", title: "Keyboard navigation", lane: "unknown", stateLabel: "Activity unknown", sourceLabel: "Native Codex", controlLabel: "Observed", repo: null, githubLinks: [], activityAt: null, reason: "The source has not reported its current state", costLabel: "Cost not reported" },
 ] satisfies Draft[]).map(named);
 const review: FactoryCard[] = [named({ ...base, id: "ended-export", runId: "ended-export", agentName: "Ellis", title: "Idempotent exports", repo: "example/api", lane: "attention", stateLabel: "Needs review", githubLinks: [], reason: "An interrupted effect needs reconciliation before another attempt", costLabel: "$1.45 recorded" })];
-const args: AgentFactoryBoardProps = { cards, review, loading: false, refreshing: false, error: null, updatedAt: at, hasMore: false, onRefresh: () => {}, onLoadMore: () => {} };
+const args: AgentFactoryBoardProps = { cards, review, loading: false, refreshing: false, error: null, updatedAt: at, hasMore: false, onRefresh: () => {}, onLoadMore: () => {}, view: "cards", onView: () => {} };
 
 export const Light: Story = { args, globals: { theme: "light" } };
 export const Dark: Story = { args, globals: { theme: "dark" } };
+// The same sessions, one row each.
+export const List: Story = { args: { ...args, view: "list" }, globals: { theme: "light" } };
+export const ListDark: Story = { args: { ...args, view: "list" }, globals: { theme: "dark" } };
 export const PartialAndStale: Story = { args: { ...args, hasMore: true, error: "The source could not be reached. The prior results are still shown." } };
 export const Loading: Story = { args: { ...args, cards: [], review: [], loading: true, updatedAt: null } };
 export const Empty: Story = { args: { ...args, cards: [], review: [] } };

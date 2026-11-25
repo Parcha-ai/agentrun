@@ -1,4 +1,4 @@
-import type { FactoryCard } from "@/components/AgentFactoryBoard";
+import type { FactoryCard, FactoryView } from "@/components/AgentFactoryBoard";
 import type { Client } from "./client";
 import { cost, runEnded, runLabel, runTitle } from "./format";
 import { isEscalated, NO_MESSAGES, runState } from "./runState";
@@ -7,6 +7,18 @@ import type { FactoryRun, FactoryScope } from "./v2";
 /** Bounds work per refresh while letting a large fleet be read further explicitly. */
 export const FACTORY_PAGE_BATCH = 5;
 export const FACTORY_POLL_MS = 10_000;
+
+/** The view a person picked for the factory, kept in this browser as the theme is (theme.ts): cards in lanes until they
+ *  pick the list. A storage that refuses (a private window) keeps nothing, and the pick still holds on the open page. */
+export const FACTORY_VIEW_KEY = "agentrun.factory.view";
+type ViewStore = Pick<Storage, "getItem" | "setItem">;
+const local = (): ViewStore | null => { try { return globalThis.localStorage ?? null; } catch { return null; } };
+export function savedFactoryView(store: ViewStore | null = local()): FactoryView {
+  try { return store?.getItem(FACTORY_VIEW_KEY) === "list" ? "list" : "cards"; } catch { return "cards"; }
+}
+export function saveFactoryView(view: FactoryView, store: ViewStore | null = local()) {
+  try { store?.setItem(FACTORY_VIEW_KEY, view); } catch { /* Refused: the page holds the pick while it is open. */ }
+}
 
 export async function readFactoryScope(client: Pick<Client, "listFactoryRuns">, scope: FactoryScope, pages: number, signal: AbortSignal) {
   const runs = new Map<string, FactoryRun>();

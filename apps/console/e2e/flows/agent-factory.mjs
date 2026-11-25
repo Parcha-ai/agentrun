@@ -98,6 +98,31 @@ export default {
       await page.getByRole("button", { name: "Agent Factory", exact: true }).click();
       await board.locator("article").nth(2).waitFor();
 
+      // The same sessions as a list: one row each, linked to its run, with no sideways scroll on a desktop or a phone.
+      // The pick is this browser's, so a reload opens the list again; Cards brings back the lanes measured below.
+      const views = page.getByRole("radiogroup", { name: "View" });
+      const rows = page.locator(`table${ACTIVE} tbody tr`);
+      await views.locator('label[title="List"]').click();
+      await rows.nth(2).waitFor();
+      check(await rows.count() === 3, "the list must hold one row for each session");
+      check(await page.locator("[data-factory-lane]").count() === 0, "the list must replace the lanes");
+      for (const runId of runIds) check(await rows.locator(`a[href="#/runs/${encodeURIComponent(runId)}"]`).count() === 1, `the list must link session ${runId} once`);
+      for (const width of [1280, 390]) {
+        await page.setViewportSize({ width, height: 1000 });
+        const wide = await page.evaluate(() => {
+          const main = document.querySelector("main"), table = document.querySelector('table[aria-label="Active agent sessions"]');
+          return document.documentElement.scrollWidth > innerWidth + 1 || main.scrollWidth > main.clientWidth + 1 || table.getBoundingClientRect().right > main.getBoundingClientRect().right + 1;
+        });
+        check(!wide, `the list at ${width}px must fit its pane`);
+      }
+      await page.setViewportSize({ width: 1280, height: 1000 });
+      await page.reload();
+      await rows.nth(2).waitFor();
+      check(await views.getByRole("radio", { name: "List", exact: true }).isChecked(), "a reload must open the view this browser kept");
+      await views.locator('label[title="Cards"]').click();
+      await board.locator("article").nth(2).waitFor();
+      check(await page.locator("table").count() === 0, "Cards must bring back the lanes");
+
       const shots = process.env.E2E_SHOTS;
       if (shots) mkdirSync(shots, { recursive: true });
       for (const theme of ["Light", "Dark"]) {
