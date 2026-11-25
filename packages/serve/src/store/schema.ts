@@ -90,6 +90,12 @@ export const TRIGGERS_TEMPLATE_ID = "ALTER TABLE triggers ADD COLUMN template_id
 /** A run's census (RunLaunchRow.census, run-census.ts): in STORE_DDL, and added at a server open to a store an earlier
  *  build of this version made, as RUNS_LABELS is (a run ended before reads as never handed a secret). */
 export const RUN_LAUNCH_CENSUS = `ALTER TABLE run_launch ADD COLUMN ${json("census", true)}`;
+/** The census "pending" of 0.1.0-beta.57, which marked a launch holding sealed bytes until an end counted them. This build
+ *  keeps no such state: a server open settles each one left as this build reads it, as Postgres migration 0029 does. A
+ *  launch still holding its sealed bytes gets null (its end counts them), and one an end erased gets "unscanned" (nothing
+ *  counted them, so its files are withheld). */
+export const RUN_LAUNCH_CENSUS_PENDING_LEFT = `SELECT 1 AS found FROM run_launch WHERE census = '"pending"' LIMIT 1`;
+export const RUN_LAUNCH_CENSUS_SETTLE = `UPDATE run_launch SET census = CASE WHEN sealed IS NULL THEN '"unscanned"' ELSE NULL END WHERE census = '"pending"'`;
 
 /** A template package imported from GitHub (POST /v2/templates/import), by its id (`github:<owner>/<repo>[/<path>]`): its
  *  source as given (ref and all), the full commit SHA read, the GitHub account that publishes it, and its files as read

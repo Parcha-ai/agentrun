@@ -8,7 +8,8 @@
 //   - the store: a launch's census is null until an end writes one; an end writes its census in the erased secrets' place
 //     only when it was made under those bytes, else CENSUS_UNSCANNED; a message's seal keeps the census as the last end
 //     wrote it; every write that seals anew moves the run's list mark, so its kept listing is built again;
-//   - Postgres migration 0028 settles each "pending" 0027 left as this build reads it and drops 0027's trigger.
+//   - Postgres migration 0029 settles each "pending" 0027 left as this build reads it and drops 0027's trigger; a
+//     SQLite server open settles each one 0.1.0-beta.57 left the same way.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -189,6 +190,33 @@ test("a store an earlier build of this version made (no run_launch.census): a ru
   try {
     assert.equal((await second.runs.launch("live")).census, null, "a launch holding sealed bytes: no end counted them yet, so its end does");
     assert.equal((await second.runs.launch("plain")).census, null, "one holding none: no census");
+  } finally {
+    await second.close();
+  }
+});
+
+test("a store an earlier release left with \"pending\" censuses: the server settles each as this build reads it, null on a launch still holding sealed bytes, unscanned on one an end erased, and keeps a census an end wrote", sqliteOnly("an earlier release's store file"), async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "store-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const file = join(dir, "store.sqlite");
+  const first = await openSqliteStore({ file, role: "server", now: () => T0 });
+  await liveAndPlain(first);
+  await first.runs.create({ id: "counted", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { content: "Answer." } }, sealed: new Uint8Array([7, 7, 7, 2]) });
+  await first.close();
+  // As 0.1.0-beta.57 left them: "pending" on each launch that held sealed bytes, kept after an end erased them.
+  const counted = JSON.stringify({ v: 1, files: {} });
+  const db = new DatabaseSync(file);
+  try {
+    db.prepare("UPDATE run_launch SET census = ? WHERE run_id IN ('live', 'plain')").run(PENDING);
+    db.prepare("UPDATE run_launch SET census = ? WHERE run_id = 'counted'").run(counted);
+  } finally {
+    db.close();
+  }
+  const second = await openSqliteStore({ file, role: "server", now: () => T0 });
+  try {
+    assert.equal((await second.runs.launch("live")).census, null, "a launch still holding sealed bytes: no end counted them yet, so its end does");
+    assert.equal((await second.runs.launch("plain")).census, CENSUS_UNSCANNED, "one an end erased: nothing counted them, so its files are withheld");
+    assert.equal((await second.runs.launch("counted")).census, counted, "a census an end wrote is kept");
   } finally {
     await second.close();
   }
