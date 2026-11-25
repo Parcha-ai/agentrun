@@ -396,6 +396,19 @@ test("(c, d) the revision's check holds it too: stopped, its numbers on the reco
   assert.equal((await w.replays()).length, 10, "no third check");
 });
 
+// Once per hold, on the agent's own runs: the revise the run after the hold was asked is on its kept learning as that
+// hold's (its compile record names the held digest), so with nothing landed the run after it asks none.
+test("(c) once per hold: the run after the hold is asked the revise; nothing lands, and the run after it asks none", { timeout: 240_000 }, async (t) => {
+  const w = await world(t, { learning: { compile_after: 5 }, prior: 5, submit: twice(true), landsRevision: true });
+  await w.start("run-1", "Question 10");
+  await w.replaysEnded(5);
+  await w.start("run-2", "Question 11");
+  assert.ok(w.asks.get("run-2")[0]?.startsWith("One more turn: revise your learned workflow `answer`"), w.asks.get("run-2")[0]?.slice(0, 200));
+  const third = await w.start("run-3", "Question 12");
+  assert.equal(third.metrics?.path, "agent", JSON.stringify(third.metrics));
+  assert.deepEqual(w.asks.get("run-3"), [], "the hold's one revise was asked: none again");
+});
+
 /** Two learned workflows of an agent: `answer` stopped (its one recompile's check held it too) and `second` held (its
  *  recompile still owed). `secondNeeds`: a field `second`'s input takes, so a run without it does not fit `second`. */
 async function stoppedAndHeld(t, secondNeeds) {

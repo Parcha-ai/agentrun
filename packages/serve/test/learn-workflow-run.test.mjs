@@ -195,7 +195,7 @@ const searchFlow = () => ({
   v: 2, name: "answer",
   schemas: {
     In: { type: "object", required: ["question"], properties: { question: { type: "string" } } },
-    Search: { type: "object", required: ["query", "results"], properties: { query: { type: "string" }, results: { type: "array", minItems: 1 } } },
+    Search: { type: "object", required: ["objective", "results"], properties: { objective: { type: "string" }, results: { type: "array", minItems: 1 } } },
   },
   input: { schemaId: "In" },
   output: { schemaId: "Search", path: "found" },

@@ -2555,7 +2555,7 @@ kind browser that declares them.
 
 | | Browserbase | Kernel | Local Chrome |
 | --- | --- | --- | --- |
-| `capabilities().browser` | wall-clock, `stealth`, `profiles` (settle 5 s), `downloads` (`downloads/`) | inactivity, `headless`, `profiles` (settle 0) | wall-clock |
+| `capabilities().browser` | wall-clock, `stealth`, `profiles` (settle 10 s, its descriptor's `profiles`), `downloads` (`downloads/`) | inactivity, `headless`, `profiles` (settle 0) | wall-clock |
 | `viewport` | `browserSettings.viewport` | `viewport` | the window's size |
 | `stealth` | `browserSettings.verified` and `solveCaptchas` (the solver is off otherwise: Browserbase's default is on) | not declared (Kernel's stealth brings a proxy nothing prices yet) | not declared |
 | `profile` | a context: `browserSettings.context { id, persist }` | a profile by name: `profile { name, save_changes }`, made first if Kernel does not know it | not declared |
@@ -2819,15 +2819,17 @@ an optional dependency, pinned exactly, as E2B's and Modal's are.
 
 ### The desktop snapshot
 
-boxd's own image (`"default"`) has Xvfb but lists none of a desktop's stock apps (Xfce's text editor and terminal,
-xterm), so a boxd desktop starts from a snapshot that adds one. `prepareImage()` answers it by name,
+boxd's own image (`"default"`) has Xvfb, xdotool and Thunar but not Xfce's text editor and terminal or a browser, so
+a boxd desktop starts from a snapshot that adds them. `prepareImage()` answers it by name,
 `agentrun-desktop-<12 hex>`, the hash of the recipe in `src/boxd.ts`, so a new recipe is a new snapshot. When the
 key's org has none, it builds it once, telling `onWait` "build" first:
 
 1. `machines.create` of an isolated machine of boxd's own image, named `agentrun-desktop-build-<8 hex>`, with no labels
    (a restore carries a snapshot's labels over to every machine made from it) and boxd's delete timer at 2 hours;
-2. the recipe as root through the image user's passwordless sudo: `apt-get install mousepad` (Ubuntu's universe), its
-   `org.xfce.mousepad.desktop` checked;
+2. the recipe as root through the image user's passwordless sudo: `mousepad` and `xfce4-terminal` from Ubuntu's
+   universe, and `firefox-esr` from Mozilla's APT repository (Ubuntu 24.04's `firefox` is a snap, and a microVM runs no
+   snapd), its signing key held to a pinned sha256 before apt reads anything it signs; each program and its desktop
+   file (`org.xfce.mousepad`, `xfce4-terminal`, `firefox-esr`) checked;
 3. `snapshots.create` under the name, read until boxd says `ready`;
 4. the build machine deleted and read gone, pass, fail or cancel: the id create answered, read through `get` (a
    lagging list can't hide it), and any machine of its name in the org's list, so a create whose reply was lost is
@@ -3067,8 +3069,8 @@ What Groundbox refuses or this host works around:
   templates it runs as the image's user, `runner` (uid 1001), with passwordless sudo, which the adapter's scripts use;
   `daemonUser` may not be 1001 there.
 - A desktop needs Xvfb and xfwm4 in its image. Groundbox's own image has Xvfb but not xfwm4, so `check()` refuses
-  `"default"` for kind desktop; the box image has both, and Xfce's terminal and text editor, Firefox ESR and xdotool as
-  its apps.
+  `"default"` for kind desktop; the box image has both, and Xfce's terminal, text editor and file manager (Thunar),
+  Firefox ESR and xdotool as its apps.
 - Groundbox's own image keeps toolchains under `/opt` (corepack's pnpm under
   `/opt/corepack/v1/pnpm/<version>/dist/node_modules/...`, and `/opt/hostedtoolcache`), deeper than the isolation probe's
   8 levels, so `isolation.vendor-agent` can't prove the socket fence on it. That is why the box image is the default.

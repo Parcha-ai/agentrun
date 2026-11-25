@@ -23,6 +23,8 @@
 //             file; for a code file, only a file outside the package's source counts. A code file no test reaches either way
 //             picks its package's test files that import by a computed path themselves.
 //   smoke     SMOKE below, a fast file per package, always (--no-smoke drops it), so a round catches a gross break.
+//   tree      TREE_WIDE below, a test that reads every tracked file of a kind (git ls-files), for any change at all: any
+//             path may break it, and no import or name says so.
 //   A shared root (SHARED_ROOTS: the root manifests, lockfile, scripts/, .github/) picks the tests that import it and the
 //   smoke set only, not every suite, and says so: CI runs every test for it (scripts/ci-affected.mjs).
 // - Output: by default a shell command per suite, run from the root, on stdout, and what each changed path picked on stderr.
@@ -55,6 +57,15 @@ export const SMOKE = {
   '@parcha/agentrun-harness-codex': 'test/machine.test.mjs',
   '@parcha/agentrun-serve': 'test/harness-default-model.test.mjs',
   'agentrun-console': 'src/App.setup.test.tsx',
+};
+
+/** The tests that read every tracked file of a kind (`git ls-files`, a listing of every package), so any change may break
+ *  them and no import or name says which: suite name to its files, relative to the suite's directory. Each runs for any
+ *  change. A pull request's CI that skipped entry-points.test.mjs let #3689 break its policy in the merge queue. */
+export const TREE_WIDE = {
+  // Every tracked script's entry check; every tracked TypeScript's TypeBox use; every package source's doc
+  // checkpoints; every tracked Markdown link.
+  'test:release': ['scripts/entry-points.test.mjs', 'scripts/typebox-out.test.mjs', 'scripts/doc-checkpoint.test.mjs', 'scripts/check-doc-anchors.test.mjs'],
 };
 
 /** Paths outside the packages that every suite may read: a change to one picks its importers and the smoke set only. */
@@ -363,7 +374,7 @@ export function ownFolders(before, folders) {
  * What the changed paths pick: `{ suites: [{ name, dir, files, why }], paths: [{ path, kinds, note }], warnings }`.
  * `files` are relative to the suite's `dir`; `why` maps each to its reasons, `{ kind, changed, chain }` (paths from the root).
  */
-export function select(root, changed, { sets = readTestSets(root), packages = readPackages(root), smoke = SMOKE } = {}) {
+export function select(root, changed, { sets = readTestSets(root), packages = readPackages(root), smoke = SMOKE, treeWide = TREE_WIDE } = {}) {
   const tests = new Map();
   for (const set of sets) for (const file of set.files) tests.set(set.dir === '.' ? file : `${set.dir}/${file}`, set);
   const resolve = resolver(root, packages);
@@ -441,6 +452,13 @@ export function select(root, changed, { sets = readTestSets(root), packages = re
     const set = sets.find((s) => s.name === name);
     if (!set || !set.files.includes(file)) { warnings.push(`SMOKE names ${name} ${file}, which is not one of its test files here; update SMOKE in scripts/test-affected.mjs`); continue; }
     add(set.dir === '.' ? file : `${set.dir}/${file}`, { kind: 'smoke', changed: null, chain: [] });
+  }
+  for (const [name, files] of Object.entries(treeWide ?? {})) {
+    for (const file of files) {
+      const set = sets.find((s) => s.name === name);
+      if (!set || !set.files.includes(file)) { warnings.push(`TREE_WIDE names ${name} ${file}, which is not one of its test files here; update TREE_WIDE in scripts/test-affected.mjs`); continue; }
+      if (changed.length) add(set.dir === '.' ? file : `${set.dir}/${file}`, { kind: 'tree', changed: null, chain: [] });
+    }
   }
   const suites = sets.filter((set) => picks.has(set)).map((set) => {
     const mine = picks.get(set);

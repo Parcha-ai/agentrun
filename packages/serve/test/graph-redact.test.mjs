@@ -8,7 +8,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { flowAgent, follow, scratch, serve, withEnv } from "./support.mjs";
-import * as refusal from "../dist/key-refusal.js";
+import * as served from "../dist/graph-served.js";
 
 const CUT_KEY = `not-a-secret-${"cut-key-0123456789abcdef"}`;
 // A value no key holds until the second test saves it.
@@ -19,22 +19,54 @@ const noKey = (text, where) => {
   for (const piece of pieces(CUT_KEY)) assert.ok(!text.includes(piece), `${where} holds ${piece}`);
 };
 
-/** Reads the run's graph until a read redacts nothing again, and fails if none does within 20 s. The count is the process's
- *  own and the runner beside the server shares it: on a loaded machine the run's view can still settle after it reads ended
- *  (a field that changes is a new part, cut once). A graph that is cut on every read never gets there. */
+/** The work the graph's reads did: servedGraphView's walks (graph-served.ts graphWalks), each a part or a field cut. Only a
+ *  graph read moves it. The process's count of redaction passes (key-refusal.ts answerPasses) is every view's: the run
+ *  read and its timeline cut the run's words on every read, and the server's run-end notice and run lister cut them as
+ *  the run ends, beside any graph read. */
+const walks = () => served.graphWalks.part + served.graphWalks.rest;
+
+/** The parts of a graph that differ between two reads of it, as the graph cuts them: its nodes as one, each decision and
+ *  each call, and each other field but read_at (the read's own time, never cut). */
+function changedParts(before, next) {
+  const { nodes: n0, decisions: d0 = [], effects: e0 = [], read_at: _r0, ...rest0 } = before;
+  const { nodes: n1, decisions: d1 = [], effects: e1 = [], read_at: _r1, ...rest1 } = next;
+  const same = (x, y) => JSON.stringify(x) === JSON.stringify(y);
+  const each = (name, xs, ys) => Array.from({ length: Math.max(xs.length, ys.length) }, (_, i) => (same(xs[i], ys[i]) ? [] : [`${name}[${i}]`])).flat();
+  return [
+    ...(same(n0, n1) ? [] : ["nodes"]),
+    ...each("decisions", d0, d1),
+    ...each("effects", e0, e1),
+    ...[...new Set([...Object.keys(rest0), ...Object.keys(rest1)])].filter((key) => !same(rest0[key], rest1[key])),
+  ];
+}
+
+/** The run's graph read again until a read finds it as the read before found it, and that read cut nothing: each part and
+ *  field is cut once per content and held set. Every read is held to its own work, with no clock: a read cuts at most the
+ *  parts that changed since the read before (a part that changes is a new part, cut once), so a graph cut again on a read
+ *  that changed nothing fails at that read. A graph that changes on each of five reads in a row fails too. */
 async function untilRedactsNothing(api, runId) {
   let before = (await api("GET", `/runs/${runId}/graph`)).body;
-  for (const end = Date.now() + 20_000; ; ) {
-    const read = refusal.answerPasses.count;
+  for (let read = 1; read <= 5; read++) {
+    const at = walks();
     const next = (await api("GET", `/runs/${runId}/graph`)).body;
-    const passes = refusal.answerPasses.count - read;
-    if (passes === 0) return next;
-    const changed = Object.keys(next).filter((key) => key !== "read_at" && JSON.stringify(next[key]) !== JSON.stringify(before[key]));
-    assert.ok(Date.now() < end, `every read of the graph redacted again (${passes} passes on the last, its changed fields: ${JSON.stringify(changed)})`);
+    const walked = walks() - at;
+    const changed = changedParts(before, next);
+    assert.ok(walked <= changed.length, `read ${read} of the graph cut ${walked} parts again, and ${changed.length} changed since the read before (${JSON.stringify(changed)})`);
+    if (changed.length === 0) return next;
     before = next;
-    await new Promise((resolve) => setTimeout(resolve, 100));
   }
+  assert.fail("the graph changed on each of five reads in a row");
 }
+
+/** `api` as a console's run page reads it: each read of a run's graph with a read of the run itself, at once, both
+ *  answered before it returns. The run read cuts the run's words on every read, in this process, as the server's own
+ *  run-end notice and run lister cut them as a run ends: none of it is the graph's. */
+const withRunPage = (api) => async (method, path, body) => {
+  const graph = /^\/runs\/([^/]+)\/graph$/.exec(path);
+  if (method !== "GET" || !graph) return api(method, path, body);
+  const [read] = await Promise.all([api(method, path, body), api("GET", `/runs/${graph[1]}`)]);
+  return read;
+};
 
 /** A workflow of two llm calls: one answers with the held key, the next fails with its provider echoing it. */
 const flow = (second) => ({
@@ -85,8 +117,16 @@ test("a workflow run's graph is redacted once per held key set: a second read re
   const second = await untilRedactsNothing(api, runId);
   assert.equal(second.effects[0].output.text, `Graph: [redacted] here, and ${LATER} too.`);
   assert.equal((await api("PUT", "/settings/tool-keys/parallel", { values: { PARALLEL_API_KEY: LATER } })).status, 204);
+  const at = walks();
   const third = (await api("GET", `/runs/${runId}/graph`)).body;
+  assert.ok(walks() > at, "a new held set: the next read cuts the graph again");
   assert.equal(third.effects[0].output.text, "Graph: [redacted] here, and [redacted] too.", "saved, it is held");
+});
+
+test("a graph read again as a console's run page reads it, with the run beside it, redacts nothing again: the run read's cuts are not the graph's", { timeout: 60_000 }, async (t) => {
+  const { api, runId } = await graphed(t, "graph-beside", false, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") }, ["PARALLEL_API_KEY"]);
+  const again = await untilRedactsNothing(withRunPage(api), runId);
+  assert.equal(again.effects[0].output.text, `Graph: [redacted] here, and ${LATER} too.`);
 });
 
 /** The smoke's faux decision providers (Jev's API), for a judge node. */
@@ -158,7 +198,7 @@ test("a map item's label cut at 200 characters inside a held key, and a decision
   assert.equal(graph.decisions[0].state.text, "Is [redacted] a question?");
   noKey(JSON.stringify(graph), "the graph");
   // The label and the decision's state are read once per held key set, as every part is.
-  // Once the view has settled (untilRedactsNothing), a read redacts none of them again.
+  // A read that finds them as the read before did cuts none of them again (untilRedactsNothing).
   assert.deepEqual((await untilRedactsNothing(api, runId)).nodes, graph.nodes);
 });
 

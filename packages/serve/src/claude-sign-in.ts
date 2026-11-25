@@ -61,14 +61,18 @@ export class ClaudeSignIns {
   #queue: Promise<unknown> = Promise.resolve();
   // Set at the server's stop (close): no start after it spawns a CLI.
   #closed = false;
-  readonly #asked: () => void;
+  // The turns asked and not yet ended (busy).
+  #turns = 0;
 
-  /** `asked`: told as each turn is asked, before it waits for the turns ahead of it (the server logs it while a turn ahead
-   *  of it makes the offers again: server.ts loginNow). */
-  constructor(options: { limitMs?: number; now?: () => number; asked?: () => void } = {}) {
+  constructor(options: { limitMs?: number; now?: () => number } = {}) {
     this.limitMs = options.limitMs ?? SIGN_IN_LIMIT_MS;
     this.#now = options.now ?? Date.now;
-    this.#asked = options.asked ?? (() => {});
+  }
+
+  /** Whether a turn holds the queue now, or waits for one, so a turn asked now waits (the server logs it: server.ts
+   *  loginNow). */
+  get busy(): boolean {
+    return this.#turns > 0;
   }
 
   /** The sign-in as it stands, or undefined when none was started here (or it was stopped). */
@@ -84,9 +88,10 @@ export class ClaudeSignIns {
    *  the next turn runs as if it had ended. A sign-in starts and ends only through a turn's `start` and `stop`: there is no
    *  start or stop beside them, since one called inside a turn would wait for that turn to end, for ever. */
   serial<T>(work: (turn: SignInTurn) => Promise<T>): Promise<T> {
-    this.#asked();
+    this.#turns += 1;
     const next = this.#queue.then(() => work({ start: (begin) => this.#start(begin), stop: () => this.#end() }));
-    this.#queue = next.catch(() => {});
+    const ended = () => void (this.#turns -= 1);
+    this.#queue = next.then(ended, ended);
     return next;
   }
 

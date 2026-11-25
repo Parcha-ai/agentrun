@@ -145,6 +145,16 @@
       "start": 51
     },
     {
+      "at": "/rows/3/summary",
+      "end": 110,
+      "id": "c_bf22662e66920d5f",
+      "kind": "held",
+      "restorable": false,
+      "rule": "held-value",
+      "shape": "alnum[33]",
+      "start": 89
+    },
+    {
       "at": "/rows/3/text",
       "end": 30,
       "id": "c_2ee7ed2a38cba84e",
@@ -163,6 +173,16 @@
       "rule": "home-path",
       "shape": "home[8]",
       "start": 51
+    },
+    {
+      "at": "/rows/3/text",
+      "end": 110,
+      "id": "c_44b958e8989c8014",
+      "kind": "held",
+      "restorable": false,
+      "rule": "held-value",
+      "shape": "alnum[33]",
+      "start": 89
     },
     {
       "at": "/rows/4/summary",
@@ -265,50 +285,30 @@
       "start": 24
     },
     {
-      "at": "/files/0/content",
-      "end": 33,
-      "id": "c_668ded26d7c9bbc6",
-      "kind": "held",
-      "restorable": false,
-      "rule": "held-value",
-      "shape": "alnum[33]",
-      "start": 12
-    },
-    {
       "at": "/files/1/content",
-      "end": 40,
-      "id": "c_fa8e13aa17be7563",
-      "kind": "held",
-      "restorable": false,
-      "rule": "held-value",
-      "shape": "alnum[33]",
-      "start": 19
-    },
-    {
-      "at": "/files/1/content",
-      "end": 71,
+      "end": 60,
       "id": "c_92bace0459877f72",
       "kind": "personal",
       "restorable": true,
       "rule": "email",
       "shape": "email[32]",
-      "start": 55
+      "start": 44
     }
   ],
   "files": [
     {
-      "bytes": 34,
-      "content": "held again: [redacted:held-value]\n",
+      "bytes": 23,
+      "content": "held again: [redacted]\n",
       "encoding": "utf8",
       "path": "out/notes.txt",
-      "sha256": "efdd5f66d0c235a6969ba4a9f61ab7c73331592b558403e90c29906539049a3d"
+      "sha256": "bafc6d5b732c514e831476b92055f2d64f25fd34185c7c5bf8eeaef592a33662"
     },
     {
-      "bytes": 79,
-      "content": "# Report\nThe token [redacted:held-value] opened it, as [redacted:email] asked.\n",
+      "bytes": 68,
+      "content": "# Report\nThe token [redacted] opened it, as [redacted:email] asked.\n",
       "encoding": "utf8",
       "path": "out/report.md",
-      "sha256": "c299d6234ac9663cd504c582e527345132fe5411df5b973a97186cfbedee59ca"
+      "sha256": "3d087b2be5af6d608bcae6492ff31d527f81d81700b1bd35eeeabe2309d9f6fb"
     }
   ],
   "format": "agentrun.share/1",
@@ -354,8 +354,8 @@
       "created_at": "2026-11-23T10:00:04.000Z",
       "id": "row_4",
       "kind": "text_block",
-      "summary": "The host [redacted:private-ip] answered from {home}/<user>/work.",
-      "text": "The host [redacted:private-ip] answered from {home}/<user>/work.",
+      "summary": "The host [redacted:private-ip] answered from {home}/<user>/work with the key saved since, [redacted:held-value].",
+      "text": "The host [redacted:private-ip] answered from {home}/<user>/work with the key saved since, [redacted:held-value].",
       "timestamp": "2026-11-23T10:00:04.000Z"
     },
     {
@@ -392,7 +392,7 @@
     "stopped_for": null,
     "title": "Connect with PGPASSWORD=[redacted:secret-assign] psql -h db"
   },
-  "sha256": "3206083b01206826af267b9e9ee2ee3319577ca5897e1b83f291778a09c9faaa",
+  "sha256": "c593499bb681d8d4a1c84ab4b8e5ed3089fccdd1327ac9dbfa010745ce415231",
   "source": {
     "agentrun": "0.0.0-golden",
     "scrubber": {

@@ -1,7 +1,8 @@
 // A forked Codex rollout's copy of its parent's history (#3588) is skipped the same on every path a totals read takes:
 // the scan of each line's fields (scan.ts, the reader's Shape), JSON.parse of the whole line, and the read pool's
 // workers. A path that misses the skip counts the parent's history a second time, or takes the parent's id from the
-// session_meta a fork copies after its own. Synthetic fixtures only.
+// session_meta a fork copies after its own. A thread-stamped fork whose parent is not read counts what it copied (#3840),
+// on every path too. Synthetic fixtures only.
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -14,6 +15,9 @@ const PARENT = "019b76da-a800-7000-8000-0000000000a1";
 const FORK = "019b76da-a800-7000-8000-0000000000b1";
 const COPIER = "019b76da-a800-7000-8000-0000000000b2";
 const CHILD = "019b76da-a800-7000-8000-0000000000c1";
+const MISSING = "019b76da-a800-7000-8000-0000000000a2";
+const STAMPED = "019b76da-a800-7000-8000-0000000000b3";
+const ORPHAN = "019b76da-a800-7000-8000-0000000000b4";
 const rollout = (home, id) => join(home, ".codex", "sessions", "2026", "01", "01", `rollout-2026-01-01T00-00-00-${id}.jsonl`);
 const meta = (id, i, extra = {}) => ({ type: "session_meta", timestamp: at(i), payload: { id, cwd: "/work/fixture", model_provider: "openai", ...extra } });
 const tokens = (last, total, i) => ({ type: "event_msg", timestamp: at(i), payload: { type: "token_count", info: { last_token_usage: last, total_token_usage: total } } });
@@ -68,5 +72,41 @@ test("a forked Codex session's totals are the same through the scan, JSON.parse 
     const { result, files } = await onWorkers(() => parseHome(home, { ...options, threads }));
     assert.deepEqual(result, scanned, `the pool at ${threads} threads gives one thread's totals`);
     assert.ok(files.some((file) => file === rollout(home, FORK) || file === rollout(home, COPIER) || file === rollout(home, CHILD)), "a fork read on a worker");
+  }
+});
+
+// Codex 0.152 stamps a thread's records with its id: a thread_settings_applied naming the fork's own thread ends its
+// copy, and usage after a marker naming another thread, up to that end, is copied too, when the parent is read.
+const settings = (thread, i) => ({ type: "event_msg", timestamp: at(i), payload: { type: "thread_settings_applied", thread_id: thread } });
+/** A 0.152 fork `id` of `parent`: the parent's history stamped with the parent's thread, a usage the parent's rollout
+ *  does not hold, the fork's own marker, then its own turn of `n` uncached input and output. */
+const stampedFork = (id, parent, n) => [
+  meta(id, 20, { forked_from_id: parent }),
+  settings(parent, 21),
+  ...replayed(),
+  ...turn(5, openaiUsage(50, 0, 5), openaiUsage(650, 440, 65), 22),
+  settings(id, 26),
+  ...turn(9, openaiUsage(n, 0, n), openaiUsage(650 + n, 440, 65 + n), 30),
+];
+
+test("a thread-stamped Codex fork counts its copy once its parent is read, and all of it when not, through the scan, JSON.parse and the pool", async (t) => {
+  const home = await tempHome(t);
+  await writeJsonl(rollout(home, PARENT), parentLines());
+  await writeJsonl(rollout(home, STAMPED), stampedFork(STAMPED, PARENT, 7));
+  await writeJsonl(rollout(home, ORPHAN), stampedFork(ORPHAN, MISSING, 3));
+  const options = { sources: ["codex"], catalog: false, env: {} };
+  const scanned = await parseHome(home, { ...options, threads: 1 });
+  const byId = Object.fromEntries(scanned.map((row) => [row.id, row]));
+  assert.deepEqual(Object.keys(byId).sort(), [PARENT, STAMPED, ORPHAN].sort());
+  assert.equal(byId[PARENT].calls, 3);
+  // Parent read: everything before the fork's own marker is a copy, the foreign usage too.
+  assert.deepEqual([byId[STAMPED].calls, byId[STAMPED].tokens.input, byId[STAMPED].tokens.output], [1, 7, 7]);
+  // Parent not read: nothing else counts the copy, so the fork does: the parent's three, the foreign one, its own.
+  assert.deepEqual([byId[ORPHAN].calls, byId[ORPHAN].tokens.input, byId[ORPHAN].tokens.output], [5, 60 + 50 + 50 + 50 + 3, 60 + 5 + 3]);
+  assert.deepEqual(await parseHome(home, { ...options, threads: 1, readers: parsed }), scanned, "JSON.parse gives the scan's totals");
+  for (const threads of [2, 4]) {
+    const { result, files } = await onWorkers(() => parseHome(home, { ...options, threads }));
+    assert.deepEqual(result, scanned, `the pool at ${threads} threads gives one thread's totals`);
+    assert.ok(files.some((file) => file === rollout(home, STAMPED) || file === rollout(home, ORPHAN)), "a stamped fork read on a worker");
   }
 });

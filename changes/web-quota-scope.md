@@ -1,0 +1,5 @@
+---
+packages: @parcha/agentrun-web, @parcha/agentrun-serve
+kind: fix
+---
+A quota of a provider's whole key holds both of its tools. Each provider marks what its quota covers on the typed failure (`Failure.covers: "key"`): a 402 (the key's credit spent) on keyed Exa, keyed Firecrawl or Parallel, search or extract alike, and keyless Firecrawl's daily limit and its `KEYLESS_QUOTA_EXHAUSTED` and `KEYLESS_ACCESS_NOT_AVAILABLE` (the host's keyless allowance). A rate limit, and `KEYLESS_TOOL_NOT_AVAILABLE`, still hold only the tool that met them. `createWeb` keeps one key breaker per provider beside each tool's own (`withKeyBreaker`): a key-wide quota met by either tool trips it, and both tools are held, unsent, until it lifts. Parallel's extract now answers a 402 with that quota (it used to hold nothing); a 429 on an extract still holds nothing. A search given its own breakers keeps a key's quota in them (`keyLimits: "call"`, the default with `breakers`), so a call node's search still holds nothing after; serve's agent web_search passes `keyLimits: "web"`, so its key's quota holds the run's web_fetch too.

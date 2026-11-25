@@ -10,7 +10,8 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { CHECK_MS, checkKey, KEY_CHECKS } from "../dist/key-check.js";
 import { FAUX_ENV } from "../dist/model.js";
-import { keptFromBefore, keptVendor, NO_BROWSER_KEY, NO_CHROME, planeFor, recheckPlane, resolveCapability, settingsIssues, TOOL_PLANE_ENV } from "../dist/tool-plane.js";
+import { PROVIDERS } from "@parcha/agentrun-computer";
+import { browserKeyRow, DEFAULT_BROWSER_VENDOR, keptFromBefore, keptVendor, NO_BROWSER_KEY, NO_CHROME, planeFor, recheckPlane, resolveCapability, settingsIssues, TOOL_PLANE_ENV } from "../dist/tool-plane.js";
 import { FAUX_BROWSER_ENV, TOOLS } from "../dist/tools.js";
 import { calls as kernelCalls, KEY as KERNEL_KEY } from "./fixtures/faux-kernel-check.mjs";
 import { agent, follow, scratch, serve, storeBytes, withEnv } from "./support.mjs";
@@ -63,6 +64,9 @@ test("a run's plane names its browser from the server's keys, set or saved; a la
   // restored later make it run.
   assert.deepEqual(recheckPlane(keptFromBefore(today), KERNEL).browser, "unavailable: browserbase picked, no BROWSERBASE_API_KEY and BROWSERBASE_PROJECT_ID");
   assert.deepEqual(keptFromBefore({ web_fetch: "kernel" }), { web_fetch: "kernel" }, "no browser, none added");
+  // The default where nothing names a vendor is the registry's first hosted browser, the one auto tries first: Browserbase.
+  const firstHosted = PROVIDERS.find((entry) => entry.kinds.includes("browser") && entry.keys.some((key) => key.required));
+  assert.deepEqual([DEFAULT_BROWSER_VENDOR, firstHosted?.id, browserKeyRow(undefined, undefined)], ["browserbase", "browserbase", "browserbase"]);
   // A vendor's missing-key refusal an earlier server saved reads as that vendor again; every other saved value as it is.
   const saved = { browser: "unavailable: browserbase picked, no BROWSERBASE_API_KEY and BROWSERBASE_PROJECT_ID", web_fetch: "kernel" };
   assert.deepEqual(keptVendor(saved), { browser: "browserbase", web_fetch: "kernel" });
