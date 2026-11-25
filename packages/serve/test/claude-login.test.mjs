@@ -6,14 +6,14 @@
 // AGENTRUN_CLAUDE_CODE_LOGIN=off, where claude-agent runs on the model keys as it does without it.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { constants, existsSync, mkdirSync, openSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, constants, existsSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { mkdtemp } from "node:fs/promises";
 import { createRequire, syncBuiltinESMExports } from "node:module";
 import { homedir, hostname, tmpdir } from "node:os";
 import { delimiter, dirname, join, relative } from "node:path";
 import { test } from "node:test";
 import * as claude from "@parcha/agentrun-harness-claude";
-import { CLAUDE_LOGIN_ENV, CLAUDE_LOGIN_SETTING, claudeLoginOf, claudeLoginSwitchedOff, claudeLoginView, envAtPlace, LOGIN_SIGNED_OUT, LOGIN_UNKNOWN, loginAt, loginBeforeRun, loginForRun, settingFor, startLoginHere, turnOffClaudeLogin, turnOnBody, turnOnClaudeLogin, whyNotOneOwner, withClaudeLogin } from "../dist/claude-login.js";
+import { CLAUDE_LOGIN_ENV, CLAUDE_LOGIN_SETTING, claudeLoginOf, claudeLoginSwitchedOff, claudeLoginView, envAtPlace, LOGIN_ANSWERS_DIR, LOGIN_SIGNED_OUT, LOGIN_UNKNOWN, loginAt, loginBeforeRun, loginForRun, loginOnRunnerOnly, loginServes, settingFor, startLoginHere, turnOffClaudeLogin, turnOnBody, turnOnClaudeLogin, whyNotOneOwner, withClaudeLogin } from "../dist/claude-login.js";
 import { ClaudeSignIns } from "../dist/claude-sign-in.js";
 import { MODEL_KEYS, hostModel } from "../dist/model.js";
 import { providerFor } from "../dist/provider.js";
@@ -140,6 +140,71 @@ test("a run on a signed-out login is refused in words, asked of the pinned CLI, 
   assert.ok(JSON.stringify(failed.error).includes(LOGIN_SIGNED_OUT), JSON.stringify(failed.error));
 });
 
+// The login is a model only for a run on the runner (loginForRun): an agent on Claude Agent in a box runs on the model
+// keys. With none, its run is refused for its model, and the refusal says why the login that reads signed in does not
+// run it, and that moving the agent to the runner does: in its words, and as `details.login_on_runner` for the console's
+// offer. The box is Docker on a fake `docker` first on PATH (fixtures/fake-docker.mjs): nothing is pulled or run.
+const FAKE_DOCKER = new URL("./fixtures/fake-docker.mjs", import.meta.url).pathname;
+const RUNNER_ONLY = "Claude Code's login on this machine runs agents on the runner only, and this agent runs in the docker box";
+/** A server for test `t` with a Docker box (a fake `docker`) and no model key, and the fake CLI that answers for its
+ *  login. */
+async function withDockerBox(t) {
+  const dir = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-login-docker-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  mkdirSync(join(dir, "bin"));
+  mkdirSync(join(dir, "state"));
+  writeFileSync(join(dir, "bin", "docker"), `#!/bin/sh\nexec '${process.execPath}' '${FAKE_DOCKER}' "$@"\n`, { mode: 0o755 });
+  const fake = await fakeCli(t);
+  withEnv(t, { PATH: [dirname(fake.cli), join(dir, "bin"), process.env.PATH].join(delimiter), FAKE_DOCKER_STATE: join(dir, "state"), AGENTRUN_BOXES: "docker" }, [...MODEL_VARS, "AGENTRUN_DOCKER_IMAGE", "AGENTRUN_BOX_ALLOW"]);
+  const { api } = await serve(t, { faux: undefined, harnesses: false });
+  return { api, fake };
+}
+test("a run of an agent on Claude Agent in a box, while the login is on and reads signed in, is refused in words that say the login runs agents on the runner only and that this one runs in the box, with details.login_on_runner", { timeout: 120_000 }, async (t) => {
+  const { api, fake } = await withDockerBox(t);
+  const boxed = agent("boxed", { harness: "claude-agent", place: { mode: "sandbox", box: "docker" } });
+  assert.equal((await api("POST", "/agents", boxed)).status, 201);
+
+  // Off: refused for its model, with no word of the login.
+  const off = await api("POST", "/agents/boxed/runs", { input: { content: "Say hi." } });
+  assert.equal(off.status, 409, JSON.stringify(off.body));
+  assert.match(off.body.error.message, /claude-agent needs ANTHROPIC_API_KEY/);
+  assert.doesNotMatch(off.body.error.message, /runner only/, "a refusal with the login off spoke of the login");
+  assert.equal(off.body.error.details.login_on_runner, undefined);
+
+  fake.status(SIGNED_IN);
+  assert.equal((await api("PUT", "/settings/claude-login", { only_me: true })).body.state, "signed_in");
+  const on = await api("POST", "/agents/boxed/runs", { input: { content: "Say hi." } });
+  assert.equal(on.status, 409, JSON.stringify(on.body));
+  assert.equal(on.body.error.code, "agent_not_runnable");
+  assert.match(on.body.error.message, /No model yet for claude-agent/);
+  assert.ok(on.body.error.message.includes(RUNNER_ONLY), `the refusal of a box agent on Claude Agent while the login reads signed in does not say the login runs agents on the runner only: ${on.body.error.message}`);
+  assert.equal(on.body.error.details.login_on_runner, true, `the refusal's details do not offer the move to the runner: ${JSON.stringify(on.body.error.details)}`);
+});
+
+// The move is offered only where the login would run the agent once it is moved: on Anthropic's own model, or on none
+// (the test above; the login's default is Anthropic's). An OpenRouter model, Anthropic's through OpenRouter included,
+// goes on OpenRouter's key on the runner too, so its refusal names that key and offers no move.
+test("an agent on Claude Agent in a box on an OpenRouter model, while the login reads signed in, is refused for OpenRouter's key with no move to the runner offered; one on Anthropic's own model is offered the move", { timeout: 120_000 }, async (t) => {
+  const { api, fake } = await withDockerBox(t);
+  fake.status(SIGNED_IN);
+  assert.equal((await api("PUT", "/settings/claude-login", { only_me: true })).body.state, "signed_in");
+  const place = { mode: "sandbox", box: "docker" };
+  assert.equal((await api("POST", "/agents", agent("routed", { harness: "claude-agent", model: "openrouter/anthropic/claude-sonnet-5.5", place }))).status, 201);
+  assert.equal((await api("POST", "/agents", agent("own", { harness: "claude-agent", model: "anthropic/claude-sonnet-5-5", place }))).status, 201);
+
+  const routed = await api("POST", "/agents/routed/runs", { input: { content: "Say hi." } });
+  assert.equal(routed.status, 409, JSON.stringify(routed.body));
+  assert.equal(routed.body.error.code, "agent_not_runnable");
+  assert.match(routed.body.error.message, /OPENROUTER_API_KEY/, "the refusal of an OpenRouter model does not name OpenRouter's key");
+  assert.ok(!routed.body.error.message.includes(RUNNER_ONLY), `an OpenRouter model, which the login never runs, was told to move to the runner: ${routed.body.error.message}`);
+  assert.equal(routed.body.error.details.login_on_runner, undefined, `an OpenRouter model, which the login never runs, was offered the move to the runner: ${JSON.stringify(routed.body.error.details)}`);
+
+  const own = await api("POST", "/agents/own/runs", { input: { content: "Say hi." } });
+  assert.equal(own.status, 409, JSON.stringify(own.body));
+  assert.ok(own.body.error.message.includes(RUNNER_ONLY), own.body.error.message);
+  assert.equal(own.body.error.details.login_on_runner, true, JSON.stringify(own.body.error.details));
+});
+
 test("the switch, unset, follows the listen address: 0.0.0.0 has the mode off, 127.0.0.1 has it; off wins on loopback, on turns it on past it", () => {
   assert.match(claudeLoginSwitchedOff({}, "0.0.0.0"), /listens on 0\.0\.0\.0, past loopback/);
   assert.match(claudeLoginSwitchedOff({}, "::"), /listens on ::/);
@@ -203,6 +268,17 @@ test("AGENTRUN_CLAUDE_CODE_LOGIN=off: every route is 404 by name, a saved turn-o
   assert.equal(await loginForRun(saved, own, {}, "claude-agent", { mode: "sandbox", box: "e2b" }), undefined);
 });
 
+// The login's model rule, which providerFor and the refusal's move offer (loginOnRunnerOnly) both ask. The console copies
+// it (its lib/claudeLogin.ts loginServes: it reads no server code), and its claudeLogin.test.ts names these same cases.
+test("loginServes: the login runs no model and Anthropic's own; an OpenRouter model, Anthropic's included, and any other vendor's go on their key", () => {
+  const cases = [[undefined, true], ["", true], ["anthropic/claude-sonnet-5-5", true], ["openrouter/anthropic/claude-sonnet-5.5", false], ["openai/gpt-6.1-sol", false]];
+  for (const [model, served] of cases) assert.equal(loginServes(model), served, String(model));
+  // The offer follows it: a box agent on an OpenRouter model is offered no move, one on Anthropic's or none is.
+  const env = withClaudeLogin({}, { dir: "/data/claude-login", profiles: "/data/claude-login/anthropic" });
+  const box = { mode: "sandbox", box: "docker" };
+  for (const [model, served] of cases) assert.equal(loginOnRunnerOnly(env, "claude-agent", model, box) !== undefined, served, String(model));
+});
+
 test("Claude Code's login on this machine on: claude-agent's Anthropic models go on it with no key and no port; other harnesses and named gateway or OpenRouter models keep their keys", () => {
   const at = { dir: "/data/claude-login", profiles: "/data/claude-login/anthropic" };
   const env = withClaudeLogin({ ANTHROPIC_API_KEY: "not-a-secret", OPENROUTER_API_KEY: "not-a-secret" }, at);
@@ -211,8 +287,7 @@ test("Claude Code's login on this machine on: claude-agent's Anthropic models go
   assert.equal(onLogin.billing, "plan");
   assert.equal(onLogin.priceModel.provider, "claude-login");
   // Anthropic's own models go on the login, an OpenRouter one (Anthropic's included) on its key, and a revision naming
-  // none gets Anthropic's: the console's No model bar copies this rule (its lib/claudeLogin.ts loginServes), so a change
-  // here changes it there.
+  // none gets Anthropic's (loginServes, case by case below).
   assert.equal(providerFor("anthropic-messages", env, { provider: "openrouter", modelId: "anthropic/claude-haiku-5.5" }, "claude-agent").login, undefined);
   assert.equal(providerFor("anthropic-messages", env, { provider: "anthropic", modelId: "claude-haiku-5-5" }, "opencode").login, undefined);
   assert.equal(hostModel(env, "default", "claude-agent"), "anthropic/claude-sonnet-5-5");
@@ -813,16 +888,25 @@ const HELD_TABLE = createRequire(import.meta.url).resolve("./fixtures/held-offer
 const held = createRequire(import.meta.url)(HELD_TABLE);
 
 /** A server on the held table for test `t`: the fake CLI on PATH, no model key, and `options` laid on it. `harnesses()`: its capabilities' harnesses now; `probes(why)`: how many probes of the offers it
- *  has made for `why`. */
+ *  has made for `why`; `logged(event)`: resolves once the server has logged a line of `event`. */
 async function heldServer(t, options = {}) {
   const fake = await fakeCli(t);
   withEnv(t, { PATH: `${dirname(fake.cli)}${delimiter}${process.env.PATH}` }, MODEL_VARS);
   t.after(() => held.answer(undefined));
   const lines = [];
-  const server = await serve(t, { faux: undefined, harnesses: false, runner: false, harnessTable: HELD_TABLE, log: (line) => void lines.push(line), ...options });
+  const waiting = [];
+  const log = (line) => {
+    lines.push(line);
+    for (const wait of waiting) if (line.includes(` event=${wait.event} `)) wait.resolve();
+  };
+  const server = await serve(t, { faux: undefined, harnesses: false, runner: false, harnessTable: HELD_TABLE, log, ...options });
   const harnesses = async () => (await server.api("GET", "/capabilities")).body.harnesses;
   const probes = (why) => lines.filter((line) => line.includes(" event=harness_offers ") && line.includes(` why=${why} `)).length;
-  return { ...server, harnesses, probes };
+  const logged = (event) => new Promise((resolve) => {
+    if (lines.some((line) => line.includes(` event=${event} `))) resolve();
+    else waiting.push({ event, resolve });
+  });
+  return { ...server, harnesses, probes, logged };
 }
 const claudeAgentIn = (harnesses) => harnesses.find((offer) => offer.id === "claude-agent");
 
@@ -897,16 +981,19 @@ async function planRecipeFile(t) {
   return file;
 }
 
-// A tool key is none of the offers' inputs (offersEnvOf), so while the offers held are current its save or delete starts
-// no probe. A probe it finds out, made from the inputs read now (a harness key's, which may find newer facts), must land:
-// a tool key's change then never drops it. While the offers held are behind the inputs (a turn-on's probe still out), a
-// tool key's change probes too and drops that probe; the offers still end made from the inputs read now. This test holds
-// the first case only. The facts here are the held table's: claude-agent's check answers FACT from the harness key's save on.
+// A tool key is none of the offers' inputs (offersEnvOf). While the offers held are current and no probe made from other
+// inputs is out, its save or delete starts no probe, and a probe it finds out made from the inputs read now (a harness
+// key's, which may find newer facts) is left to land. This test holds that case; the next holds the offers behind the
+// inputs with the probe out made from them. With a probe from other inputs out, or none out and the offers behind, a
+// tool key's change probes, and a probe out is dropped as it lands. It runs on a faux server, as the two late-probe
+// tests do: a server that asks Ollama reads the host's Ollama listing at each capabilities read (ollamaNow), so a model
+// pulled or Ollama started during the test would start a probe this test did not cause. The facts here are the held
+// table's: claude-agent's check answers FACT from the harness key's save on.
 const FACT = "the probe after the harness key's save found this";
 const TOOL_KEY_PROBED = "a tool key's change, which changes none of the offers' inputs, started a probe of the offers";
 const FACT_WHY = "a tool key's change while a probe made from the inputs read now was out dropped that probe: the facts it found never landed";
-test("while the offers held are current, a tool key's change starts no probe of the offers, and one made while a probe from the inputs read now is out leaves that probe's facts standing once it lands", { timeout: 60_000 }, async (t) => {
-  const { api, harnesses, probes } = await heldServer(t, { harnessRecipes: [await planRecipeFile(t)] });
+test("while the offers held are current and no probe from other inputs is out, a tool key's change starts no probe of the offers, and one made while a probe from the inputs read now is out leaves that probe's facts standing once it lands", { timeout: 60_000 }, async (t) => {
+  const { api, harnesses, probes } = await heldServer(t, { faux: FAUX, harnessRecipes: [await planRecipeFile(t)] });
   assert.equal((await api("DELETE", "/settings/tool-keys/typesafe")).status, 204);
   assert.equal(probes("key"), 0, `${TOOL_KEY_PROBED} with no probe out`);
   assert.notEqual(claudeAgentIn(await harnesses()).reason, FACT);
@@ -924,6 +1011,150 @@ test("while the offers held are current, a tool key's change starts no probe of 
   const offer = claudeAgentIn(await harnesses());
   assert.equal(offer.reason, FACT, `${FACT_WHY}: ${JSON.stringify(offer)}`);
   assert.equal(probes("key"), 0, `${TOOL_KEY_PROBED} while one made from the inputs read now was out`);
+});
+
+// The held offers behind the inputs: a turn-on's probe is out (held), made from the inputs a tool key's change reads.
+// The change waits for that probe to land (its harness_offers_wait line), starts none, and drops none: the offers end as
+// that probe found them. The turn-on's probe is a change's (why=key) too, so one probe for `key` is the turn-on's alone.
+const WAITED_WHY = "a tool key's change while the probe out was made from the inputs read now dropped that probe: the offers it found never landed";
+test("while the offers held are behind the inputs and the probe out was made from the inputs read now, a tool key's change waits for that probe, starts none and drops none", { timeout: 60_000 }, async (t) => {
+  const { api, harnesses, probes, logged } = await heldServer(t, { faux: FAUX });
+  const probe = held.hold((env) => claudeLoginOf(env) !== undefined, ON_REASON);
+  t.after(() => probe.release());
+  const turningOn = api("PUT", "/settings/claude-login", { only_me: true });
+  await probe.reached;
+  const deleting = api("DELETE", "/settings/tool-keys/typesafe");
+  // Waiting, the change logs that it waits; not waiting, it answers on its own.
+  await Promise.race([logged("harness_offers_wait"), deleting]);
+  probe.release();
+  const [on, deleted] = await Promise.all([turningOn, deleting]);
+  assert.equal(on.status, 200, JSON.stringify(on.body));
+  assert.equal(deleted.status, 204, JSON.stringify(deleted.body));
+  assert.equal(probes("key"), 1, `${TOOL_KEY_PROBED} while the probe out was made from the inputs read now`);
+  const offer = claudeAgentIn(await harnesses());
+  assert.equal(offer.reason, ON_REASON, `${WAITED_WHY}: ${JSON.stringify(offer)}`);
+});
+
+// The wait above is only for a probe out made from the inputs the change reads. A change to other inputs while the offers
+// lag (the login turned on while a model key's save has its probe out) probes them, and the probe out is dropped: the
+// offers end made from the turn-on's inputs, not from the ones the key's save read.
+const OTHER_WHY = "a change to other inputs than the probe out's waited for that probe: the offers ended made from the inputs it read";
+test("while the offers held are behind the inputs, a change to inputs other than the probe out's probes them and does not wait for that probe", { timeout: 60_000 }, async (t) => {
+  const { api, harnesses, probes, logged } = await heldServer(t, { faux: FAUX });
+  const probe = held.hold((env) => env.OPENAI_API_KEY !== undefined, KEY_REASON);
+  t.after(() => probe.release());
+  const saving = api("PUT", "/settings/tool-keys/openai", { values: { OPENAI_API_KEY: "fake-test-key" } });
+  await probe.reached;
+  const turningOn = api("PUT", "/settings/claude-login", { only_me: true });
+  // Waiting, the change logs that it waits; probing, it answers on its own.
+  await Promise.race([logged("harness_offers_wait"), turningOn]);
+  probe.release();
+  const [saved, on] = await Promise.all([saving, turningOn]);
+  assert.equal(saved.status, 204, JSON.stringify(saved.body));
+  assert.equal(on.status, 200, JSON.stringify(on.body));
+  const offer = claudeAgentIn(await harnesses());
+  assert.notEqual(offer.reason, KEY_REASON, `${OTHER_WHY}: ${JSON.stringify(offer)}`);
+  assert.equal(probes("key"), 2, "the key's save and the turn-on each probe once");
+});
+
+// A probe that fails never lands. When it was the latest one, no probe is out after it, so a change back to the inputs
+// the offers held were made from reuses them and starts none. A model key saved (its probe held, then failing) and
+// deleted. A failed probe logs no harness_offers line, so the delete's would be the only one for `key`.
+const FAILED = new Error("the probe of the offers failed here");
+test("after the latest probe of the offers fails, a change back to the inputs the offers held were made from starts no probe", { timeout: 60_000 }, async (t) => {
+  const { api, harnesses, probes } = await heldServer(t, { faux: FAUX });
+  const before = await harnesses();
+  const probe = held.hold((env) => env.OPENAI_API_KEY !== undefined, FAILED);
+  t.after(() => probe.release());
+  const saving = api("PUT", "/settings/tool-keys/openai", { values: { OPENAI_API_KEY: "fake-test-key" } });
+  await probe.reached;
+  probe.release();
+  const saved = await saving;
+  assert.equal(saved.status, 500, `the save's probe failed, so the save fails: ${JSON.stringify(saved.body)}`);
+  const deleted = await api("DELETE", "/settings/tool-keys/openai");
+  assert.equal(deleted.status, 204, JSON.stringify(deleted.body));
+  assert.equal(probes("key"), 0, "a change back to the inputs the offers held were made from probed again after the latest probe out had failed");
+  assert.deepEqual(await harnesses(), before, "the offers are not the starting state's");
+});
+
+// A tool key's change that waits for the probe out (the turn-on's, held) answers for its own key whatever becomes of that
+// probe: its key is stored before it waits, so another request's probe failing, or being overtaken, is no failure of its
+// own. Parallel's key is a tool key (none of the offers' inputs) and, on a faux server with no fake Parallel, is stored
+// unchecked (key-check.ts); the capabilities show it as the decision provider it unlocks (decisionsOf), read from the
+// keys at each compose, so they show it once something has composed them after the save.
+const parallelShown = async (api) => (await api("GET", "/capabilities")).body.workflows.decisions.providers.find((provider) => provider.id === "parallel")?.available === true;
+const PARALLEL_KEY = { values: { PARALLEL_API_KEY: "fake-test-key" } };
+const NOT_COMPOSED = "the capabilities never composed the tool key the change saved";
+test("a tool key's change that waits for the probe out answers for its own key though that probe fails: it probes again for the inputs it read", { timeout: 60_000 }, async (t) => {
+  const { api, logged, probes } = await heldServer(t, { faux: FAUX });
+  assert.equal(await parallelShown(api), false, "Parallel shows before its key is saved");
+  const probe = held.hold((env) => claudeLoginOf(env) !== undefined, FAILED);
+  t.after(() => probe.release());
+  const turningOn = api("PUT", "/settings/claude-login", { only_me: true });
+  await probe.reached;
+  const saving = api("PUT", "/settings/tool-keys/parallel", PARALLEL_KEY);
+  await Promise.race([logged("harness_offers_wait"), saving]);
+  probe.release();
+  const [, saved] = await Promise.all([turningOn, saving]);
+  assert.equal(saved.status, 204, `a tool key's change answered the failure of the probe it waited for, another request's, though its key was stored: ${JSON.stringify(saved.body)}`);
+  assert.equal(await parallelShown(api), true, NOT_COMPOSED);
+  // The failed probe landed nothing, so the offers held are still behind the inputs the change read: it probes them itself.
+  assert.equal(probes("key"), 1, "a tool key's change whose waited-for probe failed left the offers behind the inputs it read: it did not probe them again");
+});
+
+// The other order: the probe the change waits for is overtaken by a later one (a turn-off's) that then fails. The
+// change's key must still show: it settles on the latest probe, never on the dropped one, which lands nothing.
+test("a tool key's change that waits for the probe out answers for its own key once that probe is overtaken by one that fails", { timeout: 60_000 }, async (t) => {
+  const { api, logged } = await heldServer(t, { faux: FAUX });
+  const onProbe = held.hold((env) => claudeLoginOf(env) !== undefined, ON_REASON);
+  t.after(() => onProbe.release());
+  const turningOn = api("PUT", "/settings/claude-login", { only_me: true });
+  await onProbe.reached;
+  const saving = api("PUT", "/settings/tool-keys/parallel", PARALLEL_KEY);
+  await Promise.race([logged("harness_offers_wait"), saving]);
+  const offProbe = held.hold((env) => claudeLoginOf(env) === undefined, FAILED);
+  t.after(() => offProbe.release());
+  const turningOff = api("DELETE", "/settings/claude-login");
+  await offProbe.reached;
+  offProbe.release();
+  await turningOff;
+  onProbe.release();
+  const [, saved] = await Promise.all([turningOn, saving]);
+  assert.equal(saved.status, 204, JSON.stringify(saved.body));
+  assert.equal(await parallelShown(api), true, `${NOT_COMPOSED}: it settled on the probe it first waited for, which a later probe overtook`);
+});
+
+// A change waiting for the probe out wakes once a later probe overtakes it: it does not wait on for a probe whose offers
+// are dropped. The turn-on's probe stays held to the end; the turn-off's lands. The save has answered by then: one more
+// round trip to the server after the turn-off's answer lets its answer, written before, arrive.
+test("a tool key's change that waits for the probe out answers once a later probe overtakes that probe, not when the dropped probe ends", { timeout: 60_000 }, async (t) => {
+  const { api, logged } = await heldServer(t, { faux: FAUX });
+  const onProbe = held.hold((env) => claudeLoginOf(env) !== undefined, ON_REASON);
+  t.after(() => onProbe.release());
+  const turningOn = api("PUT", "/settings/claude-login", { only_me: true });
+  await onProbe.reached;
+  let answered = false;
+  const saving = api("PUT", "/settings/tool-keys/parallel", PARALLEL_KEY).then((res) => { answered = true; return res; });
+  await Promise.race([logged("harness_offers_wait"), saving]);
+  const off = await api("DELETE", "/settings/claude-login");
+  assert.equal(off.status, 200, JSON.stringify(off.body));
+  await api("GET", "/capabilities");
+  assert.equal(answered, true, "a tool key's change waited on for the probe it first waited for, after a later probe overtook it and landed");
+  const saved = await saving;
+  assert.equal(saved.status, 204, JSON.stringify(saved.body));
+  assert.equal(await parallelShown(api), true, NOT_COMPOSED);
+  onProbe.release();
+  await turningOn;
+});
+
+// A hold no check took is dropped as it is released, so a test that ends before its held check runs leaves no hold for
+// the next server's checks.
+const UNTAKEN = "the reason of a hold released before any check took it";
+test("a hold of the held table released before any check took it holds and answers no later check", { timeout: 60_000 }, async (t) => {
+  held.hold(() => true, UNTAKEN).release();
+  const { harnesses } = await heldServer(t, { faux: FAUX });
+  const offer = claudeAgentIn(await harnesses());
+  assert.notEqual(offer.reason, UNTAKEN, `a hold released before any check took it answered the next server's first check: ${JSON.stringify(offer)}`);
 });
 
 // A turn starts or ends the sign-in through its own `turn`. A start or stop of the sign-ins' own beside it would be a
@@ -1023,6 +1254,11 @@ function statusOf(...answers) {
   return { status, calls: () => calls };
 }
 
+/** The data folder these checks keep their answers in, one for them all, so another login's answer is there to be told
+ *  apart. */
+const ANSWERS = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-login-answers-"));
+test.after(() => rmSync(ANSWERS, { recursive: true, force: true }));
+
 /** A login of its own, so no test's earlier answer is another's. */
 async function ownLogin() {
   const dir = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-login-check-"));
@@ -1045,64 +1281,71 @@ const unknownByTimeout = (error) => {
 test("a Claude-plan run whose login check times out once asks again, and goes on when that answer is signed in", async () => {
   const login = await ownLogin();
   const fake = statusOf(timedOut(), SAID_IN);
-  await loginBeforeRun(login, "claude", fake.status);
+  await loginBeforeRun(login, "claude", fake.status, { data: ANSWERS });
   assert.equal(fake.calls(), 2, "status was asked twice");
 });
 
 test("a Claude-plan run whose login check times out twice goes on when the same login answered signed in 2 minutes before in this server", async () => {
   const login = await ownLogin();
   const time = clock(1_000_000);
-  await loginBeforeRun(login, "claude", statusOf(SAID_IN).status, { now: time.now });
+  await loginBeforeRun(login, "claude", statusOf(SAID_IN).status, { data: ANSWERS, now: time.now });
   time.at(2 * 60_000);
   const fake = statusOf(timedOut(), timedOut());
-  await loginBeforeRun(login, "claude", fake.status, { now: time.now });
+  await loginBeforeRun(login, "claude", fake.status, { data: ANSWERS, now: time.now });
   assert.equal(fake.calls(), 2, "asked twice before the earlier answer is taken");
 });
 
-test("a Claude-plan run whose login check times out twice is refused with LOGIN_UNKNOWN, in words that name the timeout, when the login never answered signed in here, answered 11 minutes ago, or only another login did", async () => {
+test("a Claude-plan run whose login check times out twice is refused with LOGIN_UNKNOWN, in words that name the timeout, when the login never answered signed in here, answered 11 minutes ago, answered after now (the clock set back since), or only another login did", async () => {
   const never = await ownLogin();
   const first = statusOf(timedOut(), timedOut());
-  await assert.rejects(loginBeforeRun(never, "claude", first.status), unknownByTimeout);
+  await assert.rejects(loginBeforeRun(never, "claude", first.status, { data: ANSWERS }), unknownByTimeout);
   assert.equal(first.calls(), 2, "no earlier answer: asked twice, then refused");
 
   const old = await ownLogin();
   const time = clock(1_000_000);
-  await loginBeforeRun(old, "claude", statusOf(SAID_IN).status, { now: time.now });
+  await loginBeforeRun(old, "claude", statusOf(SAID_IN).status, { data: ANSWERS, now: time.now });
   time.at(11 * 60_000);
   const stale = statusOf(timedOut(), timedOut());
-  await assert.rejects(loginBeforeRun(old, "claude", stale.status, { now: time.now }), unknownByTimeout);
+  await assert.rejects(loginBeforeRun(old, "claude", stale.status, { data: ANSWERS, now: time.now }), unknownByTimeout);
   assert.equal(stale.calls(), 2, "an answer 11 minutes old: asked twice, then refused");
 
   // Another login (another folder) answered signed in a minute before: that answer is not this login's.
   const other = await ownLogin();
   time.at(0);
-  await loginBeforeRun(other, "claude", statusOf(SAID_IN).status, { now: time.now });
+  await loginBeforeRun(other, "claude", statusOf(SAID_IN).status, { data: ANSWERS, now: time.now });
   time.at(60_000);
   const fresh = await ownLogin();
-  await assert.rejects(loginBeforeRun(fresh, "claude", statusOf(timedOut(), timedOut()).status, { now: time.now }), unknownByTimeout);
+  await assert.rejects(loginBeforeRun(fresh, "claude", statusOf(timedOut(), timedOut()).status, { data: ANSWERS, now: time.now }), unknownByTimeout);
   // The same folder with its credentials kept apart is another login too.
-  await assert.rejects(loginBeforeRun({ ...other, secure: join(other.userHome, "elsewhere") }, "claude", statusOf(timedOut(), timedOut()).status, { now: time.now }), unknownByTimeout);
+  await assert.rejects(loginBeforeRun({ ...other, secure: join(other.userHome, "elsewhere") }, "claude", statusOf(timedOut(), timedOut()).status, { data: ANSWERS, now: time.now }), unknownByTimeout);
+
+  // An answer noted a minute after now (the clock set back since) stands for nothing.
+  const ahead = await ownLogin();
+  time.at(60_000);
+  await loginBeforeRun(ahead, "claude", statusOf(SAID_IN).status, { data: ANSWERS, now: time.now });
+  time.at(0);
+  await assert.rejects(loginBeforeRun(ahead, "claude", statusOf(timedOut(), timedOut()).status, { data: ANSWERS, now: time.now }), unknownByTimeout, "an answer from a minute after now stood for a run whose checks timed out");
 });
 
 test("a signed-out answer is never asked again nor overridden by an earlier signed-in one: the run is refused at once with LOGIN_SIGNED_OUT, and that earlier answer is gone, so a timeout after it is refused", async () => {
   const login = await ownLogin();
   const time = clock(1_000_000);
-  await loginBeforeRun(login, "claude", statusOf(SAID_IN).status, { now: time.now });
+  await loginBeforeRun(login, "claude", statusOf(SAID_IN).status, { data: ANSWERS, now: time.now });
   time.at(60_000);
   const slow = statusOf(timedOut(), timedOut());
-  await loginBeforeRun(login, "claude", slow.status, { now: time.now });
+  await loginBeforeRun(login, "claude", slow.status, { data: ANSWERS, now: time.now });
   assert.equal(slow.calls(), 2, "two timeouts a minute after a signed-in answer: the run goes on");
 
   time.at(2 * 60_000);
   const out = statusOf(SAID_OUT, SAID_IN);
-  await assert.rejects(loginBeforeRun(login, "claude", out.status, { now: time.now }), (error) => {
+  await assert.rejects(loginBeforeRun(login, "claude", out.status, { data: ANSWERS, now: time.now }), (error) => {
     assert.equal(error.message, LOGIN_SIGNED_OUT);
     return true;
   });
   assert.equal(out.calls(), 1, "a signed-out answer is the answer: status asked once");
 
   time.at(3 * 60_000);
-  await assert.rejects(loginBeforeRun(login, "claude", statusOf(timedOut(), timedOut()).status, { now: time.now }), unknownByTimeout);
+  await assert.rejects(loginBeforeRun(login, "claude", statusOf(timedOut(), timedOut()).status, { data: ANSWERS, now: time.now }), unknownByTimeout);
 });
 
 test("the Settings view feeds the same answer: after it read the login signed in, a run whose two checks time out goes on; after it read signed out, one is refused; a check that times out there reads unknown and is asked once", async () => {
@@ -1134,12 +1377,12 @@ test("the Settings view feeds the same answer: after it read the login signed in
 
   assert.equal((await claudeLoginView(deps)).state, "signed_in");
   const slow = statusOf(timedOut(), timedOut());
-  await loginBeforeRun(login, pinned, slow.status);
+  await loginBeforeRun(login, pinned, slow.status, { data });
   assert.equal(slow.calls(), 2, "the run asked twice, then took the view's answer");
 
   said = SAID_OUT;
   assert.equal((await claudeLoginView(deps)).state, "signed_out");
-  await assert.rejects(loginBeforeRun(login, pinned, statusOf(timedOut(), timedOut()).status), unknownByTimeout);
+  await assert.rejects(loginBeforeRun(login, pinned, statusOf(timedOut(), timedOut()).status, { data }), unknownByTimeout);
 
   said = timedOut();
   asked = 0;
@@ -1147,22 +1390,149 @@ test("the Settings view feeds the same answer: after it read the login signed in
   assert.equal(asked, 1, "the view never asks again: a person waits on it");
 });
 
+// The server and its runner can be two processes on one machine and one data folder (`agentrun-serve --no-runner` beside
+// `agentrun-serve runner --data`): the Settings view's answer is the server's, a run's check is the runner's. So the
+// answer is kept in the data folder, and a runner process that never asked itself takes it. Another data folder is
+// another machine's (machineId): its runner takes none. A signed-out answer in the view removes it.
+const RUNNER_CHECK = `
+const [dist, data, login] = process.argv.slice(1);
+const { loginBeforeRun } = await import(dist);
+const timedOut = () => Object.assign(new Error("the claude CLI gave no login status: the check timed out after 15 s"), { code: "timed_out", limitMs: 15000 });
+try {
+  await loginBeforeRun(JSON.parse(login), "claude", async () => { throw timedOut(); }, { data });
+  process.stdout.write("went on");
+} catch (error) {
+  process.stdout.write(error.message);
+}`;
+/** A run's check of `login` in a runner process of its own on `data`, whose two status checks time out: "went on", or the
+ *  refusal's words. The process is ended after `limitMs`, which fails the test in the words `held`. */
+function runnerCheck(data, login, { limitMs = 60_000, held } = {}) {
+  const env = { ...process.env };
+  delete env.NODE_TEST_CONTEXT;
+  const ran = spawnSync(process.execPath, ["--input-type=module", "-e", RUNNER_CHECK, new URL("../dist/claude-login.js", import.meta.url).href, data, JSON.stringify(login)], { env, encoding: "utf8", timeout: limitMs });
+  assert.equal(ran.status, 0, ran.signal ? `${held ?? "the runner's check never ended"} (ended after ${limitMs / 1000} s)` : ran.stderr);
+  return ran.stdout;
+}
+test("a runner in a process of its own on the same data folder takes the Settings view's signed-in answer when its two checks time out; one on another data folder does not, and a signed-out answer in the view takes it away", async (t) => {
+  const data = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-login-shared-"));
+  const elsewhere = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-login-elsewhere-"));
+  t.after(() => [data, elsewhere].forEach((dir) => rmSync(dir, { recursive: true, force: true })));
+  const pinned = join(data, "claude");
+  writeFileSync(pinned, "", { mode: 0o755 });
+  const setting = settingFor("agentrun", data);
+  let said = SAID_IN;
+  const deps = {
+    signIns: { view: () => undefined },
+    settings: { get: async (key) => (key === CLAUDE_LOGIN_SETTING ? setting : undefined), put: async () => {}, remove: async () => {} },
+    data,
+    env: { HOME: data, PATH: "/usr/bin:/bin" },
+    pinned: async () => pinned,
+    refused: () => undefined,
+    sameMachine: false,
+    claude: async () => ({ claudeLoginCommand: () => "claude auth login", claudeLoginStatus: async () => said }),
+    changed: async () => {},
+  };
+  const login = loginAt("agentrun", data, deps.env);
+
+  assert.equal((await claudeLoginView(deps)).state, "signed_in");
+  assert.equal(runnerCheck(data, login), "went on", "a runner process on the same data folder refused a run right after the Settings view read the login signed in: the answer never reached it");
+  assert.ok(runnerCheck(elsewhere, login).startsWith(LOGIN_UNKNOWN), "a runner on another data folder, another machine's, took this one's answer");
+
+  said = SAID_OUT;
+  assert.equal((await claudeLoginView(deps)).state, "signed_out");
+  assert.ok(runnerCheck(data, login).startsWith(LOGIN_UNKNOWN), "a runner process took a signed-in answer the Settings view had since read signed out");
+});
+
+// The answer file is the server's own note: a run's check reads it only as a small regular file at its name (never
+// through a link, never a FIFO, which would hold the check's read, and so the server's event loop, for ever), and a
+// note keeps the answers folder at 0700 and leaves nothing beside the file when it can't be put in place.
+/** A data folder of its own where `login` answered signed in now, and the answers folder and file name that holds it. */
+async function noted(t, login) {
+  const data = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-login-note-"));
+  t.after(() => rmSync(data, { recursive: true, force: true }));
+  await loginBeforeRun(login, "claude", statusOf(SAID_IN).status, { data });
+  const dir = join(data, LOGIN_ANSWERS_DIR);
+  const names = readdirSync(dir);
+  assert.equal(names.length, 1, `one answer file: ${names}`);
+  return { data, dir, name: names[0], file: join(dir, names[0]) };
+}
+
+test("a FIFO at the answer file's name holds no run's check: it is no answer, and the run whose checks time out is refused", { skip: process.platform === "win32" ? "no mkfifo" : false }, async (t) => {
+  const login = await ownLogin();
+  const { data, file } = await noted(t, login);
+  rmSync(file);
+  assert.equal(spawnSync("mkfifo", [file]).status, 0);
+  const said = runnerCheck(data, login, { limitMs: 10_000, held: "a run's check held on a FIFO at the answer file's name, reading it as an answer" });
+  assert.ok(said.startsWith(LOGIN_UNKNOWN), said);
+});
+
+test("a link, or a file longer than a time, at the answer file's name stands for no answer", async (t) => {
+  const login = await ownLogin();
+  const { data, file } = await noted(t, login);
+  const elsewhere = join(data, "elsewhere");
+  writeFileSync(elsewhere, `${Date.now()}\n`);
+  rmSync(file);
+  symlinkSync(elsewhere, file);
+  await assert.rejects(loginBeforeRun(login, "claude", statusOf(timedOut(), timedOut()).status, { data }), unknownByTimeout, "a link at the answer file's name, to a fresh time, stood for a run whose checks timed out");
+  rmSync(file);
+  writeFileSync(file, `${Date.now()}`.padEnd(4096, " ") + "\n", { mode: 0o600 });
+  await assert.rejects(loginBeforeRun(login, "claude", statusOf(timedOut(), timedOut()).status, { data }), unknownByTimeout, "a 4 KiB file at the answer file's name stood for a run whose checks timed out");
+});
+
+test("a note keeps the answers folder at 0700: one made wider before is tightened, and a link in its place is not written through", { skip: process.platform === "win32" ? "no modes" : false }, async (t) => {
+  const login = await ownLogin();
+  const data = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-login-note-"));
+  t.after(() => rmSync(data, { recursive: true, force: true }));
+  const dir = join(data, LOGIN_ANSWERS_DIR);
+  mkdirSync(dir, { mode: 0o755 });
+  chmodSync(dir, 0o755);
+  await loginBeforeRun(login, "claude", statusOf(SAID_IN).status, { data });
+  assert.equal((statSync(dir).mode & 0o777).toString(8), "700", "an answers folder made 0755 before kept its mode after a note");
+  assert.equal(readdirSync(dir).length, 1, "the answer was noted");
+
+  const away = join(data, "away");
+  mkdirSync(away, { mode: 0o700 });
+  rmSync(dir, { recursive: true });
+  symlinkSync(away, dir);
+  await loginBeforeRun(login, "claude", statusOf(SAID_IN).status, { data });
+  assert.deepEqual(readdirSync(away), [], "a note went through a link at the answers folder's name");
+});
+
+test("a note whose file can't be put in place leaves nothing beside it", async (t) => {
+  const login = await ownLogin();
+  const { dir, name, file } = await noted(t, login);
+  rmSync(file);
+  mkdirSync(file);
+  writeFileSync(join(file, "in-the-way"), "");
+  await loginBeforeRun(login, "claude", statusOf(SAID_IN).status, { data: dirname(dir) });
+  assert.deepEqual(readdirSync(dir), [name], "a note whose rename failed left the file it wrote aside");
+});
+
+test("an answer is this machine's: once the data folder's machine id is another (the file made again), an answer noted under the old id stands for no run, though its file is still there", async (t) => {
+  const login = await ownLogin();
+  const { data, file } = await noted(t, login);
+  await loginBeforeRun(login, "claude", statusOf(timedOut(), timedOut()).status, { data });
+  writeFileSync(join(data, "machine-id"), `${"ab".repeat(16)}\n`, { mode: 0o600 });
+  assert.ok(existsSync(file), "the answer noted under the old id is still there");
+  await assert.rejects(loginBeforeRun(login, "claude", statusOf(timedOut(), timedOut()).status, { data }), unknownByTimeout, "an answer noted under the machine's old id stood after the id changed");
+});
+
 test("only a check that gave no answer is asked again or goes on by an earlier signed-in answer: a CLI that is not there, or any other failure, refuses the run at once with LOGIN_UNKNOWN in its own words", async () => {
   const login = await ownLogin();
   const time = clock(1_000_000);
-  await loginBeforeRun(login, "claude", statusOf(SAID_IN).status, { now: time.now });
+  await loginBeforeRun(login, "claude", statusOf(SAID_IN).status, { data: ANSWERS, now: time.now });
   time.at(60_000);
 
   const missing = Object.assign(new Error("spawn claude ENOENT"), { code: "ENOENT", errno: -2, syscall: "spawn claude", path: "claude" });
   const gone = statusOf(missing, SAID_IN);
-  await assert.rejects(loginBeforeRun(login, "claude", gone.status, { now: time.now }), (error) => {
+  await assert.rejects(loginBeforeRun(login, "claude", gone.status, { data: ANSWERS, now: time.now }), (error) => {
     assert.equal(error.message, `${LOGIN_UNKNOWN}: spawn claude ENOENT`);
     return true;
   });
   assert.equal(gone.calls(), 1, "a CLI that is not there: status asked once, and the signed-in answer a minute before does not stand in");
 
   const broken = statusOf(new Error("EACCES: permission denied, open '.claude.json'"), SAID_IN);
-  await assert.rejects(loginBeforeRun(login, "claude", broken.status, { now: time.now }), (error) => {
+  await assert.rejects(loginBeforeRun(login, "claude", broken.status, { data: ANSWERS, now: time.now }), (error) => {
     assert.equal(error.message, `${LOGIN_UNKNOWN}: EACCES: permission denied, open '.claude.json'`);
     return true;
   });
@@ -1171,10 +1541,10 @@ test("only a check that gave no answer is asked again or goes on by an earlier s
   // A CLI that answered, in time, nothing that reads as a status gave no answer too, as the harness says by its code.
   const noStatus = () => Object.assign(new Error("the claude CLI gave no login status"), { code: "no_status" });
   const garbled = statusOf(noStatus(), SAID_IN);
-  await loginBeforeRun(login, "claude", garbled.status, { now: time.now });
+  await loginBeforeRun(login, "claude", garbled.status, { data: ANSWERS, now: time.now });
   assert.equal(garbled.calls(), 2, "no status once, then signed in: asked twice, and the run goes on");
   time.at(2 * 60_000);
   const twice = statusOf(noStatus(), noStatus());
-  await loginBeforeRun(login, "claude", twice.status, { now: time.now });
+  await loginBeforeRun(login, "claude", twice.status, { data: ANSWERS, now: time.now });
   assert.equal(twice.calls(), 2, "no status twice, a minute after a signed-in answer: the run goes on by it");
 });
