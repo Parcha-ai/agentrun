@@ -1,7 +1,7 @@
 // A run's process is handed its pinned model's key (run-child-host.ts, claim-secrets.ts claimSecrets scoped by the
 // launch's model), never a key of the host's default now, which a key saved since its start moved: its route never sends
-// that one. A --faux start, pinned to the faux model, is handed its revision's model's key, which the faux model stands
-// in for. And a run pinned to a model whose key is saved in Settings alone runs on it end to end, in the runner and in a
+// that one. A --faux start, pinned to the faux model, is handed no model key at all: the faux model sends none, so not its
+// revision's model's either. And a run pinned to a model whose key is saved in Settings alone runs on it end to end, in the runner and in a
 // process of its own, though the claim lays its model keys never enumerable.
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
@@ -57,21 +57,18 @@ async function handed(t, { revision, model, saved, env = {} }) {
 }
 const modelKeysOf = (names) => names.filter((name) => MODEL_KEY_NAMES.includes(name)).sort();
 
-test("a run's process is handed its pinned model's key alone, never the key of the host's default now; a --faux start's, its revision's model's", { timeout: 60_000 }, async (t) => {
+test("a run's process is handed its pinned model's key alone, never the key of the host's default now; a --faux start's, no model key", { timeout: 60_000 }, async (t) => {
   // Started with OpenAI's key alone saved, it pinned OpenAI's model; Anthropic's, saved since, is the host's default now
   // (the first of anthropic, openai, openrouter), and its revision names no model.
   const moved = await handed(t, { revision: { tools: ["monid:faux/person/enrich"] }, model: { provider: "openai", modelId: "gpt-6.1-sol" }, saved: { OPENAI_API_KEY: OPENAI_SAVED, ANTHROPIC_API_KEY: ANTHROPIC_SAVED, MONID_API_KEY: MONID_SAVED } });
   assert.ok(moved.includes("MONID_API_KEY"), `its tool's key is on its pipe: ${moved}`);
   assert.deepEqual(modelKeysOf(moved), ["OPENAI_API_KEY"], "its pinned model's key alone, never the host's default's now");
-  // A --faux start: pinned to the faux model, which stands in for its revision's (Anthropic's): handed that model's key.
-  const fauxRun = { revision: { model: "anthropic/claude-sonnet-5-5", tools: ["monid:faux/person/enrich"] }, model: { provider: "faux", modelId: "faux-1" }, saved: { ANTHROPIC_API_KEY: ANTHROPIC_SAVED, OPENAI_API_KEY: OPENAI_SAVED, MONID_API_KEY: MONID_SAVED } };
-  const faux = await handed(t, { ...fauxRun, env: { [FAUX_ENV]: "1" } });
+  // A --faux start on a runner in faux mode: pinned to the faux model, which sends no key, though its revision names
+  // Anthropic's model and every key is saved: its tool's key alone.
+  const faux = await handed(t, { revision: { model: "anthropic/claude-sonnet-5-5", tools: ["monid:faux/person/enrich"] }, model: { provider: "faux", modelId: "faux-1" }, saved: { ANTHROPIC_API_KEY: ANTHROPIC_SAVED, OPENAI_API_KEY: OPENAI_SAVED, MONID_API_KEY: MONID_SAVED }, env: { [FAUX_ENV]: "1" } });
   assert.ok(faux.includes("MONID_API_KEY"), `its tool's key is on its pipe: ${faux}`);
-  assert.deepEqual(modelKeysOf(faux), ["ANTHROPIC_API_KEY"], "a --faux start's process holds its revision's model's key");
-  // The same faux launch claimed by a runner not in faux mode: no second claim, so no model key beside its tool's.
-  const notFaux = await handed(t, fauxRun);
-  assert.ok(notFaux.includes("MONID_API_KEY"), `its tool's key is on its pipe: ${notFaux}`);
-  assert.deepEqual(modelKeysOf(notFaux), [], "a faux launch on a runner not in faux mode: no revision model's key");
+  assert.deepEqual(modelKeysOf(faux), [], "a --faux start's process holds a model key, which the faux model never sends");
+  assert.deepEqual(faux, ["MONID_API_KEY"], "a --faux start's process holds its tool's key alone");
 });
 
 const until = async (done, what, ms = 40_000) => {
