@@ -14,11 +14,11 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { schemaProblems } from "./schema-support.mjs";
 import { agent, serve } from "./support.mjs";
+import { putPromotions } from "./learned-workflow-seed-support.mjs";
 
 const { figuresOf, record, summarize } = await import("../dist/learn/ledger.js");
 const { pastRunsOf } = await import("../dist/store-reads/learning.js");
 const { PAST_RUNS } = await import("../dist/runner/workflow-first.js");
-const { promotionsKey } = await import("../dist/learn/promote.js");
 
 const C = "c".repeat(16);
 const AT = "2026-11-24T00:00:00.000Z";
@@ -153,7 +153,7 @@ test("GET /agents/{id}/learning/cost and GET /runs/{id} read one ledger: each ru
   await end("run-02", 1.3, { path: "agent" }, { kept: round(1, 0.3, { compiled: { workflow: "answer", digest: C } }).proposal });
   await end("replay-1", 0.3, { ...served, path: "replay", replay: { of: "run-01", outcome: "answered" } }, { body: { ...LEARNS, replay: { of: "run-01", workflow: "answer", digest: C } } });
   const check = { compile_after: 2, agree_min: 0.8, alone_min: 0.7, attempt: 1, n: 1, agreed: 1, alone: 1, of: ["run-01"] };
-  await store.settings.put(promotionsKey("source"), { v: 1, items: [{ workflow: "answer", digest: C, at: new Date().toISOString(), decided: "promote", reason: "checked: promoted", check }] });
+  await putPromotions(store, "source", [{ workflow: "answer", digest: C, at: new Date().toISOString(), decided: "promote", reason: "checked: promoted", check }]);
   await end("run-03", 0.1, served);
   const audit = { of: "run-03", workflow: "answer", digest: C };
   await end("audit.run-03", 0.05, { path: "audit", audit }, { body: { input: LEARNS.input, title: "t", place: { mode: "runner" }, audit } });
