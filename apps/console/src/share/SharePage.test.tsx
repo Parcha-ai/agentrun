@@ -1,7 +1,7 @@
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import golden from "../../../../packages/serve/test/fixtures/run-export/golden.json";
+import { golden } from "./golden.fixture";
 import { SharePage } from "./SharePage";
 import { exportSource, runIdOf, type ShareBundle, type ShareLoad, type ShareSource } from "./bundle";
 
@@ -9,7 +9,7 @@ import { exportSource, runIdOf, type ShareBundle, type ShareLoad, type ShareSour
 let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); root = undefined; document.body.innerHTML = ""; vi.unstubAllGlobals(); });
 
-const bundle = golden as unknown as ShareBundle;
+const bundle: ShareBundle = golden;
 // Words of the run that must never show on a refusal: its title, its agent, its answer, its steps, a file.
 const RUN_TEXT = ["PGPASSWORD", "Golden agent", "Done. Mail", "The host", "held again", "out/report.md", "[redacted:"];
 

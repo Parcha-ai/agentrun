@@ -7376,7 +7376,7 @@ class GetRunExportResponseFilesItem(TypedDict):
 
 class _GetRunExportResponseOmittedItemRequired(TypedDict):
     what: Literal["file", "files", "recordings"]
-    why: Literal["binary", "too_large", "over_total", "over_count", "unreadable", "list_truncated", "never"]
+    why: Literal["binary", "too_large", "over_total", "over_count", "unreadable", "list_truncated", "uncounted", "never"]
 
 
 class GetRunExportResponseOmittedItem(_GetRunExportResponseOmittedItemRequired, total=False):
