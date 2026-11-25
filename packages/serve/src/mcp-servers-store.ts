@@ -20,7 +20,7 @@ import { credentialMark, ownersAuthConfig, tokensAccount } from "./mcp-secret-wr
 import { type SecretMeta, secretMeta, secretName } from "./secret-writes.js";
 import { type ClientKind, dialAt, issuerOf, LOOPBACK, MAX_PENDING, MCP_SETTINGS_PAGE, mcpServerAt, McpSignIns, type OAuthNetwork, type Pending, type PendingStore, reasonOf, SIGN_IN_AGAIN, systemNetwork, type TokenSet } from "./mcp-oauth.js";
 import { type Cleanup, cleanupOf, COMPOSIO_KEY_ENV, COMPOSIO_ORIGIN, composioAccountKey, composioEnvKey, composioKeyFromEnv, composioMadeKey, type ComposioMade, composioPerRun, droppedOf, madeToWrite, recordedMade, releasedOf, storedMade } from "./composio-made.js";
-import { accountLabel, asking, COMPOSIO_ACCOUNT_STATES, COMPOSIO_PER_RUN, COMPOSIO_TOKEN_BINDING_WORDS, COMPOSIO_USER, composioAccount, type ComposioAccount, type ComposioAccountState, type ComposioControl, composioListingAddress, composioListsAccount, composioServerId, composioTokenNamespaced } from "./composio-preset.js";
+import { accountLabel, asking, COMPOSIO_ACCOUNT_STATES, COMPOSIO_PER_RUN, COMPOSIO_TOKEN_BINDING_WORDS, COMPOSIO_USER, composioAccount, composioAccountBoundWords, type ComposioAccount, type ComposioAccountState, type ComposioControl, composioListingAddress, composioListsAccount, composioServerId, composioTokenNamespaced } from "./composio-preset.js";
 import { mcpSourceKey, type RecordedRow, recordedForAnother, savedByToken, sourceOf, type SourceRecord, sourceToWrite, standInGiven, storedSource, toolkitGiven } from "./mcp-sources.js";
 import { SEAL_KEY_ENV, sealKeyOf } from "./tool-keys.js";
 import { GITHUB_MCP_ONLY, GITHUB_MCP_ORIGIN, githubMcpUrl } from "./github.js";
@@ -836,8 +836,9 @@ export class McpServersOverStore {
   /** On an API-only server, the refusal of a run's binding (`binding`, handed at `field`) of the per-run Composio server
    *  `name` (`row`), or undefined when it stands: its user must be in the token's namespace (composioTokenNamespaced), and
    *  a connected account it names one Composio lists under that user for the server's toolkit, read with the server's
-   *  key (composioListsAccount). Composio not answering, or the key not opening, throws: a binding is never taken
-   *  unchecked. The refusal never quotes what was sent. */
+   *  key (composioListsAccount). Composio not answering, or the key not opening, throws, and an account past the read's
+   *  bound is refused: a binding is never taken unchecked. Each refusal says which check refused it, and never quotes
+   *  what was sent. */
   async tokenBinding(name: string, row: McpServerRow, binding: { user_id: string; connected_account_id?: string }, field: string, control: ComposioControl, signal?: AbortSignal): Promise<InputIssue | undefined> {
     if (!composioTokenNamespaced(binding.user_id)) return { field: `${field}.composio_user_id`, reason: "not_allowed", message: `That composio_user_id can't be used: ${COMPOSIO_TOKEN_BINDING_WORDS}. Nothing was started.` };
     const account = binding.connected_account_id;
@@ -845,13 +846,14 @@ export class McpServersOverStore {
     const { toolkit } = await this.sourceOf(row);
     const key = Object.entries((await this.opened(name, row, field)).headers).find(([header]) => header.toLowerCase() === "x-api-key")?.[1];
     if (!toolkit || !key) throw invalid([{ field, reason: "not_an_option", message: `The MCP server ${name} names no Composio toolkit or key to check this run's connected account with: save it again. Nothing was started.` }]);
-    let listed: boolean;
+    let listed: Awaited<ReturnType<typeof composioListsAccount>>;
     try {
       listed = await composioListsAccount(asking(control, key, signal, "nothing was started"), binding.user_id, toolkit, account);
     } catch {
       throw new ApiError("upstream_failed", `Composio didn't answer the check of this run's connected account for the MCP server ${name}, and a run's account is never taken unchecked: nothing was started. Try again.`);
     }
-    if (!listed) return { field: `${field}.connected_account_id`, reason: "not_allowed", message: `That connected_account_id is not one Composio lists under this run's composio_user_id: name one of that user's own accounts, or none. Nothing was started.` };
+    if (listed === "unbounded") return { field: `${field}.connected_account_id`, reason: "not_allowed", message: `That connected_account_id can't be checked: Composio lists ${composioAccountBoundWords()} for this run's composio_user_id and the server's toolkit, so this start can't check them all, and a run's account is never taken unchecked. Nothing was started.` };
+    if (listed === "unlisted") return { field: `${field}.connected_account_id`, reason: "not_allowed", message: `That connected_account_id is not listed under this run's composio_user_id: Composio lists no such account of that user for the server's toolkit. Name one of that user's own accounts, or none. Nothing was started.` };
     return undefined;
   }
 

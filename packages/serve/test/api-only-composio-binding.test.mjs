@@ -88,7 +88,8 @@ for (const [shape, binding, field, fake] of REFUSED) {
     assert.equal(run.status, 422, JSON.stringify(run.body));
     assert.deepEqual(run.body.error?.fields?.map((issue) => [issue.field, issue.reason]), [[`mcp_auth.mail.${field}`, "not_allowed"]], JSON.stringify(run.body.error));
     assert.match(run.body.error.fields[0].message, WHICH[field], run.body.error.fields[0].message);
-    for (const value of [binding.composio_user_id, binding.connected_account_id, KEY].filter(Boolean)) assert.equal(JSON.stringify(run.body).includes(value), false, `the refusal never quotes ${value}`);
+    // (The bare prefix is in the refusal's own words, which name the namespace.)
+    for (const value of [binding.composio_user_id, binding.connected_account_id, KEY].filter((value) => value && value !== "agentrun.token.")) assert.equal(JSON.stringify(run.body).includes(value), false, `the refusal never quotes ${value}`);
     assert.equal(await runCount(s), before, "no run made");
     nothingAsBound(s, binding);
   });

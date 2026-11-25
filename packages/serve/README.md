@@ -3644,11 +3644,17 @@ serves these routes alone:
     saves; the namespace is what keeps the user the token's after it, since no save here names it;
   - a run's binding of a per-run Composio server (`mcp_auth.<server>`, `{composio_user_id, connected_account_id?}`)
     stays in that namespace too, since every caller here is the token: its `composio_user_id` starts `agentrun.token.`
-    (exactly), else `422` `not_allowed` under it, and a `connected_account_id` it names is one Composio lists under that
-    user for the server's toolkit, read at the start or the message that hands it with the server's key, else `422`
-    `not_allowed` under it. Composio not answering that read is `424` (`upstream_failed`): a run's account is never
-    taken unchecked. Nothing is started, and no refusal quotes what was sent. A run's claim refuses a binding outside the
-    namespace too (one sealed before this rule), its calls refused unsent. The token's backend connects its users'
+    (exactly) with a user after it, else `422` `not_allowed` under it, and a `connected_account_id` it names is one
+    Composio lists under that user for the server's toolkit, read at the start or the message that hands it with the
+    server's key, 50 a page and at most 10 pages, as the save's lookup reads; one Composio answers under another user
+    never counts. An account it doesn't list there is `422` `not_allowed` under `connected_account_id`, and so is one
+    past those 10 pages, in words of its own, since it can't be checked. Composio not answering that read is `424`
+    (`upstream_failed`): a run's account is never taken unchecked. Each refusal says which check refused it, nothing is
+    started, and none quotes what was sent. A run's claim refuses a binding outside the namespace too (one sealed before
+    this rule), its calls refused unsent. Every API token listed is one principal, so the namespace is the prefix, not
+    one per token: all API tokens share one Composio namespace, so a token's runs can use any account connected under
+    `agentrun.token.*`, and never the owner's. An account connected by hand (the Composio dashboard, or another client of
+    the same Composio project) under an `agentrun.token.` user is the token's, by design. The token's backend connects its users'
     accounts at Composio under namespaced user ids (`agentrun.token.<its own id>`). On the full server the owner's runs
     bind as before;
   - a server the token saved before the namespace (0.1.0-beta.56 and earlier) calls as a user outside it, which may be

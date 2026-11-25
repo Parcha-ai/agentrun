@@ -29,25 +29,33 @@ export const COMPOSIO_USER = "agentrun";
 export const COMPOSIO_TOKEN_USER_PREFIX = "agentrun.token.";
 /** The Composio user an API token's save names `user` as (composioSave `userAs`). */
 export const composioTokenUser = (user: string): string => COMPOSIO_TOKEN_USER_PREFIX + user;
-/** Whether `user` is in the API token's namespace, the prefix exactly as its saves write it. On an API-only server a
- *  run's Composio binding must be (server.ts handedLaunchSecrets, runner/mcp-claim.ts). */
-export const composioTokenNamespaced = (user: string): boolean => user.startsWith(COMPOSIO_TOKEN_USER_PREFIX);
+/** Whether `user` is in the API token's namespace: the prefix exactly as its saves write it, and a user after it. Every
+ *  listed API token is one principal (api-token.ts), so the prefix is the namespace, not one per token. On an API-only
+ *  server a run's Composio binding must be (server.ts handedLaunchSecrets, runner/mcp-claim.ts). */
+export const composioTokenNamespaced = (user: string): boolean => user.startsWith(COMPOSIO_TOKEN_USER_PREFIX) && user.length > COMPOSIO_TOKEN_USER_PREFIX.length;
 /** Why a run's Composio binding on an API-only server can't be used: its user is not in the token's namespace. Never
  *  names the user. */
-export const COMPOSIO_TOKEN_BINDING_WORDS = `on this API-only server a run's Composio user is the API token's own, one starting "${COMPOSIO_TOKEN_USER_PREFIX}" (the namespace its Composio saves are kept in), so a run never calls as a user the owner or another client connects`;
+export const COMPOSIO_TOKEN_BINDING_WORDS = `it is outside the API token's Composio namespace: on this API-only server a run's Composio user is the API token's own, one starting "${COMPOSIO_TOKEN_USER_PREFIX}" and naming a user after it (the namespace its Composio saves are kept in), so a run never calls as a user the owner or another client connects`;
 
-/** Whether Composio lists the connected account `account` under `user` for `toolkit`: every page read, up to the
- *  lookup's bound (past it, false). Any failure to read throws (asking): the caller refuses, never assumes. */
-export async function composioListsAccount(ask: Ask, user: string, toolkit: string, account: string): Promise<boolean> {
+/** Whether a connected account Composio answered is `user`'s: one it answers under another user is never (a Composio
+ *  answering every user's, whatever user_ids asks); one it answers with no user_id is the user's asked for. */
+const accountOf = (user: string) => (one: unknown): one is Json => isObject(one) && (!one.user_id || one.user_id === user);
+
+/** Whether Composio lists the connected account `account` under `user` for `toolkit`: `listed`, `unlisted`, or
+ *  `unbounded` when it lists more than the lookup's bound (MAX_PAGES of ACCOUNT_PAGE, as the save's), so it can't be
+ *  checked. Any failure to read throws (asking): the caller refuses, never assumes. */
+export async function composioListsAccount(ask: Ask, user: string, toolkit: string, account: string): Promise<"listed" | "unlisted" | "unbounded"> {
   let cursor: string | undefined;
   for (let page = 0; page < MAX_PAGES; page++) {
     const listed = await ask("checking the run's connected account", "GET", `/api/v3/connected_accounts?user_ids=${encodeURIComponent(user)}&toolkit_slugs=${encodeURIComponent(toolkit)}&limit=${ACCOUNT_PAGE}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`);
-    if ((Array.isArray(listed.items) ? listed.items : []).some((one) => isObject(one) && one.id === account && one.user_id === user)) return true;
+    if ((Array.isArray(listed.items) ? listed.items : []).filter(accountOf(user)).some((one) => one.id === account)) return "listed";
     cursor = text(listed.next_cursor) || undefined;
-    if (!cursor) return false;
+    if (!cursor) return "unlisted";
   }
-  return false;
+  return "unbounded";
 }
+/** The bound composioListsAccount reads to, in words (a function: the bounds are declared below). */
+export const composioAccountBoundWords = (): string => `more than ${MAX_PAGES} pages of connected accounts (${ACCOUNT_PAGE} a page)`;
 /** A Composio toolkit's slug, as a save takes it once trimmed and lower-cased. */
 export const COMPOSIO_TOOLKIT = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 const TOOLKIT = COMPOSIO_TOOLKIT;
@@ -439,7 +447,8 @@ export async function composioSave<T extends { tools?: readonly { name: string }
           break;
         }
         const listed = await ask("checking the connected account", "GET", `/api/v3/connected_accounts?user_ids=${encodeURIComponent(user)}&toolkit_slugs=${encodeURIComponent(toolkit)}&auth_config_ids=${encodeURIComponent(authConfig)}&limit=${ACCOUNT_PAGE}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`);
-        actives.push(...((Array.isArray(listed.items) ? listed.items : []).filter((a) => isObject(a) && a.status === "ACTIVE" && isObject(a.auth_config) && a.auth_config.id === authConfig) as Json[]));
+        // Only this save's user's (the mapped one): an account Composio answers under another user is never counted.
+        actives.push(...((Array.isArray(listed.items) ? listed.items : []).filter((a) => isObject(a) && (!a.user_id || a.user_id === user) && a.status === "ACTIVE" && isObject(a.auth_config) && a.auth_config.id === authConfig) as Json[]));
         cursor = text(listed.next_cursor) || undefined;
         if (!cursor) break;
       }
