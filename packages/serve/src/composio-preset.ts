@@ -35,12 +35,12 @@ export const composioTokenUser = (user: string): string => COMPOSIO_TOKEN_USER_P
  *  listed API token is one principal (api-token.ts), so the prefix is the namespace, not one per token. */
 export const composioTokenNamespaced = (user: string): boolean => user.startsWith(COMPOSIO_TOKEN_USER_PREFIX) && user.length > COMPOSIO_TOKEN_USER_PREFIX.length;
 /** Why a run's Composio binding on an API-only server can't be used: its user is one the owner's servers call as here
- *  (mcp-secret-writes.ts ownersComposioUser). Never names the user or the server. */
+ *  (composio-owners.ts ownersComposioUsers). Never names the user or the server. */
 export const COMPOSIO_OWNERS_USER_WORDS = `it is a Composio user this server's owner calls as here (the preset's default user, its tool-listing user, or the user an MCP server the owner saved calls as), and a run's binding on this API-only server never calls as the owner: name a Composio user of the run's own person`;
 
-/** Whether a connected account Composio answered is `user`'s: one it answers under another user is never (a Composio
- *  answering every user's, whatever user_ids asks); one it answers with no user_id is the user's asked for. */
-const accountOf = (user: string) => (one: unknown): one is Json => isObject(one) && (!one.user_id || one.user_id === user);
+/** Whether a connected account Composio answered is `user`'s: only one it names as that user's. One it answers under
+ *  another user (a Composio answering every user's, whatever user_ids asks), or with no user_id, is never. */
+const accountOf = (user: string) => (one: unknown): one is Json => isObject(one) && one.user_id === user;
 
 /** Whether Composio lists the connected account `account` under `user` for `toolkit`: `listed`, `unlisted`, or
  *  `unbounded` when it lists more than the lookup's bound (MAX_PAGES of ACCOUNT_PAGE, as the save's), so it can't be
@@ -273,27 +273,27 @@ const labelOf = (account: Json): string | undefined =>
   accountLabel(account.alias) ?? (isObject(account.state) && isObject(account.state.val) ? accountLabel(account.state.val.displayName) : undefined) ?? accountLabel(account.word_id);
 
 /** The connected accounts of `of.user` for `of.toolkit` under `of.auth_config` (under every config where none is named;
- *  ACTIVE ones alone with `active`), as Composio lists them now: never one it names as another user's. One with no
- *  user_id (a field Composio's docs say it will stop answering) is kept: Composio was asked for this user's alone. None,
+ *  ACTIVE ones alone with `active`), as Composio lists them now: only one it names as that user's. One with no user_id
+ *  (a field Composio's docs say it will stop answering) is not: nothing says whose it is, so it is never counted. None,
  *  unasked, for a user that is no Composio user id (COMPOSIO_USER_ID): a blank one Composio may read as every user. */
 export async function accountsUnder(ask: Ask, of: { user: string; toolkit: string; auth_config?: string }, active = false): Promise<Json[]> {
   if (!COMPOSIO_USER_ID.test(of.user)) return [];
   const enc = encodeURIComponent;
   const listed = await ask("checking the connected account", "GET", `/api/v3/connected_accounts?user_ids=${enc(of.user)}&toolkit_slugs=${enc(of.toolkit)}${of.auth_config ? `&auth_config_ids=${enc(of.auth_config)}` : ""}${active ? "&statuses=ACTIVE" : ""}`);
   return (Array.isArray(listed.items) ? listed.items : []).filter((a): a is Json =>
-    isObject(a) && (!a.user_id || a.user_id === of.user) && (!of.auth_config || (isObject(a.auth_config) && a.auth_config.id === of.auth_config)) && (!active || a.status === "ACTIVE"));
+    isObject(a) && a.user_id === of.user && (!of.auth_config || (isObject(a.auth_config) && a.auth_config.id === of.auth_config)) && (!active || a.status === "ACTIVE"));
 }
 
 /** The account of a saved Composio server's user for its toolkit, under its auth config (accountsUnder), as Composio
- *  lists it now. Labels come only from an account Composio names as that user's: one with no user_id connects the server
- *  but says nothing of whose it is. `unknown`, unasked, for a user that is no one Composio user (empty, which Composio
+ *  lists it now: only an account Composio names as that user's counts, so one with no user_id neither connects the
+ *  server nor gives a label. `unknown`, unasked, for a user that is no one Composio user (empty, which Composio
  *  reads as every user). */
 export async function composioAccount(ask: Ask, of: { user: string; toolkit: string; auth_config: string }): Promise<ComposioAccount> {
   if (!COMPOSIO_USER_ID.test(of.user)) return { state: "unknown" };
   const mine = await accountsUnder(ask, of);
   const active = mine.filter((a) => a.status === "ACTIVE");
   if (active.length) {
-    const labels = [...new Set(active.filter((a) => a.user_id === of.user).map(labelOf).filter((label): label is string => !!label))].slice(0, MAX_LABELS);
+    const labels = [...new Set(active.map(labelOf).filter((label): label is string => !!label))].slice(0, MAX_LABELS);
     return { state: "connected", ...(labels.length ? { labels } : {}) };
   }
   if (mine.some((a) => a.status === "INITIATED" || a.status === "INITIALIZING")) return { state: "pending" };
@@ -449,8 +449,9 @@ export async function composioSave<T extends { tools?: readonly { name: string }
           break;
         }
         const listed = await ask("checking the connected account", "GET", `/api/v3/connected_accounts?user_ids=${encodeURIComponent(user)}&toolkit_slugs=${encodeURIComponent(toolkit)}&auth_config_ids=${encodeURIComponent(authConfig)}&limit=${ACCOUNT_PAGE}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`);
-        // Only this save's user's (the mapped one): an account Composio answers under another user is never counted.
-        actives.push(...((Array.isArray(listed.items) ? listed.items : []).filter((a) => isObject(a) && (!a.user_id || a.user_id === user) && a.status === "ACTIVE" && isObject(a.auth_config) && a.auth_config.id === authConfig) as Json[]));
+        // Only this save's user's (the mapped one): an account Composio answers under another user, or with no user_id, is
+        // never counted.
+        actives.push(...((Array.isArray(listed.items) ? listed.items : []).filter((a) => isObject(a) && a.user_id === user && a.status === "ACTIVE" && isObject(a.auth_config) && a.auth_config.id === authConfig) as Json[]));
         cursor = text(listed.next_cursor) || undefined;
         if (!cursor) break;
       }
@@ -541,6 +542,12 @@ const DASHBOARD = "https://platform.composio.dev";
 /** The Composio MCP server a saved preset address names (`/v3/mcp/<id>/mcp`, composioAddress): its id, or undefined. */
 export const composioServerId = (address: string): string | undefined => {
   try { return /^\/v3\/mcp\/([^/]+)\/mcp$/.exec(new URL(address).pathname)?.[1]; } catch { return undefined; }
+};
+
+/** The Composio user a saved preset address calls as (its user_id), or undefined: none named, or not a preset address. */
+export const composioAddressUser = (address: string): string | undefined => {
+  if (composioServerId(address) === undefined) return undefined;
+  return new URL(address).searchParams.get(ADDRESS_USER) ?? undefined;
 };
 
 /** A thing at Composio as the words name it; `removed`: as a removal names it (an account its connect link with it). */

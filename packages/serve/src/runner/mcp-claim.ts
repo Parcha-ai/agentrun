@@ -56,7 +56,7 @@
 // end is refreshed through open's lease path: behind the call while the token is still valid (the call goes at once on
 // it), waited on only when it has run out. Concurrent calls to one server share one such open.
 import { composioOutsideNamespace, heldApiOnlyMcpOrigins, offApiOnlyMcpOrigins } from "../mcp-api-only-origins.js";
-import { ownersComposioUser } from "../mcp-secret-writes.js";
+import { ownersComposioUsers, ownersUser } from "../composio-owners.js";
 import { randomUUID } from "node:crypto";
 import { EndpointRefused, REFRESH_REQUEST_MS, refreshed, refused, RequestUnsent, type Seen, systemNetwork, type OAuthNetwork, type TokenSet } from "../mcp-oauth.js";
 import { type McpCredentials, type McpPin } from "../mcp-gateway.js";
@@ -449,13 +449,13 @@ export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> 
 
   /** A per-run Composio server's account for this run, as the query its requests add (composio-preset.ts
    *  composioRunQuery); or why there is none. Undefined: `row` is no per-run Composio server (its own record says so:
-   *  composioPerRun). On an API-only store a binding of a user the owner calls as (ownersComposioUser, the start's own
+   *  composioPerRun). On an API-only store a binding of a user the owner calls as (composio-owners.ts ownersComposioUsers, the start's own
    *  check, read again: one sealed before the check, or before the owner's server was saved) is refused unsent. */
   const composioAccount = async (name: string, row: McpServerRow): Promise<{ query: Record<string, string> } | { unopened: string } | undefined> => {
     if (!composioPerRun(row, await store.settings.get(composioMadeKey(name)))) return undefined;
     const given = await handed(name, row.url, "composio");
     if ("unopened" in given) return given;
-    if ((await heldApiOnlyMcpOrigins(store)) && (await ownersComposioUser(store, given.composio.user_id))) return { unopened: COMPOSIO_OWNERS_USER_WORDS };
+    if ((await heldApiOnlyMcpOrigins(store)) && ownersUser(await ownersComposioUsers(store), given.composio.user_id)) return { unopened: COMPOSIO_OWNERS_USER_WORDS };
     return { query: composioRunQuery(given.composio) };
   };
 

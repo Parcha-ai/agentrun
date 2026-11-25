@@ -308,7 +308,7 @@ async function claimed(t, composio, { url, perRun, handed, owners }) {
   return step;
 }
 
-// The claim reads the start's check again (ownersComposioUser), with AGENTRUN_API_ONLY_MCP_ORIGINS held: a binding of a
+// The claim reads the start's check again (composio-owners.ts ownersComposioUsers), with AGENTRUN_API_ONLY_MCP_ORIGINS held: a binding of a
 // user the owner calls as (sealed before the check, or before the owner's server was saved) gets no entry but the
 // refusal's words, its calls refused unsent; a backend's bare user id is handed on.
 const CLAIM_REFUSED = [

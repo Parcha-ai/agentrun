@@ -2514,8 +2514,8 @@ lists. Composio's server can leave out an action it was allowed (it did for `HAC
 A refresh of a saved Composio server also reads its account at Composio, and every read of the server then says it as
 `composio_account: {state, labels?, checked_at}`: `connected` with each account's label (its alias, else the name
 Composio shows, else its word id; never its id or a token), `pending` while its connect link is unfinished, `expired`,
-`none`, or `unknown` when Composio didn't answer. An account Composio answers as another user's is never the server's,
-and only one it names as the server's user's gives a label. A per-run server has none; an empty recorded user reads
+`none`, or `unknown` when Composio didn't answer. An account Composio answers as another user's, or with no `user_id`,
+is never the server's: only one it names as the server's user's connects it or gives a label. A per-run server has none; an empty recorded user reads
 `unknown`. The API token sees `composio_account` too, in a server's full read: its label may be the account's email.
 
 A saved Composio server is gated, approved and shown on the Timeline as any MCP server's tools are, "not metered" until
@@ -3667,8 +3667,8 @@ serves these routes alone:
     else `422` `not_allowed` under it, before any account is looked up. Any other user is the caller's: a backend's
     own bare user id or one in the token's namespace alike. A `connected_account_id` it names is
     one Composio lists under that user for the server's toolkit, read at the start or the message that hands it with the
-    server's key, 50 a page and at most 10 pages, as the save's lookup reads; one Composio answers under another user
-    never counts. An account it doesn't list there is `422` `not_allowed` under `connected_account_id`, and so is one
+    server's key, 50 a page and at most 10 pages, as the save's lookup reads; one Composio answers under another user,
+    or with no `user_id`, never counts. An account it doesn't list there is `422` `not_allowed` under `connected_account_id`, and so is one
     past those 10 pages, in words of its own, since it can't be checked. Composio not answering that read is `424`
     (`upstream_failed`): a run's account is never taken unchecked. Each refusal says which check refused it, nothing is
     started, and none quotes what was sent. A run's claim reads the same check again (one sealed before it, or before

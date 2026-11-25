@@ -16,7 +16,8 @@ import {
 import { listMcpServers, openMcpRow, putPendingSignIn, removeMcpServer, removeMcpServerIfCredential, rewriteMcpServer, saveMcpServerIfCredential, takePendingSignIn, type RemovedMcpServer } from "./mcp-store.js";
 import { checkPrivateHosts, privateOAuthHosts, savePrivateOAuthHosts } from "./mcp-private-hosts.js";
 // MCP's secret writes, registered with the one gate as the registry loads (the server's dispatch reads them).
-import { credentialMark, ownersAuthConfig, ownersComposioUser, tokensAccount } from "./mcp-secret-writes.js";
+import { credentialMark, ownersAuthConfig, tokensAccount } from "./mcp-secret-writes.js";
+import { ownersComposioUsers, ownersUser } from "./composio-owners.js";
 import { type SecretMeta, secretMeta, secretName } from "./secret-writes.js";
 import { type ClientKind, dialAt, issuerOf, LOOPBACK, MAX_PENDING, MCP_SETTINGS_PAGE, mcpServerAt, McpSignIns, type OAuthNetwork, type Pending, type PendingStore, reasonOf, SIGN_IN_AGAIN, systemNetwork, type TokenSet } from "./mcp-oauth.js";
 import { type Cleanup, cleanupOf, COMPOSIO_KEY_ENV, COMPOSIO_ORIGIN, composioAccountKey, composioEnvKey, composioKeyFromEnv, composioMadeKey, type ComposioMade, composioPerRun, droppedOf, madeToWrite, recordedMade, releasedOf, storedMade } from "./composio-made.js";
@@ -861,13 +862,13 @@ export class McpServersOverStore {
   }
 
   /** On an API-only server, the refusal of a run's binding (`binding`, handed at `field`) of the per-run Composio server
-   *  `name` (`row`), or undefined when it stands: its user must be none the owner calls as here (ownersComposioUser), and
+   *  `name` (`row`), or undefined when it stands: its user must be none the owner calls as here (composio-owners.ts ownersComposioUsers), and
    *  a connected account it names one Composio lists under that user for the server's toolkit, read with the server's
    *  key (composioListsAccount). Composio not answering, or the key not opening, throws, and an account past the read's
    *  bound is refused: a binding is never taken unchecked. Each refusal says which check refused it, and never quotes
    *  what was sent. */
   async tokenBinding(name: string, row: McpServerRow, binding: { user_id: string; connected_account_id?: string }, field: string, control: ComposioControl, signal?: AbortSignal): Promise<InputIssue | undefined> {
-    if (await ownersComposioUser(this.store, binding.user_id)) return { field: `${field}.composio_user_id`, reason: "not_allowed", message: `That composio_user_id can't be used: ${COMPOSIO_OWNERS_USER_WORDS}. Nothing was started.` };
+    if (ownersUser(await ownersComposioUsers(this.store), binding.user_id)) return { field: `${field}.composio_user_id`, reason: "not_allowed", message: `That composio_user_id can't be used: ${COMPOSIO_OWNERS_USER_WORDS}. Nothing was started.` };
     const account = binding.connected_account_id;
     if (account === undefined) return undefined;
     const { toolkit } = await this.sourceOf(row);

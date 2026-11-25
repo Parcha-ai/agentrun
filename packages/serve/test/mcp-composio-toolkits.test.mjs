@@ -249,7 +249,8 @@ test("an account Composio answers with no user_id doesn't connect the server, no
   accounts.gmail = [{ id: "ca_connected02", user: null, status: "ACTIVE", auth_config: config, shown: { alias: "person@example.com" } }];
   const res = await s.api("POST", "/settings/mcp-servers/gmail/refresh");
   assert.equal(res.status, 200, JSON.stringify(res.body));
-  assert.deepEqual({ state: res.body.server.composio_account?.state, labels: res.body.server.composio_account?.labels }, { state: "none", labels: undefined });
+  // Not connected: the account the save's own connect link started (named as the server's user's) is what it reads.
+  assert.deepEqual({ state: res.body.server.composio_account?.state, labels: res.body.server.composio_account?.labels }, { state: "pending", labels: undefined });
   assert.ok(!storeBytes(s.server.data).includes("person@example.com"), "nor is its label kept");
   // Named as the server's user's, it connects the server and its label shows.
   accounts.gmail = [{ id: "ca_connected02", status: "ACTIVE", auth_config: config, shown: { alias: "person@example.com" } }];
