@@ -13,19 +13,28 @@
 -- run's epoch, an unknown cost its run has now, and an audit's shadow on another path. The mark starts at 0, so the first
 -- open records them. A runner of an earlier version writes `epoch` in each end's insert and fails on the schema this
 -- leaves, so the floor rises to 30: stop the earlier build's runners before this build's server starts.
+--
+-- It runs again unharmed on a schema it already brought to 30 (a store whose record of it is gone, applied again from an
+-- earlier version): the deletes read each row's epoch, so they run only while the column is there, and each column and
+-- index is dropped or added only where it is, or is not, yet.
 
-DELETE FROM learning_spend WHERE run_id IN (SELECT l.run_id FROM learning_ledger l JOIN runs ON runs.id = l.run_id
-    WHERE l.path IS NULL OR l.epoch <> runs.epoch OR (l.cost = 'unknown' AND runs.cost_usd IS NOT NULL)
-      OR (substr(l.run_id, 1, 6) = 'audit.' AND l.path <> 'audit'));
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'learning_ledger' AND column_name = 'epoch') THEN
+    EXECUTE $repair$DELETE FROM learning_spend WHERE run_id IN (SELECT l.run_id FROM learning_ledger l JOIN runs ON runs.id = l.run_id
+        WHERE l.path IS NULL OR l.epoch <> runs.epoch OR (l.cost = 'unknown' AND runs.cost_usd IS NOT NULL)
+          OR (substr(l.run_id, 1, 6) = 'audit.' AND l.path <> 'audit'))$repair$;
+    EXECUTE $repair$DELETE FROM learning_ledger WHERE run_id IN (SELECT l.run_id FROM learning_ledger l JOIN runs ON runs.id = l.run_id
+        WHERE l.path IS NULL OR l.epoch <> runs.epoch OR (l.cost = 'unknown' AND runs.cost_usd IS NOT NULL)
+          OR (substr(l.run_id, 1, 6) = 'audit.' AND l.path <> 'audit'))$repair$;
+  END IF;
+END
+$$;
 
-DELETE FROM learning_ledger WHERE run_id IN (SELECT l.run_id FROM learning_ledger l JOIN runs ON runs.id = l.run_id
-    WHERE l.path IS NULL OR l.epoch <> runs.epoch OR (l.cost = 'unknown' AND runs.cost_usd IS NOT NULL)
-      OR (substr(l.run_id, 1, 6) = 'audit.' AND l.path <> 'audit'));
+ALTER TABLE learning_ledger DROP COLUMN IF EXISTS epoch;
 
-ALTER TABLE learning_ledger DROP COLUMN epoch;
+CREATE INDEX IF NOT EXISTS learning_ledger_by_hand ON learning_ledger (agent_id, path, started_at, run_id);
 
-CREATE INDEX learning_ledger_by_hand ON learning_ledger (agent_id, path, started_at, run_id);
-
-ALTER TABLE store_meta ADD COLUMN ledger_backfilled BIGINT NOT NULL DEFAULT 0 CHECK (ledger_backfilled IN (0, 1));
+ALTER TABLE store_meta ADD COLUMN IF NOT EXISTS ledger_backfilled BIGINT NOT NULL DEFAULT 0 CHECK (ledger_backfilled IN (0, 1));
 
 UPDATE store_meta SET schema_version = 30 WHERE singleton = 1;

@@ -7,9 +7,11 @@
 //     row again with the healed cost; a purge takes the run's row and every spend row it booked or that audits it;
 //   - a run that ended with no row is recorded once, at the server's open (run-patch.ts backfillLedger), at the figures
 //     its end would have written, a page at a time; an open after a stop partway records the rest, and once the ledger
-//     is marked whole (store_meta.ledger_backfilled) no open reads the runs again; no read records one;
-//   - a store the ledger's first release left has its wrong rows recorded again at the open that drops their epoch (a
-//     shadow with no path or audit spend, a stale row, an unknown cost its run now has, a run by hand with no path);
+//     is marked whole (store_meta.ledger_backfilled) no open reads the runs again; no read records one; each run is
+//     locked before it is read again, so a heal another server commits meanwhile stands;
+//   - a store the ledger's first release left (version 15, which a runner refuses until the server brings it to 16) has
+//     its wrong rows recorded again at the open that drops their epoch (a shadow with no path or audit spend, a stale
+//     row, an unknown cost its run now has, a run by hand with no path); Postgres 0030 runs again unharmed;
 //   - the read before the window (Learning.byHandBefore) walks the by-hand index, no sort of the agent's rows;
 //   - a cancel that wins an end keeping its job's end (keepsEnd) moves its ended_at after its row is written: the row
 //     is read as written, no round read again;
@@ -24,6 +26,7 @@ import { raw, sqliteOnly } from "./store-target.mjs";
 
 const { agentCostOverStore, pastRunsOverStore, runAllInOverStore } = await import("../dist/store-reads/learning.js");
 const { BY_HAND_BEFORE } = await import("../dist/store/sqlite/run-patch.js");
+const { SCHEMA_VERSION, StoreAwaitsServer } = await import("../dist/store/index.js");
 const { PAST_RUNS, workflowCostsOf } = await import("../dist/runner/workflow-first.js");
 const { keepResetAt } = await import("../dist/learn/promote.js");
 
@@ -245,20 +248,33 @@ test("a store the ledger's first release left: its wrong rows are recorded again
   await db.run("UPDATE learning_ledger SET cost = 'unknown', job_usd = NULL WHERE run_id = 'h2'");
   await db.run("UPDATE learning_ledger SET job_usd = 9, epoch = epoch - 1 WHERE run_id = 's2'");
   await db.run("UPDATE learning_ledger SET path = 'agent' WHERE run_id = 'audit.s2'");
+  // At that release's version, 15: a runner of this build refuses it until the server brings it to 16, and a runner of
+  // 15 (whose end writes the epoch) refuses 16 as a version it does not know.
+  await db.run("UPDATE store_meta SET schema_version = 15 WHERE singleton = 1");
   await db.close();
+  assert.equal(SCHEMA_VERSION, 16);
+  await assert.rejects(storeOn(t, { file, clock, role: "runner" }), (error) => error instanceof StoreAwaitsServer && /bring this store from version 15 to 16/.test(error.message));
   const { store: reopened } = await storeOn(t, { file, clock });
   assert.deepEqual(await figures(reopened), now, "every wrong row recorded again from its run, as its end writes it");
+  const after = await raw(file);
+  assert.deepEqual([(await after.get("SELECT schema_version AS v FROM store_meta")).v, (await after.all("SELECT name FROM pragma_table_info('learning_ledger') WHERE name = 'epoch'")).length], [16, 0], "16, the epoch gone");
+  await after.close();
 });
 
-test("Postgres migration 0030 repairs the same rows, before it drops their epoch, and makes the same by-hand index and mark", async () => {
+test("Postgres migration 0030 repairs the same rows, only while their epoch is there and before it drops it, and makes the same by-hand index and mark, each only where missing", async () => {
   const { readFile } = await import("node:fs/promises");
   const { LEARNING_LEDGER_BY_HAND, LEARNING_LEDGER_REPAIR } = await import("../dist/store/schema.js");
   const flat = (sql) => sql.replace(/\s+/g, " ").trim();
-  const text = flat(await readFile(new URL("../dist/store/postgres/migrations/0030_learning_ledger_epoch.sql", import.meta.url), "utf8"));
-  const at = (sql) => text.indexOf(`${flat(sql)};`);
-  for (const sql of LEARNING_LEDGER_REPAIR) assert.ok(at(sql) >= 0 && at(sql) < text.indexOf("DROP COLUMN epoch"), sql);
-  assert.ok(at(LEARNING_LEDGER_BY_HAND.replace(" IF NOT EXISTS", "")) >= 0, LEARNING_LEDGER_BY_HAND);
-  assert.ok(text.includes("ADD COLUMN ledger_backfilled"));
+  const text = flat((await readFile(new URL("../dist/store/postgres/migrations/0030_learning_ledger_epoch.sql", import.meta.url), "utf8")).replace(/--[^\n]*/g, ""));
+  const guard = text.indexOf("IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'learning_ledger' AND column_name = 'epoch') THEN");
+  const drop = text.indexOf("ALTER TABLE learning_ledger DROP COLUMN IF EXISTS epoch;");
+  assert.ok(guard >= 0 && drop > guard, "the repair runs only while the epoch is there, the drop after it");
+  for (const sql of LEARNING_LEDGER_REPAIR) {
+    const at = text.indexOf(`EXECUTE $repair$${flat(sql)}$repair$;`);
+    assert.ok(at > guard && at < text.indexOf("END IF;"), sql);
+  }
+  assert.ok(text.includes(`${flat(LEARNING_LEDGER_BY_HAND)};`), LEARNING_LEDGER_BY_HAND);
+  assert.ok(text.includes("ALTER TABLE store_meta ADD COLUMN IF NOT EXISTS ledger_backfilled"));
 });
 
 test("the read before the window walks the by-hand index (learning_ledger_by_hand): no sort of the agent's ledger, whatever its size", sqliteOnly("SQLite's query plan"), async (t) => {

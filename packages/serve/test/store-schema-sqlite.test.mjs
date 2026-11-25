@@ -29,14 +29,12 @@ test("on a file this build's server set up, store-schema says its server and run
 });
 
 for (const need of SQLITE_RUNNER_NEEDS) {
-  test(`a file of this version ${need.gone ? `with ${need.table}.${need.gone.join(", ")}` : `without ${need.table}.${need.columns.join(", ")}`}: store-schema says the runner waits, as its open refuses it`, async (t) => {
+  test(`a file of this version without ${need.table}.${need.columns.join(", ")}: store-schema says the runner waits, as its open refuses it`, async (t) => {
     const dir = await serverMade(t);
     // An earlier build of this version left the file without the column; without the runners table (its relay was in
-    // runner_relays then), hand_backs, run_attempts or the learning ledger, which the server makes at its start; or with
-    // a column the server drops at its start (the ledger's epoch).
+    // runner_relays then), hand_backs, run_attempts or the learning ledger, which the server makes at its start.
     const db = new DatabaseSync(join(dir, STORE_FILE));
-    if (need.gone) for (const column of need.gone) db.exec(`ALTER TABLE ${need.table} ADD COLUMN ${column} INTEGER`);
-    else if (need.columns.includes("host") || ["hand_backs", "run_attempts", "learning_ledger", "learning_spend"].includes(need.table)) db.exec(`DROP TABLE ${need.table}`);
+    if (need.columns.includes("host") || ["hand_backs", "run_attempts", "learning_ledger", "learning_spend"].includes(need.table)) db.exec(`DROP TABLE ${need.table}`);
     else for (const column of need.columns) {
       for (const { name } of db.prepare(`SELECT name FROM pragma_index_list('${need.table}')`).all()) {
         if (db.prepare(`SELECT 1 FROM pragma_index_info('${name}') WHERE name = ?`).get(column) && !name.startsWith("sqlite_autoindex")) db.exec(`DROP INDEX "${name}"`);
@@ -67,14 +65,14 @@ test("every wait the SQLite runner's open says for a column is on SQLITE_RUNNER_
   assert.deepEqual(said.filter((why) => !listed.has(why)), [], "each is listed");
 });
 
-test("on SQLite, a runner waits only for a version its server upgrades in place (11-14); any other earlier one, and a later one, is refused", () => {
+test("on SQLite, a runner waits only for a version its server upgrades in place (11-15); any other earlier one, and a later one, is refused", () => {
   const target = { kind: "sqlite", dataDir: "/data" };
   const verdict = (version) => {
     const report = storeSchemaReport(target, { version, runnerFloor: version }, SCHEMA_VERSION);
     return [report.server, report.runner];
   };
   assert.deepEqual(verdict(10), ["refuses", "refused"], "10: no in-place upgrade, so neither waits on it");
-  for (const version of [11, 12, 13, 14]) assert.deepEqual(verdict(version), ["migrates", "waits"], String(version));
+  for (const version of [11, 12, 13, 14, 15]) assert.deepEqual(verdict(version), ["migrates", "waits"], String(version));
   assert.deepEqual(verdict(SCHEMA_VERSION), ["opens", "opens"]);
   assert.deepEqual(verdict(SCHEMA_VERSION + 1), ["refuses", "refused"], "a later server's file");
   assert.deepEqual(verdict(null), ["sets up", "refused"]);

@@ -12,7 +12,7 @@ import { watchCommandsAt, wakeCommands } from "../command-wake.js";
 import { claimFence, storeNow, type StoreNow } from "../fence.js";
 import { JOURNAL_FIRST_ID, RunStorage } from "../journal/storage.js";
 import { RUNNER_RECORDS } from "@parcha/agentrun-kernel";
-import { COMMANDS_ONE_ANSWER, COMPUTER_INTERVALS, COMPUTER_INTERVALS_ADDED, COMPUTER_INTERVALS_RUN, DDL, diskUpgrade, HAND_BACKS, HAND_BACKS_AT, HAND_BACKS_KEPT_MS, HAND_BACKS_RUN, IMPORTED_TEMPLATES, LEARNING_LEDGER, LEARNING_LEDGER_AGENT, LEARNING_LEDGER_BY_HAND, LEARNING_LEDGER_EPOCH, LEARNING_LEDGER_REPAIR, LEARNING_SPEND, LEARNING_SPEND_AGENT, LEARNING_SPEND_OF_RUN, listingUpgrade, MINTED_TOKENS, purgeUpgrade, relayUpgrade, NATIVE_COMMANDS_INDEX, PI_TABLE, PI_TABLES, REVISIONS_MCP_PIN, REVISIONS_MONID_PIN, RUN_ATTEMPTS, RUNNERS, RUNNERS_ADDED, RUN_LAUNCH_CENSUS, RUN_LAUNCH_CENSUS_ERASED, RUN_LAUNCH_CENSUS_ERASED_MADE, RUN_LAUNCH_CENSUS_SETTLE, RUNS_COST_UPPER_BOUND, RUNS_LABELS, SCHEMA_VERSION, SETTLED_LIST_STATUS, STORE_META_LEDGER_BACKFILLED, TRIGGERS_TEMPLATE_ID } from "../schema.js";
+import { COMMANDS_ONE_ANSWER, COMPUTER_INTERVALS, COMPUTER_INTERVALS_ADDED, COMPUTER_INTERVALS_RUN, DDL, diskUpgrade, HAND_BACKS, HAND_BACKS_AT, HAND_BACKS_KEPT_MS, HAND_BACKS_RUN, IMPORTED_TEMPLATES, LEARNING_LEDGER, LEARNING_LEDGER_AGENT, LEARNING_LEDGER_BY_HAND, LEARNING_SPEND, LEARNING_SPEND_AGENT, LEARNING_SPEND_OF_RUN, ledgerUpgrade, listingUpgrade, MINTED_TOKENS, purgeUpgrade, relayUpgrade, NATIVE_COMMANDS_INDEX, PI_TABLE, PI_TABLES, REVISIONS_MCP_PIN, REVISIONS_MONID_PIN, RUN_ATTEMPTS, RUNNERS, RUNNERS_ADDED, RUN_LAUNCH_CENSUS, RUN_LAUNCH_CENSUS_ERASED, RUN_LAUNCH_CENSUS_ERASED_MADE, RUN_LAUNCH_CENSUS_SETTLE, RUNS_COST_UPPER_BOUND, RUNS_LABELS, SCHEMA_VERSION, SETTLED_LIST_STATUS, STORE_META_LEDGER_BACKFILLED, TRIGGERS_TEMPLATE_ID } from "../schema.js";
 import {
   ActiveRuns, AgentArchived, AgentDeleting, AgentPurged, CommandTaken, ExternalBodyConflict, Fenced, FiringMoved, RunFinal, RunPurged, RunsMadeFromLeft, SchemaVersionUnknown, STORE_WRITE_DEADLINE_MS, StoreAwaitsServer, StoreBusy, StoreConstraint, StoreFromEarlierVersion, TriggerFull, TriggersLeft, UPLOAD_PREFIX, type AgentRow, type Agents,
   type Claim, type Command, type FiringRow, type FiringStatus, type ImportRunInput, type Journal, type NewRevision, type RevisionRow, type RunRow, type Runs,
@@ -338,11 +338,14 @@ async function versionOf(db: Connection): Promise<number | null> {
  *  the store, is set again. */
 const EARLIER_ROOT_FILES = ["mcp-servers.json", "triggers.json", "tool-keys.json", "trigger-secrets.json", ".door-token"];
 
+/** The store's earlier versions the server upgrades in place at its open (openSqliteStore), which a runner waits for
+ *  (StoreAwaitsServer); store-schema reports from the same set. */
+export const SQLITE_UPGRADES: ReadonlySet<number> = new Set([11, 12, 13, 14, 15]);
+
 /** The columns a runner of this build needs that an earlier build of this same version may not have: the server adds each
  *  at its start (openSqliteStore), and a runner on a file without one waits for that server (StoreAwaitsServer, in `why`'s
- *  words; exit 3). `gone`: columns an earlier build kept that the server drops at its start, which a runner waits on too.
- *  store-schema reads the same list, so its report says "waits" where the runner would. */
-export const SQLITE_RUNNER_NEEDS: readonly { readonly table: string; readonly columns: readonly string[]; readonly gone?: readonly string[]; readonly why: string }[] = [
+ *  words; exit 3). store-schema reads the same list, so its report says "waits" where the runner would. */
+export const SQLITE_RUNNER_NEEDS: readonly { readonly table: string; readonly columns: readonly string[]; readonly why: string }[] = [
   { table: "revisions", columns: ["mcp_pin", "monid_pin"], why: "install MCP and Monid revision metadata" },
   { table: "settings", columns: ["connector_id"], why: "add native command ownership metadata" },
   { table: "runs", columns: ["cost_upper_bound"], why: "add the bound beside each run's cost" },
@@ -356,8 +359,6 @@ export const SQLITE_RUNNER_NEEDS: readonly { readonly table: string; readonly co
   // A run's end writes its ledger row and spend rows (run-patch.ts applyRunPatch) in its own transaction.
   { table: "learning_ledger", columns: ["run_id"], why: "write each run's learning ledger row and spend at its end (learning_ledger, learning_spend)" },
   { table: "learning_spend", columns: ["run_id"], why: "write each run's learning ledger row and spend at its end (learning_ledger, learning_spend)" },
-  // An end of this build writes no `epoch` (schema.ts LEARNING_LEDGER_EPOCH), which an earlier build's column requires.
-  { table: "learning_ledger", columns: [], gone: ["epoch"], why: "drop each ledger row's epoch (learning_ledger.epoch)" },
 ];
 
 /** What a runner of this build waits for on a file of this version (SQLITE_RUNNER_NEEDS' first missing column's `why`),
@@ -365,7 +366,7 @@ export const SQLITE_RUNNER_NEEDS: readonly { readonly table: string; readonly co
 export async function runnerWaitsFor(columnsOf: (table: string) => Promise<ReadonlySet<string>> | ReadonlySet<string>): Promise<string | undefined> {
   for (const need of SQLITE_RUNNER_NEEDS) {
     const present = await columnsOf(need.table);
-    if (need.columns.some((column) => !present.has(column)) || need.gone?.some((column) => present.has(column))) return need.why;
+    if (need.columns.some((column) => !present.has(column))) return need.why;
   }
   return undefined;
 }
@@ -474,8 +475,10 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
     // it. Version 12 names no minting runner on a machine's token and keeps no runner's relay: the server adds them
     // (schema.ts relayUpgrade). Version 13 keeps no purge time on a run or an agent: the server adds them (schema.ts
     // purgeUpgrade). Version 14 keeps no disk on a run: the server adds it and writes each run's from its launch (schema.ts
-    // diskUpgrade). A runner refuses 11 to 14 until that server has.
-    const upgrading = found === 11 || found === 12 || found === 13 || found === 14;
+    // diskUpgrade). Version 15 keeps each ledger row's epoch: the server repairs the rows that release could leave wrong
+    // and drops it (the ledger's step below, then ledgerUpgrade). A runner refuses 11 to 15 until that server has, and a
+    // runner of 15, whose end writes the epoch, refuses 16 (SchemaVersionUnknown), or stops at its next floor read.
+    const upgrading = found !== null && SQLITE_UPGRADES.has(found);
     if (upgrading && role === "runner") throw new StoreAwaitsServer(`bring this store from version ${found} to ${SCHEMA_VERSION}`);
     if (found !== SCHEMA_VERSION && !upgrading) throw new SchemaVersionUnknown(file, found, SCHEMA_VERSION);
     const columns = new Set((await connection.all<{ name: string }>("SELECT name FROM pragma_table_info('revisions')")).map((column) => column.name));
@@ -544,14 +547,12 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
       throw new StoreAwaitsServer("keep each claim's turn and attempt (run_attempts)");
     }
     // A run's end writes its ledger row and spend rows (schema.ts LEARNING_LEDGER, LEARNING_SPEND) in its own transaction:
-    // a runner waits for the server that adds the tables (STORE_DDL at its start), and drops the `epoch` an earlier build
-    // kept on the ledger (LEARNING_LEDGER_EPOCH), which this build's end does not write.
-    const ledgerColumns = new Set((await connection.all<{ name: string }>("SELECT name FROM pragma_table_info('learning_ledger')")).map((column) => column.name));
+    // a runner waits for the server that adds the tables (STORE_DDL at its start). The `epoch` version 15 kept on the
+    // ledger, which this build's end does not write, is the version's: a runner refuses 15 above.
     const metaColumns = new Set((await connection.all<{ name: string }>("SELECT name FROM pragma_table_info('store_meta')")).map((column) => column.name));
     if (role === "runner" && (await connection.all("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name IN ('learning_ledger', 'learning_spend')")).length < 2) {
       throw new StoreAwaitsServer("write each run's learning ledger row and spend at its end (learning_ledger, learning_spend)");
     }
-    if (role === "runner" && ledgerColumns.has("epoch")) throw new StoreAwaitsServer("drop each ledger row's epoch (learning_ledger.epoch)");
     // The per-run viewer table was renamed browser_viewers → computer_viewers (schema.ts). Its rows are ephemeral, so none
     // migrate; the server drops a stale browser_viewers an earlier build of this version left, so none lingers beside it.
     // An earlier build of this version made no one-answer index on commands (schema.ts COMMANDS_ONE_ANSWER), or one that
@@ -588,12 +589,10 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
         { sql: COMPUTER_INTERVALS_RUN },
         // Nor any claim's turn and attempt (schema.ts RUN_ATTEMPTS): a claim made before it has no row.
         { sql: RUN_ATTEMPTS },
-        // Nor any learning ledger (schema.ts LEARNING_LEDGER, LEARNING_SPEND), or one with each row's `epoch`: the rows that
-        // release could leave wrong are deleted (LEARNING_LEDGER_REPAIR) and the backfill below records them again, then
-        // the epoch is dropped. Nor the mark that every ended run has its row (STORE_META_LEDGER_BACKFILLED), nor the
-        // by-hand index (LEARNING_LEDGER_BY_HAND).
+        // Nor any learning ledger (schema.ts LEARNING_LEDGER, LEARNING_SPEND; version 15's, with each row's `epoch`, is
+        // repaired and its epoch dropped by ledgerUpgrade below). Nor the mark that every ended run has its row
+        // (STORE_META_LEDGER_BACKFILLED), nor the by-hand index (LEARNING_LEDGER_BY_HAND).
         ...(metaColumns.has("ledger_backfilled") ? [] : [{ sql: STORE_META_LEDGER_BACKFILLED }]),
-        ...(ledgerColumns.has("epoch") ? [...LEARNING_LEDGER_REPAIR.map((sql) => ({ sql })), { sql: "UPDATE store_meta SET ledger_backfilled = 0 WHERE singleton = 1" }, { sql: LEARNING_LEDGER_EPOCH }] : []),
         { sql: LEARNING_LEDGER },
         { sql: LEARNING_LEDGER_AGENT },
         { sql: LEARNING_LEDGER_BY_HAND },
@@ -621,10 +620,11 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
         const minted = new Set((await connection.all<{ name: string }>("SELECT name FROM pragma_table_info('minted_tokens')")).map((column) => column.name));
         await connection.write(relayUpgrade(minted).map((sql) => ({ sql })), { full: true });
       }
-      if (upgrading) {
+      if (upgrading && found !== null) {
         const named = async (table: string) => new Set((await connection.all<{ name: string }>(`SELECT name FROM pragma_table_info('${table}')`)).map((column) => column.name));
-        if (found !== 14) await connection.write(purgeUpgrade(await named("runs"), await named("agents")).map((sql) => ({ sql })), { full: true });
-        await connection.write(diskUpgrade(await named("runs")).map((sql) => ({ sql })), { full: true });
+        if (found <= 13) await connection.write(purgeUpgrade(await named("runs"), await named("agents")).map((sql) => ({ sql })), { full: true });
+        if (found <= 14) await connection.write(diskUpgrade(await named("runs")).map((sql) => ({ sql })), { full: true });
+        await connection.write(ledgerUpgrade(await named("learning_ledger")).map((sql) => ({ sql })), { full: true });
       }
       // Every run an earlier build ended gets its ledger row once, here, on the schema this build reads.
       await backfillLedger(connection, options.now ?? Date.now);

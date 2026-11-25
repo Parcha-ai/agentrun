@@ -126,3 +126,51 @@ test("every shipped Postgres migration quotes its function bodies in matched $ta
   }
   assert.deepEqual(bad, []);
 });
+
+// A store whose record of a migration is gone has it applied again on a schema it already changed (store-postgres.test.mjs
+// from 0003, store-trigger-template.test.mjs, run-census.test.mjs), so each migration from RUNS_AGAIN_FROM runs twice
+// unharmed (0020 renames a table, so those tests drop its result by hand; each one after is written to run again). Read
+// from each file's statements outside its dollar-quoted bodies.
+const RUNS_AGAIN_FROM = 21;
+/** What in `sql` would fail, or change data again, on a schema it already brought to its version. */
+function notRunnableTwice(sql) {
+  const code = sql.replace(/--[^\n]*/g, "");
+  const bodies = [];
+  const outside = code.replace(/\$(\w*)\$[\s\S]*?\$\1\$/g, (body) => (bodies.push(body), " "));
+  const statements = outside.split(";").map((one) => one.replace(/\s+/g, " ").trim()).filter(Boolean);
+  const bad = [];
+  for (const statement of statements) {
+    if (/\bCREATE (UNIQUE )?INDEX\b(?! IF NOT EXISTS)/i.test(statement) || /\bCREATE TABLE\b(?! IF NOT EXISTS)/i.test(statement)) bad.push(`made with no IF NOT EXISTS: ${statement}`);
+    if (/\bADD COLUMN\b(?! IF NOT EXISTS)/i.test(statement)) bad.push(`a column added with no IF NOT EXISTS: ${statement}`);
+    if (/\bDROP (TABLE|INDEX|COLUMN|TRIGGER|FUNCTION|CONSTRAINT)\b(?! IF EXISTS)/i.test(statement)) bad.push(`dropped with no IF EXISTS: ${statement}`);
+    if (/\bCREATE FUNCTION\b/i.test(statement)) bad.push(`a function made with no OR REPLACE: ${statement}`);
+    if (/\bRENAME\b/i.test(statement)) bad.push(`a rename: ${statement}`);
+    const trigger = /\bCREATE TRIGGER (\w+)/i.exec(statement)?.[1];
+    if (trigger && !statements.some((one) => new RegExp(`^DROP TRIGGER IF EXISTS ${trigger}\\b`, "i").test(one))) bad.push(`a trigger made with no DROP TRIGGER IF EXISTS before it: ${statement}`);
+  }
+  // A column it drops is read before by a statement only in a body that finds the column first (a DO block over
+  // information_schema.columns): run again, the column is gone.
+  for (const [, column] of outside.matchAll(/\bDROP COLUMN (?:IF EXISTS )?(\w+)/gi)) {
+    const names = new RegExp(`\\b${column}\\b`, "i");
+    for (const statement of statements) if (names.test(statement) && !/\bDROP COLUMN\b/i.test(statement)) bad.push(`reads ${column}, which it drops, unguarded: ${statement}`);
+    for (const body of bodies) if (names.test(body) && !new RegExp(`column_name = '${column}'`).test(body)) bad.push(`a body reads ${column}, which it drops, without finding it first`);
+  }
+  return bad;
+}
+
+test("every shipped Postgres migration from 0021 on runs again unharmed on a schema it already changed: each thing it makes or drops only where missing or there, and a column it drops read only while it is there", () => {
+  const bad = migrationsIn().filter((m) => m.version >= RUNS_AGAIN_FROM).flatMap((m) => notRunnableTwice(m.sql).map((why) => `${name(m)}: ${why}`));
+  assert.deepEqual(bad, []);
+});
+
+test("the run-again check finds a read of a dropped column outside its guard, and each make or drop with no guard", () => {
+  const reads = "DELETE FROM learning_ledger l WHERE l.epoch <> 0;\nALTER TABLE learning_ledger DROP COLUMN IF EXISTS epoch;";
+  assert.equal(notRunnableTwice(reads).length, 1, reads);
+  const unchecked = "DO $$ BEGIN EXECUTE $q$DELETE FROM learning_ledger WHERE epoch <> 0$q$; END $$;\nALTER TABLE learning_ledger DROP COLUMN IF EXISTS epoch;";
+  assert.equal(notRunnableTwice(unchecked).length, 1, unchecked);
+  const guarded = "DO $$ BEGIN IF EXISTS (SELECT 1 FROM information_schema.columns WHERE column_name = 'epoch') THEN EXECUTE $q$DELETE FROM learning_ledger WHERE epoch <> 0$q$; END IF; END $$;\nALTER TABLE learning_ledger DROP COLUMN IF EXISTS epoch;";
+  assert.deepEqual(notRunnableTwice(guarded), [], guarded);
+  for (const sql of ["ALTER TABLE t DROP COLUMN c;", "CREATE INDEX i ON t (c);", "CREATE UNIQUE INDEX i ON t (c);", "CREATE TABLE t (c TEXT);", "ALTER TABLE t ADD COLUMN c TEXT;", "DROP TRIGGER x ON t;", "CREATE FUNCTION f() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NEW; END $$;", "CREATE TRIGGER x BEFORE UPDATE ON t FOR EACH ROW EXECUTE FUNCTION f();", "ALTER TABLE t RENAME TO u;"]) {
+    assert.ok(notRunnableTwice(sql).length > 0, sql);
+  }
+});

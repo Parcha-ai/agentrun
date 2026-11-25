@@ -40,9 +40,11 @@
 // such runner takes the dials the server relays to it (runners.host and .port, dial-relay.ts). Version 14 keeps when a run or
 // an agent was purged (runs.purged_at, agents.purged_at; DELETE /runs/{id} and /agents/{id}, agent-delete.ts): its row is
 // then a tombstone, its content gone and its cost kept. Version 15 keeps the disk a run's launch named as its own
-// (runs.disk; a run on one learns nothing, learn/learning-of.ts). The server upgrades these in place at its open
-// (listingUpgrade from 11, relayUpgrade from 12, purgeUpgrade from 13, then diskUpgrade from 14); a runner waits for it.
-export const SCHEMA_VERSION = 15;
+// (runs.disk; a run on one learns nothing, learn/learning-of.ts). Version 16 keeps no epoch on a learning ledger row
+// (learning_ledger; 15 kept one, which a runner of 15 writes at each end and this build's end does not). The server
+// upgrades these in place at its open (listingUpgrade from 11, relayUpgrade from 12, purgeUpgrade from 13, diskUpgrade
+// from 14, then ledgerUpgrade from 15); a runner waits for it.
+export const SCHEMA_VERSION = 16;
 
 /** One answer per approval of a run: a second approve or deny command naming the same approval is refused
  *  (StoreConstraint), so the first answer a person gives wins from the moment it is written, before the runner takes it
@@ -268,9 +270,9 @@ export const LEARNING_LEDGER_AGENT = "CREATE INDEX IF NOT EXISTS learning_ledger
 /** The agent's rows by path, newest first: what the read before the money rule's window walks (run-patch.ts
  *  BY_HAND_BEFORE), a few rows whatever the agent's history. In STORE_DDL, and made at every server open. */
 export const LEARNING_LEDGER_BY_HAND = "CREATE INDEX IF NOT EXISTS learning_ledger_by_hand ON learning_ledger (agent_id, path, started_at, run_id)";
-/** The `epoch` an earlier build of this version kept on each ledger row (the run's epoch at the end that wrote it),
- *  dropped at a server open where present; a runner waits while it is there (postgres 0030_learning_ledger_epoch.sql). */
-export const LEARNING_LEDGER_EPOCH = "ALTER TABLE learning_ledger DROP COLUMN epoch";
+/** The `epoch` version 15 kept on each ledger row (the run's epoch at the end that wrote it), dropped at the server open
+ *  that brings the store to 16 (ledgerUpgrade; postgres 0030_learning_ledger_epoch.sql). */
+const LEARNING_LEDGER_EPOCH = "ALTER TABLE learning_ledger DROP COLUMN epoch";
 /** The rows the ledger's first release (the build with LEARNING_LEDGER_EPOCH) could leave wrong once no reader corrects
  *  them: a row whose end named no path (a run by hand it left null, a shadow that failed first, with no audit spend), one
  *  behind its run's epoch (an end of an earlier runner after it), an unknown cost its run has now, and an audit's shadow
@@ -283,6 +285,17 @@ export const LEARNING_LEDGER_REPAIR: readonly string[] = [
   `DELETE FROM learning_spend WHERE run_id IN (${WRONG_LEDGER_ROWS})`,
   `DELETE FROM learning_ledger WHERE run_id IN (${WRONG_LEDGER_ROWS})`,
 ];
+/** Version 15 → 16 on SQLite (the server's open, sqlite/store.ts), given the ledger's columns now, after the open's DDL
+ *  write (the mark's column, STORE_META_LEDGER_BACKFILLED, among it): where the ledger still has its epoch (one 15 kept),
+ *  the rows that release could leave wrong deleted (LEARNING_LEDGER_REPAIR), the mark set back to 0 so the open's
+ *  backfill records them again, and the epoch dropped; then the version, in one durable write. A store from 14 or before
+ *  has a ledger made at this open, with no epoch: the version alone. */
+export function ledgerUpgrade(ledgerColumns: ReadonlySet<string>): readonly string[] {
+  return [
+    ...(ledgerColumns.has("epoch") ? [...LEARNING_LEDGER_REPAIR, "UPDATE store_meta SET ledger_backfilled = 0 WHERE singleton = 1", LEARNING_LEDGER_EPOCH] : []),
+    "UPDATE store_meta SET schema_version = 16 WHERE singleton = 1",
+  ];
+}
 /** Whether every final run not purged has its ledger row (1), which backfillLedger writes once it has recorded the last:
  *  no later open reads the runs again. 0 on a store with runs no server recorded yet. In STORE_DDL, and added at a server
  *  open to a store an earlier build of this version made. */
