@@ -8,7 +8,7 @@ import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { SCHEMA_VERSION } from "../dist/store/schema.js";
-import { openSqliteStore } from "../dist/store/sqlite/store.js";
+import { OLDEST_UPGRADED, openSqliteStore } from "../dist/store/sqlite/store.js";
 import { client, FAUX, scratch, serve, startServe } from "./support.mjs";
 
 /** The error startServe refused with, or null after closing the server it should not have started. */
@@ -101,12 +101,13 @@ const startOnStoreAt = async (t, version) => {
   return { err, code };
 };
 
-// The four versions before this one are the ones a server upgrades in place (store-listing-upgrade.test.mjs,
-// store-relay-upgrade.test.mjs, store-purge-upgrade.test.mjs, learn-per-disk.test.mjs); five before is refused.
+// The versions from OLDEST_UPGRADED up to the one before this one are the ones a server upgrades in place
+// (store-listing-upgrade.test.mjs, store-relay-upgrade.test.mjs, store-purge-upgrade.test.mjs, learn-per-disk.test.mjs);
+// the one before OLDEST_UPGRADED is refused.
 test("the bin on a store an earlier release set up says what to do, once, with no stack, and exits 1", { timeout: 20_000 }, async (t) => {
-  const { err, code } = await startOnStoreAt(t, SCHEMA_VERSION - 5);
+  const { err, code } = await startOnStoreAt(t, OLDEST_UPGRADED - 1);
   assert.equal(code, 1, err);
-  assert.match(err, new RegExp(`^agentrun-serve: the store at .*store\\.sqlite is schema version ${SCHEMA_VERSION - 5}, and this release \\(version ${SCHEMA_VERSION}\\) can't open a store an earlier release set up\\.$`, "m"));
+  assert.match(err, new RegExp(`^agentrun-serve: the store at .*store\\.sqlite is schema version ${OLDEST_UPGRADED - 1}, and this release \\(version ${SCHEMA_VERSION}\\) can't open a store an earlier release set up\\.$`, "m"));
   assert.match(err, /--data <new folder>/);
   assert.match(err, /--data \/data\/<new folder> --listen 0\.0\.0\.0 --port 7340 --drain-timeout 6s/);
   assert.match(err, /\(docker run or compose arguments: --data/);
@@ -194,7 +195,7 @@ test("started by the launcher on a store an earlier release set up, the refusal 
   const store = await openSqliteStore({ dataDir: data, role: "server" });
   await store.close();
   const raw = new DatabaseSync(join(data, "store.sqlite"));
-  raw.exec(`UPDATE store_meta SET schema_version = ${SCHEMA_VERSION - 5}`);
+  raw.exec(`UPDATE store_meta SET schema_version = ${OLDEST_UPGRADED - 1}`);
   raw.close();
   const { err, code } = await startByLauncher(t, data);
   assert.equal(code, 1, err);

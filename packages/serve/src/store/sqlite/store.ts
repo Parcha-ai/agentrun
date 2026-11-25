@@ -86,6 +86,11 @@ export const DEFAULT_LEASE_MS = 30_000;
 
 /** The store's file in its data directory: only the store names it. */
 export const STORE_FILE = "store.sqlite";
+/** The oldest schema version this release brings up to SCHEMA_VERSION in place at its server's open (version 11,
+ *  0.1.0-beta.44 and before): every version from it to the one before SCHEMA_VERSION is upgraded, each step by the
+ *  version it starts from; an older one is refused (SchemaVersionUnknown). The window follows SCHEMA_VERSION, so a new
+ *  version never drops the one before it. */
+export const OLDEST_UPGRADED = 11;
 
 export type SqliteStoreOptions = (
   /** The data directory (the server's and every runner's): the store's file is STORE_FILE in it. */
@@ -476,9 +481,10 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
     // (schema.ts relayUpgrade). Version 13 keeps no purge time on a run or an agent: the server adds them (schema.ts
     // purgeUpgrade). Version 14 keeps no disk on a run: the server adds it and writes each run's from its launch (schema.ts
     // diskUpgrade). Version 15 keeps no learning as rows: the server adds them (schema.ts learningRowsUpgrade). A runner
-    // refuses 11 to 15 until that server has. A later version is refused too, a runner in words that name its floor (a
-    // SQLite runner opens only its own version, so the floor is the version): RunnerBelowFloor.
-    const upgrading = found === 11 || found === 12 || found === 13 || found === 14 || found === 15;
+    // refuses each of OLDEST_UPGRADED to the version before SCHEMA_VERSION until that server has. A later version is
+    // refused too, a runner in words that name its floor (a SQLite runner opens only its own version, so the floor is the
+    // version): RunnerBelowFloor.
+    const upgrading = found !== null && found >= OLDEST_UPGRADED && found < SCHEMA_VERSION;
     if (upgrading && role === "runner") throw new StoreAwaitsServer(`bring this store from version ${found} to ${SCHEMA_VERSION}`);
     if (role === "runner" && found !== null && found > SCHEMA_VERSION) throw new RunnerBelowFloor(file, found, SCHEMA_VERSION, found);
     if (found !== SCHEMA_VERSION && !upgrading) throw new SchemaVersionUnknown(file, found, SCHEMA_VERSION);
@@ -615,18 +621,20 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
       const runnersMissing = Object.entries(RUNNERS_ADDED).filter(([column]) => !runnersNow.has(column)).map(([, sql]) => ({ sql }));
       if (runnersMissing.length > 0) await connection.write(runnersMissing, { full: true });
       await backfillNativeCommandOwners(connection);
-      if (found === 11) {
+      // Here `found` is SCHEMA_VERSION or a version in the window (any other was refused above): each step runs for the
+      // versions before the one that first kept what it adds.
+      if (found! <= 11) {
         const present = new Set((await connection.all<{ name: string }>("SELECT name FROM pragma_table_info('runs')")).map((column) => column.name));
         await connection.write(listingUpgrade(present).map((sql) => ({ sql })), { full: true });
       }
-      if (found === 11 || found === 12) {
+      if (found! <= 12) {
         const minted = new Set((await connection.all<{ name: string }>("SELECT name FROM pragma_table_info('minted_tokens')")).map((column) => column.name));
         await connection.write(relayUpgrade(minted).map((sql) => ({ sql })), { full: true });
       }
       if (upgrading) {
         const named = async (table: string) => new Set((await connection.all<{ name: string }>(`SELECT name FROM pragma_table_info('${table}')`)).map((column) => column.name));
-        if (found !== 14 && found !== 15) await connection.write(purgeUpgrade(await named("runs"), await named("agents")).map((sql) => ({ sql })), { full: true });
-        if (found !== 15) await connection.write(diskUpgrade(await named("runs")).map((sql) => ({ sql })), { full: true });
+        if (found! <= 13) await connection.write(purgeUpgrade(await named("runs"), await named("agents")).map((sql) => ({ sql })), { full: true });
+        if (found! <= 14) await connection.write(diskUpgrade(await named("runs")).map((sql) => ({ sql })), { full: true });
         await connection.write(learningRowsUpgrade().map((sql) => ({ sql })), { full: true });
       }
     }
