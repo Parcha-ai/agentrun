@@ -1,8 +1,8 @@
 // The host's docker config.json proxies never reach a computer, on real Docker (AGENTRUN_COMPUTER_LIVE_DOCKER=1 only).
 // The docker CLI fills in each proxy variable a `docker run` does not set itself from config.json's `proxies`, so a
-// computer made under a DOCKER_CONFIG that names one would hold it, a credential in its URL included. Here the provider
-// runs under a DOCKER_CONFIG of this file's own whose config.json names a proxy with a user and password, and the
-// computer's environment, as Docker holds it, has every proxy variable empty. Needs `npm run build` and
+// computer made under a DOCKER_CONFIG that names one would hold it, and any credential in its URL with it. Here the
+// provider runs under a DOCKER_CONFIG of this file's own whose config.json names a proxy, and the computer's
+// environment, as Docker holds it, has every proxy variable empty. Needs `npm run build` and
 // `npm run build:daemon` first, and alpine:3.20 pulled. The computer is removed by its exact name in the after hook.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -17,7 +17,7 @@ import { newRequest } from "./request.mjs";
 
 const LIVE = process.env.AGENTRUN_COMPUTER_LIVE_DOCKER === "1";
 const docker = (...args) => execFileSync("docker", args, { encoding: "utf8" });
-const PROXY = "http://user:not-a-secret@proxy.invalid:3128";
+const PROXY = "http://proxy.invalid:3128";
 const NAMES = ["HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "FTP_PROXY", "ftp_proxy", "NO_PROXY", "no_proxy", "ALL_PROXY", "all_proxy"];
 
 describe("a computer made under a docker config.json that names a proxy", { skip: LIVE ? false : "set AGENTRUN_COMPUTER_LIVE_DOCKER=1 to run on real Docker" }, () => {
@@ -35,7 +35,7 @@ describe("a computer made under a docker config.json that names a proxy", { skip
 		rmSync(config, { recursive: true, force: true });
 	});
 
-	it("holds every proxy variable empty: config.json's proxy, its credential included, never reaches it", async () => {
+	it("holds every proxy variable empty: config.json's proxy never reaches it", async () => {
 		const arch = docker("version", "--format", "{{.Server.Arch}}").trim();
 		const daemonPath = fileURLToPath(new URL(`../../dist/computerd-linux-${arch}`, import.meta.url));
 		assert.ok(existsSync(daemonPath), `no daemon for Docker's arch at ${daemonPath}: run npm run build:daemon`);
