@@ -10,6 +10,7 @@
 // run's is refused (Fenced) and writes nothing.
 import type { Context } from "@earendil-works/chord/context";
 import type { Storage, StorageWrite } from "@earendil-works/pi-durable";
+import type { Source } from "@parcha/agentrun-import";
 import type { JournalPage } from "./journal/storage.js";
 import type { MonidPinBody } from "./agent-body.js";
 import type { LedgerRow, SpendRow } from "../learn/ledger.js";
@@ -242,7 +243,7 @@ export function stoppedByPerson(run: Pick<RunRow, "state" | "outcome" | "importe
 }
 
 /** The harness an imported run came from. */
-export type ImportSource = "claude-code" | "codex" | "pi";
+export type ImportSource = Source;
 /** Where an imported run came from: the harness that ran it, and its own session id. `file` is the server's own record of
  *  the session file an import read whole (the sha-256 of its path, never the path, with its size and mtime), so a later
  *  import does not read an unchanged file again; it is internal and never shown on an answer. The unique import index keys
