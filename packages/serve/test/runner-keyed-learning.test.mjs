@@ -1,0 +1,268 @@
+// A run's learning work on its own model key (model_key), through the runner: a server that holds no gateway key of its
+// own runs a keyed run's learned-workflow check and its shadow audit on that run's key, each child on a copy sealed for
+// it alone and erased at its end, out of what the run's cap leaves at its end; and the run's view says where that work
+// stands (`learning_work`), what its caller revokes the key on. Proven here:
+//   - a keyed run whose learned workflow is new gets its check: one replay run per input, started at the run's end, every
+//     model request of each carrying the run's key (the gateway records it), never another;
+//   - a keyed run its promoted workflow served gets its shadow audit, on the run's key;
+//   - while the children run the run reads `running`, listing them; once they end, `ended` at the last one's end;
+//   - each child's copy opens for that child alone, and is erased by the write that ends it; a purge leaves no byte of it;
+//   - a cap that leaves too little drops the check (`no_budget`): no replay, nothing reserved, the run reads `ended`;
+//   - the key is in no log line, and nowhere in the store's bytes in the clear.
+// The agent's runs are real runs of the store on a pi run of the faux gateway, its route reading the run's model env.
+import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { createServer } from "node:http";
+import { Readable } from "node:stream";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { test } from "node:test";
+import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
+import { landWorkflows, startAt } from "./learned-workflow-seed-support.mjs";
+import { storeBytes } from "./support.mjs";
+
+const { openSqliteStore } = await import("../dist/store/sqlite/store.js");
+const { startRunner } = await import("../dist/runner/runner.js");
+const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
+const { adapterRunSpecFromLaunch } = await import("../dist/runner/adapter-run-spec.js");
+const { readLaunchBody } = await import("../dist/run-launch.js");
+const { promotionsOf } = await import("../dist/learn/promote.js");
+const { workflowDigest } = await import("../dist/runner/workflow-first.js");
+const { seedOf } = await import("../dist/learning.js");
+const { viewOverStore } = await import("../dist/store-view.js");
+const { openRunLaunch, sealRunLaunch } = await import("../dist/store/seal.js");
+
+const SEAL_KEY = Buffer.alloc(32, 9);
+const MODEL = "claude-sonnet-5-5";
+const RUN_KEY = `not-a-secret-${"keyed-learning"}-5e1a07`;
+const PI = `not-a-secret-${"pi"}`;
+const TIMING = { leaseMs: 60_000, renewEveryMs: 1_000, stopMarginMs: 5_000, pollMs: 20, commandPollMs: 30 };
+const AGENT_SAYS = JSON.stringify({ answer: 42, sure: true });
+const FINAL = ["ended", "failed", "stopped"];
+
+const answerFlow = {
+  v: 2, name: "answer",
+  schemas: {
+    In: { type: "object", required: ["question"], properties: { question: { type: "string" } } },
+    Answer: { type: "object", required: ["answer", "sure"], properties: { answer: { type: "number" }, sure: { type: "boolean" } } },
+  },
+  input: { schemaId: "In" }, output: { schemaId: "Answer", path: "answer" },
+  root: { node: "chain", steps: [
+    { node: "extract", label: "answer", instructions: "Answer the question; say whether you are sure.", out: "Answer", as: "answer", tier: "fast" },
+    { node: "escalate", label: "unsure", when: { predicate: "field_equals", path: "answer.sure", value: false }, kind: "unsure", stage: "answer", summary: "not sure of {answer.answer}" },
+  ] },
+};
+const FLOWS = [{ name: "answer", description: "Answers a question as a number", workflow: answerFlow }];
+const DIGEST = workflowDigest({ workflow: JSON.stringify(answerFlow) });
+
+const offers = (body, name) => (body?.tools ?? []).some((tool) => tool?.name === name);
+const hasResult = (body) => (body?.messages ?? []).some((message) => Array.isArray(message.content) && message.content.some((block) => block?.type === "tool_result"));
+/** The credential a request carried, whichever header its wire puts it in. */
+const keyOf = (request) => request.headers["x-api-key"] ?? request.headers.authorization?.replace(/^Bearer /, "");
+
+const until = async (done, what, ms = 90_000) => {
+  const end = Date.now() + ms;
+  for (;;) {
+    const value = await done();
+    if (value) return value;
+    if (Date.now() > end) throw new Error(`not within ${ms} ms: ${what}`);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+};
+
+/** A front for the gateway that holds every request whose body `held` matches until `release()`, so a test reads the
+ *  run's view while its children are in flight. */
+async function holdingFront(t, origin, held) {
+  const waiting = new Set();
+  const open = new Set();
+  let released = false;
+  const forward = async (req, res, body) => {
+    const headers = Object.fromEntries(Object.entries(req.headers).filter(([key]) => !["host", "content-length", "connection"].includes(key)));
+    const answer = await fetch(`${origin}${req.url}`, { method: req.method, headers, ...(body.length ? { body } : {}) });
+    res.writeHead(answer.status, Object.fromEntries([...answer.headers].filter(([key]) => !["content-length", "content-encoding", "transfer-encoding", "connection"].includes(key))));
+    if (answer.body) Readable.fromWeb(answer.body).pipe(res);
+    else res.end();
+  };
+  const server = createServer(async (req, res) => {
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    const body = Buffer.concat(chunks);
+    if (!released && held(body.toString("utf8"))) {
+      const go = () => (waiting.delete(go), open.delete(res), forward(req, res, body).catch(() => res.destroy()));
+      waiting.add(go);
+      open.add(res);
+      return;
+    }
+    await forward(req, res, body).catch(() => res.destroy());
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(async () => {
+    for (const res of open) res.destroy();
+    server.closeAllConnections?.();
+    await new Promise((resolve) => server.close(resolve));
+  });
+  return { url: `http://127.0.0.1:${server.address().port}`, waiting, release: () => ((released = true), [...waiting].forEach((go) => go())) };
+}
+
+/** An agent of `learning` with `prior` earlier runs of its own, on no key (the server's path), and `answer` landed in its
+ *  learning folder (`promoted`: as its check's record promotes it, so it serves first). The runner's env names the
+ *  gateway and holds no key of its own; its route reads the key the claim's model env holds. `hold`: requests whose body
+ *  it matches wait until `front.release()`. */
+async function world(t, { learning = true, prior = 0, promoted = false, hold } = {}) {
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-keyed-learning-"));
+  const server = await openSqliteStore({ dataDir: dir, role: "server" });
+  const store = await openSqliteStore({ dataDir: dir, role: "runner" });
+  const gw = await startFauxGateway({
+    call: ({ body }) => (offers(body, "submit") && !hasResult(body) ? { name: "submit", input: { value: { answer: 42, sure: true } } } : undefined),
+    text: ({ body }) => (offers(body, "submit") ? "submitted" : AGENT_SAYS),
+  });
+  const front = hold ? await holdingFront(t, gw.url, hold) : undefined;
+  const origin = front?.url ?? gw.url;
+  let runner;
+  t.after(async () => {
+    await runner?.close().catch(() => {});
+    await gw.close();
+    await store.close().catch(() => {});
+    await server.close().catch(() => {});
+    rmSync(dir, { recursive: true, force: true });
+  });
+  await server.agents.create({ id: "agent-1", name: "Keyed" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", tools: [], learning } });
+  const price = (_model, usage) => ((usage.input ?? 0) * 3 + (usage.output ?? 0) * 15) / 1e6;
+  // The route reads the gateway key the claim's model env holds at each request: the run's own (a getter over its sealed
+  // key, claim-secrets.ts claimModelEnv) on a keyed claim, none on the server's path (the test's stand-in then).
+  const routeOf = async (_model, env) => ({ model: MODEL, provider: { api: "anthropic-messages", origin, credential: () => env.AGENT_MODEL_API_KEY ?? PI }, cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 }, outputCeiling: 8_192, price, fetch: globalThis.fetch });
+  const logs = [];
+  const deps = { env: { AGENT_MODEL_BASE_URL: origin }, data: dir, journal: (claim) => store.journal(claim), store, sealKey: SEAL_KEY, routeOf, computerForClaim: async () => ({ release: async () => {} }), log: (line) => logs.push(line) };
+  const specOf = async (claim, run) => adapterRunSpecFromLaunch(readLaunchBody((await store.runs.launch(claim.runId)).body), run, deps, claim);
+  runner = startRunner({ store, name: "runner-a", ...TIMING, createLoop: createAdapterLoop(specOf) });
+  const ended = (id) => until(async () => {
+    const row = await server.runs.get(id);
+    return FINAL.includes(row?.state) && row.runner === null && row;
+  }, `run ${id} ended`);
+  const launchOf = (question, extra = {}) => ({ input: { content: `${question}?`, question }, title: question, place: { mode: "runner" }, model: { provider: "anthropic", modelId: MODEL }, ...extra });
+  for (let i = 0; i < prior; i++) {
+    await server.runs.create({ id: `prior-${i}`, agentId: "agent-1", revisionId: "rev-1" }, { body: launchOf(`Question ${i}`) });
+    await ended(`prior-${i}`);
+  }
+  const seed = await landWorkflows(dir, "agent-1", FLOWS);
+  if (promoted) await server.settings.put("learning.promotions.agent-1", { v: 1, items: [{ workflow: "answer", digest: DIGEST, at: new Date().toISOString(), decided: "promote", reason: "checked: promoted", check: { compile_after: 5, agree_min: 0.8, alone_min: 0.7, attempt: 1, n: 5, agreed: 5, alone: 5, of: [] }, commit: seed }] });
+  /** Makes run `id` on `question`, handed the run key RUN_KEY bound to the gateway's origin and capped at `capUsd`, at the
+   *  learning folder's main now, as the server's start makes it. */
+  const keyed = async (id, question, capUsd) => server.runs.create({ id, agentId: "agent-1", revisionId: "rev-1" }, {
+    body: launchOf(question, { learning: startAt((await seedOf(dir, "agent-1")).sha), ...(capUsd !== undefined ? { max_cost_usd: capUsd } : {}) }),
+    sealed: sealRunLaunch(SEAL_KEY, id, { model: { key: RUN_KEY, origin: new URL(origin).origin } }),
+  });
+  const children = async (field) => {
+    const out = [];
+    for (const row of await server.runs.list({ agentId: "agent-1" })) if (readLaunchBody((await server.runs.launch(row.id)).body)?.[field]) out.push(row);
+    return out;
+  };
+  const view = async (id) => viewOverStore(server, id, { origin: "", serverSecrets: () => [], sealKey: SEAL_KEY });
+  return { dir, server, gw, front, logs, ended, keyed, children, view };
+}
+
+/** The key nowhere in the clear: no log line, none of the store's bytes. */
+async function assertNowhere(w) {
+  assert.equal(w.logs.join("\n").includes(RUN_KEY), false, "the key is in no log line");
+  await w.server.flush();
+  assert.equal(storeBytes(w.dir).includes(Buffer.from(RUN_KEY)), false, "the key is in none of the store's bytes in the clear");
+}
+
+test("a keyed run's new workflow is checked at its end on the run's own key: each replay holds a copy sealed for it alone, every request of it carries the run's key, the run reads running then ended, and each copy is erased at its end and gone after purge", { timeout: 240_000 }, async (t) => {
+  const w = await world(t, { prior: 6, hold: (body) => body.includes('"name":"submit"') });
+  await w.keyed("run-1", "What is six times seven", 5);
+  const parent = await w.ended("run-1");
+  assert.equal(parent.state, "ended", JSON.stringify(parent));
+  assert.equal((await w.server.runs.launch("run-1")).sealed, null, "the run's own key erased at its turn's end");
+  assert.ok(w.logs.some((line) => line.includes(`answer at ${DIGEST} is new: it is checked at this run's end, on this run's own key`)), w.logs.join("\n"));
+  // The replays started at the run's end, each held at its first node request: the run reads running, listing them.
+  const replays = await until(async () => {
+    const rows = await w.children("replay");
+    return rows.length === 6 && w.front.waiting.size === 6 && rows;
+  }, "six replay runs, each at its node's request");
+  const ids = replays.map((row) => row.id);
+  const running = (await w.view("run-1")).learning_work;
+  assert.deepEqual([running.state, [...running.runs].sort(), running.ended_at], ["running", [...ids].sort(), null], JSON.stringify(running));
+  for (const id of ids) {
+    const sealed = (await w.server.runs.launch(id)).sealed;
+    assert.deepEqual(openRunLaunch(SEAL_KEY, id, sealed)?.model, { key: RUN_KEY, origin: new URL(w.front.url).origin }, "the run's key, bound to the gateway's origin, sealed for the replay");
+    assert.equal(openRunLaunch(SEAL_KEY, "run-1", sealed), undefined, "and for no other run");
+    const launch = readLaunchBody((await w.server.runs.launch(id)).body);
+    assert.ok(launch.maxCostUsd > 0 && launch.maxCostUsd <= 5 / 6, `each capped at its share of what the run's cap left: ${launch.maxCostUsd}`);
+  }
+  w.front.release();
+  for (const id of ids) {
+    const row = await w.ended(id);
+    assert.deepEqual([row.state, row.metrics?.path], ["ended", "replay"], JSON.stringify(row));
+    assert.equal((await w.server.runs.launch(id)).sealed, null, `replay ${id}'s copy erased by the write that ends it`);
+  }
+  // Every node request (the replays' alone: the agent's runs ask none) carried the run's key, and only it.
+  const nodes = w.gw.requests.filter((request) => offers(request.body, "submit"));
+  assert.ok(nodes.length >= 6, `each replay asked its node: ${nodes.length}`);
+  assert.deepEqual([...new Set(nodes.map(keyOf))], [RUN_KEY], "the replays ran on the run's own key");
+  const done = (await w.view("run-1")).learning_work;
+  const lastEnd = Math.max(...(await Promise.all(ids.map((id) => w.server.runs.get(id)))).map((row) => row.endedAt));
+  assert.deepEqual(done, { state: "ended", runs: [], ended_at: new Date(lastEnd).toISOString() }, "ended at the last child's end");
+  assert.equal((await promotionsOf(w.server.settings, "agent-1")).at(-1).decided, "replaying", "the check's record: decided at a later claim");
+  // A purge leaves nothing of the copies: the children's and the run's launches gone, no byte of the key kept.
+  const KEPT = { meters: null, spend: { usd: 0, basis: "list" }, learning: null };
+  for (const id of [...ids, "run-1"]) await w.server.runs.purge(id, KEPT);
+  for (const id of [...ids, "run-1"]) assert.equal((await w.server.runs.launch(id).catch(() => undefined))?.sealed ?? null, null, `${id}: no sealed bytes after purge`);
+  await assertNowhere(w);
+});
+
+test("a keyed run its promoted workflow served gets its shadow audit on the run's own key: the shadow's copy sealed for it alone, erased at its end; the run reads ended once it ends", { timeout: 240_000 }, async (t) => {
+  const w = await world(t, { learning: { audit_every: 1 }, promoted: true, hold: (body) => !body.includes('"name":"submit"') });
+  const before = w.gw.requests.length;
+  await w.keyed("served-1", "What is six times seven", 5);
+  const served = await w.ended("served-1");
+  assert.deepEqual([served.state, served.metrics?.path], ["ended", "workflow"], JSON.stringify(served.metrics));
+  const [shadow] = await until(async () => {
+    const rows = await w.children("audit");
+    return rows.length === 1 && w.front.waiting.size >= 1 && rows;
+  }, "the shadow, at its first request");
+  const sealed = (await w.server.runs.launch(shadow.id)).sealed;
+  assert.equal(openRunLaunch(SEAL_KEY, shadow.id, sealed)?.model?.key, RUN_KEY, "the shadow's copy of the run's key");
+  assert.equal(openRunLaunch(SEAL_KEY, "served-1", sealed), undefined, "sealed for the shadow alone");
+  assert.deepEqual((await w.view("served-1")).learning_work, { state: "running", runs: [shadow.id], ended_at: null });
+  w.front.release();
+  const ended = await w.ended(shadow.id);
+  assert.deepEqual([ended.state, ended.metrics?.path], ["ended", "audit"], JSON.stringify(ended));
+  assert.equal((await w.server.runs.launch(shadow.id)).sealed, null, "the shadow's copy erased at its end");
+  const asked = w.gw.requests.slice(before);
+  assert.ok(asked.some((request) => !offers(request.body, "submit")), "the shadow asked the agent");
+  assert.deepEqual([...new Set(asked.map(keyOf))], [RUN_KEY], "the served run and its shadow both ran on the run's own key");
+  assert.deepEqual((await w.view("served-1")).learning_work, { state: "ended", runs: [], ended_at: new Date(ended.endedAt).toISOString() });
+  await assertNowhere(w);
+});
+
+test("a keyed run whose cap leaves too little for its check drops it (no_budget): no replay, nothing reserved, the run reads ended", { timeout: 240_000 }, async (t) => {
+  const w = await world(t, { prior: 6 });
+  await w.keyed("tight-1", "What is six times seven", 0.03);
+  await w.ended("tight-1");
+  const work = await until(async () => {
+    const one = (await w.view("tight-1")).learning_work;
+    return one.state !== "running" && one;
+  }, "the run's learning work settles");
+  assert.equal(work.state, "ended", JSON.stringify(work));
+  assert.deepEqual(work.runs, []);
+  assert.ok(Date.parse(work.ended_at) > 0, JSON.stringify(work));
+  assert.ok(w.logs.some((line) => /answer at \w+ is not checked: what this run's cap leaves is too little for 6 replay runs on its own key, or not known \(no_budget\)/.test(line)), w.logs.join("\n"));
+  assert.deepEqual(await w.children("replay"), [], "no replay run made");
+  assert.deepEqual((await promotionsOf(w.server.settings, "agent-1")).filter((one) => one.digest === DIGEST), [], "nothing reserved: a later claim checks it");
+  await assertNowhere(w);
+});
+
+test("an unkeyed run on a keyless server starts no learning work on any key: its check is skipped in words, and it reads none", { timeout: 240_000 }, async (t) => {
+  const w = await world(t, { prior: 6 });
+  await w.server.runs.create({ id: "plain-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { content: "Plain?", question: "Plain" }, title: "Plain", place: { mode: "runner" }, model: { provider: "anthropic", modelId: MODEL }, learning: startAt((await seedOf(w.dir, "agent-1")).sha) } });
+  await w.ended("plain-1");
+  assert.ok(w.logs.some((line) => /replay check is skipped: it is tied to no run's model key, and this server holds none of its own/.test(line)), w.logs.join("\n"));
+  assert.deepEqual(await w.children("replay"), []);
+  const work = await until(async () => {
+    const one = (await w.view("plain-1")).learning_work;
+    return one.state !== "running" && one;
+  }, "the run's learning settles");
+  assert.notEqual(work.state, "running");
+  assert.deepEqual(work.runs, []);
+});
