@@ -242,7 +242,6 @@ test("where runs have users of their own and tracing is on, a run whose agent th
   const helper = join(dir, "agentrun-runas");
   const go = join(dir, "go");
   t.after(() => writeFileSync(go, ""));
-  t.after(() => rm(dir, { recursive: true, force: true }));
   writeFileSync(helper, `#!/bin/sh\nd="$(dirname "$0")"\ncase "$1" in\nrun) shift 2; while [ "$1" != -- ]; do shift; done; shift; exec "$@" ;;\nreap) echo reap >> "$d/reaps"; if [ "$(wc -l < "$d/reaps")" -eq 2 ]; then while [ ! -e "$d/go" ]; do sleep 0.05; done; fi ;;\nesac\nexit 0\n`);
   chmodSync(helper, 0o755);
   const exporter = new InMemorySpanExporter();
@@ -254,6 +253,9 @@ test("where runs have users of their own and tracing is on, a run whose agent th
     failAgentsGet: (id) => id === unread && ++faults > 0,
     childRuns: { isolation: { kind: "uid", helper, first: 0, slots: 1 }, log: (line) => void lines.push(line), tracing: genAiTracing({ OTEL_EXPORTER_OTLP_ENDPOINT: "http://otlp.invalid:4318" }, { exporter, log: () => {} }) },
   });
+  // After hooks run in the order they were added: `go`, then the server's stop (its runner's reaps), then the folder, so
+  // a waiting reap always finds `go` before its folder goes.
+  t.after(() => rm(dir, { recursive: true, force: true }));
   const start = async (id, name) => {
     const made = await whenFree(() => server.api("POST", "/agents", agent(id, { name })));
     assert.equal(made.status, 201, JSON.stringify(made.body));
