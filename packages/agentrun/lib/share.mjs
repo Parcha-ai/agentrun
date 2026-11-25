@@ -16,7 +16,7 @@
 // URL` takes a share down with the same token; its page then answers 410. Without --to, --dry-run or --out, share exits
 // 2 and sends nothing.
 import { createHash } from "node:crypto";
-import { existsSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, openSync, unlinkSync, writeSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { shareTargetOf } from "./login.mjs";
@@ -301,8 +301,23 @@ export const SHARE_DELETE = {
   },
 };
 
-/** The command, given what opens a browser here; SHARE (below) binds it to this machine. */
-export function shareOf({ launch = launchOpener, platform = process.platform } = {}) {
+/** `bytes` written to `path` as a new file (0600; EEXIST when one is there). A write that fails partway removes the file
+ *  this call made, never one that was there, so the same command can run again. `files`: the fs calls it makes. */
+function writeNew(path, bytes, files) {
+  const fd = files.openSync(path, "wx", 0o600);
+  try {
+    for (let at = 0; at < bytes.length; ) at += files.writeSync(fd, bytes, at, bytes.length - at);
+    files.closeSync(fd);
+  } catch (error) {
+    try { files.closeSync(fd); } catch {}
+    try { files.unlinkSync(path); } catch {}
+    throw error;
+  }
+}
+
+/** The command, given what opens a browser here and the fs calls `--out` makes (a test's seam); SHARE (below) binds it
+ *  to this machine. */
+export function shareOf({ launch = launchOpener, platform = process.platform, files = { openSync, writeSync, closeSync, unlinkSync } } = {}) {
   return {
     command: ["share"],
     pathParams: ["run"],
@@ -371,7 +386,7 @@ export function shareOf({ launch = launchOpener, platform = process.platform } =
       const page = `${origin}/share/${encodeURIComponent(run)}${query}`;
       if (out !== undefined) {
         try {
-          writeFileSync(out, bytes, { flag: "wx", mode: 0o600 });
+          writeNew(out, bytes, files);
         } catch (error) {
           if (error.code === "EEXIST") throw cli.fail(REFUSED, `${out} already exists: --out writes a new file. ${NOTHING}`);
           throw cli.fail(1, `Cannot write ${out} (${error.code ?? error.name}). ${NOTHING}`);
