@@ -254,7 +254,7 @@ test("a refused ask after a good listing keeps no models: a stopped Ollama's mod
   t.after(() => ollamaClock());
   // An address nothing listens on, listed once by a test fetch, then asked with the real fetch: refused, as a stopped
   // Ollama's address is.
-  const env = { OLLAMA_HOST: `127.0.0.1:${await closedPort()}` };
+  const env = { OLLAMA_HOST: `127.0.0.1:${await freePort()}` };
   assert.deepEqual(names(await listOllama(env, { fetch: synthAnswer })), NAMES, "listed while it ran");
   assert.deepEqual(await listOllama(env), [], "refused: none, nothing thrown");
   assert.deepEqual(ollamaKept(env), [], "the earlier models are not kept for a refused address");
