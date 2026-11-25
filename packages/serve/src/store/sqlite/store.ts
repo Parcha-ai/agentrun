@@ -1851,12 +1851,16 @@ class SqliteStore implements Store {
 
     /** `statement`, the write of server `name`'s row, answering the row it wrote (RETURNING): alone, or, when the token's mark
      *  decides it (`tokens`, `owns`), in one transaction under the server's lock (underMcpLock), the owner's dropping the
-     *  mark once its row is written and only then. */
+     *  mark once its row is written and only then, the token's first save writing its record (`tokens.made`) there too. */
     const writeMcpRow = async (name: string, statement: Statement, tokens: McpTokensMark | undefined, owns: McpOwnersMark | undefined): Promise<McpServerRecord | undefined> => {
       if (!tokens && !owns) return (await db.write([statement]))[0]!.rows[0] as McpServerRecord | undefined;
       return underMcpLock(name, async (tx) => {
         const row = (await tx.step(statement)).rows[0] as McpServerRecord | undefined;
         if (row && owns) await dropTokensMark(tx, owns, mcpServerOf(row).createdAt);
+        if (row && tokens?.made) {
+          const encoded = json(tokens.made(mcpServerOf(row)));
+          await tx.run("INSERT INTO settings (key, value, connector_id, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value, connector_id = excluded.connector_id, updated_at = excluded.updated_at", tokens.record, encoded, nativeCommandOwner(tokens.record, encoded), now());
+        }
         return row;
       });
     };

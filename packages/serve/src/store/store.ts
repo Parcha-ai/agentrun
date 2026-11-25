@@ -1283,8 +1283,9 @@ export type McpServerWrite = { name: string; url: string; auth: string; protocol
  *  `of` is the row's created_at). An owner's save drops the mark in the transaction that writes its row (McpOwnersMark),
  *  so a write that needs the mark never lands over the owner's save, whenever that save lands. The write that needs it
  *  takes the server's lock first, so on Postgres its statement reads the record as the owner's committed transaction left
- *  it. */
-export type McpTokensMark = { readonly record: string };
+ *  it. `made`: the token's first save of the name, whose record (`made` of the row written) is written at `record` in the
+ *  transaction that writes the row, so no reader ever finds the token's new row without its mark. */
+export type McpTokensMark = { readonly record: string; readonly made?: (row: { createdAt: number }) => unknown };
 
 /** The owner's write over a saved server's row: in the transaction that writes the row, and only once the row is written,
  *  the setting at `record` (the server's source record) loses the API token's mark (`by`) when it still says the token

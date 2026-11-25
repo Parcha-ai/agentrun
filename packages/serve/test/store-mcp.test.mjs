@@ -111,7 +111,7 @@ test("the owner's write over a row the token saved drops the token's mark from i
   const { store, clock } = await storeOn(t);
   const mark = (row) => ({ auth: row.auth, sealed: row.sealed !== null, changedAt: row.credentialChangedAt ?? null });
   const owns = { record: "mcp.source/github" };
-  const row = await store.mcp.putIfCredential({ ...SERVER, auth: "per_run", sealed: null }, null, owns);
+  const row = await store.mcp.putIfCredential({ ...SERVER, auth: "per_run", sealed: null }, null);
   const tokens = { source: "url", toolkit: null, of: row.createdAt, by: "token" };
   // A record for another row of the name (an earlier one's): the owner's write leaves it.
   await store.settings.put(owns.record, { ...tokens, of: row.createdAt - 1 });
