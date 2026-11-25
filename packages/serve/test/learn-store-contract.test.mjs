@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { storeOn } from "./store-helpers.mjs";
-import { client, postgresOnly, schemaOf } from "./store-target.mjs";
+import { client, postgresOnly, raw, schemaOf } from "./store-target.mjs";
 
 const { learningCommit, putCorrections } = await import("../dist/learn/commit.js");
 const { learningOf, readAt, readView, runMergeOf, writeLearning } = await import("../dist/learn/rows.js");
@@ -235,6 +235,26 @@ test("a purge takes out only the purged run's copy of a line: one its owner remo
   assert.equal(await corrections(learning), `- ALPHA line from the owner\n- ${shared}\n`);
   const diff = await runMergeOf(learning, "run_later");
   assert.deepEqual(diff.files.map((file) => [file.path, file.patch.includes(`+- ${shared}`)]), [["corrections.md", true]]);
+});
+
+test("a purge deletes every item the purged run wrote but its workflows, of a kind no code writes yet too: a label it wrote is gone, another run's label stays", async (t) => {
+  const { store, file } = await storeOn(t);
+  const learning = learningOf(store, AGENT);
+  await merge(learning, { runId: "run_labelled", correction: "a line of the labelled run" });
+  await merge(learning, { runId: "run_kept", correction: "a line of the kept run" });
+  // The schema allows a `label` item; no code writes one yet, so the rows are planted as a later PR would write them.
+  const db = await raw(file);
+  t.after(() => db.close());
+  const plant = (name, version, byRun, body) =>
+    db.run("INSERT INTO learning_items (agent_id, kind, name, version, body, by_run, change, person, pos, digest, writers, at) VALUES (?, 'label', ?, ?, ?, ?, 'learned', 0, 0, NULL, NULL, 0)", AGENT, name, version, body, byRun);
+  await plant("purged-label", 1, "run_labelled", "LABELWORD of the purged run");
+  await plant("kept-label", 2, "run_kept", "KEPTLABEL of another run");
+  const labels = async () => (await db.all("SELECT name, by_run, body FROM learning_items WHERE agent_id = ? AND kind = 'label' ORDER BY name", AGENT)).map((row) => [row.name, row.by_run, row.body]);
+  assert.equal((await labels()).length, 2);
+  await store.learning.purgeRun(AGENT, "run_labelled");
+  assert.deepEqual(await labels(), [["kept-label", "run_kept", "KEPTLABEL of another run"]], "the purged run's label is gone; another run's stays");
+  assert.equal((await db.all("SELECT body FROM learning_items WHERE agent_id = ? AND by_run = ? AND kind <> 'workflow'", AGENT, "run_labelled")).length, 0, "no item of the purged run's but a workflow is left");
+  assert.equal(await corrections(learning), "- a line of the kept run\n");
 });
 
 /** corrections.md rewritten as `text` by `by`: a person's edit (putCorrections), or a run's merge that gives the file. */

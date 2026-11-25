@@ -247,6 +247,11 @@ export const HAND_BACKS_KEPT_MS = 24 * 60 * 60_000;
  *    file. `by_run`: a note's run; a workflow's, its workflow.json's writer (what its promotions are of).
  *  - learning_records: the agent's promotion records, grades and audit rows, each its data whole, never trimmed; its
  *    run, workflow and digest read out for a purge.
+ *  The CHECKs also allow kinds no code writes yet: a `label` item, and `lifecycle` and `note` records (the follow-up
+ *  PRs write them; Postgres 0030 has the same CHECKs, and it is not changed again). A run's purge deletes every item of
+ *  the run's but a workflow, a label too, and every record whose run is the run (learning-rows.ts dropRunLearning). A PR
+ *  that first writes a lifecycle or note record whose data names another run extends the purge's scrub
+ *  (learning-rows.ts forgetRunRecords) in the same PR.
  *  In STORE_DDL, and made at a server open on a store an earlier build of this version made. */
 export const LEARNING_ROWS: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS learning_saves (

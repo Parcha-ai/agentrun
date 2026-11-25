@@ -195,7 +195,9 @@ async function moveCommits(tx: Tx, agentId: string, name: string): Promise<void>
 }
 
 /** Each promotion of agent `agentId` that holds run `runId`'s copies (a check's or an audit's disagreement naming it),
- *  blanked inside the caller's transaction (forgetRunIn): its decision, numbers and run ids stay. */
+ *  blanked inside the caller's transaction (forgetRunIn): its decision, numbers and run ids stay. Only promotions copy
+ *  another run's words today; the schema also allows `lifecycle` and `note` records, which no code writes yet. A PR
+ *  that first writes a lifecycle or note record whose data names another run extends this scrub in the same PR. */
 async function forgetRunRecords(tx: Tx, agentId: string, runId: string): Promise<void> {
   const records = await tx.all<{ seq: number | string; data: string }>("SELECT seq, data FROM learning_records WHERE agent_id = ? AND kind = 'promotion'", agentId);
   for (const record of records) {
@@ -309,10 +311,10 @@ export async function dropRunLearning(tx: Tx, agentId: string, runId: string, at
     WHERE i.agent_id = ? AND i.kind = 'workflow' AND (s.by_run = ? OR i.by_run = ?) ORDER BY i.name`, agentId, runId, runId)).map((row) => row.name);
   // The person's saves that wrote a version of the run's text, read before it goes.
   const persons = new Set((await tx.all<{ version: number | string }>(`SELECT DISTINCT i.version FROM learning_items i JOIN learning_saves s ON s.agent_id = i.agent_id AND s.version = i.version
-    WHERE i.agent_id = ? AND s.kind = 'person' AND ((i.kind = 'note' AND i.by_run = ?) OR (i.kind = 'workflow' AND i.name IN (SELECT j.name FROM learning_items j JOIN learning_saves r ON r.agent_id = j.agent_id AND r.version = j.version WHERE j.agent_id = ? AND j.kind = 'workflow' AND (r.by_run = ? OR j.by_run = ?))))`,
+    WHERE i.agent_id = ? AND s.kind = 'person' AND ((i.kind <> 'workflow' AND i.by_run = ?) OR (i.kind = 'workflow' AND i.name IN (SELECT j.name FROM learning_items j JOIN learning_saves r ON r.agent_id = j.agent_id AND r.version = j.version WHERE j.agent_id = ? AND j.kind = 'workflow' AND (r.by_run = ? OR j.by_run = ?))))`,
   agentId, runId, agentId, runId, runId)).map((row) => Number(row.version)));
   const count = async (sql: string) => Number((await tx.get<{ n: number | string }>(sql, agentId, runId))?.n ?? 0);
-  let changed = (await count("SELECT COUNT(*) AS n FROM learning_items WHERE agent_id = ? AND kind = 'note' AND by_run = ?")) > 0
+  let changed = (await count("SELECT COUNT(*) AS n FROM learning_items WHERE agent_id = ? AND kind <> 'workflow' AND by_run = ?")) > 0
     || (await count("SELECT COUNT(*) AS n FROM learning_saves WHERE agent_id = ? AND by_run = ?")) > 0;
   const gone: string[] = [];
   const taken = new Set<string>();
@@ -336,7 +338,9 @@ export async function dropRunLearning(tx: Tx, agentId: string, runId: string, at
     for (const path of rewritten.taken) taken.add(path);
     if (rewritten.changed) changed = true;
   }
-  await tx.run("DELETE FROM learning_items WHERE agent_id = ? AND kind = 'note' AND by_run = ?", agentId, runId);
+  // Every item of the run's but a workflow (rewritten above, file by file): its notes, and an item of a kind the schema
+  // allows that no code writes yet (`label`), so the first PR that writes one is covered here already.
+  await tx.run("DELETE FROM learning_items WHERE agent_id = ? AND kind <> 'workflow' AND by_run = ?", agentId, runId);
   await tx.run("DELETE FROM learning_records WHERE agent_id = ? AND run_id = ?", agentId, runId);
   await forgetRunRecords(tx, agentId, runId);
   for (const version of persons) {

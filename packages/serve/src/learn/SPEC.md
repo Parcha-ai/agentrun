@@ -401,7 +401,8 @@ person's new file is no run's. A workflow's run (what the view's `run` names) is
 workflow is never deleted by a run: a retired one stays and serves no run.
 
 A run's purge deletes its rows in the same transaction as its own (`Store.learning.purgeRun`), its agent's alone: its
-notes, its grades and audits, and in every version of each workflow, each file it wrote back to its text before (a
+notes and every other item of it but a workflow (a `label`, which the schema allows and no code writes yet, too), its
+grades and audits, and in every version of each workflow, each file it wrote back to its text before (a
 person's edit of that text with it; a file it deleted there again), so a later run's copy of its bytes goes too and a
 later run's own change of a file stays. A person's retire, and a person's restore, of a version that held its text
 stays on the version that comes back, so the owner's newest decision stands; a person's approve does not (it approved
