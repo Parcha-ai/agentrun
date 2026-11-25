@@ -402,7 +402,9 @@ export type AdapterEvent =
   /** The model's message ended inside the turn, and another may follow in it (a CLI that resumes a cut answer itself):
    *  what it said so far is one message. */
   | { type: "text_end" }
-  | { type: "tool_start"; callId: string; name: string; args: unknown; parent?: string }
+  /** `refused`: the harness turned the call down itself (a tool the session does not have), so `name` is only the
+   *  model's words, never a tool of the session's. */
+  | { type: "tool_start"; callId: string; name: string; args: unknown; parent?: string; refused?: true }
   | { type: "tool_end"; callId: string; name: string; isError: boolean; result?: string; truncated?: true }
   /** `stopReason: "length"` only when the turn's final answer was cut at the model's output limit (unfinished), with that
    *  answer's output tokens when the adapter knows them: a host reads the answer as cut, never as the run's end. `capCut`:

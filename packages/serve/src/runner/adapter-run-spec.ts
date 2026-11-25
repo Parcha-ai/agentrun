@@ -236,6 +236,9 @@ export interface AdapterSpecDeps {
    *  on purpose does not wait out MODEL_RETRY's two and a half minutes. No environment variable, flag or setting maps onto
    *  it; absent, MODEL_RETRY and MODEL_STREAM. */
   readonly modelRetry?: Pick<AdapterLoopOptions, "retry" | "stream">;
+  /** The runs' GenAI tracing (AdapterLoopOptions.tracing): in a run's own process, the one posted to its runner
+   *  (run-child.ts); absent, this process's own. */
+  readonly tracing?: AdapterLoopOptions["tracing"];
   /** web_save's download slots (ToolHost.saveSlots): in a run's own process, its runner's (run-child.ts). */
   readonly saveSlots?: SaveSlots;
 }
