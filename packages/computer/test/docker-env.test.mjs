@@ -90,6 +90,16 @@ test("ensureImage(): docker image inspect and pull, which read the credential he
 	onlyWhatDockerReads(fake.envs(), "ensureImage");
 });
 
+test("ensureImage(): two calls at once for the same image on two Docker hosts each pull on their own host, never one sharing the other's pull", async () => {
+	const fake = fakeImageDocker();
+	const image = "registry.example.com/team/box:2";
+	const hosts = ["unix:///run/one/docker.sock", "unix:///run/two/docker.sock"];
+	const answers = await Promise.all(hosts.map((DOCKER_HOST) => ensureImage({ image }, { docker: fake.docker, env: { ...hostEnv(), DOCKER_HOST } })));
+	assert.deepEqual(answers, [{ ok: true, value: image }, { ok: true, value: image }]);
+	const pulledOn = fake.envs().filter((e) => e.args[0] === "pull").map((e) => e.seen.DOCKER_HOST).sort();
+	assert.deepEqual(pulledOn, hosts, `each host pulls the image itself: pulls went to ${JSON.stringify(pulledOn)}`);
+});
+
 test("given no env, the provider, dockerArch() and ensureImage() start docker with none of this process's environment", async () => {
 	const { provider, program, envs } = fakeDocker();
 	assert.equal((await provider.list({})).ok, true);

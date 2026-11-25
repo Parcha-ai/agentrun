@@ -39,3 +39,20 @@ test("a server with a key in its environment runs an agent in the Docker box: no
     assert.deepEqual([seen.PATH, seen.HOME, seen.DOCKER_HOST], [process.env.PATH, process.env.HOME, dockerHostValue], `${call} has PATH, HOME and DOCKER_HOST as the server has them`);
   }
 });
+
+test("Settings → Computers' Docker test runs docker with PATH, HOME and DOCKER_HOST as the server has them, and no key", { timeout: 60_000 }, async (t) => {
+  const host = dockerHost();
+  const dockerHostValue = "unix:///var/run/docker.sock";
+  withEnv(t, { PATH: `${host.dir}:${process.env.PATH}`, DOCKER_HOST: dockerHostValue, [KEY]: `not-a-secret-${"canary"}` }, ["AGENTRUN_BOXES", "AGENTRUN_DOCKER_IMAGE", "AGENTRUN_BOX_ALLOW", "DAYTONA_API_KEY"]);
+  // Not --faux: Settings → Computers is the package's own providers, Docker's among them.
+  const { api } = await serve(t, { faux: undefined });
+  const tested = await api("POST", "/computers/docker/test");
+  assert.equal(tested.status, 200, JSON.stringify(tested.body));
+  const listed = host.fake.envs().filter(({ args }) => args[0] === "ps");
+  assert.ok(listed.length > 0, `the test's docker ps reached the docker first on the server's PATH: ${JSON.stringify(tested.body)}`);
+  for (const { args, names, seen } of listed) {
+    const call = `docker ${args.slice(0, 2).join(" ")}`;
+    assert.ok(!names.includes(KEY), `${KEY} reached ${call}`);
+    assert.deepEqual([seen.PATH, seen.HOME, seen.DOCKER_HOST], [process.env.PATH, process.env.HOME, dockerHostValue], `${call} has PATH, HOME and DOCKER_HOST as the server has them`);
+  }
+});
