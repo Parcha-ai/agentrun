@@ -1733,9 +1733,13 @@ launch line E2B's dial runs (`dialLaunch`), with no rootOnly paths here. The URL
 env, which the command inherits, and is on no command line. A session Daytona refuses fails create in its words, and
 the sandbox is deleted. So the snapshot's entrypoint is not relied on: a box snapshot registered without one (name,
 image and resources alone) dials too, and one whose entrypoint is the box CMD sleeps, with no `AGENTRUN_ATTACH_URL` in
-its env, so `agentrun-dial` never runs twice. A machine that does not dial within `createMs` fails with that command's
-log, read once by the id its start returned, its last 10 lines within 800 characters (`dialLog`; the adapter replaces
-every machine token in it by `<token>`), or "agentrun-dial never started" when create started none. No Archil mount, no GPU, and not `image: "default"` (Daytona's default snapshot holds
+its env, so `agentrun-dial` never runs twice on its own. While create waits for the socket, it reads that command's
+exit (`dialExit`, the session's command of the id its start returned): an `agentrun-dial` that exited fails create at
+once, and an exit of 3 (its daemon fetch failed, after its own retries) or 5 (its init never listened, and was ended)
+starts it once more, by the same line, in a session of its own, `agentrun-dial-2` (`redial`), with a create note. One
+that runs and keeps writing is waited for past `createMs`, up to twice it. A machine that does not dial fails with that
+command's log first, its last 10 lines within 800 characters (`dialLog`; the adapter replaces every machine token in it
+by `<token>`), or "agentrun-dial never started" when create started none. No Archil mount, no GPU, and not `image: "default"` (Daytona's default snapshot holds
 no `agentrun-dial`): `check()` refuses each in words. Labels as on exec. A dial sandbox may be a desktop
 (`kind: "desktop"`): the box snapshot's X server, started over the socket it dialed, and xfwm4, which computerd starts
 (init's `--window-manager`), at the snapshot's 2 CPUs and 4 GiB, with no GPU. On exec a Daytona computer is kind
@@ -1790,7 +1794,9 @@ What each part of a dial sandbox rests on:
   `attachEgress` (`DAYTONA_ATTACH_EGRESS` in Settings), `<IPv4 relay>:<port>`, checked at construction: create puts it
   in the boot env as `AGENTRUN_ATTACH_EGRESS`, and `agentrun-dial`'s daemon fetch (curl `--connect-to`) and
   `computerd attach` both open TCP to it and speak TLS and HTTP to the public host through it, so the SNI, the
-  certificate checked and `Host` stay the public host's and TLS is end to end. Unset, nothing changes.
+  certificate checked and `Host` stay the public host's and TLS is end to end. Unset, nothing changes. A relay that
+  closes a connection during TLS (curl exit 35) or resets it (56) costs a retry: the fetch is tried again after 1, 2, 4
+  then 8 s, for at most 45 s, on any failed connection or HTTP 5xx, and never on a 4xx (exit 7).
 - **No GPU on dial**, refused in words: `daytona-gpu` holds no `agentrun-dial`, and Daytona runs a GPU sandbox
   unprivileged (`Privileged: gpuIndex == nil`,
   [runner container_configs.go:205](https://github.com/daytonaio/daytona/blob/b5a5d9e7/apps/runner/pkg/docker/container_configs.go#L205)),
