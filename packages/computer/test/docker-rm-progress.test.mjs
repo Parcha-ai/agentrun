@@ -73,14 +73,15 @@ test("create() whose docker run made the container and failed, while that contai
 	assert.ok(looksAfterRm(calls, idOf(name)) >= 1, "the provider looked until the computer was gone");
 });
 
-test("a removal already under way that never ends fails release(delete) once the bound runs out, in words that name the container", async () => {
-	const { provider, names } = fakeDocker({ containers: [container({ name: A })], removing: { [A]: null } });
+test("a removal already under way that never ends fails release(delete) once the bound runs out, in words that name the container", { timeout: 5_000 }, async () => {
+	// The bound is the provider's settleMs, set far below its default 10 s: the test waits out a bound of its own.
+	const { provider, names } = fakeDocker({ containers: [container({ name: A })], removing: { [A]: null }, settleMs: 300 });
 	const started = Date.now();
 	const released = await provider.release(ref(A), "delete");
 	assert.equal(released.ok, false);
 	assert.deepEqual([released.error.code, released.error.vendor], ["vendor", "docker"]);
-	assert.equal(released.error.message, `docker rm ${A} failed: docker answered that the removal of ${A} was already in progress, and it was still there 10 s later`);
-	assert.ok(Date.now() - started >= 9_500, "it waited out the bound");
+	assert.equal(released.error.message, `docker rm ${A} failed: docker answered that the removal of ${A} was already in progress, and it was still there 0.3 s later`);
+	assert.ok(Date.now() - started >= 300, "it waited out the bound");
 	assert.deepEqual(names(), [A]);
 });
 

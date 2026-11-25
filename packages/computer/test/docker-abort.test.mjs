@@ -59,11 +59,12 @@ test("an abort during the computer's own docker run, which the daemon still fini
 	}
 });
 
-test("a retry cut off during its docker run, before Docker said the name is taken, leaves the computer its request already has", { timeout: 60_000 }, async () => {
+test("a retry cut off during its docker run, before Docker said the name is taken, leaves the computer its request already has", { timeout: 5_000 }, async () => {
 	const requestId = "docker-abort-retry";
 	const name = computerNameFor(requestId);
 	// The computer an earlier create of this request made (here or in another process); the retry's run never answers.
-	const fake = fakeDocker({ containers: [container({ name })], hold: ["run"] });
+	// Nothing comes late here, so the looks need not stay empty the default 3 s (settleQuietMs) before create answers.
+	const fake = fakeDocker({ containers: [container({ name })], hold: ["run"], settleQuietMs: 300 });
 	const controller = new AbortController();
 	const watch = (async () => {
 		while (!fake.runHeld()) await sleep(10);
@@ -77,11 +78,12 @@ test("a retry cut off during its docker run, before Docker said the name is take
 	assert.ok(!fake.calls().some((args) => args[0] === "rm" && args.includes(name)), "no rm by its name");
 });
 
-test("a retry with an allowlist cut off during its proxy's docker run leaves the computer, proxy and volume its request already has", { timeout: 60_000 }, async () => {
+test("a retry with an allowlist cut off during its proxy's docker run leaves the computer, proxy and volume its request already has", { timeout: 5_000 }, async () => {
 	const requestId = "docker-abort-retry-egress";
 	const name = computerNameFor(requestId);
 	// What an earlier create of this request made: the computer, its proxy and its volume. The retry's proxy run never answers.
-	const fake = fakeDocker({ ...allowed({ name, allow: ALLOW }), hold: ["run"] });
+	// Nothing comes late here, so the looks need not stay empty the default 3 s (settleQuietMs) before create answers.
+	const fake = fakeDocker({ ...allowed({ name, allow: ALLOW }), hold: ["run"], settleQuietMs: 300 });
 	const controller = new AbortController();
 	const watch = (async () => {
 		while (!fake.runHeld()) await sleep(10);
@@ -95,16 +97,17 @@ test("a retry with an allowlist cut off during its proxy's docker run leaves the
 	assert.ok(!fake.calls().some((args) => args[0] === "rm" || (args[0] === "volume" && args[1] === "rm")), JSON.stringify(fake.calls().filter((args) => args.includes("rm"))));
 });
 
-test("a late container that Docker will not remove is named in the error once the 10 s bound is spent", { timeout: 60_000 }, async () => {
-	// The proxy the daemon makes after the abort is one rm never removes: the bound runs out with it still there.
-	const fake = fakeDocker({ lateRun: "egress", sticky: ["-egress"] });
+test("a late container that Docker will not remove is named in the error once the bound is spent", { timeout: 8_000 }, async () => {
+	// The proxy the daemon makes after the abort is one rm never removes: the bound runs out with it still there. The bound
+	// is the provider's settleMs, 2 s here, not its default 10 s: long enough for the late create to land inside it.
+	const fake = fakeDocker({ lateRun: "egress", sticky: ["-egress"], settleMs: 2_000 });
 	const made = await abortedLate(fake, { ...SPEC, network: { allow: ALLOW } });
 	assert.equal(made.ok, false);
 	assert.equal(made.error.code, "aborted");
 	const proxy = fake.late().committed;
 	assert.match(proxy ?? "", /^computer-[0-9a-f]{12}-egress$/);
 	assert.ok(
-		made.error.message.startsWith(`create was aborted during docker run of the egress proxy; the proxy and its volume could not all be removed: the container ${proxy} was still there 10 s after docker run was cut off; `),
+		made.error.message.startsWith(`create was aborted during docker run of the egress proxy; the proxy and its volume could not all be removed: the container ${proxy} was still there 2 s after docker run was cut off; `),
 		made.error.message,
 	);
 });
@@ -117,6 +120,9 @@ test("settleWords always names what it checked: what the last look still found, 
 	// The bound ran out right after a look that found none: never an empty subject.
 	assert.equal(settleWords([container, volume], []), `${container} and ${volume} could not be confirmed gone within 10 s after docker run was cut off: the last look found none, but not for 3 s in a row`);
 	assert.equal(settleWords([], []), "what docker run may have made could not be confirmed gone within 10 s after docker run was cut off: the last look found none, but not for 3 s in a row");
+	// A provider given its own bounds (settleMs, settleQuietMs) names those, never the defaults.
+	assert.equal(settleWords([container], [container], { settleMs: 300, quietMs: 100 }), `${container} was still there 0.3 s after docker run was cut off`);
+	assert.equal(settleWords([container], [], { settleMs: 2_500, quietMs: 1_000 }), `${container} could not be confirmed gone within 2.5 s after docker run was cut off: the last look found none, but not for 1 s in a row`);
 });
 
 test("a docker run that ended with an exit of its own is cleaned up as before, once, with no settling", async () => {
