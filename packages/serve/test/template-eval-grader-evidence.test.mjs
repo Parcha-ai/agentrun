@@ -150,6 +150,26 @@ test("args_file reads its list cut and the fake's calls whole: an entry's [redac
   assert.equal(argsFileVerdict("media/clips.json", { text: '[{"input":{"key":"[redacted]"}}]' }, cut, "1 call").pass, true);
 });
 
+test("args_file under the cut compares arrays whole, as without it: an object inside one carries no field the entry lacks", () => {
+  const calls = [{ tool: "mcp:fal/submit_job", arguments: { items: [{ id: 1, enabled: false }], tags: ["a", "fake-test-key-0001"] } }];
+  const of = (entry) => argsFileVerdict("media/clips.json", { text: JSON.stringify([entry]) }, calls, "1 call of mcp:fal/submit_job").pass;
+  assert.equal(of({ items: [{ id: 1 }] }), false, "an extra field inside an array's object is not carried");
+  assert.equal(of({ items: [{ id: 1, enabled: false }] }), true);
+  assert.equal(of({ tags: ["a"] }), false, "an array's length is whole");
+  assert.equal(of({ tags: ["a", "[redacted]"] }), true, "a mark inside an array still stands for the value");
+  assert.equal(of({ items: [{ id: 1 }], tags: ["a", "[redacted]"] }), false);
+});
+
+test("args_file's cut match is linear: many marks with a suffix the call lacks fail at once, never backtracking", { timeout: 30_000 }, () => {
+  const long = "a".repeat(20_000);
+  const calls = [{ tool: "mcp:fal/submit_job", arguments: { prompt: long } }];
+  const of = (prompt) => argsFileVerdict("media/clips.json", { text: JSON.stringify([{ prompt }]) }, calls, "1 call of mcp:fal/submit_job").pass;
+  assert.equal(of(`${"[redacted]".repeat(40)}b`), false);
+  assert.equal(of("[redacted]".repeat(40)), true, "40 marks, each one character or more, in 20,000");
+  assert.equal(of(`a[redacted]a[redacted]a`), true);
+  assert.equal(of("[redacted]".repeat(20_001)), false, "more marks than characters");
+});
+
 test("args_file fails a call sent with other arguments, a call missing, one call standing for two entries, and an extra call", () => {
   const changed = [CLIPS[0], CLIPS[1], { ...CLIPS[2], negative_prompt: "blur" }];
   const off = verdict(CLIPS, sent(changed));

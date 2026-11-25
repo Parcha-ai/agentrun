@@ -663,19 +663,34 @@ const carries = (call: unknown, args: unknown): boolean => (isObject(args) ? isO
 
 /** What the run's cut writes in place of a secret's span in a file it serves (handed-values.ts). */
 const CUT_MARK = "[redacted]";
-/** carries for an args_file entry, which is read under the run's cut while a fake's calls are whole: a string of the
- *  entry holding CUT_MARK carries a call's string where each mark stands for one character or more, so a call that
- *  sent a held secret still carries the entry that names it cut. Nothing of the call's value is said. */
-const carriesCut = (call: unknown, entry: unknown): boolean => {
-  if (isObject(entry)) return isObject(call) && Object.entries(entry).every(([key, value]) => Object.hasOwn(call, key) && carriesCut(call[key], value));
-  if (Array.isArray(entry)) return Array.isArray(call) && call.length === entry.length && entry.every((value, i) => carriesCut(call[i], value));
-  if (typeof entry === "string" && entry.includes(CUT_MARK)) {
-    if (typeof call !== "string") return false;
-    const pattern = entry.split(CUT_MARK).map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("[\\s\\S]+");
-    return new RegExp(`^${pattern}$`).test(call);
+/** Whether `text` is `entry` with each CUT_MARK standing for one character or more of it. A scan from the left, each
+ *  part between marks placed at its first fit: linear in the text, so no list the run wrote can make it backtrack. */
+const cutMatches = (text: string, entry: string): boolean => {
+  const parts = entry.split(CUT_MARK);
+  const first = parts[0]!, last = parts[parts.length - 1]!;
+  if (!text.startsWith(first)) return false;
+  let at = first.length;
+  for (const part of parts.slice(1, -1)) {
+    const found = text.indexOf(part, at + 1);
+    if (found < 0) return false;
+    at = found + part.length;
   }
+  return text.length - last.length >= at + 1 && text.endsWith(last);
+};
+/** `same` for a value read under the run's cut: equal throughout, but a string of `entry` holding CUT_MARK is matched by
+ *  cutMatches. Arrays and the objects inside them are whole, keys and length alike, as `same` compares them. */
+const sameCut = (call: unknown, entry: unknown): boolean => {
+  if (Array.isArray(entry)) return Array.isArray(call) && call.length === entry.length && entry.every((value, i) => sameCut(call[i], value));
+  if (isObject(entry)) return isObject(call) && Object.keys(call).length === Object.keys(entry).length && Object.entries(entry).every(([key, value]) => Object.hasOwn(call, key) && sameCut(call[key], value));
+  if (typeof entry === "string" && entry.includes(CUT_MARK)) return typeof call === "string" && cutMatches(call, entry);
   return same(call, entry);
 };
+/** carries for an args_file entry, which is read under the run's cut while a fake's calls are whole: objects as subsets
+ *  and everything else equal, as `carries`, except that a string of the entry holding CUT_MARK carries a call's string
+ *  where each mark stands for one character or more (sameCut). So a call that sent a held secret still carries the entry
+ *  that names it cut. Nothing of the call's value is said. */
+const carriesCut = (call: unknown, entry: unknown): boolean =>
+  isObject(entry) ? isObject(call) && Object.entries(entry).every(([key, value]) => Object.hasOwn(call, key) && carriesCut(call[key], value)) : sameCut(call, entry);
 
 /** Whether `fixture`'s tool answers `args` with one of its answers (the first whose `when` matches), else its default. */
 export function fakeAnswer(fixture: McpFixture, tool: string, args: Json): Json {
