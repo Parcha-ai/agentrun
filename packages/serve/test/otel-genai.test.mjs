@@ -820,6 +820,48 @@ test("an OTLP endpoint's or header value's credential with a raw ; in it is held
   assert.deepEqual(missed, [], "every credential with a ; is held whole and by its pairs, and cut with nothing after the ; left; region and the ordinary words are not");
 });
 
+// Held OTLP values that overlap or touch in a line: each row [what, the OTEL_EXPORTER_OTLP_HEADERS value, the line, its
+// cut]. Every redactor cuts the union of every held value's places, so no character of any held value is left.
+const OVERLAP_KEY = `${SEMI_PREFIX};suffix-${"dummy"}`;
+const OVERLAP_ROWS = [
+  [
+    "the X-Relay pair quoted alone (the SDK's reading `api_key=<key>` starts first, the key with its ; ends later)",
+    `X-Relay=api_key=${OVERLAP_KEY}&region=us-east-1`,
+    `401 from relay: api_key=${OVERLAP_KEY} refused, region us-east-1`,
+    "401 from relay: [redacted] refused, region us-east-1",
+  ],
+  [
+    "two values overlapping, the longer starting first",
+    `X-One=alpha-${"dummy"}-long-value-shared,X-Two=shared-tail-${"dummy"}`,
+    `401: got alpha-${"dummy"}-long-value-shared-tail-${"dummy"} back`,
+    "401: got [redacted] back",
+  ],
+  [
+    "two values overlapping, the longer starting later",
+    `X-One=head-${"dummy"}-shared,X-Two=shared-long-${"dummy"}-tail-value`,
+    `401: got head-${"dummy"}-shared-long-${"dummy"}-tail-value back`,
+    "401: got [redacted] back",
+  ],
+  [
+    "two values touching",
+    `X-One=touch-one-${"dummy"},X-Two=touch-two-${"dummy"}`,
+    `401: got touch-one-${"dummy"}touch-two-${"dummy"} back`,
+    "401: got [redacted] back",
+  ],
+];
+
+test("OTLP values that overlap or touch in a line are cut as one by every redactor, so no character of any held value is left, whichever starts first or is longer", () => {
+  const missed = [];
+  for (const [what, headers, line, cut] of OVERLAP_ROWS) {
+    const env = { ...ON, OTEL_EXPORTER_OTLP_HEADERS: headers };
+    for (const [redactor, redact] of [["the [otel] cut", otlpHeaderCut(env)], ["the runner's redactor", secretRedactor(runnerSecrets(env))], ["the host's held list's redactor", secretRedactor(hostSecrets(env))]]) {
+      const shown = redact(line);
+      if (shown !== cut) missed.push(`${what}: ${redactor} shows ${shown}`);
+    }
+  }
+  assert.deepEqual(missed, [], "every overlapping or touching held value is cut as one [redacted]");
+});
+
 test("after a header value's first URL query, a later URL's query is read while 4,096 characters of them in all fit: one that fits has its + read as a space, and a longer one's key is still held as written by the pair read", () => {
   // A key of `length` characters with a + in it; the second URL's query is `api_key=` and the key.
   const key = (length) => `dummy+key-${"x".repeat(length - 10)}`;
