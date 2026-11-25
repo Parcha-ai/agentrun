@@ -50,6 +50,8 @@ test("a node --test suite's files in one shard take as long as node schedules th
   assert.equal(modelSeconds([file('a-long', 100), ...short]), 2 + 100);
   assert.equal(modelSeconds([...short, file('z-long', 100)]), 2 + 40 + 100);
   assert.equal(modelSeconds([...short, file('z-long', 100)].map(({ slots, ...rest }) => rest)), 2 + 100);
+  // Slots are not CPUs: eight 20 s files in eight slots take their total over the suite's parallelism of 4, not 20 s.
+  assert.equal(modelSeconds([1, 2, 3, 4, 5, 6, 7, 8].map((n) => ({ ...file(`c-${n}`, 20), slots: 8 }))), 2 + 160 / 4);
   // Planned: beside a long file that sorts first the short ones cost nothing; beside one that sorts last they do, so one goes
   // to the other shard.
   const others = [unit('x', 60, 'other'), unit('y', 50, 'other')];

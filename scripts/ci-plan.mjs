@@ -7,8 +7,9 @@
 //
 // `plan(units, n)` assigns units to n shards, longest first, each to the shard it lengthens least. A shard's time is modelled
 // per suite as node --test runs it: the files in sorted order, as many at once as its concurrency, each starting when one
-// ends, so a long file that sorts late starts late (a suite of another runner, its files' total over its measured
-// parallelism or its longest file, whichever is more). The
+// ends, so a long file that sorts late starts late; and no less than its files' total over its measured parallelism, which
+// is what a suite's CPU-bound files keep up with on the runner's 4 CPUs when they fill its slots (a suite of another
+// runner: its longest file or that total, whichever is more). The
 // weights come from scripts/ci-timings.json (seconds on the Blacksmith runners that run the merge queue's shards and this
 // repository's own pull requests', from CI's own logs: `node scripts/ci-timings.mjs`). GitHub's runners, where main and
 // a fork's pull request run, take the same files in other proportions, so the plan is balanced for Blacksmith. A file it does not list weighs its suite's median; nothing is dropped for a missing weight.
@@ -164,7 +165,7 @@ function grow(group, unit) {
 }
 const groupSeconds = (group) => {
   if (!group.count) return 0;
-  if (group.slots !== undefined) return COMMAND_SECONDS + makespan(group.queue, group.slots);
+  if (group.slots !== undefined) return COMMAND_SECONDS + Math.max(makespan(group.queue, group.slots), group.sum / group.parallelism);
   return COMMAND_SECONDS + Math.max(group.max, group.sum / Math.min(group.parallelism, group.count));
 };
 
@@ -180,8 +181,8 @@ export function timingDrift(name, modelled, seconds, { untimedRunner = false } =
   return `::warning title=ci-timings.json is stale::${name} ran ${seconds} s, modelled ${modelled} s: refresh scripts/ci-timings.json from CI's job logs (node scripts/ci-timings.mjs <job log>...), and split a test file that alone is near a shard's time`;
 }
 
-/** The modelled seconds of a set of units, summed over their suites: a node --test suite's files as it schedules them, another
- *  suite's longest unit or its total over its parallelism, whichever is more. */
+/** The modelled seconds of a set of units, summed over their suites: a node --test suite's files as it schedules them, or
+ *  their total over its parallelism if that is more; another suite's longest unit or that total, whichever is more. */
 export function modelSeconds(units) {
   const groups = new Map();
   for (const unit of units) groups.set(unit.suite, grow(groups.get(unit.suite) ?? emptyGroup(unit), unit));

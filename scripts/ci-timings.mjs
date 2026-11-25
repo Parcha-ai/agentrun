@@ -6,7 +6,9 @@
 // reporter (each top-level test's time, credited to the file that declares a test of that name) or vitest's per-file
 // lines, and the suite's wall time (node --test's closing duration_ms, vitest's Duration); for a pi part, each
 // workspace's type-check. It writes the median over the logs of each file's seconds, each suite's file total over its wall time
-// (its parallelism), the wall of each suite scripts/ci-shards.json runs whole, and each type-check. A test whose name
+// (its parallelism: the 90th percentile over the logs, what the suite keeps up when its files fill node --test's slots, as
+// a shard whose wall is one long file reads low), the wall of each suite scripts/ci-shards.json runs whole, and each
+// type-check. A test whose name
 // matches no file, or several, is left out: its file keeps its suite's median weight, as a new file does.
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -99,6 +101,7 @@ export function fileOf(declared, name) {
 }
 
 const median = (values) => { const s = [...values].sort((a, b) => a - b); const m = Math.floor(s.length / 2); return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
+const ninetieth = (values) => [...values].sort((a, b) => a - b)[Math.ceil(values.length * 0.9) - 1];
 const tenths = (value) => Math.round(value * 10) / 10;
 
 /** The timings, from the logs' texts, for the suites under `root`. */
@@ -132,8 +135,8 @@ export function timingsOf(root, texts, { config } = readConfig(root)) {
       }
     }
   }
-  const out = (map) => Object.fromEntries([...map].sort(([a], [b]) => (a < b ? -1 : 1)).map(([key, values]) => [key, tenths(median(values))]));
-  return { parallelism: out(parallelism), walls: out(walls), typecheck: out(typecheck), files: out(files) };
+  const out = (map, of = median) => Object.fromEntries([...map].sort(([a], [b]) => (a < b ? -1 : 1)).map(([key, values]) => [key, tenths(of(values))]));
+  return { parallelism: out(parallelism, ninetieth), walls: out(walls), typecheck: out(typecheck), files: out(files) };
 }
 
 /** `measured` file weights, plus each of `previous`'s that the logs did not measure and whose file still exists
@@ -153,7 +156,7 @@ if (isMain(import.meta)) {
   const previousPath = join(root, 'scripts', 'ci-timings.json');
   const previous = existsSync(previousPath) ? JSON.parse(readFileSync(previousPath, 'utf8')).files : undefined;
   timings.files = carriedOver(previous, timings.files, (path) => existsSync(join(root, path)));
-  const about = 'Seconds on a Blacksmith runner (the merge queue\'s), medians over CI job logs, written by scripts/ci-timings.mjs: files, each test file\'s own time; parallelism, a suite\'s file total over its wall time; walls, a suite run as a whole; typecheck, a workspace\'s type-check in a pi part.';
+  const about = 'Seconds on a Blacksmith runner (the merge queue\'s), medians over CI job logs, written by scripts/ci-timings.mjs: files, each test file\'s own time; parallelism, a suite\'s file total over its wall time (90th percentile); walls, a suite run as a whole; typecheck, a workspace\'s type-check in a pi part.';
   writeFileSync(join(root, 'scripts', 'ci-timings.json'), `${JSON.stringify({ about, ...timings }, null, 1)}\n`);
   console.log(`scripts/ci-timings.json: ${Object.keys(timings.files).length} files, ${Object.keys(timings.parallelism).length} suites, ${Object.keys(timings.typecheck).length} type-checks, from ${logs.length} logs`);
 }

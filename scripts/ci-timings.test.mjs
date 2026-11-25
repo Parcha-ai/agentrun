@@ -74,8 +74,8 @@ test("the timings are each file's median over the logs, each suite's file total 
   ].join('\n');
   const timings = timingsOf(root, [run(3, 2, 2), run(5, 4, 4), run(9, 6, 3)]);
   assert.deepEqual(timings.files, { 'packages/a/test/one.test.mjs': 6, 'packages/a/test/two.test.mjs': 4 });
-  // Totals 6/2, 10/4 and 16/3: the median of 3, 2.5 and 5.33.
-  assert.deepEqual(timings.parallelism['@x/a'], 3);
+  // Totals 6/2, 10/4 and 16/3: the 90th percentile of 3, 2.5 and 5.33, what the suite keeps up with its slots full.
+  assert.deepEqual(timings.parallelism['@x/a'], 5.3);
   assert.deepEqual(timings.walls, { 'test:viewer': 6 });
 });
 
