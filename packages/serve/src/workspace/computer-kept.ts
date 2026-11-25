@@ -44,8 +44,10 @@
 // the run's no more and no claim takes it back), and no janitor but that runner's ends a row pinned to a runner still
 // there (sweepKept): that runner's own timer (endKept finishes a row so marked) or janitor does; once it is gone, any
 // janitor does. No park writes over a row pinned to another runner still there (keepKept): it keeps nothing then, and
-// its machine goes as at the run's end. So a machine a claim took and could not reach, or a park did not keep, is not
-// left with no row and no runner to end it, short of the claim's process dying between its take and its give-back. A
+// its machine goes as at the run's end. A give-back whose write fails (the store threw, or a row was written on the run's
+// key since) writes the same row on a key of the machine's own beside it, which the janitor ends the same way
+// (giveBackKept). So a machine a claim took and could not reach, or a park did not keep, is not left with no row and no
+// runner to end it, short of the claim's process dying between its take and its give-back, or both writes failing. A
 // machine any runner reaches by its id (an exec vendor's sandbox, a phone)
 // is not pinned, and moves.
 import { type ComputerProvider, connectOf, type MountKind, type ProviderEntry } from "@parcha/agentrun-computer";
@@ -279,13 +281,27 @@ export async function restoreKept(settings: Pick<KeptSettings, "putIfAbsent">, r
   return JSON.stringify(await settings.putIfAbsent(keptKeyOf(runId), row)) === JSON.stringify(row);
 }
 
+/** The settings prefix of a kept machine given back beside its run's row (giveBackKept). Not under KEPT_PREFIX: the claim
+ *  rule pins no run to it and no claim takes it back. */
+export const GIVEN_BACK_PREFIX = "computer_given_back:";
+/** The settings key of `kept`'s machine of run `runId` given back beside the run's row (a run id has no colon). */
+const givenBackKeyOf = (runId: string, kept: Pick<Kept, "id">): string => `${GIVEN_BACK_PREFIX}${runId}:${kept.id}`;
+
+/** The give-back of `kept` to its runner (restoreKept), and where that write fails (the store threw, or a row was written
+ *  on the run's key since), the same row, marked ending, on a key of the machine's own beside it: the janitor's pass
+ *  ends it as a kept row (sweepKept), its runner's while that runner is there, so a machine taken off its row is never
+ *  left with nothing to end it. Throws only where both writes fail. */
+export async function giveBackKept(settings: Pick<KeptSettings, "putIfAbsent">, runId: string, kept: Kept): Promise<void> {
+  if (await restoreKept(settings, runId, kept).catch(() => false)) return;
+  await settings.putIfAbsent(givenBackKeyOf(runId, kept), rowOf(kept, "ending"));
+}
+
 /** Ends a kept computer at its time: its row marked ending, only while it still reads `kept` (a claim that took it since
  *  has it), then `end` (its delete), then the row marked ended. A row already ending (a process that died mid-way, a
  *  delete that failed, a claim that gave it back or a park that kept nothing else: restoreKept, keepKept) is deleted
  *  again. A delete that fails leaves the row ending, for the janitor's next pass, and throws its words. True when this
- *  call ended it. */
-export async function endKept(settings: Pick<KeptSettings, "get" | "replaceIf">, runId: string, kept: Kept, end: () => Promise<void>): Promise<boolean> {
-  const key = keptKeyOf(runId);
+ *  call ended it. `key`: the row's, the run's own unless a give-back left it beside (giveBackKept). */
+export async function endKept(settings: Pick<KeptSettings, "get" | "replaceIf">, runId: string, kept: Kept, end: () => Promise<void>, key = keptKeyOf(runId)): Promise<boolean> {
   const ending = rowOf(kept, "ending");
   if (!kept.ending && !(await settings.replaceIf(key, rowOf(kept), ending)) && JSON.stringify(await settings.get(key)) !== JSON.stringify(ending)) return false;
   await end();
@@ -333,14 +349,15 @@ export async function sweepKept(deps: {
   let next: number | undefined;
   let rows: Awaited<ReturnType<KeptSettings["all"]>>;
   try {
-    rows = await deps.settings.all({ prefix: KEPT_PREFIX });
+    // The runs' rows, and the machines given back beside them (giveBackKept), each ended the same way.
+    rows = [...(await deps.settings.all({ prefix: KEPT_PREFIX })), ...(await deps.settings.all({ prefix: GIVEN_BACK_PREFIX }))];
   } catch (error) {
     return { ended, failed: [`the kept computers could not be read: ${words(error)}`] };
   }
   // The runners there now, read once for the pass, only where a row is pinned to another runner (heldElsewhere).
   const othersThere = heldElsewhere(deps);
   for (const row of rows) {
-    const runId = row.key.slice(KEPT_PREFIX.length);
+    const runId = row.key.startsWith(GIVEN_BACK_PREFIX) ? row.key.slice(GIVEN_BACK_PREFIX.length).split(":", 1)[0]! : row.key.slice(KEPT_PREFIX.length);
     const kept = keptOf(row.value);
     try {
       if (!kept) {
@@ -371,7 +388,7 @@ export async function sweepKept(deps: {
         if (await deleteKept(provider, kept)) await deps.deleted?.(kept.provider, kept.id);
         if (kept.folder === "archil") await deps.revokeMount?.(runId, kept);
       };
-      const deleted = await endKept(deps.settings, runId, kept, () => bounded(deps.deleteMs ?? KEPT_DELETE_MS, proven()));
+      const deleted = await endKept(deps.settings, runId, kept, () => bounded(deps.deleteMs ?? KEPT_DELETE_MS, proven()), row.key);
       if (deleted) ended.push(kept.name);
       if (deleted && over) await deps.settings.removeIf(row.key, rowOf(kept, "ended"));
     } catch (error) {

@@ -60,7 +60,7 @@ import { type AttachedComputers, pairedProvider, withPaired } from "./attached-c
 import { computerHold, type HeldComputer, heldHands } from "./computer-hold.js";
 import { endingDeletes, figuresOf, type IntervalWrites, intervalWrites, stderrLog } from "./computer-intervals.js";
 import { type ComputeLedger, type ComputeMeter, computeMeter, type ComputeMeterOptions } from "../compute-cost.js";
-import { bounded, deleteKept, endKept, heldElsewhere, keepKept, KEEP_MS, KEPT_DELETE_MS, type Kept, keptBy, type KeptHolder, type ParkCause, type ParkedEnd, pinnedOf, readKept, restoreKept, takeKept } from "./computer-kept.js";
+import { bounded, deleteKept, endKept, giveBackKept, heldElsewhere, keepKept, KEEP_MS, KEPT_DELETE_MS, type Kept, keptBy, type KeptHolder, type ParkCause, type ParkedEnd, pinnedOf, readKept, takeKept } from "./computer-kept.js";
 import { type ProviderLedger, storeLedger } from "./computer-ledger.js";
 import { type ClaimBrowser, type ClaimSide, type ComputerSetting, type ComputerSettingKind, type KindCapabilities, type KindRegistry, type LaunchedComputer, type ProviderEntry, providerKeys, registryHere, resolveComputer, runShellOf, type ShellPlace } from "./resolve-computer.js";
 import { computerDenied } from "../tool-gate.js";
@@ -1093,14 +1093,15 @@ export async function computerForClaim(
       // whoever is there: this claim goes on on a new machine, so no claim takes that one back as the run's. A runner
       // still there (refusing claims or not, or one whose word was only late) ends it at its time (endKept finishes a row
       // so marked) or at its janitor's pass; once it is gone, any janitor's pass does. A row left off would leave the
-      // machine running with nothing to end it, so the give-back reads nothing first. Then who is there is read for the
+      // machine running with nothing to end it, so the give-back reads nothing first, and a write of it that fails goes
+      // on a key of the machine's own the janitor ends the same way (giveBackKept). Then who is there is read for the
       // new one's words alone (Replaced.elsewhere, lost): true when that runner is there (or the read failed), false when
       // it is gone; undefined when who is there was never read (the row not taken, or not pinned elsewhere), and the
       // words name neither.
       const giveBack = async (): Promise<boolean | undefined> => {
         if (!took || !elsewhere) return undefined;
         took = false;
-        await restoreKept(settings, launch.runId, record).catch(() => false);
+        await giveBackKept(settings, launch.runId, record).catch((error: unknown) => (deps.log ?? stderrLog)(`the ${record.kind} kept for run ${launch.runId} could not be given back to the runner that kept it, so only its provider's own end ends it: ${error instanceof Error ? error.message : String(error)}`));
         return heldElsewhere({ ...(store.runners ? { runners: store.runners } : {}), ...(launch.holder ? { self: launch.holder } : {}) })(record);
       };
       try {
