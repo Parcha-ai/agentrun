@@ -247,13 +247,15 @@ test("files: which files are carried, and at which index, is decided with no res
   assert.deepEqual(doc.files.map((file) => file.path), ["b/one.txt"], "the restore moves no file in");
   assert.equal(doc.files[0].content, one, "the address restored is the one picked");
   assert.deepEqual(doc.omitted.filter((x) => x.what === "file"), [{ what: "file", path: "a/ips.txt", why: "too_large" }]);
-  assert.ok(!body.includes("10.1.2.3"), "the omitted file's address is nowhere"); // key-gate: denylist the synthetic address above
+  const hidden = ips.split(" ")[1];
+  assert.ok(!body.includes(hidden), "the omitted file's address is nowhere");
 });
 
 test("files: a restore that puts a carried file over a cap is refused 400, never a file moved in or out", async () => {
   // A long address (its marker shorter) and a private one (its marker longer): cut, the file is no longer than it was read;
   // with the address restored, the private one's marker makes it longer.
-  const mail = `reach someone.with.a.rather.long.name.${hex("mail", 8)}@sample-mail.zz at 10.4.5.6\n`; // key-gate: denylist a synthetic private address the export cuts as personal
+  const inner = "10.4.5.6"; // key-gate: denylist a synthetic private address the export cuts as personal
+  const mail = `reach someone.with.a.rather.long.name.${hex("mail", 8)}@sample-mail.zz at ${inner}\n`;
   const files = () => [textFile("c/mail.txt", mail)];
   const caps = { fileBytes: Buffer.byteLength(mail) };
   const { doc: seen } = await build({ caps, files: files() });
