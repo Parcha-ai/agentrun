@@ -150,7 +150,9 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
     const has = runnerShell.size ? `whose shell here runs ${[...runnerShell].join(", ")} alone` : "which has no shell";
     const box = boxAvailability(boxes).find((b) => b.available);
     if (box) return { field, reason: "not_an_option", message: `${tool} runs only in a box, and ${where}, ${has}: give it a sandbox computer (a sandbox place).`, fix: placeFix({ mode: "sandbox", box: box.id }), host: false, tool };
-    const why = "why" in fresh ? `the docker box is unavailable here: ${fresh.why}` : "no box runs execute in is available here";
+    // In Mode 2 new agents do run on the runner (placesOf), so its words say so, as they always have; in Mode 1 a new
+    // agent names its place, so they say only why Docker's box is not here.
+    const why = "why" in fresh ? `${runnerShell.size ? "new agents run on the runner, because " : ""}the docker box is unavailable here: ${fresh.why}` : "no box runs execute in is available here";
     return { field, reason: "not_an_option", message: `${tool} runs only in a box, and ${where}, ${has} (${runnerShell.size ? tool : "a shell"} needs a sandbox computer), and ${why}. Do that, or keep this agent on the runner: name "place": {"mode": "runner"} and remove "${tool}" from definition.tools.`, fix: `Remove "${tool}" from definition.tools.`, host: false, tool };
   };
   // A harness's own MCP client may drop or retype a shape of a tool's schema (its facts' schemaProblems, measured on its
