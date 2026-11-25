@@ -195,14 +195,15 @@ export async function exportBundle(input: ExportInput): Promise<{ body: string; 
   const cuts: CutRecord[] = [];
   const restored: RestoredRecord[] = [];
   const seen = new Map<string, boolean>(); // every cut's id: whether it is restorable
-  const cutString = async (text: string, at: string, context?: CallContext): Promise<string> => {
+  // `restoring` false: every cut stays cut, whatever the restore names (the files' choice, below).
+  const cutString = async (text: string, at: string, context?: CallContext, restoring = true): Promise<string> => {
     // keep() is asked of restorable cuts alone, in the order of the string's cuts; a rule's cuts are all of one kind, so
     // counting a rule's cuts here gives the ordinals the records below are named by.
     const asked = new Map<string, number>();
     const keep = (cut: Readonly<Cut>): boolean => {
       const ordinal = asked.get(cut.rule) ?? 0;
       asked.set(cut.rule, ordinal + 1);
-      return restore.has(cutId(input.runId, at, cut.rule, ordinal));
+      return restoring && restore.has(cutId(input.runId, at, cut.rule, ordinal));
     };
     let result: ScrubResult;
     try {
@@ -262,26 +263,46 @@ export async function exportBundle(input: ExportInput): Promise<{ body: string; 
   // A file's content is cut knowing its path (a .env* file or one under ~/.ssh is dropped whole); then its bytes and digest
   // are the carried text's. The caps hold for those bytes, as a share host checks them: a cut can make a file longer than it
   // was read (a marker longer than the value), so one whose cut text is over the file cap, or the files' total, is left out
-  // as filesOf leaves one out, its cuts with it. Files are cut first so their omissions are cut with the rest of `omitted`;
-  // their records still follow every other part's, in the order the body is written in.
-  const files: Record<string, unknown>[] = [];
-  let total = 0;
-  for (const file of carried) {
-    const index = files.length;
+  // as filesOf leaves one out, its cuts with it. Which files are carried, and so each one's index (in its cut ids), is
+  // decided with every cut in place, never with a restore: a restore can make a file shorter or longer, and if it moved a
+  // file in or out, a cut id the owner picked would name another file's value. A restore that then puts a carried file
+  // over a cap is refused. Files are cut first so their omissions are cut with the rest of `omitted`; their records still
+  // follow every other part's, in the order the body is written in.
+  const cutFile = async (file: { path: string; content: string }, index: number, restoring: boolean) => {
     const before = { cuts: cuts.length, restored: restored.length, seen: new Set(seen.keys()) };
-    const path = await cutString(file.path, `/files/${index}/path`);
-    const content = await cutString(file.content, `/files/${index}/content`, { path: file.path });
-    const bytes = Buffer.byteLength(content);
-    const over = bytes > caps.fileBytes ? "too_large" : total + bytes > caps.filesBytes ? "over_total" : undefined;
-    if (over) {
+    const path = await cutString(file.path, `/files/${index}/path`, undefined, restoring);
+    const content = await cutString(file.content, `/files/${index}/content`, { path: file.path }, restoring);
+    const undo = () => {
       cuts.splice(before.cuts);
       restored.splice(before.restored);
       for (const id of [...seen.keys()]) if (!before.seen.has(id)) seen.delete(id);
+    };
+    return { path, content, bytes: Buffer.byteLength(content), undo };
+  };
+  const files: Record<string, unknown>[] = [];
+  const fileOf = (cut: { path: string; content: string; bytes: number }) => ({ path: cut.path, bytes: cut.bytes, sha256: packageSha256([{ path: cut.path, encoding: "utf8", content: cut.content }]), encoding: "utf8", content: cut.content });
+  const chosen: { path: string; content: string }[] = [];
+  let total = 0;
+  for (const file of carried) {
+    const cut = await cutFile(file, chosen.length, false);
+    const over = cut.bytes > caps.fileBytes ? "too_large" : total + cut.bytes > caps.filesBytes ? "over_total" : undefined;
+    if (over || restore.size) cut.undo();
+    if (over) {
       omitted.push({ what: "file", path: file.path, why: over });
       continue;
     }
-    total += bytes;
-    files.push({ path, bytes, sha256: packageSha256([{ path, encoding: "utf8", content }]), encoding: "utf8", content });
+    total += cut.bytes;
+    chosen.push(file);
+    if (!restore.size) files.push(fileOf(cut));
+  }
+  if (restore.size) {
+    total = 0;
+    for (const [index, file] of chosen.entries()) {
+      const cut = await cutFile(file, index, true);
+      total += cut.bytes;
+      if (cut.bytes > caps.fileBytes || total > caps.filesBytes) throw new ApiError("bad_request", `With these cuts restored, a file this run's bundle carries is over the share caps (${caps.fileBytes} bytes a file, ${caps.filesBytes} in all). Nothing was restored.`);
+      files.push(fileOf(cut));
+    }
   }
   const fileCuts = cuts.splice(0);
   const fileRestored = restored.splice(0);

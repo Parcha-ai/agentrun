@@ -130,7 +130,7 @@ const WAITING_CHIP: Record<string, string> = { budget: "Paused at cap" };
 
 /** One step: a failed one reads as failed. A server row marked `paused` (the run paused at its cap) shows a pause icon,
  *  muted like any server row. */
-function Row({ step, last, ended, waitingChip, files, onOpen }: { step: Step; last: boolean; ended: boolean; waitingChip?: string; files?: RunFile[]; onOpen?: (file: RunFile) => void }) {
+function Row({ step, last, ended, waitingChip, files, onOpen, shared }: { step: Step; last: boolean; ended: boolean; waitingChip?: string; files?: RunFile[]; onOpen?: (file: RunFile) => void; shared?: boolean }) {
   // The row a step shows, and so its label: the one place a row is read for display.
   const row = step.row;
   const [open, setOpen] = useState(false);
@@ -178,7 +178,7 @@ function Row({ step, last, ended, waitingChip, files, onOpen }: { step: Step; la
         {/* A tool step opens to the tool's own id too: its label is a word, and the id is what a log or the API says. */}
         {open && detail && row.tool_name && <p className="mt-3 font-mono text-small text-muted-foreground">{row.tool_name}</p>}
         {/* An answer opens as the Report reads it (the same markdown(): links as links, fences as code blocks, no raw HTML); a link naming one of the run's files opens that file, as in the Report. */}
-        {open && detail && row.kind === "final_answer" && <article className="report mt-3 max-h-80 max-w-none overflow-auto border bg-card p-3" onClick={openLinkedFile((path) => { const f = files?.find((x) => x.path === path); if (f) onOpen?.(f); })} dangerouslySetInnerHTML={{ __html: markdown(detail, onOpen && files ? { paths: files.map((f) => f.path) } : undefined) }} />}
+        {open && detail && row.kind === "final_answer" && <article className="report mt-3 max-h-80 max-w-none overflow-auto border bg-card p-3" onClick={openLinkedFile((path) => { const f = files?.find((x) => x.path === path); if (f) onOpen?.(f); })} dangerouslySetInnerHTML={{ __html: markdown(detail, onOpen && files ? { paths: files.map((f) => f.path), ...(shared ? { images: false as const } : {}) } : shared ? { paths: [], images: false } : undefined) }} />}
         {open && detail && row.kind !== "final_answer" && <pre className="mt-3 max-h-80 overflow-auto whitespace-pre-wrap break-words border bg-card p-3 font-mono text-small leading-[1.7]"><Redactions text={detail} /></pre>}
         {row.learned_nodes?.length ? <LearnedNodes nodes={row.learned_nodes} /> : null}
         {row.computer_calls?.length ? <ComputerCalls calls={row.computer_calls} dropped={row.computer_calls_dropped ?? 0} /> : null}
@@ -255,7 +255,9 @@ function LearnedNodes({ nodes }: { nodes: LearnedNode[] }) {
 /** The run's live timeline as a step list (lib/timeline's `steps`: each tool once, from either of the server's shapes;
  *  a question once; repeated failures once): newest last, older steps folded behind "1 earlier step" or "N earlier steps". `asking`: the
  *  waiting row of the question the page shows above while the run waits on it; its step points there. */
-export function Timeline({ rows, live, fold = 6, asking, waitingOn, files, onOpen, ended = false }: { rows: TimelineRow[]; live: boolean; fold?: number; asking?: string;
+export function Timeline({ rows, live, fold = 6, asking, waitingOn, files, onOpen, ended = false, shared = false }: { rows: TimelineRow[]; live: boolean; fold?: number; asking?: string;
+  /** A share's run (share/ShareView): an opened Answer draws no image (LinkedFiles `images`). */
+  shared?: boolean;
   /** Whether the run has ended (runEnded of its status): a charge's words then say what is known, never "so far". The run
    *  page and the agent page's latest run both pass it. */
   ended?: boolean;
@@ -279,7 +281,7 @@ export function Timeline({ rows, live, fold = 6, asking, waitingOn, files, onOpe
           <ChevronRight className="size-3" aria-hidden /> {hidden} earlier {hidden === 1 ? "step" : "steps"}
         </button>
       )}
-      <ol>{shown.map((step, i) => <Row key={step.row.id} step={step} last={i === shown.length - 1 && !live} ended={ended} waitingChip={step.row.id === current && waitingOn ? WAITING_CHIP[waitingOn] : undefined} files={files} onOpen={onOpen} />)}</ol>
+      <ol>{shown.map((step, i) => <Row key={step.row.id} step={step} last={i === shown.length - 1 && !live} ended={ended} waitingChip={step.row.id === current && waitingOn ? WAITING_CHIP[waitingOn] : undefined} files={files} onOpen={onOpen} shared={shared} />)}</ol>
       {live && <Working title="Working" note="Steps appear as the agent takes them." spin />}
     </div>
   );
