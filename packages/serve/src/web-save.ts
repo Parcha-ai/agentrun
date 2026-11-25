@@ -160,8 +160,10 @@ export async function webSave(args: unknown, work: Workspace, options: SaveOptio
     const typed = typeFor(file.bytes, file.contentType, at);
     if ("refused" in typed) return { ok: false, url: final, path: at, refused: clip(typed.refused, WORDS_MAX_CHARS) };
     try {
-      // Again with the write: a file made at the path while the download ran is kept, not replaced.
-      const saved = await saveOnce(work, at, file.bytes);
+      // Again with the write: a file made at the path while the download ran is kept, not replaced. Where the Workspace
+      // has writeNew (local, attached) so is one made after this check; where it doesn't (an Archil run disk) web_save
+      // keeps its check then a write, follow-up Parcha-ai/agentrun#3777.
+      const saved = await saveOnce(work, at, file.bytes, { checkThenWrite: true });
       if ("held" in saved) return { ...heldWords(saved.held), url: final };
     } catch (error) {
       return { ...failed(error), url: final };
