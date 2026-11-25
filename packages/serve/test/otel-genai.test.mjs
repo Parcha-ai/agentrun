@@ -837,9 +837,16 @@ const SEMI_ROWS = [
   [
     "a header value's credential pair with a ; and a %2C in its value, before an & written %26",
     { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `X-Relay=api_key=${SEMI_COMMA}%26region=us-east-1` },
-    [decodeURIComponent(SEMI_COMMA), SEMI_PREFIX],
+    [SEMI_COMMA, decodeURIComponent(SEMI_COMMA), SEMI_PREFIX],
     ["us-east-1"],
-    [`401 from relay: key ${decodeURIComponent(SEMI_COMMA)} refused`, "401 from relay: key [redacted] refused"],
+    [`401 from relay: key ${SEMI_COMMA} refused`, "401 from relay: key [redacted] refused"],
+  ],
+  [
+    "a header value's credential pair with a ; and a %2C in its value, before a space written %20",
+    { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `X-Relay=api_key=${SEMI_COMMA}%20region=us-east-1` },
+    [SEMI_COMMA, decodeURIComponent(SEMI_COMMA), SEMI_PREFIX],
+    ["us-east-1"],
+    [`401 from relay: key ${SEMI_COMMA} refused`, "401 from relay: key [redacted] refused"],
   ],
   [
     "a header value's credential pair whose value starts with a ;",
