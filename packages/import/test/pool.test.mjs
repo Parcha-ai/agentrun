@@ -2,6 +2,7 @@
 // kept only when no record it asked about and did not hold is one an earlier file holds; any other is made again in
 // order, so a copy counts once, in the file the import's order first read it.
 import assert from "node:assert/strict";
+import { once } from "node:events";
 import { appendFile, utimes } from "node:fs/promises";
 import { test } from "node:test";
 import { availableParallelism, freemem } from "node:os";
@@ -11,6 +12,8 @@ import * as poolModule from "../dist/pool.js";
 import { recordIndex } from "../dist/record-index.js";
 
 const { memoryLimit, ReadPool, readAheadBytes, stringBytes } = poolModule;
+import { ownerOf } from "../dist/record-index.js";
+import { packed, packInto } from "../dist/record-key.js";
 import { anthropicUsage, claudeAnswer, claudeFile, claudeUser, codexAnswer, codexContext, codexFile, codexMeta, codexTokens, codexUser, openaiUsage, subagentFile, tempHome, writeJsonl } from "./fixtures.mjs";
 
 const THREADS = [2, 3, 4];
@@ -275,10 +278,10 @@ async function sameShape(t) {
   return items;
 }
 
-/** Waits until no worker reads: no read is in flight, and none is sent until one is taken or dropped. */
+/** Waits until no worker reads: no read is in flight, and none is sent until one is taken or dropped. A worker's read
+ *  is handled (and the next one sent) before this sees its message. */
 async function settled(pool) {
-  for (let i = 0; i < 2_000 && pool.reading; i += 1) await new Promise((done) => setTimeout(done, 5));
-  assert.equal(pool.reading, 0, "the pool settles");
+  while (pool.running.size) await Promise.all([...pool.running.keys()].map((worker) => once(worker, "message")));
 }
 
 /** A pool of `threads` and read-ahead `ahead` over `items`, nothing taken, once it settles: the reads its workers sent
@@ -291,7 +294,7 @@ async function aheadOf(items, threads, ahead) {
   try {
     pool.readAll(items);
     await settled(pool);
-    return { peak: pool.peakWaiting, held: pool.held, waiting: reads };
+    return { peak: pool.peakWaiting, held: pool.waiting, waiting: reads };
   } finally {
     process.off("worker", counted);
     pool.close();
@@ -326,16 +329,16 @@ test("reads dropped let the read-ahead go: the pool reads on past them, and a dr
   try {
     pool.readAll(items);
     await settled(pool);
-    assert.equal(pool.held, 3 * one, "three read ahead");
+    assert.equal(pool.waiting, 3 * one, "three read ahead");
     pool.drop([0, 1, 2]);
-    assert.equal(pool.held, 0, "the reads dropped are the three waiting");
+    assert.equal(pool.waiting, 0, "the reads dropped are the three waiting");
     await settled(pool);
-    assert.equal(pool.held, 3 * one, "three more read ahead");
+    assert.equal(pool.waiting, 3 * one, "three more read ahead");
     // Each of the next three is waiting: taking it lets go of its bytes (one not read yet would be read, and hold none).
     for (const id of [3, 4, 5]) {
-      const held = pool.held;
+      const held = pool.waiting;
       assert.equal((await pool.take(id)).ok, true);
-      assert.equal(pool.held, held - one, `file ${id} was read ahead`);
+      assert.equal(pool.waiting, held - one, `file ${id} was read ahead`);
     }
     assert.deepEqual(await pool.take(0), { ok: false }, "a dropped read is not taken");
   } finally {
@@ -365,9 +368,29 @@ test("a source read again whole lets go of its reads in the pool: once the pool 
   assert.equal(pools.length, 1, "one pool");
   try {
     await settled(pools[0]);
-    assert.equal(pools[0].held, 0, "no read of the source read again waits in the pool");
+    assert.equal(pools[0].waiting, 0, "no read of the source read again waits in the pool");
   } finally {
     pools[0].close();
+  }
+});
+
+test("a worker's missed holds the records it asked for and never added: none it added after asking", async (t) => {
+  const home = await tempHome(t);
+  // Claude Code asks for a request's m: key, then its bare l: key, then adds the m: key; each line's u: key is asked for
+  // and added at once.
+  const file = await writeJsonl(claudeFile(home), [claudeUser({ uuid: "g-u", text: "Asked.", i: 0 }), claudeAnswer({ uuid: "g-a", msg: "msg_g", req: "req_g", usage: anthropicUsage(1, 2), i: 1 })]);
+  const pool = new ReadPool(1, Number.POSITIVE_INFINITY);
+  try {
+    pool.readAll([{ source: "claude-code", locator: { file }, size: 1 }]);
+    const read = await pool.take(0);
+    assert.equal(read.ok, true);
+    const holds = (index, key) => ownerOf(index, packInto(key, packed())) !== -1;
+    const added = ["u:g-u", "u:g-a", "m:msg_g:req_g"];
+    assert.deepEqual(added.map((key) => holds(read.mine, key)), [true, true, true], "mine: what it added");
+    assert.deepEqual(added.map((key) => holds(read.missed, key)), [false, false, false], "missed: none of what it added");
+    assert.deepEqual([read.missed.uuids.count, read.missed.others.count, holds(read.missed, "l:msg_g")], [0, 1, true], "missed: the bare id alone, asked for and never added");
+  } finally {
+    pool.close();
   }
 });
 
@@ -410,9 +433,9 @@ test("the read-ahead budget counts a tagged index's tags bytes", () => {
     const tags = tagged.uuids.tags.byteLength + tagged.others.tags.byteLength;
     assert.ok(tags > 0, "the tables carry tags");
     const held = (mine) => {
-      const before = pool.held;
+      const before = pool.waiting;
       pool.made({ id: -1, state: "running", bytes: 0 }, { ok: true, sessions: [], mine, missed: recordIndex(16) });
-      return pool.held - before;
+      return pool.waiting - before;
     };
     assert.equal(held(tagged) - held(untagged), tags);
   } finally {

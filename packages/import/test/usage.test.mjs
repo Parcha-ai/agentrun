@@ -2,8 +2,8 @@
 // counts below are worked by hand.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { normalizeUsage, otelUsage, parseHome, priceRequests, readSession } from "../dist/index.js";
-import { codexAnswer, codexContext, codexFile, codexMeta, codexTokens, codexUser, openaiUsage, tempHome, writeJsonl } from "./fixtures.mjs";
+import { normalizeUsage, otelUsage, priceRequests, readSession } from "../dist/index.js";
+import { codexAnswer, codexContext, codexFile, codexMeta, codexTokens, codexUser, openaiUsage, parseHome, tempHome, writeJsonl } from "./fixtures.mjs";
 
 test("Anthropic: input_tokens already leaves the cache out; the 1h part of the cache write is its own bucket", () => {
   const raw = { input_tokens: 100, output_tokens: 50, cache_read_input_tokens: 2000, cache_creation_input_tokens: 300, cache_creation: { ephemeral_1h_input_tokens: 120, ephemeral_5m_input_tokens: 180 } };

@@ -4,8 +4,8 @@
 // an earlier locator holds: its `seen` would then have answered every question alike (a record asked for and then added
 // is in mine), so the read is the one it would have made.
 import { parentPort, workerData } from "node:worker_threads";
-import { type Packed, packed, packInto } from "./record-key.js";
-import { addNew, addRecord, indexArrays, ownerOf, recordIndex } from "./record-index.js";
+import { packed, packInto } from "./record-key.js";
+import { addRecord, indexArrays, notIn, ownerOf, recordIndex } from "./record-index.js";
 import { DROPS_CURSOR, type InternalReadOptions, NO_READ_AHEAD } from "./internal.js";
 import { READERS } from "./readers/index.js";
 import type { Locator } from "./reader.js";
@@ -22,35 +22,17 @@ const buffers = (index: ReturnType<typeof recordIndex>): ArrayBuffer[] => indexA
 parentPort!.on("message", async ({ id, source, locator }: PoolAsk) => {
   const reader = (READERS as Record<string, (typeof READERS)[keyof typeof READERS]>)[source]!;
   const mine = recordIndex(64);
-  const missed = recordIndex(64);
-  let asked: string | undefined;
+  // Every record asked for while mine did not hold it; the ones added after are taken out once the read ends.
+  const asked = recordIndex(64);
   const at = packed();
-  // The last record asked for and not held, kept out of missed until the next question: a reader adds most records just
-  // after asking for them, and those are in mine.
-  let open = false;
-  const settle = () => {
-    if (open) addRecord(missed, at, 0);
-    open = false;
-  };
-  const pack = (record: string): Packed => {
-    if (record === asked) return at;
-    settle();
-    asked = record;
-    return packInto(record, at);
-  };
   const seen = {
     has: (record: string) => {
-      pack(record);
-      if (ownerOf(mine, at) !== -1) return true;
-      open = true;
+      if (ownerOf(mine, packInto(record, at)) !== -1) return true;
+      addRecord(asked, at, 0);
       return false;
     },
     add(record: string) {
-      pack(record);
-      // open: the last question was of this record, and mine held none (nothing is added to mine in between).
-      if (open) addNew(mine, at, 0);
-      else addRecord(mine, at, 0);
-      open = false;
+      addRecord(mine, packInto(record, at), 0);
       return this;
     },
   } as unknown as Set<string>;
@@ -59,7 +41,7 @@ parentPort!.on("message", async ({ id, source, locator }: PoolAsk) => {
     // every core it was given.
     const options: InternalReadOptions = { turns: false, totals: true, seen, maxLine, [DROPS_CURSOR]: true, [NO_READ_AHEAD]: true };
     const result = await reader.read(locator, undefined, options);
-    settle();
+    const missed = notIn(asked, mine);
     const counts = result.sessions.flatMap(({ counts }) => (counts ? [counts.model.buffer, counts.values.buffer, counts.has.buffer] : [])) as ArrayBuffer[];
     parentPort!.postMessage({ id, ok: true, sessions: result.sessions, mine, missed }, [...new Set([...buffers(mine), ...buffers(missed), ...counts])]);
   } catch {

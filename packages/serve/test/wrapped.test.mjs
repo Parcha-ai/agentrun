@@ -3,13 +3,16 @@
 // path or project. Each server here reads the fixture home it is handed (`sessionsHome`), never the runner's HOME.
 import assert from "node:assert/strict";
 import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { availableParallelism, tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { test } from "node:test";
 import { request } from "node:http";
+import { once } from "node:events";
 import { execFileSync } from "node:child_process";
 import { keptReads, loggedReads, within, wrappedView } from "../dist/wrapped.js";
 import { randomBytes } from "node:crypto";
+import { pathToFileURL } from "node:url";
+import { Worker } from "node:worker_threads";
 import { agent, call, cookieOf, follow, serve, withEnv } from "./support.mjs";
 
 const WORDS = "Fixture prompt, never reported.";
@@ -130,6 +133,21 @@ test("a session file that cannot be read is counted, as a number and no path, no
   assert.equal(body.unread_files, 1);
   assert.equal(body.requests, 2, "the rest of the year is read");
   assert.equal(JSON.stringify(body).includes("00000000-0000-4000-8000-000000000002"), false, "no path or id");
+});
+
+test("the import worker's Wrapped read names its threads and read-ahead: the cores less one, at most 8, and a quarter of the import heap", { timeout: 120_000 }, async (t) => {
+  const dir = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "agentrun-wrapped-worker-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  // The worker's own import of the import package, and only that one, is a stub that hands back the options it was called with.
+  const stub = join(dir, "stub.mjs");
+  await writeFile(stub, "export const wrappedHome = async (_home, _year, { threads, readAhead }) => ({ threads, readAhead });\n");
+  const hooks = join(dir, "hooks.mjs");
+  await writeFile(hooks, `import { registerHooks } from "node:module";
+registerHooks({ resolve: (specifier, context, next) => (specifier === "@parcha/agentrun-import" && context.parentURL?.endsWith("/import-worker.js") ? { url: ${JSON.stringify(pathToFileURL(stub).href)}, shortCircuit: true } : next(specifier, context)) });
+`);
+  const worker = new Worker(new URL("../dist/import-worker.js", import.meta.url), { workerData: { task: "wrapped", data: dir, home: dir, year: 2026 }, execArgv: ["--import", pathToFileURL(hooks).href] });
+  const [answer] = await once(worker, "message");
+  assert.deepEqual(answer, { wrapped: { threads: Math.max(1, Math.min(availableParallelism() - 1, 8)), readAhead: 512 * 2 ** 20 }, unread: 0 });
 });
 
 test("a harness row lists the source behind it, a source of a reader outside the table standing for itself", () => {

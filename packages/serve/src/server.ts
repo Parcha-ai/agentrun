@@ -69,7 +69,7 @@ import { HARNESS_MODULES_ENV, HARNESS_MODULES_SETTING, HARNESS_RECIPES_ENV, HARN
 import { claudeCliIn, HarnessInstall, type HarnessInstaller, installDirOf, NPM_STOP_GRACE_MS, npmInstall } from "./harness-install.js";
 import { DEFAULT_PORT, healthOf, hostMemory, maxRunsOf, runsThatFit } from "./host.js";
 import { DEFAULT_HOST, elsewhereOf, listenOn, minFreeMibOf, takeOver, urlOf } from "./listen-first.js";
-import { IMPORT_ASKED, type ImportCandidate, MAX_CANDIDATES } from "./import.js";
+import { IMPORT_ASKED, IMPORT_HEAP_MB, type ImportCandidate, MAX_CANDIDATES } from "./import.js";
 import type { ImportAnswer, ImportTask } from "./import-worker.js";
 import { answerStoreCall, type StoreCall } from "./import-proxy.js";
 import { LEARNING_LABEL, learningFolderOf, secretsShown, type LearningMode, learningOf, learnsOf, RUN_LEARNING_USE, seedOf, withAgentRepo } from "./learning.js";
@@ -275,9 +275,6 @@ const TEMPLATE_UPLOAD_BODY = Math.ceil((IMPORT_LIMITS.packageBytes * 4) / 3) + M
 /** The starts that may begin setup's import without ending it (a worker that failed, a process that ended) before the
  *  owner's yes is dropped: an import that fails the same way each time is not taken up at every start for good. */
 const IMPORT_STARTS = 3;
-/** The heap of the worker that counts or imports this machine's sessions. A run is read whole, at most MAX_RUN_BYTES of
- *  files (import.ts), which this holds several times over. */
-const IMPORT_HEAP_MB = 2048;
 const MAX_MESSAGE = 20_000;
 const MAX_WAIT_MS = 25_000;
 /** A run body's fields that a launch hook's host can't set on a firing's run (RunCreate `trigger_firing`): its trigger's
@@ -2784,7 +2781,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // runner's child holds many).
         ...(process.execArgv.some((arg) => arg.startsWith("--input-type")) ? { execArgv: workerArgs(process.execArgv) } : {}),
         // Its own heap, at most IMPORT_HEAP_MB whatever the machine's memory: an import that needs more ends as a failed
-        // worker (said, and counted: IMPORT_STARTS), never as a process the system ends for the memory it took.
+        // worker (said, and counted: IMPORT_STARTS). A Wrapped read also starts the import package's read threads
+        // (wrappedReading), each with a heap of its own outside this one, capped at its start: a 16 MB young generation
+        // and the import's workerOldMb (64 MB) old one. Their finished reads wait for this thread mostly as transferred
+        // ArrayBuffers (record indexes, request counts), memory outside this cap. So a Wrapped read holds at most
+        // IMPORT_HEAP_MB for this thread's own heap, plus threads x (workerOldMb + 16) MB, plus up to readAhead of
+        // transferred buffers.
         resourceLimits: { maxOldGenerationSizeMb: IMPORT_HEAP_MB },
       });
       workers.set(worker, { task, exit: once(worker, "exit").catch(() => undefined) });

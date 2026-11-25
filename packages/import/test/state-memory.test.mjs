@@ -8,8 +8,7 @@ import { appendFile, mkdir, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { test } from "node:test";
 import { serialize } from "node:v8";
-import { parseHome } from "../dist/index.js";
-import { anthropicUsage, claudeAnswer, claudeFile, claudeUser, codexContext, codexFile, codexMeta, codexTokens, codexUser, jsonl, openaiUsage, piAnswer, piFile, piMeta, piUser, tempHome } from "./fixtures.mjs";
+import { anthropicUsage, claudeAnswer, claudeFile, claudeUser, codexContext, codexFile, codexMeta, codexTokens, codexUser, jsonl, openaiUsage, parseHome, piAnswer, piFile, piMeta, piUser, tempHome } from "./fixtures.mjs";
 
 const N = 3000;
 const hex = (i) => i.toString(16).padStart(12, "0");

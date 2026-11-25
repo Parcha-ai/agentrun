@@ -41,11 +41,6 @@ const sessions = await parseHome(homedir(), { sources: ["claude-code", "codex"] 
   2 MB V8 ends the whole process as a worker starts, and at 3 to 7 the workers run out of memory). A line over an eighth of it, or a file that runs a worker
   out of memory, is read on the calling thread instead; past two such losses a thread, the calling thread reads the rest.
 
-  On a 73.7 GB home, 8 threads took 90.9 s (median of 5) at a peak of 1.83 GiB, and 1 thread 441.1 s at 1.05 GiB
-  (x1); with `readAhead` at 256 MiB, 8 threads took 136.5 s (x1). Measured on a loaded machine (load 17 to 45).
-  On a 23 GB home on a 48-core machine (median of 2), 8 threads took 27.5 s at a peak of 1.13 GiB, 16 took 20.3 s at
-  1.77 GiB, 24 took 17.2 s at 2.39 GiB and 32 took 23.3 s at 2.87 GiB: the peak grows about 80 MiB a thread.
-
 ## A year of work
 
 ```js
