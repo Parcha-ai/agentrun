@@ -710,7 +710,7 @@ fixtures of every evasion it catches.
 ```ts
 import { DockerProvider } from "@parcha/agentrun-computer/docker";
 
-const docker = new DockerProvider({ daemonPath: "dist/computerd-linux-amd64" });
+const docker = new DockerProvider({ daemonPath: "dist/computerd-linux-amd64", env: process.env });
 const made = await docker.create({ image: "debian:bookworm-slim", lifetimeMs: 600_000, network: "none" }, { requestId: "r1#3" });
 if (!made.ok) throw new Error(made.error.message);
 const connected = await docker.connect(made.value);
@@ -917,7 +917,7 @@ Docker): `/workspace` is only the mount.
 import { WORKSPACE } from "@parcha/agentrun-computer";
 import { DockerProvider } from "@parcha/agentrun-computer/docker";
 
-const docker = new DockerProvider({ daemonPath: "dist/computerd-linux-amd64" });
+const docker = new DockerProvider({ daemonPath: "dist/computerd-linux-amd64", env: process.env });
 // The run folder must exist, by its canonical path, and be writable by docker.user (below).
 const made = await docker.create({ image: "debian:bookworm-slim", lifetimeMs: 600_000, network: "none", mount: { kind: "bind", path: "/data/runs/r1/work" } }, { requestId: "r1#3" });
 // In the computer: files.read({ path: `${WORKSPACE}/notes.md` }), exec.run({ argv: ["make"], cwd: WORKSPACE, ... })
@@ -1036,13 +1036,13 @@ no other process to wait on: Docker's own tag is the shared state.
 ```ts
 import { DockerProvider } from "@parcha/agentrun-computer/docker";
 
-const docker = new DockerProvider({ daemonPath: "dist/computerd-linux-amd64" }); // image: the default recipe
+const docker = new DockerProvider({ daemonPath: "dist/computerd-linux-amd64", env: process.env }); // image: the default recipe
 const image = await docker.image({ signal });   // built once; one inspect when Docker has it
 if (!image.ok) throw new Error(image.error.message);
 const made = await docker.create({ image: image.value, lifetimeMs: 600_000, network: "none" }, { requestId: "r1#3" });
 ```
 
-- `ensureImage(source, { docker?, signal?, timeoutMs?, onWait? })` (`src/docker/image.ts`) gives the tag. `source` is
+- `ensureImage(source, { docker?, env?, signal?, timeoutMs?, onWait? })` (`src/docker/image.ts`) gives the tag. `source` is
   `{ recipe }`, a Dockerfile with no build context, or `{ image }`, an image by name.
   - A recipe is built with `docker build --quiet --label agentrun.computer.recipe=<sha256> --tag
     agentrun-computer:<first 12 hex digits> -`, the recipe on stdin (`recipeTag(recipe)`, `recipeHash(recipe)`,
@@ -1233,7 +1233,7 @@ as a caller's labels, with no code of its own: Docker writes them with `--label`
 import { releaseOlder, runLabels } from "@parcha/agentrun-computer";
 import { DockerProvider } from "@parcha/agentrun-computer/docker";
 
-const docker = new DockerProvider({ daemonPath: "dist/computerd-linux-amd64" });
+const docker = new DockerProvider({ daemonPath: "dist/computerd-linux-amd64", env: process.env });
 // A claim at epoch 3 takes the run over: the computers of epochs 1 and 2 go first.
 const older = await releaseOlder(docker, "r1", 3);
 if (!older.ok) throw new Error(older.error.message); // fenced, or a computer that could not be released
