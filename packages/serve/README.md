@@ -274,9 +274,13 @@ its first word is held too when that word is a known auth scheme (`Bearer`, `Bas
 and any query parameter named like a credential, and, inside any header's value, the value of each `name=value` pair
 named like a credential, read over the whole value as written, a URL's query and fragment included (a cookie's
 `session=<token>`, `https://relay/v1?region=us;session=<token>`, `#access_token=<token>`; pairs split at `;`, `&`, a
-comma or its `%2C`, and spaces, and again at `?`, `#` and `/`; a value in quotes is held without them; `theme=dark` is
-not held), and the user, password and credential-named query parameters of every URL in it, one inside another's query
-or path too, scheme-relative (`//<key>@host`) or with its slashes escaped (`https:\/\/`). A URL in quotes ends at its
+comma or its `%2C`, and spaces, again at `?`, `#` and `/` too, and again at all but `;`, so `api_key=<key;rest>` holds
+the whole key; a value in quotes is held without them; `theme=dark` is not held), and the user, password and
+credential-named query parameters of every URL in it, one inside another's query or path too, scheme-relative
+(`//<key>@host`) or with its slashes escaped (`https:\/\/`). A URL's query, an endpoint's too, is read split at `&`
+alone and again at `&` and `;`, so `?api_key=<key;rest>` holds the whole key and `?region=us;session=<token>` the
+token; after the first query a header value's read takes, a later one is read while 4,096 characters of them in all
+fit, and the pair read covers the rest. A URL in quotes ends at its
 closing quote; one without at the next space or quote, and, when that is a quote, it is also read on to the next space,
 since a password may hold a raw `'`. Inside it the user and password are read as RFC 3986 reads them, everything before
 the last `@` of its authority, any `;`, `&`, `=`, `,` or `@` in a password included, and also, a user or password of
