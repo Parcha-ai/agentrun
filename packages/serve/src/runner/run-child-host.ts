@@ -72,7 +72,8 @@ import { refuseRecipeTriggerRun, resolveRunnerLoop, withSavedGatewayDeps } from 
 import { isWorkflowRevision } from "./workflow-loop.js";
 import type { ClaudeAgentLogin } from "@parcha/agentrun-harness-claude";
 import { loginForRun } from "../claude-login.js";
-import { agentRunLogin, LOGIN_NOT_HANDED, loginRunnerInProcess, loginTokensFor } from "../claude-login-token.js";
+import { harnessOfBody } from "../harness.js";
+import { agentRunLogin, LOGIN_CHANGED_SINCE_CLAIM, LOGIN_NOT_HANDED, loginRunnerInProcess, loginTokensFor } from "../claude-login-token.js";
 import { logLine } from "../print.js";
 import type { Held, HeldComputerAsk } from "./held.js";
 import { heardComputerHold } from "./computer-journal.js";
@@ -598,8 +599,9 @@ interface ClaimReads {
   readonly signal?: AbortSignal;
   /** The runner's presence incarnation (LoopDeps.incarnation): with the claim's runner, who keeps a computer a park pins. */
   readonly incarnation?: string;
-  /** The Claude login the claim read for this run (staysInRunner), handed down as it was read: the run's one read of the
-   *  login's setting, so a turn-on after its claim never moves it onto a login its claim did not check. */
+  /** The Claude login the claim read for this run (staysInRunner), handed down as it was read: none, and a turn-on after
+   *  its claim never moves it onto a login its claim did not check; one, and the runner reads the setting again at the
+   *  run's start (claudeLogin), handing it only when both reads name the same folder. */
   readonly login: ClaudeAgentLogin | undefined;
 }
 
@@ -746,15 +748,21 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
     // or refused); never its folder or its refresh token. Each token is carried into the runner's redactor for this run
     // (redact.ts carry) before it is handed, a renewed one too: model text that repeats it is cut from the run's journal
     // as the runner writes it (runner.ts fenced), from what it stages and from its rows, as the run's own tool keys are.
-    // This answer is the claim's one decision whether it goes on the login: none, it does not. A login other than
-    // AgentRun's own folder was refused at the claim (staysInRunner, LOGIN_MACHINE_NEEDS_SERVER_USER); one handed here by
-    // a claim read that check did not make is refused again in LOGIN_NOT_HANDED's words, never left to a model key. The
-    // process reads no setting or machine id.
+    // This answer is the one decision whether the run goes on the login: none, it does not. Its claim read the setting
+    // (staysInRunner); a claim that read it off is never put on it, whatever the setting says now. A claim that read it on
+    // has it read again here, at the start, as the claim read it (the same settings, data folder, environment, harness and
+    // place), and the login is handed only when both reads name the same folder: a turn-off, or a move to another folder,
+    // between the claim and the start refuses the start in LOGIN_CHANGED_SINCE_CLAIM's fixed words (no folder in them),
+    // never a start on a login the setting no longer names nor a fall to a model key the run was not claimed on. Nothing
+    // else of the claim is read again. A login other than AgentRun's own folder was refused at the claim (staysInRunner,
+    // LOGIN_MACHINE_NEEDS_SERVER_USER); one handed here by a claim read that check did not make is refused again in
+    // LOGIN_NOT_HANDED's words, never left to a model key. The process reads no setting or machine id.
     claudeLogin: async () => {
       if (await runKeyed()) return undefined;
-      // The login its claim read (staysInRunner), never a second read of the setting.
       const at = reads.login;
       if (!at) return undefined;
+      const now = await loginForRun(store.settings, deps.data, deps.env ?? {}, harnessOfBody(launch), launch.place);
+      if (now?.dir !== at.dir) throw new ClaimRefused(LOGIN_CHANGED_SINCE_CLAIM);
       if (!agentRunLogin(at, deps.data)) throw new ClaimRefused(LOGIN_NOT_HANDED);
       const carry = cut.carry;
       if (!carry) throw new ClaimRefused("This runner has no redactor that can cut the login's token from what its run writes, so it hands none.");
@@ -1123,9 +1131,10 @@ export { RECIPE_SIGN_IN_PERSON_ONLY } from "./harness-loops.js";
  *  never the folder; it is refused at its claim (ClaimRefused, in words) on this machine's own login (machineFolder), and
  *  while a `process` runner on the same data folder is live (its CLI renews the folder's login itself). A run its caller
  *  handed a model key (model_key) runs on that key and never on the login (cli-run-spec.ts), so it is a process of its
- *  own like any other. A run that is a process of its own is handed the login this claim read (`login`, ClaimReads):
- *  the one read of the login's setting for its start, so a turn-on landing after it never puts the run on a login whose
- *  refusals here it was never checked against. */
+ *  own like any other. A run that is a process of its own is handed the login this claim read (`login`, ClaimReads): a
+ *  claim that read it off is never put on it, so a turn-on landing after it never puts the run on a login whose refusals
+ *  here it was never checked against; a claim that read it on has its runner read the setting again at the start
+ *  (heldFor claudeLogin), and is refused there, in fixed words, when that read names none or another folder. */
 export type ClaimPlace = { readonly stays: true } | { readonly stays: false; readonly login: ClaudeAgentLogin | undefined };
 export async function staysInRunner(deps: Pick<AdapterSpecDeps, "store" | "data" | "env" | "sealKey">, harness: string, launch: RunLaunch, runId: string, isolation: RunIsolation): Promise<ClaimPlace> {
   // A recipe's harness reads its install, its check's note and its owner's sign-in, each the server user's alone: never

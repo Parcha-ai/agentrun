@@ -799,6 +799,11 @@ export function loginTokensFor(login: ClaudeAgentLogin, log: (fields: Record<str
  *  hands no reader of to a run's own process: one not on AgentRun's own login folder. */
 export const LOGIN_NOT_HANDED = "This run's runner handed it no Claude Code login: it runs each run as a user of its own and hands such a run only AgentRun's own login folder's token. Switch to that folder under Settings → Model keys, set AGENTRUN_RUN_USER=same, or give the run a model_key.";
 
+/** The words a run's start is refused in by its runner (held.ts claudeLogin) when its claim read Claude Code's login and
+ *  the runner's second read of the setting, at the start, names none or another folder: the run is put on no login its
+ *  start did not read, and never falls to a model key it was not claimed on. They name no folder. */
+export const LOGIN_CHANGED_SINCE_CLAIM = "This run's runner handed it no Claude Code login: the login was turned off or moved to another folder since this run's claim, and a run claimed on the login does not fall back to the model keys. Start the run again to run it as the login is now, or give it a model_key.";
+
 /** A run's own process's login (held.ts claudeLogin's reader): each token it reads held by `hold` (the run's redactors)
  *  and this process's own (secrets.ts holdSecret) before the run's CLI is handed it, and a token Anthropic refused told
  *  to the runner, which renews it at the next ask. A process its runner hands no reader runs on no login (cli-run-spec.ts):
