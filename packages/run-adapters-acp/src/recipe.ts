@@ -3,6 +3,7 @@
 // these are the checks the adapter itself needs before it starts anything. Written for AgentRun.
 import { isAbsolute, normalize, sep } from "node:path";
 import { KEY_NAME, launchEnv } from "@parcha/agentrun-kernel";
+import { type AcpAnnounces, ANNOUNCES_EXTRA, ANNOUNCES_PATH, ANNOUNCES_PREFIX, MCP_SERVER } from "./calls.js";
 
 /** Who pays for the agent's model requests. `plan`: the vendor bills the owner's plan (Cursor), no request reaches us, so
  *  the adapter itself stops the run at these limits. `proxy`: the agent's model goes through the host's proxy, which the
@@ -20,6 +21,30 @@ const CODE = /^[A-Z][A-Z0-9_]{1,63}$/;
 /** A sign-in method's id as an agent lists one in authMethods (`gemini-api-key`): the one definition, a serve recipe's
  *  keyMethod included. */
 export const AUTH_METHOD = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+
+/** The forms an allowFile is written in, by the agent that reads it: each makes the file's text from the names of the
+ *  tools a start lists. A second agent with another format adds a form here. */
+const ALLOW_FORMS = {
+  /** Goose 1.59.2's permission file (PermissionConfig under `user`, every field present: none has a default, and a
+   *  file that does not parse stops Goose at its start): each tool always allowed by the name Goose calls it,
+   *  `agentrun__<tool>`, nothing asked before or never allowed. Written as JSON, which YAML reads. Goose's own tools are
+   *  not named, so they still ask. */
+  "goose-permission": (tools: readonly string[]) => `${JSON.stringify({ user: { always_allow: tools.map((tool) => `${MCP_SERVER}__${tool}`), ask_before: [], never_allow: [] } })}\n`,
+} satisfies Record<string, (tools: readonly string[]) => string>;
+
+/** The forms an allowFile may take, by name: a recipe loader's check (serve's) reads them from here. */
+export const ALLOW_FILE_FORMS: readonly string[] = Object.freeze(Object.keys(ALLOW_FORMS));
+
+/** The form of a recipe's allowFile. */
+export type AcpAllowForm = keyof typeof ALLOW_FORMS;
+
+/** A recipe's allowFile: where in HOME the agent reads which tools run unasked, and in what form. */
+export type AcpAllowFile = { readonly path: string; readonly form: AcpAllowForm };
+
+/** The text of an allowFile in `form` for a start whose MCP server lists `tools`. */
+export function allowFileText(form: AcpAllowForm, tools: readonly string[]): string {
+  return ALLOW_FORMS[form](tools);
+}
 
 export interface AcpRecipe {
   /** The harness's id: the adapter's. */
@@ -67,6 +92,16 @@ export interface AcpRecipe {
   readonly model?: string;
   /** Files written into its private HOME before it starts, by their path in HOME (`.config/goose/config.yaml`). */
   readonly files?: Readonly<Record<string, string>>;
+  /** A file in HOME, written at each start from the tools that start's MCP server lists, that tells the agent to run
+   *  them without asking permission (Goose's `.config/goose/permission.yaml`, form `goose-permission`): our tools'
+   *  gate is the host's, at the MCP call. Nothing else is in it, so the agent's own tools still ask. */
+  readonly allowFile?: AcpAllowFile;
+  /** Where the agent's tool_call names which tool it calls (AcpAnnounces): Goose 1.59.2's
+   *  `{ tool: "_meta.goose.toolCall.toolName" }`, Cursor 2026.11.13's
+   *  `{ tool: "rawInput.toolName", server: "rawInput.providerIdentifier", args: "rawInput.args" }`. A call it names as
+   *  another tool is the agent's own; one it names as ours is matched to the MCP call by that tool and its arguments.
+   *  Absent: every call is matched by its arguments alone. A title is never read for this. */
+  readonly announces?: AcpAnnounces;
   /** Where in HOME the agent keeps its own sessions: mirrored into the session's records, so another runner's agent
    *  loads them (session/load). Credential files under them are never mirrored. */
   readonly state?: readonly string[];
@@ -78,9 +113,11 @@ export interface AcpRecipe {
     /** How an MCP call finds its id. `match` (default): the agent's own tool_call for it, by tool and arguments; `mint`:
      *  an id of the adapter's, for an agent that announces no tool_call for an MCP call. */
     readonly mcpCall?: "match" | "mint";
-    /** The one form the agent names a call of our tools in (calls.ts CallNames): `goose`, `cursor` or `agy`. Absent:
-     *  Goose's and Cursor's, never agy's. */
-    readonly callNames?: "goose" | "cursor" | "agy";
+    /** `title`: a permission request whose title names one of our tools (ourTool), for a call the agent announced as
+     *  that tool, is answered allow_once without the host's gate, which the bridge asks at the MCP call. For an agent
+     *  that asks for every MCP call whatever its config says (Cursor 2026.11.13: its allowlist with allow: [], which keeps
+     *  it from writing files unasked, asks for each). Absent: every permission request goes to the host's gate. */
+    readonly permissionTie?: "title";
   };
 }
 
@@ -93,14 +130,29 @@ export function homePath(path: string): string | undefined {
   return clean;
 }
 
+/** What is wrong with a recipe's `announces` field, and with a title tie (quirks.permissionTie) without it, each in
+ *  words; none when both may run. The one rule for both loaders: recipeProblems here, and serve's, which reads it from
+ *  this package. */
+export function announcesProblems(announces: unknown, permissionTie: unknown): string[] {
+  const problems: string[] = [];
+  if (announces !== undefined) {
+    const said = typeof announces === "object" && announces !== null && !Array.isArray(announces) ? (announces as Record<string, unknown>) : undefined;
+    const path = (value: unknown) => typeof value === "string" && ANNOUNCES_PATH.test(value);
+    const shaped = said !== undefined && Object.keys(said).every((key) => ["tool", "server", "prefix", "args", "extras"].includes(key));
+    const prefixed = said?.prefix === undefined || (said.server === undefined && typeof said.prefix === "string" && ANNOUNCES_PREFIX.test(said.prefix));
+    const extras = said?.extras === undefined || (Array.isArray(said.extras) && said.extras.length > 0 && said.extras.every((name) => typeof name === "string" && ANNOUNCES_EXTRA.test(name)));
+    if (!said || !shaped || !path(said.tool) || (said.server !== undefined && !path(said.server)) || (said.args !== undefined && !path(said.args)) || !prefixed || !extras) problems.push('announces is { "tool": a dotted path into the agent\'s tool_call (`_meta.goose.toolCall.toolName`) that does not start at its title, toolCallId, kind, status, rawOutput, content, locations or sessionUpdate, "server"?: one, "prefix"?: our server\'s name as the agent writes it before a tool\'s (`mcp_agentrun_`; the default `agentrun__`, never with "server"), "args"?: one, "extras"?: field names beside the arguments, left out before they are matched }');
+  }
+  if (permissionTie === "title" && announces === undefined) problems.push("the title tie (quirks.permissionTie) needs announces: it answers only a request for a call that field named");
+  return problems;
+}
+
 /** What is wrong with `recipe`, each in words; none when it may run. */
 export function recipeProblems(recipe: AcpRecipe): string[] {
   const problems: string[] = [];
   if (!/^[a-z][a-z0-9-]{0,62}$/.test(recipe.id ?? "")) problems.push(`the id ${JSON.stringify(recipe.id)} is not lowercase letters, digits and dashes`);
   if (typeof recipe.command !== "string" || !isAbsolute(recipe.command)) problems.push("the command must be an absolute path");
   if (!recipe.declares || typeof recipe.declares.load !== "boolean" || (recipe.declares.mcp !== "http" && recipe.declares.mcp !== "stdio")) problems.push('declares needs load (true or false) and mcp ("http" or "stdio")');
-  const callNames = recipe.quirks?.callNames as unknown;
-  if (callNames !== undefined && callNames !== "goose" && callNames !== "cursor" && callNames !== "agy") problems.push('quirks.callNames is "goose", "cursor" or "agy"');
   const billing = recipe.billing as { kind?: unknown; maxTurns?: unknown; maxToolCalls?: unknown } | undefined;
   if (billing?.kind === "plan") {
     if (!Number.isInteger(billing.maxTurns) || (billing.maxTurns as number) < 1) problems.push("plan billing needs maxTurns, a whole number of turns of at least 1");
@@ -108,6 +160,16 @@ export function recipeProblems(recipe: AcpRecipe): string[] {
   } else if (billing?.kind !== "proxy") problems.push('billing is { kind: "plan", maxTurns, maxToolCalls } or { kind: "proxy" }');
   for (const path of Object.keys(recipe.files ?? {})) if (!homePath(path)) problems.push(`the file ${JSON.stringify(path)} must be inside the private HOME`);
   for (const path of recipe.state ?? []) if (!homePath(path)) problems.push(`the state path ${JSON.stringify(path)} must be inside the private HOME`);
+  if (recipe.allowFile !== undefined) {
+    const allow = recipe.allowFile as { path?: unknown; form?: unknown } | null;
+    const path = typeof allow?.path === "string" ? homePath(allow.path) : undefined;
+    if (!path) problems.push(`the allowFile ${JSON.stringify(allow?.path ?? null)} must be a path inside the private HOME`);
+    if (typeof allow?.form !== "string" || !Object.hasOwn(ALLOW_FORMS, allow.form)) problems.push(`the allowFile form ${JSON.stringify(allow?.form ?? null)} is none of ${Object.keys(ALLOW_FORMS).join(", ")}`);
+    if (path && Object.keys(recipe.files ?? {}).some((file) => homePath(file) === path)) problems.push(`the allowFile ${JSON.stringify(allow!.path)} is also one of the recipe's files`);
+  }
+  const quirks = recipe.quirks as { mcpCall?: unknown; permissionTie?: unknown } | undefined;
+  problems.push(...announcesProblems(recipe.announces, quirks?.permissionTie));
+  if (quirks?.permissionTie !== undefined && quirks.permissionTie !== "title") problems.push(`the quirk permissionTie ${JSON.stringify(quirks.permissionTie)} is not "title"`);
   const reserved = Object.keys(recipe.env ?? {}).filter((name) => RESERVED_ENV.has(name));
   if (reserved.length) problems.push(`the env names ${reserved.join(", ")}, which the adapter sets`);
   const launching = Object.keys(recipe.env ?? {}).filter((name) => !RESERVED_ENV.has(name) && launchEnv(name));

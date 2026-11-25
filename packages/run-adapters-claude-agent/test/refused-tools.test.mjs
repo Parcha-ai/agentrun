@@ -49,9 +49,11 @@ test("a tool the session doesn't have is refused by the CLI, kept in the store, 
   for (const name of ['browser_navigate', 'mcp__browser__navigate', 'WebFetch']) {
     const start = events.find((e) => e.type === 'tool_start' && e.name === name);
     assert.ok(start, `${name} is shown as a call: ${JSON.stringify(events.filter((e) => e.type?.startsWith('tool_')).map((e) => [e.type, e.name]))}`);
+    assert.equal(start.refused, true, `${name}'s start says the CLI refused it: its name is the model's alone`);
     assert.ok(ends.some((e) => e.callId === start.callId && e.name === name && e.isError === true), `${name} is shown as failed`);
   }
   assert.ok(ends.some((e) => e.name === 'lookup' && e.isError === false), "the session's own tool still runs");
+  assert.equal(events.find((e) => e.type === 'tool_start' && e.name === 'lookup')?.refused, undefined, "a session tool's start is never refused");
   // The model's input is on the refused call's start, as it gave it.
   assert.deepEqual(events.find((e) => e.type === 'tool_start' && e.name === 'browser_navigate')?.args, { url: 'https://example.com' });
   // A session tool that answered an error ran: one start and one failed end, never also a turned-down call.

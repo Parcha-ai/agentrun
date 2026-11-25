@@ -88,7 +88,8 @@ export function ClaudeLoginRow({ v2, writable, whyNot = "sign_in", onChange, ava
     writing.current = true;
     asked.current++;
     try {
-      setView(claudeLoginView(await write()));
+      const next = claudeLoginView(await write());
+      if (availableNow.current) setView(next);
       if (changes) onChange?.();
       return true;
     } catch (e) {

@@ -9,7 +9,7 @@ import { test } from "node:test";
 import { fakeOllama } from "./fixtures/fake-ollama.mjs";
 import { serve, withEnv } from "./support.mjs";
 
-const { ollamaClock, ollamaModels, ollamaReading, ollamaShown, OLLAMA_SHOW_TIMEOUT_MS, OLLAMA_TTL_MS } = await import("../dist/ollama-provider.js");
+const { ollamaClock, ollamaModels, ollamaReading, ollamaShown, OLLAMA_TTL_MS } = await import("../dist/ollama-provider.js");
 
 // The suites turn every Ollama off (support.mjs); this file asks its own fakes alone.
 delete process.env.AGENTRUN_SERVE_FAUX_NO_OLLAMA;
@@ -51,9 +51,13 @@ test("ollamaShown inside ollamaReading: a stale kept listing answers and nothing
   assert.deepEqual(read, { name: MODELS[2].name, capabilities: ["completion", "tools"], trained: 32_768 }, "the kept entry, at any age");
   assert.equal(await ollamaReading(() => ollamaShown(env, "synth-never:1b")), undefined, "a tag the kept listing lacks: none, and nothing asked");
   assert.equal(ollama.got.show.length, shown, "no /api/show inside a reading");
-  // A run's choice is no reading: past the TTL it asks /api/show (the gate settles; the deadline, short here, ends it).
-  const run = ollamaShown(env, MODELS[2].name, { timeoutMs: 200 });
+  // A run's choice is no reading: past the TTL it asks /api/show (the gate settles), and the test ends the ask itself, as
+  // the deadline would: no clock.
+  const stop = new AbortController();
+  const send = (url, init) => fetch(url, { ...init, signal: init?.signal ? AbortSignal.any([init.signal, stop.signal]) : stop.signal });
+  const run = ollamaShown(env, MODELS[2].name, { fetch: send });
   assert.equal(await ollama.showAsked, MODELS[2].name, "a run asks /api/show past the TTL");
+  stop.abort();
   assert.equal(await run, undefined, "and a hung Ollama gives it nothing");
 });
 
@@ -73,11 +77,10 @@ async function writeWhileHung(t, write) {
   ollama.hang();
   const shown = ollama.got.show.length;
   clock += OLLAMA_TTL_MS + 1;
-  const started = performance.now();
+  // Raced against the hung Ollama's first /api/show: the write answering first proves it asked none, with no clock.
   const first = await Promise.race([write(api).then((answer) => ({ answer })), ollama.showAsked.then((model) => ({ model }))]);
   assert.ok("answer" in first, `the write asked the hung Ollama for /api/show of ${first.model} before its 204`);
   assert.equal(first.answer.status, 204, JSON.stringify(first.answer.body));
-  assert.ok(performance.now() - started < OLLAMA_SHOW_TIMEOUT_MS, "well inside one /api/show deadline");
   assert.deepEqual(ollama.got.show.slice(shown), [], "no /api/show once it hung");
   assert.deepEqual(await piFree(), IDS, "the offers still name the kept listing's models");
   return { caps };

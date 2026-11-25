@@ -650,3 +650,16 @@ test("the conformance module's drifted twin uploads a daemon of another version"
 	assert.match(built[0], /-drift$/);
 	assert.equal(drifted.id, "agent37");
 });
+
+test("the conformance module's daemon: an option's path over COMPUTER_AGENT37_DAEMON, and the drifted twin uploads the one it built", async () => {
+	const rest = fakeRest();
+	const env = { [ENV.key]: KEY, [ENV.sshKey]: SSH_KEY, [ENV.live]: "1", [ENV.apiUrl]: API_URL, [ENV.daemon]: "/nonexistent/untangle-env/computerd" };
+	const spec = { image: "agent37-base", lifetimeMs: 600_000, network: "none" };
+	const options = { env, ssh2: { Client: class {} }, fetch: rest.fetch, daemonPath: "/nonexistent/untangle-option/computerd", buildDaemon: async () => "/nonexistent/untangle-drift/computerd" };
+	const made = await (await conformanceModule.createProvider(options)).create(spec, { requestId: "req-untangle-agent37-1" });
+	assert.equal(made.ok, false);
+	assert.match(made.error.message, /no daemon binary at \/nonexistent\/untangle-option\/computerd/);
+	const drifted = await (await conformanceModule.createDriftedProvider(options)).create(spec, { requestId: "req-untangle-agent37-2" });
+	assert.equal(drifted.ok, false);
+	assert.match(drifted.error.message, /no daemon binary at \/nonexistent\/untangle-drift\/computerd/);
+});

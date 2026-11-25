@@ -1,5 +1,5 @@
-// The Archil run folder for the mount cases, shared by every remote provider's conformance module (Daytona, Modal,
-// E2B): a fresh agents/<agent>/runs/<run>/work on the owner's disk, the mount that reaches it from inside a computer,
+// The Archil run folder for the mount cases, shared by every remote provider's conformance module: a fresh
+// agents/<agent>/runs/<run>/work on the owner's disk, the mount that reaches it from inside a computer,
 // and its outside, read and written through the disk's object API. The object API is given, or Archil's Node SDK (the
 // npm package `disk`, an optional dependency of this package, loaded only here and only when asked): `new Archil({
 // apiKey, region, s3BaseUrl })`, then `disks.get(disk)`, whose disk has getObject, putObject and deleteObject with keys
@@ -10,6 +10,7 @@
 // computer), and the account API key, which only the SDK takes, for the object API. The settings are options; each
 // module reads them from the COMPUTER_ARCHIL_* names ARCHIL_ENV lists (archilSettings).
 import { randomBytes } from "node:crypto";
+import type { MountKind } from "../mount.js";
 import { ARCHIL_REGION } from "../mount-archil.js";
 import { vendorSdk } from "../vendor-sdk.js";
 import type { RunFolder } from "./types.js";
@@ -164,5 +165,26 @@ export async function archilRunFolder(options: ArchilRunFolderOptions): Promise<
 			// Deepest first, so a folder's marker goes after what is in it.
 			for (const at of [...touched].sort((a, b) => b.length - a.length)) await objects.deleteObject(at).catch(() => {});
 		},
+	};
+}
+
+/** What a module's mountFor takes: where the settings are read, and the object API or client in place of the SDK's. */
+export interface ArchilMountOptions {
+	env?: Record<string, string | undefined>;
+	/** For mountFor("archil"): the disk's object API, or the SDK's Archil client, in place of the `disk` package's. */
+	archil?: Pick<ArchilRunFolderOptions, "objects" | "Archil" | "baseUrl">;
+}
+
+/**
+ * A module's mountFor: a fresh run folder for an Archil mount on the disk the COMPUTER_ARCHIL_* names name, none for any
+ * other kind or when they name none. Reaching it is a call to Archil, so it needs the module's live switch.
+ */
+export function archilMountFor(live: (env: Record<string, string | undefined>) => void): (kind: MountKind, options?: ArchilMountOptions) => Promise<RunFolder | undefined> {
+	return async (kind, { env = process.env, archil = {} } = {}) => {
+		if (kind !== "archil") return undefined;
+		const settings = archilSettings(env);
+		if (settings === undefined) return undefined;
+		live(env);
+		return archilRunFolder({ ...settings, ...archil });
 	};
 }

@@ -304,7 +304,7 @@ test("Mode 1: a daemon that answers only after the server started is not taken: 
   // box network) never ran; a daemon that answers now can't stand in for them. The probe's facts are pinned, so the words
   // do not depend on where the suite runs (place-offers.ts containerReason).
   const HOST_WORDS = "Docker isn't running on this machine, or this user may not use it (docker version failed: exit 1): start Docker, or add this user to the docker group, then restart AgentRun";
-  for (const [probeContainer, words] of [[{ inside: false }, HOST_WORDS], [{ inside: true, image: true, exists: () => false }, DOCKER_NO_SOCKET]]) {
+  for (const [probeContainer, words] of [[{ where: "host" }, HOST_WORDS], [{ where: "image", exists: () => false }, DOCKER_NO_SOCKET]]) {
     const api = await server(t, { archil: false, docker: false, probeContainer });
     const bin = process.env.PATH.split(":")[0];
     await writeFile(join(bin, "docker"), "#!/bin/sh\nif [ \"$1\" = version ]; then echo 27.0.0-fake; exit 0; fi\nexit 0\n", { mode: 0o755 });
@@ -312,7 +312,7 @@ test("Mode 1: a daemon that answers only after the server started is not taken: 
     for (const kind of ["sandbox", "desktop"]) {
       const docker = view.body.kinds.find((one) => one.kind === kind).providers.find((one) => one.id === "docker");
       assert.equal(docker.ready, false, `${kind}: ${JSON.stringify(docker)}`);
-      assert.equal(docker.why, words, `${kind}, inside ${probeContainer.inside}: ${JSON.stringify(docker)}`);
+      assert.equal(docker.why, words, `${kind}, where ${probeContainer.where}: ${JSON.stringify(docker)}`);
     }
   }
 });
