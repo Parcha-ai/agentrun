@@ -698,7 +698,8 @@ export type ClaudeLoginSignOut = { confirmed: boolean; message?: string; login: 
  *  folder; then the folder is removed whatever the CLI said (credentials, account, profiles, the CLI's refresh lock, and
  *  the CLI's older lock beside it), with the login's signed-in note (noteAnswer) and this process's token reader of it
  *  (claude-login-token.ts forgetLoginTokens). Runs already going are left as a turn-off leaves them: each keeps the token
- *  its CLI holds, and fails in LOGIN_SIGNED_OUT's words at its next read of the login. A login on this machine's own
+ *  its CLI holds, and fails in LOGIN_SIGNED_OUT's words at its next read of the login; one claimed on it and not yet
+ *  started is refused at its start (claude-login-token.ts LOGIN_CHANGED_SINCE_CLAIM). A login on this machine's own
  *  folder (`machine`) is the person's: refused (machineSignOutRefused), with nothing touched. */
 export async function signOutClaudeLogin(deps: ClaudeLoginDeps): Promise<ClaudeLoginSignOut> {
   const confirmed = await deps.signIns.serial(async (turn) => {

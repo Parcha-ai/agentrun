@@ -1750,7 +1750,8 @@ has the row **Use Claude Code's login on this machine**, over these routes:
   CLI said. It answers `{ "confirmed": true, "login": <the view, off> }`; `confirmed` false adds a `message` saying the
   CLI didn't confirm its own sign-out (on macOS its Keychain item may remain). The next turn-on reads `signed_out` and
   the sign-in starts as before. Runs already going are left as a turn-off leaves them, and fail saying the login is
-  signed out at their next read of it. This machine's own login (`place` `machine`) is the person's: the sign-out is
+  signed out at their next read of it; where each run is a user of its own, a run claimed on the login and not yet
+  started is refused at its start, as after a turn-off. This machine's own login (`place` `machine`) is the person's: the sign-out is
   refused (403) with nothing touched, and the words say to run `claude auth logout` in a terminal there. The console's
   Claude login row offers Sign out only while AgentRun's own login is signed in.
 

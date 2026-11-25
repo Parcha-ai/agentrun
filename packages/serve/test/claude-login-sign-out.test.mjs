@@ -3,11 +3,13 @@
 // sign-in: a person could neither sign in fresh nor switch accounts. Sign out ends a sign-in that waits, runs the CLI's
 // own sign-out (`auth logout`) on AgentRun's own login folder, removes that folder (credentials, account, profiles, the
 // refresh locks), the signed-in note kept for it and the runner's token reader, and turns the mode off; the next Turn on
-// finds no login, and the console offers the sign-in. This machine's own login (the person's `~/.claude` or
+// finds no login, and the console offers the sign-in. A run claimed on the login before it is refused at its start, as
+// at a turn-off. This machine's own login (the person's `~/.claude` or
 // CLAUDE_CONFIG_DIR) is theirs: AgentRun never signs it out, and says to run `claude auth logout` there.
 // A fake CLI stands in for the pinned one: signed in while its credentials file is in the credentials dir it is given,
 // `auth login` writes that file and the account, `auth logout` removes both and exits as the test says.
 import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -18,6 +20,7 @@ import * as login from "../dist/claude-login.js";
 import { ClaudeSignIns } from "../dist/claude-sign-in.js";
 import { loginTokensFor } from "../dist/claude-login-token.js";
 import { MODEL_KEYS } from "../dist/model.js";
+import { storeOn } from "./store-helpers.mjs";
 import { secretWritePath, serve, withEnv } from "./support.mjs";
 
 secretWritePath(["GET", "PUT", "DELETE"], /^\/settings\/claude-login$/);
@@ -218,4 +221,28 @@ test("a sign-out with no login kept here (nothing signed in yet) runs no CLI, co
   const out = await login.signOutClaudeLogin(r.deps);
   assert.deepEqual([out.confirmed, out.login.state], [true, "off"]);
   assert.deepEqual(r.logouts, []);
+});
+
+test("where runs have users of their own, a run claimed on AgentRun's own login before Sign out is refused at its start, in the fixed words of a login changed since its claim: never handed the signed-out login's reader nor left to a model key", async (t) => {
+  const host = await import("../dist/runner/run-child-host.js");
+  const { heldRedactor, keepText } = await import("../dist/runner/redact.js");
+  const { LOGIN_CHANGED_SINCE_CLAIM } = await import("../dist/claude-login-token.js");
+  const { store } = await storeOn(t);
+  const r = await rig(t);
+  signedInAt(r.data);
+  await store.settings.put(CLAUDE_LOGIN_SETTING, settingFor("agentrun", r.data));
+  const deps = { ...r.deps, settings: store.settings };
+  const runner = { store, sealKey: randomBytes(32), env: r.deps.env, data: r.data };
+  const launch = { input: { content: "Hello." }, harness: "claude-agent", place: { mode: "runner" } };
+  const claimed = await host.staysInRunner(runner, "claude-agent", launch, "run-own", { kind: "uid", helper: "/nonexistent/agentrun-runas", first: 0, slots: 1 });
+  assert.equal(claimed.stays, false, "claimed as a process of its own, on the login's token");
+  const out = await login.signOutClaudeLogin(deps);
+  const reads = { claim: { runId: "run-own", epoch: 1 }, run: { agentId: "agent-own", revisionId: "rev-own", signInHanded: null }, launch, revision: { kind: "agentic", body: { harness: "claude-agent" } }, claimed: {}, login: claimed.login };
+  await assert.rejects(host.heldFor(runner, reads, heldRedactor(keepText), () => {}).held.claudeLogin(), (error) => {
+    assert.equal(error.name, "ClaimRefused", `refused for good, the run failed in its words: ${error.stack}`);
+    assert.equal(error.message, LOGIN_CHANGED_SINCE_CLAIM);
+    assert.ok(!error.message.includes(r.data), `the refusal names no folder: ${error.message}`);
+    return true;
+  }, "a run claimed on the login before Sign out is handed no login at its start");
+  assert.equal(out.login.state, "off", JSON.stringify(out));
 });
