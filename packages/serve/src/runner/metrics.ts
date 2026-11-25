@@ -100,13 +100,16 @@ export function bookedSpend(entries: readonly EntryLike[], which: "model" | "pai
   const sides = new Set(entries.filter((e) => e.kind === RUNNER_RECORDS.request && model(e) && ((e.data as { side?: unknown; host?: unknown } | undefined)?.side === true || typeof (e.data as { host?: unknown } | undefined)?.host === "string")).map(turnOf));
   const chosen = (e: EntryLike) => (which === "paid" ? conv(e) === paidConv : which === "decisions" ? conv(e) === decisionsConv : which === "side" ? model(e) && sides.has(turnOf(e)) : model(e));
   const answered = new Set(entries.filter((e) => e.kind === RUNNER_RECORDS.turn && chosen(e)).map(turnOf));
-  // The model each request was sent on, by its turn (its runner.request's `model`).
-  const sentOn = new Map(entries.filter((e) => e.kind === RUNNER_RECORDS.request && chosen(e)).map((e) => [turnOf(e), (e.data as { model?: unknown } | undefined)?.model]));
-  const models: Record<string, number> = {};
+  // The provider-qualified name when recorded, or the model ID from an older booking.
+  const sentOn = new Map(entries.filter((e) => e.kind === RUNNER_RECORDS.request && chosen(e)).map((e) => {
+    const data = e.data as { model?: unknown; modelName?: unknown } | undefined;
+    return [turnOf(e), data?.modelName ?? data?.model];
+  }));
+  const models = new Map<string, number>();
   const count = (e: EntryLike) => {
     const model = sentOn.get(turnOf(e));
     const name = typeof model === "string" ? model : "";
-    models[name] = (models[name] ?? 0) + 1;
+    models.set(name, (models.get(name) ?? 0) + 1);
   };
   let known = 0;
   let bounded = 0;
@@ -165,7 +168,7 @@ export function bookedSpend(entries: readonly EntryLike[], which: "model" | "pai
       if (d.billing === "plan") plan.tokens += d.usage[key] as number;
     }
   }
-  return { usd: unpriced ? null : known + bounded, known, bounded, unpriced, atMost, requests, unmetered, models, tokens, priced: { reported, estimated }, plan, ...(requests > 0 && free === requests ? { free: true as const } : {}) };
+  return { usd: unpriced ? null : known + bounded, known, bounded, unpriced, atMost, requests, unmetered, models: Object.fromEntries(models), tokens, priced: { reported, estimated }, plan, ...(requests > 0 && free === requests ? { free: true as const } : {}) };
 }
 
 /** The run's decisions whose ids are in `ids` (each booked as `decision:<id>`), as bookedSpend reads its decisions, with
@@ -246,8 +249,8 @@ export function usageParts(usage: { readonly usd: number | null; readonly so_far
  *  `unbooked`: a CLI harness's model worked with no request booked (cliModelWorked: its requests went past its model
  *  proxy), one charge with no price, so the cost is unknown, never the $0 an empty booking sums to. */
 export type RunCost = CostParts & { readonly usd: number | null; readonly requests: number };
-export function runCostOf(entries: readonly EntryLike[], { unbooked = false }: { readonly unbooked?: boolean } = {}): RunCost {
-  const parts = [bookedSpend(entries, "model"), bookedSpend(entries, "paid"), bookedSpend(entries, "decisions")];
+export function runCostOf(entries: readonly EntryLike[], { unbooked = false, bookedModel = bookedSpend(entries, "model") }: { readonly unbooked?: boolean; readonly bookedModel?: BookedSpend } = {}): RunCost {
+  const parts = [bookedModel, bookedSpend(entries, "paid"), bookedSpend(entries, "decisions")];
   const cost = costOfParts([...parts, { known: 0, bounded: 0, atMost: 0, unpriced: unbooked && parts[0]!.requests === 0 ? 1 : 0 }]);
   const round = floatNoiseOff;
   // Its parts as one (CostParts, so its words are costWordsOf([cost])): `known` the requests' own figures alone, a hold

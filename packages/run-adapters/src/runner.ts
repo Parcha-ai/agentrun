@@ -204,6 +204,8 @@ export interface ModelPortOptions {
   onEvent?: (event: ModelPortEvent & { key: string; label: string; executionPath?: string }) => void | Promise<void>;
   /** The session's records, as already read (default: read from the writer). */
   records?: readonly SessionRecord[];
+  /** Provider-qualified names to record on requests sent through the host's model routes. */
+  modelNamesByRoute?: ReadonlyMap<string, string>;
   /** How a record is written (default: the writer's append, which a newer open fences). */
   append?: (records: SessionRecord[]) => Promise<void>;
   /** The attempt has stopped: the error a new paid request is refused with. Told the request's host label, for a host
@@ -531,7 +533,8 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
     // hold is its fee as admitted, never a bound on what its provider charged (bookCut).
     // `at`: when it left, so a reader shows a request still in flight from its start (a run page's live row), and
     // `inputTokensMax`, the input it was admitted with, beside it.
-    await write([{ kind: RUNNER_RECORDS.request, data: { turn, model, at: new Date((options.now ?? Date.now)()).toISOString(), ...(inputTokensMax === undefined ? {} : { inputTokensMax }), ...(paid ? { paid: true as const } : {}), ...(hold === undefined ? {} : { heldUsd: hold }), ...(onPlan ? { plan: true as const } : {}), ...(freeRequest ? { freeRequest: true as const } : {}), ...(localRequest ? { localRequest: true as const } : {}), ...(side ? { side } : {}), ...(host === undefined ? {} : { host }), ...(paid?.call === undefined ? {} : { call: paid.call }), ...(paid?.charged_by === undefined ? {} : { charged_by: paid.charged_by }), ...(paid?.tool === undefined ? {} : { tool: paid.tool }), ...(paid?.tag === undefined ? {} : { tag: paid.tag }), ...(paid?.owed ? { owed: true as const } : {}), ...(paid?.hold ? { hold: true as const } : {}), ...(paid?.ref === undefined ? {} : { ref: paid.ref }), ...(paid?.reported ? { reported: true as const } : {}) } }]);
+    const modelName = route === undefined ? undefined : options.modelNamesByRoute?.get(route);
+    await write([{ kind: RUNNER_RECORDS.request, data: { turn, model, ...(modelName === undefined ? {} : { modelName }), at: new Date((options.now ?? Date.now)()).toISOString(), ...(inputTokensMax === undefined ? {} : { inputTokensMax }), ...(paid ? { paid: true as const } : {}), ...(hold === undefined ? {} : { heldUsd: hold }), ...(onPlan ? { plan: true as const } : {}), ...(freeRequest ? { freeRequest: true as const } : {}), ...(localRequest ? { localRequest: true as const } : {}), ...(side ? { side } : {}), ...(host === undefined ? {} : { host }), ...(paid?.call === undefined ? {} : { call: paid.call }), ...(paid?.charged_by === undefined ? {} : { charged_by: paid.charged_by }), ...(paid?.tool === undefined ? {} : { tool: paid.tool }), ...(paid?.tag === undefined ? {} : { tag: paid.tag }), ...(paid?.owed ? { owed: true as const } : {}), ...(paid?.hold ? { hold: true as const } : {}), ...(paid?.ref === undefined ? {} : { ref: paid.ref }), ...(paid?.reported ? { reported: true as const } : {}) } }]);
     turns = turn;
     if (host !== undefined) hosts.set(turn, host);
     if (hold !== undefined) held.set(turn, hold);

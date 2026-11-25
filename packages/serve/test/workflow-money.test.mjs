@@ -381,6 +381,11 @@ test("a ChatGPT plan tier and a paid tier on one model id: the paid tier's reque
   for (const request of paid) assert.ok(request.heldUsd >= 1024 * PER_TOKEN, `a paid request is held at its price, never the plan's $0: ${JSON.stringify(request)}`);
   assert.equal(await spendFromRecords(store), 0.02, "the paid steps booked at $0.01 each, the plan step at $0");
   assert.match(row.summary, /^Not sent: this run has spent \$0\.02 of its \$0\.12 cap/, `the park names the booked spend: ${row.summary}`);
+  await sendCommand(server, "run-1", { kind: "raise", body: { capUsd: 100 } });
+  const ended = await waitRow(server, (r) => r.state === "ended" && r.runner === null);
+  assert.equal(ended.costUsd, 0.03);
+  assert.equal(ended.metrics.requests, 4);
+  assert.deepEqual(ended.metrics.models, { "chatgpt/gpt-6.1-sol": 1, "openai/gpt-6.1-sol": 3 });
 });
 
 test("a person's stop while a model node streams counts what it streamed and 1,024 tokens, never the hold", async (t) => {

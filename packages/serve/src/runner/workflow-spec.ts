@@ -23,7 +23,7 @@ import { completer } from "../llm.js";
 // The decision providers' list prices, the catalog's read and the replay check (decision-cap.ts), with holdOf, which the
 // parity tests hold this cap's figures to.
 import { askedBefore, catalogPrice, JEV_INPUT_USD, PARALLEL_DECISION_USD } from "../decision-cap.js";
-import { decisionProvidersIn } from "../decisions.js";
+import { decisionProvidersIn, providersNamed } from "../decisions.js";
 import { imageLoader } from "../pdf-pages.js";
 import type { RunLaunch } from "../run-launch.js";
 import { llmTiers, nodeTiers, type Tier, workflowNodes } from "../model.js";
@@ -54,8 +54,10 @@ import { holdStored } from "./store-secrets.js";
 import { type DecisionDriver, type NodeToolBinding, type PollDriver, type WorkflowCap, workflowHost, type WorkflowHostDeps } from "./workflow-host.js";
 import type { Journal, Store } from "../store/store.js";
 import type { WorkflowBody } from "../store/agent-body.js";
+import { decisionsInJournal } from "../store-reads/decisions.js";
+import { type EntryLike, runMetricsWithDecisions } from "../timeline/index.js";
 import { SUBMIT_TOOL } from "../workflow/host-tools.js";
-import { endCostOf, runCostOf } from "./metrics.js";
+import { type EndCost, bookedSpend, endCostOf, runCostOf } from "./metrics.js";
 import { journalEntries } from "./journal-reader.js";
 import { warnHoldShort } from "../print.js";
 
@@ -229,7 +231,9 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string;
     // The model nodes' tools (main's app.ts:301-306): the ones the runner binds for a node, each through the run's ToolHost
     // and the run's gate; a node naming one it does not bind yet refuses the run here, before anything starts, in words
     // naming it.
-    const nodeNames = workflowTools(workflowNodes(claimed.workflow, inspectWorkflow(claimed.workflow))).nodes;
+    const nodes = workflowNodes(claimed.workflow, inspectWorkflow(claimed.workflow));
+    const nodeNames = workflowTools(nodes).nodes;
+    const hasDecisions = providersNamed(nodes).length > 0;
     const unbound = nodeNames.find((name) => !RUNNER_NODE_TOOLS.includes(name));
     if (unbound !== undefined) throw new Error(nodeToolUnboundText(unbound));
     // Every secret the server keeps sealed (store-secrets.ts) held by the runner's one redactor before the workflow runs.
@@ -274,11 +278,14 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string;
     // tool definition it is not given, so it admits this whole set by name (as pi's admits its session's tools); main's
     // nodes send their requests straight to the provider (app.ts:117), unfiltered.
     const offered = nodeOffer(claimed.workflow);
+    const routeNames = new Map<string, string>();
     for (const [tier, provider] of providers) {
+      const route = providerId(tier);
+      routeNames.set(route, provider.named ?? `${route}/${provider.modelId}`);
       const proxy = await startModelProxy({
         // Each request names its tier's route (ModelRequest.route), so the cap prices it as that tier books it: two tiers
         // on one model id (a plan's and a paid one) are held apart, never at the other's price (capModelOf).
-        route: providerId(tier),
+        route,
         policy: await policyFor({ api: provider.api, origin: provider.origin, credential: provider.credential, ...(provider.headers ? { headers: provider.headers } : {}), ...(provider.plan ? { plan: true } : {}) }, provider.modelId, offered),
         hooks: hooks.port,
         model: provider.modelId,
@@ -374,7 +381,7 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string;
       agentId: claimed.agentId,
       revisionId: claimed.revisionId,
       ...(claimed.capUsd !== undefined ? { cap: capRuleOf(() => effectiveCapUsd ?? claimed.capUsd!) } : {}),
-      endPatch: async () => endPatchOf(booking, run?.journal),
+      endPatch: async (_, keepCost) => booking ? endPatchOf(run?.journal, hasDecisions, keepCost) : {},
       build: (loopHooks: WorkflowHostHooks) => {
         hooks.setPark(loopHooks);
         const hostDeps: WorkflowHostDeps = {
@@ -426,6 +433,7 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string;
         booking = await modelPortFor(writer, {
           key: SESSION,
           label: SESSION,
+          modelNamesByRoute: routeNames,
           // The model booking is the run's rule itself (no second booking); a refusal parks the run through the loop's hook.
           beforeRequest: parkOnRefusal(run.before, hooks, flight, steps),
           // A model node's request billed past the bound its hold was priced on: the cap's warn line (print.ts warnHoldShort).
@@ -868,12 +876,17 @@ function runEffectOf(claimed: Claimed, complete: ReturnType<typeof completer>, e
  *  pi and CLI specs store it): every model request of its sessions, its call nodes' paid requests and its decisions, each
  *  at what it was booked at, never the cap's figure for it (an answer with no price of its own is unknown, never its
  *  hold). Unknown once any one is, written as null, never left out (an end that says nothing leaves the $0 the run read
- *  before a response). With no journal to read, unknown. */
-async function endPatchOf(booking: Awaited<ReturnType<typeof modelPortFor>> | undefined, journalOf: (() => Journal) | undefined): Promise<Pick<EndData, "costUsd" | "costUpperBound" | "metrics">> {
-  if (!booking) return {};
+ *  before a response). Usage comes from those model bookings and decision receipts, tools from their conversations.
+ *  With no journal to read, cost is unknown. */
+async function endPatchOf(journalOf: (() => Journal) | undefined, hasDecisions: boolean, keepCost?: (cost: EndCost) => void): Promise<Pick<EndData, "costUsd" | "costUpperBound" | "metrics">> {
   if (!journalOf) return { costUsd: null };
-  // With whether the figure is the most it can have cost (a request cut at its hold counted in it), stored beside it.
-  return endCostOf(runCostOf((await journalEntries(journalOf(), BACKGROUND_CONTEXT)) as never));
+  const journal = journalOf();
+  const entries = await journalEntries(journal, BACKGROUND_CONTEXT) as unknown as EntryLike[];
+  const bookedModel = bookedSpend(entries, "model");
+  const cost = endCostOf(runCostOf(entries, { bookedModel }));
+  keepCost?.(cost);
+  const decisions = hasDecisions ? await decisionsInJournal(journal, BACKGROUND_CONTEXT) : [];
+  return { ...cost, metrics: runMetricsWithDecisions(entries, decisions, bookedModel) };
 }
 
 /** The run's one cap as a WorkflowCap: model nodes and call nodes pass through (their money is on the proxy), and a

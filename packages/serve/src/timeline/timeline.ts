@@ -368,6 +368,7 @@ function keepBusiest<T>(counts: Map<string, T>, size: (value: T) => number, sum:
   return Object.fromEntries([...ranked.slice(0, METRIC_NAMES.kept), [other, ranked.slice(METRIC_NAMES.kept).map(([, value]) => value).reduce(sum)]]);
 }
 type Tokens = Pick<RunMetrics, "input" | "cacheRead" | "cacheWrite" | "output">;
+type BookedModelUsage = Readonly<Pick<RunMetrics, "requests" | "unmetered">> & { readonly tokens: Tokens; readonly models: Readonly<Record<string, number>> };
 const tokenCount = (value: unknown) => (typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined);
 /** A usage's tokens: undefined unless it has an input and an output count (a cache count it omits is 0), and unless it
  *  has some input. A request that reached a model always sent some, so a usage with none is a writer's zeros for a
@@ -458,6 +459,20 @@ function createMeter() {
     for (const key of ["input", "cacheRead", "cacheWrite", "output"] as const) tokens[key] += counted[key];
   };
   const models = new Map<string, number>();
+  let bookedRequests: number | undefined;
+  const countModel = (name: string, count = 1) => {
+    const key = metricName(name);
+    models.set(key, (models.get(key) ?? 0) + count);
+  };
+
+  /** The workflow's proxy books model-node responses and direct llm calls. Take the model counts from that ledger once. */
+  function useModelBookings(booked: BookedModelUsage): void {
+    bookedRequests = booked.requests;
+    Object.assign(tokens, booked.tokens);
+    unmetered = booked.unmetered;
+    models.clear();
+    for (const [name, count] of Object.entries(booked.models)) if (name) countModel(name, count);
+  }
 
   function push(entry: EntryLike): "answer" | "call" | "continued" | "refusal" | "mark" | "charge" | "unmetered" | undefined {
     const message = entry.model?.[0];
@@ -562,10 +577,7 @@ function createMeter() {
       // An answer is no cut: its own cost counts, never the hold a cut mark before it named.
       atMostEnded = undefined;
       const name = str(message.model);
-      if (name) {
-        const key = metricName(str(message.provider) ? `${str(message.provider)}/${name}` : name);
-        models.set(key, (models.get(key) ?? 0) + 1);
-      }
+      if (name) countModel(str(message.provider) ? `${str(message.provider)}/${name}` : name);
       // A request cut before its end has no final usage: its stream had reported none (the Responses API reports it at
       // the end) or only the start (Anthropic's input and first token), never what the provider charged. Unknown.
       const aborted = message.stopReason === "aborted";
@@ -624,10 +636,7 @@ function createMeter() {
   function decide(row: DecisionLike): void {
     decided += 1;
     const name = str(row.model);
-    if (name) {
-      const key = metricName(str(row.provider) ? `${str(row.provider)}/${name}` : name);
-      models.set(key, (models.get(key) ?? 0) + 1);
-    }
+    if (name) countModel(str(row.provider) ? `${str(row.provider)}/${name}` : name);
     // A cancelled request's tokens are unknown, as an aborted answer's are; so are those of one whose spend its driver's
     // state keeps, which no record here holds.
     const u = obj(row.usage);
@@ -636,15 +645,15 @@ function createMeter() {
 
   /** The counts of a run that ended: a request it cut has unknown tokens. */
   function settled(): Omit<RunMetrics, "tools"> {
-    const all = (usage(true)?.requests ?? 0) + decided;
-    const cut = Math.max(0, marked - answered) + Math.max(0, compacting - compactions);
+    const all = (bookedRequests ?? usage(true)?.requests ?? 0) + decided;
+    const cut = bookedRequests === undefined ? Math.max(0, marked - answered) + Math.max(0, compacting - compactions) : 0;
     let model: string | undefined;
     for (const [key, n] of models) if (model === undefined || n > models.get(model)!) model = key;
     const kept = keepBusiest(models, (n) => n, (a, b) => a + b, METRIC_NAMES.otherModels);
     return { ...tokens, requests: all, unmetered: Math.min(all, unmetered + cut), models: kept, ...(model !== undefined ? { model } : {}) };
   }
 
-  return { push, decide, usage, clamp: () => lastClamp, settled };
+  return { push, decide, useModelBookings, usage, clamp: () => lastClamp, settled };
 }
 
 type OpenCall = { conv: number; name: string; args: Obj; round?: number; use: TimelineEvent; done: boolean };
@@ -1359,9 +1368,9 @@ export function runMetricsOf(records: readonly EntryLike[]): RunMetrics {
   return runMetricsWithDecisions(records, []);
 }
 
-/** runMetricsOf, with a workflow run's decision receipts beside its entries: each a request, its `usage`
- *  (`input_tokens`, `output_tokens`) in the token sums, and one with none, or cancelled, unmetered. */
-export function runMetricsWithDecisions(records: readonly EntryLike[], decisions: readonly DecisionLike[]): RunMetrics {
+/** runMetricsOf with decision receipts. A workflow can supply its proxy's model bookings, which also cover direct llm
+ *  calls. Conversation records still count tool calls and their results. A decision with no usage counts as unmetered. */
+export function runMetricsWithDecisions(records: readonly EntryLike[], decisions: readonly DecisionLike[], booked?: BookedModelUsage): RunMetrics {
   const meter = createMeter();
   const seen = new Set<string>();
   // Each call by `conversation:id`, its tool's name as kept and as called, and whether a result closed it, as the timeline
@@ -1427,6 +1436,7 @@ export function runMetricsWithDecisions(records: readonly EntryLike[], decisions
     see(name, place);
     tally(name, callFailed(named ?? "", result));
   }
+  if (booked) meter.useModelBookings(booked);
   for (const row of decisions) meter.decide(row);
   const ordered = new Map([...tools].sort(([a], [b]) => order.get(a)![0] - order.get(b)![0] || order.get(a)![1] - order.get(b)![1]));
   return { ...meter.settled(), tools: keepBusiest(ordered, (t) => t.calls, (a, b) => ({ calls: a.calls + b.calls, errors: a.errors + b.errors }), METRIC_NAMES.otherTools) };
