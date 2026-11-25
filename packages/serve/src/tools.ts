@@ -203,8 +203,10 @@ function installTool(host: Pick<ToolHost, "install">, name: string, tool: ToolRe
 export type EffectRun = { signal: AbortSignal; env: NodeJS.ProcessEnv; work: string; complete?: Complete; ledger?: Ledger; search?: SearchOn };
 
 /** What a tool's own ask (ToolEntry.asks) reads: the run's host, and how many calls of a tool the run has run to a good
- *  end, from the run's record (its journal), so a pause and a new host count them all. */
-export type AskContext = { readonly host: ToolHost; ran(tool: string): Promise<number> };
+ *  end, from the run's record (its journal), so a pause and a new host count them all; `made`, the arguments of those
+ *  calls (each one whose arguments the record names), with those of the calls the gate let through that have no result
+ *  yet. */
+export type AskContext = { readonly host: ToolHost; ran(tool: string): Promise<number>; made(tool: string): Promise<readonly unknown[]> };
 
 export type ToolEntry = {
   /** One line, for capabilities. */

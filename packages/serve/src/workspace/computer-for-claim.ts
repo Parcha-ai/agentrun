@@ -263,6 +263,9 @@ export interface ClaimComputer {
    *  computer or --faux's launch, nor a browser (its sessions are the browser tool's). The adapter loop records it in the
    *  run's journal, which is how a later claim knows the run had one (hadComputer). */
   readonly made?: MadeKind;
+  /** The computer outlives the run: a person's paired computer or the agent's own (a persistent setting), never deleted
+   *  when the run ends, so the model is never told it is (computerFilesNote). */
+  readonly outlives?: true;
   /** The kind of computer a park of this claim keeps (`park`): a desktop, a phone or a sandbox the claim made through its
    *  provider, or took back from an earlier claim's park. Absent: a park lets the computer go as the run's end does. */
   readonly keeps?: KeptKind;
@@ -928,6 +931,8 @@ export async function computerForClaim(
   let replaced: Replaced | undefined;
   /** The kind of the computer this claim made the run fresh (ClaimComputer.made). */
   let ownKind: MadeKind | undefined;
+  /** The computer outlives the run: a paired one or the agent's own (ClaimComputer.outlives). */
+  let outlives = false;
   const now = deps.now ?? Date.now;
   /** The store's clock (the deadlines': the database's on Postgres), the one a kept computer's `until` is stamped and
    *  judged by everywhere (computer-kept.ts Kept.until), never this runner's own. */
@@ -1120,11 +1125,18 @@ export async function computerForClaim(
           lapsed = await storeClock().then((at) => at >= record.until, () => true);
           return undefined;
         }
-        // Its time over (on the store's clock, which stamped it), or its end took it first: a new one, said so. Marked
-        // under this claim's fence, so a claim that lost the run takes nothing.
+        // Its time over (on the store's clock, which stamped it): a new one, said lapsed. Marked under this claim's fence,
+        // so a claim that lost the run takes nothing.
         const fence = (launch.claim ?? { runId: launch.runId, epoch: launch.epoch }) as Claim;
-        if ((await storeClock()) >= record.until || !(taking = await takeKept(settings, launch.runId, record, launch.epoch, fence))) {
+        if ((await storeClock()) >= record.until) {
           lapsed = true;
+          return undefined;
+        }
+        // Its row changed since this claim read it: its end began first (its keeper's at its time, or a stop's end that
+        // marked it ending between its two reads of the run, run-end-computers.ts), or another claim marked it. Said as
+        // a row read ending is: lapsed only once its time passed, else a new one said as any replaced one is.
+        if (!(taking = await takeKept(settings, launch.runId, record, launch.epoch, fence))) {
+          lapsed = await storeClock().then((at) => at >= record.until, () => true);
           return undefined;
         }
         const provider = await vendorProvider(entry, keys, configuration);
@@ -1187,6 +1199,7 @@ export async function computerForClaim(
       // Under a runner of its own process, through its relay: the box is routed under the run's claim (launch.claim, a
       // store Claim from each claim's launch), so a claim another runner superseded is Fenced at the route.
       const provider = pairedRow ? pairedProvider(pairedRow, deps.attached?.hub, deps.attached?.relay, launch.claim as Claim | undefined) : await vendorProvider(entry, keys, configuration);
+      outlives = pairedRow !== undefined || persistent === true;
       const spec: ComputerSpec = { ...(await specOf(entry, provider, kind, configuration, signal, gpu)), ...(mount ? { mount } : {}) };
       // A browser makes nothing here: the run's browser tool opens each session through it, so a session lives (and is
       // booked) only while the tool holds it.
@@ -1422,6 +1435,7 @@ export async function computerForClaim(
     ...(held ? { held } : {}),
     ...(replaced ? { replaced } : {}),
     ...(ownKind ? { made: ownKind } : {}),
+    ...(outlives ? { outlives: true as const } : {}),
     ...(keeps ? { keeps: keeps.kind } : {}),
     ...(meter ? { settle: () => meter.stopAll() } : {}),
     release,

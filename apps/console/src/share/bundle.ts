@@ -110,6 +110,13 @@ export function exportSource({ runId, base = "" }: { runId: string; base?: strin
   };
 }
 
+/** The restores a page's address names (`?restore=` ids, comma-separated, as the CLI's --dry-run --restore opens it):
+ *  cut ids alone, each once. The page's first read asks for them, so it shows the bundle the CLI summed up. */
+export function restoreOf(search: string): string[] {
+  const ids = (new URLSearchParams(search).get("restore") ?? "").split(",").map((id) => id.trim());
+  return [...new Set(ids.filter((id) => /^c_[0-9a-f]{16}$/.test(id)))];
+}
+
 /** A run id as a page address names it: one segment of letters, digits, `_`, `-` and `.`, never a dot segment. */
 const SEGMENT = /^[A-Za-z0-9_-][A-Za-z0-9._-]*$/;
 /** The run `/share/<run>` names, or null for any other address. */

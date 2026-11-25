@@ -1735,12 +1735,20 @@ has the row **Use Claude Code's login on this machine**, over these routes:
   in is the user's alone where that group is the user's private one, as the local account files alone say:
   `/etc/nsswitch.conf` takes users and groups from those files only (`files` or `compat` on its `passwd`, `group` and
   any `initgroups` line), and the group is the user's primary group, which no other user has as theirs and
-  `/etc/group` lists with no other member, so a umask of 002 under one refuses nothing. Any other group (one shared
-  with other users, one that is not the user's primary group, one `/etc/group` lacks, account files with a `+` or `-`
-  line, or a switch that also asks sssd, LDAP, NIS, winbind or systemd's user records, as the `files systemd` of
-  recent Ubuntu, Debian and Fedora installs does, or no switch file: there members can exist that the files do not
-  show), and a folder anyone may write in, are refused in words that name the folder, its mode and the
-  `chmod g-w,o-w` that closes it. A folder of the login
+  `/etc/group` lists with no other member and gives no password there (`x`, `!`, `*` or empty), and `/etc/passwd` has
+  one account with the user's uid and one with its name, so a umask of 002 under one refuses nothing. Any other group
+  (one shared with other users, one that is not the user's primary group, one `/etc/group` lacks, account files with
+  a `+` or `-` line, a second account with the user's name or uid, an id with blanks before it, or a switch that also
+  asks sssd, LDAP, NIS, winbind or systemd's user records, as the `files systemd` of recent Ubuntu, Debian and Fedora
+  installs does, or no switch file: there members can exist that the files do not show), and a folder anyone may
+  write in, are refused in words that name the folder, its mode and the `chmod g-w,o-w` that closes it. A group
+  `/etc/group` gives a password is refused too, since anyone who knows it may join the group with `newgrp`, and the
+  words also name the group and the `gpasswd -r` that removes the password. An `x` there is not refused: it says only
+  that the group's password, if it has one, is in `/etc/gshadow`, with the members `newgrp` lets in without it, and a
+  server without privileges cannot read that file, so the check does not. A gshadow password or member set with
+  `gpasswd` is not seen; remove it with `gpasswd -r` or `gpasswd -d`. The files are read as they are now: a user
+  removed from the group keeps it in the sessions they already have open, since a process's groups are set when it
+  logs in, so end those sessions before counting the folder as the user's alone. A folder of the login
   still to make is made by AgentRun at the turn-on and before the CLI's sign-in, 0700 whatever the umask, so the login
   the CLI signs in there is not refused after.
 - `GET /v2/settings/claude-login` says `state`: `off`, `signed_in` (with the `account` the CLI names: method, email,
@@ -1757,6 +1765,10 @@ has the row **Use Claude Code's login on this machine**, over these routes:
   `machine` with the default `~/.claude`, the CLI is signed in as the person's own `claude` runs: no
   `CLAUDE_CONFIG_DIR` or `CLAUDE_SECURESTORAGE_CONFIG_DIR`, in their home, so it writes the account in `~/.claude.json`
   and the tokens where their Claude Code keeps them (in `~/.claude`; on macOS the Keychain item `Claude Code-credentials`).
+  On macOS the CLI names that item's account by `USER`, so the sign-in, the status check and a run all get `USER` and
+  `LOGNAME` set to the user the server runs as (as the system names it, whatever `USER` the server was started with):
+  the item is the one the person's own `claude auth status` reads in their terminal, never one under the account
+  `unknown`, which a CLI started with no `USER` uses.
   `command` there is `env -u CLAUDE_CONFIG_DIR -u CLAUDE_SECURESTORAGE_CONFIG_DIR ... auth login`, so a terminal that
   exports either still signs in at that login. env is a program, so the line runs alike when pasted into sh, bash,
   zsh, fish or tcsh; a CLI path holding `=`, which env would read as a variable, goes to `sh -c` as its `$0`. env skips
@@ -2680,10 +2692,28 @@ other server, are `422` at `mcp_auth.<server>`, and no run starts. A per-run ser
 runs as one account. A server saved for one user before this mode keeps calling as that user.
 
 With `user_id: "per_run"`, whoever can start a run chooses its Composio user, so the host owns which user each run
-binds: it binds each run to its own person and never takes the ids from that person. Only `agentrun` is
-refused, so a host must not bind a per-run server to a `user_id` that a single-user server calls as. On an API-only
-server a run's user is none the owner calls as here (the preset's default and tool-listing users, and every user a
-server the owner saved stands on), and a named account one Composio lists under it (see [API only](#api-only)).
+binds: it binds each run to its own person and never takes the ids from that person. The API token never binds a run to
+a Composio user the owner calls as here, in any letter case: the user any preset server the owner saved calls as or
+its kept account stands on (not one the token saved, and not a per-run one), `agentrun`, and the tool-listing user.
+On a start, an inline start, a launch hook's firing start and a message, the
+token's binding of one is `422 input_invalid` at `mcp_auth.<server>.composio_user_id` (`not_allowed`), and nothing is
+written: no run, no new binding, and a firing stays as it was. The owner's users are read at each request, so one the
+owner connects after a token's run started is refused from then on. The seal marks each binding with who handed it
+(the token or the owner's session), and each claim reads the owner's users again: a token's binding of a user the owner
+has connected since has its calls answered, unsent, that the user is the owner's, until a message hands `mcp_auth`
+again or a new run starts. The owner's session binds any user, the owner's own included. On an [API-only](#api-only)
+server every caller is the token: the same users are refused, at the request and at each claim whoever handed the
+binding, and a named account must be one Composio lists under the run's user.
+
+What this leaves open: a per-run server lends the install's Composio key to whoever starts a run, and a token can still
+name a user the owner connected directly at Composio (the dashboard, or another client of the same Composio project),
+outside this install, which no record here names. Save a per-run server only on an install whose token callers own
+that Composio project's users.
+
+Upgrading: a run sealed before the mark, in flight across the upgrade, whose binding names a user the owner connects
+here has its calls of that server answered, unsent, in the same words at its next claim, since nothing says the owner
+handed it: a message that hands `mcp_auth` again (the owner's session, for the owner's user) marks it, or start a new
+run.
 
 What can go wrong, told apart:
 
@@ -3454,9 +3484,29 @@ after asks, saying "this run has sent 5 emails" (the count is the run's own reco
 stops two auto-responders answering each other. On a run an email started whose `email_read` is thread-scoped (no
 `scope: "mailbox"`), a send to anyone outside the thread's people
 (the account's own address and every From, To and Cc of the thread's messages) asks too, naming them ("eve@example.com
-is outside this email's thread"). The pending approval carries the reason as `asks_because`, which the console's card
-says above the call's arguments ("Asks because ..."). With accounts off, where no one can
-approve, such a send is refused in those words.
+is outside this email's thread"). On every run a trigger started (schedule, webhook, Slack, GitHub, Composio, feed or
+email), a send to an address this account has never sent to asks too, naming it ("someone@example.com: this account
+has never sent to them"). Never sent to means no message in the account's own Sent folder (Gmail's Sent Mail), from
+the account's own address and not a draft, has the address in its To, Cc or Bcc: the exact address, blind to the case
+of ASCII letters only (a Unicode look-alike such as the Kelvin sign for K is another address), as far back as Sent
+goes. Some servers (Exchange and Outlook among them) keep no Bcc header on a Sent copy over IMAP, so there an address
+only ever Bcc'd asks. Mail received from someone doesn't count, so a scheduled run replying to a first-time sender asks
+once; nor does a draft or someone else's message in Sent, and `email_file` refuses Sent and Drafts as targets, so a run
+can't file its own evidence there. Once it has made a folder, `email_file` files only into a mailbox the server lists
+by exactly the name given, so a name the server takes as another's (`Sent/` read as Sent) files nothing. Mail sent from a "send as" alias is filed from that alias, so a send to its
+recipients asks. The new-address check never asks about the account's own address or an address the run already sent
+to (unasked or approved). On a thread-scoped email run it doesn't ask about the thread's starter (the From of the
+message that started the run) either, but only when the receiving mail server vouched for that From: the message's
+topmost Authentication-Results header carries the account provider's authserv-id and says `dmarc=pass` with a
+`header.from` equal to the From's domain (case-blind, ASCII letters only). A header lower down may be the sender's own
+and is never read; `dkim=pass` or `spf=pass` alone doesn't count. The provider's authserv-id is known for Gmail
+(`mx.google.com`, by the Gmail preset or an IMAP host under gmail.com) and for no other provider yet, so there the
+starter asks like any new address. A starter with no DMARC pass asks too, since their From may be forged. Anyone else
+that message names, such as a stranger it Cc'd, asks on a reply-all. The 5-send cap still counts
+every send. A Sent folder that can't be read (or none, or no account saved when the send is checked) asks, saying so.
+`scope: "mailbox"` turns the thread ask off and exempts no starter. A playground or API run has neither ask, only the
+cap. The pending approval carries the reason as `asks_because`, which the console's card says above the call's
+arguments ("Asks because ..."). With accounts off, where no one can approve, such a send is refused in those words.
 
 An agent whose definition says `checkout: repository` starts each run in a checkout of the repository the run names: its
 start's `repo`, else the first `https://github.com/<owner>/<repo>` in its first message (a github trigger's run, its
