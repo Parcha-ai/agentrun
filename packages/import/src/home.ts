@@ -12,7 +12,7 @@ import { childrenOf, inOrder, type Readers, readerOf, sessionLocators } from "./
 import { type Env, type Locator, locatorKey, type SessionRead } from "./reader.js";
 import { READERS, SOURCES, type Source } from "./readers/index.js";
 import { LINE_READERS } from "./readers/line-readers.js";
-import { addRequest, AT, atOf, type Counts, counts, HAS_LONG, HAS_REASONING, HAS_USAGE, STRIDE, trimmed, USAGE_FIELDS } from "./counts.js";
+import { addRequest, atOf, type Counts, counts, HAS_LONG, HAS_REASONING, HAS_USAGE, STRIDE, trimmed, USAGE_FIELDS } from "./counts.js";
 import { DROPS_CURSOR, type InternalReadOptions } from "./internal.js";
 import { defaultThreads, MIN_OLD_MB, OLD_MB, type PoolRead, ReadPool, readAheadBytes } from "./pool.js";
 import { addDisjoint, addNew, addRecord, anyIn, dropOwner, locatorNumber, markOf, ownAll, ownerOf, type RecordIndex, recordIndex, undoTo } from "./record-index.js";
@@ -199,7 +199,7 @@ const modelAt = (c: Counts, i: number, fallback: string | undefined): string | u
 /** Request i of `c` as priceRequests and the requests sink take it, its model its own or else its session's. */
 function requestAt(c: Counts, i: number, fallback: string | undefined): SessionRequest {
   const model = modelAt(c, i, fallback);
-  const request: SessionRequest = { at: c.values[i * STRIDE + AT]!, ...(model !== undefined ? { model } : {}) };
+  const request: SessionRequest = { at: atOf(c, i), ...(model !== undefined ? { model } : {}) };
   const has = c.has[i]!;
   if (!(has & HAS_USAGE)) return request;
   const o = i * STRIDE;
@@ -637,6 +637,8 @@ async function totalsOf(home: string, source: string, tops: Part[], children: (P
     };
     out.push(totals);
     if (sink) {
+      // The session's first time: the least finite one of its own files' requests (each part as read, as every part is
+      // with a sink), read where they are held.
       let started: number | undefined;
       for (const { read } of parts) {
         const { counts } = read as AsRead;

@@ -1043,7 +1043,7 @@ export interface components {
       kind: "stopped";
     } | null;
     imported_from?: {
-      source: "claude-code" | "codex" | "pi" | "opencode";
+      source: "claude-code" | "codex" | "pi" | "opencode" | "copilot";
       session: string;
     } | null;
     trigger?: {
@@ -1295,7 +1295,7 @@ export interface components {
       kind: "stopped";
     } | null;
     imported_from?: {
-      source: "claude-code" | "codex" | "pi" | "opencode";
+      source: "claude-code" | "codex" | "pi" | "opencode" | "copilot";
       session: string;
     } | null;
     trigger?: {
@@ -3723,7 +3723,7 @@ export interface operations {
           unknown_cost_runs: number;
         }[];
         by_source: {
-          source: "live" | "claude-code" | "codex" | "pi" | "opencode";
+          source: "live" | "claude-code" | "codex" | "pi" | "opencode" | "copilot";
           runs: number;
           completed: number;
           needs_review: number;

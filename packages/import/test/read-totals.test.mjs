@@ -309,3 +309,44 @@ for (const [source, filesOf] of Object.entries(TIMED)) {
     }
   });
 }
+
+// What parseHome's requests sink is handed, a session a line: each request's time, in read order, and `started`, the
+// least finite one.
+const sunk = async (home, options) => {
+  const out = [];
+  await parseHome(home, { catalog: false, ...options, requests: (_totals, requests, started) => out.push({ times: requests.map((request) => request.at), started }) });
+  return out.sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
+};
+const least = (times) => times.filter(Number.isFinite).reduce((n, at) => (n === undefined || at < n ? at : n), undefined);
+const each = (timesBySession) => timesBySession.map((times) => ({ times, started: least(times) })).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
+
+for (const [source, filesOf] of Object.entries(TIMED)) {
+  test(`${source}: parseHome's requests sink gets each request's time from its counts, and started the least of them`, async (t) => {
+    const home = await tempHome(t);
+    const files = filesOf(home);
+    for (const [file, records] of files) await writeJsonl(file, records);
+    assert.deepEqual(await sunk(home, { sources: [source] }), each(files.map(([, , times]) => times)));
+  });
+}
+
+test("parseHome's requests sink gets a reader's requests' times when it gives no counts, and started the least finite one", async (t) => {
+  const home = await tempHome(t);
+  const files = ["a", "b"].map((name) => join(home, `${name}.jsonl`));
+  for (const file of files) await writeFile(file, "");
+  const timesOf = { [files[0]]: [time(5), Number.NaN, time(2), time(9)], [files[1]]: [Number.NaN] };
+  const reader = {
+    source: "fixture",
+    name: "Fixture",
+    harness: "fixture",
+    discover: async () => files.map((file) => ({ file })),
+    read: async (locator) => ({
+      sessions: [{ locator, session: { source: "fixture", id: locator.file, file: locator.file, state: "completed", child: false, turns: [], users: 1, activeMs: 0, copies: 0 }, requests: timesOf[locator.file].map((at) => ({ role: "assistant", text: "", calls: [], at, usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 } })) }],
+      cursor: undefined,
+      read: 0,
+      resumed: false,
+    }),
+  };
+  const got = await sunk(home, { sources: ["fixture"], readers: { fixture: reader } });
+  assert.deepEqual(got.map(({ started }) => started).sort(), [time(2), undefined].sort());
+  assert.deepEqual(got.map(({ times }) => times.map(String)).sort(), Object.values(timesOf).map((times) => times.map(String)).sort());
+});

@@ -1,4 +1,4 @@
-// `agentrun-serve import`: the Claude Code, Codex and pi sessions under a person's own home, into this server's agent
+// `agentrun-serve import`: the Claude Code, Codex, pi and Copilot CLI sessions under a person's own home, into this server's agent
 // store, once, when asked. Each project directory is one agent; each harness seen in it one revision of that agent, its
 // instructions the project's CLAUDE.md or AGENTS.md and its skills the project's skill folders; each session one run,
 // ended as it ended, its transcript the run's timeline. An imported run is history: it takes no message, stop or cancel.
@@ -14,7 +14,7 @@ import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { AssistantEntry, ROOT_CONVERSATION_ID, type StorageWrite, ToolResultEntry, UserEntry } from "@earendil-works/pi-durable";
 import { type EntryLike, REQUEST_COST, type RunMetrics, runMetricsOf } from "./timeline/index.js";
 import { defaultData } from "./files.js";
-import { type Answer, childrenOf, HARNESS_OF, inOrder, type Locator, locatorKey, locatorOf, locatorParent, type LocatorSize, locatorSize, mirroredIn, mostEffortOf, ownRequests, priceRequests, readSession, type Session, SOURCE_NAMES, SOURCES, type Source, sessionKey, sessionLocators, type Turn, withSubagentCosts } from "@parcha/agentrun-import";
+import { type Answer, childrenOf, copilotSessionId, HARNESS_OF, inOrder, type Locator, locatorKey, locatorOf, locatorParent, type LocatorSize, locatorSize, mirroredIn, mostEffortOf, ownRequests, priceRequests, readSession, type Session, SOURCE_NAMES, SOURCES, type Source, sessionKey, sessionLocators, type Turn, withSubagentCosts } from "@parcha/agentrun-import";
 import { type Found, hoursOf, type OpenAt, summaryLines } from "./import-summary.js";
 import { stopOnce } from "./stop-signals.js";
 import { catalogPrices, type Listed, providerModels } from "./model.js";
@@ -131,6 +131,12 @@ async function remoteHistoryMetadata(file: string, source: Source): Promise<{id:
         cwd??=str(row.cwd);child ||= row.isSidechain===true;
       }else if(source==='pi'){
         if(row.type==='session'){id=str(row.id)??id;cwd=str(row.cwd)??cwd;}
+      }else if(source==='copilot'){
+        // The process's start (a resume holds the folder too); a run the CLI started on another session's exit is a child.
+        const data=row.data;
+        if((row.type!=='session.start' && row.type!=='session.resume') || !data || typeof data!=='object' || Array.isArray(data))return;
+        if(row.type==='session.start'){id=str(data.sessionId)??id;child ||= !!str(data.detachedFromSpawningParentSessionId);}
+        cwd??=str(data.context?.cwd);
       }else if(row.type==='session_meta'){
         const payload=row.payload;
         if(!payload || typeof payload!=='object' || Array.isArray(payload))return;
@@ -148,7 +154,7 @@ async function remoteHistoryMetadata(file: string, source: Source): Promise<{id:
       if (!bytesRead) {
         metadataOf(parts);
         // readSession uses the file name only when no source record supplied an id. That is known only at EOF.
-        id??=basename(file,'.jsonl');
+        id??=source==='copilot'?copilotSessionId(file):basename(file,'.jsonl');
         return metadata();
       }
       position += bytesRead;
@@ -793,28 +799,31 @@ function merged(parts: readonly Session[]): Session {
 const ownless = (session: Session) => session.copies > 0 && !session.turns.some((turn) => turn.role !== "note");
 
 /** The records and responses an import has counted, by source, for one project: first those its runs in `store` hold
- *  already (each answer's response id and each entry's record ids, as its transcript keeps them; an OpenCode answer's
- *  fingerprint and its prompts', what a 1.x fork's copies of them are keyed by), then each file's as it is read. */
+ *  already (each answer's response id and its later parts', and each entry's record ids, as its transcript keeps them:
+ *  Claude Code's and Copilot's; an OpenCode answer's fingerprint and its prompts', what a 1.x fork's copies of them are
+ *  keyed by), then each file's as it is read. */
 async function seenIn(store: ImportStore | undefined, agentId: string): Promise<(source: Source) => Set<string>> {
   const bySource = new Map<Source, Set<string>>();
   const seen = (source: Source) => bySource.get(source) ?? bySource.set(source, new Set()).get(source)!;
   if (!store || !(await store.agents.get(agentId))) return seen;
   for (const run of await store.runs.list({ agentId })) {
     const source = run.importedFrom?.source;
-    if (source !== "claude-code" && source !== "opencode") continue;
+    if (source !== "claude-code" && source !== "opencode" && source !== "copilot") continue;
     for (const entry of (await journalEntries(store.readJournal(run.id), ctx)) as unknown as EntryLike[]) {
       const id = (entry.model?.[0] as { responseId?: unknown } | undefined)?.responseId;
-      const uuids = (entry.data as { record_uuids?: unknown } | undefined)?.record_uuids;
+      const { record_uuids: uuids, record_keys: keys } = (entry.data ?? {}) as { record_uuids?: unknown; record_keys?: unknown };
       if (source === "opencode") {
         // A request's fingerprint is its answer's response id; a prompt's, its record id.
         for (const key of [id, ...(Array.isArray(uuids) ? uuids : [])]) if (typeof key === "string" && key.startsWith("o:")) seen("opencode").add(key);
         continue;
       }
-      if (typeof id === "string" && id) seen("claude-code").add(`m:${id}`);
+      const into = seen(source);
+      if (typeof id === "string" && id) into.add(`m:${id}`);
       // A run imported before a request's key held its request id (message id:request id) keeps the bare message id:
       // the reader matches it against a request's message id alone.
-      if (typeof id === "string" && id && !id.includes(":")) seen("claude-code").add(`l:${id}`);
-      if (Array.isArray(uuids)) for (const uuid of uuids) if (typeof uuid === "string") seen("claude-code").add(`u:${uuid}`);
+      if (source === "claude-code" && typeof id === "string" && id && !id.includes(":")) into.add(`l:${id}`);
+      if (Array.isArray(uuids)) for (const uuid of uuids) if (typeof uuid === "string") into.add(`u:${uuid}`);
+      if (Array.isArray(keys)) for (const key of keys) if (typeof key === "string" && key) into.add(`m:${key}`);
     }
   }
   return seen;
@@ -926,8 +935,8 @@ const subagentMarks = (children: readonly Session[]): EntryLike[] =>
     child.turns.flatMap((turn) => {
       if (turn.role !== "assistant" || turn.mirrors) return [];
       const { input, output, cacheRead, cacheWrite } = turn.usage ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
-      // A failed request's counts are its own, zeros included, as its answer's are (entryOf).
-      return [{ kind: REQUEST_COST, data: { request: "subagent", usd: turn.costUsd ?? null, usage: { input, output, cacheRead, cacheWrite }, ...(turn.error !== undefined ? { failed: true } : {}) } } as EntryLike];
+      // A failed request's counts are its own, zeros included, as its answer's are (entryOf); so are a folded one's.
+      return [{ kind: REQUEST_COST, data: { request: "subagent", usd: turn.costUsd ?? null, usage: { input, output, cacheRead, cacheWrite, ...(turn.folded ? { folded: true } : {}) }, ...(turn.error !== undefined ? { failed: true } : {}) } } as EntryLike];
     }),
   );
 
@@ -1097,11 +1106,12 @@ export async function projectFiles(
   return { instructions, skills };
 }
 
-/** A turn's transcript entry, with the source's ids of the records it was read from (`record_uuids`): a later import counts
- *  a copy of them once. */
+/** A turn's transcript entry, with the source's ids of the records it was read from (`record_uuids`) and of a request's
+ *  later parts (`record_keys`, Turn.keys): a later import counts a copy of them once. */
 const message = (turn: Turn, model: string | undefined): { entry: typeof UserEntry; model: unknown; data?: unknown } => {
   const written = entryOf(turn, model);
-  return turn.uuids?.length ? { ...written, data: { ...(written.data as object | undefined), record_uuids: turn.uuids } } : written;
+  const ids = { ...(turn.uuids?.length ? { record_uuids: turn.uuids } : {}), ...(turn.role === "assistant" && turn.keys?.length ? { record_keys: turn.keys } : {}) };
+  return Object.keys(ids).length ? { ...written, data: { ...(written.data as object | undefined), ...ids } } : written;
 };
 
 const entryOf = (turn: Turn, model: string | undefined): { entry: typeof UserEntry; model: unknown; data?: unknown } => {
@@ -1157,6 +1167,8 @@ const entryOf = (turn: Turn, model: string | undefined): { entry: typeof UserEnt
         ...(cacheWrite1h !== undefined ? { cacheWrite1h } : {}),
         totalTokens: input + output + cacheRead + cacheWrite,
         cost: cost === undefined ? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } : { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: cost },
+        // Its zeros are counted in a later request of the session (the source wrote a total): known, never unmetered.
+        ...(turn.folded ? { folded: true } : {}),
       },
       // A failed request's zero counts are its counts, as a live run's failed request's are.
       ...(turn.error !== undefined ? { stopReason: "error", errorMessage: turn.error } : { stopReason: turn.calls.length ? "toolUse" : "stop" }),
