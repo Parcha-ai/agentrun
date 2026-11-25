@@ -94,7 +94,7 @@ const TRACE = { provider: "openrouter", serverAddress: "openrouter.ai", model: "
 
 /** One run of the stand-in, traced into memory: its spans, the run's row, and the trace's log lines. `redact`: the
  *  runner's redactor; `extra`: more events of its turn (standIn). */
-async function tracedRun(t, { requests = TWO_REQUESTS, extra, redact, facts, exporter = new InMemorySpanExporter(), env = ON, trace = TRACE } = {}) {
+async function tracedRun(t, { requests = TWO_REQUESTS, extra, redact, facts, exporter = new InMemorySpanExporter(), env = ON, trace = TRACE, runCap = { capUsd: () => undefined, modelOf: () => undefined } } = {}) {
   const opened = await stores({ runners: 1 });
   await queue(opened.server, "run-1");
   const lines = [];
@@ -105,7 +105,7 @@ async function tracedRun(t, { requests = TWO_REQUESTS, extra, redact, facts, exp
       facts,
       session: { key: "root", label: "root", system: [], tools: [write], context: "fresh" },
       input: SECRET_WORDS,
-      runCap: { capUsd: () => undefined, modelOf: () => undefined },
+      runCap,
       record: "loop",
       hooks: quiet,
       gate: () => "allow",
@@ -254,6 +254,63 @@ test("the model rule: a known model as asked; an unknown one by its route's mode
   assert.equal(tracedModel(undefined, { known }), undefined);
   const cut = tracedModel(`a-held-value-xyz-${"y".repeat(100)}`, { known, redact: secretRedactor(["a-held-value-xyz"]) });
   assert.ok(!cut.includes("a-held-value-xyz") && cut.length <= WRITTEN_MAX, cut);
+});
+
+test("a run's process posts no held value onto a span: its provider, host, call ids, request ends, turn status and failure are the runner's to clean", async () => {
+  const held = `held-${"secret"}-value-0451`;
+  const exporter = new InMemorySpanExporter();
+  const posts = tracePosts(await genAiTracing(ON, { exporter }), "run-own", secretRedactor([held]));
+  posts.post("open", [Date.now()]);
+  posts.post("known", [{ runId: "run-own", harness: "pi", provider: `${held}-provider`, serverAddress: `${held}.example.com`, model: "m", routes: new Map([["tier", { provider: held, serverAddress: held, model: "m2" }]]) }]);
+  posts.post("request", [0, "m", undefined]);
+  posts.post("ended", [0, { input: 1, output: 1, usd: 0 }, { end: "lost", label: `${held}-label` }]);
+  posts.post("request", [1, "m2", "tier"]);
+  posts.post("ended", [1, { input: 1, output: 1, usd: 0, billing: held, cut: held }, { end: "nothing", label: "refused", reason: held }]);
+  // A call's raw id matches its end; its span shows it cut. A usual id shows as given.
+  posts.post("event", [{ type: "tool_start", callId: `${held}-call`, name: "bash" }]);
+  posts.post("event", [{ type: "tool_start", callId: "toolu_01usual", name: "bash", parent: `${held}-call` }]);
+  posts.post("event", [{ type: "tool_start", callId: `c${"c".repeat(100)}`, name: "bash" }]);
+  posts.post("event", [{ type: "tool_end", callId: "toolu_01usual", isError: false }]);
+  posts.post("event", [{ type: "tool_end", callId: `${held}-call`, isError: false }]);
+  posts.post("event", [{ type: "tool_end", callId: `c${"c".repeat(100)}`, isError: false }]);
+  posts.post("end", [`${held}-why`]);
+  // A plan harness's turn, whose status is its span's error.type.
+  const planned = tracePosts(await genAiTracing(ON, { exporter }), "run-plan", secretRedactor([held]));
+  planned.post("open", [Date.now()]);
+  planned.post("known", [{ runId: "run-plan", harness: "plan-cli", plan: true, model: "auto" }]);
+  planned.post("event", [{ type: "turn_end", status: `${held}-status` }]);
+  planned.post("end", [undefined]);
+  const spans = exporter.getFinishedSpans();
+  const leaks = spans.flatMap((span) => [["name", span.name], ...Object.entries(span.attributes)].filter(([, value]) => String(value).includes(held)).map(([key, value]) => `${key}=${value}`));
+  assert.deepEqual(leaks, [], "no exported attribute or name holds the held value");
+  const tools = spans.filter((span) => span.attributes["gen_ai.operation.name"] === "execute_tool");
+  assert.equal(tools.length, 3, tools.map((span) => span.name).join());
+  assert.ok(tools.every((span) => span.status.code === 0 && span.attributes["error.type"] === undefined), "each call's end found its start by its raw id");
+  assert.ok(tools.some((span) => span.attributes["gen_ai.tool.call.id"] === "toolu_01usual"), "a usual id shows as given");
+  assert.ok(tools.every((span) => span.attributes["gen_ai.tool.call.id"].length <= WRITTEN_MAX), "every shown id is capped");
+  const usual = tools.find((span) => span.attributes["gen_ai.tool.call.id"] === "toolu_01usual");
+  const parent = tools.find((span) => span.spanContext().spanId === usual.parentSpanContext?.spanId);
+  assert.ok(parent, "a child call finds its parent by the parent's raw id");
+  const [lost, refused] = chatSpans(spans);
+  assert.equal(lost.attributes["error.type"], undefined, "an end the runner does not know is read as none");
+  assert.equal(refused.attributes["error.type"], "refused", "a known end keeps its label");
+  assert.equal(spans.find((span) => span.name === "invoke_agent pi").attributes["error.type"], "run-error", "a failure that is not a code is the runner's");
+  assert.equal(spans.find((span) => span.attributes["agentrun.run.id"] === "run-plan" && span.attributes["gen_ai.operation.name"] === "chat").attributes["error.type"], "failed", "a turn status it does not know is failed");
+});
+
+test("a body's model is known only by its own id: under a CLI spec's catch-all price (every id priced as the session's model), an invented name is its route's, and a known one is cut too", async (t) => {
+  const held = `held-${"secret"}-value-0451`;
+  const long = `route-model-${"r".repeat(80)}`;
+  // A CLI run's runCap.modelOf (cli-run-spec.ts): with no route named, every id is the session's model.
+  const sessionModel = { id: "cap-model", api: "anthropic-messages", price: null, outputCeiling: null };
+  const runCap = { capUsd: () => undefined, modelOf: (_id, by) => (by === undefined ? sessionModel : undefined) };
+  const asked = [{ ...TWO_REQUESTS[0], model: `${held}-invented` }, { ...TWO_REQUESTS[1], model: long }];
+  const { spans, row } = await tracedRun(t, { requests: asked, runCap, redact: secretRedactor([held]), trace: { ...TRACE, model: long } });
+  assert.equal(row.state, "ended", `the run ended: ${JSON.stringify(row)}`);
+  const [invented, known] = chatSpans(spans);
+  assert.equal(invented.attributes["gen_ai.request.model"], long.slice(0, WRITTEN_MAX), "an invented name is its route's model, whatever the catch-all prices it as");
+  assert.equal(known.attributes["gen_ai.request.model"].length, WRITTEN_MAX, `a known name is cut too: ${known.name}`);
+  assert.ok(spans.every((span) => !span.name.includes(held)), "no span name holds the held value");
 });
 
 test("a runner error line holds no OTLP header value: each one is a held secret, and the tracer's [otel] lines are cut", async (t) => {
