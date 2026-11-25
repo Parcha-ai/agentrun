@@ -216,13 +216,15 @@ test("a sign-out of this machine's own login (the person's CLAUDE_CONFIG_DIR) is
   assert.equal(r.rows.get(CLAUDE_LOGIN_SETTING)?.place, "machine", "the mode stays on");
 });
 
-test("a sign-out with no login kept here (nothing signed in yet) runs no CLI, confirms, and turns the mode off", async (t) => {
+test("a sign-out with no login folder here (nothing signed in yet) still runs the CLI's own sign-out at AgentRun's folder, confirms where it confirms, and turns the mode off", async (t) => {
   assert.equal(typeof login.signOutClaudeLogin, "function", "claude-login.ts has the sign-out");
   const r = await rig(t);
-  rmSync(join(r.data, "claude-login"), { recursive: true, force: true });
+  const folder = join(r.data, "claude-login");
+  rmSync(folder, { recursive: true, force: true });
   const out = await login.signOutClaudeLogin(r.deps);
   assert.deepEqual([out.confirmed, out.login.state], [true, "off"]);
-  assert.deepEqual(r.logouts, []);
+  assert.deepEqual(r.logouts.map((one) => one.dir), [folder]);
+  assert.equal(existsSync(folder), false, "no folder is left");
 });
 
 // A first sign-out whose CLI didn't confirm removes the folder, but the CLI's own copy (on macOS, the Keychain item named

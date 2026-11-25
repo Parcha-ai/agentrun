@@ -830,7 +830,7 @@ export const machineSignOutRefused = (folder: string): string =>
   `This is your own Claude Code login on this machine (${folder}), which AgentRun only uses: it never signs it out. Run \`claude auth logout\` in a terminal there to sign it out, or turn the mode off here.`;
 
 /** POST /settings/claude-login/sign-out's answer: whether all of the login is gone (the CLI confirmed its own sign-out and
- *  every removal landed; true, too, where no login was kept here), else words saying what may remain
+ *  every removal landed, whether or not a folder was there), else words saying what may remain
  *  (LOGIN_SIGN_OUT_UNCONFIRMED, signOutLeft), and the view after it (`off`). */
 export type ClaudeLoginSignOut = { confirmed: boolean; message?: string; login: ClaudeLoginView };
 
@@ -838,8 +838,10 @@ export type ClaudeLoginSignOut = { confirmed: boolean; message?: string; login: 
  *  turn-on finds none and the person signs in fresh, to the same account or another. In one turn on the sign-ins' queue
  *  (no sign-in or turn-on lands in between): a sign-in this server started that still waits is ended; the mode is turned
  *  off, so no new run goes on the login while it goes; the pinned CLI's own sign-out (the harness's claudeLogout) runs on
- *  the folder, where there is one, so it removes its credentials file and, on macOS, the Keychain item named from the
- *  folder; then the folder is removed whatever the CLI said (credentials, account, profiles, the CLI's refresh lock, and
+ *  the folder, so it removes its credentials file and, on macOS, the Keychain item named from the folder. It runs where
+ *  the folder is gone too: a retry after a sign-out the CLI didn't confirm finds no folder, and the Keychain item may
+ *  remain, so the answer is confirmed only where the CLI confirms. Then the folder is removed whatever the CLI said (a
+ *  folder the CLI made as it signed out too) (credentials, account, profiles, the CLI's refresh lock, and
  *  the CLI's older lock beside it), with the login's signed-in note (noteAnswer) and this process's token reader of it
  *  (claude-login-token.ts forgetLoginTokens). Each removal stands alone: one that fails is named in the answer
  *  (signOutLeft, `confirmed` false), and the others, the reader's drop and the server's reread of the keys still happen.
@@ -875,7 +877,6 @@ export async function signOutClaudeLogin(deps: ClaudeLoginDeps): Promise<ClaudeL
       off = true;
       const dir = agentRunLoginDir(deps.data);
       const linked = loginFolderLink(deps.data);
-      if (linked === undefined && !existsSync(dir)) return;
       const note = answerFile(deps.data, { dir, profiles: join(dir, "anthropic") });
       try {
         if (linked !== undefined) {

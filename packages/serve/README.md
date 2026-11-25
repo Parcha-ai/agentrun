@@ -1808,7 +1808,9 @@ has the row **Use Claude Code's login on this machine**, over these routes:
   CLI said. Each removal stands alone: one that fails is named in the answer and the rest still happen. It answers
   `{ "confirmed": true, "login": <the view, off> }`; `confirmed` false adds a `message` saying what may remain: the
   CLI didn't confirm its own sign-out, or its step failed, named (on macOS its Keychain item may remain), or a file it
-  could not remove, by path. The next turn-on reads `signed_out` and the sign-in starts as before. `<data>/claude-login`
+  could not remove, by path. The CLI's sign-out runs where the folder is already gone too, so a retry after an
+  unconfirmed sign-out confirms only where the CLI does. The next turn-on reads `signed_out` and the sign-in starts as
+  before. `<data>/claude-login`
   is a folder AgentRun keeps itself: a turn-on where it is a link is refused, and a sign-out that finds a link there
   removes the link alone (and the login's signed-in note), runs no CLI through it, and names what it led to. Runs already going are left as a turn-off leaves them, and fail saying the
   login is signed out at their next read of it. Where each run is a user of its own, a run claimed on the login and

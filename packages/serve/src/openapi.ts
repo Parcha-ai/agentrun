@@ -3101,7 +3101,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       "x-agentrun-secret": true,
       security: [{ ownerSession: [] }],
       responses: {
-        "200": json({ type: "object", additionalProperties: false, required: ["confirmed", "login"], properties: { confirmed: { type: "boolean", description: "Whether all of the login is gone: the CLI confirmed its own sign-out and every removal landed (true, too, when no login was kept here)." }, message: { type: "string", description: "With `confirmed` false: what may remain, in words (the CLI's step unconfirmed or failed, a removal that failed, a link left in place of the folder)." }, login: CLAUDE_LOGIN } }, "Signed out here."),
+        "200": json({ type: "object", additionalProperties: false, required: ["confirmed", "login"], properties: { confirmed: { type: "boolean", description: "Whether all of the login is gone: the CLI confirmed its own sign-out and every removal landed. The CLI's sign-out runs where the folder is already gone too, so a retry after an unconfirmed sign-out is true only where the CLI confirms." }, message: { type: "string", description: "With `confirmed` false: what may remain, in words (the CLI's step unconfirmed or failed, a removal that failed, a link left in place of the folder)." }, login: CLAUDE_LOGIN } }, "Signed out here."),
         ...errors(401, 403, 404, 429, 500),
       },
       "x-agentrun-serve": "claudelogin/1",
