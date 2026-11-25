@@ -7,6 +7,7 @@
 import { ApiError, type InputIssue, unsupported } from "./errors.js";
 import { message, type RunMoment, type RunsStore, startRun, type StartDeps, type StartOptions, WAITS_ON_A_PERSON } from "./runs-over-store.js";
 import { runOfOrigin } from "./store-reads/runs.js";
+import { WITHHELD_MESSAGE } from "./handed-values.js";
 import type { Store } from "./store/index.js";
 import type { AgentEntry } from "./agents-store.js";
 import { NATIVE_CAP_UNSUPPORTED, NATIVE_RUN_OVERRIDES_UNSUPPORTED, nativeOf, nativeRunOverrides } from "./native/binding.js";
@@ -45,7 +46,8 @@ export interface TriggerTargetDeps {
    *  runWrite): never under a purge of the run, and 410 purged after one. */
   runWrite<T>(agentId: string, runId: string, work: () => Promise<T>): Promise<T>;
   /** `text` as a message to run `runId` is written: cut of what the run holds now (server.ts cutHeld), read inside the
-   *  turn that writes it (runWrite), as a person's message is. */
+   *  turn that writes it (runWrite), as a person's message is. A run whose seal doesn't open here refuses it (ApiError
+   *  WITHHELD_MESSAGE): the firing skips with those words, never writes it uncut. */
   cutHeld(runId: string, text: string): Promise<string>;
   /** A run's v2 status, or null for an unknown run (the run view): the trigger engine's overlap and active-run checks. */
   runStatus(runId: string): Promise<string | null>;
@@ -300,6 +302,7 @@ export function triggerTargets(store: Store & RunsStore, deps: TriggerTargetDeps
         if (queued.skipped !== undefined) return { skipped: queued.skipped };
       } catch (error) {
         if (error instanceof ApiError && error.message === WAITS_ON_A_PERSON) return { skipped: WAITS_ON_A_PERSON };
+        if (error instanceof ApiError && error.message === WITHHELD_MESSAGE) return { skipped: WITHHELD_MESSAGE };
         throw error;
       }
     },

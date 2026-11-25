@@ -8,7 +8,7 @@ import type { AgentLearning, Corrections, LearningChange, LearningDiff, Learning
 import type { ComposioToolkit, ComposioTools, McpAuth, McpPreview, McpRefresh, McpServer } from "./mcp";
 import type { RunGraph } from "./runGraph";
 import { applyPage } from "./timeline";
-import type { ApiError, ApiKeyMade, ApiKeys, Capabilities, HarnessKeys, HarnessOfferView, ChatGPTSignOut, ChatGPTStart, ChatGPTView, ClaudeLoginView, ModelGateway, ModelGatewayBody, ModelGatewayTest, EmailAccount, EmailAccountBody, EmailTest, EmailTestBody, Firing, GitHubConnectStart, GitHubDisconnected, GitHubRepositories, GitHubStatus, ScanStarted, Suggestion, SuggestionCreated, SuggestionDetail, SuggestionsList, InputIssue, McpPrivateHosts, MarketplaceList, TemplateApplied, TemplateApply, TemplateImported, TemplateView, RaiseAnswer, GradeAnswer, GradeBody, Run, RunCreateInline, RunComputer, RunningComputers, RunLearningRead, LearningAudits, LearningCost, LearningLoop, Promotions, WorkflowRevisions, ReplayStarted, ReplayRead, ComputerHoldAnswer, HandBackOutcome, RunFiles, RunStatus, RunTrace, RunUsage, TimelinePage, TimelineRow, SessionSecrets, SignInForgotten, ToolKeys, ToolSettings, Trigger, TriggerCreate, TriggerDeleted, TriggerInput, TriggerMade, TriggerSecret, TriggerUpdated, ComposioEvents, ComposioTriggers, Slack, SlackAttempt, SlackBody, Webhook, WebhookAttempt, WebhookRotated, WebhookSaved, Archil, ArchilBody, ArchilTest, Computers, ComputerChoices, ComputerKeysBody, ComputerProvider, ComputerTest, Pairing } from "./v2";
+import type { ApiError, ApiKeyMade, ApiKeys, Wrapped, Capabilities, HarnessKeys, HarnessOfferView, ChatGPTSignOut, ChatGPTStart, ChatGPTView, ClaudeLoginView, ModelGateway, ModelGatewayBody, ModelGatewayTest, EmailAccount, EmailAccountBody, EmailTest, EmailTestBody, Firing, GitHubConnectStart, GitHubDisconnected, GitHubRepositories, GitHubStatus, ScanStarted, Suggestion, SuggestionCreated, SuggestionDetail, SuggestionsList, InputIssue, McpPrivateHosts, MarketplaceList, TemplateApplied, TemplateApply, TemplateImported, TemplateView, RaiseAnswer, GradeAnswer, GradeBody, Run, RunComputer, RunningComputers, RunLearningRead, LearningAudits, LearningCost, LearningLoop, Promotions, WorkflowRevisions, ReplayStarted, ReplayRead, ComputerHoldAnswer, HandBackOutcome, RunFiles, RunStatus, RunTrace, RunUsage, TimelinePage, TimelineRow, SessionSecrets, SignInForgotten, ToolKeys, ToolSettings, Trigger, TriggerCreate, TriggerDeleted, TriggerInput, TriggerMade, TriggerSecret, TriggerUpdated, ComposioEvents, ComposioTriggers, Slack, SlackAttempt, SlackBody, Webhook, WebhookAttempt, WebhookRotated, WebhookSaved, Archil, ArchilBody, ArchilTest, Computers, ComputerChoices, ComputerKeysBody, ComputerProvider, ComputerTest, Pairing } from "./v2";
 
 /** A request AgentRun Server refused: its HTTP status and its typed error (`code`, `message`, `retryable`). */
 /** A refusal's issue at one field, as the server names it (with its `fix`, when it says one). Its `reason` is any string, as
@@ -52,14 +52,21 @@ type NoOffer = { offer: false };
 
 /** A runs list's filter (GET /v2/runs's `status`, `archived` and `label`): runs in one status, the archived runs in place
  *  of the others, and runs holding one `<key>:<value>` label (one per request, as the route takes it). */
-export type RunsFilter = { status?: RunStatus; archived?: boolean; label?: string };
+/** `source`: the runs imported from one source (`claude-code`, ...), or `live` for the runs made here (GET /v2/runs only).
+ *  `from` and `to`: the runs started in [from, to), each an instant with its zone (the console's own dates made instants);
+ *  `model`: the runs that used one model, `provider/model` (GET /v2/runs only). */
+export type RunsFilter = { status?: RunStatus; archived?: boolean; label?: string; source?: string; from?: string; to?: string; model?: string };
 
-const runsQuery = (limit: number, cursor: string | null | undefined, { status, archived, label }: RunsFilter = {}) => {
+const runsQuery = (limit: number, cursor: string | null | undefined, { status, archived, label, source, from, to, model }: RunsFilter = {}) => {
   const q = new URLSearchParams({ limit: String(limit) });
   if (cursor) q.set("cursor", cursor);
   if (status) q.set("status", status);
   if (archived) q.set("archived", "true");
   if (label) q.set("label", label);
+  if (source) q.set("source", source);
+  if (from) q.set("from", from);
+  if (to) q.set("to", to);
+  if (model) q.set("model", model);
   return `?${q}`;
 };
 
@@ -142,6 +149,8 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     signOutEverywhere: () => call<{ signed_out: boolean }>("POST", "/auth/sign-out-everywhere", { body: {} }),
     /** Counts and sums from the server's store, for Mission Control (`GET /v2/stats`, a serve extension). */
     stats: () => call<Stats>("GET", "/stats"),
+    /** GET /v2/wrapped: a year of the work under the machine the server runs on (403 from any other server). */
+    wrapped: (year?: number, signal?: AbortSignal) => call<Wrapped>("GET", `/wrapped${year === undefined ? "" : `?year=${year}`}`, { signal }),
     listRuns: (limit = 50, cursor?: string | null, filter?: RunsFilter) => call<{ runs: Run[]; next_cursor: string | null }>("GET", `/runs${runsQuery(limit, cursor, filter)}`),
     /** `filter`: one status and the archived runs only, or (the agent page's) just `archived`: the archived runs only (an
      *  archived agent's runs are all archived with it). */
@@ -254,11 +263,9 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     /** Grades an ended run's answer right or wrong (PUT /v2/runs/{id}/grade): a later grade replaces it. The answer says
      *  the feedback round it opened the run again on (`feedback`), if any. */
     gradeRun: (id: string, body: GradeBody) => call<GradeAnswer>("PUT", `${run(id)}/grade`, { body }),
-    /** Starts a run of an agent the body carries whole (POST /v2/runs, a race's lane): 202 with the run; the same key with
-     *  the same body answers with that same run. */
-    startInlineRun: (body: RunCreateInline, idempotencyKey: string) => call<Run>("POST", "/runs", { body, headers: { "idempotency-key": idempotencyKey } }),
-    /** Starts a run. The server answers 202 with the run; the same key with the same body answers with that same run. */
-    startRun: async (agentId: string, body: { input: unknown; revision?: string; effort?: string; max_cost_usd?: number; file_ids?: string[] }, idempotencyKey: string) => {
+    /** Starts a run. The server answers 202 with the run; the same key with the same body answers with that same run.
+     *  `labels`: the caller's own, set once here (a race's lane carries its race's). */
+    startRun: async (agentId: string, body: { input: unknown; revision?: string; effort?: string; max_cost_usd?: number; file_ids?: string[]; labels?: Record<string, string> }, idempotencyKey: string) => {
       const r = await callTagged<Run>("POST", `${agent(agentId)}/runs`, { body, headers: { "idempotency-key": idempotencyKey } });
       return { run: r.body, status: r.status };
     },

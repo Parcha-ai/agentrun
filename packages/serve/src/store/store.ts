@@ -12,6 +12,7 @@ import type { Context } from "@earendil-works/chord/context";
 import type { Storage, StorageWrite } from "@earendil-works/pi-durable";
 import type { JournalPage } from "./journal/storage.js";
 import type { MonidPinBody } from "./agent-body.js";
+import type { LedgerRow, SpendRow } from "../learn/ledger.js";
 
 /** A run's state. queued: a row, no runner yet. running: a runner holds the claim. parked: waiting for a person (an
  *  approval, a raised cap) with no claim held; a command row or its wake_at makes it claimable again. ended, stopped and
@@ -187,6 +188,13 @@ export interface ListedFilter {
   readonly agentId?: string;
   readonly revisionId?: string;
   readonly labels?: RunLabels;
+  /** Only runs imported from this source (imported_from.source), or with "live" the runs not imported. */
+  readonly source?: string;
+  /** Only runs started at or after this time (ms), and before `startedBefore` (ms): the window [startedFrom, startedBefore). */
+  readonly startedFrom?: number;
+  readonly startedBefore?: number;
+  /** Only runs that sent at least one request to this model (`provider/model`), a key of their metrics' `models`, exactly. */
+  readonly model?: string;
   readonly archived: boolean;
   readonly status?: string;
   /** Only runs still going (no settled status on the row) whose listing is behind. */
@@ -368,20 +376,13 @@ export interface RunLaunchInput {
   readonly sealed?: Uint8Array | null;
 }
 
-/** The census a launch takes when sealed bytes are first written on it (RunLaunchRow.census): it holds secrets its caller
- *  handed it, and no end has counted where they sit. An end erases them and writes its census in its place; an end that
- *  wrote none (a runner from before the census, during a rolling deploy) leaves it, and an ended run's files under it are
- *  withheld from a cut read, as under CENSUS_UNSCANNED. */
-export const CENSUS_PENDING = JSON.stringify("pending");
-/** The census an end that erased a launch's sealed bytes writes when it has none made under them (RunLaunchRow.census), and
- *  a message's seal writes over CENSUS_PENDING left by such an end: what the run was handed may be in its files, and
- *  nothing says where. */
+/** The census an end that erased a launch's sealed bytes writes when it has none made under them (RunLaunchRow.census): what
+ *  the run was handed may be in its files, and nothing says where. */
 export const CENSUS_UNSCANNED = JSON.stringify("unscanned");
 
 /** A run's launch as the store holds it: the body the runner reads at its claim, and its sealed bytes, which the store never
- *  opens. `census`: null when its launch never held sealed bytes (none handed, or a run ended before the census was kept);
- *  CENSUS_PENDING from when they were first written until an end counted them; then the JSON text the last end that
- *  erased them wrote (RunPatch.census, run-census.ts), or CENSUS_UNSCANNED when that end had none made under them. */
+ *  opens. `census`: null until an end erased its sealed bytes (none handed, none erased yet, or a run ended before the census
+ *  was kept); then the JSON text the last end that erased them wrote (RunPatch.census, run-census.ts), or CENSUS_UNSCANNED when that end had none made under them. */
 export interface RunLaunchRow {
   readonly runId: string;
   readonly body: unknown;
@@ -482,6 +483,12 @@ export interface Learning {
    *  before it was proposed ended when it was kept; a proposal ended when its learning run ended (ended or failed), whose
    *  row keeps the grade's spend as its cost. One still waiting for its grade is none of them. */
   spend(window: { from: number; to: number }): Promise<LearningSpend[]>;
+  /** Agent `agentId`'s ledger (learn/ledger.ts), in one read (one snapshot of both tables): every run's row its end
+   *  recorded, oldest first, each with the end it was recorded for (`epoch`, its run's epoch then), and every spend row.
+   *  With `runIds`, those runs' rows alone and the spend rows they booked or that audit them (none for none). Written
+   *  only beside a run's end and a heal of its cost (run-patch.ts recordLedger); a purge or a delete of the run takes its
+   *  row and its spend. */
+  ledger(agentId: string, runIds?: readonly string[]): Promise<{ rows: (LedgerRow & { readonly epoch: number })[]; spend: SpendRow[] }>;
 }
 
 /** One run's learning end as GET /usage's learning meter counts it (Learning.spend). */
@@ -1908,6 +1915,11 @@ export interface Store {
   /** Reads the store's schema version and its runner floor now, without a lock or a write: a runner reads it at each
    *  renewal (runner/main.ts), and stops once the floor is above the version its build knows. */
   schemaState?(): Promise<StoreSchemaState>;
+  /** The clock a claim's lease is judged and stamped on (its `until`), when it is this process's own: the store's clock on
+   *  SQLite (one host), or a test's. A runner reckons a claim's deadline from its `until` on it, so a claim or renew that
+   *  waited for the writer lock keeps the lease the store granted from the lock. Absent when the lease is the database's
+   *  clock (Postgres), which this process cannot read: the runner reckons from when it asked. */
+  readonly leaseClock?: () => number;
   /** Claims the run for `runner` until now + `leaseMs`: the run's epoch + 1 when it is claimable (runs.claimable); null when
    *  another claim holds it, or it is final, or parked with nothing to wake it. A queued or parked run becomes running. */
   claim(runId: string, runner: string, options?: { leaseMs?: number }): Promise<Claim | null>;

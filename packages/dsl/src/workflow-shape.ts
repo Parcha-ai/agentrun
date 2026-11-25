@@ -1,12 +1,12 @@
 import { createRequire } from "node:module";
 import { Compile } from "typebox/compile";
+import { isRecord } from "./record.js";
 
 // A named require lets deployment tracers retain the schema beside this package.
 const require = createRequire(import.meta.url);
 const documentSchema = require("../schema/workflow.schema.json");
 const fullValidator = Compile(documentSchema);
 type RecordValue = Record<string, unknown>;
-const isRecord = (value: unknown): value is RecordValue => value !== null && typeof value === "object" && !Array.isArray(value);
 
 // Diagnostics only: the full validator below remains the acceptance authority.
 // Its union errors can fill the entire error limit with unrelated node kinds.

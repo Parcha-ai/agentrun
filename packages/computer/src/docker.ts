@@ -2,7 +2,7 @@
 import { execFile, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { readFileSync, type Stats, statSync } from "node:fs";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { DaemonClient } from "./client.js";
@@ -175,17 +175,27 @@ export function dockerArch({ docker = "docker", timeoutMs = 30_000 }: Pick<Docke
 }
 
 /**
+ * The daemon a Docker computer binds for Docker's architecture `arch` (dockerArch): computerd-linux-<arch> in `dir`,
+ * default this package's own build, and, when no such file is there, why, with the command that builds it. create()
+ * takes its daemon here, and so does a server's start check of Docker, so the two can't disagree.
+ */
+export function dockerDaemonOf(arch: string, dir: string = fileURLToPath(new URL(".", import.meta.url))): { path: string; missing?: string } {
+	const path = join(dir, `computerd-linux-${arch}`);
+	return fileMode(path) === undefined ? { path, missing: `no daemon for Docker's ${arch} at ${path}: run npm run build:daemon -w @parcha/agentrun-computer` } : { path };
+}
+
+/**
  * A DockerProvider from its options alone; it reads no environment. Without options.daemonPath it asks Docker its
- * architecture and takes this package's daemon for it, and says when that daemon is not built. The image is an option
- * too (default the provider's own recipe): no image name is read from the environment.
+ * architecture and takes this package's daemon for it (dockerDaemonOf), and says when that daemon is not built. The image
+ * is an option too (default the provider's own recipe): no image name is read from the environment.
  */
 export async function create(options: DockerCreateOptions = {}): Promise<DockerProvider> {
 	const { timeoutMs, ...given } = options;
 	let daemonPath = given.daemonPath || undefined;
 	if (daemonPath === undefined) {
-		const arch = await dockerArch({ ...(given.docker ? { docker: given.docker } : {}), ...(timeoutMs === undefined ? {} : { timeoutMs }) });
-		daemonPath = fileURLToPath(new URL(`./computerd-linux-${arch}`, import.meta.url));
-		if (fileMode(daemonPath) === undefined) throw new Error(`no daemon for Docker's ${arch} at ${daemonPath}: run npm run build:daemon -w @parcha/agentrun-computer`);
+		const daemon = dockerDaemonOf(await dockerArch({ ...(given.docker ? { docker: given.docker } : {}), ...(timeoutMs === undefined ? {} : { timeoutMs }) }));
+		if (daemon.missing !== undefined) throw new Error(daemon.missing);
+		daemonPath = daemon.path;
 	}
 	return new DockerProvider({ ...given, daemonPath });
 }

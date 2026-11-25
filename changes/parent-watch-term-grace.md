@@ -1,5 +1,0 @@
----
-packages: @parcha/agentrun-kernel
-kind: fix
----
-`parentWatched` takes a third argument, `{ termGraceMs }`: under the parent-watch shim (where `setpriv --pdeathsig` is not available: macOS, or Linux without it), the shim kills its child with SIGKILL when the child is still running that many milliseconds after a TERM the shim passed on. It reaches the shim as `--term-grace <ms>` before `--`; anything but a positive whole number of milliseconds a timer can wait is a usage error (exit 2). A host that ends a watched child with TERM and later a SIGKILL of its own sends that SIGKILL to the shim alone, so a child that ignored the TERM, or took longer to exit, ran on with no watch while its host lived: such a host asks for a grace shorter than its own wait. The parent-death signal ignores the option, since setpriv execs the child in place and the host's SIGKILL reaches it. A child started without it is ended as before: the shim passes TERM, INT and HUP on with nothing after them. Session machines pass none (their kill reaches the whole process group, the CLI included), so a session's CLI keeps all the time its host gives it after a TERM.
