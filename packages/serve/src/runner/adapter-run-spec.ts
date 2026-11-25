@@ -78,7 +78,7 @@ import { hashedMcpOf, piShaped } from "../store-reads/journal.js";
 import { replayCallsOver } from "./promotion.js";
 import { type LearnedFirst, learnedFirstWhereHeld } from "./learned-first.js";
 import type { ReplayCalls } from "../learn/replay-calls.js";
-import { servedOf } from "./workflow-first.js";
+import { servedOf, workflowDigest } from "./workflow-first.js";
 import { AUDIT_PARKED, withAudit } from "./audit.js";
 import { runPathMetricsOverStore } from "../store-reads/learning.js";
 import { type SpecHolds, specBuilt } from "./spec-holds.js";
@@ -525,10 +525,17 @@ export async function adapterRunGate(store: Pick<Store, "settings">, claim: Pick
     if (asks.length && !approvers) return refused(noApproverText(asks[0]!.tool, "no"));
     return asks.length ? { ask: learnedAskShown(asks) } : decision;
   };
+  /** The learned workflow of the run's a learned_workflow call's arguments name, if any. */
+  const flowOf = (args: unknown) => learned.find((one) => one.name === (args as { name?: unknown } | undefined)?.name);
   /** The MCP actions the learned workflow a learned_workflow call names can call; none for another call or workflow. */
   const mcpOf = async (args: unknown): Promise<LearnedAction[]> => {
-    const flow = learned.find((one) => one.name === (args as { name?: unknown } | undefined)?.name);
+    const flow = flowOf(args);
     return flow ? learnedMcpCalls(flow.workflow) : [];
+  };
+  /** That workflow's name and digest (SpecGate.learnedOf): what the record of a call of it the gate refuses names. */
+  const learnedOf = (args: unknown) => {
+    const flow = flowOf(args);
+    return flow ? { workflow: flow.name, digest: workflowDigest(flow) } : undefined;
   };
   // An ask is named as main's pending approval is (RunGate.askedAs: its settings key), beside the decision, which is
   // unchanged. The permissions are the learned workflow's (main's toolGate.policy and denyFrom), over the same settings.
@@ -540,7 +547,7 @@ export async function adapterRunGate(store: Pick<Store, "settings">, claim: Pick
     current = await storeSettings(store);
     return current.unreadable ? "deny" : gate.policy(tool);
   };
-  return Object.assign(decide, { askedAs: (tool: string, args?: unknown) => gate.askedAs(tool, args), permissions, permission, learn: (flows: readonly LearnedWorkflow[]) => void (learned = flows), askedOn: (made: ToolHost) => void (host = made), computerOff: () => gate.computerOff !== undefined, writes: () => gate.writeBar() === undefined });
+  return Object.assign(decide, { askedAs: (tool: string, args?: unknown) => gate.askedAs(tool, args), permissions, permission, learnedOf, learn: (flows: readonly LearnedWorkflow[]) => void (learned = flows), askedOn: (made: ToolHost) => void (host = made), computerOff: () => gate.computerOff !== undefined, writes: () => gate.writeBar() === undefined });
 }
 
 /** The server's tool settings from the store now; a read that throws is unread (no value of it said). A workflow's call

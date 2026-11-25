@@ -90,7 +90,7 @@ import { answerAsServed } from "../answer-json.js";
 import type { ClaimMcp } from "./mcp-run.js";
 import { type RequestFigures, reserveFor, stepAndAnswerFor, wrappingUp, wrapUpText } from "../wrap-up.js";
 import { LEARNED_CARD_FIELDS, LEARNED_CLIP, LEARNED_WORKFLOW_TOOL, learnedApprovedTools } from "../learned-workflow.js";
-import { LEARNED_NODES } from "../learned-nodes.js";
+import { LEARNED_NODES, refusedRecord } from "../learned-nodes.js";
 import { warnHoldShort } from "../print.js";
 import { type FeedbackData, feedbackAsk, feedbackOf, jobEndOpen, pendingFeedbackOf } from "./feedback-round.js";
 import { handbackText, servedAnswerOf, servedAnswerText, WORKFLOW_FIRST, WORKFLOW_FIRST_CALL, type WorkflowFirst, type WorkflowFirstData, type WorkflowRevise } from "./workflow-first.js";
@@ -136,6 +136,10 @@ export type SpecGate = ((call: ToolCall, options?: { readonly replayed?: boolean
   /** A tool's setting now, by any name a call reaches the gate by (a harness's own, Codex's `web_search`), read again at
    *  each ask: what the session reads (SessionIO.permission) for a tool no call of which reaches the gate before it runs. */
   readonly permission?: (tool: string) => Promise<"allow" | "ask" | "deny">;
+  /** The run's learned workflow a learned_workflow call's arguments name (its name and its digest, workflow-first.ts
+   *  workflowDigest), or undefined for a name the run has none of: what the record of such a call the gate refuses
+   *  names (keepRefusedLearned). */
+  readonly learnedOf?: (args: unknown) => { readonly workflow: string; readonly digest: string } | undefined;
 };
 
 /** What one claimed run's adapter loop runs. */
@@ -2702,6 +2706,21 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
               return answer;
             }
           : nestedGate;
+        // An agent's learned_workflow call the gate refuses (a deny set, a person's deny of its ask, the cap's wrap-up)
+        // never reaches the tool, which keeps every other call's record: its record is kept here, as serveFirst keeps the
+        // platform's (learned-nodes.ts refusedRecord), so the run's workflow_calls name it, refused, on pi and on every
+        // CLI alike. A name the run has no workflow of keeps none, as the tool keeps none for it.
+        const keepRefusedLearned = async (call: Parameters<typeof gateOf>[0]): Promise<void> => {
+          const named = call.tool === LEARNED_WORKFLOW_TOOL ? spec.gate?.learnedOf?.(call.args) : undefined;
+          const [journalOf, rootOf] = [harness, root];
+          if (!named || !journalOf || !rootOf || gate?.sealed) return;
+          await journalOf.commit((tx) => tx.appendEntry(rootOf.id, { kind: LEARNED_NODES, data: refusedRecord(call.callId, named.workflow, named.digest, "agent") as unknown as JsonValue }), context).catch(unlessSealed);
+        };
+        const sessionGate: typeof gateOf = async (call, hookContext) => {
+          const answer = await bridgeGate(call, hookContext);
+          if (answer !== "allow" && "deny" in answer) await keepRefusedLearned(call);
+          return answer;
+        };
         // A tool no call of which reaches the gate before it runs (Codex's live search, inside its model requests): its
         // setting now, read again at each request, so a deny or ask set mid-run reaches the next one.
         const permission = spec.gate?.permission;
@@ -2732,7 +2751,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           trace?.event(tracedEvent(event, { mcp: (name) => mcp?.catalogOf(specNow?.facts?.hostName?.(name) ?? name) !== undefined, ...(deps.redact ? { redact: deps.redact } : {}) }));
           recorded?.(event);
         };
-        const io: PiSessionIO = { writer, models: counted, signal: deps.signal, onEvent: traceAnd, gate: bridgeGate, ...(permission ? { permission } : {}), hostTool: hosted, ...(ownCalls ? { ownCalls } : {}), bookedCost, keepCalls, ...(record ? {} : { nestedEnded }) };
+        const io: PiSessionIO = { writer, models: counted, signal: deps.signal, onEvent: traceAnd, gate: sessionGate, ...(permission ? { permission } : {}), hostTool: hosted, ...(ownCalls ? { ownCalls } : {}), bookedCost, keepCalls, ...(record ? {} : { nestedEnded }) };
         // The end-of-run turn an earlier claim asked and never saw end (its runner lost mid look-back or mid compile): the
         // root's newest input still in flight is that turn's (end-of-run.ts REFLECT_PREFIX), which pi picks up again as its
         // session opens. The job's turn ended before it, answered: this pass runs no job turn (no recovery as the job's, no
@@ -3050,9 +3069,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           answer = taken(answer);
           const outcome = answer.isError ? "handed_back" : "answered";
           const data: WorkflowFirstData = { workflow: first.name, digest: first.digest, ...(first.promotion !== undefined ? { promotion: first.promotion } : {}), revision: first.revision, call: WORKFLOW_FIRST_CALL, outcome };
-          // A call refused at its gate keeps its record as one the tool refused does (learned-nodes.ts LEARNED_NODES
-          // `refused`): no workflow ran it, so the money rule charges none and the run names none.
-          const refusal = refused ? { call: WORKFLOW_FIRST_CALL, workflow: first.name, digest: first.digest, caller: "platform", nodes: [], ended: "failed", refused: true } : undefined;
+          // A call refused at its gate keeps its record as one the tool refused does (learned-nodes.ts refusedRecord): no
+          // workflow ran it, so the money rule charges none and the run names none.
+          const refusal = refused ? refusedRecord(WORKFLOW_FIRST_CALL, first.name, first.digest, "platform") : undefined;
           await on.commit(async (tx) => {
             if (outcome === "answered") await tx.appendEntry(theRoot.id, { kind: KINDS.message, data: { role: "model", text: answer.text, at: now() } as unknown as JsonValue });
             if (refusal) await tx.appendEntry(theRoot.id, { kind: LEARNED_NODES, data: refusal as unknown as JsonValue });
