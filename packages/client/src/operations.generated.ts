@@ -1313,7 +1313,7 @@ export type Features = {
     failures_to_pause: number;
     webhook: {
       signing: "standard-webhooks/v1";
-      signatures: Array<"standard" | "github">;
+      signatures: Array<"standard" | "github" | "stream">;
       tolerance_s: number;
       max_body_bytes: number;
       payload_kept_bytes: number;
@@ -6032,7 +6032,7 @@ export type CreateTriggerBody = {
     start_at?: string;
   } | {
     kind: "webhook";
-    signature?: "standard" | "github";
+    signature?: "standard" | "github" | "stream";
     accept?: Array<{
       event: string;
       actions?: Array<string>;
@@ -6164,7 +6164,7 @@ export type CreateTriggerResponse = {
     start_at: string;
   } | {
     kind: "webhook";
-    signature?: "standard" | "github";
+    signature?: "standard" | "github" | "stream";
     accept?: Array<{
       event: string;
       actions?: Array<string>;
@@ -6402,7 +6402,7 @@ export type GetTriggerResponse = {
     start_at: string;
   } | {
     kind: "webhook";
-    signature?: "standard" | "github";
+    signature?: "standard" | "github" | "stream";
     accept?: Array<{
       event: string;
       actions?: Array<string>;
@@ -6585,7 +6585,7 @@ export type ListTriggersResponse = {
       start_at: string;
     } | {
       kind: "webhook";
-      signature?: "standard" | "github";
+      signature?: "standard" | "github" | "stream";
       accept?: Array<{
         event: string;
         actions?: Array<string>;
@@ -6773,7 +6773,10 @@ export type ReleaseTriggerFiringResponse = {
   catch_up?: true;
 };
 
-/** A webhook trigger's new secret, shown once; the old one signs nothing from now on (POST /triggers/{trigger_id}/secret). Its body's string values are secrets: each copy is cut from the answer, and a refusal keeps only its code. */
+/** A webhook trigger's new secret: made here and shown once, or, for a stream trigger, the one Stream made; the old one signs nothing from now on (POST /triggers/{trigger_id}/secret). Its body's string values are secrets: each copy is cut from the answer, and a refusal keeps only its code. */
+export type RotateTriggerSecretBody = {
+  secret?: string;
+};
 export type RotateTriggerSecretResponse = {
   secret: SecretMeta;
   signing_secret?: string;
@@ -6796,7 +6799,7 @@ export type UpdateTriggerBody = {
     start_at?: string;
   } | {
     kind: "webhook";
-    signature?: "standard" | "github";
+    signature?: "standard" | "github" | "stream";
     accept?: Array<{
       event: string;
       actions?: Array<string>;
@@ -6925,7 +6928,7 @@ export type UpdateTriggerResponse = {
     start_at: string;
   } | {
     kind: "webhook";
-    signature?: "standard" | "github";
+    signature?: "standard" | "github" | "stream";
     accept?: Array<{
       event: string;
       actions?: Array<string>;
@@ -7473,7 +7476,7 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   getTrigger: {"method":"GET","path":"/triggers/{trigger_id}","pathParams":["trigger_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   listTriggers: {"method":"GET","path":"/triggers","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   releaseTriggerFiring: {"method":"POST","path":"/triggers/{trigger_id}/firings/{firing_id}/release","pathParams":["trigger_id","firing_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
-  rotateTriggerSecret: {"method":"POST","path":"/triggers/{trigger_id}/secret","pathParams":["trigger_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":true,"publicFields":[],"tagged":false},
+  rotateTriggerSecret: {"method":"POST","path":"/triggers/{trigger_id}/secret","pathParams":["trigger_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":false,"types":["application/json"]},"answer":"json","secret":true,"publicFields":[],"tagged":false},
   updateTrigger: {"method":"PATCH","path":"/triggers/{trigger_id}","pathParams":["trigger_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getUsage: {"method":"GET","path":"/usage","pathParams":[],"multiSegment":[],"query":["from","to","group_by"],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   deleteWebhook: {"method":"DELETE","path":"/settings/webhook","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"none","secret":false,"publicFields":[],"tagged":false},
@@ -7919,8 +7922,8 @@ export function resources(call: Call) {
       list: (options?: RequestOptions): Promise<ListTriggersResponse> => call("listTriggers", [], undefined, undefined, options),
       /** The launch hook's host releases a firing it took and will start no run for (POST /triggers/{trigger_id}/firings/{firing_id}/release). */
       releaseFiring: (triggerId: string, firingId: string, body: ReleaseTriggerFiringBody, options?: RequestOptions): Promise<ReleaseTriggerFiringResponse> => call("releaseTriggerFiring", [triggerId, firingId], body, undefined, options),
-      /** A webhook trigger's new secret, shown once; the old one signs nothing from now on (POST /triggers/{trigger_id}/secret). */
-      rotateSecret: (triggerId: string, options?: RequestOptions): Promise<RotateTriggerSecretResponse> => call("rotateTriggerSecret", [triggerId], undefined, undefined, options),
+      /** A webhook trigger's new secret: made here and shown once, or, for a stream trigger, the one Stream made; the old one signs nothing from now on (POST /triggers/{trigger_id}/secret). */
+      rotateSecret: (triggerId: string, body?: RotateTriggerSecretBody, options?: RequestOptions): Promise<RotateTriggerSecretResponse> => call("rotateTriggerSecret", [triggerId], body, undefined, options),
       /** Change a trigger, or turn it off and on (PATCH /triggers/{trigger_id}). */
       update: (triggerId: string, body: UpdateTriggerBody, options?: RequestOptions): Promise<UpdateTriggerResponse> => call("updateTrigger", [triggerId], body, undefined, options),
     },

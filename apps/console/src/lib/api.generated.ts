@@ -660,7 +660,7 @@ export interface components {
       failures_to_pause: number;
       webhook: {
         signing: "standard-webhooks/v1";
-        signatures: ("standard" | "github")[];
+        signatures: ("standard" | "github" | "stream")[];
         tolerance_s: number;
         max_body_bytes: number;
         payload_kept_bytes: number;
@@ -1953,7 +1953,7 @@ export interface operations {
         start_at?: string;
       } | {
         kind: "webhook";
-        signature?: "standard" | "github";
+        signature?: "standard" | "github" | "stream";
         accept?: {
           event: string;
           actions?: string[];
@@ -2082,7 +2082,7 @@ export interface operations {
         start_at: string;
       } | {
         kind: "webhook";
-        signature?: "standard" | "github";
+        signature?: "standard" | "github" | "stream";
         accept?: {
           event: string;
           actions?: string[];
@@ -3976,7 +3976,7 @@ export interface operations {
         start_at: string;
       } | {
         kind: "webhook";
-        signature?: "standard" | "github";
+        signature?: "standard" | "github" | "stream";
         accept?: {
           event: string;
           actions?: string[];
@@ -5410,7 +5410,7 @@ export interface operations {
           start_at: string;
         } | {
           kind: "webhook";
-          signature?: "standard" | "github";
+          signature?: "standard" | "github" | "stream";
           accept?: {
             event: string;
             actions?: string[];
@@ -6445,7 +6445,9 @@ export interface operations {
     };
   };
   rotateTriggerSecret: {
-    body: never;
+    body: {
+      secret?: string;
+    };
     answer: {
       secret: components["SecretMeta"];
       signing_secret?: string;
@@ -7267,7 +7269,7 @@ export interface operations {
         start_at?: string;
       } | {
         kind: "webhook";
-        signature?: "standard" | "github";
+        signature?: "standard" | "github" | "stream";
         accept?: {
           event: string;
           actions?: string[];
@@ -7396,7 +7398,7 @@ export interface operations {
         start_at: string;
       } | {
         kind: "webhook";
-        signature?: "standard" | "github";
+        signature?: "standard" | "github" | "stream";
         accept?: {
           event: string;
           actions?: string[];

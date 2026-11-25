@@ -3002,9 +3002,10 @@ comment event has neither, so no `head_sha` or `base_sha` at all), read from the
 agent's instructions can read what it was given; a sender's words there are cut to 200 characters, their quotes and brackets escaped, and a closing tag in
 the body, in any case, is defused.
 
-A webhook trigger's `signature` names its scheme, one of a table of them: `standard` (the default, above) or `github`,
-for a GitHub repository or organization webhook. A request is checked by the one scheme whose signature header it
-carries (`webhook-signature`, `X-Hub-Signature-256`), and the scheme gives its firing key, from what its signature
+A webhook trigger's `signature` names its scheme, one of a table of them: `standard` (the default, above), `github`,
+for a GitHub repository or organization webhook, or `stream`, for a Sandbar Stream ring (below). A request is checked by
+the one scheme whose signature header it carries (`webhook-signature`, `X-Hub-Signature-256`, `X-Stream-Signature`),
+and the scheme gives its firing key, from what its signature
 covers, and its event. With `github`, paste the trigger's whole `whsec_...` secret, as it is, into the GitHub webhook's
 Secret (content type `application/json`): each delivery is checked by `X-Hub-Signature-256: sha256=<hex HMAC-SHA256 of
 the raw body>`, keyed by the UTF-8 bytes of that string. GitHub signs the body alone, not `X-GitHub-Delivery` nor a
@@ -3018,6 +3019,27 @@ checked before the body is read.
 
 A webhook trigger takes no `composio` signature (`422`, pointing to the console's Triggers → New app trigger): Composio's
 events start runs through a [Composio trigger](#composio-triggers), whose server makes and keeps the subscription.
+
+`stream` takes a [Sandbar Stream](https://www.sandbar.com/technology/stream-mcp) ring's webhook: Stream's iPhone app
+posts each saved interaction as `{"text": "what was said", "interaction_id": "..."}` and, with Sign requests on, signs
+it `X-Stream-Signature: t=<Unix seconds>,v1=<hex HMAC-SHA256 of "{t}.{body}">` under the UTF-8 bytes of the whole
+secret Stream shows, `swh_` prefix included, with `t` held to the same 300 s window. Stream makes that secret, so a
+stream trigger is the one webhook trigger whose secret is given, not made here: its create answers no `signing_secret`
+(its `secret.set` is false, and a `note` says how to give it), every request is the one `401` until it is given, and the
+owner gives it with `POST /v2/triggers/{id}/secret` and the body `{"secret": "swh_..."}` (the console's Set secret on the
+trigger's page). It is sealed as a minted secret is, cut from what a run shows and an import keeps, and never answered:
+the answer is its metadata alone. Every other trigger's secret route still takes no body. A PATCH may not move a trigger
+between a secret made here and Stream's (`422` under `source.signature`): make a new trigger for the other. The firing's
+key is the signed body's `interaction_id`, so a note Stream posts again is the same firing; its event is `interaction`,
+and `where` reads `/text`. A trigger that wakes only on notes that start with a name:
+
+```json
+{ "kind": "webhook", "signature": "stream",
+  "accept": [ { "event": "interaction", "where": [ { "pointer": "/text", "prefix": "Arun" } ] } ] }
+```
+
+Stream's phone sends each interaction once, waits 5 s, follows no redirect and does not retry, so the server answers
+before any run starts; a note no rule takes is `200 {"ok": "ignored"}` and stays in Stream.
 
 `accept` makes a trigger take only the events it names, from the delivery alone:
 

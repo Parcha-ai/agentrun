@@ -230,16 +230,16 @@ describe("Triggers: schedules and webhooks", () => {
   });
 });
 
-describe("Triggers: a webhook is signed the standard way or GitHub's; Composio's events come through an app trigger", () => {
-  it("the form offers the standard and GitHub signatures alone, and sends a Composio app's events to New app trigger", async () => {
+describe("Triggers: a webhook is signed the standard way, GitHub's or Sandbar Stream's; Composio's events come through an app trigger", () => {
+  it("the form offers the standard, GitHub and Stream signatures, and sends a Composio app's events to New app trigger", async () => {
     const t = await open(server().v2, { trigger: null, kind: "webhook" });
-    expect([...t.host.querySelectorAll('input[name="signature"]')].map((input) => (input as HTMLInputElement).value)).toEqual(["standard", "github"]);
+    expect([...t.host.querySelectorAll('input[name="signature"]')].map((input) => (input as HTMLInputElement).value)).toEqual(["standard", "github", "stream"]);
     expect(t.text()).not.toMatch(/Composio's signature|Set secret/);
     const pointer = [...t.host.querySelectorAll("a")].find((a) => a.getAttribute("href") === "#/triggers/new-composio");
     expect(pointer?.textContent).toBe("New app trigger");
   });
 
-  it("a webhook's page offers Rotate secret and never Set secret, whatever its signature", async () => {
+  it("a webhook whose secret is made here offers Rotate secret and never Set secret, whatever its signature", async () => {
     for (const signature of [undefined, "github"] as const) {
       const hook = { ...HOOK, source: { kind: "webhook", ...(signature ? { signature } : {}) } } as Trigger;
       const t = await open(server({ triggers: [hook] }).v2, { trigger: hook.id });
@@ -247,5 +247,35 @@ describe("Triggers: a webhook is signed the standard way or GitHub's; Composio's
       expect(t.button(/Set secret$/)).toBeUndefined();
       act(() => root?.unmount()); document.body.innerHTML = "";
     }
+  });
+
+  it("a Stream webhook made here says where Stream's secret is and that every request is refused until it is set; no secret is shown", async () => {
+    const { v2 } = server({ create: (call) => json(201, { ...HOOK, ...(call.body as object), id: "trg_s", secret: { name: "trigger:trg_s", set: false, source: "console", changed_at: null }, note: "Stream makes this trigger's secret." }) });
+    const t = await open(v2, { trigger: null, kind: "webhook" });
+    await t.set("name", "ring");
+    await act(async () => { (t.host.querySelector('input[name="signature"][value="stream"]') as HTMLInputElement).click(); });
+    await t.set("agent", "triage");
+    await t.set("content", "A voice note from the ring.");
+    await t.set("maxCost", "1");
+    await t.click(/^Create webhook$/);
+    expect(t.text()).toContain("Stream makes this webhook's secret.");
+    expect(t.text()).toContain("turn on Sign requests");
+    expect(t.text()).toContain("Until then every request is refused");
+  });
+
+  it("a Stream webhook's page offers Set secret, never Rotate secret: the secret typed is sent once as the body's secret, and the page then says it is set without showing it", async () => {
+    const stream = { ...HOOK, id: "trg_s", source: { kind: "webhook", signature: "stream" }, secret: { name: "trigger:trg_s", set: false, source: "console", changed_at: null } } as unknown as Trigger;
+    const { v2, calls } = server({ triggers: [stream], secret: () => json(200, { secret: { name: "trigger:trg_s", set: true, source: "console", changed_at: "2026-11-25T05:00:00Z" } }) });
+    const t = await open(v2, { trigger: "trg_s" });
+    expect(t.button(/^Rotate secret$/)).toBeUndefined();
+    expect(t.host.querySelector('[data-stream-secret="unset"]')?.textContent).toContain("every request is refused");
+    await t.click(/Set secret$/);
+    await t.set("stream-secret", "  CANARY-swh-given  ");
+    await t.click(/^Save$/);
+    const sent = calls.filter((c) => c.path === "/v2/triggers/trg_s/secret");
+    expect(sent).toEqual([{ method: "POST", path: "/v2/triggers/trg_s/secret", body: { secret: "CANARY-swh-given" }, key: null }]);
+    expect(t.host.querySelector('[data-stream-secret="set"]')).not.toBeNull();
+    expect(t.text()).not.toContain("CANARY-swh-given");
+    expect((t.host.querySelector('input[name="stream-secret"]') as HTMLInputElement | null)?.value ?? "").toBe("");
   });
 });

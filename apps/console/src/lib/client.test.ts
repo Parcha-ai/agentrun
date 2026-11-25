@@ -67,6 +67,15 @@ describe("createClient", () => {
     expect(rotate.init?.credentials).toBe("same-origin");
   });
 
+  it("gives a stream trigger Stream's own secret as the body's secret, and reads back its metadata alone", async () => {
+    const { fn, calls } = fakeFetch(() => json(200, { secret: { name: "trigger:t 1", set: true, source: "console", changed_at: null } }));
+    const v2 = createClient({ fetch: fn });
+    const answer = await v2.rotateTriggerSecret("t 1", { secret: "CANARY-swh-given" });
+    const [given] = calls;
+    expect([given.init?.method, given.url, given.init?.body]).toEqual(["POST", "/v2/triggers/t%201/secret", JSON.stringify({ secret: "CANARY-swh-given" })]);
+    expect(answer.signing_secret).toBeUndefined();
+  });
+
   it("rotates the webhook's secret with no body at all: the route refuses any, `{}` too", async () => {
     const { fn, calls } = fakeFetch(() => json(200, { configured: true, url: "https://hooks.example.test/…erun", signing: "sealed", secret: { name: "webhook:outbound", set: true, source: "console", changed_at: null }, disabled: null, updated_at: "2026-11-03T12:00:00.000Z", signing_secret: "whsec_fake" }));
     const v2 = createClient({ fetch: fn });

@@ -1467,6 +1467,7 @@ const HOOK_IGNORED = closed({ ok: { const: "ignored" } }, "Verified, and not an 
  *  day whose firing is no longer kept, `{ok: "duplicate"}`); none for a request with no event, or whose events no
  *  trigger takes. Its firings' `by` names the sources `adapters` give. */
 const hookFiringsOf = (adapters: readonly TriggerAdapter[]) => closed({ firings: { type: "array", items: { oneOf: [{ ...TRIGGER_FIRING, properties: { ...TRIGGER_FIRING.properties, by: firedByOf(adapters) } }, HOOK_DUPLICATE] } } });
+const GIVEN_TRIGGER_SECRET = { type: "string", minLength: 24, maxLength: 512, pattern: "^swh_\\S+$", "x-agentrun-secret": true, description: "The signing secret Sandbar Stream made for its webhook (shown on Stream iOS's Developer (Webhook) screen, under Other Tools in its settings, once Sign requests is on), the whole string as Stream shows it, `swh_` prefix included. Sealed under the seal key and never answered; required for a stream trigger, refused for any other." };
 const TRIGGER_SECRET = { type: "string", pattern: "^whsec_[A-Za-z0-9+/]+={0,2}$", description: "A webhook trigger's signing secret, shown this once: `whsec_` and 32 random bytes in base64, as the Standard Webhooks spec gives it. Never in any GET; kept sealed under the seal key. Sign each request to /hooks/{trigger_id} with it." };
 /** github/1: Connect GitHub, the server's one GitHub App (github-connection.ts). */
 const GITHUB_MARK = { "x-agentrun-serve": "github/1" };
@@ -3579,14 +3580,15 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
   },
   "/triggers/{trigger_id}/secret": {
     post: {
-      operationId: "rotateTriggerSecret", tags: ["local"], summary: "A webhook trigger's new secret, shown once; the old one signs nothing from now on",
-      description: "A secret write: the owner's signed-in session alone (ownerSession), never the token, which is 403 forbidden in words and the secret kept. 422 for a trigger that is not a webhook's, and for any body, `{}` too, refused before it rotates: the new secret is made here, never given.",
+      operationId: "rotateTriggerSecret", tags: ["local"], summary: "A webhook trigger's new secret: made here and shown once, or, for a stream trigger, the one Stream made; the old one signs nothing from now on",
+      description: "A secret write: the owner's signed-in session alone (ownerSession), never the token, which is 403 forbidden in words and the secret kept. 422 for a trigger that is not a webhook's. A trigger whose secret is made here (`standard`, `github`) takes no body: any body, `{}` too, is refused 422 before it rotates, and the new secret is made here and shown once. A trigger whose sender makes its secret (`stream`: Sandbar Stream's, shown under Sign requests) takes it as the body's `secret`, required, the whole string with its `swh_` prefix: it is sealed, answered never (its metadata alone), and checks every request from then on.",
       parameters: [TRIGGER_ID],
-      // No body to mark a field in: the operation is marked whole, a secret write all the same.
+      requestBody: { required: false, content: { "application/json": { schema: closedWith({}, { secret: GIVEN_TRIGGER_SECRET }) } } },
+      // The operation is marked whole, a secret write with or without a body.
       "x-agentrun-secret": true,
       // The owner's password session alone (secret-writes.ts), never the document's bearer.
       security: [{ ownerSession: [] }],
-      responses: { "200": json(closedWith({ secret: TRIGGER_SECRET_META }, { signing_secret: TRIGGER_SECRET }), "The new secret as `signing_secret`, this once, and its metadata."), ...errors(401, 403, 404, 409, 422, 429, 500) },
+      responses: { "200": json(closedWith({ secret: TRIGGER_SECRET_META }, { signing_secret: TRIGGER_SECRET }), "The new secret as `signing_secret`, this once, and its metadata; a stream trigger's given secret, its metadata alone."), ...errors(401, 403, 404, 409, 422, 429, 500) },
       ...TRIGGER_MARK,
     },
   },

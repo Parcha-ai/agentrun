@@ -6455,8 +6455,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const answer = await idempotent(req, "/triggers", body, async () => {
           const { secret: shown, ...made } = await triggers.create(body);
           secret = shown;
-          // A secret the sender gave is not shown: the trigger answers its metadata, as a read does.
-          return { status: 201, body: shown ? { ...made, note: `Its secret was shown once, in the first answer; POST /v2/triggers/${made.id}/secret makes a new one.` } : withSecretOf(made), headers: { location: `/v2/triggers/${made.id}` } };
+          // A trigger whose sender makes its secret (Stream's) starts with none: it answers its metadata, as a read does,
+          // and says how to give it.
+          const given = shown ? undefined : adapters.find((a) => a.id === made.source.kind)?.givenSecret?.(made.source);
+          const unset = given ? { ...withSecretOf(made), note: `${given.sender} makes this trigger's secret: give it with POST /v2/triggers/${made.id}/secret ({"secret": "${given.prefix}..."}), the console's Set secret. Until then every request to its hook_url is refused.` } : withSecretOf(made);
+          return { status: 201, body: shown ? { ...made, note: `Its secret was shown once, in the first answer; POST /v2/triggers/${made.id}/secret makes a new one.` } : unset, headers: { location: `/v2/triggers/${made.id}` } };
         });
         const replayed = answer.headers?.["idempotent-replayed"] === "true";
         const { note: _, ...first } = answer.body as Json;
@@ -6518,14 +6521,24 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const shown = replayed ? "replay" : mayHoldSecrets(req) ? "first" : "token";
         return send(res, answer.status, answer.status === 201 || answer.status === 200 ? templateApplied(answer.body as Json, minted, shown) : answer.body, answer.headers);
       }
-      case "rotateTriggerSecret":
+      case "rotateTriggerSecret": {
         // A secret write: the dispatch's one check let only the owner's session this far (trigger-secrets-shown.ts).
-        // It takes no body: the new secret is made here, never given. Any body is refused before it rotates, `{}` too: a
-        // length other than 0, or one sent chunked, is a body whatever it holds.
-        if (req.headers["transfer-encoding"] !== undefined || Number(req.headers["content-length"] ?? 0) !== 0) {
-          throw invalid([{ field: "body", reason: "not_allowed", message: "Rotating a trigger's secret takes no body: send none, and the new secret is made here." }]);
+        // A trigger whose secret is minted here takes no body: any body is refused before it rotates, `{}` too (a length
+        // other than 0, or one sent chunked, is a body whatever it holds), and the new secret is made here and shown once.
+        // One whose sender makes its secret (Stream's) takes that secret as the body's `secret`, alone; it is sealed and
+        // never answered.
+        const sent = req.headers["transfer-encoding"] !== undefined || Number(req.headers["content-length"] ?? 0) !== 0;
+        const given = await triggers.givenSecret(id);
+        if (!given) {
+          if (sent) throw invalid([{ field: "body", reason: "not_allowed", message: "Rotating a trigger's secret takes no body: send none, and the new secret is made here." }]);
+          return send(res, 200, triggerRotated(id, (await triggers.rotate(id)).secret, new Date().toISOString()));
         }
-        return send(res, 200, triggerRotated(id, (await triggers.rotate(id)).secret, new Date().toISOString()));
+        const body = sent ? await bodyOf(req) : {};
+        const extra = unknownFields(body, ["secret"]);
+        if (extra.length) throw invalid(extra);
+        await triggers.rotate(id, body.secret);
+        return send(res, 200, triggerRotated(id, undefined, new Date().toISOString()));
+      }
       case "getTrigger":
         return send(res, 200, withSecretOf(await triggers.get(id)));
       case "updateTrigger":

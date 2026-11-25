@@ -38,6 +38,7 @@ import { carriesPrevious, type Clock, PAYLOAD_KEPT_BYTES, type PollResult, secon
 import { TRIGGER_ADAPTERS } from "./trigger-adapters.js";
 import { type Handed, handToHost, HookFailed, type HookFiring, LAUNCH_HOOK_LATE_START_MS, type LaunchHook } from "./trigger-launch-hook.js";
 import { MAX_EVERY_S } from "./trigger-schedule.js";
+import type { GivenSecret } from "./trigger-signatures.js";
 import { ID, IDEMPOTENCY_TTL_S, isObject, type Json, unknownFields } from "./validate.js";
 
 export { MAX_EVERY_S, MIN_EVERY_S } from "./trigger-schedule.js";
@@ -290,6 +291,23 @@ function capIssues(adapters: readonly TriggerAdapter[], source: Source, target: 
   return [];
 }
 
+/** The longest secret a sender's own may be: Stream's are 47 characters; anything near this is not a signing secret. */
+const MAX_GIVEN_SECRET_CHARS = 512;
+
+/** What is wrong with the secret a rotation gives for a trigger of `source`: one whose sender makes its secret (Stream's)
+ *  needs it, a string of the sender's form (the sealed store checks its length and that it has no blank space); any other
+ *  takes none, it is minted here. A create never takes one: the trigger starts with none and refuses every request until
+ *  it is given. */
+function givenSecretIssues(adapter: TriggerAdapter, source: Source, secret: unknown): InputIssue[] {
+  const given = adapter.givenSecret?.(source);
+  if (!given) return secret === undefined ? [] : [{ field: "secret", reason: "not_allowed", message: "This trigger's secret is made by this server: send no body, and a new one is made and shown once." }];
+  const form = `the whole signing secret ${given.sender} shows, starting ${given.prefix}`;
+  if (secret === undefined) return [{ field: "secret", reason: "missing", message: `This trigger's secret is the one ${given.sender} made: send it as secret, ${form}.` }];
+  if (typeof secret !== "string") return [{ field: "secret", reason: "wrong_type", message: `secret is a string: ${form}` }];
+  if (!secret.startsWith(given.prefix) || secret.length > MAX_GIVEN_SECRET_CHARS) return [{ field: "secret", reason: "invalid", message: `secret is ${form}, at most ${MAX_GIVEN_SECRET_CHARS} characters` }];
+  return [];
+}
+
 /** A POST /triggers body's own fields, read as create reads them with the sources of `adapters`: its source, target,
  *  settings, name and enabled, with every issue. What it names (the agent, the run) is create's own check
  *  (TriggerDeps.targetIssues). */
@@ -477,12 +495,22 @@ export class Triggers {
     return { ...(await this.view(asTrigger(row))), ...(minted as { secret?: string }) };
   }
 
-  /** A trigger's new signing secret, shown this once; the old one signs nothing from now on. */
-  async rotate(id: string): Promise<Record<string, string>> {
+  /** A trigger's new signing secret, shown this once; the old one signs nothing from now on. One whose sender makes its
+   *  secret (Stream's) takes it as `given` and shows nothing: none is made for it. */
+  async rotate(id: string, given?: unknown): Promise<Record<string, string>> {
     const trigger = await this.need(id);
     const adapter = this.adapter(trigger.source);
     if (!mints(adapter)) throw invalid([{ field: "source.kind", reason: "not_allowed", message: "Only a webhook trigger has a secret." }]);
-    return this.mint(trigger.source, id);
+    const issues = givenSecretIssues(adapter, trigger.source, given);
+    if (issues.length) throw invalid(issues);
+    return this.mint(trigger.source, id, given as string | undefined);
+  }
+
+  /** When trigger `id` keeps a secret its sender made (a stream webhook's), who that sender is; undefined when its secret
+   *  is minted here or it keeps none. */
+  async givenSecret(id: string): Promise<GivenSecret | undefined> {
+    const trigger = await this.need(id);
+    return this.adapter(trigger.source).givenSecret?.(trigger.source);
   }
 
   /** Whether `id` is a trigger of the pushed source `kind` that is on: the one a request delivered for `kind` may fire. */
@@ -658,6 +686,11 @@ export class Triggers {
     if (refused) throw refused;
     const trigger = await this.need(id, own.onAgent);
     if (source && source.kind !== trigger.source.kind) throw invalid([{ field: "source.kind", reason: "not_allowed", message: "A trigger's source kind is fixed: make a new trigger for another." }]);
+    // Whose secret it keeps (its sender's, or one this server made) is fixed with its scheme: make a new trigger for the other.
+    if (source) {
+      const [before, after] = [this.adapter(trigger.source).givenSecret?.(trigger.source), this.adapter(source).givenSecret?.(source)];
+      if (before?.sender !== after?.sender) throw invalid([{ field: "source.signature", reason: "not_allowed", message: "A trigger's signature cannot move between a secret this server makes and one its sender makes (Stream's): make a new trigger for the other." }]);
+    }
     // What its sender keeps of it stays as it was made (Composio's instance): only what reads it here changes.
     const upstream = this.deps.upstream?.(trigger.source.kind);
     if (source && upstream) source = upstream.patched(trigger.source, source);
@@ -1727,11 +1760,18 @@ export class Triggers {
 
   /** Each field `source`'s adapter mints for its triggers, made now for trigger `id`, by field: none for one that keeps
    *  no trigger-scoped secret. */
-  private async mint(source: Source, id: string): Promise<Record<string, string>> {
+  private async mint(source: Source, id: string, given?: string): Promise<Record<string, string>> {
     const adapter = this.adapter(source);
     if (!mints(adapter)) return {};
     const store = this.deps.settings(adapter.id);
     if (!store) throw new Error(`no sealed settings for ${adapter.id}`);
+    // The sender's own secret (Stream's), sealed as a minted one is and never answered; until it is given, none is made.
+    if (adapter.givenSecret?.(source)) {
+      if (given === undefined) return {};
+      const field = Object.entries(adapter.settings!.fields).find(([, f]) => f.mint)![0];
+      await store.set(id, field, given, "utf8");
+      return {};
+    }
     return Object.fromEntries(await Promise.all(Object.entries(adapter.settings!.fields).filter(([, f]) => f.mint).map(async ([field]) => [field, await store.mint(id, field)] as const)));
   }
 

@@ -407,8 +407,9 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
      *  of its secret, which the first answer showed once. */
     createTrigger: (body: TriggerCreate, key: string) => call<TriggerMade>("POST", "/triggers", { body, headers: { "idempotency-key": key } }),
     /** A webhook trigger's new signing secret, shown this once; the old one signs nothing from now on. */
-    /** No body: the route refuses any, `{}` too, and makes the new secret itself. */
-    rotateTriggerSecret: (id: string) => call<TriggerSecret>("POST", `${trigger(id)}/secret`),
+    /** No body for a trigger whose secret is made here: the route refuses any, `{}` too, and makes the new secret itself.
+     *  A stream trigger's is Stream's own, given as `secret`: answered with its metadata alone. */
+    rotateTriggerSecret: (id: string, given?: { secret: string }) => call<TriggerSecret>("POST", `${trigger(id)}/secret`, given ? { body: given } : undefined),
     /** A trigger from an app answers `composio` beside it when Composio could not follow a pause or resume. */
     updateTrigger: (id: string, body: TriggerInput) => call<TriggerUpdated>("PATCH", trigger(id), { body }),
     /** None (204), or `composio`'s note when Composio could not follow the delete. */
