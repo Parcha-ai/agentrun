@@ -271,7 +271,8 @@ secret the server and the runner hold, under any name, an unknown one too, but t
 its first word is held too when that word is a known auth scheme (`Bearer`, `Basic`, `Api-Key`, `Api-Token`, `Token`,
 `sentry`, `Splunk`, `GenieKey`) or the header is named like a credential (`authorization`, `x-sentry-auth`,
 `x-api-key`); any other header's value is held whole, never its tail alone. So are an OTLP endpoint's user, password
-and any query parameter named like a key, token, secret, password, auth or signature. Commas split the header variables, so write a
+and any query parameter whose name has a whole word key, token, secret, password, auth, sig or signature in it
+(`api_key`, `access_token` and `apiKey` do; `authority` and `keyspace` do not). Commas split the header variables, so write a
 comma inside a value as `%2C`. The tracer's own `[otel]` lines, where an exporter's error may quote a header it sent or
 the URL it posted to, are cut of every such value at any length, a short one too. A run's process can hold at most 512
 model requests and 512 tool calls open in its runner's trace at once; one started past that has no span. No OpenTelemetry diag logger is set, since the

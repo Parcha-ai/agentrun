@@ -266,8 +266,10 @@ const AUTH_SCHEME = /^[A-Za-z][\w.+-]*(?:\s+|%20)/;
 /** The auth schemes a backend's header writes before its credential, in any case, under any header name. */
 const KNOWN_SCHEME = /^(?:bearer|basic|api-?key|api-?token|token|sentry|splunk|geniekey)(?:\s+|%20)/i;
 
-/** The words of a header's name that say its value is a credential (`authorization`, `x-sentry-auth`, `x-api-key`,
- *  `x-auth-token`): split at each non-alphanumeric and at each lower-to-upper case change. */
+/** The words of a header's or an endpoint's query parameter's name that say its value is a credential
+ *  (`authorization`, `x-sentry-auth`, `x-api-key`, `access_token`, `apiKey`, `X-Amz-Signature`): a name is split at
+ *  each non-alphanumeric and at each lower-to-upper case change, and only a whole word counts (`authority` and
+ *  `keyspace` say nothing). */
 const CREDENTIAL_WORDS = new Set(["authorization", "auth", "key", "apikey", "token", "secret", "password", "passwd", "pwd", "sig", "signature", "credential", "credentials"]);
 const credentialNamed = (name: string): boolean =>
   name.replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase().split(/[^a-z0-9]+/).some((word) => CREDENTIAL_WORDS.has(word));
@@ -297,12 +299,9 @@ export const otlpHeaderValues = (env: NodeJS.ProcessEnv, held: boolean): string[
       return forms.flatMap((value) => [value, ...(named || KNOWN_SCHEME.test(value) ? [value.replace(AUTH_SCHEME, "")] : [])]);
     })).filter((value) => value.trim() !== "");
 
-/** A query parameter's name that says its value is a credential. */
-const CREDENTIAL_PARAMETER = /key|token|secret|password|auth|sig/i;
-
 /** The credentials the OTLP endpoints `env` names write into their URLs (OTEL_EXPORTER_OTLP_ENDPOINT and
  *  OTEL_EXPORTER_OTLP_TRACES_ENDPOINT): a user and password, and the value of each query parameter whose name says it is
- *  one (CREDENTIAL_PARAMETER), each as written and decoded. An exporter's error may quote the URL it posted to. */
+ *  one (CREDENTIAL_WORDS), each as written and decoded. An exporter's error may quote the URL it posted to. */
 export const otlpEndpointValues = (env: NodeJS.ProcessEnv): string[] =>
   [env.OTEL_EXPORTER_OTLP_ENDPOINT, env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT].flatMap((text) => {
     let url: URL;
@@ -316,7 +315,7 @@ export const otlpEndpointValues = (env: NodeJS.ProcessEnv): string[] =>
       const at = pair.indexOf("=");
       const name = pair.slice(0, Math.max(at, 0)).replace(/\+/g, " ");
       const value = pair.slice(at + 1);
-      return at > 0 && CREDENTIAL_PARAMETER.test(decoded(name) ?? name) ? [value, decoded(value.replace(/\+/g, " ")) ?? value] : [];
+      return at > 0 && credentialNamed(decoded(name) ?? name) ? [value, decoded(value.replace(/\+/g, " ")) ?? value] : [];
     });
     return [...[url.username, url.password].flatMap((value) => [value, decoded(value) ?? value]), ...query];
   }).filter((value) => value.trim() !== "");
