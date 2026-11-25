@@ -338,6 +338,18 @@ test("every OTLP header value is held but a standard one's: an unknown name's at
   for (const value of ["application/json", "application/x-protobuf", "agentrun-otel", "gzip"]) assert.equal(values.includes(value), false, `${value} (a standard header's) is not held`);
 });
 
+test("a short OTLP header value is cut from the tracer's own error text, at any length; a standard header's value is left as it is", async (t) => {
+  const short = `hc${"7"}x1`;
+  const env = { ...ON, OTEL_EXPORTER_OTLP_HEADERS: `x-honeycomb-team=${short},Content-Type=application/json`, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `x-team=${short}` };
+  // An exporter whose error quotes every header it sent, as a collector's 401 may.
+  const quoting = { export: () => { throw new Error(`401 for x-honeycomb-team: ${short} (x-team=${short}), Content-Type: application/json`); }, shutdown: async () => {}, forceFlush: async () => {} };
+  const { row, lines } = await tracedRun(t, { exporter: quoting, env });
+  assert.equal(row.state, "ended");
+  assert.equal(lines.length, 1, JSON.stringify(lines));
+  assert.equal(lines[0].includes(short), false, `the tracer's line holds no header value: ${lines[0]}`);
+  assert.equal(lines[0], "[otel] a trace export failed; its spans were dropped: 401 for x-honeycomb-team: [redacted] (x-team=[redacted]), Content-Type: application/json");
+});
+
 test("no span carries content, even with OTEL_INSTRUMENTATION_GENAI_CAPTURE_CONTENT=true: no message, prompt, argument or result", async (t) => {
   const before = process.env.OTEL_INSTRUMENTATION_GENAI_CAPTURE_CONTENT;
   process.env.OTEL_INSTRUMENTATION_GENAI_CAPTURE_CONTENT = "true";
