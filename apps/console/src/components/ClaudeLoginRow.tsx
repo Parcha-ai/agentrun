@@ -1,7 +1,7 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Chip, type ChipTone } from "@/components/ui/chip";
-import { checksFolder, claudeLoginView, KEPT_REFUSED, LOGIN_ROW, LOGIN_RUNS, type LoginView, loginSignedInAs, MACHINE_DEFAULT_FOLDER, machineCredentials, NO_CLI, ONLY_ME, ONLY_ME_FIRST, ONLY_ME_WHY, OTHER_MACHINE, placeWords, SIGNED_OUT, signInWords, UNKNOWN } from "@/lib/claudeLogin";
+import { canSignOut, checksFolder, claudeLoginView, KEPT_REFUSED,LOGIN_ROW, LOGIN_RUNS, type LoginView, loginSignedInAs, MACHINE_DEFAULT_FOLDER, machineCredentials, NO_CLI, ONLY_ME, ONLY_ME_FIRST, ONLY_ME_WHY, OTHER_MACHINE, placeWords, SIGN_OUT_ASK, SIGNED_OUT, SIGNED_OUT_HERE, signInWords, UNKNOWN } from "@/lib/claudeLogin";
 import { type Client, ClientError } from "@/lib/client";
 import { type SecretsWhyNot, WHY_NOT_WORDS } from "@/lib/secrets";
 import type { ClaudeLoginView } from "@/lib/v2";
@@ -37,6 +37,9 @@ export function ClaudeLoginRow({ v2, writable, whyNot = "sign_in", onChange, ava
   const onlyMeFirst = useId();
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
+  // Sign out asks first (`confirming`), then says what became of it (`signedOut`) until the mode is turned on again.
+  const [confirming, setConfirming] = useState(false);
+  const [signedOut, setSignedOut] = useState<string | null>(null);
   // A read's answer is shown only if no other read or write began or ended since it was asked (`asked`), and none starts
   // while a write is out (`writing`): a status read that raced a turn on or off never puts back what it replaced.
   const asked = useRef(0);
@@ -102,6 +105,19 @@ export function ClaudeLoginRow({ v2, writable, whyNot = "sign_in", onChange, ava
       writing.current = false;
       setBusy(false);
     }
+  };
+  // AgentRun's own login removed and the mode off (the answer's view): the row reads off, and Turn on then finds no login
+  // and offers the sign-in. Where the CLI didn't confirm its own sign-out, the server's words say what may remain.
+  const signOut = async () => {
+    let said: string | null = null;
+    const done = await act(async () => {
+      const out = await v2.signOutClaudeLogin();
+      said = out.confirmed ? SIGNED_OUT_HERE : out.message || SIGNED_OUT_HERE;
+      return out.login;
+    }, true);
+    if (!done) return;
+    setConfirming(false);
+    setSignedOut(said);
   };
   const state = STATE[view.state];
   const on = view.state !== "off";
@@ -175,7 +191,20 @@ export function ClaudeLoginRow({ v2, writable, whyNot = "sign_in", onChange, ava
             </div>
           </form>
         )}
-        {on && writable && <Button size="sm" disabled={busy} onClick={() => void act(() => v2.turnOffClaudeLogin(), true)}>Turn off</Button>}
+        {on && writable && (
+          <div className="flex flex-wrap gap-2">
+            <Button size="sm" disabled={busy} onClick={() => void act(() => v2.turnOffClaudeLogin(), true)}>Turn off</Button>
+            {canSignOut(view) && !confirming && <Button size="sm" disabled={busy} onClick={() => { setConfirming(true); setProblem(null); }}>Sign out</Button>}
+          </div>
+        )}
+        {writable && confirming && canSignOut(view) && (
+          <div className="flex flex-wrap items-center gap-3 border bg-card p-3">
+            <p className="min-w-0 flex-1 text-body">{SIGN_OUT_ASK}</p>
+            <Button size="sm" variant="destructive" disabled={busy} onClick={() => void signOut()}>Sign out</Button>
+            <Button size="sm" disabled={busy} onClick={() => setConfirming(false)}>Keep</Button>
+          </div>
+        )}
+        {!on && signedOut && <p className="text-body" role="status">{signedOut}</p>}
         {problem && <p className="font-mono text-small text-destructive-text" role="alert">{problem}</p>}
       </div>
     </li>

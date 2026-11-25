@@ -1734,6 +1734,16 @@ has the row **Use Claude Code's login on this machine**, over these routes:
   The CLI dies with the server, as a session's CLI does, so a server that is killed outright (SIGKILL, the OOM killer)
   leaves no sign-in waiting on the browser's port.
 - `DELETE /v2/settings/claude-login` turns it off. The login stays as the CLI keeps it.
+- `POST /v2/settings/claude-login/sign-out` signs out of AgentRun's own login, for a fresh sign-in or another account: it
+  ends a sign-in that waits, turns the mode off, runs the pinned CLI's own `claude auth logout` on
+  `<data>/claude-login` (which removes its credentials file and, on macOS, its Keychain item for that folder), then
+  removes that folder, the login's signed-in note in `claude-login-answers/` and the runner's token reader, whatever the
+  CLI said. It answers `{ "confirmed": true, "login": <the view, off> }`; `confirmed` false adds a `message` saying the
+  CLI didn't confirm its own sign-out (on macOS its Keychain item may remain). The next turn-on reads `signed_out` and
+  the sign-in starts as before. Runs already going are left as a turn-off leaves them, and fail saying the login is
+  signed out at their next read of it. This machine's own login (`place` `machine`) is the person's: the sign-out is
+  refused (403) with nothing touched, and the words say to run `claude auth logout` in a terminal there. The console's
+  Claude login row offers Sign out only while AgentRun's own login is signed in.
 
 While it is on, a claude-agent run on an `anthropic/<model>` model goes on the login: its CLI gets no
 `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN` or key, no model proxy runs, and the CLI's sandbox denies its commands

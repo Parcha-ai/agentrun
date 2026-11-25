@@ -13,18 +13,19 @@
 // for a server one person runs: it is refused where more than one person can start runs, `on` included, and the owner
 // confirms they alone run agents here. It runs only in a runner place, on the machine the owner turned it on for.
 import { createHash, randomBytes } from "node:crypto";
-import { accessSync, chmodSync, closeSync, constants, existsSync, fstatSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync, readSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { accessSync, chmodSync, closeSync, constants, existsSync, fstatSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync, readSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { delimiter, dirname, isAbsolute, join } from "node:path";
 import type { ClaudeAgentLogin, ClaudeLoginStatus, ClaudeLoginToken } from "@parcha/agentrun-harness-claude";
-import { facts as claudeFacts } from "@parcha/agentrun-harness-claude/facts";
-import { registerSecretWrite } from "./secret-writes.js";
+import { facts as claudeFacts, loginRefresh } from "@parcha/agentrun-harness-claude/facts";
+import { registerSecretPage, registerSecretWrite } from "./secret-writes.js";
 import type { ClaudeSignIns, SignInView } from "./claude-sign-in.js";
 import type { Settings } from "./store/index.js";
 
 // Every operation here is the owner's session's alone (secret-writes.ts): no answer holds a credential, but turning a
 // person's plan on for this server's runs, and starting its sign-in, are the owner's to do.
-for (const operation of ["getClaudeLogin", "turnOnClaudeLogin", "turnOffClaudeLogin", "startClaudeLogin"]) registerSecretWrite(operation, () => true);
+for (const operation of ["getClaudeLogin", "turnOnClaudeLogin", "turnOffClaudeLogin", "startClaudeLogin", "signOutClaudeLogin"]) registerSecretWrite(operation, () => true);
+registerSecretPage("signOutClaudeLogin", "/#/settings/keys");
 
 /** The switch: `off` (or 0, false, no) turns the mode off on this server, `on` (or 1, true, yes) leaves it there past
  *  loopback; unset, the listen address decides (claudeLoginSwitchedOff). */
@@ -516,7 +517,7 @@ export async function loginForRun(settings: Pick<Settings, "get">, data: string,
 }
 
 /** The routes here (server.ts): every one answers 404, by its name, while the mode is off (`why`). */
-export const CLAUDE_LOGIN_ROUTES: ReadonlySet<string> = new Set(["getClaudeLogin", "turnOnClaudeLogin", "turnOffClaudeLogin", "startClaudeLogin"]);
+export const CLAUDE_LOGIN_ROUTES: ReadonlySet<string> = new Set(["getClaudeLogin", "turnOnClaudeLogin", "turnOffClaudeLogin", "startClaudeLogin", "signOutClaudeLogin"]);
 /** Whether the claude-login routes answer here, the one rule the routes and capabilities' `features.claude_login` both
  *  read: none while the mode is switched off (`off`, claudeLoginSwitchedOff's reason), and on an API-only server
  *  (`apiOnlyRoutes`, the routes it serves) only if it serves them all. */
@@ -678,6 +679,54 @@ export async function turnOffClaudeLogin(deps: ClaudeLoginDeps): Promise<ClaudeL
   return claudeLoginView(deps);
 }
 
+/** What a sign-out answers beside `confirmed: false`: the login is gone here, and the CLI said nothing of its own copy. */
+export const LOGIN_SIGN_OUT_UNCONFIRMED = "Signed out here: AgentRun's copy of the login is removed. Claude Code's own sign-out didn't confirm, so on macOS its Keychain item for this login may remain: remove it in Keychain Access (its name starts with \"Claude Code-credentials\").";
+
+/** Why a sign-out of this machine's own login (`folder`, the person's `~/.claude` or CLAUDE_CONFIG_DIR) is refused. */
+export const machineSignOutRefused = (folder: string): string =>
+  `This is your own Claude Code login on this machine (${folder}), which AgentRun only uses: it never signs it out. Run \`claude auth logout\` in a terminal there to sign it out, or turn the mode off here.`;
+
+/** POST /settings/claude-login/sign-out's answer: whether the CLI confirmed its own sign-out (true, too, where no login was
+ *  kept here), its words when it didn't, and the view after it (`off`). */
+export type ClaudeLoginSignOut = { confirmed: boolean; message?: string; login: ClaudeLoginView };
+
+/** POST /settings/claude-login/sign-out: AgentRun's own login (`<data>/claude-login`) signed out and removed, so the next
+ *  turn-on finds none and the person signs in fresh, to the same account or another. In one turn on the sign-ins' queue
+ *  (no sign-in or turn-on lands in between): a sign-in this server started that still waits is ended; the mode is turned
+ *  off, so no new run goes on the login while it goes; the pinned CLI's own sign-out (the harness's claudeLogout) runs on
+ *  the folder, where there is one, so it removes its credentials file and, on macOS, the Keychain item named from the
+ *  folder; then the folder is removed whatever the CLI said (credentials, account, profiles, the CLI's refresh lock, and
+ *  the CLI's older lock beside it), with the login's signed-in note (noteAnswer) and this process's token reader of it
+ *  (claude-login-token.ts forgetLoginTokens). Runs already going are left as a turn-off leaves them: each keeps the token
+ *  its CLI holds, and fails in LOGIN_SIGNED_OUT's words at its next read of the login. A login on this machine's own
+ *  folder (`machine`) is the person's: refused (machineSignOutRefused), with nothing touched. */
+export async function signOutClaudeLogin(deps: ClaudeLoginDeps): Promise<ClaudeLoginSignOut> {
+  const confirmed = await deps.signIns.serial(async (turn) => {
+    if ((await claudeLoginSetting(deps.settings))?.place === "machine") throw new ClaudeLoginRefused("forbidden", machineSignOutRefused(machineFolder(deps.env, deps.uid).folder));
+    await turn.stop();
+    await deps.settings.remove(CLAUDE_LOGIN_SETTING);
+    deps.saved(undefined);
+    const dir = agentRunLoginDir(deps.data);
+    if (!existsSync(dir)) return true;
+    const { login } = loginAt("agentrun", deps.data, deps.env, deps.uid);
+    const cli = loginCli(await deps.pinned(), deps.env);
+    const signedOut = login && cli ? await (await deps.claude()).claudeLogout(cli, login, pathOf(deps.env)) : false;
+    let beside = dir;
+    try {
+      beside = realpathSync(dir);
+    } catch {
+      // The folder as named.
+    }
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(`${beside}${loginRefresh.legacyLockSuffix}`, { recursive: true, force: true });
+    rmSync(answerFile(deps.data, { dir, profiles: join(dir, "anthropic") }), { force: true });
+    (await import("./claude-login-token.js")).forgetLoginTokens(dir);
+    return signedOut;
+  });
+  await deps.changed();
+  return { confirmed, ...(confirmed ? {} : { message: LOGIN_SIGN_OUT_UNCONFIRMED }), login: await claudeLoginView(deps) };
+}
+
 /** POST /settings/claude-login/login: the CLI's own sign-in, started on this machine, where it opens a browser, with the
  *  shown line's own variables (the harness's signInEnv), so it signs in where the status reads. A sign-in that
  *  still waits is ended first (deps.signIns). The browser code goes to the CLI, never here; the answer is the view as it
@@ -725,7 +774,7 @@ export async function dropRefusedLogin(signIns: Pick<ClaudeSignIns, "serial">, s
 }
 
 /** What the routes and a run's check use of the harness (its login.ts), loaded only when asked. */
-export type ClaudeLoginCli = Pick<typeof import("@parcha/agentrun-harness-claude"), "claudeLoginStatus" | "startClaudeLogin" | "claudeLoginCommand">;
+export type ClaudeLoginCli = Pick<typeof import("@parcha/agentrun-harness-claude"), "claudeLoginStatus" | "startClaudeLogin" | "claudeLoginCommand" | "claudeLogout">;
 const pathOf = (env: Readonly<Record<string, string | undefined>>): { path?: string } => (env.PATH ? { path: env.PATH } : {});
 
 /** How long a signed-in answer stands in for a check that gives none (loginBeforeRun). */

@@ -1,0 +1,9 @@
+---
+packages: @parcha/agentrun-serve, @parcha/agentrun-harness-claude
+kind: feature
+---
+Sign out of Claude Code's login on this machine: `POST /v2/settings/claude-login/sign-out` (operation `signOutClaudeLogin`), and a Sign out button on Settings → Model keys' Claude login row. Before, the row had no way to sign out or switch accounts: Turn off kept the login as the CLI holds it, so Turn on read the same account again with no sign-in page.
+- On AgentRun's own login (`<data>/claude-login`) the sign-out ends a sign-in that waits, turns the mode off, runs the pinned CLI's own `claude auth logout` there (its credentials file and, on macOS, its Keychain item for that folder), then removes the folder, the login's signed-in note and the runner's token reader whatever the CLI said. The next Turn on reads not signed in and offers the CLI's sign-in, for the same account or another. `confirmed` false adds a `message` saying the CLI didn't confirm its own sign-out.
+- This machine's own login (`place` `machine`, the person's `~/.claude` or `CLAUDE_CONFIG_DIR`) is never signed out: the route answers 403 in words that say to run `claude auth logout` in a terminal there, and the console offers no Sign out on it.
+- Runs already going on the login are left as a turn-off leaves them: each fails saying the login is signed out at its next read of it.
+- The harness exports `claudeLogout(cli, login, { timeoutMs, path, platform })`: the CLI's `auth logout` with the sign-in's variables in the person's home, true when it exited 0 within its limit (15 s), false otherwise; it never throws.

@@ -586,6 +586,43 @@ export function startClaudeLogin(cli: string, login: ClaudeAgentLogin, options: 
   return { ended, stop: () => end("stopped") };
 }
 
+/** The longest the CLI's own sign-out may take. */
+export const LOGOUT_MS = LOGIN_STATUS_MS;
+
+/** The CLI's own sign-out at `login` (`auth logout`), with the sign-in's variables (signInEnv) in the person's home
+ *  (personHome), so it removes what that sign-in kept where it kept it: the credentials file in the login's credentials
+ *  dir or, on macOS, the Keychain item named from it, and the account in the config dir's `.claude.json`. Nothing of it
+ *  is read but how it ended: true when it exited 0 within `timeoutMs` (LOGOUT_MS by default), false when it exited
+ *  otherwise, never started, or was ended at the limit (SIGTERM, then SIGKILL a second later). Never throws.
+ *  `platform`: as signInEnv's. */
+export function claudeLogout(cli: string, login: ClaudeAgentLogin, options: { timeoutMs?: number; path?: string; platform?: NodeJS.Platform } = {}): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
+    let child: ReturnType<typeof spawn>;
+    try {
+      child = spawn(cli, ["auth", "logout"], {
+        env: { PATH: options.path ?? process.env.PATH ?? "/usr/bin:/bin", HOME: personHome(login), ...signInEnv(login, options.platform), DISABLE_AUTOUPDATER: "1", DISABLE_TELEMETRY: "1", DISABLE_ERROR_REPORTING: "1" },
+        stdio: "ignore",
+      });
+    } catch {
+      return resolve(false);
+    }
+    let timedOut = false;
+    let kill: ReturnType<typeof setTimeout> | undefined;
+    const limit = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGTERM");
+      kill = setTimeout(() => child.kill("SIGKILL"), STATUS_KILL_MS);
+    }, options.timeoutMs ?? LOGOUT_MS);
+    const done = (confirmed: boolean) => {
+      clearTimeout(limit);
+      clearTimeout(kill);
+      resolve(confirmed);
+    };
+    child.once("error", () => done(false));
+    child.once("close", (code) => done(!timedOut && code === 0));
+  });
+}
+
 /** A model response's usage, as Anthropic's stream says it (`message_start`, then `message_delta`). */
 type StreamUsage = { input_tokens?: unknown; output_tokens?: unknown; cache_read_input_tokens?: unknown; cache_creation_input_tokens?: unknown };
 const count = (value: unknown): number | undefined => (typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined);

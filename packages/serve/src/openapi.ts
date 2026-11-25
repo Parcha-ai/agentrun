@@ -3056,6 +3056,19 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       "x-agentrun-serve": "claudelogin/1",
     },
   },
+  "/settings/claude-login/sign-out": {
+    post: {
+      operationId: "signOutClaudeLogin", tags: ["local"], summary: "Sign out of Claude Code's login on this machine: AgentRun's own login removed, the mode off",
+      description: "For a person to sign in fresh, or as another account: a turn-off leaves the login as the CLI keeps it, so the next turn-on reads it again. Ends a sign-in that waits, turns the mode off, runs the pinned CLI's own `claude auth logout` on AgentRun's own login folder (`<data>/claude-login`), which removes its credentials file and, on macOS, its Keychain item for that folder, then removes the folder (credentials, account, profiles, refresh locks), the login's signed-in note and the runner's token reader, whatever the CLI said. The next turn-on finds no login (`signed_out`) and the sign-in starts as before. Runs already going on the login are left as a turn-off leaves them: each keeps the token its CLI holds, and fails saying the login is signed out at its next read of it. `confirmed` false: signed out here, and `message` says the CLI didn't confirm its own sign-out (on macOS its Keychain item may remain). 403 forbidden, with nothing touched, when the login is this machine's own (`place` `machine`: the person's `~/.claude` or CLAUDE_CONFIG_DIR): AgentRun never signs it out, and the words say to run `claude auth logout` in a terminal there. 404 not_found, naming the operation, when AGENTRUN_CLAUDE_CODE_LOGIN is `off`. A secret write: the owner's signed-in session alone (ownerSession).",
+      "x-agentrun-secret": true,
+      security: [{ ownerSession: [] }],
+      responses: {
+        "200": json({ type: "object", additionalProperties: false, required: ["confirmed", "login"], properties: { confirmed: { type: "boolean", description: "Whether the CLI confirmed its own sign-out (true, too, when no login was kept here)." }, message: { type: "string", description: "With `confirmed` false: what may remain, in words." }, login: CLAUDE_LOGIN } }, "Signed out here."),
+        ...errors(401, 403, 404, 429, 500),
+      },
+      "x-agentrun-serve": "claudelogin/1",
+    },
+  },
   "/settings/model-gateway": {
     get: {
       operationId: "getModelGateway", tags: ["local"], summary: "The model gateway in force: the environment's, the one saved here, or none",
