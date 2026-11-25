@@ -288,8 +288,11 @@ const credentialWord = (word: string): boolean => {
 const credentialNamed = (name: string): boolean =>
   name.replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase().split(/[^a-z0-9]+/).some(credentialWord);
 
-/** A URL inside a header value (a DSN, a relay's address): a scheme, `://`, then up to a space, `;`, `,` or a quote. */
-const URL_IN_TEXT = /[A-Za-z][\w+.-]*:\/\/[^\s;,"']+/g;
+/** A URL inside a header value (a DSN, a relay's address): a scheme, `://`, its user and password whole when it writes
+ *  them (group 1: up to the last `@` before a space, a `"`, or the `/`, `?`, `#` or `\` that ends its authority, as a
+ *  URL parser reads it, so a password with `;`, `&`, `=` or `,` in it is not cut short), then up to a space, `;`, `,` or
+ *  a quote. */
+const URL_IN_TEXT = /[A-Za-z][\w+.-]*:\/\/(?:([^\s"/?#\\]*)@)?[^\s;,"']+/g;
 
 /** The credentials a URL writes into itself (`text`, one URL): its user and password, and the value of each query
  *  parameter whose name says it is one (credentialNamed), each as written and decoded; none when `text` is no URL. */
@@ -311,13 +314,14 @@ const urlCredentials = (text: string): string[] => {
 };
 
 /** The credentials a header value carries inside it: the user, password and key parameters of each URL in it
- *  (urlCredentials: a DSN's `https://<key>@host/1`), and, outside its URLs, the value of each `name=value` pair whose
- *  name says it is a credential (credentialNamed: a cookie's `session=<token>`, sentry's `sentry_key=<key>`), pairs
- *  split at `;`, `&` and spaces, each as written and decoded. A pair named like no credential (`theme=dark`) is not
- *  taken, nor a value of only `=` (a base64 credential's padding, read as a pair). */
+ *  (urlCredentials: a DSN's `https://<key>@host/1`, a relay's whole `user:pa;ss`), and, outside its URLs or inside a
+ *  URL's user and password, the value of each `name=value` pair whose name says it is a credential (credentialNamed: a
+ *  cookie's `session=<token>`, sentry's `sentry_key=<key>`), pairs split at `;`, `&` and spaces, each as written and
+ *  decoded. A pair named like no credential (`theme=dark`) is not taken, nor a value of only `=` (a base64 credential's
+ *  padding, read as a pair). */
 const innerCredentials = (value: string): string[] => [
   ...(value.match(URL_IN_TEXT) ?? []).flatMap(urlCredentials),
-  ...value.replace(URL_IN_TEXT, " ").split(/[;&\s]+/).flatMap((pair) => {
+  ...value.replace(URL_IN_TEXT, (_url, userinfo: string | undefined) => ` ${userinfo ?? ""} `).split(/[;&\s]+/).flatMap((pair) => {
     const at = pair.indexOf("=");
     if (at <= 0) return [];
     const name = pair.slice(0, at);

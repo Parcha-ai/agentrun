@@ -272,8 +272,9 @@ its first word is held too when that word is a known auth scheme (`Bearer`, `Bas
 `sentry`, `Splunk`, `GenieKey`) or the header is named like a credential (`authorization`, `x-sentry-auth`,
 `x-api-key`); any other header's value is held whole, never its tail alone. So are an OTLP endpoint's user, password
 and any query parameter named like a credential, and, inside any header's value, the user, password and credential-named
-query parameters of a URL (a DSN's `https://<key>@host/1`) and the value of each `name=value` pair named like a
-credential (a cookie's `session=<token>`; `theme=dark` is not held). A header's, a parameter's or a pair's name is
+query parameters of a URL (a DSN's `https://<key>@host/1`; a password is read whole, any `;`, `&` or `=` in it
+included, as written and decoded) and the value of each `name=value` pair named like a credential (a cookie's
+`session=<token>`; `theme=dark` is not held). A header's, a parameter's or a pair's name is
 split into words at punctuation and at each lower-to-upper case change, a word's trailing digits are dropped (`apiKey2`
 is `api` and `key`), and it is named like a credential when a word is authorization, auth, key, apikey, token, secret,
 password, passwd, pwd, sig, signature, credential, credentials, jwt or session; or ends in token, secret, password,
