@@ -468,7 +468,8 @@ test("LVI: a failed env call's summary (`env; sleep 5`, timed out) is cut with i
   const { doc, body } = await exported(readsOf({ rows: rows.map(failed), calls: calls.map(failed) }));
   assert.deepEqual(cutsAt(doc, "/rows/1/tool_result_preview").map((cut) => [cut.kind, cut.rule]), [["dump", "env-dump"]], JSON.stringify(doc.cuts));
   assert.deepEqual(cutsAt(doc, "/rows/1/summary").map((cut) => [cut.kind, cut.rule]), [["dump", "env-dump"]], JSON.stringify(doc.cuts));
-  assert.equal(valueAt(doc, "/rows/1/summary"), "Bash failed: [redacted:env-dump 1 lines]");
+  // `env; sleep 5` runs another command beside env: the whole one-line summary is the dump, its head with it.
+  assert.equal(valueAt(doc, "/rows/1/summary"), "[redacted:env-dump 1 lines]");
   assert.ok(!body.includes(region), "the variable's value is not carried");
   assertNoPlanted(body, { pw: CTX_PW });
 });
