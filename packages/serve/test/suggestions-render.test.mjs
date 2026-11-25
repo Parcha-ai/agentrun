@@ -3,7 +3,7 @@
 // a comment), every other word lands only in a comment or a string it cannot end, the package checks as the server
 // checks one, and each client compiles in its language.
 import assert from "node:assert/strict";
-import { execFile, execFileSync } from "node:child_process";
+import { execFile, execFileSync, spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
@@ -239,6 +239,67 @@ test("every client reads AGENTRUN_BASE_URL as AgentRun's own clients do: the add
       });
     }
     assert.deepEqual(got, []);
+  }
+});
+
+// The key goes to AGENTRUN_BASE_URL alone, as AgentRun's SDK sends it (packages/client client.ts #follow). Python's
+// urllib copies the authorization header onto a redirect to any host, http included, and a fetch other than Node's may
+// too: so no client follows a redirect, and the server it would lead to sees nothing.
+test("no client follows a redirect: a start or a read answered with one is refused, and the server it names never hears the key", async (t) => {
+  const python = spawnSync("python3", ["--version"]).status === 0;
+  const elsewhere = [];
+  const other = createServer((req, res) => {
+    // The client's requests alone, by the path the redirect names: a probe of a new loopback listener asks for / alone.
+    if (req.url.startsWith("/elsewhere/")) elsewhere.push(`${req.method} ${req.url} ${req.headers.authorization ?? "no key"}`);
+    req.resume();
+    req.on("end", () => {
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ run_id: "run_1", status: "completed", result: { output: { category: "billing" } } }));
+    });
+  });
+  await new Promise((resolve) => other.listen(0, "127.0.0.1", resolve));
+  t.after(() => other.close());
+  // Which call the server answers with a redirect: the start (POST) or the read (GET).
+  let redirects = "POST";
+  const server = createServer((req, res) => {
+    req.resume();
+    req.on("end", () => {
+      if (req.method === redirects) {
+        res.writeHead(302, { location: `http://127.0.0.1:${other.address().port}/elsewhere${req.url}` });
+        res.end();
+        return;
+      }
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ run_id: "run_1", status: "running", result: null }));
+    });
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => server.close());
+  const dir = mkdtempSync(join(tmpdir(), "suggestions-redirect-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+
+  const s = checked(base());
+  const render = (language, path) => clientFile({ ...s, integration: { ...s.integration, language, path } }, "acme/app", "a".repeat(40)).content;
+  const files = { "typed.mjs": ts.transpileModule(render("typescript", "src/a.ts"), { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } }).outputText, "plain.mjs": render("javascript", "src/a.mjs"), "triage.py": render("python", "app/triage.py") };
+  for (const [name, content] of Object.entries(files)) writeFileSync(join(dir, name), content);
+  const node = "const [file, input] = process.argv.slice(1); const m = await import(file); console.log(JSON.stringify(await m.runTicketTriage(JSON.parse(input))));";
+  const py = "import importlib.util, json, sys\nspec = importlib.util.spec_from_file_location('triage', sys.argv[1])\nmod = importlib.util.module_from_spec(spec)\nspec.loader.exec_module(mod)\nprint(json.dumps(mod.run_ticket_triage(json.loads(sys.argv[2]))))";
+  const input = JSON.stringify({ subject: "Charged twice", body: "My card was charged twice." });
+  for (const name of Object.keys(files)) {
+    await t.test(name, { skip: name.endsWith(".py") && !python ? "python3 is absent" : false }, async () => {
+      const file = join(dir, name);
+      const [command, args] = name.endsWith(".py") ? ["python3", ["-I", "-c", py, file, input]] : [process.execPath, ["--input-type=module", "-e", node, pathToFileURL(file).href, input]];
+      for (const method of ["POST", "GET"]) {
+        redirects = method;
+        elsewhere.length = 0;
+        const ran = promisify(execFile)(command, args, { env: { PATH: process.env.PATH, AGENTRUN_BASE_URL: `http://127.0.0.1:${server.address().port}/v2`, AGENTRUN_API_KEY: "fake-test-key", AGENTRUN_AGENT_TICKET_TRIAGE: "agent_1" } });
+        await assert.rejects(ran, (error) => {
+          assert.match(error.stderr ?? "", /with a redirect \(HTTP 302\); not followed, so the API key stays with AGENTRUN_BASE_URL/, `${name}, ${method} redirected: ${error.stderr}`);
+          return true;
+        }, `${name} followed the ${method}'s redirect`);
+        assert.deepEqual(elsewhere, [], `${name}, ${method} redirected: the other server heard the client`);
+      }
+    });
   }
 });
 
