@@ -348,7 +348,7 @@ async function accountCopy(from: string, to: string): Promise<string> {
 export const personHome = (login: ClaudeAgentLogin): string => login.userHome ?? login.home ?? homedir();
 
 /** `USER` and `LOGNAME` for a CLI started on a login, built from nothing (the status check, the sign-in this host starts,
- *  a run): the user this process runs as, as the system has it (`os.userInfo()`, which reads the user database, never
+ *  a run, the CLI's own sign-out): the user this process runs as, as the system has it (`os.userInfo()`, which reads the user database, never
  *  the server's own USER), the user whose home personHome is. On macOS the pinned CLI names its Keychain item's account
  *  by `$USER`, else by its runtime's `os.userInfo().username`; it is a Bun binary, whose userInfo reads `$USER` too and
  *  says "unknown" without it. So a CLI started with no USER saves and reads the login's tokens under the account
@@ -609,9 +609,10 @@ export function startClaudeLogin(cli: string, login: ClaudeAgentLogin, options: 
 /** The longest the CLI's own sign-out may take. */
 export const LOGOUT_MS = LOGIN_STATUS_MS;
 
-/** The CLI's own sign-out at `login` (`auth logout`), with the sign-in's variables (signInEnv) in the person's home
- *  (personHome), so it removes what that sign-in kept where it kept it: the credentials file in the login's credentials
- *  dir or, on macOS, the Keychain item named from it, and the account in the config dir's `.claude.json`. Nothing of it
+/** The CLI's own sign-out at `login` (`auth logout`), with the sign-in's variables (signInEnv) and user (loginUser) in
+ *  the person's home (personHome), so it removes what that sign-in kept where it kept it: the credentials file in the
+ *  login's credentials dir or, on macOS, the Keychain item named from it under that user's account, and the account in
+ *  the config dir's `.claude.json`. Nothing of it
  *  is read but how it ended: true when it exited 0 within `timeoutMs` (LOGOUT_MS by default), false when it exited
  *  otherwise, never started, or was ended at the limit (SIGTERM, then SIGKILL a second later). Never throws.
  *  `platform`: as signInEnv's. */
@@ -620,7 +621,7 @@ export function claudeLogout(cli: string, login: ClaudeAgentLogin, options: { ti
     let child: ReturnType<typeof spawn>;
     try {
       child = spawn(cli, ["auth", "logout"], {
-        env: { PATH: options.path ?? process.env.PATH ?? "/usr/bin:/bin", HOME: personHome(login), ...signInEnv(login, options.platform), DISABLE_AUTOUPDATER: "1", DISABLE_TELEMETRY: "1", DISABLE_ERROR_REPORTING: "1" },
+        env: { PATH: options.path ?? process.env.PATH ?? "/usr/bin:/bin", HOME: personHome(login), ...loginUser(), ...signInEnv(login, options.platform), DISABLE_AUTOUPDATER: "1", DISABLE_TELEMETRY: "1", DISABLE_ERROR_REPORTING: "1" },
         stdio: "ignore",
       });
     } catch {
