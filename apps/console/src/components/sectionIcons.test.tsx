@@ -34,8 +34,8 @@ describe("a section's header icon", () => {
     expect(iconOf(host.querySelector("h1"))).toBe(nav);
   });
 
-  it("is the navigation's, for Connected agents", () => {
-    const nav = navIcon("Connected agents");
+  it("is the navigation's, for Agents", () => {
+    const nav = navIcon("Agents");
     expect(nav).toBeTruthy();
     const host = show(createElement(AgentsList, { agents: [] }));
     expect(iconOf(host.querySelector("h1"))).toBe(nav);
