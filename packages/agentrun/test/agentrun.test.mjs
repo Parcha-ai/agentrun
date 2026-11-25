@@ -906,18 +906,19 @@ test("the setup skill asks where AgentRun should run before any install, with a 
 });
 // The server runs an agent whose tools need no shell (`tools: []`) on the runner, and never asks an unlisted gateway model
 // to stop reasoning, so the first agent's definition names neither a place nor a thinking level. With no tools named it
-// would get bash and the Docker box, and wait for a container. A local model reaches a service through
-// `service install --env`; only Ollama has been walked.
-test("the setup skill's model step offers ChatGPT, a capped key, then a local Ollama model on the service, and its first agent is the template's alone", () => {
+// would get bash and the Docker box, and wait for a container. A local model is Ollama's, which the server lists itself
+// (serve's ollama-provider.ts): the service is told only where Ollama listens, and never given a key or a gateway for it.
+test("the setup skill's model step offers ChatGPT, a capped key, then a local Ollama model the server lists itself, and its first agent is the template's alone", () => {
   const skill = setupSkill();
   const model = skillSection(skill, "6. Connect a model");
   assert.match(model, /Never start a model download\./);
   assert.match(model, /offer it only when a model with tool calling is already pulled/);
+  assert.match(model, /Ollama must be running \(`ollama serve`, or its app\)\. AgentRun lists its\s+models itself, with no key, no gateway and no restart/);
+  assert.match(model, /`inkling-2-mini` \(it needs Ollama 0\.40\.17 or later\)/);
   const [install] = shellBlocks(model);
-  assert.equal(install, "~/.agentrun/bin/agentrun service install --env AGENT_MODEL_BASE_URL=http://localhost:11434/v1 --env AGENT_MODEL_GATEWAY_IDS=bare --env AGENT_MODEL=<tag> --env AGENT_MODEL_PRICE=0,0,0 --env AGENT_MODEL_API_KEY=none\n");
-  // A server that holds no key for its gateway refuses a run that brings none (model_key_required): Ollama takes no key,
-  // so the service sends `none`, in the service and in front of `sh` alike.
-  assert.match(model, /\| AGENT_MODEL_API_KEY=none AGENT_MODEL_BASE_URL=http:\/\/localhost:11434\/v1\s+AGENT_MODEL_GATEWAY_IDS=bare AGENT_MODEL=<tag> AGENT_MODEL_PRICE=0,0,0 sh/);
+  assert.equal(install, "~/.agentrun/bin/agentrun service install --env OLLAMA_HOST=<host:port>\n");
+  assert.match(model, /\| OLLAMA_HOST=<host:port> sh/);
+  assert.doesNotMatch(model, /AGENT_MODEL_API_KEY|AGENT_MODEL_BASE_URL|11434\/v1/, "no gateway in front of Ollama, and no key for it");
   assert.doesNotMatch(skill, /LM Studio|localhost:1234/);
   // Yes, only me (step 3) survives the model's restart: the service keeps what service install --env saved, and a
   // background start keeps only what its line sets, so the line carries both switches.
