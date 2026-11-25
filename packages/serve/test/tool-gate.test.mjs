@@ -861,15 +861,19 @@ test("a stop while an approval waits and a later turn runs withdraws the call an
   const turns = join(await scratch(t), "turns.txt");
   withEnv(t, { FAUX_GATE_LOG: turns });
   const turnLines = async (page) => (await readFile(turns, "utf8").catch(() => "")).split("\n").filter((line) => line.endsWith(` ${page}`));
-  // Until the slow turn on `page` has started: on the log's own change events, never a poll.
+  // Until the slow turn on `page` has started: on the log's own change events, never a poll. The watcher closes with the
+  // case, and the wait ends with it, so a turn that never starts fails the case at its timeout and holds nothing open.
   const turnStarted = (page) => new Promise((resolve, reject) => {
     const watcher = watch(dirname(turns), () => void check());
+    const done = (settle) => (watcher.close(), t.signal.removeEventListener("abort", cancelled), settle());
+    const cancelled = () => done(() => reject(t.signal.reason ?? new Error(`the slow turn on ${page} never started`)));
+    t.after(() => watcher.close());
+    t.signal.addEventListener("abort", cancelled, { once: true });
     const check = async () => {
       try {
-        if ((await turnLines(page)).includes(`started ${page}`)) (watcher.close(), resolve());
+        if ((await turnLines(page)).includes(`started ${page}`)) done(resolve);
       } catch (error) {
-        watcher.close();
-        reject(error);
+        done(() => reject(error));
       }
     };
     void check();
