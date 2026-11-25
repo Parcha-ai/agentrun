@@ -1451,8 +1451,8 @@ model with no price set that the catalog does not list in any form; null while `
   process is handed a model key only when its model needs it: a pi run its model's provider's (a run on Gemini
   `GEMINI_API_KEY`, one on `openrouter/...` `OPENROUTER_API_KEY`; a workflow each of its tiers'), or `AGENT_MODEL_API_KEY`
   through the gateway; a codex run `OPENAI_API_KEY`, or `AGENT_MODEL_API_KEY` through the gateway; a claude-agent run
-  `ANTHROPIC_API_KEY`. No run gets another's. A workflow's decision nodes get their providers' keys on a descriptor of
-  their own, whatever its model, and only those ([Safety](#safety)).
+  `ANTHROPIC_API_KEY`. No run gets another's. A workflow's decision nodes get their providers' keys on the claim's own
+  environment, whatever its model, and only those ([Safety](#safety)).
 
 A definition is checked for what keeps it from running here when it is saved, with the same checks a run makes before
 it starts:
@@ -1937,7 +1937,7 @@ agent_not_runnable`, with `details.unbound` and `details.missing`).
 | `bash_signal` | Send a background process's group `TERM`, `INT` or `KILL`: `{id, signal}` | an agentic definition whose place is a sandbox | no, no |
 | `bash_list` | List the run's background processes: id, state or exit code, output size, start time and command | an agentic definition whose place is a sandbox | no, no |
 | `ask_person` | Ask the person who started the run; the turn ends until a message answers | nothing | no, no |
-| `web_fetch` | Read one web page from a public host through the guarded direct fetch, or through Parallel's extract where Parallel is picked ([search and fetch](#search-and-fetch)), a part at a time: `{url, offset?, max_chars?, objective?}` in (`objective`, what the page is read for, is passed to the run's Web; with no classifier in the run it changes nothing), a Page out, `{ok, url, status, title, text, chars, truncated?, original_chars?, beyond_read?, offset?, next_offset?, html_chars?, converted?, links, links_omitted?, via, parallel?, refused?, error?}` | nothing (`PARALLEL_API_KEY` for Parallel, one billed extract a page a run) | yes, yes |
+| `web_fetch` | Read one web page from a public host through Parallel's extract where the server holds a Parallel key (the default, `auto`), else keyless Firecrawl, with the guarded direct fetch behind either, or the guarded direct fetch alone where `kernel` is picked ([search and fetch](#search-and-fetch)), a part at a time: `{url, offset?, max_chars?, objective?}` in (`objective`, what the page is read for, is passed to the run's Web; with no classifier in the run it changes nothing), a Page out, `{ok, url, status, title, text, chars, truncated?, original_chars?, beyond_read?, offset?, next_offset?, html_chars?, converted?, links, links_omitted?, via, parallel?, refused?, error?}` | nothing (`PARALLEL_API_KEY` for Parallel, one billed extract a page a run) | yes, yes |
 | `web_search` | Search the web, natively where the harness or the model's provider can, else through Parallel where the server holds its key, else keyless through Exa, or through the provider picked ([search and fetch](#search-and-fetch)): `{objective, queries?, n?}` in (`query` is deprecated: a model's call must give `objective`, which the schema requires; a workflow call node's `{query}` alone is still searched as the objective and its one query), `{provider, objective, queries, results: [{url, title, snippet, published?}], text?}` or `{error}` out | nothing (`PARALLEL_API_KEY` for Parallel) | yes, yes |
 | `web_save` | Download one file from a public URL into the run's `work/` and keep it there, for a link that expires (a generated image, audio or video): `{url, path}` in, `path` relative to `work/` and a bare name under `media/`; `{ok: true, path, bytes, content_type, duration_s?, url}` or `{ok: false, url, refused \| error}` out, `duration_s` its length in seconds when it is audio or video whose bytes give it (below). Never overwrites | nothing | no, no |
 | `browser` | A hosted browser, Browserbase's or Kernel's, on pi-browser's durable adapter: `snapshot`, `run`, `screenshot`, `browser_read`, `browser_release`, `browser_relaunch`, `browser_downloads` and `browser_upload` (into and from the run's `work/`); Kernel keeps no downloads, so a run on Kernel has no `browser_downloads` | `BROWSERBASE_API_KEY` and `BROWSERBASE_PROJECT_ID`, or `KERNEL_API_KEY` | yes, no |
@@ -2102,6 +2102,26 @@ A workflow's model nodes may each run on another tier's model, so a workflow's `
 it is Parallel on the server's key, else keyless Firecrawl, or the provider picked, and a pick of `native` alone is
 unavailable for a workflow.
 
+Where the server holds a TypeSafe key (`TYPESAFE_API_KEY`, set or saved), Jev runs on the web tools by default, and
+run content goes to TypeSafe. Each `web_search` sends TypeSafe its objective and each result's URL, title and snippet.
+Each `web_fetch` given an objective sends TypeSafe the page's text (up to 1,000,000 characters, in chunks) and the
+objective; a fetch with no objective sends nothing. TypeSafe bills every request to the server's TypeSafe key. To
+keep the old behaviour on a server that holds the key, set `AGENTRUN_WEB_JEV_OFF=1`. Jev (`jev-1.14.0`) scores each
+search's results against its objective and reorders them by that score, keeping every one,
+each with its `relevance` (0 to 1), and a `sift` line saying how they were ranked, or why not (a Jev failure leaves them
+as the provider gave them). It applies wherever the run's own `web_search` runs (Parallel, keyless Firecrawl or Exa,
+pi's hosted search), never to a harness's own search inside its CLI. Each Jev request is held on the run's spend cap at
+Jev's published price and booked at the cost Jev reported, never above that hold. A `web_fetch` given an objective has
+Jev pick the chunks of the page most likely to hold it, in page order (`found`, each with its `relevance`), its requests
+held and booked the same way; a fetch with no objective asks Jev nothing and its page is whole. A server with only an
+OpenRouter key runs no ranking; `AGENTRUN_WEB_JEV_OFF=1` on the server turns Jev off for every run created while it is
+set, on whatever runner host claims it (the run's plane carries the switch, and keeps it at every later launch); a
+runner's own switch can add off for the runs that host claims, never turn it back on. `GET /capabilities`' `why` for
+each tool says what it sends TypeSafe, or that Jev is off: for `web_search` `…; Jev (jev-1.14.0) ranks results …; each
+search sends that and each result's URL, title and snippet to TypeSafe …`, for `web_fetch` `…; a fetch given an
+objective sends the page's text and the objective to TypeSafe …`, and for either `…; Jev off: no TypeSafe key` or
+`…; Jev off (AGENTRUN_WEB_JEV_OFF)`.
+
 | | `claude-agent` | `codex` | pi |
 | --- | --- | --- | --- |
 | `web_search`, `auto` (the default) | Parallel on the server's key, else keyless Firecrawl, a host tool: Claude's own WebSearch is the `native` pick | the same: Codex's own search is the `native` pick | the same: the model provider's hosted search is the `native` pick |
@@ -2109,7 +2129,7 @@ unavailable for a workflow.
 | `web_search`, `off` | unavailable (`web_search is turned off in settings`): nothing is searched | the same | the same |
 | `web_search`, `firecrawl-keyless` | Firecrawl's public MCP search, keyless Exa's behind it, a host tool | the same | the same |
 | `web_search`, `exa-keyless` | Exa's public MCP search alone, a host tool | the same | the same |
-| `web_fetch`, `auto` (the default) | the guarded direct fetch where the server holds a Parallel key, else keyless Firecrawl | the same | the same |
+| `web_fetch`, `auto` (the default) | Parallel's extract where the server holds a Parallel key, the guarded direct fetch behind it; else keyless Firecrawl | the same | the same |
 | `web_fetch`, `firecrawl-keyless` | Firecrawl's public MCP scrape, the guarded direct fetch behind it: Firecrawl is sent each URL | the same | the same |
 | `web_fetch`, `kernel` | the guarded direct fetch | the same | the same |
 | either, `parallel` | Parallel's search and extract, host tools | the same | the same |
@@ -2148,10 +2168,11 @@ Upgrading to the tool gate: a workflow whose call node's tool is set to ask, by 
 run (`409` with `details.asks`); set that tool to allow for the agent (`definition.tool_settings`). Built-in tools are
 allowed by default; catalog (`monid:<provider>/<endpoint>`) and MCP tools, which ask by default, are no call node's tools here.
 
-Upgrading: a server holding `PARALLEL_API_KEY` used to read every `web_fetch` page through Parallel's extract on its own.
-Now `web_fetch` on `auto` is the guarded direct fetch on such a server (keyless Firecrawl on one with no Parallel key)
-unless Parallel is picked; to keep the old behaviour, set
-`PUT /v2/settings/tools {"web_fetch": {"provider": "parallel"}}` once (or `tool_settings` in an agent). Parallel's key reaches an agentic run only when one of its capabilities resolves to Parallel (see
+Upgrading: on a server holding `PARALLEL_API_KEY`, `web_fetch` on `auto` reads each page through Parallel's extract
+first, with the guarded direct fetch behind it, as `web_search` on `auto` searches through Parallel (keyless Firecrawl on
+a server with no Parallel key). To keep every URL on the server instead, set
+`PUT /v2/settings/tools {"web_fetch": {"provider": "kernel"}}` once (or `tool_settings` in an agent). Both tools'
+`auto` order is one table in the source (`DEFAULT_WEB_ORDER`, tool-plane.ts). Parallel's key reaches an agentic run only when one of its capabilities resolves to Parallel (see
 [Decision workflows](#decision-workflows)), and a web tool reaches Parallel only where its own capability does.
 
 pi's native `web_search` is one standalone request, as Claude's CLI runs its WebSearch: one user turn carrying the
@@ -2562,8 +2583,8 @@ A stored value that does not open is never a reason not to start. It reads `set:
 so once, naming the condition and the file, never a value; a `PUT` of the value seals it again under the current key.
 
 A saved key is read by name like one the launcher hands over, and the launcher's value wins for a name it holds. A run
-gets the saved keys at its launch, over the pipe its secrets come on (a workflow run's `PARALLEL_API_KEY` on its
-decision descriptor), never in any process's environment, and never the seal key. No restart: a `PUT` or `DELETE`
+gets the saved keys at its launch, on its claim's own environment (a workflow run's `PARALLEL_API_KEY` too), never in
+any process's environment, and never the seal key. No restart: a `PUT` or `DELETE`
 answers once capabilities, a save's checks and a run's checks see the change, in milliseconds. No harness reads a tool
 key, so a key leaves what each harness offers as it is, and the harnesses are not checked again. A run already
 running keeps what it was handed; the next run started, or a run's process started again, takes what is saved then.
@@ -4238,7 +4259,7 @@ typed answers and their probabilities.
 - OpenRouter's Decisions models answer a node that says `provider: "openrouter"` and names its model in `model`
   (`liquid/d1`, `perplexity/pplx-decider-v1.2`, `cloudflare/clef`, `typesafe/jev-1.14`). They run on the OpenRouter key
   Jev's OpenRouter route reads (`OPENROUTER_API_KEY`, else `AGENT_MODEL_API_KEY` with `AGENT_MODEL_BASE_URL` on
-  openrouter.ai), handed to the run's process on the decision descriptor as Jev's is. That key is also the model
+  openrouter.ai), laid on the run's claim's own environment as Jev's is. That key is also the model
   gateway's, which a run's process holds. Images to them are experimental. A model that cites the web returns
   `url_citation` annotations, which become the node's evidence. A cost OpenRouter reports above 0 is booked; 0 (a model its
   catalog prices at 0) or none is unknown, never $0.
@@ -4258,18 +4279,17 @@ typed answers and their probabilities.
   ($0.042 per million input tokens; output tokens are free) as an estimate, and the run's `cost.usd` is its decisions'
   sum, with `basis: "estimate"`. A decision whose cost is unknown (no token counts, the OpenRouter route, or a call that
   failed after it may have been sent) keeps its receipt's cost `null`, and the run's reads `null`, never `0`.
-- The TypeSafe and Parallel keys never enter a run's environment, which its tools and its model's provider read. The
-  server drops `TYPESAFE_API_KEY` and `PARALLEL_API_KEY` from every run's process. It hands a run's process those it
-  needs ([Safety](#safety)), a workflow's decision providers' and Parallel's where its `web_fetch` or `web_search`
-  resolves to Parallel, once, by name, on an inherited pipe (the first descriptor after its stdio and its secrets pipe, as macOS refuses a high one), at each
-  launch, a resume after a restart included. The process reads them once into its decision providers and web tools,
-  closes the descriptor before anything else runs, and keeps the keys nowhere else. It is never in an
-  environment, an argument list or a file, and no program the run starts inherits it. With no key, no descriptor is
-  opened. On the OpenRouter route Jev's key comes on the same descriptor, never from the run's environment; that key is
-  also the model gateway's key, which a run's process holds for its model nodes.
+- A run gets only the TypeSafe and Parallel keys it needs ([Safety](#safety)): a workflow's decision providers',
+  Parallel's where its `web_fetch` or `web_search` resolves to Parallel, and TypeSafe's where one of its web tools is
+  the run's own ([Search and fetch](#search-and-fetch): `web_fetch` wherever it runs, `web_search` except a harness's
+  own search inside its CLI, as on codex or claude-agent). The runner's claim reads them from the store and lays them
+  on the claim's own environment, the one the run's tools and decision providers read, a fresh object for each claim,
+  so no run sees another's. No program the run starts inherits them: a run process's environment has every key-shaped
+  name removed, and the run's shell environment is fixed. On the OpenRouter route Jev's key is also the model
+  gateway's key, which the claim holds for its model nodes.
 - `TYPESAFE_API_KEY` and `PARALLEL_API_KEY` are among the secrets the launcher hands the server over its pipe, so the
   server holds them out of its own environment too. Neither is ever among the secrets a run's process gets over its own
-  pipe, which are its tools' environment: the decision descriptor is their only way into a run.
+  pipe, which are its tools' environment: the runner's claim is their only way into a run.
 
 ## Archiving
 
@@ -5556,8 +5576,8 @@ carries no cost at all, as from a provider that does not price the model. The te
   keys or bearer token (held, and handed to a run on Bedrock), an `AWS_PROFILE`, `GOOGLE_CLOUD_API_KEY` or the default
   application credentials file work. A credential file a provider reads by path (`AWS_PROFILE`'s `~/.aws` files, the
   default application credentials) is the host's: a run's process reads it for its model, and its file tools cannot.
-- `TYPESAFE_API_KEY` is a decision key, given to a workflow run's decision providers alone and never
-  with a run's other secrets, so a pi run on a `typesafe/` model does not get it: it finds no key for that model, and
+- `TYPESAFE_API_KEY` is a decision key, given to a workflow run's decision providers and to a run's web tools Jev
+  ranks alone, and never with a run's other secrets, so a pi run on a `typesafe/` model does not get it: it finds no key for that model, and
   the run fails.
 - A run's file tools (`read`, `write`, `edit`) reach its own `work/`, and two places of its own beside it: `read` also
   reaches the run's `tmp/` (next to `work/`, where a command's spilled output would go), and a write may also land in a
