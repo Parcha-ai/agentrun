@@ -1523,6 +1523,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     ? setInterval(() => void attach.tick().catch((error: unknown) => attachLog("computer_route_tick_failed", { error: error instanceof Error ? error.message : String(error) })), PAIRED_ROUTE_MS)
     : undefined;
   routeTick?.unref();
+  // A start that fails after this point clears it as the close does: never left ticking on the store that start closed.
+  stops.push(async () => clearInterval(routeTick));
   // This server's own key on every environment it reads its secrets from, so a reader opens what this store holds with the
   // key checked against it, never another data directory's that this process booted too (secrets.ts holds one made key).
   const own = (env: NodeJS.ProcessEnv): NodeJS.ProcessEnv => withSealKey(env, seal.text);
@@ -2317,6 +2319,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   };
   const refusedTimer = setInterval(() => void sweepRefused(), REFUSED_SWEEP_MS);
   refusedTimer.unref();
+  stops.push(async () => {
+    refusedStopped = true;
+    clearInterval(refusedTimer);
+    await refusedSweep;
+  });
   // The runner beside this server, when its run isolation was refused (cli.ts): its word, kept in this store until the stop.
   let refusedBeside: Presence | undefined;
   const sourceWorkspaces = { data, sealKey, env: withSecrets(process.env, "own"), ...(options.archilControl ? { control: options.archilControl } : {}) };
@@ -2364,6 +2371,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   };
   const localSourceTimer = setInterval(() => void sweepLocalSources(), 30_000);
   localSourceTimer.unref();
+  stops.push(async () => {
+    clearInterval(localSourceTimer);
+    await localSourceSweep;
+  });
   const startDeps: StartDeps = {
     project: { ...sourceProjects, place: async given => {
       try { return await sourceProjects.place(given); }
