@@ -35,8 +35,9 @@ jobs:
     name: build (${{ matrix.node }})
     # On Blacksmith for a merge-queue candidate and for a pull request from a branch of this repository, as the test
     # shards that wait for it. A fork's pull request, and main, run on GitHub's runners: a fork's code is not the
-    # project's, and it gets neither the paid runners nor the caches they keep between runs.
-    runs-on: ${{ (github.event_name == 'merge_group' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-latest' }}
+    # project's, and it gets neither the paid runners nor the caches they keep between runs. The other four jobs on
+    # this runner alias the value (`*own-runner`), so it is written once.
+    runs-on: &own-runner ${{ (github.event_name == 'merge_group' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-latest' }}
     timeout-minutes: 15
     strategy:
       fail-fast: false
@@ -85,9 +86,8 @@ jobs:
     # and main run every test, so a test that selection misses fails there.
     name: test (${{ matrix.node }}, ${{ matrix.shard }})
     needs: [build]
-    # The build job's runner: Blacksmith for the merge queue and for this repository's own pull requests (a shard takes
-    # about half as long there as on GitHub's runners), GitHub's for a fork's pull request and for main.
-    runs-on: ${{ (github.event_name == 'merge_group' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-latest' }}
+    # The build job's runner (a shard takes about half as long on Blacksmith as on GitHub's).
+    runs-on: *own-runner
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -213,7 +213,7 @@ jobs:
     # for every shard of `test`. verify needs this job as it needs `test`.
     name: test (${{ matrix.node }}, ${{ matrix.shard }})
     needs: [build]
-    runs-on: ${{ (github.event_name == 'merge_group' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-latest' }}
+    runs-on: *own-runner
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -229,8 +229,8 @@ jobs:
     # how long a job's tests take, so a fifth job would not shorten them. The count here and in the step below must
     # agree (scripts/ci-plan.test.mjs).
     name: serve store on Postgres (${{ matrix.shard }}/4)
-    # Runs where the build does, so the required path is not set by a GitHub-hosted leg.
-    runs-on: ${{ (github.event_name == 'merge_group' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-latest' }}
+    # The build job's runner, so the required path is not set by a GitHub-hosted leg.
+    runs-on: *own-runner
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -294,8 +294,8 @@ jobs:
     # apps/console, the server's console: a private app with its own lockfile (React, Vite, Storybook), outside the
     # workspaces. Its typecheck, tests, build and Storybook build run here; verify needs it like the test shards.
     name: console
-    # Runs where the build does, so the required path is not set by a GitHub-hosted leg.
-    runs-on: ${{ (github.event_name == 'merge_group' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-latest' }}
+    # The build job's runner, so the required path is not set by a GitHub-hosted leg.
+    runs-on: *own-runner
     timeout-minutes: 15
     defaults:
       run:

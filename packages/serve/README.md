@@ -250,7 +250,10 @@ exports a GenAI trace over OTLP/HTTP to any backend that takes one, with the off
 `invoke_agent {harness}` span per claim of the run, under it a `chat {model}` span per model request (provider, model,
 `server.address` (the host the request goes to, OpenRouter's for a model reached through it; none where not known),
 and tokens with the cache: `gen_ai.usage.input_tokens` includes the cache read and write, which are also given on their
-own) and an `execute_tool {tool}` span per tool call. A run is one trace, sampled whole or not at
+own) and an `execute_tool {tool}` span per tool call. A name the model wrote is never sent as written: a call the
+harness refused (a tool the session does not have) is `execute_tool` with `error.type=tool_refused` and no tool name, a
+model the run does not know is named by its route's model, and any other name is cut of every secret the runner holds
+and at 64 characters. A run is one trace, sampled whole or not at
 all (`OTEL_TRACES_SAMPLER`, `OTEL_TRACES_SAMPLER_ARG`). A request billed to a plan, and every turn of a plan harness,
 has `agentrun.billing=plan` and no token counts. No span holds content (a prompt, a message, a tool's arguments or
 result), whatever `OTEL_INSTRUMENTATION_GENAI_CAPTURE_CONTENT` says; content capture comes later. Reasoning tokens are
@@ -258,10 +261,32 @@ not on chat spans yet: the usage a run's requests are booked with does not count
 `gen_ai.response.model`: the model asked for is `gen_ai.request.model`. The exporter takes the standard
 `OTEL_EXPORTER_OTLP_HEADERS` and `OTEL_EXPORTER_OTLP_TIMEOUT`, and the resource `OTEL_SERVICE_NAME` and
 `OTEL_RESOURCE_ATTRIBUTES` (put `deployment.environment.name` there); `service.name` is `agentrun` unless set. Runs never
-receive these settings: no `OTEL_*` variable reaches a run's harness, tools or computer, and a run's own process is
-handed them apart from its environment. Spans are sent in the background, so a run's end never waits on the collector;
-a server or runner that stops waits at most 3 s to send what is left, and a collector that is down costs one log line
-and the dropped spans. Unset, or with `OTEL_SDK_DISABLED=true`, no OpenTelemetry code loads and nothing is sent.
+receive these settings: no `OTEL_*` variable reaches a run's harness, tools or computer, and a run in a process of its
+own (under `agentrun-serve runner`) sends its trace to its runner, which exports it. The runner reads what that process
+sends as untrusted: every string is cut as a name the model wrote, a provider or host that loses its shape is dropped,
+and a request's or turn's end takes only a value the runner knows. Every OTLP header value of 8 characters or more is a
+secret the server and the runner hold, under any name, an unknown one too, but the value of a `Content-Type`, `Accept`,
+`Content-Encoding` or `User-Agent` header, and of a dataset or tenant header (`x-honeycomb-dataset`, `x-axiom-dataset`,
+`x-scope-orgid`), which is only cut from the `[otel]` lines below. A value is held as written and decoded. What follows
+its first word is held too when that word is a known auth scheme (`Bearer`, `Basic`, `Api-Key`, `Api-Token`, `Token`,
+`sentry`, `Splunk`, `GenieKey`) or the header is named like a credential (`authorization`, `x-sentry-auth`,
+`x-api-key`); any other header's value is held whole, never its tail alone. So are an OTLP endpoint's user, password
+and any query parameter named like a credential. A header's or a parameter's name is split into words at punctuation
+and at each lower-to-upper case change, and it is named like a credential when a word is authorization, auth, key,
+apikey, token, secret, password, passwd, pwd, sig, signature, credential or credentials, or ends in key, token,
+secret, password, auth, sig, signature, credential or credentials (`api_key`, `access_token`, `apiKey`, `accesstoken`
+and `writekey` are; `authority` and `keyspace` are not). Commas split the header variables, so write a comma inside a
+value as `%2C`. The tracer's own `[otel]` lines, where an exporter's error may quote a header it sent or the URL it
+posted to, are cut of every such value at any length, a short one too, and of what follows any header value's first
+word, whatever the word and the header's name. A run's process can hold at most 512
+model requests and 512 tool calls open in its runner's trace at once; one started past that has no span. No OpenTelemetry diag logger is set, since the
+SDK's diag writes can quote a header value as sent, and a test fails if a source sets one or `OTEL_LOG_LEVEL`. Everywhere else, the runner's logs and what a run
+writes, a held value is cut at 8 characters or more, a header value's as any other's, and a shorter header value is on
+no held list: that floor is kept on purpose, since a needle of a few characters would cut ordinary text, turn a served
+number such as `1` into `[redacted]`, or refuse a source capture of any project that holds it. Spans are sent in the background, so a run's end never waits on
+the collector; a server or runner that stops waits at most 3 s to send what is left, and a collector that is down
+costs one log line and the dropped spans. Unset, or with `OTEL_SDK_DISABLED=true`, no OpenTelemetry code loads and
+nothing is sent.
 
 To send traces to Sentry (two variables: its OTLP endpoint and its `x-sentry-auth` header) or to any other backend
 through an OpenTelemetry Collector, and for what Sentry's Agents view shows of a run, see
@@ -489,14 +514,8 @@ claim lapses another runner claims the run and resumes it from its journal. A ru
 runner loss, a crash, a server stop or a park (the claim that resumes the run starts a new one, and says so on the
 timeline and, once, to the model as an "AgentRun server note"), and the agent's own computer, a persistent setting, does.
 The exception is a park's keep: a desktop, phone or sandbox a park keeps for 10 minutes comes back to the run's resume.
-One that only the runner that kept it can reach again (a Docker container, a machine that dials the server) holds the
-parked run for that runner while it is there under the same process (its word in the last 30 s, not refusing) and the
-keep lasts: no other runner claims the run to resume it, so a runner whose loops are full makes an answer wait until
-then. A stop or a cancel never waits: any runner claims the run at once and ends it without taking the kept machine
-(also when the kept row can't be read then), which the runner that kept it ends at its time, or sooner at its janitor's
-next pass once the run is over; another runner's janitor leaves both the row and the machine. Once that runner
-is gone, any runner claims it, starts a new one, and the timeline says `The desktop wasn't kept: the runner that kept it
-is gone.` `agentrun-serve runner --check --data DIR --name N`
+One that only its runner can reach (a Docker container, a machine that dials the server) brings the run back to that
+runner while it is up; a stop or cancel never waits for it, and the run's end deletes the machine. `agentrun-serve runner --check --data DIR --name N`
 (or `AGENTRUN_RUNNER_NAME=N` in place of `--name`) checks the runner's environment by name (its store, its seal key,
 every run-facing name its server holds, a forwarder on loopback) and whether the runner named `N` has a fresh
 heartbeat: it exits 0 when both hold, 1 when either does not, and 2 when no name is given. `--check --env` checks the
