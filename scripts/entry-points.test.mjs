@@ -31,6 +31,7 @@ const reviewed = new Map([
   ['packages/serve/test/store-target.mjs', label],
   ['packages/serve/test/native-fixtures/cli.mjs', 'reads argv[1] only to label the native CLI fixture and select its canned protocol; it never decides whether this module is the command'],
   ['packages/serve/test/native-fixtures/feedback-cli.mjs', 'reads argv[1] only to label the native CLI fixture and select its canned protocol; it never decides whether this module is the command'],
+  ['packages/import/test/index-once.test.mjs', 'its `node -e` child reads argv[1] as the path of the dist to import; it never decides whether this module is the command'],
 ]);
 
 const suspect = (source) => source.includes('process.argv[1]');
