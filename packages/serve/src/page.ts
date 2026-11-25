@@ -88,8 +88,14 @@ export class ConsoleSessions {
  *  (7340, published at 7350), and so does another beside it. A Host with no port keeps the socket's. */
 const browserPort = (req: IncomingMessage) => hostPort(req.headers.host) ?? req.socket.localPort;
 const cookieName = (req: IncomingMessage) => `agentrun-${browserPort(req)}`;
-export const cookiesOf = (req: IncomingMessage, name: string) =>
-  String(req.headers.cookie ?? "").split(";").map((part) => part.trim()).filter((part) => part.startsWith(`${name}=`)).map((part) => part.slice(name.length + 1));
+/** The request's cookies, each name and value trimmed, in the order sent; a part with no name is left out. */
+const cookiePairs = (req: IncomingMessage): Array<{ name: string; value: string }> =>
+  String(req.headers.cookie ?? "").split(";").flatMap((part) => {
+    const at = part.indexOf("=");
+    return at > 0 && part.slice(0, at).trim() ? [{ name: part.slice(0, at).trim(), value: part.slice(at + 1).trim() }] : [];
+  });
+/** The values of the request's cookies named `name`, in the order sent. */
+export const cookiesOf = (req: IncomingMessage, name: string) => cookiePairs(req).filter((pair) => pair.name === name).map((pair) => pair.value);
 /** Whether the browser reached this server over TLS, as the proxy in front says (X-Forwarded-Proto): `https`, or `wss`,
  *  which some proxies (Traefik) send on a WebSocket upgrade. Both are the page's https origin and its `__Host-` cookie. */
 export const overHttps = (req: IncomingMessage) => ["https", "wss"].includes(String(req.headers["x-forwarded-proto"] ?? "").split(",")[0]!.trim().toLowerCase());
@@ -107,11 +113,7 @@ export const ownerCookie = (req: IncomingMessage, value: string, maxAgeS: number
  *  again through a tunnel at 8080 sends both to either. Which are this server's is the owner's to say (Owner.valid). */
 export const sessionsAtEveryPort = (req: IncomingMessage): Array<{ name: string; value: string }> => {
   const own = ownerCookieName(req);
-  return String(req.headers.cookie ?? "").split(";").flatMap((part) => {
-    const at = part.indexOf("=");
-    const name = part.slice(0, at).trim();
-    return at > 0 && (name === own || /^agentrun-\d{1,5}-session$/.test(name)) ? [{ name, value: part.slice(at + 1).trim() }] : [];
-  });
+  return cookiePairs(req).filter(({ name }) => name === own || /^agentrun-\d{1,5}-session$/.test(name));
 };
 /** The owner's session cookies the request holds, valid or not. */
 export const heldSessions = (req: IncomingMessage) => cookiesOf(req, ownerCookieName(req));

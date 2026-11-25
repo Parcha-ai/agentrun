@@ -17,6 +17,9 @@ const ENV_DUMMY = `not-a-secret-${"from-env"}`;
 const { openSqliteStore } = await import("../dist/store/sqlite/store.js");
 const { claimSecrets } = await import("../dist/runner/claim-secrets.js");
 const { putSealedKey } = await import("../dist/server-keys.js");
+const { MODEL_KEY_NAMES } = await import("../dist/runner/claim-secrets.js");
+const { FAUX_ENV } = await import("../dist/model.js");
+const { SECRET_NAMES } = await import("../dist/secrets.js");
 
 const KEY = randomBytes(32);
 const rev = (tools) => ({ kind: "agentic", body: { tools } });
@@ -74,4 +77,36 @@ test("a claim gets the server's ChatGPT sign-in only when its run can reach a pl
   assert.equal(planOf(unpinned)?.state, "signed_in", "a run that names no model, where the plan is pi's default, gets it");
   const tierOnPlan = await claim({ model: "openai/gpt-6.1-sol", modelTiers: { fast: "chatgpt/gpt-6.1-sol" } }, { model: { provider: "openai", modelId: "gpt-6.1-sol" } });
   assert.equal(planOf(tierOnPlan)?.state, "signed_in", "a run whose tier names a plan model gets it");
+});
+
+// A workflow of one model node on the default tier, then one call of a monid tool (on monid's key).
+const MODEL_THEN_MONID = {
+  v: 2, name: "checked",
+  schemas: {
+    In: { type: "object", required: ["question"], properties: { question: { type: "string" } } },
+    Answer: { type: "object", required: ["answer"], properties: { answer: { type: "string" } } },
+    Person: { type: "object" },
+  },
+  input: { schemaId: "In" }, output: { schemaId: "Person", path: "person" },
+  root: { node: "chain", steps: [
+    { node: "extract", label: "answer", instructions: "Answer the question.", out: "Answer", as: "answer" },
+    { node: "call", label: "enrich", via: "tool", tool: "monid:faux/person/enrich", args: { name: "{answer}" }, out: "Person", as: "person", deadline_s: 60 },
+  ] },
+};
+const OPENAI_DUMMY = `not-a-secret-${"openai-saved"}`;
+const MONID_SAVED = `not-a-secret-${"monid-saved"}`;
+/** The secret names a claim's environment holds, read by name as a route reads them (model keys are never enumerable). */
+const heldIn = (env) => SECRET_NAMES.filter((name) => typeof env[name] === "string" && env[name] !== "").sort();
+
+test("a workflow run on a --faux runner is laid no model key, though its host model is a provider's whose key is saved; it is laid its tool's key", async (t) => {
+  const store = await storeWith(t, { OPENAI_API_KEY: OPENAI_DUMMY, MONID_API_KEY: MONID_SAVED });
+  const workflow = { kind: "workflow", body: { workflow: MODEL_THEN_MONID } };
+  // As workflow-spec.ts claims a workflow run: its plane alone, no pinned model. Its host model is AGENT_MODEL's, or else
+  // the default the saved OpenAI key gives.
+  for (const [how, env] of [["AGENT_MODEL", { AGENT_MODEL: "openai/gpt-6-luna" }], ["a saved key's default", {}]]) {
+    assert.deepEqual(heldIn(await claimSecrets({ store, sealKey: KEY, env }, workflow, {})), ["MONID_API_KEY", "OPENAI_API_KEY"], `${how}, not faux: its model's key and its tool's`);
+    const faux = heldIn(await claimSecrets({ store, sealKey: KEY, env: { ...env, [FAUX_ENV]: "1" } }, workflow, {}));
+    assert.deepEqual(faux.filter((name) => MODEL_KEY_NAMES.includes(name)), [], `${how}: a workflow run on a --faux runner holds a model key, which the faux model never sends`);
+    assert.deepEqual(faux, ["MONID_API_KEY"], `${how}: a workflow run on a --faux runner holds its tool's key alone`);
+  }
 });
