@@ -14,6 +14,7 @@ import test, { after } from "node:test";
 import { computerNameFor, kindRefusals, PHONE_GROUPS } from "../dist/index.js";
 import { PROTOCOL_VERSION } from "../dist/protocol.js";
 import { ADB_CODE, ADB_HOST, fakeClock, fakePhoneHarness, KEY, PHONED_JAR, PHONED_SERVICE } from "./fake-phone-harness.mjs";
+import { refusesHttp } from "./https-refusal.mjs";
 
 const phone = await import("../dist/phone-harness.js");
 const { create, memoryLedger, adbCli } = phone;
@@ -63,7 +64,7 @@ test("the API URL is https alone, loopback included, so the key never crosses in
 	const heard = [];
 	const fetch = async (url) => (heard.push(url), new Response("[]", { status: 200 }));
 	for (const baseUrl of ["http://api.phone-harness.com", "http://10.0.0.5:8080", "http://127.0.0.1:8080", "http://[::1]:8080", "http://localhost:8080", "ws://api.phone-harness.com"]) {
-		await assert.rejects(create({ apiKey: KEY, baseUrl, fetch }), (error) => /^the phone harness URL must be https, so the key never crosses in the clear/.test(error.message) && !error.message.includes(KEY), baseUrl);
+		await assert.rejects(create({ apiKey: KEY, baseUrl, fetch }), refusesHttp("the phone harness URL", baseUrl, KEY));
 	}
 	await assert.rejects(create({ apiKey: KEY, baseUrl: "api.phone-harness.com", fetch }), (error) => /the phone harness URL is not a URL/.test(error.message) && !error.message.includes(KEY));
 	assert.deepEqual(heard, [], "no call went out");

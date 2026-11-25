@@ -409,8 +409,10 @@ test("the image carries a desktop, nothing started: Xvfb, xfwm4 and the apps, ea
   assert.doesNotMatch(desktop, /command -v sudo/, "the desktop's no-sudo check is the guard's, after it");
 });
 
-test("the default box recipe's hash stays ed5aee54d3ea: staging's desktops start from the snapshot of that name through beta.53", async () => {
-  // Another image (media/, documents/) is a recipe of its own; nothing it adds moves this one.
+test("the default box recipe's hash is d289bcc6d0c2: a recipe change is a box bump, a new image and snapshot of that name", async () => {
+  // Another image (media/, documents/) is a recipe of its own; nothing it adds moves this one. A change here names a new
+  // ghcr.io/parcha-ai/agentrun-box:<hash> (the release's box job publishes it), a new Daytona snapshot
+  // agentrun-box-<hash> (box/build-daytona.py) for AGENTRUN_DAYTONA_SNAPSHOT, and relays/cloudflare/wrangler.json's image.
   const { recipeHash } = await import("../box/recipe.mjs");
-  assert.equal(recipeHash(), "ed5aee54d3ea");
+  assert.equal(recipeHash(), "d289bcc6d0c2");
 });

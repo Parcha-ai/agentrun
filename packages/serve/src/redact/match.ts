@@ -13,9 +13,13 @@
 
 export type Span = [start: number, end: number];
 
-/** The characters the shape scanners have visited in this process: the text each prefix search passes over, each run
- *  read, each guard read back. A test sets it to 0, redacts, and reads it: a scanner that read a run once per start
- *  inside it would count the square of the run's length. */
+/** The characters the redaction pipeline has visited in this process: the text each prefix search passes over, each
+ *  run read, each guard read back (the shape scanners); each form, hex, folded and plain needle's search, and the text
+ *  it passes over (find); each view built (its special characters found, its blanks, its decoders' reads, its non-ASCII
+ *  stretches squeezed, each cut its cover passes), lowered and flattened; each covered stretch a find in a view is
+ *  checked against (inside); the finds merged and the text cut; and
+ *  key-refusal.ts's reads of a text in pieces. A test sets it to 0, redacts, and reads it: a stage that read again from
+ *  the start at each find would count the text once per find. */
 export const scanned = { chars: 0 };
 
 // ---- Character classes, as the regexes they replace wrote them.
@@ -79,6 +83,13 @@ function seek(hay: string, prefix: string, from: number): number {
   return at < 0 ? Number.POSITIVE_INFINITY : at;
 }
 
+/** Where `needle` next stands in `hay` at or after `from`, or -1: a needle's search, counted as seek counts a prefix's. */
+function find(hay: string, needle: string, from: number): number {
+  const at = hay.indexOf(needle, from);
+  scanned.chars += Math.max(0, (at < 0 ? hay.length : at + needle.length) - from);
+  return at;
+}
+
 /** `text` with A-Z lowered and nothing else changed, so each offset is the same in both. */
 export const asciiLower = (text: string): string => text.replace(/[A-Z]+/g, (upper) => upper.toLowerCase());
 
@@ -121,26 +132,225 @@ const prefixFixed = (kind: string, prefixes: readonly string[], cls: Class, coun
   scan: (text, at, prefix) => (fixed(text, at + prefix.length, count, cls) ? { start: at, end: at + prefix.length + count, next: at + 1 } : none(at + 1)),
 });
 
-const PRIVATE_KEY_HEADER = only(` ${UPPER}${DIGIT}`);
-/** A private key block's header: "-----BEGIN", its key type (RSA, EC, OPENSSH, ENCRYPTED) at most 64 characters each
- *  side of "PRIVATE KEY", then "-----". Each start reads at most 140 characters. */
+const PRIVATE_KEY_TYPE = only(` ${UPPER}${DIGIT}`);
+/** Where a private key block's armor line at `at` ends, past its closing "-----", or -1. Its opening ("-----BEGIN" or
+ *  "-----END", `head` characters) is already read; then its key type (RSA, EC, OPENSSH, ENCRYPTED, an armored key's
+ *  "PGP ... BLOCK"), at most 64 characters each side of "PRIVATE KEY", then "-----". It reads at most 140 characters,
+ *  and 11 at each place "PRIVATE KEY" may stand. */
+function armorEnd(text: string, at: number, head: number): number {
+  const from = at + head;
+  let end = from;
+  while (end < text.length && end - from < 140 && PRIVATE_KEY_TYPE(text.charCodeAt(end))) end++;
+  scanned.chars += end - from + 1;
+  const length = end - from;
+  if (length >= 140 || !text.startsWith("-----", end)) return -1;
+  for (let i = Math.max(0, length - 75); i <= Math.min(64, length - 11); i++) {
+    scanned.chars += 11;
+    if (text.startsWith("PRIVATE KEY", from + i)) return end + 5;
+  }
+  return -1;
+}
+
+/** The most characters between a key's header and its END line, and the most base64 characters on a body line. */
+const KEY_BODY_MAX = 16384;
+/** The most lines of a key's body read when no END line is in reach. */
+const KEY_LINES = 1024;
+/** The most characters of a legacy PEM's or armored key's header line after its colon. */
+const KEY_HEADER_MAX = 256;
+const KEY_BASE64 = only(`${ALNUM}+=`);
+/** A header line's text: any character but a line break, a backslash, a quote or a "<". */
+const KEY_HEADER_TEXT: Class = (code) =>
+  code !== 10 && code !== 13 && code !== 92 && code !== 34 && code !== 39 && code !== 60;
+const KEY_HEADER_WORDS = ["Proc-Type:", "DEK-Info:", "Version:", "Comment:"];
+
+/** How many backslashes stand at `at`, at most 9 read: an escape takes 1 to 8 (a string four deep); 9 is too many. */
+function backslashes(text: string, at: number): number {
+  let end = at;
+  while (end < text.length && end - at < 9 && text.charCodeAt(end) === 92) end++;
+  scanned.chars += end - at + 1;
+  return end - at;
+}
+
+/** Where an escape at `at` of one of `chars`, after 1 to 8 backslashes, ends, or -1. */
+function escapeEnd(text: string, at: number, chars: string): number {
+  const count = backslashes(text, at);
+  const ok = count >= 1 && count <= 8 && at + count < text.length && chars.includes(text[at + count]!);
+  return ok ? at + count + 1 : -1;
+}
+
+/** Where each spelling of a line break at `at` ends, in the order the key's reading tries them: CRLF, then CR alone;
+ *  LF; an escaped CR followed by an escaped LF, then the CR alone; an escaped LF. */
+function keyBreaks(text: string, at: number): number[] {
+  if (at >= text.length) return [];
+  scanned.chars += 2;
+  const code = text.charCodeAt(at);
+  if (code === 13) return text.charCodeAt(at + 1) === 10 ? [at + 2, at + 1] : [at + 1];
+  if (code === 10) return [at + 1];
+  if (code !== 92) return [];
+  const count = backslashes(text, at);
+  if (count > 8) return [];
+  const after = text[at + count];
+  if (after === "n") return [at + count + 1];
+  if (after !== "r") return [];
+  const lf = escapeEnd(text, at + count + 1, "n");
+  return lf >= 0 ? [lf, at + count + 1] : [at + count + 1];
+}
+
+/** Where the blanks at `at` end: spaces, tabs and escaped tabs. */
+function keyBlanks(text: string, at: number): number {
+  let end = at;
+  for (;;) {
+    const code = text.charCodeAt(end);
+    scanned.chars += 1;
+    if (code === 32 || code === 9) end++;
+    else if (code !== 92) return end;
+    else {
+      const tab = escapeEnd(text, end, "t");
+      if (tab < 0) return end;
+      end = tab;
+    }
+  }
+}
+
+/** Where the base64 at `at` ends: at most KEY_BODY_MAX of its characters, each a letter, a digit, "+", "=" or a "/"
+ *  (maybe escaped, "\/"). */
+function keyBase64(text: string, at: number): number {
+  let end = at;
+  for (let count = 0; count < KEY_BODY_MAX; count++) {
+    const code = text.charCodeAt(end);
+    scanned.chars += 1;
+    if (KEY_BASE64(code) || code === 47) end++;
+    else if (code !== 92) return end;
+    else {
+      const slash = escapeEnd(text, end, "/");
+      if (slash < 0) return end;
+      end = slash;
+    }
+  }
+  return end;
+}
+
+/** Where a legacy PEM's or armored key's header line at `at` ends ("Proc-Type:", "DEK-Info:", "Version:" or "Comment:",
+ *  then at most KEY_HEADER_MAX characters of its text), or -1. */
+function keyHeaderLine(text: string, at: number): number {
+  for (const word of KEY_HEADER_WORDS) {
+    scanned.chars += word.length;
+    if (!text.startsWith(word, at)) continue;
+    const from = at + word.length;
+    let end = from;
+    while (end < text.length && end - from < KEY_HEADER_MAX && KEY_HEADER_TEXT(text.charCodeAt(end))) end++;
+    scanned.chars += end - from + 1;
+    return end;
+  }
+  return -1;
+}
+
+/** Whether a body line may end at `at`: a line break or a closing quote (either maybe escaped), a tag's "<", the text's
+ *  end. */
+function keyLineEnds(text: string, at: number): boolean {
+  if (at >= text.length) return true;
+  scanned.chars += 1;
+  const code = text.charCodeAt(at);
+  if (code === 10 || code === 13 || code === 34 || code === 39 || code === 60) return true;
+  return code === 92 && escapeEnd(text, at, `rn"'`) >= 0;
+}
+
+/** Where a body line at `at` ends, or -1: blanks, then base64, or a header line, or nothing, then blanks, at a place a
+ *  line may end. Each is tried in that order and the first that ends at such a place is the line. */
+function keyLine(text: string, at: number): number {
+  const start = keyBlanks(text, at);
+  const base64 = keyBase64(text, start);
+  if (base64 > start) {
+    const end = keyBlanks(text, base64);
+    if (keyLineEnds(text, end)) return end;
+  }
+  const header = keyHeaderLine(text, start);
+  if (header >= 0) {
+    const end = keyBlanks(text, header);
+    if (keyLineEnds(text, end)) return end;
+  }
+  return keyLineEnds(text, start) ? start : -1;
+}
+
+/** Where a line break at `at` and the body line after it end, the break's spellings tried in order, or -1. */
+function keyNextLine(text: string, at: number): number {
+  for (const start of keyBreaks(text, at)) {
+    const end = keyLine(text, start);
+    if (end >= 0) return end;
+  }
+  return -1;
+}
+
+/** Where the END line of a block whose header ends at `header` ends, or -1: the first "-----" after the header, at most
+ *  KEY_BODY_MAX characters on, must start one. The search stops at that "-----", so a reading from one header never
+ *  passes the next header's dashes. */
+function keyEndLine(text: string, header: number): number {
+  const dashes = find(text, "-----", header);
+  if (dashes < 0 || dashes - header > KEY_BODY_MAX) return -1;
+  scanned.chars += 3;
+  return text.startsWith("-----END", dashes) ? armorEnd(text, dashes, 8) : -1;
+}
+
+/** Where the body lines after a header that ends at `header` end, or -1 when not even an empty line stands there: a
+ *  first line (after a line break, or glued to the header), then at most KEY_LINES - 1 more, each after a line break,
+ *  as long as one follows. */
+function keyBodyLines(text: string, header: number): number {
+  let end = keyNextLine(text, header);
+  if (end < 0) end = keyLine(text, header);
+  for (let lines = 1; end >= 0 && lines < KEY_LINES; lines++) {
+    const next = keyNextLine(text, end);
+    if (next < 0) break;
+    end = next;
+  }
+  return end;
+}
+
+/** A private key block, whole: its BEGIN line through its body to its END line, the key itself, not its header alone (a
+ *  cut read serves a run's whole file). Ported from #3617's rule, one regex there, read here by hand with every
+ *  character counted.
+ *  - With its END line within KEY_BODY_MAX characters, all between is cut, whatever wraps the body's lines (a code
+ *    string literal on each, a "#" or ">" before each, an XML or HTML line break, an escape, an armored key's headers):
+ *    the body is any character but a "-" that starts "-----", so the END line can only start at the first "-----"
+ *    after the header, and the reading from one header stops there.
+ *  - With no END line in reach (a key cut short, one past the bound, one the edge of a window key-refusal.ts reads
+ *    crosses), it is cut through its body's lines: the first maybe glued to its header, at most KEY_LINES in all. A
+ *    line break is LF, CRLF or CR, or one escaped in a quoted string ("\n", "\r\n", "\\n" in a string within a string:
+ *    at most 8 backslashes, four strings deep). A line is blanks (a space, a tab, or an escaped tab), then base64 of at
+ *    most KEY_BODY_MAX characters (its slashes maybe escaped, "\/"), or a legacy PEM's or armored key's header
+ *    (Proc-Type, DEK-Info, Version, Comment) of at most KEY_HEADER_MAX after its colon, or nothing (a blank line), then
+ *    blanks; it ends at a line break or a closing quote (either maybe escaped), an XML or HTML tag's "<", or the text's
+ *    end. Text after the body that is no such line (prose, a field) stays.
+ *  - A header with not even an empty line after it (prose on its line, another header glued to it) is cut alone, as
+ *    the header shape before this one cut it.
+ *  A block read whole or through its lines reads on from its end: a "-----BEGIN" inside it can only stand in a header
+ *  line's text, already cut. Each part is bounded, a line break's spellings try the line after it at most three times,
+ *  and the search for the END line stops at the next "-----": the reading stays linear. */
 const PRIVATE_KEY: Shape = {
   kind: "private key block",
   prefixes: ["-----BEGIN"],
   scan(text, at) {
-    const from = at + 10;
-    let end = from;
-    while (end < text.length && end - from < 140 && PRIVATE_KEY_HEADER(text.charCodeAt(end))) end++;
-    scanned.chars += end - from + 1;
-    const length = end - from;
-    if (length >= 140 || !text.startsWith("-----", end)) return none(at + 1);
-    for (let i = Math.max(0, length - 75); i <= Math.min(64, length - 11); i++) {
-      scanned.chars += 11;
-      if (text.startsWith("PRIVATE KEY", from + i)) return { start: at, end: end + 5, next: at + 1 };
-    }
-    return none(at + 1);
+    const header = armorEnd(text, at, 10);
+    if (header < 0) return none(at + 1);
+    const whole = keyEndLine(text, header);
+    if (whole >= 0) return { start: at, end: whole, next: whole };
+    const lines = keyBodyLines(text, header);
+    return lines >= 0 ? { start: at, end: lines, next: lines } : { start: at, end: header, next: at + 1 };
   },
 };
+
+/** Where the private key block whose "-----BEGIN" stands at `at` ends, past its END line, or -1: no key's header there,
+ *  or no END line in reach, as PRIVATE_KEY reads it whole. key-refusal.ts reads it so that no piece of an answer ends
+ *  inside a block. Whether any "-----" stands within KEY_BODY_MAX of the header is read back from there first (the
+ *  header's own closing dashes stop that read), so a header with none after it reads no further. */
+export function privateKeyEnd(text: string, at: number): number {
+  if (!text.startsWith("-----BEGIN", at)) return -1;
+  const header = armorEnd(text, at, 10);
+  if (header < 0) return -1;
+  const reach = Math.min(text.length, header + KEY_BODY_MAX);
+  const last = text.lastIndexOf("-----", reach);
+  scanned.chars += reach - Math.max(last, header - 5);
+  return last < header ? -1 : keyEndLine(text, header);
+}
 
 /** A JWT: three base64url parts, the first two JSON objects ("eyJ"), each 8 characters or more after it. It starts at
  *  the first "eyJ" of a run of a part's characters, wherever that run starts ("token-eyJ…", "x9eyJ…"): a later "eyJ" in
@@ -272,8 +482,9 @@ const BEARER_TOKEN: Shape = {
   },
 };
 
-/** Each name a credential parameter goes by, as written after "?" or "&" and lowered. */
-const CREDENTIAL_NAMES = new Set([
+/** Each name a credential parameter goes by, as written after "?" or "&" and lowered; and each key, lowered, of a held
+ *  JSON value whose string is held as itself (learn/secrets.ts heldFields). */
+export const CREDENTIAL_NAMES: ReadonlySet<string> = new Set([
   ...["api", "access", "auth", "id", "refresh", "client"].flatMap((head) => {
     const tail = head === "api" ? "key" : head === "client" ? "secret" : "token";
     return [`${head}${tail}`, `${head}_${tail}`, `${head}-${tail}`];
@@ -301,6 +512,32 @@ const URL_CREDENTIAL: Shape = {
   },
 };
 
+const isUpper = (code: number) => code >= 65 && code <= 90;
+/** An API key made in this server's console (api-keys.ts): `ar_key_` and its 32 random bytes in base64url, 43
+ *  characters or more to the end of that run, so a key glued to more of its characters is cut whole. The server keeps
+ *  no copy of such a key (only a keyed hash), so its shape is the one way it is found in a text, and it is found
+ *  whatever stands before it: after a word's character too (the `n` of a line break as JSON text writes it, a name
+ *  glued to it). What tells a key from a long name that only holds the prefix's letters (`similar_key_for_the_...`) is
+ *  in the run itself: a capital or a digit, which 32 random bytes all but always hold and a snake_case name does not.
+ *  A start inside a run already read ends where that run ends and holds no more of it, so it is not read again. */
+const AGENTRUN_API_KEY: Shape = {
+  kind: "AgentRun API key",
+  prefixes: ["ar_key_"],
+  scan(text, at, prefix) {
+    const from = at + prefix.length;
+    let end = from;
+    let mixed = false;
+    for (; end < text.length; end++) {
+      const code = text.charCodeAt(end);
+      if (!PART(code)) break;
+      mixed ||= isDigit(code) || isUpper(code);
+    }
+    scanned.chars += end - from + 1;
+    const next = end - (prefix.length - 1);
+    return end - from >= 43 && mixed ? { start: at, end, next } : none(next);
+  },
+};
+
 /** Text shaped like a secret, by kind. The same shapes the Pi learning loop's guard refuses. */
 export const SECRET_SHAPES: readonly Shape[] = [
   prefixFixed("AWS access key id", ["AKIA", "ASIA"], only(UPPER + DIGIT), 16),
@@ -309,6 +546,7 @@ export const SECRET_SHAPES: readonly Shape[] = [
   prefixRun("GitHub token", ["ghp_", "gho_", "ghu_", "ghs_", "ghr_"], ALNUM_CLASS, 30),
   prefixRun("GitHub token", ["github_pat_"], WORD, 20),
   prefixRun("sk- key", ["sk-"], PART, 20, (text, at) => at === 0 || !ALNUM_CLASS(text.charCodeAt(at - 1))),
+  AGENTRUN_API_KEY,
   prefixRun("Slack token", [..."abposre"].map((kind) => `xox${kind}-`).concat("xapp-"), only(`${ALNUM}-`), 10),
   JWT,
   WEBHOOK_SECRET,
@@ -344,8 +582,10 @@ const besideWord = (kind: string, words: readonly string[], pattern: RegExp, hea
 const ACCOUNT_NUMBER = /\b(?:bank\s{1,3})?(?:account|acct|a\/c)(?:\s{1,3}(?:number|no\.?|num))?\s{0,3}(?:#|:|\bis\b)?\s{0,3}(?!\d{4}-\d{2}-\d{2}\b)\d(?:[ -]?\d){5,}/;
 /** An IBAN beside its word: two letters, two check digits, then ten to thirty letters or digits, spaces between. */
 const IBAN = /\bIBAN\s{0,3}(?:#|:|\bis\b)?\s{0,3}[A-Z]{2}\d{2}(?:\s?[A-Z0-9]){10,30}/;
-/** A US routing (ABA) number beside its word: nine digits. */
-const ROUTING_NUMBER = /\b(?:routing|ABA)(?:\s{1,3}(?:number|no\.?|num))?\s{0,3}(?:#|:|\bis\b)?\s{0,3}\d{9}\b/;
+/** A US routing (ABA) number beside its word: nine digits. The word ends at a word end, so an id or hash whose hex
+ *  holds "aba" glued to nine digits (a UUID's last group, a sha cut to twelve) is none. The other words hold a letter
+ *  no hex does, so no id spells them. */
+const ROUTING_NUMBER = /\b(?:routing|ABA)\b(?:\s{1,3}(?:number|no\.?|num))?\s{0,3}(?:#|:|\bis\b)?\s{0,3}\d{9}\b/;
 /** A UK sort code beside its word: three pairs of digits. */
 const SORT_CODE = /\bsort\s{1,3}code\s{0,3}(?:#|:|\bis\b)?\s{0,3}\d{2}[- ]?\d{2}[- ]?\d{2}\b/;
 
@@ -432,7 +672,7 @@ export type Needles = {
 /** Adds each place `needle` stands in `hay` to `out`, overlapping places too. */
 function places(hay: string, needle: string, out: Span[]): void {
   if (!needle) return;
-  for (let at = hay.indexOf(needle); at >= 0; at = hay.indexOf(needle, at + 1)) out.push([at, at + needle.length]);
+  for (let at = find(hay, needle, 0); at >= 0; at = find(hay, needle, at + 1)) out.push([at, at + needle.length]);
 }
 
 const isSeparator = (code: number) => code === 45 || code === 95 || code === 58 || code === 46;
@@ -441,6 +681,8 @@ const isSeparator = (code: number) => code === 45 || code === 95 || code === 58 
  *  two. Found in the text lowered with its separators gone, each character's offset in the text kept, and a place kept
  *  only where no two of its digits are more than one separator apart. */
 function foldSpans(text: string, folds: readonly string[], out: Span[]): void {
+  // The text lowered, then read once for its separators.
+  scanned.chars += 2 * text.length;
   const lower = asciiLower(text);
   const at = new Int32Array(text.length);
   const parts: string[] = [];
@@ -460,7 +702,7 @@ function foldSpans(text: string, folds: readonly string[], out: Span[]): void {
   for (let k = 1; k < count; k++) stretch[k] = at[k]! - at[k - 1]! > 2 ? k : stretch[k - 1]!;
   for (const needle of folds) {
     if (!needle) continue;
-    for (let i = flat.indexOf(needle); i >= 0; i = flat.indexOf(needle, i + 1)) {
+    for (let i = find(flat, needle, 0); i >= 0; i = find(flat, needle, i + 1)) {
       const last = i + needle.length - 1;
       if (stretch[last]! <= i) out.push([at[i]!, at[last]! + 1]);
     }
@@ -469,6 +711,8 @@ function foldSpans(text: string, folds: readonly string[], out: Span[]): void {
 
 /** `found` in order, each run of overlapping or touching spans as one. */
 export function merged(found: readonly (readonly [number, number])[]): Span[] {
+  // Each find read once: they come as one sorted run per form, hex, fold and shape, which the sort merges.
+  scanned.chars += found.length;
   const out: Span[] = [];
   for (const [start, end] of [...found].sort((a, b) => a[0] - b[0])) {
     const last = out.at(-1);
@@ -480,6 +724,7 @@ export function merged(found: readonly (readonly [number, number])[]): Span[] {
 
 /** `text` with each of `spans` (merged, in order) replaced by "[redacted]". */
 export function cutAt(text: string, spans: readonly Span[]): string {
+  scanned.chars += text.length;
   let out = "";
   let from = 0;
   for (const [start, end] of spans) {
@@ -497,6 +742,14 @@ type View = { readonly text: string; readonly covered: readonly Span[] };
 
 const HEX = only("0123456789abcdefABCDEF");
 const BLANKS = /[\t-\r ]+/y;
+/** A character that renders as nothing (a zero-width space, a soft hyphen, a byte order mark, a variation selector). */
+const IGNORABLE = /\p{Default_Ignorable_Code_Point}+/gu;
+const GONE = /[\s\p{Default_Ignorable_Code_Point}]+/gu;
+
+/** `text` as a view reads it, and as a held value's needles are read: NFKC, with its whitespace and its characters that
+ *  render as nothing gone, before NFKC (so one between a letter and its accent hides neither) and after. A held value
+ *  with a zero-width space or a soft hyphen between its characters reads as itself. */
+export const squeeze = (text: string): string => text.replace(IGNORABLE, "").normalize("NFKC").replace(GONE, "");
 
 /** What a view decodes where its trigger character stands: given the text and that place, the end of what it decoded,
  *  each character it decodes to handed to `unit` with the text it came from; or -1 where nothing there decodes. */
@@ -509,13 +762,94 @@ const PERCENT: Decoder = {
   decode(text, at, unit) {
     let end = at;
     while (text[end] === "%" && HEX(text.charCodeAt(end + 1)) && HEX(text.charCodeAt(end + 2))) end += 3;
+    // Each byte read, and the three characters past the run that end it.
+    scanned.chars += end - at + 3;
     if (end === at) return -1;
     decoded(text, at, end, unit);
     return end;
   },
 };
 /** "+" as a space, as a form's encoding writes one. */
-const PLUS: Decoder = { trigger: "+", decode: (_text, at, unit) => (unit(" ", at, at + 1), at + 1) };
+const PLUS: Decoder = { trigger: "+", decode: (_text, at, unit) => (scanned.chars++, unit(" ", at, at + 1), at + 1) };
+/** What JSON's one-character escapes stand for. */
+const ESCAPED: Readonly<Record<string, string>> = {
+  n: "\n", r: "\r", t: "\t", '"': '"', "\\": "\\", "/": "/", b: "\b", f: "\f",
+};
+/** A character of `text` at `at` read through one level of JSON's escapes, and where it ends: a "\" and one of
+ *  ESCAPED's keys, or "\u" and four hex digits (a UTF-16 unit), or else the character as it stands. */
+type Char = { char: string; end: number };
+function unescaped(text: string, at: number): Char | undefined {
+  // Counted as the most it reads, six characters ("\u" and four hex digits), whatever it reads.
+  if (at >= text.length) return undefined;
+  scanned.chars += Math.min(6, text.length - at);
+  if (text[at] !== "\\") return { char: text[at]!, end: at + 1 };
+  const next = text[at + 1];
+  if (next !== undefined && ESCAPED[next] !== undefined) return { char: ESCAPED[next]!, end: at + 2 };
+  if (next !== "u") return undefined;
+  for (let i = at + 2; i < at + 6; i++) if (!HEX(text.charCodeAt(i))) return undefined;
+  return { char: String.fromCharCode(Number.parseInt(text.slice(at + 2, at + 6), 16)), end: at + 6 };
+}
+/** JSON's escapes, decoded twice: a held value a JSON writer wrote, every character or some ("\n", "\"", a "\u" and
+ *  four hex digits), and one written again as a JSON string's text (JSON in JSON: "\\n", "\\\""). Where one level's "\"
+ *  starts an escape of the next, each character that escape decodes to comes from all of the raw text the two levels
+ *  read; a "\" that starts none is itself. A surrogate pair is two escapes, two units, NFKC'd together as any non-ASCII
+ *  stretch is. Line breaks written "\r\n" decode to whitespace, gone from the view. */
+const JSON_ESCAPE: Decoder = {
+  trigger: "\\",
+  decode(text, at, unit) {
+    const first = unescaped(text, at);
+    if (!first) return -1;
+    if (first.char !== "\\") {
+      unit(first.char, at, first.end);
+      return first.end;
+    }
+    // The first level decoded a "\": what follows it, itself read through the first level, may be a second escape.
+    const second = unescaped(text, first.end);
+    if (second && ESCAPED[second.char] !== undefined) {
+      unit(ESCAPED[second.char]!, at, second.end);
+      return second.end;
+    }
+    if (second?.char === "u") {
+      let end = second.end;
+      let digits = "";
+      for (let i = 0; i < 4; i++) {
+        const digit = unescaped(text, end);
+        if (!digit || !HEX(digit.char.charCodeAt(0))) break;
+        digits += digit.char;
+        end = digit.end;
+      }
+      if (digits.length === 4) {
+        unit(String.fromCharCode(Number.parseInt(digits, 16)), at, end);
+        return end;
+      }
+    }
+    unit("\\", at, first.end);
+    return first.end;
+  },
+};
+/** JSON's escapes, decoded once: a "\" that starts an escape and what follows it, as one character. A held value that
+ *  holds a backslash before a character an escape starts with ("\n", "A" as written), written by a JSON writer
+ *  ("\\n", "\u0041"), reads as itself here, where the two levels JSON_ESCAPE reads make the escaped backslash and
+ *  what follows it one escape. */
+const JSON_ESCAPE_ONCE: Decoder = {
+  trigger: "\\",
+  decode(text, at, unit) {
+    const char = unescaped(text, at);
+    if (!char) return -1;
+    unit(char.char, at, char.end);
+    return char.end;
+  },
+};
+/** What JSON_ESCAPE reads at `at`: the character the escape there decodes to, through both levels, and where it ends;
+ *  undefined where no escape starts (the "\" is then itself). key-refusal.ts's peek counts an escape by it, so the
+ *  read past a call's stop and the JSON view see the same characters. */
+export function jsonEscapeAt(text: string, at: number): { char: string; end: number } | undefined {
+  let char: string | undefined;
+  const end = JSON_ESCAPE.decode(text, at, (decoded) => {
+    char = decoded;
+  });
+  return end < 0 || char === undefined ? undefined : { char, end };
+}
 
 /** A view the whole-text check reads: the text decoded by `decoders`, then squeezed (viewOf), read only where `when`
  *  says the text holds what a decoder decodes. `special`: where viewOf stops to do more than copy. */
@@ -526,17 +860,21 @@ const viewSpec = (when: (text: string) => boolean, decoders: readonly Decoder[])
   special: new RegExp(`[\\s${decoders.map((decoder) => `\\${decoder.trigger}`).join("")}\\u0080-\\uffff]`, "g"),
 });
 /** The views of a text read for each held value, in order: squeezed; percent-decoded; percent-decoded with "+" as a
- *  space. Each is lowered for hexes and flattened for folded identifiers in holds. */
+ *  space; JSON's escapes decoded twice; and decoded once, where the text holds an escape that decodes to a backslash
+ *  (elsewhere the two levels read as one does). Each is lowered for hexes and flattened for folded identifiers in
+ *  holds. */
 const VIEWS: readonly ViewSpec[] = [
   viewSpec(() => true, []),
   viewSpec((text) => /%[0-9a-fA-F]{2}/.test(text), [PERCENT]),
   viewSpec((text) => text.includes("+"), [PERCENT, PLUS]),
+  viewSpec((text) => /\\(?:u[0-9a-fA-F]{4}|["\\/bfnrt])/.test(text), [JSON_ESCAPE]),
+  viewSpec((text) => /\\(?:\\|u005[cC])/.test(text), [JSON_ESCAPE_ONCE]),
 ];
 
-/** `text` as the whole-text check reads it: decoded by `spec`'s decoders, NFKC, and its whitespace gone, as
- *  learn/secrets.ts has always squeezed it. NFKC is applied to each stretch of non-ASCII characters with the ASCII
- *  character before it, which gives what it gives over the whole text (an ASCII character is a starter nothing composes
- *  onto), and each character it makes comes from that whole stretch. With `cuts` (merged spans of `text`), the view's
+/** `text` as the whole-text check reads it: decoded by `spec`'s decoders, then squeezed (squeeze: NFKC, its whitespace
+ *  and its characters that render as nothing gone), as a held value's needles are. The squeeze is applied to each
+ *  stretch of non-ASCII characters with the ASCII character before it, which gives what it gives over the whole text (an
+ *  ASCII character is a starter nothing composes onto), and each character it makes comes from that whole stretch. With `cuts` (merged spans of `text`), the view's
  *  covered stretches: where every character comes from inside one cut. */
 function viewOf(text: string, spec: ViewSpec, cuts?: readonly Span[]): View {
   const out: string[] = [];
@@ -553,8 +891,13 @@ function viewOf(text: string, spec: ViewSpec, cuts?: readonly Span[]): View {
     if (to <= from) return;
     out.push(text.slice(from, to));
     if (cuts) {
-      while (cut < cuts.length && cuts[cut]![1] <= from) cut++;
+      // The cover's cursor only goes forward: each cut is passed once in the whole view.
+      while (cut < cuts.length && cuts[cut]![1] <= from) {
+        cut++;
+        scanned.chars++;
+      }
       for (let k = cut; k < cuts.length && cuts[k]![0] < to; k++) {
+        scanned.chars++;
         const start = Math.max(from, cuts[k]![0]);
         const end = Math.min(to, cuts[k]![1]);
         if (start < end) cover(length + start - from, length + end - from);
@@ -567,7 +910,10 @@ function viewOf(text: string, spec: ViewSpec, cuts?: readonly Span[]): View {
     if (!chars) return;
     out.push(chars);
     if (cuts) {
-      while (cut < cuts.length && cuts[cut]![1] <= from) cut++;
+      while (cut < cuts.length && cuts[cut]![1] <= from) {
+        cut++;
+        scanned.chars++;
+      }
       if (cut < cuts.length && cuts[cut]![0] <= from && to <= cuts[cut]![1]) cover(length, length + chars.length);
     }
     length += chars.length;
@@ -581,15 +927,17 @@ function viewOf(text: string, spec: ViewSpec, cuts?: readonly Span[]): View {
     if (held && !isSpace(held.char.charCodeAt(0))) emit(held.char, held.from, held.to);
     held = undefined;
   };
-  const nfkc = (chars: string) => chars.normalize("NFKC").replace(/\s+/gu, "");
   const flushGroup = () => {
     if (!group) return;
-    const made = nfkc(group.chars);
+    // The stretch squeezed twice: whole, and without its lead.
+    scanned.chars += 2 * group.chars.length;
+    const made = squeeze(group.chars);
     const { lead } = group;
-    const rest = lead ? nfkc(group.chars.slice(lead.char.length)) : "";
+    const rest = lead ? squeeze(group.chars.slice(lead.char.length)) : "";
     // Where nothing composed onto the ASCII character, it comes from itself alone: a value cut in place right before
-    // a non-ASCII character is still covered to its last character.
-    if (lead && made === nfkc(lead.char) + rest) {
+    // a non-ASCII character is still covered to its last character. A stretch that squeezes to nothing (characters that
+    // render as nothing) adds nothing to the view, as whitespace adds nothing.
+    if (lead && made === squeeze(lead.char) + rest) {
       held = lead;
       flushHeld();
       emit(rest, lead.to, group.to);
@@ -617,6 +965,8 @@ function viewOf(text: string, spec: ViewSpec, cuts?: readonly Span[]): View {
     special.lastIndex = at;
     const hit = special.exec(text);
     const stop = hit ? hit.index : text.length;
+    // The characters copied as they are, and the special one that stopped the search.
+    scanned.chars += (hit ? stop + 1 : stop) - at;
     if (stop > at) {
       flushGroup();
       flushHeld();
@@ -633,6 +983,7 @@ function viewOf(text: string, spec: ViewSpec, cuts?: readonly Span[]): View {
       // character after it could compose onto.
       BLANKS.lastIndex = stop;
       BLANKS.test(text);
+      scanned.chars += BLANKS.lastIndex - stop;
       flushGroup();
       flushHeld();
       held = { char: text[BLANKS.lastIndex - 1]!, from: BLANKS.lastIndex - 1, to: BLANKS.lastIndex };
@@ -658,6 +1009,8 @@ function decoded(text: string, from: number, to: number, unit: Sink): void {
     for (let at = from; at < to; at += 3) unit(String.fromCharCode(Number.parseInt(text.slice(at + 1, at + 3), 16)), at, at + 3);
     return;
   }
+  // The run read three times: its hex parsed, decoded whole, and decoded one sequence at a time.
+  scanned.chars += 3 * (to - from);
   const bytes = Buffer.from(text.slice(from, to).replaceAll("%", ""), "hex");
   const whole = bytes.toString("utf8");
   const pieces: [string, number, number][] = [];
@@ -674,6 +1027,7 @@ function decoded(text: string, from: number, to: number, unit: Sink): void {
 
 /** A view with its separators ("-", "_", ":", ".") gone, its covered stretches moved to match. */
 function flatOf(view: View): View {
+  scanned.chars += view.text.length + view.covered.length;
   const parts: string[] = [];
   const kept = new Int32Array(view.text.length + 1);
   let from = 0;
@@ -698,11 +1052,13 @@ function flatOf(view: View): View {
   return { text: parts.join(""), covered };
 }
 
-/** Whether [start, end) of a view lies in one of its covered stretches. */
+/** Whether [start, end) of a view lies in one of its covered stretches: a binary search, each stretch it visits
+ *  counted. */
 function inside(covered: readonly Span[], start: number, end: number): boolean {
   let lo = 0;
   let hi = covered.length - 1;
   while (lo <= hi) {
+    scanned.chars++;
     const mid = (lo + hi) >> 1;
     if (covered[mid]![0] <= start) lo = mid + 1;
     else hi = mid - 1;
@@ -715,10 +1071,10 @@ function holdsIn(view: string, covered: readonly Span[] | undefined, needles: re
   for (const needle of needles) {
     if (!needle) continue;
     if (!covered) {
-      if (view.includes(needle)) return true;
+      if (find(view, needle, 0) >= 0) return true;
       continue;
     }
-    for (let at = view.indexOf(needle); at >= 0; at = view.indexOf(needle, at + 1)) if (!inside(covered, at, at + needle.length)) return true;
+    for (let at = find(view, needle, 0); at >= 0; at = find(view, needle, at + 1)) if (!inside(covered, at, at + needle.length)) return true;
   }
   return false;
 }
@@ -730,11 +1086,14 @@ export function holds(text: string, needles: Needles, { fold = true, cuts }: { f
   const folds = fold ? needles.folds : [];
   if (!needles.plain.length && !needles.hexes.length && !folds.length) return false;
   for (const spec of VIEWS) {
+    // Whether a decoding view is read: its test reads the text to its first trigger at most.
+    if (spec.decoders.length) scanned.chars += text.length;
     if (!spec.when(text)) continue;
     const view = viewOf(text, spec, cuts);
     const covered = cuts ? view.covered : undefined;
     if (holdsIn(view.text, covered, needles.plain)) return true;
     if (!needles.hexes.length && !folds.length) continue;
+    scanned.chars += view.text.length;
     const lower = { text: asciiLower(view.text), covered: view.covered };
     if (holdsIn(lower.text, covered, needles.hexes)) return true;
     if (!folds.length) continue;

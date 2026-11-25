@@ -2,7 +2,7 @@
 // this user against a copy whose fixed paths are a scratch directory's. The daemon it fetches is fake bytes from a local
 // server: a stand-in that records each start, its arguments and its environment. No root, no network beyond loopback.
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
@@ -19,8 +19,15 @@ const TOKEN = `art_${randomBytes(32).toString("base64url")}`;
 const USER = `${process.getuid()}:${process.getgid()}`;
 const INIT_ARGS = `--deadline 2026-11-16T12:00:00Z --user ${USER} --own-network --network allow:*.example.com`;
 
-/** A scratch box: agentrun-dial with its fixed paths moved into it, the fake daemon's bytes, and a server for them. */
-async function box(t) {
+/**
+ * A scratch box: agentrun-dial with its fixed paths moved into it, the fake daemon's bytes, and a server for them.
+ * fixed: more of its fixed values, by name, replaced. drops: which of agentrun-dial's requests the server resets before
+ * answering, as a relay whose connection fails does: "none", "all", or "first try" (each one in the 500 ms after its
+ * first; agentrun-dial waits 1 s before its next try). answers: the HTTP statuses its first answered requests get,
+ * before the daemon's 200. trickle: the daemon's answer is 2 KiB every half second, never ending (above curl's speed
+ * limit, so only a time limit ends it). fetches: its answered requests; dropped: how many it reset.
+ */
+async function box(t, { fixed: more = {}, drops = "none", answers = [], trickle = false } = {}) {
 	const dir = mkdtempSync(join(tmpdir(), "computer-agentrun-dial-"));
 	t.after(() => rmSync(dir, { recursive: true, force: true }));
 	const calls = join(dir, "calls");
@@ -28,8 +35,10 @@ async function box(t) {
 	const daemon = Buffer.from(`#!${process.execPath}
 const { appendFileSync } = require("node:fs");
 const [command, ...args] = process.argv.slice(2);
-appendFileSync(${JSON.stringify(calls)}, JSON.stringify({ command, args, env: process.env, cwd: process.cwd() }) + "\\n");
-if (command === "init") {
+appendFileSync(${JSON.stringify(calls)}, JSON.stringify({ command, args, env: process.env, cwd: process.cwd(), pid: process.pid }) + "\\n");
+if (command === "init" && require("node:fs").existsSync(${JSON.stringify(join(dir, "init-never-listens"))})) {
+	setTimeout(() => process.exit(0), 20000);
+} else if (command === "init") {
 	require("node:net").createServer().listen(process.env.AGENTRUN_COMPUTERD_SOCKET);
 	setTimeout(() => process.exit(0), 3000);
 }
@@ -41,6 +50,7 @@ if (command === "init") {
 		INIT_LOG: ["/run/agentrun-init.log", join(dir, "run", "agentrun-init.log")],
 		WORKSPACE: ["/workspace", join(dir, "workspace")],
 		OWNER: ["0:0", `${process.getuid()}:${process.getgid()}`],
+		...more,
 	};
 	let script = DIAL;
 	for (const [name, [shipped, here]] of Object.entries(fixed)) {
@@ -53,13 +63,32 @@ if (command === "init") {
 	writeFileSync(join(dir, "allow:x.example.com"), "");
 	const fetches = [];
 	const hosts = [];
+	const dropped = { count: 0, first: 0 };
 	const server = createServer((req, res) => {
+		// Other programs on a host may probe a new loopback port (a GET / with no token): only a request with this box's
+		// token is agentrun-dial's.
+		if (req.headers.authorization !== `Bearer ${TOKEN}`) return res.writeHead(404).end();
+		dropped.first ||= Date.now();
+		if (drops === "all" || (drops === "first try" && Date.now() - dropped.first < 500)) {
+			dropped.count += 1;
+			return req.socket.destroy();
+		}
 		fetches.push({ url: req.url, authorization: req.headers.authorization });
+		if (trickle) {
+			res.writeHead(200);
+			const drip = setInterval(() => res.write(Buffer.alloc(2048)), 500);
+			return res.on("close", () => clearInterval(drip));
+		}
 		hosts.push(req.headers.host);
+		const status = answers[fetches.length - 1];
+		if (status !== undefined) return res.writeHead(status).end(`status ${status}`);
 		res.end(daemon);
 	});
 	await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-	t.after(() => server.close());
+	t.after(() => {
+		server.closeAllConnections();
+		server.close();
+	});
 	const env = {
 		AGENTRUN_ATTACH_URL: "ws://127.0.0.1:1/v2/computers/attach",
 		AGENTRUN_ATTACH_TOKEN: TOKEN,
@@ -70,7 +99,8 @@ if (command === "init") {
 	};
 	const run = (overrides = {}) =>
 		new Promise((resolve) => {
-			const child = spawn("sh", [join(dir, "agentrun-dial")], { cwd: dir, env: { ...env, ...overrides } });
+			// A run that outlives 20 s is ended, so an unbounded loop fails its test instead of hanging the file.
+			const child = spawn("sh", [join(dir, "agentrun-dial")], { cwd: dir, env: { ...env, ...overrides }, timeout: 20_000 });
 			let stderr = "";
 			child.stderr.on("data", (chunk) => (stderr += chunk));
 			child.on("close", (status) => {
@@ -78,7 +108,7 @@ if (command === "init") {
 				resolve({ status, stderr, calls: recorded });
 			});
 		});
-	return { dir, fixed, env, fetches, hosts, run };
+	return { dir, fixed, env, fetches, hosts, dropped, run };
 }
 
 test("agentrun-dial is POSIX shell that stops at the first failure, never globs and never traces, and hands the token to curl on stdin alone", () => {
@@ -184,4 +214,106 @@ test("agentrun-dial without the env a dial create sets exits 2, naming what is m
 		assert.match(stderr, new RegExp(`${name} is not set`));
 		assert.deepEqual(calls, []);
 	}
+});
+
+test("agentrun-dial fetches the daemon after the first connection drops: it tries again, says so, and starts", async (t) => {
+	const { dropped, fetches, run } = await box(t, { drops: "first try" });
+	const { status, stderr, calls } = await run();
+	assert.equal(status, 0, stderr);
+	assert.ok(dropped.count >= 1, "the dropped request, then the one that served");
+	assert.equal(fetches.length, 1);
+	assert.equal(stderr.match(/trying again/g)?.length, 1, "one failed try, then the one that fetched");
+	assert.ok(calls.some((call) => call.command === "init"), `init started: ${JSON.stringify(calls)}`);
+	assert.match(stderr, /agentrun-dial: the daemon fetch's try 1 failed \(curl exit 5[256]\); trying again in 1 s/);
+});
+
+test("agentrun-dial tries a daemon route that answers 5xx again, and fetches it", async (t) => {
+	const { fetches, run } = await box(t, { answers: [503] });
+	const { status, stderr, calls } = await run();
+	assert.equal(status, 0, stderr);
+	assert.equal(fetches.length, 2);
+	assert.ok(calls.some((call) => call.command === "init"));
+});
+
+test("a 4xx from the daemon route exits 7 at once, with one request: a refused token never works on a retry", async (t) => {
+	const { fixed, fetches, run } = await box(t, { answers: [401, 401, 401] });
+	const { status, stderr, calls } = await run();
+	assert.equal(status, 7, stderr);
+	assert.equal(fetches.length, 1, "one request");
+	assert.match(stderr, /agentrun-dial: fetching the daemon from \S+ failed: the server answered HTTP 401/);
+	assert.doesNotMatch(stderr, /trying again/);
+	assert.deepEqual(calls, []);
+	assert.ok(!existsSync(`${fixed.DAEMON[1]}.part`), "and the refusal's body is not left");
+});
+
+test("a connection that drops every time ends the fetch within its budget: exit 3, naming curl's exit and the tries", async (t) => {
+	const { dropped, run } = await box(t, { drops: "all", fixed: { FETCH_S: ["45", "3"] } });
+	const began = Date.now();
+	const { status, stderr, calls } = await run();
+	assert.equal(status, 3, stderr);
+	// The budget is read in whole seconds: it ends within 3 s, and before 4 s have passed at most.
+	assert.ok(Date.now() - began < 6_000, `bounded: ${Date.now() - began} ms`);
+	const tries = Number(stderr.match(/agentrun-dial: fetching the daemon from \S+ failed: curl exit 5[256], after (\d+) tries/)?.[1]);
+	assert.ok(tries >= 2, stderr);
+	assert.equal(stderr.match(/trying again/g)?.length, tries - 1, "one line per retry");
+	assert.equal(dropped.count, tries, "one request a try");
+	assert.deepEqual(calls, []);
+});
+
+test("a transfer that trickles above curl's speed limit, or stalls, ends at the budget too: each try is held to the seconds left", { timeout: 15_000 }, async (t) => {
+	const { fixed, run } = await box(t, { trickle: true, fixed: { FETCH_S: ["45", "3"] } });
+	const began = Date.now();
+	const { status, stderr, calls } = await run();
+	assert.equal(status, 3, stderr);
+	assert.ok(Date.now() - began < 6_000, `bounded: ${Date.now() - began} ms`);
+	assert.match(stderr, /agentrun-dial: fetching the daemon from \S+ failed: curl exit 28, after 1 try$/m);
+	assert.deepEqual(calls, []);
+	assert.ok(!existsSync(`${fixed.DAEMON[1]}.part`), "and the part fetched is not left");
+});
+
+test("a try starts only with a second of the budget left (curl's --max-time 0 is no limit at all): none left, none made", { timeout: 15_000 }, async (t) => {
+	const { fetches, run } = await box(t, { trickle: true, fixed: { FETCH_S: ["45", "0"] } });
+	const { status, stderr, calls } = await run();
+	assert.equal(status, 3, stderr);
+	assert.match(stderr, /agentrun-dial: fetching the daemon from \S+ failed: no time was left, after 0 tries$/m);
+	assert.equal(fetches.length, 0);
+	assert.deepEqual(calls, []);
+});
+
+/** What still runs from a box: every stage of init's start (env, setsid, sh, the daemon) names the box's directory. */
+const running = (dir) => {
+	try {
+		return execFileSync("pgrep", ["-f", dir], { encoding: "utf8" }).trim();
+	} catch {
+		return "";
+	}
+};
+/** A TERM is delivered on its own time: what is left once a second has passed, or nothing. */
+const leftAfterTerm = async (dir) => {
+	for (let at = 0; at < 50 && running(dir); at++) await new Promise((resolve) => setTimeout(resolve, 20));
+	return running(dir);
+};
+const SETSID = execFileSync("sh", ["-c", "command -v setsid"], { encoding: "utf8" }).trim();
+
+test("an init that never listens is ended with agentrun-dial (exit 5), so a second start of agentrun-dial finds none running", async (t) => {
+	const { dir, run } = await box(t, { fixed: { INIT_WAIT_TENTHS: ["300", "5"] } });
+	writeFileSync(join(dir, "init-never-listens"), "");
+	const { status, stderr } = await run();
+	assert.equal(status, 5, stderr);
+	assert.match(stderr, /init did not listen at \S+ within 0\.5 s/);
+	assert.equal(await leftAfterTerm(dir), "", "nothing of init's start is left");
+});
+
+test("an init whose start the wait outran (setsid had not yet made its group) is ended by its pid: nothing of it runs later", async (t) => {
+	// A setsid that waits 1 s first, ahead on agentrun-dial's PATH: the 0.5 s wait ends while init's start has no group
+	// of its own. Its arguments name the box's daemon, so what runs of it is found by the box's directory still.
+	const slow = mkdtempSync(join(tmpdir(), "computer-agentrun-dial-setsid-"));
+	t.after(() => rmSync(slow, { recursive: true, force: true }));
+	writeFileSync(join(slow, "setsid"), `#!/bin/sh\nsleep 1\nexec ${SETSID} "$@"\n`, { mode: 0o755 });
+	const PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
+	const { dir, run } = await box(t, { fixed: { INIT_WAIT_TENTHS: ["300", "5"], PATH: [PATH, `${slow}:${PATH}`] } });
+	writeFileSync(join(dir, "init-never-listens"), "");
+	const { status, stderr } = await run();
+	assert.equal(status, 5, stderr);
+	assert.equal(await leftAfterTerm(dir), "", "the start was ended before setsid ran, so init never starts");
 });

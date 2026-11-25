@@ -30,6 +30,25 @@ const select = (name: string, value: string) => pick(picker(host, name)!, value)
 afterEach(() => { act(() => root?.unmount()); root = undefined; document.body.innerHTML = ""; localStorage.clear(); vi.restoreAllMocks(); });
 
 describe("RunsRequest", () => {
+  it("keeps the runs list's window and model in the request it prepares and sends, and drops them for one agent's runs", async () => {
+    const [from, to] = ["2026-11-01T00:00:00.000Z", "2026-11-02T00:00:00.000Z"];
+    await mount({ filter: { from, to, model: "openai/gpt-5" } });
+    expect(host.querySelector("pre")?.textContent).toContain(`/v2/runs?limit=50&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&model=openai%2Fgpt-5`);
+    await act(async () => button("Send request").click());
+    expect([calls[0].url.searchParams.get("from"), calls[0].url.searchParams.get("to"), calls[0].url.searchParams.get("model")]).toEqual([from, to, "openai/gpt-5"]);
+    act(() => root?.unmount());
+    await mount({ agentId: "support/a", filter: { from, model: "openai/gpt-5" } });
+    expect(host.querySelector("pre")?.textContent).not.toMatch(/from=|model=/);
+  });
+  it("keeps the runs list's source in the request it prepares and sends, and drops it for one agent's runs", async () => {
+    await mount({ filter: { source: "claude-code" } });
+    expect(host.querySelector("pre")?.textContent).toContain("/v2/runs?limit=50&source=claude-code");
+    await act(async () => button("Send request").click());
+    expect(calls[0].url.searchParams.get("source")).toBe("claude-code");
+    act(() => root?.unmount());
+    await mount({ agentId: "support/a", filter: { source: "claude-code" } });
+    expect(host.querySelector("pre")?.textContent).not.toContain("source=");
+  });
   it("prepares a read-only all-runs request and fetches only when Send is clicked", async () => {
     await mount();
     expect(calls).toEqual([]);

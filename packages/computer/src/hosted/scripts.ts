@@ -15,7 +15,7 @@ const PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 const CAPS = ["CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb"];
 
 /** Root for what follows: the command's own user when it is root, else passwordless sudo, which the install checked. */
-const ROOT = 'p=; [ "$(id -u)" = 0 ] || p="sudo -n"';
+export const ROOT = 'p=; [ "$(id -u)" = 0 ] || p="sudo -n"';
 
 /** Whether the daemon at d is root's alone: the binary and every directory above it owned by root and writable by no
  *  group or other user (and so no symbolic link, no ACL). Else a user who could rename an entry on the path could put
@@ -397,12 +397,15 @@ export async function daemonDrift(connection: ComputerConnection, expected: Daem
 	return ok(found);
 }
 
+/** The echo of the running sh's pid and start time: PID_WRAPPER's line on stderr, and Groundbox's pid record in a file. */
+export const PID_ECHO = 'echo "$$ $(s=$(cat /proc/$$/stat) && set -- ${s##*") "} && echo "${20}")"';
+
 /**
  * The sh a process starts under where the vendor has no kill that ends it (framedExec with no kill, SSH, Modal): one
  * line on stderr, its pid and its start time (field 22 of /proc/<pid>/stat, counted past the command's name in
  * parentheses, which may hold spaces), then the command in its place, which keeps both. pidLine takes the line off.
  */
-export const PID_WRAPPER = ["sh", "-c", 'echo "$$ $(s=$(cat /proc/$$/stat) && set -- ${s##*") "} && echo "${20}")" >&2; exec "$@"', "sh"];
+export const PID_WRAPPER = ["sh", "-c", `${PID_ECHO} >&2; exec "$@"`, "sh"];
 
 /**
  * The sh pidKill starts, given the pid and start time: a pid whose process has ended, and may be another's now, is let

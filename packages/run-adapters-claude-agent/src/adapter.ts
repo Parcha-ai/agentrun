@@ -16,20 +16,21 @@ import { abortedOutcome, openDrive, pendingSubmissions, Restart, SessionHalt, ty
 import { toolSchemaProblems } from "@parcha/agentrun-kernel";
 import { bridgeTool, NativeJournal, recoveryNote, settleTurn, transcriptOf } from "@parcha/agentrun-kernel/process";
 import { type BinaryProbe, checkedOnce, checkedOnceAsync, hostHeaderProblems, type ModelProxyOptions, startModelProxy } from "@parcha/agentrun-kernel/host";
-import { anthropicPolicy, withWebSearches } from "./host/policy.js";
+import { anthropicPolicy, isoDay, withWebSearches } from "./host/policy.js";
 import { findClaudeExecutable, platformSuffix } from "./binary.js";
 import { CLAUDE_AGENT_PACKAGE, ClaudeAgentNotInstalled, ClaudeAgentPinMismatch, ClaudeAgentThinkingOff } from "./errors.js";
 import { type ClaudeAgentSdk, claudeCodeHarness, claudeToolSearch, lostPrompts } from "./harness.js";
-import { JournalSessionStore } from "./store.js";
+import { JournalSessionStore, type BarrierTimers } from "./store.js";
 import { type ConfineChild, localMachine } from "./host/machine.js";
-import type { ClaudeAgentLogin } from "./login.js";
+import type { ClaudeAgentLogin, ClaudeLoginToken } from "./login.js";
 import { serialWriter } from "./serial.js";
 import type { ToolServerModules } from "./host/tool-server.js";
 import { CLAUDE_AGENT_SDK_INSTALL, CLAUDE_AGENT_SDK_VERSION, CLAUDE_CODE_VERSION, installedVersion } from "./versions.js";
 export { CLAUDE_AGENT_CLI_SKILL_NAMES } from "./cli-names.js";
 
-/** The pinned CLI's tools the copied harness leaves undecided, off by name in every session (WebSearch unless `webSearch`). */
-export const CLAUDE_AGENT_ALSO_OFF: readonly string[] = Object.freeze(["Skill", "WebSearch"]);
+/** The pinned CLI's tools off by name in every session (WebSearch unless `webSearch`): those the copied harness leaves
+ *  undecided, and WebFetch, which fetches from the CLI's own process where the host's web_fetch is the session's. */
+export const CLAUDE_AGENT_ALSO_OFF: readonly string[] = Object.freeze(["Skill", "WebSearch", "WebFetch"]);
 
 /** The local plugin the session's skills are served from: the model sees each as `agentrun:<name>`, and may load it by
  *  that name or, unless the CLI has a command or skill of that name (`CLAUDE_AGENT_CLI_SKILL_NAMES`), by its bare one. */
@@ -92,8 +93,9 @@ export interface ClaudeAgentAdapterOptions {
   provider?: ClaudeAgentProvider;
   /** A person's own login on this machine (login.ts), which the CLI runs on in place of a provider: it calls Anthropic
    *  itself, with no proxy, no model URL and no key of the host's; each response is booked from its stream, billed to the
-   *  person's plan (`price` is not read), and the session has no host port. The host only says where the login is. */
-  login?: ClaudeAgentLogin;
+   *  person's plan (`price` is not read), and the session has no host port. The host says where the login is, or hands
+   *  its access token alone (ClaudeLoginToken), asked at each start of the CLI and on a 401. */
+  login?: ClaudeAgentLogin | ClaudeLoginToken;
   /** Start the CLI under the host's confinement (its own `confine()`, a `setpriv --no-new-privs` prefix, say). It may
    *  only add in front of the pinned binary and its arguments, and never touches its environment. */
   confine?: ConfineChild;
@@ -138,13 +140,18 @@ export interface ClaudeAgentAdapterOptions {
   /** For tests only (AGENTRUN_CLAUDE_AGENT_STANDIN=1 under a test runner): a scripted SDK's stand-in CLI, which no
    *  pin is checked against. */
   standIn?: { command: string };
+  /** For tests: the timers a host tool's wait for its call to reach the log runs on (a fake clock). Default the system's. */
+  barrierTimers?: BarrierTimers;
   /** How hard the model thinks when a node names no level (its `thinking`, else its `effort`). Default medium; it is
    *  never off. */
   thinking?: ClaudeAgentThinking;
   /** The fetch the model proxy forwards with: the host's route for a model it translates onto this wire (a test's
    *  recorder, too); absent, the network. Forwarding it is the harness contract (HARNESS.md, the facts' `wire`). */
   fetch?: typeof fetch;
-  /** For tests: the clock a user turn's day is read from (harness.ts dateLine). Default the system's. */
+  /** The run's clock, when the host sets one (serve: a template eval case's `now`): a user turn's day is read from it
+   *  (harness.ts dateLine), and the CLI's own date lines, which it reads from the machine's clock, are made to say its
+   *  day in `zone` at the session's model proxy (policy.ts `day`). A session on a login has no proxy: there the CLI's
+   *  lines keep the machine's date. Default the system's clock, and the CLI's lines pass as written. */
   now?: () => Date;
   /** The IANA zone a user turn's day is read in (harness.ts dateLine), the one the host's environment line names. Default UTC. */
   zone?: string;
@@ -411,6 +418,8 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
           ...(options.maxOutputTokens ? { maxOutputTokens: options.maxOutputTokens } : {}),
           ...(provider.auth ? { auth: provider.auth } : {}),
           ...(provider.headers ? { headers: provider.headers } : {}),
+          // The CLI's own date lines follow the clock (policy.ts `day`).
+          ...(options.now ? { day: () => isoDay(options.now!(), options.zone) } : {}),
           ...(options.log ? { log: options.log } : {}),
           ...(options.fetch ? { fetch: options.fetch } : {}),
         } } : {}),
@@ -444,6 +453,7 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
         ...(options.log ? { log: options.log } : {}),
         ...(options.now ? { now: options.now } : {}),
         ...(options.zone ? { zone: options.zone } : {}),
+        ...(options.barrierTimers ? { barrierTimers: options.barrierTimers } : {}),
         // The host's gate, asked about each host-tool call and each WebSearch before it is written or run.
         ...(io.gate ? { gate: (call: GateCall) => io.gate!(call) } : {}),
       });
@@ -466,7 +476,7 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
         // A call the CLI refused itself (a tool the session doesn't have): shown as a call that failed, by the name the
         // model gave. The CLI's transcript, mirrored to the store, keeps the refusal.
         if (e?.type === "tool_refused" && typeof e.callId === "string" && typeof e.name === "string") {
-          io.onEvent({ type: "tool_start", callId: e.callId, name: e.name, args: e.args ?? {} });
+          io.onEvent({ type: "tool_start", callId: e.callId, name: e.name, args: e.args ?? {}, refused: true });
           io.onEvent({ type: "tool_end", callId: e.callId, name: e.name, isError: true });
           options.log?.("claude-agent: the CLI turned down a call to a tool this session does not have", { name: e.name, reason: e.reason });
         }

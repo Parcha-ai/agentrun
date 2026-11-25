@@ -13,9 +13,9 @@ import { createNativeLoop } from "./native-loop.js";
 //     module adds with no adapter facts of its own, on its runner's adapter;
 //   - a CLI harness (claude-agent, codex, opencode) runs on the adapter loop with its own adapter;
 //   - anything else fails the run in words (the dispatch's UnknownHarness).
-import { harnessOf, recipeKeysOf } from "../harness-table.js";
+import { harnessOf, planRecipeOf } from "../harness-table.js";
 import { harnessKeysSaved, RECIPE_SIGN_IN_PERSON_ONLY } from "../harness-keys.js";
-import type { SealedKeys } from "../store/index.js";
+import type { SealedKeys, Settings } from "../store/index.js";
 import { hostMemory, neverFits } from "../host.js";
 import { personStarted, type RunLaunch } from "../run-launch.js";
 import { resolveHarness } from "./adapters/index.js";
@@ -40,14 +40,14 @@ export class NeverFits extends ClaimRefused {
 export { RECIPE_SIGN_IN_PERSON_ONLY };
 
 /** Refuses at its claim a run no person started (a schedule's, a trigger's, a learned workflow's audit shadow or replay:
- *  personStarted) on a plan-billed recipe's harness (harness-table.ts recipeKeysOf) unless every key it runs on is saved for that harness (harness-keys.ts), on
- *  every path a claim takes (run-child-host.ts staysInRunner, and here): the early word, before a process is made. Rows
- *  are counted, never opened; the claim's spec opens them and refuses it again if not every one opened, since a row
- *  counted here can be gone or not open by then (cli-run-spec.ts). */
-export async function refuseRecipeTriggerRun(deps: { readonly env?: NodeJS.ProcessEnv; readonly store: { readonly sealedKeys: Pick<SealedKeys, "all"> } }, harness: string, launch: Pick<RunLaunch, "trigger" | "audit" | "replay">): Promise<void> {
+ *  personStarted) on a plan-billed recipe's harness (harness-table.ts planRecipeOf) unless every key it runs on is saved
+ *  for that recipe (harness-keys.ts), on every path a claim takes (run-child-host.ts staysInRunner, and here): the early
+ *  word, before a process is made. Rows and their bindings are counted, never opened; the claim's spec opens them and
+ *  refuses it again if not every one opened, since a row counted here can be gone or not open by then (cli-run-spec.ts). */
+export async function refuseRecipeTriggerRun(deps: { readonly env?: NodeJS.ProcessEnv; readonly store: { readonly sealedKeys: Pick<SealedKeys, "all">; readonly settings: Pick<Settings, "get"> } }, harness: string, launch: Pick<RunLaunch, "trigger" | "audit" | "replay">): Promise<void> {
   if (personStarted(launch)) return;
-  const keys = recipeKeysOf(deps.env ?? {}, harness);
-  if (keys !== undefined && !(await harnessKeysSaved(deps.store, harness, keys))) throw new ClaimRefused(RECIPE_SIGN_IN_PERSON_ONLY);
+  const recipe = planRecipeOf(deps.env ?? {}, harness);
+  if (recipe !== undefined && !(await harnessKeysSaved(deps.store, recipe))) throw new ClaimRefused(RECIPE_SIGN_IN_PERSON_ONLY);
 }
 
 /** The dispatch's `resolve`, built from the runner's deps: it reads the run's revision (for a workflow revision) and
@@ -133,7 +133,7 @@ async function loopOn(deps: AdapterSpecDeps, harness: string, launch: RunLaunch,
     return createAdapterLoop((claim, adapterRun) =>
       entry?.facts && entry.adapter
         ? cliRunSpecFromLaunch(launch, adapterRun, deps, claim)
-        : adapterRunSpecFromLaunch(launch, adapterRun, deps, claim, runner), deps.modelRetry ?? {});
+        : adapterRunSpecFromLaunch(launch, adapterRun, deps, claim, runner), { ...deps.modelRetry, ...(deps.tracing ? { tracing: deps.tracing } : {}) });
   }
   return undefined;
 }

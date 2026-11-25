@@ -105,6 +105,15 @@ export function heldAs(name: string, args: unknown): { readonly tool: string; re
   const fields = (given !== null && typeof given === "object" ? given : {}) as Record<string, unknown>;
   return { tool, args: SHELL_OPS.has(op as string) ? { command: fields.command, ...(fields.cwd !== undefined ? { cwd: fields.cwd } : {}) } : { path: fields.path } };
 }
+/** The path a computer_screenshot call saves the screen to in the run's folder (its `save_as`), held to write's setting
+ *  as a file the write tool writes is; undefined for any other call, a screenshot with no save_as included. */
+function savedAs(name: string, args: unknown): { readonly path: unknown } | undefined {
+  if (name !== "computer_screenshot" || args === null || typeof args !== "object") return undefined;
+  const path = (args as { save_as?: unknown }).save_as;
+  return path === undefined ? undefined : { path };
+}
+/** What a screenshot's refusal for write's setting adds to write's own words: why write's setting holds it. */
+const SAVED_AS_WORDS = "computer_screenshot with save_as writes a file into the run's files, so write's setting holds it; a screenshot without save_as is not held to it.";
 const STRICTNESS: Readonly<Record<Permission, number>> = { allow: 0, ask: 1, deny: 2 };
 /** A session's `{name -> settings key}` map (nameMapOf). */
 export type NameMap = ReadonlyMap<string, string>;
@@ -349,8 +358,8 @@ export const permissionOf = (name: string, server: PermissionSettings, agent: Pe
 
 /** An approval's price for the person who answers it: USD where the tool declares one (booked through the spend cap's
  *  paidCall), else "not metered" (an unpriced MCP call, the owner's ruling of 11-04), or "priced by usage" for a monid
- *  endpoint priced by usage: monid estimates its cost only when the call runs, after the person's allow, and its charge
- *  can pass that estimate (runner/monid-run.ts). */
+ *  endpoint priced by usage or a fal job: each is priced only when the call runs, after the person's allow, and its
+ *  charge can pass that estimate (runner/monid-run.ts, fal-price.ts). */
 export type ApprovalPrice = number | "not metered" | "priced by usage";
 
 /** One pending approval, as the run's view shows it (`pending`) and the console's approval card reads it. */
@@ -501,6 +510,15 @@ export class RunGate {
     if (pinned) return { deny: pinned.text };
     const policed = this.policyRefusal(key, name, args);
     if (policed) return { deny: policed };
+    // A screenshot saved into the run's files (save_as) is a file written as write writes one: write's setting holds it
+    // too, after the kind's deny, and the stricter decides (write's deny refuses it before the computer is asked, write's
+    // ask puts it to a person, as the kind's does).
+    const saved = savedAs(name, args);
+    if (saved) {
+      const write = await this.decide("write", saved, options);
+      if (typeof write === "object") return { deny: `${write.deny} ${SAVED_AS_WORDS}` };
+      if (write === "ask") return "ask";
+    }
     if (verdict === "allow") return "allow";
     return this.approvers ? "ask" : { deny: noApproverText(tool, ran) };
   }

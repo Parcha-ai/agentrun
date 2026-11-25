@@ -19,10 +19,11 @@ import type { ThinkingLevelMap } from "../port-models.js";
 import type { Wire } from "@parcha/agentrun-kernel";
 import { onOpenRouter, openRouterAttribution, ROUTE_ORIGIN, streamErrorOf } from "@parcha/agentrun-kernel/host";
 import type { ToolsAs } from "../local-models.js";
-import { chooseModel, MODEL_PROVIDER, type PinnedModel, runModels, type Tier } from "../model.js";
-import { OLLAMA_PROVIDER } from "../ollama-provider.js";
+import { chooseModel, FAUX_PROVIDER, MODEL_PROVIDER, type PinnedModel, runModels, type Tier } from "../model.js";
+import { OLLAMA_PROVIDER, type OllamaAsks } from "../ollama-provider.js";
 import { gatewayHeadersAt, providerFor } from "../provider.js";
 import { keepText, type Redact, runnerSecrets, secretRedactor } from "./redact.js";
+import { type EdgeAsks, responsesFetch } from "./responses-fetch.js";
 import { callsOfText, type PiContext, toolsAsText } from "./text-tools.js";
 
 /** What a request on a model costs, USD per million tokens, as pi-ai's catalog lists it (tiers included). */
@@ -61,6 +62,11 @@ export interface ModelRoute {
   readonly price?: (model: string, usage: RouteUsage) => number | null;
   /** The upstream fetch: the route's own, for a model that does not speak Messages. Absent: the network. */
   readonly fetch?: typeof fetch;
+  /** Where the route's own translation (`fetch`) sends the model's requests: the origin pi-ai's catalog entry gives it
+   *  (OpenRouter's, Particle's, this machine's Ollama). A run's GenAI trace names its host, never `provider.origin`
+   *  (ROUTE_ORIGIN, a name no request leaves for). Absent on a route with no translation, and under the faux model,
+   *  whose requests go nowhere. */
+  readonly upstreamOrigin?: string;
   /** The catalog's cost of the model, tiers included: what the cap prices a request at before it leaves. */
   readonly cost?: RouteCost;
   /** True when serve has no price for the model (runModels' `unpriced`): `cost` is then a placeholder of zeros, which the
@@ -141,7 +147,9 @@ export async function routeOf(model: string | PinnedModel | undefined, env: Node
   // before Ollama would cut the prompt.
   const local = target.provider === OLLAMA_PROVIDER;
   const like = target.provider === "particle" ? { ...settings, ...LEVELS_BY_NAME, translatedChatCompletions: true } : local ? { ...settings, ...(target.reasoning ? LEVELS_BY_NAME : {}) } : target.reasoning ? { ...sees, ...LEVELS_BY_NAME } : undefined;
-  return { ...route, ...(like ? { like } : {}), ...(local ? { local: true } : {}), provider: { api: "anthropic-messages", origin: ROUTE_ORIGIN, credential: () => "model-route" }, fetch: messagesFetch(models as unknown as PiModels, target, redact ?? secretRedactor(runnerSecrets(env)), upstream, env) };
+  // Where pi-ai sends the translated requests (its model's baseUrl), for the run's trace: none under the faux model.
+  const upstreamOrigin = target.provider !== FAUX_PROVIDER && target.baseUrl ? { upstreamOrigin: target.baseUrl } : {};
+  return { ...route, ...(like ? { like } : {}), ...(local ? { local: true } : {}), ...upstreamOrigin, provider: { api: "anthropic-messages", origin: ROUTE_ORIGIN, credential: () => "model-route" }, fetch: messagesFetch(models as unknown as PiModels, target, redact ?? secretRedactor(runnerSecrets(env)), upstream, env) };
 }
 
 /** Whether pi-ai sends `target`'s requests to OpenRouter (pi-ai's own test, utils/openrouter-cost.js isOpenRouterModel). */
@@ -180,6 +188,7 @@ function tapped(upstream: typeof fetch | undefined): { fetch: typeof fetch; kept
 export function messagesFetch(models: PiModels, target: PiModel, redact: Redact = keepText, upstream?: typeof fetch, env: NodeJS.ProcessEnv = process.env): typeof fetch {
   const attribution = piOnOpenRouter(target) ? openRouterAttribution(env) : {};
   const particle = target.provider === "particle";
+  const ollama = target.provider === OLLAMA_PROVIDER;
   // Side requests without a Pi session id retain affinity for this route's lifetime.
   const cacheSession = particle ? randomUUID() : undefined;
   // A tool call's id as Messages carries it (letters, digits, _ and -), and back to the provider's own on its result.
@@ -189,7 +198,7 @@ export function messagesFetch(models: PiModels, target: PiModel, redact: Redact 
     providerIds.set(safe, id);
     return safe;
   };
-  return (async (_url: unknown, init: { body?: unknown; signal?: AbortSignal } = {}) => {
+  return (async (_url: unknown, init: { body?: unknown; signal?: AbortSignal; edgeAsks?: EdgeAsks } = {}) => {
     const body = JSON.parse(String(init.body ?? "{}")) as MessagesRequest;
     const built = contextOf(body, target, (id) => providerIds.get(id) ?? id) as PiContext;
     // A model that takes its tools as text (its catalog entry's toolsAs): its tools in its system prompt, every call and
@@ -203,7 +212,7 @@ export function messagesFetch(models: PiModels, target: PiModel, redact: Redact 
     // Particle's cache affinity: the session's id (the Messages hop's metadata.user_id), else this route's own; an
     // empty id is a caller that asked for no cache hint.
     const affinity = !particle ? {} : body.metadata?.user_id === "" ? { cacheRetention: "none" } : { sessionId: body.metadata?.user_id || cacheSession };
-    const streamOptions = { ...affinity, ...(body.max_tokens ? { maxTokens: body.max_tokens } : {}), ...(level ? { reasoning: level } : {}), ...(init.signal ? { signal: init.signal } : {}), ...(sendWith ? { fetch: sendWith } : {}), ...(Object.keys(attribution).length ? { headers: attribution } : {}) };
+    const streamOptions = { ...affinity, ...(body.max_tokens ? { maxTokens: body.max_tokens } : {}), ...(level ? { reasoning: level } : {}), ...(ollama && init.edgeAsks ? ollamaAsks(init.edgeAsks) : {}), ...(init.signal ? { signal: init.signal } : {}), ...(sendWith ? { fetch: sendWith } : {}), ...(Object.keys(attribution).length ? { headers: attribution } : {}) };
     const events = models.streamSimple(target as never, context as never, streamOptions as never);
     const encoder = new TextEncoder();
     const stream = new ReadableStream<Uint8Array>({
@@ -481,10 +490,17 @@ export function forMessagesClients(route: typeof fetch): typeof fetch {
 
 /** The route's translation onto each wire it translates a model onto (wires.ts TRANSLATED), by wire: what a harness's
  *  proxy on that wire forwards with for `model` (`provider/model-id`), made on `env`. Anthropic's Messages: the route's
- *  own Messages fetch (messagesFetch), as a Messages client asks it (forMessagesClients). provider.ts routedProvider reads
- *  it; a wire with no entry has no translation, whatever TRANSLATED says. */
+ *  own Messages fetch (messagesFetch), as a Messages client asks it (forMessagesClients). OpenAI's Responses: that same
+ *  fetch under a Responses edge (responsesFetch). provider.ts routedProvider reads it; a wire with no entry has no
+ *  translation, whatever TRANSLATED says. */
 export const TRANSLATORS: Readonly<Partial<Record<Wire, (model: string, env: NodeJS.ProcessEnv) => Promise<typeof fetch>>>> = Object.freeze({
   "anthropic-messages": async (model: string, env: NodeJS.ProcessEnv) => forMessagesClients((await routeOf(model, env)).fetch!),
+  // OpenAI's Responses: the same Messages fetch under a Responses edge (responses-fetch.ts), a model that reasons asked its
+  // effort by name as on Messages.
+  "openai-responses": async (model: string, env: NodeJS.ProcessEnv) => {
+    const route = await routeOf(model, env);
+    return responsesFetch(route.fetch!, { reasons: route.like?.reasoning === true });
+  },
 });
 
 type StreamBlock = { type: string; text?: string; thinking?: string; signature?: string; input?: unknown; [key: string]: unknown };
@@ -566,6 +582,19 @@ const LEVELS_BY_NAME = { reasoning: true, adaptiveThinking: true, thinkingLevelM
 function levelOf(body: MessagesRequest): (typeof NAMED_LEVELS)[number] | undefined {
   const effort = body.output_config?.effort;
   return body.thinking?.type === "adaptive" && (NAMED_LEVELS as readonly unknown[]).includes(effort) ? (effort as (typeof NAMED_LEVELS)[number]) : undefined;
+}
+
+/** What the Responses edge asks an Ollama model past the Messages body (responses-fetch.ts EdgeAsks, on the in-process
+ *  call's init, never the body) as pi-ai's options and ollama-provider.ts chatBody read them: the format and think as
+ *  they are, temperature as pi-ai's own, top_p as its samplingParams. Read on an Ollama model alone; a Messages client's
+ *  own request carries none, so the Messages wire is as it was. */
+function ollamaAsks(asks: EdgeAsks): OllamaAsks & { temperature?: number; samplingParams?: { top_p: number } } {
+  return {
+    ...(asks.format ? { format: asks.format } : {}),
+    ...(asks.temperature === undefined ? {} : { temperature: asks.temperature }),
+    ...(asks.top_p === undefined ? {} : { samplingParams: { top_p: asks.top_p } }),
+    ...(asks.think === false ? { think: false as const } : {}),
+  };
 }
 
 /** A part of a pi-ai message, as the context carries it. */
