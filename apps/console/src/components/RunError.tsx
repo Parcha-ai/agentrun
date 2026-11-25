@@ -1,4 +1,5 @@
 import { TriangleAlert } from "lucide-react";
+import { Redactions } from "@/lib/redaction";
 import type { ApiError } from "@/lib/v2";
 
 /** A failed run's error, or a request the server refused, on the hosted console's failure card (a neutral panel, a
@@ -9,7 +10,7 @@ export function RunError({ error, title = "The run failed" }: { error: ApiError;
       <TriangleAlert className="mt-0.5 size-4 shrink-0 text-destructive-text" aria-hidden />
       <div className="min-w-0">
         <p className="caps text-small font-semibold">{title}</p>
-        <p className="mt-2 break-words font-mono text-body leading-relaxed">{error.message}</p>
+        <p className="mt-2 break-words font-mono text-body leading-relaxed"><Redactions text={error.message} /></p>
         <p className="mt-2 font-mono text-label text-muted-foreground">
           {error.code}{error.retryable ? " · retryable" : ""}{error.request_id ? ` · ${error.request_id}` : ""}
         </p>
