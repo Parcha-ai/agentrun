@@ -111,6 +111,12 @@ test("the money rule holds the agent's learned_workflow tool too: one over the l
   assert.match(over.said.join("\n"), new RegExp(`a cost \\$2 a run over its last ${COST_WINDOW} served runs, at or over \\$1 by hand.*the learned_workflow tool leaves it out`));
   assert.deepEqual(toolStopsOf(past("a", dA, COST_WINDOW, 0.5, 1), [A, B]), { flows: [A, B], stops: [], said: [] }, "under the line");
   assert.deepEqual(toolStopsOf(past("a", "0".repeat(16), COST_WINDOW, 2, 1), [A, B]).flows, [A, B], "over the line at another digest");
+  // COST_WINDOW served runs and no by-hand cost to hold them to: out of the tool, as out of the first call
+  // (no_by_hand_cost), with no stop, since there is no by-hand figure for a revision to beat. Under COST_WINDOW it stays.
+  const none = toolStopsOf(past("a", dA, COST_WINDOW, 9, null), [A, B]);
+  assert.deepEqual([none.flows, none.stops], [[B], []], "never run unchecked by the tool");
+  assert.match(none.said.join("\n"), /no by-hand cost to hold a to .*the learned_workflow tool leaves it out/);
+  assert.deepEqual(toolStopsOf(past("a", dA, COST_WINDOW - 1, 9, null), [A, B]).flows, [A, B], "under COST_WINDOW served runs");
   const unread = toolStopsOf({ unread: "store down" }, [A, B]);
   assert.deepEqual([unread.flows, unread.stops], [[], []]);
   assert.match(unread.said.join("\n"), /could not read the agent's past runs \(store down\); the learned_workflow tool runs none of a, b/);
