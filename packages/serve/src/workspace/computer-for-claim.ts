@@ -15,7 +15,11 @@
 // to be replaced. The claim that makes one says its kind (`made`), which the adapter loop records in the run's
 // journal. When a later claim's replaces an earlier claim's (`replaced`: one this claim let go of, or one the run's
 // journal says an earlier claim made, hadComputer), the ready line says so (and that the kept one's time had passed,
-// `lapsed`), and the run's tools and model are told (run-tools.ts, the adapter loop's computer note).
+// `lapsed`), and the run's tools and model are told (run-tools.ts, the adapter loop's computer note). A kept one only
+// the runner that kept it can reach again (a Docker container, a machine that dials that runner: computer-kept.ts
+// pinnedOf) names that runner and its incarnation on its row (`ClaimLaunch.holder`), and the store's claim rule lets no
+// other runner claim the run while that runner is live and the keep lasts; one taken after it is gone and not reached
+// here is said to be lost with it (`lost`).
 //
 // A sandbox the claim made can be lost mid-run (its vendor deleted it, or no longer has it): the call that finds it lost
 // fails, saying so and that it was not run again (code gone, computer-lost.ts lostInCallWords), and is never sent to the
@@ -31,29 +35,36 @@
 // and a test's stand-ins are passed in.
 //
 // A paired computer (a person's own, attached-computers.ts) is one more provider of the registry for the claim, by its
-// id: claimed through the hub of the server's process (the computer package's attachedProvider), released by ending the
-// run's hold, never made or deleted.
+// id: claimed through the hub of the server's process (the computer package's attachedProvider), or through a runner's
+// relay hub once the server moved the box's socket there (dial-relay.ts), released by ending the run's hold, never made
+// or deleted.
 //
 // A persistent setting (the agent's own computer, agent-computer.ts) is made once under the agent's owner (this server's
 // id and the agent's), found again by its owner at each later claim and attached under the new claim, and detached, not
 // deleted, at the run's end. A run that finds it held by another run still going is refused, naming that run.
 import { randomUUID } from "node:crypto";
-import type { BrowserSpec, ComputerClient, ComputerConnection, ComputerError, ComputerOwner, ComputerProvider, ComputerSpec, DaemonMethod, DaemonMethods, HelloResult, MountKind, MountReadBack, Result, ScreenWatch, ScreenWatchHandlers, WatchOptions } from "@parcha/agentrun-computer";
+import type { BrowserComputerProvider, BrowserSpec, ComputerClient, ComputerConnection, ComputerError, ComputerOwner, ComputerProvider, ComputerSpec, DaemonMethod, DaemonMethods, HelloResult, MountKind, MountReadBack, Result, ScreenWatch, ScreenWatchHandlers, WatchOptions } from "@parcha/agentrun-computer";
 import { isBrowserProvider, ownerFilter, releaseOlder, RUN_LABEL, runLabels } from "@parcha/agentrun-computer";
 import { type RecordInput, type Recording, type RecordWatch, startRecording } from "../computer-record.js";
 import { computerOfPlace, type ComputerSetting as RevisionComputer, type PlaceView } from "../computer-setting.js";
 import { KEY_TABLE, type KeyTable, type ProviderSettings, providerOptions, settingOptions } from "../computer-keys.js";
 import { LOST_RECREATES, lostEnd, lostInCallWords, lostRecreatedWords } from "../computer-lost.js";
+import { missingNeeds, needsNoSandboxWords, needsWords } from "../computer-needs.js";
 import { inToolCall, stopRun } from "../paid-calls.js";
 import { getSealedKey } from "../server-keys.js";
-import type { Store } from "../store/index.js";
+import type { Claim, Store } from "../store/index.js";
 import { type AgentComputerHold, agentComputerOf, forgetAgentComputer, holdAgentComputer, keepAgentComputer, liveHolderOf, reconcileAgentComputer, serverIdOf } from "./agent-computer.js";
 import type { MountCheck } from "./attach.js";
 import { type AttachedComputers, pairedProvider, withPaired } from "./attached-computers.js";
 import { computerHold, type HeldComputer, heldHands } from "./computer-hold.js";
-import { deleteKept, endKept, KEEP_MS, type Kept, type ParkCause, type ParkedEnd, readKept, takeKept, writeKept } from "./computer-kept.js";
+import { endingDeletes, figuresOf, type IntervalWrites, intervalWrites } from "./computer-intervals.js";
+import { type ComputeLedger, type ComputeMeter, computeMeter, type ComputeMeterOptions } from "../compute-cost.js";
+import { bounded, deleteKept, endKept, KEEP_MS, KEPT_DELETE_MS, type Kept, keptBy, type KeptHolder, type ParkCause, type ParkedEnd, pinnedOf, readKept, takeKept, writeKept } from "./computer-kept.js";
 import { type ProviderLedger, storeLedger } from "./computer-ledger.js";
-import { type ClaimBrowser, type ClaimSide, type ComputerSetting, type ComputerSettingKind, type KindCapabilities, type KindRegistry, type LaunchedComputer, type ProviderEntry, providerKeys, registryHere, resolveComputer } from "./resolve-computer.js";
+import { type ClaimBrowser, type ClaimSide, type ComputerSetting, type ComputerSettingKind, type KindCapabilities, type KindRegistry, type LaunchedComputer, type ProviderEntry, providerKeys, registryHere, resolveComputer, runShellOf, type ShellPlace } from "./resolve-computer.js";
+import { computerDenied } from "../tool-gate.js";
+import { loadToolSettings } from "../tool-plane.js";
+import { computerDeniedWords, computerStillOffWords } from "../refusal-words.js";
 import type { RunComputer, RunHold } from "./run-tools.js";
 import { claimHolds, fencedStore, type FolderStore, type HeldFolder, holdSynced, storedFolder } from "./synced-folder.js";
 import type { Workspace } from "./workspace.js";
@@ -75,6 +86,10 @@ export interface ClaimLaunch {
   readonly boxAllow?: readonly string[] | "none";
   /** The operator set that (run-launch.ts boxAllowSet), not the default. */
   readonly boxAllowSet?: true;
+  /** The runner this claim runs in: its name and its process's presence incarnation (runner/presence.ts). A park that
+   *  keeps a computer only this runner can reach again (computer-kept.ts pinnedOf) names both on its row, so the claim
+   *  rule gives the run back to this runner while it is there. Absent: nothing kept is pinned. */
+  readonly holder?: KeptHolder;
 }
 
 /** What of the run a computer's spec is made from, besides its kind and provider: what it may reach, and whether the
@@ -205,8 +220,20 @@ export interface ComputerForClaimDeps {
    *  claim's Archil mount credential (Mode 2): the credential is this claim's to remove now (archil-claim.ts inherit),
    *  since this claim mints none. Absent: nothing was minted (Mode 1). */
   readonly inheritMount?: () => void;
-  /** The clock a kept computer's time is read by (computer-kept.ts). Default Date.now. */
+  /** The kind of the run's computer an earlier claim's deny turned off for the run (runner/computer-journal.ts
+   *  computerTurnedOff): this claim starts none, says so, and ends at once the one a park kept, its mount with it.
+   *  Absent: the computer is on. */
+  readonly turnedOff?: string;
+  /** The clock a kept computer's time is read by (computer-kept.ts), and its computers' intervals are written on
+   *  (computer-intervals.ts). Default Date.now. */
   readonly now?: () => number;
+  /** Where a computer interval that could not be written is said (computer-intervals.ts). Default the runner's stderr. */
+  readonly log?: (line: string) => void;
+  /** The run's one ledger and the server's environment, for its computers' time (compute-cost.ts): each computer the
+   *  claim makes or takes back is metered there, priced by the operator's per-resource settings, its next stretch held
+   *  under the run's cap. Absent (a runner of its own with no ledger here), nothing is held or booked: its time is on the
+   *  usage read alone. */
+  readonly compute?: { readonly ledger: ComputeLedger; readonly env: NodeJS.ProcessEnv; readonly every?: ComputeMeterOptions["every"] };
   readonly signal?: AbortSignal;
 }
 
@@ -217,6 +244,10 @@ export interface ComputerForClaimDeps {
  *  owner's view let go, then the computer. */
 export interface ClaimComputer {
   readonly computer?: RunComputer;
+  /** The agent's computer was not started: every tool it serves the run is set to deny (tool-gate.ts computerDenied), or
+   *  an earlier claim's deny turned it off for the run (ComputerForClaimDeps.turnedOff). The run goes on without it, and
+   *  its kind's skill is not named to the model. */
+  readonly off?: true;
   readonly hold?: RunHold;
   readonly held?: HeldComputer;
   /** The computer is a new one that replaced an earlier claim's (Replaced): what was on that one is gone. Absent: the
@@ -229,6 +260,12 @@ export interface ClaimComputer {
   /** The kind of computer a park of this claim keeps (`park`): a desktop, a phone or a sandbox the claim made through its
    *  provider, or took back from an earlier claim's park. Absent: a park lets the computer go as the run's end does. */
   readonly keeps?: KeptKind;
+  /** Books the time of every computer this claim holds up to now on the run's ledger, its holds let go, its meter
+   *  stopped (compute-cost.ts): run before the run's end or park is written (the spec's beforeRelease), so the end's
+   *  cost holds it. Absent where nothing is metered. */
+  settle?(): Promise<void>;
+  /** Strict durable folder sync for project checkpoints; distinct from metering settlement. */
+  syncProject?(signal?: AbortSignal): Promise<void>;
   release(why?: ViewEnd): Promise<void>;
   /** The claim's release at the run's park, for `cause`: a computer it `keeps` is kept for KEEP_MS (computer-kept.ts),
    *  its live view closed with the park's cause and the keep's time (ParkedEnd) and its hold ended, but the machine left
@@ -245,8 +282,11 @@ export type KeptKind = Kept["kind"];
 
 /** A computer the claim made fresh in place of an earlier claim's: its kind, and `folderKept`, the run's folder is on
  *  Archil (Mode 2) and mounted in it, so the folder is kept. `lapsed`: the earlier one was kept at a park, and its time
- *  (KEEP_MS) passed before this claim. */
-export type Replaced = { readonly kind: MadeKind; readonly folderKept: boolean; readonly lapsed?: true };
+ *  (KEEP_MS) passed before this claim. `lost`: the earlier one was kept at a park pinned to another runner (or another
+ *  process of this runner's name), that runner was gone by this claim, and this claim could not reach it. `refused`: the
+ *  earlier one was kept at a park, and its provider refused to attach it again, in these words (a Docker computer made
+ *  before its egress bridge). */
+export type Replaced = { readonly kind: MadeKind; readonly folderKept: boolean; readonly lapsed?: true; readonly lost?: true; readonly refused?: string };
 
 /** A computer that cannot be had, with the code the run fails with and the server's words. */
 const unavailable = (words: string): Error => Object.assign(new Error(words), { code: "computer_unavailable" });
@@ -262,9 +302,12 @@ const claimRequestId = (claim: { readonly runId: string; readonly epoch: number 
  *  lost, a crash). A run's first claim is epoch 1 (a queued run is epoch 0; each claim and release moves it up one): no
  *  claim came before it to leave a computer, so the provider is not asked (its list is a vendor round trip before the
  *  create). */
-async function releaseOlderClaims(provider: ComputerProvider, claim: { readonly runId: string; readonly epoch: number }, signal: AbortSignal | undefined): Promise<boolean> {
+async function releaseOlderClaims(provider: ComputerProvider, claim: { readonly runId: string; readonly epoch: number }, signal: AbortSignal | undefined, ending?: { readonly entry: string; readonly writes: IntervalWrites }): Promise<boolean> {
   if (claim.epoch <= 1) return false;
-  const older = await releaseOlder(provider, claim.runId, claim.epoch, signal ? { signal } : {});
+  // Each delete that answers ok ends its interval as it answers (computer-intervals.ts endingDeletes), so one deleted
+  // before another failed, or before the call was cut, keeps its end; one detached or not let go is left open.
+  const releasing = ending ? endingDeletes(provider, ending.entry, ending.writes) : provider;
+  const older = await releaseOlder(releasing, claim.runId, claim.epoch, signal ? { signal } : {});
   if (!older.ok) throw new Error(older.error.message);
   return older.value.released.length > 0;
 }
@@ -277,6 +320,18 @@ export async function settingOf(launch: ClaimLaunch, store: Pick<Store, "agents"
   if (body?.computer) return body.computer;
   if (body?.place) return computerOfPlace(body.place);
   return launch.place ? computerOfPlace(launch.place) : undefined;
+}
+
+/** The kind of the claim's computer `setting` when every tool it serves the run is set to deny (tool-gate.ts
+ *  computerDenied): the revision's grants and tool settings over the server's, as the run's gate reads them. `shell`: where
+ *  the run's shell would be with it. A store with no settings, or settings that do not read, deny nothing. */
+async function deniedKind(launch: ClaimLaunch, setting: ComputerSetting, store: Pick<Store, "agents"> & { readonly settings?: Store["settings"] }, shell: ShellPlace): Promise<string | undefined> {
+  if (setting.kind === "none" || !store.settings || !launch.revisionId) return undefined;
+  const revision = await store.agents.revision(launch.revisionId);
+  if (!revision || revision.kind !== "agentic") return undefined;
+  const server = await loadToolSettings({ settings: store.settings }).catch(() => undefined);
+  if (!server || server.unreadable) return undefined;
+  return computerDenied({ kind: revision.kind, body: { ...(revision.body as object), computer: setting } }, shell, server);
 }
 
 /** A phone's platform: what the phone says it is, else its provider's phone configuration's machine kind; android when
@@ -394,6 +449,9 @@ export function claimBrowser(provider: ComputerProvider, spec: ComputerSpec): { 
       },
       url: (id) => cdpUrlOf(provider, { id, name: id }),
       close: release,
+      ...(isBrowserProvider(provider) && typeof provider.sessionUsage === "function"
+        ? { usage: (id: string, signal?: AbortSignal) => valueOf((provider as Required<Pick<BrowserComputerProvider, "sessionUsage">>).sessionUsage({ id, name: id }, signal ? { signal } : {})) }
+        : {}),
       ...(kept && features.downloads
         ? {
             downloads: {
@@ -413,8 +471,9 @@ export function claimBrowser(provider: ComputerProvider, spec: ComputerSpec): { 
  *  own, its connection's `close` (a park keeps the machine), and its release, which deletes it. */
 type ProviderComputer = LaunchedComputer & { readonly client: ComputerClient; readBack(): Promise<Result<MountReadBack>>; machine: string; hello: ComputerSaid["hello"]; watch?: WatchOf; ref: { readonly id: string; readonly name: string }; close(): Promise<void> };
 
-/** The run's computer `ref` of `provider`, connected (`connection`), as the claim holds it (ProviderComputer). */
-function providerComputer(provider: ComputerProvider, ref: { readonly id: string; readonly name: string }, connection: ComputerConnection): ProviderComputer {
+/** The run's computer `ref` of `provider`, connected (`connection`), as the claim holds it (ProviderComputer). `ended`:
+ *  told once its delete answered ok (its interval's end, computer-intervals.ts). */
+function providerComputer(provider: ComputerProvider, ref: { readonly id: string; readonly name: string }, connection: ComputerConnection, ended?: () => Promise<void>): ProviderComputer {
   const { client, hello } = connection;
   const watch = watchOf(provider, ref);
   const close = async () => {
@@ -440,30 +499,46 @@ function providerComputer(provider: ComputerProvider, ref: { readonly id: string
       await close();
       const released = await provider.release(ref, "delete");
       if (!released.ok) throw new Error(released.error.message);
+      await ended?.();
     },
   };
 }
 
 /** `entry`'s computer started through its provider: the run's computers of a lower claim epoch released first
  *  (releaseOlderClaims; none at a run's first claim; `releasedOlder`, whether it deleted one), then made with the run's
- *  labels (and the run's folder, when it mounts), connected (providerComputer); its release deletes it. */
+ *  labels (and the run's folder, when it mounts), connected (providerComputer); its release deletes it. Its interval
+ *  (computer-intervals.ts) is opened under `entry` (the provider's registry id) once the create answers, of `kind`, and
+ *  ended by each delete that answers ok. */
 async function providerLaunch(
   provider: ComputerProvider,
   claim: { readonly runId: string; readonly epoch: number },
   spec: ComputerSpec,
   signal: AbortSignal | undefined,
+  interval: { readonly writes: IntervalWrites; readonly entry: string; readonly kind: string; readonly meter?: ComputeMeter },
 ): Promise<ProviderComputer & { releasedOlder: boolean }> {
-  const releasedOlder = await releaseOlderClaims(provider, claim, signal);
+  const { writes, entry } = interval;
+  const releasedOlder = await releaseOlderClaims(provider, claim, signal, { entry, writes });
+  // Its first stretch held under the run's cap at what the create asks for, before anything is made: refused, nothing is.
+  const ahead = await interval.meter?.before(entry, figuresOf(spec));
   // The claim is the request: a retry of this launch under the same epoch gets the computer it made, never a second.
   const created = await provider.create(spec, { requestId: claimRequestId(claim), ...(signal ? { signal } : {}) });
-  if (!created.ok) throw new Error(created.error.message);
+  if (!created.ok) {
+    void ahead?.drop();
+    throw new Error(created.error.message);
+  }
   const ref = { id: created.value.id, name: created.value.name };
+  // What it was made with: its provider's figures where it said them, else what was asked. Metered from here.
+  const figures = figuresOf(spec, created.value.resources);
+  await writes.opened(entry, ref.id, claim.runId, interval.kind, figures);
+  interval.meter?.start(entry, ref.id, figures, ahead);
+  const ended = () => writes.ended(entry, ref.id);
   const connected = await provider.connect(ref);
   if (!connected.ok) {
-    await provider.release(ref, "delete").catch(() => undefined);
+    const released = await provider.release(ref, "delete").catch(() => undefined);
+    if (released?.ok) await ended();
     throw new Error(connected.error.message);
   }
-  return { ...providerComputer(provider, ref, connected.value), releasedOlder };
+  return { ...providerComputer(provider, ref, connected.value, ended), releasedOlder };
 }
 
 /** The words a hosted provider's connection answers every call in once its vendor deleted the machine (the computer
@@ -631,18 +706,20 @@ function lostAware(first: ProviderComputer, renewal: Renewal): ProviderComputer 
   };
 }
 
-/** The computer an earlier claim of the run kept at its park (`kept`), attached again through `provider` and connected,
- *  or undefined when its provider no longer has it or it does not connect (one that does not is deleted). */
-async function keptLaunch(provider: ComputerProvider, kept: Kept, signal: AbortSignal | undefined): Promise<ProviderComputer | undefined> {
+/** The computer an earlier claim of the run kept at its park (`kept`), attached again through `provider` and connected;
+ *  `refused`, the provider's words, when it refuses to attach it; or undefined when its provider no longer has it or it
+ *  does not connect (one that does not is deleted). */
+async function keptLaunch(provider: ComputerProvider, kept: Kept, signal: AbortSignal | undefined, ended: () => Promise<void>): Promise<ProviderComputer | { readonly refused: string } | undefined> {
   const ref = { id: kept.id, name: kept.name };
   const found = await provider.attach({ id: ref.id }, signal ? { signal } : {});
-  if (!found.ok) return undefined;
+  if (!found.ok) return found.error.code === "refused" ? { refused: found.error.message } : undefined;
   const connected = await provider.connect(ref);
   if (!connected.ok) {
-    await provider.release(ref, "delete").catch(() => undefined);
+    const released = await provider.release(ref, "delete").catch(() => undefined);
+    if (released?.ok) await ended();
     return undefined;
   }
-  return providerComputer(provider, ref, connected.value);
+  return providerComputer(provider, ref, connected.value, ended);
 }
 
 /** A run state in which the run still holds what it claimed. */
@@ -807,7 +884,9 @@ export async function computerForClaim(
   launch: ClaimLaunch,
   // `settings` and `runs`: the agent's own computer's record and its holder's run row, for a persistent setting; and the
   // run's own row, whose epoch and runner fence every write of the run's folder to its disk.
-  store: Pick<Store, "agents" | "sealedKeys" | "computerLedger"> & { readonly settings?: Store["settings"]; readonly runs?: Pick<Store["runs"], "get"> },
+  // `computerIntervals`: where each computer the claim makes is written, from its create to its proven delete
+  // (computer-intervals.ts); absent, none is.
+  store: Pick<Store, "agents" | "sealedKeys" | "computerLedger"> & { readonly settings?: Store["settings"]; readonly runs?: Pick<Store["runs"], "get">; readonly computerIntervals?: Store["computerIntervals"] },
   deps: ComputerForClaimDeps,
 ): Promise<ClaimComputer> {
   // The run's disk as this claim writes the folder on it: each write refused once a later claim has taken the run (Q1).
@@ -836,15 +915,43 @@ export async function computerForClaim(
   /** The kind of the computer this claim made the run fresh (ClaimComputer.made). */
   let ownKind: MadeKind | undefined;
   const now = deps.now ?? Date.now;
+  /** Each computer this claim makes through its provider, from its create to its proven delete. */
+  const written = intervalWrites(store, deps.log, now);
+  /** Its time on the run's ledger (compute-cost.ts), while this claim holds it; none with no ledger here. */
+  const meter = deps.compute ? computeMeter({ env: deps.compute.env, ledger: deps.compute.ledger, booked: written.booked, now, ...(deps.compute.every ? { every: deps.compute.every } : {}), ...(deps.log ? { log: deps.log } : {}) }) : undefined;
+  /** The writes, each computer's meter stopped (its time booked up to now) before it is kept or its end written. */
+  const writes: IntervalWrites = meter
+    ? {
+        ...written,
+        kept: async (provider, providerId) => {
+          await meter.stop(provider, providerId);
+          await written.kept(provider, providerId);
+        },
+        ended: async (provider, providerId) => {
+          await meter.stop(provider, providerId);
+          await written.ended(provider, providerId);
+        },
+      }
+    : written;
   /** The computer an earlier claim of the run kept at its park (computer-kept.ts), read once: attached again when it is
    *  the setting's and its time is not over (reattach), else left to the launch's releaseOlderClaims. A read that fails
    *  is none. A run's first claim follows no park. */
   let kept = store.settings && launch.epoch > 1 ? await readKept(store.settings, launch.runId).catch(() => undefined) : undefined;
   /** The kept computer's time passed before this claim: the new one says so (Replaced.lapsed). */
   let lapsed = false;
+  /** The kept computer was pinned to another runner, gone by this claim, and this claim could not reach it: the new one
+   *  says so (Replaced.lost). */
+  let lost = false;
+  /** The kept computer's provider refused to attach it again, in these words: the new one says why (Replaced.refused). */
+  let refused: string | undefined;
   /** What a park of this claim keeps (ClaimComputer.park): a desktop, a phone or a sandbox it made through its provider, or took
-   *  back, with its provider, its connection's close and the claim epoch its labels carry. */
-  let keepable: { readonly provider: ComputerProvider; readonly entry: string; readonly kind: KeptKind; readonly computer: ProviderComputer; epoch: number } | undefined;
+   *  back, with its provider, its connection's close and the claim epoch its labels carry; `pinned`: only this runner can
+   *  reach it again (computer-kept.ts pinnedOf), so the park names this claim's holder on its row. */
+  let keepable: { readonly provider: ComputerProvider; readonly entry: string; readonly kind: KeptKind; readonly computer: ProviderComputer; readonly pinned: boolean; epoch: number } | undefined;
+  /** Whether a computer of `entry` made with `configuration` is reachable again only by this runner: its options as
+   *  vendorProvider makes it (the settings' options under the configuration's). */
+  const pinnedHere = (entry: ProviderEntry, configuration: { readonly options?: Readonly<Record<string, unknown>> }): boolean =>
+    pinnedOf(entry, { ...settingOptions(entry.id, deps.settings ?? {}, table), ...configuration.options });
   /** A vendor's provider (or a local one's), made with the keys and the configuration the setting selected: that
    *  configuration is built by its own create() options (Orgo's Windows: { os: "windows" }), beside the keys'. */
   const vendorProvider = async (entry: ProviderEntry, keys: Readonly<Record<string, string>>, configuration: { readonly options?: Readonly<Record<string, unknown>> }): Promise<ComputerProvider> => {
@@ -899,15 +1006,24 @@ export async function computerForClaim(
         mount = await deps.workspace.mountSpec();
       }
       const call = deps.signal ? { signal: deps.signal } : {};
+      const ahead = await meter?.before(entry.id, figuresOf(spec));
       const created = await provider.create({ ...spec, ...(mount ? { mount } : {}) }, { requestId: `${claimRequestId(launch)}#lost-${times}`, ...call });
-      if (!created.ok) throw new Error(created.error.message);
+      if (!created.ok) {
+        void ahead?.drop();
+        throw new Error(created.error.message);
+      }
       const ref = { id: created.value.id, name: created.value.name };
+      const figures = figuresOf(spec, created.value.resources);
+      await writes.opened(entry.id, ref.id, launch.runId, "sandbox", figures);
+      meter?.start(entry.id, ref.id, figures, ahead);
+      const ended = () => writes.ended(entry.id, ref.id);
       const connected = await provider.connect(ref);
       if (!connected.ok) {
-        await provider.release(ref, "delete").catch(() => undefined);
+        const released = await provider.release(ref, "delete").catch(() => undefined);
+        if (released?.ok) await ended();
         throw new Error(connected.error.message);
       }
-      const again = providerComputer(provider, ref, connected.value);
+      const again = providerComputer(provider, ref, connected.value, ended);
       if (mount) {
         try {
           if (store && stored) folderHeld.folder = await holdSynced(store, own(again), stored, deps.signal);
@@ -942,6 +1058,10 @@ export async function computerForClaim(
       kept = undefined;
       if (!record || !store.settings) return undefined;
       if (persistent || paired.some((row) => row.id === entry.id) || (deps.launch && (deps.launches?.(entry.id) ?? true)) || record.provider !== entry.id || record.kind !== kind || record.folder !== folder) return undefined;
+      // Kept pinned to another runner (or another process of this runner's name): the claim rule let this claim have the
+      // run only once that runner was gone. Taken off its row, it is tried here all the same (a runner on the same host,
+      // sharing its Docker engine, finds it); one this claim cannot reach is lost with that runner, said so.
+      const elsewhere = record.runner !== undefined && !keptBy(record, launch.holder);
       try {
         // Its time over, or its end took it first (ending or ended): a new one, said so.
         if (record.ending || record.ended || now() >= record.until || !(await takeKept(store.settings, launch.runId, record))) {
@@ -949,13 +1069,20 @@ export async function computerForClaim(
           return undefined;
         }
         const provider = await vendorProvider(entry, keys, configuration);
-        const taken = await keptLaunch(provider, record, signal);
-        if (!taken) return undefined;
+        const taken = await keptLaunch(provider, record, signal, () => writes.ended(entry.id, record.id));
+        if (!taken || "refused" in taken) {
+          lost = elsewhere;
+          refused = taken?.refused;
+          return undefined;
+        }
+        // Metered again from here, with what its interval says it was made with: the time it was kept is no claim's.
+        const row = meter ? (await store.computerIntervals?.forRun(launch.runId).catch(() => undefined))?.find((one) => one.provider === entry.id && one.providerId === record.id) : undefined;
+        if (row) meter?.start(entry.id, record.id, row);
         deps.inheritMount?.();
         // A sandbox taken back is started again when it is lost as one this claim made (lostAware): the new one is this
         // claim's, made from this claim's spec, its folder mounted.
         const again = record.kind === "sandbox" ? lostAware(taken, renewalOf(provider, entry, () => specOf(entry, provider, kind, configuration, deps.signal, gpu), folder)) : taken;
-        keepable = { provider, entry: entry.id, kind: record.kind, computer: again, epoch: record.epoch };
+        keepable = { provider, entry: entry.id, kind: record.kind, computer: again, pinned: pinnedHere(entry, configuration), epoch: record.epoch };
         ownKind = record.kind;
         const screen = record.kind === "sandbox" ? undefined : record.kind;
         made = { id: again.id, machine: again.machine, ...(again.watch && screen ? { watch: again.watch, gone: goneOf(provider, again.id, runLabels(launch.runId, record.epoch), screen) } : {}) };
@@ -964,6 +1091,8 @@ export async function computerForClaim(
         deps.onConnected?.({ provider: entry.label, kind: record.kind, hello: { os, ...(osVersion ? { osVersion } : {}), arch }, kept: true });
         return { ...again, epoch: record.epoch };
       } catch {
+        // Taken off its row (or not), and not reached here: lost with its runner where it was pinned to another.
+        lost = elsewhere && !lapsed;
         return undefined;
       }
     },
@@ -981,13 +1110,15 @@ export async function computerForClaim(
         madeBy = entry;
         return own;
       }
-      const provider = pairedRow ? pairedProvider(pairedRow, deps.attached?.hub) : await vendorProvider(entry, keys, configuration);
+      // Under a runner of its own process, through its relay: the box is routed under the run's claim (launch.claim, a
+      // store Claim from each claim's launch), so a claim another runner superseded is Fenced at the route.
+      const provider = pairedRow ? pairedProvider(pairedRow, deps.attached?.hub, deps.attached?.relay, launch.claim as Claim | undefined) : await vendorProvider(entry, keys, configuration);
       const spec: ComputerSpec = { ...(await specOf(entry, provider, kind, configuration, signal, gpu)), ...(mount ? { mount } : {}) };
       // A browser makes nothing here: the run's browser tool opens each session through it, so a session lives (and is
       // booked) only while the tool holds it.
       if (kind === "browser") {
         // The run's sessions of a lower claim epoch go first, as a computer's do (the janitor's releaseOlder).
-        await releaseOlderClaims(provider, launch, signal);
+        await releaseOlderClaims(provider, launch, signal, { entry: entry.id, writes });
         const opened = claimBrowser(provider, spec);
         madeBy = entry;
         return { id: entry.id, groups: ["cdp"], browser: opened.browser, release: opened.release };
@@ -1015,15 +1146,16 @@ export async function computerForClaim(
         // end: a server's stop). The journal is read before anything is rented, so a read that fails leaves nothing to let
         // go. A paired computer is the same one at every claim, and is no computer of the run's own.
         const journalSays = !pairedRow && launch.epoch > 1 && (await deps.hadComputer?.()) === true;
-        const fresh = await providerLaunch(provider, launch, spec, signal);
+        // A paired computer is no computer of the run's own: it has no interval.
+        const fresh = await providerLaunch(provider, launch, spec, signal, pairedRow ? { writes: intervalWrites(undefined), entry: entry.id, kind } : { writes, entry: entry.id, kind, ...(meter ? { meter } : {}) });
         // A sandbox the claim made is started again when its provider loses it mid-run (lostAware): never a paired
         // computer, nor a desktop or a phone (a person may hold or watch it), nor the agent's own (persistent, above).
         const { releasedOlder } = fresh;
         const held = kind === "sandbox" && !pairedRow ? lostAware(fresh, renewalOf(provider, entry, async () => spec, mount?.kind)) : fresh;
         launched = held;
         if (!pairedRow) ownKind = kind as MadeKind;
-        if (!pairedRow && (kind === "desktop" || kind === "phone" || kind === "sandbox")) keepable = { provider, entry: entry.id, kind, computer: held, epoch: launch.epoch };
-        if (!pairedRow && (releasedOlder || journalSays)) replaced = { kind: kind as MadeKind, folderKept: deps.mode === 2 && mount !== undefined, ...(lapsed ? { lapsed: true as const } : {}) };
+        if (!pairedRow && (kind === "desktop" || kind === "phone" || kind === "sandbox")) keepable = { provider, entry: entry.id, kind, computer: held, pinned: pinnedHere(entry, configuration), epoch: launch.epoch };
+        if (!pairedRow && (releasedOlder || journalSays || lost || refused !== undefined)) replaced = { kind: kind as MadeKind, folderKept: deps.mode === 2 && mount !== undefined, ...(lost ? { lost: true as const } : lapsed ? { lapsed: true as const } : {}), ...(refused !== undefined ? { refused } : {}) };
       }
       made = { id: launched.id, machine: launched.machine, ...(launched.watch ? { watch: launched.watch, ...(kind === "desktop" || kind === "phone" ? { gone: goneOf(provider, launched.id, listedUnder, kind) } : {}) } : {}) };
       madeBy = entry;
@@ -1033,7 +1165,58 @@ export async function computerForClaim(
     },
   };
 
+  /** The computer an earlier claim kept at the run's park, ended now by a claim that starts none (the run's computer is
+   *  off): deleted, its interval ended, and its mount credential, the parking claim's, taken on and removed
+   *  (archil-claim.ts revoke removes only one its claim minted or took on), so the run's folder is its own again before
+   *  its tools touch it. The credential is taken on only once this claim's end holds the row (endKept's compare-and-set):
+   *  a later claim that took the computer back first holds its mount, which this claim's revoke (at its loss, its end)
+   *  then never removes. Once taken on, a revoke this claim does not finish here is the run's end's. The delete and the
+   *  revoke together are bounded (KEPT_DELETE_MS) and end at the run's stop: one that fails or does not answer leaves the
+   *  row ending, for the janitor's next pass. Never throws. */
+  const endKeptNow = async (): Promise<void> => {
+    const record = kept;
+    kept = undefined;
+    const settings = store.settings;
+    const entry = record && kinds.PROVIDERS.find((one) => one.id === record.provider);
+    if (!record || record.ended || !settings || !entry) return;
+    try {
+      await endKept(settings, launch.runId, record, () => {
+        deps.inheritMount?.();
+        return bounded(KEPT_DELETE_MS, (async () => {
+          try {
+            const provider = await vendorProvider(entry, await side.keysOf(entry.id), {});
+            if (await deleteKept(provider, record)) await writes.ended(entry.id, record.id);
+          } finally {
+            await deps.revokeMount?.().catch(() => undefined);
+          }
+        })(), deps.signal);
+      });
+    } catch {
+      // Left ending for the janitor.
+    }
+  };
+  // The run's computer turned off by an earlier claim's deny: none is started, and the one a park kept goes now.
+  if (deps.turnedOff) {
+    deps.onComputerNote?.(computerStillOffWords(deps.turnedOff));
+    await endKeptNow();
+    return { computer: undefined, off: true, release: noop };
+  }
   const setting = await settingOf(launch, store);
+  // Programs it needs (computer.needs) are checked in a sandbox's box alone: a setting that needs them and is any other
+  // kind is refused before anything is rented, never run without them.
+  const needs = (setting as { needs?: readonly string[] } | undefined)?.needs;
+  if (needs?.length && setting?.kind !== "sandbox") {
+    const label = setting?.provider ? kinds.PROVIDERS.find((one) => one.id === setting.provider)?.label ?? setting.provider : undefined;
+    throw unavailable(needsNoSandboxWords(needs, setting?.kind === "none" || !setting ? "none" : `a ${setting.kind}${label ? ` on ${label}` : ""}`));
+  }
+  // A computer every tool of which is set to deny (tool-gate.ts computerDenied) serves the run nothing: none is started,
+  // nothing is rented or checked, and the run goes on without it, its timeline saying why.
+  const denied = setting && (await deniedKind(launch, setting, store, runShellOf(setting, deps.mode, kinds)));
+  if (denied) {
+    deps.onComputerNote?.(computerDeniedWords(denied));
+    await endKeptNow();
+    return { computer: undefined, off: true, release: noop };
+  }
   const resolved = await resolveComputer(setting, deps.mode, kinds, side);
   if ("refused" in resolved) throw unavailable(resolved.refused);
   if (resolved.kind === "none") return { computer: undefined, release: noop };
@@ -1052,10 +1235,25 @@ export async function computerForClaim(
     const disk = diskOf();
     started = await resolved.start({ workspace: deps.workspace, check: { ...deps.check, epoch: deps.check.epoch ?? launch.epoch }, ...(disk ? { store: disk } : {}), held: folderHeld, ...(deps.signal ? { signal: deps.signal } : {}) });
   } catch (error) {
+    // A computer made before the start failed is the claim's no more: its time booked up to now.
+    await meter?.stopAll().catch(() => undefined);
     await revoke().catch(() => undefined);
     throw error;
   }
   const computer = started.computer;
+  // What the agent needs its sandbox to have (computer.needs): asked of the box it started, before anything of the run
+  // reaches a model. A box that lacks one, or that could not be asked, is let go and the run ends in words: never a run on
+  // a box without what its work needs.
+  if (needs?.length) {
+    // A sandbox setting whose start gave no sandbox is no box to check: refused as one that could not be asked.
+    const answer = computer?.kind === "sandbox" ? await missingNeeds(computer.computer.client, needs, deps.signal) : { unchecked: "its start gave no sandbox" };
+    if ("unchecked" in answer || answer.missing.length > 0) {
+      await started.release().catch(() => undefined);
+      await meter?.stopAll().catch(() => undefined);
+      await revoke().catch(() => undefined);
+      throw unavailable(needsWords(answer, needs, kinds.PROVIDERS.find((one) => one.id === resolved.provider)));
+    }
+  }
   // A desktop's or a phone's: its hold, parking the run's ports while a person holds it, and its live view, proxy-only (no
   // vendor's URL reaches a person), opened under this claim. A fenced open is a lost claim. The release ends the hold.
   let endHold: () => void = () => {};
@@ -1081,6 +1279,7 @@ export async function computerForClaim(
       const opened = await deps.openComputerView({ store, sealKey: deps.sealKey, claim: launch.claim ?? { runId: launch.runId, epoch: launch.epoch }, kind: computer.kind, input, tag: made.id, watch, hold: theHold, ...(made.gone ? { gone: made.gone } : {}) });
       if (!opened.ok) {
         await started.release().catch(() => undefined);
+        await meter?.stopAll().catch(() => undefined);
         await revoke().catch(() => undefined);
         if (opened.refused === "fenced") throw claimLost(`run ${launch.runId}'s claim (epoch ${launch.epoch}) is no longer this runner's, so its ${computer.kind} was released: ${opened.message}`);
         throw unavailable(`the ${computer.kind}'s live view could not be opened: ${opened.message}`);
@@ -1103,6 +1302,8 @@ export async function computerForClaim(
       try {
         await started.release();
       } finally {
+        // A computer whose delete failed is held by no claim from here: its time is booked up to now, and no more.
+        await meter?.stopAll();
         await revoke();
       }
     })());
@@ -1117,7 +1318,26 @@ export async function computerForClaim(
     ...(replaced ? { replaced } : {}),
     ...(ownKind ? { made: ownKind } : {}),
     ...(keeps ? { keeps: keeps.kind } : {}),
+    ...(meter ? { settle: () => meter.stopAll() } : {}),
     release,
+    async syncProject(signal) {
+      const cancellation = signal && deps.signal ? AbortSignal.any([signal, deps.signal]) : signal ?? deps.signal;
+      cancellation?.throwIfAborted();
+      if (started.sync) { if (!(await started.sync()).ok) throw new Error("The project folder could not be durably synchronized."); }
+      else if (resolved.folder === "bind") {
+        // A bind is already this Workspace's filesystem, so there is no remote folder delta to pull. File tools
+        // fsync their own writes, but arbitrary shell edits need this final syncfs after dispatch has settled.
+        // Use the supplied host Workspace, never the lost-aware computer client (which could recreate a machine).
+        const flushed = await deps.workspace.exec(["/usr/bin/sync", "-f", "."], {
+          env: { PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C" }, timeoutMs: 30_000, maxOutput: 1024,
+          ...(cancellation ? { signal: cancellation } : {}),
+        });
+        if (flushed.code !== 0 || flushed.signal || flushed.timedOut || flushed.truncated)
+          throw new Error("The bound project folder could not be durably synchronized.");
+      }
+      else if (runComputer && "check" in runComputer && runComputer.check) throw new Error("This mounted project has no verified synchronization capability.");
+      cancellation?.throwIfAborted();
+    },
     async park(cause: ParkCause): Promise<boolean> {
       if (!keeps || !settings || released) {
         await release();
@@ -1133,12 +1353,13 @@ export async function computerForClaim(
       }
       let row: Kept;
       try {
-        row = await writeKept(settings, launch.runId, { provider: keeps.entry, kind: keeps.kind, id: ref.id, name: ref.name, epoch: keeps.epoch, until: now() + KEEP_MS, ...(resolved.folder ? { folder: resolved.folder } : {}) });
+        row = await writeKept(settings, launch.runId, { provider: keeps.entry, kind: keeps.kind, id: ref.id, name: ref.name, epoch: keeps.epoch, until: now() + KEEP_MS, ...(resolved.folder ? { folder: resolved.folder } : {}), ...(keeps.pinned && launch.holder ? { runner: launch.holder.runner, incarnation: launch.holder.incarnation } : {}) });
       } catch {
         // No row, nothing to find it by: it goes as at the run's end.
         await release();
         return false;
       }
+      await writes.kept(keeps.entry, ref.id);
       // The live view ends (its frames and any take-over), saying what the run waits for and until when the computer is
       // kept, never that it ended; the hold with it; the machine and its mount stay.
       released = (async () => {
@@ -1153,7 +1374,7 @@ export async function computerForClaim(
       // deletes it, a synced folder with no read-back.
       const timer = setTimeout(() => {
         void endKept(settings, launch.runId, row, async () => {
-          await deleteKept(keeps.provider, ref);
+          if (await deleteKept(keeps.provider, ref)) await writes.ended(keeps.entry, ref.id);
           await revoke().catch(() => undefined);
         }).catch(() => undefined);
       }, Math.max(0, row.until - now()));

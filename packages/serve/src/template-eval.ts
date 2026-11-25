@@ -3,9 +3,10 @@
 // Everything goes through the v2 API alone, on an in-process server over a temp data directory by default (an eval never
 // touches the owner's server) or on one named by its address and token. Per case: a fake MCP server per `mcp` fixture,
 // saved under its name with no credential and recording every call; the package applied with the case's parameters and
-// grants, a fresh agent per run, its learning seeded from the case's corrections; one run per `runs` with the prompt's body as
+// grants, a fresh agent per run, its learning seeded from the case's corrections and its work folder from the case's
+// files; one run per `runs` with the prompt's body as
 // its input and the case's cap, on the case's clock when it sets one (`now`), waited for; then its answer, its tool calls (its timeline read with calls=whole, each
-// call's arguments and its output's head through the run's redaction, and the fakes' own logs) and its files, graded, and held to the package's output schema when it declares one (outputVerdict,
+// call's arguments and its output whole, to CALL_RESULT_CHARS, through the run's redaction, and the fakes' own logs) and its files, graded, and held to the package's output schema when it declares one (outputVerdict,
 // the server's own verdict). Every grader is deterministic but `llm`, which is itself a run on the same
 // server: a grader agent with no tools that sees the rubric, the run's input, its answer and its calls, never another
 // grader or an expected answer, and answers {pass, reason}. readCases checks a package's cases without running one.
@@ -15,9 +16,10 @@ import { chmodSync, cpSync, lstatSync, mkdtempSync, readdirSync, readFileSync, r
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseDocument } from "yaml";
-import { answerJson, lastJsonBlock } from "./answer-json.js";
+import { answerJson, jsonBlockOf } from "./answer-json.js";
 import { correctionsProblems } from "./learn/index.js";
 import { linkCheck } from "./link-check.js";
+import { frontMatter } from "./manifest.js";
 import { inputMessage } from "./run-manifest.js";
 import { shownUrl } from "./mcp-probe.js";
 import { isMonidName, MCP_SERVER_NAME, MCP_TOOL_NAME, mcpNameOf, mcpToolName, monidNameOf, parseToolName } from "./tool-names.js";
@@ -25,20 +27,25 @@ import type { EvalFakes } from "./runner/adapter-run-spec.js";
 import { type EvalClock, evalClock, type Layout, LAYOUTS, type MailboxAfter, type MailboxFixture, mailboxAfter, mailboxFixtureOf, type MailboxRecord, mailboxText, mailboxVerdict, seed, seededFaux, type Snapshot, snapshot } from "./eval-mailbox.js";
 import type { EmailFaux } from "./email/email-faux.js";
 import { type CaseFeeds, caseFeeds, type FeedFixture, feedFixtureOf } from "./eval-feed.js";
+import { HANDED_KINDS, handedPrevious, handedVerdict, type PreviousFixture, previousFixtureOf, type Seeded, seedPrevious } from "./eval-previous.js";
+import type { PreviousHandover } from "./trigger-targets.js";
+import type { Store } from "./store/index.js";
 import { EMAIL_TOOLS } from "./email/names.js";
 import { CALENDAR_EVENTS } from "./calendar/names.js";
 import type { IcsFaux } from "./calendar/ics-faux.js";
 import type { MonidFake } from "./runner/monid-run.js";
 import { nameMapOf, settingsKeyOf, shellToolOf } from "./tool-gate.js";
 import { builtinHarness } from "./harness-table.js";
-import { webShownOf } from "./timeline/index.js";
+import { CALLS_PAGE_ROWS, webShownOf } from "./timeline/index.js";
 import { ASK_TOOL, BOUND_TOOLS } from "./tools.js";
 import { type WebFake, webFixtureOf } from "./web-fake.js";
 import { WEB_FETCH_TOOL } from "./web-fetch.js";
+import { WEB_SAVE_TOOL } from "./web-save.js";
 import { WEB_SEARCH_TOOL } from "./web-search.js";
 import { dayIn, serverZone } from "./environment.js";
 import { instantOf } from "./trigger-adapter.js";
 import { applyBodyOf, compiled, filledPins, filledSource, onServerName, onServers, type Package, packageView, readPackage } from "./templates.js";
+import { INPUTS_DIR } from "./uploads.js";
 import { inputIssues, inputSchemaOf, isObject, type Json, MODEL_REF } from "./validate.js";
 
 /** What a grader run is told, whatever the rubric: blind, strict, and its verdict as one JSON block. */
@@ -60,24 +67,24 @@ export const GRADER_CAP_USD = 0.5;
 export const GRADER_PROMPT_MAX = 120_000;
 /** How long one run may take before the eval cancels it and fails it. */
 export const RUN_TIMEOUT_MS = 30 * 60_000;
-/** How long a run may stay queued, no runner having taken it, before the eval stops waiting on it: it fails by that
- *  name, its state when the wait gave up, never by the run's whole timeout. */
-export const QUEUE_TIMEOUT_MS = 2 * 60_000;
+/** How long a run may stay queued, no runner holding it, before the eval stops waiting on it: it fails by that name,
+ *  never by the run's whole timeout. 5 minutes: a busy machine's runner can be slow to make its first claim. */
+export const QUEUE_TIMEOUT_MS = 5 * 60_000;
 export const GRADER_NAME = "Template eval grader";
 /** The folder under TMPDIR where local evals keep the one install of each harness's pin they all share. */
 export const EVAL_HARNESSES = "agentrun-eval-harnesses";
 /** An owner's data folder is the eval's own server's to open (EvalOptions.data): a named server keeps its own. */
 export const ON_DATA_WITH_SERVER = "--on-data is the data folder of the eval's own server, and --server names another server: give one of them";
 
-const FRONT = /^---\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/;
 const PROMPT_FIELDS = ["description", "runs", "max_cost_usd", "input"];
-const CASE_FIELDS = ["parameters", "grants", "mcp", "web", "monid", "learning", "now", "email", "calendar", "feed"];
+const CASE_FIELDS = ["parameters", "grants", "mcp", "web", "monid", "learning", "now", "email", "calendar", "feed", "previous", "files"];
 const GRADER_FIELDS: Record<string, string[]> = {
   llm: ["type", "target"],
   regex: ["type", "pattern", "flags", "expect", "target"],
   tool_used: ["type", "tool", "tools", "expect", "count", "at_least", "args"],
   file_exists: ["type", "path"],
   mailbox: ["type", "message_id", "in", "not_in"],
+  handed: ["type", "expect", "dropped"],
 };
 /** A target: a field of the answer's JSON, dotted for a nested one. */
 const TARGET = /^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$/;
@@ -88,7 +95,7 @@ const LOOPBACK = "127.0.0.1"; // key-gate: loopback-rule each fake MCP server li
 const LOOPBACK_HOST = /^(?:127\.\d+\.\d+\.\d+|localhost|\[::1\])$/; // key-gate: loopback-rule a server on this machine reaches the fakes
 
 /** A case's fields that the eval's own runner alone binds (EvalFakes), each with what it does: a named server refuses them. */
-const OWN_SERVER_FAKES: readonly (readonly ["web" | "now" | "monid" | "email" | "calendar" | "feed", string])[] = [["web", "web fakes the web tools"], ["now", "now sets its runs' clock"], ["monid", "monid fakes the package's monid endpoints"], ["email", "email fakes the server's email account"], ["calendar", "calendar fakes the server's calendar"], ["feed", "feed fakes the package's feeds"]];
+const OWN_SERVER_FAKES: readonly (readonly ["web" | "now" | "monid" | "email" | "calendar" | "feed" | "previous" | "files", string])[] = [["web", "web fakes the web tools"], ["now", "now sets its runs' clock"], ["monid", "monid fakes the package's monid endpoints"], ["email", "email fakes the server's email account"], ["calendar", "calendar fakes the server's calendar"], ["feed", "feed fakes the package's feeds"], ["previous", "previous seeds the case's earlier runs in the server's store"], ["files", "files seeds its runs' work folders"]];
 
 /** A case's run input: its prompt's body as content (none when empty), then its typed fields. */
 export const runInput = (content: string, fields?: Json): Json => ({ ...(content ? { content } : {}), ...fields });
@@ -99,13 +106,18 @@ export type Grader = (
   | { file: string; type: "tool_used"; tools: string[]; expect: "called" | "not_called"; count?: number; atLeast?: number; args?: Json }
   | { file: string; type: "file_exists"; path: string }
   | { file: string; type: "mailbox"; messageId: string; in?: string; notIn: string[] }
+  | { file: string; type: "handed"; expect: PreviousHandover["kind"]; dropped?: Record<string, number> }
 ) & {
   /** An email case's layouts this grader grades the runs of; absent, every run. */
   layouts?: Layout[];
 };
-/** One answer of a fake tool: taken when every argument `when` lists equals the call's; `when` a list, when any one of
- *  its entries does (one answer for each spelling of a call: a file by `sha` or by `ref`, say). */
+/** One answer of a fake tool: taken when every argument `when` lists equals the call's, or, listed as `{"$pattern":
+ *  <regex>}`, is a string the regex matches whole; `when` a list, when any one of its entries does (one answer for each
+ *  spelling of a call: a file by `sha` or by `ref`, say). */
 type Answer = { when: Json | Json[]; result: Json };
+/** The regex a `when` value matches by, when it is `{"$pattern": <regex>}` and nothing else: anchored here, so a key
+ *  made of a run's random stem (ns-k7m2p9qa-voice-cold-open) matches whole, never by a prefix the author left open. */
+const patternOf = (value: unknown): RegExp | undefined => (isObject(value) && Object.keys(value).length === 1 && typeof value.$pattern === "string" ? new RegExp(`^(?:${value.$pattern})$`) : undefined);
 /** A fake code search: the call's `query` argument searched over `files` (GitHub's code search syntax, read loosely: bare
  *  and quoted terms every one of which a file holds, /.../ terms read as literal text (a backslash before punctuation
  *  dropped), never as a regular expression, so no query can stall the eval, NOT before a term or a qualifier, and the
@@ -148,6 +160,12 @@ export type EvalCase = {
   /** The case's fake feed (eval-feed.ts): each run gets fake feeds served from it, read in place of the URLs the
    *  package's feed trigger names, and is started by that trigger as it would be. */
   feed?: FeedFixture;
+  /** The case's previous runs (eval-previous.ts): each run's agent gets them seeded as completed runs of the package's
+   *  schedule trigger, which then starts the run as it would, handing it the last one's result. */
+  previous?: PreviousFixture;
+  /** The files each run's work folder holds before its first turn (`files:`, a path in the folder to its text): the eval's
+   *  own runner writes them at the claim (EvalFakes.files), so a case can start where an earlier run left off. */
+  files?: Record<string, string>;
 };
 
 /** Cases that do not check: every problem, each naming its file. */
@@ -157,12 +175,13 @@ export class CaseError extends Error {
   }
 }
 
-/** A file's YAML front matter and body, read as templates.ts reads a package's (core schema, unique keys, no aliases). */
+/** A file's YAML front matter and body, read as a package's are (manifest.ts); an empty one is a mapping with no keys. */
 function frontOf(text: string): { data: Json; body: string } | string {
-  const match = FRONT.exec(text);
-  if (!match) return { data: {}, body: text };
-  const parsed = yamlOf(match[1]!);
-  return typeof parsed === "string" ? `its front matter ${parsed}` : isObject(parsed) ? { data: parsed, body: text.slice(match[0].length) } : "its front matter is not a mapping";
+  const read = frontMatter(text);
+  if (!read) return { data: {}, body: text };
+  if ("problem" in read) return `its front matter ${read.problem}`;
+  const data = read.data ?? {};
+  return isObject(data) ? { data, body: read.body } : "its front matter is not a mapping";
 }
 function yamlOf(text: string): unknown {
   const doc = parseDocument(text, { schema: "core", merge: false, uniqueKeys: true, strict: true });
@@ -208,6 +227,27 @@ function fixtureOf(text: string, name: string, at: string, bad: (message: string
     if (!ok || !MCP_TOOL_NAME.test(tool)) {
       bad(`${at}: tools.${tool} is {description, input: an object's JSON Schema, answers: [{when: {...} or [{...}, ...], result: an MCP tool result}], default?: a result, search?: {query: the argument's name, files: [{path, text}], limit?, note?}}`);
       continue;
+    }
+    // A `when` value that names $pattern is a regex over the call's argument: one that is no string, does not compile, or
+    // sits beside another key would be compared by equality and match nothing, so it fails here, not as a silent miss.
+    for (const [i, answer] of (answers as Answer[]).entries()) {
+      const whens = Array.isArray(answer.when) ? answer.when.map((when, j) => [`[${j}]`, when] as const) : [["", answer.when] as const];
+      for (const [j, when] of whens) {
+        for (const [key, value] of Object.entries(when as Json)) {
+          if (!isObject(value) || !Object.hasOwn(value, "$pattern")) continue;
+          const where = `${at}: tools.${tool}.answers[${i}].when${j}.${key}`;
+          const others = Object.keys(value).filter((name) => name !== "$pattern");
+          if (others.length) bad(`${where}: a {"$pattern": ...} value holds no other key, and this one holds ${others.join(", ")}`);
+          else if (typeof value.$pattern !== "string") bad(`${where}: $pattern is a regular expression's source, a string`);
+          else {
+            try {
+              new RegExp(value.$pattern);
+            } catch (error) {
+              bad(`${where}: its $pattern does not compile: ${(error as Error).message}`);
+            }
+          }
+        }
+      }
     }
     tools[tool] = { description: spec.description as string, input: spec.input as Json, answers: answers as Answer[], ...(isObject(spec.default) ? { default: spec.default } : {}), ...(isObject(spec.search) ? { search: spec.search as FakeSearch } : {}) };
   }
@@ -301,6 +341,15 @@ function graderOfType(p: Package, file: string, text: string, bad: (message: str
       if (data.in === undefined && !notIn.length) return bad(`${file}: a mailbox grader says where the message is (in) or is not (not_in)`), undefined;
       return { file, type, messageId: data.message_id, ...(typeof data.in === "string" ? { in: data.in } : {}), notIn: notIn as string[] };
     }
+    case "handed": {
+      // What a previous case's run was handed after its message (eval-previous.ts handedPrevious): its kind, and for carried
+      // fields how many first entries each carried array gave up.
+      if (!(HANDED_KINDS as readonly unknown[]).includes(data.expect)) return bad(`${file}: expect is ${HANDED_KINDS.slice(0, -1).join(", ")} or ${HANDED_KINDS.at(-1)}`), undefined;
+      const dropped = data.dropped;
+      if (dropped !== undefined && !(isObject(dropped) && Object.values(dropped).every((n) => Number.isSafeInteger(n) && (n as number) >= 0))) return bad(`${file}: dropped is a mapping of a carried array's field to how many of its first entries were dropped, 0 or more`), undefined;
+      if (dropped !== undefined && data.expect !== "carried") return bad(`${file}: dropped counts a carried array's entries, and expect is ${String(data.expect)}, not carried`), undefined;
+      return { file, type, expect: data.expect as PreviousHandover["kind"], ...(isObject(dropped) ? { dropped: dropped as Record<string, number> } : {}) };
+    }
   }
   return undefined;
 }
@@ -314,7 +363,7 @@ export function readCases(dir: string, names?: readonly string[]): { pkg: Packag
   const pkg = readPackage(dir, { evalFixtures: false });
   const problems: string[] = [];
   const missing = (names ?? []).filter((name) => !pkg.evals.includes(name));
-  if (missing.length) throw new CaseError(dir, missing.map((name) => `evals/${name}: no such case (the package's are ${pkg.evals.join(", ") || "none"})`));
+  if (missing.length) throw new CaseError(dir, missing.map((name) => `evals/${name}: no such case (the package's are ${[...pkg.evals].sort().join(", ") || "none"})`));
   const cases: EvalCase[] = [];
   for (const name of pkg.evals.filter((name) => !names?.length || names.includes(name))) {
     const at = `evals/${name}`;
@@ -335,8 +384,8 @@ export function readCases(dir: string, names?: readonly string[]): { pkg: Packag
     const spec = lstatSync(join(root, "case.yaml"), { throwIfNoEntry: false })?.isFile() ? yamlOf(readFileSync(join(root, "case.yaml"), "utf8")) : {};
     const c = typeof spec === "string" ? (bad(`${at}/case.yaml: ${spec}`), {}) : isObject(spec) ? spec : (bad(`${at}/case.yaml: is not a mapping`), {});
     for (const field of unknown(c, CASE_FIELDS)) bad(`${at}/case.yaml: no field ${field}: its fields are ${CASE_FIELDS.join(", ")}`);
-    // An email case's run is on its trigger's input, and its prompt gives none (`email` below holds it to that).
-    if (c.email === undefined && c.feed === undefined) for (const issue of inputIssues(runInput(body, fields), inputSchemaOf(pkg.inputSchema))) bad(`${at}/prompt.md: ${issue.message}`);
+    // An email, feed or previous case's run is on its trigger's input, and its prompt gives none (each holds it to that).
+    if (c.email === undefined && c.feed === undefined && c.previous === undefined) for (const issue of inputIssues(runInput(body, fields), inputSchemaOf(pkg.inputSchema))) bad(`${at}/prompt.md: ${issue.message}`);
     if (c.parameters !== undefined && !isObject(c.parameters)) bad(`${at}/case.yaml: parameters is a mapping, the apply's parameters`);
     if (c.grants !== undefined && !(Array.isArray(c.grants) && c.grants.every((g) => typeof g === "string"))) bad(`${at}/case.yaml: grants is a list of gate names (mcp:<server>/<tool>)`);
     if (c.now !== undefined && instantOf(c.now) === undefined) bad(`${at}/case.yaml: now is a date and time with its offset (2026-11-14T09:00:00Z), not ${JSON.stringify(c.now)}`);
@@ -374,7 +423,7 @@ export function readCases(dir: string, names?: readonly string[]): { pkg: Packag
     if (c.web !== undefined) {
       const path = c.web === "unavailable" ? undefined : inside(root, c.web, "file");
       // Only a package that names a web tool has one: one that names no tools gets its computer's shell tools, or none.
-      if (!pkg.tools?.includes(WEB_SEARCH_TOOL) && !pkg.tools?.includes(WEB_FETCH_TOOL)) bad(`${at}/case.yaml: web fakes web_search and web_fetch, and the package's tools name neither`);
+      if (![WEB_SEARCH_TOOL, WEB_FETCH_TOOL, WEB_SAVE_TOOL].some((tool) => pkg.tools?.includes(tool))) bad(`${at}/case.yaml: web fakes web_search, web_fetch and web_save, and the package's tools name none of them`);
       else if (c.web === "unavailable") web = "unavailable";
       else if (!path) bad(`${at}/case.yaml: web is unavailable, or a fixture file in the case (not ${JSON.stringify(c.web)})`);
       else {
@@ -459,6 +508,49 @@ export function readCases(dir: string, names?: readonly string[]): { pkg: Packag
       // Its run is the trigger's, on the trigger's input and cap: the prompt gives neither.
       if (body || fields || f.max_cost_usd !== undefined) bad(`${at}/prompt.md: a feed case's run is started by the package's trigger, on the trigger's input and cap: its prompt.md holds description and runs alone`);
     }
+    // The case's previous runs: its fixture, and the package's schedule trigger its runs start from (eval-previous.ts).
+    let previous: PreviousFixture | undefined;
+    if (c.previous !== undefined) {
+      const path = inside(root, c.previous, "file");
+      let parsed: unknown;
+      if (c.email !== undefined || c.feed !== undefined) bad(`${at}/case.yaml: a previous case's run is started by the package's schedule trigger: previous goes with neither email nor feed`);
+      if (!path) bad(`${at}/case.yaml: previous is a previous-runs fixture file in the case (not ${JSON.stringify(c.previous)})`);
+      else {
+        try {
+          parsed = JSON.parse(readFileSync(join(root, path), "utf8"));
+        } catch (error) {
+          bad(`${at}/${path}: is not JSON (${(error as Error).message})`);
+        }
+      }
+      const fixture = parsed === undefined ? undefined : previousFixtureOf(parsed, `${at}/${path}`, pkg.outputSchema, bad);
+      const kindOf = (t: Json) => (isObject(t.source) ? t.source.kind : undefined);
+      const named = fixture?.trigger === undefined ? undefined : pkg.triggers.find((t) => t.name === fixture.trigger);
+      const starts = named ? [named] : pkg.triggers.filter((t) => kindOf(t) === "schedule");
+      if (!fixture) undefined;
+      else if (fixture.trigger !== undefined && !named) bad(`${at}/${path}: trigger ${fixture.trigger} is not one of the package's triggers (${pkg.triggers.map((t) => String(t.name)).join(", ") || "none"})`);
+      else if (starts.length !== 1 || kindOf(starts[0]!) !== "schedule") bad(`${at}/${path}: a previous case starts its run through the package's schedule trigger, and ${named ? `${fixture.trigger} is a ${String(kindOf(named))} trigger` : starts.length ? `the package has ${starts.length}: name one with trigger` : "the package has none"}`);
+      else previous = { ...fixture, trigger: String(starts[0]!.name) };
+      // Its run is the trigger's, on the trigger's input and cap: the prompt gives neither.
+      if (body || fields || f.max_cost_usd !== undefined) bad(`${at}/prompt.md: a previous case's run is started by the package's schedule trigger, on the trigger's input and cap: its prompt.md holds description and runs alone`);
+    }
+    // The case's files: each run's work folder holds them before its first turn, as a run that resumes finds what the run
+    // before it left (a keys file, say). Text only, each path in the folder and outside inputs/, which the server fills
+    // with the run's uploads and its message.
+    let files: Record<string, string> | undefined;
+    if (c.files !== undefined) {
+      if (!isObject(c.files)) bad(`${at}/case.yaml: files is a mapping of a path in the run's work folder to the text that file starts with`);
+      else {
+        files = {};
+        for (const [path, text] of Object.entries(c.files)) {
+          const shown = JSON.stringify(path);
+          if (!path || path.startsWith("/") || /[\\\0]/.test(path) || path.split("/").some((part) => part === "" || part === "." || part === "..")) bad(`${at}/case.yaml: files: ${shown} is not a path in the run's work folder (relative, with no empty, . or .. segment)`);
+          else if (path.split("/")[0] === INPUTS_DIR) bad(`${at}/case.yaml: files: ${shown} is under ${INPUTS_DIR}/, where the server puts the run's uploads and its message`);
+          else if (typeof text !== "string") bad(`${at}/case.yaml: files: ${shown} is the file's text, a string`);
+          // An own property, so a path such as __proto__ is a file, never the object's prototype.
+          else Object.defineProperty(files, path, { value: text, writable: true, enumerable: true, configurable: true });
+        }
+      }
+    }
     let learning: string | undefined;
     if (c.learning !== undefined) {
       const file = inside(root, c.learning, "file");
@@ -476,6 +568,7 @@ export function readCases(dir: string, names?: readonly string[]): { pkg: Packag
       const grader = graderOf(pkg, `${at}/graders/${entry.name}`, readFileSync(join(root, "graders", entry.name), "utf8"), bad);
       const unrun = grader?.layouts?.filter((layout) => email && !email.layouts.includes(layout)) ?? [];
       if (grader?.type === "mailbox" && c.email === undefined) bad(`${at}/graders/${entry.name}: a mailbox grader reads the case's fake mailbox, and the case has no email`);
+      else if (grader?.type === "handed" && c.previous === undefined) bad(`${at}/graders/${entry.name}: a handed grader reads what a previous case's run was handed, and the case has no previous`);
       else if (grader?.layouts && c.email === undefined) bad(`${at}/graders/${entry.name}: layouts grades the runs of an email case's layouts, and the case has no email`);
       else if (unrun.length) bad(`${at}/graders/${entry.name}: layouts names ${unrun.join(", ")}, which the case's fixture does not run on (${email!.layouts.join(", ")})`);
       else if (grader) graders.push({ ...grader, file: entry.name });
@@ -484,7 +577,7 @@ export function readCases(dir: string, names?: readonly string[]): { pkg: Packag
     cases.push({
       name, description: typeof f.description === "string" ? f.description : "", runs: typeof f.runs === "number" ? f.runs : 1,
       ...(typeof f.max_cost_usd === "number" ? { maxCostUsd: f.max_cost_usd } : {}), input: body, ...(fields ? { fields } : {}),
-      parameters, grants, mcp, ...(web ? { web } : {}), ...(monid ? { monid } : {}), ...(learning !== undefined ? { learning } : {}), graders, ...(typeof c.now === "string" ? { now: c.now } : {}), ...(email ? { email } : {}), ...(calendar ? { calendar } : {}), ...(feed ? { feed } : {}),
+      parameters, grants, mcp, ...(web ? { web } : {}), ...(monid ? { monid } : {}), ...(learning !== undefined ? { learning } : {}), graders, ...(typeof c.now === "string" ? { now: c.now } : {}), ...(email ? { email } : {}), ...(calendar ? { calendar } : {}), ...(feed ? { feed } : {}), ...(previous ? { previous } : {}), ...(files ? { files } : {}),
     });
   }
   if (problems.length) throw new CaseError(dir, problems);
@@ -496,6 +589,10 @@ export function readCases(dir: string, names?: readonly string[]): { pkg: Packag
 /** A call a run made: from its timeline (`tool`, its gate name, a preview of its input, its `arguments` through the run's
  *  redaction, and the head of its `result`) or, for a faked MCP tool, from the fake's own log (`arguments` whole). */
 export type ToolCall = { tool: string; name?: string; preview?: string | null; status?: string | null; result?: string | null; arguments?: Json };
+/** A file a run left in its work folder, as a grader is told of it: its name (its path under the run's cut, the listing's
+ *  `name`; absent from a server that doesn't cut its listing's names, when the file is shown by no name, never its path),
+ *  its size in bytes and, for a text file read whole, its text. */
+export type FinalFile = { name?: string; bytes: number; text?: string };
 /** What a run left, for its graders. */
 export type RunRecord = {
   /** The run's final answer, or "" when it has none. */
@@ -506,10 +603,15 @@ export type RunRecord = {
   mcpCalls: ToolCall[];
   /** The paths of its files, from its work folder. */
   files: string[];
+  /** Its work folder's files as it left them, for its llm graders (finalFilesOf): each text file with its whole `text`,
+   *  any other (media, a binary, one past what was read) with its size alone. */
+  finalFiles?: FinalFile[];
   /** The clock it ran on, its case's `now`; absent, the real one. */
   now?: string;
   /** Its fake mailbox after it, for a case with `email` (eval-mailbox.ts). */
   mailbox?: MailboxRecord;
+  /** What it was handed of its trigger's last result after its message, for a case with `previous` (eval-previous.ts). */
+  handed?: PreviousHandover;
 };
 export type Verdict = { pass: boolean; reason: string; cost_usd?: number | null; run_id?: string };
 
@@ -534,7 +636,11 @@ const carries = (call: unknown, args: unknown): boolean => (isObject(args) ? isO
 export function fakeAnswer(fixture: McpFixture, tool: string, args: Json): Json {
   const spec = fixture.tools[tool];
   if (!spec) return { isError: true, content: [{ type: "text", text: `The fake ${fixture.server} has no tool ${tool}.` }] };
-  const matches = (when: Json) => Object.entries(when).every(([key, value]) => Object.hasOwn(args, key) && same(args[key], value));
+  const matches = (when: Json) => Object.entries(when).every(([key, value]) => {
+    if (!Object.hasOwn(args, key)) return false;
+    const pattern = patternOf(value);
+    return pattern ? typeof args[key] === "string" && pattern.test(args[key]) : same(args[key], value);
+  });
   const hit = spec.answers.find((answer) => (Array.isArray(answer.when) ? answer.when.some(matches) : matches(answer.when)));
   if (hit) return hit.result;
   if (spec.search && typeof args[spec.search.query] === "string") return { content: [{ type: "text", text: searched(spec.search, args[spec.search.query] as string) }] };
@@ -634,6 +740,8 @@ export function gradeDeterministic(grader: Exclude<Grader, { type: "llm" }>, run
     }
     case "mailbox":
       return run.mailbox ? mailboxVerdict(run.mailbox, grader.messageId, grader.in, grader.notIn) : { pass: false, reason: "the run has no fake mailbox to read" };
+    case "handed":
+      return handedVerdict(run.handed, grader.expect, grader.dropped);
   }
 }
 
@@ -647,8 +755,8 @@ export function outputVerdict(pkg: Package, result: unknown): GraderResult | und
 }
 
 /** The input a grader run gets for an llm grader: the rubric, the clock the run ran on when its case set one (the grader's
- *  own run is on the real clock), the run's input, its answer (its target field marked when the grader names one), its
- *  calls and, for a run that searched or fetched, the link check of its cited links (link-check.ts). Never another grader, the case's description or anything the case expects. */
+ *  own run is on the real clock), the run's input, its answer (its target field marked when the grader names one), the
+ *  files it left (fitFiles: whole ahead of its calls, which are cut first), its calls and, for a run that searched or fetched, the link check of its cited links (link-check.ts). Never another grader, the case's description or anything the case expects. */
 export function graderInput(grader: Extract<Grader, { type: "llm" }>, input: string, run: RunRecord, max = GRADER_PROMPT_MAX): string {
   const target = grader.target ? targetOf(run.answer, grader.target) : undefined;
   const at = run.now === undefined ? undefined : instantOf(run.now);
@@ -662,12 +770,19 @@ export function graderInput(grader: Extract<Grader, { type: "llm" }>, input: str
     // What the run did to its fake mailbox: the messages it added (a draft, a copy in Sent), moved or labelled, and sent.
     ...(run.mailbox ? [`<mailbox-after untrusted>\nThe run's email account was a fake mailbox (layout ${run.mailbox.after.layout}). What the run left in it:\n${mailboxText(run.mailbox.after)}\n</mailbox-after>`] : []),
   ];
-  // Each call with its arguments (else its input's preview), its status and its output's head.
-  const lines = run.calls.map((call, i) => ({
-    head: `${i + 1}. ${call.tool}${call.arguments ? ` ${JSON.stringify(call.arguments)}` : call.preview ? ` (${call.preview})` : ""}${call.status ? ` -> ${call.status}` : ""}`,
-    result: call.result ?? "",
-    tool: call.name ?? call.tool,
-  }));
+  // The files the run left, ahead of its calls. A call shows a file's bytes only in its arguments or its output, each cut
+  // where the timeline cuts it (a string of its arguments at 2,000 characters, its output at CALL_RESULT_CHARS, each
+  // ending "..."), and a cut call reads to a grader as a run that did less than its file holds.
+  const files = run.finalFiles ?? [];
+  const texts = files.filter((file) => file.text !== undefined);
+  // Each call with its arguments (else its input's preview), its status and its output's head; a call that names a file
+  // shown whole says where it is.
+  const lines = run.calls.map((call, i) => {
+    const head = `${i + 1}. ${call.tool}${call.arguments ? ` ${JSON.stringify(call.arguments)}` : call.preview ? ` (${call.preview})` : ""}${call.status ? ` -> ${call.status}` : ""}`;
+    const result = call.result ?? "";
+    const named = texts.flatMap((file) => (file.name !== undefined && (head.includes(file.name) || result.includes(file.name)) ? [file.name] : [])).sort((a, b) => b.length - a.length)[0];
+    return { head: named ? `${head} [the file ${named} is in <files>, whole unless marked cut]` : head, result, tool: call.name ?? call.tool };
+  });
   // Each call a fake MCP server received, its arguments whole in its log: they are the part a cut may take.
   const mcpLines = run.mcpCalls.map((call, i) => ({ head: `${i + 1}. ${call.tool}`, result: JSON.stringify(call.arguments ?? {}) }));
   const wrap = (text: string) => `<tool-calls untrusted>\n${text}\n</tool-calls>`;
@@ -675,13 +790,18 @@ export function graderInput(grader: Extract<Grader, { type: "llm" }>, input: str
   // A run that searched or fetched: each link its answer cites, matched against its web calls' urls in code (link-check.ts).
   const links = linkCheck(run.answer, run.calls);
   const linked = links === undefined ? [] : [`<link-check untrusted>\n${links}\n</link-check>`];
-  // Both lists share the room the rubric, the task, the answer and the link check leave, each in proportion to its whole size.
-  const room = max - [...before, wrap(""), ...linked, ...(mcpLines.length ? [wrapMcp("")] : [])].reduce((sum, part) => sum + part.length + 2, 0);
+  const wrapFiles = (text: string) => `<files untrusted>\nThe files in the run's work folder when it ended, each text file whole unless marked cut (a call below that shows one only in part shows a cut of it):\n${text}\n</files>`;
+  const room = max - [...before, wrap(""), ...linked, ...(mcpLines.length ? [wrapMcp("")] : []), ...(files.length ? [wrapFiles("")] : [])].reduce((sum, part) => sum + part.length + 2, 0);
   const wholeOf = (list: readonly { head: string; result: string }[]) => list.reduce((sum, one) => sum + one.head.length + one.result.length + 3, 0);
   const [callsWhole, mcpWhole] = [wholeOf(lines), wholeOf(mcpLines)];
-  const mcpRoom = callsWhole + mcpWhole <= room ? mcpWhole : Math.floor((room * mcpWhole) / Math.max(1, callsWhole + mcpWhole));
+  // The files come first: they take what they need of the room, but no more than leaves the calls a quarter of it (or
+  // all they need, when that is less), so a call's result is cut before a file is.
+  const shownFiles = files.length ? fitFiles(files, Math.max(0, room - Math.min(callsWhole + mcpWhole, Math.floor(room / 4)))) : undefined;
+  // Both call lists share the room the rest leave, each in proportion to its whole size.
+  const left = room - (shownFiles === undefined ? 0 : shownFiles.length);
+  const mcpRoom = callsWhole + mcpWhole <= left ? mcpWhole : Math.floor((left * mcpWhole) / Math.max(1, callsWhole + mcpWhole));
   const after = mcpLines.length ? [wrapMcp(fitCalls(mcpLines, mcpRoom, "argument list"))] : [];
-  return [...before, wrap(lines.length ? fitCalls(lines, room - mcpRoom) : "(none)"), ...linked, ...after].join("\n\n");
+  return [...before, ...(shownFiles === undefined ? [] : [wrapFiles(shownFiles)]), wrap(lines.length ? fitCalls(lines, left - mcpRoom) : "(none)"), ...linked, ...after].join("\n\n");
 }
 
 /** A grader's calls, one line each (`head`, then `: <result>`), in at most `room` characters: whole when they fit; else
@@ -695,13 +815,7 @@ export function fitCalls(lines: readonly { head: string; result: string; tool?: 
   const line = (head: string, result: string) => (result ? `${head}: ${result}` : head);
   const whole = lines.map((one) => line(one.head, one.result)).join("\n");
   if (whole.length <= room) return whole;
-  const said = (cut: string) => `(Cut to keep this prompt under its cap: ${cut}.)`;
-  const middle = (text: string, keep: number) => {
-    if (text.length <= keep) return text;
-    const marker = ` [... ${text.length - keep} characters cut ...] `;
-    const tail = Math.floor(keep / 3);
-    return `${text.slice(0, keep - tail)}${marker}${text.slice(text.length - tail)}`;
-  };
+  const said = saidCut;
   const webs = lines.map((one) => (one.tool ? webShownOf(one.tool, one.result) : undefined));
   const LONG = said(`each long ${what} keeps its head and tail, its middle cut where marked${webs.some(Boolean) ? "; a web_search keeps every result's url, title and date, and a web_fetch its url and title, their snippets and page text cut" : ""}`);
   // What a result cut to `keep` adds to its line, ": " included: the marker a cut adds is at most 40 characters, counted
@@ -748,9 +862,56 @@ export function fitCalls(lines: readonly { head: string; result: string; tool?: 
   return [said(`every ${what} is left out, and ${dropped} call${dropped === 1 ? "" : "s"} in the middle`), ...kept[0], `[... ${dropped} call${dropped === 1 ? "" : "s"} cut ...]`, ...kept[1]].join("\n");
 }
 
-/** A grader run's answer read as its verdict: the last json block's (else the last JSON object's) {pass, reason}. */
+/** A cut's note, on the first line of what it cut. */
+const saidCut = (cut: string) => `(Cut to keep this prompt under its cap: ${cut}.)`;
+/** `text` in at most `keep` characters and its marker: whole when it fits, else its first two thirds and last third of
+ *  `keep`, its middle cut and marked in place with how much was cut (a marker of at most 40 characters). */
+function middle(text: string, keep: number): string {
+  if (text.length <= keep) return text;
+  const marker = ` [... ${text.length - keep} characters cut ...] `;
+  const tail = Math.floor(keep / 3);
+  return `${text.slice(0, keep - tail)}${marker}${text.slice(text.length - tail)}`;
+}
+
+/** A run's final files in at most `room` characters: each text file in a <file> block, whole when they all fit; else each
+ *  text past a length L keeps its head and tail with its middle cut and marked, L the longest that fits (so the largest
+ *  is cut first); else every text left out. A file with no text (media, a binary, one past what was read) is named with
+ *  its size on a last line, cut to the room when even that passes it. Each file is named by its cut name alone: one with
+ *  none is in a block with no path, or counted. */
+export function fitFiles(files: readonly FinalFile[], room: number): string {
+  const block = (file: FinalFile, text: string) => `<file${file.name === undefined ? "" : ` path="${file.name}"`} bytes="${file.bytes}">\n${text}\n</file>`;
+  const texts = files.filter((file): file is FinalFile & { text: string } => file.text !== undefined);
+  const others = files.filter((file) => file.text === undefined);
+  const named = others.length ? [`Not shown (not text, or past what a grader is given), by path and size in bytes: ${namesOf(others)}`] : [];
+  const whole = [...texts.map((file) => block(file, file.text)), ...named].join("\n");
+  if (whole.length <= room) return whole;
+  const LONG = saidCut("each long file keeps its head and tail, its middle cut where marked");
+  const size = (keep: number) => LONG.length + 1 + texts.reduce((sum, file) => sum + block(file, "").length + (file.text.length <= keep ? file.text.length : keep + 40) + 1, 0) + named.reduce((sum, line) => sum + line.length, 0);
+  if (texts.length && size(0) <= room) {
+    let [low, top] = [0, Math.max(...texts.map((file) => file.text.length))];
+    while (low < top) {
+      const mid = Math.ceil((low + top) / 2);
+      if (size(mid) <= room) low = mid;
+      else top = mid - 1;
+    }
+    return [LONG, ...texts.map((file) => block(file, middle(file.text, low))), ...named].join("\n");
+  }
+  const list = [saidCut("every file's text is left out"), `By path and size in bytes: ${namesOf(files)}`].join("\n");
+  return list.length <= room ? list : room < 4 ? "" : `${list.slice(0, room - 4)} ...`;
+}
+
+/** Files by their cut names and sizes, "a.mp4 (9000000), b.txt (5)", and those with no name counted after them: a file is
+ *  never named to a grader by anything but its cut name. */
+function namesOf(files: readonly FinalFile[]): string {
+  const named = files.flatMap((file) => (file.name === undefined ? [] : [`${file.name} (${file.bytes})`]));
+  const unnamed = files.length - named.length;
+  const count = unnamed ? `${unnamed} file${unnamed === 1 ? "" : "s"} not named (this server doesn't cut file names)` : "";
+  return named.length && count ? `${named.join(", ")}; and ${count}` : named.length ? named.join(", ") : count;
+}
+
+/** A grader run's answer read as its verdict: its json block's (jsonBlockOf), else the last flat JSON object's, {pass, reason}. */
 export function verdictOf(answer: string): { pass: boolean; reason: string } | undefined {
-  const candidates = [lastJsonBlock(answer), ...[...answer.matchAll(/\{[^{}]*"pass"[^{}]*\}/g)].map((m) => m[0]).reverse()];
+  const candidates = [jsonBlockOf(answer), ...[...answer.matchAll(/\{[^{}]*"pass"[^{}]*\}/g)].map((m) => m[0]).reverse()];
   for (const text of candidates) {
     if (text === undefined) continue;
     try {
@@ -815,13 +976,14 @@ async function bytesOf(req: IncomingMessage): Promise<Buffer> {
 
 // ---- the API ---------------------------------------------------------------------------------------------------------
 
-type Answered = { status: number; body: unknown };
-/** `statusOnly`: the answer's status alone, its body cancelled unread (a file's existence, never its bytes). `signal`: the
- *  request and the read of its body stop when it aborts, and the call rejects. */
-export type Api = (method: string, path: string, body?: unknown, headers?: Record<string, string>, options?: { statusOnly?: true; signal?: AbortSignal }) => Promise<Answered>;
+type Answered = { status: number; body: unknown; headers?: Headers };
+/** `statusOnly`: the answer's status alone, its body cancelled unread (a file's existence, never its bytes). `text`: its
+ *  body as the text it is, never parsed (a file's bytes: a JSON file's text, as it was written), with the answer's headers.
+ *  `signal`: the request and the read of its body stop when it aborts, and the call rejects. */
+export type Api = (method: string, path: string, body?: unknown, headers?: Record<string, string>, options?: { statusOnly?: true; text?: true; signal?: AbortSignal }) => Promise<Answered>;
 
 /** A client of the v2 API at `baseUrl` (ending in /v2) with `token`. */
-function apiOf(baseUrl: string, token: string): Api {
+export function apiOf(baseUrl: string, token: string): Api {
   return async (method, path, body, headers = {}, options = {}) => {
     const raw = typeof body === "string";
     // The console's page takes a write from its session only with a JSON body type, a body or not (page.ts answerPage):
@@ -842,6 +1004,7 @@ function apiOf(baseUrl: string, token: string): Api {
       return { status: res.status, body: null };
     }
     const text = await res.text();
+    if (options.text) return { status: res.status, body: text, headers: res.headers };
     let json: unknown = text;
     try {
       json = JSON.parse(text);
@@ -863,40 +1026,118 @@ function expectOk(what: string, answered: Answered, ok: number[] = [200, 201, 20
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+/** How long the run read that asks whether a runner holds a queued run may take. */
+export const CLAIM_READ_TIMEOUT_MS = 10_000;
+/** The least time between two of those reads of one run. */
+export const CLAIM_READ_EVERY_MS = 5_000;
+/** How long a timeline page read asks the server to wait for a new row (its wait_ms). */
+const PAGE_WAIT_MS = 5_000;
+/** How long that read may take: its wait, and 10 s for the answer to arrive. */
+export const PAGE_READ_TIMEOUT_MS = PAGE_WAIT_MS + 10_000;
+
+/** The bound of a read in waitRun made at `now`: `capMs`, or the time left to `deadline` when that is less (`ms`, whole
+ *  milliseconds and never below 0, as AbortSignal.timeout takes them), and whether the time left is what bounds it
+ *  (`atDeadline`). */
+export function readBound(deadline: number, capMs: number, now: number): { ms: number; atDeadline: boolean } {
+  const left = deadline - now;
+  return left < capMs ? { ms: Math.max(0, Math.ceil(left)), atDeadline: true } : { ms: capMs, atDeadline: false };
+}
+
+/** A read in waitRun, bounded as readBound says and by the eval's stop (`stop`): the `signal` its request takes, whether
+ *  to `send` it at all (not with no time left), and `byDeadline()`, true once the deadline ended it. The wait takes that
+ *  as its end, with no second read of the clock: the timer runs on a monotonic clock in whole milliseconds, and
+ *  Date.now() can still read a millisecond short of the deadline when it fires. */
+function bounded(deadline: number, capMs: number, stop?: AbortSignal): { signal: AbortSignal; send: boolean; byDeadline: () => boolean } {
+  const { ms, atDeadline } = readBound(deadline, capMs, Date.now());
+  const timeout = AbortSignal.timeout(ms);
+  return { signal: stop ? AbortSignal.any([stop, timeout]) : timeout, send: ms > 0, byDeadline: () => atDeadline && (ms === 0 || timeout.aborted) };
+}
+
+/** Whether a runner holds the run now (the run read's `claim`): "deadline" when the read ran to the run's `deadline`, or
+ *  there was no time left to send it; undefined when it fails, takes over CLAIM_READ_TIMEOUT_MS or is stopped by
+ *  `signal` (the eval's stop): not known, so never a reason to cancel the run as unheld. */
+async function heldNow(api: Api, runId: string, deadline: number, signal?: AbortSignal): Promise<boolean | "deadline" | undefined> {
+  const read = bounded(deadline, CLAIM_READ_TIMEOUT_MS, signal);
+  const answered = read.send ? await api("GET", `/runs/${runId}`, undefined, {}, { signal: read.signal }).catch(() => undefined) : undefined;
+  if (read.byDeadline()) return "deadline";
+  return answered?.status === 200 && isObject(answered.body) ? isObject(answered.body.claim) : undefined;
+}
+
 /** A run waited for: its rows until it ends (completed, failed, cancelled) or waits on a person (input_required), or
- *  `deadline` passes (then it is cancelled). A stop of the eval (`signal`) cancels it too, and throws. */
-async function waitRun(api: Api, runId: string, deadline: number, signal?: AbortSignal, queueTimeoutMs = QUEUE_TIMEOUT_MS): Promise<{ status: string; rows: Json[]; waiting?: string; why?: string }> {
+ *  `deadline` passes (then it is cancelled). A stop of the eval (`signal`) cancels it too, and throws. Each of its reads
+ *  ends at the deadline and at the stop (bounded), so a server that stalls one never holds the wait past either.
+ *  Exported for its tests. */
+export async function waitRun(api: Api, runId: string, deadline: number, signal?: AbortSignal, queueTimeoutMs = QUEUE_TIMEOUT_MS): Promise<{ status: string; rows: Json[]; waiting?: string; why?: string }> {
   const view = new Map<string, Json>();
   let after = 0;
-  // A run nobody takes stays queued: given up on after queueTimeoutMs, by name, never left to the whole deadline.
-  const queuedUntil = Date.now() + queueTimeoutMs;
+  const started = Date.now();
+  // A run nobody takes stays queued: given up on once it has gone queueTimeoutMs with no runner holding it, by name, never
+  // left to the whole deadline. A run's view reads queued until its first rows show, held or not (a slow start on a busy
+  // machine), so a queued page past the bound asks the run read whether a runner holds it now. Once one has, every queued
+  // page asks (at most one read in CLAIM_READ_EVERY_MS): a claim can lapse for a moment on a stalled machine (not renewed
+  // in time, then claimed again), so one read that finds none never ends the wait. The run is cancelled only when reads
+  // found no runner holding it from the first such read to one queueTimeoutMs later, none between them finding one. A read
+  // that doesn't answer (failed, stalled past its bound, or stopped) says neither.
+  let unheldSince: number | undefined = started;
+  let everHeld = false;
+  let askedAt = -Infinity;
+  let rows: Json[] = [];
+  let state: unknown;
   for (;;) {
     if (signal?.aborted) {
       await api("POST", `/runs/${runId}/cancel`, {}).catch(() => undefined);
       signal.throwIfAborted();
     }
-    // calls=whole: each call's arguments and its output's head (tool_input, tool_result_text), which its graders read.
-    const page = expectOk(`reading run ${runId}'s timeline`, await api("GET", `/runs/${runId}/timeline?after=${after}&wait_ms=5000&calls=whole`));
-    if (page.reset) view.clear();
-    for (const id of (page.drop as string[] | undefined) ?? []) view.delete(id);
-    for (const row of (page.rows as Json[] | undefined) ?? []) view.set(String(row.id), row);
-    after = Number(page.next_after ?? after);
-    const rows = [...view.values()].sort((a, b) => Number(a.seq ?? 0) - Number(b.seq ?? 0));
-    const status = String(page.status);
-    if (ENDED.includes(status) && page.final && !page.has_more) return { status, rows };
-    if (status === "input_required" && !page.has_more) {
-      const waiting = rows.findLast((row) => row.kind === "waiting");
-      return { status, rows, waiting: typeof waiting?.summary === "string" ? waiting.summary : "it waits on a person" };
+    // calls=whole: each call's arguments and its output, whole to CALL_RESULT_CHARS (tool_input, tool_result_text), which its graders read.
+    // CALLS_PAGE_ROWS rows a page, the most a calls=whole page holds (an older server's default is 500). A page its bound
+    // cut (stalled past PAGE_READ_TIMEOUT_MS, run to the deadline, or stopped) is no page: it is asked again, unless the
+    // stop or the deadline below ends the wait.
+    const read = bounded(deadline, PAGE_READ_TIMEOUT_MS, signal);
+    const answered = read.send
+      ? await api("GET", `/runs/${runId}/timeline?after=${after}&wait_ms=${PAGE_WAIT_MS}&calls=whole&limit=${CALLS_PAGE_ROWS}`, undefined, {}, { signal: read.signal }).catch((error: unknown) => {
+          if (read.signal.aborted) return undefined;
+          throw error;
+        })
+      : undefined;
+    let timedOut = read.byDeadline();
+    const page = answered === undefined ? undefined : expectOk(`reading run ${runId}'s timeline`, answered);
+    if (page) {
+      if (page.reset) view.clear();
+      for (const id of (page.drop as string[] | undefined) ?? []) view.delete(id);
+      for (const row of (page.rows as Json[] | undefined) ?? []) view.set(String(row.id), row);
+      after = Number(page.next_after ?? after);
+      rows = [...view.values()].sort((a, b) => Number(a.seq ?? 0) - Number(b.seq ?? 0));
+      state = page.state;
+      const status = String(page.status);
+      if (ENDED.includes(status) && page.final && !page.has_more) return { status, rows };
+      if (status === "input_required" && !page.has_more) {
+        const waiting = rows.findLast((row) => row.kind === "waiting");
+        return { status, rows, waiting: typeof waiting?.summary === "string" ? waiting.summary : "it waits on a person" };
+      }
+      if (status === "queued" && (everHeld || Date.now() - started > queueTimeoutMs) && Date.now() - askedAt >= CLAIM_READ_EVERY_MS) {
+        askedAt = Date.now();
+        const held = await heldNow(api, runId, deadline, signal);
+        if (held === "deadline") timedOut = true;
+        else if (held === true) {
+          everHeld = true;
+          unheldSince = undefined;
+        } else if (held === false) {
+          unheldSince ??= askedAt;
+          if (Date.now() - unheldSince >= queueTimeoutMs) {
+            await api("POST", `/runs/${runId}/cancel`, {}).catch(() => undefined);
+            return { status: "timed_out", rows, why: `the run stayed queued for ${Math.round(queueTimeoutMs / 1000)} s with no runner holding it, and it was cancelled` };
+          }
+        }
+      }
     }
-    if (status === "queued" && Date.now() > queuedUntil) {
+    if (signal?.aborted) continue;
+    // A read the deadline ended, or the clock at the deadline, not only past it. A cancel that fails is sent again once the
+    // wait's answer is settled (settle cancels a run not ended): the wait still ends timed out.
+    if (timedOut || Date.now() >= deadline) {
       await api("POST", `/runs/${runId}/cancel`, {}).catch(() => undefined);
-      return { status: "timed_out", rows, why: `the run stayed queued for ${Math.round(queueTimeoutMs / 1000)} s: no runner took it (state ${String(page.state)}), and it was cancelled` };
+      return { status: "timed_out", rows, why: `the run took longer than ${Math.round((deadline - started) / 1000)} s (state ${String(state ?? "unknown")} when the wait gave up) and was cancelled` };
     }
-    if (Date.now() > deadline) {
-      await api("POST", `/runs/${runId}/cancel`, {});
-      return { status: "timed_out", rows, why: `the run took longer than ${Math.round((deadline - (queuedUntil - queueTimeoutMs)) / 1000)} s (state ${String(page.state)} when the wait gave up) and was cancelled` };
-    }
-    if (page.has_more !== true && page.unchanged === true) await sleep(250);
+    if (page?.has_more !== true && page?.unchanged === true) await sleep(250);
   }
 }
 
@@ -904,7 +1145,7 @@ async function waitRun(api: Api, runId: string, deadline: number, signal?: Abort
  *  shell tool held to bash's setting (bash_background, bash_output, ...) keeps its own name, so its grader sees it. A
  *  call on a saved server `toolkits` names ({<saved server>: <the package's toolkit>}, a need an owner's server filled
  *  under another name) is named on the package's toolkit, as the package's graders name it. Each with its arguments and
- *  its output's head as the rows of a calls=whole read carry them (tool_input, tool_result_text), else its previews. */
+ *  its output as the rows of a calls=whole read carry them (tool_input, tool_result_text), else its previews. */
 export function callsOf(rows: readonly Json[], harness: string, toolkits: Readonly<Record<string, string>> = {}): ToolCall[] {
   const results = new Map(rows.filter((row) => row.kind === "tool_result" && row.tool_use_id).map((row) => [String(row.tool_use_id), row]));
   // The rows are a server's, read over its API: the names are the built-in harness's, the only facts known here.
@@ -918,16 +1159,64 @@ export function callsOf(rows: readonly Json[], harness: string, toolkits: Readon
   });
 }
 
-/** Every file path of a run's work folder (the files route, page by page). */
-async function filesOf(api: Api, runId: string): Promise<string[]> {
-  const paths: string[] = [];
+/** A file of a run's work folder as its listing names it: its path (for this eval's own reads, never a grader's prompt),
+ *  its name under the run's cut (the listing's `name`, absent from a server that doesn't cut it), its size, its type
+ *  (null for an extension the server does not type) and whether the server could read it. */
+export type Listed = { path: string; name?: string; bytes: number; type: string | null; unreadable: boolean };
+/** Every file of a run's work folder (the files route, page by page), each with its name under the run's cut (`?cut=run`). */
+async function filesOf(api: Api, runId: string): Promise<Listed[]> {
+  const files: Listed[] = [];
   for (let cursor: string | null = null; ; ) {
-    const page = await api("GET", `/runs/${runId}/files${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`);
-    if (page.status !== 200 || !isObject(page.body)) return paths;
-    for (const file of (page.body.files as Json[] | undefined) ?? []) if (typeof file.path === "string") paths.push(file.path);
+    const page = await api("GET", `/runs/${runId}/files?cut=run${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`);
+    if (page.status !== 200 || !isObject(page.body)) return files;
+    for (const file of (page.body.files as Json[] | undefined) ?? []) {
+      if (typeof file.path === "string") files.push({ path: file.path, ...(typeof file.name === "string" ? { name: file.name } : {}), bytes: typeof file.size_bytes === "number" ? file.size_bytes : 0, type: typeof file.content_type === "string" ? file.content_type : null, unreadable: file.unreadable === true });
+    }
     cursor = typeof page.body.next_cursor === "string" ? page.body.next_cursor : null;
-    if (!cursor) return paths;
+    if (!cursor) return files;
   }
+}
+
+const filePath = (runId: string, path: string) => `/runs/${runId}/files/${path.split("/").map(encodeURIComponent).join("/")}`;
+/** A type a file's bytes are text in: text/*, JSON and NDJSON. A file the server gives no type (an extension it does not
+ *  know: .srt, .vtt, .yaml) is read too: the server answers its text when its bytes are UTF-8 with no NUL, else 415. */
+const TEXT_TYPE = /^(text\/|application\/(json|x-ndjson)\b)/;
+/** How long one read of a run's final file may take, its body included: a server that stalls mid-file leaves that file's
+ *  text out, and the eval goes on. */
+export const FILE_READ_TIMEOUT_MS = 10_000;
+/** How long all of a run's final file reads may take together: past it, the files not yet read are listed by size alone. */
+export const FILE_READS_TIMEOUT_MS = 30_000;
+
+/** A run's final files for its llm graders: each text file's whole text, read smallest first while the texts read stay
+ *  within GRADER_PROMPT_MAX UTF-8 bytes in all (one grader input holds that many characters, and a character is at least
+ *  a byte), every other file by its size alone. Each is read under the run's own cut, on the server that holds its
+ *  secrets (`?cut=run`, run-reads-over-store.ts cutRunFile): every value its timeline's calls are cut of, and every secret
+ *  shape, is "[redacted]" in the text a grader sees. An answer without the cut's mark (`x-agentrun-cut: run`: a server
+ *  that doesn't know the cut and would serve the raw bytes) leaves the text out. A read that fails, is refused (403, 413,
+ *  415), takes longer than `readTimeoutMs`, or would pass the budget leaves that file's text out, never the grade, and
+ *  the files after it are still read; past FILE_READS_TIMEOUT_MS in all, the rest are left out. In the listing's order. */
+export async function finalFilesOf(api: Api, runId: string, listed: readonly Listed[], signal?: AbortSignal, readTimeoutMs = FILE_READ_TIMEOUT_MS): Promise<FinalFile[]> {
+  const texts = new Map<string, string>();
+  let left = GRADER_PROMPT_MAX;
+  const until = Date.now() + Math.max(FILE_READS_TIMEOUT_MS, readTimeoutMs);
+  for (const file of [...listed].filter((one) => !one.unreadable && (one.type === null || TEXT_TYPE.test(one.type))).sort((a, b) => a.bytes - b.bytes)) {
+    if (file.bytes > left) continue;
+    signal?.throwIfAborted();
+    const remaining = until - Date.now();
+    if (remaining <= 0) break;
+    const bound = AbortSignal.timeout(Math.min(readTimeoutMs, remaining));
+    const read = await api("GET", `${filePath(runId, file.path)}?cut=run`, undefined, {}, { text: true, signal: signal ? AbortSignal.any([signal, bound]) : bound }).catch((error: unknown) => {
+      if (signal?.aborted) throw error;
+      return undefined;
+    });
+    if (read?.status !== 200 || read.headers?.get("x-agentrun-cut") !== "run" || typeof read.body !== "string") continue;
+    const bytes = Buffer.byteLength(read.body);
+    if (bytes > left) continue;
+    texts.set(file.path, read.body);
+    left -= bytes;
+  }
+  // Each by its cut name alone: its path is for the reads above, never a grader.
+  return listed.map((file) => ({ ...(file.name !== undefined ? { name: file.name } : {}), bytes: file.bytes, ...(texts.has(file.path) ? { text: texts.get(file.path)! } : {}) }));
 }
 
 /** Each path a file_exists grader names that the run's work folder holds, read one by one (GET /runs/{id}/files/{path}):
@@ -936,7 +1225,7 @@ async function filesOf(api: Api, runId: string): Promise<string[]> {
 async function presentOf(api: Api, runId: string, paths: readonly string[]): Promise<string[]> {
   const present: string[] = [];
   for (const path of new Set(paths)) {
-    const read = await api("GET", `/runs/${runId}/files/${path.split("/").map(encodeURIComponent).join("/")}`, undefined, {}, { statusOnly: true });
+    const read = await api("GET", filePath(runId, path), undefined, {}, { statusOnly: true });
     if (read.status === 200) present.push(path);
   }
   return present;
@@ -989,6 +1278,8 @@ export type EvalOptions = {
   runTimeoutMs?: number;
   /** How long one run may stay queued with no runner taking it (default QUEUE_TIMEOUT_MS). */
   queueTimeoutMs?: number;
+  /** How long one read of a run's final file may take, its body included (default FILE_READ_TIMEOUT_MS). */
+  fileReadTimeoutMs?: number;
   /** Told each step as one line (the CLI's stderr). */
   log?: (line: string) => void;
   /** Stops the eval: the run in progress is cancelled, what the eval made is cleaned up as at its end, and the eval
@@ -1001,7 +1292,7 @@ type Made = { agents: string[]; runs: Set<string>; triggers: Set<string> };
 /** `fakes`: each run's fakes by its agent's id, read by the eval's own runner (runner/beside.ts evalFakes). `clock`: the
  *  eval's own server's trigger clock, for a package with an email case (a run starts as its trigger's); `owner`, the
  *  headers of that server's console session, which saves and removes its email account (a secret write). */
-type Ctx = { api: Api; pkg: Package; options: EvalOptions; made: Made; log: (line: string) => void; graderAgent: () => Promise<string>; served?: Json; fakes: Map<string, EvalFakes>; clock?: EvalClock; owner?: Record<string, string>; feedRoutes?: FeedRoutes };
+type Ctx = { api: Api; pkg: Package; options: EvalOptions; made: Made; log: (line: string) => void; graderAgent: () => Promise<string>; served?: Json; fakes: Map<string, EvalFakes>; clock?: EvalClock; owner?: Record<string, string>; feedRoutes?: FeedRoutes; store?: () => Promise<Store> };
 /** The running feed case's route to its fake feeds (eval-feed.ts CaseFeeds), which the eval's own server reads through. */
 type FeedRoutes = { route?: (url: string) => string | undefined };
 export type GraderResult = { grader: string; type: string; pass: boolean; reason: string; cost_usd: number | null; run_id?: string };
@@ -1011,8 +1302,9 @@ export type GraderResult = { grader: string; type: string; pass: boolean; reason
 export type RunMetrics = { input: number; cache_read: number; cache_write: number; output: number; requests: number; unmetered: number; tool_calls: number; tools: Record<string, { calls: number; errors: number }> };
 /** `answer`, `calls`, `mcp_calls`, `created_at`, `ended_at` and `metrics`: what the run left, kept in the report so a caller scores the
  *  run itself after the eval's temp server is gone (a hill climb's parser and judge, say). An email case's run carries
- *  its fake mailbox's `layout` and what it left there (`mailbox_after`). */
-export type RunResult = { run: number; agent_id: string | null; run_id: string | null; status: string; pass: boolean; error?: string; cost_usd: number | null; graders: GraderResult[]; answer?: string; calls?: ToolCall[]; mcp_calls?: ToolCall[]; created_at?: string | null; ended_at?: string | null; metrics?: RunMetrics | null; layout?: Layout; mailbox_after?: MailboxAfter };
+ *  its fake mailbox's `layout` and what it left there (`mailbox_after`); a previous case's run, what it was handed of its
+ *  trigger's last result (`handed_previous`). */
+export type RunResult = { run: number; agent_id: string | null; run_id: string | null; status: string; pass: boolean; error?: string; cost_usd: number | null; graders: GraderResult[]; answer?: string; calls?: ToolCall[]; mcp_calls?: ToolCall[]; created_at?: string | null; ended_at?: string | null; metrics?: RunMetrics | null; layout?: Layout; mailbox_after?: MailboxAfter; handed_previous?: PreviousHandover };
 export type CaseResult = { name: string; description: string; pass: boolean; runs: RunResult[]; error?: string; cost_usd: number };
 export type Report = {
   package: { name: string; version: string; dir: string };
@@ -1040,6 +1332,10 @@ export function v2Base(url: string): string {
 export async function evalTemplate(options: EvalOptions): Promise<Report> {
   const log = options.log ?? (() => undefined);
   if (options.data !== undefined && options.server) throw new Error(ON_DATA_WITH_SERVER);
+  // A NaN bound would never end a wait (no clock reads past it); a fraction of a millisecond is rounded up (readBound).
+  for (const [name, ms] of [["runTimeoutMs", options.runTimeoutMs], ["queueTimeoutMs", options.queueTimeoutMs]] as const) {
+    if (ms !== undefined && !(Number.isFinite(ms) && ms > 0)) throw new RangeError(`${name} is a time in milliseconds over 0, not ${ms}`);
+  }
   const { pkg, cases } = readCases(options.dir, options.cases);
   if (options.graderModel !== undefined && !MODEL_REF.test(options.graderModel)) throw new CaseError(options.dir, [`--grader-model is "provider/model-id", not ${options.graderModel}`]);
   // A case's fakes are bound by the eval's own runner, in this process: a named server's runs would search the real web,
@@ -1048,7 +1344,7 @@ export async function evalTemplate(options: EvalOptions): Promise<Report> {
   if (refused.length) throw new CaseError(options.dir, refused);
   // Each run's fakes, by the agent the eval made for it (runOnce), which the runner beside the server reads at the claim.
   const fakes = new Map<string, EvalFakes>();
-  const clock = !options.server && cases.some((one) => one.email || one.feed) ? evalClock() : undefined;
+  const clock = !options.server && cases.some((one) => one.email || one.feed || one.previous) ? evalClock() : undefined;
   // Where the eval's own server reads each feed: the running feed case's fakes (feedRun). A feed no case routes (a feed
   // trigger of the package's that the eval deletes once the apply made it, read at its creation) is served nowhere: its
   // read is unreachable at once, never sent, so no eval reads a real feed.
@@ -1100,7 +1396,7 @@ export async function evalTemplate(options: EvalOptions): Promise<Report> {
     const { withoutFaux } = await import("./model.js");
     const serveOptions = options.serve ?? {};
     // Its run lines go to stderr: stdout is the eval's report.
-    const beside = await runnerBeside(data!, { mcpLoopback: serve.localInstall, mcpOwn: serve.own, evalFakes: (agentId) => fakes.get(agentId), harnessInstall, onLine: (line) => console.error(line), ...(serveOptions.faux ? { env: { ...withoutFaux(process.env), ...fauxEnvOf({ data: data!, ...serveOptions } as Parameters<typeof fauxEnvOf>[0]) } } : {}) }).catch(async (error: unknown) => {
+    const beside = await runnerBeside(data!, { mcpLoopback: serve.localInstall, mcpOwn: serve.own, ollamaHost: serve.ollamaHost, evalFakes: (agentId) => fakes.get(agentId), harnessInstall, onLine: (line) => console.error(line), ...(serveOptions.faux ? { env: { ...withoutFaux(process.env), ...fauxEnvOf({ data: data!, ...serveOptions } as Parameters<typeof fauxEnvOf>[0]) } } : {}) }).catch(async (error: unknown) => {
       await closeServe();
       removeTree(scratch!);
       throw error;
@@ -1124,7 +1420,8 @@ export async function evalTemplate(options: EvalOptions): Promise<Report> {
     }
     // On the owner's folder, an email case's fake mailbox would replace the account its server keeps (one account, saved
     // and removed per run): refused before anything runs, the account as it was.
-    if (clock && options.data !== undefined) {
+    // Only an email case saves a mailbox: a previous or feed case on the clock leaves the account alone.
+    if (cases.some((one) => one.email) && options.data !== undefined) {
       const kept = await api("GET", "/settings/email", undefined, owner).catch(() => undefined);
       const address = kept?.status === 200 && isObject(kept.body) ? kept.body.address : undefined;
       if (typeof address === "string" || kept?.status !== 200) {
@@ -1152,8 +1449,12 @@ export async function evalTemplate(options: EvalOptions): Promise<Report> {
   const results: CaseResult[] = [];
   let grader: string | undefined;
   const made: Made = { agents: [], runs: new Set(), triggers: new Set() };
+  // A previous case's earlier runs are written in the eval's own server's store (eval-previous.ts seedPrevious), opened
+  // beside the server as its runner opens it, once, when the first such run seeds.
+  let opened: Promise<Store> | undefined;
+  const store = data !== undefined && cases.some((one) => one.previous) ? () => (opened ??= import("./store/open.js").then(({ openStore }) => openStore({ dataDir: data, role: "runner" }))) : undefined;
   const ctx: Ctx = {
-    api, pkg, options, made, log, fakes, feedRoutes, ...(clock ? { clock } : {}), ...(owner ? { owner } : {}),
+    api, pkg, options, made, log, fakes, feedRoutes, ...(clock ? { clock } : {}), ...(owner ? { owner } : {}), ...(store ? { store } : {}),
     graderAgent: async () => {
       if (grader) return grader;
       // No computer: a grader reads, it never runs a command, and a server with no sandbox would fail its run at the start.
@@ -1175,6 +1476,7 @@ export async function evalTemplate(options: EvalOptions): Promise<Report> {
     await cleanUp(api, made);
     // On an owner's server, what the eval made goes to the archive (an archived agent and its runs stay readable).
     if (options.server || options.data !== undefined) for (const id of made.agents) await api("POST", `/agents/${encodeURIComponent(id)}/archive`, {}).catch(() => undefined);
+    await opened?.then((one) => one.close(), () => undefined);
     await close();
     if (scratch) removeTree(scratch);
   }
@@ -1382,8 +1684,8 @@ async function runOnce(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[
   // every run. Left where the run before took it, a schedule's next time is a later day each run, with no mail of the case.
   // A millisecond before it: a schedule's next time is strictly after the clock, so a case whose `now` is the schedule's
   // own time (an evening digest's 18:00) fires for that time, not the next day's.
-  // An email or feed case's run is its one trigger's (readCases chose it): `via`, that trigger's name.
-  const via = mail ? one.email!.trigger : feeds ? one.feed!.trigger : undefined;
+  // An email, feed or previous case's run is its one trigger's (readCases chose it): `via`, that trigger's name.
+  const via = mail ? one.email!.trigger : feeds ? one.feed!.trigger : one.previous?.trigger;
   if (via !== undefined && one.now !== undefined) ctx.clock?.set(instantOf(one.now)! - 1);
   // Approvals never, for the eval's own agent only: a run that stopped at its first ask would measure nothing. The
   // package's default (ask, say, for a template whose tools cost money) is the owner's at install, and stays as it is;
@@ -1395,13 +1697,18 @@ async function runOnce(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[
   // their own, into the fakes' logs, and outlive the eval. Each one the apply made is deleted at once.
   // An email or feed case's run is its one trigger's: that one stays, until the run is read.
   let kept: string | undefined;
-  for (const id of Array.isArray(applied.trigger_ids) ? (applied.trigger_ids as unknown[]).map(String) : []) {
-    if (via !== undefined && !kept && expectOk(`reading the package's trigger ${id}`, await api("GET", `/triggers/${encodeURIComponent(id)}`)).name === via) kept = id;
-    else made.triggers.add(id);
+  for (const one of Array.isArray(applied.triggers) ? (applied.triggers as { trigger_id: string; name: string }[]) : []) {
+    if (via !== undefined && !kept && one.name === via) kept = one.trigger_id;
+    else made.triggers.add(one.trigger_id);
   }
   await deleteTriggers(api, made, true);
-  if (via !== undefined && !kept) throw new ApiFailure(`the apply made no trigger named ${via}`);
   if (kept) made.triggers.add(kept);
+  // A server under AGENTRUN_RUN_KEYS=1 takes a key it lacks from each run, and says so in the apply's warning at
+  // secrets.<NAME>; an eval's runs carry no keys, so each would be refused. The eval stops before any, as for a case that
+  // does not check (its agent removed with the case).
+  const owed = (Array.isArray(applied.warnings) ? applied.warnings : []).flatMap((warning) => (isObject(warning) && warning.reason === "not_set_up_here" && typeof warning.field === "string" && warning.field.startsWith("secrets.") ? [warning.field.slice("secrets.".length)] : []));
+  if (owed.length) throw new CaseError(ctx.options.dir, [`the server takes ${owed.join(" and ")} from each run (AGENTRUN_RUN_KEYS=1), and an eval's runs carry no keys: run it without --server, or on a server that holds ${owed.length > 1 ? "them" : "it"}`]);
+  if (via !== undefined && !kept) throw new ApiFailure(`the apply made no trigger named ${via}`);
   const agent = expectOk(`reading the agent ${agentId}`, await api("GET", `/agents/${encodeURIComponent(agentId)}`));
   // The saved server the apply gave each need ({toolkit: server}; null for a need it left unset).
   const used = Object.fromEntries(Object.entries(isObject(applied.servers) ? applied.servers : {}).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
@@ -1414,7 +1721,7 @@ async function runOnce(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[
   }
   stopped();
   // The case's fakes, for this run's agent alone, before its run can be claimed.
-  ctx.fakes.set(agentId, { ...(one.web !== undefined ? { web: one.web } : {}), ...(one.now !== undefined ? { now: new Date(instantOf(one.now)!) } : {}), ...(one.monid !== undefined ? { monid: one.monid } : {}), ...(mail ? { email: { imap: mail.faux.imap, smtp: mail.faux.smtp, kind: mail.layout } } : {}) });
+  ctx.fakes.set(agentId, { ...(one.web !== undefined ? { web: one.web } : {}), ...(one.now !== undefined ? { now: new Date(instantOf(one.now)!) } : {}), ...(one.monid !== undefined ? { monid: one.monid } : {}), ...(mail ? { email: { imap: mail.faux.imap, smtp: mail.faux.smtp, kind: mail.layout } } : {}), ...(one.files ? { files: one.files } : {}) });
   let runId: string;
   let fired: Fired | undefined;
   if (via !== undefined && kept) {
@@ -1431,6 +1738,15 @@ async function runOnce(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[
         before = snapshot(mail.faux);
       }, fixture.message ? " (its accept rules may leave the case's message)" : "");
       fired = { mailbox: () => mailboxAfter(mail.faux, mail.layout, before!) };
+    } else if (one.previous) {
+      // The case's earlier results, each a completed run of this agent that a firing of the trigger started, ended before
+      // the clock's time, so the trigger's own firing hands the run the last one's (trigger-targets.ts previousResultOf).
+      if (!ctx.store || !ctx.clock) throw new ApiFailure("a previous case's earlier runs are seeded in the eval's own server's store, and this eval has none");
+      const trigger = expectOk(`reading the package's trigger ${via}`, await api("GET", `/triggers/${encodeURIComponent(kept)}`));
+      const target = isObject(trigger.target) && isObject(trigger.target.input) ? trigger.target.input : {};
+      const previous = await seedPrevious(await ctx.store(), one.previous, { agentId, triggerId: kept, content: typeof target.content === "string" ? target.content : "", before: ctx.clock.now() });
+      runId = await triggerRun(ctx, via, agentId, kept, () => undefined, "");
+      fired = { previous };
     } else {
       runId = await triggerRun(ctx, via, agentId, kept, () => feeds!.deliver(), " (its accept rules may leave the case's item)");
       fired = {};
@@ -1450,8 +1766,18 @@ async function runOnce(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[
   }
 }
 
-/** A run its trigger started (an email or feed case's): `mailbox`, an email run's fake mailbox, read once it has ended. */
-type Fired = { mailbox?: () => Promise<MailboxRecord> };
+/** A run its trigger started (an email, feed or previous case's): `mailbox`, an email run's fake mailbox, read once it has
+ *  ended; `previous`, a previous case's earlier runs as seeded, what its input is read against. */
+type Fired = { mailbox?: () => Promise<MailboxRecord>; previous?: readonly Seeded[] };
+
+/** What a previous case's run, its input content `content`, was handed of the last result `seeded`: that run read back as
+ *  the trigger reads it (its result.output and end, GET /runs/{id}), handed over as the trigger hands it (handedPrevious). */
+async function handedOf(api: Api, content: string, seeded: readonly Seeded[]): Promise<PreviousHandover> {
+  const last = seeded.at(-1)!;
+  const read = expectOk(`reading the seeded run ${last.runId}`, await api("GET", `/runs/${last.runId}`));
+  const output = isObject(read.result) ? (read.result.output ?? null) : null;
+  return handedPrevious(content, last, { output, endedAt: typeof read.ended_at === "string" ? read.ended_at : null });
+}
 
 /** The started run `runId` of `agentId` waited on, read and graded; its calls on the saved servers `used` gave its needs
  *  ({toolkit: server}) named on the package's toolkits; a run its trigger started (`fired`) graded on the input it was
@@ -1466,23 +1792,26 @@ async function ranOnce(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[
   // Its metrics once it has ended (a cancelled run's end writes them too), before the eval's server can go.
   const metrics = await metricsOf(api, agentId, options.signal);
   const mailbox = fired?.mailbox ? await fired.mailbox() : undefined;
+  const handed = fired?.previous ? await handedOf(api, isObject(view.input) && typeof view.input.content === "string" ? view.input.content : "", fired.previous) : undefined;
   stopped();
   const result = isObject(view.result) ? view.result : {};
   const harness = isObject(agent.definition) && typeof agent.definition.harness === "string" ? agent.definition.harness : "pi";
+  const listed = await filesOf(api, runId);
   const record: RunRecord = {
     answer: typeof result.final_answer === "string" ? result.final_answer : "",
     calls: callsOf(ended.rows, harness, Object.fromEntries(Object.entries(used).map(([toolkit, server]) => [server, toolkit]))),
     mcpCalls: fakes.flatMap((fake) => fake.calls.map((call) => ({ ...call }))),
     files: await (async () => {
-      const listed = await filesOf(api, runId);
+      const paths = listed.map((file) => file.path);
       const named = one.graders.flatMap((grader) => (grader.type === "file_exists" ? [grader.path] : []));
-      return [...listed, ...(await presentOf(api, runId, named.filter((path) => !listed.includes(path))))];
+      return [...paths, ...(await presentOf(api, runId, named.filter((path) => !paths.includes(path))))];
     })(),
     ...(one.now !== undefined ? { now: one.now } : {}),
     ...(mailbox ? { mailbox } : {}),
+    ...(handed ? { handed } : {}),
   };
   stopped();
-  const base = { run: n, agent_id: agentId, run_id: runId, status: ended.status, cost_usd: costOf(view), answer: record.answer, calls: record.calls, mcp_calls: record.mcpCalls, created_at: typeof view.created_at === "string" ? view.created_at : null, ended_at: typeof view.ended_at === "string" ? view.ended_at : null, metrics, ...(mailbox ? { mailbox_after: mailbox.after } : {}) };
+  const base = { run: n, agent_id: agentId, run_id: runId, status: ended.status, cost_usd: costOf(view), answer: record.answer, calls: record.calls, mcp_calls: record.mcpCalls, created_at: typeof view.created_at === "string" ? view.created_at : null, ended_at: typeof view.ended_at === "string" ? view.ended_at : null, metrics, ...(mailbox ? { mailbox_after: mailbox.after } : {}), ...(handed ? { handed_previous: handed } : {}) };
   // The grader's task: the input the run was given, an email or feed run's its trigger's (the payload in its tag).
   const task = fired ? inputMessage(view.input ?? {}) : inputMessage(runInput(one.input, one.fields));
   // Waiting on its person's answer (an ask_person question, a tool call's approval) is where such a run stops, and is
@@ -1496,6 +1825,8 @@ async function ranOnce(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[
     : !graded ? `the run ended ${ended.status}${pending ? ` (${pending})` : ""}${isObject(view.error) && typeof view.error.message === "string" ? `: ${view.error.message}` : ""}`
     : undefined;
   const output = ended.status === "completed" ? outputVerdict(ctx.pkg, view.result) : undefined;
+  // The files it left, read whole for its llm graders: only a run they grade, so a case of other graders reads none.
+  if (graded && one.graders.some((grader) => grader.type === "llm")) record.finalFiles = await finalFilesOf(api, runId, listed, options.signal, options.fileReadTimeoutMs);
   const graders: GraderResult[] = output ? [output] : [];
   for (const grader of one.graders) {
     stopped();

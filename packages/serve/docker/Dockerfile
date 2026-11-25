@@ -137,16 +137,18 @@ COPY --from=node /opt/node/ /usr/local/
 # The node user (1000:1000) the official node image has, which the server runs as and /data belongs to.
 RUN groupadd --gid 1000 node && useradd --uid 1000 --gid node --shell /bin/bash --create-home node
 # A run's process runs as a user of its own: slot s of a runner as uid and gid 1001 + s (s < 256, the helper's compiled
-# range), each a user with no home and no shell, its group holding node too, so the server reads what a run writes in
-# its folders (made the slot group's, 2770) and nothing of one run is another's.
+# range), each a user with no home and no shell in a group of its own. node is in none of them, and no slot is in node's
+# group: node stays in one group (its own, 1000), so a platform that reads its groups at start (Northflank's environment
+# injector refused 257) sees one. A run's folders are its slot's uid's and node's group's (2770, setgid) while it runs, the
+# helper's `own`, so the server reads them through that one group and nothing of one run is another's.
 RUN s=0 && while [ "$s" -lt 256 ]; do \
       id=$((1001 + s)) \
       && groupadd --gid "$id" "run-$s" \
       && useradd --uid "$id" --gid "$id" --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin "run-$s" \
       && s=$((s + 1)); \
     done \
- && usermod -a -G "$(seq -s, 1001 1256)" node \
- && [ "$(id -G node | wc -w)" = 257 ]
+ && [ "$(id -G node)" = 1000 ] \
+ && [ "$(id -G run-0)" = 1001 ] && [ "$(id -G run-255)" = 1256 ]
 # tini is PID 1, so the run processes the server starts are reaped and get its SIGTERM. git is for an agent's learning
 # folder, which needs 2.32 or newer; this image holds itself to 2.40 by its own choice: trixie's is 2.47. docker-cli (26.1) is the Docker client alone, no daemon:
 # with the host's Docker socket mounted (compose.yaml at the repository's root), a run's Docker box is a container beside this one.
@@ -161,16 +163,17 @@ RUN v="$(git --version | cut -d' ' -f3)" && dpkg --compare-versions "$v" ge 2.40
  || { echo "git $v is older than 2.40" >&2; exit 1; }
 COPY --from=build --chown=root:root /src /opt/agentrun
 # The run helper (packages/serve/runas): root:node 0750, so only the server's user starts it, with the file capabilities
-# it switches to a slot's uid by (setuid, setgid) and empties the run's bounding set with (setpcap), each set here in the
+# it switches to a slot's uid by (setuid, setgid), empties the run's bounding set with (setpcap) and gives a run's folders
+# to its slot and back with (chown, kept alone while it does), each set here in the
 # final stage, where no later COPY can drop them. The build fails unless getcap reads exactly that set back and the
 # helper's own check finds it effective, as node, the user it runs as, and unless util-linux's flock is there: the runner
 # locks each run's slot on the data directory with it.
 COPY --from=build /opt/runas/agentrun-runas /usr/local/bin/agentrun-runas
 RUN chown root:node /usr/local/bin/agentrun-runas && chmod 0750 /usr/local/bin/agentrun-runas \
- && setcap cap_setuid,cap_setgid,cap_setpcap+ep /usr/local/bin/agentrun-runas \
+ && setcap cap_chown,cap_setuid,cap_setgid,cap_setpcap+ep /usr/local/bin/agentrun-runas \
  && caps="$(getcap /usr/local/bin/agentrun-runas)" \
- && { [ "$caps" = "/usr/local/bin/agentrun-runas cap_setgid,cap_setuid,cap_setpcap=ep" ] \
-      || { echo "the run helper's capabilities are \"$caps\", not cap_setgid,cap_setuid,cap_setpcap=ep" >&2; exit 1; }; } \
+ && { [ "$caps" = "/usr/local/bin/agentrun-runas cap_chown,cap_setgid,cap_setuid,cap_setpcap=ep" ] \
+      || { echo "the run helper's capabilities are \"$caps\", not cap_chown,cap_setgid,cap_setuid,cap_setpcap=ep" >&2; exit 1; }; } \
  && [ "$(stat -c '%U:%G %a' /usr/local/bin/agentrun-runas)" = "root:node 750" ] \
  && setpriv --reuid=node --regid=node --init-groups /usr/local/bin/agentrun-runas check \
  && flock --version >/dev/null
@@ -195,7 +198,8 @@ COPY --from=ffmpeg /opt/ffmpeg/ /usr/local/
 RUN [ "$(command -v ffmpeg)" = /usr/local/bin/ffmpeg ] && node /opt/agentrun/packages/serve/docker/ffmpeg-check.mjs
 WORKDIR /opt/agentrun
 USER node
-ENV NODE_ENV=production
+# AGENTRUN_IN_IMAGE: this image says it is itself (place-offers.ts containerOf), where Kubernetes and containerd mark nothing.
+ENV NODE_ENV=production AGENTRUN_IN_IMAGE=1
 EXPOSE 7340
 VOLUME ["/data"]
 # The launcher hands the secrets over its pipe; tini is PID 1; docker/start.sh runs the command. `server-and-runner` and

@@ -116,7 +116,9 @@ function joins(store: Store, context: Context) {
 /** The runs, newest first; `agent`, `revision` and `labels` (every one held) narrow it. Archived runs are listed too (the
  *  server filters them), with the archive time coalesced onto each row, and a not-ended run's cost its booked-so-far spend. */
 export async function listRuns(store: Store, filter: { agent?: string; revision?: string; labels?: RunLabels }, context: Context): Promise<RunRowView[]> {
+  // Purged runs too: /usage sums their cost from their tombstones, as before their purge.
   const runs = await store.runs.list({
+    purged: true,
     ...(filter.agent !== undefined ? { agentId: filter.agent } : {}),
     ...(filter.revision !== undefined ? { revisionId: filter.revision } : {}),
     ...(filter.labels !== undefined ? { labels: filter.labels } : {}),

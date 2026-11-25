@@ -11,9 +11,9 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { join, resolve } from "node:path";
+import { OWN_NODE, OWN_VERSION } from "./own.mjs";
 import { INSTALL_COMMAND, managerOf } from "./service.mjs";
 
-const OWN = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
 const REPO = "https://github.com/Parcha-ai/agentrun/blob/main/packages";
 export const DOCS = {
   launcher: `${REPO}/agentrun/README.md`,
@@ -87,7 +87,7 @@ export async function doctorOf({
   exec = (command, args) => spawnSync(command, args, { encoding: "utf8", timeout: 10_000, env }),
   get = fetch,
   nodeVersion = process.versions.node,
-  engines = OWN.engines.node,
+  engines = OWN_NODE,
   readRecord = plainText,
   alive = isAlive,
   readToken = () => undefined,
@@ -162,13 +162,13 @@ export async function doctorOf({
     try {
       token = readToken({ data, record, env });
     } catch (error) {
-      capsWhy = error.message;
+      capsWhy = error.message.replace(/\.$/, "");
     }
     if (token) {
       const answer = await getJson(`${base}/capabilities`, { authorization: `Bearer ${token}` });
       if (answer.status === 200 && answer.body && typeof answer.body === "object") caps = answer.body;
       else capsWhy = `GET /v2/capabilities answered ${answer.status || answer.error}`;
-    } else capsWhy ??= `no token to read the server's capabilities with: ${join(data, ".token")} is not there${record?.token_file ? "" : " (the server was started with AGENTRUN_TOKEN; set AGENTRUN_API_KEY to it)"}`;
+    } else capsWhy ??= `no token to read the server's capabilities with: ${join(data, ".token")} is not there`;
   }
   const version = caps?.server?.version;
 
@@ -342,7 +342,7 @@ export async function doctorOf({
   }
 
   const exit = refused !== undefined ? 1 : !answering ? 3 : checks.some((c) => c.status === "fail") ? 1 : 0;
-  return { data, launcher: OWN.version, server: answering ? { url: health.url, version: version ?? null } : null, exit, checks };
+  return { data, launcher: OWN_VERSION, server: answering ? { url: health.url, version: version ?? null } : null, exit, checks };
 }
 
 /** The checks as a person reads them: one line each, then its fix and docs when it is not ok. */
@@ -370,11 +370,7 @@ export const DOCTOR = {
   options: { json: { type: "boolean" } },
   async run({ values, io, env, cli }) {
     if (values["base-url"] !== undefined) throw cli.fail(2, "agentrun doctor checks the AgentRun on this machine, the server of --data (default ~/.agentrun); it takes no --base-url.");
-    const readToken = ({ data, record, env: vars }) => {
-      if (record && !record.token_file) return vars.AGENTRUN_API_KEY || undefined;
-      return cli.privateFile(join(data, ".token"))?.trim() || undefined;
-    };
-    const report = await doctorOf({ data: values.data, env, readRecord: cli.privateFile, readToken });
+    const report = await doctorOf({ data: values.data, env, readRecord: cli.privateFile, readToken: cli.localToken });
     io.stdout.write(values.json ? `${JSON.stringify(report, null, 2)}\n` : textOf(report));
     return report.exit;
   },

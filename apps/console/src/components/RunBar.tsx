@@ -10,7 +10,7 @@ import { Input, Textarea } from "@/components/ui/field";
 import { capWords } from "@/components/NeedsYou";
 import type { Agent } from "@/lib/agentForm";
 import { type Client, ClientError, type FieldIssue } from "@/lib/client";
-import { agentInputOf, type FieldSpec, fieldIssueWords, fieldLabel, fieldOfIssue, fieldStartText, fieldValid, fieldValues } from "@/lib/inputForm";
+import { agentInputOf, clearsContentIssue, contentIssueOf, type FieldSpec, fieldIssueWords, fieldLabel, fieldOfIssue, fieldStartText, fieldValid, fieldValues } from "@/lib/inputForm";
 import { exampleHint, exampleInput, keeper, startBody, submitStart } from "@/lib/runStart";
 import { type ParameterText, paramHelp } from "@/lib/templatePackages";
 import { sendUpload, type Upload } from "@/lib/uploads";
@@ -33,10 +33,10 @@ type Sent = { status: number; runId?: string; problem?: Problem };
  *  server's limit on those requests, which no dollar cap reaches (lib/models.ts freeRequestsNote).
  *  An agentic agent with an input_schema takes its typed fields under the message (lib/inputForm.ts), and a refusal's
  *  issue at one is said at that field. */
-export function RunBar({ agent, efforts, v2, go, blocked, limits, freeNote, upload = sendUpload }: { agent: Agent; efforts: string[]; v2: Client; go: (hash: string) => void; blocked?: string; limits?: UploadLimits; freeNote?: string | null; upload?: Upload }) {
+export function RunBar({ agent, efforts, v2, go, blocked, limits, freeNote, playgroundHref, className, upload = sendUpload }: { agent: Agent; efforts: string[]; v2: Client; go: (hash: string) => void; blocked?: string; limits?: UploadLimits; freeNote?: string | null; playgroundHref?: string; className?: string; upload?: Upload }) {
   const workflow = agent.kind === "workflow";
-  // An agentic agent's input_schema: its fields under the message box (the message optional when the schema requires
-  // another field), or, for one the fields can't show, the whole input as JSON in the box, as a workflow's is.
+  // An agentic agent's input_schema: its fields under the message box (the message optional unless the schema lists
+  // it), or, for one the fields can't show, the whole input as JSON in the box, as a workflow's is.
   const shape = useMemo(() => (workflow ? null : agentInputOf(agent.definition.input_schema)), [workflow, agent.definition.input_schema]);
   const form = shape?.kind === "fields" ? shape.form : null;
   const json = workflow || shape?.kind === "json";
@@ -55,10 +55,19 @@ export function RunBar({ agent, efforts, v2, go, blocked, limits, freeNote, uplo
   // A refusal's issue at one of the fields (input.<key>, or an item's input.<key>.<i>) is said there, not in the list.
   const fieldKeys = new Set(form?.fields.map(([k]) => k) ?? []);
   const atField = (f: FieldIssue) => { const k = fieldOfIssue(f.field); return k !== null && fieldKeys.has(k) ? k : null; };
-  // A field's value as typed or picked: an issue at it goes as soon as the value is one the server takes.
+  // A field's value as typed or picked: an issue at it goes as soon as the value is one the server takes, and so does the
+  // message's where that value stands in for it (clearsContentIssue).
   const setField = (key: string, f: FieldSpec, value: string) => {
     setValues((was) => ({ ...was, [key]: value }));
-    if (fieldValid(f, value)) setProblem((p) => (p?.fields ? { ...p, fields: p.fields.filter((i) => atField(i) !== key) } : p));
+    const clears = !!form && clearsContentIssue(form, f, value);
+    if (fieldValid(f, value)) setProblem((p) => (p?.fields ? { ...p, fields: p.fields.filter((i) => atField(i) !== key && !(clears && i.field === "input.content")) } : p));
+  };
+  // With typed fields the message may be optional: the server's issue at it is said at the box, until the message or a
+  // field is filled.
+  const contentIssue = contentIssueOf(form, problem?.fields);
+  const typeText = (value: string) => {
+    setText(value);
+    if (contentIssue && value.trim()) setProblem((p) => (p?.fields ? { ...p, fields: p.fields.filter((i) => i !== contentIssue) } : p));
   };
   // The agent's own default cap, which an empty box leaves in force.
   const agentCap = typeof agent.definition.max_cost_usd === "number" ? agent.definition.max_cost_usd : null;
@@ -90,16 +99,18 @@ export function RunBar({ agent, efforts, v2, go, blocked, limits, freeNote, uplo
   // What is wrong with the cap: the box's own check, else the server's refusal of it. Said at the box, not again below.
   const capIssue = !workflow ? (!built.ok && built.field === "max_cost_usd" ? built.message : problem?.fields?.find((f) => f.field === "max_cost_usd")?.message ?? null) : null;
   // A 422 names its fields; each one whose message says more than the refusal's is listed under it (the cap's at its box).
-  const more = (problem?.fields ?? []).filter((f) => f.message !== problem?.message && !(capIssue && f.field === "max_cost_usd") && atField(f) === null);
+  const more = (problem?.fields ?? []).filter((f) => f.message !== problem?.message && !(capIssue && f.field === "max_cost_usd") && atField(f) === null && f !== contentIssue);
   const messageLabel = form ? (form.contentRequired ? "The run's message" : "The run's message (optional)") : "The run's first message";
   return (
-    <section className="border-b px-5 py-4 max-sm:py-3 md:px-8" aria-label="Start a run">
+    // The box's own width lays it out (a container): the message beside the controls only where the box is wide, else the
+    // message across it and the controls under it, so a column (the agent page's workspace) never squeezes the message.
+    <section className={cn("border-b px-5 py-4 [container-type:inline-size] max-sm:py-3 md:px-8", className)} aria-label="Start a run">
       {/* On a phone the message box is one line (a workflow's JSON keeps its height), and the file button sits in the
           row with Effort and Run: the textarea and the controls come out of their box, so the three wrap as one row. */}
       <div data-phone-row className="max-sm:flex max-sm:flex-wrap max-sm:items-center max-sm:gap-x-2 max-sm:gap-y-2">
-        <div className="flex flex-col gap-3 max-sm:contents lg:flex-row lg:items-start">
-          <Textarea value={text} onChange={(e) => setText(e.target.value)} rows={json ? 6 : 2} spellCheck={!json}
-            aria-label={json ? "The run's input, as JSON" : messageLabel}
+        <div className="flex flex-col gap-3 max-sm:contents [@container(min-width:72rem)]:flex-row [@container(min-width:72rem)]:items-start">
+          <Textarea value={text} onChange={(e) => typeText(e.target.value)} rows={json ? 6 : 2} spellCheck={!json}
+            aria-label={json ? "The run's input, as JSON" : messageLabel} aria-invalid={contentIssue ? true : undefined}
             placeholder={workflow ? "The workflow's input, as JSON" : json ? "The agent's input, as JSON" : messageLabel}
             onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); void start(); } }}
             className={cn("min-w-0 flex-1 resize-y max-sm:order-first max-sm:basis-full", json ? "leading-[1.6]" : "max-sm:h-10")} />
@@ -145,10 +156,12 @@ export function RunBar({ agent, efforts, v2, go, blocked, limits, freeNote, uplo
             unavailable={attachments.items.length ? "Remove the attached files first: they are for a run started here, and are deleted when you leave this page. Your coding agent uploads its own."
               : !built.ok && built.field === "max_cost_usd" && cap.trim() ? "Fix the spend cap first: the handoff carries it, and a cap that is not a positive number of dollars cannot be handed over." : undefined}
             context={() => ({ kind: "run", agentId: agent.agent_id, revision: agent.revision, ...(built.ok ? { input: built.body.input } : {}), ...(effort ? { effort } : {}), ...(built.ok && built.body.max_cost_usd !== undefined ? { maxCostUsd: built.body.max_cost_usd } : {}) })} />
+          {playgroundHref && <a href={playgroundHref} className="text-small text-muted-foreground underline underline-offset-2 hover:text-foreground max-sm:hidden">Open in API playground</a>}
         </div>
       </div>
       {example && <p className="mt-2 font-mono text-label text-muted-foreground">{exampleHint(example, "run", workflow ? "workflow" : "agent")}</p>}
       {!built.ok && built.field !== "max_cost_usd" && text.trim() && <p className="mt-2 font-mono text-small text-destructive-text" role="alert">{built.message}</p>}
+      {contentIssue && <p className="mt-2 font-mono text-small text-destructive-text" role="alert" data-issue="input.content">{contentIssue.message}</p>}
       {problem && (
         <div className="mt-3 border border-destructive/50 bg-destructive/10 px-3 py-2 font-mono text-small text-destructive-text" role="alert">
           <p>The run did not start: {problem.message}</p>

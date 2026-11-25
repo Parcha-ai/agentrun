@@ -3,9 +3,9 @@ import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { RunDetail } from "@/components/RunDetail";
 import { RunTrace } from "@/components/RunTrace";
-import { TRACE, TRACE_CLI, TRACE_END, TRACE_LIVE, TRACE_LIVE_NOW, TRACE_START, TRACE_USD } from "@/components/RunTrace.sample";
+import { TRACE, TRACE_CLI, TRACE_END, TRACE_LIVE, TRACE_LIVE_NOW, TRACE_START, TRACE_USD, USAGE_CLI, USAGE_MACHINES, USAGE_REDO } from "@/components/RunTrace.sample";
 import { messageFeatures } from "@/fixtures";
-import type { Run, RunTrace as Trace } from "@/lib/v2";
+import type { Run, RunTrace as Trace, RunUsage } from "@/lib/v2";
 
 // The run page's Dev tools tab: every model request and tool call of the run in one table and on one time axis, each
 // opening to what it used and cost, and the run's totals by tool and by model. Read from GET /v2/runs/{id}/trace.
@@ -55,6 +55,33 @@ describe("the Dev tools tab", () => {
     expect(tile(host, "Time")?.textContent).toMatch(/3m 45s.*model 38% · tools 60%/);
   });
 
+  it("says how much of its spend cap the run's cost is, and that it stopped short for it", async () => {
+    // $0.6336 of a $0.75 cap.
+    const run = { ...RUN, cost: { ...RUN.cost!, cap_usd: 0.75 }, stopped_for: "budget" as const, budget_refused_calls: 3 };
+    const host = await open(TRACE, { run, view: "breakdown" });
+    expect(tile(host, "Cost, estimated")?.textContent).toMatch(/\$0\.6336.*84% of its \$0\.75 cap · requests \$0\.6132 · tools \$0\.0204/);
+    expect([...host.querySelectorAll("section[aria-label='What stands out'] li")][0]!.textContent).toBe("The run stopped short for its budgetIts model was told to answer soon, to stay under its $0.75 cap, and it answered from what it had. 3 tool calls were refused, unrun, for its budget.");
+    // A cost that is a ceiling is at most that share of the cap, never an exact one.
+    const held = await open(TRACE, { run: { ...RUN, cost: { ...RUN.cost!, cap_usd: 0.75, upper_bound: true } } });
+    expect(tile(held, "Cost, estimated")?.textContent ?? tile(held, "Cost")?.textContent).toMatch(/at most 84% of its \$0\.75 cap/);
+    // A run with no cap says none, and one that never came near its cap says nothing of a stop.
+    const plain = await open(TRACE, { run: { ...RUN, cost: { ...RUN.cost!, cap_usd: 5 } }, view: "breakdown" });
+    expect(tile(plain, "Cost, estimated")?.textContent).toMatch(/13% of its \$5\.00 cap/);
+    expect(plain.textContent).not.toMatch(/stopped short|told to wrap up|refused for the run/);
+  });
+  it("says a run was told to wrap up for its budget though its trace has no request and no call", async () => {
+    // A CLI harness's record keeps no request, and the run answered its wrap-up without calling a tool.
+    const run = { ...RUN, cost: { ...RUN.cost!, cap_usd: 0.75 }, stopped_for: "budget" as const, budget_refused_calls: 0 };
+    const host = await open({ run_id: RUN.run_id, model_requests: "not_recorded", spans: [], dropped: 0 }, { run });
+    expect([...host.querySelectorAll("section[aria-label='What stands out'] li")].map((li) => li.textContent)).toEqual(["The run was told to wrap up for its budgetIts model was told to answer soon, to stay under its $0.75 cap. No tool call was refused."]);
+    // Told to wrap up and no more: said plainly. With a call refused the run did less than it was asked, and it reads as bad.
+    const red = (h: Element) => h.querySelector("section[aria-label='What stands out'] li span")!.className.includes("text-destructive-text");
+    const refused = await open({ run_id: RUN.run_id, model_requests: "not_recorded", spans: [], dropped: 0 }, { run: { ...run, budget_refused_calls: 2 } });
+    expect([red(host), red(refused)]).toEqual([false, true]);
+    // A run with no span that did not stop for its budget has no such section.
+    const plain = await open({ run_id: RUN.run_id, model_requests: "not_recorded", spans: [], dropped: 0 });
+    expect(plain.querySelector("section[aria-label='What stands out']")).toBeNull();
+  });
   it("lists every request and call in the order they started, each call under the request that made it", async () => {
     const host = await open(TRACE);
     const listed = callRows(host);
@@ -368,6 +395,192 @@ describe("the Dev tools tab", () => {
     expect(callRows(host)).toHaveLength(5);
   });
 
+  it("splits a CLI harness's run's cost by line from the server's booking: by model, by the vendor that charged, by browser provider", async () => {
+    const readUsage = vi.fn(async () => USAGE_CLI);
+    const host = await open(TRACE_CLI, { readUsage, view: "breakdown" });
+    expect(readUsage).toHaveBeenCalledTimes(1);
+    const cost = host.querySelector("section[aria-label='Where the cost went']")!;
+    // The run's total beside the heading: one of its charges is not known, so it is what is known, never a whole figure.
+    expect(cost.querySelector("h2")!.parentElement!.textContent).toBe("Where the cost wentUnknown, $0.4379 known");
+    // One part a line, named by its model, the vendor that charged for a tool, or the browser provider.
+    expect([...cost.querySelectorAll("ul li")].map((li) => li.textContent)).toEqual(["claude-sonnet-5-5$0.4125 · 94%", "monid · tools$0.0150 · 3%", "browserbase · browser timeUnknown, $0.0104 known · 2%"]);
+    const table = cost.querySelector("[role=region]")!;
+    expect(document.getElementById(table.getAttribute("aria-labelledby")!)!.textContent).toBe("Cost by line");
+    expect([...table.querySelectorAll("thead th")].map((th) => th.textContent)).toEqual(["Line", "Quantity", "Cost", "Basis"]);
+    expect([...table.querySelectorAll("tbody tr")].map((tr) => [...tr.children].map((cell) => cell.textContent))).toEqual([
+      ["claude-sonnet-5-5Tokens", "184,220 tokens", "$0.4125", "Reported"],
+      ["monid · toolsTool charges2 calls not metered: no price is set, so they are outside the cost", "3 calls", "$0.0150", "Estimate"],
+      ["browserbase · browser timeBrowser time", "312 seconds", "Unknown, $0.0104 known", "Estimate"],
+    ]);
+    // A charge not known is never $0.
+    expect(cost.textContent).not.toMatch(/\$0(?![.\d])/);
+    // The lines are a part of Where the cost went, not a heading of the tab.
+    expect([...host.querySelectorAll("h2, h3")].map((h) => h.textContent)).not.toContain("Cost by line");
+  });
+
+  it("shows a computer's time by provider and resource, its unit and the time no claim held, and an unpriced resource as no price, never $0", async () => {
+    const compute = (resource: "vcpu" | "gpu" | "disk", quantity: number, unit: "vcpu_second" | "gpu_second" | "gb_month", usd: number | null, extra = {}) =>
+      ({ meter: "compute_time" as const, model: null, provider: "daytona", charged_by: "daytona", quantity, unit, basis: usd === null ? ("unpriced" as const) : ("estimate" as const), attempt: 1, billable: true, usd, resource, gpu_type: resource === "gpu" ? "H100" : null, unheld_quantity: 0, open_computers: 0, ...extra });
+    const usage = { ...USAGE_CLI, total: { usd: 0.4125 }, lines: [USAGE_CLI.lines![0]!, compute("vcpu", 3600, "vcpu_second", 0.0504, { unheld_quantity: 1200 }), compute("gpu", 900, "gpu_second", null), compute("disk", 0.000064, "gb_month", null, { open_computers: 1 })] };
+    const host = await open(TRACE_CLI, { readUsage: vi.fn(async () => usage), view: "breakdown" });
+    const table = host.querySelector("section[aria-label='Where the cost went'] [role=region]")!;
+    expect([...table.querySelectorAll("tbody tr")].slice(1).map((tr) => [...tr.children].map((cell) => cell.textContent))).toEqual([
+      ["daytona · vCPUComputer time1,200 vCPU-seconds no claim held: outside the cost", "3,600 vCPU-seconds", "$0.0504", "Estimate"],
+      ["daytona · H100 GPUComputer time", "900 GPU-seconds", "Unknown", "No price"],
+      ["daytona · diskComputer time1 computer still running when read", "0.000064 GB-months", "Unknown", "No price"],
+    ]);
+  });
+
+  it("says which attempt a cost line was made in and what its repeated requests cost, where an attempt was cut and another took over", async () => {
+    const host = await open(TRACE_CLI, { readUsage: vi.fn(async () => USAGE_REDO), view: "breakdown" });
+    const cost = host.querySelector("section[aria-label='Where the cost went']")!;
+    expect([...cost.querySelectorAll("[role=region] tbody tr")].map((tr) => tr.children[0]!.textContent)).toEqual([
+      "claude-sonnet-5-5TokensAttempt 1: requests cut before they answered, sent again", "claude-sonnet-5-5TokensAttempt 2", "monid · toolsTool chargesAttempt 2",
+    ]);
+    // The split's parts say the attempt too: two of them are one model's.
+    expect([...cost.querySelectorAll("ul li")].map((li) => li.textContent)).toEqual(["claude-sonnet-5-5 · attempt 1 · sent again$0.0312 · 7%", "claude-sonnet-5-5 · attempt 2$0.4125 · 90%", "monid · tools · attempt 2$0.0150 · 3%"]);
+    // The server's own sum of the repeated requests' lines, with its share of the run's cost: $0.0312 of $0.4587.
+    expect(cost.querySelector("[data-redo]")!.textContent).toMatch(/^Requests sent twice: \$0\.0312 · 7%\. An attempt at a turn was cut/);
+    // Only what the cut attempt had not finished was sent again: its paid calls are not said to be repeated.
+    expect(cost.querySelector("[data-redo]")!.textContent).toContain("its answered requests and finished paid calls were reused");
+    expect([...host.querySelectorAll("section[aria-label='What stands out'] li")].map((li) => li.textContent)).toContain("$0.0312 went on requests sent twice1 of the run's 3 cost lines is of requests an attempt sent and was cut before they answered, which the next attempt sent again: 7% of the run's cost.");
+  });
+  it("tells two parts of one model and one attempt apart: the requests that answered, and the ones cut and sent again", async () => {
+    // An attempt answered some requests before another was cut: both lines are attempt 1's, one of them not billable.
+    const usage = { ...USAGE_REDO, lines: [USAGE_REDO.lines![0]!, { ...USAGE_REDO.lines![1]!, attempt: 1 }, USAGE_REDO.lines![2]!] };
+    const host = await open(TRACE_CLI, { readUsage: vi.fn(async () => usage), view: "breakdown" });
+    expect([...host.querySelectorAll("section[aria-label='Where the cost went'] ul li")].map((li) => li.textContent!.replace(/\$.*/, ""))).toEqual(["claude-sonnet-5-5 · attempt 1 · sent again", "claude-sonnet-5-5 · attempt 1", "monid · tools · attempt 2"]);
+  });
+  it("says a repeated request's cost as at most, with no share, where it is what was held for a request cut before its usage", async () => {
+    const usage = { ...USAGE_REDO, lines: [{ ...USAGE_REDO.lines![0]!, upper_bound: true as const }, ...USAGE_REDO.lines!.slice(1)] };
+    const host = await open(TRACE_CLI, { readUsage: vi.fn(async () => usage), view: "breakdown" });
+    expect(host.querySelector("[data-redo]")!.textContent).toMatch(/^Requests sent twice: at most \$0\.0312\. An attempt/);
+  });
+  it("says nothing of attempts on a run none of whose attempts was cut", async () => {
+    const host = await open(TRACE_CLI, { readUsage: vi.fn(async () => USAGE_CLI), view: "breakdown" });
+    expect(host.querySelector("[data-redo]")).toBeNull();
+    expect(host.textContent).not.toMatch(/Attempt \d|sent twice|sent again/);
+  });
+
+  it("draws the run's computers and browser sessions under its calls, each on the same time axis, and lists them in the Breakdown", async () => {
+    const host = await open(TRACE, { readUsage: vi.fn(async () => USAGE_MACHINES) });
+    const lanes = [...overviewOf(host).querySelectorAll("[data-stretches]")];
+    expect(lanes.map((lane) => lane.querySelector("p")!.textContent)).toEqual(["Computers (1)", "Browser sessions (1)"]);
+    // The sandbox outlasts the window at both ends; the session is a quarter of the way in, for a quarter of it.
+    const [computer, session] = lanes.map((lane) => lane.querySelector<HTMLElement>("[data-stretch]")!);
+    expect([computer!.style.left, computer!.style.width, computer!.title]).toEqual(["0%", "100%", "daytona sandbox, up 3m 59s, from 2.4 s before the first request"]);
+    expect([Number.parseFloat(session!.style.left).toFixed(1), Number.parseFloat(session!.style.width).toFixed(1), session!.title]).toEqual(["25.2", "26.7", "browserbase browser, up 1m 00s, from +0:56.6"]);
+    // A stretch is no call: a press on one opens no panel, and the overview's words count them.
+    await click(computer);
+    expect(panel(host)).toBeNull();
+    expect(overviewOf(host).querySelector("[role=img]")!.getAttribute("aria-label")).toMatch(/Under them, 1 computer and 1 browser session: the Breakdown lists each\.$/);
+
+    await pick(host, "trace-view", "breakdown");
+    const table = host.querySelector("section[aria-label='Computers and browser sessions'] table")!;
+    expect([...table.querySelectorAll("thead th")].map((th) => th.textContent)).toEqual(["What", "Started", "Up for", "In the run's cost", "Note"]);
+    expect([...table.querySelectorAll("tbody tr")].map((tr) => [...tr.children].map((cell) => cell.textContent))).toEqual([
+      ["daytona sandbox2 vCPU · 4 GB · 10 GB disk", "2.4 s before the first request", "3m 59s", "3m 46s", "–None"],
+      ["browserbase browserbb_9d2c41", "+0:56.6", "1m 00s", "1m 00s", "Closed by the agent"],
+    ]);
+  });
+  it("lists a session whose start was never recorded, with what was charged for it, and draws no bar for it", async () => {
+    // Its runner died before the release that writes a session's start and end: the charge is still the run's.
+    const lost = { ...USAGE_MACHINES.browser_sessions![0]!, tag: "browser-2", provider_session_id: null, started_at: null, ended_at: null, release_reason: "lost", charged_seconds: 42 };
+    const usage = { ...USAGE_MACHINES, computer_intervals: [], browser_sessions: [lost, USAGE_MACHINES.browser_sessions![0]!] };
+    const host = await open(TRACE, { readUsage: vi.fn(async () => usage) });
+    expect(overviewOf(host).querySelectorAll("[data-stretch]")).toHaveLength(1);
+    await pick(host, "trace-view", "breakdown");
+    expect([...host.querySelectorAll("section[aria-label='Computers and browser sessions'] tbody tr")].map((tr) => [...tr.children].map((cell) => cell.textContent))).toEqual([
+      ["browserbase browserbb_9d2c41", "+0:56.6", "1m 00s", "1m 00s", "Closed by the agent"],
+      ["browserbase browser", "Not recorded", "Not recorded", "42.0 s", "Lost"],
+    ]);
+  });
+  it("says how long a computer with no end recorded had been up when the run ended, never its age now, and draws no session opened after the trace's last span", async () => {
+    // Its delete failed: it may be up still, hours after. The usage covers the run to its end (228 s in; the sandbox was made 1 s in).
+    const open_ = { ...USAGE_MACHINES.computer_intervals![0]!, ended_at: null };
+    // A session opened after the window's end (a long run's trace holds its first spans only).
+    const later = { ...USAGE_MACHINES.browser_sessions![0]!, tag: "browser-9", started_at: new Date(TRACE_START + 300_000).toISOString(), ended_at: new Date(TRACE_START + 330_000).toISOString(), charged_seconds: 30 };
+    const usage = { ...USAGE_MACHINES, ended_at: new Date(TRACE_END).toISOString(), computer_intervals: [open_], browser_sessions: [later] };
+    // The page is opened a day later: the run's own end still dates the figure.
+    const host = await open(TRACE, { readUsage: vi.fn(async () => usage), now: TRACE_END });
+    expect([...overviewOf(host).querySelectorAll("[data-stretches]")].map((lane) => lane.querySelector("p")!.textContent)).toEqual(["Computers (1)"]);
+    await pick(host, "trace-view", "breakdown");
+    expect([...host.querySelectorAll("section[aria-label='Computers and browser sessions'] tbody tr")].map((tr) => [tr.children[0]!.textContent, tr.children[2]!.textContent])).toEqual([
+      ["daytona sandbox2 vCPU · 4 GB · 10 GB disk", "No end recorded · up 3m 47s when the run ended"],
+      ["browserbase browserbb_9d2c41", "30.0 s"],
+    ]);
+  });
+  it("lists a run's computers though its trace has no request and no call, against the run's start", async () => {
+    // A run that made its computer and failed before its first request: the sandbox was made 1 s after the run began.
+    const empty = { run_id: TRACE.run_id, model_requests: "priced" as const, spans: [], dropped: 0 };
+    const host = await open(empty, { readUsage: vi.fn(async () => ({ ...USAGE_MACHINES, lines: [], browser_sessions: [] })) });
+    expect(host.textContent).toContain("This run made no model request and called no tool.");
+    expect([...host.querySelectorAll("section[aria-label='Computers and browser sessions'] tbody tr")].map((tr) => [...tr.children].map((cell) => cell.textContent))).toEqual([
+      ["daytona sandbox2 vCPU · 4 GB · 10 GB disk", "+0:01.0", "3m 59s", "3m 46s", "–None"],
+    ]);
+  });
+  it("draws no such lane and lists none for a run that made no computer and opened no browser, or whose usage is not read", async () => {
+    for (const readUsage of [vi.fn(async () => USAGE_CLI), undefined]) {
+      const host = await open(TRACE, { readUsage, view: "breakdown" });
+      expect(host.querySelector("section[aria-label='Computers and browser sessions']")).toBeNull();
+      await pick(host, "trace-view", "calls");
+      expect(overviewOf(host).querySelector("[data-stretches]")).toBeNull();
+      act(() => root?.unmount()); root = undefined; document.body.innerHTML = "";
+    }
+  });
+
+  it("shows lines only as read at the run's version now: lines left by a reread that failed after the run moved are not shown as its own", async () => {
+    const host = await open(TRACE, { readUsage: async () => USAGE_CLI, view: "breakdown" });
+    const cost = () => host.querySelector("section[aria-label='Where the cost went']")!;
+    expect(cost().textContent).toContain("Cost by line");
+    // A follow-up moves the run; the reread fails.
+    act(() => root!.render(createElement(RunTrace, { run: RUN, read: async () => TRACE, readUsage: async () => { throw new Error("offline"); }, version: "2", live: false, now: TRACE_END, view: "breakdown" })));
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 600)); });
+    await settle();
+    expect(cost().textContent).toMatch(/claude-sonnet-5-5\$0\.6132 · 97%/);
+    expect(cost().textContent).not.toContain("Cost by line");
+  });
+
+  it("shows a stopped run's lines, though the run reads no end (a follow-up may take it on) (#3281 review)", async () => {
+    const host = await open(TRACE, { run: { ...RUN, status: "input_required", state: "waiting", ended_at: null }, readUsage: async () => USAGE_CLI, view: "breakdown" });
+    expect(host.querySelector("section[aria-label='Where the cost went']")!.textContent).toContain("Cost by line");
+  });
+
+  it("gives a CLI run that called no tool its cost by line, though its trace has no span", async () => {
+    const host = await open({ ...TRACE_CLI, spans: [] }, { readUsage: async () => USAGE_CLI });
+    const cost = host.querySelector("section[aria-label='Where the cost went']")!;
+    expect(cost.querySelector("h2")!.parentElement!.textContent).toBe("Where the cost wentUnknown, $0.4379 known");
+    expect([...cost.querySelectorAll("tbody tr")].map((tr) => tr.children[0]!.textContent)).toEqual(["claude-sonnet-5-5Tokens", "monid · toolsTool charges2 calls not metered: no price is set, so they are outside the cost", "browserbase · browser timeBrowser time"]);
+    expect(host.textContent).not.toContain("This run made no model request and called no tool.");
+  });
+
+  it("says a line's cost at most where it is a bound, and the provider its tokens went to", async () => {
+    const usage: RunUsage = { ...USAGE_CLI, total: { usd: 0.4379, upper_bound: true }, lines: [{ ...USAGE_CLI.lines![0]!, provider: "anthropic", usd: 0.4125, upper_bound: true }] };
+    const host = await open(TRACE_CLI, { readUsage: async () => usage, view: "breakdown" });
+    const cost = host.querySelector("section[aria-label='Where the cost went']")!;
+    expect(cost.querySelector("h2")!.parentElement!.textContent).toBe("Where the cost wentat most $0.4379");
+    expect([...cost.querySelectorAll("tbody tr")].map((tr) => [...tr.children].map((cell) => cell.textContent))).toEqual([["claude-sonnet-5-5Tokens · sent to anthropic", "184,220 tokens", "at most $0.4125", "Reported"]]);
+  });
+
+  it("with no lines yet keeps the trace's own split and says why: the run is at work, or its cost can't be split", async () => {
+    const running: RunUsage = { ...USAGE_CLI, ended_at: null, total: null, lines: null, browser_sessions: null, computer_intervals: null, infra_usd: null, reason: "running" };
+    const host = await open(TRACE, { readUsage: async () => running, view: "breakdown" });
+    const cost = () => host.querySelector("section[aria-label='Where the cost went']")!;
+    expect(cost().textContent).toMatch(/claude-sonnet-5-5\$0\.6132 · 97%.*Tool charges\$0\.0204 · 3%/);
+    expect(cost().textContent).toContain("Cost by line appears when the run ends.");
+    expect(cost().querySelector("[role=region]")).toBeNull();
+    act(() => root?.unmount());
+    const cli = await open(TRACE_CLI, { readUsage: async () => ({ ...running, reason: "not_booked" as const }), view: "breakdown" });
+    expect(cli.querySelector("section[aria-label='Where the cost went']")!.textContent).toContain("This run's cost is its harness's own figure, so it can't be split by line.");
+  });
+
+  it("a usage read that fails leaves the trace's own split, and no error", async () => {
+    const host = await open(TRACE, { readUsage: async () => { throw new Error("no such route"); }, view: "breakdown" });
+    const cost = host.querySelector("section[aria-label='Where the cost went']")!;
+    expect(cost.textContent).toMatch(/claude-sonnet-5-5\$0\.6132 · 97%/);
+    expect(host.textContent).not.toContain("no such route");
+  });
+
   it("a workflow run's requests carry tokens and no cost: none is said, and the panel says why", async () => {
     const spans = TRACE.spans.map((s) => (s.kind === "model" ? { ...s, usd: null } : s));
     const host = await open({ ...TRACE, model_requests: "tokens_only", spans }, { open: "m:0:24" });
@@ -562,6 +775,18 @@ describe("the run page", () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(600); });
     vi.useRealTimers();
     expect(read).toHaveBeenCalledTimes(2);
+  });
+
+  it("reads the run's usage lines beside its trace once the Dev tools tab is open", async () => {
+    const readUsage = vi.fn(async () => USAGE_CLI);
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(RunDetail, { run: RUN, agentName: "supplier-screening", messages: messageFeatures, harnessSteers: true, rows: [], files: [], readTrace: async () => TRACE_CLI, readUsage, traceAt: { now: TRACE_END, view: "breakdown" } })));
+    await settle();
+    expect(readUsage).not.toHaveBeenCalled();
+    await click(tab(host, "Dev tools"));
+    expect(readUsage).toHaveBeenCalledTimes(1);
+    expect(host.querySelector("section[aria-label='Where the cost went'] [role=region]")!.textContent).toContain("monid · tools");
   });
 
   it("has no Dev tools tab where it cannot", async () => {

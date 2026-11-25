@@ -71,19 +71,19 @@ describe("AgentEditor, the Computer step", () => {
   // The kind cards, each kind's providers and "The loop gets …" read the server's computers list (capabilities.computers,
   // the same list GET /v2/computers answers). The words below are this fixture's; the console shows the server's.
   const KINDS = [
-    { kind: "none", offered: true, groups: [], tools: ["read", "write", "edit", "bash"], settings: [], providers: [] },
-    { kind: "sandbox", offered: true, groups: ["exec", "files", "processes"], tools: ["read", "write", "edit", "bash", "bash_background"], settings: ["image", "persistent", "gpu"], providers: [
+    { kind: "none", offered: true, groups: [], tools: ["read", "write", "edit", "bash"], settings: [], record: { available: false, why: "fixture: no computer" }, providers: [] },
+    { kind: "sandbox", offered: true, groups: ["exec", "files", "processes"], tools: ["read", "write", "edit", "bash", "bash_background"], settings: ["image", "persistent", "gpu"], record: { available: false, why: "fixture: a sandbox has no screen to record" }, providers: [
       { id: "docker", name: "Docker", secrets: [], required: [], ready: true, metered: false },
       { id: "daytona", name: "Daytona", secrets: [{ name: "computer:daytona:DAYTONA_API_KEY", set: true, source: "console", changed_at: null }], required: ["computer:daytona:DAYTONA_API_KEY"], ready: false, why: "fixture: Daytona can't mount this server's run folders" },
     ] },
-    { kind: "desktop", offered: true, groups: ["screen", "input.pointer", "input.keys"], tools: ["read", "write", "edit", "bash", "screen.shot", "input.actions"], settings: ["image", "persistent", "surface", "exec", "record"], providers: [
+    { kind: "desktop", offered: true, groups: ["screen", "input.pointer", "input.keys"], tools: ["read", "write", "edit", "bash", "screen.shot", "input.actions"], settings: ["image", "persistent", "surface", "exec", "record"], record: { available: true }, providers: [
       { id: "orgo", name: "Orgo", secrets: [{ name: "computer:orgo:ORGO_API_KEY", set: true, source: "console", changed_at: null }], required: ["computer:orgo:ORGO_API_KEY"], ready: true, metered: true },
       { id: "e2b", name: "E2B", secrets: [{ name: "computer:e2b:E2B_API_KEY", set: false, source: null, changed_at: null }], required: ["computer:e2b:E2B_API_KEY"], ready: false, why: "fixture: E2B needs E2B_API_KEY saved" },
     ] },
-    { kind: "phone", offered: true, groups: ["screen", "input.touch", "apps"], tools: ["read", "screen.shot", "input.actions"], settings: ["image", "persistent", "surface", "exec", "record"], providers: [
+    { kind: "phone", offered: true, groups: ["screen", "input.touch", "apps"], tools: ["read", "screen.shot", "input.actions"], settings: ["image", "persistent", "surface", "exec", "record"], record: { available: true }, providers: [
       { id: "phone-harness", name: "Phone harness", secrets: [{ name: "computer:phone-harness:PHONE_HARNESS_API_KEY", set: false, source: null, changed_at: null }], required: ["computer:phone-harness:PHONE_HARNESS_API_KEY"], ready: false, why: "fixture: Phone harness needs PHONE_HARNESS_API_KEY saved" },
     ] },
-    { kind: "browser", offered: false, why: "fixture: no provider of a browser computer can run here", groups: ["cdp"], tools: [], settings: ["image", "persistent", "record"], providers: [] },
+    { kind: "browser", offered: false, why: "fixture: no provider of a browser computer can run here", groups: ["cdp"], tools: [], settings: ["image", "persistent", "record"], record: { available: true }, providers: [] },
   ];
   const listed = { ...caps, computers: KINDS };
   const card = (host: HTMLElement, kind: string) => host.querySelector(`[data-kind="${kind}"]`) as HTMLElement | null;
@@ -147,7 +147,7 @@ describe("AgentEditor, the Computer step", () => {
 
   it("never says it under a metered browser provider: a browser's time is counted in a run's cap", () => {
     const LINE = "This provider bills by the minute through your own vendor account, and those minutes aren't counted in a run's spending cap.";
-    const browsing = KINDS.map((k) => (k.kind === "browser" ? { kind: "browser", offered: true, groups: ["cdp"], tools: ["browser"], settings: ["image", "persistent", "record"], providers: [{ id: "browserbase", name: "Browserbase", secrets: [], required: [], ready: true, metered: true }] } : k));
+    const browsing = KINDS.map((k) => (k.kind === "browser" ? { kind: "browser", offered: true, groups: ["cdp"], tools: ["browser"], settings: ["image", "persistent", "record"], record: { available: true }, providers: [{ id: "browserbase", name: "Browserbase", secrets: [], required: [], ready: true, metered: true }] } : k));
     const { host, click } = mount({ agent: agent(), caps: { ...caps, computers: browsing }, step: "computer" });
     click(kindRadio(host, "browser"));
     const browserbase = providerRadio(host, "browserbase")!.closest("label")!;
@@ -164,5 +164,18 @@ describe("AgentEditor, the Computer step", () => {
     expect(host.querySelector('input[name="computer-provider"]')).toBeNull();
     await save();
     expect(saved()!.computer).toEqual({ kind: "none" });
+  });
+
+  // Which tools run only in a box is the capabilities' word (sandbox_only); the computers list comes from its own read.
+  // Before the capabilities answer, or after their read failed, the editor has no tools listed: a pick that puts the
+  // agent on the runner can't tell which of its tools to drop, so it changes nothing and says so.
+  it("the capabilities not read: none picked for an agent in a box with bash is refused in words, and nothing puts it on the runner with bash", async () => {
+    const { host, click, save, saved } = mount({ agent: agent({ computer: { kind: "sandbox", provider: "docker" }, place: { mode: "sandbox", box: "docker" }, tools: ["read", "bash"] }), caps: { ...listed, tools: [] }, step: "computer" });
+    click(kindRadio(host, "none"));
+    await save();
+    const sent = saved() as { computer?: { kind: string }; tools?: string[] } | undefined;
+    expect({ computer: sent?.computer?.kind, bash: sent?.tools?.includes("bash") }, "the Computer step saved the agent on the runner with bash, before the capabilities said which tools run only in a box").not.toEqual({ computer: "none", bash: true });
+    expect(host.textContent).toContain("The server's tools haven't been read, so which of this agent's tools run only in a box is unknown: the computer was not changed. Try again, or reload the page if this stays.");
+    expect(kindRadio(host, "sandbox")!.checked, "the computer picked after the refused pick").toBe(true);
   });
 });

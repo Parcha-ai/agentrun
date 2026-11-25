@@ -99,7 +99,7 @@ test("a run on claude-agent: through the adapter's proxy with the native model, 
   const { fake, release } = await heldFake(t);
   const { api, data } = await claudeServe(t, fake);
   // How many fit at once is this host's memory (admission.test.mjs).
-  const { max_concurrent_runs, models: _models, free_models: _free, label: _label, promises: _promises, ...offer } = (await api("GET", "/capabilities")).body.harnesses.find((h) => h.id === "claude-agent");
+  const { max_concurrent_runs, models: _models, ready_models: _ready, free_models: _free, label: _label, promises: _promises, ...offer } = (await api("GET", "/capabilities")).body.harnesses.find((h) => h.id === "claude-agent");
   assert.deepEqual(offer, { id: "claude-agent", available: true, steer: true, default_model: `anthropic/${MODEL}`, run_memory_mib: 288 });
   const run = await api("POST", "/agents/claude/runs", { input: { content: "Say what you did." } });
   assert.equal(run.status, 202, JSON.stringify(run.body));
@@ -129,6 +129,13 @@ test("a run on claude-agent: through the adapter's proxy with the native model, 
   // The endpoint reports a response's input as its request body's length over 4, and 12 output tokens.
   const expected = asked.reduce((sum, m) => sum + Math.ceil(JSON.stringify(m.body).length / 4) * PRICE.input + 12 * PRICE.output, 0) / 1e6;
   assert.equal(usage?.usd, Math.round(expected * 1e6) / 1e6, "each response's input and output at serve's catalog price");
+  // Its cost line by line (GET /runs/{run_id}/usage) reads as a pi run's does: one tokens line on its model, sent by this
+  // server to Anthropic itself, joining to the run's cost.
+  const cost = (await api("GET", `/runs/${runId}`)).body.cost;
+  const byLine = (await api("GET", `/runs/${runId}/usage`)).body;
+  assert.equal(byLine.reason, null, JSON.stringify(byLine));
+  assert.deepEqual(byLine.lines.map((line) => [line.meter, line.model, line.provider, line.requests]), [["tokens", MODEL, "anthropic", asked.length]]);
+  assert.equal(byLine.total.usd, cost.usd, "the lines join to the run's cost");
   const left = (await filesUnder(join(runDir(data, runId), "work"))).filter((path) => path.startsWith(".claude") || path.endsWith(".jsonl"));
   assert.deepEqual(left, [], "no CLI file in the run's workspace");
 });

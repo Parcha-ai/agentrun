@@ -7,7 +7,9 @@
 // /v2/health is answered by this process (reachesThisRun), as a host swapping instances answers from the old one first.
 // Then it runs Core, provider.deadline and drift.arch
 // among it, and prints the report as JSON between two marker lines, DIAL-CONFORMANCE-REPORT-BEGIN and
-// DIAL-CONFORMANCE-REPORT-END, so a log that holds other lines still yields it. Then it idles, /v2/health still
+// DIAL-CONFORMANCE-REPORT-END, so a log that holds other lines still yields it. A run whose screen case read a whole
+// screenshot (the suite's onScreenshot) first prints it, as base64 lines between DIAL-CONFORMANCE-FRAME-BEGIN <sha256>
+// <bytes> and DIAL-CONFORMANCE-FRAME-END (frameLines). Then it idles, /v2/health still
 // answered, until SIGTERM or SIGINT ends it with the run's status: a host that restarts an exited process (Render's)
 // would start a second run. With --exit it exits instead: 0 when Core passes, else 1. A refusal before the server
 // listens (a usage error, no AGENTRUN_PUBLIC_URL or PORT) exits 1 either way.
@@ -15,7 +17,9 @@
 //   node packages/serve/scripts/dial-conformance.mjs --provider fly
 //
 // reads its settings from its own environment: the provider module's names (Fly's COMPUTER_FLY_API_TOKEN and
-// COMPUTER_FLY_APP), AGENTRUN_PUBLIC_URL (the https address the internet reaches this process at) and PORT. --provider
+// COMPUTER_FLY_APP), AGENTRUN_PUBLIC_URL (the https address the internet reaches this process at) and PORT.
+// AGENTRUN_BIND_HOST optionally restricts the listening interface (127.0.0.1 for a local fixture); unset, it listens
+// on all interfaces so remote machines can dial it. --provider
 // takes a registry id or a conformance module's path. --only (the conformance CLI's) narrows the run to groups and case
 // ids, for a test over a fake host whose daemon answers some of them; such a run is partial at best, and exits 0 when
 // every case it ran passed. No token or key is printed: every value of the module's secret names, and every machine
@@ -46,6 +50,8 @@ import { createAttachRoutes, sha256Hex } from "../dist/computer-attach.js";
 
 const BEGIN = "DIAL-CONFORMANCE-REPORT-BEGIN";
 const END = "DIAL-CONFORMANCE-REPORT-END";
+const FRAME_BEGIN = "DIAL-CONFORMANCE-FRAME-BEGIN";
+const FRAME_END = "DIAL-CONFORMANCE-FRAME-END";
 const USAGE = "usage: node dial-conformance.mjs --provider <registry id or module path> [--only <groups and case ids>] [--exit], with AGENTRUN_PUBLIC_URL and PORT set";
 /** A name of a module's ENV that holds a secret (the conformance CLI's rule). */
 const SECRET_NAME = /(^|_)(KEY|TOKEN|SECRET)(_|$)/;
@@ -53,6 +59,18 @@ const SECRET_NAME = /(^|_)(KEY|TOKEN|SECRET)(_|$)/;
 export const scrubMachineTokens = (text) => text.replace(new RegExp(MACHINE_TOKEN_SOURCE, "g"), "art_[redacted]");
 
 const say = (line) => process.stderr.write(`dial-conformance: ${line}\n`);
+
+/** Bind the actual listener. Omitting host preserves Node's public-listener default; local callers can explicitly
+ *  restrict it without changing the public address the provider's machines are told to dial. */
+export function listenConformance(server, port, host) {
+	return new Promise((done, fail) => {
+		const failed = (error) => { server.off("listening", listening); fail(error); };
+		const listening = () => { server.off("error", failed); done(); };
+		server.once("error", failed);
+		server.once("listening", listening);
+		server.listen({ port, ...(host === undefined ? {} : { host }) });
+	});
+}
 
 /** --provider's value, --only's groups and case ids when it is given, and --exit; anything else is a usage error. */
 function argsOf(argv) {
@@ -141,6 +159,14 @@ export const FIXTURE_PATH = fileURLToPath(new URL("../../computer/dist/computerd
 /** What a run of `kind` checks effects with: a desktop's computerd-fixture (its screen and input cases skip without it, and
  *  Core cannot pass), none otherwise. */
 export const fixtureFor = (kind, path = FIXTURE_PATH) => (kind === "desktop" ? path : undefined);
+
+/** The lines a frame is printed as: its sha256 and size after the begin marker, its base64 in lines of `width`. */
+export function frameLines(png, width = 512) {
+	const data = Buffer.from(png).toString("base64");
+	const lines = [];
+	for (let at = 0; at < data.length; at += width) lines.push(data.slice(at, at + width));
+	return [`${FRAME_BEGIN} ${createHash("sha256").update(png).digest("hex")} ${png.length}`, ...lines, FRAME_END];
+}
 
 /** The version a drifted daemon reports: the provider's, its last character changed, so the bytes keep their length. */
 export const driftedVersion = (version) => `${version.slice(0, -1)}${version.endsWith("x") ? "y" : "x"}`;
@@ -316,9 +342,11 @@ async function main({ provider: name, only, exit }, env, state) {
 		if (targetOf(req).path !== ATTACH_PATH) return deny("404 Not Found");
 		attach.upgrade(req, socket, head, deny);
 	});
-	await new Promise((done, fail) => server.once("error", fail).listen(port, () => done()));
+	await listenConformance(server, port, env.AGENTRUN_BIND_HOST || undefined);
 	state.listening = true;
-	const local = `ws://127.0.0.1:${server.address().port}${ATTACH_PATH}`;
+	const address = server.address();
+	const localHost = address.address === "::" || address.address === "0.0.0.0" ? "127.0.0.1" : address.address.includes(":") ? `[${address.address}]` : address.address;
+	const local = `ws://${localHost}:${address.port}${ATTACH_PATH}`;
 	say(`listening on port ${server.address().port}; the machines dial ${publicUrl}`);
 
 	const controller = new AbortController();
@@ -329,6 +357,8 @@ async function main({ provider: name, only, exit }, env, state) {
 	const options = { env, dial: { url: publicUrl, tokens: minting(), hub }, onNote: (note) => notes.push({ computer: note.computer, note: note.note }) };
 	try {
 		const provider = await module.createProvider(options);
+		// The screen case's last whole screenshot, printed before the report: what the computer showed.
+		let frame;
 		// The same provider with no public address, its host's creates counted: provider.dial-token's unreachable().
 		const bare = await module.createProvider({ ...options, dial: { tokens: minting(), hub } });
 		let creates = 0;
@@ -413,6 +443,9 @@ async function main({ provider: name, only, exit }, env, state) {
 					}),
 			...(Array.isArray(module.conformanceNotes) ? { notes: module.conformanceNotes } : {}),
 			onResult: (result) => say(scrub(`${result.status} ${result.id}${result.reason ? `: ${result.reason}` : ""}`)),
+			onScreenshot: (png) => {
+				frame = png;
+			},
 		});
 		if (notes.length > 0) report.providerNotes = notes;
 		// The daemon copy the drifted twin's machines were served, by its sha256 and the version it reports, and the
@@ -421,6 +454,7 @@ async function main({ provider: name, only, exit }, env, state) {
 		const hellos = [...new Set(drift.hellos)];
 		const helloOk = hellos.every((said) => copies.some((copy) => copy.version === said));
 		if (copies.length > 0) report.driftedDaemon = { copies, hellos, matches: helloOk };
+		if (frame !== undefined) process.stdout.write(`${frameLines(frame).join("\n")}\n`);
 		process.stdout.write(`${BEGIN}\n${scrub(JSON.stringify(report, null, 2))}\n${END}\n`);
 		say(`Core ${report.core}`);
 		if (!helloOk) say(`the drifted twin's hellos reported ${hellos.join(", ")}, not the daemon copy's ${copies.map((copy) => copy.version).join(", ")}`);

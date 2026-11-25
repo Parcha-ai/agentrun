@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { after, before, describe, it, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { DaemonClient, FolderSync, folderPathProblem, SYNC_MAX_BYTES, SYNC_MAX_ENTRIES } from "../dist/index.js";
+import { computerdListening } from "./computerd-listening.mjs";
 import { CASES, fakeSink, folderOf } from "./sync-folder-cases.mjs";
 
 const ARCH = { x64: "amd64", arm64: "arm64" }[process.arch];
@@ -30,12 +31,10 @@ describe("the synced folder's delta against computerd in a user namespace", { sk
 
 	before(async () => {
 		const deadline = new Date(Date.now() + 10 * 60_000).toISOString();
-		init = spawn("unshare", ["-Ur", DAEMON, "init", "--deadline", deadline], { env: { PATH: process.env.PATH, AGENTRUN_COMPUTERD_SOCKET: socket }, stdio: ["ignore", "ignore", "pipe"] });
+		// Under umask 077, as init on the exec path runs (hosted/scripts.ts): computerd keeps it.
+		init = spawn("sh", ["-c", 'umask 077 && exec "$@"', "sh", "unshare", "-Ur", DAEMON, "init", "--deadline", deadline], { env: { PATH: process.env.PATH, AGENTRUN_COMPUTERD_SOCKET: socket }, stdio: ["ignore", "ignore", "pipe"] });
 		init.stderr.on("data", (chunk) => (stderr += chunk));
-		for (let tries = 0; !existsSync(socket); tries++) {
-			assert.ok(tries < 200 && init.exitCode === null, `computerd's init did not listen at ${socket}: ${stderr}`);
-			await new Promise((resolve) => setTimeout(resolve, 25));
-		}
+		await computerdListening(socket, init, () => stderr);
 		stream = connect(socket);
 		await new Promise((resolve, reject) => stream.once("connect", resolve).once("error", reject));
 		client = new DaemonClient({ readable: stream, writable: stream });
@@ -312,4 +311,86 @@ test("adopt: a kept computer's folder with no manifest; the next sync puts every
 	assert.deepEqual(sink.calls.slice(3, 5).sort(), [["remove", "d/x", "file"], ["remove", "gone", "file"]], "removed once every put landed");
 	assert.deepEqual(sink.calls[5], ["meta", { modes: { b: 0o600 }, links: { l: "a" } }]);
 	assert.deepEqual(await sync.sync(), { ok: true, value: { put: 0, mkdir: 0, removed: 0, meta: false } }, "settled");
+});
+
+/** A client for a push: tar.push.* answered and what was written kept; files.list answers `listed` (an error, or the entries). */
+function pushing({ pushFails, listed = { entries: [], truncated: false } }) {
+	const sent = { calls: [], bytes: [] };
+	return {
+		sent,
+		async call(method, params) {
+			sent.calls.push(method);
+			if (method === "tar.push.begin") return pushFails ? { ok: false, error: { code: "refused", message: pushFails } } : { ok: true, value: { id: "p1" } };
+			if (method === "tar.push.write") {
+				sent.bytes.push(Buffer.from(params.data, "base64"));
+				return { ok: true, value: {} };
+			}
+			if (method === "tar.push.end") return { ok: true, value: { entries: 2 } };
+			if (method === "files.list") return listed.error ? { ok: false, error: listed.error } : { ok: true, value: listed };
+			return { ok: false, error: { code: "unsupported", message: `${method} is not scripted` } };
+		},
+		close() {},
+	};
+}
+/** The mtime a ustar header (the 512 bytes at `at`) carries, in seconds. */
+const headerMtime = (bytes, at) => Number.parseInt(bytes.subarray(at + 136, at + 147).toString("latin1"), 8);
+
+test("push: each file is stamped with the pushed mtime in the tar, a directory is not, and the baseline is taken after the push ends", async () => {
+	const client = pushing({ listed: { entries: [file("d/f", 3)], truncated: false } });
+	const sync = new FolderSync(client, fakeSink());
+	const entries = [
+		{ name: "d", type: "dir", mode: 0o755 },
+		{ name: "d/f", type: "file", mode: 0o644, body: Buffer.from("abc"), mtime: 1_700_000_000 },
+	];
+	assert.deepEqual(await sync.push(entries), { ok: true, value: undefined });
+	assert.deepEqual(client.sent.calls, ["tar.push.begin", "tar.push.write", "tar.push.end", "files.list"], "the baseline's listing is read once the push has ended");
+	const tar = Buffer.concat(client.sent.bytes);
+	assert.equal(headerMtime(tar, 512), 946_684_800, "the file's own mtime is replaced by the pushed one, the year 2000");
+	assert.notEqual(headerMtime(tar, 0), 946_684_800, "a directory keeps what it was given");
+	assert.deepEqual(await sync.sync(), { ok: true, value: { put: 0, mkdir: 0, removed: 0, meta: false } }, "the listing it took is the manifest: nothing to put");
+});
+
+test("push: a push that fails says it was the push, its code kept, and takes no baseline; a listing that fails says it was the listing; no entries push an empty tar", async () => {
+	const down = pushing({ pushFails: "the computer is full" });
+	const pushed = await new FolderSync(down, fakeSink()).push([{ name: "f", type: "file", mode: 0o644, body: Buffer.from("x") }]);
+	assert.deepEqual(pushed, { ok: false, error: { code: "refused", message: "could not be pushed into the computer: the computer is full" } });
+	assert.deepEqual(down.sent.calls, ["tar.push.begin"], "no listing after a push that failed");
+	const blind = pushing({ listed: { error: { code: "gone", message: "the computer went away" } } });
+	const listed = await new FolderSync(blind, fakeSink()).push([{ name: "f", type: "file", mode: 0o644, body: Buffer.from("x") }]);
+	assert.deepEqual(listed, { ok: false, error: { code: "gone", message: "pushed into the computer could not be listed: files.list of /workspace at 0: the computer went away" } });
+	const none = pushing({});
+	assert.deepEqual(await new FolderSync(none, fakeSink()).push([]), { ok: true, value: undefined });
+	assert.deepEqual(none.sent.calls, ["tar.push.begin", "tar.push.write", "tar.push.end", "files.list"], "an empty folder is an empty tar, then its baseline");
+});
+
+test("push: a source that throws is a failed push in words (the push ended, no baseline); an abort lets the source go", async () => {
+	const broken = pushing({});
+	const throwing = (async function* () {
+		yield { name: "a", type: "file", mode: 0o644, body: Buffer.from("a") };
+		throw new Error("the store lost a");
+	})();
+	const failed = await new FolderSync(broken, fakeSink()).push(throwing);
+	assert.deepEqual(failed, { ok: false, error: { code: "invalid", message: "could not be pushed into the computer: the tar source failed: the store lost a" } });
+	assert.deepEqual(broken.sent.calls, ["tar.push.begin", "tar.push.end"], "the push that began was ended, and no listing followed");
+
+	const stopped = new AbortController();
+	let closed = false;
+	let next = 0;
+	const endless = {
+		[Symbol.asyncIterator]: () => ({
+			next: async () => {
+				if (++next === 3) stopped.abort();
+				return { done: false, value: { name: `f${next}`, type: "file", mode: 0o644, body: Buffer.from("x") } };
+			},
+			return: async () => {
+				closed = true;
+				return { done: true, value: undefined };
+			},
+		}),
+	};
+	const aborted = await new FolderSync(pushing({}), fakeSink()).push(endless, { signal: stopped.signal });
+	assert.equal(aborted.ok, false);
+	assert.match(aborted.error.message, /^could not be pushed into the computer: .*aborted/);
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.equal(closed, true, "the caller's entries are let go, as a push lets go of its tar");
 });

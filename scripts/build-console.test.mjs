@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { delimiter, dirname, join } from 'node:path';
+import { join } from 'node:path';
 import { test } from 'node:test';
 import { buildConsole, consoleDepsInstalled, consoleInputsHash, consoleIsCurrent, HASH_FILE, stampConsole } from './build-console.mjs';
 
@@ -88,7 +88,7 @@ test('dependencies npm installed by itself, as a source check does before going 
   assert.equal(consoleDepsInstalled(r.root), false, 'a version the lockfile does not name');
 });
 
-/** buildConsole with its own npm (no `run` passed) in a child process, a fake npm first on PATH: each `npm ci` answers
+/** buildConsole with its own npm (no `run` passed) in a child process, a fake npm as npm_execpath (the CLI script `npm run` names): each `npm ci` answers
  *  with the next of `plan` (`ok`, or npm 11's error lines for a code), and `npm run build` builds and stamps. */
 function buildWithNpm(t, plan) {
   const r = repo(t);
@@ -101,7 +101,7 @@ function buildWithNpm(t, plan) {
   };
   const module = new URL('./build-console.mjs', import.meta.url).href;
   r.put('bin/calls.log', '');
-  r.put('bin/npm', `#!${process.execPath}
+  r.put('bin/npm-cli.cjs', `#!${process.execPath}
 const { appendFileSync, mkdirSync, readFileSync, writeFileSync } = require('node:fs');
 appendFileSync(${JSON.stringify(log)}, process.argv.slice(2).join(' ') + '\\n');
 if (process.argv[2] === 'run') { mkdirSync('dist', { recursive: true }); writeFileSync('dist/index.html', 'built\\n'); import(${JSON.stringify(module)}).then((m) => m.stampConsole(${JSON.stringify(r.root)})); }
@@ -111,9 +111,9 @@ else {
   if (step !== 'ok') { process.stderr.write(${JSON.stringify(errors)}[step]); process.exit(1); }
 }
 `);
-  chmodSync(join(bin, 'npm'), 0o755);
+  chmodSync(join(bin, 'npm-cli.cjs'), 0o755);
   const done = spawnSync(process.execPath, ['--input-type=module', '-e', `import { buildConsole } from ${JSON.stringify(module)}; console.log('result:', buildConsole(${JSON.stringify(r.root)}));`], {
-    encoding: 'utf8', env: { ...process.env, PATH: `${bin}${delimiter}${dirname(process.execPath)}${delimiter}${process.env.PATH}`, NPM_CI_RETRY_WAIT_MS: '0' },
+    encoding: 'utf8', env: { ...process.env, npm_execpath: join(bin, 'npm-cli.cjs'), NPM_CI_RETRY_WAIT_MS: '0' },
   });
   return { ...done, calls: readFileSync(log, 'utf8').split('\n').filter(Boolean), dist: existsSync(join(r.root, 'apps/console/dist/index.html')) };
 }

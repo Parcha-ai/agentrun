@@ -226,7 +226,7 @@ async function agentFor(ctx, job, harness, learns) {
   const model = models[harness];
   const applied = ok(`applying ${pkgName}`, await api("POST", `/templates/${pkgName}/apply`, { parameters: job.parameters, grants: job.grants, ...(model ? { overrides: { model } } : {}) }));
   const agentId = String(applied.agent_id);
-  for (const id of applied.trigger_ids ?? []) await api("DELETE", `/triggers/${q(String(id))}`);
+  for (const { trigger_id } of applied.triggers ?? []) await api("DELETE", `/triggers/${q(String(trigger_id))}`);
   const agent = ok(`reading ${agentId}`, await api("GET", `/agents/${q(agentId)}`));
   const settings = { ...(agent.definition.tool_settings ?? {}) };
   for (const tool of job.deny) settings[tool] = { ...(settings[tool] ?? {}), permission: "deny" };

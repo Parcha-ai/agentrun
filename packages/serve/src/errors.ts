@@ -59,6 +59,13 @@ export const ERROR_STATUS = {
   github_no_public_url: 409,
   github_wrong_origin: 409,
   github_failed: 502,
+  // Suggested agents (suggestions.ts): a repository the GitHub App is not installed on, an installation that lacks the
+  // permissions a pull request needs (contents and pull requests, write), a file the pull request would add that the
+  // repository already has, and a suggestion already decided (created, or discarded and not restored).
+  github_not_installed: 409,
+  github_permission_missing: 409,
+  github_file_exists: 409,
+  suggestion_decided: 409,
   // Composio triggers (composio-triggers.ts): one made with no public address Composio could send to, one whose project's
   // webhook subscription is at another address (moved here only when asked), one whose server's Composio user has no
   // connected account (answered with the link to connect it) or several (naming them: never one picked), and a Composio
@@ -74,12 +81,25 @@ export const ERROR_STATUS = {
   // A replay its owner asked of a learned workflow's revision that cannot start now (runner/promotion.ts askReplay): one
   // replays already, another revision of it replays, it is promoted, or no graded input fits it.
   replay_conflict: 409,
-  // DELETE /agents/{id} (agent-delete.ts): an agent made here, which is archived instead; an agent whose runs did not end
-  // by the delete's wait (or one only its application ends, an SDK run's); an agent whose learning refused its delete
-  // while learning work was in flight. The last two leave the agent refusing runs, and a DELETE sent again finishes it.
-  agent_not_external: 409,
+  // DELETE /agents/{id} (agent-delete.ts): another system's agent whose runs did not end by the delete's wait (or one only
+  // its application ends, an SDK run's); an agent whose learning refused its delete while learning work was in flight.
+  // Both leave the agent refusing runs, and a DELETE sent again finishes it. An agent made here that is not archived:
+  // archive it first, then purge it.
   runs_in_flight: 409,
   learning_busy: 409,
+  agent_not_archived: 409,
+  // DELETE /runs/{id} and /agents/{id} (agent-delete.ts purgeRun): a run, or a run made from it, that is live (not final,
+  // or held by a runner). Nothing is purged.
+  run_not_final: 409,
+  // PUT /runs/{id}/grade on a run that reads ended while it still learns from that end (its look-back: a fresh run's
+  // end-of-run step, or a grade's round): graded once that ends. The same grade sent then is taken.
+  run_learning: 409,
+  // GET /agents/{id}/package (agent-package.ts) of an agent whose source is elsewhere (a native, CLI learning, SDK or
+  // another system's agent), a workflow, or one with no revision: there is no package of it to write.
+  not_exportable: 409,
+  // A run or an agent that was purged (DELETE /runs/{id}, /agents/{id}): every route of it reads its tombstone in the
+  // error's details, and its DELETE answers 204 again.
+  purged: 410,
   // A run start, or a message that would start a turn, with no model_key where the server holds no key for the run's
   // model (run-model-key.ts): nothing to spend, so refused before any model call.
   model_key_required: 422,
@@ -87,11 +107,13 @@ export const ERROR_STATUS = {
   // (run-child-host.ts runIsolationOf), in the runner's words and their fix. Not retryable: it stays so until the runner
   // is started again as the words say.
   runner_refused: 503,
+  // POST /settings/api-keys (api-keys.ts) while the server keeps as many API keys as it takes: one is revoked first.
+  api_keys_full: 409,
 } as const;
 
 export type ErrorCode = keyof typeof ERROR_STATUS;
 
-const RETRYABLE = new Set<ErrorCode>(["home_busy", "idempotency_in_progress", "rate_limited", "internal", "unavailable", "github_failed", "runs_in_flight", "learning_busy"]);
+const RETRYABLE = new Set<ErrorCode>(["home_busy", "idempotency_in_progress", "rate_limited", "internal", "unavailable", "github_failed", "runs_in_flight", "learning_busy", "run_learning"]);
 
 /** A field that is missing or wrong. `example`: a value the field accepts, read from the request body's schema (explain.ts). */
 export type InputIssue = { field: string; reason: string; message: string; expected?: string; fix?: string; code?: string; example?: unknown };

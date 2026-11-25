@@ -1,6 +1,8 @@
+import { cliLearningOf } from "@/lib/cliLearning";
 import { useEffect, useRef, useState } from "react";
 import { AgentEditor, type EditorCaps, type Revision } from "@/components/AgentEditor";
 import { agentHash } from "@/components/AgentPage";
+import { goBack } from "@/lib/back";
 import { CodingAgentAction } from "@/components/CodingAgentAction";
 import { Banner } from "@/components/ui";
 import { backendSdkOf } from "@/lib/backendSdk";
@@ -17,7 +19,7 @@ import type { ComputerKindView, ToolSettings } from "@/lib/v2";
 const problemOf = (e: unknown) => (e instanceof ClientError ? saveError(e) : { kind: "other" as const, message: e instanceof Error ? e.message : String(e) });
 
 /** The agents on the live server: the list, or the archived ones (`#/agents?archived=true`), every page of them. */
-export function AgentsPage({ v2, archived, go }: { v2: Client; archived: boolean; go: (hash: string) => void }) {
+export function AgentsPage({ v2, archived, go, learning }: { v2: Client; archived: boolean; go: (hash: string) => void; learning?: "on" | "off" | null }) {
   const observations = useObservations(v2, { active: !archived });
   const [agents, setAgents] = useState<Agent[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -38,7 +40,7 @@ export function AgentsPage({ v2, archived, go }: { v2: Client; archived: boolean
     return () => { window.removeEventListener("focus", refresh); document.removeEventListener("visibilitychange", refresh); };
   }, [v2, archived]); // eslint-disable-line react-hooks/exhaustive-deps
   return (
-    <AgentsList observations={observations} agents={agents} archived={archived} onArchivedChange={(on) => go(on ? "#/agents?archived=true" : "#/agents")} error={error}
+    <AgentsList observations={observations} agents={agents} archived={archived} onArchivedChange={(on) => go(on ? "#/agents?archived=true" : "#/agents")} error={error} learning={learning}
       handoff={<ConnectExistingAgents />}
       actions={{
         onOpen: (id) => go(agentHash(id)),
@@ -128,12 +130,12 @@ export function AgentEditPage({ v2, caps, choices = [], gates = [], focusTool, a
   if (agentId && !agent) return <p className="p-8 text-center font-mono text-body text-muted-foreground">Loading the agent...</p>;
   return (
     // Keyed on loads only: a save updates the agent in place, so the editor keeps its form, and its Save reads "Saved".
-    agent && backendSdkOf(agent.definition) ? <section className="space-y-4 p-5 md:p-8">
+    agent && (backendSdkOf(agent.definition) || cliLearningOf(agent.definition)) ? <section className="space-y-4 p-5 md:p-8">
       <h1 className="text-2xl font-semibold">Edit {agent.definition.name}</h1>
-      <Banner>This agent runs in your backend. Edit its application code with your coding agent; manage self-improving in its Learning tab.</Banner>
-      <CodingAgentAction label="Edit agent" prompt={editAgentPrompt(location.origin, agent.agent_id, false, backendSdkOf(agent.definition)!.runtime)} />
+      <Banner>{cliLearningOf(agent.definition) ? "This agent runs in your CLI. Edit its original project configuration; manage self-improving in its Learning tab." : "This agent runs in your backend. Edit its application code with your coding agent; manage self-improving in its Learning tab."}</Banner>
+      <CodingAgentAction label="Edit agent" prompt={editAgentPrompt(location.origin, agent.agent_id, false, backendSdkOf(agent.definition), cliLearningOf(agent.definition)?.runtime)} />
       <a href={agentHash(agent.agent_id)} className="block text-body underline underline-offset-2">Back to agent</a>
-    </section> : <AgentEditor key={`${agent?.agent_id ?? "new"}:${version}`} agent={agent} revisions={revisions} caps={{ ...caps, computers }} providerChoices={choices} permissionGates={gates} mcpServers={mcpServers} serverToolSettings={serverTools} onRetryMcp={loadMcp} {...(focusTool ? { focusTool, step: "tools" as const } : {})} notice={notice} validate={v2.validateWorkflow} onBack={() => go("#/agents")} onReload={() => { void load(); loadMcp(); }}
+    </section> : <AgentEditor key={`${agent?.agent_id ?? "new"}:${version}`} agent={agent} revisions={revisions} caps={{ ...caps, computers }} providerChoices={choices} permissionGates={gates} mcpServers={mcpServers} serverToolSettings={serverTools} onRetryMcp={loadMcp} {...(focusTool ? { focusTool, step: "tools" as const } : {})} notice={notice} validate={v2.validateWorkflow} onBack={() => goBack(agent ? agentHash(agent.agent_id) : "#/agents")} onReload={() => { void load(); loadMcp(); }}
       onSave={async (fields, note) => {
         let saved;
         try {

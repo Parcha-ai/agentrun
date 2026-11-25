@@ -9,6 +9,8 @@ import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseDocument } from "yaml";
 import { type InputIssue, invalid } from "./errors.js";
+import { frontMatter } from "./manifest.js";
+import { DOCKER_IMAGE_FIX, needsIssues } from "./computer-needs.js";
 // Where a package's MCP tools come from (a Composio toolkit, GitHub's MCP server, or any other server by its address): a
 // saved MCP server records one too, and apply maps each need to a server whose record matches.
 import { MCP_SOURCES, type McpSource } from "./mcp-sources.js";
@@ -45,12 +47,12 @@ export const MODEL_TIERS: Readonly<Record<string, Tier>> = { fast: "fast", balan
 const SCALAR_TYPES = ["string", "number", "integer", "boolean"] as const;
 /** A case's grader types. The answer's output schema is no grader's: every graded run of a package with `output` is held
  *  to it by the server's own verdict (template-eval.ts outputVerdict). */
-export const GRADER_TYPES = ["llm", "regex", "tool_used", "file_exists", "mailbox"] as const;
+export const GRADER_TYPES = ["llm", "regex", "tool_used", "file_exists", "mailbox", "handed"] as const;
 /** The entries of a package's `computer` preference list: `shell`, a computer that gives the agent a shell here (bash);
  *  `none`, no shell, the file tools alone. Apply takes the first this server meets now (pickComputer). */
 export const COMPUTER_ENTRIES = ["shell", "none"] as const;
 export type ComputerEntry = (typeof COMPUTER_ENTRIES)[number];
-const FIELDS = ["name", "display_name", "version", "description", "license", "author", "repository", "category", "tags", "harness", "model", "effort", "tools", "mcp", "tool_policy", "computer", "checkout", "parameters", "inputs", "secrets", "budget", "learning", "approvals", "triggers", "output"];
+const FIELDS = ["name", "display_name", "version", "description", "license", "author", "repository", "category", "tags", "harness", "model", "effort", "tools", "mcp", "tool_policy", "computer", "needs", "checkout", "parameters", "inputs", "secrets", "budget", "learning", "approvals", "triggers", "output"];
 /** What a package is for, shown on a marketplace page and the console's list: display only, never applied. */
 export const CATEGORIES = ["engineering", "security", "sales", "marketing", "research", "finance", "operations", "compliance", "personal"] as const;
 const TAG = /^[a-z0-9-]{1,32}$/;
@@ -63,10 +65,11 @@ export const INPUT_TYPES = [...SCALAR_TYPES, "array"] as const;
  *  formats it knows. cron and timezone are for the form alone (a schedule picker, a zone choice); where a parameter fills
  *  a schedule, the schedule's own check reads the value at apply. */
 export const INPUT_FORMATS = ["uri", "email", "hostname", "date", "date-time", "uuid", "cron", "timezone"] as const;
-/** An input's or a parameter's keys: what a form and a JSON Schema say of one field. */
-const INPUT_KEYS = ["type", "required", "pattern", "enum", "format", "default", "description", "title", "examples", "minimum", "maximum", "minLength", "maxLength", "items"];
+/** An input's or a parameter's keys: what a form and a JSON Schema say of one field, in the order an export writes them
+ *  (agent-package.ts). */
+export const INPUT_KEYS = ["type", "title", "description", "pattern", "format", "minLength", "maxLength", "minimum", "maximum", "enum", "examples", "default", "required", "items"] as const;
 /** A list input's `items`: a scalar's keys alone. */
-const ITEM_KEYS = ["type", "pattern", "enum", "format", "minimum", "maximum", "minLength", "maxLength"];
+export const ITEM_KEYS = ["type", "pattern", "format", "minLength", "maxLength", "minimum", "maximum", "enum"] as const;
 const NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const PARAMETER = /^[a-z][a-z0-9_]{0,63}$/;
 /** The keys a package may need: those Settings saves (a tool's or a model provider's), each one a run is handed. */
@@ -94,11 +97,11 @@ const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[
 const PLACEHOLDER = /\$\{parameters\.([^}]*)\}/g;
 /** Text that is one placeholder alone: it takes the parameter's value with its type (a pin's, a trigger's input's). */
 const WHOLE = /^\$\{parameters\.([^}]*)\}$/;
-const FRONT = /^---\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/;
 
 /** An MCP server a package uses, by where it comes from (`source`, `toolkit`), never by the name an owner saves it under:
- *  inside the package its tools are `mcp:<toolkit>/<tool>`. `tools`, those the agent may be granted, and `allow`, those of
- *  them the package asks the owner to grant (a consent screen shows it, with `reason`). Neither the package nor an apply
+ *  inside the package its tools are `mcp:<toolkit>/<tool>`. `tools`, those the agent uses and the package asks the owner to
+ *  grant (a consent screen shows each, with `reason`), and `allow`, those of them expected to run without asking (reads);
+ *  the rest (writes) wait for the owner's OK on each call (packageView's `asks`). Neither the package nor an apply
  *  sets a permission: an apply's `grants`, the owner's ticks, grant the tools, and each call follows this server's tool settings
  *  (a write asks unless the owner allowed it there, a read follows the server's Allow reads, approvals never lifts an ask). `pin`, by tool: the arguments each of its calls must carry (a value, or
  *  `${parameters.<name>}`), which apply writes as the tool's pin in the agent's tool settings, so a send goes only to the
@@ -160,11 +163,12 @@ export const fieldsOf = (schema: Json): Record<string, Json> => schema.propertie
 const SCHEDULE_FIELDS = ["cron", "timezone"];
 /** Where an imported package came from (POST /v2/templates/import): its source as given, ref and all (the ref an upgrade
  *  reads again), the full commit SHA that ref was at when it was read, which is what was imported, and the GitHub account
- *  that publishes it. */
+ *  that publishes it. An upload's source is its id, its sha the package's sha256, its publisher empty. */
 export type PackageOrigin = { source: string; sha: string; publisher: string };
 export type Package = {
   /** Its identity here, the one apply and delete take: a bundled package's name (`kyb`); an imported one's source without
-   *  its ref (`github:<owner>/<repo>[/<path>]`), so the bundled kyb and an imported kyb are two packages. */
+   *  its ref (`github:<owner>/<repo>[/<path>]`), so the bundled kyb and an imported kyb are two packages; an upload's
+   *  `upload:<name>`. */
   id: string;
   /** Null for a package this server ships. */
   origin: PackageOrigin | null;
@@ -194,12 +198,17 @@ export type Package = {
   /** The computers it prefers, in order (`[shell, none]`): apply takes the first this server meets now (pickComputer)
    *  and writes it as the agent's computer. Absent (or `default` in the manifest): where this server puts a new agent. */
   computer?: ComputerEntry[];
+  /** The programs its sandbox must have on its PATH, or libraries its code loads (`needs`, beside `computer: [shell]` alone): apply writes them onto
+   *  the sandbox it picks as the agent's `computer.needs`, which each run checks in its box before any model request
+   *  (computer-needs.ts); it names no image, which stays the server's (AGENTRUN_DOCKER_IMAGE). */
+  needs?: string[];
   /** A policy by tool (bash only: `read-only`, bash-read-only.ts), which apply writes as the tool's `policy` in the
    *  agent's tool settings, so the gate holds its runs to it whatever the tool's permission. */
   toolPolicy?: { bash: BashPolicy };
   /** What the server checks out in each run's folder before its first turn (the definition's `checkout`,
-   *  runner/pr-checkout.ts): the pull request the run's GitHub event names. */
-  checkout?: "pull_request";
+   *  runner/pr-checkout.ts): the pull request the run's GitHub event names, or the default branch of the repository the
+   *  run names. */
+  checkout?: "pull_request" | "repository";
   /** The setup an apply takes (manifest `parameters`), compiled as `inputs` are (fieldsSchema): a closed object schema,
    *  with no properties when the package names none. */
   parameters: Json;
@@ -207,7 +216,7 @@ export type Package = {
   inputSchema?: Json;
   secrets: string[];
   /** Each run's limit: its spend cap (the agent's max_cost_usd). */
-  budget?: { per_run_usd: number };
+  budget?: { per_run_usd: number; max_requests?: number };
   /** The agent's `learning`, as a definition takes it: true, false, or the loop's settings (agree_on, each path a required
    *  field of the output schema). */
   learning?: LearningSetting;
@@ -222,6 +231,8 @@ export type Package = {
   instructions: string;
   /** Skill files by path under the agent's skills folder (`review/SKILL.md`), each rule beside each SKILL.md. */
   skills: Record<string, string>;
+  /** The names of its rules/ files (each one in `skills` beside every SKILL.md), so an export writes them as rules/ again. */
+  rules?: string[];
   evals: string[];
 };
 
@@ -578,6 +589,21 @@ function fieldsSchema(value: unknown, of: "inputs" | "parameters", bad: (message
   return { type: "object", additionalProperties: false, ...(required.length ? { required } : {}), properties };
 }
 
+/** A spend cap a run can hold: a number above 0 and finite (0, a negative, NaN and Infinity are none). */
+const isCap = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value) && value > 0;
+
+/** Each of a package's triggers (POST /v2/triggers bodies, as its manifest or an export writes them) with no spend cap of
+ *  its own (target.max_cost_usd, read by isCap here, not left to the trigger's schema), by its index and name. A package
+ *  with triggers and no budget.per_run_usd is taken only when this is empty, so every run a trigger starts is capped by
+ *  the budget or by its trigger. readPackage refuses by it, and an export blocks by it (agent-package.ts). */
+export function uncappedTriggers(triggers: readonly unknown[]): { index: number; name: string }[] {
+  return triggers.flatMap((trigger, index) => {
+    const target = isObject(trigger) ? trigger.target : undefined;
+    if (isObject(target) && isCap(target.max_cost_usd)) return [];
+    return [{ index, name: isObject(trigger) && typeof trigger.name === "string" ? trigger.name.trim() : "" }];
+  });
+}
+
 /** Reads the package at `from` (its folder, or its files: PackageFiles) checked whole: a valid package, or PackageError
  *  with every problem found. */
 export function readPackage(from: string | PackageFiles, { evalFixtures = true }: { evalFixtures?: boolean } = {}): Package {
@@ -585,10 +611,13 @@ export function readPackage(from: string | PackageFiles, { evalFixtures = true }
   const dir = src.where;
   const problems: string[] = [];
   const bad = (where: string, message: string) => void problems.push(`${where}: ${message}`);
+  /** The entries of the folder at `sub`, every read of a folder's entries here: a hidden file or folder (.env,
+   *  .DS_Store, .cache/) is no part of a package, at its top or anywhere under it, so it is left out, never refused. */
+  const entries = (sub: string) => src.entries(sub).filter((entry) => !entry.name.startsWith("."));
   /** The regular files under `sub`, by path from it with forward slashes; a link or any other kind of entry is a
    *  problem (a package is read from disk, and a link would carry a file from outside it into an agent). */
   const files = (sub: string): string[] =>
-    src.entries(sub).sort((a, b) => (a.name < b.name ? -1 : 1)).flatMap((entry) => {
+    entries(sub).sort((a, b) => (a.name < b.name ? -1 : 1)).flatMap((entry) => {
       const path = sub ? `${sub}/${entry.name}` : entry.name;
       if (entry.isDirectory()) return files(path);
       if (!entry.isFile()) return bad(path, "is not a regular file or a folder (links are refused)"), [];
@@ -599,21 +628,14 @@ export function readPackage(from: string | PackageFiles, { evalFixtures = true }
   /** A file's YAML front matter and body. */
   const front = (path: string, required = true): { data: Json; body: string } | undefined => {
     const content = text(path);
-    const match = FRONT.exec(content);
-    if (!match) {
+    const read = frontMatter(content);
+    if (!read) {
       if (required) bad(path, "has no YAML front matter between --- lines");
       return required ? undefined : { data: {}, body: content };
     }
-    const doc = parseDocument(match[1]!, { schema: "core", merge: false, uniqueKeys: true, strict: true });
-    if (doc.errors.length) return bad(path, `its front matter is not YAML: ${doc.errors[0]!.message.split("\n")[0]}`), undefined;
-    let data: unknown;
-    try {
-      data = doc.toJS({ maxAliasCount: 0 });
-    } catch (error) {
-      return bad(path, `its front matter is refused: ${(error as Error).message}`), undefined;
-    }
-    if (!isObject(data)) return bad(path, "its front matter is not a mapping"), undefined;
-    return { data, body: content.slice(match[0].length) };
+    if ("problem" in read) return bad(path, `its front matter ${read.problem}`), undefined;
+    if (!isObject(read.data)) return bad(path, "its front matter is not a mapping"), undefined;
+    return { data: read.data, body: read.body };
   };
   const list = (value: unknown, field: string, test: (item: string) => boolean = (item) => item !== ""): string[] => {
     if (value === undefined) return [];
@@ -621,13 +643,15 @@ export function readPackage(from: string | PackageFiles, { evalFixtures = true }
     if (new Set(value).size !== value.length) bad(MANIFEST, `${field} names one item twice`);
     return value as string[];
   };
-  /** `path` is a regular file inside the package. */
-  const inside = (path: unknown) => typeof path === "string" && !path.startsWith("/") && !path.split("/").some((part) => part === ".." || part === "." || part === "") && kind(path) === "file";
+  /** `path`, named in agent.md, passes through a hidden file or folder: one the package leaves out (entries), so never read. */
+  const hidden = (path: unknown) => typeof path === "string" && path.split("/").some((part) => part.startsWith("."));
+  /** `path` is a regular file inside the package, none of its parts hidden (".", ".." and ".env" alike) or empty. */
+  const inside = (path: unknown) => typeof path === "string" && !path.startsWith("/") && !hidden(path) && !path.split("/").includes("") && kind(path) === "file";
 
   const name = src.name;
   if (src.kind("") !== "dir") throw new PackageError(dir, ["it is not a folder: a package is one"]);
   if (kind(MANIFEST) !== "file") throw new PackageError(dir, [`${MANIFEST}: missing: a package is a folder with agent.md (its manifest in the front matter, the agent's instructions in the body)`]);
-  for (const entry of src.entries("")) {
+  for (const entry of entries("")) {
     if (entry.isDirectory() && !["skills", "rules", "evals"].includes(entry.name)) bad(`${entry.name}/`, "a package's folders are skills/, rules/ and evals/");
   }
   // Bounded before anything is read: a file, the files together, and how many there are.
@@ -658,7 +682,7 @@ export function readPackage(from: string | PackageFiles, { evalFixtures = true }
   if (f.author !== undefined && !(isObject(f.author) && !unknownFields(f.author, ["name", "email", "url"]).length && typeof f.author.name === "string" && Object.values(f.author).every((v) => typeof v === "string"))) bad(MANIFEST, "author is {name, email?, url?}");
   if (f.repository !== undefined && !(typeof f.repository === "string" && URL.canParse(f.repository) && /^https?:$/.test(new URL(f.repository).protocol))) bad(MANIFEST, "repository is an http(s) URL");
   // Display only: what a marketplace page and the console's list file it under, and its tags.
-  if (f.category !== undefined && !(CATEGORIES as readonly unknown[]).includes(f.category)) bad(MANIFEST, `category is one of ${CATEGORIES.join(", ")}`);
+  if (f.category !== undefined && !(CATEGORIES as readonly unknown[]).includes(f.category)) bad(MANIFEST, `category is one of ${CATEGORIES.join(", ")}, not ${JSON.stringify(f.category)}`);
   const tags = f.tags === undefined ? [] : Array.isArray(f.tags) && f.tags.length <= MAX_TAGS && f.tags.every((tag) => typeof tag === "string" && TAG.test(tag)) && new Set(f.tags).size === f.tags.length ? (f.tags as string[]) : (bad(MANIFEST, `tags is a list of at most ${MAX_TAGS} tags, each once, each lowercase letters, digits and dashes (${TAG.source})`), []);
   const harness = f.harness === undefined ? undefined : list(f.harness, "harness", (id) => (HARNESSES as readonly string[]).includes(id));
   if (harness && !harness.length) bad(MANIFEST, `harness is a non-empty preference list of ${HARNESSES.join(", ")}; leave it out for any`);
@@ -717,17 +741,28 @@ export function readPackage(from: string | PackageFiles, { evalFixtures = true }
       if (!computer.includes("shell") && shellOnly.length) bad(MANIFEST, `computer: [none] gives no shell, so ${shellOnly.join(", ")} would never be granted: add shell to computer, or take ${shellOnly.length === 1 ? "it" : "them"} out of tools`);
     }
   }
+  // The programs its sandbox must have, checked as a sandbox's computer.needs is: only beside [shell] alone, so a package
+  // that needs them is a sandbox's or nothing, never a fallback to no computer.
+  let needs: string[] | undefined;
+  if (f.needs !== undefined) {
+    const issues = needsIssues(f.needs, "needs");
+    for (const issue of issues) bad(MANIFEST, issue.message);
+    if (computer?.length !== 1 || computer[0] !== "shell") bad(MANIFEST, "needs: the programs a sandbox must have, so computer is [shell]: a template that needs them never falls back to no computer, nor runs where a new agent does");
+    else if (!issues.length) needs = [...(f.needs as string[])];
+  }
   // The server's checkout before each run's first turn: the pull request the run's GitHub event names, at its head.
-  if (f.checkout !== undefined && f.checkout !== "pull_request") bad(MANIFEST, "checkout is pull_request: the server checks out the pull request the run's GitHub event names, at its head, in repo/ before the first turn");
+  // Or the head of the default branch of the repository the run names.
+  if (f.checkout !== undefined && f.checkout !== "pull_request" && f.checkout !== "repository") bad(MANIFEST, "checkout is pull_request or repository: the server checks out, in repo/ before the first turn, the pull request the run's GitHub event names (at its head), or the head of the default branch of the repository the run names");
   // The setup an apply takes, in the inputs' grammar, by the same compiler; none, a schema of no fields.
   const parameters = fieldsSchema(f.parameters, "parameters", (message) => bad(MANIFEST, message)) ?? { type: "object", additionalProperties: false, properties: {} };
   const fields = fieldsOf(parameters);
   const inputSchema = fieldsSchema(f.inputs, "inputs", (message) => bad(MANIFEST, message));
   const secrets = list(f.secrets, "secrets", (secret) => /^[A-Z][A-Z0-9_]{0,127}$/.test(secret));
   for (const secret of secrets.filter((name) => !PACKAGE_SECRETS.includes(name))) bad(MANIFEST, `secrets names ${secret}, a key this server cannot hold: a package needs the keys Settings saves and a run is handed (${PACKAGE_SECRETS.join(", ")})`);
-  // Each run's limit: its spend cap (per_run_usd, the agent's max_cost_usd), required once a budget is given.
-  const perRun = (value: unknown) => typeof value === "number" && Number.isFinite(value) && value > 0;
-  if (f.budget !== undefined && !(isObject(f.budget) && !unknownFields(f.budget, ["per_run_usd"]).length && perRun(f.budget.per_run_usd))) bad(MANIFEST, "budget is {per_run_usd: a number above 0}");
+  // Each run's limits: its spend cap (per_run_usd, the agent's max_cost_usd), required once a budget is given, and the most
+  // requests on free models it makes (max_requests, the agent's max_requests), which a dollar cap cannot bound.
+  const requests = (value: unknown) => value === undefined || (typeof value === "number" && Number.isSafeInteger(value) && value >= 1);
+  if (f.budget !== undefined && !(isObject(f.budget) && !unknownFields(f.budget, ["per_run_usd", "max_requests"]).length && isCap(f.budget.per_run_usd) && requests(f.budget.max_requests))) bad(MANIFEST, "budget is {per_run_usd: a number above 0, max_requests: a whole number of free-model requests above 0, when given}");
   const learningIssue = f.learning === undefined ? undefined : learningSettingIssue(f.learning, "learning");
   if (learningIssue) bad(MANIFEST, learningIssue);
   if (f.approvals !== undefined && f.approvals !== "ask" && f.approvals !== "never") bad(MANIFEST, "approvals is ask (the agent asks its person before a tool runs) or never (it runs unattended; deny and pins still hold)");
@@ -756,12 +791,16 @@ export function readPackage(from: string | PackageFiles, { evalFixtures = true }
       else if (!need.required) bad(MANIFEST, `triggers[${i}].source.server ${need.toolkit}: the trigger's server is the mcp need of the toolkit ${need.toolkit}, so that need is required: true. An optional one may have no saved server here, and the trigger would have none`);
     }
   });
-  if (triggers.length && !(isObject(f.budget) && f.budget.per_run_usd !== undefined)) bad(MANIFEST, "budget is required when the package has triggers: {per_run_usd}, each run's cap");
+  // Every run a trigger starts is capped: by the package's budget, else by each trigger's own max_cost_usd.
+  if (triggers.length && !(isObject(f.budget) && f.budget.per_run_usd !== undefined)) {
+    for (const { index, name } of uncappedTriggers(triggers)) bad(MANIFEST, `triggers[${index}]${name ? ` (${name})` : ""} has no max_cost_usd of its own, and the package has no budget: every run a trigger starts is capped, so give the trigger's target a max_cost_usd above 0, or the package a budget: {per_run_usd}, each run's cap`);
+  }
   let outputSchema: unknown;
   if (f.output !== undefined) {
     const at = isObject(f.output) ? f.output.schema : undefined;
     const evalSize = typeof at === "string" && at.startsWith("evals/") && inside(at) ? src.size(at) : 0;
-    if (!isObject(f.output) || unknownFields(f.output, ["schema"]).length || !inside(at)) bad(MANIFEST, "output is {schema: a JSON Schema file in the package}");
+    if (isObject(f.output) && typeof at === "string" && hidden(at) && !at.split("/").some((part) => part === "." || part === "..")) bad(MANIFEST, `output.schema ${at} is a hidden file: a hidden file or folder is no part of a package, so it is never read. Name a file with no part of its path starting with "."`);
+    else if (!isObject(f.output) || unknownFields(f.output, ["schema"]).length || !inside(at)) bad(MANIFEST, "output is {schema: a JSON Schema file in the package}");
     else if (evalSize > MAX_FILE_BYTES || agentBytes + evalSize > MAX_PACKAGE_BYTES) {
       bad(at as string, evalSize > MAX_FILE_BYTES ? `is over ${MAX_FILE_BYTES} bytes, a package file's limit: the answer's schema is given to the agent, so it keeps an agent file's limits, under evals/ too` : `takes the agent's files over ${MAX_PACKAGE_BYTES} bytes together, POST /v2/agents' own limit: the answer's schema is given to the agent, so it counts as an agent file, under evals/ too`);
     } else {
@@ -855,7 +894,7 @@ export function readPackage(from: string | PackageFiles, { evalFixtures = true }
 
   // skills/<name>/SKILL.md, each named as its folder and described, as Agent Skills are; rules/*.md beside each.
   const skills: Record<string, string> = {};
-  const skillDirs = kind("skills") === "dir" ? src.entries("skills") : [];
+  const skillDirs = kind("skills") === "dir" ? entries("skills") : [];
   for (const entry of skillDirs) {
     if (!entry.isDirectory() || !NAME.test(entry.name)) {
       bad(`skills/${entry.name}`, "skills/ holds only skill folders, each named in lowercase letters, digits and dashes");
@@ -870,13 +909,15 @@ export function readPackage(from: string | PackageFiles, { evalFixtures = true }
     if (skill && (skill.data.name !== entry.name || typeof skill.data.description !== "string" || !skill.data.description.trim())) bad(`skills/${entry.name}/SKILL.md`, `its front matter names the skill (${entry.name}) and describes it`);
     for (const path of own) skills[`${entry.name}/${path}`] = text(`skills/${entry.name}/${path}`);
   }
-  const rules = kind("rules") === "dir" ? src.entries("rules") : [];
+  const rules = kind("rules") === "dir" ? entries("rules") : [];
   if (rules.length && !skillDirs.length) bad("rules/", "rules ship beside each skill's SKILL.md, and the package has no skill");
+  const ruleNames: string[] = [];
   for (const entry of rules) {
     if (!entry.isFile() || !entry.name.endsWith(".md")) {
       bad(`rules/${entry.name}`, "rules/ holds only .md files");
       continue;
     }
+    ruleNames.push(entry.name);
     for (const skill of skillDirs.filter((d) => d.isDirectory())) {
       const path = `${skill.name}/${entry.name}`;
       if (Object.hasOwn(skills, path)) bad(`rules/${entry.name}`, `skills/${path} has the same name, and a rule ships beside each SKILL.md`);
@@ -890,7 +931,7 @@ export function readPackage(from: string | PackageFiles, { evalFixtures = true }
   // evals/<case>/: prompt.md (the run's input), graders/*.md (each its type in its front matter), case.yaml and
   // fixtures/ if it has them. The layout only: no eval runs here.
   const evals: string[] = [];
-  for (const entry of kind("evals") === "dir" ? src.entries("evals") : []) {
+  for (const entry of kind("evals") === "dir" ? entries("evals") : []) {
     const at = `evals/${entry.name}`;
     if (!entry.isDirectory() || !NAME.test(entry.name)) {
       bad(at, "evals/ holds only case folders, each named in lowercase letters, digits and dashes");
@@ -901,9 +942,10 @@ export function readPackage(from: string | PackageFiles, { evalFixtures = true }
     for (const path of own.filter((p) => !(p === "prompt.md" || p === "case.yaml" || /^graders\/[^/]+\.md$/.test(p) || p.startsWith("fixtures/")))) bad(`${at}/${path}`, "a case holds prompt.md, graders/*.md, case.yaml and fixtures/ only");
     const caseDoc = own.includes("case.yaml") ? parseDocument(text(`${at}/case.yaml`), { uniqueKeys: true }) : undefined;
     if (caseDoc?.errors.length) bad(`${at}/case.yaml`, "is not YAML");
-    // An email or feed case's run is its trigger's, on the trigger's input (template-eval.ts): its prompt.md has no body.
+    // An email, feed or previous case's run is its trigger's, on the trigger's input (template-eval.ts): its prompt.md has
+    // no body.
     const caseJs = !!caseDoc && !caseDoc.errors.length && isObject(caseDoc.toJS()) ? (caseDoc.toJS() as Json) : undefined;
-    const triggeredCase = caseJs !== undefined && (caseJs.email !== undefined || caseJs.feed !== undefined);
+    const triggeredCase = caseJs !== undefined && (caseJs.email !== undefined || caseJs.feed !== undefined || caseJs.previous !== undefined);
     if (!own.includes("prompt.md")) bad(at, "has no prompt.md");
     else if (!triggeredCase && !front(`${at}/prompt.md`, false)?.body.trim()) bad(`${at}/prompt.md`, "its body is empty: the body is the run's input");
     // A case's web fixture is checked as eval-template checks it, in the same words (web-fake.ts).
@@ -931,8 +973,8 @@ export function readPackage(from: string | PackageFiles, { evalFixtures = true }
     ...(typeof f.license === "string" ? { license: f.license } : {}), ...(isObject(f.author) ? { author: f.author } : {}), ...(typeof f.repository === "string" ? { repository: f.repository } : {}),
     ...(typeof f.category === "string" ? { category: f.category as NonNullable<Package["category"]> } : {}), tags,
     ...(harness ? { harness } : {}), ...(isObject(f.model) ? { model: { ...(f.model as NonNullable<Package["model"]>), ...(choices ? { choices } : {}) } } : {}), ...(typeof f.effort === "string" ? { effort: f.effort } : {}),
-    ...(tools ? { tools } : {}), mcp, ...(computer ? { computer } : {}), ...(toolPolicy ? { toolPolicy } : {}), ...(f.checkout === "pull_request" ? { checkout: "pull_request" as const } : {}), parameters, ...(inputSchema ? { inputSchema } : {}), secrets, ...(isObject(f.budget) ? { budget: { per_run_usd: f.budget.per_run_usd as number } } : {}), ...(f.learning !== undefined ? { learning: learningSettingOf(f.learning as LearningSetting) } : {}), ...(f.approvals === "ask" || f.approvals === "never" ? { approvals: f.approvals } : {}),
-    triggers: triggers as Json[], ...(isObject(f.output) ? { output: { schema: f.output.schema as string } } : {}), ...(isObject(outputSchema) ? { outputSchema } : {}), instructions, skills, evals,
+    ...(tools ? { tools } : {}), mcp, ...(computer ? { computer } : {}), ...(needs ? { needs } : {}), ...(toolPolicy ? { toolPolicy } : {}), ...(f.checkout === "pull_request" || f.checkout === "repository" ? { checkout: f.checkout } : {}), parameters, ...(inputSchema ? { inputSchema } : {}), secrets, ...(isObject(f.budget) ? { budget: { per_run_usd: f.budget.per_run_usd as number, ...(f.budget.max_requests !== undefined ? { max_requests: f.budget.max_requests as number } : {}) } } : {}), ...(f.learning !== undefined ? { learning: learningSettingOf(f.learning as LearningSetting) } : {}), ...(f.approvals === "ask" || f.approvals === "never" ? { approvals: f.approvals } : {}),
+    triggers: triggers as Json[], ...(isObject(f.output) ? { output: { schema: f.output.schema as string } } : {}), ...(isObject(outputSchema) ? { outputSchema } : {}), instructions, skills, ...(ruleNames.length ? { rules: ruleNames.sort() } : {}), evals,
   };
   // What an apply makes, made here with each parameter's default, else a sample of its type, and checked as POST
   // /v2/agents and POST /v2/triggers check their bodies (all but the agent the trigger names, which an apply makes). A
@@ -1003,11 +1045,12 @@ export function readPackages(dir: string = TEMPLATES_DIR): Package[] {
 /** A package as GET /v2/templates lists it: what an apply asks for and makes. */
 export function packageView(p: Package) {
   return {
-    id: p.id, bundled: p.origin === null, source: p.origin?.source ?? null, sha: p.origin?.sha ?? null, publisher: p.origin?.publisher ?? null,
+    // An upload has no publisher: its own owner sent it.
+    id: p.id, bundled: p.origin === null, source: p.origin?.source ?? null, sha: p.origin?.sha ?? null, publisher: p.origin?.publisher || null,
     name: p.name, display_name: p.displayName ?? null, version: p.version, description: p.description, license: p.license ?? null, author: p.author ?? null, repository: p.repository ?? null,
     category: p.category ?? null, tags: p.tags,
     output: p.output ? { schema: p.output.schema, json_schema: p.outputSchema ?? null } : null,
-    harness: p.harness ?? null, model: modelView(p.model), effort: p.effort ?? null, tools: p.tools ?? null, tool_policy: p.toolPolicy ?? null, computer: p.computer ?? null, checkout: p.checkout ?? null,
+    harness: p.harness ?? null, model: modelView(p.model), effort: p.effort ?? null, tools: p.tools ?? null, tool_policy: p.toolPolicy ?? null, computer: p.computer ?? null, needs: p.needs ?? null, checkout: p.checkout ?? null,
     mcp: p.mcp.map(({ source, toolkit, tools, required, reason, allow, pin }) => ({ source, toolkit, required, reason: reason ?? null, tools: tools.map((name) => ({ name, tool: mcpToolName(toolkit, name), asks: allow.includes(name) ? "allow" : "ask", ...(Object.hasOwn(pin, name) ? { pin: pin[name]! } : {}) })) })), parameters: p.parameters, input_schema: p.inputSchema ?? null, secrets: p.secrets,
     budget: p.budget ?? null, learning: p.learning ?? false, approvals_default: p.approvals ?? "ask", triggers: p.triggers, skills: Object.keys(p.skills).filter((path) => /^[^/]+\/SKILL\.md$/.test(path)).map((path) => path.slice(0, -"/SKILL.md".length)), evals: p.evals,
   };
@@ -1020,11 +1063,12 @@ function modelView(model: Package["model"]) {
   return { ...rest, ...(choices ? { choices: choices.map(({ id, label, model: ref, harness, warning, note, secrets }) => ({ id, label, model: ref, harness, warning: warning ?? null, note: note ?? null, secrets })) } : {}) };
 }
 
-/** A package as an import answers it: its listing, and every text its agent would be given, the instructions and each
- *  skill file by path (a rule and the answer's schema beside each SKILL.md among them), so a person reads what a third
- *  party's package would tell their agent before it is installed. */
-export function packageDetail(p: Package) {
-  return { ...packageView(p), instructions: p.instructions, skill_files: { ...p.skills } };
+/** A package whole, as an import and a read of one answer it: its listing with the computer it would get here
+ *  (`computerHere`), and every text its agent would be given, the instructions and each skill file by path (a rule and
+ *  the answer's schema beside each SKILL.md among them), so a person reads what a package would tell their agent before
+ *  it is applied. */
+export function packageDetail<Pick>(p: Package, computerHere: (p: Package) => Pick) {
+  return { template: { ...packageView(p), computer_here: computerHere(p) }, instructions: p.instructions, skill_files: { ...p.skills } };
 }
 
 /** The packages this server serves: the ones it ships, read at its start, and the ones imported here (the store keeps
@@ -1051,14 +1095,20 @@ export class TemplateRegistry {
   }
 }
 
-/** POST /v2/templates/{name}/apply's body (`{parameters, grants?, servers?, overrides?: {model?, choice?, approvals?}, agent_id?}`), checked
+/** POST /v2/templates/{name}/apply's body (`{parameters, grants?, servers?, overrides?: {model?, choice?, approvals?}, agent_id?, revision?, sha?, dry_run?}`), checked
  *  against the package: the parameters as given (a blank one at its default), the MCP tools the owner allows (each one the
  *  package lists, by its gate name), and the model asked for in place of the package's: one of its own (`model`), or one
- *  of the package's model choices by id (`choice`), never both. 422 naming every field that is wrong. */
-export function applyBodyOf(p: Package, body: Json): { parameters: Json; grants: string[]; servers: Record<string, string>; model?: string; choice?: ModelChoice; approvals?: Approvals; agentId?: string } {
-  const issues: InputIssue[] = unknownFields(body, ["parameters", "grants", "servers", "overrides", "agent_id"]);
+ *  of the package's model choices by id (`choice`), never both. `revision` (with agent_id) and `sha` are what the caller
+ *  read: the agent's current revision and the package's sha, each held to them (412 when another). 422 naming every field
+ *  that is wrong. */
+export function applyBodyOf(p: Package, body: Json): { parameters: Json; grants: string[]; servers: Record<string, string>; model?: string; choice?: ModelChoice; approvals?: Approvals; agentId?: string; revision?: string; sha?: string; dryRun: boolean } {
+  const issues: InputIssue[] = unknownFields(body, ["parameters", "grants", "servers", "overrides", "agent_id", "revision", "sha", "dry_run"]);
+  if (body.dry_run !== undefined && typeof body.dry_run !== "boolean") issues.push({ field: "dry_run", reason: "wrong_type", message: "dry_run is true or false: true answers the apply's plan and writes nothing" });
   // The agent an update writes onto (the server checks it was made from this package): text, else a 422 with the rest.
   if (body.agent_id !== undefined && !(typeof body.agent_id === "string" && body.agent_id.trim())) issues.push({ field: "agent_id", reason: "wrong_type", message: `agent_id is the id of an agent the ${p.name} template made: the apply writes a new revision of it in place of making another` });
+  if (body.revision !== undefined && !(typeof body.revision === "string" && body.revision)) issues.push({ field: "revision", reason: "wrong_type", message: "revision is the id of the agent's revision you read (GET /agents/{agent_id} `revision`): the apply writes only while it is still the current one" });
+  else if (body.revision !== undefined && body.agent_id === undefined) issues.push({ field: "revision", reason: "not_allowed", message: "revision is the agent's current revision as you read it, so it goes with agent_id: an apply without one makes a new agent" });
+  if (body.sha !== undefined && !(typeof body.sha === "string" && /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(body.sha))) issues.push({ field: "sha", reason: "bad_format", message: "sha is the package's sha as you read it (GET /templates `sha`): a commit's 40 hex characters, or an upload's 64" });
   const listed = p.mcp.flatMap(({ toolkit, tools }) => tools.map((tool) => mcpToolName(toolkit, tool)));
   const grants: string[] = [];
   if (body.grants !== undefined && !Array.isArray(body.grants)) issues.push({ field: "grants", reason: "wrong_type", message: "grants is a list of the package's MCP tools, by the package's own names (mcp:<toolkit>/<tool>), the owner allows" });
@@ -1099,7 +1149,7 @@ export function applyBodyOf(p: Package, body: Json): { parameters: Json; grants:
     else if (overrides.choice !== undefined && !choice) issues.push({ field: "overrides.choice", reason: "not_an_option", message: choices.length ? `overrides.choice is one of ${choices.map((one) => one.id).join(", ")}: the package's model choices, by id.` : `The package ${p.name} offers no model choices: leave overrides.choice out.` });
   }
   if (issues.length) throw invalid(issues);
-  return { parameters, grants, servers, ...(typeof body.agent_id === "string" ? { agentId: body.agent_id.trim() } : {}), ...(isObject(overrides) && typeof overrides.model === "string" ? { model: overrides.model } : {}), ...(choice ? { choice } : {}), ...(isObject(overrides) && (overrides.approvals === "ask" || overrides.approvals === "never") ? { approvals: overrides.approvals } : {}) };
+  return { parameters, grants, servers, dryRun: body.dry_run === true, ...(typeof body.agent_id === "string" ? { agentId: body.agent_id.trim() } : {}), ...(typeof body.revision === "string" ? { revision: body.revision } : {}), ...(typeof body.sha === "string" ? { sha: body.sha } : {}), ...(isObject(overrides) && typeof overrides.model === "string" ? { model: overrides.model } : {}), ...(choice ? { choice } : {}), ...(isObject(overrides) && (overrides.approvals === "ask" || overrides.approvals === "never") ? { approvals: overrides.approvals } : {}) };
 }
 
 /** The model a package's agent gets here, as `{model?, warning?}`: its `prefer` when this server runs it on `harness`
@@ -1175,7 +1225,7 @@ export async function choiceUnrunnable(env: NodeJS.ProcessEnv, choice: ModelChoi
 }
 
 /** A computer setting as a definition names it (`definition.computer`). */
-export type PickedSetting = { kind: string; provider?: string };
+export type PickedSetting = { kind: string; provider?: string; needs?: string[] };
 /** The shell this server can give an agent now (server.ts shellHere): the computer setting that gives it, the shell
  *  tools a run there has (tools.ts shellTools), and the shell in words; else, `none`, why it has none. */
 export type ShellHere = { computer: PickedSetting; tools: readonly string[]; words: string } | { none: string };
@@ -1186,13 +1236,15 @@ export type ComputerPick = { entry: ComputerEntry; computer: PickedSetting; shel
 
 /** What to do where a package's computer list has no shell to take: in the apply's refusal and its fallback warning. */
 export const COMPUTER_FIX = "Turn on Archil in Settings → Workspace, or run AgentRun where Docker answers, then apply again to give it a shell.";
+/** What to do where a package that needs programs (`needs`) has no sandbox to take: a Docker box whose image has them. */
+export const NEEDS_FIX = `Run AgentRun where Docker answers, with Archil off in Settings → Workspace. ${DOCKER_IMAGE_FIX} Then apply again.`;
 
 /** The first entry of a package's computer list (`[shell, none]`) this server meets now, given the shell it has
  *  (`here`): shell, where it has one; none, always (kind none, and no shell tool: a run on the runner in Mode 2 has bash,
  *  so a shell tool is dropped rather than left to it). Undefined for a package with no list (it runs where a new agent
  *  does); `refused`, in words, when no entry is met. The rule is the package's preference alone: nothing here knows a
  *  template. */
-export function pickComputer(p: Pick<Package, "name" | "computer" | "tools">, here: ShellHere): ComputerPick | { refused: string } | undefined {
+export function pickComputer(p: Pick<Package, "name" | "computer" | "tools" | "needs">, here: ShellHere): ComputerPick | { refused: string; fix?: string } | undefined {
   if (!p.computer) return undefined;
   // A shell that is a sandbox runs the agent in the box, where a runner-only tool (browser) is refused: such a package
   // cannot take that shell, so its list falls to the next entry, as it does where there is no shell at all.
@@ -1201,6 +1253,13 @@ export function pickComputer(p: Pick<Package, "name" | "computer" | "tools">, he
   const clash = found && found.computer.kind === "sandbox" && runnerOnly.length ? `${found.words} runs ${runnerOnly.join(", ")} nowhere` : undefined;
   const shell = clash ? undefined : found;
   const lack = "none" in here ? here.none : clash ?? "this server has none";
+  // A package that needs programs (its list is [shell] alone) takes a sandbox, whose box each run checks for them: a
+  // shell that is no sandbox (Archil's serverless exec runs on the runner, whose programs no run checks) is refused.
+  if (p.needs && !(shell && shell.computer.kind === "sandbox")) {
+    const why = shell ? `the shell here is ${shell.words}, which is no sandbox` : lack;
+    const list = new Intl.ListFormat("en", { type: "conjunction" }).format(p.needs);
+    return { refused: `The ${p.name} template needs a sandbox that has ${list}, and ${why}. Nothing was created. ${NEEDS_FIX}`, fix: NEEDS_FIX };
+  }
   const entry = p.computer.find((one) => one === "none" || shell);
   if (!entry) return { refused: `The ${p.name} template needs a shell, and ${lack}. Nothing was created.` };
   const runs = entry === "shell" && shell ? shell.tools : [];
@@ -1210,7 +1269,7 @@ export function pickComputer(p: Pick<Package, "name" | "computer" | "tools">, he
     ? `${lack.charAt(0).toUpperCase()}${lack.slice(1)}, so the agent was made with the template's next choice, no computer${dropped.length ? `, and without ${without}` : ""}. ${COMPUTER_FIX}`
     : dropped.length && shell ? `The shell here is ${shell.words}, which runs ${runs.join(", ")} alone, so the agent was made without ${without}.` : null;
   return entry === "shell" && shell
-    ? { entry, computer: { ...shell.computer }, shell: shell.words, dropped, defaults: [...shell.tools], note }
+    ? { entry, computer: { ...shell.computer, ...(p.needs ? { needs: [...p.needs] } : {}) }, shell: shell.words, dropped, defaults: [...shell.tools], note }
     : { entry, computer: { kind: "none" }, shell: null, dropped, defaults: [], note };
 }
 
@@ -1272,7 +1331,7 @@ export function compiled(p: Package, parameters: Json, chosen: { harness?: strin
     name: p.displayName ? filled(p.displayName, parameters) : p.name, description: p.description, instructions: filled(p.instructions, parameters),
     ...(chosen.harness ? { harness: chosen.harness } : {}), ...(chosen.model ? { model: chosen.model } : {}), ...(chosen.modelTiers && Object.keys(chosen.modelTiers).length ? { model_tiers: chosen.modelTiers } : {}), ...(p.effort ? { thinking: p.effort } : {}),
     ...(pick ? { computer: pick.computer } : {}), ...(tools ? { tools } : {}), ...(Object.keys(settings).length ? { tool_settings: settings } : {}),
-    ...(p.learning !== undefined ? { learning: p.learning } : {}), ...(p.budget?.per_run_usd ? { max_cost_usd: p.budget.per_run_usd } : {}), skills,
+    ...(p.learning !== undefined ? { learning: p.learning } : {}), ...(p.budget?.per_run_usd ? { max_cost_usd: p.budget.per_run_usd } : {}), ...(p.budget?.max_requests ? { max_requests: p.budget.max_requests } : {}), skills,
     // The apply's choice: unattended only when it says never (none given: the agent asks).
     ...(chosen.approvals === "never" ? { approvals: "never" } : {}),
     // The package's typed input (manifest `inputs`): what each run's input is checked against, and how the model reads it.

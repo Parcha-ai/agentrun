@@ -1,6 +1,6 @@
 // The agentrun-cli skill, generated with the CLI's command table (generate-clients.mjs): SKILL.md from the template
-// below with its slots filled from the table (the command groups, and recipe 5, which names a command only once the
-// table has it), and references/commands.md, one entry per command. recipeProblems() is what --check holds the recipes
+// below with its slot filled from the table (recipe 5, which names a command only once the table has it), and
+// references/commands.md, one entry per command and the skill's only index of them. recipeProblems() is what --check holds the recipes
 // to: every `agentrun` command and flag they name is one the CLI has, so the skill cannot teach a command that is gone.
 // Each recipe's shell blocks run in order in one directory (packages/agentrun/test/skill.test.mjs), each ending with a
 // `# exit N` line that says how its last command exits.
@@ -123,8 +123,6 @@ const RECIPES = (commands) => [
 
 /** SKILL.md: the template, its slots filled from the commands. */
 export function skillText(commands) {
-  const groups = new Map();
-  for (const entry of commands) groups.set(entry.command[0], [...(groups.get(entry.command[0]) ?? []), entry]);
   return [
     '---',
     'name: agentrun-cli',
@@ -170,6 +168,9 @@ export function skillText(commands) {
     '',
     ...RECIPES(commands),
     '',
+    ...(commands.some((entry) => entry.command.join(' ') === 'wrapped')
+      ? ['A year of the person\'s own coding-agent work (tokens, cost, models, harnesses, when they work) is `agentrun wrapped --year 2025`: numbers and names only, read from the session files on the machine the server runs on, and answered only by a server on loopback with no public URL (any other is 403). The console shows it at `#/wrapped`.', '']
+      : []),
     '## Exit codes',
     '',
     '- 0: done; for `runs wait` and `runs start --wait`, the run completed.',
@@ -182,14 +183,12 @@ export function skillText(commands) {
     '',
     '## From a program',
     '',
-    'Two clients call the same API from code, with the same server and token. `@parcha/agentrun-client` is the TypeScript one, `new AgentRun({ baseUrl, apiKey })`; `npm install @parcha/agentrun-client` installs it. `parcha-agentrun` (python/) is the Python one, `AgentRun(base_url=..., api_key=...)` from the `agentrun` module; `pip install parcha-agentrun` installs it. Both default to `AGENTRUN_BASE_URL` and `AGENTRUN_API_KEY` and read no config file. Each command here is a method, grouped the same way: `agentrun runs start` is `client.runs.start`, and `client.runs.wait` and `client.runs.follow` do what `--wait` and `--follow` do.',
+    'Two clients call the same API from code, with the same server and token. `@parcha/agentrun-client` is the TypeScript one, `new AgentRun({ baseUrl, apiKey })`; `npm install @parcha/agentrun-client` installs it. `parcha-agentrun` (python/) is the Python one, `AgentRun(base_url=..., api_key=...)` from the `agentrun` module; `pip install parcha-agentrun` installs it. Both default to `AGENTRUN_BASE_URL` and `AGENTRUN_API_KEY` and read no config file. Each command is a method, grouped the same way: `agentrun runs start` is `client.runs.start`, and `client.runs.wait` and `client.runs.follow` do what `--wait` and `--follow` do.',
     '',
     '## Commands',
     '',
-    ...[...groups].map(([noun, entries]) => entries.length === 1 && entries[0].command.length === 1
-      ? `- \`${usage(entries[0])}\`: ${entries[0].summary}`
-      : `- \`agentrun ${noun}\`: ${entries.map((entry) => entry.command[1]).join(', ')}`),
-    '- `agentrun api METHOD PATH [--body JSON|@FILE|-]`: any route, PATH under the base URL',
+    // The index of commands is references/commands.md's alone: listed here too, it grew SKILL.md with every route.
+    'Every command, by group with its flags and route, is in [references/commands.md](references/commands.md); `agentrun api METHOD PATH [--body JSON|@FILE|-]` calls any route, PATH under the base URL.',
     '',
   ].join('\n');
 }
@@ -210,7 +209,7 @@ export function referenceText(commands) {
   let group;
   for (const entry of commands) {
     if (entry.command[0] !== group) lines.push('', `## ${(group = entry.command[0])}`);
-    lines.push('', `### \`${usage(entry)}\``, '', `${cell(entry.summary)}.`.replace(/\.\.$/, '.'), '', `Route: ${entry.route ? `\`${entry.route}\`` : 'none, it runs on this machine'}.${entry.raw ? ' It prints the answer\'s bytes as they are.' : ''}${entry.multiSegment?.length ? ` ${entry.multiSegment.map((name) => name.toUpperCase()).join(', ')} keeps its slashes.` : ''}`);
+    lines.push('', `### \`${usage(entry)}\``, '', `${cell(entry.summary)}.`.replace(/\.\.$/, '.'), '', `Route: ${entry.route ? [entry.route].flat().map((route) => `\`${route}\``).join(', ') : 'none, it runs on this machine'}.${entry.raw ? ' It prints the answer\'s bytes as they are.' : ''}${entry.multiSegment?.length ? ` ${entry.multiSegment.map((name) => name.toUpperCase()).join(', ')} keeps its slashes.` : ''}`);
     if (entry.flags.length) {
       lines.push('');
       for (const f of entry.flags) lines.push(`- \`${f.name}${f.value ? ` ${f.value}` : ''}\` (${wildcard(f.type)}${f.required ? ', required' : ''}${f.own ? ', this CLI\'s own' : ''})${cell(f.description) ? `: ${wildcard(cell(f.description))}` : ''}`);
@@ -223,12 +222,10 @@ export function referenceText(commands) {
 
 const BUILT_IN = [{ command: ['help'], flags: [] }, { command: ['api'], flags: [{ name: '--body' }] }];
 
-/** The commands and flags SKILL.md names, in its shell blocks and its inline code, that the CLI does not have. The
- *  Commands section is left out: it is the table's own list. */
+/** The commands and flags SKILL.md names, in its shell blocks and its inline code, that the CLI does not have. */
 export function recipeProblems(commands, text) {
   const known = [...commands, ...BUILT_IN];
-  const named = text.replace(/\n## Commands\n[\s\S]*?(?=\n## |$)/, '');
-  const snippets = [...named.matchAll(/^```sh\n([\s\S]*?)^```$/gm), ...named.matchAll(/`(agentrun [^`]+)`/g)].map((match) => match[1]);
+  const snippets = [...text.matchAll(/^```sh\n([\s\S]*?)^```$/gm), ...text.matchAll(/`(agentrun [^`]+)`/g)].map((match) => match[1]);
   const problems = new Set();
   for (const snippet of snippets) {
     for (const call of snippet.matchAll(/(?:^|[\s;|&(])agentrun((?: +[^\s|;&)#]+)*)/gm)) {

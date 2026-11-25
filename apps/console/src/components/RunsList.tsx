@@ -1,7 +1,6 @@
-import { ObservedSessions } from "@/components/ObservedSessions";
 import type { ObservationRead } from "@/lib/observations";
 import { queryPlaygroundHref } from "@/lib/playgroundRoutes";
-import { Archive, ArrowUpRight, History, Play } from "lucide-react";
+import { Archive, ArrowUpRight, Flag, History, Play } from "lucide-react";
 import { Picker } from "@/components/ui/picker";
 import { ProblemCard } from "@/components/Problem";
 import { RunKind } from "@/components/RunKind";
@@ -9,6 +8,7 @@ import { ScheduleChip } from "@/components/ScheduleChip";
 import { ListSkeleton } from "@/components/Skeleton";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Button, buttonVariants } from "@/components/ui/button";
+import { Banner } from "@/components/ui/banner";
 import type { RunsFilter } from "@/lib/client";
 import { cost, runEnded, when, runTitle } from "@/lib/format";
 import type { Problem } from "@/lib/problem";
@@ -27,6 +27,9 @@ const STATUS_LABEL: Record<RunStatus, string> = { queued: "Queued", working: "Wo
  *  A read that failed says so in words, with Try again (`onRetry`); a failed Load more keeps the rows above it. */
 export function RunsList({ runs, agentName, onOpen, error, onRetry, onMore, loadingMore, filter = {}, onFilter, agentId, observations }: { runs: Run[] | null; agentName: (id: string) => string; onOpen: (id: string) => void; error?: Problem | null; onRetry?: () => void; onMore?: () => void; loadingMore?: boolean; filter?: RunsFilter; onFilter?: (filter: RunsFilter) => void; agentId?: string; observations?: ObservationRead }) {
   const archived = !!filter.archived;
+  const connected = !archived && !filter.status && !agentId ? observations : undefined;
+  const sourceAgents = !!connected?.data?.sessions.length;
+  const sourceUnknown = !!connected && !connected.data && (connected.loading || !!connected.error);
   return (
     <div className="flex h-full min-h-0 flex-col">
       <header className={cn(pageToolbarClass, "flex-wrap gap-2 px-5 md:px-6")}>
@@ -36,17 +39,24 @@ export function RunsList({ runs, agentName, onOpen, error, onRetry, onMore, load
             <Picker label="Runs in one state" value={filter.status ?? ""} onChange={(v) => onFilter({ ...filter, status: (v || undefined) as RunStatus | undefined })} className="h-control-sm w-48"
               options={[{ value: "", label: "Any state" }, ...RUN_STATUSES.map((s) => ({ value: s, label: STATUS_LABEL[s] }))]} />
             <Button size="sm" variant={archived ? "primary" : "outline"} aria-pressed={archived} onClick={() => onFilter({ ...filter, archived: !archived })}><Archive aria-hidden /> Archived</Button>
+            {filter.source && <Button size="sm" variant="primary" aria-pressed onClick={() => onFilter({ ...filter, source: undefined })}><History aria-hidden /> {filter.source === "live" ? "Made here" : `From ${filter.source}`}</Button>}
           </>
         )}
-        <CodingAgentAction label="Query" prompt={`${queryRunsPrompt(location.origin, agentId)}\nCurrent view: ${filter.status ? `status ${filter.status}` : "all statuses"}; ${archived ? "archived runs" : "non-archived runs"}.`} playgroundHref={queryPlaygroundHref(agentId, filter)} />
+        <a href="#/races/new" className={buttonVariants({ variant: "outline", size: "sm" })}><Flag aria-hidden />New race</a>
+        <CodingAgentAction label="Ask about runs" prompt={`${queryRunsPrompt(location.origin, agentId)}\nCurrent view: ${filter.status ? `status ${filter.status}` : "all statuses"}; ${archived ? "archived runs" : "non-archived runs"}${filter.source && !agentId ? `; ${filter.source === "live" ? "runs made here" : `runs imported from ${filter.source}`}` : ""}.`} playgroundHref={queryPlaygroundHref(agentId, filter)} />
       </header>
       <div className="min-h-0 flex-1 overflow-auto">
       {error && !runs ? <ProblemCard problem={error} onRetry={onRetry} className="" />
         : !runs ? <ListSkeleton label="Loading the runs" />
-        : !runs.length && !observations?.data?.sessions.length && !filter.status && !archived ? <div className="p-5 md:p-8"><FirstRun /></div>
-        : !runs.length && observations?.data?.sessions.length ? null : !runs.length ? <p className="px-4 py-16 text-center text-body text-muted-foreground">{filter.status ? "No run matches." : archived ? "No archived runs." : "No runs yet."}</p>
+        : !runs.length && (filter.status || archived || filter.source) ? <p className="px-4 py-16 text-center text-body text-muted-foreground">{filter.status || filter.source ? "No run matches." : "No archived runs."}</p>
+        : !runs.length && (sourceAgents || sourceUnknown) ? <div className="space-y-3 p-5 md:p-8">
+          <h2 className="text-lg font-semibold">No captured runs yet</h2>
+          <p className="text-body text-muted-foreground">Continue working with your agents. Completed prompts appear here when they are recorded.</p>
+          <a href="#/agents" className="inline-block text-body underline underline-offset-2">Connected agents</a>
+        </div>
+        : !runs.length ? <div className="p-5 md:p-8"><FirstRun /></div>
         : <RunsTable runs={runs} agentName={agentName} onOpen={onOpen} />}
-      {observations && <div className="p-5 md:p-8"><ObservedSessions read={observations} /></div>}
+      {connected?.error && <div className="p-5 md:p-8"><Banner tone="error" actions={<Button size="xs" disabled={connected.loading} onClick={connected.refresh}>Try again</Button>}>Could not refresh connected agents: {connected.error}</Banner></div>}
       {runs && error && <ProblemCard problem={error} className="mt-4" />}
       {runs && onMore && <div className="flex justify-center p-4"><Button type="button" size="sm" onClick={onMore} disabled={loadingMore}>{loadingMore ? "Loading" : "Load more"}</Button></div>}
       </div>

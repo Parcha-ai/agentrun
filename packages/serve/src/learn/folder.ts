@@ -100,7 +100,7 @@ export const blobOid = (bytes: Uint8Array | string): string => {
 const keyFile = (name: string) => `${WORKFLOWS_DIR}/${name}/README.md`;
 const viewFile = (name: string) => `${WORKFLOWS_DIR}/${name}/workflow.json`;
 /** The draft a path is in, by name: `workflows/<name>/...`; else undefined. */
-function folderOf(path: string): string | undefined {
+export function folderOf(path: string): string | undefined {
   const [top, name, ...rest] = path.split("/");
   return top === WORKFLOWS_DIR && name && rest.length ? name : undefined;
 }
@@ -142,6 +142,23 @@ function changeEntry(commit: CommitInfo, sha: string, files: string[]): SnapChan
   const paragraphs = commit.body.split(/\n\s*\n/).map((part) => part.trim()).filter(Boolean);
   return { commit: sha, at: new Date(commit.at).toISOString(), by, reason: paragraphs.slice(0, -1).join(" ") || commit.subject.replace(/^learning: /, ""), files };
 }
+/** Who wrote workflow `name`'s workflow.json once `commit` changed it (SnapLearned.run), so the writer follows the bytes:
+ *  a run's merge, its run; the host's commit, the run its `Written-By: <name> <run>` line names (a purge that put an
+ *  earlier version back: commit.ts forgetRunWorkflows; a bare `Written-By: <name>`, none), else none; any other (a
+ *  person's edit), undefined: the writer before it stays. Asked of a commit that changed the file, or one whose
+ *  Written-By line names it (writtenIn: a put-back of main's own bytes changes no file). Both snapshot readers and
+ *  folderAt's writers ask it. */
+function writerOf(commit: CommitInfo, name: string): string | null | undefined {
+  const runId = commit.runId.split(",")[0]!.trim();
+  if (runId) return runId;
+  if (!commit.subject.startsWith("host: ")) return undefined;
+  const line = commit.body.split("\n").find((one) => one === `Written-By: ${name}` || one.startsWith(`Written-By: ${name} `));
+  return line ? line.slice(`Written-By: ${name}`.length).trim() || null : null;
+}
+/** The workflows a host commit's Written-By lines name (writerOf): its writer moves with them, a file changed or not. */
+const writtenIn = (commit: CommitInfo): string[] =>
+  commit.subject.startsWith("host: ") ? commit.body.split("\n").flatMap((line) => (line.startsWith("Written-By: ") ? [line.slice("Written-By: ".length).split(" ")[0]!] : [])).filter(Boolean) : [];
+
 /** Whether a commit's message holds a line git's log of changes greps for: `Run-Id: ` or `Changed-By: user`. */
 const isChange = (commit: CommitInfo) => `${commit.subject}\n${commit.body}`.split("\n").some((line) => line.startsWith("Run-Id: ") || line === "Changed-By: user");
 
@@ -223,17 +240,22 @@ export function snapshotOfRead(read: ReturnType<typeof parseRead>): Snapshot | u
   if (!main || !records.length) return undefined;
   const order = new Map<string, number>();
   const history = new Map<string, SnapHistory>();
-  const runs = new Map<string, string>();
+  const runs = new Map<string, string | null>();
   const log: SnapChange[] = [];
   let more = false;
   records.forEach(({ commit, sha, files }, i) => {
-    const runId = commit.runId.split(",")[0]!.trim();
     for (const file of files) {
       if (!order.has(file)) order.set(file, i);
       const known = history.get(file);
       if (!known) history.set(file, foldNewer(undefined, commit));
       else foldOlder(known, commit);
-      if (runId && !runs.has(file)) runs.set(file, runId);
+      const name = folderOf(file);
+      const writer = name !== undefined && file === viewFile(name) && !runs.has(file) ? writerOf(commit, name) : undefined;
+      if (writer !== undefined) runs.set(file, writer);
+    }
+    for (const name of writtenIn(commit)) {
+      const writer = !runs.has(viewFile(name)) ? writerOf(commit, name) : undefined;
+      if (writer !== undefined) runs.set(viewFile(name), writer);
     }
     if (!isChange(commit)) return;
     const entry = changeEntry(commit, sha, files);
@@ -295,12 +317,21 @@ function learnedItem(name: string, files: SnapFile[], links: readonly string[], 
  *  that must be on main as they are on another commit (a run's seed). The script checks both on main as it commits. */
 export type FolderChange = {
   /** A run's merge names the run and its reason, and its `round` past the first (a follow-up's correction): its diff is
-   *  kept under runDiffKey. The host's own book-keeping (an audit row) names what it kept. */
-  by: { person: PersonKind; file: string; approved?: boolean } | { run: string; reason: string; round?: number } | { host: string };
+   *  kept under runDiffKey. The host's own book-keeping (an audit row) names what it kept; a purge that puts a workflow's
+   *  earlier version back names, by workflow, the run that wrote it (`written`: writerOf; null, none), which moves the
+   *  writer even when the version put back is main's bytes already (the commit then changes no file). */
+  by: { person: PersonKind; file: string; approved?: boolean } | { run: string; reason: string; round?: number } | { host: string; written?: Readonly<Record<string, string | null>> };
   writes: readonly { path: string; text: string }[];
   deletes?: readonly string[];
   absent?: readonly string[];
   same?: readonly { commit: string; path: string }[];
+  /** A run's merge: the commit the run was seeded from, which the folder must still hold, whatever the merge writes (a
+   *  correction alone included), named only when this folder held it as the run's end began (commit.ts mustHold): one a
+   *  reset of the agent's learning removed refuses the merge. */
+  seed?: string;
+  /** The host's scrub of one merge of a purged run (commit.ts forgetRunText), by its diff key (runDiffKey): lands once,
+   *  as a run's merge does (a second is FolderMerged, naming the first). */
+  purged?: string;
 };
 
 /** A commit's message and trailers, as git keeps them: a person's names their action and the file, with Changed-By (and
@@ -312,7 +343,8 @@ function messageOf(by: FolderChange["by"] | undefined): { message: string; subje
   // The host's own book-keeping (an audit row): no trailer, so no change in the log a person reads.
   if ("host" in by) {
     const subject = `host: ${clean(by.host).trim() || "kept"}`;
-    return { message: `${subject}\n`, subject, body: "", runId: "", changedBy: "", approvedVia: "" };
+    const body = Object.entries(by.written ?? {}).map(([name, run]) => `Written-By: ${name}${run ? ` ${run}` : ""}\n`).join("");
+    return { message: body ? `${subject}\n\n${body}` : `${subject}\n`, subject, body, runId: "", changedBy: "", approvedVia: "" };
   }
   if ("run" in by) {
     const subject = `learning: ${by.run}: merged`;
@@ -349,7 +381,6 @@ export function nextSnapshot(before: Snapshot | undefined, change: Omit<FolderCh
   const deletes = new Set(change?.deletes ?? []);
   const changed = [...new Set([...[...writes].filter(([path, { oid }]) => known.get(path) !== oid).map(([path]) => path), ...[...deletes].filter((path) => !writes.has(path))])].sort(byBytes);
   const touched = new Set(changed);
-  const runId = commit.runId;
 
   const written = writes.get(CORRECTIONS_FILE);
   const corrections = written ? { path: CORRECTIONS_FILE, oid: written.oid, bytes: written.bytes } : deletes.has(CORRECTIONS_FILE) ? undefined : before?.corrections;
@@ -358,7 +389,9 @@ export function nextSnapshot(before: Snapshot | undefined, change: Omit<FolderCh
 
   const list = before?.workflows ?? [];
   const hit = new Set(changed.map(folderOf).filter((name): name is string => name !== undefined));
-  const workflows = list.filter((item) => !hit.has(item.name)).map((item) => ({ ...item, order: item.order + 1 }));
+  // A Written-By line moves its workflow's writer whether or not the commit changes its files (writtenIn).
+  const named = new Set(writtenIn(commit));
+  const workflows = list.filter((item) => !hit.has(item.name)).map((item) => ({ ...item, order: item.order + 1, ...(named.has(item.name) ? { run: writerOf(commit, item.name) ?? null } : {}) }));
   for (const name of hit) {
     const old = list.find((item) => item.name === name);
     const prefix = `${WORKFLOWS_DIR}/${name}/`;
@@ -372,10 +405,11 @@ export function nextSnapshot(before: Snapshot | undefined, change: Omit<FolderCh
     const keyText = writes.get(key)?.text;
     // A link the change writes a file over, or deletes, is a link no more.
     const links = (old?.links ?? []).filter((path) => !writes.has(path) && !deletes.has(path));
+    const writer = touched.has(viewFile(name)) || named.has(name) ? writerOf(commit, name) : undefined;
     const item = learnedItem(name, [...files.values()], links, (path) => writes.get(path)?.text, {
       order: 0,
       history: touched.has(key) ? foldNewer(old?.history, commit) : (old?.history ?? { at: commit.at }),
-      run: runId && touched.has(viewFile(name)) ? runId : (old?.run ?? null),
+      run: writer !== undefined ? writer : (old?.run ?? null),
     }, keyText === undefined && old ? { description: old.description, status: old.status, ...(old.retired_from ? { retired_from: old.retired_from } : {}) } : undefined);
     if (item) workflows.push(item);
   }
@@ -487,6 +521,14 @@ function keep(oid: string, text: string): void {
 export function forgetBodies(): void {
   bodies.clear();
   bodyBytes = 0;
+}
+
+/** Blob `oid`'s body forgotten, when it was kept: a text a purge took off main is held in this process no longer. */
+export function forgetBody(oid: string): void {
+  const held = bodies.get(oid);
+  if (held === undefined) return;
+  bodies.delete(oid);
+  bodyBytes -= held.length;
 }
 
 /** File `path`'s bytes, which must be blob `oid` (else Mismatch): through the file API, never git. */
@@ -675,7 +717,7 @@ export class FolderTooLarge extends Error {
 export type Committed =
   | { landed: true; main: string; snapshot: Snapshot }
   | { stale: true; main: string | undefined }
-  | { refused: { absent: string[]; same: string[] } }
+  | { refused: { absent: string[]; same: string[]; seed?: string } }
   | { unaligned: true; main: string }
   | { merged: string };
 
@@ -688,12 +730,14 @@ export type Committed =
 export async function commitChange(ws: Workspace, base: Snapshot | undefined, change: FolderChange | undefined): Promise<Committed> {
   const seconds = Math.floor(Date.now() / 1000);
   const { snapshot, changed } = nextSnapshot(base, change, seconds);
-  // A change that changes nothing on main is no commit: main stays, and nothing is run.
-  if (base && change && !changed.length) return { landed: true, main: base.main, snapshot: base };
+  // A change that changes nothing on main is no commit: main stays, and nothing is run. One that moves a workflow's
+  // writer is a commit, its files the same (a purge's put-back of main's own bytes: writtenIn).
+  const moves = snapshot.workflows.some((item) => base?.workflows.find((one) => one.name === item.name)?.run !== item.run);
+  if (base && change && !changed.length && !moves) return { landed: true, main: base.main, snapshot: base };
   const writes = change?.writes ?? [];
   for (const { path } of writes) checkPath(path);
   for (const path of [...(change?.deletes ?? []), ...(change?.absent ?? []), ...(change?.same ?? []).map(({ path }) => path)]) checkPath(path);
-  for (const { commit } of change?.same ?? []) if (!/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(commit)) throw new Error(`${JSON.stringify(commit)} is not a commit`);
+  for (const commit of [...(change?.same ?? []).map(({ commit }) => commit), ...(change?.seed !== undefined ? [change.seed] : [])]) if (!/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(commit)) throw new Error(`${JSON.stringify(commit)} is not a commit`);
   const ref = `refs/agentrun/import-${randomBytes(8).toString("hex")}`;
   const run = change && "run" in change.by ? runDiffKey(change.by.run, change.by.round) : undefined;
   const header = [
@@ -702,6 +746,8 @@ export async function commitChange(ws: Workspace, base: Snapshot | undefined, ch
     ...(run ? changed.map((path) => `path ${path}`) : []),
     ...(change?.absent ?? []).map((path) => `absent ${path}`),
     ...(change?.same ?? []).map(({ commit, path }) => `same ${commit} ${path}`),
+    ...(change?.seed !== undefined ? [`seed ${change.seed}`] : []),
+    ...(change?.purged !== undefined ? [`purged ${change.purged}`] : []),
   ];
   const stream = importStream(ref, base?.main, writes, change?.deletes ?? [], messageOf(change?.by).message, seconds);
   const args = base ? ["commit", base.main, ...(run ? [run] : [])] : ["init"];
@@ -713,10 +759,11 @@ export async function commitChange(ws: Workspace, base: Snapshot | undefined, ch
   if (result.code === 3) return { stale: true, main: said || undefined };
   if (result.code === 4) {
     const lines = said.split("\n");
-    return { refused: { absent: lines.filter((line) => line.startsWith("absent ")).map((line) => line.slice(7)), same: lines.filter((line) => line.startsWith("same ")).map((line) => line.slice(5)) } };
+    const seed = lines.find((line) => line.startsWith("seed "))?.slice(5);
+    return { refused: { absent: lines.filter((line) => line.startsWith("absent ")).map((line) => line.slice(7)), same: lines.filter((line) => line.startsWith("same ")).map((line) => line.slice(5)), ...(seed !== undefined ? { seed } : {}) } };
   }
   if (result.code === 5 && /^[0-9a-f]{40,64}$/.test(said)) return { unaligned: true, main: said };
-  if (result.code === 6 && run && /^[0-9a-f]{40,64}$/.test(said)) return { merged: said };
+  if (result.code === 6 && (run || change?.purged !== undefined) && /^[0-9a-f]{40,64}$/.test(said)) return { merged: said };
   throw failed(args[0]!, result);
 }
 
@@ -728,16 +775,24 @@ export async function snapshotAt(ws: Workspace, commit: string): Promise<Snapsho
   return (await folderAt(ws, commit))?.snapshot;
 }
 
-/** `commit` as main would have it (snapshotAt) with the blobs its tree holds, by oid, as git gave them: one read-only
- *  exec. Undefined when the folder has no such commit. */
-export async function folderAt(ws: Workspace, commit: string): Promise<{ snapshot: Snapshot; blobs: ReadonlyMap<string, Buffer> } | undefined> {
+/** A commit that made someone a workflow's writer (writerOf), that writer, and the commit before it (none for the first). */
+export type WriterChange = { commit: string; before: string | undefined; run: string | null };
+
+/** `commit` as main would have it (snapshotAt) with the blobs its tree holds, by oid, as git gave them, and each
+ *  workflow's writers over its first-parent history, newest first (`writers`): one read-only exec. Undefined when the
+ *  folder has no such commit. */
+export async function folderAt(ws: Workspace, commit: string): Promise<{ snapshot: Snapshot; blobs: ReadonlyMap<string, Buffer>; writers: (name: string) => WriterChange[] } | undefined> {
   if (!/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(commit)) throw new Error(`${JSON.stringify(commit)} is not a commit`);
   const read = await runScript(ws, ["read", commit]);
   if (read.code === 1) return undefined;
   if (read.code !== 0) throw failed("read", read);
   const parsed = parseRead(read.stdout);
   const snapshot = snapshotOfRead(parsed);
-  return snapshot ? { snapshot, blobs: parsed.blobs } : undefined;
+  const writers = (name: string) => parsed.records.flatMap(({ commit: info, sha, files }, i) => {
+    const run = files.includes(viewFile(name)) || writtenIn(info).includes(name) ? writerOf(info, name) : undefined;
+    return run === undefined ? [] : [{ commit: sha, before: parsed.records[i + 1]?.sha, run }];
+  });
+  return snapshot ? { snapshot, blobs: parsed.blobs, writers } : undefined;
 }
 
 /** The texts `commit` holds at `paths` (each a plain path, checkPath), each read alone with one read-only exec (the
@@ -765,6 +820,16 @@ export async function textsAt(ws: Workspace, commit: string, paths: readonly str
     at += size + 1;
   }
   return out;
+}
+
+/** Whether the folder holds `commit`: one read-only exec of the script's show with no path, which reads nothing but
+ *  that. False once a reset of the agent's learning removed it (or the folder is not a repository). */
+export async function holdsCommit(ws: Workspace, commit: string): Promise<boolean> {
+  if (!/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(commit)) throw new Error(`${JSON.stringify(commit)} is not a commit`);
+  const result = await runScript(ws, ["show", commit]);
+  if (result.code === 1) return false;
+  if (result.code !== 0) throw failed("show", result);
+  return true;
 }
 
 export async function learningRepair(ws: Workspace): Promise<Snapshot | undefined> {
@@ -803,11 +868,14 @@ export async function learningInit(ws: Workspace): Promise<string> {
 export class FolderRefused extends Error {
   readonly absent: string[];
   readonly same: string[];
-  constructor(refused: { absent: string[]; same: string[] }) {
-    super(`the learning folder's main refused the write: ${[...refused.absent.map((path) => `${path} is there`), ...refused.same.map((path) => `${path} changed`)].join(", ")}`);
+  /** A run's merge whose seed (FolderChange.seed) the folder no longer holds: its agent's learning was reset. */
+  readonly seed: string | undefined;
+  constructor(refused: { absent: string[]; same: string[]; seed?: string }) {
+    super(`the learning folder's main refused the write: ${[...(refused.seed !== undefined ? [`the run's seed ${refused.seed} is not in the folder`] : []), ...refused.absent.map((path) => `${path} is there`), ...refused.same.map((path) => `${path} changed`)].join(", ")}`);
     this.name = "FolderRefused";
     this.absent = refused.absent;
     this.same = refused.same;
+    this.seed = refused.seed;
   }
 }
 

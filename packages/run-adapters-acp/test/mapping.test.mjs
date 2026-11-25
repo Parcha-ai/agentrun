@@ -8,7 +8,8 @@ import { join } from 'node:path';
 import { test as nodeTest } from 'node:test';
 import { memorySessionStore } from '@parcha/agentrun-kernel/testing';
 import { ACP_CODES, acpAdapter } from '@parcha/agentrun-harness-acp';
-import { fakeEvents, fakeRecipe, openSession, scratch, streamRecords, tool, toolEffects, until } from './helpers.mjs';
+import { stateFiles } from '../dist/state.js';
+import { fakeEvents, fakeRecipe, openSession, resolvedRecords, scratch, streamRecords, tool, toolEffects, until } from './helpers.mjs';
 
 const test = (name, fn) => nodeTest(name, { timeout: 60_000 }, fn);
 const texts = (events) => events.filter((e) => e.type === 'text').map((e) => e.delta).join('');
@@ -93,7 +94,7 @@ test("an agent's own tool asks the host's gate; a deny answers reject_once and t
   assert.deepEqual(fakeEvents(recipe).filter((e) => e.type === 'permission').map((e) => e.kind), ['reject_once']);
   assert.throws(() => readFileSync(nativeLog, 'utf8'), /ENOENT/, 'never ran');
   const journaled = await streamRecords(store, 'acp.permission');
-  assert.deepEqual(journaled.map((r) => [r.type, r.callId === asked[0].callId]), [['asked', true], ['answered', true]]);
+  assert.deepEqual(journaled.map((r) => [r.type, r.callId === asked[0].callId]), [['asked', true], ['answered', true], ['given', true]]);
   assert.equal(journaled[1].answer, 'deny');
 });
 
@@ -258,7 +259,7 @@ test("the agent's session store is mirrored into the records at turn end, creden
   const { session, store } = await openSession(t, recipe);
   await session.send('go');
   await session.turnEnd();
-  const mirrored = await streamRecords(store, 'acp.state');
-  assert.ok(mirrored.some((r) => r.path.startsWith('.fake-acp/sessions/') && r.data), JSON.stringify(mirrored.map((r) => r.path)));
-  assert.equal(mirrored.some((r) => /token/.test(r.path)), false, 'a credential file is never mirrored');
+  const mirrored = [...stateFiles(await resolvedRecords(store, 'acp.state'))];
+  assert.ok(mirrored.some(([path, bytes]) => path.startsWith('.fake-acp/sessions/') && bytes.length > 0), JSON.stringify(mirrored.map(([path]) => path)));
+  assert.equal(mirrored.some(([path]) => /token/.test(path)), false, 'a credential file is never mirrored');
 });

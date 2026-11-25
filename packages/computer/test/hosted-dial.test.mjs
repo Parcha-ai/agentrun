@@ -340,6 +340,97 @@ test("a machine that never dials is deleted, its token revoked, and create fails
 	assert.deepEqual(fake.live(), [], "the machine was deleted");
 });
 
+test("a machine that never dials: the timeout carries the host's dialLog, its last 10 lines within 800 characters, or that agentrun-dial never started; a dialLog that fails, or none, keeps the message", { timeout: 30_000 }, async () => {
+	const DIALED = "did not dial ws://127.0.0.1:8080/v2/computers/attach within 0.05 s: the machine must reach that address";
+	const SAID = "; agentrun-dial said: ";
+	// A fake that never dials: create gives up at createMs, so these wait 50 ms each.
+	const QUICK = { timeouts: { ...TIMEOUTS, createMs: 50 } };
+	const lines = Array.from({ length: 15 }, (_, at) => `line ${at + 1}`);
+	const said = setup({ dials: false }, QUICK);
+	const asked = [];
+	said.fake.host.dialLog = async (id) => {
+		asked.push(id);
+		return `${lines.join("\n")}\n\n`;
+	};
+	const failed = await create(said.provider);
+	assert.equal(failed.error?.code, "timeout");
+	assert.ok(failed.error.message.includes(DIALED), failed.error.message);
+	assert.ok(failed.error.message.endsWith(`${SAID}${lines.slice(5).join(" | ")}`), failed.error.message);
+	assert.equal(asked.length, 1, "asked once, at the timeout");
+	assert.equal(typeof asked[0], "string");
+	assert.deepEqual(said.fake.live(), [], "the machine was deleted");
+
+	const long = setup({ dials: false }, QUICK);
+	long.fake.host.dialLog = async () => `start\n${"x".repeat(2_000)}y\n`;
+	const cut = await create(long.provider);
+	const tail = cut.error.message.slice(cut.error.message.indexOf(SAID) + SAID.length);
+	assert.equal(tail.length, 800, "the last 800 characters");
+	assert.ok(tail.endsWith("xy"));
+
+	// A machine token agentrun-dial wrote, every time, is replaced by the adapter: no host has to remember it.
+	const TOKEN = `art_fake-test-key-not-a-secret-${"0".repeat(16)}`;
+	assert.match(TOKEN, new RegExp(`^${MACHINE_TOKEN_SOURCE}$`));
+	const leaky = setup({ dials: false }, QUICK);
+	leaky.fake.host.dialLog = async () => `sent ${TOKEN}\n${TOKEN} was refused\n`;
+	const redacted = await create(leaky.provider);
+	assert.ok(redacted.error.message.endsWith(`${SAID}sent <token> | <token> was refused`), redacted.error.message);
+	// A longer word whose tail reads like a token is no token: it is left whole.
+	const WORD = `restart_${"a".repeat(43)}`;
+	const wordy = setup({ dials: false }, QUICK);
+	wordy.fake.host.dialLog = async () => `${WORD} AGENTRUN_ATTACH_TOKEN=${TOKEN}\n`;
+	const kept = await create(wordy.provider);
+	assert.ok(kept.error.message.endsWith(`${SAID}${WORD} AGENTRUN_ATTACH_TOKEN=<token>`), kept.error.message);
+
+	const never = setup({ dials: false }, QUICK);
+	never.fake.host.dialLog = async () => undefined;
+	const silent = await create(never.provider);
+	assert.equal(silent.error?.code, "timeout");
+	assert.ok(silent.error.message.endsWith("; agentrun-dial never started"), silent.error.message);
+
+	// A cancel while the log read stalls ends the wait at once: the read never holds create's cleanup back. The read's
+	// bound is ten minutes, so a cancel that failed to cut it would hang into the test's own 30 s bound and fail there.
+	const stalled = setup({ dials: false }, { timeouts: { ...QUICK.timeouts, requestMs: 600_000 } });
+	const cancel = new AbortController();
+	stalled.fake.host.dialLog = () => {
+		queueMicrotask(() => cancel.abort());
+		return new Promise(() => {});
+	};
+	const cancelled = await stalled.provider.create(SPEC, { requestId: `dial-${++requests}`, signal: cancel.signal });
+	assert.equal(cancelled.ok, false);
+	assert.doesNotMatch(cancelled.error.message, /agentrun-dial said|never started/);
+
+	for (const dialLog of [async () => Promise.reject(new Error("the toolbox is down")), undefined]) {
+		const plain = setup({ dials: false }, QUICK);
+		if (dialLog) plain.fake.host.dialLog = dialLog;
+		const kept = await create(plain.provider);
+		assert.equal(kept.error?.code, "timeout", "a log read that fails never changes the code");
+		assert.ok(kept.error.message.includes(DIALED), kept.error.message);
+		assert.doesNotMatch(kept.error.message, /agentrun-dial said|never started|the toolbox is down/);
+		assert.deepEqual(plain.fake.live(), []);
+	}
+});
+
+test("attachEgress: the machine is booted with AGENTRUN_ATTACH_EGRESS beside the five names, one that never dials fails naming the relay too, and a malformed one is refused at construction", async () => {
+	const { fake, provider } = setup({}, { attachEgress: "192.0.2.40:18443" });
+	const ref = made(await create(provider));
+	const { env } = fake.calls.find(([what]) => what === "create")[1].boot;
+	assert.deepEqual(Object.keys(env).sort(), ["AGENTRUN_ATTACH_EGRESS", "AGENTRUN_ATTACH_TOKEN", "AGENTRUN_ATTACH_URL", "AGENTRUN_DAEMON_SHA256", "AGENTRUN_DAEMON_URL", "AGENTRUN_INIT_ARGS"]);
+	assert.equal(env.AGENTRUN_ATTACH_EGRESS, "192.0.2.40:18443");
+	assert.equal(env.AGENTRUN_ATTACH_URL, "ws://127.0.0.1:8080/v2/computers/attach", "the address dialed by name is the public one still");
+	made(await provider.release(ref, "delete"));
+
+	const silent = setup({ dials: false }, { attachEgress: "192.0.2.40:18443" });
+	const failed = await create(silent.provider);
+	assert.equal(failed.error?.code, "timeout");
+	assert.match(failed.error.message, /did not dial ws:\/\/127\.0\.0\.1:8080\/v2\/computers\/attach through 192\.0\.2\.40:18443 within 1 s/);
+	assert.deepEqual(silent.fake.live(), []);
+
+	const empty = setup({}, { attachEgress: "" });
+	made(await create(empty.provider));
+	assert.equal("AGENTRUN_ATTACH_EGRESS" in empty.fake.calls.find(([what]) => what === "create")[1].boot.env, false, "an empty egress is none");
+	assert.throws(() => setup({}, { attachEgress: "relay.example:18443" }), /the attach egress is <IPv4 relay>:<port>, such as 192\.0\.2\.40:18443, a port from 1 to 65535; not "relay\.example:18443"/);
+});
+
 test("a machine whose daemon's sha256 is not the server's never dials, and create fails", async () => {
 	const { fake, provider } = setup({ daemon: Buffer.from("another build") });
 	const failed = await create(provider);
@@ -364,7 +455,7 @@ test("the constructor refuses a dial host with exec or upload", () => {
 	assert.throws(() => new HostedProvider({ ...host, upload: async () => {} }, { daemonPath: DAEMON_PATH }), /has no exec and no upload/);
 });
 
-test("a dial desktop boots init with DISPLAY, starts the X server and the window manager over the socket it dialed, and declares the screen", async () => {
+test("a dial desktop boots init with DISPLAY and --window-manager, starts the X server over the socket it dialed, waits until computerd's window manager runs, and declares the screen", async () => {
 	const { fake, provider, hub } = setup({ facts: { windowManager: true } }, { kind: "desktop" });
 	const ref = made(await create(provider));
 	const [, request] = fake.calls.find(([what]) => what === "create");
@@ -372,15 +463,18 @@ test("a dial desktop boots init with DISPLAY, starts the X server and the window
 	assert.equal(fake.machines.get(ref.id).init.display, ":0", "init started with the display");
 	assert.deepEqual(fake.events.filter(({ what }) => what.startsWith("run ")), [], "nothing was run in the machine through the host");
 	assert.deepEqual(fake.uploads, [], "and nothing uploaded");
-	// The X server, then the window manager, started by computerd as any program, over the socket the machine dialed.
+	assert.match(request.boot.env.AGENTRUN_INIT_ARGS, / --window-manager$/, "init is asked to start the window manager");
+	assert.equal(fake.machines.get(ref.id).init.windowManager, true);
+	// The X server alone, started by computerd as any program, over the socket the machine dialed: computerd starts the
+	// window manager itself.
 	assert.deepEqual(
 		fake.machines.get(ref.id).processes.map(({ argv }) => argv[0]),
-		["Xvfb", "unshare"],
+		["Xvfb"],
 	);
-	assert.ok(fake.machines.get(ref.id).processes[1].argv.some((arg) => arg.includes("xfwm4")));
 	const connection = made(await provider.connect(ref));
 	assert.equal(connection.hello.kind, "desktop");
 	assert.ok(connection.hello.groups.includes("screen"));
+	assert.deepEqual(connection.hello.windowManager, { state: "running" });
 	await connection.close();
 	assert.equal(hub.online(ref.name), true);
 	made(await provider.release(ref, "delete"));

@@ -17,12 +17,14 @@ import { routeOf } from "./model-route.js";
 import { heldRedactor, processSecretRedactor } from "./redact.js";
 import { Channel } from "./run-channel.js";
 import { registerRunErrors } from "./run-errors.js";
+import { remoteSaveSlots } from "./save-slots.js";
 import { runEnv } from "./main.js";
 import { carriedLedger } from "../paid-calls.js";
 import { heldHands, type ComputerHold, type HoldAsk, type HoldEvent, type HoldState } from "../workspace/computer-hold.js";
 import type { ClaimComputer } from "../workspace/computer-for-claim.js";
 import type { AdapterSpecDeps } from "./adapter-run-spec.js";
 import type { JournalReads, Store } from "../store/store.js";
+import { flushTraces } from "../otel/tracer.js";
 
 /** How often the run's process reads its loop's held state (LoopDeps.live) and posts it to its runner when it moved: the
  *  runner's live ticker reads the newest it was posted. */
@@ -40,14 +42,16 @@ interface ChildInit {
   readonly githubApi?: string;
   readonly githubWeb?: string;
   readonly githubMcpOrigin?: string;
+  readonly composioMcpOrigin?: string;
 }
 
 registerRunErrors();
 
 const socket = new Socket({ fd: 4, readable: true, writable: true });
 const channel = new Channel(socket, {
-  // The runner closed the channel (the loop's end answered) or is gone: nothing of the run's goes on.
-  onClose: () => void setImmediate(() => process.exit(0)),
+  // The runner closed the channel (the loop's end answered) or is gone: nothing of the run's goes on, but its trace's last
+  // spans are sent first (flushTraces: at most FLUSH_MS, at once when tracing is off).
+  onClose: () => void setImmediate(() => void flushTraces().finally(() => process.exit(0))),
   // Each call carries the ledger of the tool call it is made in: what the runner does for it (an MCP tool's call, a
   // computer's) books on the run's one ledger, as it would in the run's own process.
   context: carriedLedger,
@@ -181,6 +185,7 @@ function childDeps(init: ChildInit, store: Store, journal: Journal, held: Held):
     const recordings = given.recordings as { say?: (words: string) => void } | undefined;
     const ask: HeldComputerAsk = {
       hadComputer: given.hadComputer as () => Promise<boolean>,
+      ...(typeof given.turnedOff === "string" ? { turnedOff: given.turnedOff } : {}),
       ...(given.signal instanceof AbortSignal ? { signal: given.signal } : {}),
       ...(recordings?.say ? { say: recordings.say } : {}),
       ...(typeof given.onImageWait === "function" ? { onImageWait: given.onImageWait as HeldComputerAsk["onImageWait"] } : {}),
@@ -201,9 +206,12 @@ function childDeps(init: ChildInit, store: Store, journal: Journal, held: Held):
     computerForClaim,
     computerDeps: {} as AdapterSpecDeps["computerDeps"],
     installForClaim: heldInstall as AdapterSpecDeps["installForClaim"],
+    // web_save's download slots are the runner's, shared by all its runs (save-slots.ts).
+    saveSlots: remoteSaveSlots(channel),
     ...(init.githubApi ? { githubApi: init.githubApi } : {}),
     ...(init.githubWeb ? { githubWeb: init.githubWeb } : {}),
     ...(init.githubMcpOrigin ? { githubMcpOrigin: init.githubMcpOrigin } : {}),
+    ...(init.composioMcpOrigin ? { composioMcpOrigin: init.composioMcpOrigin } : {}),
     ...(init.mcpLoopback ? { mcpLoopback: true, mcpOwn: init.mcpOwn ?? [] } : {}),
   };
 }
@@ -235,7 +243,8 @@ channel.expose("loop", async (method, args) => {
         live: (reader) => void (read = reader),
         redact: heldRedactor(processSecretRedactor()),
       };
-      loop = createDispatchLoop({ launchOf: (runId) => store.runs.launch(runId), resolve: resolveRunnerLoop(deps) })(loopDeps);
+      // Its runner counted the harness's key rows before it made this process (staysInRunner): never again here.
+      loop = createDispatchLoop({ launchOf: (runId) => store.runs.launch(runId), resolve: resolveRunnerLoop(deps, { keysCounted: true }) })(loopDeps);
       made(loop);
       // The loop's held state and whether a plain stop keeps its computer, posted when either moved.
       let last = "";

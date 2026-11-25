@@ -47,7 +47,11 @@ import { AgentRun } from "@parcha/agentrun-client";
 const client = new AgentRun({ baseUrl: "https://agentrun.example.com/v2", apiKey: process.env.AGENTRUN_API_KEY });
 ```
 
-`baseUrl` defaults to `AGENTRUN_BASE_URL` and `apiKey` to `AGENTRUN_API_KEY`. The base URL must be http or https with no
+`baseUrl` defaults to `AGENTRUN_BASE_URL` and `apiKey` to `AGENTRUN_API_KEY`, else `AGENTRUN_TOKEN`. `AGENTRUN_TOKEN` is the
+name the local server gives its token, so the client sends it only to a server on this machine (`localhost`, `127.0.0.1` or
+`[::1]`, as the CLI); any other address takes `AGENTRUN_API_KEY` or `apiKey`, and with neither is refused. The base URL is the
+server's address with or without `/v2`: as the CLI takes it, `/v2` is added when its path holds no `v2` segment, a path
+prefix kept. It must be http or https with no
 query, fragment, user or password, and the key must be a valid header value; both are checked here, before any request. The
 client reads no file: finding the server started on this machine (its data directory and the address it records there) is
 the CLI's job (`npx @parcha/agentrun`), not this package's. Other options: `timeoutMs` for one try of a request (default
@@ -107,6 +111,18 @@ checkout; these new exports are not a guarantee about the current npm release.
 | --- | --- |
 | Claude Agent SDK `query` and custom tools | [Preserve the native query, add checked learning](../../docs/tutorials/claude-sdk-learning.md) |
 | Codex SDK client, project and tools | [Preserve native threads, add checked learning](../../docs/tutorials/codex-sdk-learning.md) |
+
+For OpenClaw, Capy or another platform that executes its own agents, use `BackendLearningClient` from
+`@parcha/agentrun-client/learning` with `{runtime: "external", platform, input, instructions}`. The required platform
+label is 1–80 Unicode characters without surrounding whitespace, controls or unpaired surrogates. These sources
+report runs and receive owner corrections; they cannot supply a workflow bridge. See [external platform reporting](../../docs/tutorials/platform-sdk-runs.md).
+`BackendLearningSource` accepts either the existing, extensible `BackendLearningStart` interface or an `ExternalLearningStart`.
+
+The generated `StartSdkRunBody` type is now a union: external starts require `platform` and exclude workflow fields.
+If your code extends this generated type with an interface, use a type intersection such as
+`type JobStart = StartSdkRunBody & { jobId: string }` instead. To refer to SDK workflow fields, first select
+`Extract<StartSdkRunBody, { runtime: "claude-agent-sdk" | "codex-sdk" | "eve" }>` or narrow a value by its `runtime`.
+The higher-level `BackendLearningStart` remains an interface that applications can extend.
 
 Your backend still starts and cancels tasks. The wrapper records original source policy/input, assistant text,
 tool names/status and usage. With an explicit workflow bridge, bounded arguments/results for its registered tools also supply compilation evidence; other raw tool payloads and SDK credentials are not sent. AgentRun supplies the

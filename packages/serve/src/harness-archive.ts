@@ -3,24 +3,28 @@
 // platform: its URL and sha256, and the sha256 of the binary it unpacks to), and it lands whole or not at all, as a
 // first-use install does (harness-install.ts):
 //   - the archive is downloaded with node's fetch into a fresh folder beside `<data>/harnesses/<harness>`, its sha256
-//     taken as it arrives, and refused unless it is the pin's before anything reads it;
+//     (or the sha512 a release is pinned by, as Google's agy CLI manifest lists it) taken as it arrives, and refused
+//     unless it is the pin's before anything reads it;
 //   - the verified archive is unpacked there by the system's tar (`tar -xjf` for Goose's tar.bz2, `-xzf` for Cursor's
 //     tar.gz; a fixed argument list, no shell, an environment of PATH alone): node has no bzip2 of its own, and the
-//     repository carries none;
+//     repository carries none. A zip (Google Antigravity's) is unpacked by node itself (harness-zip.ts), no tool needed;
 //   - the binary's sha256 is checked there against the pin, and where the pin holds one the digest of every file beside
-//     it (Cursor's launcher runs its own node on a hundred files of code), and only then is the folder renamed into place
-//     and made read-only. What was there before goes aside first, then away;
+//     it (Cursor's launcher runs its own node on a hundred files of code; Antigravity's server runs a sidecar), and only
+//     then is the folder renamed into place and made read-only. A recipe's release may pin neither: the first tree
+//     unpacked from its verified archive (the binary among it) is recorded, and a later install that differs is refused. What was there
+//     before goes aside first, then away;
 //   - a crash part way leaves that fresh folder (its name the sweep's) and never a half install: the next install removes it.
 // One install at a time on a data directory, under the hold first-use installs take (takeHold). The installer is handed no
 // key of the server's: fetch carries no header of ours, and tar's environment is PATH alone.
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { createReadStream, createWriteStream, existsSync } from "node:fs";
-import { lstat, mkdir, mkdtemp, rename } from "node:fs/promises";
-import { dirname, join, relative, resolve, sep } from "node:path";
+import { lstat, mkdir, mkdtemp, readdir, realpath, rename } from "node:fs/promises";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { leftoverPrefix, releaseHold, removeLeftover, sweepLeftovers, takeHold, writable } from "./harness-install.js";
+import { unzipInto } from "./harness-zip.js";
 
 /** The codes an archive install's failures carry (ArchiveInstallFailed). */
 export const ARCHIVE_CODES = Object.freeze({
@@ -28,7 +32,7 @@ export const ARCHIVE_CODES = Object.freeze({
   platform: "HARNESS_PLATFORM_UNSUPPORTED",
   /** The archive could not be downloaded: the network, a status other than 200, a size past the limit. */
   download: "HARNESS_DOWNLOAD_FAILED",
-  /** The archive downloaded is not the pin's: its sha256 differs. */
+  /** The archive downloaded is not the pin's: its sha256 (or sha512) differs. */
   archive: "HARNESS_ARCHIVE_MISMATCH",
   /** tar could not unpack the verified archive, or it holds no binary at the pin's path. */
   unpack: "HARNESS_UNPACK_FAILED",
@@ -39,19 +43,22 @@ export const ARCHIVE_CODES = Object.freeze({
 } as const);
 export type ArchiveCode = (typeof ARCHIVE_CODES)[keyof typeof ARCHIVE_CODES];
 
-/** One platform's release, as a pin holds it (the ACP registry's: acp's AcpArchivePin). `treeSha256`: the digest of
- *  every file it unpacks to (acp's treeDigest), for a binary that is a launcher of the code beside it (Cursor's). */
-export type ArchiveRelease = { readonly url: string; readonly format: string; readonly sha256: string; readonly cmd: string; readonly binarySha256?: string; readonly treeSha256?: string };
+/** One platform's release, as a pin holds it (the ACP registry's: acp's AcpArchivePin). The archive is pinned by one
+ *  digest: its `sha256`, else its `sha512` (Google's agy CLI manifest lists that one alone); a recipe's loader takes
+ *  exactly one. `treeSha256`: the digest of every file it unpacks to (acp's treeDigest), for a binary that is a launcher
+ *  of the code beside it (Cursor's). */
+export type ArchiveRelease = { readonly url: string; readonly format: string; readonly sha256?: string; readonly sha512?: string; readonly cmd: string; readonly binarySha256?: string; readonly treeSha256?: string };
 /** A harness installed from an archive: its id and name, its pin, and the command that installs it (said on every failure).
  *  `tree`: how a tree's digest is taken (acp's treeDigest), needed where a release pins one. */
 export type ArchiveHarness = { readonly id: string; readonly label: string; readonly retry: string; readonly pin: { readonly version: string; readonly archives: Readonly<Partial<Record<string, ArchiveRelease>>> }; readonly tree?: (root: string) => Promise<string> };
 
-/** How tar unpacks each format this installer takes: node has neither bzip2 nor a tar of its own. */
-const TAR_FLAG: Readonly<Record<ArchiveFormat, string>> = Object.freeze({ "tar.bz2": "-xjf", "tar.gz": "-xzf" });
+/** How each format this installer takes is unpacked: tar's flag (node has neither bzip2 nor a tar of its own), or node's
+ *  own zip reader. */
+const UNPACK: Readonly<Record<ArchiveFormat, string>> = Object.freeze({ "tar.bz2": "-xjf", "tar.gz": "-xzf", zip: "node" });
 /** An archive format this installer unpacks. */
-export type ArchiveFormat = "tar.bz2" | "tar.gz";
+export type ArchiveFormat = "tar.bz2" | "tar.gz" | "zip";
 /** The formats this installer unpacks, the one list a recipe's loader checks a release against (harness-recipe.ts). */
-export const ARCHIVE_FORMATS: readonly ArchiveFormat[] = Object.freeze(Object.keys(TAR_FLAG) as ArchiveFormat[]);
+export const ARCHIVE_FORMATS: readonly ArchiveFormat[] = Object.freeze(Object.keys(UNPACK) as ArchiveFormat[]);
 
 /** A failed install, by its code (ARCHIVE_CODES): its message says why, and the command that tries again. */
 export class ArchiveInstallFailed extends Error {
@@ -87,6 +94,33 @@ function binaryUnder(root: string, cmd: string): string | undefined {
   return inside && inside !== ".." && !inside.startsWith(`..${sep}`) ? path : undefined;
 }
 
+/** The first link under `root` (its path from `root`) that leads outside `root`, or to nothing; undefined when none does.
+ *  The tree digest holds a link by its words, never the bytes it leads to, so a file reached through one (the binary
+ *  behind a linked folder, code a launcher loads from `lib` linked elsewhere) would be checked by nothing. Each link is
+ *  resolved by the filesystem (realpath), as opening it would be, never by its words alone: in a chain such as
+ *  `sub/up -> ..` and `sub/code -> up/../outside`, the `..` is taken after the link before it is followed, so the words
+ *  read inside while the path leads out. A link that leads to nothing is refused too, since what its last step names
+ *  could be made outside later. */
+export async function linkOutOf(root: string): Promise<string | undefined> {
+  const base = await realpath(resolve(root));
+  const within = (path: string) => path === base || path.startsWith(`${base}${sep}`);
+  const walk = async (dir: string): Promise<string | undefined> => {
+    for (const name of await readdir(dir)) {
+      const path = join(dir, name);
+      const entry = await lstat(path);
+      if (entry.isSymbolicLink()) {
+        const target = await realpath(path).catch(() => undefined);
+        if (target === undefined || !within(target)) return relative(base, path);
+      } else if (entry.isDirectory()) {
+        const found = await walk(path);
+        if (found !== undefined) return found;
+      }
+    }
+    return undefined;
+  };
+  return walk(base);
+}
+
 export interface ArchiveInstallOptions {
   /** The platform, as the registry names it. Default this host's (archivePlatform). */
   platform?: string;
@@ -100,10 +134,12 @@ export interface ArchiveInstallOptions {
   maxBytes?: number;
   /** Hears each step once it holds: `downloaded` (and its digest checked), `unpacked`, `verified` (the binary's digest). */
   onStep?: (step: "downloaded" | "unpacked" | "verified") => void | Promise<void>;
-  /** For a release whose binary has no sha256 pinned (a recipe's, where the registry lists only the archive's): the record
-   *  of the first one unpacked from its verified archive. With none recorded, this install records its binary's; with one,
-   *  a binary that differs is refused (HARNESS_BINARY_MISMATCH). Without it, such a release is refused. */
-  binaryRecord?: { read(): string | undefined; write(sha256: string): void };
+  /** For a release with no tree digest pinned (a recipe's, where the registry lists only the archive's): the record of the
+   *  first tree (every file it unpacks to, the binary among them: harness.tree's digest) unpacked from its verified
+   *  archive. With none recorded, this install records its tree's; with one, a tree that differs (a binary or a sidecar)
+   *  is refused (HARNESS_BINARY_MISMATCH). Needs harness.tree. A release that pins neither its binary nor its tree, with
+   *  no record, is refused. */
+  treeRecord?: { read(): string | undefined; write(sha256: string): void };
 }
 
 /** Installs `harness` into `dir` (`<data>/harnesses/<id>`) from its pin's archive for this platform: downloaded, checked,
@@ -116,21 +152,31 @@ export async function installArchive(harness: ArchiveHarness, dir: string, optio
   const platform = options.platform ?? archivePlatform();
   const release = platform ? harness.pin.archives[platform] : undefined;
   if (!platform || !release) throw fail(ARCHIVE_CODES.platform, `${named} has no release pinned for ${platform ?? `${process.platform}-${process.arch}`}`);
-  if (!release.binarySha256 && !options.binaryRecord) throw fail(ARCHIVE_CODES.platform, `${named}'s binary on ${platform} has no sha256 pinned, so what its archive unpacks to cannot be checked`);
-  const flag = (TAR_FLAG as Readonly<Record<string, string>>)[release.format];
-  if (!flag || !Object.hasOwn(TAR_FLAG, release.format)) throw fail(ARCHIVE_CODES.platform, `${named}'s archive on ${platform} is ${release.format}, and this installer unpacks ${ARCHIVE_FORMATS.join(" and ")} alone`);
-  if (release.treeSha256 && !harness.tree) throw fail(ARCHIVE_CODES.platform, `${named}'s files on ${platform} are pinned by a tree digest, and this install was given no way to take one`);
+  // The archive's one digest, by the algorithm its pin names: sha256, else sha512.
+  const algorithm = release.sha256 !== undefined ? "sha256" : "sha512";
+  const want = release.sha256 ?? release.sha512;
+  if (!want) throw fail(ARCHIVE_CODES.platform, `${named}'s archive on ${platform} has no sha256 or sha512 pinned, so it cannot be checked`);
+  const flag = (UNPACK as Readonly<Record<string, string>>)[release.format];
+  if (!flag || !Object.hasOwn(UNPACK, release.format)) throw fail(ARCHIVE_CODES.platform, `${named}'s archive on ${platform} is ${release.format}, and this installer unpacks ${ARCHIVE_FORMATS.slice(0, -1).join(", ")} and ${ARCHIVE_FORMATS.at(-1)} alone`);
+  const treeRecord = release.treeSha256 ? undefined : options.treeRecord;
+  if (!release.binarySha256 && !release.treeSha256 && !treeRecord) throw fail(ARCHIVE_CODES.platform, `${named}'s binary on ${platform} has no sha256 pinned, so what its archive unpacks to cannot be checked`);
+  if ((release.treeSha256 || treeRecord) && !harness.tree) throw fail(ARCHIVE_CODES.platform, `${named}'s files on ${platform} are ${release.treeSha256 ? "pinned" : "recorded"} by a tree digest, and this install was given no way to take one`);
   const binary = binaryUnder(dir, release.cmd);
   if (!binary) throw fail(ARCHIVE_CODES.platform, `${named}'s pinned path ${release.cmd} is not inside its folder`);
-  // The pin's digest, else the first one recorded (none before the first install).
-  const pinned = release.binarySha256 ?? options.binaryRecord?.read();
-  /** Whether the pinned binary is in place: a file whose sha256 is the pin's, in a folder whose tree is the pin's where
-   *  it pins one. */
+  // The pin's digests, else the first tree recorded (none before the first install).
+  const pinned = release.binarySha256;
+  const pinnedTree = release.treeSha256 ?? treeRecord?.read();
+  /** Whether the pinned install is in place: a binary there, its sha256 the pin's where it pins one, in a folder whose
+   *  tree is the pin's (or the one recorded) where it pins or records one. One whose tree is to be recorded and is not
+   *  yet (a recipe's install from before trees were recorded) is installed again, and its tree recorded. */
   const inPlace = async (): Promise<boolean> =>
-    pinned !== undefined &&
+    (!treeRecord || pinnedTree !== undefined) &&
     (await lstat(binary).catch(() => undefined)) !== undefined &&
-    (await digestOf(binary).catch(() => undefined)) === pinned &&
-    (!release.treeSha256 || (await harness.tree!(dir).catch(() => undefined)) === release.treeSha256);
+    // One placed before links out were refused is installed again, where the unpack's own check says why, never
+    // "already" (which every start would then refuse).
+    (await linkOutOf(dir).catch(() => "unreadable")) === undefined &&
+    (pinned === undefined || (await digestOf(binary).catch(() => undefined)) === pinned) &&
+    (pinnedTree === undefined || (await harness.tree!(dir).catch(() => undefined)) === pinnedTree);
   if (await inPlace()) return { installed: "already", binary };
 
   const parent = dirname(dir);
@@ -148,8 +194,8 @@ export async function installArchive(harness: ArchiveHarness, dir: string, optio
     const timeoutMs = options.timeoutMs ?? ARCHIVE_TIMEOUT_MS;
     const maxBytes = options.maxBytes ?? ARCHIVE_MAX_BYTES;
 
-    // The download, hashed as it is written; refused past its limit.
-    const hash = createHash("sha256");
+    // The download, hashed as it is written by its pin's algorithm; refused past its limit.
+    const hash = createHash(algorithm);
     let bytes = 0;
     try {
       const response = await (options.fetch ?? fetch)(release.url, { redirect: "follow", signal: AbortSignal.timeout(timeoutMs) });
@@ -173,41 +219,58 @@ export async function installArchive(harness: ArchiveHarness, dir: string, optio
       throw fail(ARCHIVE_CODES.download, `${named}'s archive could not be downloaded from ${release.url}: ${(error as Error).message}${cause ? ` (${cause.code ?? cause.message})` : ""}`);
     }
     const got = hash.digest("hex");
-    if (got !== release.sha256) throw fail(ARCHIVE_CODES.archive, `${named}'s archive from ${release.url} has sha256 ${got}, and the pin is ${release.sha256}; it was not unpacked`);
+    if (got !== want) throw fail(ARCHIVE_CODES.archive, `${named}'s archive from ${release.url} has ${algorithm} ${got}, and the pin is ${want}; it was not unpacked`);
     await options.onStep?.("downloaded");
 
-    // Unpacked by tar, verified archive only, into a folder of its own inside the fresh one.
-    const tree = join(work, "tree");
+    // Unpacked, verified archive only, into a folder of its own inside the fresh one: a zip by node, a tarball by tar. It
+    // takes the name the install's folder has, so a link is read (linkOutOf) where it leads once renamed into place: a
+    // link `a -> ../tree/b` would lead inside a folder named tree and outside the installed one.
+    const tree = join(work, basename(dir));
     await mkdir(tree);
-    const PATH = (options.env ?? process.env).PATH ?? "/usr/bin:/bin";
-    await new Promise<void>((done, reject) => {
-      execFile(options.tar ?? "tar", [flag, archive, "-C", tree, "--no-same-owner", "--no-same-permissions"], { env: { PATH, LC_ALL: "C" }, timeout: timeoutMs, maxBuffer: 1024 * 1024 }, (error, _stdout, stderr) => {
-        if (error) reject(fail(ARCHIVE_CODES.unpack, `tar could not unpack ${named}'s archive: ${String(stderr).trim() || error.message}`));
-        else done();
+    if (release.format === "zip") {
+      try {
+        await unzipInto(archive, tree);
+      } catch (error) {
+        throw fail(ARCHIVE_CODES.unpack, `${named}'s zip was not unpacked: ${(error as Error).message}`);
+      }
+    } else {
+      const PATH = (options.env ?? process.env).PATH ?? "/usr/bin:/bin";
+      await new Promise<void>((done, reject) => {
+        execFile(options.tar ?? "tar", [flag, archive, "-C", tree, "--no-same-owner", "--no-same-permissions"], { env: { PATH, LC_ALL: "C" }, timeout: timeoutMs, maxBuffer: 1024 * 1024 }, (error, _stdout, stderr) => {
+          if (error) reject(fail(ARCHIVE_CODES.unpack, `tar could not unpack ${named}'s archive: ${String(stderr).trim() || error.message}`));
+          else done();
+        });
       });
-    });
+    }
     await options.onStep?.("unpacked");
 
     // The binary, a regular file at the pin's path, checked before anything puts it in place.
     const unpacked = binaryUnder(tree, release.cmd)!;
     const found = await lstat(unpacked).catch(() => undefined);
     if (!found?.isFile()) throw fail(ARCHIVE_CODES.unpack, `${named}'s archive holds no file at ${release.cmd}`);
-    const binarySha = await digestOf(unpacked);
-    if (pinned === undefined) {
-      // The first binary unpacked from the verified archive: recorded, so a later one that differs is refused. A record
-      // another install wrote first holds.
-      try {
-        options.binaryRecord!.write(binarySha);
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException)?.code !== "EEXIST") throw error;
-        const first = options.binaryRecord!.read();
-        if (first !== binarySha) throw fail(ARCHIVE_CODES.binary, `${named}'s binary from its archive has sha256 ${binarySha}, and the first one recorded is ${first}; it was not put in place`);
-      }
-    } else if (binarySha !== pinned) throw fail(ARCHIVE_CODES.binary, `${named}'s binary from its archive has sha256 ${binarySha}, and the ${release.binarySha256 ? "pin" : "first one recorded"} is ${pinned}; it was not put in place`);
-    // Every file beside it, where the pin holds their digest: a launcher's code is as much the harness as the launcher.
-    if (release.treeSha256) {
+    // A link out of the tree anywhere in it (on the binary's path, or to code the binary loads): refused (linkOutOf).
+    const outward = await linkOutOf(tree);
+    if (outward !== undefined) throw fail(ARCHIVE_CODES.unpack, `${named}'s archive holds a link out of its files (${outward}), so what it leads to would be checked by nothing; it was not put in place`);
+    if (pinned !== undefined) {
+      const binarySha = await digestOf(unpacked);
+      if (binarySha !== pinned) throw fail(ARCHIVE_CODES.binary, `${named}'s binary from its archive has sha256 ${binarySha}, and the pin is ${pinned}; it was not put in place`);
+    }
+    // Every file it unpacked to, where the pin holds their digest or a record keeps the first (a record another install
+    // wrote first holds): a launcher's code, or a server's sidecar, is as much the harness as the binary, which is among
+    // them.
+    if (release.treeSha256 || treeRecord) {
       const treeSha = await harness.tree!(tree);
-      if (treeSha !== release.treeSha256) throw fail(ARCHIVE_CODES.binary, `${named}'s files from its archive have the tree sha256 ${treeSha}, and the pin is ${release.treeSha256}; they were not put in place`);
+      let first = pinnedTree;
+      if (first === undefined) {
+        try {
+          treeRecord!.write(treeSha);
+          first = treeSha;
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException)?.code !== "EEXIST") throw error;
+          first = treeRecord!.read();
+        }
+      }
+      if (treeSha !== first) throw fail(ARCHIVE_CODES.binary, `${named}'s files from its archive have the tree sha256 ${treeSha}, and the ${release.treeSha256 ? "pin" : "first one recorded"} is ${first}; they were not put in place`);
     }
     await options.onStep?.("verified");
 

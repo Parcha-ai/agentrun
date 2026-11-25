@@ -377,15 +377,17 @@ test("the release publishes the box image beside agentrun-server, amd64, by the 
   const at = (pattern) => job.steps.findIndex((step) => pattern.test(step.run ?? step.uses ?? ""));
   const key = at(/\[ -n "\$E2B_API_KEY" \] \|\| \{ echo "::error::needs secret E2B_API_KEY in the npm-release environment/);
   assert.ok(key > at(/^docker\/build-push-action@/) && key > at(/imagetools create --tag/), "a missing key stops the template, in words, after the box image is published");
-  assert.ok(key < at(/manifests/) && at(/manifests/) < at(/build-e2b\.mjs/), "then the image is checked public before E2B is asked to pull it");
+  assert.ok(key < at(/ghcr-published\.mjs/) && at(/ghcr-published\.mjs/) < at(/build-e2b\.mjs/), "then the image is checked public before E2B is asked to pull it");
   const template = job.steps[at(/build-e2b\.mjs/)];
   assert.equal(template.run, 'node packages/computer/box/build-e2b.mjs --image "$BOX_IMAGE" --public');
-  for (const step of [job.steps[at(/manifests/)], template]) assert.equal(step.env.BOX_IMAGE, "${{ env.IMAGE }}:${{ steps.recipe.outputs.hash }}", "the image this job published, by its recipe's tag");
+  for (const step of [job.steps[at(/ghcr-published\.mjs/)], template]) assert.equal(step.env.BOX_IMAGE, "${{ env.IMAGE }}:${{ steps.recipe.outputs.hash }}", "the image this job published, by its recipe's tag");
+  assert.match(job.steps[at(/ghcr-published\.mjs/)].run, /^node scripts\/ghcr-published\.mjs "\$BOX_IMAGE" \|\| \{ echo "::error::[^\n]*; exit 1; \}$/m, "anything but an anonymous pull's 200 stops the job");
   assert.equal(template.env.E2B_API_KEY, "${{ secrets.E2B_API_KEY }}");
 });
 
 test("the image carries a desktop, nothing started: Xvfb, xfwm4 and the apps, each checked, with no sudo", async () => {
-  const { WINDOW_MANAGER } = await import("../dist/desktop.js");
+  // The script computerd's window-manager start becomes (daemon/internal/windowmanager).
+  const script = readFileSync(new URL("../daemon/internal/windowmanager/windowmanager.go", import.meta.url), "utf8").match(/^const script = `([^`]*)`$/m)?.[1] ?? "";
   const { DESKTOP_APPS } = await import("../dist/conformance/cases/apps.js");
   const desktop = step("desktop");
   const packages = desktop.match(/apt-get install -y -qq --no-install-recommends (.*?) >\/dev\/null\n/)?.[1].trim().split(/\s+/) ?? [];
@@ -395,15 +397,20 @@ test("the image carries a desktop, nothing started: Xvfb, xfwm4 and the apps, ea
   assert.ok(INSTALL.indexOf("desktop() {") < INSTALL.indexOf("checked() {") && /packages; desktop; helper; dial; checked/.test(INSTALL), "the sudo guard runs after the desktop's packages");
   const programs = desktop.match(/for x in ([^;]*); do command -v "\$x"/)?.[1].split(" ") ?? [];
   assert.ok(programs.includes("Xvfb"), "the build checks the X server is there");
-  // The window manager's programs beyond Debian's essential ones (unshare, util-linux's, and sh).
-  assert.equal(WINDOW_MANAGER[0], "unshare");
-  // xsetroot paints the desktop's background before xfwm4 starts, so a desktop with no window open is not a black screen.
+  // The window manager's programs beyond Debian's essential ones (sh). xsetroot paints the desktop's background before
+  // xfwm4 starts, so a desktop with no window open is not a black screen.
   for (const program of ["dbus-run-session", "xfwm4", "xsetroot"]) {
-    assert.ok(WINDOW_MANAGER.some((arg) => arg.includes(`${program} `)), `the window manager runs ${program}`);
+    assert.ok(script.includes(`${program} `), `the window manager runs ${program}`);
     assert.ok(programs.includes(program), `the build checks the window manager's ${program} is there`);
   }
   const apps = desktop.match(/for app in ([^;]*); do/)?.[1].split(" ") ?? [];
   assert.ok(apps.some((app) => DESKTOP_APPS.includes(app)), "the build checks a desktop file the conformance apps case opens");
   // E2B's builder adds sudo before the recipe's steps: a sudo check here would refuse its build before the guard takes it away.
   assert.doesNotMatch(desktop, /command -v sudo/, "the desktop's no-sudo check is the guard's, after it");
+});
+
+test("the default box recipe's hash stays ed5aee54d3ea: staging's desktops start from the snapshot of that name through beta.53", async () => {
+  // Another image (media/, documents/) is a recipe of its own; nothing it adds moves this one.
+  const { recipeHash } = await import("../box/recipe.mjs");
+  assert.equal(recipeHash(), "ed5aee54d3ea");
 });

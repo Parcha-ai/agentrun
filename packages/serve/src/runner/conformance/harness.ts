@@ -93,6 +93,10 @@ export function suiteTools(countFile?: string) {
   const slowGate = new Promise<void>((resolve) => (letGo = resolve));
   let slowStarted: () => void = () => {};
   const started = new Promise<void>((resolve) => (slowStarted = resolve));
+  // Held (holdAsked), an approved `asked` call runs until the suite lets it go (letAskedGo), so its run cannot end first.
+  let askedGate: Promise<void> | undefined;
+  let letAskedGoNow: () => void = () => {};
+  const holdAsked = () => void (askedGate = new Promise<void>((resolve) => (letAskedGoNow = resolve)));
   const tool = (name: ToolName, replaySafe: boolean, ask: boolean, run: SuiteTool["run"]): SuiteTool => ({ name, replaySafe, ask, run });
   const tools: Record<ToolName, SuiteTool> = {
     effect: tool("effect", false, false, async () => {
@@ -109,12 +113,13 @@ export function suiteTools(countFile?: string) {
       await Promise.race([slowGate, new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }))]);
       return signal.aborted ? "cut" : "slow done";
     }),
-    asked: tool("asked", false, true, async () => {
+    asked: tool("asked", false, true, async (_args, signal) => {
       ran.asked += 1;
+      if (askedGate) await Promise.race([askedGate, new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }))]);
       return "asked done";
     }),
   };
-  return { tools, ran, letSlowGo: () => letGo(), slowStarted: started };
+  return { tools, ran, letSlowGo: () => letGo(), slowStarted: started, holdAsked, letAskedGo: () => letAskedGoNow() };
 }
 
 /** Catalog tools (an MCP server's, by wire name) that do nothing, enough of them to pass DEFER_CATALOG_OVER: a run with that
@@ -381,7 +386,7 @@ async function world(subject: ConformanceSubject, t: { after(fn: () => unknown):
     return reducer.rows();
   };
   /** The run's Timeline rows as GET /runs/{id}/timeline serves them (run-timeline-served.ts), its approval rows among them. */
-  const servedRows = (): Promise<TimelineEvent[]> => servedTimelineRows({ serverSecrets: () => [], keyEnv: () => ({}) }, server, RUN, BACKGROUND_CONTEXT);
+  const servedRows = (): Promise<TimelineEvent[]> => servedTimelineRows({ serverSecrets: () => [], sealKey: undefined, keyEnv: () => ({}) }, server, RUN, BACKGROUND_CONTEXT);
   const commandRow = async (id: number) => (await server.commands(RUN, id - 1)).find((row) => row.id === id)!;
   /** The call the run asked a person about: its ask entry's callId, which an approve or deny names as its approval. */
   const askedCall = async (): Promise<string> => {
@@ -1042,12 +1047,19 @@ const CASES: readonly Case[] = [
     title: "a double-clicked approval runs the call once: the first answers it, and the store refuses the second (one answer per approval)",
     async body(subject, t) {
       const w = await world(subject, t);
-      const { tools, ran } = suiteTools();
+      const { tools, ran, holdAsked, letAskedGo } = suiteTools();
+      // The approved call is held until the second click is answered, so the run cannot end first: a run that ended
+      // refuses any command as final (RunFinal) before the one-answer index is reached, which is not this case.
+      holdAsked();
       await w.start("runner-a", { script: [{ call: "asked" }, { say: "done" }], tools, hooks: quiet });
       await w.ended("parked");
       const callId = await w.askedCall();
       const first = await sendCommand(w.server, RUN, { kind: "approve", body: { approval: callId } });
-      await assert.rejects(sendCommand(w.server, RUN, { kind: "approve", body: { approval: callId } }), AnswerTaken, "a second answer to one approval is never written: the store says it is answered already");
+      try {
+        await assert.rejects(sendCommand(w.server, RUN, { kind: "approve", body: { approval: callId } }), AnswerTaken, "a second answer to one approval is never written: the store says it is answered already");
+      } finally {
+        letAskedGo();
+      }
       await w.ended("ended");
       assert.equal(ran.asked, 1, "the call ran once");
       assert.equal((await w.commandRow(first.id)).refused, null, "the first approve answered it");
@@ -1065,7 +1077,9 @@ const CASES: readonly Case[] = [
       await w.ended("parked");
       const callId = await w.askedCall();
       // Both sent before either is awaited (on Postgres, each on its own pooled connection). Whichever is written first, the
-      // store's one-answer index refuses the other: no order is imposed, so the case holds for either winner.
+      // store refuses the other: no order is imposed, so the case holds for either winner. The other meets the one-answer
+      // index (AnswerTaken) or, when the winner's answer already ended the run, the run's end (RunFinal): which one is
+      // timing, so either stands, and the index itself is approval-double-click's (its call held so the run cannot end).
       const settled = await Promise.allSettled([
         sendCommand(w.server, RUN, { kind: "approve", body: { approval: callId } }),
         sendCommand(w.server, RUN, { kind: "deny", body: { approval: callId } }),
@@ -1073,7 +1087,7 @@ const CASES: readonly Case[] = [
       const won = settled.filter((r): r is PromiseFulfilledResult<Awaited<ReturnType<typeof sendCommand>>> => r.status === "fulfilled");
       const lost = settled.filter((r): r is PromiseRejectedResult => r.status === "rejected");
       assert.equal(won.length, 1, `one answer is written, not both: ${JSON.stringify(settled.map((r) => r.status))}`);
-      assert.ok(lost[0]?.reason instanceof AnswerTaken, `the other is refused by the store as answered already (AnswerTaken), never a bare constraint: ${String(lost[0]?.reason)}`);
+      assert.ok(lost[0]?.reason instanceof AnswerTaken || lost[0]?.reason instanceof RunFinal, `the other is refused by the store, answered already (AnswerTaken) or the run ended on the winner (RunFinal), never a bare constraint: ${String(lost[0]?.reason)}`);
       await w.ended("ended");
       const winner = won[0]!.value;
       assert.equal(ran.asked, winner.kind === "approve" ? 1 : 0, "the run acted on the answer written, never the other");

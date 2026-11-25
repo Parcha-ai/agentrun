@@ -22,6 +22,7 @@ import { bookedIn } from "../dist/paid-calls.js";
 import { FakeArchilDisk } from "./fixtures/archil-fake.mjs";
 import { fakeComputer } from "./workspace-fake-computer.mjs";
 import { KINDS } from "./workspace-kinds-fixture.mjs";
+import { memoryIntervals } from "./memory-intervals.mjs";
 
 const dirs = [];
 after(() => { for (const dir of dirs) rmSync(dir, { recursive: true, force: true }); });
@@ -47,22 +48,19 @@ function memorySettings() {
 /** Where a synced claim's run folder is on its fake disk. */
 const SYNCED = runKey("acme", "r1");
 
-/** How many execs the synced sandboxes ran: each writes one byte more than the last. */
-let execs = 0;
-
 /** A fake sandbox over a folder of its own, reading back a synced folder under epoch 3: a push into it is extracted for
- *  real, its mtimes fresh as computerd's extraction sets them, and its exec writes out.txt, longer each time. The same
- *  bytes written again in the millisecond of the push that brought them would keep its size and mtime, which no sync
- *  sees (sync-folder.ts's known miss), so a test of where the exec ran never depends on the clock. */
+ *  real, each file at its header's mtime as computerd's extraction keeps it (the one FolderSync.push gives), and its
+ *  exec writes out.txt, the same bytes each time. Written again in the millisecond of the push that brought them, they
+ *  keep its size, and the write still moves its mtime off the pushed one, so the next sync sees it. */
 function syncedComputer() {
   const root = realpathSync(mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-lost-synced-")));
   dirs.push(root);
-  const computer = fakeComputer(root, { readBack: { kind: "sync", epoch: 3 }, exec: () => (writeFileSync(join(root, "out.txt"), `made by the exec${"!".repeat((execs += 1))}\n`), undefined) });
+  const computer = fakeComputer(root, { readBack: { kind: "sync", epoch: 3 }, exec: () => (writeFileSync(join(root, "out.txt"), "made by the exec\n"), undefined) });
   const tar = [];
   computer.overrides["tar.push.begin"] = () => ({ id: "push-1" });
   computer.overrides["tar.push.write"] = ({ data }) => (tar.push(Buffer.from(data, "base64")), {});
   computer.overrides["tar.push.end"] = () => {
-    const extracted = spawnSync("tar", ["-x", "-m", "-C", root], { input: Buffer.concat(tar.splice(0)) });
+    const extracted = spawnSync("tar", ["-x", "-C", root], { input: Buffer.concat(tar.splice(0)) });
     if (extracted.status !== 0) throw new Error(`tar: ${extracted.stderr}`);
     return { entries: readdirSync(root).length };
   };
@@ -87,6 +85,7 @@ async function claim({ recreates, kept = false, synced, archil } = {}) {
     agents: { revision: async () => undefined },
     sealedKeys: { get: async (name) => keys.get(name), put: async (name, sealed) => void keys.set(name, sealed), remove: async () => {}, all: async () => [] },
     computerLedger: { put: async () => {}, get: async () => undefined, list: async () => [], remove: async () => {} },
+    computerIntervals: memoryIntervals(),
     settings: memorySettings(),
   };
   const sealKey = randomBytes(32);
@@ -180,7 +179,7 @@ async function claim({ recreates, kept = false, synced, archil } = {}) {
 const STAT = ["files.stat", { path: "/workspace" }];
 
 test("a lost Mode 2 sandbox: the next tool call's computer call starts a new one under the claim, its mount credential minted anew and the lost one's removed, read back, then serves the call", async () => {
-  const { record, answer, inCall, paused } = await claim();
+  const { record, answer, inCall, paused, store } = await claim();
   assert.equal(record.minted, 1, "the claim's first mount");
   record.lose = (id, method) => id === "c1" && method === "files.stat";
   const cut = await inCall(...STAT);
@@ -196,8 +195,12 @@ test("a lost Mode 2 sandbox: the next tool call's computer call starts a new one
   assert.deepEqual(record.released, [["c1", "delete"]], "the lost one let go");
   assert.deepEqual(record.notes, ["Its computer was lost; started a new one (c2)."]);
   assert.deepEqual(paused, []);
+  // Each sandbox its own interval (computer-intervals.ts): the lost one ended by its delete, the new one opened.
+  const intervals = async () => (await store.computerIntervals.forRun("run-1")).map((one) => [one.provider, one.providerId, one.kind, one.endedAt !== null]);
+  assert.deepEqual(await intervals(), [["modal", "c1", "sandbox", true], ["modal", "c2", "sandbox", false]]);
   await answer.release();
   assert.deepEqual(record.released, [["c1", "delete"], ["c2", "delete"]], "the run's end lets the new one go");
+  assert.deepEqual(await intervals(), [["modal", "c1", "sandbox", true], ["modal", "c2", "sandbox", true]]);
   assert.equal(record.revoked, 2);
 });
 

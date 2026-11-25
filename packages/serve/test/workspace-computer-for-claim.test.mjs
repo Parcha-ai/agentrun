@@ -105,7 +105,7 @@ function views(refusal) {
   return { open, opened, closed, holds, gones };
 }
 
-async function claim(setting, { mode = 1, keys = {}, groups = ["exec", "files", "processes"], existing, view, machine, unprepared = false, kinds = KINDS, onConnected, onStarting, hostWhy, hadComputer, epoch = 3, list, spec = SPEC } = {}) {
+async function claim(setting, { mode = 1, keys = {}, groups = ["exec", "files", "processes"], existing, view, machine, unprepared = false, kinds = KINDS, onConnected, onStarting, hostWhy, hadComputer, epoch = 3, list, spec = SPEC, workspaceExec } = {}) {
   const root = scratch();
   const store = memoryStore();
   const sealKey = randomBytes(32);
@@ -114,7 +114,9 @@ async function claim(setting, { mode = 1, keys = {}, groups = ["exec", "files", 
   const providers = Object.fromEntries(["docker", "e2b", "daytona", "modal", "agent37", "phone-harness"].map((id) => [id, (options, extras) => (record.options.push([id, options, typeof extras.ledger.put]), { ...fakeProvider(root, record, groups, machine), ...(unprepared ? { prepareImage: undefined } : {}), ...(list ? { list } : {}) })]));
   record.revoked = 0;
   const revokeMount = async () => void (record.revoked += 1);
-  const run = () => computerForClaim({ runId: "run-1", epoch, computer: setting }, store, { mode, kinds, sealKey, providers, spec, workspace: localWorkspace(root), check: { readBackOf, epoch }, revokeMount, ...(view ? { openComputerView: view.open } : {}), ...(onConnected ? { onConnected } : {}), ...(onStarting ? { onStarting } : {}), ...(hostWhy ? { hostWhy } : {}), ...(hadComputer ? { hadComputer } : {}) });
+  const workspace = localWorkspace(root);
+  if (workspaceExec) { const execute = workspace.exec.bind(workspace); workspace.exec = (argv, options) => workspaceExec(argv, options, execute); }
+  const run = () => computerForClaim({ runId: "run-1", epoch, computer: setting }, store, { mode, kinds, sealKey, providers, spec, workspace, check: { readBackOf, epoch }, revokeMount, ...(view ? { openComputerView: view.open } : {}), ...(onConnected ? { onConnected } : {}), ...(onStarting ? { onStarting } : {}), ...(hostWhy ? { hostWhy } : {}), ...(hadComputer ? { hadComputer } : {}) });
   return { root, record, run };
 }
 
@@ -140,6 +142,48 @@ test("a Mode 1 sandbox on Docker is made under the run's labels with the run's f
   await answer.release();
   assert.deepEqual(record.released, [["c1", "delete"]], "released once");
   assert.equal(record.revoked, 1, "the run's mount credential is removed once, after the computer");
+});
+
+test("a bind-mounted moved project flushes its actual host filesystem before checkpoint capture", async () => {
+  const calls = [];
+  const { run, record } = await claim({ kind: "sandbox", provider: "docker" }, { workspaceExec: async (argv, options, execute) => {
+    calls.push({ argv, options }); return execute(argv, options);
+  } });
+  const answer = await run();
+  try {
+    await answer.syncProject(new AbortController().signal);
+    assert.equal(calls.length, 1);
+    assert.deepEqual(calls[0].argv, ["/usr/bin/sync", "-f", "."]);
+    assert.equal(calls[0].options.timeoutMs, 30_000);
+    assert.deepEqual(record.released, [], "flush happens while the original computer remains held");
+    assert.equal(record.created.length, 1, "the checkpoint does not create a replacement computer");
+  } finally { await answer.release(); }
+});
+
+test("a refused or timed-out bind flush cannot report a durable project", async () => {
+  for (const result of [{ code: 1 }, { code: 0, timedOut: true }, { code: 0, signal: "SIGTERM" }]) {
+    const { run } = await claim({ kind: "sandbox", provider: "docker" }, { workspaceExec: async () => ({ stdout: new Uint8Array(), stderr: new Uint8Array(), ...result }) });
+    const answer = await run();
+    try { await assert.rejects(answer.syncProject(new AbortController().signal), /durably synchronized/); }
+    finally { await answer.release(); }
+  }
+});
+
+test("aborting a bind flush waits for the dispatched filesystem operation to settle", async () => {
+  const entered = Promise.withResolvers(), finish = Promise.withResolvers(), controller = new AbortController(); let done = false;
+  const { run } = await claim({ kind: "sandbox", provider: "docker" }, { workspaceExec: async (_argv, options) => {
+    entered.resolve(options.signal); await finish.promise; options.signal.throwIfAborted();
+  } });
+  const answer = await run();
+  const pending = answer.syncProject(controller.signal).finally(() => { done = true; });
+  pending.catch(() => {});
+  try {
+    const signal = await entered.promise;
+    controller.abort(new Error("fixture stopped"));
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(signal.aborted, true); assert.equal(done, false);
+    finish.resolve(); await assert.rejects(pending, /fixture stopped/);
+  } finally { finish.resolve(); await pending.catch(() => {}); await answer.release(); }
 });
 
 test("an Agent37 desktop starts from the template its prepareImage() answers, where the spec names no image for it", async () => {

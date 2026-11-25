@@ -389,7 +389,7 @@ test("a template's composio trigger whose key comes from a parameter: the apply'
   const applied = await server.api("POST", "/templates/deals/apply", { parameters: { app_id: "4242", developer_api_key: key } }, { "idempotency-key": "deals-once" });
   assert.equal(applied.status, 201, JSON.stringify(applied.body));
   assert.ok(!JSON.stringify(applied.body).includes(key), "the apply's answer holds no key");
-  const read = await server.api("GET", `/triggers/${applied.body.trigger_ids[0]}`);
+  const read = await server.api("GET", `/triggers/${applied.body.triggers[0].trigger_id}`);
   assert.ok(!JSON.stringify(read.body).includes(key), "the trigger it made holds no key");
   assert.equal(read.body.source.config.developer_api_key, MASK);
   assert.deepEqual([...composio.instances.values()][0]?.trigger_config, { app_id: "4242", developer_api_key: key }, "Composio's instance watches with the key");
@@ -435,12 +435,12 @@ test("a template's composio trigger with a key from a parameter, applied again w
   assert.equal(first.status, 201, JSON.stringify(first.body));
   const again = await server.api("POST", "/templates/deals/apply", { parameters, agent_id: first.body.agent_id }, { "idempotency-key": "deals-update" });
   assert.equal(again.status, 200, `the update with the same key is no change to the sealed config: ${again.status} ${blanked(JSON.stringify(again.body), [key])}`);
-  assert.deepEqual(again.body.trigger_ids, first.body.trigger_ids, "the same trigger, kept by name");
+  assert.deepEqual(again.body.triggers.map((one) => one.trigger_id), first.body.triggers.map((one) => one.trigger_id), "the same trigger, kept by name");
   assert.ok(!JSON.stringify(again.body).includes(key), "the update's answer holds no key");
-  const read = await server.api("GET", `/triggers/${first.body.trigger_ids[0]}`);
+  const read = await server.api("GET", `/triggers/${first.body.triggers[0].trigger_id}`);
   assert.equal(read.body.source.config.developer_api_key, MASK, "still sealed");
   assert.deepEqual(read.body.source.sealed_config, ["developer_api_key"]);
-  assert.equal((await sealedRowsOf(server.store, first.body.trigger_ids[0])).length, 1, "its sealed value kept");
+  assert.equal((await sealedRowsOf(server.store, first.body.triggers[0].trigger_id)).length, 1, "its sealed value kept");
   assert.equal(composio.instances.size, 1, "nothing new made on Composio");
   assert.deepEqual(filesUnder(server.data).filter((path) => readFileSync(path).includes(key)), [], "no file under the data directory holds the key in the clear");
   assert.ok(!lines.some((l) => l.includes(key)), "no log line holds the key");
@@ -452,12 +452,12 @@ test("a template's composio trigger applied again with agent_id and another key 
   const other = fakeKey();
   const first = await server.api("POST", "/templates/deals/apply", { parameters: { app_id: "4242", developer_api_key: key } });
   assert.equal(first.status, 201, JSON.stringify(first.body));
-  const [old] = first.body.trigger_ids;
+  const [{ trigger_id: old }] = first.body.triggers;
   const [{ id: oldInstance }] = instancesOf(composio);
   const from = composio.calls.length;
   const again = await server.api("POST", "/templates/deals/apply", { parameters: { app_id: "4242", developer_api_key: other }, agent_id: first.body.agent_id }, { "idempotency-key": "deals-rekey" });
   assert.equal(again.status, 200, `another key makes the trigger again: ${again.status} ${blanked(JSON.stringify(again.body), [key, other])}`);
-  const [made] = again.body.trigger_ids;
+  const [{ trigger_id: made }] = again.body.triggers;
   assert.notEqual(made, old, "a new trigger");
   assert.equal((await server.api("GET", `/triggers/${old}`)).status, 404, "the old one is gone");
   assert.equal((await sealedRowsOf(server.store, old)).length, 0, "with its sealed value");
@@ -484,8 +484,8 @@ test("a template's composio trigger whose old instance Composio fails to remove 
   assert.deepEqual(instancesOf(composio).map((one) => one.config), [{ app_id: "4242", developer_api_key: key }], "never two instances watching");
   assert.notEqual((await server.api("GET", `/agents/${first.body.agent_id}`)).body.revision, before, "the revision stands, as with a refused trigger");
   // Composio kept its instance, so the old trigger is kept here as it was: the row, its sealed key and its package mark.
-  assert.equal((await server.api("GET", `/triggers/${first.body.trigger_ids[0]}`)).status, 200, "the old trigger stays here, as its instance stays at Composio");
-  assert.equal((await sealedRowsOf(server.store, first.body.trigger_ids[0])).length, 1, "with its sealed key");
+  assert.equal((await server.api("GET", `/triggers/${first.body.triggers[0].trigger_id}`)).status, 200, "the old trigger stays here, as its instance stays at Composio");
+  assert.equal((await sealedRowsOf(server.store, first.body.triggers[0].trigger_id)).length, 1, "with its sealed key");
   for (const [said, what] of [[JSON.stringify(failed.body), "the answer"], [lines.join("\n"), "the log"]]) assert.ok(![key, other].some((one) => said.includes(one)), `${what} holds no key`);
   assert.deepEqual(filesUnder(server.data).filter((path) => [key, other].some((one) => readFileSync(path).includes(one))), [], "no file holds either key");
 });
@@ -495,13 +495,13 @@ test("a template's composio trigger whose package moves it to another event is m
   const key = fakeKey();
   const applied = await first.server.api("POST", "/templates/deals/apply", { parameters: { app_id: "4242", developer_api_key: key } });
   assert.equal(applied.status, 201, JSON.stringify(applied.body));
-  const [old] = applied.body.trigger_ids;
+  const [{ trigger_id: old }] = applied.body.triggers;
   assert.equal((await first.server.api("PATCH", `/triggers/${old}`, { enabled: false })).status, 200, "the owner turns it off");
   await first.server.stop();
   const second = await dealsServer(t, { event: DEAL_CREATED, data: first.server.data, composio: first.composio });
   const moved = await second.server.api("POST", "/templates/deals/apply", { parameters: { app_id: "4242", developer_api_key: key }, agent_id: applied.body.agent_id });
   assert.equal(moved.status, 200, `a changed event makes the trigger again: ${moved.status} ${blanked(JSON.stringify(moved.body), [key])}`);
-  const [made] = moved.body.trigger_ids;
+  const [{ trigger_id: made }] = moved.body.triggers;
   assert.notEqual(made, old, "a new trigger");
   const read = await second.server.api("GET", `/triggers/${made}`);
   assert.equal(read.body.source.event, DEAL_CREATED.slug);
@@ -515,11 +515,11 @@ test("a template's composio trigger the owner turned off, made again for another
   const key = fakeKey();
   const first = await server.api("POST", "/templates/deals/apply", { parameters: { app_id: "4242", developer_api_key: key } });
   assert.equal(first.status, 201, JSON.stringify(first.body));
-  assert.equal((await server.api("PATCH", `/triggers/${first.body.trigger_ids[0]}`, { enabled: false })).status, 200);
+  assert.equal((await server.api("PATCH", `/triggers/${first.body.triggers[0].trigger_id}`, { enabled: false })).status, 200);
   const again = await server.api("POST", "/templates/deals/apply", { parameters: { app_id: "4242", developer_api_key: fakeKey() }, agent_id: first.body.agent_id });
   assert.equal(again.status, 200, JSON.stringify(again.body));
-  assert.notEqual(again.body.trigger_ids[0], first.body.trigger_ids[0], "made again");
-  assert.equal((await server.api("GET", `/triggers/${again.body.trigger_ids[0]}`)).body.enabled, false, "the owner's off stays off");
+  assert.notEqual(again.body.triggers[0].trigger_id, first.body.triggers[0].trigger_id, "made again");
+  assert.equal((await server.api("GET", `/triggers/${again.body.triggers[0].trigger_id}`)).body.enabled, false, "the owner's off stays off");
 });
 
 test("a template's composio trigger applied again with agent_id and the same key: a change outside its fixed part (the input) is made in place, the same trigger with the key still sealed", async (t) => {
@@ -527,10 +527,10 @@ test("a template's composio trigger applied again with agent_id and the same key
   const key = fakeKey();
   const first = await server.api("POST", "/templates/deals/apply", { parameters: { app_id: "4242", developer_api_key: key, team: "sales" } });
   assert.equal(first.status, 201, JSON.stringify(first.body));
-  const [id] = first.body.trigger_ids;
+  const [{ trigger_id: id }] = first.body.triggers;
   const moved = await server.api("POST", "/templates/deals/apply", { parameters: { app_id: "4242", developer_api_key: key, team: "support" }, agent_id: first.body.agent_id });
   assert.equal(moved.status, 200, `a change outside the fixed part is made in place: ${moved.status} ${blanked(JSON.stringify(moved.body), [key])}`);
-  assert.deepEqual(moved.body.trigger_ids, [id], "the same trigger");
+  assert.deepEqual(moved.body.triggers.map((one) => one.trigger_id), [id], "the same trigger");
   const read = await server.api("GET", `/triggers/${id}`);
   assert.equal(read.body.target.input.content, "Note the deal's new stage for support.", "the input changed in place");
   assert.equal(read.body.source.config.developer_api_key, MASK, "the key still sealed");
@@ -544,7 +544,7 @@ test("an owner's composio trigger with the name of the package's and another key
   const mine = fakeKey();
   const first = await server.api("POST", "/templates/deals/apply", { parameters: { app_id: "4242", developer_api_key: key } });
   assert.equal(first.status, 201, JSON.stringify(first.body));
-  assert.ok((await server.api("DELETE", `/triggers/${first.body.trigger_ids[0]}`)).status < 300, "the owner removes the package's deal-stage");
+  assert.ok((await server.api("DELETE", `/triggers/${first.body.triggers[0].trigger_id}`)).status < 300, "the owner removes the package's deal-stage");
   const own = await server.api("POST", "/triggers", { name: "deal-stage", source: { kind: "composio", server: "work-hubspot", event: DEAL_STAGE.slug, config: { app_id: "4242", developer_api_key: mine } }, target: { kind: "start_run", agent_id: first.body.agent_id, input: { content: "The owner's own note." } } });
   assert.equal(own.status, 201, blanked(JSON.stringify(own.body), [key, mine]));
   const from = composio.calls.length;
@@ -825,18 +825,29 @@ test("an Idempotency-Key replay of a run create gives back its input as sent, a 
  *  old bytes may still be in the store's files. */
 const markerIn = (data) => join(data, "store.sqlite.scrub");
 
-/** A server whose store holds trigger `id`'s key only in free pages: kept in the clear, rewritten by pauses, then masked
- *  with no scrub after, as a server that died after its rewrite committed leaves it. Its marker is left. */
+/** A server whose store holds trigger `id`'s key only in free pages: kept in the clear, rewritten by renames, then masked
+ *  with no scrub after, as a server that died after its rewrite committed leaves it. Its marker is left. This server's
+ *  connections zero what they free (secure_delete, store/sqlite/worker.ts), so the rewrites are an earlier server's: a
+ *  connection of the test's own with secure_delete off, on the stopped server's file. */
 async function diedAfterRewrite(t) {
   const s = await setup(t);
   const key = fakeKey();
   const made = await s.api("POST", "/triggers", dealTrigger(key));
   assert.equal(made.status, 201, made.status === 201 ? "" : JSON.stringify(made.body));
-  await keptInTheClear(s.server.store, made.body, key);
   await livedWith(s.api, made.body.id);
-  const masked = (await s.api("GET", `/triggers/${made.body.id}`)).body.source;
-  await s.server.store.triggers.update(made.body.id, { source: masked });
   await s.server.stop();
+  const db = new DatabaseSync(join(s.server.data, "store.sqlite"), { timeout: 5_000 });
+  try {
+    db.exec("PRAGMA secure_delete = OFF");
+    const { source: masked } = db.prepare("SELECT source FROM triggers WHERE id = ?").get(made.body.id);
+    const { sealed_config: _, ...source } = JSON.parse(masked);
+    const rewrite = db.prepare("UPDATE triggers SET source = ? WHERE id = ?");
+    rewrite.run(JSON.stringify({ ...source, config: { ...source.config, developer_api_key: key } }), made.body.id);
+    for (const n of [1, 2, 3, 4, 5]) db.prepare("UPDATE triggers SET name = ? WHERE id = ?").run(`deals ${"y".repeat(n * 9)}`, made.body.id);
+    rewrite.run(masked, made.body.id);
+  } finally {
+    db.close();
+  }
   writeFileSync(markerIn(s.server.data), "");
   assert.ok(filesUnder(s.server.data).some((path) => readFileSync(path).includes(key)), "the key's old bytes are in the store's free space before the start");
   return { s, key, made };
@@ -1316,7 +1327,7 @@ test("a template's composio trigger the owner turned off, whose old instance Com
   const { server, composio } = await dealsServer(t, { fail: { method: "DELETE", path: (path) => path.includes("/trigger_instances/manage/"), status: 500, times: 1 } });
   const first = await server.api("POST", "/templates/deals/apply", { parameters: { app_id: "4242", developer_api_key: key } });
   assert.equal(first.status, 201, JSON.stringify(first.body));
-  const [old] = first.body.trigger_ids;
+  const [{ trigger_id: old }] = first.body.triggers;
   const [{ id: oldInstance }] = instancesOf(composio);
   assert.equal((await server.api("PATCH", `/triggers/${old}`, { enabled: false })).status, 200, "the owner turns it off");
   const failed = await server.api("POST", "/templates/deals/apply", { parameters: { app_id: "4242", developer_api_key: other }, agent_id: first.body.agent_id });
@@ -1327,7 +1338,7 @@ test("a template's composio trigger the owner turned off, whose old instance Com
   composio.instances.delete(oldInstance);
   const again = await server.api("POST", "/templates/deals/apply", { parameters: { app_id: "4242", developer_api_key: other }, agent_id: first.body.agent_id });
   assert.equal(again.status, 200, `applied again: ${again.status} ${blanked(JSON.stringify(again.body), [key, other])}`);
-  const [made] = again.body.trigger_ids;
+  const [{ trigger_id: made }] = again.body.triggers;
   assert.notEqual(made, old, "made again");
   assert.equal((await server.api("GET", `/triggers/${old}`)).status, 404, "the old one gone now");
   assert.equal((await server.api("GET", `/triggers/${made}`)).body.enabled, false, "the owner's off stays off through the 424 and the retry");
@@ -1338,7 +1349,7 @@ test("a template's composio trigger the package drops, whose instance Composio f
   const first = await dealsServer(t, { fail: { method: "DELETE", path: (path) => path.includes("/trigger_instances/manage/"), status: 500, times: 1 } });
   const applied = await first.server.api("POST", "/templates/deals/apply", { parameters: { app_id: "4242", developer_api_key: key } });
   assert.equal(applied.status, 201, JSON.stringify(applied.body));
-  const [old] = applied.body.trigger_ids;
+  const [{ trigger_id: old }] = applied.body.triggers;
   const [{ id: instance }] = instancesOf(first.composio);
   await first.server.stop();
   const second = await dealsServer(t, { dropped: true, data: first.server.data, composio: first.composio });
@@ -1362,7 +1373,7 @@ test("a template update's removal of a Composio trigger and the owner's move of 
   const first = await dealsServer(t);
   const applied = await first.server.api("POST", "/templates/deals/apply", { parameters: { app_id: "4242", developer_api_key: key } });
   assert.equal(applied.status, 201, JSON.stringify(applied.body));
-  const [old] = applied.body.trigger_ids;
+  const [{ trigger_id: old }] = applied.body.triggers;
   const [{ id: instance }] = instancesOf(first.composio);
   await first.server.stop();
   const second = await dealsServer(t, { dropped: true, data: first.server.data, composio: first.composio });
@@ -1391,8 +1402,8 @@ test("two agents' template triggers on one Composio instance, both dropped by up
   const a = await first.server.api("POST", "/templates/deals/apply", { parameters: { app_id: "4242", developer_api_key: key } });
   const b = await first.server.api("POST", "/templates/deals/apply", { parameters: { app_id: "4242", developer_api_key: key } });
   assert.deepEqual([a.status, b.status], [201, 201], JSON.stringify([a.body, b.body]));
-  const [x] = a.body.trigger_ids;
-  const [y] = b.body.trigger_ids;
+  const [{ trigger_id: x }] = a.body.triggers;
+  const [{ trigger_id: y }] = b.body.triggers;
   const instances = instancesOf(first.composio);
   assert.equal(instances.length, 1, "the two agents' deal-stage triggers share one instance (the same event and config)");
   const [{ id: instance }] = instances;

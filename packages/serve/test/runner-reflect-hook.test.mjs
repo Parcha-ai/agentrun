@@ -6,7 +6,15 @@ import { test } from "node:test";
 import { createReflectHook } from "../dist/runner/reflect-hook.js";
 import { COMPILE_TIMEOUT_MS, compilePrompt } from "../dist/learn/compile.js";
 import { said, STOPPED } from "../dist/learning-words.js";
-import { runCostOf } from "../dist/learning-cost.js";
+import { figuresOf, record } from "../dist/learn/ledger.js";
+
+/** A run's series figures as its ledger row gives them (learn/ledger.ts record, figuresOf): its row's cost `costUsd` and
+ *  the one round its end kept. */
+const runCostOf = (costUsd, end) => {
+  const { row } = record({ id: "run-1", agentId: "a", startedAt: 0, costUsd, costAtMostUsd: null, metrics: { path: "agent" }, rounds: [{ round: 1, proposal: end }] });
+  const figures = figuresOf(row, { compile: 0, shadow: 0, share: 0 });
+  return { cost_usd: figures.usd, learning_usd: figures.series_learning_usd, total_usd: figures.series_total_usd };
+};
 
 const claim = { runId: "run-1", runner: "runner-a", epoch: 1, until: 0, from: "running" };
 /** The hooks' clock; a run's spend reads 0.01 throughout unless a test says otherwise. */
@@ -74,6 +82,9 @@ test("a run cut before its end-of-run step (a person's stop, or a fault) keeps i
   }
   const { hook, input } = hookWith({ facts: { learns: false } });
   assert.equal(await hook({ ...input("failed"), cut: "stopped" }), undefined, "a run that does not learn keeps nothing, cut or not");
+  // A stop or cancel that cuts the look-back leaves the run on its job's end (completed): its learning never says the run
+  // was cancelled.
+  assert.equal(said.stopped(STOPPED.cancelledLooking), "Not kept: learning stopped (a stop or cancel cut it while it wrote what it learned).");
 });
 
 test("a run stopped during its compile turn (an earlier claim asked it) keeps the job's saved figures and the compile's spend, known or null: its cost is the job's own, the rest is learning's", async () => {

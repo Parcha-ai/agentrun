@@ -1,7 +1,9 @@
 // A run's trace (GET /v2/runs/{id}/trace) as the Dev tools tab reads it: where each span sits on the time axis, what the
 // run's requests and calls add up to, and the same broken down by tool and by model. Every figure here is a sum, a share
 // or a rank of what the server sent; a figure the trace does not carry stays unknown (null), never 0.
-import type { RunTrace, TraceSpan } from "./v2";
+import { matchesFilter } from "./filter";
+import { capDollars } from "./format";
+import type { Run, RunTrace, RunUsage, TimelineRow, TraceSpan, UsageLine } from "./v2";
 
 export type SpanKind = "all" | "model" | "tool" | "failed";
 export type SpanSort = "started" | "duration" | "cost" | "tokens";
@@ -72,6 +74,59 @@ export function lane(spans: readonly TraceSpan[], window: { from: number; ms: nu
   });
   return { bars, rows: Math.max(1, ends.length) };
 }
+
+/** Something of the run's that was up for a stretch of it and is no call: a computer the run made, or a browser session
+ *  it opened (GET /usage's `computer_intervals` and `browser_sessions`). Its time is the provider's to bill, in the run's
+ *  cost by line. `from` null: a browser session whose start is not recorded (the server writes a session's start with its
+ *  release, so one whose runner died before the release has neither, though its time may still be charged). `to` null:
+ *  no end is recorded (a computer still up, a session whose release was never told). `counted`:
+ *  the seconds of it in the run's cost (a computer's, what a claim of the run held; a session's, what was charged); null
+ *  when not known. `notes`: what else its record says, in words. */
+export type Stretch = { key: string; kind: "computer" | "browser"; name: string; about: string | null; from: number | null; to: number | null; counted: number | null; notes: string[] };
+const RELEASE_WORDS: Record<string, string> = { tool: "Closed by the agent", idle: "Closed for being idle", relaunch: "Closed to open another", close: "Let go by the run", ended: "Ended by its provider", lost: "Lost", create_failed: "Never opened" };
+/** A run's computers and browser sessions as stretches, each kind in the order they started, one with no start recorded
+ *  last: it is still one of the run's sessions, with what was charged for it, and has no place on a time axis
+ *  (stretchLane leaves it out). An attempt is said only where one was cut and worked again. */
+export function stretches(usage: Pick<RunUsage, "computer_intervals" | "browser_sessions"> | null | undefined): { computers: Stretch[]; browsers: Stretch[] } {
+  const cut = (of: { attempt: number | null; billable: boolean }) => (of.billable ? [] : [`${of.attempt === null ? "An attempt" : `Attempt ${of.attempt}`}: cut and worked again`]);
+  const byStart = (a: Stretch, b: Stretch) => (a.from ?? Number.POSITIVE_INFINITY) - (b.from ?? Number.POSITIVE_INFINITY);
+  const computers = (usage?.computer_intervals ?? []).map((c, i): Stretch => {
+    const gpus = c.gpu && (c.gpu.count ?? 1) > 0 ? `${c.gpu.count ?? 1} ${c.gpu.type ?? ""} GPU`.replace("  ", " ") : null;
+    const size = [c.cpus !== null ? `${c.cpus} vCPU` : null, c.memory_mb !== null ? `${(c.memory_mb / 1024).toLocaleString("en-US", { maximumFractionDigits: 1 })} GB` : null, gpus, c.disk_gb !== null ? `${c.disk_gb} GB disk` : null].filter((part) => part !== null);
+    return { key: `c:${i}:${c.provider_id}`, kind: "computer", name: `${c.provider} ${c.kind ?? "computer"}`, about: size.length ? size.join(" · ") : null, from: at(c.started_at), to: c.ended_at ? at(c.ended_at) : null, counted: c.booked_seconds, notes: [...(c.kept ? ["Kept while the run waited for a person"] : []), ...cut(c)] };
+  }).sort(byStart);
+  const browsers = (usage?.browser_sessions ?? []).map((b, i): Stretch => ({
+    key: `b:${i}:${b.tag}`, kind: "browser", name: `${b.provider} browser`, about: b.provider_session_id, from: b.started_at ? at(b.started_at) : null, to: b.started_at && b.ended_at ? at(b.ended_at) : null, counted: b.charged_seconds,
+    notes: [...(b.release_reason ? [RELEASE_WORDS[b.release_reason] ?? b.release_reason] : []), ...cut(b)],
+  })).sort(byStart);
+  return { computers, browsers };
+}
+
+export type StretchBar = { stretch: Stretch; left: number; width: number; row: number; before: boolean; after: boolean };
+/** Each stretch's place on its lane, in percent of the trace's window, as `lane` places spans. The window is the run's
+ *  requests and calls, and a computer is made before the first and may outlast the last: the part outside is not drawn,
+ *  and `before` and `after` say there is one. One with no end is drawn to `now`. One with no start is not drawn, nor one
+ *  that lies wholly outside the window (a session opened after the last span a long run's trace holds): drawn at the
+ *  window's edge it would read as up then. The Breakdown lists every one. */
+export function stretchLane(items: readonly Stretch[], window: { from: number; ms: number }, now: number, gap = 0.2): { bars: StretchBar[]; rows: number } {
+  const ends: number[] = [];
+  const share = (ms: number) => (window.ms > 0 ? ((ms - window.from) / window.ms) * 100 : 0);
+  const bars = items.flatMap((stretch): StretchBar[] => {
+    if (stretch.from === null) return [];
+    const [start, end] = [share(stretch.from), window.ms > 0 ? share(stretch.to ?? Math.max(now, stretch.from)) : 100];
+    if (end < 0 || start > 100) return [];
+    const left = Math.min(100, Math.max(0, start));
+    const width = Math.max(0, Math.min(100, end) - left);
+    let row = ends.findIndex((free) => free + gap <= left);
+    if (row < 0) row = ends.push(0) - 1;
+    ends[row] = left + width;
+    return [{ stretch, left, width, row, before: start < 0, after: end > 100 }];
+  });
+  return { bars, rows: Math.max(1, ends.length) };
+}
+/** When a stretch started, against what its times are measured from (`anchor`: the trace's first request, or the run's
+ *  start for a run with no request): a time since it, or how long before it. */
+export const since = (ms: number, anchor = "the first request") => (ms < 0 ? `${duration(-ms)} before ${anchor}` : offset(ms));
 
 const STEPS = [100, 200, 500, 1000, 2000, 5000, 10_000, 15_000, 30_000, 60_000, 120_000, 300_000, 600_000, 900_000, 1_800_000, 3_600_000, 7_200_000, 14_400_000, 28_800_000, 86_400_000];
 /** The axis's marks for `ms` of the trace that begin `from` ms into it (0: its start): at most `most`, at a round step,
@@ -222,10 +277,7 @@ export function byModel(spans: readonly TraceSpan[], priced = true): ModelRow[] 
  *  its subagent or its arguments holding every word typed. */
 export function keeps(span: TraceSpan, kind: SpanKind, query: string): boolean {
   if (kind === "failed" ? span.status !== "failed" : kind !== "all" && span.kind !== kind) return false;
-  const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
-  if (!words.length) return true;
-  const text = `${span.name} ${span.agent_label ?? ""} ${span.input_preview ?? ""} ${span.status}`.toLowerCase();
-  return words.every((word) => text.includes(word));
+  return matchesFilter(query, span.name, span.agent_label, span.input_preview, span.status);
 }
 
 /** `spans` in the table's order: as they started, or the longest, the dearest or the largest first (one with no such
@@ -261,6 +313,105 @@ export function costSplit(spans: readonly TraceSpan[]): { parts: { name: string;
   return known ? { parts, total } : null;
 }
 
+/** A computer resource in words, a GPU by its type. */
+const RESOURCE_WORDS = { vcpu: "vCPU", memory: "memory", gpu: "GPU", disk: "disk" } as const;
+
+/** A usage line's name: its model; the vendor that charged for a tool; the provider of browser time; or the provider and
+ *  resource of computer time. */
+export function lineName(line: UsageLine): string {
+  if (line.meter === "tokens") return line.model ?? "A model with no name";
+  if (line.meter === "tools") return `${line.charged_by ?? "An unnamed vendor"} · tools`;
+  if (line.meter === "compute_time") {
+    const resource = line.resource === "gpu" && line.gpu_type ? `${line.gpu_type} GPU` : RESOURCE_WORDS[line.resource ?? "vcpu"];
+    return `${line.provider ?? "An unnamed provider"} · ${resource}`;
+  }
+  return `${line.provider ?? "An unnamed provider"} · browser time`;
+}
+
+/** A cost from the run's booking in words, never $0 for what is not known: "$0.0120", "at most $0.0120" (a bound),
+ *  "Unknown, $0.0040 known" (some of it known), "Unknown". */
+export function bookedWords(cost: Pick<NonNullable<RunUsage["total"]>, "usd" | "so_far_usd" | "upper_bound">): string {
+  if (cost.usd !== null) return cost.upper_bound ? `at most ${usd(cost.usd)}` : usd(cost.usd);
+  return cost.so_far_usd !== undefined ? `Unknown, ${usd(cost.so_far_usd)} known` : "Unknown";
+}
+
+const UNITS = {
+  token: ["token", "tokens"],
+  call: ["call", "calls"],
+  second: ["second", "seconds"],
+  vcpu_second: ["vCPU-second", "vCPU-seconds"],
+  gib_second: ["GiB-second", "GiB-seconds"],
+  gpu_second: ["GPU-second", "GPU-seconds"],
+  gb_month: ["GB-month", "GB-months"],
+} as const;
+/** A usage line's quantity with its unit ("12,400 tokens", "3 calls", "84.5 seconds", "0.000064 GB-months"); null when it
+ *  was not measured. A month of disk is a small figure for a run, so it keeps more places. */
+export function quantityWords(line: Pick<UsageLine, "quantity" | "unit">, quantity: number | null = line.quantity): string | null {
+  if (quantity === null) return null;
+  const [one, many] = UNITS[line.unit];
+  return `${quantity.toLocaleString("en-US", { maximumFractionDigits: line.unit === "gb_month" ? 6 : 1 })} ${quantity === 1 ? one : many}`;
+}
+
+/** How a line's dollars were reached, in words. */
+export const BASIS_WORDS: Record<UsageLine["basis"], string> = { reported: "Reported", estimate: "Estimate", unpriced: "No price" };
+
+/** What a line's figures leave out, in words: calls of a tool with no price set, requests that reported no tokens. */
+export function lineNotes(line: UsageLine): string[] {
+  const notes: string[] = [];
+  if (line.not_metered_calls) notes.push(`${line.not_metered_calls} call${line.not_metered_calls === 1 ? "" : "s"} not metered: no price is set, so ${line.not_metered_calls === 1 ? "it is" : "they are"} outside the cost`);
+  if (line.unmetered_requests) notes.push(`${line.unmetered_requests} request${line.unmetered_requests === 1 ? "" : "s"} reported no tokens`);
+  if (line.unheld_quantity) notes.push(`${quantityWords(line, line.unheld_quantity)} no claim held: outside the cost`);
+  if (line.open_computers) notes.push(`${line.open_computers} computer${line.open_computers === 1 ? "" : "s"} still running when read`);
+  return notes;
+}
+
+/** Which attempt at its turn a usage line's work was made in, in words: said only on a run whose lines differ by it (one
+ *  made in a second attempt, or of requests an attempt sent and never finished). Null on every line of a run whose lines
+ *  are all a first attempt's and billable, where there is nothing to tell apart. A line that is not billable is of model
+ *  requests its attempt sent and was cut before they answered, which the attempt that took the turn over sent again;
+ *  what the cut attempt had finished (its answered requests, its paid calls) was reused, and is on a billable line. */
+export function attemptWords(line: Pick<UsageLine, "attempt" | "billable">, lines: readonly Pick<UsageLine, "attempt" | "billable">[]): string | null {
+  if (!lines.some((other) => !other.billable || (other.attempt ?? 1) > 1)) return null;
+  const nth = line.attempt === null ? "An attempt with no number kept" : `Attempt ${line.attempt}`;
+  return line.billable ? nth : `${nth}: requests cut before they answered, sent again`;
+}
+
+/** What a run's repeated requests cost: the lines of model requests an attempt sent and never finished (its runner
+ *  drained, crashed or lost its lease, or its turn was tried again), which the attempt that took the turn over sent
+ *  again. `usd` is the server's own sum (`infra_usd`), null when one such line's cost is not known. `bound`: one of those
+ *  lines is a ceiling (a request cut before its usage was known counts at what was held for it), so the sum is one too,
+ *  said "at most". `share`, its part of the run's cost: null where either is not one exact figure. Null for a run with
+ *  no such line. */
+export type Redo = { usd: number | null; bound: boolean; lines: number; of: number; share: number | null };
+export function redoOf(usage: Pick<RunUsage, "lines" | "infra_usd" | "total"> | null | undefined): Redo | null {
+  const lines = usage?.lines ?? [];
+  const cut = lines.filter((line) => !line.billable);
+  if (!usage || !cut.length) return null;
+  const [usd, total] = [usage.infra_usd, usage.total?.usd ?? null];
+  const bound = cut.some((line) => line.upper_bound === true);
+  return { usd, bound, lines: cut.length, of: lines.length, share: usd !== null && !bound && total !== null && total > 0 && usage.total?.upper_bound !== true ? Math.min(1, usd / total) : null };
+}
+/** A run's repeated requests' cost in words: "$0.0312", "at most $0.0312" (a ceiling), "Unknown". */
+export const redoWords = (redo: Pick<Redo, "usd" | "bound">) => (redo.usd === null ? "Unknown" : `${redo.bound ? "at most " : ""}${usd(redo.usd)}`);
+
+/** The trace span each of a run's tool calls is, by its call row's id on the Timeline: `t:<conversation>:<call id>`, and
+ *  `#2`, `#3` after it for the same id called again in one conversation. A call's id alone does not name it: two
+ *  conversations may each make a call of one id, and one may make it twice, and each is a span of its own. The server
+ *  names its spans by the same rule over the same rows, in their order (run-trace.ts), so what a row links to is that
+ *  call and no other. A row with no call id has no span. */
+export function callSpanIds(rows: readonly Pick<TimelineRow, "id" | "kind" | "tool_use_id" | "conversation_id">[]): Map<string, string> {
+  const made = new Map<string, number>();
+  const ids = new Map<string, string>();
+  for (const row of rows) {
+    if (row.kind !== "tool_use" || !row.tool_use_id) continue;
+    const key = `${row.conversation_id ?? 0}:${row.tool_use_id}`;
+    const nth = made.get(key) ?? 0;
+    made.set(key, nth + 1);
+    ids.set(row.id, nth === 0 ? `t:${key}` : `t:${key}#${nth + 1}`);
+  }
+  return ids;
+}
+
 /** Reads a span's conversation off a trace: the call that started it ("" for the run's own), from the request the span
  *  is or ran under. Null where the trace does not say. The trace says it only where each request is a span of a pi run
  *  (`priced`): a subagent's requests name the call that started it, the run's own name none, and a call is of the
@@ -275,6 +426,29 @@ function conversationOf(trace: Pick<RunTrace, "spans" | "model_requests">): (s: 
   };
 }
 
+/** What of a run says it wound down for its spend cap. */
+export type BudgetRun = Pick<Run, "stopped_for" | "budget_refused_calls"> & { cost?: Pick<NonNullable<Run["cost"]>, "cap_usd"> | null };
+/** A run that wound down for its spend cap, in words: its model was told to wrap up to stay under the cap
+ *  (`stopped_for`), or tool calls of it were refused, unrun, for the cap (`budget_refused_calls`, each call once). Null
+ *  for a run that did neither. It is said to have stopped short only where a call was refused: a run told to wrap up
+ *  with none refused may have done all it was asked, and far under its cap (a small cap has the model told from its
+ *  first request), so of that one only the telling is said. The cap is named, as it was set, only for the telling: a
+ *  run is told under the cap it has now, while its refused calls count every one since it began, so one refused before
+ *  a raise was refused under an earlier cap the run's view no longer says. `bad`: a call was refused, so the run did
+ *  less than it was asked; a run only told to wrap up is said plainly, never as something that went wrong. */
+export function budgetStop(run: BudgetRun): { title: string; detail: string; bad: boolean } | null {
+  const refused = run.budget_refused_calls ?? 0;
+  const stopped = run.stopped_for === "budget";
+  if (!stopped && refused === 0) return null;
+  const cap = typeof run.cost?.cap_usd === "number" ? `its ${capDollars(run.cost.cap_usd)} cap` : "its spend cap";
+  const calls = `${refused} tool call${refused === 1 ? " was" : "s were"} refused, unrun, for its budget`;
+  const told = `Its model was told to answer soon, to stay under ${cap}`;
+  if (!stopped) return { title: `${refused} call${refused === 1 ? "" : "s"} refused for the run's budget`, detail: `${calls}, under the cap it had then.`, bad: true };
+  return refused > 0
+    ? { title: "The run stopped short for its budget", detail: `${told}, and it answered from what it had. ${calls}.`, bad: true }
+    : { title: "The run was told to wrap up for its budget", detail: `${told}. No tool call was refused.`, bad: false };
+}
+
 /** One thing about the run worth a look, with the span it is about. */
 export type Finding = { id: string; title: string; detail: string; span?: string; bad?: boolean };
 /** What stands out in a trace, most pressing first: what failed, the call and the request that took the longest, the
@@ -282,17 +456,26 @@ export type Finding = { id: string; title: string; detail: string; span?: string
  *  conversation wrote the cache, the largest result (it becomes input to every request after it), and time spent
  *  between calls. (Calls repeated with the same arguments are not found: the trace keeps one field of a call's
  *  arguments, not all of them.)
- *  Each is a figure of the trace, never advice. */
-export function findings(trace: Pick<RunTrace, "spans" | "model_requests">, now: number): Finding[] {
+ *  Each is a figure of the trace, never advice. `more.usage`: the run's cost by line, where it was read: what its
+ *  repeated requests cost (redoOf) is then said after what failed. `more.run`: the run, where it wound down for its spend cap
+ *  (budgetStop): said first, as what its cap did to the run, and as bad only where a call of it was refused. */
+export function findings(trace: Pick<RunTrace, "spans" | "model_requests">, now: number, more: { usage?: Pick<RunUsage, "lines" | "infra_usd" | "total"> | null; run?: BudgetRun } = {}): Finding[] {
   const { spans } = trace;
   const totals = traceTotals(trace, now);
   const out: Finding[] = [];
+  const budget = more.run ? budgetStop(more.run) : null;
+  if (budget) out.push({ id: "budget", title: budget.title, detail: budget.detail, ...(budget.bad ? { bad: true } : {}) });
   const longest = (kind: TraceSpan["kind"]) => spans.filter((s) => s.kind === kind && spanMs(s, now) !== null).sort((a, b) => spanMs(b, now)! - spanMs(a, now)!)[0];
   const ofWall = (ms: number) => (totals.time.wall > 0 ? ` · ${percent(ms / totals.time.wall)} of the run's time` : "");
   const failed = spans.filter((s) => s.status === "failed");
   if (failed.length) {
     const names = [...new Set(failed.map((s) => s.name))];
     out.push({ id: "failed", bad: true, span: failed[0]!.id, title: failed.length === 1 ? `1 call failed: ${failed[0]!.name}` : `${failed.length} calls failed`, detail: failed.length === 1 ? `At ${offset(at(failed[0]!.started_at) - traceWindow(spans, now).from)}.${spans.some((s) => at(s.started_at) > at(failed[0]!.started_at)) ? " The run went on after it." : " Nothing ran after it."}` : names.slice(0, 4).join(", ") + (names.length > 4 ? ` and ${names.length - 4} more` : "") });
+  }
+  const redo = redoOf(more.usage);
+  if (redo) {
+    const said = redoWords(redo);
+    out.push({ id: "redo", title: redo.usd !== null ? `${said[0]!.toUpperCase()}${said.slice(1)} went on requests sent twice` : "Requests were sent twice, at a cost not known", detail: `${redo.lines} of the run's ${redo.of} cost line${redo.of === 1 ? "" : "s"} ${redo.lines === 1 ? "is" : "are"} of requests an attempt sent and was cut before they answered, which the next attempt sent again${redo.share !== null ? `: ${percent(redo.share)} of the run's cost` : ""}.` });
   }
   const call = longest("tool");
   if (call) out.push({ id: "slowest-call", span: call.id, title: `Slowest call: ${call.name}`, detail: `${duration(spanMs(call, now)!)}${ofWall(spanMs(call, now)!)}${call.status === "waiting" ? " · waiting for a person" : ""}` });

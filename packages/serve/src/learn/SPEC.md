@@ -182,7 +182,7 @@ naming the run it audits; a shadow whose line could not be written is never crea
 list, sends no webhook, is no run of the stats, GET /runs/{id} reads it with `audit_of` and `path` `audit`, and its cost
 is the served run's learning (its `cost.learning_usd` and its learning cost in the cost series; `cost.usd` stays the
 served run's own spend). While the shadow is queued or running the served run's all-in is unknown, never $0
-(`store-reads/learning.ts` shadowSpendOf): its `cost.learning_usd`, `cost.all_in_usd` and learning cost read null until
+(`learn/ledger.ts` shadowCostOf): its `cost.learning_usd`, `cost.all_in_usd` and learning cost read null until
 the shadow ends. Each claim of a run that learns first settles the open audits (started lines with no row yet), reading
 each one's two runs by id, never a window of newest runs: once both ended it writes the row `{run, shadow_run, workflow,
 digest, promoted_at, source: "shadow", agreed, served_cost, shadow_cost, turn, at}`, `agreed` by compareAnswers of the
@@ -315,6 +315,20 @@ Over a cap is refused, never cut.
   of the run's metrics (`loops`: `{node, iterations, met, repick?, workflow}`, `repick` true on the re-pick loop alone,
   a top-level step of this shape), so a re-pick (`iterations` 2) and whether it found its quotes (`met`) are counted,
   and a run's views say it (`workflow.repick`: `found`, `missed`, or null); its request is booked as any node's.
+- `learning.repick` (the owner's, off by default; `learning-setting.ts`) has the re-pick read the run's pages. H6c's
+  re-pick tier, one more answer over the pages the run fetched, found its quotes on 24 of 24 misses; the compiled
+  re-pick, over its compact facts and its draft alone, found them on 2 of 8 in S6. What is rewritten: with it on, the
+  answer's re-pick loop where quoteRule finds it (a top-level step, or the composed child's writing the answer), when
+  its body is one agent, decide or extract step with a `state` map and no tools, before the draft is committed
+  (`runner/learning-end.ts` `checkDraftOf`; the mechanism is `repick.ts`'s). Its second pass runs a clone of that
+  step, `<label>_pages`, that also reads the check's pages, told they are untrusted data. Any other re-pick, or one
+  whose marker names are taken, is committed as compiled and the runner's log says so. Which shape passes: the compact
+  state rule reads only the exact marker `repick.ts` derives, at that loop, at a cap the setting allows, never in a
+  child whose node's `input` hands it `repick_next`; with the setting off, a marker is refused as any page read. What is cut: the clone's request state past `repick_max_chars`
+  (150000 by default, 1 to 400000), its longest strings first, each marked where it was cut; a state that cannot fit
+  is never sent and the run hands back; the workflow's own state stays whole for the quote check. Its request is the
+  served run's, under the run's one cost cap. A change reaches only the workflows compiled after it, and an agent on
+  an SDK bridge (`workflowAdapters`) ignores it.
 - Every problem is `{ rule, path?, detail }`, printable as it is: its path and detail are cut of the host's values and
   of secret shapes, and a field over 4096 bytes prints whole as `[redacted]`, never scanned.
 
@@ -333,3 +347,37 @@ snapshot (`.agentrun/snapshot.json`, what every read reads). A stop between the 
 ref with no diff: the next read of the round's merge (the end step's, or a second merge's) writes it from the ref. A person's replace of `corrections.md` is one commit the
 same way, under the ETag they read. A workflow is never deleted by a run: a retired one stays in the folder and
 serves no run.
+
+## The reset
+
+`DELETE /v2/agents/{id}/learning` (`learning-reset.ts`) deletes the folder whole, its git history and audit ledger
+included, on this server and on every Archil disk the agent's runs used (a Mode 2 run's end writes the folder on the
+disk its claim mounted: the agent's own, or one its launch named; `archil-routes.ts` removeLearningFolder, 503 while a
+disk can't be reached; `learning-of.ts` namedDisksOf: each disk a run of the agent named, a purged run's included),
+then the agent's promotions and grades (`delete.ts` deleteLearning); the agent and its runs stay. The agent's delete
+takes the same step on the launch-named disks; its own disk goes whole there. It cancels the runs that exist only for
+learning (replays, audit shadows) and waits for them; a run of the agent's own still going refuses it (409
+`learning_busy`), since its learning lives in it, and nothing is deleted. Before the records go, each revision they
+name is kept in the agent's reset ledger (`learning.reset-ledger.<agent>`: workflow, digest and K alone), so a kept
+served run's cost still carries its revision's compile and check; an agent's delete removes the ledger. Each run's
+diff (`.agentrun/diffs/`) goes with the folder. The folder's next write starts a new history.
+
+A run on a disk its launch named learns nothing (`learning-of.ts`): its start reads no seed (`other_disk`), the runner
+drops any seed and workflow from its launch, and with no seed it stops before its compile. So the agent's records are
+its own, and every learning read of its runs reads only runs on no named disk (`runs.disk` null).
+
+Before anything goes, the reset sets the agent's watermark (`learning.reset-at.<agent>`, beside the ledger; the agent's
+delete removes both): when it began. Learning reads only the
+runs after it (`compile.ts` sinceReset): a run that started at or before it, or whose seed was read at or before it
+(its launch's `seededAt`, read in the same queue as the reset), counts toward no compile_after and is no compile's
+trace, no check's or owner's replay input, no audit's draw and no past run of the money rule, and the loop view lists
+none of its compiles. A run seeded before the reset whose row was made after it learns nothing: its learning end drops it at its entry
+(reason `reset`), before any look-back, merge, compile or record. That check reads time alone: a Mode 2 run's end
+writes the folder on its disk, which never held the seed the server read from its own, so a commit missing there says
+nothing of a reset. The learning script is a second wall: once the agent was reset, a run whose folder holds its seed
+at its end's entry names it on its merge (`seed <commit>`), which the script refuses when the folder no longer holds
+it, a correction alone included. A grade of a run before the reset is kept, but writes no audit row (`runner/audit.ts`
+gradeRow), so a promotion of the same digest after the reset is never held by what came before it. An SDK start is
+admitted (its check reserved, its inbox and run row made) in the same queue (`sdk/runs.ts`): a start whose seed was read
+before the reset is refused (`503 unavailable`, start it again), so no check of a draft the reset deleted is reserved.
+The runs themselves, their costs and what each kept stay.

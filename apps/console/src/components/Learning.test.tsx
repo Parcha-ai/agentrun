@@ -444,7 +444,8 @@ describe("the before and after", () => {
     const t = await open(agent(true), { learning: async () => view({ impact: IMPACT }) });
     const card = t.host.querySelector('section[aria-label^="Since it learned"]')!;
     expect(card.getAttribute("aria-label")).toBe("Since it learned (medians of 4 runs started from what it learned): answers in 12s instead of 18s");
-    expect(card.textContent).toContain("Answers in12sinstead of 18s−33%");
+    // A figure cell like the four at the top: its label, its time, the change in the band under it, then what it was.
+    expect(card.textContent).toContain("Answers in12s−33%instead of 18s");
     // A run's cost is the cost card's all-in before and after, learning included: a median of the job's own cost here
     // left learning out and read -86% beside the cost card's 2.0x cheaper.
     expect(card.textContent).not.toContain("A run costs");
@@ -456,10 +457,10 @@ describe("the before and after", () => {
     // Learning's cost is the bill's: the impact has no figure of its own (its old median of mostly-zero rows read $0).
     const t = await open(agent(true), { cost, learning: async () => view({ impact: { before: { runs: 2, median_duration_s: 1.2 }, after: { runs: 4, median_duration_s: 1.3 } } }) });
     const card = t.host.querySelector('section[aria-label^="Since it learned"]')!;
-    expect(card.textContent).toContain("Learning itself$0.0075 a run, booked");
+    expect(card.textContent).toContain("Learning itself$0.0075a run, booked");
     expect(card.textContent).not.toContain("$0.0000");
-    const up = [...card.querySelectorAll("span")].find((x) => x.textContent === "+8%")!;
-    expect(card.textContent).toContain("Answers in1.3sinstead of 1.2s+8%");
+    const up = [...card.querySelectorAll("span")].filter((x) => x.textContent === "+8%").at(-1)!;
+    expect(card.textContent).toContain("Answers in1.3s+8%instead of 1.2s");
     expect(up.className).toContain("text-warning-text");
   });
   it("renders for an agent that learned only a workflow", async () => {
@@ -900,7 +901,7 @@ describe("the loop on the Learning tab", () => {
     expect(t.host.querySelector('[data-testid="stage-compiled"]')!.textContent).toContain("150 of 200 completed runs");
   });
   it("the cheaper stage: 'N times cheaper' (the chart's ratio) over the agreement check it passed (N of M agreed, its bar) when the serving check cleared, never 'the same accuracy'; the reason in its place when a run's cost isn't all known", async () => {
-    const took = { takeover: { n: 19, run_id: "r19" }, before: { runs: 18, mean_usd: 0.89 }, after: { runs: 59, mean_usd: 0.127 }, after_state: "priced" as const, hand_backs: { ran: 59, back: 3 } };
+    const took = { takeover: { n: 19, run_id: "r19" }, before: { runs: 18, mean_usd: 0.89 }, after: { runs: 59, mean_usd: 0.127 }, after_state: "priced" as const, hand_backs: { ran: 59, back: 3, cut: 0 } };
     const costOf = (over: Partial<LearningCost["summary"]>) => async (): Promise<LearningCost> => ({ agent: "refunds", runs: [], total_runs: 77, unknown_cost_runs: 0, unknown_path_runs: 0, summary: { ...took, times_cheaper: 7, withheld: null, replay: { n: 40, workflow_pct: 80, agent_pct: 100, cleared: true, agreed: 32, alone: 40, agree_min: 0.8 }, ...over }, workflows: [], bill: EMPTY_BILL });
     const t = await open(agent(true), { cost: costOf({}) });
     const stage = t.host.querySelector('[data-testid="stage-cheaper"]')!;
@@ -1014,5 +1015,59 @@ describe("the bill", () => {
     // Runs 5 to 9 were audited and each has its row: the card and the charged runs agree, nothing waits.
     expect(t.text()).not.toContain("not scored yet");
     expect(t.text()).not.toMatch(/equal[- ]cache/i);
+  });
+});
+
+
+describe("CLI project learning uses owner corrections", () => {
+  const cli = { runtime: "codex" as const, connection_id: "connection", project: "/workspace/app" };
+  const empty = async () => none();
+
+  it("explains an uncaptured first prompt without launching extra work or promising automatic lessons", async () => {
+    const a = { ...agent(true, { cli_learning: cli }), runs: { count: 0, live: 0 } };
+    const t = await open(a, { learning: empty, runs: [] }, { server: "on" });
+    expect(t.text()).toContain("Waiting for the first captured prompt.");
+    expect(t.text()).toContain("Continue your normal work in Codex CLI");
+    expect(t.text()).toContain("Earlier conversations are not imported automatically");
+    expect(t.text()).toContain("owner-written corrections");
+    expect(t.text()).toContain("Workflow learning is unavailable for this CLI connection");
+    expect(t.text()).not.toContain("a job it does again compiles into a workflow");
+    expect(t.text()).not.toContain("keeps a note");
+    expect(t.host.querySelector('[role="switch"]')?.getAttribute("aria-checked")).toBe("true");
+    expect(t.calls.some(call => /^(put |write )/.test(call))).toBe(false);
+  });
+
+  it("stops the first-prompt message when a recorded run is visible", async () => {
+    const a = { ...agent(true, { cli_learning: cli }), runs: { count: 0, live: 0 } };
+    const t = await open(a, { learning: empty, runs: [RUNS[0]!] }, { server: "on" });
+    expect(t.text()).not.toContain("Waiting for the first captured prompt.");
+    expect(t.text()).toContain("No corrections yet.");
+    expect(t.text()).not.toContain("had their compile turn");
+  });
+
+  it("keeps disabled learning explicit and enables the current boolean setting on the latest revision", async () => {
+    const a = { ...agent(false, { cli_learning: cli }), runs: { count: 0, live: 0 } };
+    const t = await open(a, { learning: empty, runs: [] }, { server: "on" });
+    expect(t.text()).toContain("Learning is off for this agent.");
+    expect(t.text()).not.toContain("Waiting for the first captured prompt.");
+    await act(async () => (t.host.querySelector('[role="switch"]') as HTMLButtonElement).click());
+    await settle();
+    const saved = t.calls.find(call => call.startsWith("put "))!;
+    expect(saved).toContain('"learning":true');
+    expect(saved).toContain('"cli_learning"');
+    expect(saved).not.toContain('"learning":"notes"');
+  });
+
+  it("keeps corrections editable and historical workflows visible without offering execution or approval", async () => {
+    const t = await open(agent(true, { cli_learning: cli }), { learning: async () => view({ workflows: [flow("pending")] }), runs: [] });
+    expect(t.text()).toContain("Keep the answer to three lines.");
+    expect(t.button(/^Edit corrections$/)).toBeDefined();
+    expect(t.card("check-refunds")).not.toBeNull();
+    expect(t.button(/^Approve check-refunds$/)).toBeUndefined();
+    expect(t.button(/^Retire check-refunds$/)).toBeUndefined();
+    expect(t.text()).toContain("Stored workflows are preserved");
+    expect(t.text()).not.toContain("a job it does again, as steps a later run can call");
+    expect(t.text()).not.toContain("compiles into a workflow it can run as one step");
+    expect(t.calls.some(call => /^(put |write |approve |retire )/.test(call))).toBe(false);
   });
 });

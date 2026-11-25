@@ -1,10 +1,12 @@
-// A dial desktop against a real computerd and a real Xvfb on this host: init started with DISPLAY, as agentrun-dial starts
-// it for a desktop, in a user namespace of its own (unshare -Ur); its socket handed to an AttachHub as a machine minted a
-// desktop, one frame a line, as `computerd attach` carries it; the X server and the window manager started through
-// computerd's process.start over that connection (desktop.ts startDisplay); then hello says desktop and the screen tools
-// answer. Skipped, in words, where the host has no dist/computerd-linux-<arch> (npm run build:daemon), no Xvfb, or
-// refuses a user namespace. No window manager: its own unshare --user, nested in this test's user namespace, may not
-// write its uid map; hosted-dial.test.mjs drives the provider's create, the window manager among it, over the fake dial host.
+// A dial desktop against a real computerd and a real Xvfb on this host: init started with DISPLAY and --window-manager,
+// as agentrun-dial starts it for a desktop whose host runs one, in a user namespace of its own (unshare -Ur, where init is
+// root and may make the window manager's network namespace); its socket handed to an AttachHub as a machine minted a
+// desktop, one frame a line, as `computerd attach` carries it; the X server started through computerd's process.start
+// over that connection (desktop.ts startDisplay), and the window manager by computerd itself once the display answers,
+// which create waits on (hello's windowManager) and starts none of its own; then hello says desktop, the root window has
+// a window manager (_NET_SUPPORTING_WM_CHECK), and the screen tools answer. Skipped, in words, where the host has no
+// dist/computerd-linux-<arch> (npm run build:daemon), no Xvfb, xfwm4, xsetroot, dbus-run-session or xprop, or refuses a
+// user namespace.
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
@@ -15,12 +17,23 @@ import { after, before, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import { AttachHub, helloMismatch, mintedComputer } from "../dist/index.js";
 import { desktopOf, startDisplay } from "../dist/desktop.js";
+import { computerdListening } from "./computerd-listening.mjs";
 
 const ARCH = { x64: "amd64", arm64: "arm64" }[process.arch];
 const DAEMON = fileURLToPath(new URL(`../dist/computerd-linux-${ARCH}`, import.meta.url));
 const has = (program) => spawnSync("sh", ["-c", `command -v ${program}`]).status === 0;
 const userns = spawnSync("unshare", ["-Ur", "unshare", "-n", "true"]).status === 0;
-const skip = !existsSync(DAEMON) ? `needs ${DAEMON}: npm run build:daemon` : !has("Xvfb") ? "needs Xvfb" : !userns ? "needs a user namespace with its capabilities (unshare -Ur), which this host refuses" : false;
+const programs = ["Xvfb", "xfwm4", "xsetroot", "dbus-run-session", "xprop"];
+const missing = programs.filter((program) => !has(program));
+const skip = !existsSync(DAEMON)
+	? `needs ${DAEMON}: npm run build:daemon`
+	: missing.length > 0
+		? `needs ${missing.join(", ")}`
+		: !userns
+			? "needs a user namespace with its capabilities (unshare -Ur), which this host refuses"
+			: false;
+/** Whether the root window of display names a window manager's check window (EWMH _NET_SUPPORTING_WM_CHECK). */
+const framed = (display) => /window id # 0x[0-9a-f]+/.test(spawnSync("xprop", ["-display", display, "-root", "_NET_SUPPORTING_WM_CHECK"], { encoding: "utf8" }).stdout ?? "");
 /** A display no X server on this host holds. */
 const free = () => {
 	for (let n = 90; n < 200; n++) if (!existsSync(`/tmp/.X11-unix/X${n}`) && !existsSync(`/tmp/.X${n}-lock`)) return `:${n}`;
@@ -72,12 +85,9 @@ describe("a dial desktop against computerd and Xvfb on this host", { skip }, () 
 
 	before(async () => {
 		const deadline = new Date(Date.now() + 10 * 60_000).toISOString();
-		init = spawn("unshare", ["-Ur", DAEMON, "init", "--deadline", deadline], { env: { PATH: process.env.PATH, AGENTRUN_COMPUTERD_SOCKET: socket, DISPLAY: display }, stdio: ["ignore", "ignore", "pipe"] });
+		init = spawn("unshare", ["-Ur", DAEMON, "init", "--deadline", deadline, "--window-manager"], { env: { PATH: process.env.PATH, AGENTRUN_COMPUTERD_SOCKET: socket, DISPLAY: display }, stdio: ["ignore", "ignore", "pipe"] });
 		init.stderr.on("data", (chunk) => (stderr += chunk));
-		for (let tries = 0; !existsSync(socket); tries++) {
-			assert.ok(tries < 200 && init.exitCode === null, `computerd's init did not listen at ${socket}: ${stderr}`);
-			await new Promise((resolve) => setTimeout(resolve, 25));
-		}
+		await computerdListening(socket, init, () => stderr);
 	});
 
 	after(async () => {
@@ -95,7 +105,7 @@ describe("a dial desktop against computerd and Xvfb on this host", { skip }, () 
 		rmSync(dir, { recursive: true, force: true });
 	});
 
-	it("the hub takes the minted desktop's socket while it says linux, the display comes up over it, and the screen tools answer", { timeout: 60_000 }, async () => {
+	it("the hub takes the minted desktop's socket while it says linux, the display comes up over it, computerd's window manager takes it, and the screen tools answer", { timeout: 60_000 }, async () => {
 		const stream = connect(socket);
 		await new Promise((resolve, reject) => stream.once("connect", resolve).once("error", reject));
 		const accepted = await hub.accept(minted, lineSocket(stream));
@@ -104,20 +114,24 @@ describe("a dial desktop against computerd and Xvfb on this host", { skip }, () 
 		const connection = hub.connection(MACHINE);
 		assert.ok(connection, "the hub holds the socket under the machine's name");
 
-		const shown = await startDisplay(connection.client, desktopOf({ display }), { version: "0.0.0-test", vendor: "test" });
+		const shown = await startDisplay(connection.client, desktopOf({ display }), { version: "0.0.0-test", vendor: "test", windowManager: true });
 		const listed = await connection.client.call("process.list", {});
 		if (listed.ok) for (const one of listed.value.processes) pids.push(one.pid);
 		assert.equal(shown.ok, true, shown.ok ? "" : `${shown.error.message}; init: ${stderr}`);
 		assert.deepEqual(
 			listed.value.processes.map(({ argv }) => argv[0]),
 			["Xvfb"],
-			"computerd started the X server",
+			"computerd started the X server, and create no window manager of its own",
 		);
 
 		const hello = await connection.client.call("hello", { client: "test" });
 		assert.equal(hello.ok, true);
 		assert.equal(hello.value.kind, "desktop");
 		assert.equal(hello.value.display, display);
+		assert.deepEqual(hello.value.windowManager, { state: "running" }, "computerd says its window manager runs");
+		for (let until = Date.now() + 15_000; !framed(display); await new Promise((resolve) => setTimeout(resolve, 50))) {
+			assert.ok(Date.now() < until, `no window manager took ${display} within 15 s: the root window has no _NET_SUPPORTING_WM_CHECK`);
+		}
 		for (const group of ["screen", "input.pointer", "input.keys"]) assert.ok(hello.value.groups.includes(group), group);
 		assert.equal(helloMismatch(minted, hello.value), undefined, "a redial now matches its mint");
 

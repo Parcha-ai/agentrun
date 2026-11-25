@@ -8,7 +8,7 @@
 // passes its decisions. `effort` is the level the run ran at and `model`, on a harness other than pi, the model its
 // revision named — both as storedMetrics added them, resolved by the caller from the run's launch and harness.
 import { type DecisionLike, type EntryLike, runMetricsWithDecisions, type RunMetrics, timelineOf } from "../timeline/index.js";
-import { costOfParts, type CostParts, rebooked, RUNNER_RECORDS, type SessionRecord, sessionSpendOf, turnCostOf } from "@parcha/agentrun-kernel";
+import { billedToPlan, costOfParts, type CostParts, rebooked, RUNNER_RECORDS, type SessionRecord, sessionSpendOf, turnCostOf } from "@parcha/agentrun-kernel";
 import { DECISION_SESSION, TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
 import { KINDS, WORKFLOW_SESSION } from "./journal-kinds.js";
 import { anthropicModelId } from "../provider.js";
@@ -26,8 +26,16 @@ import { WORKFLOW_FIRST, WORKFLOW_FIRST_CALL } from "./workflow-first.js";
  *  gateway priced (`reported`: the proxy's reportedCostOf or usageCostOf, its runner.turn keeping the table's figure beside
  *  it as `tableUsd`) and how many a price table did (`estimated`: its runner.turn's `estimated`, or a cut request's hold,
  *  or a native or SDK task's `aggregate` booking, its harness's own figure).
- *  A figure that is neither ($0 for a request refused or never sent, a charge settled through the cap) counts in neither. */
-export type BookedSpend = { readonly usd: number | null; readonly known: number; readonly bounded: number; readonly unpriced: number; readonly atMost: number; readonly requests: number; readonly unmetered: number; readonly models: Readonly<Record<string, number>>; readonly tokens: { input: number; output: number; cacheRead: number; cacheWrite: number }; readonly priced: { readonly reported: number; readonly estimated: number }; readonly free?: true };
+ *  A figure that is neither ($0 for a request refused or never sent, a charge settled through the cap) counts in neither.
+ *  `plan`: of its requests, those billed to a person's plan (a ChatGPT plan's, chatgpt-plan.ts, or Claude Code's login's:
+ *  its runner.turn's `billing` "plan", or, still in flight, its runner.request's `plan`), how many and their tokens (input,
+ *  output and cache, as each booking reported them; none yet for one in flight). Each is $0 to the run by the kernel's one
+ *  rule (turnCostOf), however it ended: the plan pays for it, so no reader counts it unpriced. Counted as `requests` is:
+ *  a request booked twice is one. */
+export type BookedSpend = { readonly usd: number | null; readonly known: number; readonly bounded: number; readonly unpriced: number; readonly atMost: number; readonly requests: number; readonly unmetered: number; readonly models: Readonly<Record<string, number>>; readonly tokens: { input: number; output: number; cacheRead: number; cacheWrite: number }; readonly priced: { readonly reported: number; readonly estimated: number }; readonly plan: { readonly requests: number; readonly tokens: number }; readonly free?: true };
+
+/** A booking record's request, as every reader of a booking names it: its conversation and its turn. */
+const turnOf = (e: EntryLike): string => `${String(e.conversationId)}:${String((e.data as { turn?: unknown } | undefined)?.turn)}`;
 
 /** How a run's cost was reached, by how its model requests were priced: `reported` when every request priced had the
  *  provider's or its gateway's own figure (LiteLLM's `x-litellm-response-cost`, OpenRouter's usage `cost`); `estimate`
@@ -87,7 +95,6 @@ export function bookedSpend(entries: readonly EntryLike[], which: "model" | "pai
   const paidConv = keyed.get(TOOL_SESSION);
   const decisionsConv = keyed.get(DECISION_SESSION);
   const conv = (e: EntryLike) => Number(e.conversationId);
-  const turnOf = (e: EntryLike) => `${String(e.conversationId)}:${String((e.data as { turn?: unknown } | undefined)?.turn)}`;
   const model = (e: EntryLike) => conv(e) !== paidConv && conv(e) !== decisionsConv;
   // The side calls among the model requests: each request that says so, by its conversation and turn.
   const sides = new Set(entries.filter((e) => e.kind === RUNNER_RECORDS.request && model(e) && ((e.data as { side?: unknown; host?: unknown } | undefined)?.side === true || typeof (e.data as { host?: unknown } | undefined)?.host === "string")).map(turnOf));
@@ -111,6 +118,7 @@ export function bookedSpend(entries: readonly EntryLike[], which: "model" | "pai
   let reported = 0;
   let estimated = 0;
   const tokens = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+  const plan = { requests: 0, tokens: 0 };
   // Each request is booked once, as the kernel's sessionSpendOf reads it: a second runner.turn of a turn already booked
   // (two bookings of one session that each read it open, a cut written twice) counts no money and no request again.
   const booked = new Set<string>();
@@ -119,7 +127,10 @@ export function bookedSpend(entries: readonly EntryLike[], which: "model" | "pai
     if (e.kind === RUNNER_RECORDS.request && !answered.has(turnOf(e))) {
       requests += 1;
       count(e);
-      unpriced += 1;
+      // One billed to a person's plan (its record's `plan`, Admitted.plan) is $0 to the run however it ends, as the
+      // kernel's sessionSpendOf holds it: in flight it is a known $0 and one of the plan's requests, never unpriced.
+      if (billedToPlan(e.data)) plan.requests += 1;
+      else unpriced += 1;
       unmetered += 1;
       continue;
     }
@@ -147,9 +158,23 @@ export function bookedSpend(entries: readonly EntryLike[], which: "model" | "pai
     }
     // The booking keeps a request's usage only when it reported some (runner.ts tokensOf): one with none is unmetered.
     if (d.usage === undefined) unmetered += 1;
-    for (const key of Object.keys(tokens) as (keyof typeof tokens)[]) if (typeof d.usage?.[key] === "number") tokens[key] += d.usage[key] as number;
+    if (d.billing === "plan") plan.requests += 1;
+    for (const key of Object.keys(tokens) as (keyof typeof tokens)[]) {
+      if (typeof d.usage?.[key] !== "number") continue;
+      tokens[key] += d.usage[key] as number;
+      if (d.billing === "plan") plan.tokens += d.usage[key] as number;
+    }
   }
-  return { usd: unpriced ? null : known + bounded, known, bounded, unpriced, atMost, requests, unmetered, models, tokens, priced: { reported, estimated }, ...(requests > 0 && free === requests ? { free: true as const } : {}) };
+  return { usd: unpriced ? null : known + bounded, known, bounded, unpriced, atMost, requests, unmetered, models, tokens, priced: { reported, estimated }, plan, ...(requests > 0 && free === requests ? { free: true as const } : {}) };
+}
+
+/** The run's decisions whose ids are in `ids` (each booked as `decision:<id>`), as bookedSpend reads its decisions, with
+ *  every other decision left out: the ones a vendor charged as a paid call (store-reads/decisions.ts
+ *  parallelChargedDecisions), which the run's tools figures count beside its paid tool calls. */
+export function bookedDecisionsOf(entries: readonly EntryLike[], ids: ReadonlySet<string>): BookedSpend {
+  const named = (e: EntryLike) => (e.data as { model?: unknown } | undefined)?.model;
+  const kept = new Set(entries.filter((e) => e.kind === RUNNER_RECORDS.request && typeof named(e) === "string" && (named(e) as string).startsWith("decision:") && ids.has((named(e) as string).slice("decision:".length))).map(turnOf));
+  return bookedSpend(entries.filter((e) => !(e.kind === RUNNER_RECORDS.request || e.kind === RUNNER_RECORDS.turn) || kept.has(turnOf(e))), "decisions");
 }
 
 /** A sum of charges with its float noise rounded off, nothing more (as the decisions row rounds, decision-rows.ts): a
@@ -217,22 +242,6 @@ export function runCostOf(entries: readonly EntryLike[], { unbooked = false }: {
  *  it can have cost (a request cut at its hold counted in it). An unknown cost is never a bound. */
 export type EndCost = { readonly costUsd: number | null; readonly costUpperBound: boolean };
 export const endCostOf = (cost: RunCost): EndCost => ({ costUsd: cost.usd, costUpperBound: cost.usd !== null && cost.atMost > 0 });
-
-/** The run's model requests billed to a ChatGPT plan (runner.turn `billing` "plan", booked at no price, chatgpt-plan.ts):
- *  how many and their tokens (input, output and cache, as each booking reported them). Each is $0 to the run by the
- *  kernel's one rule (turnCostOf), however it ended: the plan pays for it, so no reader counts it unpriced. */
-export function planSpend(entries: readonly EntryLike[]): { readonly requests: number; readonly tokens: number } {
-  let requests = 0;
-  let tokens = 0;
-  for (const e of entries) {
-    if (e.kind !== RUNNER_RECORDS.turn) continue;
-    const d = (e.data ?? {}) as { billing?: unknown; givenBack?: unknown; unsent?: unknown; usage?: Record<string, unknown> };
-    if (d.billing !== "plan" || d.givenBack === true || d.unsent === true) continue;
-    requests += 1;
-    for (const key of ["input", "output", "cacheRead", "cacheWrite"]) if (typeof d.usage?.[key] === "number") tokens += d.usage[key] as number;
-  }
-  return { requests, tokens };
-}
 
 /** Whether a CLI harness's record (`entries`, its root's) shows the model at work: a model message, a tool call it made, or
  *  its end-of-run turn's answer. Each took a model request, so a run that shows one and booked none (its requests went

@@ -110,8 +110,15 @@ export default {
         check(flags.join() === "marker-revision,marker-hold,marker-revision,marker-promote", `${at}: the chart's markers are ${flags.join()}`);
         const headline = await cost.locator("h3 + p").textContent();
         check(/^\$0\.890 a run before takeover, \$0\.116 all-in over 59 served runs after: 7\.7x cheaper · 5% handed back since$/.test(headline ?? ""), `${at}: the headline says ${headline}`);
+        // The learned workflow takes a row of its own under the cost chart, as wide as it, at every width: beside it, its
+        // column was too narrow for its name and its graph.
+        const chartBox = await cost.boundingBox(), flowBox = await page.getByRole("region", { name: "Learned workflow" }).boundingBox();
+        const under = flowBox.y >= chartBox.y + chartBox.height - 1 && Math.abs(flowBox.x - chartBox.x) < 2 && Math.abs(flowBox.width - chartBox.width) < 2;
+        check(under, `${at}: the learned workflow is at ${JSON.stringify(flowBox)}, the cost chart at ${JSON.stringify(chartBox)}`);
         await shoot(cost, `loop-cost-${theme}-${width}.png`);
         // A flag's hover says its record.
+        // The chart can start under the fold (the glance and the story stand above it): bring it into view first.
+        await cost.scrollIntoViewIfNeeded();
         const flag = cost.locator('g[data-testid="marker-promote"] rect').first();
         const fb = await flag.boundingBox();
         await page.mouse.move(fb.x + fb.width / 2, fb.y + fb.height / 2);

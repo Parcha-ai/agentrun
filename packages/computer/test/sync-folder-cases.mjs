@@ -1,8 +1,8 @@
 // The synced folder's delta (src/sync-folder.ts) against a real computerd: each change made in the folder by a shell
-// in the computer (a write, a move, rm -rf, chmod, a symlink, a same-ms same-size rewrite, a new tree) lands on a fake
-// sink exactly once, through the reads it should take (files.read up to 512 KiB, a tar.pull above it and for a new
-// tree). Run on a computerd on this host in a user namespace (sync-folder.test.mjs), and in a Docker computer
-// (docker/sync-folder.docker.test.mjs).
+// in the computer (a write, a move, rm -rf, chmod, a symlink, a same-ms same-size rewrite, one in a push's own tick, a
+// new tree) lands on a fake sink exactly once, through the reads it should take (files.read up to 512 KiB, a tar.pull
+// above it and for a new tree). Run on a computerd on this host in a user namespace (sync-folder.test.mjs), and in a
+// Docker computer (docker/sync-folder.docker.test.mjs).
 import assert from "node:assert/strict";
 import { FolderSync } from "../dist/index.js";
 
@@ -164,6 +164,20 @@ export const CASES = [
 		},
 	},
 	{
+		name: "a same-size rewrite in a push's own clock tick: put at the next sync; the pushed files that did not change are never read",
+		setup: "true",
+		async run(folder) {
+			const file = (name, text) => ({ name, type: "file", mode: 0o644, body: Buffer.from(text) });
+			await folder.push([file("f", "aaaa"), file("keep", "k"), { name: "d", type: "dir", mode: 0o755 }, file("d/g", "g")]);
+			// The mtime a coarse clock (a jiffy) gives a write in the push's own tick: the ctime its extraction left on f.
+			await folder.sh('t="$(stat -c %z f)" && printf bbbb > f && touch -d "$t" f');
+			assert.deepEqual(await folder.sync(10_000), { put: 1, mkdir: 0, removed: 0, meta: false }, "the rewrite, seen");
+			assert.deepEqual(await folder.sync(10_000 + RACY_MS), { put: 0, mkdir: 0, removed: 0, meta: false }, "the racy re-read finds the same bytes");
+			assert.deepEqual(folder.sink.calls, [["put", "f", "bbbb"]]);
+			assert.deepEqual(folder.reads, [["files.read", "f"], ["files.read", "f"]], "f and its racy re-read; keep and d/g, as pushed, are never read");
+		},
+	},
+	{
 		name: "a new tree: pulled as one tar, each file put once, an empty directory in it made once",
 		setup: "printf t > top",
 		async run(folder) {
@@ -177,6 +191,20 @@ export const CASES = [
 			]);
 			assert.deepEqual(folder.reads, [["tar.pull", "n"]]);
 			assert.deepEqual(await folder.sync(10_000), { put: 0, mkdir: 0, removed: 0, meta: false });
+		},
+	},
+	{
+		// computerd runs under umask 077 where init on the exec path does (sync-folder.test.mjs starts it so): a mode the
+		// extraction took from the umask would be recorded as the folder's own and written to the sink with the next change.
+		name: "a push under any umask: a directory the tar names gets its own mode and one only a file's path names gets 0755, so the modes recorded are the user's alone",
+		setup: "true",
+		async run(folder) {
+			const file = (name, text) => ({ name, type: "file", mode: 0o644, body: Buffer.from(text) });
+			// The runner's push names every directory (synced-folder.ts); a push may also name a file alone.
+			await folder.push([{ name: "named", type: "dir", mode: 0o755 }, file("named/a", "a"), { name: "private", type: "dir", mode: 0o700 }, file("unnamed/deep/b", "b")]);
+			await folder.sh("chmod 0600 named/a");
+			assert.deepEqual(await folder.sync(10_000), { put: 0, mkdir: 0, removed: 0, meta: true });
+			assert.deepEqual(folder.sink.calls, [["meta", { modes: { "named/a": 0o600, private: 0o700 }, links: {} }]]);
 		},
 	},
 ];
@@ -207,6 +235,11 @@ export async function folderOf(client, base, name, setup) {
 		sh,
 		sink,
 		reads,
+		/** `entries` pushed into the folder as a runner pushes them (FolderSync.push), its baseline taken again. */
+		async push(entries) {
+			const pushed = await engine.push(entries);
+			assert.equal(pushed.ok, true, JSON.stringify(pushed));
+		},
 		async sync(now) {
 			clock = now;
 			const synced = await engine.sync();

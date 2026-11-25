@@ -95,8 +95,9 @@ export function createReflectHook(deps: ReflectDeps): EndOfRunTurn {
     if (!facts.learns) return undefined;
     const now = deps.now ?? Date.now;
     // When the job answered and what it cost: as the step starts, the run's spend so far is the job's. A compile turn an
-    // earlier claim asked first (cut by a crash or a lost claim) reads that ask's, which it kept with its prompt.
-    let answeredAt = new Date(now()).toISOString();
+    // earlier claim asked first (cut by a crash or a lost claim) reads that ask's, which it kept with its prompt. A run's
+    // first round answered when its job's end was kept (the run's end time), never after it.
+    let answeredAt = new Date(round === 1 && input.endedAt !== undefined ? input.endedAt : now()).toISOString();
     let job = facts.costUsd;
     const firstAsk = (kept: EndOfRunKept | undefined): boolean => {
       if (typeof kept?.answered_at !== "string" || (typeof kept.job_cost_usd !== "number" && kept.job_cost_usd !== null)) return false;
@@ -107,7 +108,7 @@ export function createReflectHook(deps: ReflectDeps): EndOfRunTurn {
     // What the step's model turns cost: the run's spend once it closed less the job's, unknown when either is. Kept with
     // every end once a compile turn was asked; 0 for an end that asked none. The step's only model turn is its compile
     // turn, so this is the compile's spend: it joins the revision it drafts, or the bill's unattributed when it kept no
-    // draft (store-reads/learning.ts compilesOf, learning-cost.ts amortize), never the run's own.
+    // draft (learn/ledger.ts record and summarize), never the run's own.
     let asked = begun;
     const spent = async () => {
       if (!asked) return { answered_at: answeredAt, job_cost_usd: job, look_back_usd: 0 };

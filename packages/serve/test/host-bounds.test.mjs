@@ -24,7 +24,8 @@ import * as claude from "@parcha/agentrun-harness-claude";
 import * as codex from "@parcha/agentrun-harness-codex";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import * as pages from "../dist/web-fetch-direct.js";
+import * as pages from "@parcha/agentrun-web";
+import * as save from "../dist/web-save.js";
 import * as hosts from "../dist/host-tools.js";
 import { hostToolNames } from "../dist/tool-list.js";
 import { CLIP, monidText } from "../dist/monid.js";
@@ -35,11 +36,12 @@ import { localWorkspace } from "../dist/workspace/index.js";
 import { bashTool, fileTools, piEnv } from "../dist/workspace/pi-env.js";
 import { hostToolsOf } from "./host-tools-of.mjs";
 import { LEARNED_CLIP, learnedText, learnedWorkflowTool } from "../dist/learned-workflow.js";
-import * as web from "../dist/web-fetch.js";
-import * as search from "../dist/web-search.js";
+const web = { ...(await import("@parcha/agentrun-web")), ...(await import("../dist/web-fetch.js")), ...(await import("./fixtures/serve-web.mjs")) };
+const search = { ...(await import("@parcha/agentrun-web")), ...(await import("../dist/web-search.js")) };
 import { emailError, emailText } from "../dist/email/answer.js";
 import { emailRegistrations } from "../dist/email/tools.js";
 import { calendarError, calendarRegistrations, calendarText } from "../dist/calendar/tools.js";
+const PRIVATE_HOST = "10.0.0.1"; // key-gate: denylist an address the guard must refuse
 
 const PUBLIC = "http://public.example/";
 /** The background tools: the computer's, run by the kernel's registry (workspace/run-tools.ts), not by a host tool here. */
@@ -119,6 +121,47 @@ test("every host tool's largest result is within the host's result bound, which 
   assert.ok(widestCalendar.truncated === true && widestCalendar.events.length > 0 && widestCalendar.events.length < 200, "the events that do not fit are dropped from the end, and the answer says truncated");
   keep("calendar_events", ...calendars);
 
+  // web_save: its answers made by its own code from inputs past every cap: a URL at URL_MAX, a path at PATH_MAX_CHARS
+  // (and one past it), a redirect to a URL far past URL_MAX, a declared type and a failure's words far past theirs, each in
+  // quotes and in three-byte text.
+  const saves = [];
+  await mkdir(join(dir, "save-work"));
+  const saveWork = localWorkspace(join(dir, "save-work"));
+  for (const fill of ['"', wide]) {
+    const longUrl = `https://cdn.example/${fill.repeat(pages.URL_MAX - 20)}`;
+    // A path of PATH_MAX_CHARS characters ending in `ext`, its folders each under the disk's 255 bytes a name.
+    const pathOf = (ext, n = save.PATH_MAX_CHARS) => {
+      const part = fill.repeat(fill === wide ? 80 : 200);
+      let at = "media";
+      while (at.length + 1 + part.length + ext.length < n) at += `/${part}`;
+      return `${at}/${fill.repeat(n - at.length - 1 - ext.length)}${ext}`;
+    };
+    const longPath = pathOf(".png");
+    assert.equal(longPath.length, save.PATH_MAX_CHARS);
+    const far = `https://cdn.example/${fill.repeat(10 * pages.URL_MAX)}`;
+    const network = {
+      lookup: async (host) => (host === "cdn.example" ? ["93.184.216.34"] : [PRIVATE_HOST]),
+      fetchImpl: async (url) => {
+        if (url.pathname.startsWith("/r/private")) return new Response(null, { status: 302, headers: { location: `https://${"a".repeat(60)}.${"b".repeat(60)}.example/${fill.repeat(10 * pages.URL_MAX)}` } });
+        if (url.pathname.startsWith("/r/")) return new Response(null, { status: 302, headers: { location: far } });
+        if (url.pathname.startsWith("/typed")) return new Response("x", { status: 200, headers: { "content-type": `text/${"x".repeat(100_000)}` } });
+        if (url.pathname.startsWith("/fail")) throw new TypeError(fill.repeat(100_000));
+        return new Response(Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), { status: 200, headers: { "content-type": "image/png" } });
+      },
+    };
+    const answers = [
+      await save.webSave({ url: longUrl, path: longPath }, saveWork, network),
+      await save.webSave({ url: longUrl, path: pathOf(".png", save.PATH_MAX_CHARS + 1) }, saveWork, network),
+      await save.webSave({ url: `https://cdn.example/r/${fill.repeat(pages.URL_MAX - 30)}`, path: pathOf(".png") }, saveWork, network),
+      await save.webSave({ url: `https://cdn.example/r/private${fill.repeat(pages.URL_MAX - 40)}`, path: longPath }, saveWork, network),
+      await save.webSave({ url: `https://cdn.example/typed${fill.repeat(pages.URL_MAX - 30)}`, path: pathOf(".txt") }, saveWork, network),
+      await save.webSave({ url: `https://cdn.example/fail${fill.repeat(pages.URL_MAX - 30)}`, path: longPath }, saveWork, network),
+    ];
+    assert.deepEqual(answers.map((answer) => answer.ok), [true, false, false, false, false, false], JSON.stringify(answers.map((answer) => answer.error ?? answer.refused ?? answer.path?.length)));
+    saves.push(...answers.map(save.savedText));
+  }
+  keep("web_save", ...saves);
+
   // A monid endpoint (one host tool per pinned endpoint, runner/monid-run.ts): one answer far past CLIP, the whole filed
   // under work/, by the longest run id it files by.
   const work = join(dir, "work");
@@ -177,7 +220,7 @@ test("every host tool's largest result is within the host's result bound, which 
   // client), carries the bound as its result size; the CLI takes one up to 500,000.
   // learned_workflow is the run's own tool, given beside the table's when its pin names a learned workflow.
   const learned = learnedWorkflowTool({ workflows: [{ name: "answer", description: "Answers a question", workflow: "{}" }], granted: [], env: {}, work, models: { getModel: () => undefined, getModels: () => [], completeSimple: async () => ({}) }, policy: () => "allow", denyFrom: () => "default" });
-  const registrations = [...fileTools(), bashTool(), web.webFetchTool(process.env), search.webSearchTool(process.env), learned, askPerson, ...emailRegistrations({}), ...calendarRegistrations({})];
+  const registrations = [...fileTools(), bashTool(), web.webFetchTool(process.env), search.webSearchTool(process.env), save.webSaveTool(() => saveWork, () => ({})), learned, askPerson, ...emailRegistrations({}), ...calendarRegistrations({})];
   const endpoints = monidForClaim({ [MONID_ENDPOINT]: { description: "Enrich a person.", input: { type: "object", properties: {} }, usd: 0.003 } }, {}, () => ws).tools;
   const all = [...hostToolsOf(run, HOSTED, ctx, new Map(), registrations), ...endpoints];
   assert.deepEqual(all.map((tool) => tool.name).sort(), [...HOSTED, "monid__faux__person__enrich"].sort(), "every host tool, and a monid endpoint, under its wire name");

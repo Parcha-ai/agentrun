@@ -24,12 +24,14 @@ import { CURSOR_DEFAULT_MODEL, CURSOR_KEY, cursorCardOf, cursorHidden, cursorLim
 import type { AdapterNeeds } from "./adapters.js";
 import { DEFAULT_HARNESS, HARNESS_ID_PATTERN, type HarnessId, PLAN_HARNESSES, RESERVED_HARNESS_IDS } from "./harness.js";
 import { HARNESS_INSTALLS, type HarnessInstallEntry, type HarnessPins } from "./harness-install.js";
-import { chooseModel } from "./model.js";
+import { chooseModel, hostModel } from "./model.js";
 import { HarnessUnavailable, type ModelChoice, modelOn, openRouterOnly, priceModelFor, providerFor } from "./provider.js";
-import { modelWire, wireOf, WIRES } from "./wires.js";
+import { modelWire, routedId, wireOf, WIRES } from "./wires.js";
 import type { SkillCheck } from "./skills.js";
 import type { RunnerHarness } from "./runner/adapters/index.js";
 import { PLAN_PROVIDER, signedIn } from "./chatgpt-plan.js";
+import { loadRecipe } from "./harness-recipe.js";
+import { recipeServerEntry } from "./harness-recipe-entry.js";
 
 /** A module of entries a test merges over the built-in ones (HarnessTableModule), by absolute path. */
 export const HARNESS_TABLE_ENV = "AGENTRUN_HARNESS_TABLE";
@@ -116,6 +118,10 @@ export interface HarnessEntry {
 export interface ModuleLaunch {
   readonly model: string;
   readonly provider: { readonly origin: string; readonly credential: () => string | Promise<string>; readonly auth?: "bearer" | "x-api-key" };
+  /** What the session's proxy forwards with, for a model the route translates onto the harness's wire (an Ollama model on
+   *  Anthropic's Messages: provider.ts routedProvider): the route's own fetch, answering at `provider.origin`. A module
+   *  hands it to its model proxy (startModelProxy's `fetch`); absent, the network. */
+  readonly fetch?: typeof fetch;
   readonly price: (model: string, usage: { input: number; output: number; cacheRead?: number; cacheWrite?: number }) => number | null;
   readonly log: (message: string, fields?: Record<string, unknown>) => void;
   readonly confine?: AdapterNeeds["confine"];
@@ -221,7 +227,8 @@ function adapterEntry(facts: AdapterFacts, make: (env: NodeJS.ProcessEnv, needs:
     ...extra,
     // Its wire's vendor's model, or that vendor's on OpenRouter; behind serve's gateway, on the wire it serves, any id,
     // which is the gateway's own string and names no provider here. One that runs on a ChatGPT plan, the plan's models.
-    runs: (env, model) => (gateway && Boolean(env.AGENT_MODEL_BASE_URL)) || model.slice(0, Math.max(0, model.indexOf("/"))) === vendor || onOpenRouter(model, vendor) || (onPlan && model.startsWith(`${PLAN_PROVIDER}/`)),
+    // A model the route translates onto its wire (wires.ts routed: an Ollama model on Messages), except behind a gateway.
+    runs: (env, model) => (gateway && Boolean(env.AGENT_MODEL_BASE_URL)) || model.slice(0, Math.max(0, model.indexOf("/"))) === vendor || onOpenRouter(model, vendor) || (onPlan && model.startsWith(`${PLAN_PROVIDER}/`)) || (routedId(wire, model) && !env.AGENT_MODEL_BASE_URL),
     onWire: (env) => facts.ownModel || openRouterOnly(wire, env),
     model: async (env, ref, available) => (facts.ownModel && !available ? undefined : modelOn(wire, env, ref, id)),
     priceModel: (env, model) => priceModelFor(wire, env, model, id),
@@ -231,13 +238,16 @@ function adapterEntry(facts: AdapterFacts, make: (env: NodeJS.ProcessEnv, needs:
       const provider = providerFor(wire, env, needs.model, id);
       // A person's Claude Code login is its CLI's alone: no request of serve's own goes on it.
       if (provider.login) throw new HarnessUnavailable(`${id} runs on Claude Code's login on this machine, which only its CLI uses: this request needs a model key.`);
-      const policy = facts.policy({ model: provider.modelId, tools: [], auth: provider.auth, ...nativeOptions(facts, env), ...(provider.billing === "plan" ? { plan: true } : {}) });
-      return { api: wire, options: { policy, model: provider.modelId, origin: provider.origin, credential: async () => provider.credential(), price: priceOf({ ...needs, model: provider.priceModel }) } };
+      const policy = facts.policy({ model: provider.modelId, tools: [], auth: provider.auth, ...(provider.fetch ? {} : nativeOptions(facts, env)), ...(provider.billing === "plan" ? { plan: true } : {}) });
+      return { api: wire, options: { policy, model: provider.modelId, origin: provider.origin, credential: async () => provider.credential(), price: priceOf({ ...needs, model: provider.priceModel }), ...(provider.fetch ? { fetch: provider.fetch } : {}) } };
     },
     refusal: async (env, given, { atStart }) => {
       const { harnessInstalled, startReason } = await import("./adapters.js");
-      // Signed in to a ChatGPT plan, a harness that runs on it is asked of the plan's route, which needs no key.
-      const needs = given ?? { model: { provider: onPlan && signedIn(env) ? PLAN_PROVIDER : vendor, modelId: "default" }, models: { getModel: () => undefined } };
+      // Signed in to a ChatGPT plan, a harness that runs on it is asked of the plan's route, which needs no key. One whose
+      // default here is a model the route translates onto its wire (the Ollama here, no key held) is asked of that one.
+      const local = given ? undefined : hostModel(env, "default", id);
+      const probe = local && routedId(wire, local) ? { provider: local.slice(0, local.indexOf("/")), modelId: local.slice(local.indexOf("/") + 1) } : { provider: onPlan && signedIn(env) ? PLAN_PROVIDER : vendor, modelId: "default" };
+      const needs = given ?? { model: probe, models: { getModel: () => undefined } };
       try {
         // Not installed yet installs on first use (harness-install.ts): until then the provider decides, as it would for
         // a session.
@@ -259,7 +269,7 @@ function adapterEntry(facts: AdapterFacts, make: (env: NodeJS.ProcessEnv, needs:
  *  throws is a HarnessUnavailable with the fix its code names in the facts (fixOf: install, pins). */
 function moduleAdapter(facts: AdapterFacts, build: (launch: ModuleLaunch) => AgentAdapter | Promise<AgentAdapter>, { missing }: ModuleChecks, host: AcpEntryHost = {}) {
   return async (env: NodeJS.ProcessEnv, needs: AdapterNeeds): Promise<AgentAdapter> => {
-    const { fixOf, harnessLog, priceOf } = await import("./adapters.js");
+    const { fixOf, harnessLog, priceOf, providerOf } = await import("./adapters.js");
     const unavailable = (error: unknown) => (error instanceof HarnessUnavailable ? error : new HarnessUnavailable((error as Error).message, fixOf(facts, error)));
     // What no key fixes is said first (a binary): a refusal for it names no key.
     let lacks: string | undefined;
@@ -269,7 +279,7 @@ function moduleAdapter(facts: AdapterFacts, build: (launch: ModuleLaunch) => Age
       throw unavailable(error);
     }
     if (lacks) throw new HarnessUnavailable(lacks);
-    const provider = providerFor(facts.wire, env, needs.model, facts.id);
+    const provider = providerOf(facts.wire, env, needs, facts.id);
     // A person's Claude Code login is its CLI's alone (claude-login.ts): no request of this harness goes on it; a key of
     // its wire's vendor's, or OpenRouter's, runs it.
     if (provider.login) throw new HarnessUnavailable(`${facts.label} runs on a model key: Claude Code's login on this machine is its CLI's alone.`, undefined, [wireOf(facts.wire)!.key, "OPENROUTER_API_KEY"]);
@@ -277,6 +287,7 @@ function moduleAdapter(facts: AdapterFacts, build: (launch: ModuleLaunch) => Age
       return await build({
         model: provider.modelId,
         provider: { origin: provider.origin, credential: provider.credential, ...(provider.auth ? { auth: provider.auth } : {}) },
+        ...(provider.fetch ? { fetch: provider.fetch } : {}),
         price: priceOf({ ...needs, model: provider.priceModel }),
         log: host.log ?? harnessLog(facts.id, env),
         ...(needs.confine ? { confine: needs.confine } : {}),
@@ -358,7 +369,12 @@ function acpProxyEntryOf(options: AcpEntryOptions, host: AcpEntryHost = {}): Har
 /** What a run of a plan-billed ACP agent is given (acpEntryOf's plan branch): its model as its vendor names it (`default`
  *  for the vendor's own), a log, the confinement its process starts under and the server's environment. No provider or
  *  price: its vendor bills its owner's plan, and no request of it reaches a proxy of ours. */
-export type PlanLaunch = Omit<ModuleLaunch, "provider" | "price" | "skills">;
+export type PlanLaunch = Omit<ModuleLaunch, "provider" | "price" | "skills"> & {
+  /** Set where the adapter is built only to say whether it would run (the entry's refusal: offers, a save's or a start's
+   *  check), never to start its agent: a recipe's route reads its server's listing then, and only what a claim laid when
+   *  its agent starts (harness-recipe-entry.ts). */
+  readonly probe?: boolean;
+};
 
 /** What serve gives acpEntryOf for an ACP agent billed to its owner's plan (its facts' wire `plan`): Cursor's entry and
  *  harness-check's plan-billed recipes. Not the kit's: a module's acpEntry is proxy-billed. `missing` may throw a
@@ -382,7 +398,7 @@ function acpPlanEntryOf(options: AcpPlanEntryOptions, host: AcpEntryHost = {}): 
   const { id, label } = facts;
   if (modelWire(facts.wire)) throw new Error(`${id} runs on a model wire of ours, so its ACP entry is the proxy-billed one`);
   const prefix = `${id}/`;
-  const make = async (env: NodeJS.ProcessEnv, needs: AdapterNeeds): Promise<AgentAdapter> => {
+  const make = async (env: NodeJS.ProcessEnv, needs: AdapterNeeds, probe = false): Promise<AgentAdapter> => {
     const { fixOf, harnessLog } = await import("./adapters.js");
     // What no key fixes is said first, as for the built-in harnesses' binaries.
     const lacks = await options.missing?.(env);
@@ -392,7 +408,7 @@ function acpPlanEntryOf(options: AcpPlanEntryOptions, host: AcpEntryHost = {}): 
     if (needs.model.provider !== id) throw new HarnessUnavailable(`${label} runs ${label}'s models, named ${prefix}<model-id>; the run's model is ${needs.model.provider}/${needs.model.modelId}.`);
     const log = host.log ?? harnessLog(id, env);
     try {
-      const recipe = await ownKeysOnly(facts, await options.recipe({ model: needs.model.modelId, log, ...(needs.confine ? { confine: needs.confine } : {}), env }));
+      const recipe = await ownKeysOnly(facts, await options.recipe({ model: needs.model.modelId, log, ...(needs.confine ? { confine: needs.confine } : {}), env, ...(probe ? { probe } : {}) }));
       // Its keys (recipe.keys) are read from the run's environment, which holds its own (ownKeys: run-secrets.ts keysFor).
       return acp.acpAdapter({ recipe, ...(options.beforeStart ? { beforeStart: options.beforeStart } : {}), ...(needs.confine ? { confine: needs.confine } : {}), env, log });
     } catch (error) {
@@ -421,11 +437,12 @@ function acpPlanEntryOf(options: AcpPlanEntryOptions, host: AcpEntryHost = {}): 
       return { model: { provider: id, modelId } };
     },
     priceModel: (_env, model) => model,
-    adapter: make,
+    adapter: (env, needs) => make(env, needs),
+    // Built only to check it (a probe), never started.
     refusal: async (env, given, { atStart }) => {
       const { startReason } = await import("./adapters.js");
       try {
-        const adapter = await make(env, given ?? { model: { provider: id, modelId: PLAN_DEFAULT_MODEL }, models: { getModel: () => undefined } });
+        const adapter = await make(env, given ?? { model: { provider: id, modelId: PLAN_DEFAULT_MODEL }, models: { getModel: () => undefined } }, true);
         const problems = adapter.check({ key: "capabilities", label: "capabilities", system: [], tools: [], context: "fresh" });
         return problems.length ? { reason: problems.join(" ") } : undefined;
       } catch (error) {
@@ -466,6 +483,7 @@ async function gooseLaunch(launch: ModuleLaunch): Promise<AgentAdapter> {
   return acpPackage()!.gooseAdapter({
     binary: found.binary, sha256: found.sha256, model: launch.model, provider: launch.provider, price: launch.price, log: launch.log,
     ...(launch.confine ? { confine: launch.confine } : {}),
+    ...(launch.fetch ? { fetch: launch.fetch } : {}),
   });
 }
 
@@ -591,6 +609,39 @@ function modulesOf(env: NodeJS.ProcessEnv): string[] {
 
 const harnessId = new RegExp(HARNESS_ID_PATTERN);
 
+/** The setting that names the recipes a server's table adds and the data directory they are installed in, as a run's
+ *  process carries it (HARNESS_RECIPES_SETTING, `--harness-recipe`): JSON `{ "data": dir, "files": [absolute paths],
+ *  "signIn": true }`, `signIn` only from a server whose start proved --harness-sign-in (server.ts harnessSignInRefusal),
+ *  never from the owner's setting, so a runner apart never runs a recipe on its owner's sign-in. */
+export const HARNESS_RECIPES_ENV = "AGENTRUN_HARNESS_RECIPES";
+
+/** The recipes `env` names (HARNESS_RECIPES_ENV): none when it names none. */
+function recipesOf(env: NodeJS.ProcessEnv): { data: string; files: string[]; signIn: boolean } | undefined {
+  const given = env[HARNESS_RECIPES_ENV];
+  if (!given) return undefined;
+  const shape = `${HARNESS_RECIPES_ENV} is JSON { "data": the data directory, "files": recipe paths, "signIn": true or absent }`;
+  let parsed: { data?: unknown; files?: unknown; signIn?: unknown } | null;
+  try {
+    parsed = JSON.parse(given) as { data?: unknown; files?: unknown; signIn?: unknown } | null;
+  } catch {
+    throw new Error(shape);
+  }
+  if (!parsed || typeof parsed.data !== "string" || !Array.isArray(parsed.files) || !parsed.files.every((file) => typeof file === "string") || (parsed.signIn !== undefined && parsed.signIn !== true)) throw new Error(shape);
+  return parsed.files.length ? { data: parsed.data, files: parsed.files as string[], signIn: parsed.signIn === true } : undefined;
+}
+
+/** The owner's setting that names harness recipes when no option does: recipe files, comma-separated. */
+export const HARNESS_RECIPES_SETTING = "AGENTRUN_SERVE_HARNESS_RECIPES";
+
+/** The recipe files `given` names (a server's or a runner's `--harness-recipe`, else HARNESS_RECIPES_SETTING). */
+export const harnessRecipesOf = (given: readonly string[] | undefined, env: NodeJS.ProcessEnv): string[] =>
+  given?.length ? [...given] : (env[HARNESS_RECIPES_SETTING] ?? "").split(",").map((name) => name.trim()).filter(Boolean);
+
+/** HARNESS_RECIPES_ENV for the recipe files `files` names, installed into `data`: none for none. `signIn` only where the
+ *  server's start proved --harness-sign-in. */
+export const harnessRecipesEnv = (files: readonly string[], data: string, { signIn = false }: { signIn?: boolean } = {}): NodeJS.ProcessEnv =>
+  (files.length ? { [HARNESS_RECIPES_ENV]: JSON.stringify({ data: resolve(data), files: files.map((file) => resolve(file)), ...(signIn ? { signIn: true } : {}) }) } : {});
+
 /** The table `env` runs on: the built-in entries; then, only under a test runner (node --test's NODE_TEST_CONTEXT, which a
  *  server's and a run's processes there carry), a test's module's (HARNESS_TABLE_ENV) merged over them by id; then the
  *  harnesses each of the owner's harness modules adds (HARNESS_MODULES_ENV), under a test runner or not. A module adds
@@ -602,8 +653,9 @@ const harnessId = new RegExp(HARNESS_ID_PATTERN);
 export function harnessTable(env: NodeJS.ProcessEnv): Readonly<Record<string, HarnessEntry>> {
   const path = env.NODE_TEST_CONTEXT ? env[HARNESS_TABLE_ENV] : undefined;
   const modules = modulesOf(env);
-  if (!path && !modules.length) return BUILTIN;
-  const key = JSON.stringify([path ?? null, modules]);
+  const recipes = recipesOf(env);
+  if (!path && !modules.length && !recipes) return BUILTIN;
+  const key = JSON.stringify([path ?? null, modules, recipes ?? null]);
   let table = loaded.get(key);
   if (!table) {
     const built: Record<string, HarnessEntry> = { ...BUILTIN };
@@ -621,11 +673,54 @@ export function harnessTable(env: NodeJS.ProcessEnv): Readonly<Record<string, Ha
         built[id] = Object.freeze({ ...entry, id }) as HarnessEntry;
       }
     }
+    // Then each recipe the owner names (HARNESS_RECIPES_ENV): loaded under its five rules, so a refused one, or one whose
+    // id a module or another recipe already adds, refuses the start in words (a recipe never takes a built-in's id).
+    for (const file of recipes?.files ?? []) {
+      // One read: the entry, and the digest a run's keys are bound to, are of the same bytes.
+      const loadedFile = loadRecipe(file);
+      const entry = recipeServerEntry(loadedFile, recipes!.data, { signIn: recipes!.signIn });
+      if (Object.hasOwn(built, entry.id)) throw new Error(`harness recipe ${file} names ${entry.id}, which a harness module or another recipe already adds`);
+      built[entry.id] = entry;
+      const { recipe, sha256 } = loadedFile;
+      madeByRecipe.set(entry, { billing: recipe.model.billing, label: recipe.label, keys: Object.freeze([...recipe.keys]), digest: sha256 });
+    }
     table = Object.freeze(built);
     loaded.set(key, table);
   }
   return table;
 }
+
+/** What harnessTable kept of each entry it made from a recipe (HARNESS_RECIPES_ENV): its billing, its label, the names
+ *  of the keys it runs on (recipe.keys) and the sha256 of its file as loaded. */
+type RecipeMade = { readonly billing: "proxy" | "plan"; readonly label: string; readonly keys: readonly string[]; readonly digest: string };
+const madeByRecipe = new WeakMap<HarnessEntry, RecipeMade>();
+
+/** How `id` on `env`'s table is billed when it is a recipe's harness, else undefined. A recipe's install, its check's
+ *  note and its owner's sign-in are the server user's alone (0700 and 0600 under `<data>/harnesses`), so its runs run as
+ *  that user, never a slot's; and a plan-billed one runs on keys saved for it or, for a person's run alone, its owner's
+ *  own sign-in (harness-recipe-entry.ts serverRoute). */
+export const recipeHarness = (env: NodeJS.ProcessEnv, id: string): "proxy" | "plan" | undefined => {
+  const entry = Object.hasOwn(harnessTable(env), id) ? harnessTable(env)[id] : undefined;
+  return entry === undefined ? undefined : madeByRecipe.get(entry)?.billing;
+};
+
+/** A harness on `env`'s table whose keys are saved for it alone (harness-keys.ts): a recipe billed to its vendor's plan.
+ *  `digest`: its recipe file's sha256 as loaded, which each key saved for it is bound to, so a later file of the same id
+ *  (another agent, another vendor) never opens them. */
+export type PlanRecipe = { readonly id: string; readonly label: string; readonly keys: readonly string[]; readonly digest: string };
+
+const planRecipe = (entry: HarnessEntry): PlanRecipe | undefined => {
+  const made = madeByRecipe.get(entry);
+  return made?.billing === "plan" ? { id: entry.id, label: made.label, keys: made.keys, digest: made.digest } : undefined;
+};
+
+/** `id` when it is a plan-billed recipe's harness on `env`'s table, else undefined. */
+export const planRecipeOf = (env: NodeJS.ProcessEnv, id: string): PlanRecipe | undefined =>
+  (Object.hasOwn(harnessTable(env), id) ? planRecipe(harnessTable(env)[id]!) : undefined);
+
+/** Every plan-billed recipe's harness on `env`'s table, in its order: what Settings → Harness keys lists. */
+export const planRecipesOf = (env: NodeJS.ProcessEnv): PlanRecipe[] =>
+  Object.values(harnessTable(env)).flatMap((entry) => planRecipe(entry) ?? []);
 
 /** The owner's setting that names harness modules when no option does: package names or paths, comma-separated. */
 export const HARNESS_MODULES_SETTING = "AGENTRUN_SERVE_HARNESS_MODULES";
@@ -670,7 +765,8 @@ export const builtinHarness = (id: string | undefined): HarnessEntry | undefined
 /** The owner's table on `env`: the built-in entries and those its harness modules add (HARNESS_MODULES_ENV), never a test
  *  table's. What a run weighs and whether one fits (host.ts, runner/memory-claim.ts) read it, so a test's stand-in admits
  *  as the built-in harness it stands in for, and a module's harness as its entry declares. */
-export const ownerTable = (env: NodeJS.ProcessEnv): Readonly<Record<string, HarnessEntry>> => harnessTable(env[HARNESS_MODULES_ENV] ? { [HARNESS_MODULES_ENV]: env[HARNESS_MODULES_ENV] } : {});
+export const ownerTable = (env: NodeJS.ProcessEnv): Readonly<Record<string, HarnessEntry>> =>
+  harnessTable({ ...(env[HARNESS_MODULES_ENV] ? { [HARNESS_MODULES_ENV]: env[HARNESS_MODULES_ENV] } : {}), ...(env[HARNESS_RECIPES_ENV] ? { [HARNESS_RECIPES_ENV]: env[HARNESS_RECIPES_ENV] } : {}) });
 
 /** The entry of harness `id` (none: the default, pi) on the owner's table (ownerTable); undefined for one it has not. */
 export const ownerHarness = (env: NodeJS.ProcessEnv, id: string | undefined): HarnessEntry | undefined => {
@@ -693,3 +789,8 @@ export const onAdapter = (env: NodeJS.ProcessEnv, id: string | undefined): boole
 
 /** The harness a definition stores: none for the default, which is never stored. */
 export const storedHarness = (id: string | undefined): string | undefined => (id === undefined || id === DEFAULT_HARNESS ? undefined : id);
+
+/** The managed adapter for an imported native protocol. Source discovery never chooses execution by a bare runtime string. */
+export const harnessForSourceProtocol = (protocol: "codex-json" | "claude-json"): string => ({
+  "codex-json": "codex", "claude-json": "claude-agent",
+})[protocol];

@@ -1,4 +1,4 @@
-import type { RunTrace, TraceSpan } from "@/lib/v2";
+import type { RunTrace, RunUsage, TraceSpan } from "@/lib/v2";
 
 // Hand-written traces in the served shape (GET /v2/runs/{id}/trace), for tests and stories: the faux model answers in
 // milliseconds and never caches, so a recorded trace shows neither a long call nor a cache read.
@@ -88,4 +88,47 @@ export const TRACE_CLI: RunTrace = {
     { ...call("toolu_04", 0, "Edit", 11_000, 11_020, '{"file_path":"src/totals.js"}', "Edited src/totals.js", 64), parent_id: null },
     { ...call("toolu_05", 0, "Bash", 11_600, 17_900, '{"command":"npm test"}', "12 passing", 5_876), parent_id: null },
   ],
+};
+
+/** The CLI harness's run's cost line by line (GET /v2/runs/{id}/usage), as the server booked it: its model's tokens
+ *  (sent through a gateway, so no provider is named), the calls one vendor charged for (two more ran with no price set),
+ *  and its browser time, whose charge is not known yet beyond what is. */
+export const USAGE_CLI: RunUsage = {
+  run_id: "run_51c0d7aa",
+  ended_at: new Date(TRACE_END).toISOString(),
+  currency: "USD",
+  total: { usd: null, so_far_usd: 0.4379, unpriced: 1 },
+  lines: [
+    { meter: "tokens", model: "claude-sonnet-5-5", provider: null, charged_by: null, quantity: 184_220, unit: "token", basis: "reported", attempt: 1, billable: true, usd: 0.4125, requests: 12, tokens: { input: 1_840, output: 6_120, cache_read: 160_400, cache_write: 15_860 } },
+    { meter: "tools", model: null, provider: "monid", charged_by: "monid", quantity: 3, unit: "call", basis: "estimate", attempt: 1, billable: true, usd: 0.015, not_metered_calls: 2 },
+    { meter: "browser_time", model: null, provider: "browserbase", charged_by: null, quantity: 312, unit: "second", basis: "estimate", attempt: 1, billable: true, usd: null, so_far_usd: 0.0104, unpriced: 1 },
+  ],
+  browser_sessions: [],
+  computer_intervals: [],
+  infra_usd: 0,
+  reason: null,
+};
+
+/** A run one turn of which two attempts worked: the first sent two requests and was cut before they answered, and the
+ *  second, which took the turn over, sent them again and finished it. The cut requests' line is not billable, and
+ *  `infra_usd` is its cost: $0.0312 of the run's $0.4587 (0.0312 + 0.4125 + 0.015). */
+export const USAGE_REDO: RunUsage = {
+  ...USAGE_CLI,
+  total: { usd: 0.4587 },
+  lines: [
+    { meter: "tokens", model: "claude-sonnet-5-5", provider: null, charged_by: null, quantity: 14_060, unit: "token", basis: "reported", attempt: 1, billable: false, usd: 0.0312, requests: 2, tokens: { input: 620, output: 440, cache_read: 0, cache_write: 13_000 } },
+    { ...USAGE_CLI.lines![0]!, attempt: 2 },
+    { ...USAGE_CLI.lines![1]!, attempt: 2, not_metered_calls: 0 },
+  ],
+  infra_usd: 0.0312,
+};
+
+/** The supplier-screening run's computer and browser session, beside its cost lines: a sandbox made 2.4 s before the
+ *  run's first request and deleted 12.1 s after its last call ended (3m 59s up, 226 s of it held by the run), and a
+ *  browser session the agent opened a minute in and closed a minute later. */
+export const USAGE_MACHINES: RunUsage = {
+  ...USAGE_CLI,
+  run_id: TRACE.run_id,
+  computer_intervals: [{ provider: "daytona", provider_id: "sbx_41f0a2", kind: "sandbox", gpu: null, cpus: 2, memory_mb: 4096, disk_gb: 10, started_at: new Date(TRACE_START + 1000).toISOString(), ended_at: new Date(TRACE_START + 240_000).toISOString(), kept: false, booked_seconds: 226, attempt: 1, billable: true }],
+  browser_sessions: [{ provider: "browserbase", tag: "browser-1", provider_session_id: "bb_9d2c41", started_at: new Date(TRACE_START + 60_000).toISOString(), ended_at: new Date(TRACE_START + 120_000).toISOString(), release_reason: "tool", charged_seconds: 60, provider_record: null, provider_record_status: "not_offered", attempt: 1, billable: true }],
 };

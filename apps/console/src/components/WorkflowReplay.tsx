@@ -11,6 +11,7 @@ import { ReplayRevision, replayable } from "@/components/ReplayRevision";
 import { givenToRuns } from "@/lib/learning";
 import { recordOf, replayLine, standingOf, stoppedOf } from "@/lib/learningLoop";
 import type { Client } from "@/lib/client";
+import { cn } from "@/lib/utils";
 import { runLabel, when } from "@/lib/format";
 import { replaySteps } from "@/lib/workflowReplay";
 import type { LearningCost, Promotion, Serving, WorkflowRevisions } from "@/lib/v2";
@@ -28,18 +29,19 @@ const LIMIT = 50;
 export const STEP_MS = 1800;
 
 /** The learned workflows in use (`workflows`: the tab's list, those given to runs: neither pending nor retired), one replay
- *  at a time, the first by default. Nothing when none is. `v2` is read when it shows, and again on Try again. */
-export function WorkflowReplay({ v2, agentId, workflows, promotions = [], serving = [], cost = null, onReplayed }: { v2: Client; agentId: string; workflows: { name: string; status: string }[]; promotions?: readonly Promotion[]; serving?: readonly Serving[]; cost?: Pick<LearningCost, "workflows"> | null; onReplayed?: () => void }) {
+ *  at a time, the first by default. Nothing when none is. `v2` is read when it shows, and again on Try again. `className`
+ *  is the card's, for where the tab stands it. */
+export function WorkflowReplay({ v2, agentId, workflows, promotions = [], serving = [], cost = null, onReplayed, className }: { v2: Client; agentId: string; workflows: { name: string; status: string }[]; promotions?: readonly Promotion[]; serving?: readonly Serving[]; cost?: Pick<LearningCost, "workflows"> | null; onReplayed?: () => void; className?: string }) {
   const active = workflows.filter((w) => givenToRuns(w.status)).map((w) => w.name);
   const [picked, setPicked] = useState<string | null>(null);
   const name = picked !== null && active.includes(picked) ? picked : (active[0] ?? null);
   if (name === null) return null;
-  return <Replay key={name} v2={v2} agentId={agentId} name={name} choices={active} onPick={setPicked} promotions={promotions} serving={serving} stopped={stoppedOf(cost, name)} onReplayed={onReplayed} />;
+  return <Replay key={name} v2={v2} agentId={agentId} name={name} choices={active} onPick={setPicked} promotions={promotions} serving={serving} stopped={stoppedOf(cost, name)} onReplayed={onReplayed} className={className} />;
 }
 
 const TITLE = "Learned workflow";
 
-function Replay({ v2, agentId, name, choices, onPick, promotions, serving, stopped, onReplayed }: { v2: Client; agentId: string; name: string; choices: string[]; onPick: (name: string) => void; promotions: readonly Promotion[]; serving: readonly Serving[]; stopped: string | null; onReplayed?: () => void }) {
+function Replay({ v2, agentId, name, choices, onPick, promotions, serving, stopped, onReplayed, className }: { v2: Client; agentId: string; name: string; choices: string[]; onPick: (name: string) => void; promotions: readonly Promotion[]; serving: readonly Serving[]; stopped: string | null; onReplayed?: () => void; className?: string }) {
   const [data, setData] = useState<WorkflowRevisions | null>(null);
   const [error, setError] = useState<unknown>(null);
   const [asked, setAsked] = useState(0);
@@ -52,15 +54,15 @@ function Replay({ v2, agentId, name, choices, onPick, promotions, serving, stopp
   }, [v2, agentId, name, asked]);
   const heading = (
     <header className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b px-4 py-3">
-      <h2 className="min-w-0 flex-1"><span className="caps text-small font-semibold">{TITLE}</span> <span className="ml-1 break-all font-mono text-body font-semibold">{name}</span></h2>
+      <h2 className="min-w-0 flex-1"><span className="caps text-small font-semibold">{TITLE}</span> <span className="ml-1 break-words font-mono text-body font-semibold">{name}</span></h2>
       {choices.length > 1 && <Picker small className="w-56 max-w-full" label="Learned workflow" value={name} onChange={onPick} options={choices.map((c) => ({ value: c, label: c }))} />}
     </header>
   );
   if (error && !data) return (
-    <section className="border" aria-label={TITLE}>{heading}<div className="p-4"><ProblemCard problem={problem(error, "the learned workflow")} onRetry={() => setAsked((n) => n + 1)} className="" /></div></section>
+    <section className={cn("border", className)} aria-label={TITLE}>{heading}<div className="p-4"><ProblemCard problem={problem(error, "the learned workflow")} onRetry={() => setAsked((n) => n + 1)} className="" /></div></section>
   );
-  if (!data) return <section className="border" aria-label={TITLE} aria-busy>{heading}<div className="p-4"><Bone className="h-48 w-full" /></div></section>;
-  return <section className="border" aria-label={TITLE}>{heading}<Steps data={data} promotions={promotions} serving={serving.find((one) => one.workflow === data.name)?.digest ?? null} stopped={stopped} replay={{ v2, agentId, onStarted: onReplayed, onDecided: () => { setAsked((n) => n + 1); onReplayed?.(); } }} /></section>;
+  if (!data) return <section className={cn("border", className)} aria-label={TITLE} aria-busy>{heading}<div className="p-4"><Bone className="h-48 w-full" /></div></section>;
+  return <section className={cn("border", className)} aria-label={TITLE}>{heading}<Steps data={data} promotions={promotions} serving={serving.find((one) => one.workflow === data.name)?.digest ?? null} stopped={stopped} replay={{ v2, agentId, onStarted: onReplayed, onDecided: () => { setAsked((n) => n + 1); onReplayed?.(); } }} /></section>;
 }
 
 /** The replay of a read: the controls, the step's line and date, its graph. `stopped`: the digest the money rule stopped
@@ -99,8 +101,11 @@ export function Steps({ data, stepMs = STEP_MS, promotions = [], serving = null,
   const record = recordOf(promotions, data.name, step.digest);
   // Serving is the champion's (the server's `serving`): a newer revision replaying or held never takes it from it.
   const standing = standingOf(record, { serving, stopped });
+  // Wide, the revision's words stand left of its graph; narrow, above it. The card's own width decides.
   return (
-    <div className="space-y-3 p-4">
+    <div className="[container-type:inline-size]">
+    <div className="grid grid-cols-1 gap-4 p-4 [@container(min-width:720px)]:grid-cols-[minmax(18rem,2fr)_minmax(0,3fr)]">
+    <div className="min-w-0 space-y-3">
       {n > 1 && (
         <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
           <Button size="sm" onClick={play} aria-label={playing ? "Pause the replay" : "Play the replay"} aria-pressed={playing}>{playing ? <Pause aria-hidden /> : <Play aria-hidden />}{playing ? "Pause" : "Play"}</Button>
@@ -112,23 +117,17 @@ export function Steps({ data, stepMs = STEP_MS, promotions = [], serving = null,
       <div className="min-w-0">
         <p className="font-mono text-label text-muted-foreground">
           <span>{n > 1 ? `Revision ${at + 1} of ${n}` : "One revision"}</span> · <time dateTime={step.at}>{when(step.at)}</time>
-          {" · "}{step.run ? <a href={`#/runs/${encodeURIComponent(step.run)}`} className="underline underline-offset-2 hover:text-foreground">run {runLabel(step.run)}</a> : "a person"}
+          {" · "}{step.run ? <a href={`#/runs/${encodeURIComponent(step.run)}`} className="whitespace-nowrap underline underline-offset-2 hover:text-foreground">run {runLabel(step.run)}</a> : "a person"}
         </p>
         <p className="mt-1 break-words text-lead" role="status" data-testid="replay-line">{step.line}</p>
         {step.reason && <p className="mt-0.5 line-clamp-2 break-words text-body text-muted-foreground">{step.reason}</p>}
         <p className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-body" data-testid="standing">
-          <Chip tone={standing.tone}>{standing.text}</Chip>
+          {/* The standing and its proof are longer than a narrow card (beside the cost chart, or on a small phone): there
+              the chip takes a second line, never the card's edge. */}
+          <Chip tone={standing.tone} className="h-auto min-h-5 max-w-full shrink whitespace-normal py-0.5 leading-tight">{standing.text}</Chip>
           <span className="min-w-0 break-words text-muted-foreground">{record ? replayLine(record) : step.digest ? "No check yet: a new revision is checked on the inputs of the agent's own runs before it serves." : "Its file did not read: no standing."}</span>
         </p>
         {replay && step.digest && <ReplayRevision key={step.digest} v2={replay.v2} agentId={replay.agentId} workflow={data.name} digest={step.digest} offered={replayable(standing)} resume={record?.decided === "replaying" ? (record.replay_id ?? null) : null} onStarted={replay.onStarted} onDecided={replay.onDecided} />}
-      </div>
-      {/* The graph takes the room: a short workflow is drawn up to 1.6x to the card's width, centred (by its margins, so a wide one still scrolls from its start) in a frame at least 280px tall. */}
-      <div className="flex min-h-[280px] overflow-auto border bg-[radial-gradient(hsl(var(--border))_1px,transparent_1px)] [background-size:22px_22px] p-4">
-        <WorkflowGraph graph={step.graph} marks={step.marks} label={`The workflow at revision ${at + 1} of ${n}, as a graph`} minScale={0.5} maxScale={1.6} className="m-auto" />
-      </div>
-      <div className="space-y-1.5">
-        <GraphLegend />
-        <p className="font-mono text-label text-muted-foreground"><span className="font-semibold text-foreground">NEW</span> first appears in this revision · <span className="font-semibold text-foreground">EDITED</span> its prompt, code, inputs or tier changed</p>
       </div>
       {(data.total > data.revisions.length || data.truncated || unreadable > 0) && (
         <p className="text-body text-muted-foreground">
@@ -137,6 +136,18 @@ export function Steps({ data, stepMs = STEP_MS, promotions = [], serving = null,
           {unreadable > 0 && `${unreadable} ${unreadable === 1 ? "revision" : "revisions"} could not be read as a workflow and ${unreadable === 1 ? "is" : "are"} left out.`}
         </p>
       )}
+    </div>
+    <div className="min-w-0 space-y-3">
+      {/* The graph takes the room: a short workflow is drawn up to 1.6x to the card's width, centred (by its margins, so a wide one still scrolls from its start) in a frame at least 280px tall. */}
+      <div className="flex min-h-[280px] overflow-auto border bg-[radial-gradient(hsl(var(--border))_1px,transparent_1px)] [background-size:22px_22px] p-4">
+        <WorkflowGraph graph={step.graph} marks={step.marks} label={`The workflow at revision ${at + 1} of ${n}, as a graph`} minScale={0.5} maxScale={1.6} className="m-auto" />
+      </div>
+      <div className="space-y-1.5">
+        <GraphLegend />
+        <p className="font-mono text-label text-muted-foreground"><span className="font-semibold text-foreground">NEW</span> first appears in this revision · <span className="font-semibold text-foreground">EDITED</span> its prompt, code, inputs or tier changed</p>
+      </div>
+    </div>
+    </div>
     </div>
   );
 }

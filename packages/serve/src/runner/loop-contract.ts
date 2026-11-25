@@ -5,7 +5,7 @@
 import { money } from "@parcha/agentrun-kernel/kernel/cap";
 import { refusedText } from "../refusal-words.js";
 import type { AlsoRow, Claim, Command, Journal } from "../store/store.js";
-import type { Redact } from "./redact.js";
+import type { HeldRedact } from "./redact.js";
 import type { Compared, GraderReply } from "../learn/promote.js";
 
 // The store's own: a claim (its epoch fences every write made under it; `until` in epoch ms) and a command row (taken_at
@@ -43,6 +43,9 @@ export type EndOfRunTurn = (input: {
   readonly claim: Claim;
   /** How the job ended. */
   readonly outcome: "completed" | "failed";
+  /** When the job's end was kept (the run's `ended_at`, kept before the step looks back), in epoch milliseconds: the
+   *  time the job answered. Absent from a loop that keeps none. */
+  readonly endedAt?: number;
   /** The run was cut before it could look back: by a person's stop (`stopped`), by one during the end-of-run turn
    *  (`stopped-looking`), or by a fault (`faulted`). The step must not call `ask`: it returns only what a cut run keeps. */
   readonly cut?: "stopped" | "stopped-looking" | "faulted";
@@ -160,9 +163,14 @@ export interface LoopDeps {
    *  The ticker writes it to the run's run_live row, one store transaction per tick for all its loops, never into the
    *  journal. Absent: not reported. */
   live?: (read: () => HeldState | undefined) => void;
-  /** The runner's one redactor (redact.ts): an error's text the loop writes to its run's end goes through it, so no
-   *  secret the runner holds is stored, and its values cut the run's live view (live-ticker.ts). Absent: none cut. */
-  redact?: Redact;
+  /** The runner's one redactor (redact.ts), the same instance for every loop: an error's text the loop writes to its run's
+   *  end goes through it, so no secret the runner holds is stored, its values cut the run's live view (live-ticker.ts),
+   *  and a claim carries the run's own tool keys into it (claim-secrets.ts). */
+  redact: HeldRedact;
+  /** The incarnation of the runner's word in the store (runner/presence.ts), the claim's runner being the claim's own
+   *  `runner`: a park that keeps a computer only this runner can reach again pins it to both (workspace/computer-kept.ts
+   *  pinnedOf), so the claim rule gives the run back to this runner while it is there. Absent: nothing is pinned. */
+  incarnation?: string;
 }
 
 /** A run's held state: what pi shows before it stores it. The live view (live/stream.ts) streams it beside the stored

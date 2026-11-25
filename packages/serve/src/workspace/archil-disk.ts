@@ -85,9 +85,21 @@ export type ArchilExecRequest = {
 };
 export type ArchilExecAnswer = { readonly exitCode: number; readonly stdout: string; readonly stderr: string };
 
+/** The disk itself is not there: Archil's lookup of it, made before the SDK's first call and again after any call
+ *  answered 404, answered 404 (removed, at the start or mid-run, or the key's account or region holds none of that id).
+ *  Every call that meets it fails with it. It carries no HTTP `status`, so no caller reads it as a missing file or
+ *  folder. */
+export class ArchilDiskMissing extends Error {
+  constructor(readonly disk: string, readonly region: string, words: string, options?: ErrorOptions) {
+    super(`the Archil disk ${disk} is not there in region ${region}: ${words}`, options);
+    this.name = "ArchilDiskMissing";
+  }
+}
+
 /**
  * An Archil disk, keys relative to its root. A failed call rejects with an error carrying the HTTP `status` when there
- * was an answer (the SDK's ArchilS3Error and ArchilApiError do, and so does the ranged read here).
+ * was an answer (the SDK's ArchilS3Error and ArchilApiError do, and so does the ranged read here), or ArchilDiskMissing
+ * when Archil has no such disk.
  */
 export interface ArchilDisk {
   readonly id: string;
@@ -240,13 +252,33 @@ class SdkArchilDisk implements ArchilDisk {
       const { region, baseUrl } = this.#options;
       const { Archil } = await import("disk");
       const client = new Archil({ apiKey, region, s3BaseUrl: this.#s3, ...(baseUrl === undefined ? {} : { baseUrl }) });
-      return { client, disk: await client.disks.get(this.id) };
+      const disk = await client.disks.get(this.id).catch((error: unknown) => {
+        if ((error as { status?: unknown } | null)?.status !== 404) throw error;
+        throw new ArchilDiskMissing(this.id, region, String((error as Error)?.message ?? error), { cause: error });
+      });
+      return { client, disk };
     })();
     // A failed start (the key refused, the disk not found) is tried again by the next call.
     ready.catch(() => { if (this.#ready === ready) { this.#ready = undefined; this.#readyKey = undefined; } });
     this.#ready = ready;
     this.#readyKey = apiKey;
     return ready;
+  }
+
+  /** `call` made with the client and the disk. */
+  async #call<T>(call: (sdk: { readonly client: ArchilClient; readonly disk: SdkDisk }) => Promise<T>): Promise<T> {
+    return call(await this.#sdk()).catch((error: unknown) => this.#after(error));
+  }
+
+  /** Throws `error`. A 404 is a missing key, or the disk itself removed at Archil since #sdk looked it up: the disk is
+   *  looked up again (one disks.get), so a disk not there fails the call that met it as ArchilDiskMissing. The 404 is
+   *  kept only once the lookup found the disk; a lookup that failed otherwise is the call's failure. */
+  async #after(error: unknown): Promise<never> {
+    if ((error as { status?: unknown } | null)?.status === 404) {
+      this.#ready = undefined;
+      await this.#sdk();
+    }
+    throw error;
   }
 
   /** The client made and the disk looked up: one disks.get. A key of the wrong kind fails here (401 or 403). */
@@ -290,30 +322,30 @@ class SdkArchilDisk implements ArchilDisk {
         await pause(100 * 2 ** attempt);
         continue;
       }
-      throw new RangeReadError(response.status, response.statusText, body);
+      return this.#after(new RangeReadError(response.status, response.statusText, body));
     }
   }
 
   async putObject(key: string, body: Uint8Array): Promise<void> {
-    await (await this.#sdk()).disk.putObject(key, body);
+    await this.#call(({ disk }) => disk.putObject(key, body));
   }
 
   async appendObject(key: string, body: Uint8Array): Promise<void> {
-    await (await this.#sdk()).disk.appendObject(key, body);
+    await this.#call(({ disk }) => disk.appendObject(key, body));
   }
 
   async deleteObject(key: string): Promise<void> {
-    await (await this.#sdk()).disk.deleteObject(key);
+    await this.#call(({ disk }) => disk.deleteObject(key));
   }
 
   async deleteObjects(keys: readonly string[]): Promise<readonly { readonly key: string; readonly code?: string; readonly message?: string }[]> {
-    return (await (await this.#sdk()).disk.deleteObjects([...keys], { quiet: true })).errors;
+    return (await this.#call(({ disk }) => disk.deleteObjects([...keys], { quiet: true }))).errors;
   }
 
   async listPage(prefix: string, options: { readonly recursive: boolean; readonly token?: string }): Promise<ArchilListPage> {
-    const page = await (await this.#sdk()).disk.listObjects(prefix, {
+    const page = await this.#call(({ disk }) => disk.listObjects(prefix, {
       recursive: options.recursive, singlePage: true, ...(options.token === undefined ? {} : { continuationToken: options.token }),
-    });
+    }));
     const next = page.isTruncated ? page.nextContinuationToken : undefined;
     return {
       objects: page.objects.map(({ key, size, lastModified }) => ({ key, size, ...(lastModified === undefined ? {} : { mtimeMs: lastModified.getTime() }) })),
@@ -322,7 +354,7 @@ class SdkArchilDisk implements ArchilDisk {
   }
 
   async grep(request: ArchilGrepRequest): Promise<ArchilGrepAnswer> {
-    const answer = await (await this.#sdk()).disk.grep({ ...request, globs: request.globs === undefined ? undefined : [...request.globs] });
+    const answer = await this.#call(({ disk }) => disk.grep({ ...request, globs: request.globs === undefined ? undefined : [...request.globs] }));
     return { matches: answer.matches.map(({ file, line, text }) => ({ file, line, text })), stoppedReason: answer.stoppedReason };
   }
 
@@ -347,7 +379,7 @@ class SdkArchilDisk implements ArchilDisk {
       ...(request.network === undefined ? {} : { network: { egress: { default: request.network.egress.default } } }),
       command: request.command,
       disks: Object.fromEntries(Object.entries(request.mounts).map(([name, subdirectory]) => [name, { disk: this.id, subdirectory, queueMs: request.queueMs }])),
-    });
+    }).catch((error: unknown) => this.#after(error));
     return { exitCode: answer.exitCode, stdout: answer.stdout, stderr: answer.stderr };
   }
 }

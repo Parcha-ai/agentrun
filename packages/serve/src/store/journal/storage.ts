@@ -72,7 +72,8 @@ function readsOf(db: JournalConnection): Pick<SqliteExecutor, "get" | "all"> {
 }
 
 /** A run's first id to mint: pi's root conversation is 1. */
-const FIRST_ID = 2;
+export const JOURNAL_FIRST_ID = 2;
+const FIRST_ID = JOURNAL_FIRST_ID;
 
 type StoredTask = TaskRecord<JsonValue, JsonValue, JsonValue>;
 
@@ -398,7 +399,7 @@ export class RunStorage implements Journal {
         }
         // A run patch that made the run final: its other untaken rows are refused in this commit, after its own takes.
         // A person's message that came while it was ending opens a completed run again instead (refuseLeftovers).
-        if (patching) await refuseLeftovers(tx, this.#runId, staged?.run?.state, now, this.#dialect);
+        if (patching) await refuseLeftovers(tx, this.#runId, staged?.run?.state, now, this.#dialect, staged?.run?.keepsEnd === true, staged?.run?.census);
       }
     });
     this.#nextId = Math.max(this.#nextId, candidateNextId);

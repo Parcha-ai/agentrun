@@ -1,0 +1,112 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "suggestions.schema.json",
+  "title": "Agent scout answer",
+  "description": "The agents one repository's app should have, each standing on lines of its code. The server reads this answer into the Suggested agents page; each suggestion is created (a pull request adds the agent and a client to the repository) or discarded by a person.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["repository", "commit", "app", "suggestions"],
+  "properties": {
+    "repository": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100}$", "description": "owner/name, as the run named it" },
+    "commit": { "type": "string", "pattern": "^([0-9a-f]{40})?$", "description": "the commit the checkout is at (its note says it), or empty with no checkout" },
+    "app": { "type": "string", "minLength": 1, "maxLength": 600, "description": "what the app does and for whom, in one or two sentences; or why nothing could be read" },
+    "suggestions": {
+      "type": "array",
+      "maxItems": 5,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["key", "title", "summary", "why", "impact", "evidence", "agent", "integration"],
+        "properties": {
+          "key": { "type": "string", "pattern": "^[a-z][a-z0-9-]{1,38}[a-z0-9]$", "description": "a short kebab-case name for the job, unique in the answer" },
+          "title": { "type": "string", "minLength": 3, "maxLength": 80 },
+          "summary": { "type": "string", "minLength": 10, "maxLength": 300 },
+          "why": { "type": "string", "minLength": 20, "maxLength": 900 },
+          "impact": { "enum": ["high", "medium", "low"] },
+          "evidence": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 5,
+            "items": { "$ref": "#/$defs/line" }
+          },
+          "agent": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "description", "instructions", "inputs", "output", "tools", "tier"],
+            "properties": {
+              "name": { "type": "string", "minLength": 3, "maxLength": 60 },
+              "description": { "type": "string", "minLength": 10, "maxLength": 400 },
+              "instructions": { "type": "string", "minLength": 200, "maxLength": 6000, "description": "Markdown: the agent's role, its input fields, steps, rules and answer, for this app" },
+              "inputs": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 8,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["name", "type", "description", "required"],
+                  "properties": {
+                    "name": { "$ref": "#/$defs/field" },
+                    "type": { "enum": ["string", "number", "integer", "boolean"] },
+                    "description": { "type": "string", "minLength": 3, "maxLength": 300 },
+                    "required": { "type": "boolean" }
+                  }
+                }
+              },
+              "output": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 10,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["name", "type", "description"],
+                  "properties": {
+                    "name": { "$ref": "#/$defs/field" },
+                    "type": { "enum": ["string", "number", "integer", "boolean", "string_list"] },
+                    "description": { "type": "string", "minLength": 3, "maxLength": 300 },
+                    "enum": { "type": "array", "minItems": 2, "maxItems": 12, "items": { "type": "string", "minLength": 1, "maxLength": 40 } }
+                  }
+                }
+              },
+              "tools": { "type": "array", "maxItems": 2, "items": { "enum": ["web_search", "web_fetch"] } },
+              "tier": { "enum": ["fast", "balanced", "strong"] }
+            }
+          },
+          "integration": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["language", "path", "call_site"],
+            "properties": {
+              "language": { "enum": ["typescript", "javascript", "python", "other"] },
+              "path": { "type": "string", "minLength": 3, "maxLength": 200, "description": "a new file for the client, beside the code that calls it" },
+              "call_site": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["path", "line", "note"],
+                "properties": {
+                  "path": { "type": "string", "minLength": 1, "maxLength": 300 },
+                  "line": { "type": "integer", "minimum": 1 },
+                  "note": { "type": "string", "minLength": 10, "maxLength": 400 }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "field": { "type": "string", "pattern": "^[a-z][a-z0-9_]{0,39}$" },
+    "line": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "line", "quote"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1, "maxLength": 300, "description": "relative to the repository's root" },
+        "line": { "type": "integer", "minimum": 1 },
+        "quote": { "type": "string", "minLength": 1, "maxLength": 400 }
+      }
+    }
+  }
+}

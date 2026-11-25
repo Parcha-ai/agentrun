@@ -19,9 +19,11 @@ import { FakeArchilDisk, FakeDiskError } from "./fixtures/archil-fake.mjs";
 import { pairedOf } from "../dist/workspace/attached-computers.js";
 import { fauxComputers } from "../dist/faux-computers.js";
 import { computerKeptWords, computerReadyWords, computerReplacedNote } from "../dist/workspace/computer-deps.js";
-import { computerLapsedWords, endKept, KEEP_MS, keptKeyOf, readKept, sweepKept, writeKept } from "../dist/workspace/computer-kept.js";
+import { computerLapsedWords, endKept, KEEP_MS, KEPT_DELETE_MS, keptKeyOf, readKept, sweepKept, writeKept } from "../dist/workspace/computer-kept.js";
 import { startJanitor, sweepKeptComputers } from "../dist/workspace/computer-janitor.js";
+import { computerStillOffWords } from "../dist/refusal-words.js";
 import { fakeComputer } from "./workspace-fake-computer.mjs";
+import { memoryIntervals } from "./memory-intervals.mjs";
 import { KINDS } from "./workspace-kinds-fixture.mjs";
 
 const dirs = [];
@@ -67,6 +69,7 @@ function memoryStore() {
     settings: memorySettings(),
     sealedKeys: { get: async (name) => keys.get(name), put: async (name, sealed) => void keys.set(name, sealed), remove: async (name) => void keys.delete(name), all: async () => [...keys].map(([name]) => ({ name })) },
     computerLedger: { put: async () => {}, get: async () => undefined, list: async () => [], remove: async () => {} },
+    computerIntervals: memoryIntervals(),
   };
 }
 
@@ -136,14 +139,30 @@ async function server({ setting = E2B_DESKTOP, mode = 1, groups = DESKTOP_GROUPS
   const account = vendor(root, groups, machine);
   const clock = { now: T0 };
   const providers = Object.fromEntries(["docker", "e2b", "agent37", "phone-harness", "daytona"].map((id) => [id, () => account.provider]));
-  const mounts = { revoked: 0, inherited: 0 };
-  const deps = { mode, kinds: KINDS, sealKey, providers, spec: SPEC, workspace: workspace ?? localWorkspace(root), revokeMount: async () => void (mounts.revoked += 1), inheritMount: () => void (mounts.inherited += 1), now: () => clock.now };
-  const claim = (epoch, extra = {}) => {
+  const mounts = { revoked: 0, inherited: 0, steps: [] };
+  const deps = { mode, kinds: KINDS, sealKey, providers, spec: SPEC, workspace: workspace ?? localWorkspace(root), revokeMount: async () => void (mounts.revoked += 1, mounts.steps.push("revoke")), inheritMount: () => void (mounts.inherited += 1, mounts.steps.push("inherit")), now: () => clock.now };
+  // `launch`: more of the claim's launch (its `holder`: the runner that claims and its incarnation).
+  const claim = (epoch, extra = {}, launch = {}) => {
     store.runs.take("run-1", epoch);
-    return computerForClaim({ runId: "run-1", epoch, computer: setting }, store, { ...deps, check: { readBackOf, epoch }, ...extra });
+    return computerForClaim({ runId: "run-1", epoch, computer: setting, ...launch }, store, { ...deps, check: { readBackOf, epoch }, ...extra });
   };
-  const janitor = () => sweepKeptComputers({ store, computers: { kinds: KINDS, providers, keyOf: (name) => getSealedKey(store, sealKey, name) }, now: () => clock.now });
-  return { store, account, clock, mounts, claim, janitor, sealKey, keys };
+  // `self` and `runners`: the janitor of a runner (its name and incarnation), reading which runners are there.
+  const janitor = ({ self, runners } = {}) => sweepKeptComputers({ store: runners ? { ...store, runners } : store, computers: { kinds: KINDS, providers, keyOf: (name) => getSealedKey(store, sealKey, name) }, now: () => clock.now, ...(self ? { self } : {}) });
+  // A full janitor pass as the runner process runs it (startJanitor's first: the kept pass, then every provider's sweep),
+  // as runner `self` reading `runners`; one vendor account behind every provider, as a dial vendor's (or one Docker
+  // engine) both runners list. The store without its agents, so no server id is minted. What it logged.
+  const pass = async ({ self, runners } = {}) => {
+    const logged = [];
+    const swept = { runs: store.runs, computerLedger: store.computerLedger, settings: store.settings, computerIntervals: store.computerIntervals, ...(runners ? { runners } : {}) };
+    const running = startJanitor({ store: swept, computers: { kinds: KINDS, providers, keyOf: (name) => getSealedKey(store, sealKey, name) }, env: {}, log: (line) => void logged.push(line), everyMs: 600_000, now: () => clock.now, ...(self ? { self } : {}) });
+    try {
+      await running.first;
+    } finally {
+      await running.close();
+    }
+    return logged;
+  };
+  return { store, account, clock, mounts, claim, janitor, pass, sealKey, keys };
 }
 
 const creates = (account) => account.calls.filter(([verb]) => verb === "create").map(([, id]) => id);
@@ -178,6 +197,103 @@ test("a desktop parked and resumed within 10 minutes is the same computer: attac
   await resumed.release();
   assert.deepEqual(deletes(one.account), ["c1"], "the run's end lets it go");
   assert.equal(one.mounts.revoked, 1);
+});
+
+test("Mode 2, a resume of a run whose desktop an earlier claim's deny turned off: the desktop its park kept is deleted and its mount revoked at once, so the run's folder is its own again, and the claim goes on with none", async () => {
+  const one = await server({ mode: 2 });
+  await (await one.claim(3)).park();
+  const said = [];
+  const resumed = await one.claim(5, { turnedOff: "desktop", hadComputer: async () => true, onComputerNote: (words) => void said.push(words) });
+  assert.deepEqual([resumed.computer, resumed.off], [undefined, true], "the claim has no computer");
+  assert.deepEqual(creates(one.account), ["c1"], "none made");
+  assert.deepEqual(deletes(one.account), ["c1"], "the kept desktop deleted now, not at the end of its 10 minutes");
+  // archil-claim.ts revoke removes only a credential its claim minted or took on: the parking claim's is taken on first.
+  assert.deepEqual(one.mounts.steps, ["inherit", "revoke"], "its mount credential taken on, then revoked");
+  assert.equal((await readKept(one.store.settings, "run-1"))?.ended, true, "its row ended: nothing left for the janitor");
+  assert.deepEqual(said, [computerStillOffWords("desktop")]);
+  await resumed.release();
+  assert.deepEqual(deletes(one.account), ["c1"], "the run's end lets nothing more go");
+});
+
+test("a claim of a run whose desktop is off, with nothing kept: none is made, nothing deleted or revoked", async () => {
+  const one = await server({ mode: 2 });
+  const resumed = await one.claim(5, { turnedOff: "desktop", hadComputer: async () => true });
+  assert.deepEqual([resumed.computer, resumed.off], [undefined, true]);
+  assert.deepEqual([creates(one.account), deletes(one.account), one.mounts.steps], [[], [], []]);
+});
+
+/** A mount revoke that never answers until let go (Archil not answering): its `called` settles when it is asked. */
+function hangingRevoke() {
+  let asked;
+  let letGo;
+  const called = new Promise((done) => { asked = done; });
+  const answered = new Promise((done) => { letGo = done; });
+  return { called, letGo: () => letGo(), revokeMount: () => { asked(); return answered; } };
+}
+
+test("Mode 2, a resume of a run whose desktop is off, its kept desktop's mount revoke not answering: the claim goes on after KEPT_DELETE_MS, the row left ending for the janitor", async (t) => {
+  const one = await server({ mode: 2 });
+  await (await one.claim(3)).park();
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const revoke = hangingRevoke();
+  const claimed = one.claim(5, { turnedOff: "desktop", hadComputer: async () => true, revokeMount: revoke.revokeMount });
+  await revoke.called;
+  t.mock.timers.tick(KEPT_DELETE_MS);
+  const resumed = await claimed;
+  assert.deepEqual([resumed.computer, resumed.off], [undefined, true]);
+  assert.deepEqual(deletes(one.account), ["c1"], "the desktop deleted all the same");
+  assert.equal((await readKept(one.store.settings, "run-1"))?.ending, true, "its row left ending");
+  revoke.letGo();
+});
+
+test("Mode 2, a resume of a run whose desktop is off, stopped while its kept desktop's mount revoke does not answer: the claim goes on at the stop", async () => {
+  const one = await server({ mode: 2 });
+  await (await one.claim(3)).park();
+  const revoke = hangingRevoke();
+  const stop = new AbortController();
+  const claimed = one.claim(5, { turnedOff: "desktop", hadComputer: async () => true, revokeMount: revoke.revokeMount, signal: stop.signal });
+  await revoke.called;
+  stop.abort();
+  const resumed = await claimed;
+  assert.deepEqual([resumed.computer, resumed.off], [undefined, true]);
+  assert.equal((await readKept(one.store.settings, "run-1"))?.ending, true, "its row left ending");
+  revoke.letGo();
+});
+
+/** A claim's Archil mount credentials as archil-claim.ts holds them, over the run's `tokens` (by the epoch that minted
+ *  each): its revoke removes the run's tokens of its epoch and earlier only once it took one on (inherit). */
+function archilClaimOf(tokens, epoch) {
+  let inherited = false;
+  return {
+    inheritMount: () => { inherited = true; },
+    revokeMount: async () => {
+      if (!inherited) return;
+      inherited = false;
+      for (const token of [...tokens]) if (token <= epoch) tokens.delete(token);
+    },
+  };
+}
+
+test("Mode 2, a claim whose desktop is off loses its park's kept desktop to a later claim that takes it back: it never takes on the mount credential, so its loss's revoke leaves the later claim's mount in place", async () => {
+  const one = await server({ mode: 2 });
+  await (await one.claim(3)).park();
+  const tokens = new Set([3]);
+  const [b, c] = [archilClaimOf(tokens, 5), archilClaimOf(tokens, 6)];
+  // Claim 6 (its tools allowed again) takes the kept desktop back between claim 5's read of the row and its end of it.
+  const replaceIf = one.store.settings.replaceIf.bind(one.store.settings);
+  let later;
+  one.store.settings.replaceIf = async (key, ...rest) => {
+    if (key === keptKeyOf("run-1") && !later) later = await one.claim(6, { hadComputer: async () => true, ...c });
+    return replaceIf(key, ...rest);
+  };
+  const off = await one.claim(5, { turnedOff: "desktop", hadComputer: async () => true, ...b });
+  assert.deepEqual([off.computer, off.off], [undefined, true]);
+  assert.equal(later?.made, "desktop", "claim 6 took the kept desktop back");
+  assert.deepEqual(deletes(one.account), [], "nothing deleted");
+  // Claim 5 lost: archil-claim.ts lost() revokes.
+  await b.revokeMount();
+  assert.deepEqual([...tokens], [3], "the mount credential claim 6's desktop holds stands");
+  await later.release();
 });
 
 test("a desktop resumed after 10 minutes is a new one: the kept one let go, said once with why", async () => {
@@ -400,6 +516,142 @@ test("a sandbox's park hold words and timeout words", () => {
   assert.equal(computerLapsedWords("sandbox"), "The sandbox wasn't kept: 10 minutes passed.");
 });
 
+// Claim affinity (computer-kept.ts pinnedOf): a Docker computer is on the claiming runner's engine, so its park names
+// that runner and its incarnation on the row; the store's claim rule then gives the run to that runner alone while it is
+// there (store-claim-affinity.test.mjs, runner-claim-affinity.test.mjs).
+const RUNNER_A = { runner: "runner-a", incarnation: "inc-a" };
+const RUNNER_B = { runner: "runner-b", incarnation: "inc-b" };
+
+test("leak (b): another runner's janitor leaves a kept row pinned to a runner still there, whatever its time; that runner's own janitor ends it, and once it is gone any janitor does", async () => {
+  const one = await server(SANDBOX);
+  await (await one.claim(3, {}, { holder: RUNNER_A })).park("approval");
+  const key = keptKeyOf("run-1");
+  // As this build's park writes it; put raw, so a janitor with no pin rule fails on its own pass alone.
+  const row = { ...(await one.store.settings.get(key)), ...RUNNER_A };
+  await one.store.settings.put(key, row);
+  const live = [{ ...RUNNER_A, refused: null }];
+  const runners = { live: async () => live };
+  one.clock.now = T0 + KEEP_MS + 60_000;
+  // runner-b's janitor: only runner-a's engine has the container, so a delete from here finds nothing, reads as done,
+  // marks the row ended, and runner-a's own timer then finds it ended and deletes nothing: the container leaks.
+  assert.deepEqual(await one.janitor({ self: RUNNER_B, runners }), { ended: [], failed: [] }, "runner-b's janitor leaves runner-a's row");
+  assert.deepEqual(deletes(one.account), [], "nothing deleted from runner-b");
+  assert.deepEqual(await one.store.settings.get(key), row, "the row as runner-a's park left it");
+  assert.deepEqual(await one.janitor({ self: RUNNER_A, runners }), { ended: ["c1"], failed: [] }, "runner-a's own janitor ends it at its time");
+  assert.deepEqual(deletes(one.account), ["c1"]);
+
+  const gone = await server(SANDBOX);
+  await (await gone.claim(3, {}, { holder: RUNNER_A })).park("approval");
+  await gone.store.settings.put(key, { ...(await gone.store.settings.get(key)), ...RUNNER_A });
+  gone.clock.now = T0 + KEEP_MS;
+  assert.deepEqual(await gone.janitor({ self: RUNNER_B, runners: { live: async () => [] } }), { ended: ["c1"], failed: [] }, "runner-a gone: any runner's janitor ends it as before");
+  const failing = await server(SANDBOX);
+  await (await failing.claim(3, {}, { holder: RUNNER_A })).park("approval");
+  await failing.store.settings.put(key, { ...(await failing.store.settings.get(key)), ...RUNNER_A });
+  failing.clock.now = T0 + KEEP_MS;
+  assert.deepEqual(await failing.janitor({ self: RUNNER_B, runners: { live: async () => { throw new Error("store down"); } } }), { ended: [], failed: [] }, "the runners unread: the pinned row is left for a later pass, never ended blind");
+});
+
+test("runner-b's full janitor pass, after runner-b ended runner-a's parked run, leaves runner-a's kept machine from both sweeps on a provider both runners list; once runner-a is gone or a new incarnation, the machine goes as before", async () => {
+  // runner-a parked the run with its machine kept; runner-b then ended the run (a person's stop, ends-only): the run is
+  // final, the row still runner-a's, inside its keep.
+  const parkedThenStopped = async () => {
+    const one = await server(SANDBOX);
+    await (await one.claim(3, {}, { holder: RUNNER_A })).park("approval");
+    one.store.runs.set("run-1", "stopped");
+    one.clock.now = T0 + 60_000;
+    return one;
+  };
+  const key = keptKeyOf("run-1");
+  const one = await parkedThenStopped();
+  const row = await one.store.settings.get(key);
+  assert.deepEqual([row?.runner, row?.incarnation], ["runner-a", "inc-a"], "the park pinned it to runner-a");
+  const logged = await one.pass({ self: RUNNER_B, runners: { live: async () => [{ ...RUNNER_A, refused: null }] } });
+  // The kept pass leaves the row; the provider sweep lists the same machine, its run over, and would end it at once.
+  assert.deepEqual(deletes(one.account), [], `runner-b's full janitor pass leaves runner-a's kept machine: ${JSON.stringify(logged)}`);
+  assert.ok(one.account.computers.has("c1"), "still running for runner-a");
+  assert.deepEqual(await one.store.settings.get(key), row, "its row as runner-a's park left it");
+  // runner-a's own pass ends it: the run is over and the row is its own.
+  await one.pass({ self: RUNNER_A, runners: { live: async () => [{ ...RUNNER_A, refused: null }] } });
+  assert.deepEqual(deletes(one.account), ["c1"], "runner-a's own pass ends it, once");
+  assert.equal(await one.store.settings.get(key), undefined, "and removes its row, the run being over");
+
+  // runner-a gone (its word stale): runner-b's pass ends it as before, once.
+  const gone = await parkedThenStopped();
+  await gone.pass({ self: RUNNER_B, runners: { live: async () => [] } });
+  assert.deepEqual(deletes(gone.account), ["c1"], "runner-a gone: runner-b's pass ends it");
+  assert.equal(await gone.store.settings.get(key), undefined);
+  // runner-a restarted under its name (a new incarnation): the machine is no live process's, and goes the same way.
+  const again = await parkedThenStopped();
+  await again.pass({ self: RUNNER_B, runners: { live: async () => [{ runner: "runner-a", incarnation: "inc-a2", refused: null }] } });
+  assert.deepEqual(deletes(again.account), ["c1"], "runner-a's new incarnation: runner-b's pass ends it");
+
+  // The kept rows unread: neither sweep can tell which machine is kept, so neither ends it this pass, and it is said.
+  const unread = await parkedThenStopped();
+  unread.store.settings.all = async () => {
+    throw new Error("the store did not answer");
+  };
+  const said = await unread.pass({ self: RUNNER_B, runners: { live: async () => [] } });
+  assert.deepEqual(deletes(unread.account), [], `the kept rows unread: nothing ended blind: ${JSON.stringify(said)}`);
+  assert.ok(said.some((line) => line.startsWith("the computer janitor could not sweep docker's computers: the computers kept at a park could not be read")), JSON.stringify(said));
+});
+
+test("a Docker sandbox's park names the runner that claimed it and its incarnation; a resume by another runner that cannot reach it makes a new one, said lost with that runner and naming none", async () => {
+  const one = await server(SANDBOX);
+  await (await one.claim(3, {}, { holder: RUNNER_A })).park("approval");
+  assert.deepEqual(await readKept(one.store.settings, "run-1"), { provider: "docker", kind: "sandbox", id: "c1", name: "c1", epoch: 3, until: T0 + KEEP_MS, folder: "bind", ...RUNNER_A }, "pinned to runner-a, this process");
+  // runner-a is gone (the claim rule let runner-b have the run), and its engine with the container: runner-b's finds none.
+  one.account.computers.delete("c1");
+  one.clock.now = T0 + 60_000;
+  const said = [];
+  const resumed = await one.claim(5, { hadComputer: async () => true, onConnected: (words) => void said.push(words) }, { holder: RUNNER_B });
+  assert.deepEqual(creates(one.account), ["c1", "c2"], "a new sandbox");
+  assert.deepEqual(resumed.replaced, { kind: "sandbox", folderKept: false, lost: true });
+  assert.equal(said.length, 1, "said once");
+  assert.equal(computerReadyWords(said[0]), "The sandbox is ready: Linux (amd64), from Docker. The sandbox wasn't kept: the runner that kept it is gone. It's a new sandbox: the one before is gone, with what was on it.");
+  await resumed.release();
+});
+
+test("a kept Docker sandbox its provider refuses to attach again (its proxy made before the egress bridge) is replaced: the run goes on, and its timeline says why in the provider's words", async () => {
+  const one = await server(SANDBOX);
+  await (await one.claim(3, {}, { holder: RUNNER_A })).park("approval");
+  const words =
+    "the computer c1 does not match this provider, so attach refuses it and it is left as it is: network: network allow, but its egress proxy c1-egress is on Docker's default bridge: an earlier release of this provider made it there, before the egress bridge agentrun-egress; delete the computer and create it again";
+  const attach = one.account.provider.attach;
+  one.account.provider.attach = async (ref, context) => {
+    if (ref.id !== "c1") return attach(ref, context);
+    one.account.calls.push(["attach", ref.id]);
+    return { ok: false, error: { code: "refused", message: words } };
+  };
+  one.clock.now = T0 + 60_000;
+  const said = [];
+  const resumed = await one.claim(5, { hadComputer: async () => true, onConnected: (phase) => void said.push(phase) }, { holder: RUNNER_A });
+  assert.ok(one.account.calls.some(([verb, id]) => verb === "attach" && id === "c1"), "the kept one was tried");
+  assert.deepEqual(creates(one.account), ["c1", "c2"], "a new sandbox");
+  assert.deepEqual(deletes(one.account), ["c1"], "the refused one deleted as an older claim's");
+  assert.equal(resumed.computer?.kind, "sandbox", "the claim gave the run a computer, never failed");
+  assert.deepEqual(resumed.replaced, { kind: "sandbox", folderKept: false, refused: words });
+  assert.equal(said.length, 1, "said once");
+  assert.equal(computerReadyWords(said[0]), `The sandbox is ready: Linux (amd64), from Docker. The sandbox kept before could not be taken back: ${words}. It's a new sandbox: the one before is gone, with what was on it.`);
+  await resumed.release();
+});
+
+test("a phone harness kept at its park is not pinned: its row names no runner, and another runner's resume attaches the same phone", async () => {
+  const one = await server({ setting: { kind: "phone", provider: "phone-harness" }, groups: PHONE_GROUPS, machine: "android", keys: { PHONE_HARNESS_API_KEY: "fake-test-key" } });
+  const first = await one.claim(3, {}, { holder: RUNNER_A });
+  assert.equal(await first.park(), true);
+  const row = await readKept(one.store.settings, "run-1");
+  assert.deepEqual([row.runner, row.incarnation], [undefined, undefined], "the vendor's phone: any runner reaches it, so nothing pins the run");
+  one.clock.now = T0 + 60_000;
+  const said = [];
+  const resumed = await one.claim(5, { hadComputer: async () => true, onConnected: (words) => void said.push(words) }, { holder: RUNNER_B });
+  assert.deepEqual(creates(one.account), ["c1"], "the same phone: no create");
+  assert.equal(resumed.replaced, undefined);
+  assert.equal(said[0]?.kept, true, "said to be the same one");
+  await resumed.release();
+  assert.deepEqual(deletes(one.account), ["c1"]);
+});
+
 /** A Mode 2 Daytona sandbox with no DAYTONA_ARCHIL_EGRESS (a synced folder), its run's folder on a fake disk. */
 const RUN_ROOT = runKey("acme", "r1");
 const text = (bytes) => (bytes === undefined ? undefined : Buffer.from(bytes).toString());
@@ -546,6 +798,7 @@ test("a paired computer and --faux's desktop are never kept: their park lets the
   assert.equal(fauxDesk.keeps, undefined, "--faux's desktop");
   assert.equal(await fauxDesk.park(), false);
   assert.equal(store.settings.rows.size, 0);
+  assert.equal(store.computerIntervals.rows.size, 0, "--faux's desktop is no computer of a provider's: no interval");
 
   const driver = new FakeUiDriver({ groups: ["screen", "input.pointer", "input.keys", "apps", "ui"] });
   const row = { id: "c-1", name: "Test Mac", hello: driver.hello(), driver: "0", labels: { owner: "test" }, pairingId: "p-1", createdAt: 0, seenAt: 0, revokedAt: null };
@@ -559,6 +812,7 @@ test("a paired computer and --faux's desktop are never kept: their park lets the
     assert.equal(held.keeps, undefined, "a paired computer");
     assert.equal(await held.park(), false);
     assert.equal(pairedStore.settings.rows.size, 0);
+    assert.equal(pairedStore.computerIntervals.rows.size, 0, "a paired computer is no computer of the run's own: no interval");
   } finally {
     driver.close();
   }
@@ -580,3 +834,236 @@ function socketPair() {
   });
   return [side(ends[0], ends[1]), side(ends[1], ends[0])];
 }
+
+// Each computer a run made, from its create to its proven delete (computer-intervals.ts): the rows the claim, its park,
+// its release and the janitor write. The expected rows are worked out from the vendor's ids (c1, c2, ...) and the test's
+// clock, under the setting's provider (e2b): this server's id for the provider, not the provider object's own ("fake").
+const intervalsOf = (one) => one.store.computerIntervals.forRun("run-1");
+
+test("a run's desktop has an interval: opened at its create by the provider's id, the create's asks null where it asked none; kept at the park; ended when the keep's end deletes it", async () => {
+  const one = await server();
+  const first = await one.claim(3);
+  const opened = { runId: "run-1", provider: "e2b", providerId: "c1", kind: "desktop", gpuType: null, gpuCount: null, cpus: null, memoryMb: null, diskGb: null, startedAt: T0 };
+  assert.deepEqual(await intervalsOf(one), [{ ...opened, kept: false, endedAt: null, bookedMs: 0 }]);
+  one.clock.now = T0 + 30_000;
+  assert.equal(await first.park(), true);
+  assert.deepEqual(await intervalsOf(one), [{ ...opened, kept: true, endedAt: null, bookedMs: 0 }], "kept past its claim, not ended");
+  one.clock.now = T0 + 30_000 + KEEP_MS;
+  assert.deepEqual(await one.janitor(), { ended: ["c1"], failed: [] });
+  assert.deepEqual(await intervalsOf(one), [{ ...opened, kept: true, endedAt: T0 + 30_000 + KEEP_MS, bookedMs: 0 }], "ended when its delete answered ok");
+});
+
+test("a run's sandbox released at its end is ended at that moment; a release whose delete fails leaves it open, never a guessed end", async () => {
+  const one = await server(SANDBOX);
+  const first = await one.claim(3, { spec: () => ({ ...SPEC(), cpus: 2, memoryMb: 4096 }) });
+  one.clock.now = T0 + 90_000;
+  await first.release();
+  assert.deepEqual(await intervalsOf(one), [{ runId: "run-1", provider: "docker", providerId: "c1", kind: "sandbox", gpuType: null, gpuCount: null, cpus: 2, memoryMb: 4096, diskGb: null, startedAt: T0, kept: false, endedAt: T0 + 90_000, bookedMs: 0 }]);
+
+  const two = await server(SANDBOX);
+  const held = await two.claim(3);
+  two.account.provider.release = async () => ({ ok: false, error: { code: "unavailable", message: "the vendor did not answer" } });
+  await assert.rejects(held.release(), /the vendor did not answer/);
+  assert.deepEqual((await intervalsOf(two)).map((row) => [row.providerId, row.endedAt]), [["c1", null]], "left open: no delete was proven");
+});
+
+test("an earlier claim's computer let go by a later claim's launch is ended; the new one is opened beside it", async () => {
+  const one = await server();
+  await one.claim(3);
+  // The runner that held claim 3 is lost: claim 5 lets its desktop go (releaseOlderClaims) and makes a new one.
+  one.clock.now = T0 + 60_000;
+  const later = await one.claim(5);
+  assert.deepEqual((await intervalsOf(one)).map((row) => [row.providerId, row.startedAt, row.endedAt]), [["c1", T0, T0 + 60_000], ["c2", T0 + 60_000, null]]);
+  await later.release();
+});
+
+test("an earlier claim's computer deleted before another one's delete failed keeps its end, though the later claim fails (#3332 review)", async () => {
+  const one = await server();
+  await one.claim(3);
+  // A second computer of claim 3 (a lost runner's retry), whose delete the vendor refuses.
+  one.account.computers.set("x9", { id: "x9", labels: { ...one.account.computers.get("c1").labels } });
+  const release = one.account.provider.release.bind(one.account.provider);
+  one.account.provider.release = async (ref, how) => (ref.id === "x9" ? { ok: false, error: { code: "unavailable", message: "the vendor did not answer" } } : release(ref, how));
+  one.clock.now = T0 + 60_000;
+  await assert.rejects(one.claim(5), /the vendor did not answer/);
+  assert.deepEqual((await intervalsOf(one)).map((row) => [row.providerId, row.endedAt]), [["c1", T0 + 60_000]], "c1's delete answered ok: its end is kept");
+});
+
+test("a resumed kept desktop is the same interval: no second row, and the run's end ends it", async () => {
+  const one = await server();
+  await (await one.claim(3)).park();
+  one.clock.now = T0 + 60_000;
+  const resumed = await one.claim(5, { hadComputer: async () => true });
+  one.clock.now = T0 + 120_000;
+  await resumed.release();
+  assert.deepEqual((await intervalsOf(one)).map((row) => [row.providerId, row.kept, row.endedAt]), [["c1", true, T0 + 120_000]]);
+});
+
+test("an interval that can't be written never fails the claim: it is said on the log, and the computer is the run's as before", async () => {
+  const one = await server();
+  one.store.computerIntervals = memoryIntervals({ fail: true });
+  const said = [];
+  const held = await one.claim(3, { log: (line) => void said.push(line) });
+  assert.equal(held.computer.kind, "desktop");
+  assert.equal(await held.park(), true, "its park keeps it as before");
+  assert.deepEqual(said, ["the computer interval of e2b c1 (run run-1) was not written: the store is down", "the computer interval of e2b c1 was not written: the store is down"]);
+});
+
+// A computer's time on the run's ledger (compute-cost.ts), priced by the operator's per-resource settings: its first
+// stretch held before its create, each stretch booked and the next held, the rest booked when it is let go. The ledger
+// here records each admit and settle; `refuse` refuses a hold (never an owed booking) in the cap's words.
+function ledgerOf({ refuse = () => false } = {}) {
+  const admits = [];
+  const settles = [];
+  const pauses = [];
+  const paid = {
+    async admit(request) {
+      if (!request.owed && refuse(request)) throw Object.assign(new Error("spend_cap_reached: this run's cap of $0.01 has no room for the computer's next stretch"), { code: "spend_cap_reached", forGood: false });
+      admits.push(request);
+      return {};
+    },
+    async settle(id, usd, options) {
+      settles.push([id, usd, options?.givenBack === true]);
+      return usd;
+    },
+  };
+  return { admits, settles, pauses, ledger: { paid, pause: async (refusal) => void pauses.push(refusal) } };
+}
+/** $0.00001 a vCPU-second and $0.000002 a GiB-second on e2b: 2 vCPUs and 4 GiB cost $0.000028 a second, $0.0084 a stretch. */
+const PRICES = { AGENTRUN_COMPUTE_USD_PER_VCPU_SECOND_E2B: "0.00001", AGENTRUN_COMPUTE_USD_PER_GIB_SECOND_E2B: "0.000002" };
+const SIZED = () => ({ ...SPEC(), cpus: 2, memoryMb: 4096 });
+/** The meter's timer, run by hand: `tick()` runs each stretch's tick once and waits for it. */
+function ticker() {
+  const ticks = new Set();
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 10));
+  return { every: (tick) => (ticks.add(tick), () => ticks.delete(tick)), settle, tick: async () => { for (const tick of ticks) tick(); await settle(); } };
+}
+const bookings = (admits) => admits.filter((one) => one.owed && !one.hold).map((one) => [one.tag, Math.round(one.holdUsd * 1e9) / 1e9]);
+
+test("a priced computer's first stretch is held before its create; a cap with no room for it makes nothing, in the cap's words", async () => {
+  const one = await server();
+  const { ledger, admits } = ledgerOf({ refuse: () => true });
+  await assert.rejects(one.claim(3, { spec: SIZED, compute: { ledger, env: PRICES } }), /spend_cap_reached: this run's cap of \$0\.01 has no room for the computer's next stretch/);
+  assert.deepEqual(creates(one.account), [], "nothing made, nothing billed");
+  assert.deepEqual(admits, [], "nothing held");
+});
+
+test("a priced computer's time is booked each stretch, the next held; the rest is booked at its delete, its holds given back, and its interval says how much was booked", async () => {
+  const one = await server();
+  const { ledger, admits, settles } = ledgerOf();
+  const clock = ticker();
+  const held = await one.claim(3, { spec: SIZED, compute: { ledger, env: PRICES, every: clock.every } });
+  await clock.settle();
+  const holds = () => admits.filter((one) => one.hold).map((one) => [one.holdUsd, one.owed === true]);
+  assert.deepEqual(holds(), [[0.0084, false], [0.0084, true]], "a stretch held before the create, then one owed for the computer made");
+  one.clock.now = T0 + 300_000;
+  await clock.tick();
+  // 300 s of 2 vCPUs at $0.00001 is $0.006; of 4 GiB at $0.000002, $0.0024.
+  assert.deepEqual(bookings(admits), [["vcpu", 0.006], ["memory", 0.0024]]);
+  assert.ok(admits.filter((one) => one.owed && !one.hold).every((one) => one.tool === "compute" && one.chargedBy === "e2b"));
+  one.clock.now = T0 + 345_000;
+  await held.release();
+  // The last 45 s at its delete: $0.0009 and $0.00036.
+  assert.deepEqual(bookings(admits), [["vcpu", 0.006], ["memory", 0.0024], ["vcpu", 0.0009], ["memory", 0.00036]]);
+  await clock.settle();
+  const holdIds = admits.filter((one) => one.hold).map((one) => one.id);
+  assert.ok(holdIds.every((id) => settles.some(([settled, usd, back]) => settled === id && usd === 0 && back)), `every hold given back: ${JSON.stringify(settles)}`);
+  assert.deepEqual((await intervalsOf(one)).map((row) => [row.cpus, row.memoryMb, row.bookedMs, row.endedAt]), [[2, 4096, 345_000, T0 + 345_000]]);
+});
+
+test("a cap with no room for a computer's next stretch pauses the run once, and the time it runs on is still booked, never refused", async () => {
+  const one = await server();
+  let full = false;
+  const { ledger, admits, pauses } = ledgerOf({ refuse: () => full });
+  const clock = ticker();
+  const held = await one.claim(3, { spec: SIZED, compute: { ledger, env: PRICES, every: clock.every } });
+  full = true;
+  one.clock.now = T0 + 300_000;
+  await clock.tick();
+  one.clock.now = T0 + 600_000;
+  await clock.tick();
+  assert.equal(pauses.length, 1, "paused once, in the cap's words");
+  assert.match(pauses[0].refuse, /spend_cap_reached/);
+  assert.equal(pauses[0].forGood, false, "a raise lets it go on");
+  assert.deepEqual(bookings(admits), [["vcpu", 0.006], ["memory", 0.0024], ["vcpu", 0.006], ["memory", 0.0024]], "both stretches booked");
+  await held.release();
+});
+
+test("a computer with no price set is never refused and never held: it runs as before, its time on the usage read alone", async () => {
+  const one = await server();
+  const { ledger, admits } = ledgerOf({ refuse: () => true });
+  const held = await one.claim(3, { spec: SIZED, compute: { ledger, env: {} } });
+  assert.deepEqual(creates(one.account), ["c1"]);
+  one.clock.now = T0 + 60_000;
+  await held.release();
+  assert.deepEqual(admits, [], "nothing held or booked");
+  assert.deepEqual((await intervalsOf(one)).map((row) => row.bookedMs), [0]);
+});
+
+test("the provider's own figures price the computer where its create said them, over what was asked", async () => {
+  const one = await server();
+  const create = one.account.provider.create.bind(one.account.provider);
+  one.account.provider.create = async (spec) => {
+    const made = await create(spec);
+    return { ok: true, value: { ...made.value, resources: { cpus: 4, memoryMb: 8192, diskGb: 20 } } };
+  };
+  const { ledger, admits } = ledgerOf();
+  const clock = ticker();
+  const held = await one.claim(3, { spec: SIZED, compute: { ledger, env: PRICES, every: clock.every } });
+  one.clock.now = T0 + 100_000;
+  await held.release();
+  // 100 s of 4 vCPUs: $0.004; of 8 GiB: $0.0016. Its disk has no price set: unpriced, never booked.
+  assert.deepEqual(bookings(admits), [["vcpu", 0.004], ["memory", 0.0016]]);
+  assert.deepEqual((await intervalsOf(one)).map((row) => [row.cpus, row.memoryMb, row.diskGb]), [[4, 8192, 20]]);
+});
+
+test("a computer's next stretch is asked for once the booked one's hold is given back, so a cap with room for it holds it (#3338 review)", async () => {
+  // A cap of $0.02 that counts what is booked and what is still held: a stretch is $0.0084. At the first tick $0.0084 is
+  // booked; with the booked stretch's hold still counted, a next $0.0084 would make $0.0252 and be refused.
+  const one = await server();
+  const live = new Map();
+  let spent = 0;
+  const admits = [];
+  const pauses = [];
+  const paid = {
+    async admit(request) {
+      const held = [...live.values()].reduce((sum, usd) => sum + usd, 0);
+      if (!request.owed && spent + held + request.holdUsd > 0.02 + 1e-12) throw Object.assign(new Error("spend_cap_reached: no room"), { code: "spend_cap_reached", forGood: false });
+      admits.push(request);
+      if (request.hold) live.set(request.id, request.holdUsd);
+      else spent += request.holdUsd;
+      return {};
+    },
+    async settle(id, usd) {
+      live.delete(id);
+      return usd;
+    },
+  };
+  const clock = ticker();
+  const held = await one.claim(3, { spec: SIZED, compute: { ledger: { paid, pause: async (refusal) => void pauses.push(refusal) }, env: PRICES, every: clock.every } });
+  await clock.settle();
+  one.clock.now = T0 + 300_000;
+  await clock.tick();
+  assert.deepEqual(pauses, [], "the run is not paused: the cap has room for the next stretch");
+  assert.equal(live.size, 1, "the next stretch is held");
+  assert.ok(Math.abs([...live.values()][0] - 0.0084) < 1e-9);
+  await held.release();
+  await clock.settle();
+  assert.equal(live.size, 0, "every hold given back at its delete");
+});
+
+test("a computer whose resources the operator priced at $0 is booked at $0 each stretch, never held, so its usage reads $0 and not unpriced (#3338 review)", async () => {
+  const one = await server();
+  const { ledger, admits } = ledgerOf({ refuse: () => true });
+  const clock = ticker();
+  const env = { AGENTRUN_COMPUTE_USD_PER_VCPU_SECOND_E2B: "0", AGENTRUN_COMPUTE_USD_PER_GIB_SECOND_E2B: "0" };
+  const held = await one.claim(3, { spec: SIZED, compute: { ledger, env, every: clock.every } });
+  assert.deepEqual(creates(one.account), ["c1"], "made, though the cap refuses every hold: nothing is held");
+  one.clock.now = T0 + 300_000;
+  await clock.tick();
+  one.clock.now = T0 + 345_000;
+  await held.release();
+  assert.deepEqual(admits.filter((one) => one.hold), [], "nothing held");
+  assert.deepEqual(bookings(admits), [["vcpu", 0], ["memory", 0], ["vcpu", 0], ["memory", 0]], "each stretch booked at $0");
+  assert.deepEqual((await intervalsOf(one)).map((row) => row.bookedMs), [345_000], "its time is held by the claim, not unheld");
+});

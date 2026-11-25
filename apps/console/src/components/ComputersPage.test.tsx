@@ -1,12 +1,12 @@
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ComputersPage } from "./ComputersPage";
+import { ComputersPage, RUNNING_POLL_MS } from "./ComputersPage";
 import { SETTINGS_PAGES } from "./Settings";
 import { SIGN_IN_TO_CHANGE } from "@/lib/secrets";
 import { route } from "@/App";
 import { createClient } from "@/lib/client";
-import type { ComputerChoices, ComputerKindView, ComputerProvider, Computers, ComputerSecret, PairedComputer } from "@/lib/v2";
+import type { ComputerChoices, ComputerKindView, ComputerProvider, Computers, ComputerSecret, PairedComputer, RunningRun } from "@/lib/v2";
 
 // Settings → Computers over GET /v2/computers, PUT /v2/computers/{provider}/keys, POST /v2/computers/{provider}/test and
 // GET /v2/computers/{provider}/choices (a picked key, Orgo's workspace, picked by name):
@@ -28,10 +28,10 @@ const CHANGED = "2026-11-09T01:00:00.000Z";
 const METERED = "This provider bills by the minute through your own vendor account, and those minutes aren't counted in a run's spending cap.";
 /** A provider's secret as served: its full name "computer:<provider>:<KEY>". */
 const secret = (provider: string, key: string, set: boolean, source: ComputerSecret["source"] = set ? "console" : null): ComputerSecret => ({ name: `computer:${provider}:${key}`, set, source, changed_at: source === "console" ? CHANGED : null });
-/** Where a choice's runs have their shell, as the server serves it: a computer that mounts the run's folder gives every
- *  host tool; one that doesn't, the file tools only. */
-const MOUNTS = { shell: "computer" as const, host_tools: ["read", "write", "edit", "bash", "bash_background", "bash_output", "bash_input", "bash_signal", "bash_list"] };
-const NO_SHELL = { shell: "none" as const, host_tools: ["read", "write", "edit"], shell_note: "No computer on this server: the agent gets the file tools only, no shell. Pick a computer to run commands." };
+/** Where a choice's runs have their shell and their folder, as a Mode 1 server serves it: a computer that binds the run's
+ *  folder gives every host tool; one that holds none, the file tools only. */
+const MOUNTS = { folder: "bind" as const, shell: "computer" as const, host_tools: ["read", "write", "edit", "bash", "bash_background", "bash_output", "bash_input", "bash_signal", "bash_list"] };
+const NO_SHELL = { folder: null, shell: "none" as const, host_tools: ["read", "write", "edit"], shell_note: "No computer on this server: the agent gets the file tools only, no shell. Pick a computer to run commands." };
 const docker: ComputerProvider = { id: "docker", name: "Docker", metered: false, secrets: [], required: [], ready: true, runs_refused: null, ...MOUNTS };
 const e2b = (saved = false): ComputerProvider => ({ id: "e2b", name: "E2B", metered: true, secrets: [secret("e2b", "E2B_API_KEY", saved)], required: ["computer:e2b:E2B_API_KEY"], ready: saved, ...(saved ? {} : { why: E2B_WHY }), runs_refused: null, ...NO_SHELL });
 const orgo: ComputerProvider = { id: "orgo", name: "Orgo", metered: true, secrets: [secret("orgo", "ORGO_API_KEY", true)], required: ["computer:orgo:ORGO_API_KEY"], ready: true, runs_refused: null, ...NO_SHELL };
@@ -43,10 +43,10 @@ const daytona: ComputerProvider = { id: "daytona", name: "Daytona", metered: tru
 const DESK: PairedComputer = {
   id: "cmp-abc", name: "desk-1", kind: "desktop", serves: ["desktop"], unserved: null, runs_refused: null, os: "windows", os_version: "11", device: { maker: "Acme", model: "Book 14" }, arch: "x86_64",
   screen: { width: 1920, height: 1080, scale: 1 }, groups: ["screen", "input.pointer", "input.keys"], features: { "ui.tree": { off: "no accessibility grant" } },
-  driver: "0.2.0", online: true, held_by_run: null, held_until: null, pairing: "pairing-mine", created_at: "2026-11-12T10:00:30.000Z", seen_at: "2026-11-12T10:00:31.000Z",
+  driver: "0.2.0", online: true, held_by_run: null, held_until: null, held_on: null, hold_note: null, pairing: "pairing-mine", created_at: "2026-11-12T10:00:30.000Z", seen_at: "2026-11-12T10:00:31.000Z",
 };
 const DESK_PROVIDER: ComputerProvider = { id: "cmp-abc", name: "desk-1 (windows)", metered: false, secrets: [], required: [], ready: true, runs_refused: null, ...NO_SHELL };
-const kind = (k: ComputerKindView["kind"], providers: ComputerProvider[], extra: Partial<ComputerKindView> = {}): ComputerKindView => ({ kind: k, offered: true, groups: [], tools: [], settings: [], providers, ...extra });
+const kind = (k: ComputerKindView["kind"], providers: ComputerProvider[], extra: Partial<ComputerKindView> = {}): ComputerKindView => ({ kind: k, offered: true, groups: [], tools: [], settings: [], record: { available: true }, providers, ...extra });
 const view = (saved = false): Computers => ({
   paired: [],
   kinds: [
@@ -61,19 +61,23 @@ const view = (saved = false): Computers => ({
 type Call = { method: string; path: string; type: string | null; body: unknown };
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 /** A server that answers GET with `views` in turn (the last one again after), a provider's choices GET with `choices`
- *  in turn, and PUT and POST with `write`. */
-function server(views: (Computers | Response)[], write: (call: Call) => Response | Promise<Response> = () => json(200, {}), choices: (ComputerChoices | Response)[] = [{ choices: [] }]) {
+ *  in turn, and PUT and POST with `write`. GET /computers/running is its own read, answered with `running` in turn
+ *  (none going, unless given; a promise answers when it settles) and counted apart (`runningReads`): `calls` are the
+ *  page's other requests. */
+function server(views: (Computers | Response)[], write: (call: Call) => Response | Promise<Response> = () => json(200, {}), choices: (ComputerChoices | Response)[] = [{ choices: [] }], running: (RunningRun[] | Response | Promise<RunningRun[]>)[] = [[]]) {
   const calls: Call[] = [];
   let read = 0;
   let chose = 0;
+  const counts = { runningReads: 0 };
   const fetch = (async (url: string, init?: RequestInit) => {
     const call = { method: init?.method ?? "GET", path: String(url), type: new Headers(init?.headers).get("content-type"), body: init?.body ? JSON.parse(String(init.body)) : undefined };
+    if (call.method === "GET" && call.path.endsWith("/computers/running")) { const r = await running[Math.min(counts.runningReads++, running.length - 1)]!; return r instanceof Response ? r : json(200, { runs: r }); }
     calls.push(call);
     if (call.method === "GET" && call.path.endsWith("/choices")) { const c = choices[Math.min(chose++, choices.length - 1)]!; return c instanceof Response ? c : json(200, c); }
     if (call.method === "GET") { const v = views[Math.min(read++, views.length - 1)]!; return v instanceof Response ? v : json(200, v); }
     return write(call);
   }) as typeof globalThis.fetch;
-  return { v2: createClient({ fetch }), calls };
+  return { v2: createClient({ fetch }), calls, counts };
 }
 
 let root: ReturnType<typeof createRoot> | undefined;
@@ -123,7 +127,7 @@ describe("Settings → Computers", () => {
   it("shows a section per kind: the server's why for a kind it doesn't offer, and nothing to set up for none", async () => {
     const { v2 } = server([view()]);
     const { host, section } = await open(v2);
-    expect([...host.querySelectorAll("section[aria-label]")].map((s) => s.getAttribute("aria-label"))).toEqual(["Your computers", "None", "Sandbox", "Desktop", "Phone", "Browser"]);
+    expect([...host.querySelectorAll("section[aria-label]")].map((s) => s.getAttribute("aria-label"))).toEqual(["Running now", "Your computers", "None", "Sandbox", "Desktop", "Phone", "Browser"]);
     expect(section("None").textContent).toContain("Nothing to set up");
     expect(section("None").querySelectorAll("li")).toHaveLength(0);
     expect(section("Phone").textContent).toContain(PHONE_WHY);
@@ -443,7 +447,7 @@ describe("Settings → Computers", () => {
   it("on a server whose runner runs in a process of its own, says with the code, and on the computer it paired, that no run here can use a paired computer, in the server's words", async () => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"], now: Date.parse("2026-11-12T10:00:00.000Z") });
     try {
-      const APART = "no run on this server can use a paired computer: its runner runs in a process of its own, and the computer's socket is held by the server's: start the image with the server options alone, without server-and-runner (outside the image: agentrun-serve without --no-runner)";
+      const APART = "no run on this server can use a paired computer: its runner runs in a process of its own and relays no computer's socket: give the runner AGENTRUN_PUBLIC_URL (this server's public address), or start the image with the server options alone, without server-and-runner (outside the image: agentrun-serve without --no-runner)";
       const apart: PairedComputer = { ...DESK, runs_refused: APART };
       const { v2 } = server([view(), view(), { ...view(), paired: [apart] }], () => json(201, { id: "pairing-mine", code: "K7PD-W3QX", expires_at: "2026-11-12T10:10:00.000Z", runs_refused: APART }));
       const { section, click, settle } = await open(v2);
@@ -513,6 +517,21 @@ describe("Settings → Computers", () => {
     expect(row("cmp-old")).toBeNull();
   });
 
+  it("names the runner a relayed computer's holding run is on, and says the server's note of a refused relay in its words instead of the offline hint", async () => {
+    const relayed: PairedComputer = { ...DESK, held_by_run: "0190f0aa-0000-7000-8000-00000000beef", held_until: "2026-11-12T11:00:00.000Z", held_on: "runner-b" };
+    const NOTE = "runner runner-b, which holds it, restarted since, and the hold was its earlier process's: it comes back to this server at its next dial, within 60 s, and the run's next claim takes it again";
+    const refused: PairedComputer = { ...DESK, id: "cmp-late", name: "late-desk", online: false, hold_note: NOTE };
+    const { v2 } = server([{ ...view(), paired: [relayed, refused] }], () => new Response(null, { status: 204 }));
+    const { section } = await open(v2);
+    const mine = section("Your computers");
+    const row = (id: string) => mine.querySelector(`[data-paired="${id}"]`)!;
+    expect(row("cmp-abc").textContent).toContain("In use by run 0000beef on runner-b");
+    expect(row("cmp-abc").querySelector("[data-hold-note]"), "nothing went wrong").toBeNull();
+    expect(row("cmp-late").querySelector("[data-hold-note]")?.textContent).toBe(NOTE);
+    expect(row("cmp-late").textContent).toContain("Offline");
+    expect(row("cmp-late").textContent, "the note says what to do").not.toContain("Open its driver on that computer: it dials this server.");
+  });
+
   it("says a failed read in the server's words, and reads again on Try again", async () => {
     const down = json(500, { error: { code: "internal", message: "the store is busy", retryable: true } });
     const { v2, calls } = server([down, view()]);
@@ -521,5 +540,130 @@ describe("Settings → Computers", () => {
     await click(host, /^Try again$/);
     expect(calls.filter((c) => c.method === "GET")).toHaveLength(2);
     expect(section("Sandbox")).toBeTruthy();
+  });
+});
+
+// Running now, over GET /v2/computers/running: each run still going whose agent has a computer, as GET /v2/runs/{run_id}
+// answers it, newest first. A row says the run's status as every run list does (StatusBadge), its title, its agent, the
+// kind and the provider's name, You drive while its owner has it, and a held run's hold, and opens the run. It is read
+// when the page opens and every RUNNING_POLL_MS after while the page is shown, one read at a time.
+describe("Settings → Computers: Running now", () => {
+  const going = (id: string, more: Partial<RunningRun> = {}): RunningRun => ({
+    run_id: id, agent_id: "fare-watch", kind: "agentic", title: "Find the cheapest nonstop", status: "working", state: "working", created_at: "2026-11-12T10:02:11.000Z",
+    computer: { kind: "desktop", provider: "e2b", state: "ready" }, ...more,
+  }) as RunningRun;
+  const rowsOf = (host: Element) => [...host.querySelectorAll('section[aria-label="Running now"] li[data-running]')] as HTMLElement[];
+  const chipsOf = (row: Element) => [...row.querySelectorAll("span.caps")].map((c) => c.textContent);
+  async function mount(v2: ReturnType<typeof createClient>) {
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(ComputersPage, { v2, writable: true })));
+    const settle = async (ms = 0) => { await act(async () => { await vi.advanceTimersByTimeAsync(ms); }); };
+    await settle();
+    return { host, settle };
+  }
+  afterEach(() => { vi.useRealTimers(); Object.defineProperty(document, "hidden", { configurable: true, get: () => false }); });
+
+  it("says so when no run with a computer is going", async () => {
+    const { v2 } = server([view(true)]);
+    const p = await open(v2);
+    expect(p.section("Running now").textContent).toContain("No run with a computer is going now.");
+    expect(rowsOf(p.host)).toHaveLength(0);
+  });
+
+  it("each row says the run's status as the run lists do, its agent, kind and provider, who drives and its hold, and opens the run", async () => {
+    const { v2 } = server([view(true)], undefined, undefined, [[
+      going("run_AAAA1111", { status: "input_required", state: "waiting", computer: { kind: "phone", provider: "phone-harness", state: "taken_over" }, title: "Check me in", agent_id: "trip-prep" }),
+      going("run_BBBB2222"),
+      going("run_CCCC3333", { status: "input_required", state: "idle" }),
+      going("run_DDDD4444", { status: "queued", computer: { kind: "desktop", provider: "e2b", state: "starting" } }),
+      going("run_EEEE5555", { title: "Run the notebook", agent_id: "lab", status: "queued", computer: { kind: "sandbox", provider: "docker", state: "starting" } }),
+      going("run_FFFF6666", { computer: { kind: "desktop", provider: "orgo", state: "ready", held: { state: "waiting", minutes: 15, until: "2026-11-12T10:20:00.000Z" } } }),
+    ]]);
+    const p = await open(v2);
+    const rows = rowsOf(p.host);
+    expect(rows.map((li) => li.dataset.running)).toEqual(["run_AAAA1111", "run_BBBB2222", "run_CCCC3333", "run_DDDD4444", "run_EEEE5555", "run_FFFF6666"]);
+    // A taken-over phone of a run waiting on its person; a provider the page has no name for is said by its id.
+    expect(rows[0]!.textContent).toContain("Check me in");
+    expect(rows[0]!.textContent).toContain("trip-prep · Phone · phone-harness");
+    expect(chipsOf(rows[0]!)).toEqual(["Input required", "You drive"]);
+    // A working desktop: the provider by the name Settings → Computers lists it under.
+    expect(rows[1]!.textContent).toContain("fare-watch · Desktop · E2B");
+    expect(chipsOf(rows[1]!)).toEqual(["Working"]);
+    // A stopped run is Stopped, as the run lists say it, never "waiting".
+    expect(chipsOf(rows[2]!)).toEqual(["Stopped"]);
+    // One status a row: a queued desktop says it once.
+    expect(chipsOf(rows[3]!)).toHaveLength(1);
+    expect(rows[4]!.textContent).toContain("lab · Sandbox · Docker");
+    expect(rows[5]!.textContent).toMatch(/Held for you until \d{1,2}:20/);
+    // The row is one link, to the run.
+    expect([...rows[0]!.querySelectorAll("a")].map((a) => a.getAttribute("href"))).toEqual(["#/runs/run_AAAA1111"]);
+  });
+
+  it("a triggered run's title is cut at its trigger's payload, as the run lists cut it", async () => {
+    const { v2 } = server([view(true)], undefined, undefined, [[going("run_AAAA1111", { title: "Triage the lead <trigger-payload>{\"email\":\"x\"}</trigger-payload>", trigger: { id: "t1", firing_key: "f1" } })]]);
+    const p = await open(v2);
+    const title = rowsOf(p.host)[0]!.querySelector("a span span")!.textContent;
+    expect(title).not.toContain("trigger-payload");
+    expect(title).toContain("Triage the lead");
+  });
+
+  it("reads again every RUNNING_POLL_MS: a run that started shows, one that ended goes; gone from the page, it reads no more", async () => {
+    vi.useFakeTimers();
+    const { v2, counts } = server([view(true)], undefined, undefined, [[going("run_AAAA1111")], [going("run_BBBB2222", { title: "Another" }), going("run_AAAA1111")], []]);
+    const { host, settle } = await mount(v2);
+    expect(rowsOf(host).map((li) => li.dataset.running)).toEqual(["run_AAAA1111"]);
+    await settle(RUNNING_POLL_MS);
+    expect(rowsOf(host).map((li) => li.dataset.running)).toEqual(["run_BBBB2222", "run_AAAA1111"]);
+    await settle(RUNNING_POLL_MS);
+    expect(host.querySelector('section[aria-label="Running now"]')!.textContent).toContain("No run with a computer is going now.");
+    expect(counts.runningReads).toBe(3);
+    act(() => root!.unmount()); root = undefined;
+    await vi.advanceTimersByTimeAsync(RUNNING_POLL_MS * 3);
+    expect(counts.runningReads).toBe(3);
+  });
+
+  it("reads nothing while the page is hidden, and reads at once when it is shown again", async () => {
+    vi.useFakeTimers();
+    const { v2, counts } = server([view(true)], undefined, undefined, [[going("run_AAAA1111")]]);
+    const { settle } = await mount(v2);
+    expect(counts.runningReads).toBe(1);
+    Object.defineProperty(document, "hidden", { configurable: true, get: () => true });
+    await settle(RUNNING_POLL_MS * 3);
+    expect(counts.runningReads).toBe(1);
+    Object.defineProperty(document, "hidden", { configurable: true, get: () => false });
+    await act(async () => { document.dispatchEvent(new Event("visibilitychange")); });
+    await settle();
+    expect(counts.runningReads).toBe(2);
+  });
+
+  it("starts no read while one is pending: a slow answer is the one shown", async () => {
+    vi.useFakeTimers();
+    let late!: (runs: RunningRun[]) => void;
+    const slow = new Promise<RunningRun[]>((resolve) => { late = resolve; });
+    const { v2, counts } = server([view(true)], undefined, undefined, [slow, [going("run_NEXT0000")]]);
+    const { host, settle } = await mount(v2);
+    await settle(RUNNING_POLL_MS * 3);
+    await act(async () => { document.dispatchEvent(new Event("visibilitychange")); });
+    expect(counts.runningReads).toBe(1);
+    await act(async () => { late([going("run_SLOW0000")]); });
+    await settle();
+    expect(rowsOf(host).map((li) => li.dataset.running)).toEqual(["run_SLOW0000"]);
+    await settle(RUNNING_POLL_MS);
+    expect(counts.runningReads).toBe(2);
+    expect(rowsOf(host).map((li) => li.dataset.running)).toEqual(["run_NEXT0000"]);
+  });
+
+  it("a read that fails says so in the server's words and keeps the list it had; the rest of the page still shows", async () => {
+    vi.useFakeTimers();
+    const refused = json(503, { error: { code: "unavailable", message: "the store is busy", retryable: true } });
+    const { v2 } = server([view(true)], undefined, undefined, [[going("run_AAAA1111")], refused]);
+    const { host, settle } = await mount(v2);
+    await settle(RUNNING_POLL_MS);
+    const section = host.querySelector('section[aria-label="Running now"]')!;
+    expect(section.querySelector('[role="alert"]')!.textContent).toContain("The running computers could not be read");
+    expect(section.querySelector('[role="alert"]')!.textContent).toContain("the store is busy");
+    expect(rowsOf(host).map((li) => li.dataset.running)).toEqual(["run_AAAA1111"]);
+    expect(host.querySelector('section[aria-label="Sandbox"]')).toBeTruthy();
   });
 });

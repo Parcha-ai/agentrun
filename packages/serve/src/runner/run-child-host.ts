@@ -6,22 +6,27 @@
 // opens for the claim (held.ts), never the key. The runner keeps the claim, its renewals, its commands and its end.
 //
 // Where the image's helper can switch (agentrun-runas, root:node 0750 with file capabilities), each of the runner's claim
-// slots runs as a uid of its own (1001 + slot), in folders of the slot's group (2770) the server's user reads through its
-// membership of every slot group: one run can read neither another run's folder nor, being another uid, its memory. A
-// slot is reaped at each run's end (every process of its uid killed, its files in /tmp removed, what it left readable to
-// the server), and its folders are given back to the server's group.
+// slots runs as a uid of its own (1001 + slot), in its own group alone. While a run holds its slot, its folders are the
+// slot's uid's and the runner's group's (2770, setgid, the helper's `own <slot>`), which the server's user reads through
+// that one group: the server's user is in no slot's group, and no slot is in the server's, so one run can read neither
+// another run's folder nor, being another uid, its memory. A slot is reaped at each run's end (every process of its uid
+// killed, its files in /tmp removed), and its folders are given back to the server's user (`own runner`), so the slot's
+// next run reaches nothing of them.
 import { type ChildProcess, execFile, spawn } from "node:child_process";
-import { existsSync, type Stats } from "node:fs";
-import { chmod, chown, lchown, lstat, mkdir, readdir, rm } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { chmod, mkdir, rm } from "node:fs/promises";
 import type { Socket } from "node:net";
+import type { Duplex } from "node:stream";
 import { dirname, join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { encode, SECRET_NAMES, SECRETS_FD_ENV, SECRETS_LEN_ENV, withoutSecrets } from "../secrets.js";
+import { encode, OTEL_PAIR, SECRET_NAMES, SECRETS_FD_ENV, SECRETS_LEN_ENV, withoutSecrets } from "../secrets.js";
+import { otelSettings } from "../otel/tracer.js";
 import { putLiveViewer, dropLiveViewer } from "../browser-live.js";
 import { CALENDAR_EVENTS } from "../calendar/names.js";
 import { openCalendar } from "../calendar/address.js";
 import { openAccount } from "../email/account.js";
-import { harnessOf } from "../harness-table.js";
+import { harnessOf, planRecipeOf, recipeHarness } from "../harness-table.js";
+import { openHarnessKeys } from "../harness-keys.js";
 import { installDirOf, installForClaim, shareInstall } from "../harness-install.js";
 import { loadArchilSettings } from "../archil-settings.js";
 import { planOf } from "../chatgpt-plan.js";
@@ -30,9 +35,9 @@ import { vendorsOver } from "../sign-ins.js";
 import { decisionProvidersIn, fauxFetch } from "../decisions.js";
 import { DECISION_PROVIDER_KEYS } from "../tool-plane.js";
 import { learningEndOfRun } from "./learning-end.js";
-import { runnerSecrets } from "./redact.js";
+import { cutDeep, runnerSecrets } from "./redact.js";
 import { storeSecrets } from "./store-secrets.js";
-import { FAUX_ENV, GATEWAY_KEY_ENV } from "../model.js";
+import { FAUX_ENV, FAUX_PROVIDER, GATEWAY_KEY_ENV } from "../model.js";
 import { SAVED_GATEWAY_ENV, savedGatewayIn } from "../model-gateway.js";
 import { FAUX_VENDOR_API_ENV } from "../tools.js";
 import { withinCarried } from "../paid-calls.js";
@@ -40,6 +45,7 @@ import { openRunMcpAuth, sealRunMcpAuth } from "../store/seal.js";
 import { runZone } from "../environment.js";
 import { shadowRunId } from "../learn/audit.js";
 import { LEARNING_SCRIPT, learningWorkspace } from "../learn/folder.js";
+import { agreeOnOf } from "../learning-setting.js";
 import { openRunWorkspace } from "../workspace/run-workspace.js";
 import { archilClaim, MOUNT_TTL_MS } from "../workspace/archil-claim.js";
 import { agentDirName, recordingsFolder, runFolder, scratchFolder } from "../workspace/paths.js";
@@ -47,22 +53,22 @@ import type { Workspace } from "../workspace/workspace.js";
 import { keptKeyOf } from "../workspace/computer-kept.js";
 import { claimModelKey, claimSecrets, claimSpendOff, hostDecisionKeys, learnedDecisionKeys, openRunModelKey, savedModelKeys, serverKeyless, tierModelKeys, withoutModelKeys } from "./claim-secrets.js";
 import { type GithubAppAccessAt, githubAppAccess } from "./github-app.js";
-import { githubPullOf } from "../github.js";
+import { githubPullOf, githubTargetOf } from "../github.js";
 import { isObject } from "../validate.js";
 import { liveForRun, runnerLiveOf } from "../live-reach.js";
 import { type LearnedWorkflow, learningFolderOf, secretsShown } from "../learning.js";
 import { learningStartOf, seedFailed } from "../run-launch.js";
 import { messageText } from "../run-manifest.js";
-import { placeRunInputs } from "../uploads.js";
+import { filesToCopy, placeRunInputs } from "../uploads.js";
 import { withAudit } from "./audit.js";
 import { compareEndOfRun } from "./compare-end.js";
 import type { Compared } from "../learn/promote.js";
 import { learnedFirst, type LearnedFirst } from "./learned-first.js";
 import { workflowsAt } from "./learning-seed.js";
-import { heldMcpOf, mcpForClaim } from "./mcp-run.js";
+import { claimMetering, heldMcpOf, mcpForClaim } from "./mcp-run.js";
 import { learnedTiers, learnsWorkflows, mcpReachOf, type AdapterSpecDeps } from "./adapter-run-spec.js";
 import { createDispatchLoop } from "./dispatch.js";
-import { resolveRunnerLoop, withSavedGatewayDeps } from "./harness-loops.js";
+import { refuseRecipeTriggerRun, resolveRunnerLoop, withSavedGatewayDeps } from "./harness-loops.js";
 import { isWorkflowRevision } from "./workflow-loop.js";
 import { loginForRun } from "../claude-login.js";
 import type { Held, HeldComputerAsk } from "./held.js";
@@ -70,10 +76,21 @@ import { heardComputerHold } from "./computer-journal.js";
 import { type Claim, type Command, type CommandOutcome, type HeldState, type Loop, type LoopDeps, type LoopEnd, type LoopFactory, type StopReason, ClaimRefused } from "./loop-contract.js";
 import { Channel, ChannelClosed } from "./run-channel.js";
 import { registerRunErrors } from "./run-errors.js";
-import { readLaunchBody, type RunLaunch } from "../run-launch.js";
-import { SUBAGENT_TOOL } from "./subagent.js";
+import { exposeSaveSlots } from "./save-slots.js";
+import { type RunBigWrites, runBigWrites } from "./big-writes.js";
+import { type SaveSlots, SERVER_SLOTS } from "../web-save.js";
+import { launchOnItsDisk, readLaunchBody, type RunLaunch } from "../run-launch.js";
+import { routedSubagentTiers, SUBAGENT_TOOL } from "./subagent.js";
 import type { AlsoRow, JournalReads, Store } from "../store/store.js";
 import type { Tier } from "../model.js";
+import { sourceSyncOf } from "../source-sync/types.js";
+import { sourceAuxiliaryAdmitter } from "../source-sync/auxiliary.js";
+import { beginSourceIO, type SourceIOReceipt } from "../source-sync/io.js";
+import type { ProjectCheckpoint, ProjectUncertain } from "../source-sync/checkpoints.js";
+import type { ClaimComputer } from "../workspace/computer-for-claim.js";
+import { runTools, type RunTools } from "../workspace/run-tools.js";
+import { ProjectHostGate } from "./project-host.js";
+import { runProjectCheckpoint } from "./project-checkpoint.js";
 
 /** The image's helper that starts a run's process as its slot's uid (packages/serve/runas). */
 export const RUNAS_HELPER = "/usr/local/bin/agentrun-runas";
@@ -116,6 +133,11 @@ const execText = (file: string, args: readonly string[], timeoutMs: number): Pro
       resolve({ code: -1, stdout: "", stderr: (error as Error)?.message ?? String(error) });
     }
   });
+
+/** Whether runIsolationOf gives `env` on this host `process` (every run as the runner's own user), told before it is
+ *  asked: `same`, or no helper and not `slot`. A helper that is there but cannot switch refuses the runner instead. */
+export const runsAsOwnUser = (env: NodeJS.ProcessEnv, helper: string = RUNAS_HELPER): boolean =>
+  env[RUN_USER_ENV] === "same" || (!existsSync(helper) && env[RUN_USER_ENV] !== "slot");
 
 /** This host's isolation for `loops` runs at once, by `env` and the helper: the helper's own check that it can switch
  *  (its effective set holds what it needs) decides `uid`; none installed (a local install), `process`; `same`, `process`
@@ -279,113 +301,50 @@ const runParents = (data: string, agentId: string, runId: string): string[] => {
   return [data, join(data, "disk"), join(data, "disk", "agents"), join(data, "disk", "agents", agentDirName(agentId)), dirname(top), join(data, "scratch"), dirname(scratch)];
 };
 
-/** Before the run's process starts on `slot`: its parents traverse-only, its top folders the slot group's (2770), and
- *  what an earlier claim's slot left in them given to this slot (the helper's reown). */
+/** Before the run's process starts on `slot`: its parents traverse-only, the folders its process opens first made (its
+ *  folder, its recordings and its temporary folder, its TMPDIR), and its top folders with everything in them given to the
+ *  slot (the helper's `own <slot>`: the slot's uid, the runner's group, folders 2770). What an earlier claim's slot left,
+ *  and what the server's user placed at this claim, is the slot's with the rest. */
 async function layRunFolders(isolation: Extract<RunIsolation, { kind: "uid" }>, data: string, agentId: string, runId: string, slot: number): Promise<void> {
   for (const parent of runParents(data, agentId, runId)) {
     await mkdir(parent, { recursive: true });
     await chmod(parent, 0o711);
   }
-  const gid = slotId(slot);
-  for (const top of runTops(data, agentId, runId)) {
-    await mkdir(top, { recursive: true });
-    await chown(top, process.getuid!(), gid);
-    await chmod(top, 0o2770);
-    // An earlier claim of this run on another slot left its files that slot's: given to this one, so the run reads and
-    // writes what it wrote before.
-    for (const other of await slotsUnder(top, slot)) {
-      const moved = await execText(isolation.helper, ["reown", String(other), String(slot), top], 120_000);
-      if (moved.code !== 0) throw new Error(`the run's folder could not be given to its slot: ${moved.stderr.trim()}`);
-    }
-    // What the server's user made there (a run's inputs placed at this claim, an earlier run's folders on a volume from
-    // before runs had slots of their own): the slot group's, so the run writes there too.
-    await toSlotGroup(top, gid);
-  }
-  // The folders the run's process opens first, made here in the slot's group (setgid): its folder, its recordings and its
-  // temporary folder (its TMPDIR), each one the server reads through the group as the run writes it.
-  for (const folder of [runFolder(data, agentId, runId), recordingsFolder(data, agentId, runId), join(scratchFolder(data, agentId, runId), "tmp")]) {
-    await mkdir(folder, { recursive: true });
-    const stat = await lstat(folder);
-    if (stat.uid !== process.getuid!()) continue;
-    await chown(folder, process.getuid!(), gid);
-    await chmod(folder, 0o2770);
-  }
-}
-
-/** Every entry under `dir` the server's user owns, given to group `gid` as the helper's reown gives a slot's: a folder
- *  the group's to enter and write (2770), a file's owner bits copied to the group, none for others. The whole tree, a
- *  symlink never followed nor changed (an lstat's). Run while no process of the slot is alive (after its reap), so
- *  nothing it walks is swapped under it. */
-export async function toSlotGroup(dir: string, gid: number): Promise<void> {
-  const me = process.getuid!();
-  const walk = async (at: string): Promise<void> => {
-    let names: string[];
-    try {
-      names = await readdir(at);
-    } catch {
-      return;
-    }
-    for (const name of names) {
-      const path = join(at, name);
-      const stat = await lstat(path).catch(() => undefined);
-      if (!stat || stat.isSymbolicLink()) continue;
-      if (stat.uid === me) {
-        await lchown(path, me, gid);
-        const owner = stat.mode & 0o700;
-        await chmod(path, stat.isDirectory() ? 0o2770 : owner | (owner >> 3));
-      }
-      if (stat.isDirectory()) await walk(path);
-    }
-  };
-  await walk(dir);
-}
-
-/** The other slots that own an entry anywhere under `dir`, as the helper's reown walks it: the whole tree, a symlink
- *  never followed (an lstat's, never a directory). `statOf`: the stat it reads (a test's). */
-export async function slotsUnder(dir: string, slot: number, statOf: (path: string) => Promise<Stats> = lstat): Promise<number[]> {
-  const found = new Set<number>();
-  const look = async (at: string): Promise<void> => {
-    let names: string[];
-    try {
-      names = await readdir(at);
-    } catch {
-      return;
-    }
-    for (const name of names) {
-      const path = join(at, name);
-      const stat = await statOf(path).catch(() => undefined);
-      if (!stat) continue;
-      const other = stat.uid - FIRST_RUN_ID;
-      if (other >= 0 && other < RUN_SLOTS && other !== slot) found.add(other);
-      if (stat.isDirectory()) await look(path);
-    }
-  };
-  await look(dir);
-  return [...found];
+  const tops = runTops(data, agentId, runId);
+  for (const folder of [...tops, runFolder(data, agentId, runId), recordingsFolder(data, agentId, runId), join(scratchFolder(data, agentId, runId), "tmp")]) await mkdir(folder, { recursive: true });
+  const given = await execText(isolation.helper, ["own", String(slot), ...tops], 120_000);
+  if (given.code !== 0) throw new Error(`the run's folders could not be given to its slot: ${given.stderr.trim() || `${isolation.helper} own exited ${given.code}`}`);
 }
 
 /** The host's shared folders a slot's uid can leave a file in, each swept at its reap (/var/lock is /run/lock's link on
  *  Debian, swept as itself where it is a folder of its own). SysV IPC is not swept. */
 const SWEPT = ["/tmp", "/var/tmp", "/dev/shm", "/run/lock", "/var/lock", "/dev/mqueue"] as const;
 
+/** At a claim, before anything of the run is placed: its top folders and everything in them the server's user's again
+ *  (the helper's `own runner`), whoever an earlier claim left them to. Throws, in words, when they could not be. */
+export async function takeBackRunFolders(isolation: Extract<RunIsolation, { kind: "uid" }>, tops: readonly string[]): Promise<void> {
+  const taken = await execText(isolation.helper, ["own", "runner", ...tops], 120_000);
+  if (taken.code !== 0) throw new Error(`the run's folders could not be taken back from the slot an earlier claim left them to: ${taken.stderr.trim() || `${isolation.helper} own exited ${taken.code}`}`);
+}
+
 /** After the run's process ended: every process of the slot's uid killed, its files in the shared temporary folders
- *  removed, what it left in its folders readable and removable by the server's group, and its top folders the server's
- *  own again (0770), which the slot's next run cannot enter. Whether the reap held: the helper kills until no process of
- *  the uid is left, and says so; false when one still is, or the reap could not run (the slot is then never run on
- *  again by this runner). */
+ *  removed, and its top folders with everything in them given back to the server's user (the helper's `own runner`:
+ *  the server's uid and group, folders 2770), which the slot's next run cannot enter. Whether the reap held: the helper
+ *  kills until no process of the uid is left, and says so, and the folders were given back; false when a process still
+ *  is, or either step could not run (the slot is then never run on again by this runner). */
 export async function reapSlot(isolation: Extract<RunIsolation, { kind: "uid" }>, slot: number, tops: readonly string[], log: (line: string) => void): Promise<boolean> {
-  const args = ["reap", String(slot), ...SWEPT.flatMap((dir) => ["--sweep", dir]), ...tops.flatMap((top) => ["--fix", top])];
-  const reaped = await execText(isolation.helper, args, 120_000);
+  const reaped = await execText(isolation.helper, ["reap", String(slot), ...SWEPT.flatMap((dir) => ["--sweep", dir])], 120_000);
   if (reaped.code !== 0) log(`slot ${slot}'s reap said: ${reaped.stderr.trim()}`);
-  for (const top of tops) {
-    try {
-      await chown(top, process.getuid!(), process.getgid!());
-      await chmod(top, 0o770);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") log(`the run's folder ${top} was not given back to the server: ${(error as Error).message}`);
+  // Given back whether or not the reap held: a process of the slot's uid still alive then reaches its folders no more.
+  let back = true;
+  if (tops.length) {
+    const given = await execText(isolation.helper, ["own", "runner", ...tops], 120_000);
+    if (given.code !== 0) {
+      log(`slot ${slot}'s folders were not all given back to the server: ${given.stderr.trim()}`);
+      back = false;
     }
   }
-  return reaped.code === 0;
+  return reaped.code === 0 && back;
 }
 
 /** After a reap that held: the run's scratch folder as a claim's end in the runner's own process leaves it (cli-run-spec.ts
@@ -429,19 +388,6 @@ export function dataOnly(value: unknown, seen = new Set<object>()): unknown {
   } finally {
     seen.delete(value);
   }
-}
-
-/** Every string inside `value` cut by `cut`: what the run's process writes, as the runner's redactor would cut it in a
- *  loop of its own (rule three: no secret the runner holds is written). */
-export function cutDeep<T>(value: T, cut: (text: string) => string): T {
-  if (typeof value === "string") return cut(value) as T;
-  if (value === null || typeof value !== "object") return value;
-  if (ArrayBuffer.isView(value) || value instanceof Date || value instanceof RegExp || value instanceof ArrayBuffer) return value;
-  if (Array.isArray(value)) return value.map((item) => cutDeep(item, cut)) as T;
-  if (value instanceof Map) return new Map([...value].map(([k, v]) => [k, cutDeep(v, cut)])) as T;
-  const out: Record<string, unknown> = {};
-  for (const key of Object.keys(value)) Object.defineProperty(out, key, { value: cutDeep((value as Record<string, unknown>)[key], cut), enumerable: true, writable: true, configurable: true });
-  return out as T;
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -646,20 +592,64 @@ interface ClaimReads {
   readonly launch: import("../run-launch.js").RunLaunch;
   readonly revision: { readonly kind: string; readonly body: Record<string, unknown> };
   readonly claimed: NodeJS.ProcessEnv;
+  readonly signal?: AbortSignal;
+  /** The runner's presence incarnation (LoopDeps.incarnation): with the claim's runner, who keeps a computer a park pins. */
+  readonly incarnation?: string;
 }
 
 /** The email tools a revision may grant. */
 const grantsEmail = (granted: readonly string[]): boolean => granted.some((tool) => tool.startsWith("email_"));
 
 /** Held (held.ts) for one claim, on the runner: each answer the claim's own, read with the runner's seal key from the
- *  runner's own reads of the claim; every argument from the run's process is checked or ignored. */
-export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, reads: ClaimReads, cut: (text: string) => string, log: (line: string) => void): { held: Held; inputs(): Promise<void>; release(): Promise<void> } {
+ *  runner's own reads of the claim; every argument from the run's process is checked or ignored. `bigs`: the run's pieced
+ *  writes (big-writes.ts), let go at the claim's release and, by the caller, when the run's channel ends. */
+export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, reads: ClaimReads, cut: (text: string) => string, log: (line: string) => void, bigs: RunBigWrites = runBigWrites()): { held: Held; inputs(): Promise<void>; release(): Promise<void>; projectEnd?(): Promise<void> } {
   const { claim, run, launch, revision, claimed } = reads;
   const sealKey = deps.sealKey;
   const store = deps.store;
   const granted = ((revision.body as { tools?: unknown }).tools as readonly string[] | undefined) ?? [];
+  const admitAuxiliary = sourceAuxiliaryAdmitter(store, { data: deps.data, sealKey, env: deps.env, control: { ...deps.mountControl, ...(deps.makeArchilDisk ? { makeDisk: deps.makeArchilDisk } : {}) } });
   const keys = { store, sealKey, env: deps.env };
-  const releases: (() => Promise<void> | void)[] = [];
+  const releases: (() => Promise<void> | void)[] = [() => bigs.close()];
+  const source = sourceSyncOf(revision.body), placed = launch.sourceProject;
+  const moved = !!source && !!placed && source.id === placed.sourceId && source.project === placed.digest && placed.baselineRevision === run.revisionId;
+  const projectGate = moved ? new ProjectHostGate() : undefined;
+  const projectStop = new AbortController();
+  const projectSignal = reads.signal ? AbortSignal.any([reads.signal, projectStop.signal]) : projectStop.signal;
+  let projectIO: Promise<SourceIOReceipt> | undefined, projectCapture: Promise<ProjectCheckpoint> | undefined;
+  let projectComputer: ClaimComputer | undefined, projectWorkspace: Workspace | undefined, projectMode: 1 | 2 = 1;
+  let projectFailed = false, projectReleased = false, projectClosing = false, projectCaptureDone = false;
+  let projectRelease: Promise<void> | undefined;
+  let projectCleanup: Promise<unknown> | undefined;
+  const projectOwns = async (settlingAudit = false): Promise<void> => {
+    projectSignal.throwIfAborted();
+    const row = await store.runs.get(claim.runId);
+    // A never-waiting audit journals its Ask/cap as parked before terminalizing under this same claim. Only its
+    // checkpoint may finish from that state; ordinary held calls still require running, and claim identity is exact.
+    const settlingParkedAudit = settlingAudit && launch.audit !== undefined && row?.state === "parked";
+    if (!row || row.agentId !== run.agentId || row.revisionId !== run.revisionId || row.epoch !== claim.epoch || row.runner !== claim.runner || row.state !== "running" && !settlingParkedAudit)
+      throw new ClaimRefused("This project checkpoint no longer holds its original run claim.");
+  };
+  const ownProject = async (settlingAudit = false): Promise<void> => {
+    if (!projectGate) return;
+    await projectOwns(settlingAudit);
+    await (projectIO ??= beginSourceIO(store, run.agentId, "snapshot"));
+  };
+  const projectCall = <T>(work: () => Promise<T>): Promise<T> => projectGate ? projectGate.run(async () => { await ownProject(); return work(); }) : work();
+  const projectWorkSettled = async (): Promise<void> => { await projectCapture; await projectGate?.drain(); };
+  const projectSettled = async (): Promise<void> => { await projectWorkSettled(); await projectCleanup?.catch(() => undefined); };
+  /** Cleanup closes capture admission synchronously. A capture already admitted finishes first; one arriving later
+   *  cannot use resources being relinquished. Cleanup itself remains owned and is awaited by the host's release. */
+  const cleanProject = <T>(work: () => Promise<T>): Promise<T> => {
+    if (!projectGate) return work();
+    if (projectReleased) return Promise.reject(new ClaimRefused("This claim's project resources have already been released."));
+    projectClosing = true; projectGate.close();
+    const previous = projectCleanup;
+    const pending = (async () => { await previous?.catch(() => undefined); await projectWorkSettled(); return work(); })();
+    projectCleanup = pending;
+    void pending.catch(() => { projectFailed = true; });
+    return pending;
+  };
   const fromGitHub = launch.inputOrigin?.kind === "trigger" && launch.inputOrigin.source === "github";
   const github = () => githubAppAccess(store, sealKey, launch.input, { ...(deps.githubApi ? { api: deps.githubApi } : {}), fromGitHub, ...(launch.repo !== undefined ? { repo: launch.repo } : {}) });
   /** Mode 2's Archil claim, made once for the claim on the runner, its folder the run's. */
@@ -668,13 +658,18 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
     (archil ??= (async () => {
       const settings = await loadArchilSettings(store, deps.env);
       if (settings === undefined) return undefined;
-      const made = await archilClaim({ settings, keys: store.sealedKeys, sealKey, signal: new AbortController().signal, env: deps.env, mount: { runId: claim.runId, epoch: claim.epoch, ttlMs: MOUNT_TTL_MS, ...(deps.mountControl ?? {}) }, run: { agentId: run.agentId, ...(launch.archilDisk ? { launch: launch.archilDisk } : {}), store }, ...(deps.makeArchilDisk ? { makeDisk: deps.makeArchilDisk } : {}) });
+      const made = await archilClaim({ settings, keys: store.sealedKeys, sealKey, signal: new AbortController().signal, env: deps.env, mount: { runId: claim.runId, epoch: claim.epoch, ttlMs: MOUNT_TTL_MS }, ...(deps.mountControl ? { control: deps.mountControl } : {}), run: { agentId: run.agentId, ...(launch.archilDisk ? { launch: launch.archilDisk } : {}), store }, ...(deps.makeArchilDisk ? { makeDisk: deps.makeArchilDisk } : {}) });
       releases.push(() => made.release());
       return made;
     })());
   /** Whether the claim's run holds a model key of its own now (its launch, as this runner opens it): its process is then
    *  handed none of the server's (claim-secrets.ts keyedAtClaim, held here for the runner's answers). */
   const runKeyed = async () => (await openRunModelKey(keys, claim.runId)) !== undefined;
+  /** Whether the claim's run is held, its model kept from running at its create (hold.refused): it routes no model, so
+   *  whatever its process asks, the runner hands it no model key, answers it keyless and refuses it a learning step (its
+   *  learned workflows and its end-of-run step), as its spec asks for none of them (adapter-run-spec.ts, cli-run-spec.ts). */
+  const modelRefused = launch.hold?.refused !== undefined;
+  const refusedSpend = (): ClaimRefused => new ClaimRefused("a held run its model kept from running asks its runner for no model spend: it routes no model and takes no learning step");
   const learningFolder = async () => {
     const made = await archilOf();
     return made === undefined ? learningFolderOf(deps.data, run.agentId) : learningWorkspace({ mode: "archil", agentId: run.agentId, archil: made });
@@ -692,6 +687,45 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
   /** The claim's one learned first choice: its promotion's writes are made once, however often the process asks. */
   let chosen: Promise<LearnedFirst> | undefined;
   const held: Held = {
+    projectCheckpoint: (...args: [AbortSignal?]) => {
+      if (args.length > 1 || args[0] !== undefined && !(args[0] instanceof AbortSignal)) throw new ClaimRefused("A project checkpoint accepts only its cancellation signal.");
+      if (!projectGate || !placed || !source) throw new ClaimRefused("This claim has no matching placed source project.");
+      if (projectReleased) throw new ClaimRefused("This claim's project resources have already been released.");
+      if (projectCapture) return projectCapture;
+      if (projectClosing) throw new ClaimRefused("This claim's project resources are closing for cleanup.");
+      projectGate.close();
+      const signal = args[0] ? AbortSignal.any([projectSignal, args[0], AbortSignal.timeout(60_000)]) : AbortSignal.any([projectSignal, AbortSignal.timeout(60_000)]);
+      const uncertain = (): ProjectUncertain => ({ version: 1, status: "uncertain", sourceId: source.id, runId: claim.runId, epoch: claim.epoch, reason: "project_not_settled", stage: "drain" });
+      projectCapture = (async () => {
+        let checkpoint: ReturnType<typeof runProjectCheckpoint> | undefined;
+        let tools: RunTools | undefined;
+        let result: ProjectCheckpoint;
+        try {
+          await projectGate.drain();
+          await ownProject(true);
+          signal.throwIfAborted(); await projectOwns(true);
+          if (projectGate.uncertain) throw new ClaimRefused("An earlier project operation has an unresolved outcome.");
+          if (!projectComputer || !projectWorkspace) throw new ClaimRefused("The project's held execution resources are unavailable.");
+          checkpoint = runProjectCheckpoint({ store, agentId: run.agentId, claim, launch, computer: projectComputer, ioHeld: true,
+            tools: { get workspace() { if (!tools) throw new ClaimRefused("Project settlement has not opened its workspace."); return tools.workspace; },
+              settleProject: async () => { tools = await runTools(projectWorkspace!, projectComputer!.computer, { mode: projectMode, context: BACKGROUND_CONTEXT }); return tools.settleProject(); } },
+            workspace: { data: deps.data, sealKey, env: deps.env, control: { ...deps.mountControl, ...(deps.makeArchilDisk ? { makeDisk: deps.makeArchilDisk } : {}) } },
+            secrets: async () => runnerSecrets(deps.env, [...runnerSecrets(claimed), ...await storeSecrets(store, sealKey, deps.data)]),
+          });
+          result = await checkpoint.capture(signal);
+          signal.throwIfAborted(); await projectOwns(true);
+          if (result.status !== "candidate" && result.status !== "discarded" && !checkpoint.refusalSettled()) projectFailed = true;
+        } catch {
+          projectFailed = true;
+          result = checkpoint?.uncertain() ?? uncertain();
+        } finally {
+          try { await tools?.end(); }
+          catch { projectFailed = true; result = { ...uncertain(), reason: "project_capture_failed", stage: "cleanup" }; }
+        }
+        return result;
+      })().finally(() => { projectCaptureDone = true; });
+      return projectCapture;
+    },
     plan: async () => {
       const plan = planOf(claimed);
       if (!plan) return undefined;
@@ -703,24 +737,28 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
       return runSignIn(store, sealKey, claim, String(resolution), { vendors: vendorsOver(() => claimed, vendorFetch), log });
     },
     verifySignIn: (kept, at) => verifyRunSignIn(store, sealKey, claim, kept, Number(at)),
-    mcp: async (ask) => {
+    mcp: (ask) => projectCall(async () => {
       const reach = await mcpReachOf(deps);
       const harness = { commit: (change: (tx: unknown) => Promise<unknown>) => change({ appendEntry: async (_conversation: number, entry: unknown) => void (await ask.appendRoot(dataOnly(entry))) }) };
-      const made = await mcpForClaim({ claim, store, sealKey, grants: granted, harness: harness as never, work: () => runFolder(deps.data, run.agentId, claim.runId), launchInput: launch.input, githubAppAccess: () => github(), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}), ...reach });
+      const made = await mcpForClaim({ claim, store, sealKey, grants: granted, harness: harness as never, work: () => runFolder(deps.data, run.agentId, claim.runId), launchInput: launch.input, githubAppAccess: () => github(), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}), ...(deps.composioMcpOrigin ? { composioMcpOrigin: deps.composioMcpOrigin } : {}), ...reach, ...claimMetering(deps, undefined, launch) });
       if (!made) return undefined;
       releases.push(() => made.release());
-      return heldMcpOf(made, cut);
-    },
+      const exposed = heldMcpOf(made, cut);
+      return projectGate ? projectGate.capability(exposed) : exposed;
+    }),
     githubAppAccess: async () => {
       // A run's process mints for one thing alone: its revision's pull-request checkout (pr-checkout.ts), of the pull
       // request its launch's payload names, contents read. Its MCP mints on the runner (mcp above). So the mint handed
       // here makes that token and no other, whatever repository or permissions the process names.
-      if (revision.body.checkout !== "pull_request") return undefined;
-      const pull = githubPullOf(isObject(launch.input) ? launch.input.content : launch.input, { payload: fromGitHub });
+      // A repository checkout's is the repository the run names (its start's repo, else the first https://github.com
+      // URL its owner's words name): the same one repository, contents read.
+      if (revision.body.checkout !== "pull_request" && revision.body.checkout !== "repository") return undefined;
+      const content = isObject(launch.input) ? launch.input.content : launch.input;
+      const pull = revision.body.checkout === "pull_request" ? githubPullOf(content, { payload: fromGitHub }) : launch.repo !== undefined ? { repo: launch.repo } : githubTargetOf(content, { payload: fromGitHub });
       if (!pull) return undefined;
       const access = await github();
       if (!access) return undefined;
-      const bound = { repo: pull.repo, ...(pull.installation !== undefined ? { installation: pull.installation } : {}) };
+      const bound = { repo: pull.repo, ...("installation" in pull && pull.installation !== undefined ? { installation: pull.installation } : {}) };
       const mint: GithubAppAccessAt["mint"] = async (to) => {
         if (to?.repo !== bound.repo || to.installation !== bound.installation) {
           log(`run ${claim.runId}: its process asked for a GitHub token of another repository than its pull request's, which a run's process may not`);
@@ -730,19 +768,30 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
       };
       return { api: access.api, target: bound, mint, ...(access.revoke ? { revoke: access.revoke } : {}), ...(access.same ? { same: access.same } : {}) };
     },
-    savedModelKeys: async () => {
-      // Only a run whose routes have no revision to scope their keys by: a subagent's tiers, a learning run's grade, an SDK
-      // run's grade. And never for a run that holds a key of its own (its launch's, read now): the server's keys are not
-      // its to spend, whatever its process asks.
-      const reads = granted.includes(SUBAGENT_TOOL) || launch.harness === "learning" || launch.sdk !== undefined;
+    subagentTierKeys: async () => {
+      // A subagent's tiers alone: an agentic run granted the subagent tool routes each tier its revision's modelTiers or
+      // the host's tier variable names, and no other (adapter-run-spec.ts), so its process is handed those tiers' models'
+      // keys (tierModelKeys, the revision's model of a tier over the host's): never a provider's no tier of it reaches, nor
+      // a key for a tier it routes no model on. A replay's or an audit's grade (adapter-run-spec.ts graderRouteOf) routes
+      // the fast tier of that same answer, whose model may be another provider's than its agent's: its process is handed
+      // that tier's model's key alone (through a gateway, the gateway's), none when the revision names agree_on (no
+      // grader). A learning run's grade and an SDK run's compile turn stay in the runner (runsInRunner): their process
+      // never asks, and gets none. And never for a run that holds a key of its own (its launch's, read now): the server's
+      // keys are not its to spend, whatever its process asks; nor for a held run its model kept from running, which routes
+      // no model and grades nothing.
+      const subagent = !modelRefused && revision.kind === "agentic" && granted.includes(SUBAGENT_TOOL);
+      const grades = !modelRefused && (launch.replay !== undefined || launch.audit !== undefined) && !agreeOnOf((revision.body as { readonly learning?: unknown }).learning)?.length;
+      if (!subagent && !grades) return {};
+      const { tiers, refs } = routedSubagentTiers(revision.body, keys.env ?? {});
       const keyed = await runKeyed();
-      return reads ? stringsOf(keyed ? {} : await savedModelKeys(keys)) : {};
+      return stringsOf(keyed ? {} : await tierModelKeys(keys, subagent ? tiers : tiers.filter((tier) => tier === "fast"), refs));
     },
     tierModelKeys: async (tiers) => {
       // The tiers the claim's learned workflows name (learnedTiers), as this runner chose them (learnedFirst below): a
-      // tier the process names beyond them gets no key, and none before the choice.
+      // tier the process names beyond them gets no key, and none before the choice (a held run its model kept from running
+      // makes none: its learnedFirst is refused).
       const asked = new Set((tiers as readonly unknown[]).filter((tier): tier is Tier => typeof tier === "string"));
-      const named = learnsWorkflows(revision.kind, learnedFlows) ? learnedTiers(learnedFlows).filter((tier) => asked.has(tier)) : [];
+      const named = !modelRefused && learnsWorkflows(revision.kind, learnedFlows) ? learnedTiers(learnedFlows).filter((tier) => asked.has(tier)) : [];
       const keyed = await runKeyed();
       const got = keyed ? {} : await tierModelKeys(keys, named);
       const plan = planOf(got);
@@ -756,9 +805,19 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
     },
     // The claim's own run's key alone (its launch, as the runner reads it), whatever run the process would name.
     runModelKey: () => openRunModelKey(keys, claim.runId),
-    serverKeyless: () => serverKeyless(keys),
+    // A held run its model kept from running is answered keyless, no saved key read: none of its spend is the server's.
+    serverKeyless: async () => modelRefused || serverKeyless(keys),
     // The zone alone, from the claim's own launch's trigger: the process never reads a trigger's row.
     runZone: () => runZone(store, launch.inputOrigin),
+    // The keys saved for the claim's own harness alone (harness-keys.ts), whatever the process names: none unless that
+    // harness is a plan-billed recipe on this runner's table, and never another harness's. Opened for the recipe file
+    // the process loaded (`digest`), never the one this runner's table read at its start: a file swapped for another
+    // vendor's under the same id since then runs its own binary, and a key bound to the first file never opens for it.
+    harnessKeys: async (digest) => {
+      const harness = launch.harness ?? (revision.body as { harness?: string }).harness;
+      const recipe = harness === undefined ? undefined : planRecipeOf(deps.env, harness);
+      return recipe?.keys.length && typeof digest === "string" ? openHarnessKeys(store, sealKey, { ...recipe, digest }) : {};
+    },
     liveViewerPut: (handover) => putLiveViewer(store, sealKey, claim, handover),
     liveViewerDrop: (tag) => dropLiveViewer(store, claim, tag),
     // The claim's own run, whatever the process names: its view on this runner hears the change.
@@ -784,7 +843,7 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
       // install from before installs were shared too.
       await shareInstall(installDirOf(deps.data, harness));
     },
-    computer: async (ask: HeldComputerAsk) => {
+    computer: (ask: HeldComputerAsk) => projectCall(async () => {
       const made = await archilOf();
       const mode: 1 | 2 = made === undefined ? 1 : 2;
       const ws = made === undefined
@@ -792,12 +851,13 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
         : await openRunWorkspace({ mode: 2, agentId: run.agentId, runId: claim.runId, archil: made, log });
       const say = typeof ask.say === "function" ? ask.say : undefined;
       const got = await deps.computerForClaim(
-        { runId: claim.runId, epoch: claim.epoch, claim, agentId: run.agentId, revisionId: run.revisionId, place: launch.place } as never,
+        { runId: claim.runId, epoch: claim.epoch, claim, agentId: run.agentId, revisionId: run.revisionId, place: launch.place, ...(reads.incarnation ? { holder: { runner: claim.runner, incarnation: reads.incarnation } } : {}) } as never,
         store,
         {
           ...deps.computerDeps, mode, workspace: ws.workspace, sealKey,
           recordings: { folder: recordingsFolder(deps.data, run.agentId, claim.runId), say: (words: string) => say?.(cut(words)) },
           hadComputer: async () => (await ask.hadComputer()) === true,
+          ...(typeof ask.turnedOff === "string" ? { turnedOff: ask.turnedOff } : {}),
           ...(ask.signal instanceof AbortSignal ? { signal: ask.signal } : {}),
           ...(made ? { revokeMount: () => made.revoke(), inheritMount: () => made.inherit() } : {}),
           ...(typeof ask.onImageWait === "function" ? { onImageWait: ask.onImageWait } : {}),
@@ -811,16 +871,28 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
       // its channel never calls its release. Idempotent with the process's own release and with its park (which keeps it).
       const claimed = got as { release?: (why?: "ended") => Promise<void> } | undefined;
       if (typeof claimed?.release === "function") releases.push(() => claimed.release!("ended"));
+      if (projectGate) {
+        projectComputer = got as ClaimComputer; projectWorkspace = ws.workspace; projectMode = mode;
+        const { syncProject: _sync, ...exposed } = got as ClaimComputer;
+        return { ...exposed, ...(exposed.computer ? { computer: projectGate.capability(exposed.computer) } : {}),
+          release: (...args: Parameters<ClaimComputer["release"]>) => cleanProject(() => exposed.release(...args)),
+          ...(exposed.park ? { park: (...args: Parameters<NonNullable<ClaimComputer["park"]>>) => cleanProject(() => exposed.park!(...args)) } : {}) };
+      }
       return got;
-    },
-    archil: async () => {
+    }),
+    archil: () => projectCall(async () => {
       const made = await archilOf();
       if (made === undefined) return undefined;
       const ws = await openRunWorkspace({ mode: 2, agentId: run.agentId, runId: claim.runId, archil: made, log });
       releases.push(() => ws.end());
-      return { workspace: ws.workspace, revoke: () => made.revoke(), inherit: async () => made.inherit(), release: async () => {} };
-    },
+      // A write bigger than the channel's frame is pulled in pieces and written here, on this Workspace (big-writes.ts).
+      return { workspace: projectGate ? projectGate.capability(ws.workspace) : ws.workspace, pieces: projectGate ? projectGate.capability(bigs.pieces(ws.workspace)) : bigs.pieces(ws.workspace),
+        revoke: () => cleanProject(() => made.revoke()), inherit: () => projectCall(async () => made.inherit()), release: async () => {} };
+    }),
     endOfRun: async (input) => {
+      // None for a held run its model kept from running: its spec builds no end-of-run step, and its runner reads no saved
+      // key and starts no audit for one, whatever its process asks.
+      if (modelRefused) throw refusedSpend();
       // The step as the run's spec builds it in a runner (adapter-run-spec.ts), over the runner's reads of the claim: what
       // the run must never learn is every secret this runner holds, the keys its claim handed it, every secret the server
       // keeps sealed and its sign-in's pointers, none of which the run's process is given.
@@ -850,7 +922,7 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
         log,
         decisionProviders: async () => decisionProvidersIn({ ...(deps.env ?? {}), ...(await hostDecisionKeys(keys, DECISION_PROVIDER_KEYS)) }),
         learningFolder: made === undefined ? (agentId: string) => learningFolderOf(deps.data, agentId) : (agentId: string) => learningWorkspace({ mode: "archil", agentId, archil: made }),
-      }), { store, agentId: run.agentId, revisionId: run.revisionId, context: BACKGROUND_CONTEXT, folder: await folderNow(), shown, log, sealKey, spendOff, launch, redact: cut });
+      }), { store, agentId: run.agentId, revisionId: run.revisionId, context: BACKGROUND_CONTEXT, folder: await folderNow(), shown, log, sealKey, spendOff, launch, redact: cut, admitAuxiliary });
       if (!step) return undefined;
       // keptOf is the run's process's, asked over the channel: read once, for the round learningEndOfRun reads (the
       // round after the newest the run kept), before the step reads it at once.
@@ -871,16 +943,17 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
       });
       return rows === undefined ? undefined : { also: dataOnly(rows.also ?? []) as AlsoRow[] };
     },
-    learnedFirst: (ask) => (chosen ??= (async () => {
+    // None for a held run its model kept from running: it settles no audit, starts no replay run and serves no workflow.
+    learnedFirst: (ask) => (modelRefused ? Promise.reject(refusedSpend()) : chosen ??= (async () => {
       // The workflows the claim's seed lays, read by this runner at the launch's seed (learning-seed.ts workflowsAt), as
       // the process's lay chose them: none where its lay laid none (`laid` false: a read that failed, a seed with no
       // workflows).
       const start = learningStartOf(launch);
       const folder = await folderNow();
-      const laid = ask?.laid === true && start && !seedFailed(start) && !start.noWorkflows ?await workflowsAt({ folder, shown }, start.seed).catch(() => []) : [];
+      const laid = ask?.laid === true && start && !seedFailed(start) && !start.noWorkflows ?await workflowsAt({ folder, store, shown }, start.seed).catch(() => []) : [];
       const spendOff = await claimSpendOff(keys, await claimModelKey(keys, claim.runId));
       const outputSchema = (revision.body as { outputSchema?: unknown }).outputSchema;
-      const got = await learnedFirst({ store, sealKey, agentId: run.agentId, runId: claim.runId, revisionId: run.revisionId, kind: revision.kind, ...(outputSchema !== undefined ? { outputSchema } : {}), launch, context: BACKGROUND_CONTEXT, log, folder, shown, spendOff }, laid);
+      const got = await learnedFirst({ store, sealKey, agentId: run.agentId, runId: claim.runId, revisionId: run.revisionId, kind: revision.kind, ...(outputSchema !== undefined ? { outputSchema } : {}), launch, context: BACKGROUND_CONTEXT, log, folder, shown, spendOff, admitAuxiliary }, laid);
       learnedFlows = got.workflows;
       return cutDeep(dataOnly(got) as LearnedFirst, cut);
     })()),
@@ -893,7 +966,7 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
   };
   return {
     held,
-    inputs: async () => {
+    inputs: () => projectCall(async () => {
       // The run's uploads and its opening message (uploads.ts placeRunInputs), placed by this runner before the run's
       // process starts: their hold is the server's alone.
       const made = await archilOf();
@@ -901,14 +974,23 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
         ? await openRunWorkspace({ mode: 1, agentId: run.agentId, runId: claim.runId, data: deps.data, log })
         : await openRunWorkspace({ mode: 2, agentId: run.agentId, runId: claim.runId, archil: made, log });
       try {
-        await placeRunInputs(deps.data, claim.runId, ws.workspace, launch.files ?? [], messageText(launch.input));
+        await placeRunInputs(deps.data, claim.runId, ws.workspace, filesToCopy(launch), messageText(launch.input));
       } finally {
         await ws.end();
       }
-    },
-    release: async () => {
-      for (const release of releases.reverse()) await Promise.resolve(release()).catch((error: unknown) => log(`run ${claim.runId}: a release on its runner failed: ${(error as Error)?.message ?? error}`));
-    },
+    }),
+    release: () => projectRelease ??= (async () => {
+      projectReleased = true; projectGate?.close();
+      await projectSettled();
+      let failed = false;
+      for (const release of releases.reverse()) await Promise.resolve(release()).catch((error: unknown) => { failed = true; log(`run ${claim.runId}: a release on its runner failed: ${(error as Error)?.message ?? error}`); });
+      if (projectIO && !failed && !projectFailed && !projectGate?.uncertain && !projectSignal.aborted) await (await projectIO).settled();
+    })(),
+    ...(projectGate ? { projectEnd: async () => {
+      if (projectCapture && !projectCaptureDone) projectStop.abort(new Error("The project host is ending."));
+      projectReleased = true;
+      projectGate.close(); await projectSettled();
+    } } : {}),
   };
 }
 
@@ -976,12 +1058,16 @@ export const childArgv = (): string[] => [process.execPath, "--import", new URL(
  *  A built-in learning run (its launch names harness "learning"): its grade is one ask through the runner's model route,
  *  and its one write is the merge into the agent's learning folder, which no run's process may write. An SDK backend
  *  run (launch.sdk): its agent runs in the caller's application, and its loop here reads the evidence it posts and closes
- *  its inbox. A native run (launch.native): its agent is the source machine's own sign-in, reached through the server's
+ *  its inbox. A CLI capture (launch.cli_learning) likewise only receives source evidence and serves owner corrections.
+ *  A native run (launch.native): its agent is the source machine's own sign-in, reached through the server's
  *  connectors, whose rows are the server's. */
-export const runsInRunner = (harness: string, launch: Pick<RunLaunch, "sdk" | "native">): boolean => harness === "learning" || Boolean(launch.sdk) || Boolean(launch.native);
+export const runsInRunner = (harness: string, launch: Pick<RunLaunch, "sdk" | "native" | "cli_learning">): boolean => harness === "learning" || Boolean(launch.sdk) || Boolean(launch.native) || Boolean(launch.cli_learning);
 
 /** The words a run on Claude Code's login on this machine is refused in where each run is a user of its own. */
 export const LOGIN_NEEDS_SERVER_USER = `A run on Claude Code's login on this machine needs runs under the server's own user, and this runner runs each run as a user of its own: set ${RUN_USER_ENV}=same, or give the run a model_key.`;
+/** The words a run on a harness recipe is refused in where each run is a user of its own (harness-table.ts recipeHarness). */
+export const RECIPE_NEEDS_SERVER_USER = `A run on a harness recipe needs runs under the server's own user, since its install, its check and its owner's sign-in are that user's alone, and this runner runs each run as a user of its own: set ${RUN_USER_ENV}=same on this runner.`;
+export { RECIPE_SIGN_IN_PERSON_ONLY } from "./harness-loops.js";
 
 /** Whether run `runId` stays in its runner's process: runsInRunner's, and a workflow run on a server with a documents
  *  directory (launch.documents), whose reads and writes (a pdf_pages call's pages) are rooted in a folder the server's
@@ -992,6 +1078,12 @@ export const LOGIN_NEEDS_SERVER_USER = `A run on Claude Code's login on this mac
  *  the server's user. A run its caller handed a model key (model_key) runs on that key and never on the login
  *  (cli-run-spec.ts), so it is a process of its own like any other. */
 export async function staysInRunner(deps: Pick<AdapterSpecDeps, "store" | "data" | "env" | "sealKey">, harness: string, launch: RunLaunch, runId: string, isolation: RunIsolation): Promise<boolean> {
+  // A recipe's harness reads its install, its check's note and its owner's sign-in, each the server user's alone: never
+  // opened to a slot's user (the sign-in least of all), so where each run is a user of its own it is refused here. And a
+  // plan-billed one's run that no person started (a schedule's, a trigger's) never runs on its owner's sign-in: only on
+  // keys saved for its harness.
+  if (isolation.kind === "uid" && recipeHarness(deps.env ?? {}, harness)) throw new ClaimRefused(RECIPE_NEEDS_SERVER_USER);
+  await refuseRecipeTriggerRun(deps, harness, launch);
   if (runsInRunner(harness, launch)) return true;
   if (launch.documents !== undefined) {
     const run = await deps.store.runs.get(runId);
@@ -1028,6 +1120,13 @@ function withGatewayKey(claimed: NodeJS.ProcessEnv, key: string): NodeJS.Process
   return out;
 }
 
+/** The pair a run's process is handed this runner's OpenTelemetry settings in (secrets.ts OTEL_PAIR): none when it has
+ *  none. */
+export const otelPair = (env: NodeJS.ProcessEnv = process.env): (readonly [string, string])[] => {
+  const settings = otelSettings(env);
+  return Object.keys(settings).length ? [[OTEL_PAIR, JSON.stringify(settings)] as const] : [];
+};
+
 /** The environment a run's process starts with: the runner's run environment's plain values (runEnv: its secrets are
  *  not enumerable, so none is here), no key-shaped name, and where its keys come from. */
 function childEnv(base: NodeJS.ProcessEnv, keys: Buffer, extra: Record<string, string>): NodeJS.ProcessEnv {
@@ -1036,6 +1135,17 @@ function childEnv(base: NodeJS.ProcessEnv, keys: Buffer, extra: Record<string, s
   const env = withoutSecrets(plain);
   for (const name of SECRET_NAMES) delete env[name];
   return { ...env, ...extra, [SECRETS_FD_ENV]: "3", [SECRETS_LEN_ENV]: String(keys.length) };
+}
+
+/** The runner's side of a run's channel over `socket`. Each call of the run's process runs inside the ledger of the tool
+ *  call it was made in (paid-calls.ts). web_save's slots are `gate`, this runner's one (save-slots.ts); the channel's end
+ *  (the run's end, or its process gone) gives back every slot the run held or waited for, and lets go of every pieced write
+ *  of the run's `bigs` (big-writes.ts), held or waiting. `maxFrame`: the channel's (a test's), default MAX_FRAME. */
+export function runChannel(socket: Duplex, onClose: (why: Error) => void, gate: SaveSlots = SERVER_SLOTS, more: { readonly bigs?: RunBigWrites; readonly maxFrame?: number } = {}): Channel {
+  let saves: (() => void) | undefined;
+  const channel = new Channel(socket, { onClose: (why) => { onClose(why); saves?.(); more.bigs?.close(); }, within: withinCarried, ...(more.maxFrame ? { maxFrame: more.maxFrame } : {}) });
+  saves = exposeSaveSlots(channel, gate);
+  return channel;
 }
 
 function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, loopDeps: LoopDeps): Loop {
@@ -1091,7 +1201,9 @@ function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, loopDep
       return (started ??= (async (): Promise<LoopEnd> => {
         const runRow = await deps.store.runs.get(claim.runId);
         if (!runRow) throw new Error(`run ${claim.runId}: its row is gone from the store`);
-        const launch = readLaunchBody((await deps.store.runs.launch(claim.runId)).body);
+        // The launch as this run runs it: on a named disk, with nothing learned on another disk (launchOnItsDisk).
+        const read = readLaunchBody((await deps.store.runs.launch(claim.runId)).body);
+        const launch = read && launchOnItsDisk(read);
         if (!launch) throw new Error(`run ${claim.runId}: its launch record could not be read as a launch`);
         const revisionRow = await deps.store.agents.revision(runRow.revisionId);
         if (!revisionRow) throw new Error(`run ${claim.runId}: its revision ${runRow.revisionId} is gone from the store`);
@@ -1100,12 +1212,21 @@ function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, loopDep
         // in this process has it laid (harness-loops.ts): the run's process reads no store row of it and holds no seal key.
         const claimDeps = await withSavedGatewayDeps(deps);
         const claimEnv = claimDeps.env ?? {};
+        // Refuse before taking a slot: even a slot's final reap normalizes modes in its run folders.
+        if (launch.sourceProject && isolation.kind === "uid" && !await loadArchilSettings(deps.store, claimEnv)) {
+          ready();
+          throw new ClaimRefused("project_mode_fidelity: This runner rewrites local project file permissions for per-user isolation. A moved project needs a destination that preserves its original permissions.");
+        }
         const savedGateway = savedGatewayIn(claimEnv);
-        // The run's own keys: those its claim opens (claim-secrets.ts), the one list its loop in this process read.
-        const claimed = await claimSecrets({ store: deps.store, sealKey: deps.sealKey, env: claimEnv }, revisionRow as never, launch);
-        // With them, its revision's own model's (a launch pinned at its start to another model, a --faux start's, is still
-        // handed its agent's model's key, as a run's own process was handed it before: run-secrets.ts secretsFor).
-        const ofRevision = await claimSecrets({ store: deps.store, sealKey: deps.sealKey, env: claimEnv }, revisionRow as never, { ...(launch.plane ? { plane: launch.plane } : {}) });
+        // The run's own keys: those its claim opens (claim-secrets.ts), the one list its loop in this process read. Its model
+        // keys are its pinned model's (claimSecrets scopes them by the launch's model), the one its route sends: never the
+        // host's default's now, where its revision names no model and a key saved since moved that default.
+        const claimed = await claimSecrets({ store: deps.store, sealKey: deps.sealKey, env: claimEnv, redact: loopDeps.redact }, revisionRow as never, launch, claim.runId);
+        // A --faux start alone is pinned to the faux model (model.ts chooseModel), which stands in for its revision's and
+        // sends no key: its process is handed its revision's model's key with them, as a run of that model is handed it.
+        // Only on a runner in faux mode too: a faux launch claimed where FAUX_ENV is unset gets no second claim. A held run its
+        // model kept from running at its create (hold.refused) is laid no model key here either: its model runs nowhere.
+        const ofRevision: NodeJS.ProcessEnv = launch.model?.provider === FAUX_PROVIDER && claimEnv[FAUX_ENV] ? await claimSecrets({ store: deps.store, sealKey: deps.sealKey, env: claimEnv, redact: loopDeps.redact }, revisionRow as never, { ...(launch.plane ? { plane: launch.plane } : {}), ...(launch.hold ? { hold: launch.hold } : {}) }) : {};
         // A run that holds a model key of its own (model_key, its launch's) spends that key alone: its process is handed
         // none of the server's model keys, as its spec drops them from its tools' (claim-secrets.ts withoutModelKeys).
         // Copies: the runner's own reads (heldFor's `claimed`: what the run's learning must never keep) stay whole.
@@ -1113,13 +1234,19 @@ function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, loopDep
         const toProcess = keyed ? [withoutModelKeys({ ...claimed }), withoutModelKeys({ ...ofRevision })] : [claimed, ofRevision];
         // The saved gateway's key, kept off the claim's tool keys (claimSecrets), is handed for the run's model routes alone,
         // read as the server's model keys are (savedModelKeys, over the claim's environment the gateway was laid over), as a
-        // run in this process reads it from its environment by name; none to a run that brings its own key.
-        const gatewayKey = savedGateway ? (keyed ? {} : await savedModelKeys({ store: deps.store, sealKey: deps.sealKey, env: claimEnv }))[GATEWAY_KEY_ENV] || undefined : undefined;
+        // run in this process reads it from its environment by name; none to a run that brings its own key, and none to a
+        // held run its model kept from running, which routes no model.
+        const gatewayKey = savedGateway && !launch.hold?.refused ? (keyed ? {} : await savedModelKeys({ store: deps.store, sealKey: deps.sealKey, env: claimEnv }))[GATEWAY_KEY_ENV] || undefined : undefined;
         const handed = (name: string): string | undefined => (name === GATEWAY_KEY_ENV && savedGateway ? gatewayKey : toProcess.map((from) => from[name]).find((value): value is string => typeof value === "string" && value !== ""));
-        const keys = encode(SECRET_NAMES.flatMap((name) => {
-          const value = handed(name);
-          return value === undefined ? [] : [[name, value] as const];
-        }));
+        const keys = encode([
+          ...SECRET_NAMES.flatMap((name) => {
+            const value = handed(name);
+            return value === undefined ? [] : [[name, value] as const];
+          }),
+          // The runner's OpenTelemetry settings, so the run's process exports its trace as this one would: on the pipe,
+          // since no run's environment has them (runEnv), never in the process's environment.
+          ...otelPair(),
+        ]);
         const slot = await slots?.take();
         if (slots && slot === undefined) {
           // Every free slot of this runner is held by another runner on the data directory (ranges that overlap): the run
@@ -1138,10 +1265,16 @@ function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, loopDep
         }
         if (isolation.kind === "uid" && slot !== undefined) hold = new SlotHold(slot, isolation.helper, log);
         const tops = runTops(deps.data, runRow.agentId, claim.runId);
-        const heldSide = heldFor({ ...deps, env: claimEnv }, { claim, run: runRow, launch, revision, claimed: gatewayKey ? withGatewayKey(claimed, gatewayKey) : claimed }, cut, log);
+        // The run's pieced writes (big-writes.ts): let go when its channel ends, or at the claim's release.
+        const bigs = runBigWrites();
+        const heldSide = heldFor({ ...deps, env: claimEnv }, { claim, run: runRow, launch, revision, claimed: gatewayKey ? withGatewayKey(claimed, gatewayKey) : claimed, signal: loopDeps.signal, ...(loopDeps.incarnation ? { incarnation: loopDeps.incarnation } : {}) }, cut, log, bigs);
         try {
           let extra: Record<string, string> = {};
           let argv = [...(options.argv ?? childArgv())];
+          // A claim that resumes a run whose last runner ended before giving its folders back finds them its last slot's,
+          // perhaps shut (a run's own chmod 700): taken back first, so the inputs and folders below are laid as the
+          // server's, then given to this slot.
+          if (isolation.kind === "uid" && slot !== undefined) await takeBackRunFolders(isolation, tops);
           // The run's uploads and opening message, placed by the runner before its process starts (their hold is the
           // server's alone), then given to the slot with its folders.
           await heldSide.inputs();
@@ -1169,8 +1302,7 @@ function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, loopDep
           keyPipe.end(keys);
           const socket = child.stdio[4] as Socket;
           let broke: Error | undefined;
-          // Each call of the run's process runs inside the ledger of the tool call it was made in (paid-calls.ts).
-          channel = new Channel(socket, { onClose: (why) => void (broke ??= why), within: withinCarried });
+          channel = runChannel(socket, (why) => void (broke ??= why), SERVER_SLOTS, { bigs });
           const bound: Bound = { claim, agentId: runRow.agentId, revisionId: runRow.revisionId };
           channel.expose("store", (method, args) => storeCall(deps.store, method, args, bound, log));
           channel.expose("journal", journalTarget(loopDeps.journal(claim), cut));
@@ -1206,6 +1338,7 @@ function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, loopDep
             ...(deps.githubApi ? { githubApi: deps.githubApi } : {}),
             ...(deps.githubWeb ? { githubWeb: deps.githubWeb } : {}),
             ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}),
+            ...(deps.composioMcpOrigin ? { composioMcpOrigin: deps.composioMcpOrigin } : {}),
           };
           const ended = channel.call("loop", "start", [init]) as Promise<LoopEnd>;
           // From here a command or a stop goes to the run's process, after its start on the channel.
@@ -1224,6 +1357,7 @@ function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, loopDep
           }
         } finally {
           ready();
+          await heldSide.projectEnd?.();
           const reaped = await end(slot, tops).catch((error: unknown) => {
             log(`run ${claim.runId}: its process's end failed: ${(error as Error)?.message ?? error}`);
             return false;

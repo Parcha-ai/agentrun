@@ -1,23 +1,45 @@
+import { modelsInFlight } from "./in-flight.js";
+import { CALLS_PAGE_ROWS } from "./timeline/index.js";
+import { prepareProjectSkillEdit } from "./source-sync/skill-edits.js";
+import { sourceSyncOf } from "./source-sync/types.js";
+import { sourceService, SOURCE_BODY_BYTES } from "./source-sync/service.js";
+import { destinationPreparation, bindSourceTool } from "./source-sync/destination.js";
+import { prepareSource, SourcePreparationError } from "./source-sync/prepare.js";
+import { SnapshotError, validateSourceSnapshot } from "./source-sync/snapshots.js";
+import { cliAdoptionResolver } from "./source-sync/adoption.js";
+import { projectPlacement } from "./source-sync/projects.js";
+import { auxiliaryAdmitter } from "./source-sync/auxiliary.js";
+import { openRunPlacement, sourceSnapshotReader } from "./source-sync/workspace.js";
+import { SOURCE_FAILURES, configurationDigest, type SourceFailureCode } from "./source-sync/registry.js";
+import type { SourceSnapshot } from "./native/source-snapshot-types.js";
+import type {RunLaunch} from "./run-launch.js";
+import { CliLearningConnections } from "./cli-learning/connections.js";
+import { ObservationLearning } from "./observation/learning.js";
+import { cliLearningOf } from "./store/agent-body.js";
 import { maintainObservations, Observations } from './observation/observer.js';
 import { isObservationRoute, observationHttp } from './observation/http.js';
-import { SdkRuns, sdkOf, sdkRunSecret } from "./sdk/runs.js";
+import { SDK_MAX_OPEN_MS, SdkRuns, sdkOf, sdkRunSecret } from "./sdk/runs.js";
 import { learningModelOf, type LearningModel } from "./learning-model.js";
 import { answerSkill } from './skill-route.js';
 import { RemoteConnectors, verifyRemote, REMOTE_COMPLETION_BODY_BYTES } from './native/remote.js';
 import { REMOTE_HISTORY_BODY_BYTES } from './native/history.js';
 import { nativeOf, nativeModelOverrides, nativeExecutionOverrides, NATIVE_MODEL_SETTINGS_UNSUPPORTED, NATIVE_EXECUTION_SETTINGS_UNSUPPORTED, NATIVE_TOOL_BUDGET_UNSUPPORTED, NATIVE_CAP_UNSUPPORTED } from "./native/binding.js";
 import { discoverNative } from "./native/discovery.js";
-import { isNativeRuntime } from "./native/runtimes.js";
+import { isNativeRuntime, NATIVE_RUNTIME_FACTS } from "./native/runtimes.js";
 import { connectNative, launchNative, updateNative, verifyConnection } from "./native/connection.js";
 // The /v2 API over the agent store in a data directory: the contract agentrun.v2/0, served on loopback with a bearer
 // token.
-import { createHash, createHmac, randomBytes } from "node:crypto";
+import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
 import { chmod, lstat, mkdir, readFile, realpath, rename, stat, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { Duplex } from "node:stream";
 import type { AddressInfo } from "node:net";
 import proxyaddr from "proxy-addr";
-import { apiOnlyRefusal, servedApiOnly } from "./api-only.js";
+import { API_ONLY_HOOKED_KINDS, apiOnlyMcpSave, apiOnlyRefusal, apiOnlyTriggerSkipped, servedApiOnly } from "./api-only.js";
+import { API_ONLY_MCP_ORIGINS_ENV, apiOnlyMcpOriginsFrom, RUN_KEYS_ENV } from "./env-switch.js";
+import { holdApiOnlyMcpOrigins, offApiOnlyMcpServers } from "./mcp-api-only-origins.js";
+import { declaredKeys, keysOwed, keysOwedRefusal, type RunKeys, runKeysOf, runKeysTriggerSkipped, undeclaredKeys, withCarried } from "./run-keys.js";
+import { capacityOverStore, capacityWindowOf } from "./capacity.js";
 import { carriedFields } from "./answer-json.js";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -28,40 +50,43 @@ import { rm } from "node:fs/promises";
 import { homedir, hostname } from "node:os";
 import type { Revision, RunOrigin } from "./agent-rows.js";
 import { pinFirst as pinFirstOf } from "./mcp-pin-first.js";
-import { type AgentEntry, agentRevision, agentRevisions, agentView, commitAgent, createAgent, etagOf, externalKey, getAgent, listAgents, makeRevision, refuseExternal, revisionView, type SaveCheck, type SaveStamp, setAgentArchived, setCurrentRevision } from "./agents-store.js";
+import { agentPackage } from "./agent-package.js";
+import { uuidv7 } from "./ids.js";
+import { type AgentEntry, type InTurn, agentRevision, agentRevisions, agentView, commitAgent, createAgent, definitionOf, etagOf, externalKey, getAgent, listAgents, makeRevision, ownedElsewhere, refuseExternal, revisionView, type SaveCheck, type SavePrepare, type SaveStamp, setAgentArchived, setCurrentRevision } from "./agents-store.js";
 import { WORKFLOW_ADAPTERS } from "./runner/workflow-adapters.js";
 import { DECISION_ADAPTER, decisionsOf, FAUX_JEV_ENV, FAUX_OPENROUTER_ENV, FAUX_PARALLEL_ENV, fauxFetch } from "./decisions.js";
-import { FAUX_WEB_ENV } from "./web-fetch-direct.js";
-import { FAUX_MONID_ENV, MONID_KEY_ENV, pinMonid, PRICED_BY_USAGE } from "./monid.js";
-import { FAUX_EXA_ENV } from "./exa-keyless.js";
+import { FAUX_EXA_ENV, FAUX_FIRECRAWL_ENV, FAUX_WEB_ENV } from "./web-run.js";
+import { FAUX_MONID_ENV, MONID_KEY_ENV, monidReads, pinMonid, PRICED_BY_USAGE } from "./monid.js";
 import { FAUX_BROWSER_ENV, NODE_TOOLS, shellTools, toolingOf, toolOf, toolsView } from "./tools.js";
 import { ApiError, type InputIssue, invalid, sentence, unsupported } from "./errors.js";
 import { deref, explain } from "./explain.js";
 import { HOME_HOST_OWNED } from "./files.js";
 import { DATA_ENV, syncDir, TOKEN_FILE, writeDurable } from "./server-fs.js";
 import { homePath, hostOwnedOf, type OwnedReadAt } from "./home-path.js";
-import { chooseModel, EFFORTS, FAUX_ENV, FAUX_UPSTREAM_ENV, MODEL_NODES, type ModelNeeds, modelSource, THINKING_LEVELS, unpricedModels, withoutFaux } from "./model.js";
+import { asksOllama, chooseModel, EFFORTS, FAUX_ENV, hostModel, MODEL_NODES, type ModelNeeds, modelSource, THINKING_LEVELS, unpricedModels, withoutFaux } from "./model.js";
 import { DEFAULT_HARNESS, HARNESSES, type HarnessCapability, harnessOfBody, harnessOffers } from "./harness.js";
-import { HARNESS_MODULES_ENV, HARNESS_TABLE_ENV, harnessIds, harnessModulesEnv, harnessOf, harnessTable, tableIds } from "./harness-table.js";
+import { HARNESS_MODULES_ENV, HARNESS_MODULES_SETTING, HARNESS_RECIPES_ENV, HARNESS_RECIPES_SETTING, HARNESS_TABLE_ENV, harnessIds, harnessModulesEnv, harnessOf, harnessRecipesEnv, harnessTable, planRecipesOf, recipeHarness, tableIds } from "./harness-table.js";
 import { claudeCliIn, HarnessInstall, type HarnessInstaller, installDirOf, NPM_STOP_GRACE_MS, npmInstall } from "./harness-install.js";
 import { DEFAULT_PORT, healthOf, hostMemory, maxRunsOf, runsThatFit } from "./host.js";
 import { DEFAULT_HOST, elsewhereOf, listenOn, minFreeMibOf, takeOver, urlOf } from "./listen-first.js";
 import { IMPORT_ASKED, type ImportCandidate, MAX_CANDIDATES } from "./import.js";
 import type { ImportAnswer, ImportTask } from "./import-worker.js";
 import { answerStoreCall, type StoreCall } from "./import-proxy.js";
-import { LEARNING_LABEL, learningFolderOf, secretsShown, type LearningMode, learningOf, learnsOf, RUN_LEARNING_USE, seedOf } from "./learning.js";
+import { LEARNING_LABEL, learningFolderOf, secretsShown, type LearningMode, learningOf, learnsOf, RUN_LEARNING_USE, seedOf, withAgentRepo } from "./learning.js";
 import { askReplay, type ReplayAsk, ReplayRefused, replayView } from "./runner/promotion.js";
-import { agentLearning, changeWorkflow, correctionsView, correctionsWrite, learningLog, pendingCount, readLearnedFile, sendText, statusesOf, textBody, workflowAtDigest, workflowRevisions } from "./learning-routes.js";
+import { agentLearning, changeWorkflow, correctionsView, correctionsWrite, forgetRunLearning, learningLog, pendingCount, readLearnedFile, sendText, statusesOf, textBody, workflowAtDigest, workflowRevisions } from "./learning-routes.js";
 import type { DraftDecisions } from "./learn/workflow-draft.js";
+import { purgedRun, refusedIn } from "./purged-workflow.js";
 import { answerLlms, MCP_PATH, mcpEndpoint } from "./mcp.js";
 import { openapiDocument, servedOpenapi, UNSUPPORTED } from "./openapi.js";
 import { boxAvailability, boxesLine, defaultPlaceOf, NEW_AGENT_TOOLS, newAgentPlace, noBoxReason, type Place, placesOf, resolvePlace } from "./place.js";
 import { boxAllowOf, boxAllowSetIn } from "./box-settings.js";
 import { dockerLimitsOf } from "./workspace/computer-deps.js";
 import { Owner, passwordProblem, SESSION_MS } from "./owner.js";
+import { API_KEYS_LIMIT, ApiKeys } from "./api-keys.js";
 import { acceptedTokens, type ApiToken, bearerCheck, tokenProblem } from "./api-token.js";
-import { answerPage, byConsoleSession, byOwnerSession, ConsoleSessions, consoleEntry, heldSessions, isJson, overHttps, ownerCookie, ownOrigin, sendHostRefused, sendMoved, sendMovedPage, signedIn } from "./page.js";
-import { hostFix, hostName, loopbackNames, movedFix } from "./host-check.js";
+import { answerPage, byConsoleSession, byOwnerSession, ConsoleSessions, consoleEntry, heldSessions, isJson, overHttps, ownerCookie, ownerCookieName, ownOrigin, sessionsAtEveryPort, sendHostRefused, sendMoved, sendMovedPage, signedIn } from "./page.js";
+import { hostFix, hostName, isLoopbackName, loopbackNames, movedFix } from "./host-check.js";
 import { movedAddress, publicAddressChanged, readPublicAddress } from "./public-address.js";
 import { computerViewerLink, familyReaches, type LiveFamily, type LiveHandover, liveViewerById, liveViewerFor, liveViewerLink, OpenViewers, proxyLiveUpgrade, serveViewerFile, viewerAnswers } from "./browser-live.js";
 import { browserHandBack, handBackTarget } from "./browser-commands.js";
@@ -73,70 +98,85 @@ import { durationMs, logLine } from "./print.js";
 import { type RunMoment, type State, type Status } from "./run-view.js";
 import { keepPresence, type Presence, refusedEnd, runnersRefused } from "./runner/presence.js";
 import { approve, archiveRun, cancel, message, pause as pauseRunOverStore, prepareLaunch, raiseCap, resume as resumeRunOverStore, type StartDeps, startInline, type StartOptions, startRun, stop as stopRunOverStore } from "./runs-over-store.js";
-import { builtOfNow, factsOverStore, listedItem, momentOverStore, summaryOverStore, timelineOverStore, toolsUsdOverStore, type ViewDeps, viewOverStore, withheldOverStore } from "./store-view.js";
+import { builtOfNow, factsOverStore, listedItem, lookingBackEnd, momentOverStore, summaryOverStore, timelineOverStore, toolsUsdOverStore, type ViewDeps, viewOverStore, withheldOverStore } from "./store-view.js";
 import { healEndedCosts } from "./cost-heal.js";
+import { reconcileProjectCheckpoints } from "./source-sync/checkpoints.js";
+import { acknowledgeProjects } from "./source-sync/checkpoint-gate.js";
+import { LocalSources } from "./source-sync/local.js";
+import { beginSourceIO } from "./source-sync/io.js";
 import { createLister } from "./run-listing.js";
 import { HELD_WAITS } from "./runner/journal-kinds.js";
 import { type ServedTimelineDeps, servedTimelineRows } from "./run-timeline-served.js";
 import { servedRunTrace } from "./run-trace.js";
+import { servedRunUsage } from "./run-usage.js";
 import { servedRunDiff, servedRunLearning } from "./run-learning-served.js";
-import { agentPointers, WITHHELD_LEARNING } from "./handed-values.js";
+import { agentPointers, cutHanded, handedSecretValues, launchValuesOf, RETIRED_MAX, retiredValues, WITHHELD_LEARNING, WITHHELD_MESSAGE } from "./handed-values.js";
 import { runCutValues } from "./run-cut.js";
-import { readLaunchBody } from "./run-launch.js";
+import { type HeldRefusal, readLaunchBody } from "./run-launch.js";
 import { modelKeyMisfit, modelKeyOf, modelKeyRequired, noServerKeyFor, runModelOrigin, serverKeyMissing } from "./run-model-key.js";
 import { listRunFiles as listRunFilesOverStore, readRunFile as readRunFileOverStore, runGraphView, type RunReadsDeps, runTimelines } from "./run-reads-over-store.js";
 import { triggerTargets, type TriggerTargetDeps } from "./trigger-targets.js";
 import { labelFilter, labelsIssues } from "./run-labels.js";
 import { listRuns as listRunsOverStore, readRun as readRunOverStore, runOfOrigin as runOfOriginOverStore } from "./store-reads/runs.js";
 import { runEntries } from "./store-reads/journal.js";
-import { metersOverStore } from "./store-reads/cap.js";
+import { metersOverStore, spendOverStore } from "./store-reads/cap.js";
 import { watchRun } from "./live/stream.js";
 import { stats as statsOverStore } from "./store-reads/stats.js";
 import { analytics as analyticsOverStore } from "./store-reads/analytics.js";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { type AgenticBody, type McpCredentialMark, type MonidPinBody, type NewRevision, openStore, type RevisionPlace, type RevisionRow, type LaunchSealed, openRunLaunch, type RunMcpAuth, type RunRow, sealRunLaunch, type Store, StoreLaunchMissing, StoreOwned, storeTarget, type TemplatePackage, type WorkflowBody } from "./store/index.js";
-import { agentDeleting, answerOf, logged } from "./agents.js";
+import { type AgenticBody, type AgentRow, type McpCredentialMark, type MonidPinBody, type NewRevision, openStore, type RevisionPlace, type RevisionRow, type LaunchSealed, openRunLaunch, type RunMcpAuth, type RunRow, sealRunLaunch, type Store, StoreLaunchMissing, StoreOwned, storeTarget, type TemplatePackage, type WorkflowBody } from "./store/index.js";
+import { agentDeleting, answerOf, logged, purgedAgent } from "./agents.js";
 import { keepGrade } from "./runner/feedback-round.js";
 import { gradeRow, notAuditableOf } from "./runner/audit.js";
-import { auditsOffWords, auditWriterOf, isShadowRun, readAudits, servingLinesOf } from "./learn/audit.js";
+import { namedDisksOf } from "./learn/learning-of.js";
+import { auditsOffWords, auditWriterOf, isShadowRun, readAudits, servingLinesOf, shadowRunId } from "./learn/audit.js";
 import { auditLoopOf, COMPILE_AFTER_MAX } from "./learning-setting.js";
 import { FINAL_STATES, RUN_CHANGES_PAGE, type RunChange, type RunChangeCursor } from "./store/store.js";
-import { championOf, type Grade, GRADE_SOURCES, GRADES_KEPT, type GradeSource, gradeView, LABEL_MAX, promotionsOf, promotionsShown, servingOf, servingStateOf, shownDeep } from "./learn/promote.js";
+import { championOf, forgetRunCopies, type Grade, GRADE_SOURCES, GRADES_KEPT, type GradeSource, gradeView, LABEL_MAX, type PromotionRecord, promotionsOf, promotionsShown, type Refused, servingOf, servingStateOf, shownDeep } from "./learn/promote.js";
 import { workflowNodesOf } from "./learn/workflow-nodes.js";
 import { deleteLearning } from "./learn/delete.js";
 import { runModelRef } from "./model.js";
+import { ollamaHostOf, ollamaHostRefused, ollamaListing, ollamaModels, ollamaReading } from "./ollama-provider.js";
 import { REDACTED } from "./secret-cut.js";
 // The v2 run statuses, as the run view names them (run-view.ts Status), for the list filter's validation. */
 const STATUSES = ["queued", "working", "paused", "input_required", "completed", "failed", "cancelled"] as const;
 import { runLines } from "./usage-lines.js";
-import { type BoxOffer, boxesByDefault, boxesLog, enabledBoxes, placeOffers, withNetworks } from "./place-offers.js";
+import { type BoxOffer, boxesByDefault, boxesLog, type ContainerFacts, enabledBoxes, placeOffers, withNetworks } from "./place-offers.js";
 import { dockerComputerRefusal, type DockerPaths, dockerPathsOf, FAUX_MOUNTINFO_ENV, remoteDockerOnce } from "./box-paths.js";
 import { dockerDaemonCheck, type DockerDaemon } from "./docker-daemon.js";
-import { hostAddressesOnce, noHostAddresses, unionOf } from "./docker-host-addresses.js";
+import { type HostRead, hostAddressesOnce, noHostAddresses, retryHostAddresses, unionOf, type Wait } from "./docker-host-addresses.js";
 import { DOCUMENTS_ENV } from "./pdf-pages.js";
-import { type Blocker, blockersOf, CODE_NODES_ENV, issueOf, NOT_SET_UP, type RevisionShape } from "./runnable.js";
+import { type Blocker, blockersOf, CODE_NODES_ENV, deniedComputer, issueOf, NOT_SET_UP, type RevisionShape } from "./runnable.js";
+import { computerDeniedWords } from "./refusal-words.js";
 import { hostSecrets, SECRET_NAMES, secret, type StoredKeys, withSecrets } from "./secrets.js";
 import { isSecretWriteOperation, type SecretRequest, secretPageFor, secretsWritableFields, secretWriteRefusal, secretWriterFacts, writesSecretFor, writesSecretsAllowed } from "./secret-writes.js";
 import { ChatGPTPlan, planOf, PlanSignInRefused, SIGN_OUT_UNCONFIRMED, withPlan } from "./chatgpt-plan.js";
 import { modelGatewayRoute, readSavedGateway, type SavedGateway, withSavedGateway } from "./model-gateway.js";
-import { CLAUDE_LOGIN_ROUTES, ClaudeLoginRefused, claudeLoginOf, claudeLoginRouteOff, claudeLoginSwitchedOff, claudeLoginSetting, claudeLoginView, type ClaudeLoginDeps, dropRefusedLogin, envAtPlace, LOGIN_HARNESS, loginOf, startLoginHere, turnOffClaudeLogin, turnOnClaudeLogin, whyNotOneOwner, withClaudeLogin } from "./claude-login.js";
+import { CLAUDE_LOGIN_ROUTES, LOGIN_REFUSES_API_KEYS, oneOwnerDeps, ClaudeLoginRefused, claudeLoginOf, claudeLoginRouteOff, claudeLoginSwitchedOff, claudeLoginSetting, claudeLoginView, type ClaudeLoginDeps, dropRefusedLogin, envAtPlace, homeOf, LOGIN_HARNESS, loginOf, loginOnRunnerOnly, loopback, startLoginHere, turnOffClaudeLogin, turnOnClaudeLogin, withClaudeLogin } from "./claude-login.js";
+import { ClaudeSignIns } from "./claude-sign-in.js";
 import { bootSealKey, parametersDigest, withSealKey } from "./seal-key.js";
 import { ServerLockHeldError, takeServerLock } from "./server-lock.js";
+import { recordDataRoot } from "./runner/disk-free.js";
+import { recordRunEnv, runFacingNames } from "./runner/runner-check.js";
 import { DRAIN_TIMEOUT } from "./runner/beside.js";
+import { runnerName } from "./runner/runner.js";
 import { analyticsFilter, analyticsView, statsView } from "./stats.js";
+import { keptReads, within, WRAPPED_WAIT_MS, wrappedView } from "./wrapped.js";
 import { type CostBasis, joinedBasis } from "./runner/metrics.js";
+import { unifiedUsage } from "./unified-usage.js";
 import { agentLoopOverStore } from "./store-reads/loop.js";
 import { printable } from "./learn/index.js";
-import { agentCostOverStore, agentLearningOverStore, allInOf, costRunOf, costStopOverStore, learningCountsOverStore, learningSpendOverStore, runAllInOverStore, runLearningEnd } from "./store-reads/learning.js";
+import { agentCostOverStore, agentLearningOverStore, costStopOverStore, learningCountsOverStore, learningSpendOverStore, runAllInOverStore, runLearningEnd } from "./store-reads/learning.js";
 import { costCsv, learningCostQuery, RUN_PATHS } from "./learning-cost.js";
 import { keyOf, SEAL_KEY_ENV, TOOL_FIELDS } from "./tool-keys.js";
 import { toolKeysOverStore } from "./tool-keys-store.js";
+import { HarnessKeysOverStore, harnessKeysSavedHere } from "./harness-keys.js";
 import { SIGN_INS_DIR, vendorsOver } from "./sign-ins.js";
 import { signInsOverStore } from "./sign-ins-store.js";
 import { boundTool, MCP_AUTH_TYPES, marked, mcpAuthOf, type McpTool, nameOf as mcpNameOf } from "./mcp-probe.js";
-import { composioMadeKey, composioPerRun } from "./composio-made.js";
-import { COMPOSIO_PER_RUN, type ComposioControl, composioForget, composioNote, composioSave, composioTools } from "./composio-preset.js";
-import { ComposioTriggers } from "./composio-triggers.js";
+import { type COMPOSIO_KEY_ENV, composioEnvKey, composioMadeKey, composioPerRun } from "./composio-made.js";
+import { COMPOSIO_PER_RUN, type ComposioControl, composioForget, composioNote, composioSave, composioToolkits, composioTools } from "./composio-preset.js";
+import { ComposioTriggers, composioNoPublicUrl } from "./composio-triggers.js";
 import { type ComposioDropped, loopbackWords, mcpServersOverStore, type SaveGuard } from "./mcp-servers-store.js";
 import { MCP_ALLOW_LOOPBACK_ENV, startSwitches, WEBHOOK_PRIVATE_TARGETS_ENV } from "./start-switches.js";
 import type { SourceRecord } from "./mcp-sources.js";
@@ -154,6 +194,8 @@ import { type ServerSecrets } from "./server-secrets.js";
 import { openServerSecretsOverStore } from "./server-secrets-store.js";
 import { HOOK_TOLERANCE_S } from "./standard-webhooks.js";
 import { GitHubConnect, GitHubConnection, INSTALLED_PATH, startedHere as gitHubStartedHere, stateCookie } from "./github-connection.js";
+import { SCOUT_TEMPLATE, Suggestions } from "./suggestions.js";
+import type { UsageEventName } from "./telemetry.js";
 import { FAUX_GITHUB, FAUX_GITHUB_FILE, startFauxGitHub } from "./github-faux.js";
 import { GITHUB_API } from "./github.js";
 import { bindingOf, REPO_NAME } from "./run-repo.js";
@@ -165,26 +207,32 @@ import { webhook } from "./trigger-webhook.js";
 import { SCHEME_NAMES } from "./trigger-signatures.js";
 import { permissionFrom, pinnedEffect, toolEffect } from "./tool-gate.js";
 import { mcpNameOf as mcpToolOf, mcpToolName } from "./tool-names.js";
-import { CATCHUP_WINDOW_S, FAILURES_TO_PAUSE, HISTORY_KEPT, MIN_EVERY_S, SOURCE_KINDS, TARGET_KINDS, type TriggerClock, Triggers } from "./triggers.js";
+import { CATCHUP_WINDOW_S, FAILURES_TO_PAUSE, HISTORY_KEPT, MIN_EVERY_S, RELEASE_WORDS_MAX, SOURCE_KINDS, TARGET_KINDS, type TriggerClock, Triggers } from "./triggers.js";
+import type { LaunchHook } from "./trigger-launch-hook.js";
 import { PAYLOAD_KEPT_BYTES } from "./trigger-adapter.js";
 import { applyBodyOf, choiceUnrunnable, COMPOSIO_TRIGGER_FIX, composioTriggerSkipped, COMPUTER_FIX, compiled, feedLeftEmpty, feedTriggerEmpty, githubTriggerUnconnected, githubTriggerWords, madeTriggerIssues, mcpSetUp, type McpServed, onServerName, onServers, type Package, packageDetail, packageModel, packageTiers, packageView, pickComputer, readPackages, notSetUpYet, serversFor, type ShellHere, TemplateRegistry, type TemplatesDeps } from "./templates.js";
-import { deleteTemplate, importTemplate, loadImported, type TemplateImportDeps } from "./template-import.js";
-import { templateInstallLink, templateLink } from "./console-links.js";
-import { GITHUB_HOSTS } from "./template-source.js";
+import { applyImported, deleteTemplate, dropRemovedUploads, importTemplate, loadImported, type TemplateImportDeps, UPLOAD_PREFIX } from "./template-import.js";
+import { hereOf, Marketplace, marketplaceUrlOf } from "./marketplace.js";
+import { templateInstallLink, templateLink, templatesLink } from "./console-links.js";
+import { GITHUB_HOSTS, IMPORT_LIMITS } from "./template-source.js";
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, type DefinitionBody, definitionBodyIssues, EXTERNAL_NAME, ID, IDEMPOTENCY_TTL_S, inputIssues, inputSchemaOf, isObject, type Json, stable, unknownFields } from "./validate.js";
 import { agentTools, BROWSER_VENDOR_IDS, browserKeyRow, isUnavailable, keptVendor, loadToolSettings, type Plane, recheckPlane, settingsIssues, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
 import { wakeAnsweredBySetting } from "./settings-wake.js";
 import { toolSettingsOverStore } from "./tool-settings-store.js";
 import { readApprovers, writeApprovers } from "./server-approvers.js";
-import { MAX_FILES_PER_RUN, MAX_UPLOAD_BYTES, Uploads, UPLOADS_DIR } from "./uploads.js";
+import { MAX_FILES_PER_RUN, MAX_UPLOAD_BYTES, Uploads, UPLOADS_DIR, type UploadStore } from "./uploads.js";
+import { archilUploads, runKeepsUploads, UPLOAD_RETENTION_ENV, UPLOAD_SWEEP_EVERY_MS, uploadRetentionMs } from "./uploads-archil.js";
 import { entryAt, listFiles, sendFile as sendWorkspaceFile, viewOf } from "./run-files.js";
 import { recordingsOf, recordingsWorkspace } from "./run-recordings.js";
 import { recordingsFolder } from "./workspace/paths.js";
 import { heldRoute, holdIssues, runComputerRead } from "./computer-held-routes.js";
 import { COMPUTER_ROUTES, computerHoldOf, computerRoute, runComputerKind } from "./computer-routes.js";
+import { runOver } from "./computer-commands.js";
+import { mintViewerCredential, VIEWER_PARAM, viewerCookie, viewerCredentialFor, viewerCredentialKey, viewerCredentialOf } from "./viewer-credential.js";
 import { ATTACH_PATH, AttachHub, type HostedDial, PROVIDERS as COMPUTER_PROVIDERS, SETTING_KINDS, servingRefusals } from "@parcha/agentrun-computer";
 import { type AttachTiming, createAttachRoutes, liveRelays, pairedView } from "./computer-attach.js";
 import { pairedRefusal, withPaired } from "./workspace/attached-computers.js";
+import { PAIRED_ROUTE_MS, readRoute } from "./workspace/paired-route.js";
 import { COMPUTER_TOOLS, hostToolDefs } from "@parcha/agentrun-kernel/kernel";
 import { freeModelRequestsOf } from "@parcha/agentrun-kernel/kernel/cap";
 import { archilRoute, type ArchilRoutesOptions, createArchilRoutes, liveRunsOnDisk } from "./archil-routes.js";
@@ -192,17 +240,21 @@ import { noAccount, openAccount } from "./email/account.js";
 import { emailRoute } from "./email/routes.js";
 import { addressForms, openCalendar } from "./calendar/address.js";
 import { calendarRoute } from "./calendar/routes.js";
-import { agentDiskOf, ARCHIL_DISK_ID, archilSettingsFromEnv, inArchilMode, runDiskKey } from "./archil-settings.js";
-import { computerOfPlace, type ComputerKind, type ComputerSetting, type PlaceView } from "./computer-setting.js";
+import { agentDiskOf, ARCHIL_DISK_ID, archilSettingsFromEnv, inArchilMode, loadArchilSettings, runDiskKept, runDiskKey } from "./archil-settings.js";
+import { computerOfPlace, type ComputerKind, type ComputerSetting, type PlaceView, settingOfDefinition } from "./computer-setting.js";
 import { computerCapabilities, type ComputerRoutes, createComputerRoutes, folderModeOf, hostCommandRefusals, settingsComputerRoute } from "./computers.js";
+import { runningComputers } from "./computers-running.js";
 import { type FauxComputers, fauxComputers } from "./faux-computers.js";
 import { writesHeld } from "./workspace.js";
-import { type AgentDeleteHost, type AgentDeleteStep, type DeleteLearning, deleteExternalAgent, oneAtATime } from "./agent-delete.js";
+import { type AgentDeleteHost, type AgentDeleteStep, type DeleteLearning, deleteExternalAgent, oneAtATime, purgeAgent, purgeRun, purgingKey } from "./agent-delete.js";
+import { type LearningResetHost, resetLearning } from "./learning-reset.js";
 import { agentComputerHoldKey } from "./workspace/agent-computer.js";
 import { sdkRunKey } from "./sdk/runs.js";
 import { waitEndedKey } from "./browser-wait-ended.js";
+import { browserHoldKey } from "./browser-hold.js";
 import { agentComputerOf, agentComputerView, agentDirName, agentFolder, agentHomeFolder, claimKinds, runFolder, scratchFolder, computerProviderFactories, computerProviderMakers, computerReadiness, dockerHostAddressesOf, isWorkspaceError, localWorkspace, reconcileAgentComputer, registryHere, runShellOf, serverRunWorkspace, type ShellPlace, storeLedger, type Workspace } from "./workspace/index.js";
 import { keyReader } from "./key-meta.js";
+import { redacted } from "./key-refusal.js";
 
 export const CONTRACT = "agentrun.v2/0";
 
@@ -216,6 +268,9 @@ const IDEMPOTENCY_FILE = ".idempotency.json";
  *  computer kind; `browser`, the browser's own), then its page, files or WebSocket. Both are served by the same code. */
 const LIVE_PATH = /^\/v2\/runs\/([^/]+)\/(computer|browser)\/live(\/.*)$/;
 const MAX_BODY = 1 << 20;
+/** POST /v2/templates/import's body: an upload's files at the import's own limit, base64 (4/3) with room for the JSON
+ *  around them. */
+const TEMPLATE_UPLOAD_BODY = Math.ceil((IMPORT_LIMITS.packageBytes * 4) / 3) + MAX_BODY;
 /** The starts that may begin setup's import without ending it (a worker that failed, a process that ended) before the
  *  owner's yes is dropped: an import that fails the same way each time is not taken up at every start for good. */
 const IMPORT_STARTS = 3;
@@ -224,6 +279,9 @@ const IMPORT_STARTS = 3;
 const IMPORT_HEAP_MB = 2048;
 const MAX_MESSAGE = 20_000;
 const MAX_WAIT_MS = 25_000;
+/** A run body's fields that a launch hook's host can't set on a firing's run (RunCreate `trigger_firing`): its trigger's
+ *  target fixes them. */
+const HANDED_FIXED = ["revision", "hold", "hold_minutes"] as const;
 /** How often the server fails the runs still queued while no runner here can take them (runner/presence.ts). */
 const REFUSED_SWEEP_MS = 2_000;
 const PAGE_ROWS = 500;
@@ -247,6 +305,9 @@ export type ServeOptions = {
   /** On Postgres: told when this server's owner lock is lost for good (another server took the schema, or the lock could
    *  not be taken back): every store call is refused from then. The CLI exits 1 on it, so the platform restarts the server. */
   onStoreLost?: (error: Error) => void;
+  /** Told when someone uses a feature the anonymous counts name (telemetry.ts UsageEventName: a suggestions scan, a
+   *  discard, a suggested agent created). The CLI hands it the counts' `used`; it hears the event's name and nothing else. */
+  onUsage?: (event: UsageEventName) => void;
   /** The owner, signed in with a password (owner.ts): the page asks for it, and the token stays for scripts and the CLI. */
   accounts?: boolean;
   /** With accounts: the first visit sets the password with no setup code (a server with no public address). Honored only
@@ -255,9 +316,12 @@ export type ServeOptions = {
   openSetup?: boolean;
   /** With accounts: the address people open (AGENTRUN_PUBLIC_URL), which the printed setup link uses. */
   publicUrl?: string;
-  /** With open setup: the home whose Claude Code, Codex and pi sessions setup offers to import (default this user's),
-   *  and the temp directory whose projects it leaves out (default the OS's). */
+  /** The home whose Claude Code, Codex and pi sessions setup offers to import and GET /v2/wrapped reads (default this
+   *  user's), and the temp directory whose projects setup leaves out (default the OS's). */
   sessionsHome?: { home: string; temp?: string };
+  /** How long GET /v2/wrapped waits for its read of `sessionsHome`'s home before it answers 503 with a retry, while the
+   *  read goes on (default WRAPPED_WAIT_MS, 15 s). */
+  wrappedWaitMs?: number;
   /** With open setup on this machine, and no owner yet: count the sessions setup would import as the server starts, so
    *  the offer has its numbers by the time the page opens (the CLI sets it). */
   countSessions?: boolean;
@@ -306,10 +370,21 @@ export type ServeOptions = {
    *  (the console, sign-in, setup, settings, MCP, triggers, hooks, ...) with a 404 before anything reads the request.
    *  It has no owner: accounts and open setup are off, there being no page to sign in to. */
   apiOnly?: boolean;
+  /** AGENTRUN_API_ONLY_MCP_ORIGINS, read as the environment's is (the serve README's API-only section); only with apiOnly. */
+  apiOnlyMcpOrigins?: readonly string[];
+  /** The launch hook (AGENTRUN_LAUNCH_HOOK_URL and _SECRET, trigger-launch-hook.ts): each trigger firing that would start
+   *  a run is handed to the host instead, which starts it through the API. None, firings start their runs here. */
+  launchHook?: LaunchHook;
+  /** The run-keys setting (AGENTRUN_RUN_KEYS=1, run-keys.ts): a template's apply makes its agent though a tool key it
+   *  declares is not set here, and a run of it that does not carry that key in `keys` is refused. */
+  runKeys?: boolean;
   /** Another Archil control plane than the key's region's, and its fetch, and another maker of a disk's file API: a
    *  test's fakes, for the server's own Archil calls (a launch's disk read, the settings' test, an agent's disk removed,
    *  a deleted agent's run folder removed from a disk its launch named). */
   archilControl?: ArchilRoutesOptions["control"];
+  /** How long an uploaded file no run names is kept on the uploads disk in Mode 2 (uploads-archil.ts): a duration such
+   *  as 7d, or "off". Default AGENTRUN_UPLOAD_RETENTION, else 7d. */
+  uploadRetention?: string;
   /** Another Composio than the real one, and its fetch: a test's fake, for the Composio preset's calls (composio-preset.ts). */
   composioControl?: ComposioControl;
   /** With `faux` only: a module whose default export gives the `browser` tool's `{ provider, driver }` (the tests' fake
@@ -344,20 +419,30 @@ export type ServeOptions = {
    *  with goes through (the tests' fake for that check alone), in place of monid's API; the runs' calls go through
    *  `fauxMonid`'s. */
   fauxMonidCheck?: string;
-  /** With `faux` only: a module whose default export is the fetch the Anthropic and OpenAI providers send through, in
-   *  place of their APIs, for web_search's own request to the provider the revision's model names (model.ts). */
-  fauxUpstream?: string;
   /** With `faux` only: a module whose default export is the fetch web_search's keyless Exa search sends through, in place
-   *  of Exa's MCP endpoint (exa-keyless.ts). */
+   *  of Exa's MCP endpoint (web-run.ts FAUX_EXA_ENV). */
   fauxExa?: string;
+  /** With `faux` only: the URL of a fake MCP server (a test's, on loopback) that web_search's and web_fetch's keyless
+   *  Firecrawl ask in place of Firecrawl's endpoint (web-run.ts FAUX_FIRECRAWL_ENV). A URL, not a module: it is passed as given.
+   *  Under `faux` with none, keyless Firecrawl is never asked. */
+  fauxFirecrawl?: string;
   /** A module of harness table entries merged over the built-in ones (harness-table.ts HARNESS_TABLE_ENV): a test's
    *  stand-ins for the harnesses. */
   harnessTable?: string;
   /** The owner's harness modules (harness-table.ts HARNESS_MODULES_ENV): packages or paths, each exporting a
    *  HarnessTableModule whose entries add harnesses of their own, for this server and its runs. Never a built-in one. */
   harnessModules?: readonly string[];
+  /** The owner's harness recipes (harness-table.ts HARNESS_RECIPES_ENV): recipe files installed into `data`, each adding
+   *  the harness it describes to this server and its runs once a harness-check of it passed there (HARNESS.md#a-recipe). */
+  harnessRecipes?: readonly string[];
+  /** The owner's say-so (--harness-sign-in) that a plan-billed recipe with a sign-in runs a person's runs on the owner's
+   *  own sign-in: a start refuses it unless this server is one owner's own, on their own machine (harnessSignInRefusal). */
+  harnessSignIn?: boolean;
   /** With `faux` only: Docker answers, so docker is available, and nothing asks Docker (place-offers.ts). */
   fauxDocker?: boolean;
+  /** For tests: how long the Claude Code CLI's own sign-in this server starts waits for its browser before it is ended
+   *  (claude-sign-in.ts), in place of 10 minutes. */
+  claudeSignInLimitMs?: number;
   /** For tests: the lock each harness's first use installs by (harness-install.ts), by harness, with the package.json it
    *  locks beside it, in place of the one AgentRun ships, whose packages a test's own registry serves. */
   harnessLocks?: Readonly<Record<string, string>>;
@@ -367,6 +452,12 @@ export type ServeOptions = {
   /** Under `faux`: a file read as this server's /proc/self/mountinfo (box-paths.ts), a container's in a test; absent (and
    *  no FAUX_MOUNTINFO_ENV), a faux server is on a host. */
   fauxMountinfo?: string;
+  /** For tests: whether Docker's start probe takes this server to be in a container (place-offers.ts containerReason),
+   *  in place of its own marks; a faux server's is a host's. */
+  probeContainer?: ContainerFacts;
+  /** For tests: the wait before each read again of the Docker host's addresses after the start's failed
+   *  (docker-host-addresses.ts retryHostAddresses), in place of the backoff's timer. */
+  hostReadWait?: Wait;
   /** Extra `Host` names to accept besides the loopback ones, on any port (host-check.ts). */
   allowHosts?: string[];
   /** The console's built files, answered at / (default dist/console beside the server, which this package's build copies
@@ -378,8 +469,9 @@ export type ServeOptions = {
    *  LISTER_IDLE_MS). `Infinity`: it builds only when Serve.listingSettled asks, so a test reads what a list builds alone. */
   listerIdleMs?: number;
   /** No runner beside this server in its process (the CLI's --no-runner, the image's server-and-runner): a paired
-   *  computer's socket is held here, where no run reaches it, so a pairing code, the pair answer and each paired computer
-   *  say so and how to start the server instead (attached-computers.ts RUNNER_APART_WORDS). */
+   *  computer's socket is held here while no run holds it, and relayed to the runner that holds a run of it
+   *  (workspace/paired-route.ts); while no runner relays, a pairing code, the pair answer and each paired computer say no
+   *  run reaches it, and what to do instead (attached-computers.ts RUNNER_APART_WORDS). */
   runnerApart?: boolean;
   /** For tests: the attach socket's liveness timing (computer-attach.ts AttachTiming), a relayed dial's included; the
    *  protocol's by default. */
@@ -417,6 +509,9 @@ export type ServeOptions = {
   githubApi?: string;
   /** A test's seam: the origin a github_app MCP server may have (default GitHub's hosted MCP: github.ts GITHUB_MCP_ORIGIN). */
   githubMcpOrigin?: string;
+  /** A test's seam: the one origin a Composio key read from the environment is sent to (default Composio's:
+   *  composio-made.ts COMPOSIO_ORIGIN). */
+  composioMcpOrigin?: string;
   /** A test's seam: how long a hook's body has to arrive, whole (default 30 s: push-handler.ts HOOK_BODY_MS). */
   hookBodyMs?: number;
   /** A test's seam: awaited by a message (a person's, or a trigger's firing) once its checks have passed and just before its
@@ -426,9 +521,13 @@ export type ServeOptions = {
   /** A test's seam: step 2 of DELETE /agents/{id} (agent-delete.ts) in place of the learning module's deleteLearning over
    *  the agent's learning folder (learn/delete.ts), the server's own. */
   deleteLearning?: DeleteLearning;
-  /** A test's seam: awaited at each step's point of DELETE /agents/{id} (agent-delete.ts AgentDeleteStep), so a throw
-   *  there stops the delete as a crash would. */
-  agentDeleteAt?: (step: AgentDeleteStep, agentId: string) => void | Promise<void>;
+  /** A test's seam: awaited at each step's point of DELETE /agents/{id} and DELETE /runs/{id} (agent-delete.ts
+   *  AgentDeleteStep), with the agent's id or the run's, so a throw there stops the delete as a crash would. */
+  agentDeleteAt?: (step: AgentDeleteStep, id: string) => void | Promise<void>;
+  /** A test's seam: told each time a request waits in an agent's delete turn behind another (agent-delete.ts oneAtATime),
+   *  with the agent's id and how many of its requests wait there now, so a test knows a write sent while a DELETE is
+   *  held is queued behind it before it lets the DELETE go. */
+  deleteTurnQueued?: (agentId: string, waiting: number) => void;
   /** A test's seam: awaited with a request's path and answer once its work under an Idempotency-Key is done, before the
    *  answer is kept, so a test can hold a request there while a DELETE /agents/{id} runs. */
   beforeKeep?: (path: string, answer: unknown) => void | Promise<void>;
@@ -439,6 +538,9 @@ export type ServeOptions = {
   /** A test's seam: the GitHub a template import reads, its API's origin and the one host it may be sent to, in place of
    *  GitHub's own (template-source.ts GITHUB_HOSTS). */
   templateImportApi?: string;
+  /** A test's seam: the marketplace whose list GET /marketplace/templates answers, its address, or null for none, in
+   *  place of AGENTRUN_MARKETPLACE's (marketplace.ts marketplaceUrlOf). */
+  marketplace?: string | null;
   /** The waits before each try again of a webhook delivery (default 5 s, 5 min, 30 min, 2 h, 5 h and 10 h: webhooks.ts RETRY_MS). */
   webhookRetryMs?: readonly number[];
   /** The bound on one webhook try, whole milliseconds under the 60 s claim it holds its message by (default 15 s:
@@ -458,17 +560,19 @@ export type ServeOptions = {
 
 /** Each test switch a run's process reads, by the variable it reads it from: set only under `faux`, but the faux
  *  harness's, which scripts the harnesses with or without it. */
-const FAUX_SWITCHES = [["fauxBrowser", FAUX_BROWSER_ENV], ["fauxWeb", FAUX_WEB_ENV], ["fauxJev", FAUX_JEV_ENV], ["fauxParallel", FAUX_PARALLEL_ENV], ["fauxOpenrouter", FAUX_OPENROUTER_ENV], ["fauxMonid", FAUX_MONID_ENV], ["fauxUpstream", FAUX_UPSTREAM_ENV], ["fauxExa", FAUX_EXA_ENV]] as const;
+const FAUX_SWITCHES = [["fauxBrowser", FAUX_BROWSER_ENV], ["fauxWeb", FAUX_WEB_ENV], ["fauxJev", FAUX_JEV_ENV], ["fauxParallel", FAUX_PARALLEL_ENV], ["fauxOpenrouter", FAUX_OPENROUTER_ENV], ["fauxMonid", FAUX_MONID_ENV], ["fauxExa", FAUX_EXA_ENV]] as const;
 
 /** The switches a run's process gets, each module path resolved: the owner's harness modules (harnessModules), and the test
  *  switches, which are empty outside tests. A test's in-process runner takes the same (test/support.mjs
  *  startInProcessRunner). */
 export function fauxEnvOf(options: ServeOptions): NodeJS.ProcessEnv {
   // The owner's harness modules too (not a test switch): a run's process reads the same table as the server.
-  const env: NodeJS.ProcessEnv = { ...harnessModulesEnv(options.harnessModules ?? [], options.data), ...(options.harnessTable ? { [HARNESS_TABLE_ENV]: resolve(options.harnessTable) } : {}) };
+  const env: NodeJS.ProcessEnv = { ...harnessModulesEnv(options.harnessModules ?? [], options.data), ...harnessRecipesEnv(options.harnessRecipes ?? [], options.data, { signIn: options.harnessSignIn === true }), ...(options.harnessTable ? { [HARNESS_TABLE_ENV]: resolve(options.harnessTable) } : {}) };
   if (!options.faux) return env;
   env[FAUX_ENV] = resolve(options.faux);
   for (const [option, name] of FAUX_SWITCHES) if (options[option]) env[name] = resolve(options[option]);
+  // A URL, so never resolved as a path.
+  if (options.fauxFirecrawl) env[FAUX_FIRECRAWL_ENV] = options.fauxFirecrawl;
   // The mountinfo the server itself reads (fauxMountinfo in serve), also when its own environment names it: a CLI server
   // in a container hands it to the runner beside it, whose environment drops every faux variable it inherited.
   const mountinfo = options.fauxMountinfo ?? process.env[FAUX_MOUNTINFO_ENV];
@@ -488,6 +592,11 @@ export type Serve = { url: string; baseUrl: string; port: number; token: string;
   /** The live sockets of the computers paired with this server (computer-attach.ts): a runner beside the server in this
    *  process takes it (runner/beside.ts), so its runs can use them. */
   attachHub: AttachHub;
+  /** The name and incarnation the runner beside this server in its process runs under (runner/beside.ts), new at each
+   *  start: its run's route of a paired box names them, and this server's attach routes read such a route as this hub's
+   *  (computer-attach.ts beside), so the box stays here for the run and a runner apart's take for another run is
+   *  refused meanwhile. */
+  beside: { readonly runner: string; readonly incarnation: string };
   /** What a dial provider's create takes of this server (HostedProvider's dial): the address its machines dial
    *  (AGENTRUN_PUBLIC_URL, absent without one), the tokens it mints for them (computer-attach.ts machineTokens) and the
    *  hub their sockets land in. The runner beside the server hands it to its remote providers (runner/beside.ts). */
@@ -497,10 +606,17 @@ export type Serve = { url: string; baseUrl: string; port: number; token: string;
    *  it is this process's finding, never a store's, so another runner on a shared store never inherits it. A runner in
    *  its own process takes its own operator's opt-in from its own environment (runner/main.ts runnerLoopback). */
   localInstall: boolean;
+  /** The OLLAMA_HOST its runner beside it asks (ollama-provider.ts ollamaHostOf): this server's own, else the default
+   *  address where this is one owner's own machine; none on a shared one that names none (runner/beside.ts ollamaHost). */
+  ollamaHost: string | undefined;
   /** This server's own addresses (McpServersOverStore.own): where it listens, and its public address when that is on
    *  loopback. The runner beside it is told them with localInstall (runner/beside.ts mcpOwn), so its runs' loopback reads
    *  never reach this server, as its own reads never do. */
   own: readonly string[];
+  /** With --faux-github: the fake GitHub's API and its repository's site, for a test's own runner alone
+   *  (test/support.mjs): the runner's GitHub API has one way in, a test runner's option, so neither the CLI's runner nor
+   *  any setting is ever pointed at it. */
+  fauxGitHub?: { api: string; web?: string };
   /** What a stop waits on: the runs whose processes still finish their turn, and the longest it waits on them. */
   stopping(): { runs: number; boundMs: number };
   /** Resolves once every run's listing is current (run-listing.ts Lister.settled): for tests and benchmarks. */
@@ -547,9 +663,25 @@ export const ROUTES: readonly Route[] = [
   {method:"DELETE",pattern:/^\/connectors\/([^/]+)$/,name:"revokeRemoteConnector"},
   {method:"POST",pattern:/^\/connectors\/([^/]+)\/import$/,name:"importRemoteTarget"},
   {method:"POST",pattern:/^\/connectors\/([^/]+)\/targets\/([^/]+)\/history$/,name:"importRemoteHistory"},
+  {method:"POST",pattern:/^\/connectors\/([^/]+)\/targets\/([^/]+)\/sync\/grant$/,name:"grantSourceSync"},
+  {method:"POST",pattern:/^\/connectors\/([^/]+)\/targets\/([^/]+)\/sync$/,name:"publishSourceSync"},
+  {method:"POST",pattern:/^\/connectors\/([^/]+)\/targets\/([^/]+)\/sync\/status$/,name:"sourceSyncFailure"},
+  {method:"GET",pattern:/^\/agents\/([^/]+)\/source$/,name:"getSourceSync"},
+  {method:"PATCH",pattern:/^\/agents\/([^/]+)\/source$/,name:"setSourceSync"},
+  {method:"POST",pattern:/^\/agents\/([^/]+)\/source\/move$/,name:"moveSourceAgent"},
+  {method:"POST",pattern:/^\/agents\/([^/]+)\/source\/tools$/,name:"bindSourceTool"},
+  {method:"POST",pattern:/^\/agents\/([^/]+)\/source\/resolve$/,name:"resolveSourceSync"},
+  {method:"POST",pattern:/^\/agents\/([^/]+)\/source\/project-review$/,name:"reviewSourceProject"},
   {method:"POST",pattern:/^\/connectors\/([^/]+)\/poll$/,name:"pollRemoteConnector"},
   {method:"POST",pattern:/^\/connectors\/([^/]+)\/commands\/([^/]+)\/events$/,name:"remoteCommandEvents"},
   {method:"POST",pattern:/^\/connectors\/([^/]+)\/commands\/([^/]+)\/complete$/,name:"completeRemoteCommand"},
+  {method:"POST",pattern:/^\/cli-learning\/connections$/,name:"enrollCliLearning"},
+  {method:"GET",pattern:/^\/cli-learning\/connections$/,name:"listCliLearning"},
+  {method:"DELETE",pattern:/^\/cli-learning\/connections\/([^/]+)$/,name:"revokeCliLearning"},
+  {method:"POST",pattern:/^\/cli-learning\/connections\/([^/]+)\/runs$/,name:"startCliLearningRun"},
+  {method:"GET",pattern:/^\/cli-learning\/runs\/([^/]+)$/,name:"getCliLearningRun"},
+  {method:"POST",pattern:/^\/cli-learning\/runs\/([^/]+)\/events$/,name:"cliLearningEvents"},
+  {method:"POST",pattern:/^\/cli-learning\/runs\/([^/]+)\/complete$/,name:"completeCliLearningRun"},
   {method:"POST",pattern:/^\/agents\/([^/]+)\/sdk-runs$/,name:"startSdkRun"},
   {method:"GET",pattern:/^\/sdk-runs\/([^/]+)$/,name:"getSdkRun"},
   {method:"POST",pattern:/^\/sdk-runs\/([^/]+)\/events$/,name:"sdkRunEvents"},
@@ -570,6 +702,7 @@ export const ROUTES: readonly Route[] = [
   { method: "DELETE", pattern: /^\/agents\/([^/]+)$/, name: "deleteAgent" },
   { method: "PUT", pattern: /^\/agents\/([^/]+)\/definition$/, name: "updateDefinition" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/revisions$/, name: "listRevisions" },
+  { method: "GET", pattern: /^\/agents\/([^/]+)\/package$/, name: "getAgentPackage" },
   { method: "POST", pattern: /^\/agents\/([^/]+)\/current$/, name: "setCurrent" },
   { method: "POST", pattern: /^\/agents\/([^/]+)\/archive$/, name: "archiveAgent" },
   { method: "POST", pattern: /^\/agents\/([^/]+)\/unarchive$/, name: "unarchiveAgent" },
@@ -587,6 +720,8 @@ export const ROUTES: readonly Route[] = [
   { method: "POST", pattern: /^\/runs$/, name: "createInlineRun" },
   { method: "GET", pattern: /^\/runs\/([^/]+)$/, name: "getRun" },
   { method: "PATCH", pattern: /^\/runs\/([^/]+)$/, name: "raiseRunCap" },
+  // A run purged, its cost kept, with the runs made from it (agent-delete.ts purgeRun).
+  { method: "DELETE", pattern: /^\/runs\/([^/]+)$/, name: "deleteRun" },
   { method: "GET", pattern: /^\/runs\/([^/]+)\/timeline$/, name: "getTimeline" },
   { method: "POST", pattern: /^\/runs\/([^/]+)\/messages$/, name: "sendMessage" },
   { method: "POST", pattern: /^\/runs\/([^/]+)\/stop$/, name: "stopRun" },
@@ -599,6 +734,8 @@ export const ROUTES: readonly Route[] = [
   { method: "GET", pattern: /^\/runs\/([^/]+)\/graph$/, name: "getRunGraph" },
   // A run's trace (run-trace.ts): each model request and tool call as a span, with its time, tokens and cost.
   { method: "GET", pattern: /^\/runs\/([^/]+)\/trace$/, name: "getRunTrace" },
+  // A run's usage lines (run-usage.ts): by meter, model, charger and provider, each with its quantity and its cost.
+  { method: "GET", pattern: /^\/runs\/([^/]+)\/usage$/, name: "getRunUsage" },
   { method: "POST", pattern: /^\/workflows\/validate$/, name: "validateWorkflow" },
   { method: "POST", pattern: /^\/runs\/([^/]+)\/pause$/, name: "pauseRun" },
   { method: "POST", pattern: /^\/runs\/([^/]+)\/resume$/, name: "resumeRun" },
@@ -609,6 +746,8 @@ export const ROUTES: readonly Route[] = [
   // store-backed take-over lands). The run routes stay together.
   { method: "GET", pattern: /^\/runs\/([^/]+)\/computer$/, name: "getRunComputer" },
   { method: "POST", pattern: /^\/runs\/([^/]+)\/computer\/take-over$/, name: "takeOverRunComputer" },
+  // An API-only server's viewer credential for a run's live view (viewer-credential.ts), minted for its backend.
+  { method: "POST", pattern: /^\/runs\/([^/]+)\/computer\/viewer$/, name: "createRunComputerViewer" },
   { method: "POST", pattern: /^\/runs\/([^/]+)\/computer\/hand-back$/, name: "handBackRunComputer" },
   // A held computer's (computer-held-routes.ts): a run started with hold: true waits for its start, takes its owner's
   // protocol calls, and keeps its computer after its agent's end until released.
@@ -618,6 +757,7 @@ export const ROUTES: readonly Route[] = [
   // Settings → Computers (computers.ts settingsComputerRoute) and the owner's Archil settings (archil-routes.ts
   // archilRoute): the server switch dispatches them, once the server opens its store.
   { method: "GET", pattern: /^\/computers$/, name: "listComputers" },
+  { method: "GET", pattern: /^\/computers\/running$/, name: "listRunningComputers" },
   { method: "PUT", pattern: /^\/computers\/([^/]+)\/keys$/, name: "saveComputerKeys" },
   { method: "POST", pattern: /^\/computers\/([^/]+)\/test$/, name: "testComputer" },
   { method: "GET", pattern: /^\/computers\/([^/]+)\/choices$/, name: "listComputerChoices" },
@@ -643,9 +783,17 @@ export const ROUTES: readonly Route[] = [
   { method: "POST", pattern: /^\/quotes$/, name: "createQuote", capability: "quotes" },
   { method: "GET", pattern: /^\/usage$/, name: "getUsage" },
   { method: "GET", pattern: /^\/stats$/, name: "getStats" },
+  // The runs waiting and held, the live runners and their free slots, and the recent hand-backs (capacity.ts).
+  { method: "GET", pattern: /^\/capacity$/, name: "getCapacity" },
+  // A year of the work under this machine's home (wrapped.ts), on a server on the person's own machine alone.
+  { method: "GET", pattern: /^\/wrapped$/, name: "getWrapped" },
   { method: "GET", pattern: /^\/settings\/tool-keys$/, name: "listToolKeys" },
   { method: "PUT", pattern: /^\/settings\/tool-keys\/([^/]+)$/, name: "saveToolKey" },
   { method: "DELETE", pattern: /^\/settings\/tool-keys\/([^/]+)$/, name: "deleteToolKey" },
+  // The keys a plan-billed harness recipe runs on, saved for that harness alone (harness-keys.ts): the owner's session's.
+  { method: "GET", pattern: /^\/settings\/harness-keys$/, name: "listHarnessKeys" },
+  { method: "PUT", pattern: /^\/settings\/harness-keys\/([^/]+)\/([^/]+)$/, name: "saveHarnessKey" },
+  { method: "DELETE", pattern: /^\/settings\/harness-keys\/([^/]+)\/([^/]+)$/, name: "deleteHarnessKey" },
   // The server's email account (email/routes.ts): the owner's session's alone, its password in no answer.
   { method: "GET", pattern: /^\/settings\/email$/, name: "getEmailAccount" },
   { method: "PUT", pattern: /^\/settings\/email$/, name: "saveEmailAccount" },
@@ -671,8 +819,10 @@ export const ROUTES: readonly Route[] = [
   { method: "DELETE", pattern: /^\/settings\/model-gateway$/, name: "deleteModelGateway" },
   { method: "POST", pattern: /^\/settings\/model-gateway\/test$/, name: "testModelGateway" },
   { method: "GET", pattern: /^\/settings\/mcp-servers$/, name: "listMcpServers" },
+  { method: "GET", pattern: /^\/settings\/mcp-server-names$/, name: "listMcpServerNames" },
   { method: "POST", pattern: /^\/settings\/mcp-servers\/preview$/, name: "previewMcpServer" },
   { method: "POST", pattern: /^\/settings\/mcp-servers\/composio\/tools$/, name: "listComposioTools" },
+  { method: "POST", pattern: /^\/settings\/mcp-servers\/composio\/toolkits$/, name: "listComposioToolkits" },
   { method: "GET", pattern: /^\/settings\/mcp-servers\/([^/]+)$/, name: "getMcpServer" },
   { method: "PUT", pattern: /^\/settings\/mcp-servers\/([^/]+)$/, name: "saveMcpServer" },
   { method: "PUT", pattern: /^\/settings\/mcp-servers\/([^/]+)\/composio$/, name: "saveComposioServer" },
@@ -693,6 +843,11 @@ export const ROUTES: readonly Route[] = [
   { method: "PUT", pattern: /^\/settings\/mcp-servers\/oauth\/private-hosts$/, name: "putMcpPrivateHosts" },
   { method: "GET", pattern: /^\/settings\/tools$/, name: "getToolSettings" },
   { method: "PUT", pattern: /^\/settings\/tools$/, name: "putToolSettings" },
+  // The API keys a person makes for their apps (api-keys.ts): a read with any token; making and revoking one are secret
+  // writes, so the one secret-write check takes them from the owner's session alone.
+  { method: "GET", pattern: /^\/settings\/api-keys$/, name: "listApiKeys" },
+  { method: "POST", pattern: /^\/settings\/api-keys$/, name: "createApiKey" },
+  { method: "DELETE", pattern: /^\/settings\/api-keys\/([^/]+)$/, name: "revokeApiKey" },
   { method: "GET", pattern: /^\/settings\/webhook$/, name: "getWebhook" },
   { method: "PUT", pattern: /^\/settings\/webhook$/, name: "saveWebhook" },
   { method: "DELETE", pattern: /^\/settings\/webhook$/, name: "deleteWebhook" },
@@ -713,9 +868,12 @@ export const ROUTES: readonly Route[] = [
   { method: "DELETE", pattern: /^\/triggers\/([^/]+)$/, name: "deleteTrigger" },
   { method: "POST", pattern: /^\/triggers\/([^/]+)\/fire$/, name: "fireTrigger" },
   { method: "GET", pattern: /^\/triggers\/([^/]+)\/firings$/, name: "listTriggerFirings" },
+  { method: "POST", pattern: /^\/triggers\/([^/]+)\/firings\/([^/]+)\/release$/, name: "releaseTriggerFiring" },
   { method: "POST", pattern: /^\/triggers\/([^/]+)\/secret$/, name: "rotateTriggerSecret" },
   { method: "GET", pattern: /^\/templates$/, name: "listTemplates" },
   { method: "POST", pattern: /^\/templates\/import$/, name: "importTemplate" },
+  { method: "GET", pattern: /^\/marketplace\/templates$/, name: "listMarketplaceTemplates" },
+  { method: "GET", pattern: /^\/templates\/([^/]+)$/, name: "getTemplate" },
   { method: "DELETE", pattern: /^\/templates\/([^/]+)$/, name: "deleteTemplate" },
   { method: "POST", pattern: /^\/templates\/([^/]+)\/apply$/, name: "applyTemplate" },
   // Answered before the bearer check: the request's signature is its credential.
@@ -726,9 +884,19 @@ export const ROUTES: readonly Route[] = [
   { method: "POST", pattern: /^\/integrations\/github\/connect$/, name: "connectGitHub" },
   { method: "GET", pattern: /^\/integrations\/github\/callback$/, name: "gitHubCallback" },
   { method: "GET", pattern: /^\/integrations\/github\/installed$/, name: "gitHubInstalled" },
+  { method: "GET", pattern: /^\/integrations\/github\/repositories$/, name: "listGitHubRepositories" },
+  // Suggested agents (suggestions.ts): what the agent-scout template finds in a repository, and what a person decides.
+  { method: "GET", pattern: /^\/suggestions$/, name: "listSuggestions" },
+  { method: "POST", pattern: /^\/suggestions\/scans$/, name: "scanForSuggestions" },
+  { method: "GET", pattern: /^\/suggestions\/([^/]+)$/, name: "getSuggestion" },
+  { method: "POST", pattern: /^\/suggestions\/([^/]+)\/discard$/, name: "discardSuggestion" },
+  { method: "POST", pattern: /^\/suggestions\/([^/]+)\/restore$/, name: "restoreSuggestion" },
+  { method: "POST", pattern: /^\/suggestions\/([^/]+)\/create$/, name: "createSuggestedAgent" },
   // Answered before routing (mcp.ts), with the token only: listed here for the document.
   { method: "POST", pattern: /^\/mcp$/, name: "callMcp" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning$/, name: "getAgentLearning" },
+  // The agent's learning reset, the agent and its runs kept (learning-reset.ts).
+  { method: "DELETE", pattern: /^\/agents\/([^/]+)\/learning$/, name: "deleteAgentLearning" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/cost$/, name: "getLearningCost" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/promotions$/, name: "listLearningPromotions" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/audits$/, name: "listLearningAudits" },
@@ -820,9 +988,10 @@ export function offersEnvOf(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
 const GATEWAY_VARS = ["AGENT_MODEL_BASE_URL", "AGENT_MODEL_GATEWAY_IDS", "AGENT_MODEL", "AGENT_MODEL_FAST", "AGENT_MODEL_STRONG"] as const;
 
 /** What of `env` a write can change that the harnesses' offers are made from: each secret but the tool keys' fields (a
- *  saved key is one of those; the rest of the environment is the server's start's). Held to tell whether a write needs
- *  the offers probed again, never shown. */
-const offersInputs = (env: NodeJS.ProcessEnv): readonly (string | undefined)[] => [...SECRET_NAMES.filter((name) => !TOOL_FIELDS.includes(name)).map((name) => env[name]), ...GATEWAY_VARS.map((name) => env[name]), planOf(env)?.state, planOf(env)?.models.join(" "), claudeLoginOf(env)?.dir];
+ *  saved key is one of those; the rest of the environment is the server's start's), and the models the Ollama here
+ *  listed when last asked (ollamaListing). Held to tell whether a write, or a new listing, needs the offers probed again,
+ *  never shown. */
+const offersInputs = (env: NodeJS.ProcessEnv): readonly (string | undefined)[] => [...SECRET_NAMES.filter((name) => !TOOL_FIELDS.includes(name)).map((name) => env[name]), ...GATEWAY_VARS.map((name) => env[name]), planOf(env)?.state, planOf(env)?.models.join(" "), claudeLoginOf(env)?.dir, ollamaListing(env)];
 
 /** A sign-in step's answer; its refusal (a stale or bad pasted address, no sign-in waiting, OpenAI's no) a 400 in words. */
 async function planStep<T>(step: () => Promise<T>): Promise<T> {
@@ -840,10 +1009,13 @@ async function planStep<T>(step: () => Promise<T>): Promise<T> {
  *  Made from `env` alone, so it is remade only when env is. */
 type ModelState = { needs: ModelNeeds | null; priced: boolean | null; learning_model: LearningModel };
 async function needsOf(env: NodeJS.ProcessEnv): Promise<ModelState> {
-  const chosen = await chooseModel(env, undefined);
-  const learning_model = await learningModelOf(env);
-  if ("why" in chosen) return { needs: chosen.needs, priced: null, learning_model };
-  return { needs: null, priced: (await unpricedModels(env, undefined)).length === 0, learning_model };
+  // A reading no run waits on, as the offers are (ollamaReading): a key's save never waits on a stuck Ollama's /api/show.
+  return ollamaReading(async () => {
+    const chosen = await chooseModel(env, undefined);
+    const learning_model = await learningModelOf(env);
+    if ("why" in chosen) return { needs: chosen.needs, priced: null, learning_model };
+    return { needs: null, priced: (await unpricedModels(env, undefined)).length === 0, learning_model };
+  });
 }
 
 /** The server's reading of `base`, whole: its secrets, saved keys among them (`env`), the harnesses' offers, probed from
@@ -867,6 +1039,9 @@ export async function readingOf(base: NodeJS.ProcessEnv, maxRuns: number, stored
 export async function capabilities(env: NodeJS.ProcessEnv = withSecrets(process.env), maxRuns = maxRunsOf(env), learning: LearningMode = learningOf(env), toolSettings: ToolSettingsMap = {}, boxes: readonly BoxOffer[] = []) {
   return capabilitiesWith(env, maxRuns, await harnessOffers(env), learning, await needsOf(env), toolSettings, boxes);
 }
+
+/** A run body's launch secrets, checked (handedLaunchSecrets): its MCP credentials, its own model key and tool keys. */
+type Handed = { mcp?: RunMcpAuth; model?: string; keys?: RunKeys };
 
 /** The start-time switches a server takes as options (ServeOptions mcpLoopback, webhookPrivateTargets). */
 type SwitchedOn = { mcpLoopback: boolean; webhookPrivateTargets: boolean };
@@ -908,8 +1083,12 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
      *  a user of its own too. */
     run_isolation: isolation,
     /** The harnesses a revision may name (`definition.harness`), whether this server runs each, and how many at once. */
-    // `keys`, what a model key would unlock, is the key rows' (listToolKeys), never served here.
-    harnesses: harnesses.map(({ keys: _keys, ...offer }) => ({ ...offer, max_concurrent_runs: Math.min(maxRuns, runsThatFit(offer.id, memory, env)) })),
+    // `keys`, what a model key would unlock, is the key rows' (listToolKeys), never served here. Served `available` is
+    // whether a run of it can start now on some model it offers: one whose every model lacks a key or the sign-in
+    // (noModelRuns: pi with neither) is not, though a save and a run read it as a harness that runs here (runnable.ts), so
+    // their words name the model it lacks. One whose default lacks a key while another model runs is (its `needs` says
+    // what the default lacks).
+    harnesses: harnesses.map(({ keys: _keys, noModelRuns, ...offer }) => ({ ...offer, available: offer.available && !noModelRuns, max_concurrent_runs: Math.min(maxRuns, runsThatFit(offer.id, memory, env)) })),
     /** The places a revision may name (`definition.place`), this host's default, and whether this server has each box. */
     places: placesOf(boxes, boxAllowOf(env)),
     models,
@@ -971,20 +1150,32 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
       /** GET, PUT and DELETE /settings/tool-keys: a tool's key saved by name, kept sealed under the server's seal key
        *  (tool-keys-store.ts), never in the clear. */
       tool_keys: { routes: true, at_rest: "sealed" },
+      /** GET /settings/harness-keys and PUT/DELETE of one key: a plan-billed recipe's keys, saved for that harness alone
+       *  (harness-keys.ts); `harnesses` its ids here, and `kept` each id with keys saved whose recipe it no longer names
+       *  (a running server's, from its store: HarnessKeysOverStore.unnamed), so the console offers the page only where
+       *  there is one or a key to remove. */
+      harness_keys: { routes: true, at_rest: "sealed", harnesses: planRecipesOf(env).map((recipe) => recipe.id), kept: [] as string[] },
       /** /settings/mcp-servers: remote MCP servers previewed and saved, each credential sealed under the server's seal key,
        *  which always exists (seal-key.ts), so MCP credentials are always kept sealed. Every harness of the table runs a
-       *  grant (runnable.ts takes one on any), a module's among them. */
-      mcp_client: { transports: ["streamable-http"], auth: [...MCP_AUTH_TYPES], at_rest: "sealed", harnesses: [...harnessIds(env)] },
+       *  grant (runnable.ts takes one on any), a module's among them. `composio_per_run`: a per-run Composio server takes
+       *  each run's own Composio account (mcp_auth's ComposioRunBinding, composioperrun/1), said here so a backend in
+       *  front learns it from this answer, which an API-only server serves, not from the API document, which it refuses. */
+      mcp_client: { transports: ["streamable-http"], auth: [...MCP_AUTH_TYPES], at_rest: "sealed", harnesses: [...harnessIds(env)], composio_per_run: true },
       /** This server's learning switch (`--learning`): on, a run learns when its agent says `learning: true`; off, none does. */
       learning,
       /** /settings/webhook: one URL POSTed, signed by the Standard Webhooks spec, when a run needs its person and when it
        *  ends (webhooks.ts); its secret kept sealed under the same seal key. */
       // Always sealed: the server starts with its seal key (seal-key.ts bootSealKey), so nothing is kept in the clear.
       webhooks: { routes: true, events: [...WEBHOOK_EVENTS], signing: "standard-webhooks/v1", at_rest: "sealed" },
+      /** /settings/api-keys: the keys a person makes in the console for their apps (api-keys.ts), each shown once and
+       *  kept as a keyed hash alone; `limit`, the most a server keeps. */
+      api_keys: { routes: true, limit: API_KEYS_LIMIT, at_rest: "hashed" },
       /** /settings/slack: one Slack incoming-webhook URL each of `events` is posted to as a readable message (slack.ts); the
        *  URL kept sealed, never shown. */
       slack: { routes: true, events: [...SLACK_EVENTS], at_rest: "sealed" },
       /** /triggers: what starts an agent's capped runs with no caller (triggers.ts). */
+      /** A backend SDK run's start (sdk/runs.ts): the fields it takes, and the most seconds it stays open. */
+      sdk_runs: { started_at: true, title: true, labels: true, max_open_s: SDK_MAX_OPEN_MS / 1000 },
       triggers: { routes: true, sources: [...SOURCE_KINDS], targets: [...TARGET_KINDS], min_every_s: MIN_EVERY_S, history_kept: HISTORY_KEPT, catchup_window_s: CATCHUP_WINDOW_S, failures_to_pause: FAILURES_TO_PAUSE, webhook: { signing: "standard-webhooks/v1", signatures: [...SCHEME_NAMES], tolerance_s: HOOK_TOLERANCE_S, max_body_bytes: webhook.push!.maxBodyBytes, payload_kept_bytes: PAYLOAD_KEPT_BYTES, at_rest: "sealed" } },
     },
     regions: [{ id: "local", jurisdiction: null, state: "live" }],
@@ -1033,6 +1224,53 @@ function integerParam(value: string | null, name: string, max: number): number {
   return Number(value);
 }
 
+/** Why a server started on its owner's own sign-in makes no API key for an app, in one line. */
+export const HARNESS_SIGN_IN_REFUSES_API_KEYS = "This server runs on its owner's own sign-in (--harness-sign-in), which is one person's: it creates no API key for an app, and a key created before opens nothing here. Revoke the ones listed that you no longer want.";
+
+/** A start with --harness-sign-in on a server that is not one owner's own, on their own machine. */
+export const HARNESS_SIGN_IN_NOT_LOCAL = "HARNESS_SIGN_IN_NOT_LOCAL";
+
+/** Why `options` on `data` is not one owner's own server on their own machine, each reason in words; none when it is. One
+ *  owner's own: it listens on loopback alone, with no public address; its store is the SQLite one in its data directory (no
+ *  AGENTRUN_STORE_URL, which servers elsewhere share); its runs run beside it as its own user (`ownUser`:
+ *  runIsolationOf's `process`), never under --no-runner or a user of their own; and one person starts them, as Claude
+ *  Code's login on this machine asks (claude-login.ts whyNotOneOwner): an owner, and one API token. What --harness-sign-in
+ *  starts under (harnessSignInRefusal), and where the Ollama at this machine's default address is a model of the person
+ *  who starts runs (ollama-provider.ts ollamaHostOf). */
+export function whyNotOwnMachine(options: Pick<ServeOptions, "host" | "publicUrl" | "runnerApart" | "apiOnly" | "token" | "tokens">, data: string, ownUser: boolean): string[] {
+  return [
+    ...whyNotOwnersServer(options, data),
+    ...(options.runnerApart ? ["runs no runner beside it (--no-runner)"] : []),
+    ...(ownUser ? [] : ["runs each run as a user of its own (unset AGENTRUN_RUN_USER=slot, or set AGENTRUN_RUN_USER=same)"]),
+  ];
+}
+
+/** Why `options` on `data` is not one owner's server on their own machine as far as who reaches it goes, each reason in
+ *  words: whyNotOwnMachine's facts but its runner's. What may read this machine's own files for whoever asks (GET
+ *  /v2/wrapped). `keys`: the live API keys made in the console (api-keys.ts), each one more caller, as a second token is
+ *  (claude-login.ts whyNotOneOwner counts them too); 0 where none can open the server. */
+export function whyNotOwnersServer(options: Pick<ServeOptions, "host" | "publicUrl" | "apiOnly" | "token" | "tokens">, data: string, keys = 0): string[] {
+  const host = options.host ?? DEFAULT_HOST;
+  // Every token the server takes (acceptedTokens): AGENTRUN_TOKEN's as `default` beside the list's, or else DIR/.token's alone.
+  const tokens = (options.token === undefined ? 0 : 1) + (options.tokens?.length ?? 0);
+  return [
+    ...(loopback(host) ? [] : [`listens on ${host}, past loopback`]),
+    ...(options.publicUrl ? [`has a public address (${options.publicUrl})`] : []),
+    ...(options.apiOnly ? ["has no owner (the API-only profile), so anyone with its token starts runs"] : []),
+    ...(tokens > 1 ? [`takes ${tokens} API tokens (AGENTRUN_TOKEN and AGENTRUN_TOKENS together), so more than one person starts runs`] : []),
+    ...(keys > 0 ? [`has ${keys === 1 ? "an API key" : `${keys} API keys`} made for apps (Settings → AgentRun API keys), so more than one caller reaches it`] : []),
+    ...(storeTarget(data).kind === "sqlite" ? [] : ["keeps its store in Postgres (AGENTRUN_STORE_URL), which servers elsewhere share"]),
+  ];
+}
+
+/** Why `options` on `data` may not run a recipe on its owner's own sign-in (--harness-sign-in), in words; undefined when
+ *  it may: one owner's own server on their own machine alone (whyNotOwnMachine). A check, a schedule and a shared server
+ *  run on a key (HARNESS.md#sign-in). */
+export function harnessSignInRefusal(options: Pick<ServeOptions, "host" | "publicUrl" | "runnerApart" | "apiOnly" | "token" | "tokens">, data: string, ownUser: boolean): string | undefined {
+  const why = whyNotOwnMachine(options, data, ownUser);
+  return why.length ? `${HARNESS_SIGN_IN_NOT_LOCAL}: --harness-sign-in runs a recipe on its owner's own sign-in on one owner's own machine alone, and this server ${why.join("; ")}. Start it without --harness-sign-in: its plan-billed recipes run on keys.` : undefined;
+}
+
 // A data directory an earlier version wrote (old agent homes, an old runs/ layout, or an earlier store version) is refused
 // by the store itself when it opens (StoreFromEarlierVersion), in words, to start fresh: no pre-open scan, no migration.
 
@@ -1045,9 +1283,20 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   // So is the harness modules list, from `harnessModules` alone (an operator names them with --harness-module or
   // AGENTRUN_SERVE_HARNESS_MODULES, which the CLI reads into the option).
   delete process.env[HARNESS_MODULES_ENV];
+  // And the recipes, from `harnessRecipes` alone (--harness-recipe or AGENTRUN_SERVE_HARNESS_RECIPES).
+  delete process.env[HARNESS_RECIPES_ENV];
   await mkdir(resolve(options.data), { recursive: true, mode: 0o700 });
   // Canonical once, here: a computer's mount source below it must then be its own canonical path, through no link.
   const data = await realpath(resolve(options.data));
+  const { runsAsOwnUser } = await import("./runner/run-child-host.js");
+  const ownUser = runsAsOwnUser(process.env);
+  if (options.harnessSignIn) {
+    const refused = harnessSignInRefusal(options, data, ownUser);
+    if (refused) throw new Error(refused);
+  }
+  // The Ollama this server asks, and its runner beside it: OLLAMA_HOST, else the default address on one owner's own machine
+  // alone (ollamaHostOf). Read once, at the start: a refused one is said once, here, in the base rule's words.
+  const ollamaHost = ollamaHostOf(process.env, whyNotOwnMachine(options, data, ownUser).length === 0);
   const tokenRefused = options.token === undefined ? undefined : tokenProblem(options.token);
   if (tokenRefused) throw new Error(tokenRefused);
   for (const entry of options.tokens ?? []) {
@@ -1083,7 +1332,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   // store handle it opened.
   const stops: Array<() => Promise<void>> = [];
   try {
-    return await startHolding(options, data, { maxRuns, minFreeBytes, learning, boxAllow, templates }, stops);
+    return await startHolding(options, data, { maxRuns, minFreeBytes, learning, boxAllow, templates, ollamaHost }, stops);
   } catch (error) {
     for (const stop of stops) await stop().catch(() => undefined);
     throw error;
@@ -1110,8 +1359,8 @@ async function whileReplaced<T>(take: () => Promise<T> | T, held: (error: unknow
   }
 }
 
-async function startHolding(options: ServeOptions, data: string, checked: { maxRuns: number; minFreeBytes: number; learning: LearningMode; boxAllow: readonly string[] | "none"; templates: Package[] }, stops: Array<() => Promise<void>>): Promise<Serve> {
-  const { maxRuns, minFreeBytes, learning, boxAllow, templates } = checked;
+async function startHolding(options: ServeOptions, data: string, checked: { maxRuns: number; minFreeBytes: number; learning: LearningMode; boxAllow: readonly string[] | "none"; templates: Package[]; ollamaHost: string | undefined }, stops: Array<() => Promise<void>>): Promise<Serve> {
+  const { maxRuns, minFreeBytes, learning, boxAllow, templates, ollamaHost } = checked;
   /** What an agent's view says of its learning: how many learned items wait for its owner's OK, for an agent that learns
    *  on this server (learning on, its current revision `learning: true`); none for another, or when the count cannot be
    *  read (the view never fails for it). */
@@ -1132,7 +1381,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // shown nowhere.
   let secretStores: ServerSecrets | undefined;
   let triggerSettings: Map<string, SealedSettingsOverStore> = new Map();
-  const base = { ...withoutFaux(process.env), [DATA_ENV]: data, ...(options.allowCodeNodes ? { [CODE_NODES_ENV]: "1" } : {}), ...(options.faux ? { [FAUX_ENV]: resolve(options.faux) } : {}), ...(options.harnessTable ? { [HARNESS_TABLE_ENV]: resolve(options.harnessTable) } : {}), ...harnessModulesEnv(options.harnessModules ?? [], data) };
+  const base = { ...withoutFaux(process.env), [DATA_ENV]: data, ...(options.allowCodeNodes ? { [CODE_NODES_ENV]: "1" } : {}), ...(options.faux ? { [FAUX_ENV]: resolve(options.faux) } : {}), ...(options.harnessTable ? { [HARNESS_TABLE_ENV]: resolve(options.harnessTable) } : {}), ...harnessModulesEnv(options.harnessModules ?? [], data), ...harnessRecipesEnv(options.harnessRecipes ?? [], data, { signIn: options.harnessSignIn === true }) , ...(ollamaHost ? { OLLAMA_HOST: ollamaHost } : {}) };
+  // A refused OLLAMA_HOST lists nothing (ollama-provider.ts baseOf): said once, at the start, in the base rule's words,
+  // which never hold the value (a user or password in it stays unsaid).
+  const ollamaRefused = ollamaHostRefused(base);
+  if (ollamaRefused) log ? log(logLine("ollama_host_refused", { line: ollamaRefused })) : void process.stderr.write(`agentrun-serve: ${ollamaRefused}\n`);
   // The table, loaded once here: a harness module that is missing, names a built-in harness or gives half an entry refuses
   // the start, in words, before anything else opens.
   // The harness ids a definition may name here: the table's, the built-in ones and those the modules add, and one the
@@ -1168,6 +1421,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // The packages served: the bundled ones, read and checked before the start, and those imported here, which the store
   // keeps and are checked again as they load (template-import.ts). One that no longer checks is left out, said in the log.
   const registry = new TemplateRegistry(templates);
+  // The marketplace's list (marketplace.ts), read when the console or a caller asks for it, never at the start.
+  const marketplace = new Marketplace(options.marketplace !== undefined ? options.marketplace : marketplaceUrlOf(process.env, Boolean(options.faux)));
   await loadImported({ registry, store }, (id, why) => log?.(logLine("template_import_skipped", { template: id, why })));
   stopObservationRetention = await maintainObservations(new Observations(store), {
     onError: () => { process.stderr.write("agentrun-serve: observation retention failed; retrying on the next sweep\n"); },
@@ -1176,6 +1431,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // which the runner beside the server shares (Serve.attachHub), so one process holds them. A second server on this
   // store is refused above (its owner lock).
   const attachHub = new AttachHub();
+  // The runner beside this server, as its run's route of a paired box names it (Serve.beside): a new name and
+  // incarnation at each start, so a route an earlier start's runner left names a runner that is gone, and goes stale.
+  const beside = { runner: runnerName(), incarnation: randomUUID() };
   // The data root's own lock, once the store is held (so a deploy on Postgres waits at the store's owner lock first): the
   // store's lock holds one store, but the data root also holds what the server writes beside it (its token, its seal key,
   // uploads, harness installs, learning folders), which two servers on two stores (two Postgres schemas, or SQLite and
@@ -1202,16 +1460,42 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // there is no keeping one in the clear.
   const seal = await bootSealKey(store, data);
   stops.push(async () => seal.release());
+  // What a runner apart reads to tell its disk from this server's, and its environment's gaps (runner/disk-free.ts,
+  // runner/runner-check.ts): this data root's id, and the names (never the values) of the run-facing environment this
+  // server holds, each said in the store at every start, replacing the last start's.
+  await recordDataRoot(store, data);
+  // Harness modules and recipes this start was given as options (--harness-module, --harness-recipe) are said under the
+  // setting a runner apart reads them from, as an exported setting is: a runner without them would claim their runs and
+  // have no harness to run them on.
+  const startedWith: Record<string, string | undefined> = {
+    [HARNESS_MODULES_SETTING]: options.harnessModules?.length ? options.harnessModules.join(",") : undefined,
+    [HARNESS_RECIPES_SETTING]: options.harnessRecipes?.length ? options.harnessRecipes.join(",") : undefined,
+  };
+  await recordRunEnv(store, runFacingNames((name) => startedWith[name] ?? secret(name) ?? (base as NodeJS.ProcessEnv)[name], Object.keys(base)));
   // Its runners on other hosts (AGENTRUN_RUNNER_HOSTS): a viewer's row naming one of their hosts is dialled there, with
   // the proxy's proof under the seal key (live-reach.ts); any other host is never dialled. A hosted machine a runner in a
   // process of its own made is relayed to that runner's attach listener the same way (dial-relay.ts).
   const reach = liveReachOf(process.env, seal.key);
+  // A runner in a process of its own that relays its dials (dial-relay.ts): one whose attach listener said it is there
+  // within PRESENCE_STALE_MS on the store's clock (liveRelays), at a host this server dials.
+  const relayedNow = async (): Promise<boolean> => (await liveRelays(store.runners)).some((row) => dialHost(row.host, reach) !== undefined);
+  const attachLog = (event: string, fields: Record<string, string>) => (log ? log(logLine(event, fields)) : void process.stderr.write(`agentrun-serve: ${logLine(event, fields)}\n`));
   const attach = createAttachRoutes({
-    store, hub: attachHub, machinesOnly: options.apiOnly === true, runnerApart: options.runnerApart === true,
+    store, hub: attachHub, machinesOnly: options.apiOnly === true, runnerApart: options.runnerApart === true, relayed: relayedNow,
     relay: { runners: store.runners, reach },
+    beside,
     ...(options.attachTiming ? { timing: options.attachTiming } : {}),
-    log: (event, fields) => (log ? log(logLine(event, fields)) : void process.stderr.write(`agentrun-serve: ${logLine(event, fields)}\n`)),
+    log: attachLog,
   });
+  // A paired computer's socket goes where its route says (workspace/paired-route.ts): the tick moves a socket in the
+  // wrong place, every PAIRED_ROUTE_MS. A runner apart takes a route whether this server's own runner runs beside it or
+  // not (its runners on other hosts, AGENTRUN_RUNNER_HOSTS), so the tick runs on both. It does nothing while no computer
+  // is paired; with a runner beside it, nothing past its one read of the routes while no route row is there and no box
+  // is relayed (computer-attach.ts tick).
+  const routeTick = options.apiOnly !== true
+    ? setInterval(() => void attach.tick().catch((error: unknown) => attachLog("computer_route_tick_failed", { error: error instanceof Error ? error.message : String(error) })), PAIRED_ROUTE_MS)
+    : undefined;
+  routeTick?.unref();
   // This server's own key on every environment it reads its secrets from, so a reader opens what this store holds with the
   // key checked against it, never another data directory's that this process booted too (secrets.ts holds one made key).
   const own = (env: NodeJS.ProcessEnv): NodeJS.ProcessEnv => withSealKey(env, seal.text);
@@ -1219,6 +1503,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // call each the server's, and none could be deleted. The keys are sealed rows in the store; load() reads them once here.
   const toolKeys = toolKeysOverStore(store, own(withSecrets(base, "own")), (fields) => (log ? log(logLine("tool_keys", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("tool_keys", fields)}\n`)));
   await toolKeys.load();
+  // The keys each plan-billed harness recipe this server names runs on, saved for that harness alone (harness-keys.ts):
+  // sealed rows in the store, loaded once here and kept in step with every save, so its listing reads them at once.
+  const harnessKeys = new HarnessKeysOverStore(store, seal.key, planRecipesOf(base), data);
+  await harnessKeys.load();
   // A key's check as it is saved (key-check.ts) goes to its provider; under faux only to the tests' fake for that provider,
   // the one its runs are given (monid, Parallel, TypeSafe's Jev), never to the network: one with no fake is not checked.
   const fakes: Record<string, string | undefined> = { monid: options.fauxMonid, parallel: options.fauxParallel, typesafe: options.fauxJev, browserbase: options.fauxBrowserbase, kernel: options.fauxKernel };
@@ -1228,7 +1516,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     return fake ? ((await import(pathToFileURL(resolve(fake)).href)) as { default: typeof fetch }).default : undefined;
   };
   // Aborted as close() begins: a key's check still waiting on its provider stops waiting, and its save stores nothing.
+  // A start that fails aborts it too: what began on it (the host-address read's retry) stops with that start.
   const stopping = new AbortController();
+  stops.push(async () => stopping.abort());
+  /** monid's listing and inspects as this server's saves read them: a burst of saves reads each once (monid.ts monidReads). */
+  const monidShared = monidReads();
   /** The after-start seal by the events' schemas (composio-triggers.ts sealMarked), drained by stop. */
   let schemaSealed: Promise<unknown> = Promise.resolve();
   // The start's sweep of ended runs whose stored cost is unknown (cost-heal.ts), once this server listens; stop drains it.
@@ -1238,25 +1530,42 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const storedKeys: StoredKeys = (name) => toolKeys.value(name);
   // A stored key that does not open is said once at the start, never a refusal to start.
   toolKeys.view();
+  // The API-only profile's MCP origins, normalized as the environment's are (a list passed in code included), and held in
+  // the store for every reader of a saved server there (mcp-api-only-origins.ts); removed when the profile is off.
+  const apiOnlyMcpOrigins = options.apiOnly ? apiOnlyMcpOriginsFrom((options.apiOnlyMcpOrigins ?? []).join(",")) : [];
+  await holdApiOnlyMcpOrigins(store, options.apiOnly === true, apiOnlyMcpOrigins);
+  // Said once at an API-only start: the per_run servers the token saved whose origin is off that list (with the setting
+  // unset, every one, as on an upgrade whose operator has not listed them), whose runs are refused until it lists them.
+  // Their names alone, never an address. Nothing is said when there are none.
+  const offList = options.apiOnly ? await offApiOnlyMcpServers(store) : [];
+  if (offList.length) {
+    const fields = { count: offList.length, servers: offList.join(","), line: `runs that grant these per_run MCP servers the API token saved are refused, nothing sent, until ${API_ONLY_MCP_ORIGINS_ENV} lists their origin` };
+    log ? log(logLine("api_only_mcp_off_list", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("api_only_mcp_off_list", fields)}\n`);
+  }
   const mcpServers = mcpServersOverStore(store, own(withSecrets(base, "own")), VERSION);
   if (options.githubMcpOrigin) mcpServers.appOrigin = options.githubMcpOrigin;
+  if (options.composioMcpOrigin) mcpServers.composioOrigin = options.composioMcpOrigin;
   mcpServers.standIns = options.mcpStandIns === true;
   // The saved MCP servers' metadata (their addresses and the tools they list), a snapshot the checks read in step (which
   // servers are saved, a workflow's grants, the template apply): the server is the one writer of these rows (a save,
   // refresh, sign-in or delete), so the snapshot is refreshed after each of those and reads what is saved now. An agent's
   // save lists its granted servers live and pins their tools on its revision (saveable, mcpListingOf); the runner reads
   // that pin and the credentials from the store at a run's claim (runner/mcp-claim.ts); this server hands a run no MCP
-  // source. Each with what it is (its source and toolkit, mcp-sources.ts), which a template's apply maps its MCP needs on.
-  let mcpMeta = new Map<string, { url: string; auth: string; tools: readonly McpTool[]; source: SourceRecord }>();
+  // source. Each with what it is (its source and toolkit, mcp-sources.ts), which a template's apply maps its MCP needs on,
+  // and the variable a Composio server saved with api_key_env reads its key from (`keyEnv`), which a run's start checks.
+  let mcpMeta = new Map<string, { url: string; auth: string; tools: readonly McpTool[]; source: SourceRecord; keyEnv?: string }>();
   const refreshMcpMeta = async (): Promise<void> => {
-    mcpMeta = new Map(await Promise.all((await listMcpServers(store)).map(async (row) => [row.name, { url: row.url, auth: row.auth, tools: (row.tools as McpTool[]) ?? [], source: await mcpServers.sourceOf(row) }] as const)));
+    mcpMeta = new Map(await Promise.all((await listMcpServers(store)).map(async (row) => {
+      const keyEnv = await mcpServers.keyEnvOf(row);
+      return [row.name, { url: row.url, auth: row.auth, tools: (row.tools as McpTool[]) ?? [], source: await mcpServers.sourceOf(row), ...(keyEnv ? { keyEnv } : {}) }] as const;
+    })));
   };
   await refreshMcpMeta();
   // Each saved server's tools in the harnesses' shape (the registry keeps input_schema; a bound tool takes inputSchema),
   // with whether each can be granted: a known meta tool can't (mcp-meta.ts).
   const mcpTools = (server: string) => {
     const saved = mcpMeta.get(server);
-    return saved && marked(saved.url, { tools: saved.tools.map((tool) => ({ name: tool.name, ...(tool.title ? { title: tool.title } : {}), ...(tool.description ? { description: tool.description } : {}), inputSchema: (tool.input_schema ?? {}) as Record<string, unknown>, ...(tool.annotations ? { annotations: tool.annotations as Record<string, unknown> } : {}) })) }).tools;
+    return saved && marked(saved.url, { tools: saved.tools.map(boundTool) }).tools;
   };
   // The server's tool settings, in the store: capabilities say what they resolve to, again after a PUT. load() reads them
   // once here.
@@ -1277,13 +1586,44 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // where it is signed in. A sign-in, a sign-out or an expiry it sees makes the reading again, as a key's save does.
   const plan = new ChatGPTPlan({ store, sealKey: seal.key, log: (fields) => (log ? log(logLine("chatgpt", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("chatgpt", fields)}\n`)), changed: () => keysChanged() });
   await plan.load();
-  stops.push(async () => plan.close());
+  stops.push(async () => void plan.close());
   // Claude Code's login on this machine (claude-login.ts): env carries where it is while the owner has it on, so
   // claude-agent's model checks see a model without a key. Unset, its switch follows the listen address: there on
   // loopback, off past it. A setting kept where the mode is now off or refused goes first.
   const loginOff = claudeLoginSwitchedOff(base, options.host ?? DEFAULT_HOST);
-  const loginRefused = whyNotOneOwner({ apiOnly: options.apiOnly === true, tokens: tokens.length });
-  await dropRefusedLogin(store.settings, loginOff ?? loginRefused, (line) => (log ? log(logLine("claude_login", { line })) : void process.stderr.write(`agentrun-serve: ${line}\n`)));
+  // The API keys made in the console (api-keys.ts), read once here: this process is the store's one server, so the keys
+  // it holds are the store's. No value is kept, so none joins the server's secrets: a key in a text is cut by its shape
+  // (redact/match.ts).
+  // On two servers the keys are dormant, so a key made on this store before opens nothing there and their tokens are the
+  // ones they were started with: an API-only server (api-only.ts), which has no owner and serves none of the keys'
+  // routes, and one started on its owner's own sign-in (--harness-sign-in), which is one person's. Dormant keys are
+  // still read: the owner of the second sees and revokes them, and they count for the one-owner rule below, so none
+  // waits unseen for a start that takes keys again.
+  const apiKeys = new ApiKeys(store, seal.key, {
+    say: (fields) => (log ? log(logLine("api_key", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("api_key", fields)}\n`)),
+    dormant: options.apiOnly === true || options.harnessSignIn === true,
+  });
+  stops.push(() => apiKeys.close());
+  await apiKeys.load();
+  // A key is one more caller that starts runs, as a second token is: counted each time the login's refusal is asked,
+  // since keys are made and revoked while the server runs, and the login's turn-on takes the keys' turn (oneOwnerDeps).
+  const oneOwner = oneOwnerDeps({ apiOnly: options.apiOnly === true, tokens: tokens.length, keysDormant: options.harnessSignIn === true }, apiKeys);
+  /** Why this server makes no API key now, in words; undefined when it does. The one-owner rule from its other side: a
+   *  recipe on the owner's own sign-in, and Claude Code's login on this machine while it is on, are one person's. */
+  const apiKeysRefused = async (): Promise<string | undefined> =>
+    options.harnessSignIn ? HARNESS_SIGN_IN_REFUSES_API_KEYS : (await claudeLoginSetting(store.settings)) ? LOGIN_REFUSES_API_KEYS : undefined;
+  // Making a key, revoking one and turning the login on each take a turn (ApiKeys.inTurn; the login's is taken in
+  // turnOnClaudeLogin, through oneOwnerDeps' `turn`), one at a time: each decides by what the others left once their writes
+  // landed or were undone, never by a key taken out for a removal that then fails.
+  // The sign-in this server starts, kept for this process (claude-sign-in.ts). Its queue is the one way the login's
+  // setting changes, the drop here included. A server whose user owns no home for the login (homeOf) drops it too.
+  const claudeSignIns = new ClaudeSignIns({ limitMs: options.claudeSignInLimitMs });
+  await dropRefusedLogin(claudeSignIns, store.settings, loginOff ?? oneOwner.refused() ?? homeOf(base).refused, (line) => (log ? log(logLine("claude_login", { line })) : void process.stderr.write(`agentrun-serve: ${line}\n`)));
+  // The status checks' folders a server killed mid-check left in the temporary folder, each with a copy of the account
+  // file (the harness's sweepClaudeStatusFolders): this user's alone, and only once the check has ended by the end it
+  // wrote in its folder, so a check another server on this host runs now stays. Where the mode is there, as status
+  // checks are; a sweep that fails never stops the start.
+  if (loginOff === undefined) await import("@parcha/agentrun-harness-claude").then((claude) => claude.sweepClaudeStatusFolders()).catch(() => []);
   let claudeLogin = loginOf(await claudeLoginSetting(store.settings), data, base);
   // The model gateway saved in the console (model-gateway.ts), its key opened: laid over every reading of env, where the
   // environment names no gateway of its own. Read again at each save or removal (gatewayChanged).
@@ -1309,21 +1649,50 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // The start-time switches as this server was started: its options, else the CLI's variables. mcpLoopback is the
   // option alone, as everywhere it is read here (localInstall): the CLI sets it from AGENTRUN_MCP_ALLOW_LOOPBACK.
   const switched: SwitchedOn = { mcpLoopback: options.mcpLoopback === true, webhookPrivateTargets: switchedOnBy(process.env, options).webhookPrivateTargets };
-  const compose = (runnerShell?: ReadonlySet<string>) => askNeeds(capabilitiesWith(env, maxRuns, offers, learning, needs, settings.get(), boxOffers, toolKeys.refused(), runnerShell, isolation, switched));
+  // harness_keys.kept from the store's snapshot, made again at each key's save or removal (harnessKeysChanged's probe).
+  const compose = (runnerShell?: ReadonlySet<string>) => {
+    const made = askNeeds(capabilitiesWith(env, maxRuns, offers, learning, needs, settings.get(), boxOffers, toolKeys.refused(), runnerShell, isolation, switched));
+    return { ...made, features: { ...made.features, harness_keys: { ...made.features.harness_keys, kept: harnessKeys.unnamed() } } };
+  };
   const recompose = () => void (caps = compose());
   // What the offers held now were made from (offersInputs), and the latest probe: one a later probe overtook is dropped.
   let offersFrom: readonly (string | undefined)[] | undefined;
   let probes = 0;
-  const probe = async (why: string) => {
-    const mine = ++probes;
-    const from = offersInputs(env);
-    const started = performance.now();
-    const next = await harnessOffers(offersEnvOf(env));
-    log?.(logLine("harness_offers", { why, ms: Math.round(performance.now() - started) }));
-    if (mine !== probes) return;
-    [offers, offersFrom] = [next, from];
-    recompose();
+  // What the latest probe is made from, once it has read it, until it lands or fails: none while no probe is out. A
+  // probe that fails never lands; when it is the latest, it clears this as it fails, so no probe is out after it.
+  let probing: readonly (string | undefined)[] | undefined;
+  // The latest probe's turn: it ends as that probe lands or fails, or as a later probe starts and overtakes it, whichever
+  // is first, and never fails. A change that waits for the probe out waits for its turn (keysChanged), so a dropped
+  // probe holds no one up and its failure is no one else's.
+  let turn: Promise<void> = Promise.resolve();
+  let endTurn: () => void = () => {};
+  const probe = (why: string): Promise<void> => {
+    endTurn();
+    turn = new Promise<void>((resolve) => (endTurn = resolve));
+    const probed = probeOffers(why);
+    probed.then(endTurn, endTurn);
+    return probed;
   };
+  const probeOffers = async (why: string) => {
+    const mine = ++probes;
+    probing = undefined;
+    try {
+      // The Ollama listing the offers are made from is read before they are, so the first capabilities do not remake them.
+      if (asksOllama(env)) await ollamaModels(env);
+      const from = offersInputs(env);
+      if (mine === probes) probing = from;
+      const started = performance.now();
+      const next = await harnessOffers(offersEnvOf(env));
+      log?.(logLine("harness_offers", { why, ms: Math.round(performance.now() - started) }));
+      if (mine !== probes) return;
+      [offers, offersFrom] = [next, from];
+      recompose();
+    } finally {
+      if (mine === probes) probing = undefined;
+    }
+  };
+  /** Whether `a` and `b` are the same offers' inputs (offersInputs). */
+  const sameInputs = (a: readonly (string | undefined)[], b: readonly (string | undefined)[]): boolean => a.length === b.length && a.every((value, i) => value === b[i]);
   /** After a save or delete of a key, the one writer of its file: env again, then what reads it. Writes can overlap
    *  (needsOf may wait, and another write lands meanwhile): the latest write's `needs` stands, an earlier one's that
    *  finishes after it is dropped. */
@@ -1336,6 +1705,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     log: (what, error) => log?.(logLine(what, { error: error.message })),
     ...(options.listerIdleMs !== undefined ? { idleMs: options.listerIdleMs } : {}),
   });
+  /** Whether the offers held now were made from `inputs` (offersInputs). */
+  const offersMadeFrom = (inputs: readonly (string | undefined)[]): boolean => offersFrom !== undefined && sameInputs(inputs, offersFrom);
   const keysChanged = async () => {
     // A run's learning, view, list and timeline row are cut of the keys saved now by the run view at read time (it reads
     // serverSecrets live, store-view), and a list builds a listing cut of other keys again (builtOfNow). A failed run's error words
@@ -1345,40 +1716,76 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const mine = ++needsAsked;
     const next = await needsOf(env);
     if (mine === needsAsked) needs = next;
-    const inputs = offersInputs(env);
-    if (offersFrom && inputs.length === offersFrom.length && inputs.every((value, i) => value === offersFrom![i])) recompose();
-    else await probe("key");
+    // A probe still out from other inputs (a turn-on's, after its turn-off) would put back offers made from them as it
+    // lands: a probe of these overtakes it. Only a change starts one, at most one per change, so nothing loops. While the
+    // probe out has read these inputs, a change starts none: with the offers held made from them too it recomposes at
+    // once; with them behind (a tool key saved while a turn-on's probe is out) it waits for that probe's turn, then
+    // decides again from the inputs read then (a later change's, if one landed meanwhile): the probe landed, and it
+    // recomposes; it failed, and the change probes for itself; a later probe overtook it, and the change goes by that
+    // one. So it never answers another request's failure, and never waits on a dropped probe. With no probe out that has
+    // read its inputs (none out, or the latest still reading the Ollama listing), it recomposes when the offers held are
+    // made from these inputs and probes when not; a probe it starts itself fails it if it fails.
+    for (;;) {
+      const inputs = offersInputs(env);
+      const out = probing !== undefined && sameInputs(probing, inputs);
+      if (out && !offersMadeFrom(inputs)) {
+        log?.(logLine("harness_offers_wait", { why: "key" }));
+        await turn;
+        continue;
+      }
+      if (offersMadeFrom(inputs) && (probing === undefined || out)) recompose();
+      else await probe("key");
+      return;
+    }
+  };
+  /** The Ollama here, as capabilities read it: its listing asked again behind the answer once stale (ollamaModels), and
+   *  the reading made again, as a key's save does, once a listing differs from the one the offers were made from. So a
+   *  model pulled, or Ollama started after this server, shows in a later answer with no restart. */
+  const ollamaNow = async () => {
+    if (!asksOllama(env)) return;
+    void ollamaModels(env);
+    if (offersFrom && !offersMadeFrom(offersInputs(env))) await keysChanged();
+  };
+  /** After a harness key is saved or removed (harness-keys.ts): the listings built again, cut of it, and the offers probed
+   *  again, as a recipe is offered once every key it runs on is saved here (harnessKeysSavedHere). No environment changes. */
+  const harnessKeysChanged = async () => {
+    await lister.keysChanged();
+    await probe("harness-key");
   };
   /** After the model gateway is saved or removed in the console: the saved gateway read again, then env, as a key's save. */
   const gatewayChanged = async () => {
     savedGateway = await readSavedGateway(store, seal.key);
     await keysChanged();
   };
-  /** The sign-in as the store holds it now: a runner may have renewed it, or found it expired. A change reads env again. */
-  const planNow = async () => {
-    const was = plan.state;
-    if ((await plan.load()).state !== was) await keysChanged();
-  };
-  /** What Claude Code's login routes use: a turn on or off reads the setting again, then env, as a key's save does. A
-   *  sign-in this server starts opens a browser on its machine, so only where the console is on loopback here. */
+  /** The sign-in as the store holds it now (ChatGPTPlan.refresh): a change reads env again, and so does one this server
+   *  failed to take (changed_failed), until it takes. */
+  const planNow = () => plan.refresh();
+  /** What Claude Code's login routes use: a turn on or off hands over the login it saved, then env is read again, as a
+   *  key's save does. A sign-in this server starts opens a browser on its machine, so only where the console is on
+   *  loopback here; it is kept for this process (claudeSignIns, above), and one still waiting is ended at the stop. */
+  stops.push(async () => claudeSignIns.close());
   const loginDeps = (): ClaudeLoginDeps => ({
+    signIns: claudeSignIns,
     settings: store.settings,
     data,
     env: base,
     pinned: async () => claudeCliIn(installDirOf(data, LOGIN_HARNESS), (await import("@parcha/agentrun-harness-claude")).claudeAgentPlatform()),
-    refused: loginRefused,
+    // `refused` and `turn`: the keys are counted when the refusal is asked (inside the turn-on's turn, the keys' own).
+    ...oneOwner,
     sameMachine: isLoopback(host) && !options.publicUrl,
     claude: () => import("@parcha/agentrun-harness-claude"),
-    changed: async () => {
-      claudeLogin = loginOf(await claudeLoginSetting(store.settings), data, base);
-      await keysChanged();
+    saved: (login) => {
+      claudeLogin = login;
     },
+    changed: keysChanged,
   });
   // The boxes a place may name, read once from the computers runs execute on (place-offers.ts): AGENTRUN_BOXES lists
   // them, docker alone when it is not set; docker by its probe, daytona and modal by their providers' keys, read as a
   // run's claim reads them. Under --faux, `fauxDocker` stands in for Docker's answer, and nothing asks Docker.
   const fauxDocker = Boolean(options.faux) && options.fauxDocker === true;
-  const found = await placeOffers(env, { keyOf: keyReader(store, seal.key, env), fauxDocker });
+  // A faux server's probe is on a host, as its Docker paths are below, so a test reads the same words in a container;
+  // `probeContainer` sets it for a test of a real one.
+  const found = await placeOffers(env, { keyOf: keyReader(store, seal.key, env), fauxDocker, ...(options.probeContainer ? { container: options.probeContainer } : options.faux ? { container: { inside: false } } : {}) });
   const docker = found.some((offer) => offer.id === "docker" && offer.available);
   // Under --faux, the mountinfo a test gives (fauxMountinfo, or FAUX_MOUNTINFO_ENV in the process's own environment, which
   // `env` leaves out: a server under test in a container names its own /proc/self/mountinfo there); with none, a faux
@@ -1398,17 +1805,47 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // From a container, a Docker computer keeps this server's allow-list only knowing the Docker host's own addresses: the
   // union of the read through the socket and AGENTRUN_DOCKER_HOST_ADDRESSES (docker-host-addresses.ts), the same read the
   // runner beside this server takes. Said at the start with what was found; with none, Docker isn't offered, in words.
+  // A read that failed with none known is read again in the background (retryHostAddresses) until one answers and the
+  // helper containers the failed reads left are gone, or this server stops: the boxes are made again from the answer and
+  // said again, so Docker is offered with no restart. Every reader of boxOffers reads it when it is called; capabilities
+  // are composed again. One that failed with the operator's addresses known changes no box: the retry only removes the
+  // containers it left. The close cuts a read in flight (its client killed) and stop() awaits the retry last, so the
+  // read's container is removed within the stop's deadline (docker-host-addresses.ts REMOVE_MS).
+  const boxesOf = (hostAddresses: { addresses: readonly string[]; why?: string } | undefined): BoxOffer[] => {
+    if (hostAddresses) log?.(logLine("docker_host_addresses", { addresses: hostAddresses.addresses.join(",") || "none", ...(hostAddresses.why ? { read: hostAddresses.why } : {}) }));
+    const dockerRefused = dockerElsewhere ?? (hostAddresses && hostAddresses.addresses.length === 0 ? noHostAddresses(hostAddresses.why ?? "the read through Docker's socket found none") : undefined);
+    // Each box with what it reaches (place-offers.ts withNetworks).
+    const offers = withNetworks(found, boxAllow, { ...(dockerRefused !== undefined ? { refused: dockerRefused } : {}), ...(hostAddresses ? { hostAddresses: hostAddresses.addresses } : {}), faux: fauxDocker });
+    log?.(logLine("boxes", boxesLog(offers, enabledBoxes(env))));
+    return offers;
+  };
   const hostAddresses = dockerElsewhere === undefined && "paths" in dockerPaths && boxAllow !== "none" ? unionOf(await hostAddressesOnce(env), dockerHostAddressesOf(env)) : undefined;
-  if (hostAddresses) log?.(logLine("docker_host_addresses", { addresses: hostAddresses.addresses.join(",") || "none", ...(hostAddresses.why ? { read: hostAddresses.why } : {}) }));
-  const dockerRefused = dockerElsewhere ?? (hostAddresses && hostAddresses.addresses.length === 0 ? noHostAddresses(hostAddresses.why ?? "the read through Docker's socket found none") : undefined);
-  // Each box with what it reaches (place-offers.ts withNetworks).
-  const boxOffers: BoxOffer[] = withNetworks(found, boxAllow, { ...(dockerRefused !== undefined ? { refused: dockerRefused } : {}), ...(hostAddresses ? { hostAddresses: hostAddresses.addresses } : {}), faux: fauxDocker });
-  log?.(logLine("boxes", boxesLog(boxOffers, enabledBoxes(env))));
+  let boxOffers = boxesOf(hostAddresses);
+  const hostRetried: Promise<void> =
+    hostAddresses === undefined || hostAddresses.why === undefined
+      ? Promise.resolve()
+      : retryHostAddresses({
+          env,
+          ...(hostAddresses.addresses.length === 0
+            ? {
+                read: () => hostAddressesOnce(env, stopping.signal),
+                found: (read: HostRead) => {
+                  boxOffers = boxesOf(unionOf(read, dockerHostAddressesOf(env)));
+                  // Capabilities are first composed at the start's probe, below; before it, there is nothing to compose again.
+                  if (caps) recompose();
+                },
+              }
+            : {}),
+          signal: stopping.signal,
+          ...(options.hostReadWait ? { wait: options.hostReadWait } : {}),
+        }).catch(() => undefined);
   const adapters = options.triggerAdapters ?? TRIGGER_ADAPTERS;
   const openapi = openapiDocument((operationId) => ROUTES.find((r) => r.name === operationId)?.capability, adapters);
   const sealKey = seal.key;
   // SDK runs' credentials are signed with a key from the seal key, never an API token: a rotation leaves them working.
   const sdkSecret = sdkRunSecret(sealKey);
+  // An API-only server's viewer credentials: viewer-credential.ts.
+  const viewerKey = viewerCredentialKey(sealKey);
   // Each run's viewers are asked under that run's key (live-reach.ts reachForRun).
   const answers = (runId: string) => (handover: LiveHandover): Promise<boolean> => viewerAnswers(handover, reachForRun(reach, runId));
   // Settings → Computers and the owner's Archil settings, over the one store (computers.ts, archil-routes.ts), built once
@@ -1450,11 +1887,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // A provider's key set where the server starts is one of its secrets, held off process.env (secrets.ts): read by name
     // from what the server was started with, as computerReady below reads it.
     store, sealKey, tools: kindTools, mode: folderModeOf(store, process.env), env: withSecrets(process.env, "own"),
-    paired: { rows: () => store.pairedComputers.list(), viewOf: (row, serves) => pairedView(row, attachHub, serves, options.runnerApart === true) },
+    // Each with its route (who holds it, on which runner, and why a route was refused), and online while relayed.
+    paired: { rows: () => store.pairedComputers.list(), viewOf: async (row, serves, runsRefused) => pairedView(row, attachHub, serves, runsRefused, await readRoute(store.settings, row.id), attach.relayedTo(row.id) !== undefined) },
     runnerApart: options.runnerApart === true,
-    // A runner in a process of its own that relays its dials (dial-relay.ts): one whose attach listener said it is there
-    // within PRESENCE_STALE_MS on the store's clock (liveRelays), at a host this server dials.
-    relayed: async () => (await liveRelays(store.runners)).some((row) => dialHost(row.host, reach) !== undefined),
+    relayed: relayedNow,
     ...(options.faux
       // --faux's providers stand in for every vendor's, a local one's daemon included.
       ? { kinds: fauxOf().kinds, factories: fauxOf().factories, keyTable: fauxOf().keyTable }
@@ -1480,11 +1916,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   /** A key as the runner reads it: the secrets this process was started with (withSecrets "own"), else the saved one. */
   const runnerKeys = () => keyReader(store, sealKey, own(withSecrets(process.env, "own")));
   // A paired computer is one more provider of the registry (workspace/attached-computers.ts), ready while its driver is
-  // attached to this process's hub.
+  // attached: to this process's hub, or relayed to the runner that holds a run of it.
   const computerReady = async (setting: { kind: string; provider?: string; image?: string; gpu?: { type: string; count: number } }) => {
     const paired = await store.pairedComputers.list();
     const row = paired.find((one) => one.id === setting.provider);
-    const offline = row ? pairedRefusal(row, attachHub) : undefined;
+    const offline = row ? pairedRefusal(row, { online: (id) => attachHub.online(id) || attach.relayedTo(id) !== undefined }) : undefined;
     if (offline) return { refused: offline };
     return computerReadiness(setting, await modeNow(), withPaired(claimRegistry(), paired), runnerKeys(), dockerAnswers, boxAllow, (provider) => (Object.hasOwn(hostWhy, provider) ? hostWhy[provider] : undefined));
   };
@@ -1496,9 +1932,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   /** The shell this server can give a template's agent now (templates.ts pickComputer's `shell`), by the rules a run
    *  has it by (shellOf): Archil's serverless exec on the runner in Mode 2 (bash alone); else the box a new agent is saved
    *  with (Docker), where it answers now (computerReady asks the daemon, not the start's offers: a Docker stopped since
-   *  is no shell), whose shell runs the shell tools; else none, and why. */
-  const shellHere = async (): Promise<ShellHere> => {
-    if ((await shellOf({ kind: "none" })) === "local") return { computer: { kind: "none" }, tools: [...shellTools("local")], words: "Archil's serverless exec" };
+   *  is no shell), whose shell runs the shell tools; else none, and why. A package that needs programs (`sandbox`) asks
+   *  for a sandbox alone, whose box a run checks for them: Archil's exec is none, so in Mode 2 it is told why no sandbox
+   *  answers (the Docker box can't mount Archil's workspaces), never given the exec. */
+  const shellHere = async (wants: { sandbox?: boolean } = {}): Promise<ShellHere> => {
+    const exec = (await shellOf({ kind: "none" })) === "local";
+    if (exec && !wants.sandbox) return { computer: { kind: "none" }, tools: [...shellTools("local")], words: "Archil's serverless exec" };
     const fresh = newAgentPlace(boxOffers);
     let why = "why" in fresh ? fresh.why : "it is not set up";
     if ("place" in fresh && fresh.place.mode === "sandbox") {
@@ -1507,14 +1946,17 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       if ("refused" in ready) why = ready.refused;
       else if ((await shellOf(computer)) === "computer") return { computer, tools: [...shellTools("computer")], words: `the ${fresh.place.box} sandbox` };
     }
+    if (exec) return { none: `no sandbox answers here: Archil's serverless exec is no sandbox, and the docker box is unavailable here (${why})` };
     return { none: `this server has no shell to give an agent now: Archil is off (Settings → Workspace), and the docker box is unavailable here (${why})` };
   };
   /** Each package's computer list read against this server now, as a listing shows it (`computer_here`): what an apply
    *  here would pick (pickComputer), the shell asked for once for them all. */
   const computerHere = async (packages: readonly Package[]) => {
-    const here = packages.some((one) => one.computer) ? await shellHere() : undefined;
+    const here = packages.some((one) => one.computer && !one.needs) ? await shellHere() : undefined;
+    const sandbox = packages.some((one) => one.computer && one.needs) ? await shellHere({ sandbox: true }) : undefined;
     return (pkg: Package) => {
-      const pick = here && pickComputer(pkg, here);
+      const shell = pkg.needs ? sandbox : here;
+      const pick = shell && pickComputer(pkg, shell);
       if (!pick) return null;
       if ("refused" in pick) return { entry: null, computer: null, shell: null, dropped: [], note: pick.refused };
       return { entry: pick.entry, computer: pick.computer, shell: pick.shell, dropped: pick.dropped, note: pick.note };
@@ -1527,22 +1969,35 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  list reads it, so a tool of bash's family the run would not have shows unavailable (tool-plane.ts shellUnavailable). */
   const shellOfRevision = async (revision: Revision): Promise<ShellPlace> => {
     const body = revision.body as { computer?: ComputerSetting; place?: Place; tools?: readonly unknown[] };
-    return shellOf(body.computer ?? computerOfPlace(resolvePlace(body.place, fallbackPlace(revision.kind, revision.kind === "agentic" ? (body.tools ?? []) : []))));
+    return shellOf(settingOfDefinition(body)?.computer ?? computerOfPlace(fallbackPlace(revision.kind, revision.kind === "agentic" ? (body.tools ?? []) : [])));
   };
-  /** A run's computer on its read: its revision's computer setting, else the one its place says; absent for none. */
-  const runComputerOf = (runId: string, view: Record<string, unknown>): Promise<Record<string, unknown>> => runComputerRead(store, runId, view, { context: ctx });
   /** The run read's costs (A8, store-reads/learning.ts runAllInOverStore): `cost.usd` its own spend, the
    *  job's (its compile turn is learning's), null while unknown; what learning spent for it
-   *  (`learning_usd`) and the two (`all_in_usd`). A cost known only as a bound keeps its bound, and all-in is unknown.
+   *  (`learning_usd`) and the two (`all_in_usd`), with what makes up `learning_usd` (`compile_usd`, `followup_usd`,
+   *  `shadow_usd`, `share_usd`): the figures the agent's cost page gives the run (learn/ledger.ts figuresOf, one formula).
+   *  A cost known only as a bound keeps its bound, and all-in is unknown.
    *  `tools_usd`: the part of `usd` its paid tool calls cost (store-view.ts toolsUsdOverStore). */
   const allInViewOf = async (runId: string, view: Record<string, unknown>): Promise<Record<string, unknown>> => {
     const cost = (view.cost ?? {}) as { usd?: unknown; upper_bound?: unknown };
     const own = typeof cost.usd === "number" && cost.upper_bound !== true ? cost.usd : null;
-    const all = await runAllInOverStore(store, runId, own);
+    // A purge gate that can't be asked (its store read of a writer's row fails) leaves this read without its answer, never
+    // a 500: the revision ledger its `learning_usd` and `all_in_usd` share is read from takes the champion with no record
+    // skipped (as before the purge), so a revision a purged run wrote may be the one it counts as serving, for this read
+    // alone. Figures only: no text is read or shown. Every write that asks the gate still fails closed (decideCheck
+    // throws, so no promote lands; recordPromotion trims nothing). Such a read says so: `cost.degraded`.
+    let degraded = false;
+    const all = await runAllInOverStore(store, runId, own, (agentId, records) => refusedFor(agentId, records).catch((error: unknown): Refused => {
+      degraded = true;
+      const line = `learning: run ${runId}: its costs were read without the purge gate's answer: ${error instanceof Error ? error.message : String(error)}`;
+      if (log) log(logLine("learning", { line }));
+      else process.stderr.write(`agentrun-serve: ${line}\n`);
+      return Object.assign(() => false, { unread: true });
+    }));
     if (!all) return {};
-    // A bound stays the view's bound. Otherwise usd is the job's (runCostOf's cost_usd, the same figure the cost series
+    // A bound stays the view's bound. Otherwise usd is the job's (its ledger row's, the same figure the cost series
     // gives): known as it answered even when its compile turn's cost is not; the row's while the run is at work.
-    return { cost: { ...cost, ...(cost.upper_bound === true ? {} : { usd: all.usd }), tools_usd: await toolsUsdOverStore(store, runId), learning_usd: all.learning_usd, all_in_usd: all.all_in_usd } };
+    const { learning_usd, all_in_usd, compile_usd, followup_usd, shadow_usd, share_usd } = all;
+    return { cost: { ...cost, ...(cost.upper_bound === true ? {} : { usd: all.usd }), tools_usd: await toolsUsdOverStore(store, runId), learning_usd, all_in_usd, compile_usd, followup_usd, shadow_usd, share_usd, ...(degraded ? { degraded: true } : {}) } };
   };
   // The agents accessor the routes call, over the one store (module A): the agents-store functions, with the run-row reads
   // the server makes (store-reads) under `.store`. `.request` is a thin pass-through — the store runs its own transactions,
@@ -1553,7 +2008,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     list: (options: { archived?: boolean } = {}) => listAgents(store, options),
     create: (body: DefinitionBody, check?: SaveCheck, fresh?: { place: RevisionPlace; tools: readonly string[] }, template?: TemplatePackage) =>
       createAgent(store, body, { ...(check ? { check } : {}), ...(fresh ? { fresh } : {}), ...(template ? { template } : {}) }),
-    commit: (entry: AgentEntry, body: DefinitionBody, options: { ifCurrent?: string | null; check?: SaveCheck; contract?: boolean; template?: TemplatePackage; fromPackage?: boolean } = {}) => commitAgent(store, entry, body, options),
+    commit: (entry: AgentEntry, body: DefinitionBody, options: { ifCurrent?: string | null; check?: SaveCheck; prepare?: SavePrepare; contract?: boolean; template?: TemplatePackage; fromPackage?: boolean; inTurn?: InTurn } = {}) => commitAgent(store, entry, body, options),
     revisions: (id: string) => agentRevisions(store, id),
     revision: (agentId: string, revisionId: string) => agentRevision(store, agentId, revisionId),
     setCurrent: (entry: AgentEntry, revisionId: string) => setCurrentRevision(store, entry, revisionId),
@@ -1572,6 +2027,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   secretStores.add("server", () => tokens.map((entry) => entry.token));
   // The model gateway's key saved in the console (model-gateway.ts): cut from everything shown, as every saved key is.
   secretStores.add("model-gateway", () => (savedGateway?.key ? [savedGateway.key] : []));
+  // Each harness key saved, and each replaced or removed one still kept sealed (harness-keys.ts RETIRED_KEPT): a timeline
+  // written while one was live stays cut after it changes.
+  secretStores.add("harness-keys", () => harnessKeys.values());
   // The email account's password (email/account.ts), and each one saved since this server started: cut from everything
   // it shows, so a tool's error or a model's text that ever echoed it shows it nowhere.
   const emailPasswords = new Set<string>();
@@ -1631,6 +2089,30 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const row = await store.runs.get(runId);
     if (!row || FINAL_STATES.includes(row.state)) await uploads.release(runId);
   }
+  // Mode 2 (uploads-archil.ts): the uploads on this server's own Archil disk, and each run's placed in its folder at its
+  // start, so its runner reads no upload. Mode 1 keeps them in this data directory (uploads above), as before.
+  const archilFiles = archilUploads({ store, sealKey, env: withSecrets(process.env, "own"), ...(options.archilControl ? { control: options.archilControl } : {}) });
+  /** Where the files routes find uploads now: the uploads disk in Mode 2, else this data directory. `make`: an upload,
+   *  which makes the uploads disk when there is none. */
+  const uploadsHere = async (make = false): Promise<UploadStore> => (await archilFiles.here(make)) ?? uploads;
+  const uploadRetention = uploadRetentionMs(options.uploadRetention ?? process.env[UPLOAD_RETENTION_ENV]);
+  if (uploadRetention !== undefined) {
+    // An uploaded file no run names, older than the retention, is deleted from the uploads disk (Mode 2 only): once an
+    // hour, each sweep after the last one ends.
+    let sweeping: Promise<void> = Promise.resolve();
+    const sweepUploads = () => {
+      sweeping = sweeping.then(async () => {
+        const removed = await archilFiles.sweep(uploadRetention, runKeepsUploads(store));
+        if (removed.length) log?.(logLine("uploads_expired", { removed: removed.length }));
+      }).catch((error: Error) => void log?.(logLine("uploads_sweep_failed", { why: String(error?.message ?? error).slice(0, 300) })));
+    };
+    const uploadsTimer = setInterval(sweepUploads, UPLOAD_SWEEP_EVERY_MS);
+    uploadsTimer.unref();
+    stops.push(async () => {
+      clearInterval(uploadsTimer);
+      await sweeping;
+    });
+  }
   const documents = options.documents ?? process.env[DOCUMENTS_ENV];
   if (documents !== undefined && !(await stat(documents).then((info) => info.isDirectory(), () => false))) throw new Error(`the documents directory ${documents} is not a directory`);
   // The CLI harnesses, each installed on first use into the data's harnesses directory (harness-install.ts): one install
@@ -1680,7 +2162,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // no box relay here — a runner (its own process, sharing only this store) claims and runs every run. The leaves a start
   // needs that live in this request layer are gathered once as StartDeps; the run's model is resolved once, now (the runner
   // reads launch.model alone).
-  const modelOf = (_entry: AgentEntry, revision: Revision) => nativeOf(revision.body) ? Promise.resolve(undefined) : runModelRef(env, revision);
+  const modelOf = (_entry: AgentEntry, revision: Revision) => (nativeOf(revision.body) || cliLearningOf(revision.body)) ? Promise.resolve(undefined) : runModelRef(env, revision);
   // Why no runner here can take a run, while every runner there refused to claim (runner/presence.ts): read from the
   // store at each start, capabilities and health answer, so a runner in another process (or on another host over one
   // Postgres) counts as the one beside this server does, and a runner that can claim, once there, clears it at once.
@@ -1701,7 +2183,56 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   refusedTimer.unref();
   // The runner beside this server, when its run isolation was refused (cli.ts): its word, kept in this store until the stop.
   let refusedBeside: Presence | undefined;
+  const sourceWorkspaces = { data, sealKey, env: withSecrets(process.env, "own"), ...(options.archilControl ? { control: options.archilControl } : {}) };
+  const localSources = new LocalSources(store, { secrets: () => [...serverSecrets(), sdkSecret, ...tokens.map(entry => entry.token)] });
+  const sources = sourceService(store, sourceWorkspaces, async (entry, snapshot) => {
+    const prepared = await prepareSource(snapshot, destinationPreparation(store, entry.agent.id, {
+      env: () => env, boxes: () => boxOffers, check: revision => saveable(revision),
+      // Readiness needs a successful probe, not capabilities' display fallback after a failed helper check.
+      // A different runner repeats this prerequisite at claim, before its ownership helper changes any bytes/modes.
+      projectExecution: async () => ({ isolation: runIsolationName(await runIsolationOf(base, 1, () => {})),
+        storage: await loadArchilSettings(store, sourceWorkspaces.env) ? "archil" : "local" }),
+    }));
+    const prior = entry.revision?.body as AgenticBody | undefined;
+    // Main's corrections/workflow setting remains the owner's choice across the ownership cutover.
+    return prior?.learning === undefined ? prepared : { ...prepared, revision: { ...prepared.revision,
+      body: { ...(prepared.revision.body as AgenticBody), learning: prior.learning } } };
+  }, async (entry, snapshot, prepared) => {
+    const record = await sources.sync.get(entry.agent.id);
+    if (!record) throw new ApiError("precondition_failed", "The source sync connection changed during preparation.");
+    const revision = { ...prepared.revision, body: { ...(prepared.revision.body as AgenticBody), sourceSync: {
+      id: record.id, snapshot: snapshot.digest, project: snapshot.digest, configuration: configurationDigest(prepared.revision.body),
+    } } };
+    // This private, unadmitted probe verifies the actual destination's modes, Git and assets before ownership moves.
+    const placed = await sourceProjects.place({ agentId: entry.agent.id, runId: uuidv7(), revision,
+      launch: { input: "", title: "Source preparation", place: resolvePlace((prepared.revision.body as AgenticBody).place as Place | undefined, { mode: "runner" }) } });
+    await placed?.undo();
+  }, agentId => localSources.authorize(agentId));
+  const sourceProjects = projectPlacement({ snapshots: agentId => sourceSnapshotReader(store, agentId, sourceWorkspaces),
+    hold: ({ agentId }) => beginSourceIO(store, agentId, "placement"),
+    destination: target => openRunPlacement(store, target, sourceWorkspaces),
+    placeUploads: async ({ runId, launch, workspace }) => {
+      const { files, bytesOf } = await uploads.heldFiles(runId, launch.files ?? []);
+      await uploads.copyInto(workspace, files, bytesOf);
+      await uploads.release(runId);
+    } });
+  const localSourcePublisher = localSources.publisher(sources.sync, { agentWrite: (id, call) => agentWrite(id, call) });
+  let localSourceSweep: Promise<void> = Promise.resolve(), localSourceBusy = false;
+  const sweepLocalSources = () => {
+    if (localSourceBusy || stopping.signal.aborted) return localSourceSweep;
+    localSourceBusy = true;
+    localSourceSweep = localSourcePublisher.tick(stopping.signal).then(() => undefined).catch(() => {
+      if (!stopping.signal.aborted) process.stderr.write("agentrun-serve: source setup sync could not finish; the last complete snapshot is retained. Check the source status and connection.\n");
+    }).finally(() => { localSourceBusy = false; });
+    return localSourceSweep;
+  };
+  const localSourceTimer = setInterval(() => void sweepLocalSources(), 30_000);
+  localSourceTimer.unref();
   const startDeps: StartDeps = {
+    project: { ...sourceProjects, place: async given => {
+      try { return await sourceProjects.place(given); }
+      catch (error) { if (error instanceof SnapshotError) throw new ApiError("agent_not_runnable", error.message); throw error; }
+    } },
     // A start while every runner here refused to claim is refused in their words (runner/presence.ts).
     runnersRefused: refusedNow,
     runBodyIssues,
@@ -1714,8 +2245,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     told: (error) => told(error),
     runnable,
     pinFirst: (revision) => pinFirst(revision),
-    readyFiles: (ids) => uploads.readyFiles(ids as string[]),
-    files: { hold: (runId, ids) => uploads.hold(runId, ids), release: (runId) => uploads.release(runId) },
+    readyFiles: async (ids) => (await uploadsHere()).readyFiles(ids as string[]),
+    files: { hold: (runId, ids) => uploads.hold(runId, ids), release: (runId) => uploads.release(runId), place: (runId, agentId, launch) => archilFiles.place(runId, agentId, launch) },
     fallbackPlace: (kind, tools) => fallbackPlace(kind, tools),
     // The run's Archil disk for its launch record (run-launch.ts archilDisk): the body's, else its agent's when it has one.
     // A disk the body names is read at Archil once, before the run is made (archil-routes.ts checkLaunchDisk): one that is
@@ -1772,6 +2303,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     return [...serverSecrets(), ...pointers];
   };
   const learningShown = async (agentId: string) => secretsShown(await learningValues(agentId));
+  // What championOf skips of the agent's promotion records (purged-workflow.ts refusedIn): a champion the purge gate
+  // refuses at its commit, so the views name the champion a run's claim serves. A folder whose end() throws after the ask
+  // is logged, never the read's 500.
+  const refusedFor = (agentId: string, records: readonly PromotionRecord[]): Promise<Refused> =>
+    refusedIn(() => learningFolderOf(data, agentId), store, (line) => (log ? log(logLine("learning", { line })) : void process.stderr.write(`agentrun-serve: ${line}\n`)))(records);
   // The agent's audit ledger on its learning folder's main (learn/audit.ts), oldest first.
   const auditsOfAgent = async (agentId: string) => {
     const { workspace, end } = learningFolderOf(data, agentId);
@@ -1783,11 +2319,16 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   };
   // What a run held for its owner's OK reads as it stands on its agent's learning folder's main (statusesOf).
   const statuses = (agentId: string) => statusesOf(data, agentId);
-  const viewDepsFor = (origin: string): ViewDeps => ({ origin, serverSecrets, signIns, keyEnv: () => withSavedGateway(own(withSecrets(process.env, "all", storedKeys)), savedGateway), statuses });
+  const viewDepsFor = (origin: string): ViewDeps => ({ origin, serverSecrets, signIns, sealKey, keyEnv: () => withSavedGateway(own(withSecrets(process.env, "all", storedKeys)), savedGateway), statuses });
   // A run read as a whole (its own read, its archive) lists its recordings too, from its recordings folder on this machine
   // (run-recordings.ts), where the runner beside it wrote them; every other read of the view opens no file.
   const recordings = (agentId: string, runId: string, endedAt: number | null) => recordingsOf(recordingsFolder(data, agentId, runId), endedAt);
   const runReadDepsFor = (origin: string): ViewDeps => ({ ...viewDepsFor(origin), recordings });
+  /** A run as GET /v2/runs/{run_id} answers it, its links at `origin`. */
+  const runRead = async (runId: string, origin: string): Promise<Record<string, unknown> | undefined> => {
+    const view = await viewOverStore(store, runId, runReadDepsFor(origin));
+    return view && { ...view, ...(await runComputerRead(store, runId, view, { context: ctx })), ...(await allInViewOf(runId, view)) };
+  };
   const ownOriginOf = (): string => options.publicUrl ?? url;
   // The run read routes (a run's files, its browser state, its workflow graph) over the one store (run-reads-over-store):
   // a run's files through the server's read-only Workspace of its folder (serverRunWorkspace, no runner claim), its view
@@ -1795,7 +2336,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // (liveViewerLink, the one the runner's browser tool wrote under its claim), opened with the server's seal key. The
   // timeline route keeps its own stub (store-reads journal + SSE) until E2c's timeline lands.
   const runReadsDeps: RunReadsDeps = {
-    runWorkspace: (_store, runId) => serverRunWorkspace(store, runId, { data, sealKey, env: withSecrets(process.env, "own") }),
+    runWorkspace: (_store, runId) => serverRunWorkspace(store, runId, { data, sealKey, env: withSecrets(process.env, "own"), ...(options.archilControl?.makeDisk ? { makeDisk: options.archilControl.makeDisk } : {}) }),
     recordings: async (_store, runId) => {
       const run = await store.runs.get(runId);
       return run ? recordingsWorkspace(recordingsFolder(data, run.agentId, runId)) : null;
@@ -1803,14 +2344,15 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     env,
     runFacts: (_store, runId) => factsOverStore(store, runId, viewDepsFor(ownOriginOf())),
     withheld: (_store, runId) => withheldOverStore(store, runId, viewDepsFor(ownOriginOf())),
-    cutValues: (_store, runId) => runCutValues({ serverSecrets, signIns }, store, runId),
+    cutValues: (_store, runId) => runCutValues({ serverSecrets, signIns, sealKey }, store, runId),
     context: ctx,
+    sealKey,
     liveViewer: (runId: string) => liveViewerLink(store, sealKey, runId, answers(runId)),
   };
   // The run timeline reader over the store (run-reads-over-store runTimelines): one change-numbered RowLog per run, synced
   // from its journal (store-reads) on each read, its view (viewOverStore) for status/state/cost and whether it is final.
   // The route frames the SSE around its `page`, which long-polls the journal, byte-identical to the old live run's page.
-  const servedTimelineDeps: ServedTimelineDeps = { serverSecrets, signIns, keyEnv: () => withSavedGateway(own(withSecrets(process.env, "all", storedKeys)), savedGateway), statuses };
+  const servedTimelineDeps: ServedTimelineDeps = { serverSecrets, signIns, sealKey, keyEnv: () => withSavedGateway(own(withSecrets(process.env, "all", storedKeys)), savedGateway), statuses };
   const timelines = runTimelines({
     context: ctx,
     // The run's rows as served (run-timeline-served.ts), by its one cut (run-cut.ts, read for each page: a secret rotated
@@ -1820,13 +2362,36 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // from its journal, which keeps what the run said whole.
     timelineRows: (forStore, runId, context, calls) => servedTimelineRows(servedTimelineDeps, forStore, runId, context, calls),
     runView: (forStore, runId) => viewOverStore(forStore, runId, viewDepsFor(ownOriginOf())),
+    // A live run's model requests sent and not answered (in-flight.ts), from its booking's records in its journal.
+    inFlight: async (forStore, runId, context) => modelsInFlight(await runEntries(forStore, runId, context)),
   });
+  /** `text` as a message to run `runId` is written: cut of `handed` (what the message itself hands) and of what the run
+   *  holds now (its turn's end erases those, and a read after it could no longer cut them). A run whose seal doesn't
+   *  open here (its seal key changed or is missing, or what was sealed is damaged or lost) takes no message: 409
+   *  not_continuable, reason withheld (WITHHELD_MESSAGE), and nothing is written, since what it can't read it can't
+   *  cut, and a message written uncut would show those values once the run's end lets its reads go uncut-withheld.
+   *  Read inside the turn that writes the message (runWrite), never before it: a message written first in that turn
+   *  (one that hands a new key) is in the seal read here, so a message that says that key without handing it is cut of
+   *  it too. Both writers of a message read it: a person's (sendMessage) and a trigger's (trigger-targets.ts
+   *  message_run, which skips with those words). */
+  async function cutHeld(runId: string, text: string, handed: readonly string[] = []): Promise<string> {
+    const held = launchValuesOf(sealKey, runId, (await store.runs.launch(runId)).sealed);
+    if (held === "unreadable") throw new ApiError("not_continuable", WITHHELD_MESSAGE, { details: { reason: "withheld" } });
+    return cutHanded(text, [...handed, ...held]);
+  }
   const triggerDeps: TriggerTargetDeps = {
     ...(options.beforeSubmit ? { beforeSubmit: options.beforeSubmit } : {}),
     start: startDeps,
     getAgent: async (agentId: string) => (await getAgent(store, agentId)) ?? undefined,
     needAgent,
     momentOf: (runId: string) => momentOverStore(store, runId, viewDepsFor(ownOriginOf())),
+    // A trigger never messages a run on a plan-billed recipe whose keys are not all saved: its turn would run on its
+    // owner's own sign-in. With them saved, the turn runs on them (harness-keys.ts), and a claim that opens not every one
+    // is refused (cli-run-spec.ts).
+    planRecipe: (harness: string) => recipeHarness(base, harness) === "plan" && !harnessKeysSavedHere(data, harness),
+    // Read when a firing's message is sent (declared below, with the delete turn).
+    runWrite: (agentId, runId, work) => runWrite(agentId, runId, work),
+    cutHeld: (runId, text) => cutHeld(runId, text),
     runStatus: async (runId: string) => ((await viewOverStore(store, runId, viewDepsFor(ownOriginOf())))?.status as string | undefined) ?? null,
     completedOutput: async (runId: string) => {
       const view = await viewOverStore(store, runId, viewDepsFor(ownOriginOf()));
@@ -1836,16 +2401,30 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       const carried = typeof view.revision === "string" ? carriedFields(((await store.agents.revision(view.revision))?.body as { outputSchema?: unknown } | undefined)?.outputSchema) : undefined;
       return { output: (view.result as { output?: unknown } | null)?.output ?? null, endedAt: (view.ended_at as string | null | undefined) ?? null, ...(carried ? { carried } : {}) };
     },
+    // Read as the server's environment stands now (a saved key changes it).
+    ...(options.runKeys ? { keysOwed: (revision: object) => keysOwed(revision, env, []) } : {}),
+    hooked: options.launchHook !== undefined,
   };
   const targets = triggerTargets(store, triggerDeps);
   // Every presented token is checked here, against every token the server takes, in constant time (api-token.ts). The id
   // of the one that opened a request is kept with it for its log line (tokenUsed), never the secret.
   const bearerOf = bearerCheck(tokens);
   const tokenUsed = new WeakMap<IncomingMessage, string>();
-  const bearer = (header: string | undefined, req?: IncomingMessage): boolean => {
+  /** Whether `header` carries a token this server was started with: the one credential that stands in for the setup
+   *  code (ownerRoute). A key made in the console never does. */
+  const startToken = (header: string | undefined, req?: IncomingMessage): boolean => {
     const id = bearerOf(header);
     if (id !== undefined && req) tokenUsed.set(req, id);
     return id !== undefined;
+  };
+  // A key made in the console (api-keys.ts) opens what a token opens, but for setup. Its id is kept for the log line too.
+  const keyUsed = new WeakMap<IncomingMessage, string>();
+  const bearer = (header: string | undefined, req?: IncomingMessage): boolean => {
+    // Both are checked whatever the first says, so the time taken does not say which kind was presented.
+    const started = startToken(header, req);
+    const key = apiKeys.used(header);
+    if (key !== undefined && req) keyUsed.set(req, key);
+    return started || key !== undefined;
   };
   // Answered keys are kept in the data directory for the retention capabilities state, and written before the answer
   // is sent, so a client that retries after a restart gets the first answer back.
@@ -1939,13 +2518,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // --faux-github (with --faux only): the fake App is connected afresh at each start, its API in this process.
   const was = options.faux && options.fauxGitHub ? github.view() : undefined;
   if (was && was.slug !== FAUX_GITHUB.slug) throw new Error(`--faux-github connects a fake GitHub App, and this data directory has the GitHub App ${was.slug} connected: use a scratch data directory.`);
-  const fauxGitHub = options.faux && options.fauxGitHub ? await startFauxGitHub() : undefined;
+  // Its repository as a bare git repository beside the data, so a run's checkout of it (agent-scout's) stays on this machine.
+  const fauxGitHub = options.faux && options.fauxGitHub ? await startFauxGitHub({ webDir: join(data, "faux-github-web") }) : undefined;
   if (fauxGitHub) {
     stops.push(() => fauxGitHub.close());
     if (was) await github.remove();
     await github.save(fauxGitHub.app);
     await github.setInstallations([{ id: FAUX_GITHUB.installation, account: FAUX_GITHUB.account }]);
-    await writeFile(join(data, FAUX_GITHUB_FILE), `${JSON.stringify({ webhook_secret: fauxGitHub.app.webhookSecret, installation: FAUX_GITHUB.installation, account: FAUX_GITHUB.account, repositories: FAUX_GITHUB.repositories })}\n`, { mode: 0o600 });
+    await writeFile(join(data, FAUX_GITHUB_FILE), `${JSON.stringify({ webhook_secret: fauxGitHub.app.webhookSecret, installation: FAUX_GITHUB.installation, account: FAUX_GITHUB.account, repositories: FAUX_GITHUB.repositories, api_url: fauxGitHub.url })}\n`, { mode: 0o600 });
   }
   const githubConnect = new GitHubConnect(github, { ...(options.publicUrl ? { publicUrl: options.publicUrl.replace(/\/+$/, "") } : {}), api: fauxGitHub?.url ?? options.githubApi ?? GITHUB_API, say: (fields) => log?.(logLine("github", fields)) });
   /** The connection a GitHub template or the console reads: the App's id, slug and installations, never a secret. */
@@ -1955,7 +2535,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // A template import reads GitHub's own hosts alone (a test's faux GitHub in their place), with an installation token of
   // the App when GitHub is connected (tokenForListing: metadata read, the least there is), else anonymously, and says why.
   const importDeps: TemplateImportDeps = {
-    registry, store,
+    registry, store, apiOnly: options.apiOnly === true,
     reach: async (signal) => {
       const api = options.templateImportApi ?? GITHUB_API;
       const hosts = options.templateImportApi ? [new URL(options.templateImportApi).host] : GITHUB_HOSTS;
@@ -1963,11 +2543,47 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       return "token" in minted ? { api, hosts, token: minted.token } : { api, hosts, anonymous: "unusable" in minted ? minted.unusable : minted.failed };
     },
   };
+  // Suggested agents (suggestions.ts): scans run the bundled agent-scout, applied once and reused (one apply at a time
+  // on this server); a create pushes through the App's token for the one repository, then applies the package it pushed
+  // as an imported template, so the agent here is made from the very files the pull request adds.
+  let scouting: Promise<string> | undefined;
+  const suggestions = new Suggestions({
+    settings: store.settings,
+    github: { view: () => github.view(), settingsUrl: () => github.settingsUrl(), get api() { return githubConnect.api; }, repoInstallation: (repo, signal) => githubConnect.repoInstallation(repo, signal), tokenWith: (installation, repo, permissions, signal) => githubConnect.tokenWith(installation, repo, permissions, signal), revokeToken: (token) => githubConnect.revokeToken(token) },
+    scoutAgent: () => (scouting ??= (async () => {
+      const mine = (await agents.list()).find((one) => one.template?.id === SCOUT_TEMPLATE && !one.agent.archivedAt);
+      if (mine) return mine.agent.id;
+      const pkg = registry.get(SCOUT_TEMPLATE);
+      if (!pkg) throw new ApiError("unavailable", `This server does not ship the ${SCOUT_TEMPLATE} template, which scans a repository.`);
+      return (await applyTemplate(pkg, { parameters: {} })).applied.agent_id;
+    })().finally(() => { scouting = undefined; })),
+    startScan: async (agentId, content) => (await startRunOf(await needRunnableAgent(agentId), { input: { content } })).id,
+    readRun: async (runId) => {
+      const view = await viewOverStore(store, runId, viewDepsFor(ownOriginOf()));
+      if (!view) return undefined;
+      const result = isObject(view.result) ? view.result : undefined;
+      const error = isObject(view.error) && typeof view.error.message === "string" ? view.error.message : typeof result?.output_error === "string" ? `Its answer did not meet the scout's schema: ${result.output_error}` : undefined;
+      return { status: String(view.status), ...(result && result.output != null ? { output: result.output } : {}), ...(error ? { error } : {}), ...(typeof view.ended_at === "string" ? { endedAt: Date.parse(view.ended_at) } : {}) };
+    },
+    // Kept, then applied (template-import.ts applyImported): a thrown error means no agent was made. The package has no
+    // trigger, so the apply makes the agent as its last write.
+    cancelScan: async (runId) => { await cancel(store, await needRun(runId)); },
+    agentFrom: async (id, sha) => (await agents.list()).find((one) => one.template?.id === id && one.template.sha === sha && !one.agent.archivedAt)?.agent.id,
+    makeAgent: async (id, origin, files) => {
+      const made = await applyImported({ registry, store, apply: (pkg) => applyTemplate(pkg, { parameters: {} }) }, id, origin, files);
+      return { agentId: made.applied.agent_id, warnings: made.applied.warnings };
+    },
+    ...(options.publicUrl ? { publicUrl: options.publicUrl.replace(/\/+$/, "") } : {}),
+    ...(options.onUsage ? { used: options.onUsage } : {}),
+  });
   // A github_app MCP server's tools are listed with an installation token of the App, narrowed to one repository it covers
   // with metadata read (tokenForListing); a run's own is minted in the runner (runner/github-app.ts). Every token minted
   // is a server secret while it may be in use.
   mcpServers.appToken = (signal) => githubConnect.tokenForListing(signal);
   secretStores.add("github-tokens", () => githubConnect.liveTokens());
+  /** Why a trigger of `kind` can't be on here now (its connection), or undefined: what a create of an enabled one is
+   *  refused with, and what an apply's plan says of the triggers it would make. */
+  const triggerUnavailable = async (kind: string): Promise<ApiError | undefined> => (kind === "github" && !githubConnection() ? new ApiError("github_not_connected", "This server has no GitHub App: Connect GitHub in Settings, then make the trigger (or turn it on).") : kind === "email" && !(await openAccount(store, sealKey)) ? noAccount() : undefined);
   const triggers: Triggers = new Triggers({
     // The server's own store (the one it opened) holds the triggers a person writes and reads; a test may inject another
     // (startServe's `store`).
@@ -1975,7 +2591,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     clock: options.triggerClock,
     ...(options.publicUrl ? { publicUrl: options.publicUrl.replace(/\/+$/, "") } : {}),
     adapters,
-    unavailable: async (kind) => (kind === "github" && !githubConnection() ? new ApiError("github_not_connected", "This server has no GitHub App: Connect GitHub in Settings, then make the trigger (or turn it on).") : kind === "email" && !(await openAccount(store, sealKey)) ? noAccount() : undefined),
+    unavailable: triggerUnavailable,
     // The email trigger's account, its password opened as it polls (email/account.ts): never kept in the engine.
     // A feed trigger's reach: where its reads may go, as an MCP server's requests may (mcp-oauth.ts feedAt), and a test's
     // or an eval's route to its fake feeds (feedsAt).
@@ -1993,6 +2609,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     },
     // A Composio trigger's instance, and the project's subscription, are made and kept on Composio with its server's key.
     upstream: (kind) => (kind === "composio" ? composioTriggers : undefined),
+    ...(options.launchHook ? { launchHook: options.launchHook } : {}),
   });
   const composioTriggers = new ComposioTriggers({
     control: options.composioControl ?? {},
@@ -2146,14 +2763,15 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   let closing = false;
   const workers = new Map<Worker, { task: ImportTask["task"]; exit: Promise<unknown> }>();
   // Once the server closes, no worker starts: a setup still being answered then leaves its yes for the next start.
-  const onWorker = (task: ImportTask["task"], projects?: readonly string[]): Promise<ImportAnswer> =>
+  const onWorker = (task: ImportTask["task"], projects?: readonly string[], year?: number): Promise<ImportAnswer> =>
     closing ? Promise.resolve({ stopped: true }) : new Promise((answered, failed) => {
       const worker = new Worker(new URL("./import-worker.js", import.meta.url), {
         // The secrets this process holds (secrets.ts keeps them out of every environment, so the worker's has none), in the
         // worker's memory alone: what the import cuts out of everything it writes. The keys saved on the Tool keys page are
         // not passed; the worker reads them from the store over the port (sealed rows it opens with the seal key among these
         // secrets), the same cut as the CLI's import, where a saved key and the server's own of the same name may differ.
-        workerData: { task, data, ...(projects ? { projects } : {}), home: options.sessionsHome?.home ?? homedir(), ...(options.sessionsHome?.temp ? { temp: options.sessionsHome.temp } : {}), secrets: Object.fromEntries(SECRET_NAMES.flatMap((name) => { const value = name === SEAL_KEY_ENV ? seal.text : secret(name); return value === undefined ? [] : [[name, value]]; })) } satisfies ImportTask,
+        // A Wrapped read (`year`) writes nothing, so it is handed no secret.
+        workerData: { task, data, ...(projects ? { projects } : {}), ...(year !== undefined ? { year } : {}), home: options.sessionsHome?.home ?? homedir(), ...(options.sessionsHome?.temp ? { temp: options.sessionsHome.temp } : {}), ...(task === "wrapped" ? {} : { secrets: Object.fromEntries(SECRET_NAMES.flatMap((name) => { const value = name === SEAL_KEY_ENV ? seal.text : secret(name); return value === undefined ? [] : [[name, value]]; })) }) } satisfies ImportTask,
         // Started from a string (node --input-type=module -e, as a test or a `--` command may), the server's flags are given again
         // without that string and its type: a worker started from a file with them is refused. Otherwise the worker
         // inherits them as Node passes them on, which leaves out the flags a worker may not take (on Node 24 a test
@@ -2176,10 +2794,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         workers.delete(worker);
         if (answer) answered(answer);
         // A count the close ended: stopped, not failed (the next start counts again).
-        else if (closing && task === "plan") answered({ stopped: true });
+        else if (closing && task !== "import") answered({ stopped: true });
         else failed(new Error(`the import's worker ended (${code}) with no answer`));
       });
     });
+  // GET /v2/wrapped's reads of this machine's home (wrapped.ts), each year's on the import worker, so its parsing never holds
+  // up a request; shared and kept as keptReads says. A read the close ended answers `stopped`: a failed read, not kept.
+  const readWrapped = keptReads((year) => onWorker("wrapped", undefined, year).then((answer) => ("wrapped" in answer ? answer : Promise.reject(new Error("the server stopped before this machine's session history was read")))));
   // The count of what setup would import: started once (at start, or by the page's first read), read as it stands. One
   // stopped (by close, or by setup) starts again on the next read; one that failed stays failed.
   let count: { state: "counting" } | { state: "counted"; projects: number; sessions: number; candidates: ImportCandidate[] } | { state: "failed" } | undefined;
@@ -2340,7 +2961,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   async function needRunnableAgent(id: string): Promise<AgentEntry> {
     const entry = await needAgent(id);
     // Another system's agent is archived only by its delete (its archive route is refused).
-    if (entry.agent.archivedAt && entry.agent.externalRef !== null) throw agentDeleting(id);
+    if (entry.agent.archivedAt && ownedElsewhere(entry.agent)) throw agentDeleting(id);
     if (entry.agent.archivedAt) throw new ApiError("agent_not_runnable", `The agent ${id} is archived: unarchive it to run it.`, { details: { archived_at: new Date(entry.agent.archivedAt).toISOString() } });
     return entry;
   }
@@ -2394,7 +3015,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     for (const [slot, one] of idempotency) if (namesForgotten(kind, id, slot.slice(0, slot.indexOf("\n")), one.answer?.body)) idempotency.delete(slot);
     await keep();
   };
-  const deleteInTurn = oneAtATime();
+  const deleteInTurn = oneAtATime(options.deleteTurnQueued);
   /** `work`, a write to agent `id`'s home or learning (files a delete removes with the agent's folders, settings it leaves
    *  to deleteLearning, answers kept under its path), done in the agent's delete turn, the agent read there: a write sent
    *  while a DELETE runs waits for it, then finds the agent gone (404) or still being deleted (409 agent_not_runnable),
@@ -2402,25 +3023,70 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const agentWrite = <T>(id: string, work: () => Promise<T>): Promise<T> =>
     deleteInTurn(id, async () => {
       const entry = await needAgent(id);
-      if (entry.agent.archivedAt && entry.agent.externalRef !== null) throw agentDeleting(id);
+      // A purged agent's row stays as its tombstone: a write that waited on its purge is 410, never a folder made again.
+      if (entry.agent.purgedAt !== null) throw purgedAgent(entry.agent);
+      if (entry.agent.archivedAt && ownedElsewhere(entry.agent)) throw agentDeleting(id);
+      // A purge stopped part way (its mark still there): nothing of the agent is written, nor is it unarchived, until a
+      // DELETE finishes it.
+      if (entry.agent.archivedAt && (await store.settings.get(purgingKey(id))) !== undefined) throw agentDeleting(id);
+      return work();
+    });
+  /** `work`, a write that names run `runId` of agent `agentId` (a message, which may open it again; a grade, which keeps its
+   *  id and expected answer), done in the agent's delete turn, the agent and the run read there: a purge of the run (or of
+   *  its agent) holds that turn from its live check to its tombstone, so such a write waits for it and is then 410, never
+   *  a run opened again under a purge nor a grade saved after one. */
+  const runWrite = <T>(agentId: string, runId: string, work: () => Promise<T>): Promise<T> =>
+    agentWrite(agentId, async () => {
+      const row = await store.runs.get(runId);
+      if (!row) throw new ApiError("not_found", `no run ${runId}`);
+      if (row.purgedAt !== null) throw purgedRun(row);
       return work();
     });
   const AGAIN = "It starts no run meanwhile: send the DELETE again to finish it.";
-  /** `work`, a thing a deleted agent owns elsewhere deleted there: a refusal of one of `codes` (it is not deleted there
-   *  yet) answered as the delete answers each such one, 503 unavailable, retryable, saying to send the DELETE again. */
-  const notYetWith = async (work: () => Promise<unknown>, codes: readonly string[] = ["unavailable"]): Promise<void> => {
+  const RUN_AGAIN = "The run is kept: send the DELETE again to finish it.";
+  /** `work`, a thing a deleted agent or run owns elsewhere deleted there: a refusal of one of `codes` (it is not deleted
+   *  there yet) answered as the delete answers each such one, 503 unavailable, retryable, saying to send the DELETE again
+   *  (`again`: the words for an agent's delete, or a run's). */
+  const notYetWith = async (work: () => Promise<unknown>, codes: readonly string[] = ["unavailable"], again = AGAIN): Promise<void> => {
     try {
       await work();
     } catch (error) {
       if (!(error instanceof ApiError && codes.includes(error.code))) throw error;
-      throw new ApiError("unavailable", `${error.message.replace(/[.\s]*$/, "")}. ${AGAIN}`, { retry_after_ms: 5_000 });
+      throw new ApiError("unavailable", `${error.message.replace(/[.\s]*$/, "")}. ${again}`, { retry_after_ms: 5_000 });
     }
   };
+  /** The Archil disks agent `agentId`'s learning folder may be on: a Mode 2 run's end writes it on the disk its claim
+   *  mounted (workspace/learning-workspace.ts, at learningKey), the agent's stored disk (named here only for
+   *  `agentDisk`) or one a launch named (kind "launch", a customer's: each run's disk, learn/learning-of.ts namedDisksOf,
+   *  read off its row, so a purged run whose launch is gone still names it). A run's kept disk, or a launch's kind
+   *  "agent", is the agent's own disk, mounted only while it is still the stored one (workspace/run-disk.ts runDiskOf):
+   *  one no longer stored was removed at Archil, its folder with it. */
+  const learningDisksOf = async (agentId: string, agentDisk: boolean): Promise<string[]> => {
+    const disks = new Set<string>();
+    const stored = agentDisk ? await agentDiskOf(store, agentId) : undefined;
+    if (stored) disks.add(stored.diskId);
+    for (const disk of await namedDisksOf(store, agentId)) disks.add(disk);
+    return [...disks];
+  };
+  /** Step 2 of DELETE /agents/{id}, and DELETE /agents/{id}/learning: the learning module's delete over the agent's
+   *  learning folder on this server's disk, as the learning routes open it (learningFolderOf), which deleteLearning ends
+   *  in its finally, and over its folder on each Archil disk a launch of its runs named and, for a reset (`agentDisk`),
+   *  on its own disk, which the agent's delete removes whole in step 3 (archil-routes.ts removeLearningFolder; Archil
+   *  off or refusing is 503 unavailable, nothing here deleted, for the next call). */
+  const learningDelete: DeleteLearning = options.deleteLearning ?? ((given, agentId, { keepResetLedger = false, agentDisk = false } = {}) => deleteLearning(given, agentId, learningFolderOf(data, agentId), {
+    keepResetLedger,
+    elsewhere: async () => {
+      for (const diskId of await learningDisksOf(agentId, agentDisk)) {
+        try {
+          await archil.removeLearningFolder(agentId, diskId);
+        } catch (error) {
+          if (!(error instanceof ApiError && ["unavailable", "upstream_failed"].includes(error.code))) throw error;
+          throw new ApiError("unavailable", `${error.message.replace(/[.\s]*$/, "")}. The agent's learning folder on this server and its learning records are kept: send the DELETE again once it can be reached.`, { retry_after_ms: 5_000 });
+        }
+      }
+    },
+  }));
   /** What DELETE /agents/{id} does outside the store's rows, on this server (agent-delete.ts AgentDeleteHost). */
-  /** Step 2 of DELETE /agents/{id}: the learning module's delete over the agent's learning folder on this server's disk,
-   *  as the learning routes open it (learningFolderOf), which deleteLearning ends in its finally. A learning folder on
-   *  the agent's Archil disk goes with that disk in step 3. */
-  const learningDelete: DeleteLearning = options.deleteLearning ?? ((given, agentId) => deleteLearning(given, agentId, learningFolderOf(data, agentId)));
   const agentDeleteHost: AgentDeleteHost = {
     store,
     deleteLearning: learningDelete,
@@ -2458,19 +3124,29 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       // Archil's failure (424), a live run of another agent on the disk (412) or no key (503): each is retried by the next DELETE.
       await notYetWith(() => archil.removeAgentDisk({ id: agentId, archived: true, external: true, liveOn: (diskId: string) => liveRunsOnDisk(store.runs, agentId, diskId) }), ["upstream_failed", "precondition_failed", "unavailable"]);
     },
-    forgetRun: async (agentId, runId) => {
+    forgetRun: async (agentId, runId, alone) => {
+      const again = alone ? RUN_AGAIN : AGAIN;
       // Its own folder on a disk its launch named (the caller's disk, which stays): read from its launch record, which goes
       // with the run's rows after this, so a failure or a stop here leaves the record that names the disk for the next
-      // DELETE. A run on its agent's own disk has none: that disk went whole (removeDisk), its folder with it.
+      // DELETE. A run on its agent's own disk: with its agent's delete that disk went whole (removeDisk), its folder with
+      // it; deleted alone, its folder there is deleted, the disk kept, read from its disk setting, which goes after.
       const launched = await store.runs.launch(runId).then((row) => readLaunchBody(row.body)?.archilDisk, (error: unknown) => (error instanceof StoreLaunchMissing ? undefined : Promise.reject(error)));
-      if (launched?.kind === "launch") await notYetWith(() => archil.removeRunFolder(agentId, runId, launched.diskId), ["unavailable", "upstream_failed"]);
+      // The agent's learning folder there too: a Mode 2 end wrote the run's diff and correction in it, and nothing reads it.
+      if (launched?.kind === "launch") {
+        await notYetWith(() => archil.removeRunFolder(agentId, runId, launched.diskId), ["unavailable", "upstream_failed"], again);
+        await notYetWith(() => archil.removeLearningFolder(agentId, launched.diskId), ["unavailable", "upstream_failed"], again);
+      } else if (alone) {
+        const own = launched?.diskId ?? (await runDiskKept(store, runId));
+        if (own) await notYetWith(() => archil.removeRunFolder(agentId, runId, own, "agent"), ["unavailable", "upstream_failed"], again);
+      }
       // The run's folder (its work and what sits beside it), its scratch and its native context, on this machine.
       for (const folder of [dirname(runFolder(data, agentId, runId)), scratchFolder(data, agentId, runId), join(data, "native-context", runId)]) await rm(folder, { recursive: true, force: true });
-      // Its settings: an SDK run's row, its browser wait's end, the Archil disk it resolved to. Its kept computer's row
+      // Its settings: an SDK run's row, its browser wait's end and take, the Archil disk it resolved to. Its kept computer's row
       // (workspace/computer-kept.ts) is left to the janitor, which deletes the computer of a run no longer there and then
       // the row: removed here, the computer would have nothing left to reach it.
       await store.settings.remove(sdkRunKey(runId));
       await store.settings.remove(waitEndedKey(runId));
+      await store.settings.remove(browserHoldKey(runId));
       await store.settings.remove(runDiskKey(runId));
       await forgetKept("run", runId);
     },
@@ -2478,11 +3154,51 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       // The agent's folder (its runs' folders, its home, its learning folder) and its scratch folder.
       await rm(agentFolder(data, agentId), { recursive: true, force: true });
       await rm(join(data, "scratch", agentDirName(agentId)), { recursive: true, force: true });
+      // Private source metadata is owned by this exact agent. Prefix siblings with dotted IDs are left alone.
+      for (const key of [`source-sync.agent.${agentId}`, `source-sync.local.${agentId}`]) await store.settings.remove(key);
+      for (const prefix of [`source-sync.tool.${agentId}.`, `source-sync.checkpoint.${agentId}.`]) {
+        for (const row of await store.settings.all({ prefix })) if (/^[a-f0-9]{64}$/.test(row.key.slice(prefix.length))) await store.settings.remove(row.key);
+      }
       await forgetKept("agent", agentId);
+    },
+    // The replay runs of its input, its audit's shadow run and a learning run it names (the store's), and its audit's shadow
+    // run by its id (one whose launch is gone too).
+    madeFrom: async (runId) => [...new Set([...(await store.runs.madeFrom(runId)), shadowRunId(runId)])],
+    // Its copies in the agent's promotion records, then its text off the agent's learning folder's current files (its
+    // merges' diff files and feedback lines), in the agent's queue: a folder that can't be written now is 503, the run
+    // purged or kept as the purge had got, and the next DELETE does it again.
+    forgetCopies: async (agentId, runId) => {
+      await forgetRunCopies(store.settings, agentId, runId);
+      await notYetWith(() => forgetRunLearning(data, agentId, runId, store), ["unavailable"], "The agent's learning folder keeps the run's text until the DELETE is sent again.");
+    },
+    // /usage's meters and a live read's spend, from its journal, as they read now (store-reads/cap.ts), and how its
+    // learning ended as /stats counts it (its state and reason alone).
+    kept: async (runId) => {
+      const spend = await spendOverStore(store, runId, ctx);
+      const learning = await runLearningEnd(store, runId);
+      return {
+        meters: await metersOverStore(store, runId, ctx),
+        spend: { usd: spend.usd, ...(spend.basis === undefined ? {} : { basis: spend.basis }) },
+        learning: learning ? { state: learning.state, reason: learning.reason } : null,
+      };
+    },
+    turnOver: async (runId) => {
+      const read = await runStatusState(runId);
+      return read.state === "idle" && read.status !== "paused";
     },
     waitMs: options.agentDeleteWaitMs ?? 30_000,
     pollMs: 200,
     ...(options.agentDeleteAt ? { at: options.agentDeleteAt } : {}),
+  };
+  /** What DELETE /agents/{id}/learning does outside the learning module (learning-reset.ts): the agent delete's learning
+   *  step, cancel path and wait, and the agent's learning queue, where a run's start reads its seed. */
+  const learningResetHost: LearningResetHost = {
+    store,
+    deleteLearning: learningDelete,
+    cancel: agentDeleteHost.cancel,
+    inQueue: (agentId, work) => withAgentRepo(data, agentId, work),
+    waitMs: agentDeleteHost.waitMs,
+    pollMs: agentDeleteHost.pollMs,
   };
   // A run's live moment from the store (store-view momentOf), for the one acceptance each act a run takes reads. The run
   // routes read from the store + the run view now, not a live Run.
@@ -2579,8 +3295,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   /** What keeps `revision` from running here at `place` (its own, else this host's default), checked before anything
    *  starts with the checks a save makes (runnable.ts): one a save refused, or one a setting of this host fixes that it
    *  does not have yet. `capped`: the run has a spend cap, which a web tool's resolution reads (tool-plane.ts). `price`:
-   *  what prices an OpenRouter decision model under that cap; a start's reads OpenRouter's catalog (decisionPrice). */
-  async function runnable(revision: Revision, place: Place, { capped = false, price = decisionPrice }: { capped?: boolean; price?: (model: string) => Promise<unknown> } = {}): Promise<void> {
+   *  what prices an OpenRouter decision model under that cap; a start's reads OpenRouter's catalog (decisionPrice).
+   *  `carried`: the names of the tool keys the run carries (run-keys.ts), each read as one this host holds. `held`: the
+   *  run holds its computer (hold: true): kept from running by its model alone, it is not refused, and the refusal is
+   *  returned for its launch, its start to answer it (computer-held.ts). */
+  async function runnable(revision: Revision, place: Place, { capped = false, price = decisionPrice, carried = [], held = false }: { capped?: boolean; price?: (model: string) => Promise<unknown>; carried?: readonly string[]; held?: boolean } = {}): Promise<HeldRefusal | undefined> {
+    if (cliLearningOf(revision.body)) throw new ApiError("agent_not_runnable", "Continue in the original CLI session; this connection records learning without launching its tools.");
     if (sdkOf(revision.body)) throw new ApiError("agent_not_runnable", "This agent runs in its backend SDK. Call its SDK wrapper to start a task; AgentRun does not launch its tools or credentials.");
     const native = nativeOf(revision.body);
     if (native) {
@@ -2611,6 +3331,17 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         return [{ field: `definition.tools[${index}]`, reason: "not_an_option", message: `The MCP tool ${tool} was not pinned when this revision was saved: ${why}`, tool }];
       });
       if (unpinned.length) throw new ApiError("agent_not_runnable", unpinned.map((one) => one.message).join(" "), { fields: unpinned.map(({ tool: _tool, ...issue }) => issue), details: { unbound: unpinned.map((one) => one.tool), missing: {} } });
+      // A granted tool of a Composio server that reads its key from the environment (api_key_env) while that variable is
+      // unset, or whose address is off Composio's origin: refused by its name before the run starts, never launched
+      // without the server's tools, and nothing sent (composioEnvKey).
+      const unset = ((revision.body as { tools?: readonly string[] }).tools ?? []).flatMap((tool, index) => {
+        const named = mcpToolOf(tool);
+        const saved = named ? mcpMeta.get(named.server) : undefined;
+        const keyEnv = saved?.keyEnv as typeof COMPOSIO_KEY_ENV | undefined;
+        const got = named && saved && keyEnv ? composioEnvKey(named.server, saved.url, keyEnv, mcpServers.composioOrigin) : undefined;
+        return got && "refused" in got ? [{ field: `definition.tools[${index}]`, reason: got.reason, message: got.refused, tool, keyEnv: keyEnv!, unset: got.reason === "missing" }] : [];
+      });
+      if (unset.length) throw new ApiError("agent_not_runnable", [...new Set(unset.map((one) => one.message))].join(" "), { fields: unset.map(({ tool: _tool, keyEnv: _keyEnv, unset: _unset, ...issue }) => issue), details: { unbound: [], missing: Object.fromEntries(unset.filter((one) => one.unset).map((one) => [one.tool, [one.keyEnv]])) } });
     }
     const pinnedTools = (server: string) => {
       const saved = mcpMeta.get(server);
@@ -2622,10 +3353,20 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       });
     };
     const monid = (revision as { monidPin?: MonidPinBody | null }).monidPin ?? undefined;
+    // Under the run-keys setting, a template's tool key this host does not hold is each run's to carry: one that does not
+    // is refused for it alone, before the checks that read the keys it would bring.
+    const owed = options.runKeys ? keysOwed(revision, env, carried) : [];
+    if (owed.length) throw keysOwedRefusal(owed);
     // Claude Code's login on this machine is a runner place's alone: a sandbox run is checked for a key, as it runs.
-    const blockers = await blockersOf(envAtPlace(env, shape.place), shape, settings.get(), { capped, boxes: boxOffers, computerReady, shellOf, offers, mcp: revision.kind === "agentic" ? pinnedTools : mcpTools, monid, decisionPrice: price });
+    const blockers = await blockersOf(withCarried(envAtPlace(env, shape.place), carried), shape, settings.get(), { capped, boxes: boxOffers, computerReady, shellOf, offers, mcp: revision.kind === "agentic" ? pinnedTools : mcpTools, monid, decisionPrice: price });
     if (!blockers.length) return;
-    const message = blockers.map((b) => b.message).join(" ");
+    // An agent refused for its model in a box while its harness runs on the login at the runner, on a model the login
+    // runs: the words say so, and how to run it there (details.login_on_runner, the console's offer to move it). Its
+    // model is the blocker whichever field names it (runnable.ts Blocker.model: an agent that names none is refused on its
+    // harness), and the model it would run on the runner is its own, else the runner's default for its harness
+    // (hostModel: AGENT_MODEL first), so one whose default there is an OpenRouter model is offered no move.
+    const runnerOnly = shape.kind === "agentic" && blockers.some((b) => b.model && b.reason === NOT_SET_UP && !b.unpriced) ? loginOnRunnerOnly(env, shape.harness, shape.model || hostModel(envAtPlace(env, { mode: "runner" }), "default", shape.harness), shape.place) : undefined;
+    const message = [...blockers.map((b) => b.message), ...(runnerOnly ? [runnerOnly] : [])].join(" ");
     // Each blocker as a 422 names its issue: its field, reason and message, and the fix when it has one.
     const fields = blockers.map(issueOf);
     const unbound = blockers.flatMap((b) => (b.tool ? [b.tool] : []));
@@ -2635,7 +3376,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const harness = blockers.find((b) => b.harness)?.harness;
     const box = blockers.find((b) => b.box)?.box;
     const named = { ...(harness ? { harness } : {}), ...(box ? { box } : {}), ...(notGrantable.length ? { not_grantable: notGrantable } : {}) };
-    if (revision.kind === "agentic") throw new ApiError("agent_not_runnable", message, { fields, details: { unbound, missing, ...named } });
+    if (revision.kind === "agentic") {
+      const details = { unbound, missing, ...named, ...(runnerOnly ? { login_on_runner: true } : {}) };
+      // A held run kept from running by its model alone opens (runnable.ts Blocker.model: a CLI harness that lacks only a
+      // model key here among them): its computer is its owner's to call, and these words are its start's refusal
+      // (computer-held.ts). Any other blocker refuses it here, as any run.
+      if (held && blockers.every((b) => b.model)) return { message, fields, details };
+      throw new ApiError("agent_not_runnable", message, { fields, details });
+    }
     const tier = blockers.find((b) => b.tier)?.tier;
     const decisions = Object.fromEntries(blockers.flatMap((b) => (b.decision ? [[b.decision.provider, { reason: b.reason, needs: b.decision.needs }]] : [])));
     const denied = blockers.flatMap((b) => (b.denied ? [b.denied] : []));
@@ -2690,7 +3438,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       pin: () => {
         if (!granted.length) return undefined;
         try {
-          return mcpPinOf(granted, { server: (name) => { const kept = carried.get(name); if (kept) return kept; const listing = listings.get(name); return listing && { url: listing.url, tools: listing.tools.map(boundTool), prices: listing.prices }; } });
+          return mcpPinOf(granted, { server: (name) => { const kept = carried.get(name); if (kept) return kept; const listing = listings.get(name); return listing && { url: listing.url, tools: listing.tools.map(boundTool), prices: listing.prices, toolkit: listing.toolkit }; } });
         } catch (error) {
           throw invalid([{ field: "definition.tools", reason: "not_an_option", message: (error as Error).message }]);
         }
@@ -2722,7 +3470,16 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       if (execution.length) throw invalid(execution.map(field => ({ field: `definition.${field}`, reason: "not_allowed", message: NATIVE_EXECUTION_SETTINGS_UNSUPPORTED })));
       return { warnings: [], stamp: {} };
     }
-    if (sdkOf(body)) return { warnings: [], stamp: {} };
+    if (cliLearningOf(body) || sdkOf(body)) return { warnings: [], stamp: {} };
+    // A workflow's own issues, as POST /workflows/validate lists them (workflowIssues: the DSL's checks, the durable
+    // runner's refusal), refuse its save before anything is written, each at its path under definition.workflow. Asked
+    // with no tools list: its run binds every tool its call nodes name whether `tools` lists it or not (tools.ts
+    // grantedTools), so a call node's unlisted tool is validate's hint, never a reason to refuse a runnable workflow.
+    if (revision.kind === "workflow") {
+      const { workflowIssues } = await import("./workflow-run.js");
+      const { issues } = await workflowIssues(body.workflow);
+      if (issues.length) throw invalid(issues.map(({ path, code, message }) => ({ field: `definition.workflow${path}`, reason: "invalid", code, message })));
+    }
     // An agent on a harness that installs on first use starts its install, if it is not in yet: its first run waits for less.
     const harnessId = revision.kind === "agentic" ? harnessOfBody(body) : undefined;
     const install = harnessId !== undefined && Object.hasOwn(installs, harnessId) ? installs[harnessId] : undefined;
@@ -2753,7 +3510,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const never = blockers.filter((b) => !b.host);
     if (never.length) throw invalid(never.map(issueOf));
     const mcpPin = listing.pin();
-    return { warnings: [...blockers.map(issueOf), ...usage], stamp: { ...(mcpPin ? { mcpPin } : {}), ...(monid ? { monidPin: monid } : {}) } };
+    // A computer every tool of which is set to deny, here or in the agent's own settings: its runs never start it.
+    const denied = await deniedComputer(shape, settings.get(), shellOf);
+    const off: InputIssue[] = denied ? [{ field: "definition.computer", reason: "not_allowed", message: computerDeniedWords(denied) }] : [];
+    return { warnings: [...blockers.map(issueOf), ...off, ...usage], stamp: { ...(mcpPin ? { mcpPin } : {}), ...(monid ? { monidPin: monid } : {}) } };
   }
 
   /** An agentic `revision`'s monid pin (monid.ts pinMonid) and a warning per endpoint priced by usage; a grant that
@@ -2764,7 +3524,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const send = await checkFetch("monid");
     const before = previous?.kind === "agentic" ? { grants: (previous.body as AgenticBody).tools ?? [], pin: previous.monidPin } : undefined;
     // The key as the server reads it (env: what it was started with, its handed secrets and its saved keys).
-    const pinned = await pinMonid(tools, { key: env[MONID_KEY_ENV]?.trim(), fetch: send ?? (async () => { throw new Error("no fake of monid's API under faux"); }), signal: stopping.signal, ...(before ? { previous: before } : {}) });
+    const pinned = await pinMonid(tools, { key: env[MONID_KEY_ENV]?.trim(), fetch: send ?? (async () => { throw new Error("no fake of monid's API under faux"); }), signal: stopping.signal, shared: monidShared, ...(before ? { previous: before } : {}) });
     if (pinned && "refused" in pinned) throw invalid(pinned.refused.map(({ tool, message }) => ({ field: tools.includes(tool) ? `definition.tools[${tools.indexOf(tool)}]` : "definition.tools", reason: "not_an_option", message })));
     return pinned && { monid: pinned.pin, warnings: pinned.warnings.map(({ tool, message }) => ({ field: `definition.tools[${tools.indexOf(tool)}]`, reason: PRICED_BY_USAGE, message })) };
   }
@@ -2815,7 +3575,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       warnings = saved.warnings;
       return saved.stamp;
     };
-    const edited = await agents.commit(entry, checkDefinitionBody(body, { creating: false, harnesses }), { check, ...options });
+    // Its last read and its commit in the agent's delete turn (agentWrite), the check outside it: an edit or a template
+    // update whose commit comes once the agent is purged is 410, and one after a purge stopped part way is 409, nothing
+    // written (the store refuses a purged agent's revision too, AgentPurged).
+    const edited = await agents.commit(entry, checkDefinitionBody(body, { creating: false, harnesses }), { check, prepare: prepareProjectSkillEdit(store, entry.agent.id, sourceWorkspaces), ...options, inTurn: (work) => agentWrite(entry.agent.id, work) });
     reconcileComputer(entry.agent.id);
     return { entry: edited, warnings };
   }
@@ -2840,6 +3603,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  reads it, cut of the host's secrets as the learning reads cut them, and a replay run's launch made as a run's start
    *  makes one now (prepareLaunch: the agent's current revision, model, plane and learning start). */
   const replayAskOf = (entry: AgentEntry): ReplayAsk => ({
+    admitAuxiliary: auxiliaryAdmitter(store, { data, project: startDeps.project }),
     store, agentId: entry.agent.id, context: ctx, log: (line) => void log?.(line),
     folder: () => learningFolderOf(data, entry.agent.id), shown: () => learningShown(entry.agent.id),
     launchOf: async (input) => {
@@ -2897,18 +3661,98 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (error instanceof ApiError && error.code === "not_found") return false;
     throw error;
   };
-  /** applyTemplate's work, in its turn on the agent where it has agent_id. */
-  async function applyWith(template: Package, body: Json) {
-    const { parameters, grants: asked, servers: picks, model: override, choice, approvals, agentId } = applyBodyOf(template, body);
+  /** A fresh apply's twins: the live agents here made from the package `pkgId` with the parameters `digest` digests. The
+   *  apply still makes another and warns of each (applyWith); its plan names them first (planTemplate). None for an
+   *  apply onto an agent (`onto`). */
+  const twinsOf = async (onto: unknown, pkgId: string, digest: string): Promise<string[]> =>
+    onto ? [] : (await agents.list()).filter((one) => one.template?.id === pkgId && one.template.parameters_digest === digest).map((one) => one.agent.id);
+  /** POST /templates/{id}/apply {dry_run: true}: the apply's plan, from the same reads and checks as the apply
+   *  (prepareApply), with nothing written: whether it makes an agent or revises the one agent_id names (and its current
+   *  revision), the agents a fresh one would make a twin of, the keys and MCP servers this server lacks (where the apply
+   *  would refuse with 409, the plan lists them), what becomes of each trigger (made, changed in place, removed, or
+   *  skipped for a connection this server lacks), and the computer it picks. Any other refusal is the apply's own. */
+  async function planTemplate(template: Package, body: Json) {
+    const p = await prepareApply(template, body, { plan: true });
+    // A monid grant is pinned to monid's listing when the agent is saved (saveable: monidPinOf), read with the monid key:
+    // with none here the apply is refused, so the plan lists the key. A grant the agent's current pin carries reads
+    // nothing (pinMonid with no key answers before any request).
+    const definition = isObject(p.made.agent) && isObject(p.made.agent.definition) ? p.made.agent.definition : {};
+    const tools = Array.isArray(definition.tools) ? definition.tools.filter((tool): tool is string => typeof tool === "string") : [];
+    const was = p.onto?.revision?.kind === "agentic" ? p.onto.revision : undefined;
+    const unread = !env[MONID_KEY_ENV]?.trim() && (await pinMonid(tools, { key: undefined, ...(was ? { previous: { grants: (was.body as AgenticBody).tools ?? [], pin: was.monidPin ?? null } } : {}) }));
+    const missing = unread && "refused" in unread && !p.missing.includes(MONID_KEY_ENV) ? [...p.missing, MONID_KEY_ENV] : p.missing;
+    // A skip's `code` is the apply's warning's for it: not_set_up_here for one this server makes once it is set up (a
+    // connection, a feed's URLs, a launch hook), not_an_option for one it never makes.
+    const planned: { name: string; kind: string; action: "create" | "update" | "remove" | "skip"; code?: string; reason?: string }[] = [];
+    for (const [i, trigger] of p.made.triggers.entries()) {
+      const name = String(trigger.name).trim();
+      const kind = isObject(trigger.source) ? String(trigger.source.kind) : "";
+      // On an API-only server, skipped in the apply's own words (prepareApply).
+      const hostSkip = p.hostless.get(i);
+      if (hostSkip) {
+        planned.push({ name, kind, action: "skip", code: hostSkip.reason, reason: hostSkip.message });
+        continue;
+      }
+      if (p.emptyFeeds.has(i)) {
+        planned.push({ name, kind, action: "skip", code: NOT_SET_UP, reason: feedTriggerEmpty(p.pkg.name, trigger, isObject(p.pkg.triggers[i]?.source) ? p.pkg.triggers[i]!.source.urls : undefined) });
+        continue;
+      }
+      const was = p.hadByName.get(name);
+      if (was && isObject(was.source) && was.source.kind === kind && !p.remade.has(i)) {
+        planned.push({ name, kind, action: "update" });
+        continue;
+      }
+      // Made (again), on unless the owner had turned the old one off: a connection this server lacks skips it, as the
+      // apply's create does (notSetUpYet), or refuses the apply. A Composio trigger is skipped for want of a public URL
+      // (any trigger, on or off), read here; its account and subscription are Composio's to answer, which a plan never asks.
+      const refusal = kind === "composio" && !options.publicUrl ? composioNoPublicUrl() : trigger.enabled !== false && !(was && !was.enabled) ? await triggerUnavailable(kind) : undefined;
+      if (refusal && notSetUpYet(kind, refusal.code)) planned.push({ name, kind, action: "skip", code: NOT_SET_UP, reason: refusal.message });
+      else if (refusal) throw refusal;
+      else planned.push({ name, kind, action: "create", ...(was ? { reason: `The agent's ${name} trigger is removed and made again: its kind or its Composio server, event or config changed.` } : {}) });
+    }
+    for (const row of p.removing) planned.push({ name: row.name, kind: isObject(row.source) ? String(row.source.kind) : "", action: "remove" });
+    const computer = p.pick && !("refused" in p.pick) ? p.pick.computer as { kind: string; provider?: string } : undefined;
+    return {
+      plan: {
+        action: p.onto ? "revise" : "create",
+        agent_id: p.onto?.agent.id ?? null,
+        current_revision_id: p.onto?.revision?.id ?? null,
+        twins: await twinsOf(p.onto, p.pkg.id, p.digest),
+        missing_secrets: missing,
+        unmatched_mcp: p.unsaved.map((need) => ({ source: need.source, toolkit: need.toolkit, required: need.required })),
+        triggers: planned,
+        computer: computer ? { kind: computer.kind, provider: computer.provider ?? null } : null,
+      },
+    };
+  }
+
+  /** What an apply reads and checks before its first write, the same for its plan (`plan`) and itself: the body
+   *  (applyBodyOf), the agent agent_id names, the keys and MCP servers, the computer, the model, the agent and triggers it
+   *  makes and how they meet the agent's, every refusal but the keys' and MCP servers' (which the plan lists). */
+  async function prepareApply(template: Package, body: Json, { plan }: { plan: boolean }) {
+    const { parameters, grants: asked, servers: picks, model: override, choice, approvals, agentId, revision: expected, sha } = applyBodyOf(template, body);
+    // The package the caller read (its sha): another stored under this id since (an upload of the same name) is not what
+    // they planned or confirmed.
+    if (sha !== undefined && (template.origin?.sha ?? null) !== sha) throw new ApiError("precondition_failed", `The ${template.name} template stored here is not the package of sha ${sha} (another was stored under ${template.id} since): nothing was changed. Read it again (GET /templates), then apply.`);
     // With agent_id, the apply writes a new revision of that agent (one this template made) in place of making another:
-    // everything below checks the package as a fresh apply does, through the same code.
+    // everything below checks the package as a fresh apply does, through the same code. With `revision`, only onto the
+    // revision the caller read: the write below is held to the revision read here (ifCurrent), so one written in between
+    // is 412 as well.
     const onto = agentId === undefined ? undefined : await templateAgentOf(agentId, template);
+    if (onto && expected !== undefined && (onto.revision?.id ?? null) !== expected) throw new ApiError("precondition_failed", `The agent ${onto.agent.id}'s current revision is ${onto.revision?.id ?? "none"}, not ${expected} (an edit, or another apply, wrote one since it was read): nothing was changed. Read it again, then apply.`);
     // An update's triggers are reconciled by name with the ones the agent has (below), read with the agent: each write to
     // one is made only while it is still this agent's (TriggerOwn.onAgent), so one a PATCH moves away meanwhile is left.
     const had = onto ? await store.triggers.list(onto.agent.id) : [];
-    if (onto && options.templateApplyRead) await options.templateApplyRead(onto.agent.id);
-    // A model choice's own keys are needed as the package's are: missing, the apply is refused and nothing is made.
-    const missing = [...new Set([...template.secrets, ...(choice?.secrets ?? [])])].filter((name) => !secret(name, storedKeys));
+    if (onto && !plan && options.templateApplyRead) await options.templateApplyRead(onto.agent.id);
+    // A model choice's own keys are needed as the package's are: missing, the apply is refused and nothing is made. Under
+    // the run-keys setting, a tool key is each run's to carry (run-keys.ts): its agent is made, the warning says so, and a
+    // run that does not carry it is refused. A model key is still the server's, and so is monid's: the agent's monid tools
+    // are checked with it when the agent is saved (monidPinOf), before any run.
+    const declared = [...new Set([...template.secrets, ...(choice?.secrets ?? [])])].sort();
+    const absent = declared.filter((name) => !secret(name, storedKeys));
+    const brought = options.runKeys ? absent.filter((name) => TOOL_FIELDS.includes(name) && name !== MONID_KEY_ENV) : [];
+    const missing = absent.filter((name) => !brought.includes(name));
+    const keyWarnings: InputIssue[] = brought.map((name) => ({ field: `secrets.${name}`, reason: NOT_SET_UP, message: `${name} is not set on this server: it takes it from each run (${RUN_KEYS_ENV}=1), so a run that does not carry it in keys is refused.`, fix: `Send keys.${name} with each run, or add it in Settings → API Keys.` }));
     // Each MCP need on the saved server whose source and toolkit match (the owner's pick when several do, never a silent
     // one: several and no pick is a 422); the package's
     // tool names, mcp:<toolkit>/<tool>, read as that server's from here on (templates.ts onServers).
@@ -2921,28 +3765,31 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // of a saved server that happens to be named as its toolkit.
     const grants = asked.filter((tool) => Object.hasOwn(servers, mcpToolOf(tool)?.server ?? "")).map((tool) => onServerName(tool, servers));
     const needed = unsaved.filter((need) => need.required);
-    if (missing.length || needed.length) {
+    if (!plan && (missing.length || needed.length)) {
       const fix = "Add it in Settings → API Keys, or set it where AgentRun starts, then apply the template again.";
-      throw new ApiError("agent_not_runnable", `The ${pkg.name} template needs ${[...missing, ...needed.map((need) => `a ${need.source} MCP server of the toolkit ${need.toolkit}`)].join(" and ")}, which this server does not have. Nothing was created.`, { fields: [...missing.map((name) => ({ field: `secrets.${name}`, reason: NOT_SET_UP, message: `${name} is not set on this server.`, fix })), ...needed.map((need) => ({ field: `mcp.${need.toolkit}`, reason: NOT_SET_UP, message: `No saved MCP server is ${need.source} ${need.toolkit}.`, fix: mcpSetUp(need) }))] });
+      throw new ApiError("agent_not_runnable", `The ${pkg.name} template needs ${[...missing, ...needed.map((need) => `a ${need.source} MCP server of the toolkit ${need.toolkit}`)].join(" and ")}, which this server does not have. Nothing was created.`, { fields: [...missing.map((name) => ({ field: `secrets.${name}`, reason: NOT_SET_UP, message: options.runKeys && name === MONID_KEY_ENV ? `${name} is not set on this server, and a run can't bring it (${RUN_KEYS_ENV}=1): the agent's monid tools are checked with this server's key when it is saved.` : `${name} is not set on this server.`, fix })), ...needed.map((need) => ({ field: `mcp.${need.toolkit}`, reason: NOT_SET_UP, message: `No saved MCP server is ${need.source} ${need.toolkit}.`, fix: mcpSetUp(need) }))] });
     }
     // The package's computer list: the first entry this server meets now (templates.ts pickComputer), written as the
     // agent's computer; a fallback, or a shell tool that computer does not run, said under `computer`. A list none of
     // whose entries is met (a shell alone, where there is none) refuses the apply: nothing is made.
-    const pick = pickComputer(pkg, await shellHere());
-    if (pick && "refused" in pick) throw new ApiError("agent_not_runnable", pick.refused, { fields: [{ field: "computer", reason: NOT_SET_UP, message: pick.refused, fix: COMPUTER_FIX }] });
+    const pick = pickComputer(pkg, await shellHere({ sandbox: Boolean(pkg.needs) }));
+    if (pick && "refused" in pick) throw new ApiError("agent_not_runnable", pick.refused, { fields: [{ field: "computer", reason: NOT_SET_UP, message: pick.refused, fix: pick.fix ?? COMPUTER_FIX }] });
     const computerWarnings: InputIssue[] = pick?.note ? [{ field: "computer", reason: pick.entry === "none" ? NOT_SET_UP : "not_an_option", message: pick.note }] : [];
     // An MCP server the package can do without is skipped, and said: its tools are not granted.
     const skipped: InputIssue[] = unsaved.map((need) => ({ field: `mcp.${need.toolkit}`, reason: NOT_SET_UP, message: `No saved MCP server is ${need.source} ${need.toolkit}, so the agent was made without its tools (${need.tools.join(", ")}).`, fix: mcpSetUp(need) }));
     // A model choice the owner picked is its model on its harness, or a refusal naming the model: never the tier's model
-    // in its place. So is a package's `prefer` (packageModel's `refused`), outside a gateway.
-    const unrunnable = choice && (await choiceUnrunnable(env, choice, offers.find((offer) => offer.id === choice.harness)));
+    // in its place. So is a package's `prefer` (packageModel's `refused`), outside a gateway. A plan whose keys are
+    // missing lists them and goes on: a model refused for want of one of them is the same lack, and once they are added
+    // the next plan reads the model again.
+    const lacking = plan && missing.length > 0;
+    const unrunnable = choice && !lacking && (await choiceUnrunnable(env, choice, offers.find((offer) => offer.id === choice.harness)));
     if (choice && unrunnable) {
       const message = `The ${pkg.name} template's choice ${choice.label} runs ${choice.model} on ${choice.harness}, which this server can't run: ${unrunnable.replace(/\.$/, "")}. Nothing was created.`;
       throw new ApiError("agent_not_runnable", message, { fields: [{ field: "overrides.choice", reason: NOT_SET_UP, message, fix: "Apply with the default or another choice, or, where the model only wants a key, add it in Settings → Model keys." }] });
     }
     const harness = choice ? choice.harness : pkg.harness && (pkg.harness.find((id) => offers.some((offer) => offer.id === id && offer.available)) ?? pkg.harness[0]);
     const picked = choice ? { model: choice.model } : override ? { model: override } : await packageModel(env, pkg.model, harness ?? DEFAULT_HARNESS);
-    if ("refused" in picked && picked.refused) {
+    if ("refused" in picked && picked.refused && !lacking) {
       const message = `The ${pkg.name} template prefers ${pkg.model?.prefer}, which this server can't run on ${harness ?? DEFAULT_HARNESS}: ${picked.refused.why}. Nothing was created.`;
       throw new ApiError("agent_not_runnable", message, { fields: [{ field: "model", reason: NOT_SET_UP, message, fix: picked.refused.fix }] });
     }
@@ -2966,12 +3813,27 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // by the triggers' own clock, the one POST /triggers checks by and they fire by (a template eval case's `now`).
     // A feed trigger whose urls are one array parameter given empty reads no feed: skipped, never the apply (feedLeftEmpty).
     const emptyFeeds = new Set(made.triggers.flatMap((trigger, i) => (feedLeftEmpty(trigger) ? [i] : [])));
-    const refusedTriggers = madeTriggerIssues(made.triggers, options.triggerClock?.now() ?? Date.now(), pkg.inputSchema).filter((issue) => !emptyFeeds.has(Number(/^triggers\.(\d+)\./.exec(issue.field)?.[1])));
+    // A trigger is made only when its firings have somewhere to go: on an API-only server, a schedule or a feed with the
+    // launch hook set (api-only.ts); under the run-keys setting, for an agent whose runs owe keys, only with the launch
+    // hook, the one way a firing's run carries them (run-keys.ts). Each other is said, and stays listed, so a trigger the
+    // agent has by its name is left as it is, never removed. One left on still fires, so its skip says so and how to stop it.
+    const hooked = options.launchHook !== undefined;
+    const hostless = new Map(made.triggers.flatMap((trigger, i) => {
+      const skip = (options.apiOnly ? apiOnlyTriggerSkipped(pkg.name, trigger, hooked) : undefined) ?? runKeysTriggerSkipped(pkg.name, trigger, brought, hooked);
+      if (!skip) return [];
+      const keptOn = had.find((row) => row.enabled && row.name === String(trigger.name).trim());
+      // An API-only server serves no trigger route: its archive is what turns the agent's triggers off.
+      const off = options.apiOnly ? "archiving the agent turns it off" : `PATCH /v2/triggers/${keptOn?.id} with {"enabled": false} turns it off`;
+      return [[i, keptOn ? { ...skip, message: `${skip.message} The agent's trigger ${keptOn.id} of that name is kept as it was, and still fires: ${off}.` } : skip] as const];
+    }));
+    const unmade = (i: number) => emptyFeeds.has(i) || hostless.has(i);
+    const refusedTriggers = madeTriggerIssues(made.triggers, options.triggerClock?.now() ?? Date.now(), pkg.inputSchema).filter((issue) => !unmade(Number(/^triggers\.(\d+)\./.exec(issue.field)?.[1])));
     if (refusedTriggers.length) throw invalid(refusedTriggers);
     // POST /agents' and POST /triggers' own body limit: parameters filled in more than once can grow a package past it.
     for (const one of [made.agent, ...made.triggers]) if (Buffer.byteLength(JSON.stringify(one)) > MAX_BODY) throw new ApiError("payload_too_large", `the ${pkg.name} template, its parameters filled in, makes a body over ${MAX_BODY} bytes`, { details: { limit: "max_body_bytes" } });
-    // The package's triggers by name, as this apply makes them (a feed it left empty is not made, so not listed either).
-    const listed = new Set(made.triggers.flatMap((trigger, i) => (emptyFeeds.has(i) ? [] : [String(trigger.name).trim()])));
+    // The package's triggers by name, as this apply makes them (a feed it left empty is not made, so not listed either,
+    // except one an API-only server does not make, which leaves each the agent has: hostless above).
+    const listed = new Set(made.triggers.flatMap((trigger, i) => (emptyFeeds.has(i) && !hostless.has(i) ? [] : [String(trigger.name).trim()])));
     // The triggers to remove: each of the agent's that an apply of this package marked as its own (TriggerRow.templateId)
     // and whose name the package no longer lists. A trigger the owner made, one a PATCH moved here from another agent (or
     // away and back), and one made before the mark was kept carry none, and are left. One whose removal fails keeps its
@@ -2986,7 +3848,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const resent = new Map<number, Source>();
     const remade = new Set<number>();
     for (const [i, trigger] of made.triggers.entries()) {
-      const was = emptyFeeds.has(i) ? undefined : hadByName.get(String(trigger.name).trim());
+      const was = unmade(i) ? undefined : hadByName.get(String(trigger.name).trim());
       if (!was || !isObject(trigger.source) || trigger.source.kind !== "composio" || !isObject(was.source) || was.source.kind !== "composio") continue;
       try {
         resent.set(i, composioTriggers.resent(was.source as Source, was.id, trigger.source as Source));
@@ -3002,7 +3864,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // have to make again without being its own, or another package's, refuses the apply with nothing written (409 under
     // triggers.<i>): the owner renames or deletes it, then applies again.
     const notOurs: InputIssue[] = made.triggers.flatMap((trigger, i) => {
-      const was = emptyFeeds.has(i) ? undefined : hadByName.get(String(trigger.name).trim());
+      const was = unmade(i) ? undefined : hadByName.get(String(trigger.name).trim());
       if (!was || was.templateId === pkg.id) return [];
       const kind = isObject(trigger.source) ? String(trigger.source.kind) : "";
       const wasKind = isObject(was.source) ? String(was.source.kind) : "";
@@ -3014,15 +3876,23 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     });
     if (notOurs.length) throw new ApiError("name_taken", notOurs.length === 1 ? notOurs[0]!.message : `${notOurs.length} of the agent's triggers have the names of the ${pkg.name} template's and are not its own. Nothing was changed: rename or delete each, then apply the template again.`, { fields: notOurs });
     // The agent keeps where it came from (the package on the revision the apply writes): the package's id, version and,
-    // imported, its SHA; and a keyed digest of the parameters it was given (never the parameters: one may be a credential).
-    // Which triggers are the package's is on each trigger (its mark), not here.
+    // imported, its SHA; a keyed digest of the parameters it was given (never the parameters: one may be a credential); and
+    // the names of the keys it declared (never a value), which an export names after the server's copy of the package
+    // changes, and whose tool keys a run may carry (under the run-keys setting, a run that does not is refused). Which
+    // triggers are the package's is on each trigger (its mark), not here.
     const digest = parametersDigest(sealKey, stable(parameters));
-    const origin: TemplatePackage = { id: pkg.id, version: pkg.version, sha: pkg.origin?.sha ?? null, parameters_digest: digest };
+    const origin: TemplatePackage = { id: pkg.id, version: pkg.version, sha: pkg.origin?.sha ?? null, parameters_digest: digest, secrets: declared };
+    return { pkg, onto, missing, unsaved, saved, mapped, grants, pick, made, emptyFeeds, hostless, unmade, hadByName, remade, resent, removing, digest, origin, warned: [...keyWarnings, ...skipped, ...kept, ...modelWarnings, ...computerWarnings] };
+  }
+
+  /** applyTemplate's work, in its turn on the agent where it has agent_id: prepareApply's reads and checks, then its
+   *  writes. */
+  async function applyWith(template: Package, body: Json) {
+    const { pkg, onto, saved, mapped, grants, made, emptyFeeds, hostless, unmade, hadByName, remade, resent, removing, digest, origin, warned } = await prepareApply(template, body, { plan: false });
     // A fresh apply of what already made a live agent here (the same package and parameters) still makes one, and says
     // which is there: an apply with its agent_id updates that one instead. Read before this apply's agent is made.
-    const twins: InputIssue[] = onto ? [] : (await agents.list())
-      .filter((one) => one.template?.id === pkg.id && one.template.parameters_digest === digest)
-      .map((one) => ({ field: "agent_id", reason: "duplicate", message: `The agent ${one.agent.id} was made from the ${pkg.name} template with these parameters, and this apply made another. To change that one instead, apply with agent_id ${one.agent.id}.` }));
+    const twins: InputIssue[] = (await twinsOf(onto, pkg.id, digest))
+      .map((id) => ({ field: "agent_id", reason: "duplicate", message: `The agent ${id} was made from the ${pkg.name} template with these parameters, and this apply made another. To change that one instead, apply with agent_id ${id}.` }));
     // An update writes the package as a new revision of the agent, as an edit does (its id, name and description are the
     // agent's own: the package's never replace them), but what the package owns and leaves out is gone (fromPackage); only onto the
     // revision it read, else 412 with nothing changed. A fresh apply makes the agent as POST /agents does.
@@ -3038,7 +3908,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // (catchup_window_s and max_active_runs the package leaves out back to their defaults, as a fresh apply makes them); a new name is made; one the package
     // marked and no longer lists is removed (`removing`). Each trigger the apply makes or keeps is marked as the package's; each write to one the agent had is made only while it
     // is still the agent's: one a PATCH moved away meanwhile is neither changed nor removed, and its name is made anew.
-    const ids: string[] = [];
+    // Each trigger it made or kept, in the package's order, as it stands after its write: the answer's triggers (its id,
+    // its name, its kind, and whether it is on).
+    const answered: { trigger_id: string; name: string; kind: string; enabled: boolean }[] = [];
+    const list = (view: { id: string; name: string; enabled: boolean; source: { kind: string } }) => answered.push({ trigger_id: view.id, name: view.name, kind: view.source.kind, enabled: view.enabled });
     // The triggers this apply made (never one it changed in place): what a refusal's undo removes.
     const madeNow: string[] = [];
     // Each webhook trigger's signing secret, minted as it is made: handed back in the apply's first answer alone, as POST
@@ -3053,7 +3926,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const leftThere: InputIssue[] = [];
     try {
       for (const [i, trigger] of made.triggers.entries()) {
-        if (emptyFeeds.has(i)) continue;
+        if (unmade(i)) continue;
         const aimed: Json = { ...trigger, target: { ...(trigger.target as Json), agent_id: entry.agent.id } };
         let was = hadByName.get(String(trigger.name).trim());
         const own = { templateId: pkg.id, onAgent: entry.agent.id };
@@ -3071,8 +3944,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
             // The package's settings whole: one its version leaves out goes back to what a fresh apply makes (POST
             // /triggers' default), never kept from the version before. PATCH reads null as no cap.
             const patch = { ...sent, catchup_window_s: sent.catchup_window_s ?? CATCHUP_WINDOW_S, max_active_runs: sent.max_active_runs ?? null };
-            if (await triggers.update(was.id, source ? { ...patch, source } : patch, own).then(() => true, movedAway)) {
-              ids.push(was.id);
+            const changed = await triggers.update(was.id, source ? { ...patch, source } : patch, own).catch(movedAway);
+            if (changed) {
+              list(changed);
               continue;
             }
             was = undefined;
@@ -3085,8 +3959,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
           const left = was ? await triggers.remove(was.id, own).catch(movedAway) : false;
           if (left === false) was = undefined;
           else if (isObject(left) && isObject(left.composio) && left.composio.done === false) throw new ApiError("upstream_failed", `The ${pkg.name} template's trigger ${String(trigger.name).trim()} changed, so its old Composio trigger instance must go before the new one is made, and Composio didn't delete it: the new one was not made, and the old trigger is kept here as it was. ${String(left.composio.note ?? "")} Then apply again.`.trim());
-          const { id: madeId, secret } = await triggers.create(was && !was.enabled ? { ...aimed, enabled: false } : aimed, { templateId: pkg.id });
-          ids.push(madeId);
+          const created = await triggers.create(was && !was.enabled ? { ...aimed, enabled: false } : aimed, { templateId: pkg.id });
+          const { id: madeId, secret } = created;
+          list(created);
           madeNow.push(madeId);
           if (secret) secrets.push({ trigger_id: madeId, secret });
         } catch (error) {
@@ -3126,9 +4001,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const ticked = saved.map((need) => ({ ...need, tools: need.tools.filter((tool) => grants.includes(mcpToolName(need.server, tool))) }));
     const appShort = await appPermissionWarnings({ name: pkg.name, mcp: ticked }, (server) => mcpMeta.get(server)?.auth === "github_app", () => githubConnect.installationPermissions(stopping.signal));
     // A webhook trigger's secret is in no apply answer: each one's warning sends the person to the console for it.
-    const hooks = made.triggers.flatMap((trigger, i) => (isObject(trigger.source) && trigger.source.kind === "webhook" ? [templateTriggerSecret(i)] : []));
+    const hooks = made.triggers.flatMap((trigger, i) => (!hostless.has(i) && isObject(trigger.source) && trigger.source.kind === "webhook" ? [templateTriggerSecret(i)] : []));
     // Each github trigger: what it runs on, when made (a note, never a lack); skipped, what to do about it.
-    const githubTriggers: InputIssue[] = made.triggers.flatMap((trigger, i) => (isObject(trigger.source) && trigger.source.kind === "github"
+    const githubTriggers: InputIssue[] = made.triggers.flatMap((trigger, i) => (!hostless.has(i) && isObject(trigger.source) && trigger.source.kind === "github"
       ? [unconnected.has(i) ? { field: `triggers.${i}`, reason: NOT_SET_UP, message: githubTriggerUnconnected(pkg.name, trigger.source) } : { field: `triggers.${i}`, reason: "not_an_option", message: githubTriggerWords(pkg.name, trigger.source) }]
       : []));
     // Each composio trigger it skipped: which, the refusal's words, and where to make it once that's fixed.
@@ -3137,13 +4012,18 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       return refused && isObject(trigger.source) && trigger.source.kind === "composio" ? [{ field: `triggers.${i}`, reason: NOT_SET_UP, message: composioTriggerSkipped(pkg.name, trigger, refused.message), fix: COMPOSIO_TRIGGER_FIX }] : [];
     });
     // Each feed trigger it skipped for want of a feed: which, and the parameter to set.
-    const feedsSkipped: InputIssue[] = [...emptyFeeds].map((i) => ({ field: `triggers.${i}`, reason: NOT_SET_UP, message: feedTriggerEmpty(pkg.name, made.triggers[i]!, isObject(pkg.triggers[i]?.source) ? pkg.triggers[i]!.source.urls : undefined) }));
+    const feedsSkipped: InputIssue[] = [...emptyFeeds].filter((i) => !hostless.has(i)).map((i) => ({ field: `triggers.${i}`, reason: NOT_SET_UP, message: feedTriggerEmpty(pkg.name, made.triggers[i]!, isObject(pkg.triggers[i]?.source) ? pkg.triggers[i]!.source.urls : undefined) }));
+    // Each trigger an API-only server does not make: not_set_up_here when the launch hook would make it, else not_an_option.
+    const hostSkipped: InputIssue[] = [...hostless].map(([i, { reason, message }]) => ({ field: `triggers.${i}`, reason, message }));
     // Each trigger it made, a webhook trigger's with its secret's metadata; the values go back beside the answer, never in it
     // (the route adds them to the first answer to the owner's session, after the Idempotency-Key's record is written).
     const minted = new Map(secrets.map(({ trigger_id, secret }) => [trigger_id, secret]));
     // Which saved server each MCP need runs on (null: none here, said under mcp.<toolkit>).
     const used = Object.fromEntries(mapped.map(({ need, server }) => [need.toolkit, server]));
-    const applied = { template: pkg.id, version: pkg.version, agent_id: entry.agent.id, servers: used, trigger_ids: ids, ...templateWebhookSecrets([...minted.keys()], new Date().toISOString()), warnings: [...skipped, ...kept, ...modelWarnings, ...computerWarnings, ...unpinned, ...warnings, ...hooks, ...githubTriggers, ...composioSkipped, ...feedsSkipped, ...leftThere, ...appShort, ...twins] };
+    // What the apply did to the agent: made it, wrote a new revision, or wrote none (an update whose package and
+    // parameters the current revision already holds: commitAgent keeps that revision).
+    const agentChange = !onto ? "made" : entry.revision?.id === onto.revision?.id ? "unchanged" : "updated";
+    const applied = { template: pkg.id, version: pkg.version, agent_id: entry.agent.id, revision_id: entry.revision?.id ?? null, revision_version: entry.version, agent_change: agentChange, servers: used, triggers: answered, ...templateWebhookSecrets([...minted.keys()], new Date().toISOString()), warnings: [...warned, ...unpinned, ...warnings, ...hooks, ...githubTriggers, ...composioSkipped, ...feedsSkipped, ...hostSkipped, ...leftThere, ...appShort, ...twins] };
     return { applied, minted, updated: onto !== undefined };
   }
 
@@ -3203,11 +4083,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  bound to its server's origin then and the model key to the gateway's (AGENT_MODEL_BASE_URL). `handed` is called only
    *  for new work, inside the request's idempotent work: there each mcp_auth entry must name a saved per_run server, and
    *  the model key must be text, else 422, nothing written. A retry its key already answered replays that answer even
-   *  when the server has since changed or gone, since it does no new work. */
-  function handedLaunchSecrets(body: Json): { body: Json; handed: () => Promise<{ mcp?: RunMcpAuth; model?: string }> } {
-    if (body.mcp_auth === undefined && body.model_key === undefined) return { body, handed: async () => ({}) };
-    const { mcp_auth, model_key, ...rest } = body;
-    const handed = async () => {
+   *  when the server has since changed or gone, since it does no new work. `keys`, the run's own tool keys (run-keys.ts),
+   *  go the same way: each a tool key name to its value as text, else 422 by name, never with the value; whether the
+   *  run's revision reads each is its start's check (prepareLaunch), by name alone. */
+  function handedLaunchSecrets(body: Json): { body: Json; handed: () => Promise<Handed> } {
+    if (body.mcp_auth === undefined && body.model_key === undefined && body.keys === undefined) return { body, handed: async () => ({}) };
+    const { mcp_auth, model_key, keys: given, ...rest } = body;
+    const handed = async (): Promise<Handed> => {
       const issues: InputIssue[] = [];
       const mcp = mcp_auth === undefined ? undefined : mcpAuthOf(mcp_auth, issues);
       const auth: Record<string, RunMcpAuth[string]> = {};
@@ -3227,11 +4109,16 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         else issues.push({ field, reason: "not_an_option", message: perRunComposio ? `The MCP server ${server} takes a Composio account from each run, not headers: send {"composio_user_id": "<user>", "connected_account_id": "ca_..."} (the account optional).` : `The MCP server ${server} keeps its own credential (auth ${row.auth}): only a per_run server takes one from a run.` });
       }
       const model = model_key === undefined ? undefined : modelKeyOf(model_key, issues);
+      const keys = given === undefined ? undefined : runKeysOf(given, issues);
       if (issues.length) throw invalid(issues);
-      return { ...(mcp_auth !== undefined ? { mcp: auth } : {}), ...(model !== undefined ? { model } : {}) };
+      // Empty keys are kept: on a message they replace the run's keys with none (on a start, none is what it has).
+      return { ...(mcp_auth !== undefined ? { mcp: auth } : {}), ...(model !== undefined ? { model } : {}), ...(keys !== undefined ? { keys } : {}) };
     };
     return { body: rest, handed };
   }
+
+  /** The start option naming the tool keys `handed` carries, by name (runs-over-store StartOptions.keys). */
+  const carriedOf = (handed: Handed): { keys?: readonly string[] } => (handed.keys ? { keys: Object.keys(handed.keys) } : {});
 
   /** The 422 for a model key where the run's model never takes it (run-model-key.ts modelKeyMisfit), at `model_key`. */
   const misfit = (why: string) => invalid([{ field: "model_key", reason: "not_an_option", message: why }]);
@@ -3240,16 +4127,15 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  where the run's model never takes it is refused (modelKeyMisfit), and a start that hands other secrets but no key
    *  is refused where the server holds no key for the run's route (serverKeyMissing). Undefined when nothing is handed:
    *  the start's own check (runs-over-store keyedOrRefused) refuses that one where it has no key to spend. */
-  function startSeal(handed: { mcp?: RunMcpAuth; model?: string }): StartOptions["sealed"] {
-    if (handed.mcp === undefined && handed.model === undefined) return undefined;
-    return (runId, launch, kind) => {
-      const target = { kind, model: launch.model, native: Boolean(launch.native) };
+  function startSeal(handed: Handed): StartOptions["sealed"] {
+    if (handed.mcp === undefined && handed.model === undefined && handed.keys === undefined) return undefined;
+    return (runId, _launch, target) => {
       if (handed.model !== undefined) {
         const why = modelKeyMisfit(env, target);
         if (why) throw misfit(why);
       } else if (serverKeyMissing(env, target)) throw modelKeyRequired(false);
       const origin = runModelOrigin(env);
-      return sealRunLaunch(sealKey, runId, { ...(handed.mcp ? { mcp: handed.mcp } : {}), ...(handed.model !== undefined && origin ? { model: { key: handed.model, origin } } : {}) });
+      return sealRunLaunch(sealKey, runId, { ...(handed.mcp ? { mcp: handed.mcp } : {}), ...(handed.model !== undefined && origin ? { model: { key: handed.model, origin } } : {}), ...(handed.keys ? { keys: handed.keys } : {}) });
     };
   }
 
@@ -3258,29 +4144,71 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  part it does not hand is kept as the run holds it (none after its turn's end erased it). A model key is refused
    *  where the run's model never takes it. One is required where the server holds no key for the run's route and the
    *  run holds none when the message is written (its last turn ended): 422 model_key_required from inside that write,
-   *  which then writes nothing, so a turn never starts with no key to spend. */
-  async function messageSeal(run: { id: string; kind: string }, handed: { mcp?: RunMcpAuth; model?: string }): Promise<LaunchSealed | undefined> {
+   *  which then writes nothing, so a turn never starts with no key to spend. Its `keys` replace the run's whole, each one
+   *  its revision reads (else 422 by name); under the run-keys setting, a message that would leave the run without a tool
+   *  key its template declared and this host does not hold (its last turn's end erased them) is refused, 409, nothing
+   *  written. A value the run held that the message replaces is kept sealed as `retired`, only to be cut, until the turn's
+   *  end erases the seal; where what the run holds does not open here, or past RETIRED_MAX values replaced, the seal says
+   *  so (`lost`), and the run is withheld until its end, which counts nothing (handed-values.ts launchValuesOf). */
+  async function messageSeal(run: { id: string; kind: string }, handed: Handed): Promise<LaunchSealed | undefined> {
     const launch = readLaunchBody((await store.runs.launch(run.id)).body);
+    // A held run its model kept from running takes no message (runs-over-store.ts message refuses it in its create's
+    // words): nothing to seal, and no key check answers before that refusal (its launch pins no model to check).
+    if (launch?.hold?.refused) return undefined;
     const target = { kind: run.kind, model: launch?.model, native: Boolean(launch?.native) };
     if (handed.model !== undefined) {
       const why = modelKeyMisfit(env, target);
       if (why) throw misfit(why);
     }
+    const row = handed.keys || options.runKeys ? await store.runs.get(run.id) : undefined;
+    const revision = row ? await store.agents.revision(row.revisionId) : undefined;
+    if (handed.keys) {
+      const undeclared = undeclaredKeys(Object.keys(handed.keys), revision ? await declaredKeys(revision as unknown as Revision) : []);
+      if (undeclared.length) throw invalid(undeclared);
+    }
+    const owed = options.runKeys && revision ? keysOwed(revision, env, []) : [];
     const needsKey = handed.model === undefined && serverKeyMissing(env, target);
-    if (handed.mcp === undefined && handed.model === undefined && !needsKey) return undefined;
+    if (handed.mcp === undefined && handed.model === undefined && handed.keys === undefined && !needsKey && !owed.length) return undefined;
     const origin = runModelOrigin(env);
     return (current) => {
-      const held = current === null ? {} : (openRunLaunch(sealKey, run.id, current) ?? {});
+      const opened = openRunLaunch(sealKey, run.id, current);
+      const held = opened ?? {};
       const mcp = handed.mcp ?? held.mcp;
       const model = handed.model !== undefined && origin ? { key: handed.model, origin } : held.model;
+      const keys = handed.keys ?? held.keys;
       if (!model && needsKey) throw modelKeyRequired(true);
-      return sealRunLaunch(sealKey, run.id, { ...(mcp ? { mcp } : {}), ...(model ? { model } : {}) });
+      const unpaid = owed.length && revision ? keysOwed(revision, env, Object.keys(keys ?? {})) : [];
+      if (unpaid.length) throw keysOwedRefusal(unpaid);
+      const next = { ...(mcp ? { mcp } : {}), ...(model ? { model } : {}), ...(keys ? { keys } : {}) };
+      const retired = retiredValues(held, next);
+      const lost = opened === undefined || held.lost === true || retired.length > RETIRED_MAX;
+      return sealRunLaunch(sealKey, run.id, { ...next, ...(lost ? { lost: true as const } : { retired }) });
     };
   }
 
   async function createRun(req: IncomingMessage, agentId: string) {
     const entry = await needRunnableAgent(agentId);
     const { body, handed } = handedLaunchSecrets(await bodyOf(req));
+    // The host's run for a firing the launch hook handed it: the firing's own run, under the firing's key (a second start
+    // answers that run), started by the trigger's target policy as a firing here starts one (its cap, which the host's may
+    // lower, its effort when it sets one, its previous result, its trigger, origin and title), with the host's body and
+    // launch secrets over it. The firing is its key, so it takes no Idempotency-Key, whose check across a restart is the run's origin.
+    if (body.trigger_firing !== undefined) {
+      if (req.headers["idempotency-key"] !== undefined) throw invalid([{ field: "trigger_firing", reason: "not_allowed", message: "A run for a trigger firing is keyed by the firing, and a second start answers its run: send it without Idempotency-Key." }]);
+      // It starts on its trigger's target as a firing here would: on the agent's current revision, holding no computer.
+      const fixed = HANDED_FIXED.filter((field) => body[field] !== undefined);
+      if (fixed.length) throw invalid(fixed.map((field) => ({ field, reason: "not_allowed", message: `A run for a trigger firing starts on its trigger's target, on the agent's current revision and holding no computer: send it without ${field}.` })));
+      const { trigger_firing: given, ...rest } = body;
+      // The firing's room is checked and held as drive's is while its run is written; the firing is started with the run.
+      const run = await triggers.handedStart(given, agentId, async (firing) => {
+        const secrets = await handed();
+        const seal = startSeal(secrets);
+        // What the server writes of the start (its input, which the run's title is read from) is cut of what it hands.
+        const cut = cutHanded(rest, handedSecretValues(secrets));
+        return targets.start(firing.target, cut.input, firing.trigger, firing.from, firing.title, firing.previous, { body: cut, ...(seal ? { sealed: seal } : {}), ...carriedOf(secrets) });
+      });
+      return { status: 202, body: await viewOverStore(store, run.run_id, viewDepsFor(linkOrigin(req))), headers: { location: `/v2/runs/${run.run_id}`, ...(run.replayed ? { "idempotent-replayed": "true" } : {}) } };
+    }
     return idempotent(req, `/agents/${agentId}/runs`, body, async (origin) => {
       // A run the store started under this key, though no answer was kept (its server went down first): that run, as it is now.
       const first = origin && (await agents.request(() => agents.store.runOfOrigin(origin.key)));
@@ -3289,8 +4217,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const headers: Record<string, string> = { location: `/v2/runs/${first.runId}`, "idempotent-replayed": "true" };
         return { status: 202, body: await viewOverStore(store, first.runId, viewDepsFor(linkOrigin(req))), headers };
       }
-      const seal = startSeal(await handed());
-      const run = await startRunOf(entry, body, { ...(origin ? { origin } : {}), ...(seal ? { sealed: seal } : {}) });
+      const secrets = await handed();
+      const seal = startSeal(secrets);
+      // What the server writes of the start (its input, which the run's title is read from) is cut of what it hands; the
+      // idempotency fingerprint stays the body's as sent.
+      const run = await startRunOf(entry, cutHanded(body, handedSecretValues(secrets)), { ...(origin ? { origin } : {}), ...(seal ? { sealed: seal } : {}), ...carriedOf(secrets) });
       // Its view from the store: the run and its launch were inserted in one transaction, so the view reads it whole.
       return { status: 202, body: await viewOverStore(store, run.id, viewDepsFor(linkOrigin(req))), headers: { location: `/v2/runs/${run.id}` } };
     });
@@ -3303,6 +4234,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  (runs-over-store startInline). The answer is POST /agents/{agent_id}/runs' own: 202 and the run. */
   async function createInlineRun(req: IncomingMessage) {
     const { body, handed } = handedLaunchSecrets(await bodyOf(req));
+    if (isObject(body.definition) && body.definition.cli_learning !== undefined) throw new ApiError("input_invalid", "CLI learning references are registered only through /cli-learning/connections on the source machine.");
     if (isObject(body.definition) && body.definition.native !== undefined) throw new ApiError("input_invalid", "Native references are registered only through /native/connect on the source machine; an inline definition cannot create one.");
     const { external, definition, skills, note, revision: pinned, ...run } = body;
     const given = { definition, ...(skills !== undefined ? { skills } : {}), ...(note !== undefined ? { note } : {}) };
@@ -3342,8 +4274,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const headers: Record<string, string> = { location: `/v2/runs/${first.runId}`, "idempotent-replayed": "true" };
         return { status: 202, body: await viewOverStore(store, first.runId, viewDepsFor(linkOrigin(req))), headers };
       }
-      const seal = startSeal(await handed());
-      const started = await startInline(store, startDeps, inline, run, { ...(origin ? { origin } : {}), ...(seal ? { sealed: seal } : {}) });
+      const secrets = await handed();
+      const seal = startSeal(secrets);
+      // What the server writes of the start (its input, which the run's title is read from) is cut of what it hands.
+      const started = await startInline(store, startDeps, inline, cutHanded(run, handedSecretValues(secrets)), { ...(origin ? { origin } : {}), ...(seal ? { sealed: seal } : {}), ...carriedOf(secrets) });
       return { status: 202, body: await viewOverStore(store, started.id, viewDepsFor(linkOrigin(req))), headers: { location: `/v2/runs/${started.id}` } };
     });
   }
@@ -3420,7 +4354,15 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     return value === "true";
   }
 
-  async function runsPage(url: URL, filter: { agent?: string; revision?: string }, origin: string) {
+  /** GET /runs' `source`, once: a source's name (claude-code, codex, ...) keeps the runs imported from it, `live` the runs not imported. */
+  function sourceParam(url: URL): string | undefined {
+    const given = url.searchParams.getAll("source");
+    if (given.length === 0) return undefined;
+    if (given.length > 1 || !/^[a-z][a-z0-9-]{0,31}$/.test(given[0]!)) throw new ApiError("bad_request", "source is one source's name (claude-code, codex, ...), or live; once");
+    return given[0];
+  }
+
+  async function runsPage(url: URL, filter: { agent?: string; revision?: string }, origin: string, source?: string) {
     const limit = limitOf(url.searchParams.get("limit"));
     const offset = cursorOf(url.searchParams.get("cursor"));
     const status = url.searchParams.get("status");
@@ -3434,7 +4376,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // ordered and cut to the page in one query, so a list costs the same at ten runs and at thousands, however long their
     // journals. An audit's shadow run is no row of the list (learn/audit.ts): it is read by id, and its cost is its served
     // run's. A run's archive is its own or its agent's.
-    const where = { ...(filter.agent !== undefined ? { agentId: filter.agent } : {}), ...(filter.revision !== undefined ? { revisionId: filter.revision } : {}), ...(labels ? { labels } : {}), archived };
+    const where = { ...(filter.agent !== undefined ? { agentId: filter.agent } : {}), ...(filter.revision !== undefined ? { revisionId: filter.revision } : {}), ...(labels ? { labels } : {}), ...(source !== undefined ? { source } : {}), archived };
     // A listing is built by the server's lister (run-listing.ts) once per change, so a list finds it current. One that is
     // behind (a write landed since, or the lister has not reached it since the store was upgraded) is built here, written
     // back, and shown as built: for a status filter, first every run still going whose listing is behind (its row's
@@ -3483,14 +4425,16 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   async function timeline(req: IncomingMessage, res: ServerResponse, url: URL, runId: string): Promise<void> {
     const after = integerParam(url.searchParams.get("after"), "after", Number.MAX_SAFE_INTEGER);
     const waitMs = integerParam(url.searchParams.get("wait_ms"), "wait_ms", MAX_WAIT_MS);
-    // This server's own: a page of at most `limit` rows, for a client that reads a little at a time (the MCP tool's).
-    const asked = url.searchParams.get("limit");
-    if (asked !== null && !(/^\d+$/.test(asked) && Number(asked) >= 1 && Number(asked) <= PAGE_ROWS)) throw new ApiError("bad_request", `limit is an integer from 1 to ${PAGE_ROWS}`);
-    const limit = asked === null ? PAGE_ROWS : Number(asked);
-    // `calls=whole`: each call's arguments and its output's head too (tool_input, tool_result_text), for a grader.
+    // `calls=whole`: each call's arguments and its output too, whole to CALL_RESULT_CHARS (tool_input, tool_result_text), for a grader.
     const shape = url.searchParams.get("calls");
     if (shape !== null && shape !== "whole") throw new ApiError("bad_request", "calls is whole, or absent");
     const calls = shape === "whole";
+    // This server's own: a page of at most `limit` rows, for a client that reads a little at a time (the MCP tool's). A
+    // calls=whole page holds at most CALLS_PAGE_ROWS, as each row's result may be CALL_RESULT_CHARS long.
+    const most = calls ? CALLS_PAGE_ROWS : PAGE_ROWS;
+    const asked = url.searchParams.get("limit");
+    if (asked !== null && !(/^\d+$/.test(asked) && Number(asked) >= 1 && Number(asked) <= most)) throw new ApiError("bad_request", `limit is an integer from 1 to ${most}${calls ? " with calls=whole" : ""}`);
+    const limit = asked === null ? most : Number(asked);
     // The run's page from the store (runTimelines): run_id/status/state/reset/rows/drop/next_after/unchanged/has_more/final/
     // cost, byte-identical to the old live page. TODO(learning-row freshness): a learning row approved or retired since the
     // journal wrote it reads its journal state here (store-view owns the fresh learning view); folded in with learning-1.
@@ -3575,11 +4519,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // ---- usage ----------------------------------------------------------------------------------------------------------
 
   // Each ended run's meters, over the one store (store-reads/cap metersOverStore, cap.ts meterFiguresFrom over A's journal):
-  // kept, as a settled run's journal no longer changes, keyed by its end, so a run opened again and ended again is read
-  // again. A run whose journal cannot be read leaves it all tokens.
+  // kept, as a settled run's journal no longer changes, keyed by its end and its cost, so a run opened again and ended
+  // again is read again: a grade's round ends it again at the same end time (its look-back keeps the end), its cost moved
+  // by the round's spend. A run whose journal cannot be read leaves it all tokens.
   const endedMeters = new Map<string, Awaited<ReturnType<typeof metersOverStore>>>();
-  const metersOf = async (row: { id: string; endedAt?: string | null }) => {
-    const key = `${row.id} ${row.endedAt}`;
+  const metersOf = async (row: { id: string; endedAt?: string | null; costUsd?: number | null }) => {
+    const key = `${row.id} ${row.endedAt} ${row.costUsd}`;
     let meters = endedMeters.get(key);
     if (!meters) {
       // An ended run's meter figures over the one store: cap.ts meterFiguresFrom over A's journal, its paid tools' charges
@@ -3702,7 +4647,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     switch (path) {
       case "/setup": {
         const byToken = req.headers.authorization !== undefined;
-        if (byToken && !bearer(req.headers.authorization, req)) throw new ApiError("unauthenticated", "the Bearer here is the server's token, or none", {}, { "www-authenticate": "Bearer" });
+        if (byToken && !startToken(req.headers.authorization, req)) throw new ApiError("unauthenticated", "the Bearer here is the server's token, or none", {}, { "www-authenticate": "Bearer" });
         if (!byToken) fromPage(req);
         const { password, body } = await passwordIn(req, ["password", "code", "import"]);
         // The owner's choice: the projects to import, by the ids the offer named them with (GET /v2/setup/import's
@@ -3718,7 +4663,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const along = takes ? { keep: () => writeDurable(importAsked, chosen ? JSON.stringify({ projects: chosen }) : ""), drop: () => rm(importAsked, { force: true }) } : undefined;
         // The server's API token stands in for the code in the code field too (on Render it is in the Environment tab, the
         // code only in the log), compared as the header is, in constant time; a wrong one counts as a wrong code.
-        const tokenAsCode = typeof body.code === "string" && body.code !== "" && bearer(`Bearer ${body.code}`, req);
+        const tokenAsCode = typeof body.code === "string" && body.code !== "" && startToken(`Bearer ${body.code}`, req);
         const made = await me.setFirst(password, body.code, byToken || tokenAsCode, along);
         if (made === "exists") throw new ApiError("forbidden", "this server has its owner, or is being set up: sign in");
         if (made === "missing") throw new ApiError("forbidden", "this server's setup takes the setup code in its log: send it as code");
@@ -3790,13 +4735,17 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         return send(res, 200, { signed_in: true }, { "set-cookie": ownerCookie(req, me.session(), SESSION_S) });
       }
       // This browser: its session revoked on the server (a copy of its cookie is no session either) and its cookie
-      // cleared; every other browser's session left as it is. A viewer watching with it is cut off.
+      // cleared; every other browser's session left as it is. A viewer watching with it is cut off. Its sessions at this
+      // server's other ports go too (page.ts sessionsAtEveryPort: a browser sends a host's cookies to every port), each
+      // name cleared; a cookie this server did not make (another server's on the same host) is left as it is.
       case "/auth/sign-out": {
         fromPage(req);
         if (!signedIn(req, me)) throw new ApiError("unauthenticated", "this browser is not signed in");
-        for (const value of heldSessions(req)) if (me.valid(value)) me.revoke(value);
+        const ended = sessionsAtEveryPort(req).filter(({ value }) => me.valid(value));
+        for (const { value } of ended) me.revoke(value);
         viewers.recheck();
-        return send(res, 200, { signed_out: true }, { "set-cookie": ownerCookie(req, "", 0) });
+        const names = new Set([ownerCookieName(req), ...ended.map(({ name }) => name)]);
+        return send(res, 200, { signed_out: true }, { "set-cookie": [...names].map((name) => ownerCookie(req, "", 0, name)) });
       }
       // Every browser and phone: the sessions' epoch moves on, so every cookie made before is none, this one's too.
       case "/auth/sign-out-everywhere": {
@@ -3888,14 +4837,24 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       // in Mode 2): where there is one, the document is made again with it (cheap), its tools available with no box.
       const runnerShell = shellTools(await shellOf({ kind: "none" }));
       await planNow();
+      await ollamaNow();
       const answer = forCaller(runnerShell.size ? compose(runnerShell) : caps, byOwnerSession(req));
       // features.triggers.public_url: whether Composio (or any sender) has a public address to reach, never the address.
       // runner_refused: why no runner here can take a run, in their words, while every runner there refused to claim
       // (runner/presence.ts); null while one can, or none is there yet.
       const runnerRefused = (await refusedNow().catch(() => undefined)) ?? null;
-      return send(res, 200, { ...answer, runner_refused: runnerRefused, features: { ...answer.features, computers: await computerCapabilities(computersOf()), triggers: { ...answer.features.triggers, public_url: Boolean(options.publicUrl) } } });
+      // store_schema: the store's version and runner floor now, beside this build's (Store.schemaState), for a deploy's
+      // skew check; left out when the store cannot say (a read that failed).
+      const state = await store.schemaState?.().catch(() => undefined);
+      const storeSchema = state ? { store_schema: { version: state.version, runner_floor: state.runnerFloor, known: state.known } } : {};
+      // features.harness_keys.kept names which harness ids still have keys stored: the owner's session or a holder of
+      // the server's token reads it; a caller with neither (this route answers before any bearer check) reads none.
+      const keptShown = byOwnerSession(req) || bearer(req.headers.authorization, req);
+      const keptCap = { ...answer.features.harness_keys, kept: keptShown ? answer.features.harness_keys.kept : [] };
+      // features.api_keys.routes: false on an API-only server, which serves none of the keys' routes and reads no key.
+      return send(res, 200, { ...answer, ...storeSchema, runner_refused: runnerRefused, features: { ...answer.features, harness_keys: keptCap, computers: await computerCapabilities(computersOf()), triggers: { ...answer.features.triggers, public_url: Boolean(options.publicUrl) }, claude_login: !loginOff && !options.apiOnly, api_keys: { ...answer.features.api_keys, routes: !options.apiOnly } } });
     }
-    if (found.name === "getOpenapi") return send(res, 200, servedOpenapi(openapi, req.socket.localPort));
+    if (found.name === "getOpenapi") return send(res, 200, servedOpenapi(openapi, ownerCookieName(req)));
     // With accounts off there is no owner, and the console still asks whether it may save a secret: secret-writes.ts'
     // verdict over the request the page just marked, never a signed-in user it doesn't have.
     if (found.name === "getAuthSession") return send(res, 200, { accounts: false, ...secretsWritableFields(secretWriterFacts(req, { accounts: false, loopbackBound: isLoopback(host) })) });
@@ -3982,28 +4941,42 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       authFailed(`/v2${path}`, "replay_without_session");
       throw new ApiError("forbidden", owner ? "Replaying a learned workflow's revision takes the owner's password sign-in in the console, never a token." : "Replaying a learned workflow's revision takes the owner's password sign-in, and this server has no accounts (AGENTRUN_ACCOUNTS=0).");
     }
-    // A run's live computer view is a full-control credential for its computer: the owner's signed-in page alone, as
-    // approving a note is (never a token a run, an MCP client or a script may hold).
-    if ((found.name === "getRunBrowser" || found.name === "handBackRunBrowser" || found.name === "getRunComputer") && !byOwnerSession(req) && req.headers.authorization !== undefined) {
+    // A run's live computer view, and its take-over and hand-back (COMPUTER_ROUTES), are a full-control credential for its
+    // computer: the owner's signed-in page alone, as approving a note is (never a token a run, an MCP client or a script
+    // may hold). An API-only server has no owner: there the server's token, its backend's own, takes a run's computer,
+    // checked below as every route's token is.
+    const runComputer = found.name === "getRunComputer" || COMPUTER_ROUTES.has(found.name);
+    if ((found.name === "getRunBrowser" || found.name === "handBackRunBrowser" || (runComputer && !options.apiOnly)) && !byOwnerSession(req) && req.headers.authorization !== undefined) {
       const what = found.name.endsWith("Browser") ? "browser" : "computer";
       authFailed(`/v2${path}`, `${what}_without_session`);
       throw new ApiError("forbidden", owner ? `A run's live ${what} takes the owner's password sign-in in the console, never a token.` : `A run's live ${what} takes the owner's password sign-in, and this server has no accounts (AGENTRUN_ACCOUNTS=0).`);
     }
-    // A run's desktop or phone view drives it once taken over: the owner's signed-in page alone (computer-routes.ts decides).
-    if (COMPUTER_ROUTES.has(found.name) && !byOwnerSession(req) && req.headers.authorization !== undefined) authFailed(`/v2${path}`, "computer_without_session");
     // Answering a tool call that waits for approval (tool-gate.ts) is the same: the owner's signed-in page alone, never a
     // token, which the run's own process, an agent's MCP client or a script may hold.
     if (found.name === "answerApproval" && !byOwnerSession(req) && req.headers.authorization !== undefined) {
       authFailed(`/v2${path}`, "approve_without_session");
       throw new ApiError("forbidden", owner ? "Answering a tool call's approval takes the owner's password sign-in in the console, never a token." : "Answering a tool call's approval takes the owner's password sign-in, and this server has no accounts (AGENTRUN_ACCOUNTS=0).");
     }
+    // Purging a run or an agent, deleting another system's agent, or resetting an agent's learning cannot be undone: the
+    // owner's session or the API token. A console session counts as the owner's only where it does for a secret
+    // (secret-writes.ts: accounts off on a loopback-bound server); bound off loopback with accounts off, whoever opened the
+    // console is no owner. With no credential at all it is 401, as every route is.
+    if ((found.name === "deleteRun" || found.name === "deleteAgent" || found.name === "deleteAgentLearning") && byConsoleSession(req) && !writesSecretsAllowed(req, { accounts: owner !== undefined, loopbackBound: isLoopback(host) })) {
+      authFailed(`/v2${path}`, "delete_without_owner");
+      throw new ApiError("forbidden", "Deleting a run or an agent, or resetting an agent's learning, takes the owner's session (the password sign-in, or the console on a server bound to loopback) or the API token.");
+    }
     // Saving, replacing or removing a secret (secret-writes.ts): the one check. Who may is mayWriteSecrets' alone (the
     // owner's session); which writes are secret is each plane's registered predicate, read from the body, so a token's
     // non-secret edit on the same route still goes through. A body that does not read counts as the plane says of none.
     // What a stored predicate read to let the request through (SecretRequest.seen): the operation's write is refused if
     // that changed before it lands, so a write allowed against one stored credential never lands over another.
+    // `byToken`: the gate read this request as the API token's, so an MCP server it saves is recorded as the token's, and
+    // it saves over or removes only one the token saved (mcp-secret-writes.ts tokenWriteOverRefused), compared again in
+    // the statement that writes or removes the row (mcp-servers-store.ts save, remove).
     let secretSeen: unknown;
+    let byToken = false;
     if (isSecretWriteOperation(found.name) && req.headers.authorization !== undefined && !writesSecretsAllowed(req, { accounts: owner !== undefined, loopbackBound: isLoopback(host) })) {
+      byToken = true;
       const body = req.method === "DELETE" || req.method === "GET" ? undefined : await bodyOf(req).catch(() => undefined);
       // A segment that is not valid percent-encoding is taken as it came: the request goes on to the token's own check.
       const params = (found.pattern.exec(path) ?? []).slice(1).map((part) => {
@@ -4013,7 +4986,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
           return part;
         }
       });
-      const checked: SecretRequest = { params, store };
+      const checked: SecretRequest = { params, store, apiOnly: options.apiOnly === true };
       if (await writesSecretFor(found.name, body, checked)) {
         authFailed(`/v2${path}`, "secret_without_session");
         // Where the person finishes it: the operation's console page, filled with what the request held that is no
@@ -4036,20 +5009,89 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       await broker.authenticate(connectorId, String(req.headers.authorization).slice(7));
       return send(res, 200, await broker.revoke(connectorId));
     }
-    if (["importRemoteTarget", "importRemoteHistory", "pollRemoteConnector", "remoteCommandEvents", "completeRemoteCommand"].includes(found.name)) {
+    if (["importRemoteTarget", "importRemoteHistory", "pollRemoteConnector", "remoteCommandEvents", "completeRemoteCommand", "grantSourceSync", "publishSourceSync", "sourceSyncFailure"].includes(found.name)) {
       const parts = found.pattern.exec(path)!;
       const connectorId = decodeURIComponent(parts[1]!);
       const broker = new RemoteConnectors(store);
       await broker.authenticate(connectorId, String(req.headers.authorization ?? "").replace(/^Bearer /, ""));
       // History pages and command completions have separate bounded contracts; other JSON keeps MAX_BODY.
       const limit = found.name === "importRemoteHistory" ? REMOTE_HISTORY_BODY_BYTES
-        : found.name === "completeRemoteCommand" ? REMOTE_COMPLETION_BODY_BYTES : MAX_BODY;
+        : found.name === "completeRemoteCommand" ? REMOTE_COMPLETION_BODY_BYTES : found.name === "publishSourceSync" ? SOURCE_BODY_BYTES : MAX_BODY;
       const body = await bodyOf(req, limit);
-      if (found.name === "importRemoteTarget") return send(res, 200, await broker.importTarget(connectorId, body));
+      if (found.name === "importRemoteTarget") return send(res, 200, await broker.importTarget(connectorId, body, cliAdoptionResolver(store, new CliLearningConnections(store, sdkSecret))));
       if (found.name === "importRemoteHistory") return send(res, 200, await broker.importHistory(connectorId, decodeURIComponent(parts[2]!), body, [...tokens.map((entry) => entry.token),String(req.headers.authorization??"").replace(/^Bearer /,"")]));
+      if (["grantSourceSync", "publishSourceSync", "sourceSyncFailure"].includes(found.name)) {
+        const targetId = decodeURIComponent(parts[2]!), target = await broker.syncAuthority(connectorId, targetId);
+        const scoped = sources.forConnector(broker, connectorId, targetId);
+        if (found.name === "grantSourceSync") {
+          if (Object.keys(body).length) throw new ApiError("input_invalid", "A sync grant takes an empty object; export authority comes from connector enrollment.");
+          const granted = await agentWrite(target.agentId, async () => {
+            const record = await scoped.grant(target.agentId);
+            // Account/environment prerequisites can recover while source bytes stay unchanged.
+            try { await scoped.reconcile(target.agentId); }
+            catch (error) { if (!(error instanceof SourcePreparationError) && !(error instanceof ApiError && error.status < 500)) throw error; }
+            return record;
+          });
+          return send(res, 200, granted);
+        }
+        const allowed = found.name === "publishSourceSync" ? ["generation", "sequence", "snapshot"] : ["generation", "sequence", "code"];
+        if (Object.keys(body).some(key => !allowed.includes(key)) || typeof body.generation !== "string" || !Number.isSafeInteger(body.sequence) || Number(body.sequence) < 0) throw new ApiError("input_invalid", "Supply the current sync generation and a non-negative sequence.");
+        if (found.name === "sourceSyncFailure") {
+          if (typeof body.code !== "string" || !Object.hasOwn(SOURCE_FAILURES, body.code)) throw new ApiError("input_invalid", "Choose a supported source failure code.");
+          return send(res, 200, await agentWrite(target.agentId, () => scoped.failed(target.agentId, { generation: body.generation as string, sequence: Number(body.sequence), code: body.code as SourceFailureCode })));
+        }
+        if (!isObject(body.snapshot)) throw new ApiError("input_invalid", "Supply a complete source snapshot envelope.");
+        try {
+          // Even an idempotent replay must carry a valid bounded envelope; a matching digest is not validation.
+          validateSourceSnapshot(body.snapshot as unknown as SourceSnapshot);
+          const saved = await agentWrite(target.agentId, async () => {
+            const published = await scoped.publish(target.agentId, { generation: body.generation as string, sequence: Number(body.sequence), snapshot: body.snapshot as unknown as SourceSnapshot });
+            // Publication is durable even when a new setup cannot yet be applied; the owner sees its readiness reason.
+            try { await scoped.reconcile(target.agentId); }
+            catch (error) { if (!(error instanceof SourcePreparationError) && !(error instanceof ApiError && error.status < 500)) throw error; }
+            return published;
+          });
+          return send(res, 200, saved);
+        } catch (error) {
+          if (error instanceof SnapshotError) throw new ApiError("input_invalid", error.message);
+          throw error;
+        }
+      }
       if (found.name === "pollRemoteConnector") return send(res, 200, await broker.poll(connectorId, body));
       const commandId = decodeURIComponent(parts[2]!);
       return send(res, 200, found.name === "remoteCommandEvents" ? await broker.events(connectorId, commandId, body) : await broker.complete(connectorId, commandId, body));
+    }
+    if (found.name === "startCliLearningRun") {
+      if (options.apiOnly || options.publicUrl || !isLoopback(host) || !isLoopback(req.socket.remoteAddress ?? "")) throw new ApiError("forbidden", "CLI learning runs require the enrolled local source server.");
+      const connectionId=decodeURIComponent(found.pattern.exec(path)![1]!);
+      const broker=new CliLearningConnections(store,sdkSecret);
+      const connection=await broker.authenticate(connectionId,String(req.headers.authorization??"").replace(/^Bearer /,""));
+      if(!req.headers["idempotency-key"])throw new ApiError("bad_request","A CLI prompt window requires Idempotency-Key.");
+      const body=await bodyOf(req);
+      if(Object.keys(body).some(key=>!["session_id","turn_id","input","instructions","policy_complete","model"].includes(key)) || typeof body.session_id!=="string" || !body.session_id || body.session_id.length>256 || typeof body.turn_id!=="string" || !body.turn_id || body.turn_id.length>256 || typeof body.policy_complete!=="boolean")throw new ApiError("input_invalid","Supply session_id, turn_id, input, instructions, and explicit policy_complete.");
+      const entry=await needAgent(connection.agent_id);
+      const runtime = NATIVE_RUNTIME_FACTS[connection.runtime].captureRuntime;
+      const sdk=new SdkRuns(store,data,sdkSecret,()=>[...serverSecrets(),broker.token(connection)],[],"cli");
+      const input={runtime,input:body.input,instructions:body.instructions,...(body.model!==undefined?{model:body.model}:{})};
+      const key=`cli-window:${connectionId}:${connection.generation}:${createHash("sha256").update(`${body.session_id}\0${body.turn_id}`).digest("hex")}`;
+      const fingerprint=createHash("sha256").update(stable(body)).digest("hex");
+      const answer=await idempotent(req,`${path}:${connection.generation}`,body,async()=>({status:201,body:await sdk.start(entry,input,startDeps, {key,fingerprint},{check:async()=>{}},linkOrigin(req),{runtime,connection_id:connectionId,connection_generation:connection.generation,session_id:body.session_id as string,turn_id:body.turn_id as string,instructions:String(body.instructions??""),policy_complete:body.policy_complete as boolean})}));
+      const receipt=await sdk.receipt((answer.body as {run_id:string}).run_id,linkOrigin(req));
+      await broker.recordWindow(connectionId,connection.generation,receipt.run_id,body.session_id as string);
+      return send(res,answer.status,receipt,answer.headers);
+    }
+    if (["getCliLearningRun","cliLearningEvents","completeCliLearningRun"].includes(found.name)) {
+      const runId=decodeURIComponent(found.pattern.exec(path)![1]!);
+      const authentication=new SdkRuns(store,data,sdkSecret,serverSecrets,[],"cli");
+      await authentication.authenticate(runId,String(req.headers.authorization??"").replace(/^Bearer /,""));
+      const launch=(await store.runs.launch(runId)).body as unknown as RunLaunch;
+      if(!launch.cli_learning)throw new ApiError("not_found","This is not a CLI learning prompt window.");
+      const connection=await new CliLearningConnections(store,sdkSecret).get(launch.cli_learning.connection_id);
+      if(!connection.active || connection.generation !== launch.cli_learning.connection_generation)throw new ApiError("unauthenticated","The CLI learning connection was disconnected.");
+      const sdk=new SdkRuns(store,data,sdkSecret,()=>[...serverSecrets(),new CliLearningConnections(store,sdkSecret).token(connection)],[],"cli");
+      if(found.name==="cliLearningEvents")return send(res,200,await sdk.events(runId,await bodyOf(req)));
+      if(found.name==="completeCliLearningRun"){const result=await sdk.complete(runId,await bodyOf(req));await new CliLearningConnections(store,sdkSecret).recordWindow(connection.connection_id,connection.generation,runId,launch.cli_learning.session_id);return send(res,200,result);}
+      return send(res,200,{...await sdk.status(runId),learning:await servedRunLearning({serverSecrets,signIns,sealKey,statuses},store,runId)});
     }
     if (["getSdkRun","sdkRunEvents","completeSdkRun"].includes(found.name)) {
       const runId=decodeURIComponent(found.pattern.exec(path)![1]!);
@@ -4057,17 +5099,41 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       await sdk.authenticate(runId,String(req.headers.authorization??"").replace(/^Bearer /,""));
       if(found.name==="sdkRunEvents")return send(res,200,await sdk.events(runId,await bodyOf(req)));
       if(found.name==="completeSdkRun")return send(res,200,await sdk.complete(runId,await bodyOf(req)));
-      return send(res,200,{...await sdk.status(runId),learning:await servedRunLearning({serverSecrets,signIns,statuses},store,runId)});
+      return send(res,200,{...await sdk.status(runId),learning:await servedRunLearning({serverSecrets,signIns,sealKey,statuses},store,runId)});
     }
     if (!bearer(req.headers.authorization, req)) {
       authFailed(`/v2${path}`, req.headers.authorization === undefined ? "no_credential" : "wrong_token");
       throw new ApiError("unauthenticated", "this route needs Authorization: Bearer <the token in the data directory>", {}, { "www-authenticate": "Bearer" });
     }
     if (found.capability) throw unsupported(found.capability, UNSUPPORTED[found.capability]!);
-    if (["discoverNative","connectNative"].includes(found.name) && (options.apiOnly || options.publicUrl || !isLoopback(host))) throw new ApiError("forbidden", "Native connections require AgentRun on the source machine, bound to loopback without a public URL. A hosted browser cannot discover your laptop.");
+    if (["discoverNative","connectNative","enrollCliLearning"].includes(found.name) && (options.apiOnly || options.publicUrl || !isLoopback(host))) throw new ApiError("forbidden", "Native connections require AgentRun on the source machine, bound to loopback without a public URL. A hosted browser cannot discover your laptop.");
     const [, first, second] = found.pattern.exec(path)!;
     const id = first ? decodeURIComponent(first) : "";
+    // A purged run or agent (DELETE /runs/{id}, /agents/{id}): every route of it but its DELETE answers 410 purged, with
+    // its tombstone in the details.
+    if (id && ID.test(id)) {
+      if (found.name !== "deleteRun" && found.pattern.source.startsWith("^\\/runs\\/([^/]+)")) {
+        const row = await store.runs.get(id);
+        if (row && row.purgedAt !== null) throw purgedRun(row);
+      }
+      if (found.name !== "deleteAgent" && found.pattern.source.startsWith("^\\/agents\\/([^/]+)")) {
+        const agent = await store.agents.get(id);
+        if (agent && agent.purgedAt !== null) throw purgedAgent(agent);
+      }
+    }
     switch (found.name) {
+      case "enrollCliLearning": {
+        if(!isLoopback(req.socket.remoteAddress ?? ""))throw new ApiError("forbidden","CLI learning enrollment must come from the local source machine.");
+        const { source_sync, ...body } = await bodyOf(req);
+        const connection = await new CliLearningConnections(store,sdkSecret).enroll(body);
+        if (source_sync !== undefined) {
+          await localSources.grant(connection.agent_id, source_sync); await sources.sync.grant(connection.agent_id);
+          void sweepLocalSources();
+        }
+        return send(res,201,connection);
+      }
+      case "listCliLearning": return send(res,200,await new CliLearningConnections(store,sdkSecret).list());
+      case "revokeCliLearning": return send(res,200,await new CliLearningConnections(store,sdkSecret).revoke(id));
       case "startSdkRun": {
         if(!req.headers["idempotency-key"])throw new ApiError("bad_request","An SDK run requires Idempotency-Key so a retried start never duplicates execution.");
         const body=await bodyOf(req),entry=await needAgent(id);
@@ -4093,7 +5159,53 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "getObservations": {
         const days = Number(url.searchParams.get("days") ?? 30);
         if (!Number.isInteger(days) || days < 1 || days > 31) throw new ApiError("input_invalid", "Choose an observation window from 1 to 31 days.");
-        return send(res, 200, await new Observations(store).snapshot(days, url.searchParams.get("session_id") ?? undefined));
+        return send(res, 200, await new Observations(store, Date.now, new ObservationLearning(store, new CliLearningConnections(store, sdkSecret), learning !== "off")).snapshot(days, url.searchParams.get("session_id") ?? undefined));
+      }
+      case "getSourceSync": return send(res, 200, await sources.status(id));
+      case "reviewSourceProject": {
+        const body = await bodyOf(req), entry = await needAgent(id);
+        if (!sourceSyncOf(entry.revision?.body)) throw new ApiError("input_invalid", "This agent has no moved project to review.");
+        if (Object.keys(body).length !== 1 || !Object.hasOwn(body, "receipts")) throw new ApiError("input_invalid", "Choose the unresolved run receipts you reviewed.");
+        await reconcileProjectCheckpoints(store, id);
+        await acknowledgeProjects(store, id, body.receipts);
+        return send(res, 200, await sources.status(id));
+      }
+      case "setSourceSync": {
+        const body = await bodyOf(req);
+        if (Object.keys(body).length !== 1 || typeof body.enabled !== "boolean") throw new ApiError("input_invalid", "Set enabled to true or false.");
+        await sources.sync.setEnabled(id, body.enabled);
+        return send(res, 200, await sources.status(id));
+      }
+      case "moveSourceAgent": {
+        const body = await bodyOf(req);
+        if (Object.keys(body).length) throw new ApiError("input_invalid", "Move takes an empty object and uses the latest complete synchronized setup.");
+        try {
+          const entry = await agentWrite(id, () => sources.sync.move(id));
+          return send(res, 200, { agent: agentView(entry, linkOrigin(req), await agentExtra(entry)), source: await sources.status(id) });
+        } catch (error) {
+          if (error instanceof SourcePreparationError || error instanceof SnapshotError) throw new ApiError("agent_not_runnable", error.message);
+          throw error;
+        }
+      }
+      case "resolveSourceSync": {
+        const body = await bodyOf(req);
+        if (Object.keys(body).some(key => !["revision", "snapshot"].includes(key)) || typeof body.revision !== "string" || typeof body.snapshot !== "string") throw new ApiError("input_invalid", "Choose the source snapshot and current agent revision you reviewed.");
+        try {
+          const entry = await agentWrite(id, () => sources.sync.useSource(id, { revision: body.revision as string, snapshot: body.snapshot as string }));
+          return send(res, 200, { agent: agentView(entry, linkOrigin(req), await agentExtra(entry)), source: await sources.status(id) });
+        } catch (error) {
+          if (error instanceof SourcePreparationError || error instanceof SnapshotError) throw new ApiError("agent_not_runnable", error.message);
+          throw error;
+        }
+      }
+      case "bindSourceTool": {
+        const body = await bodyOf(req), record = await sources.sync.get(id);
+        if (Object.keys(body).some(key => !["tool", "server"].includes(key)) || typeof body.tool !== "string" || typeof body.server !== "string") throw new ApiError("input_invalid", "Choose a source tool and its destination connection.");
+        if (!record?.snapshot) throw new ApiError("agent_not_runnable", "Sync the complete setup before choosing its tool connections.");
+        const snapshot = await sources.sync.options.read(id, record.snapshot), requirement = snapshot.configuration.tools.find(tool => tool.name === body.tool);
+        if (!requirement) throw new ApiError("input_invalid", "Choose a tool required by this source setup.");
+        await bindSourceTool(store, id, requirement, body.server);
+        return send(res, 200, await sources.status(id));
       }
       case "listRemoteConnectors": return send(res, 200, await new RemoteConnectors(store).list());
       case "enrollRemoteConnector": return send(res, 200, await new RemoteConnectors(store).enroll(await bodyOf(req)));
@@ -4104,7 +5216,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         return send(res,200,await discoverNative({project:body.project,...(body.runtime?{runtime:body.runtime}:{})}));
       }
       case "connectNative": {
-        const entry=await connectNative(store,await bodyOf(req));
+        const { source_sync, ...body } = await bodyOf(req);
+        const entry=await connectNative(store,body);
+        if (source_sync !== undefined) { await localSources.grant(entry.agent.id, source_sync); await sources.sync.grant(entry.agent.id); void sweepLocalSources(); }
         return send(res,200,{agent:agentView(entry,linkOrigin(req),await agentExtra(entry)),native:nativeOf(entry.revision?.body)});
       }
       case "getNative": {
@@ -4121,13 +5235,15 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "disconnectNative": {
         const entry=await needAgent(id); const native=nativeOf(entry.revision?.body);
         if(!native)throw new ApiError("not_found","This agent has no native connection.");
+        await localSources.revoke(id);
         const changed=await updateNative(store,entry,{...native,connected:false});
         if(native.remote)await new RemoteConnectors(store).disconnectTarget(native);
         return send(res,200,{native:nativeOf(changed.revision?.body)});
       }
       case "createAgent": {
         const body = await bodyOf(req);
-        if (isObject(body.definition) && body.definition.native !== undefined) throw new ApiError("input_invalid", "Native references are registered only through /native/connect on the source machine.");
+        if (isObject(body.definition) && body.definition.cli_learning !== undefined) throw new ApiError("input_invalid", "CLI learning references are registered only through /cli-learning/connections on the source machine.");
+    if (isObject(body.definition) && body.definition.native !== undefined) throw new ApiError("input_invalid", "Native references are registered only through /native/connect on the source machine.");
         const answer = await idempotent(req, "/agents", body, async () => {
           const { entry, warnings } = await createAgentOf(body);
           return { status: 201, body: { ...agentView(entry, linkOrigin(req), await agentExtra(entry)), warnings }, headers: { location: `/v2/agents/${entry.agent.id}`, etag: etagOf(entry) } };
@@ -4170,6 +5286,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // contract's is the definition itself, and takes the contract's preconditions: If-Match, and a version past the
         // current one.
         const contract = !("definition" in body);
+        const cliEdit=contract?body.cli_learning:isObject(body.definition)?body.definition.cli_learning:undefined;
+        if(cliEdit!==undefined&&stable(cliEdit)!==stable(cliLearningOf(entry.revision?.body)))throw new ApiError("input_invalid","CLI learning bindings are changed only through their enrollment endpoints.");
         const nativeEdit = contract ? body.native : isObject(body.definition) ? body.definition.native : undefined;
         if (nativeEdit !== undefined && stable(nativeEdit) !== stable(nativeOf(entry.revision?.body))) throw new ApiError("input_invalid", "Native references are changed only through the native connection endpoints. Normal edits retain the existing reference.");
         // Check explicit native selectors before canonicalization (the ordinary default harness, pi, is not stored).
@@ -4182,8 +5300,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
           if (match === undefined) throw new ApiError("precondition_failed", "If-Match is required: the agent's ETag, as GET /agents/{agent_id} returned it.");
           if (body.version === undefined || (typeof body.version === "number" && body.version <= entry.version)) throw invalid([{ field: "definition.version", reason: body.version === undefined ? "missing" : "not_an_option", message: `definition.version must be greater than the current one, ${entry.version}` }]);
         }
-        // The check above is a fast path; the store compares If-Match again inside the commit, so of two edits that read
-        // the same revision exactly one lands.
+        // The checks above are a fast path on the agent as the request found it, its body read after. The commit reads the
+        // agent again in its delete turn (reviseAgentOf, agentWrite): one whose body arrived once the agent was purged is
+        // 410, nothing written. The store compares If-Match again inside the commit, so of two edits that read the same
+        // revision exactly one lands.
         const { entry: edited, warnings } = await reviseAgentOf(entry, contract ? { definition: body } : body, { contract, ...(match === undefined ? {} : { ifCurrent: entry.revision?.id ?? null }) });
         return send(res, 200, { ...agentView(edited, linkOrigin(req), await agentExtra(edited)), warnings }, { etag: etagOf(edited) });
       }
@@ -4196,34 +5316,72 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const page = all.slice(offset, offset + limit).map((row) => revisionView(entry.agent, row));
         return send(res, 200, { revisions: page, next_cursor: nextCursor(offset + limit, all.length) });
       }
-      case "setCurrent": {
+      case "getAgentPackage": {
         const entry = await needAgent(id);
+        const { agent, revision } = entry;
+        // An agent whose source is somewhere else has no package here: its project or application holds it.
+        const body = (revision?.body ?? {}) as Json;
+        const elsewhere = ownedElsewhere(agent) ? "another system's agent, which that system defines" : body.native ? "a native agent, which its project on its own machine defines" : body.cli_learning ? "a CLI learning agent, which its CLI's sessions define" : body.sdk ? "an SDK agent, which its application's code defines" : undefined;
+        if (elsewhere) throw new ApiError("not_exportable", `The agent ${id} is ${elsewhere}: export it from there.`);
+        if (!revision || revision.kind !== "agentic") throw new ApiError("not_exportable", `The agent ${id} ${revision ? "is a workflow, and a template package holds an agent" : "has no revision to export"}.`);
+        // Its triggers: those that start its runs and those that message one of them (each row names the agent it runs as).
+        const own = new Set((await store.triggers.list(id)).map((row) => row.id));
+        const views = (await triggers.list()).triggers.filter((view) => own.has(view.id)) as unknown as Json[];
+        const answer = agentPackage({
+          agent: { id, name: agent.name, description: agent.description ?? null },
+          definition: definitionOf(agent, revision, entry.version),
+          skills: (isObject(revision.skills) ? revision.skills : {}) as Record<string, string>,
+          template: entry.template ? { id: entry.template.id, version: entry.template.version, ...(entry.template.secrets ? { secrets: entry.template.secrets } : {}) } : null,
+          origin: entry.template ? registry.get(entry.template.id) : undefined,
+          servers: mcpMeta,
+          triggers: views,
+          signIns: await store.signIns.list(id),
+          now: options.triggerClock?.now() ?? Date.now(),
+        });
+        return send(res, 200, answer);
+      }
+      case "setCurrent": {
+        // The body read first, outside the agent's delete turn; the move made in it (agentWrite), as an edit's revision is:
+        // one whose body arrives while the agent is purged is 410 (the store refuses it too, AgentPurged).
         const body = await bodyOf(req);
-        const extra = unknownFields(body, ["revision"]);
-        if (extra.length) throw invalid(extra);
-        const revision = body.revision;
-        if (typeof revision !== "string" || !ID.test(revision)) throw invalid([{ field: "revision", reason: revision === undefined ? "missing" : "wrong_type", message: "revision is a revision id of this agent" }]);
-        const candidate = await agents.revision(id, revision);
-        if (!candidate) throw invalid([{ field: "revision", reason: "not_an_option", message: `${revision} is not a revision of the agent ${id}` }]);
-        if (stable(nativeOf(candidate.revision.body)) !== stable(nativeOf(entry.revision?.body))) throw new ApiError("input_invalid", "This revision changes the native connection. Reconnect or verify through the native connection controls; ordinary revision restore cannot change its source or connection state.");
-        if (nativeOf(candidate.revision.body)) {
-          const overrides = nativeModelOverrides(candidate.revision.body);
-          if (overrides.length) throw invalid(overrides.map(field => ({ field: `definition.${field}`, reason: "not_allowed", message: NATIVE_MODEL_SETTINGS_UNSUPPORTED })));
-          const execution = nativeExecutionOverrides(candidate.revision.body);
-          if (execution.length) throw invalid(execution.map(field => ({ field: `definition.${field}`, reason: "not_allowed", message: NATIVE_EXECUTION_SETTINGS_UNSUPPORTED })));
-        }
-        const moved = await agents.setCurrent(entry, revision);
+        const moved = await agentWrite(id, async () => {
+          const entry = await needAgent(id);
+          const extra = unknownFields(body, ["revision"]);
+          if (extra.length) throw invalid(extra);
+          const revision = body.revision;
+          if (typeof revision !== "string" || !ID.test(revision)) throw invalid([{ field: "revision", reason: revision === undefined ? "missing" : "wrong_type", message: "revision is a revision id of this agent" }]);
+          const candidate = await agents.revision(id, revision);
+          if (!candidate) throw invalid([{ field: "revision", reason: "not_an_option", message: `${revision} is not a revision of the agent ${id}` }]);
+          if (sourceSyncOf(candidate.revision.body)?.id !== sourceSyncOf(entry.revision?.body)?.id) throw new ApiError("input_invalid", "A revision restore cannot change this agent’s source ownership. Keep a revision from after Move.");
+          if (stable(cliLearningOf(candidate.revision.body)) !== stable(cliLearningOf(entry.revision?.body))) throw new ApiError("input_invalid", "A revision restore cannot change the enrolled CLI learning connection.");
+          if (stable(nativeOf(candidate.revision.body)) !== stable(nativeOf(entry.revision?.body))) throw new ApiError("input_invalid", "This revision changes the native connection. Reconnect or verify through the native connection controls; ordinary revision restore cannot change its source or connection state.");
+          if (nativeOf(candidate.revision.body)) {
+            const overrides = nativeModelOverrides(candidate.revision.body);
+            if (overrides.length) throw invalid(overrides.map(field => ({ field: `definition.${field}`, reason: "not_allowed", message: NATIVE_MODEL_SETTINGS_UNSUPPORTED })));
+            const execution = nativeExecutionOverrides(candidate.revision.body);
+            if (execution.length) throw invalid(execution.map(field => ({ field: `definition.${field}`, reason: "not_allowed", message: NATIVE_EXECUTION_SETTINGS_UNSUPPORTED })));
+          }
+          return agents.setCurrent(entry, revision);
+        });
         reconcileComputer(id);
         return send(res, 200, agentView(moved, linkOrigin(req), await agentExtra(moved)), { etag: etagOf(moved) });
       }
       case "deleteAgent": {
-        // Another system's agent, deleted whole (agent-delete.ts); one delete of an agent at a time, the agent read in its
-        // turn, so a DELETE after one that finished is 404.
-        await deleteInTurn(id, async () => {
-          const entry = await needAgent(id);
-          if (entry.agent.externalRef === null) throw new ApiError("agent_not_external", `The agent ${id} was made here, not by another system's inline run, and is not deleted: archive it instead (POST /v2/agents/${id}/archive), which keeps its runs and stops new ones.`);
-          await deleteExternalAgent(agentDeleteHost, id);
-        });
+        // Another system's agent deleted whole; one made here purged once archived (agent-delete.ts). One delete of an agent
+        // at a time, the agent read in its turn, so a DELETE after one that finished is 404 (deleted) or 204 (purged).
+        try {
+          await deleteInTurn(id, async () => {
+            const { agent } = await needAgent(id);
+            if (agent.purgedAt !== null) return;
+            if (ownedElsewhere(agent)) return deleteExternalAgent(agentDeleteHost, id);
+            if (agent.archivedAt === null) throw new ApiError("agent_not_archived", `The agent ${id} is not archived: archive it first (POST /v2/agents/${id}/archive), which stops new runs and turns its triggers off, then send the DELETE again. Nothing was purged.`);
+            await purgeAgent(agentDeleteHost, id);
+          });
+        } finally {
+          // An upload its purge took with it is no longer served: also after a purge that committed and then failed, and on
+          // the DELETE sent again. A store that cannot answer leaves it to the next DELETE, or the next start's load.
+          await dropRemovedUploads({ registry, store }).catch(() => undefined);
+        }
         res.writeHead(204, { "cache-control": "no-store", "x-content-type-options": "nosniff" });
         return void res.end();
       }
@@ -4236,7 +5394,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // agent_archived in that same store transaction; unarchived, none turns on. Never archived first by another path,
         // which would turn its triggers off with no reason and leave the answer empty. Both answer the triggers off for
         // the archive, each turned on again by PATCH /triggers/{id} {enabled: true}.
-        const triggersOff = found.name === "archiveAgent" ? await triggers.agentArchived(id) : await triggers.agentUnarchived(id);
+        // In the agent's delete turn (agentWrite): an unarchive sent while its purge runs waits for it and is 410, so no
+        // run of it starts between the purge's live check and its tombstone.
+        // On an API-only server with the launch hook, which serves no trigger route to turn one on, the unarchive turns its
+        // schedule and feed triggers on again (the ones its apply makes there).
+        const turnOn = options.apiOnly && options.launchHook ? (source: { kind: string }) => API_ONLY_HOOKED_KINDS.has(source.kind) : undefined;
+        const triggersOff = await agentWrite(id, () => (found.name === "archiveAgent" ? triggers.agentArchived(id) : triggers.agentUnarchived(id, turnOn)));
         // An archived agent's own computer is deleted (an unarchived one gets a new one at its next persistent run).
         if (found.name === "archiveAgent") reconcileComputer(id);
         const entry = await needAgent(id);
@@ -4249,7 +5412,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const entry = await needAgent(id);
         const controller = new AbortController();
         req.once("close", () => controller.abort());
-        const agent = { id, archived: entry.agent.archivedAt != null, external: entry.agent.externalRef !== null, liveOn: (diskId: string) => liveRunsOnDisk(store.runs, id, diskId) };
+        const agent = { id, archived: entry.agent.archivedAt != null, external: ownedElsewhere(entry.agent), liveOn: (diskId: string) => liveRunsOnDisk(store.runs, id, diskId) };
         return send(res, 200, await archilRoute(archil, found.name, { agent, signal: controller.signal }), { "cache-control": "no-store" });
       }
       case "forgetSignIn": {
@@ -4276,12 +5439,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "listAllRuns": {
         const agent = url.searchParams.get("agent") ?? undefined;
         const revision = url.searchParams.get("revision") ?? undefined;
-        return send(res, 200, await runsPage(url, { ...(agent ? { agent } : {}), ...(revision ? { revision } : {}) }, linkOrigin(req)));
+        return send(res, 200, await runsPage(url, { ...(agent ? { agent } : {}), ...(revision ? { revision } : {}) }, linkOrigin(req), sourceParam(url)));
       }
       case "getRun": {
-        const view = await viewOverStore(store, id, runReadDepsFor(linkOrigin(req)));
-        if (!view) throw new ApiError("not_found", `no run ${id}`);
-        return send(res, 200, { ...view, ...(await runComputerOf(id, view)), ...(await allInViewOf(id, view)) });
+        const run = await runRead(id, linkOrigin(req));
+        if (!run) throw new ApiError("not_found", `no run ${id}`);
+        return send(res, 200, run);
       }
       case "getTimeline":
         await needRun(id);
@@ -4293,14 +5456,20 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         if (run.kind === "workflow") throw unsupported("messages.steer_workflow_runs", "A workflow run takes no messages here: its workflow runs to its end, or a cancel ends it.");
         const { body, handed } = handedLaunchSecrets(await bodyOf(req));
         const answer = await idempotent(req, `/runs/${id}/messages`, body, async () => {
-          const seal = await messageSeal(run, await handed());
+          const secrets = await handed();
+          const seal = await messageSeal(run, secrets);
           const extra = unknownFields(body, ["content"]);
           if (extra.length) throw invalid(extra);
-          const content = body.content;
-          if (typeof content !== "string" || !/\S/.test(content)) throw invalid([{ field: "content", reason: content === undefined ? "missing" : "wrong_type", message: "content is a non-empty string" }]);
-          if (content.length > MAX_MESSAGE) throw invalid([{ field: "content", reason: "too_long", message: `content is at most ${MAX_MESSAGE} characters` }]);
+          const given = body.content;
+          if (typeof given !== "string" || !/\S/.test(given)) throw invalid([{ field: "content", reason: given === undefined ? "missing" : "wrong_type", message: "content is a non-empty string" }]);
+          if (given.length > MAX_MESSAGE) throw invalid([{ field: "content", reason: "too_long", message: `content is at most ${MAX_MESSAGE} characters` }]);
           // Its mcp_auth and model_key replace the run's in the steer's own write, so the turn it starts uses them.
-          const { mode, messageId } = await message(store, run, content, { ...(seal ? { launchSealed: seal } : {}), ...(options.beforeSubmit ? { beforeSubmit: options.beforeSubmit } : {}) });
+          // In its agent's delete turn (runWrite): a message that may open the run again never lands under its purge.
+          // Its text is cut of what it hands and of what the run holds, read in that turn (cutHeld).
+          const { mode, messageId } = await runWrite(run.agentId, run.id, async () => {
+            const content = await cutHeld(run.id, given, handedSecretValues(secrets));
+            return message(store, run, content, { ...(seal ? { launchSealed: seal } : {}), ...(options.beforeSubmit ? { beforeSubmit: options.beforeSubmit } : {}) });
+          });
           // The run's state after the command row is written (the run view): the runner applies the steer; the client polls.
           const { status, state } = await runStatusState(run.id);
           return { status: 202, body: { run_id: run.id, message_id: messageId, mode, status, state, poll_after_ms: 1000 } };
@@ -4324,9 +5493,21 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const { status, state } = await runStatusState(run.id);
         return send(res, 200, { run_id: run.id, max_cost_usd: cap, resumed, ...(messageId ? { message_id: messageId } : {}), ...(note ? { note } : {}), status, state });
       }
+      case "deleteRun": {
+        // In its agent's delete turn (an agent's delete or purge, or another purge of one of its runs, finishes first), the
+        // run read in that turn, so a DELETE after one that finished is 204 again (purgeRun: a purged run's only work is
+        // its learning folder's scrub, again).
+        const row = ID.test(id) ? await store.runs.get(id) : undefined;
+        if (!row) throw new ApiError("not_found", `no run ${id}`);
+        // API-only (api-only.ts) purges a run wherever its token may delete the run's whole agent, which is any agent:
+        // another system's, and one made here once archived. One run is less than all of them, so it is served alike.
+        await deleteInTurn(row.agentId, () => purgeRun(agentDeleteHost, id));
+        res.writeHead(204, { "cache-control": "no-store", "x-content-type-options": "nosniff" });
+        return void res.end();
+      }
       case "stopRun": {
         const run = await needRun(id);
-        const stopped = await stopRunOverStore(store, run.id);
+        const stopped = await stopRunOverStore(store, run);
         const { status, state } = await runStatusState(run.id);
         return send(res, 200, { run_id: run.id, stopped, status, state });
       }
@@ -4358,6 +5539,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         if (body.expected !== undefined && !isObject(body.expected)) throw invalid([{ field: "expected", reason: "wrong_type", message: "expected is an object: the fields a right answer's JSON holds" }]);
         if (body.source !== undefined && !GRADE_SOURCES.includes(body.source as never)) throw invalid([{ field: "source", reason: "not_an_option", message: `source is one of ${GRADE_SOURCES.join(", ")}` }]);
         if (body.label !== undefined && (typeof body.label !== "string" || body.label.length > LABEL_MAX)) throw invalid([{ field: "label", reason: "wrong_type", message: `label is a string of at most ${LABEL_MAX} characters: the grade's words` }]);
+        // A run that reads ended while it still learns from that end (its look-back: store-view.ts lookingBackEnd) is graded
+        // once that ends: its row is not ended yet, and the round a grade opens reopens only an ended run.
+        if (!FINAL_STATES.includes(row.state) && (await lookingBackEnd(store, row))) throw new ApiError("run_learning", "The run is still learning from its answer: grade it once that ends.");
         if (!FINAL_STATES.includes(row.state)) throw invalid([{ field: "run_id", reason: "not_allowed", message: "A run is graded once it has ended." }]);
         const m = (isObject(row.metrics as Json) ? row.metrics : {}) as { path?: unknown; workflow?: unknown; workflow_digest?: unknown; workflow_promotion?: unknown };
         if (m.path === "replay") throw invalid([{ field: "run_id", reason: "not_allowed", message: "A replay run is never graded: its answer is scored against the run it replays." }]);
@@ -4370,7 +5554,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         };
         // The grade and its audit row are written to the agent's learning in its delete turn (agentWrite): a grade whose body
         // came in while a DELETE ran waits for it and finds the agent gone, so nothing is written after its learning went.
-        const kept = await agentWrite(row.agentId, async () => {
+        const kept = await runWrite(row.agentId, row.id, async () => {
           // Kept with what it asks of the run's learning (runner/feedback-round.ts): nothing, or a look-back.
           // Its feedback round is a turn with no caller's model key: on the server's key for the run's route, else not opened.
           const graded = gradeView(await keepGrade(store, row.agentId, grade, typeof body.label === "string" ? body.label : undefined, (launch) => !serverKeyMissing(env, { kind: "agentic", model: launch.model, native: Boolean(launch.native) })));
@@ -4453,10 +5637,26 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // store: the hold is the run's journal, a take-over and a hand-back are command rows its runner applies; a browser's
         // hand-back is the browser's own answer row, as POST .../browser/hand-back writes it.
         const run = await needRun(id);
-        const answer = await computerRoute(found.name, run.id, {
-          ownerSession: byOwnerSession(req), token: req.headers.authorization !== undefined, accounts: owner !== undefined, body: await bodyOf(req),
-        }, store, { context: ctx });
+        const answer = await computerRoute(found.name, run.id, await bodyOf(req), store, { context: ctx });
         return send(res, 200, answer, { "cache-control": "no-store" });
+      }
+      case "createRunComputerViewer": {
+        // A viewer credential for the run's live view (viewer-credential.ts), for an API-only server's backend to hand its
+        // user: a link on the public address to the run's open viewer, the credential in its query, the viewer's own token
+        // in its fragment. A server with no backend in between has an owner who opens the view in the console: not here.
+        if (!options.apiOnly) throw new ApiError("not_found", "A run's viewer link is minted on an API-only server alone (AGENTRUN_API_ONLY=1): here its owner opens the live view in the console.");
+        const run = await needRun(id);
+        const body = await bodyOf(req);
+        const issues = unknownFields(body, []);
+        if (issues.length) throw invalid(issues);
+        if (!options.publicUrl) throw new ApiError("unsupported_here", "A run's viewer link is on this server's public address, and AGENTRUN_PUBLIC_URL is unset: set it to the address your users' browsers open this server at.");
+        if (await runOver(store, run.id)) throw new ApiError("computer_not_live", "This run has ended: its computer has no live view.");
+        const link = await computerViewerLink(store, sealKey, run.id, answers(run.id));
+        if (link === undefined) throw new ApiError("computer_not_live", "This run's computer has no live view open now: ask again once GET /v2/runs/{run_id}/computer reads live.");
+        const { credential, expiresAt } = mintViewerCredential(viewerKey, run.id, Date.now());
+        const [path, fragment] = link.viewer.split("#");
+        const minted = `${options.publicUrl.replace(/\/+$/, "")}${path}?${VIEWER_PARAM}=${credential}${fragment === undefined ? "" : `#${fragment}`}`;
+        return send(res, 201, { url: minted, expires_at: new Date(expiresAt).toISOString() }, { "cache-control": "no-store" });
       }
       case "startRun":
       case "callRunComputer":
@@ -4473,6 +5673,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "deleteComputer":
         await attach.remove(id);
         return void res.writeHead(204, { "cache-control": "no-store" }).end();
+      case "listRunningComputers": {
+        const origin = linkOrigin(req);
+        return send(res, 200, await runningComputers(store, (runId) => runRead(runId, origin)), { "cache-control": "no-store" });
+      }
       case "listComputers":
       case "saveComputerKeys":
       case "testComputer":
@@ -4498,7 +5702,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         await needRun(id);
         // A run's files through the server's read-only Workspace of its folder (serverRunWorkspace); a run with no folder
         // lists none, a withheld run refuses (403), as the base did (filesShown). Same shape and cap the file route answered.
-        return send(res, 200, await listRunFilesOverStore(store, id, runReadsDeps));
+        // With ?cut=run, each file's name under the run's cut too.
+        return send(res, 200, await listRunFilesOverStore(store, id, runReadsDeps, url.searchParams.get("cut")));
       }
       // An archived agent's home is read and written as any other's: as its definition is.
       case "listHomeFiles": {
@@ -4570,6 +5775,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // The workflow run's graph from its journal over the store (run-reads-over-store): an agentic run has none (404),
         // a run whose output is withheld is refused (403), as the route refused it.
         return send(res, 200, await runGraphView(store, id, runReadsDeps));
+      case "getRunUsage":
+        await needRun(id);
+        // The run's lines from its booking (run-usage.ts), the figures its cost.usd joins: none, with why, while it is at work
+        // or where its figure is not its booking's.
+        // Names through the run's cut, and a withheld run refused (403), as its trace is.
+        return send(res, 200, await servedRunUsage({ serverSecrets, signIns, sealKey }, store, id));
       case "getRunTrace":
         await needRun(id);
         // The run's spans over its served Timeline rows and its journal (run-trace.ts): cut by the run's one cut, as its
@@ -4594,8 +5805,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "createFile": {
         // A `path` in the query, or a body that is not JSON: the file sent in one call, its bytes the body. Else the
         // contract's JSON reservation, its bytes sent after with PUT /files/{file_id}.
+        const kept = await uploadsHere(true);
         if (url.searchParams.has("path") || !isJson(req)) {
-          const received = await uploads.take(url.searchParams, req.headers["content-type"], req);
+          const received = await kept.take(url.searchParams, req.headers["content-type"], req);
           try {
             const answer = await idempotent(req, "/files", received.fingerprint, async () => ({ status: 201, body: await received.commit() }));
             return send(res, answer.status, answer.body, answer.headers);
@@ -4604,35 +5816,57 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
           }
         }
         const body = await bodyOf(req);
-        const answer = await idempotent(req, "/files", body, async () => ({ status: 201, body: await uploads.reserve(body) }));
+        const answer = await idempotent(req, "/files", body, async () => ({ status: 201, body: await kept.reserve(body) }));
         return send(res, answer.status, answer.body, answer.headers);
       }
       case "uploadFile":
-        return send(res, 200, await uploads.receive(id, req));
+        return send(res, 200, await (await uploadsHere()).receive(id, req));
       case "listFiles": {
+        const kept = await uploadsHere();
         // This server's own: its uploads, newest first, a page at a time, so an id is never lost with the answer that gave it.
         const limit = limitOf(url.searchParams.get("limit"));
         const offset = cursorOf(url.searchParams.get("cursor"));
-        const ids = await uploads.ids();
-        const files = (await Promise.all(ids.slice(offset, offset + limit).map((fileId) => uploads.get(fileId)))).filter((file) => file !== null);
+        const ids = await kept.ids();
+        const files = (await Promise.all(ids.slice(offset, offset + limit).map((fileId) => kept.get(fileId)))).filter((file) => file !== null);
         return send(res, 200, { files, next_cursor: nextCursor(offset + limit, ids.length) });
       }
       case "getFile": {
-        const file = await uploads.get(id);
+        const file = await (await uploadsHere()).get(id);
         if (!file) throw new ApiError("not_found", `no file ${id}: GET /v2/files lists the files this server keeps`);
         return send(res, 200, file);
       }
       case "deleteFile":
-        await uploads.remove(id);
+        await (await uploadsHere()).remove(id);
         return void res.writeHead(204, { "cache-control": "no-store" }).end();
       case "getUsage":
         return send(res, 200, await usage(url));
+      case "getCapacity":
+        return send(res, 200, await capacityOverStore(store.runners, capacityWindowOf(url)));
+      case "getWrapped": {
+        // The session files of the machine this server runs on, read for whoever holds a token: only one owner's server on
+        // their own machine answers (whyNotOwnersServer: loopback, no public URL, an owner, one API token and no live API key
+        // made in the console, its own SQLite store). Keys are counted at each ask: they are made and revoked while it runs.
+        // Dormant keys (API-only, --harness-sign-in) open nothing, so they are not callers here. A name an operator allowed (--allow-host) passes the server's Host check for its other routes, but a page
+        // that rebound one to this address must not read the machine's files: here the Host is a loopback name or address.
+        const notOwn = whyNotOwnersServer(options, data, options.apiOnly === true || options.harnessSignIn === true ? 0 : apiKeys.count);
+        if (!isLoopbackName(hostName(req.headers.host))) notOwn.push("was reached at a name that is not this machine's own");
+        if (notOwn.length) throw new ApiError("forbidden", `wrapped reads this machine's own session files, so only one owner's server on their own machine, reached by a loopback name, answers it. This one ${notOwn.join("; ")}.`);
+        const given = url.searchParams.get("year");
+        const year = given === null ? new Date().getFullYear() : Number(given);
+        if (given !== null && !/^[1-9]\d{3}$/.test(given)) throw new ApiError("bad_request", "year is a four-digit year");
+        if (year > new Date().getFullYear()) throw new ApiError("bad_request", "year is this year or an earlier one");
+        // A long home is read on, shared, past the wait: the answer says when to ask again rather than hold the request.
+        const read = await within(readWrapped(year), options.wrappedWaitMs ?? WRAPPED_WAIT_MS);
+        if (!read) throw new ApiError("unavailable", `This machine's session history for ${year} is still being read: ask again in a few seconds.`, { retry_after_ms: 5_000 });
+        const analytics = await analyticsOverStore(store, { from: new Date(year, 0, 1).toISOString(), to: new Date(year + 1, 0, 1).toISOString() });
+        return send(res, 200, wrappedView(read.wrapped, analytics.bySource.filter((g) => g.source !== "live").map((g) => ({ source: g.source, runs: g.runs })), read.unread));
+      }
       case "getStats": {
         const filter = analyticsFilter(url);
         // The store's counts and cost sums (store-reads/stats), the runs' metrics summed (store-reads/analytics), and the
         // runs over the store for the learning counts. No in-process pending set and no held Runs: the runner writes a
         // run's end to the store before it lets it go.
-        const [s, a] = await Promise.all([statsOverStore(store), analyticsOverStore(store, { ...filter })]);
+        const [s, a, tokens] = await Promise.all([statsOverStore(store), analyticsOverStore(store, { ...filter }), unifiedUsage(store, filter)]);
         // Each running row's status over the store (viewOverStore), for the active/needs_input/unknown buckets.
         const vd = viewDepsFor(ownOriginOf());
         const runningStatus = new Map<string, Status>();
@@ -4640,7 +5874,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // How the runs that tried to learn fared, over the store (learning-1's learningCountsOverStore): the same figures the
         // ledger gave, run for run; no held run's learning from memory.
         const learning = await learningCountsOverStore(store, filter);
-        return send(res, 200, { ...statsView(s, (id) => runningStatus.get(id)), analytics: analyticsView(a, filter), learning });
+        return send(res, 200, { ...statsView(s, (id) => runningStatus.get(id)), analytics: { ...analyticsView(a, filter), usage: tokens }, learning });
       }
       case "listToolKeys":
         // The offers the server holds, not capabilities': a model key's row names the harnesses its key would run too.
@@ -4660,6 +5894,25 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "deleteToolKey":
         await toolKeys.remove(id);
         await keysChanged();
+        return void res.writeHead(204, { "cache-control": "no-store" }).end();
+      case "listHarnessKeys":
+        return send(res, 200, harnessKeys.list());
+      // Never through `idempotent`: its record keeps the body, and this body is the value. The owner's session alone (the
+      // dispatch's secret-write check, harness-keys.ts registerSecretWrite), for a recipe this server names and a key it
+      // runs on; the next claim of a run on that harness opens it, with no restart. Then the listings are built again, cut
+      // of it, and the harness offers probed again: whether the recipe is offered turns on its keys being saved.
+      case "saveHarnessKey": {
+        const recipe = harnessKeys.recipe(id);
+        const body = await bodyOf(req);
+        if (stopping.signal.aborted) throw new ApiError("unavailable", "The server is shutting down: the key was not saved.");
+        await harnessKeys.save(recipe, decodeURIComponent(second!), body);
+        await harnessKeysChanged();
+        return void res.writeHead(204, { "cache-control": "no-store" }).end();
+      }
+      // A recipe this server names, or an id whose recipe it no longer names that still has keys kept: removed all the same.
+      case "deleteHarnessKey":
+        await harnessKeys.remove(harnessKeys.held(id), decodeURIComponent(second!));
+        await harnessKeysChanged();
         return void res.writeHead(204, { "cache-control": "no-store" }).end();
       // Never through `idempotent`: its record keeps the body, and the body holds the password.
       case "getEmailAccount":
@@ -4733,15 +5986,24 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       // Never through `idempotent`: its record keeps the body, and a body may hold a credential.
       case "listMcpServers":
         return send(res, 200, await mcpServers.list());
+      // Names only: what the API-only profile serves in place of the list.
+      case "listMcpServerNames":
+        return send(res, 200, { names: (await listMcpServers(store)).map((row) => row.name).sort() });
       case "getMcpServer":
         return send(res, 200, await mcpServers.get(id));
       case "previewMcpServer":
         return send(res, 200, await mcpServers.preview(await bodyOf(req), stopping.signal));
       case "saveMcpServer": {
         const body = await bodyOf(req);
+        const preset = await mcpServers.composioPreset(id);
+        // API-only, where this route is served only with the operator's MCP origins: a per_run server at one of them alone,
+        // under a name no Composio preset has (api-only.ts apiOnlyMcpSave). Anything else is the refused route's own 404,
+        // before anything reaches the address. The secret-write gate has already refused a credential, and a save over a
+        // server the token did not save or one that seals a credential (403).
+        if (options.apiOnly && !apiOnlyMcpSave(body, preset, apiOnlyMcpOrigins)) throw new ApiError("not_found", apiOnlyRefusal(`/v2${path}`));
         // A server that isn't a Composio preset's is saved at once, as ever: no save waits on another's listing.
-        if (!(await mcpServers.composioPreset(id))) {
-          const saved = await mcpServers.save(id, body, stopping.signal, secretSeen as McpCredentialMark | undefined);
+        if (!preset) {
+          const saved = await mcpServers.save(id, body, stopping.signal, secretSeen as McpCredentialMark | undefined, undefined, undefined, undefined, undefined, byToken);
           await refreshMcpMeta();
           return send(res, 200, saved);
         }
@@ -4758,13 +6020,15 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
           }),
           inUse: () => composioTriggers.inUse(id, SAVE_AFTER_TRIGGERS),
         };
-        const saved = await mcpServers.save(id, body, stopping.signal, secretSeen as McpCredentialMark | undefined, undefined, undefined, (left) => (over.dropped = left), guard);
+        const saved = await mcpServers.save(id, body, stopping.signal, secretSeen as McpCredentialMark | undefined, undefined, undefined, (left) => (over.dropped = left), guard, byToken);
         await refreshMcpMeta();
         return send(res, 200, over.note ? { ...saved, composio: over.note } : saved);
       }
       // Composio makes the managed MCP server; what is kept is the ordinary MCP save, so the key is a sealed header.
       case "listComposioTools":
         return send(res, 200, await composioTools(await bodyOf(req), options.composioControl ?? {}, stopping.signal), { "cache-control": "no-store" });
+      case "listComposioToolkits":
+        return send(res, 200, await composioToolkits(await bodyOf(req), options.composioControl ?? {}, stopping.signal), { "cache-control": "no-store" });
       case "saveComposioServer": {
         // The name is checked before Composio is called: a refused name leaves nothing made there.
         mcpNameOf(id);
@@ -4773,11 +6037,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // made and what that save made that this one no longer stands on (an account of another user, an auth config of
         // another toolkit), with the key it was made with, and says so as a delete does; what another saved server uses is
         // that one's now, and said too. A save as another user or auth config is refused while Composio triggers use the
-        // server, in the delete's words, checked in its project's turn before the row is written.
+        // server, in the delete's words, checked in its project's turn before the row is written. An API-only server's token
+        // saves one that names its key by api_key_env (the secret-write gate), and over a saved server only one it saved
+        // (mcp-secret-writes.ts tokenWriteOverRefused), landing only while the row still has the credential the gate read
+        // (secretSeen) and the token's mark. The body names no address or headers (composioSave refuses them).
         const answer = await inComposioTurn(async () => {
           const over: { dropped?: ComposioDropped } = {};
           const guard: SaveGuard = { turn: (work) => composioTriggers.inTurnOf(id, work), inUse: () => composioTriggers.inUse(id, SAVE_AFTER_TRIGGERS) };
-          const saved = await composioSave(body, options.composioControl ?? {}, (mcp, made, stands) => mcpServers.save(id, mcp, stopping.signal, undefined, made, stands, (left) => (over.dropped = left), guard), id, stopping.signal, async () => (await mcpServers.get(id)).url);
+          const saved = await composioSave(body, options.composioControl ?? {}, (mcp, made, stands) => mcpServers.save(id, mcp, stopping.signal, secretSeen as McpCredentialMark | undefined, made, stands, (left) => (over.dropped = left), guard, byToken), id, stopping.signal, async () => (await mcpServers.get(id)).url);
           await refreshMcpMeta();
           return over.dropped ? { ...saved, composio: await composioLeft(id, over.dropped) } : saved;
         });
@@ -4792,7 +6059,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "deleteComposioSubscription":
         return send(res, 200, await composioTriggers.forget(id), { "cache-control": "no-store" });
       case "refreshMcpServer": {
-        const refreshed = await mcpServers.refresh(id, stopping.signal);
+        const refreshed = await mcpServers.refresh(id, stopping.signal, options.composioControl ?? {});
         await refreshMcpMeta();
         return send(res, 200, refreshed);
       }
@@ -4818,6 +6085,32 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const view = githubConnection();
         return send(res, 200, view ? { connected: true, ...view } : { connected: false });
       }
+      case "listGitHubRepositories": {
+        // The installations repaired from GitHub's own first, as getGitHubConnection does (at most once a minute): an
+        // installation whose event was missed is listed, not hidden until a restart.
+        await githubConnect.reconcile((detail) => triggers.turnOff("github", detail));
+        const listed = await githubConnect.repositories(stopping.signal);
+        if ("unusable" in listed) throw new ApiError("github_not_connected", listed.unusable);
+        return send(res, 200, listed, { "cache-control": "no-store" });
+      }
+      case "listSuggestions":
+        // The same repair first: the page's Refresh and Check again read installations as GitHub has them.
+        await githubConnect.reconcile((detail) => triggers.turnOff("github", detail));
+        return send(res, 200, await suggestions.list({ ...(url.searchParams.has("repo") ? { repo: url.searchParams.get("repo")! } : {}), ...(url.searchParams.has("status") ? { status: url.searchParams.get("status")! } : {}) }), { "cache-control": "no-store" });
+      case "scanForSuggestions": {
+        const scanned = await suggestions.scan(await bodyOf(req));
+        return send(res, scanned.status, scanned.body, { location: `/v2/runs/${String(scanned.body.run_id)}` });
+      }
+      case "getSuggestion":
+        return send(res, 200, await suggestions.get(id, stopping.signal, url.searchParams.get("name") ?? undefined), { "cache-control": "no-store" });
+      case "discardSuggestion":
+        return send(res, 200, await suggestions.discard(id));
+      case "restoreSuggestion":
+        return send(res, 200, await suggestions.restore(id));
+      case "createSuggestedAgent": {
+        const created = await suggestions.create(id, await bodyOf(req), stopping.signal);
+        return send(res, created.status, created.body);
+      }
       case "disconnectGitHub": {
         const view = githubConnection();
         if (!view) throw new ApiError("not_found", "No GitHub App is connected to this server.");
@@ -4842,7 +6135,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // its Composio project's turn, so a trigger still being made on it is counted (composio-triggers.ts deleting). All of
         // it in the Composio turn, so a Composio save still at work finishes first and its record is counted.
         const forgotten = await inComposioTurn(async () => {
-          const { composio: made } = await composioTriggers.deleting(id, () => mcpServers.remove(id, secretSeen as McpCredentialMark | undefined));
+          const { composio: made } = await composioTriggers.deleting(id, () => mcpServers.remove(id, secretSeen as McpCredentialMark | undefined, byToken));
           await refreshMcpMeta();
           return !made ? undefined : "unusable" in made ? composioNote(id, made.cleanup) : await composioForget(options.composioControl ?? {}, made.key, made.id, id, stopping.signal, made.cleanup);
         });
@@ -4879,16 +6172,17 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // over the same records and the money rule's decision, costStopOverStore), so the view never says a workflow serves
         // that does not run first.
         const records = await promotionsOf(store.settings, id);
+        const refused = await refusedFor(id, records);
         const costStop = await costStopOverStore(store, id);
         const body = entry.revision?.body as AgenticBody | undefined;
         const modelEnv = !body || sdkOf(body) || nativeOf(body) ? env : envAtPlace(env, resolvePlace(body.place as Place | undefined, fallbackPlace(entry.revision!.kind === "workflow" ? "workflow" : "agentic", body.tools ?? [])));
-        return send(res, 200, { ...await agentLearning(data, id, await learningShown(id), counts, impact, (workflow) => servingStateOf(records, workflow, costStop)), learning_model: await learningModelOf(modelEnv, entry.revision) });
+        return send(res, 200, { ...await agentLearning(data, id, await learningShown(id), counts, impact, (workflow) => servingStateOf(records, workflow, costStop, refused), store), learning_model: await learningModelOf(modelEnv, entry.revision) });
       }
       case "getLearningCost": {
         await needAgent(id);
         // The agent's cost per run over the one store (agentCostOverStore): each ended run's figures and path, aggregates only.
         const { limit, csv } = learningCostQuery(url);
-        const read = await agentCostOverStore(store, id, limit);
+        const read = await agentCostOverStore(store, id, limit, refusedFor);
         // Each workflow's name as the other learning reads show it: one that holds a secret or a sign-in's value is cut.
         const shown = await learningShown(id);
         const cost = { ...read, runs: read.runs.map((run) => (run.workflow === null ? run : { ...run, workflow: shown.name(run.workflow) })), workflows: read.workflows.map((one) => ({ ...one, workflow: shown.name(one.workflow) })), bill: { ...read.bill, revisions: read.bill.revisions.map((one) => ({ ...one, workflow: shown.name(one.workflow) })), holds: read.bill.holds.map((one) => ({ ...one, workflow: shown.name(one.workflow), reason: shown.text(one.reason) })) } };
@@ -4905,13 +6199,15 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // (promotionsShown: a reason as well as each workflow's name). Beside what serves, each one's state, its check's
         // numbers and its audit line (learn/audit.ts servingLinesOf), at the agent's numbers.
         const records = await promotionsOf(store.settings, id);
+        // Every champion below skips a record the purge gate refuses at its commit, as a run's claim does (championOf).
+        const refused = await refusedFor(id, records);
         const shown = await learningShown(id);
-        const shownRead = promotionsShown(records, shown);
+        const shownRead = promotionsShown(records, shown, refused);
         // A ledger that can't be read now leaves each audit line at no rows, never the read refused.
         const loop = auditLoopOf((entry.revision?.body as { learning?: unknown } | undefined)?.learning);
         // Each one's state with the money rule's decision a run's launch reads (costStopOverStore): a champion it stopped
         // running first reads `stopped`.
-        const lines = servingLinesOf(records, await auditsOfAgent(id).catch(() => []), loop, await costStopOverStore(store, id));
+        const lines = servingLinesOf(records, await auditsOfAgent(id).catch(() => []), loop, await costStopOverStore(store, id), refused);
         // Why its runs are never audited, when the agent can call a tool that writes (learn/audit.ts auditWriterOf, the
         // rule startAudit reads); and how many of the serving revision's runs a trigger started (never audited).
         const writer = auditWriterOf(entry.revision ?? undefined);
@@ -4920,10 +6216,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // first), then main: never by paging the workflow's history. Its nodes with their tiers and code checks, and the
         // check it was promoted on; nodes null when no commit read holds its text (or the folder can't be read now).
         const championRead = async (workflow: string, digest: string) => {
-          const champion = championOf(records, workflow);
+          const champion = championOf(records, workflow, refused);
           const record = champion?.digest === digest ? champion : undefined;
           const commits = records.filter((one) => one.workflow === workflow && one.digest === digest && one.commit).map((one) => one.commit!).reverse();
-          const read = await workflowAtDigest(data, id, workflow, digest, commits).catch(() => undefined);
+          const read = await workflowAtDigest(data, id, workflow, digest, commits, store).catch(() => undefined);
           let doc: unknown;
           try {
             doc = read ? JSON.parse(read.text) : undefined;
@@ -4932,7 +6228,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
           }
           return shownDeep({ digest, commit: read?.commit ?? null, nodes: doc === undefined ? null : workflowNodesOf(doc), check: record?.check ?? null }, shown);
         };
-        const serving = await Promise.all(servingOf(records).map(async (one, i) => ({
+        const serving = await Promise.all(servingOf(records, refused).map(async (one, i) => ({
           ...shownRead.serving[i]!, ...lines[i]!, audits_off: auditsOff,
           not_auditable: one.digest === null ? 0 : await notAuditableOf(store, id, one.workflow, one.digest, loop).catch(() => 0),
           champion: one.digest === null ? null : await championRead(one.workflow, one.digest),
@@ -4956,7 +6252,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const values = await learningValues(id);
         const read = await agentLoopOverStore(store, id);
         const compiles = await Promise.all(read.compiles.map(async (one) => {
-          const cut = await runCutValues({ serverSecrets, signIns }, store, one.run_id).catch(() => "unreadable" as const);
+          const cut = await runCutValues({ serverSecrets, signIns, sealKey }, store, one.run_id).catch(() => "unreadable" as const);
           const workflow = one.workflow === null ? null : shown.name(one.workflow);
           if (cut === "unreadable") return { ...one, workflow, attempts: one.attempts.map(({ ok }) => ({ ok, errors: [] })), draft_errors: [], withheld: true };
           const all = [...values, ...cut.values];
@@ -4967,7 +6263,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       }
       case "listLearningLog":
         await needAgent(id);
-        return send(res, 200, await learningLog(data, id, url.searchParams, await learningShown(id)));
+        return send(res, 200, await learningLog(data, id, url.searchParams, await learningShown(id), store));
       case "getLearningCorrections": {
         await needAgent(id);
         // corrections.md whole, as every run of the agent is served it under # Learned, with its ETag in the body and the header.
@@ -4983,12 +6279,21 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const written = await agentWrite(id, () => correctionsWrite(data, id, { text, ifMatch: typeof req.headers["if-match"] === "string" ? req.headers["if-match"] : undefined, refuse }));
         return send(res, 200, written, { etag: written.etag });
       }
+      case "deleteAgentLearning": {
+        // The agent's learning reset (learning-reset.ts), a write to its learning: in its delete turn (agentWrite), which
+        // reads the agent there (404 unknown) and refuses one being deleted.
+        await agentWrite(id, () => resetLearning(learningResetHost, id));
+        // A run's list row that read a workflow of the agent's says what the folder says now, at the next list.
+        await lister.learningChanged(id);
+        res.writeHead(204, { "cache-control": "no-store", "x-content-type-options": "nosniff" });
+        return void res.end();
+      }
       case "listLearnedWorkflowRevisions":
         await needAgent(id);
-        return send(res, 200, await workflowRevisions(data, id, second!, url.searchParams, await learningShown(id)));
+        return send(res, 200, await workflowRevisions(data, id, second!, url.searchParams, await learningShown(id), store));
       case "readLearningFile":
         await needAgent(id);
-        return sendText(res, 200, await readLearnedFile(data, id, second!, await learningShown(id)));
+        return sendText(res, 200, await readLearnedFile(data, id, second!, await learningShown(id), store));
       case "retireLearningFile":
       case "approveLearningFile":
       case "restoreLearningFile": {
@@ -4996,7 +6301,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const refuse = await learningValues(id);
         const action = found.name === "approveLearningFile" ? "approve" : found.name === "restoreLearningFile" ? "restore" : "retire";
         // A change to a workflow is a write to the agent's learning: in its delete turn (agentWrite).
-        const written = await agentWrite(id, () => changeWorkflow(data, id, second!, { action, ifMatch: typeof req.headers["if-match"] === "string" ? req.headers["if-match"] : undefined, refuse, draftTools: () => learnedDraftToolsOf(id) }));
+        const written = await agentWrite(id, () => changeWorkflow(data, id, second!, { action, ifMatch: typeof req.headers["if-match"] === "string" ? req.headers["if-match"] : undefined, refuse, draftTools: () => learnedDraftToolsOf(id), store }));
         // A run's list row that read a workflow held for the owner's OK says what the folder says now, at the next list.
         await lister.learningChanged(id);
         return sendText(res, written.status, { ...written, text: secretsShown(refuse).text(written.text) });
@@ -5032,15 +6337,26 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // The run's learning view over the store (learning-1's runLearningOverStore): its end, the notes it was given and its seed
         // from its launch, what it holds for the owner's OK as the store's run view reads it (on its folder's main), as main.
         // Cut by the run's one cut, and refused for a withheld run (run-learning-served.ts).
-        return send(res, 200, await servedRunLearning({ serverSecrets, signIns, statuses }, store, run.id));
+        return send(res, 200, await servedRunLearning({ serverSecrets, signIns, sealKey, statuses }, store, run.id));
       }
       case "getRunLearningDiff": {
         const run = await needRun(id);
         // The run's learning diff over the store (learning-routes.ts runDiffOverStore): its merge from its agent's learning
         // folder, else its kept proposal's notes against its seed, else no file against the seed its launch names. Cut by the
         // run's one cut, and refused for a withheld run, as its learning is (run-learning-served.ts).
-        return send(res, 200, await servedRunDiff({ serverSecrets, signIns }, store, data, run.id));
+        return send(res, 200, await servedRunDiff({ serverSecrets, signIns, sealKey }, store, data, run.id));
       }
+      case "listApiKeys":
+        return send(res, 200, apiKeys.list(await apiKeysRefused()));
+      case "createApiKey": {
+        // A secret write: the dispatch's one check let only the owner's session this far (api-keys.ts). Never through
+        // `idempotent`, whose record would keep the answer, and the answer holds the key. Refused, in words, where the
+        // server is one person's (apiKeysRefused), asked in the create's own turn.
+        return send(res, 201, await apiKeys.create(await bodyOf(req), apiKeysRefused));
+      }
+      case "revokeApiKey":
+        await apiKeys.revoke(id);
+        return void res.writeHead(204, { "cache-control": "no-store" }).end();
       case "getWebhook":
         return send(res, 200, webhooks.view());
       case "saveWebhook": {
@@ -5108,15 +6424,30 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const pickView = await computerHere(listed);
         return send(res, 200, { templates: listed.map((pkg) => ({ ...packageView(pkg), computer_here: pickView(pkg) })) });
       }
+      case "listMarketplaceTemplates": {
+        // The marketplace's list as read (or kept), each entry with the package here that it is, when one is.
+        const read = await marketplace.list();
+        const here = registry.list();
+        return send(res, 200, { ...read, templates: read.templates.map((entry) => { const id = hereOf(entry, here); return id ? { ...entry, here: id } : entry; }) });
+      }
       case "importTemplate": {
-        // Read from GitHub and checked; a dry run answers it (200), else it is stored and served (201). The answer shows the
-        // package whole, its instructions and every skill file, for a person to read before they apply it.
-        const body = await bodyOf(req);
+        // Read from GitHub, or uploaded whole ({files}), and checked; a dry run answers it (200), else it is stored and
+        // served (201). The answer shows the package whole, its instructions and every skill file, for a person to read
+        // before they apply it. An upload's body carries the package's bytes (base64 among them), up to the import's own
+        // limit (TEMPLATE_UPLOAD_BODY).
+        const body = await bodyOf(req, TEMPLATE_UPLOAD_BODY);
         const done = new AbortController();
         res.once("close", () => done.abort());
         const imported = await importTemplate(importDeps, body, done.signal);
-        const pickView = await computerHere([imported.pkg]);
-        return send(res, imported.status, { template: { ...packageView(imported.pkg), computer_here: pickView(imported.pkg) }, ...(({ instructions, skill_files }) => ({ instructions, skill_files }))(packageDetail(imported.pkg)), publisher_trusted: imported.trusted, stored: imported.status === 201, replaced: imported.replaced, console_url: imported.status === 201 ? templateLink(linkOrigin(req), imported.pkg.id) : templateInstallLink(linkOrigin(req), imported.pkg.origin?.source ?? imported.pkg.id) });
+        const uploaded = imported.pkg.id.startsWith(UPLOAD_PREFIX);
+        return send(res, imported.status, { ...packageDetail(imported.pkg, await computerHere([imported.pkg])), publisher_trusted: imported.trusted, stored: imported.status === 201, replaced: imported.replaced, console_url: imported.status === 201 ? templateLink(linkOrigin(req), imported.pkg.id) : uploaded ? templatesLink(linkOrigin(req)) : templateInstallLink(linkOrigin(req), imported.pkg.origin?.source ?? imported.pkg.id) });
+      }
+      case "getTemplate": {
+        // One package whole, a bundled one's too: as the list shows it, with the files an import's answer shows, for a
+        // person (or a coding agent) to read before they apply it.
+        const pkg = registry.get(id);
+        if (!pkg) throw new ApiError("not_found", `no template ${id}: GET /v2/templates lists them`);
+        return send(res, 200, { ...packageDetail(pkg, await computerHere([pkg])), console_url: templateLink(linkOrigin(req), pkg.id) });
       }
       case "deleteTemplate":
         await deleteTemplate(importDeps, id);
@@ -5125,6 +6456,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const pkg = registry.get(id);
         if (!pkg) throw new ApiError("not_found", `no template ${id}: GET /v2/templates lists them`);
         const body = await bodyOf(req);
+        // A dry run writes nothing, so it keeps no Idempotency-Key record either: a retry reads the plan again.
+        if (body.dry_run === true) return send(res, 200, await planTemplate(pkg, body));
         // The Idempotency-Key's record keeps the agent and triggers, so a retry under the key gets the same apply; it never
         // keeps a webhook trigger's secret (below).
         let minted = new Map<string, string>();
@@ -5170,6 +6503,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       }
       case "listTriggerFirings":
         return send(res, 200, await triggers.firings(id));
+      case "releaseTriggerFiring":
+        // The launch hook's host took the firing and will start no run for it: failed now, its trigger's room free. Its
+        // words are kept and sent on (trigger.failed) as any stored string is, cut of every secret the server holds.
+        return send(res, 200, await triggers.release(id, decodeURIComponent(second!), await bodyOf(req), (text) => redacted(text, serverSecrets(), RELEASE_WORDS_MAX)));
     }
     throw new ApiError("not_found", `no route ${path}`);
   }
@@ -5177,10 +6514,29 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // The MCP endpoint's tools are the routes above, called in process with the caller's token (mcp.ts).
   const mcp = mcpEndpoint({ route, authorized: (header, req) => bearer(header, req), authFailed, version: VERSION });
 
-  function send(res: ServerResponse, status: number, body: unknown, headers: Record<string, string> = {}): void {
+  function send(res: ServerResponse, status: number, body: unknown, headers: Record<string, string | string[]> = {}): void {
     const text = JSON.stringify(body);
     res.writeHead(status, { "content-type": "application/json", "cache-control": "no-store", "x-content-type-options": "nosniff", ...headers });
     res.end(text);
+  }
+
+  /**
+   * Whether an API-only server lets this request into run `runId`'s live view, its page and files or (socket) its
+   * WebSocket: from the public address alone (a page navigation may send no Origin; a socket always sends one), with the
+   * viewer credential its backend minted for this run (viewer-credential.ts), not expired, its run not ended (read from
+   * the store each time: its revocation). The credential, or the refusal and its authFailed reason.
+   */
+  async function liveAdmits(req: IncomingMessage, runId: string, { socket }: { socket: boolean }): Promise<{ credential: string } | { reason: string; error: ApiError }> {
+    const sent = req.headers.origin?.toLowerCase();
+    if (sent === undefined ? socket : sent !== publicOrigin) {
+      return { reason: "live_view_origin", error: new ApiError("forbidden", "a run's live view here is opened on this server's public address (AGENTRUN_PUBLIC_URL) alone") };
+    }
+    const credential = viewerCredentialOf(req);
+    if (credential === undefined) return { reason: "no_credential", error: new ApiError("unauthenticated", "a run's live view here takes the viewer link its backend minted (POST /v2/runs/{run_id}/computer/viewer)") };
+    if (!viewerCredentialFor(viewerKey, runId, credential, Date.now()) || (await runOver(store, runId))) {
+      return { reason: "viewer_credential", error: new ApiError("forbidden", "this viewer link is expired, for another run, or its run has ended: ask for a new one") };
+    }
+    return { credential };
   }
 
   /** A run's live viewer's page and files (browser-live.ts, /v2/runs/{id}/computer/live/*): the owner's signed-in page
@@ -5188,6 +6544,18 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  only the viewer's WebSocket reaches the run. */
   async function liveRoute(req: IncomingMessage, res: ServerResponse, runId: string, family: LiveFamily, rest: string): Promise<void> {
     if (req.method !== "GET" && req.method !== "HEAD") throw new ApiError("method_not_allowed", `${req.method} is not a method of a run's live view`, {}, { allow: "GET, HEAD" });
+    if (options.apiOnly) {
+      // API-only: no owner here (liveAdmits). The page's answer sets the credential as the cookie its files and socket carry.
+      const admitted = await liveAdmits(req, runId, { socket: false });
+      if ("error" in admitted) {
+        authFailed(`/v2/runs/${runId}/${family}/live`, admitted.reason);
+        throw admitted.error;
+      }
+      const handover = await liveViewerFor(store, sealKey, runId, rest);
+      if (handover === undefined) throw new ApiError("not_found", `this run's ${family} has no live view at that address`);
+      res.setHeader("set-cookie", viewerCookie(req, runId, admitted.credential));
+      return serveViewerFile(req, res, rest, (handover.kind ?? "browser") === "browser" ? "browser" : "computer");
+    }
     if (!byOwnerSession(req)) {
       authFailed(`/v2/runs/${runId}/${family}/live`, req.headers.authorization === undefined ? "no_credential" : `${family}_without_session`);
       throw req.headers.authorization === undefined ? new ApiError("unauthenticated", `a run's live ${family} view takes the owner's password sign-in in the console`) : new ApiError("forbidden", `a run's live ${family} view takes the owner's password sign-in in the console, never a token`);
@@ -5230,10 +6598,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       const started = performance.now();
       const method = req.method ?? "GET";
       const path = (req.url ?? "/").split("?")[0]!;
-      // Who the request was answered for: the owner's or the console's session, or the id of the API token it carried
-      // (api-token.ts), never a secret. A request opened by neither has no such field.
+      // Who the request was answered for: the owner's or the console's session, the id of the API token it carried
+      // (api-token.ts), or the id of the key made in the console (api-keys.ts): never a secret. A request opened by none
+      // has no such field.
       res.once("finish", () => {
-        const by: Record<string, string> = byOwnerSession(req) ? { session: "owner" } : byConsoleSession(req) ? { session: "console" } : tokenUsed.has(req) ? { token: tokenUsed.get(req)! } : {};
+        const by: Record<string, string> = byOwnerSession(req) ? { session: "owner" } : byConsoleSession(req) ? { session: "console" } : tokenUsed.has(req) ? { token: tokenUsed.get(req)! } : keyUsed.has(req) ? { api_key: keyUsed.get(req)! } : {};
         log(logLine("request", { method, path, status: res.statusCode, ms: Math.round(performance.now() - started), ...by }));
       });
     }
@@ -5272,14 +6641,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const raw = (req.url ?? "/").split("?")[0]!;
     // API-only (api-only.ts): any address but the run routes is refused here, before the page, the owner's routes, the
     // MCP endpoint, the token-less hooks or the token check read anything of the request.
-    if (options.apiOnly && !servedApiOnly(ROUTES, req.method, raw)) return fail(new ApiError("not_found", apiOnlyRefusal(raw)));
+    if (options.apiOnly && !servedApiOnly(ROUTES, req.method, raw, apiOnlyMcpOrigins.length > 0)) return fail(new ApiError("not_found", apiOnlyRefusal(raw)));
     // Before the page: its cookie must not stand in for the token on the owner's own routes, nor on the MCP endpoint.
     if (owner && (raw === "/v2/setup" || raw === "/v2/setup/import" || raw === "/v2/setup/code" || raw.startsWith("/v2/auth/"))) return void ownerRoute(req, res, raw.slice(3), owner).catch(fail);
     if (raw === MCP_PATH) return void mcp(req, res).catch(fail);
     if (raw === "/llms.txt") return void answerLlms(req, res).catch(fail);
     if (raw === "/skills/agentrun-serve/SKILL.md") return void answerSkill(req, res).catch(fail);
     if (answerPage(req, res, raw, { token, authFailed, console: options.console, takesBytes, ...(owner ? { owner } : {}), ...(consoleSessions ? { sessions: consoleSessions } : {}), ...(options.publicUrl ? { publicUrl: options.publicUrl } : {}) })) return;
-    if (isObservationRoute(raw)) return void observationHttp(req, res, url, new Observations(store), (header) => bearer(header, req)).catch(fail);
+    if (isObservationRoute(raw)) return void observationHttp(req, res, url, new Observations(store, Date.now, new ObservationLearning(store, new CliLearningConnections(store, sdkSecret), learning !== "off")), (header) => bearer(header, req)).catch(fail);
     if (!raw.startsWith("/v2/")) return fail(new ApiError("not_found", `no route ${raw}; the API is under /v2`));
     // A run's id needs no decoding: one that is not an id as sent (a stray or malformed escape) is no run's, and is never
     // decoded here, where a throw would leave the request listener.
@@ -5301,9 +6670,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // address sends its own name as Origin too, which the Origin check below would take, so its Host is what gives it
     // away. Its name alone, on any port, as the HTTP routes check it.
     if (names && !names.has(hostName(req.headers.host) ?? "")) return deny("403 Forbidden");
-    // API-only: a run's live view is the console's, and refused with it; so are paired computers (Settings), whose tokens
-    // the attach socket takes as unknown there (machinesOnly). A run's hosted machine that dials still reaches it.
-    if (options.apiOnly && raw !== ATTACH_PATH) return deny("404 Not Found");
+    // API-only: paired computers are the console's (Settings), and refused with it, whose tokens the attach socket takes as
+    // unknown there (machinesOnly). A run's hosted machine that dials still reaches it, and a run's computer live view takes
+    // its viewer credential (below); a browser's live view stays the console's.
+    if (options.apiOnly && raw !== ATTACH_PATH && viewing?.[2] !== "computer") return deny("404 Not Found");
     // A paired computer's driver or a hosted machine dialing the attach socket (computer-attach.ts): its token, not the
     // owner's, lets it in.
     if (raw === ATTACH_PATH) {
@@ -5316,13 +6686,20 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (!viewing || !ID.test(viewing[1]!) || !/^\/v\/[A-Za-z0-9_-]{22}\/ws$/.test(viewing[3]!)) return deny("404 Not Found");
     // A browser always sends its page's origin on a WebSocket, which no other page's script can forge: this server's own
     // (as this request reaches it, or its public address, which a TLS proxy that rewrites Host or drops
-    // X-Forwarded-Proto leaves as the only one the owner's page has), and the owner signed in, or nothing.
-    const sent = String(req.headers.origin ?? "").toLowerCase();
-    if (sent === "" || (sent !== ownOrigin(req) && sent !== publicOrigin)) return (authFailed(raw, "live_view_origin"), deny("403 Forbidden"));
-    if (!owner || !signedIn(req, owner)) return (authFailed(raw, "live_view_without_session"), deny("401 Unauthorized"));
+    // X-Forwarded-Proto leaves as the only one the owner's page has), and the owner signed in, or nothing. API-only:
+    // liveAdmits, below.
+    if (!options.apiOnly) {
+      const sent = String(req.headers.origin ?? "").toLowerCase();
+      if (sent === "" || (sent !== ownOrigin(req) && sent !== publicOrigin)) return (authFailed(raw, "live_view_origin"), deny("403 Forbidden"));
+      if (!owner || !signedIn(req, owner)) return (authFailed(raw, "live_view_without_session"), deny("401 Unauthorized"));
+    }
     // Once the run's WebSocket is piped to this socket, a failure here only ends it: an HTTP line would land mid-stream.
     let piping = false;
     void (async () => {
+      if (options.apiOnly) {
+        const admitted = await liveAdmits(req, viewing[1]!, { socket: true });
+        if ("error" in admitted) return (authFailed(raw, admitted.reason), deny(admitted.error.code === "unauthenticated" ? "401 Unauthorized" : "403 Forbidden"));
+      }
       const run = ID.test(viewing[1]!) ? await momentOverStore(store, viewing[1]!, viewDepsFor(ownOriginOf())) : undefined;
       // The run's live viewer from the store (the runner's browser/computer tool wrote it under its claim): none for a run no
       // runner holds. A /computer/live socket reaches a viewer of every kind, a
@@ -5333,10 +6710,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       // Gone during the lookup, or the server is closing and has ended its viewers, or is about to.
       if (socket.destroyed || closing) return void socket.destroy();
       // Checked again after the lookup, then for as long as the socket is open: the sessions that let it in, and no other.
-      const held = heldSessions(req);
-      const admitted = () => held.some((value) => owner.valid(value));
-      if (!admitted()) return deny("401 Unauthorized");
-      viewers.watch(socket, admitted);
+      // API-only: the credential's run not ended, read from the store (its revocation); its expiry bounds the opening alone.
+      if (options.apiOnly) viewers.watch(socket, async () => !(await runOver(store, run!.id)));
+      else {
+        const held = heldSessions(req);
+        const admitted = () => held.some((value) => owner!.valid(value));
+        if (!admitted()) return deny("401 Unauthorized");
+        viewers.watch(socket, admitted);
+      }
       proxyLiveUpgrade(req, socket, head, handover, viewing[3]!, () => { piping = true; }, reachForRun(reach, run!.id));
     })().catch(() => (piping ? void socket.destroy() : deny("500 Internal Server Error")));
   };
@@ -5642,8 +7023,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // the store closes last.
     closing = true;
     stopping.abort();
-    // Cancel a pending ChatGPT callback without signing out or changing the saved credential.
-    plan.close();
+    clearInterval(localSourceTimer);
+    // Cancel a pending ChatGPT callback without signing out or changing the saved credential (not waited for).
+    void plan.close();
+    // The CLI's sign-in still waiting for its browser ends with the server, which forgets it: left running, its CLI would
+    // keep the browser's callback port from the next server's sign-in. Awaited until its process is gone.
+    const signInStopped = claudeSignIns.close();
     const observationStopped = stopObservationRetention();
     // A harness install under way stops with the server: npm gets SIGTERM, then SIGKILL, and nothing half installed stays.
     const installStopped = Promise.all(Object.values(installs).map((install) => install.stop()));
@@ -5653,15 +7038,18 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // triggers close, so it never turns one off into a closed file.
     const githubStopped = githubConnect.close();
     triggers.close();
+    // A count and a Wrapped read write nothing: ended outright. An import stops between two files and keeps what it wrote.
     for (const [worker, { task }] of workers) {
-      if (task === "plan") void worker.terminate();
-      else worker.postMessage("stop");
+      if (task === "import") worker.postMessage("stop");
+      else void worker.terminate();
     }
     await Promise.all([...workers.values()].map((w) => w.exit));
     await importing;
     await schemaSealed;
     await installStopped;
+    await signInStopped;
     await observationStopped;
+    await localSourceSweep;
     // The ends' follower stops before the webhooks it feeds and the store it reads.
     clearTimeout(endsTimer);
     await endsRead;
@@ -5669,8 +7057,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     await slack.close();
     // An upgraded socket is no connection closeAllConnections ends, and server.close waits for it.
     viewers.close();
+    clearInterval(routeTick);
     await attach.close();
     await new Promise((done) => (server.close(done), server.closeAllConnections()));
+    // No request is left to use a key: its last-use writes end before the store they write to closes.
+    await apiKeys.close();
     await mcpStopped;
     await githubStopped;
     // --faux-github's fake GitHub API, once nothing asks it anything.
@@ -5690,6 +7081,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     await store.close();
     dataLock.release();
     seal.release();
+    // Last, so a stop cut at its deadline has closed the rest: the host-address retry, aborted above, its read in flight
+    // cut then and its container's removal running since, within two REMOVE_MS.
+    await hostRetried;
   }
   return {
     url,
@@ -5703,9 +7097,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     ...(consoleSessions ? { launchCode: consoleSessions.code } : {}),
     boxesLine: boxesLine(boxOffers, enabledBoxes(env), boxAllow, boxesByDefault(env)),
     attachHub,
+    beside,
     dial: { ...(options.publicUrl ? { url: options.publicUrl.replace(/\/+$/, "") } : {}), tokens: attach.machineTokens, hub: attachHub },
     localInstall,
+    ollamaHost,
     own: mcpServers.own,
+    ...(fauxGitHub ? { fauxGitHub: { api: fauxGitHub.url, ...(fauxGitHub.web ? { web: fauxGitHub.web } : {}) } } : {}),
     // Once: a second call, at any time, is the first one's promise, so a close repeated after the next server started
     // never writes this data root's record again (the next server's, by then).
     close: () => (stopped ??= stop()),

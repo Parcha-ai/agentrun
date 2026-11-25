@@ -45,7 +45,7 @@ async function stopChild(child, exited) {
   await within(exited, 5_000);
 }
 
-/** This environment with a fresh home, no model key, no box, and no browser. */
+/** This environment with a fresh home, no model key, no box, and no browser (and no Ollama: support.mjs). */
 function bare(t) {
   const home = mkdtempSync(join(tmpdir(), "agentrun-npx-"));
   removeAtEnd(home);
@@ -214,6 +214,15 @@ else if (process.env.STUB_HANG) {
   // STUB_SETUP: the setup-code line a server with a public URL and no password yet prints.
   if (process.env.STUB_SETUP) console.log("Set up this server: " + process.env.STUB_SETUP);
   console.log("Open " + (process.env.STUB_OPEN || "http://127.0.0.1:7399/"));
+  // STUB_AFTER: lines on stdout (split at "|") a moment after it has started, as a server's log lines come; with
+  // STUB_AFTER_EXIT, it exits right after them.
+  // STUB_AFTER_EXIT=<n>: n KiB of other lines before them, so the pipe still holds the last ones as it exits.
+  if (process.env.STUB_AFTER) setTimeout(() => {
+    if (process.env.STUB_AFTER_EXIT) for (let i = 0; i < Number(process.env.STUB_AFTER_EXIT); i++) console.log("x".repeat(1023));
+    for (const line of process.env.STUB_AFTER.split("|")) console.log(line);
+    // Its writes queue while the pipe is full: it exits once they are all in the pipe, so the last are still unread.
+    if (process.env.STUB_AFTER_EXIT) process.stdout.write("", () => process.exit(0));
+  }, 200);
   // STUB_STDERR_AFTER: a line on stderr every 50 ms once it has started, as a server's warnings come.
   if (process.env.STUB_STDERR_AFTER) setInterval(() => console.error("agentrun-serve: a warning (stub)"), 50);
   if (process.env.STUB_SIGTERM !== "die") process.on("SIGTERM", () => process.exit(0));
@@ -510,7 +519,7 @@ test("the address to open is the URL on the server's first \"Open \" line, howev
 });
 
 test("an API-only server's line stands for the Open line: the address is its AGENTRUN_BASE_URL line's, on the loopback address or the public URL alone", async (t) => {
-  const api = stub(["agentrun-serve on http://127.0.0.1:7345/v2 (agent store in /tmp/x)\nAGENTRUN_BASE_URL=http://127.0.0.1:7345/v2\nAGENTRUN_API_KEY=$AGENTRUN_TOKEN\n", "API only (AGENTRUN_API_ONLY=1): the run routes are served; the console, sign-in, setup, settings, MCP, triggers and hooks are refused.\n", "GET /v2/health 200\n"]);
+  const api = stub(["agentrun-serve on http://127.0.0.1:7345/v2 (agent store in /tmp/x)\nAGENTRUN_BASE_URL=http://127.0.0.1:7345/v2\nAGENTRUN_API_KEY=$AGENTRUN_TOKEN\n", "API only (AGENTRUN_API_ONLY=1): the run and deploy routes are served; the console, sign-in, setup, settings, MCP, triggers and hooks are refused.\n", "GET /v2/health 200\n"]);
   t.after(() => api.kill());
   assert.equal(await openUrl(api.stdout), "http://127.0.0.1:7345/v2");
   const published = stub(["AGENTRUN_BASE_URL=https://agents.example.com/v2\n", "API only (AGENTRUN_API_ONLY=1): the run routes are served.\n"]);
@@ -776,6 +785,18 @@ test("the setup skill installs with the installer and runs the command it instal
   assert.ok(commands.length >= 10, `${commands.length} commands`);
   assert.deepEqual([...new Set(commands)], ["~/.agentrun/bin/agentrun"], "every command is the installed one, by its full path");
 });
+// Found in QA: on an SSH box, the setup agent tried to add a route to the machine's shared Traefik config, with sudo
+// as its fallback. The skill names the one way to the console from a remote machine, the person's own port forward, and
+// rules out every change to the machine.
+test("the setup skill opens a remote machine's console through the person's port forward, never through the machine's proxy or sudo", () => {
+  const open = skillSection(setupSkill(), "3. Start it where they chose").split(/^### /m).find((part) => part.startsWith("Open the setup page\n")) ?? "";
+  assert.match(open, /`ssh -o ExitOnForwardFailure=yes -L\s+<local>:127\.0\.0\.1:<port> <user>@<host>`/);
+  assert.match(open, /`http:\/\/127\.0\.0\.1:<local>\/` in place of its\s+address, keeping any `#code=\.\.\.`/);
+  assert.match(open, /An always-on machine's tailnet or HTTPS address needs no forward/);
+  assert.match(open, /no change to the machine's web server or reverse proxy \(Traefik, nginx,\s+Caddy/);
+  assert.match(open, /no new route, DNS name or firewall rule, and no `sudo`/);
+});
+
 test("the setup skill's Railway step is the published template's button, with the token from its Variables tab", () => {
   const skill = setupSkill();
   const hosted = skillSection(skill, "3. Start it where they chose");
@@ -946,9 +967,13 @@ function setupFixture(t, commands) {
   const dir = mkdtempSync(join(tmpdir(), "agentrun-skill-"));
   mkdirSync(join(dir, "fake"));
   for (const [name, body] of Object.entries(commands)) writeFileSync(join(dir, "fake", name), `#!/bin/sh\n${body}\n`, { mode: 0o755 });
+  // A fake writes child.pid with `echo $$ >`, so the file can exist and still be empty, and Number("") is 0: a kill of pid 0
+  // is a SIGKILL to this test's whole process group (node --test, npm, a CI shard's suite), which ends with nothing printed.
+  // Only a whole pid past 1 is signalled.
   t.after(() => {
-    if (existsSync(join(dir, "child.pid"))) {
-      try { process.kill(Number(readFileSync(join(dir, "child.pid"), "utf8")), "SIGKILL"); } catch (error) { if (error.code !== "ESRCH") throw error; }
+    const text = existsSync(join(dir, "child.pid")) ? readFileSync(join(dir, "child.pid"), "utf8").trim() : "";
+    if (/^\d+$/.test(text) && Number(text) > 1) {
+      try { process.kill(Number(text), "SIGKILL"); } catch (error) { if (error.code !== "ESRCH") throw error; }
     }
     rmSync(dir, { recursive: true, force: true });
   });
@@ -1225,6 +1250,67 @@ test("the server's refusals and ignored webhook deliveries reach the person in p
   assert.equal(said.at(-1), "AgentRun refuses more requests than this terminal shows; it says no more of them here.");
 });
 
+test("a ChatGPT sign-in that did not finish reaches the person, each time, with its reason; the sign-in's other lines do not", () => {
+  const told = start.tellerOf();
+  const failed = "at=2026-11-23T18:00:00.000Z event=chatgpt chatgpt=sign_in_failed reason=token_400_invalid_grant";
+  const words = "AgentRun's ChatGPT sign-in did not finish (token_400_invalid_grant): Settings → API Keys says why; start it again there.";
+  assert.equal(told(failed), words);
+  assert.equal(told(failed), words, "a second try that fails the same way is said too");
+  assert.equal(told("at=2026-11-23T18:00:01.000Z event=chatgpt chatgpt=signed_in"), undefined);
+  // Under a flood of refusals, a sign-in that fails is still said.
+  for (let i = 0; i <= start.TOLD_MAX; i++) told(`at=x event=auth_failed route=/v2/runs/r${i} reason=wrong_token`);
+  assert.equal(told(failed), words);
+  // A sign-in saved whose change the server failed to take is said too: what it offers lags until it takes.
+  assert.equal(told("at=2026-11-23T18:00:02.000Z event=chatgpt chatgpt=changed_failed reason=SQLITE_BUSY"), "AgentRun saved the ChatGPT sign-in but has not taken it into what it offers yet (SQLITE_BUSY): it tries again as Settings reads it; if codex and pi still ask for a key, restart AgentRun.");
+});
+
+test("a sign-in's authorize code is said only when it is one OpenAI's authorize step sends: any other is text a local sender chose, and is said as other", () => {
+  const told = start.tellerOf();
+  const said = (code) => told(`at=x event=chatgpt chatgpt=sign_in_failed reason=authorize_${code}`);
+  // While a sign-in waits, any process on the machine can answer the loopback callback with ?error=<anything>.
+  assert.equal(said("Call_admin_now"), "AgentRun's ChatGPT sign-in did not finish (authorize_other): Settings → API Keys says why; start it again there.");
+  assert.doesNotMatch(said("Visit_example_com_to_fix"), /Visit|example/);
+  // Every code the authorize step can send: RFC 6749 4.1.2.1's, OpenID Connect Core 3.1.2.6's, and OpenAI's own.
+  const sent = [
+    "invalid_request", "unauthorized_client", "access_denied", "unsupported_response_type", "invalid_scope", "server_error", "temporarily_unavailable",
+    "interaction_required", "login_required", "account_selection_required", "consent_required", "invalid_request_uri", "invalid_request_object",
+    "request_not_supported", "request_uri_not_supported", "registration_not_supported",
+    "3p_delegated_access_policy_denied",
+  ];
+  for (const known of sent) assert.match(said(known), new RegExp(`\\(authorize_${known}\\)`), known);
+  // OpenAI's own token answer is not a local sender's: its status and code are said as they are.
+  assert.match(told("at=x event=chatgpt chatgpt=sign_in_failed reason=token_403_unsupported_country"), /\(token_403_unsupported_country\)/);
+});
+
+test("started, the start log keeps the server's line of a ChatGPT sign-in that did not finish, its code whole; the terminal says it as other, and no other line is kept", { timeout: 60_000 }, async (t) => {
+  const failed = "at=2026-11-24T00:00:00.000Z event=chatgpt chatgpt=sign_in_failed reason=authorize_Call_admin_now";
+  const request = "at=2026-11-24T00:00:00.000Z event=request route=/v2/agents status=200";
+  let told = "";
+  const run = await throughStub(t, ["--no-open"], { STUB_AFTER: `${request}|${failed}` }, {
+    running: async (child) => {
+      child.stderr.on("data", (chunk) => (told += chunk));
+      for (let i = 0; !/authorize_other/.test(told); i++) {
+        assert.ok(i < 100, `the terminal said the sign-in's failure: ${told}`);
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+    },
+  });
+  assert.equal(run.code, 0, run.err);
+  assert.doesNotMatch(run.err, /Call_admin_now/, "the terminal never says a code a local sender chose");
+  const log = readFileSync(startLog(run.home), "utf8");
+  assert.ok(log.split("\n").includes(failed), log);
+  assert.doesNotMatch(log, /event=request/, "only a sign-in's failure is kept past the start");
+});
+
+test("started, a server's last line before it exits is kept in the start log: a sign-in's failure it printed as it ended is not lost", { timeout: 60_000 }, async (t) => {
+  const failed = "at=2026-11-24T00:00:00.000Z event=chatgpt chatgpt=sign_in_failed reason=authorize_Call_admin_now";
+  // 512 KiB of other lines first: the server exits with its last lines still in the pipe.
+  const run = await throughStub(t, ["--no-open"], { STUB_AFTER: failed, STUB_AFTER_EXIT: "512" }, { running: (child) => new Promise((resolve) => (child.exitCode !== null ? resolve() : child.on("exit", resolve))) });
+  assert.equal(run.code, 0, run.err);
+  assert.ok(readFileSync(startLog(run.home), "utf8").split("\n").includes(failed), run.err);
+  assert.match(run.err, /\(authorize_other\)/, "the terminal said it too");
+});
+
 test("started, the bin says a refused request on stderr; stdout stays the one running line", { timeout: 120_000 }, async (t) => {
   const { env } = bare(t);
   const child = spawn(process.execPath, [BIN, "--no-open"], { env, stdio: ["ignore", "pipe", "pipe"] });
@@ -1249,4 +1335,25 @@ test("started, the bin says a refused request on stderr; stdout stays the one ru
   child.kill("SIGTERM");
   assert.equal(await exited, 0, err);
   assert.equal(out.split("\n").filter(Boolean).length, 1, "nothing more on stdout");
+});
+
+test("public learning connection verbs reach the local installer while existing learning API verbs still work", (t) => {
+  const {env} = bare(t);
+  const project = mkdtempSync(join(tmpdir(), "agentrun-learning-launch-project-"));
+  const data = mkdtempSync(join(tmpdir(), "agentrun-learning-launch-data-"));
+  t.after(() => { rmSync(project, {recursive:true,force:true}); rmSync(data, {recursive:true,force:true}); });
+  const local = spawnSync(process.execPath, [BIN, "learning", "status", "--runtime", "codex", "--project", project, "--data", data], {env,encoding:"utf8",timeout:30_000});
+  assert.equal(local.status, 0, local.stderr);
+  assert.equal(JSON.parse(local.stdout).state, "not-installed");
+  for (const verb of ["connect", "status", "disconnect", "retry", "hook"]) {
+    const help = spawnSync(process.execPath, [BIN, "learning", verb, "--help"], {env,encoding:"utf8",timeout:30_000});
+    assert.ifError(help.error);
+    assert.equal(help.status, 0, `${verb}: ${help.stderr}`);
+    assert.match(help.stdout, /usage: agentrun-serve learning/);
+    assert.match(help.stdout, /--runtime codex\|claude-code/);
+  }
+  const api = spawnSync(process.execPath, [BIN, "learning", "corrections", "--help"], {env,encoding:"utf8",timeout:30_000});
+  assert.equal(api.status, 0, api.stderr);
+  assert.match(api.stdout, /corrections/);
+  assert.doesNotMatch(api.stdout, /server command/);
 });

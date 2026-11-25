@@ -8,7 +8,7 @@ helm install agentrun oci://ghcr.io/parcha-ai/charts/agentrun --devel --namespac
 ```
 
 Each release publishes the chart at its own version, installing that release's image. Releases are betas for now,
-and Helm skips a prerelease unless told: `--devel` takes the newest, `--version 0.1.0-beta.47` a given one. From a
+and Helm skips a prerelease unless told: `--devel` takes the newest, `--version 0.1.0-beta.57` a given one. From a
 checkout, `helm install agentrun deploy/helm/agentrun` installs this one.
 
 Then open the console. The install's notes print the two commands: a port-forward, and the one that reads your token
@@ -60,7 +60,8 @@ kubectl -n agentrun create secret generic agentrun-keys \
 File tools and `web_fetch`, and no shell: a cluster gives the server no Docker. For a shell, add a sandbox provider's
 key in the console.
 
-Each run's process runs as a user of its own. The run helper switches to it with three file capabilities (`SETUID`,
-`SETGID`, `SETPCAP`), which the container keeps while dropping every other capability, and the init container runs as
+Each run's process runs as a user of its own. The run helper switches to it, and gives the run's folders to it and back,
+with four file capabilities (`CHOWN`, `SETUID`, `SETGID`, `SETPCAP`), which the container keeps while dropping every
+other capability (the kernel refuses to start the helper when one is missing), and the init container runs as
 root with `CHOWN` and `FOWNER`. The pod therefore needs the `baseline` Pod Security level (Kubernetes' default): a
 namespace that enforces `restricted` rejects it, and the chart doesn't support one.

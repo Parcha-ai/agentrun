@@ -1,7 +1,7 @@
 import { agentHash } from "@/components/AgentPage";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { CodingAgentAction } from "@/components/CodingAgentAction";
-import { Banner, Button, Chip, ConfirmDialog, Dialog, Field, Input, Segmented, useToast } from "@/components/ui";
+import { Banner, Button, Chip, ConfirmDialog, Dialog, Field, Input, Segmented, Switch, useToast } from "@/components/ui";
 import { type Client, problemOf } from "@/lib/client";
 import type { ConnectorEnrollment, RemoteConnectionIntent, RemoteConnector } from "@/lib/connectors";
 import { connectRemoteAgentsPrompt } from "@/lib/codingAgentPrompts";
@@ -15,6 +15,7 @@ export function RemoteConnections({ v2 }: { v2: Client }) {
   const [error, setError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [label, setLabel] = useState("");
+  const [sync, setSync] = useState(true);
   const [intent, setIntent] = useState<RemoteConnectionIntent>("live");
   const [enrollment, setEnrollment] = useState<ConnectorEnrollment | null>(null);
   const [expired, setExpired] = useState(false);
@@ -55,7 +56,7 @@ export function RemoteConnections({ v2 }: { v2: Client }) {
   const enroll = async () => {
     if (mutation.current) return;
     mutation.current = true; setBusy(true); setActionError(null); setExpired(false);
-    try { const result = await v2.enrollConnector(label, { native_execution: intent !== "history", history_import: intent !== "live" }); if (live.current) setEnrollment(result); }
+    try { const result = await v2.enrollConnector(label, { native_execution: intent !== "history", history_import: intent !== "live", config_sync: sync }); if (live.current) setEnrollment(result); }
     catch (e) { if (live.current) setActionError(problemOf(e)); }
     finally { mutation.current = false; if (live.current) setBusy(false); }
   };
@@ -75,9 +76,11 @@ export function RemoteConnections({ v2 }: { v2: Client }) {
   };
   return <div className="space-y-6" aria-label="Remote connections">
     <section className="space-y-4 border bg-card p-4" aria-label="Connect another machine">
-      <div className="flex flex-wrap items-center gap-3"><h2 className="mr-auto text-lg font-semibold">Connect remote agents</h2><CodingAgentAction label="Connect agent" prompt={connectRemoteAgentsPrompt(location.origin, intent)} /></div>
-      <p className="max-w-prose text-body text-muted-foreground">Connect a Claude Code or Codex setup on your laptop, VM or container. Its files and native sign-in stay there.</p>
+      <div className="flex flex-wrap items-center gap-3"><h2 className="mr-auto text-lg font-semibold">Connect remote agents</h2><CodingAgentAction label="Connect your agents" prompt={connectRemoteAgentsPrompt(location.origin, intent)} /></div>
+      <p className="max-w-prose text-body text-muted-foreground">Connect a Claude Code or Codex setup on your laptop, VM or container. Keep working there while your setup syncs here. Move the agent to AgentRun whenever it is ready. Native sign-in stays on the source.</p>
       <div className="space-y-3"><p className="caps text-label">Allow this connection to</p><Segmented name="remote-connection-intent" label="Connection scope" size="sm" value={intent} onChange={setIntent} options={[{ value: "live", label: "Live agent", disabled: busy }, { value: "history", label: "History only", disabled: busy }, { value: "both", label: "Both", disabled: busy }]} /><p className="max-w-prose text-small text-muted-foreground">{intent === "live" ? "Run future jobs with your existing setup. Past conversations are not shared." : intent === "history" ? "Upload completed conversations from one selected project and runtime. No executing worker or self-improvement is enabled." : "Connect for future jobs and upload completed conversations from the selected project and runtime."} {intent !== "live" && " Preview and approve the history on the source machine before upload. History is not used as learning."}</p></div>
+      <div className="flex items-center gap-3"><span id="new-connector-sync" className="text-body">Keep setup in sync</span><Switch labelledBy="new-connector-sync" checked={sync} disabled={busy} onChange={setSync} /></div>
+      {sync && <p className="text-small text-muted-foreground">Sync copies the approved project, instructions, authored skills, tools and supported settings to AgentRun. The source confirms its scope when connecting.</p>}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start"><div className="min-w-0 flex-1"><Field label="Machine label" hint="Optional. A name you recognize in this console."><Input value={label} onChange={(event) => setLabel(event.target.value)} placeholder="My development machine" disabled={busy} maxLength={120} /></Field></div><Button size="md" className="self-start sm:mt-6" disabled={busy} aria-busy={busy} onClick={() => void enroll()}>{busy && !revoking ? "Creating code…" : "Create connection code"}</Button></div>
       <p className="text-small text-muted-foreground">Use the code only in the connector's secure terminal prompt. It expires after ten minutes and can pair one machine. The coding-agent prompt contains no credentials.</p>
       {expired && <Banner tone="warning">The connection code expired. Create a new one if you have not connected the machine.</Banner>}

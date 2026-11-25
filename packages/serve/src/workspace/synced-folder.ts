@@ -23,7 +23,7 @@
 //   the disk (storedFolder, holdSynced).
 // - Every write of a claim's goes through fencedStore: once a later claim has taken the run (the run's epoch and runner
 //   say so, held or not), it is refused, never sent.
-import { type ComputerClient, fail, type FolderMeta, folderPathProblem, FolderSync, ok, pushTar, type Result, SYNC_MAX_BYTES, SYNC_MAX_ENTRIES, type SyncSink, type TarEntry, tarStream, WORKSPACE } from "@parcha/agentrun-computer";
+import { type ComputerClient, fail, type FolderMeta, folderPathProblem, FolderSync, ok, type Result, SYNC_MAX_BYTES, SYNC_MAX_ENTRIES, type SyncSink, type TarEntry, WORKSPACE } from "@parcha/agentrun-computer";
 
 /** A file or a directory of the folder as the store holds it, by its path relative to the folder. */
 export type StoredEntry = { readonly path: string; readonly type: "file" | "dir"; readonly size: number };
@@ -85,7 +85,8 @@ const quiet = <T>(promise: Promise<T>): Promise<T> => {
 };
 
 /** The folder's entries as tar entries, by path (a directory before what is in it), then its links: each file read
- *  AHEAD ahead of the one written, so what is held is those few, never the folder. */
+ *  AHEAD ahead of the one written, so what is held is those few, never the folder (FolderSync.push gives each file its
+ *  mtime). */
 async function* tarEntries(store: FolderStore, { entries, meta }: StoredFolder): AsyncGenerator<TarEntry> {
   const modeOf = (path: string, fallback: number): number => (Object.hasOwn(meta.modes, path) ? meta.modes[path]! : fallback);
   const sorted = [...entries].sort(byPath);
@@ -115,20 +116,17 @@ export type HeldFolder = { folder?: FolderSync };
 
 /**
  * The stored folder pushed into the computer's empty /workspace through `client` (the computer's own, under no sync),
- * one streaming tar, then the computer's listing read as the manifest: the sync the claim holds from then on (the
- * caller sets HeldFolder.folder to it), at the claim's start and for a new sandbox in place of a lost one, whose fresh
- * mtimes the old manifest would read as every file changed. The links an exec made on the disk (linkObjects), now links
+ * one streaming tar (FolderSync.push), then the computer's listing read as the manifest: the sync the claim
+ * holds from then on (the caller sets HeldFolder.folder to it), at the claim's start and for a new sandbox in place of a
+ * lost one, whose files the old manifest does not describe. The links an exec made on the disk (linkObjects), now links
  * in the computer, are then removed from the disk. Throws in words where the push, the listing or a remove fails.
  */
 export async function holdSynced(store: FolderStore, client: ComputerClient, stored: StoredFolder, signal?: AbortSignal): Promise<FolderSync> {
-  const options = signal ? { signal } : {};
-  if (stored.entries.length > 0 || Object.keys(stored.meta.links).length > 0) {
-    const pushed = await pushTar(client, WORKSPACE, tarStream(tarEntries(store, stored)), options);
-    if (!pushed.ok) throw new Error(`the run's folder could not be pushed into the computer: ${pushed.error.message}`);
-  }
   const folder = new FolderSync(client, store);
-  const listed = await folder.baseline(options);
-  if (!listed.ok) throw new Error(`the run's folder pushed into the computer could not be listed: ${listed.error.message}`);
+  const options = signal ? { signal } : {};
+  // An empty folder is an empty tar, as conformance pushes it.
+  const held = await folder.push(tarEntries(store, stored), options);
+  if (!held.ok) throw new Error(`the run's folder ${held.error.message}`);
   for (const path of stored.linkObjects) {
     const removed = await store.remove(path, "file");
     if (!removed.ok) throw new Error(`the link ${JSON.stringify(path)} an exec made on the run's disk could not be removed from it: ${removed.error.message}`);

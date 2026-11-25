@@ -7,10 +7,10 @@
 // seal key (server-keys.ts); a provider is handed its keys only for its test, or for the agent's own computer
 // (providerFor), through computer-keys.ts (providerOptions, testConnection), which maps a key's name onto the option it
 // fills. A run's claim is refused by the workspace's resolver (workspace/resolve-computer.ts resolveComputer).
-import { type ComputerProvider, connectOf, type GpuCapability, type HostCommand, imagesOf, type ProviderEntry } from "@parcha/agentrun-computer";
+import { type ComputerProvider, connectOf, type GpuCapability, type HostCommand, imagesOf, type MountKind, type ProviderEntry } from "@parcha/agentrun-computer";
 import { BOX_ALLOW_ENV, boxAllowOf } from "./box-settings.js";
 import { KEY_TABLE, type KeyChoice, keyChoices, type KeyTable, type ProviderFactories, type ProviderSettings, providerOptions, settingOptions, testConnection } from "./computer-keys.js";
-import { COMPUTER_KINDS, type ComputerKind, type ComputerSetting, kindSettings } from "./computer-setting.js";
+import { COMPUTER_KINDS, type ComputerKind, type ComputerSetting, kindSettings, recordOf, type RecordView } from "./computer-setting.js";
 import { inArchilMode } from "./archil-settings.js";
 import { daemonUp, type DockerDaemon, noDockerWords } from "./docker-daemon.js";
 import { ApiError, invalid } from "./errors.js";
@@ -23,7 +23,7 @@ import { getSealedKey, putSealedKey, removeSealedKey } from "./server-keys.js";
 import type { PairedComputerRow, Store } from "./store/index.js";
 import type { PairedView } from "./computer-attach.js";
 import { dialApartWords, RUNNER_APART_WORDS, withPaired } from "./workspace/attached-computers.js";
-import { aLabel, type ComputerSettingKind, entryHere, folderKindOf, type KindRegistry, type ShellPlace, needsNetwork, shellChoiceOf } from "./workspace/resolve-computer.js";
+import { aLabel, type ComputerSettingKind, entryHere, folderKindOf, type KindRegistry, type ShellPlace, needsNetwork, runFolderOf, shellChoiceOf } from "./workspace/resolve-computer.js";
 import { restartWith } from "./start-switches.js";
 
 // Every request to a computer's keys is a secret write (secret-writes.ts), whatever its body (a value, a null, an empty
@@ -82,17 +82,17 @@ export interface ComputerRoutesOptions {
   /** Whether a provider that binds a folder of this machine (Docker) answers here now, or why not (the server's daemon
    *  check, docker-daemon.ts, which keeps its answer a while). Absent: taken as answering. */
   readonly answers?: (provider: string) => Promise<DockerDaemon>;
-  /** The person's own computers paired with this server (computer-attach.ts): the store's rows and each one's view.
-   *  Each is one more provider of its kind (attached-computers.ts pairedEntry), ready while it is attached. Absent:
-   *  none. */
-  readonly paired?: { rows(): Promise<readonly PairedComputerRow[]>; viewOf(row: PairedComputerRow, serves: readonly ComputerSettingKind[]): PairedView };
-  /** No runner in this server's process (ServeOptions.runnerApart): no run here can use a computer whose socket the
-   *  server's attach hub takes, a paired computer's or a dial provider's machine's. Each such provider's row says so
-   *  (runs_refused), and a dial provider's test fails in those words. */
+  /** The person's own computers paired with this server (computer-attach.ts): the store's rows and each one's view, with
+   *  its runs_refused as this module reads it. Each is one more provider of its kind (attached-computers.ts pairedEntry),
+   *  ready while it is attached. Absent: none. */
+  readonly paired?: { rows(): Promise<readonly PairedComputerRow[]>; viewOf(row: PairedComputerRow, serves: readonly ComputerSettingKind[], runsRefused: string | null): Promise<PairedView> };
+  /** No runner in this server's process (ServeOptions.runnerApart): while no runner relays (`relayed`), no run here can
+   *  use a computer whose socket the server's attach hub takes, a paired computer's or a dial provider's machine's. Each
+   *  such provider's row says so (runs_refused), and a dial provider's test fails in those words. */
   readonly runnerApart?: boolean;
-  /** Whether a runner in a process of its own relays its dials now (dial-relay.ts): its machines dial this server, which
-   *  relays each socket to it, so a dial provider's runs can use it and its row says nothing. Read once per view and per
-   *  test. Absent: none does. A paired computer's socket is never relayed. */
+  /** Whether a runner in a process of its own relays now (dial-relay.ts): a dial provider's machines and a paired
+   *  computer dial this server, which relays each socket to the runner that holds its run, so their runs can use them and
+   *  their rows say nothing. Read once per view and per test. Absent: none does. */
   readonly relayed?: () => Promise<boolean>;
 }
 
@@ -104,8 +104,11 @@ export interface ComputerRoutesOptions {
  *  where it offers images to choose. `picked`: the names of the secrets a person picks from the vendor's own list
  *  (GET /v2/computers/{provider}/choices) rather than pastes, where it has any. `runs_refused`: on a server whose runner
  *  runs in a process of its own, why no run here can use it and the fix, for a computer whose socket the server's
- *  process takes (a dial provider's, a paired one's); else null. */
-export type ProviderView = { id: string; name: string; metered: boolean; secrets: KeyMeta[]; required: string[]; picked?: string[]; ready: boolean; why?: string; runs_refused: string | null; network?: string; images?: string[]; persistent?: { images?: string[] }; gpu?: GpuView } & ShellChoice;
+ *  process takes (a dial provider's, a paired one's); else null. `folder`: the kind of the run's folder a run of an agent
+ *  with this computer holds on this server now (resolve-computer.ts runFolderOf, the claim's rule, in this server's mode
+ *  and with the provider as this server has it): a bind of this machine, an Archil mount or a synced folder; null where
+ *  it holds none. */
+export type ProviderView = { id: string; name: string; metered: boolean; secrets: KeyMeta[]; required: string[]; picked?: string[]; ready: boolean; why?: string; runs_refused: string | null; folder: MountKind | null; network?: string; images?: string[]; persistent?: { images?: string[] }; gpu?: GpuView } & ShellChoice;
 /** A choice's shell (workspace runShellOf, in this server's mode), the host tools it gives (the kernel registry's
  *  hostToolDefs for that shell) and what it leaves out in words (absent on a computer that mounts the folder). */
 export type ShellChoice = { shell: ShellPlace; host_tools: string[]; shell_note?: string };
@@ -141,8 +144,9 @@ export function networkWords(network: readonly string[] | undefined, kind?: Comp
   return undefined;
 }
 /** A kind; kind none, the one "no computer" choice, carries its ShellChoice itself (it has no providers). `settings`: the
- *  fields its computer may set beside kind and provider (computer-setting.ts kindSettings). */
-export type KindView = { kind: ComputerKind; offered: boolean; why?: string; groups: string[]; tools: string[]; settings: string[]; providers: ProviderView[] } & Partial<ShellChoice>;
+ *  fields its computer may set beside kind and provider (computer-setting.ts kindSettings). `record`: whether a run of it
+ *  can record its screen on this server, or why not (computer-setting.ts recordOf). */
+export type KindView = { kind: ComputerKind; offered: boolean; why?: string; groups: string[]; tools: string[]; settings: string[]; record: RecordView; providers: ProviderView[] } & Partial<ShellChoice>;
 export type TestView = { ok: true; detail: string } | { ok: false; why: string };
 /** A picked key's choices (GET /v2/computers/{provider}/choices): its KEY, as PUT …/keys takes it, then the values the
  *  vendor's list offers, each saved as it is and shown by its label, and `saved`, the one whose value is saved now, where
@@ -217,10 +221,10 @@ export function createComputerRoutes(options: ComputerRoutesOptions) {
   const modeNow = async (): Promise<FolderMode> => (typeof options.mode === "function" ? options.mode() : options.mode);
   /** Why no run here can use `provider`'s computers, on a server whose runner runs in a process of its own: its machines
    *  dial this server (connectOf, with the connect its settings give), or it is a paired computer (`paired`), so the
-   *  server's attach hub takes its socket, which the runner never reaches. A dial provider's machine reaches a runner
-   *  that relays its dials (`relayed`, read by relaysNow), so it is null there. Null where its runs can use it. */
+   *  server's attach hub takes its socket, which the runner never reaches. Either reaches a runner that relays
+   *  (`relayed`, read by relaysNow), so it is null there. Null where its runs can use it. */
   const runsRefused = (provider: Pick<ProviderEntry, "id" | "label" | "connect">, relays: boolean, paired = false): string | null =>
-    options.runnerApart !== true ? null : paired ? RUNNER_APART_WORDS : !relays && connectOf(provider, settingOptions(provider.id, settings, keyTable)) === "dial" ? dialApartWords(provider.label) : null;
+    options.runnerApart !== true || relays ? null : paired ? RUNNER_APART_WORDS : connectOf(provider, settingOptions(provider.id, settings, keyTable)) === "dial" ? dialApartWords(provider.label) : null;
   const relaysNow = async (): Promise<boolean> => options.runnerApart === true && options.relayed !== undefined && (await options.relayed());
   /** Why a computer of `kind` on `provider` can't be had for its daemon (a provider that binds a folder of this machine,
    *  `said` its answer, in folder `mode`): none answering is the one wording (docker-daemon.ts noDockerWords); else its
@@ -235,10 +239,10 @@ export function createComputerRoutes(options: ComputerRoutesOptions) {
     // The paired computers, each one more provider of its kind; one not attached now is not ready, saying so.
     const rows = options.paired ? await options.paired.rows() : [];
     const listed = withPaired(options.kinds, rows);
-    const paired = rows.map((row) => options.paired!.viewOf(row, listed.PROVIDERS.find((provider) => provider.id === row.id)?.kinds ?? []));
+    const relays = await relaysNow();
+    const paired = await Promise.all(rows.map((row) => options.paired!.viewOf(row, listed.PROVIDERS.find((provider) => provider.id === row.id)?.kinds ?? [], runsRefused({ id: row.id, label: row.name }, relays, true))));
     const offline = new Map(rows.flatMap((row, at) => (paired[at]!.online ? [] : [[row.id, `${row.name} is not attached now: open its driver on that computer, which dials this server`] as const])));
     const pairedIds = new Set(rows.map((row) => row.id));
-    const relays = await relaysNow();
     // Every provider's keys in one read: each a SecretMeta named for its provider, set by the environment or the store row
     // of its key's name.
     const slots = listed.PROVIDERS.flatMap((provider) => provider.keys.map((key) => ({ secret: secretName("computer", provider.id, key.name), env: key.name, row: key.name })));
@@ -248,6 +252,8 @@ export function createComputerRoutes(options: ComputerRoutesOptions) {
     // Archil mount where its settings make its machines dial this server.
     const kinds = { ...listed, PROVIDERS: listed.PROVIDERS.map((provider) => entryHere(provider, (name) => saved.has(name) || envValue(env, name) !== undefined, settingOptions(provider.id, settings, keyTable))) };
     const choice = (setting: ComputerSetting): ShellChoice => shellChoiceOf(setting, mode === "disk" ? 2 : 1, kinds);
+    // The run's folder a computer of this choice holds, by the rule the claim picks it by, over the same providers.
+    const folderOf = (setting: ComputerSetting): MountKind | null => runFolderOf(setting, mode === "disk" ? 2 : 1, kinds) ?? null;
     // Under this server's AGENTRUN_BOX_ALLOW none, a computer that needs a network is refused at a
     // run's start and its claim (resolve-computer.ts noNetworkRefusal), so it is never ready here, whatever its keys.
     const refusedOpen = (provider: ProviderEntry): boolean => boxAllowOf(env as NodeJS.ProcessEnv) === "none" && needsNetwork(provider.network);
@@ -273,13 +279,13 @@ export function createComputerRoutes(options: ComputerRoutesOptions) {
           const keptImages = images.filter((image) => keeping.some((one) => (one.image ?? provider.defaultImage?.[kind]) === image));
           const persistent = keeping.length === 0 ? undefined : images.length > 0 ? { images: keptImages } : {};
           const picked = provider.keys.filter((key) => key.picked).map((key) => secretName("computer", provider.id, key.name));
-          return { id: provider.id, name: provider.label, metered: provider.metered, secrets: provider.keys.map((key) => metas.get(secretName("computer", provider.id, key.name))!), required: provider.keys.filter((key) => key.required).map((key) => secretName("computer", provider.id, key.name)), ...(picked.length > 0 ? { picked } : {}), ready: why === undefined, ...(why ? { why } : {}), runs_refused: runsRefused(provider, relays, pairedIds.has(provider.id)), ...(network ? { network } : {}), ...(images.length > 0 ? { images } : {}), ...(persistent ? { persistent } : {}), ...(gpu ? { gpu: gpuView(gpu, provider, mode) } : {}), ...choice({ kind, provider: provider.id } as ComputerSetting) };
+          return { id: provider.id, name: provider.label, metered: provider.metered, secrets: provider.keys.map((key) => metas.get(secretName("computer", provider.id, key.name))!), required: provider.keys.filter((key) => key.required).map((key) => secretName("computer", provider.id, key.name)), ...(picked.length > 0 ? { picked } : {}), ready: why === undefined, ...(why ? { why } : {}), runs_refused: runsRefused(provider, relays, pairedIds.has(provider.id)), folder: folderOf({ kind, provider: provider.id } as ComputerSetting), ...(network ? { network } : {}), ...(images.length > 0 ? { images } : {}), ...(persistent ? { persistent } : {}), ...(gpu ? { gpu: gpuView(gpu, provider, mode) } : {}), ...choice({ kind, provider: provider.id } as ComputerSetting) };
         });
         const offered = kind === "none" || serving.some((provider) => unusable(kind, provider) === undefined);
         const why = offered ? undefined
           : serving.length && serving.every(refusedOpen) ? `every provider of a ${kind} computer needs a network, and this server's ${BOX_ALLOW_ENV} is none (no network)`
           : serving.length ? `no provider of a ${kind} computer can reach this server's run folders` : `no provider serves a ${kind} computer`;
-        return { kind, offered, ...(why ? { why } : {}), groups: [...spec.required, ...spec.optional], tools: [...tools(kind)], settings: kindSettings(kind), providers, ...(kind === "none" ? choice({ kind: "none" }) : {}) };
+        return { kind, offered, ...(why ? { why } : {}), groups: [...spec.required, ...spec.optional], tools: [...tools(kind)], settings: kindSettings(kind), record: recordOf(kind, options.env?.PATH), providers, ...(kind === "none" ? choice({ kind: "none" }) : {}) };
       }),
       paired,
     };

@@ -754,6 +754,20 @@ test("through the API: an uncapped run's browser minutes are its cost, folded in
   const usage = (await api("GET", "/usage?group_by=meter")).body;
   assert.deepEqual(usage.lines.map(({ meter, usd, quantity, unit }) => ({ meter, usd, quantity, unit })), [{ meter: "tokens", usd: 0, quantity: undefined, unit: undefined }, { meter: "browser_time", usd: 0.002, quantity: 60, unit: "second" }]);
   assert.equal(usage.total_usd, 0.002);
+  // The run's own lines (GET /runs/{id}/usage): its browser time by provider, in raw seconds and dollars.
+  const own = (await api("GET", `/runs/${started.body.run_id}/usage`)).body;
+  assert.deepEqual(own.lines.filter((line) => line.meter === "browser_time"), [{ meter: "browser_time", model: null, provider: "browserbase", charged_by: null, quantity: 60, unit: "second", basis: "estimate", attempt: 1, billable: true, usd: 0.002 }]);
+  assert.deepEqual(own.total, { usd: 0.002 });
+  // And its one session: the provider's id for it, when this server opened and let it go, the seconds charged for it (the
+  // line's), and no provider record, since this provider keeps none (not_offered), never one of zeros.
+  assert.equal(own.browser_sessions.length, 1, JSON.stringify(own.browser_sessions));
+  const [session] = own.browser_sessions;
+  assert.equal(session.provider, "browserbase");
+  assert.equal(typeof session.provider_session_id, "string");
+  assert.ok(Date.parse(session.ended_at) >= Date.parse(session.started_at), JSON.stringify(session));
+  assert.equal(session.release_reason, "close");
+  assert.equal(session.charged_seconds, 60);
+  assert.deepEqual([session.provider_record, session.provider_record_status], [null, "not_offered"]);
 });
 
 test("through the API, live: each browser call's row carries its charge as it runs, /usage reads it as browser time, and the release's charge after the answer is an update of the last call's row, never a row of its own", { timeout: 120_000 }, async (t) => {
@@ -854,6 +868,12 @@ test("through the API: a provider with no price books its time as an unknown cos
   assert.deepEqual([browser.usd, browser.unpriced_runs, browser.unit], [0, 1, "second"]);
   assert.ok(browser.quantity > 0, "its seconds");
   assert.equal(lines.find((line) => line.meter === "tools"), undefined, "no other tool charged anything");
+  // The run's own lines: its seconds on steel, its dollars unknown, never $0; the total unknown with it.
+  const own = (await api("GET", `/runs/${started.body.run_id}/usage`)).body;
+  const steel = own.lines.find((line) => line.meter === "browser_time");
+  assert.deepEqual([steel.provider, steel.usd, steel.basis, steel.unit], ["steel", null, "unpriced", "second"], JSON.stringify(own.lines));
+  assert.ok(steel.quantity > 0, "its seconds");
+  assert.equal(own.total.usd, null);
 });
 
 test("through the API: a browser call counts once among the run's paid tool calls, its release's charge included: one call is 1, two are 2", { timeout: 120_000 }, async (t) => {

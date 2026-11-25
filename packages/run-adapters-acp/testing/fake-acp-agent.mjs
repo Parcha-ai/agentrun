@@ -10,6 +10,8 @@
 //          (titles agentrun-<tool>: <tool>; MCP and execute ask, edits do not; a refused native call still reports
 //          completed), or "goose-1.59" (as "goose", but titled as Goose 1.59.2 titles a call of an extension's tool:
 //          `agentrun: <tool, its underscores as spaces>`);
+//   titleSummary: with style "goose-1.59", the summary Goose 1.59.2 writes after such a title for a call whose
+//                 arguments it summarizes (a path): `agentrun: <tool> · <titleSummary>`;
 //   askMcp: ask permission before an MCP call (default: by style); askNative: the native kinds that ask;
 //   nativeLog: a file each native call that runs appends its title to;
 //   countFile: a file each event (new, load, prompt, cancel, mcp, permission) is appended to, one JSON line;
@@ -33,12 +35,24 @@
 //               config directory is $CURSOR_CONFIG_DIR, else $XDG_CONFIG_HOME/cursor, else $HOME/.cursor; sessions in
 //               <dir>/acp-sessions, and an edit, write, delete or move refused unasked when <dir>/cli-config.json denies
 //               Write(**) (Cursor reports it completed all the same).
+//   tally: a file the takes of a `retitled` native step are counted in: a step {native, title, retitled: [t2, t3, ...]}
+//          asks with its title the first time and with the next of `retitled` each time it is taken again (the last
+//          one repeats), its input's command that title, as Cursor writes a new command after a restart.
+//   auth: {methods, home, key, leak}: initialize lists the sign-in methods `methods` (ids); session/new and
+//         session/load are refused (authRequired) until `authenticate` takes one. `home` {method, env, file}: that
+//         method reads `file` in the folder the variable `env` names, the sign-in a person's own login left there, and
+//         rewrites it as an agent refreshing its token does. `key` {method, env}: that method reads the key in the
+//         variable `env`. `leak`: at session/new, say the token or key it signed in with: "exit" on stderr, then exit 1;
+//         "answer" in the words of the error it answers, alive.
+//   grow: {bytes}: at each save of a session, append `bytes` random bytes to <sessions>/store.db-wal and rewrite a
+//         store.db-shm beside it: a store that grows each turn, as Cursor's SQLite WAL does.
+//   holdInit: a file; while it exists, initialize is not answered, so the host can send this process nothing.
 // A script step {hang: true} is a model that never answers (until a cancel the agent heeds).
 // The step the model takes is the number it took before: its session's history (calls, native calls, answers), plus the
 // calls a recovery or context note names that its history does not hold, as a resumed model reads its conversation.
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import { Readable, Writable } from "node:stream";
@@ -70,6 +84,13 @@ const save = (session) => {
   if (!loads) return;
   mkdirSync(store, { recursive: true });
   writeFileSync(join(store, `${session.id}.json`), JSON.stringify({ id: session.id, history: session.history }));
+  if (config.grow) {
+    // A store that grows by appending, as SQLite's WAL does: `bytes` more at each save, and its shared-memory index
+    // rewritten beside it.
+    const wal = join(store, "store.db-wal");
+    appendFileSync(wal, randomBytes(config.grow.bytes));
+    writeFileSync(join(store, "store.db-shm"), randomBytes(32 * 1024));
+  }
 };
 const sessions = new Map();
 // What it was started with: the names in its environment (never their values), its HOME and its directory.
@@ -81,7 +102,7 @@ const pgid = (() => {
   }
 })();
 said({ type: "start", env: Object.keys(process.env).sort(), home, cwd: process.cwd(), pgid, ...(config.cursorDirs ? { cursorDir, deniesWrite } : {}) });
-const titleOf = (tool) => (style === "cursor" ? `agentrun-${tool}: ${tool}` : style === "goose-1.59" ? `agentrun: ${tool.replace(/_/g, " ")}` : `agentrun__${tool}`);
+const titleOf = (tool) => (style === "cursor" ? `agentrun-${tool}: ${tool}` : style === "goose-1.59" ? `agentrun: ${tool.replace(/_/g, " ")}${config.titleSummary ? ` · ${config.titleSummary}` : ""}` : `agentrun__${tool}`);
 const late = style === "cursor" && config.announce === "late";
 const models = config.models ? { currentModelId: config.models[0].modelId, availableModels: config.models } : undefined;
 /** The credential Cursor derives from its key, in its private HOME: here the key's sha256, never the key. */
@@ -110,6 +131,14 @@ function writeAuth() {
   said({ type: "auth", file, keySha, saved: true });
 }
 const steps = (history) => history.filter((h) => h.kind === "call" || h.kind === "native" || h.kind === "say").length;
+/** How many times script step `index` was taken before, across this agent's processes (config.tally, a file each take
+ *  appends its index to); this take is added. */
+function tally(index) {
+  if (!config.tally) throw new Error("fake-acp: a retitled step needs config.tally");
+  const before = existsSync(config.tally) ? readFileSync(config.tally, "utf8").split("\n").filter((line) => line === String(index)).length : 0;
+  appendFileSync(config.tally, `${index}\n`);
+  return before;
+}
 const text = (blocks) => blocks.filter((b) => b.type === "text").map((b) => b.text);
 
 /** The calls a note names (`- name(...), call <id>:`), a nested one's (`<id>/<key>`) left out. */
@@ -281,11 +310,15 @@ async function takeTurn(client, session, prompt, signal) {
     }
     if ("native" in s) {
       const id = `native_${step - 1}`;
-      const update = { toolCallId: id, title: s.title ?? s.native, kind: s.native, status: "pending", rawInput: s.input ?? {} };
+      // A model that, taking a step again (after a restart), writes another command for it (retitled).
+      const again = s.retitled?.length ? tally(step - 1) : 0;
+      const title = again > 0 ? s.retitled[Math.min(again, s.retitled.length) - 1] : (s.title ?? s.native);
+      const update = { toolCallId: id, title, kind: s.native, status: "pending", rawInput: again > 0 ? { ...(s.input ?? {}), command: title } : (s.input ?? {}) };
       const entry = { kind: "native", id, title: update.title, status: "pending" };
       session.history.push(entry);
       save(session);
-      await notify({ sessionUpdate: "tool_call", ...update });
+      // {announce: false}: a permission request for a call no tool_call announced.
+      if (s.announce !== false) await notify({ sessionUpdate: "tool_call", ...update });
       const allowed = deniesWrite && EDITS.has(s.native) ? false : askNative.has(s.native) ? await permitted(client, session, update) : true;
       if (signal.aborted) return { stopReason: "cancelled" };
       if (allowed && config.nativeLog) appendFileSync(config.nativeLog, `${update.title}\n`);
@@ -319,17 +352,55 @@ async function takeTurn(client, session, prompt, signal) {
   }
 }
 
+/** What `authenticate` signed in with (auth): the token's or the key's text; undefined before. */
+let signedIn;
+/** Refuses a session before the sign-in, where the config signs in; says it, where the config leaks it. */
+const needsSignIn = () => {
+  if (!config.auth) return;
+  if (signedIn === undefined) throw RequestError.authRequired();
+  if (config.auth.leak === "exit") {
+    process.stderr.write(`fake-acp: the vendor refused the sign-in ${signedIn}\n`);
+    process.exit(1);
+  }
+  if (config.auth.leak === "answer") throw RequestError.internalError(undefined, `the vendor refused the sign-in ${signedIn}`);
+};
+/** The sign-in `methodId` reads, or undefined when it has none. */
+const signInWith = (methodId) => {
+  const { home: login, key } = config.auth ?? {};
+  if (login && methodId === login.method) {
+    const file = process.env[login.env] ? join(process.env[login.env], login.file) : undefined;
+    if (!file || !existsSync(file)) return undefined;
+    const text = readFileSync(file, "utf8");
+    writeFileSync(file, `${text.trim()}\n`);
+    return text.trim();
+  }
+  if (key && methodId === key.method) return process.env[key.env] || undefined;
+  return undefined;
+};
+
 const app = agent({ name: "fake-acp" })
-  .onRequest("initialize", () => ({
-    protocolVersion: 1,
-    agentCapabilities: {
-      loadSession: config.advertiseLoad ?? loads,
-      mcpCapabilities: { http: config.advertiseHttp ?? config.http ?? true, sse: false },
-      ...(config.systemPrompt ? { sessionCapabilities: { systemPrompt: {} } } : {}),
-    },
-    agentInfo: { name: "fake-acp", version: "1.0.0" },
-  }))
+  .onRequest("initialize", async () => {
+    while (config.holdInit && existsSync(config.holdInit)) await new Promise((resolve) => setTimeout(resolve, 20));
+    return {
+      protocolVersion: 1,
+      agentCapabilities: {
+        loadSession: config.advertiseLoad ?? loads,
+        mcpCapabilities: { http: config.advertiseHttp ?? config.http ?? true, sse: false },
+        ...(config.systemPrompt ? { sessionCapabilities: { systemPrompt: {} } } : {}),
+      },
+      agentInfo: { name: "fake-acp", version: "1.0.0" },
+      authMethods: (config.auth?.methods ?? []).map((id) => ({ id, name: id })),
+    };
+  })
+  .onRequest("authenticate", ({ params }) => {
+    const text = signInWith(params.methodId);
+    if (text === undefined) throw RequestError.authRequired({ methodId: params.methodId });
+    said({ type: "authenticate", methodId: params.methodId, sha: createHash("sha256").update(text).digest("hex") });
+    signedIn = text;
+    return {};
+  })
   .onRequest("session/new", async ({ params }) => {
+    needsSignIn();
     if (config.failNew) {
       process.stderr.write(`${config.failNew}\n`);
       process.exit(1);
@@ -348,6 +419,7 @@ const app = agent({ name: "fake-acp" })
     return {};
   })
   .onRequest("session/load", async ({ params, client }) => {
+    needsSignIn();
     const file = join(store, `${params.sessionId}.json`);
     if (!loads || !existsSync(file)) throw RequestError.resourceNotFound(params.sessionId);
     const { history } = JSON.parse(readFileSync(file, "utf8"));

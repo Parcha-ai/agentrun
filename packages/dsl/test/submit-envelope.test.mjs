@@ -96,20 +96,20 @@ test('a property or definition NAMED criteria keeps its name and its own schema'
   assert.equal(Compile(submitParameters(schema)).Check({ value: { criteria: 'x', named: 3 } }), true);
 });
 
-test('only criteria and x-carried are left out: annotations and other keywords the envelope does not know stay as written', () => {
-  const schema = { type: 'string', title: 'Label', description: 'The label.', examples: ['bug'], default: 'bug', 'x-note': 'kept', $comment: 'kept', criteria, 'x-carried': ['label'] };
-  const { criteria: _dropped, 'x-carried': _carried, ...rest } = schema;
+test('only criteria and x- keywords are left out: annotations and other keywords the envelope does not know stay as written', () => {
+  const schema = { type: 'string', title: 'Label', description: 'The label.', examples: ['bug'], default: 'bug', 'x-note': 'dropped', $comment: 'kept', criteria, 'x-carried': ['label'] };
+  const { criteria: _dropped, 'x-carried': _carried, 'x-note': _note, ...rest } = schema;
   assert.deepEqual(submitParameters(schema).properties.value, rest);
 });
 
-// `x-carried` is AgentRun's output-schema annotation (the fields an agent's next run reads back): a learned workflow's
-// output node can copy an agent's output schema whole, and a provider that knows only its own schema fields (Google's
-// OpenAPI-subset `parameters`) refuses an unknown one. The host reads it; the model never needs it.
-test('x-carried is left out of the submit envelope wherever a schema sits, a property NAMED x-carried stays, and the input is not changed', () => {
+// An `x-` keyword is an annotation the host reads (AgentRun's `x-carried`: the fields an agent's next run reads back): a
+// learned workflow's output node can copy an agent's output schema whole, and a provider that knows only its own schema
+// fields (Google's OpenAPI-subset `parameters`) refuses an unknown one. The model never needs it.
+test('every x- keyword is left out of the submit envelope wherever a schema sits, a property NAMED x-carried stays, and the input is not changed', () => {
   const schema = {
     type: 'object', 'x-carried': ['seen', 'x-carried'], required: ['seen'],
-    properties: { seen: { type: 'array', 'x-carried': ['inner'], items: { type: 'string' } }, 'x-carried': { type: 'string' } },
-    $defs: { Kept: { type: 'object', 'x-carried': [] } },
+    properties: { seen: { type: 'array', 'x-carried': ['inner'], 'x-shown-as': 'list', items: { type: 'string', 'x-note': 'a url' } }, 'x-carried': { type: 'string' } },
+    $defs: { Kept: { type: 'object', 'x-carried': [], 'x-owner': { team: 'watch' } } },
   };
   const before = structuredClone(schema);
   const value = submitParameters(schema).properties.value;
@@ -144,4 +144,9 @@ test('the interpreter hands runNode the original schema, criteria included, and 
   assert.deepEqual(done.output, { label: 'bug' });
   assert.deepEqual(criteriaKeys(seen[0]), ['/definitions/Label/criteria'], 'the runner receives the schema as written');
   await assert.rejects(runWorkflow(wf, {}, { runNode: async () => ({ label: 'wontfix' }) }), (error) => error.code === 'output_invalid');
+});
+
+test('a list where a property map belongs is kept as written, not read as a map', () => {
+  const kept = submitParameters({ type: 'object', properties: [{ type: 'string' }] }).properties.value.properties;
+  assert.deepEqual(kept, [{ type: 'string' }], `a list under properties stays a list: it became ${JSON.stringify(kept)}`);
 });

@@ -27,7 +27,8 @@ test("a run whose loop keeps ending interrupted on its own is claimed again only
   const record = recorder();
   await queue(opened.server, "run-1");
   const loops = closingLoops();
-  const runner = startRunner({ store: observed(opened.runners[0], record), createLoop: loops.createLoop, name: "runner-a", interruptBackoffMs: BACKOFF_MS, ...TIMING });
+  const events = [];
+  const runner = startRunner({ store: observed(opened.runners[0], record), createLoop: loops.createLoop, name: "runner-a", interruptBackoffMs: BACKOFF_MS, onEvent: (event) => events.push(event), ...TIMING });
   t.after(() => runner.close());
   await sleep(BACKOFF_MS * 7);
   const gaps = loops.starts.slice(1).map((start, i) => start.at - loops.starts[i].at);
@@ -35,4 +36,7 @@ test("a run whose loop keeps ending interrupted on its own is claimed again only
   assert.ok(loops.starts.length <= 4, `claimed ${loops.starts.length} times in ${BACKOFF_MS * 7} ms: gaps ${JSON.stringify(gaps)}`);
   for (const [i, gap] of gaps.entries()) assert.ok(gap >= BACKOFF_MS * 2 ** i - 20, `gap ${i + 1} is ${gap} ms, at least ${BACKOFF_MS * 2 ** i}`);
   assert.equal((await opened.server.runs.get("run-1")).state, "running", "never failed for it: a backoff, not an end");
+  // Each such release is a hand-back for the runner's metrics (runner-metrics.ts), by its cause.
+  const handed = events.filter((event) => event.type === "handed-back");
+  assert.ok(handed.length >= 1 && handed.every((event) => event.runId === "run-1" && event.cause === "interrupted"), JSON.stringify(handed));
 });

@@ -101,6 +101,11 @@ export const KINDS = {
    *  entry is how that claim knows the run had one when nothing of the earlier claim's is left to let go (a server's
    *  stop, a park): computer-journal.ts hadComputer. Neither a call nor a message, and never on the Timeline. */
   computerMade: "agentrun.computer.made",
+  /** The run's computer is off for the rest of the run (`computer`: its kind): written on the root by the claim's gate at
+   *  the first deny of a call of that computer's own tools (tool-gate.ts RunGate.computerOff), whose refusal said so. A
+   *  later claim of the run starts no computer and refuses each call of its tools short: computer-journal.ts
+   *  computerTurnedOff. Neither a call nor a message, and never on the Timeline. */
+  computerOff: "agentrun.computer.off",
   /** A grade's feedback round (runner/feedback-round.ts): the run opened again on a grade's words, asked no turn of the
    *  job's; its next end's end-of-run turn reads them (`text`, the `round`, whether the grade said right, the workflow a
    *  revision is asked of). Written on the root by the commit that takes the round's steer row. Neither a call nor a
@@ -275,6 +280,9 @@ export interface AskData {
   readonly tool: string;
   /** The call's input as the gate saw it; null when it had none. */
   readonly args?: unknown;
+  /** Why a call its setting allows asks a person anyway (a tool's own ask, tools.ts ToolEntry.asks): the gate's alone,
+   *  never one of the call's arguments. */
+  readonly because?: string;
   /** When it was asked (ISO), from the loop's clock; a re-ask on a resume keeps the first. */
   readonly requestedAt?: string;
   /** Its approval price (a catalog tool's, the spec's mcp priceOf); null when it has none. */
@@ -378,6 +386,8 @@ export function withdrawnAnswers(entries: readonly { readonly kind: string; read
 }
 
 export interface EndData {
+  /** Immutable moved-project candidate or explicit uncertainty, committed atomically with this run end. */
+  readonly projectCheckpoint?: import("../source-sync/checkpoints.js").ProjectCheckpoint;
   readonly state: "ended" | "stopped" | "failed";
   readonly summary?: string;
   /** How the run ended beside its state (the store's RunOutcome): an escalation's 'escalated'; a stopped end's 'stopped'
@@ -400,10 +410,12 @@ export interface EndData {
 }
 
 /** How a run's job's own turn ended (KINDS.jobEnd): the end it gives the run (its summary cut of every secret the runner
- *  holds), and a CLI's error answer the end writes as its error row (`failedWith`). */
+ *  holds), a CLI's error answer the end writes as its error row (`failedWith`), and the end's time (`endedAt`): the run
+ *  reads that end while it looks back, and its end is written at that time (feedback-round.ts KeptEnd). */
 export interface JobEndData {
   readonly end: EndData;
   readonly failedWith?: string;
+  readonly endedAt: number;
 }
 
 /** An escalated workflow run's review as its end keeps it: the escalation's kind, the escalate node's label (else the node

@@ -12,7 +12,7 @@ import { DEADLINE_LABEL, show } from "./drift.js";
 import { installedProxy, type ProxyEnv, proxyForDomain } from "./env-proxy.js";
 import { type HostCall, HostError, type HostFacts, type Machine, type MachineHost, type MachineProcess, type MachineRequest } from "./host.js";
 import { deadlineOf, HostedProvider, type HostedOptions, type HostedTimeouts, isoOf, MAX_LABEL, timeoutsOf } from "./hosted/provider.js";
-import { AGENTRUN_DIAL, hostedCommands, shellLine } from "./hosted/scripts.js";
+import { dialLaunch } from "./hosted/scripts.js";
 import { connectOf } from "./descriptor.js";
 import { dateOf, DOMAIN, isWhole, sizeRefusals } from "./hosted/values.js";
 import { PassThrough } from "node:stream";
@@ -162,16 +162,9 @@ const DIAL_LOG = "/run/agentrun-dial.log";
 /**
  * A dial machine's launch, root's command with boot env: E2B runs a template's start command once, at the template's
  * build, and snapshots it running, so it never sees a create's env (docs.e2b.dev/template/start-ready-command). So
- * create starts agentrun-dial itself, after the steps the exec path runs before init: ROOT_ONLY made root's alone, the
- * session buses in /tmp closed. A step that fails starts nothing, and the machine never dials.
+ * create starts agentrun-dial itself (dialLaunch), the URL in the boot env.
  */
-const DIAL_LAUNCH = [
-	"-c",
-	[
-		`umask 077; exec >>${DIAL_LOG} 2>&1 </dev/null`,
-		`${shellLine(hostedCommands({ rootOnly: ROOT_ONLY }).rootOnly)} && ${shellLine(hostedCommands().sockets)} && exec ${AGENTRUN_DIAL}`,
-	].join("\n"),
-];
+const DIAL_LAUNCH = ["-c", [`umask 077; exec >>${DIAL_LOG} 2>&1 </dev/null`, dialLaunch({ rootOnly: ROOT_ONLY })].join("\n")];
 
 
 /** The SDK names its errors (index.mjs:86-360); Connect's carry a code. */
@@ -213,8 +206,14 @@ function machineOf(info: SandboxInfo): Machine {
 	}
 	const started = dateOf(info.startedAt);
 	const state = info.state === "running" ? "running" : info.state === "paused" ? "stopped" : "gone";
-	return { id: info.sandboxId, labels, state, ...(started ? { createdAt: started } : {}), ...(end ? { endsAt: end } : {}) };
+	// What E2B says the sandbox was given (SandboxInfo's cpuCount and memoryMB), where it says it; E2B's answer has no disk.
+	const [cpus, memoryMb] = [positive(info.cpuCount), positive(info.memoryMB)];
+	const resources = { ...(cpus === undefined ? {} : { cpus }), ...(memoryMb === undefined ? {} : { memoryMb }) };
+	return { id: info.sandboxId, labels, state, ...(started ? { createdAt: started } : {}), ...(end ? { endsAt: end } : {}), ...(Object.keys(resources).length > 0 ? { resources } : {}) };
 }
+
+/** A positive finite figure of a vendor's answer, else undefined: never guessed. */
+const positive = (value: unknown): number | undefined => (typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined);
 
 /** One chunk of the SDK's output into a stream, unless the stream has ended. */
 const push = (stream: PassThrough, data: Uint8Array) => void (stream.writableEnded || stream.write(data));

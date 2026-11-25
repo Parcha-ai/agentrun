@@ -346,18 +346,6 @@ export async function restCall(
 	return { status: response.status, json, headers: response.headers };
 }
 
-/** An https base URL, with no trailing slash, so a key never crosses in the clear; throws in words on another. */
-export function httpsBase(url: string, what: string): string {
-	let parsed: URL;
-	try {
-		parsed = new URL(url);
-	} catch {
-		throw new Error(`${what} is not a URL: ${JSON.stringify(url)}`);
-	}
-	if (parsed.protocol !== "https:") throw new Error(`${what} must be https, so the key never crosses in the clear: ${parsed.protocol}`);
-	return url.replace(/\/+$/, "");
-}
-
 /** A vendor's session id as a ref or attach gives it: a plain token, never a path. */
 export const idProblem = (id: unknown, vendor: string) =>
 	typeof id === "string" && /^[A-Za-z0-9_.:-]{1,128}$/.test(id) ? undefined : `${typeof id === "string" ? JSON.stringify(id) : String(id)} is not a ${vendor} session's id`;
@@ -442,12 +430,26 @@ export interface BrowserDownloads {
 }
 
 /**
+ * A session as its vendor itself records it, for a host that reconciles its own measure of a session with the vendor's
+ * bill: when the vendor says the session started and ended, and the bytes it moved through the vendor's proxy. Each
+ * field is null where the vendor's record does not say it (a session still running has no end; a vendor that reports no
+ * proxy traffic has no bytes), never a zero standing in for one.
+ */
+export interface BrowserSessionUsage {
+	startedAt: string | null;
+	endedAt: string | null;
+	proxyBytes: number | null;
+}
+
+/**
  * A provider of browsers, with the members its features may bring: profiles where capabilities().browser declares
- * profiles, downloads where it declares downloads.
+ * profiles, downloads where it declares downloads. sessionUsage, where the vendor keeps a record of each session it ran:
+ * that record, read once (a host reads it when the session is let go); undefined for a session the vendor does not know.
  */
 export interface BrowserComputerProvider extends ComputerProvider {
 	readonly profiles?: BrowserProfiles;
 	readonly downloads?: BrowserDownloads;
+	sessionUsage?(ref: ComputerRef, context?: CallContext): Promise<Result<BrowserSessionUsage | undefined>>;
 }
 
 /** Whether a provider is a browser provider: its capabilities are of kind browser and declare its sessions' features. */

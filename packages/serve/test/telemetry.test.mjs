@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setImmediate } from "node:timers/promises";
 import { test } from "node:test";
-import { HEARTBEAT_MS, runsRange, startTelemetry, TELEMETRY_FILE, TELEMETRY_KEY, TELEMETRY_NOTICE, telemetryMode } from "../dist/telemetry.js";
+import { HEARTBEAT_MS, runsRange, startTelemetry, TELEMETRY_FILE, TELEMETRY_KEY, TELEMETRY_NOTICE, telemetryMode, USAGE_EVENTS } from "../dist/telemetry.js";
 
 /** A stand-in for the project key: any text that is not empty turns sending on. */
 const KEY = "test";
@@ -76,6 +76,66 @@ test("the first start prints the notice and sends nothing; the next sends server
     timestamp: "2026-11-17T10:00:00.000Z",
     properties: { version: "9.9.9", os: process.platform, arch: process.arch, node: Number(process.versions.node.split(".")[0]), runs: "0", $process_person_profile: false, $geoip_disable: true },
   });
+});
+
+test("a use of suggested agents is said by its name alone, with the fields every event holds; a name not listed is never sent", async () => {
+  const data = await scratch();
+  const r = receiver();
+  await start(data, r).close();
+  const t = start(data, r, { now: () => new Date("2026-11-22T10:00:00.000Z") });
+  for (const event of USAGE_EVENTS) t.used(event);
+  t.used("suggestion_restored");
+  t.used("server_started");
+  await t.close();
+  const id = JSON.parse(await readFile(join(data, TELEMETRY_FILE), "utf8")).id;
+  assert.deepEqual(r.got.map(({ body }) => body.event), ["server_started", "suggestions_scanned", "suggestion_discarded", "suggested_agent_created"]);
+  // Every field a use's event holds: the same as every other event's, and nothing of the repository, suggestion or agent.
+  for (const { body } of r.got.slice(1)) {
+    assert.deepEqual(body, {
+      api_key: KEY,
+      event: body.event,
+      distinct_id: id,
+      timestamp: "2026-11-22T10:00:00.000Z",
+      properties: { version: "9.9.9", os: process.platform, arch: process.arch, node: Number(process.versions.node.split(".")[0]), runs: "0", $process_person_profile: false, $geoip_disable: true },
+    });
+  }
+});
+
+test("a use during the notice's start is dropped, never held: the next start does not say it, and that start's first heartbeat ends the drop", async (t) => {
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  const data = await scratch();
+  const r = receiver();
+  const first = start(data, r);
+  assert.equal(first.notice, TELEMETRY_NOTICE);
+  first.used("suggestions_scanned");
+  await first.close();
+  assert.deepEqual(r.got, []);
+  await start(data, r).close();
+  assert.deepEqual(r.got.map(({ body }) => body.event), ["server_started"], "the dropped use is not said later");
+
+  const up = await scratch();
+  const u = receiver();
+  const running = start(up, u);
+  running.used("suggestions_scanned");
+  t.mock.timers.tick(HEARTBEAT_MS);
+  running.used("suggested_agent_created");
+  await running.close();
+  assert.deepEqual(u.got.map(({ body }) => body.event), ["heartbeat", "suggested_agent_created"]);
+
+  // Turned off, a use sends nothing and writes nothing; debug prints it and sends none.
+  const off = await scratch();
+  const o = receiver();
+  const quiet = start(off, o, { env: { AGENTRUN_TELEMETRY: "0" } });
+  quiet.used("suggestion_discarded");
+  await quiet.close();
+  assert.deepEqual(o.got, []);
+  await assert.rejects(readFile(join(off, TELEMETRY_FILE)), { code: "ENOENT" });
+  const lines = [];
+  const shown = start(await scratch(), o, { env: { AGENTRUN_TELEMETRY: "debug" }, say: (line) => lines.push(line) });
+  shown.used("suggestion_discarded");
+  await shown.close();
+  assert.deepEqual(o.got, []);
+  assert.deepEqual(lines.map((line) => JSON.parse(line.slice(line.indexOf("{"))).event), ["server_started", "suggestion_discarded"]);
 });
 
 test("a server that stays up is counted by its heartbeat, the first start's too", async (t) => {

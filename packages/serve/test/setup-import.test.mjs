@@ -20,7 +20,7 @@ import { StoreBusy, StoreConstraint } from "../dist/store/index.js";
 import { launchBody } from "../dist/run-launch.js";
 import { at as minute, claudeSession, claudeSubagent, codexSession, piSession } from "./fixtures/import-sessions.mjs";
 import { agentWithRevision, storeOn } from "./store-helpers.mjs";
-import { call, client, cookieOf, FAUX, scratch, serve, startServe, withEnv } from "./support.mjs";
+import { call, client, cookieOf, FAUX, LAUNCH_HOOK_URL, scratch, serve, startServe, withEnv } from "./support.mjs";
 
 const LAUNCHER = new URL("../launcher/agentrun-serve", import.meta.url).pathname;
 const json = { "content-type": "application/json" };
@@ -322,8 +322,7 @@ test("a server that fails to listen takes up no import and starts no count: it h
   assert.ok(existsSync(join(data, ".import-at-setup")), "the yes is kept for a start that listens");
 });
 
-// SKIP (follow-up #2432): under its launcher setup writes a line to stderr (a refused worker or node:sqlite warning)
-test.skip("under its launcher (node started from a string), setup counts this machine's sessions and imports them, and the worker prints nothing", { timeout: 90_000 }, async (t) => {
+test("under its launcher (node started from a string), setup counts this machine's sessions and imports them, and the worker prints nothing", { timeout: 90_000 }, async (t) => {
   const root = await scratch(t);
   const home = join(root, "home");
   const site = join(home, "code", "acme-site");
@@ -360,8 +359,10 @@ test.skip("under its launcher (node started from a string), setup counts this ma
   const state = async () => (await call(port, { path: "/v2/setup/import", headers: { cookie: cookieOf(made) } })).json;
   for (const deadline = Date.now() + 30_000; (await state()).state === "running" && Date.now() < deadline; ) await sleep(100);
   assert.deepEqual(await state(), { state: "done", agents: 1, runs: 3, skipped: 0 }, err);
-  // The one line a first start says: where it made the seal key (seal-key.ts), only its path.
-  const others = err.split("\n").filter((line) => line && !/^agentrun-serve: made a new seal key at \S+ \(0600\), beside the store/.test(line));
+  // The one line a first start says: where it made the seal key (seal-key.ts), only its path. The runner's computer
+  // janitor speaks of this host's Docker (no Docker, or no computer daemon built), never of the worker: not counted.
+  const host = /^agentrun-serve runner: the computer janitor could not sweep \S+ computers: /;
+  const others = err.split("\n").filter((line) => line && !/^agentrun-serve: made a new seal key at \S+ \(0600\), beside the store/.test(line) && !host.test(line));
   assert.deepEqual(others, [], "no other line on stderr: no refused worker, no node:sqlite warning");
 });
 
@@ -511,9 +512,10 @@ test("under its launcher, setup's import cuts each of the server's own secrets o
   // server opens its store from (a value that is no store is refused at start): its password's custody is
   // secret-custody.test.mjs's. The token list's is one id:secret entry, the only form the server takes. Each value is told
   // apart by its random part, not its name, and is as long as a provider's real key (109 characters, about an Anthropic
-  // key's): with every name set, several times the page a pipe holds unread.
+  // key's): with every name set, several times the page a pipe holds unread. The launch hook's secret is a whsec_ one, as
+  // the server takes it, with the hook's URL beside it (a secret alone is refused at start).
   const names = /^SECRETS='([A-Z0-9_ ]+)'$/m.exec(readFileSync(LAUNCHER, "utf8"))[1].split(" ").filter((name) => name && name !== "AGENTRUN_STORE_URL");
-  const keys = Object.fromEntries(names.map((name) => [name, name === "AGENTRUN_SEAL_KEY" ? randomBytes(32).toString("base64") : name === "AGENTRUN_TOKENS" ? `import:not-a-secret-${randomBytes(48).toString("hex")}` : `not-a-secret-${randomBytes(48).toString("hex")}`]));
+  const keys = Object.fromEntries(names.map((name) => [name, name === "AGENTRUN_SEAL_KEY" ? randomBytes(32).toString("base64") : name === "AGENTRUN_TOKENS" ? `import:not-a-secret-${randomBytes(48).toString("hex")}` : name === "AGENTRUN_LAUNCH_HOOK_SECRET" ? `whsec_${randomBytes(48).toString("base64")}` : `not-a-secret-${randomBytes(48).toString("hex")}`]));
   const KEY = Object.values(keys).join(" ");
   const root = await scratch(t);
   const home = join(root, "home");
@@ -525,7 +527,7 @@ test("under its launcher, setup's import cuts each of the server's own secrets o
   const [data, config, temp] = [join(root, "agents"), join(root, "config"), join(root, "tmp")];
   mkdirSync(temp, { recursive: true });
   const { AGENTRUN_PUBLIC_URL: _, RENDER_EXTERNAL_URL: __, AGENTRUN_TOKEN: ___, ...inherited } = process.env;
-  const child = spawn(LAUNCHER, ["--data", data, "--port", "0"], { detached: true, stdio: ["ignore", "pipe", "pipe"], env: { ...inherited, HOME: home, TMPDIR: temp, XDG_CONFIG_HOME: config, ...keys } });
+  const child = spawn(LAUNCHER, ["--data", data, "--port", "0"], { detached: true, stdio: ["ignore", "pipe", "pipe"], env: { ...inherited, HOME: home, TMPDIR: temp, XDG_CONFIG_HOME: config, ...LAUNCH_HOOK_URL, ...keys } });
   // Its group is signalled only while it is alive: once it has exited, the group's number may be another's.
   let alive = true;
   const exited = new Promise((resolve) => child.once("exit", () => resolve((alive = false))));

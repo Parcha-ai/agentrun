@@ -13,7 +13,7 @@ import { fakeEvents, fakeRecipe, openSession, scratch, streamRecords, tool } fro
 const test = (name, fn) => nodeTest(name, { timeout: 60_000 }, fn);
 const texts = (events) => events.filter((e) => e.type === 'text').map((e) => e.delta).join('');
 
-for (const [style, kind, title] of [['cursor', 'execute', 'agentrun: lookup'], ['goose', 'edit', 'agentrun__lookup'], ['goose-1.59', 'other', 'github: look up']]) {
+for (const [style, kind, title] of [['cursor', 'execute', 'agentrun: lookup'], ['goose', 'edit', 'agentrun__lookup'], ['goose-1.59', 'other', 'github: look up'], ['goose-1.59', 'edit', 'agentrun: look up · proof.txt'], ['goose-1.59', 'execute', 'agentrun: lookup · ls']]) {
   test(`a native ${kind} titled ${JSON.stringify(title)} (${style}) asks the host's gate; a deny answers reject_once, journaled`, async (t) => {
     const dir = scratch();
     const nativeLog = join(dir, 'native.log');
@@ -32,14 +32,14 @@ for (const [style, kind, title] of [['cursor', 'execute', 'agentrun: lookup'], [
     assert.throws(() => readFileSync(nativeLog, 'utf8'), /ENOENT/, 'the native call never ran');
     assert.equal(ran, 0, 'our tool never ran either');
     const journaled = await streamRecords(store, 'acp.permission');
-    assert.deepEqual(journaled.map((r) => [r.type, r.callId === asked[0].callId]), [['asked', true], ['answered', true]]);
+    assert.deepEqual(journaled.map((r) => [r.type, r.callId === asked[0].callId]), [['asked', true], ['answered', true], ['given', true]], 'asked, answered, and handed to the agent (used up)');
     assert.equal(journaled[1].answer, 'deny');
   });
 }
 
-for (const style of ['cursor', 'goose-1.59']) {
-  test(`our real tool's permission request (${style}) is answered allow_once, its gate asked at the MCP call`, async (t) => {
-    const recipe = fakeRecipe(scratch(), { script: [{ call: 'look_up', args: { q: 'x' } }, { sayLastResult: true }], style, askMcp: true });
+for (const [style, titleSummary] of [['cursor'], ['goose-1.59'], ['goose-1.59', 'proof.txt']]) {
+  test(`our real tool's permission request (${style}${titleSummary ? `, titled with Goose's summary` : ''}) is answered allow_once, its gate asked at the MCP call`, async (t) => {
+    const recipe = fakeRecipe(scratch(), { script: [{ call: 'look_up', args: { q: 'x' } }, { sayLastResult: true }], style, askMcp: true, ...(titleSummary ? { titleSummary } : {}) });
     const asked = [];
     const { session, events, store } = await openSession(t, recipe, {
       tools: [tool('look_up', () => 'found it')],
@@ -53,3 +53,22 @@ for (const style of ['cursor', 'goose-1.59']) {
     assert.deepEqual(await streamRecords(store, 'acp.permission'), [], 'no native permission record');
   });
 }
+
+test("a permission request titled as our tool with Goose's summary, of a kind with no effects, that no tool_call announced, asks the host's gate; a deny answers reject_once", async (t) => {
+  const dir = scratch();
+  const nativeLog = join(dir, 'native.log');
+  const title = 'agentrun: look up · proof.txt';
+  const recipe = fakeRecipe(dir, { script: [{ native: 'other', title, input: { path: 'proof.txt' }, announce: false }, { sayLastResult: true }], style: 'goose-1.59', nativeLog });
+  const asked = [];
+  let ran = 0;
+  const { session } = await openSession(t, recipe, {
+    tools: [tool('look_up', () => ((ran += 1), 'found'))],
+    gate: async (call) => (asked.push(call), { deny: 'not announced' }),
+  });
+  await session.send('go');
+  assert.equal((await session.turnEnd()).status, 'completed');
+  assert.deepEqual(asked.map((c) => [c.tool, c.args.title]), [['acp_other', title]], 'the title alone is never ours');
+  assert.deepEqual(fakeEvents(recipe).filter((e) => e.type === 'permission').map((e) => e.kind), ['reject_once']);
+  assert.throws(() => readFileSync(nativeLog, 'utf8'), /ENOENT/, 'the call never ran');
+  assert.equal(ran, 0);
+});

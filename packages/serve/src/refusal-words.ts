@@ -12,9 +12,6 @@ export const STOPPED_WHILE_WAITING = "Not run: the run was stopped while it wait
 export const ENDED_WHILE_WAITING = "Not run: the run ended while it waited";
 /** How a refusal of a setting's deny, or of an ask no one can approve, opens (deniedText, noApproverText). */
 export const DENIED_OPENING = "Permission denied: ";
-/** The field of an asked call's card that says why a call its setting allows asks a person anyway (a tool's own ask,
- *  tools.ts ToolEntry.asks): written by the gate alone, so the model's own arguments never carry it onto the card. */
-export const ASKED_BECAUSE = "asked_because";
 /** How a person's deny opens (refusedText). */
 export const USER_DENIED_OPENING = "The user denied this ";
 /** What a read-only bash policy's refusal says after the tool's name (bash-read-only.ts readOnlyText). */
@@ -39,6 +36,17 @@ export const deniedText = (tool: string, heldTo?: string, from: SettingFrom = "s
   const what = ran === "no" ? NOT_RUN : RAN_UNKNOWN;
   return heldTo && heldTo !== tool ? `${DENIED_OPENING}${tool} follows ${heldTo}'s setting, which is deny ${denyPlace(from)}. ${what} Don't retry it.` : `${DENIED_OPENING}${tool} is set to deny ${denyPlace(from)}. ${what} Don't retry it.`;
 };
+/** What the first deny of a call of the run's computer's own tools (a desktop's or a phone's, a browser's) says after
+ *  its refusal, once: the computer is off for the rest of the run (tool-gate.ts RunGate.decide). */
+export const computerOffWords = (kind: string): string => `The ${kind} is off for the rest of this run, so every later call of its tools is refused too.`;
+/** The refusal of a later call of an off computer's tools, short: decided on the runner alone, no setting read. */
+export const computerOffText = (kind: string, ran: "no" | "unknown" = "no"): string => `${DENIED_OPENING}the ${kind} is off for this run. ${ran === "no" ? NOT_RUN : RAN_UNKNOWN}`;
+/** Why a later claim of a run starts no computer: an earlier claim's deny turned it off for the run (runner/
+ *  computer-journal.ts computerTurnedOff). Said on the run's timeline. */
+export const computerStillOffWords = (kind: string): string => `The ${kind} is off for this run: an earlier call of its tools was refused for a deny, so it is not started again.`;
+/** Why a run never starts the agent's computer: every tool it serves is set to deny (tool-gate.ts computerDenied). A
+ *  save's warning says it, and the run's timeline. */
+export const computerDeniedWords = (kind: string): string => `Every tool for this agent's ${kind} is set to deny, so a run never starts it: allow one, or set the computer to none.`;
 /** A workflow model node's tool set to ask: a model node cannot wait for a person's approval (the gate parks no workflow
  *  call), so the call is refused unrun and the model reads why (tool-gate.ts RunGate, on main and on the runner). */
 export const modelNodeAskText = (tool: string, ran: "no" | "unknown" = "no"): string =>

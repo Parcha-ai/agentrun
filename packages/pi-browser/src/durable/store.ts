@@ -110,9 +110,12 @@ export function custodyStore({ name, Config, Sessions, providerOf, emit, meter, 
     await commit((tx) => kept ? move(tx, row, { state: "live", resourceId: kept.id, at: now() }) : unknownCreate(tx, row, now()));
     return kept;
   }
-  async function emitReleased(cid: ConversationId, tag: string, read: DocumentReader, context: Context, at = now()): Promise<void> {
+  /** `found`: the id a release task's lookup found for a record that has none yet, which the commit after this one
+   *  records; the host hears the session with it, and with the bill that commit makes. */
+  async function emitReleased(cid: ConversationId, tag: string, read: DocumentReader, context: Context, at = now(), found: { resourceId?: string } = {}): Promise<void> {
     const [state, config] = await Promise.all([read.snapshot(Sessions, cid, context), read.snapshot(Config, cid, context)]);
-    const record = state?.sessions.find((r) => r.tag === tag);
+    const stored = state?.sessions.find((r) => r.tag === tag);
+    const record = stored && stored.resourceId === null && found.resourceId ? { ...stored, resourceId: found.resourceId } : stored;
     const spent = record && record.resourceId !== null ? meter(record.spent, at, true).spent : record?.spent;
     if (record && spent) await emit(cid, config?.label ?? "", { ...record, state: "released", endedAt: record.endedAt ?? at, spent }, "released");
   }
@@ -173,7 +176,7 @@ export function custodyStore({ name, Config, Sessions, providerOf, emit, meter, 
         // The host hears the release before the task's last commit, so at least once, with the bill that commit
         // records.
         const at = iso(runtime.now());
-        await emitReleased(cidOf(row), row.tag, runtime, context, at);
+        await emitReleased(cidOf(row), row.tag, runtime, context, at, foundId(row, ids));
         await runtime.commit(async (tx) => {
           await move(tx, row, { state: "released", at, ...foundId(row, ids) });
           return { status: "terminal", outcome: { status: "completed", result: { released: ids.length } } };

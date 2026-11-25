@@ -67,6 +67,22 @@ test("an error body that echoes the key never reaches a message, and the error o
   assert.ok(!inspect(client, { depth: 8 }).includes(KEY) && !JSON.stringify(client).includes(KEY), "nor does the printed client");
 });
 
+test("a refusal's message says the server's reason, with the key cut from it, on one line", async (t) => {
+  const server = await listener(t, (req) => {
+    if (req.url === "/v2/agents") return json(422, { error: { code: "invalid_input", message: `name is taken (key ${KEY})\nby agent a` } });
+    if (req.url === "/v2/runs") return json(409, { error: { code: "conflict", message: "x".repeat(400) } });
+    return json(403, { error: { code: "forbidden", message: "Only the owner may archive an agent." } });
+  });
+  const client = new AgentRun({ baseUrl: server.base, apiKey: KEY, maxRetries: 0 });
+  const taken = await thrown(client.agents.list());
+  assert.ok(taken instanceof AgentRunRefused);
+  assert.equal(taken.message, "The server refused GET /agents: 422 invalid_input: name is taken (key [hidden]) by agent a");
+  assert.equal((await thrown(client.runs.list())).message, `The server refused GET /runs: 409 conflict: ${"x".repeat(299)}…`);
+  const owner = await thrown(client.agents.archive("a"));
+  assert.ok(owner instanceof AgentRunAuthError);
+  assert.equal(owner.message, "The server refused the API key for POST /agents/{agent_id}/archive: 403 forbidden: Only the owner may archive an agent.");
+});
+
 test("a key that is not a valid header value, a missing key and a base URL that would carry it elsewhere are refused before any request", async (t) => {
   const server = await listener(t);
   for (const apiKey of [`${KEY}\nX-Other: 1`, `${KEY} `, "a\tb", "ключ", "a\x7f"]) {
@@ -75,11 +91,12 @@ test("a key that is not a valid header value, a missing key and a base URL that 
     assert.equal(error.reason, "bad_header");
     assert.ok(!printed(error).includes(apiKey));
   }
-  const saved = { base: process.env.AGENTRUN_BASE_URL, key: process.env.AGENTRUN_API_KEY };
+  const saved = { base: process.env.AGENTRUN_BASE_URL, key: process.env.AGENTRUN_API_KEY, token: process.env.AGENTRUN_TOKEN };
   t.after(() => {
-    for (const [name, value] of [["AGENTRUN_BASE_URL", saved.base], ["AGENTRUN_API_KEY", saved.key]]) value === undefined ? delete process.env[name] : (process.env[name] = value);
+    for (const [name, value] of [["AGENTRUN_BASE_URL", saved.base], ["AGENTRUN_API_KEY", saved.key], ["AGENTRUN_TOKEN", saved.token]]) value === undefined ? delete process.env[name] : (process.env[name] = value);
   });
   delete process.env.AGENTRUN_API_KEY;
+  delete process.env.AGENTRUN_TOKEN;
   process.env.AGENTRUN_BASE_URL = server.base;
   assert.equal(thrownSync(() => new AgentRun()).reason, "no_token");
   assert.equal(thrownSync(() => new AgentRun({ apiKey: "" })).reason, "no_token");
@@ -96,6 +113,72 @@ test("a key that is not a valid header value, a missing key and a base URL that 
   assert.equal(server.requests.length, 0, "nothing was sent");
   await fromEnv.agents.list();
   assert.equal(server.requests[0].headers.authorization, `Bearer ${KEY}`);
+});
+
+test("the base URL is the server's address with or without /v2, as the CLI takes it: /v2 is added to a path with no v2 segment, its prefix kept; AGENTRUN_TOKEN stands in for AGENTRUN_API_KEY, which wins", async (t) => {
+  const server = await listener(t);
+  const prefix = server.base.replace(/\/v2$/, "");
+  for (const baseUrl of [prefix, `${prefix}/`, `${prefix}//`, server.base, `${server.base}/`]) assert.equal(new AgentRun({ baseUrl, apiKey: KEY }).baseUrl, server.base, baseUrl);
+  assert.equal(new AgentRun({ baseUrl: server.origin, apiKey: KEY }).baseUrl, `${server.origin}/v2`);
+  assert.equal(new AgentRun({ baseUrl: `${server.base}/extra`, apiKey: KEY }).baseUrl, `${server.base}/extra`, "a path with a v2 segment is kept");
+  await new AgentRun({ baseUrl: prefix, apiKey: KEY }).agents.list();
+  assert.equal(server.requests.at(-1).url, "/v2/agents");
+  const names = ["AGENTRUN_BASE_URL", "AGENTRUN_API_KEY", "AGENTRUN_TOKEN"];
+  const saved = names.map((name) => process.env[name]);
+  t.after(() => names.forEach((name, i) => (saved[i] === undefined ? delete process.env[name] : (process.env[name] = saved[i]))));
+  process.env.AGENTRUN_BASE_URL = prefix;
+  delete process.env.AGENTRUN_API_KEY;
+  process.env.AGENTRUN_TOKEN = KEY;
+  const fromToken = new AgentRun();
+  assert.equal(fromToken.baseUrl, server.base, "the environment's address without /v2");
+  await fromToken.agents.list();
+  assert.equal(server.requests.at(-1).headers.authorization, `Bearer ${KEY}`, "AGENTRUN_TOKEN when AGENTRUN_API_KEY is not set");
+  process.env.AGENTRUN_API_KEY = `${KEY}-api`;
+  await new AgentRun().agents.list();
+  assert.equal(server.requests.at(-1).headers.authorization, `Bearer ${KEY}-api`, "AGENTRUN_API_KEY wins");
+  await new AgentRun({ apiKey: `${KEY}-given` }).agents.list();
+  assert.equal(server.requests.at(-1).headers.authorization, `Bearer ${KEY}-given`, "apiKey wins over both");
+  delete process.env.AGENTRUN_API_KEY;
+  process.env.AGENTRUN_TOKEN = "";
+  assert.equal(thrownSync(() => new AgentRun()).reason, "no_token", "an empty AGENTRUN_TOKEN is no key");
+});
+
+test("AGENTRUN_TOKEN goes only to a loopback host", async (t) => {
+  const names = ["AGENTRUN_BASE_URL", "AGENTRUN_API_KEY", "AGENTRUN_TOKEN"];
+  const saved = names.map((name) => process.env[name]);
+  t.after(() => names.forEach((name, i) => (saved[i] === undefined ? delete process.env[name] : (process.env[name] = saved[i]))));
+  delete process.env.AGENTRUN_BASE_URL;
+  delete process.env.AGENTRUN_API_KEY;
+  process.env.AGENTRUN_TOKEN = KEY;
+  const sent = [];
+  const fetch = async (url, init) => (sent.push([String(url), new Headers(init?.headers).get("authorization")]), new Response("{\"agents\":[]}", { status: 200, headers: JSON_HEADERS }));
+  // On this machine: the token is its key.
+  for (const baseUrl of ["http://localhost:7340", "http://127.0.0.1:7340/v2", "http://[::1]:7340", "HTTP://LocalHost:7340"]) {
+    await new AgentRun({ baseUrl, fetch }).agents.list();
+    assert.equal(sent.at(-1)[1], `Bearer ${KEY}`, baseUrl);
+  }
+  const from = sent.length;
+  // Anywhere else: refused before any request, naming AGENTRUN_API_KEY, never the token.
+  for (const baseUrl of ["https://agentrun.example", "http://localhost.evil.example:7340", "http://127.0.0.1.nip.io:7340", "http://127.0.0.2:7340", "http://192.0.2.5:7340"]) {
+    const error = thrownSync(() => new AgentRun({ baseUrl, fetch }));
+    assert.ok(error instanceof AgentRunAuthError, `${baseUrl}: ${error}`);
+    assert.equal(error.reason, "no_token", baseUrl);
+    assert.match(error.message, /AGENTRUN_API_KEY/, baseUrl);
+    assert.equal(error.message.includes(KEY), false, `${baseUrl}: the token is in no message`);
+  }
+  // A loopback name behind a user part, an encoded @ or a fragment: the base URL itself is refused (it holds a user, or is
+  // no URL), before any key is read.
+  for (const baseUrl of ["http://localhost@evil.example/", Object.assign(new URL("http://evil.example/"), { username: "localhost", password: "8080" }).href, "http://127.0.0.1%40evil.example/", "http://evil.example/#@localhost"]) {
+    const error = thrownSync(() => new AgentRun({ baseUrl, fetch }));
+    assert.ok(error instanceof AgentRunUsage, `${baseUrl}: ${error}`);
+    assert.equal(error.message.includes(KEY), false, `${baseUrl}: the token is in no message`);
+  }
+  assert.deepEqual(sent.slice(from), [], "nothing was sent");
+  // There, AGENTRUN_API_KEY or apiKey is the key, and the token is not sent.
+  process.env.AGENTRUN_API_KEY = `${KEY}-api`;
+  await new AgentRun({ baseUrl: "https://agentrun.example", fetch }).agents.list();
+  await new AgentRun({ baseUrl: "https://agentrun.example", apiKey: `${KEY}-given`, fetch }).agents.list();
+  assert.deepEqual(sent.slice(from).map(([, authorization]) => authorization), [`Bearer ${KEY}-api`, `Bearer ${KEY}-given`]);
 });
 
 test("a path argument is encoded whole, a file path keeps its slashes, and one that would read as another route is refused before any request", async (t) => {

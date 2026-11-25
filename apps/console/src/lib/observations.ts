@@ -7,7 +7,8 @@ export type ObservedSession = {
   id: string; connector_id: string; source_id: string; external_session_id: string;
   harness: string; activity: string; reported_activity: string; connection_state: string; selection_active: boolean;
   occurred_at: string; received_at: string; created_at: string; updated_at: string; sequence: number;
-  display_name: string; models: string[]; usage: ObservedUsage; observation_only: true;
+  display_name: string; project_name?: string; models: string[]; usage: ObservedUsage; observation_only: true;
+  learning?: { state: "on" | "off" | "setup_required" | "unknown" | "unsupported"; agent_id?: string; connection_id?: string; mode?: "off" | "notes" | "workflows"; reason?: string };
 };
 export type Observations = {
   connectors: { id?: string; connector_id?: string; storage_full?: boolean; [key: string]: unknown }[]; sessions: ObservedSession[];
@@ -15,6 +16,8 @@ export type Observations = {
 };
 export const observationHash = (id: string) => `#/observations/${encodeURIComponent(id)}`;
 export const observedHarness = (value: string) => value === "claude" ? "Claude Code" : value === "codex" ? "Codex" : value;
+/** Search the same identity and provenance shown on a connected agent's card and detail page. */
+export const observedSearchTexts = (session: ObservedSession) => [session.display_name, session.project_name, observedHarness(session.harness), ...session.models, session.id, session.external_session_id, session.source_id, session.connector_id];
 export function observedState(session: ObservedSession): string {
   if (session.connection_state === "revoked") return "Revoked";
   if (session.connection_state === "disconnected") return "Disconnected";

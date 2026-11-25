@@ -1,10 +1,33 @@
 // One error class per way a call can fail, the outcome kinds every client of the server maps to its own idiom (the CLI to
-// an exit code, this client to a class). No message holds the API key, a secret a body carried, or the server's own
-// message text, which could quote either: a message names the route, the status and the server's error code.
+// an exit code, this client to a class). No message holds the API key or a secret a body carried: a message names the
+// route, the status, the server's error code and its reason, read from the error object the client keeps (the key cut
+// from it; after a secret body, no reason).
 import type { Run } from "./operations.generated.js";
 
 /** The server's error object (`{ code, message, ... }`), with every copy of the API key cut from its values and keys. */
 export type ServerError = Record<string, unknown>;
+
+/** The most of the server's reason a message carries. */
+export const REASON_CHARS = 300;
+
+/** The characters a reason keeps as one space: every whitespace run is one. Spelled out, not \s, so the Python client's
+ *  rule (python/agentrun/_errors.py) is the same character for character. */
+const SPACES = /[\t\n\v\f\r \u{85}\u{A0}\u{1680}\u{2000}-\u{200A}\u{2028}\u{2029}\u{202F}\u{205F}\u{3000}]+/gu;
+/** The characters a reason drops: every other control character (C0, DEL, C1), the zero-width ones, the bidi controls and
+ *  the BOM, none of which a terminal or a log shows as what it is. */
+const DROPPED = /[\u{0}-\u{8}\u{E}-\u{1F}\u{7F}-\u{84}\u{86}-\u{9F}\u{200B}-\u{200F}\u{202A}-\u{202E}\u{2060}-\u{2064}\u{2066}-\u{2069}\u{FEFF}]/gu;
+
+/** The server's reason as a message's end: `: <its message>`, on one line (whitespace runs one space, every control,
+ *  zero-width, bidi and BOM character dropped, the ends trimmed), at most REASON_CHARS characters (code points), the last
+ *  a … when cut; empty when the error object holds no message, or none that survives. `error` is the one the client
+ *  keeps, the key already cut from it. The same cases test both clients (packages/client/test/reason-cases.json). */
+export function said(error: ServerError | undefined): string {
+  const message = error?.message;
+  if (typeof message !== "string") return "";
+  const line = [...message.replace(DROPPED, "").replace(SPACES, " ").trim()];
+  if (!line.length) return "";
+  return `: ${line.length <= REASON_CHARS ? line.join("") : `${line.slice(0, REASON_CHARS - 1).join("")}…`}`;
+}
 
 /** What every error of this client is: `kind` says which outcome it is. */
 export abstract class AgentRunError extends Error {
@@ -21,7 +44,7 @@ export class AgentRunRefused extends AgentRunError {
   /** How long the server asked to be left before the same request again (its Retry-After), in milliseconds. */
   readonly retryAfterMs: number | undefined;
   constructor(route: string, status: number, code: string | undefined, error: ServerError | undefined, why?: string, retryAfterMs?: number) {
-    super(why ?? `The server refused ${route}: ${status}${code ? ` ${code}` : ""}.`);
+    super(why ?? `The server refused ${route}: ${status}${code ? ` ${code}` : ""}${said(error) || "."}`);
     this.name = "AgentRunRefused";
     this.status = status;
     this.code = code;

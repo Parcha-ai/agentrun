@@ -1,0 +1,43 @@
+name: The pinned image, else this checkout's
+description: >
+  A walk deploys the image its template pins, which release.yml publishes only after the release's tag: on the release's
+  own pull request, and on main until the tag's release finishes, GHCR has no such tag. Asked anonymously, as the platform
+  pulls it: published (200), the walk walks it; not there (404), this checkout's image is built and AGENTRUN_IMAGE set to it
+  for the job's later steps, the name every walk takes for the image to walk; any other answer fails the step.
+inputs:
+  image:
+    description: the image the template pins, as ghcr.io/<owner>/<name>:<tag>
+    required: true
+outputs:
+  image:
+    description: the image the walk walks
+    value: ${{ steps.choose.outputs.image }}
+runs:
+  using: composite
+  steps:
+    - id: choose
+      shell: bash
+      env:
+        PINNED: ${{ inputs.image }}
+      run: |
+        repo=${PINNED%:*} tag=${PINNED##*:}
+        name=${repo#ghcr.io/}
+        [ "$repo" != "$name" ] && [ "$tag" != "$PINNED" ] || { echo "::error::$PINNED is not ghcr.io/<owner>/<name>:<tag>"; exit 1; }
+        token=$(curl -fsS "https://ghcr.io/token?scope=repository:$name:pull" | jq -r .token) \
+          || { echo "::error::GHCR gave no anonymous pull token for $name"; exit 1; }
+        code=$(curl -sS -o /dev/null -w '%{http_code}' -I -H "Authorization: Bearer $token" \
+          -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json' \
+          "https://ghcr.io/v2/$name/manifests/$tag")
+        case "$code" in
+          200)
+            echo "::notice::$PINNED is on GHCR: the walk walks it"
+            echo "image=$PINNED" >> "$GITHUB_OUTPUT" ;;
+          404)
+            echo "::notice::$PINNED is not on GHCR yet (its release publishes it after the tag): the walk walks this checkout's image"
+            docker build -q -f packages/serve/docker/Dockerfile -t agentrun-walk:checkout .
+            echo "image=agentrun-walk:checkout" >> "$GITHUB_OUTPUT"
+            echo "AGENTRUN_IMAGE=agentrun-walk:checkout" >> "$GITHUB_ENV" ;;
+          *)
+            echo "::error::GHCR answered $code for $PINNED to an anonymous pull: neither published nor absent"
+            exit 1 ;;
+        esac

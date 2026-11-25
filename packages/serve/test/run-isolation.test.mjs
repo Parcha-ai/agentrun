@@ -6,8 +6,8 @@ import assert from "node:assert/strict";
 import childProcess, { spawn } from "node:child_process";
 import { syncBuiltinESMExports } from "node:module";
 import { randomBytes } from "node:crypto";
-import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
-import { lstat, rm } from "node:fs/promises";
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { duplexPair } from "node:stream";
@@ -15,8 +15,9 @@ import { test } from "node:test";
 import { serialize } from "node:v8";
 import { SECRET_NAMES } from "../dist/secrets.js";
 import { shadowRunId } from "../dist/learn/audit.js";
-import { Channel, ChannelClosed, MAX_FRAME } from "../dist/runner/run-channel.js";
-import { FIRST_RUN_ID, reapSlot, RUN_SLOTS, RunIsolationRefused, runIsolationOf, SlotHold, slotId, Slots, slotsUnder, storeCall } from "../dist/runner/run-child-host.js";
+import { Channel, ChannelClosed, FrameTooLarge, MAX_FRAME } from "../dist/runner/run-channel.js";
+import { registerRunErrors } from "../dist/runner/run-errors.js";
+import { FIRST_RUN_ID, reapSlot, RUN_SLOTS, RunIsolationRefused, runIsolationOf, SlotHold, slotId, Slots, storeCall } from "../dist/runner/run-child-host.js";
 import { createServer } from "node:http";
 import { DatabaseSync } from "node:sqlite";
 import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
@@ -105,31 +106,31 @@ test("two runners on one data directory never run two runs on one slot at once, 
   held.push([three, again]);
 });
 
-test("a run's folder is given to its next slot however deep an earlier claim's slot wrote in it, and a symlink out of it is never followed", async (t) => {
-  const top = scratchDir(t, "reown-");
-  const outside = scratchDir(t, "outside-");
-  mkdirSync(join(top, "work", "a", "b", "c"), { recursive: true });
-  writeFileSync(join(top, "work", "a", "b", "c", "deep.txt"), "an earlier claim's");
-  writeFileSync(join(outside, "theirs.txt"), "not the run's");
-  symlinkSync(outside, join(top, "work", "out"));
-  // Uids as a slot's would own them (a test cannot chown): the deep file slot 7's, what the symlink reaches slot 9's,
-  // every other entry uid 0 (no slot).
-  const uidOf = (path) => (path.endsWith("deep.txt") ? slotId(7) : path.startsWith(outside) ? slotId(9) : 0);
-  const statOf = async (path) => Object.assign(Object.create(Object.getPrototypeOf(await lstat(path))), await lstat(path), { uid: uidOf(path) });
-  assert.deepEqual(await slotsUnder(top, 3, statOf), [7], "the slot that wrote four levels down is reowned");
-  assert.deepEqual(await slotsUnder(top, 7, statOf), [], "the run's own slot is not another's");
-});
-
-test("a slot's reap sweeps every folder of the host its uid can leave a file in: /tmp, /var/tmp, /dev/shm, /run/lock, /var/lock and /dev/mqueue", async (t) => {
+test("a slot's reap sweeps every folder of the host its uid can leave a file in (/tmp, /var/tmp, /dev/shm, /run/lock, /var/lock and /dev/mqueue), then gives the run's folders back to the server's user", async (t) => {
   const file = join(scratchDir(t, "runas-"), "agentrun-runas");
-  writeFileSync(file, `#!/bin/sh\nprintf '%s\\n' "$@" > "$0.args"\n`);
+  writeFileSync(file, `#!/bin/sh\nprintf '%s\\n' "$*" >> "$0.calls"\n`);
   chmodSync(file, 0o755);
   const top = scratchDir(t, "top-");
-  await reapSlot({ kind: "uid", helper: file, first: 0, slots: 1 }, 0, [top], () => undefined);
-  const args = readFileSync(`${file}.args`, "utf8").trim().split("\n");
-  const swept = args.flatMap((arg, i) => (arg === "--sweep" ? [args[i + 1]] : []));
+  const scratch = scratchDir(t, "scratch-");
+  assert.equal(await reapSlot({ kind: "uid", helper: file, first: 0, slots: 1 }, 0, [top, scratch], () => undefined), true);
+  const [reap, own, ...rest] = readFileSync(`${file}.calls`, "utf8").trim().split("\n").map((line) => line.split(" "));
+  assert.deepEqual(rest, [], "two calls: the reap, then the give-back");
+  assert.deepEqual(reap.slice(0, 2), ["reap", "0"]);
+  const swept = reap.flatMap((arg, i) => (arg === "--sweep" ? [reap[i + 1]] : []));
   assert.deepEqual(swept.sort(), ["/dev/mqueue", "/dev/shm", "/run/lock", "/tmp", "/var/lock", "/var/tmp"]);
-  assert.deepEqual(args.slice(0, 2), ["reap", "0"]);
+  assert.ok(!reap.includes("--fix"), "the reap no longer takes the runner's group to fix modes: the give-back does");
+  assert.deepEqual(own, ["own", "runner", top, scratch]);
+});
+
+test("a reap whose give-back fails does not hold: the slot is retired, never run on again with its last run's folders still its own", async (t) => {
+  const file = join(scratchDir(t, "runas-"), "agentrun-runas");
+  writeFileSync(file, `#!/bin/sh\n[ "$1" = own ] && { echo "own /x: operation not permitted" >&2; exit 1; }\nexit 0\n`);
+  chmodSync(file, 0o755);
+  const said = [];
+  assert.equal(await reapSlot({ kind: "uid", helper: file, first: 0, slots: 1 }, 2, [scratchDir(t, "top-")], (line) => said.push(line)), false);
+  assert.match(said.join("\n"), /slot 2's folders were not all given back to the server: own \/x: operation not permitted/);
+  // A reap with no folders (the one before a slot's first run) gives nothing back.
+  assert.equal(await reapSlot({ kind: "uid", helper: file, first: 0, slots: 1 }, 2, [], () => undefined), true);
 });
 
 test("a run's kill reaps its slot only while the run holds it: a kill still reaping holds the give-back, and a kill after it leaves the slot's next run alive", async (t) => {
@@ -309,17 +310,34 @@ test("a call past the channel's cap fails alone, and the channel goes on", async
   child.close();
 });
 
+test("a call or an answer past the channel's cap fails as FrameTooLarge on the caller's side, naming its bytes and the cap", async () => {
+  registerRunErrors();
+  const [a, b] = duplexPair();
+  const runner = new Channel(a, { maxFrame: 4096 });
+  const child = new Channel(b, { maxFrame: 4096 });
+  child.expose("big", () => "y".repeat(8192));
+  child.expose("echo", (_method, args) => args[0]);
+  const named = (error) => error instanceof FrameTooLarge && error.limit === 4096 && error.bytes > 8192 && error.message.includes(String(error.bytes)) && error.message.includes("4096");
+  // The answer is refused on the child's side and crosses back as an error: still a FrameTooLarge here.
+  await assert.rejects(runner.call("big", "it", []), named, "an answer");
+  await assert.rejects(runner.call("echo", "it", ["x".repeat(8192)]), named, "a call");
+  assert.equal(runner.closed, false);
+  runner.close();
+  child.close();
+});
+
 // ---------------------------------------------------------------------------------------------------------------------
 // The whole server: a run whose process breaks its channel fails, and the store's files are the server's alone.
 
 /** The launcher's server on a data directory of its own, its runs each a process of their own (no helper: process
  *  isolation). `faux`: its --faux module (false: none, the model the environment names). `keys`: false hands it no provider key,
- *  only its token and seal key. `extra`: more of its environment. */
+ *  only its token and seal key. `extra`: more of its environment. No launch hook: its triggers start their runs here (the
+ *  hook's secret's custody is secret-custody.test.mjs's and run-custody.test.mjs's). */
 async function launched(t, { faux = BREAKER, keys = true, extra = {} } = {}) {
   const dir = scratchDir(t, "run-isolation-");
   const canary = `nak-${process.pid}-${Date.now().toString(36)}`;
   const own = (name) => name === "AGENTRUN_TOKEN" || name === "AGENTRUN_SEAL_KEY";
-  const secrets = Object.fromEntries(SECRET_NAMES.map((name, i) => [name, name === "AGENTRUN_TOKEN" ? `${canary}-token-0123456789abcdef` : name === "AGENTRUN_TOKENS" ? `custody:${canary}-tokens-0123456789abcdef0123456789` : name === "AGENTRUN_SEAL_KEY" ? randomBytes(32).toString("base64") : name === "AGENTRUN_STORE_URL" || (!keys && !own(name)) ? undefined : `${canary}-${i}`]));
+  const secrets = Object.fromEntries(SECRET_NAMES.map((name, i) => [name, name === "AGENTRUN_TOKEN" ? `${canary}-token-0123456789abcdef` : name === "AGENTRUN_TOKENS" ? `custody:${canary}-tokens-0123456789abcdef0123456789` : name === "AGENTRUN_SEAL_KEY" ? randomBytes(32).toString("base64") : name === "AGENTRUN_STORE_URL" || name === "AGENTRUN_LAUNCH_HOOK_SECRET" || (!keys && !own(name)) ? undefined : `${canary}-${i}`]));
   const env = { ...process.env, ...secrets, ...extra, XDG_CONFIG_HOME: join(dir, "config"), TMPDIR: dir };
   for (const [name, value] of Object.entries(env)) if (value === undefined) delete env[name];
   delete env.AGENTRUN_RUN_USER;

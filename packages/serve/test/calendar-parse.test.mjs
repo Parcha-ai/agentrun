@@ -132,8 +132,8 @@ test("at most 200 events an answer, sorted by start, with truncated; a rule that
 });
 
 test("a busy window's answer, events with not one space in them, passes the run's redactor whole: a line for each field", () => {
-  // The run's redactor (key-refusal.ts redactedAnswer) reads in pieces split at whitespace, and a run of 8,192 characters
-  // with none reads "[redacted]": compact JSON of 200 one-word events is one such run.
+  // The run's redactor (key-refusal.ts redactedAnswer) reads in pieces split at whitespace; a run of 8,192 characters with
+  // none is cut at a JSON string's end, or reads "[redacted]" with none: compact JSON of 200 one-word events is one run.
   const busy = parseCalendar(icsLines(["BEGIN:VCALENDAR", "VERSION:2.0", "X-WR-TIMEZONE:UTC", "BEGIN:VEVENT", "UID:h@x", "DTSTART:20261101T000000Z", "DTEND:20261101T003000Z", "RRULE:FREQ=HOURLY", "SUMMARY:Check-in", "END:VEVENT", "END:VCALENDAR"]), "faux.example");
   const { events, truncated } = read(busy, "2026-11-02", "2026-11-30");
   const text = calendarText({ calendar: "Busy", time_zone: "UTC", from: "2026-11-02T00:00:00+00:00", to: "2026-12-01T00:00:00+00:00", events, truncated });

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { delimiter, dirname, join } from 'node:path';
+import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
@@ -17,14 +17,14 @@ const FAILURES = {
   EBADENGINE: 'npm error code EBADENGINE\nnpm error engine Unsupported engine\nnpm error engine Not compatible with your version of node/npm: x@1.0.0\n',
 };
 
-/** A directory holding an `npm` that logs each call's arguments and answers each `npm ci` with the next of `plan`
+/** A directory holding an npm CLI script (npm_execpath, as `npm run` names its own) that logs each call's arguments and answers each `npm ci` with the next of `plan`
  *  (`ok`, or a FAILURES key with an optional `:<exit code>`, 1 if not given). */
 function fakeNpm(t, plan) {
   const dir = mkdtempSync(join(tmpdir(), 'npm-ci-retry-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const log = join(dir, 'calls.log');
   writeFileSync(log, '');
-  writeFileSync(join(dir, 'npm'), `#!${process.execPath}
+  writeFileSync(join(dir, 'npm-cli.cjs'), `#!${process.execPath}
 const { appendFileSync, readFileSync } = require('node:fs');
 appendFileSync(${JSON.stringify(log)}, process.argv.slice(2).join(' ') + '\\n');
 const n = readFileSync(${JSON.stringify(log)}, 'utf8').split('\\n').filter(Boolean).length;
@@ -33,9 +33,9 @@ if (step === 'ok') { console.log('added 1 package in 1s'); process.exit(0); }
 process.stderr.write(${JSON.stringify(FAILURES)}[step]);
 process.exit(Number(code ?? 1));
 `);
-  chmodSync(join(dir, 'npm'), 0o755);
+  chmodSync(join(dir, 'npm-cli.cjs'), 0o755);
   const run = (args, env = {}) => {
-    const done = spawnSync(process.execPath, [SCRIPT, ...args], { encoding: 'utf8', env: { ...process.env, PATH: `${dir}${delimiter}${dirname(process.execPath)}${delimiter}${process.env.PATH}`, NPM_CI_RETRY_WAIT_MS: '0', ...env } });
+    const done = spawnSync(process.execPath, [SCRIPT, ...args], { encoding: 'utf8', env: { ...process.env, npm_execpath: join(dir, 'npm-cli.cjs'), NPM_CI_RETRY_WAIT_MS: '0', ...env } });
     return { ...done, calls: readFileSync(log, 'utf8').split('\n').filter(Boolean) };
   };
   return run;

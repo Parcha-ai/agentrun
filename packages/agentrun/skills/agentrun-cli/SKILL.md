@@ -115,6 +115,8 @@ agentrun runs wait "$run" > out.json
 
 A tool call waiting for approval (`pending.kind` `approval`) is answered by the person in the console (the run's `console_url`): the server takes that answer only from their own session there, never from a token, so the CLI has no command for it. Tell them, then `agentrun runs wait "$run"` once they have.
 
+A year of the person's own coding-agent work (tokens, cost, models, harnesses, when they work) is `agentrun wrapped --year 2025`: numbers and names only, read from the session files on the machine the server runs on, and answered only by a server on loopback with no public URL (any other is 403). The console shows it at `#/wrapped`.
+
 ## Exit codes
 
 - 0: done; for `runs wait` and `runs start --wait`, the run completed.
@@ -127,38 +129,8 @@ A tool call waiting for approval (`pending.kind` `approval`) is answered by the 
 
 ## From a program
 
-Two clients call the same API from code, with the same server and token. `@parcha/agentrun-client` is the TypeScript one, `new AgentRun({ baseUrl, apiKey })`; `npm install @parcha/agentrun-client` installs it. `parcha-agentrun` (python/) is the Python one, `AgentRun(base_url=..., api_key=...)` from the `agentrun` module; `pip install parcha-agentrun` installs it. Both default to `AGENTRUN_BASE_URL` and `AGENTRUN_API_KEY` and read no config file. Each command here is a method, grouped the same way: `agentrun runs start` is `client.runs.start`, and `client.runs.wait` and `client.runs.follow` do what `--wait` and `--follow` do.
+Two clients call the same API from code, with the same server and token. `@parcha/agentrun-client` is the TypeScript one, `new AgentRun({ baseUrl, apiKey })`; `npm install @parcha/agentrun-client` installs it. `parcha-agentrun` (python/) is the Python one, `AgentRun(base_url=..., api_key=...)` from the `agentrun` module; `pip install parcha-agentrun` installs it. Both default to `AGENTRUN_BASE_URL` and `AGENTRUN_API_KEY` and read no config file. Each command is a method, grouped the same way: `agentrun runs start` is `client.runs.start`, and `client.runs.wait` and `client.runs.follow` do what `--wait` and `--follow` do.
 
 ## Commands
 
-- `agentrun agents`: archive, connect-native, create, delete-agent, delete-agent-archil, disconnect-native, discover-native, forget-sign-in, get, get-agent-archil, get-learning-loop, get-native, list, list-learning-audits, list-learning-promotions, runs, unarchive, update, verify-native
-- `agentrun connectors`: complete-remote-command, enroll-remote-connector, import-remote-history, import-remote-target, list-remote-connectors, poll-remote-connector, register-remote-connector, remote-command-events, revoke-remote-connector
-- `agentrun doctor`: Check how this AgentRun is set up (Node, the server, its service, address, password, models, switches, Docker) and print what to change; read-only (exit 0 ok or warnings, 1 a check failed, 3 no server answering)
-- `agentrun files`: create, delete, get, list, upload
-- `agentrun harness`: install
-- `agentrun harness-check`: Run a recipe's installed agent for real and check it (tools off, env allowlist, pins, limits, no side requests, resume, a denied call, an MCP tool): a JSON report and three facts. Real models cost money
-- `agentrun home`: delete, list, read, write
-- `agentrun learning`: corrections, cost, get, log, read, replay, retire, workflow-revisions, write-corrections
-- `agentrun local`: create-pairing, delete-composio-subscription, delete-computer, delete-workspace-archil, disconnect-git-hub, get-git-hub-connection, get-model-gateway, get-workspace-archil, list-composio-events, list-composio-triggers, list-computer-choices, list-computers, receive-hook-composio, rotate-composio-secret, test-computer, test-workspace-archil
-- `agentrun login`: Check a server's token, read from stdin, and keep it with the server's address in the config file
-- `agentrun logout`: Remove the config file login wrote, its address and token
-- `agentrun mcp-servers`: delete, get, list, oauth-client, private-hosts, refresh
-- `agentrun Observations`: get-observations
-- `agentrun open`: Open AgentRun in this machine's browser: the setup page, its code filled in, until the owner's password is set; the console after (where no browser opens, it prints the link)
-- `agentrun revisions`: list, set-current
-- `agentrun runs`: archive, cancel, computer-call, computer-release, create-inline-run, files, get, grade-run, graph, hand-back-run-computer, learning, learning-diff, list, message, pause, raise-cap, read-file, resume, start, start-held, stop, take-over-run-computer, timeline, trace, unarchive, wait
-- `agentrun sdk-runs`: complete, events, get, start
-- `agentrun server`: capabilities, health, mcp, openapi
-- `agentrun service`: install, logs, restart, start, status, stop, uninstall, upgrade
-- `agentrun skill`: install
-- `agentrun slack`: deliveries, get, redeliver, test
-- `agentrun stats`: Counts and cost over every agent and run
-- `agentrun stop`: Stop the AgentRun the installer started in the background, where there is no service manager (exit 0 stopped, 3 none running)
-- `agentrun template`: apply, delete, eval, import, install, list, validate
-- `agentrun tool-keys`: list
-- `agentrun tool-settings`: get, save
-- `agentrun triggers`: create, delete, fire, firings, get, list, update
-- `agentrun usage`: Usage by meter over a period
-- `agentrun webhook`: delete, deliveries, get, redeliver, save, test
-- `agentrun workflows`: validate
-- `agentrun api METHOD PATH [--body JSON|@FILE|-]`: any route, PATH under the base URL
+Every command, by group with its flags and route, is in [references/commands.md](references/commands.md); `agentrun api METHOD PATH [--body JSON|@FILE|-]` calls any route, PATH under the base URL.

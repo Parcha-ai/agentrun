@@ -32,7 +32,7 @@ const groups = (rows) => groupTimeline(rows.filter((row) => row.kind !== "usage"
 const norm = (line) => line.slice(10).replace(/(\S) {2,}/g, "$1 ");
 const summaries = (rows) => rows.map((row) => row.summary);
 
-test("every row carries Grep's 13 fields, a known kind, an ISO time and Grep's caps", () => {
+test("every row carries the 13 base fields, a known kind, an ISO time and the base caps", () => {
   const long = "x".repeat(5000);
   const rows = timelineOf([
     user(long, 0),
@@ -163,6 +163,32 @@ test("a round of different tools has a header and one line per call", () => {
   assert.match(out[2], /^ {12}Took a screenshot +ok$/);
 });
 
+// A browser that takes only actions (a local Chrome over CDP) refuses code before it runs, as pi-browser's typed
+// failure `code: "refused"`. Its row says what the browser refused, never that the page in the code failed to open; any
+// other failure of the same call still reads as the call's own label, failed.
+test("a run the browser refused before it ran says the browser refused it, not that its page failed to open; another failure reads as before", () => {
+  const refusal = (message, effect = "none") => JSON.stringify({ ok: false, code: "refused", retryable: false, effect, message });
+  const CODE = "run code is not available on this browser (the agent's browser computer): send actions instead.";
+  const rows = timelineOf([
+    assistant([call("a", "run", { code: "await page.goto('https://iana.org/help/example-domains')" })], 0),
+    result("a", "run", refusal(CODE), 1, { isError: true }),
+    assistant([call("b", "run", { code: "await page.click('#go')" })], 2),
+    result("b", "run", refusal(CODE), 3, { isError: true }),
+    assistant([call("c", "run", { actions: [{ op: "scroll" }] })], 4),
+    result("c", "run", refusal("run takes the ops goto, click, hover, fill, type, press and select, not \"scroll\""), 5, { isError: true }),
+    assistant([call("d", "run", { code: "await page.goto('https://iana.org/help/example-domains')" })], 6),
+    result("d", "run", JSON.stringify({ ok: false, code: "navigation_failed", retryable: true, effect: "none", message: "net::ERR_NAME_NOT_RESOLVED" }), 7, { isError: true }),
+    assistant([call("e", "run", { actions: [{ op: "click", id: "0-1" }, { op: "click", id: "0-2" }] })], 8),
+    result("e", "run", refusal("The person took the browser after the first action.", "partial"), 9, { isError: true }),
+  ]);
+  const done = (id) => rows.find((row) => row.kind === "tool_result" && row.tool_use_id === id);
+  assert.deepEqual([done("a").summary, done("a").tool_status], [`The browser refused the code to open iana.org/help/example-domains: ${CODE}`, "failed"]);
+  assert.equal(done("b").summary, `The browser refused the agent's code: ${CODE}`);
+  assert.equal(done("c").summary, 'The browser refused the action: run takes the ops goto, click, hover, fill, type, press and select, not "scroll"');
+  assert.equal(done("d").summary, "Opened iana.org/help/example-domains failed: net::ERR_NAME_NOT_RESOLVED", "a page that failed to open still says so");
+  assert.equal(done("e").summary, "Acted on the page failed: The person took the browser after the first action.", "a refusal after some actions ran is no refusal before it ran");
+});
+
 test("rounds of one call of one tool fold across rounds; thinking, a row or a failure ends the fold", () => {
   const bash = (id, t) => [assistant([call(id, "bash", { command: `ls ${id}` })], t), result(id, "bash", "ok", t)];
   const folded = timelineOf([...bash("a", 0), ...bash("b", 1), ...bash("c", 2)]);
@@ -205,6 +231,22 @@ test("a fetch whose page says it was refused, or failed, reads as that and as fa
   const rendered = text(rows);
   assert.match(rendered, /Tried to fetch x\.example:8080\/health +failed$/m);
   assert.match(rendered, /Fetched example\.com +ok$/m);
+});
+
+test("web_save reads as the file it saved, a Saved row at the path it answered (media/ for a bare name), and a refusal in its own words", () => {
+  const rows = timelineOf([
+    assistant([call("a", "web_save", { url: "https://v3.fal.example/files/abc/cat.png", path: "cat.png" })], 0),
+    result("a", "web_save", JSON.stringify({ ok: true, path: "media/cat.png", bytes: 264, content_type: "image/png", url: "https://v3.fal.example/files/abc/cat.png" }), 0),
+    assistant([call("b", "web_save", { url: "http://127.0.0.1/x.png", path: "media/x.png" })], 1),
+    result("b", "web_save", JSON.stringify({ ok: false, url: "http://127.0.0.1/x.png", path: "media/x.png", refused: "refused: 127.0.0.1 is not a public host" }), 1),
+  ]);
+  assert.deepEqual(rows.filter((row) => ["tool_use", "tool_result", "phase"].includes(row.kind)).map((row) => [row.kind, row.summary, row.tool_status ?? null, row.path ?? null]), [
+    ["tool_use", "Saved media/cat.png from v3.fal.example", null, null],
+    ["tool_result", "Saved media/cat.png from v3.fal.example: ok", "success", null],
+    ["phase", "Saved media/cat.png", null, "media/cat.png"],
+    ["tool_use", "Tried to save media/x.png from 127.0.0.1", null, null],
+    ["tool_result", "Tried to save media/x.png from 127.0.0.1: refused: 127.0.0.1 is not a public host", "failed", null],
+  ]);
 });
 
 test("a result closes its call by id, whatever its order", () => {

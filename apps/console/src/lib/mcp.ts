@@ -40,6 +40,9 @@ export const MCP_URL_PRESETS = [
   { id: "github-token", label: "GitHub (token)", name: "github", url: GITHUB_MCP_URL, readOnly: `${GITHUB_MCP_URL}readonly`, auth: "bearer", note: "A fine-grained personal access token for the repositories it may use, with Contents, Issues and Pull requests (read-only, or read and write)." },
   { id: "linear", label: "Linear", name: "linear", url: "https://mcp.linear.app/mcp", auth: "oauth", note: "Sign in with your Linear account: this server keeps the tokens." },
   { id: "notion", label: "Notion", name: "notion", url: "https://mcp.notion.com/mcp", auth: "oauth", note: "Sign in with your Notion workspace: this server keeps the tokens." },
+  // fal's image, video and audio models: the key first, so a template that needs fal links to it (setUpHref).
+  { id: "fal", label: "fal (key)", name: "fal", url: "https://mcp.fal.ai/mcp", auth: "bearer", note: "Image, video and audio models. Your fal key, from fal.ai's API keys page: generations bill your fal account, and a run counts each one at fal's price, under its spend cap. This server keeps the key; the agent never sees it." },
+  { id: "fal-sign-in", label: "fal (sign in)", name: "fal", url: "https://mcp.fal.ai/mcp-relay", auth: "oauth", note: "Image, video and audio models. Sign in with your fal account: generations bill it, and a run counts each one at fal's price, under its spend cap. This server keeps the tokens." },
 ] as const satisfies readonly McpPreset[];
 export type McpPresetId = (typeof MCP_URL_PRESETS)[number]["id"];
 /** The URL preset of `id`, or undefined for any other. */
@@ -96,12 +99,21 @@ export type McpServer = {
   source: McpSource; toolkit: string | null;
   credential: "sealed" | "unreadable" | "expired" | null;
   oauth?: { expires_at?: string; scopes: string[]; client: string; client_id?: string };
+  /** A Composio server's account as its last refresh read it at Composio; absent when none was read for what it stands
+   *  on now (never refreshed, or one with no account of its own: per-run, a toolkit with no sign-in). */
+  composio_account?: ComposioAccount;
   prices?: Record<string, number>;
 };
 export type McpPreview = { protocol: string; server_info?: { name?: string; version?: string }; instructions?: string; tools: McpTool[] };
 export type McpRefresh = { added: string[]; removed: string[]; changed: string[]; server: McpServer };
 /** What a preview or save sends as `auth`: a credential only when one was typed (none: keep the sealed one). */
 export type McpAuth = { type: McpAuthType; token?: string; headers?: Record<string, string> };
+/** A Composio server's account (its read's `composio_account`): connected, with each account's label (never its id), or
+ *  why not. */
+export type ComposioAccountState = "connected" | "pending" | "expired" | "none" | "unknown";
+export type ComposioAccount = { state: ComposioAccountState; labels?: string[]; checked_at: string };
+/** A toolkit Composio offers (POST /settings/mcp-servers/composio/toolkits): its slug, as a save takes it, and its name. */
+export type ComposioToolkit = { slug: string; name: string };
 /** A Composio toolkit's actions (POST /settings/mcp-servers/composio/tools), `no_auth` when it needs no account. */
 export type ComposioTools = { toolkit: string; no_auth: boolean; tools: { slug: string; name: string; description: string }[] };
 

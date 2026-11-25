@@ -11,7 +11,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
-import { ATTACH_PATH, type AttachHub, DAEMON_PATH, type MachineTokens } from "../attach.js";
+import { ATTACH_EGRESS_ENV, ATTACH_PATH, type AttachHub, attachEgressOf, DAEMON_PATH, MACHINE_TOKEN_SOURCE, type MachineTokens } from "../attach.js";
 import { CreateRequests, endedWords, otherSpecWords, readBackDiffer } from "../create-requests.js";
 import { mountsOf, syncs } from "../descriptor.js";
 import { type DesktopOptions, desktopOf, startDisplay } from "../desktop.js";
@@ -53,6 +53,7 @@ import {
 	type ComputerInfo,
 	type ComputerProvider,
 	type ComputerRef,
+	type ComputerResources,
 	type ComputerSpec,
 	type CreateContext,
 	type CreatedComputer,
@@ -98,7 +99,11 @@ export interface HostedTimeouts {
 	 * listings while create waits for the new computer to show: those start at 150 ms and double up to it.
 	 */
 	pollMs: number;
-	/** How long create waits for the listing to show the new computer. */
+	/**
+	 * How long create waits for the listing to show the new computer. A computer still not listed then is read by its id:
+	 * one that reads running with its labels is kept, with a note, since a vendor's listing may trail its create (Daytona's
+	 * is eventually consistent); any other is a timeout.
+	 */
 	listedMs: number;
 	/**
 	 * The listing's stability window: create's wait ends once the listing has shown the new computer on two consecutive
@@ -137,6 +142,13 @@ export interface HostedOptions {
 	 * Given to the helper's mount and revoke. Unset or empty, the client reaches Archil as the machine's network allows.
 	 */
 	archilEgress?: string;
+	/**
+	 * The relay a dial machine reaches this server through, `<IPv4 relay>:<port>` such as 192.0.2.40:18443
+	 * (attachEgressOf): for a vendor whose machines reach only addresses the operator allows. A dial machine is booted with
+	 * it as AGENTRUN_ATTACH_EGRESS, and its daemon fetch and attach socket both open TCP to it, speaking TLS and HTTP to
+	 * the public host through it. Unset or empty, they go to the public host; a host whose machines don't dial ignores it.
+	 */
+	attachEgress?: string;
 	/** What a host whose facts.connect is "dial" needs: create refuses without it, before any call to the vendor, in words
 	 *  that name serve's one-process start (a runner apart from the server has none). */
 	dial?: HostedDial;
@@ -193,6 +205,14 @@ const LISTED_POLL_MS = 150;
 const LISTED_ROUNDS = 2;
 const LISTEN_RETRY_MS = 250;
 const START_POLL_MS = 500;
+/** How much of agentrun-dial's output a dial timeout carries (MachineHost.dialLog): its last lines, cut to these characters. */
+const DIAL_LOG_LINES = 10;
+const DIAL_LOG_CHARS = 800;
+/**
+ * A machine token anywhere in what agentrun-dial wrote, not the tail of a longer word (`restart_…`): a dial timeout's
+ * words carry `<token>` in its place.
+ */
+const MACHINE_TOKEN = new RegExp(`(?<![A-Za-z0-9_-])${MACHINE_TOKEN_SOURCE}`, "g");
 /**
  * The computerd build a hosted machine of arch runs: HostedProvider's default daemonPath, and the file serve's daemon
  * route serves, so the sha256 a dial machine checks (AGENTRUN_DAEMON_SHA256) is this file's.
@@ -317,11 +337,22 @@ export class HostedProvider implements ComputerProvider {
 	readonly #probeTargets: string[];
 	readonly #onNote: ProviderNote | undefined;
 	readonly #archilEgress: ArchilEgress | undefined;
+	readonly #attachEgress: string | undefined;
 	/** Each create in flight, and the names of the computers this provider ended (create-requests.ts). In memory alone:
 	 *  past it, and past this process, the vendor's listing is what holds. */
 	readonly #requests = new CreateRequests();
 	/** Each computer's last extend, by machine id, while one runs: the next waits for it. */
 	readonly #extending = new Map<string, Promise<void>>();
+	/** What the vendor said a machine this create made was given (Machine.resources), by machine id, from its read once it
+	 *  ran (#prepare) until the create answers with it (#createOnce). */
+	readonly #given = new Map<string, ComputerResources>();
+	/**
+	 * Each computer create kept while the vendor's listing still left it out (#unlisted), by name to machine id: a retry
+	 * of its request finds it here, read by its id, where the name's listing would not show it yet. An entry goes once
+	 * the listing shows the name, a read finds the machine gone or not this one, or release deletes it. This instance's
+	 * alone: another instance's retry still waits on the listing.
+	 */
+	readonly #keptUnlisted = new Map<string, string>();
 	/** A dial host's server: what its machines reach, and what holds their tokens and sockets. */
 	readonly #dial: HostedDial | undefined;
 	/** The host's descriptor's mounts as its machines reach this server (mountsOf): a dial host's take no Archil mount. */
@@ -338,6 +369,7 @@ export class HostedProvider implements ComputerProvider {
 			probeTargets = DEFAULT_PROBE_TARGETS,
 			onNote,
 			archilEgress,
+			attachEgress,
 		} = options;
 		const { id, label, capabilities } = host.descriptor;
 		if (kind !== "desktop" && kind !== "linux") throw new Error(`kind is desktop or linux, not ${String(kind)}`);
@@ -350,6 +382,7 @@ export class HostedProvider implements ComputerProvider {
 		this.#fail = failFor(id);
 		this.#onNote = onNote;
 		this.#archilEgress = archilEgress === undefined || archilEgress === "" ? undefined : archilEgressOf(archilEgress);
+		this.#attachEgress = attachEgress === undefined || attachEgress === "" ? undefined : attachEgressOf(attachEgress);
 		if (!isWhole(maxLifetimeMs) || maxLifetimeMs <= 0 || maxLifetimeMs > host.facts.maxLifetimeMs) {
 			throw new Error(`maxLifetimeMs must be a whole number of ms above 0 and at most ${host.facts.maxLifetimeMs} ms, the longest ${label} keeps a computer`);
 		}
@@ -668,6 +701,11 @@ export class HostedProvider implements ComputerProvider {
 		const listed = await foundBy(this.host, "the listing by the request's name", byName(name), this.#timeouts, signal);
 		if (!listed.ok) return listed;
 		const found = listed.value.filter((machine) => ours(machine.labels, name));
+		if (found.length === 0) {
+			const kept = await this.#keptOf(name, signal);
+			if (!kept.ok) return kept;
+			if (kept.value !== undefined) return this.#again(spec, name, kept.value, signal);
+		} else this.#keptUnlisted.delete(name);
 		if (found.length > 1) return this.#fail("exists", `${found.length} machines carry the name ${name} (${found.map((m) => m.id).join(", ")}): create with a new request id`);
 		if (found.length === 1) return this.#again(spec, name, found[0] as Machine, signal);
 		if (taken) return taken;
@@ -679,6 +717,8 @@ export class HostedProvider implements ComputerProvider {
 		const first = await this.#converge(name, ref.id, signal);
 		if (first.ok && first.value !== undefined && first.value.id !== ref.id) return this.#again(spec, name, first.value, signal);
 		const prepared = await this.#prepare(spec, ref, made, signal);
+		const given = this.#given.get(ref.id);
+		this.#given.delete(ref.id);
 		if (signal?.aborted) return this.#abandon(ref, { code: "aborted", message: "create was aborted" }, signal);
 		if (!prepared.ok) {
 			// A create of this request on another instance, whose machine is older, deletes this one under it: answer that one.
@@ -694,7 +734,22 @@ export class HostedProvider implements ComputerProvider {
 		const last = await this.#converge(name, ref.id, signal);
 		if (!last.ok) return this.#abandon(ref, last.error, signal, true);
 		if (last.value !== undefined && last.value.id !== ref.id) return this.#again(spec, name, last.value, signal);
-		return ok(prepared.value.length > 0 ? { ...ref, notes: prepared.value } : ref);
+		return ok({ ...ref, ...(prepared.value.length > 0 ? { notes: prepared.value } : {}), ...(given === undefined ? {} : { resources: given }) });
+	}
+
+	/**
+	 * The computer create kept for this name while the listing left it out (#keptUnlisted), read by its id now: undefined
+	 * when there is none, or the read finds it gone or not this name's (the entry then goes). A read that fails fails the
+	 * create, the entry kept: a retry never asks the vendor for a second computer while the first may still be up.
+	 */
+	async #keptOf(name: string, signal?: AbortSignal): Promise<Result<Machine | undefined>> {
+		const id = this.#keptUnlisted.get(name);
+		if (id === undefined) return ok(undefined);
+		const read = await this.#get(id, signal);
+		if (!read.ok) return this.#fail(read.error.code, `${name} (machine ${id}), which create kept while the listing left it out, could not be read, so no second computer is made: ${read.error.message}`);
+		if (read.value !== undefined && ours(read.value.labels, name) && alive(read.value.state)) return ok(read.value);
+		this.#keptUnlisted.delete(name);
+		return ok(undefined);
 	}
 
 	/**
@@ -745,7 +800,9 @@ export class HostedProvider implements ComputerProvider {
 				// shows a drift in a size.
 				const drift = attached.ok ? readBackDiffer({ ...spec, network: networkOfForm(formOf(spec.network)) as NetworkSpec, user: this.#userOf(spec) }, attached.value.spec, ["user", "network", "gpu"]) : [];
 				if (drift.length > 0) return this.#fail("exists", otherSpecWords(name, "was made", drift));
-				if (attached.ok) return ok({ id: attached.value.id, name: attached.value.name, ...(attached.value.notes ? { notes: attached.value.notes } : {}) });
+				// What the vendor gave it, from this read of it running, as a fresh create answers it (#prepare): a retry, or
+				// another instance's computer adopted, is priced by the same figures.
+				if (attached.ok) return ok({ id: attached.value.id, name: attached.value.name, ...(attached.value.notes ? { notes: attached.value.notes } : {}), ...(machine.resources ? { resources: machine.resources } : {}) });
 				if (attached.error.code === "aborted") return attached;
 				// Its daemon is not up yet, or not yet as declared (a desktop whose display the first create is still
 				// starting): the first create is still making it. A refusal that holds past createMs is exists.
@@ -804,6 +861,8 @@ export class HostedProvider implements ComputerProvider {
 		if ("problem" in stored) return this.#fail("refused", `labels: ${stored.problem}`);
 		const archil = spec.mount?.kind === "archil";
 		const user = this.#userOf(spec);
+		// A desktop whose host runs a window manager has computerd start it (init --window-manager).
+		const windowManager = this.#desktop !== undefined && this.host.facts.windowManager === true;
 		const commands = hostedCommands({
 			staging: `${STAGING}${randomBytes(8).toString("hex")}`,
 			deadline,
@@ -820,10 +879,11 @@ export class HostedProvider implements ComputerProvider {
 			network: formOf(spec.network),
 			// A synced folder's /workspace, the computer's user's, made by install before init.
 			workspace: spec.mount?.kind === "sync",
+			windowManager,
 		});
 		const backstopAt = new Date(now + this.#maxLifetimeMs + BACKSTOP_MARGIN_MS).toISOString();
 		const run = spec.labels?.[RUN_LABEL];
-		const boot = this.#dialing ? await this.#boot(name, backstopAt, { deadline, user, maxDeadline, network: formOf(spec.network) }, sha256, typeof run === "string" ? run : undefined) : undefined;
+		const boot = this.#dialing ? await this.#boot(name, backstopAt, { deadline, user, maxDeadline, network: formOf(spec.network), windowManager }, sha256, typeof run === "string" ? run : undefined) : undefined;
 		if (boot !== undefined && !boot.ok) return boot;
 		const request: MachineRequest = {
 			name,
@@ -887,6 +947,8 @@ export class HostedProvider implements ComputerProvider {
 			AGENTRUN_INIT_ARGS: initFlags(init).join(" "),
 			// A desktop's init gets its display as the exec path's start gives it: DISPLAY, which agentrun-dial passes on.
 			...(this.#desktop === undefined ? {} : { DISPLAY: this.#desktop.display }),
+			// The relay the machine reaches this server through: agentrun-dial's fetch and computerd attach both dial it.
+			...(this.#attachEgress === undefined ? {} : { [ATTACH_EGRESS_ENV]: this.#attachEgress }),
 		});
 	}
 
@@ -985,6 +1047,7 @@ export class HostedProvider implements ComputerProvider {
 		const { uploadMs, execMs } = this.#timeouts;
 		const running = await this.#running(ref, signal);
 		if (!running.ok) return running;
+		if (running.value.resources !== undefined) this.#given.set(ref.id, running.value.resources);
 		const drift = this.#machineDrift(running.value, labels);
 		if (drift.length > 0) return this.#fail("refused", `it did not match its spec: ${drift.join("; ")}`);
 		const gpu = spec.gpu !== undefined;
@@ -1068,7 +1131,7 @@ export class HostedProvider implements ComputerProvider {
 			await opened.value.close();
 		}
 		const listed = await this.#waitListed(ref, signal);
-		return listed.ok ? ok([...closed, ...notes]) : listed;
+		return listed.ok ? ok([...closed, ...notes, ...listed.value]) : listed;
 	}
 
 	/** What init wrote to its log (child) or the vendor's words of the machine (pid1): the end of it, or nothing. */
@@ -1102,7 +1165,7 @@ export class HostedProvider implements ComputerProvider {
 	): Promise<Result<string[]> & { mount?: MountReadBack; user?: string }> {
 		let current = connection;
 		if (starting && this.#desktop) {
-			const shown = await startDisplay(connection.client, this.#desktop, { version: VERSION, vendor: this.id, signal, windowManager: this.host.facts.windowManager === true });
+			const shown = await startDisplay(connection.client, this.#desktop, { version: VERSION, vendor: this.id, signal });
 			if (!shown.ok) return shown;
 			const hello = await connection.client.call("hello", { client: `@parcha/agentrun-computer ${VERSION}` }, { signal: bounded(this.#timeouts.helloMs, signal) });
 			if (!hello.ok) return hello.error.code === "aborted" && !signal?.aborted ? this.#fail("timeout", `the daemon in ${name} did not answer hello within ${seconds(this.#timeouts.helloMs)}`) : hello;
@@ -1203,7 +1266,8 @@ export class HostedProvider implements ComputerProvider {
 			if (left <= 0) {
 				const dialed = this.#dialed();
 				const to = "problem" in dialed ? "this server" : dialed.attach;
-				return this.#fail("timeout", `${ref.name} did not dial ${to} within ${seconds(createMs)}: the machine must reach that address, and run agentrun-dial (the box image's entrypoint while AGENTRUN_ATTACH_URL is set)`);
+				const through = this.#attachEgress === undefined ? "" : ` through ${this.#attachEgress}`;
+				return this.#fail("timeout", `${ref.name} did not dial ${to}${through} within ${seconds(createMs)}: the machine must reach that address, and run agentrun-dial (the box image's entrypoint while AGENTRUN_ATTACH_URL is set, or the provider's own start of it)${await this.#dialWords(ref, signal)}`);
 			}
 			const polled = pause(Math.min(this.#startPollMs(), left), signal).then(() => false as const);
 			reading ??= this.#dialRefused(ref.name, Math.min(requestMs, left), signal);
@@ -1215,6 +1279,22 @@ export class HostedProvider implements ComputerProvider {
 			}
 			if (signal?.aborted) return this.#fail("aborted", `create was aborted while it waited for ${ref.name} to dial`);
 		}
+	}
+
+	/**
+	 * A dial timeout's last words: what the host's dialLog read of agentrun-dial, every machine token replaced by
+	 * `<token>`, its last DIAL_LOG_LINES lines within DIAL_LOG_CHARS characters, or that it never started. Nothing for a
+	 * host without dialLog, or a read that fails, outlasts requestMs or is cut by the create's signal, so a cancel never
+	 * waits on it.
+	 */
+	async #dialWords(ref: ComputerRef, signal?: AbortSignal): Promise<string> {
+		const { dialLog } = this.host;
+		if (dialLog === undefined) return "";
+		const read = await this.#call(`the dial log of ${ref.name}`, (ctx) => dialLog.call(this.host, ref.id, ctx), this.#timeouts.requestMs, signal);
+		if (!read.ok) return "";
+		if (read.value === undefined) return "; agentrun-dial never started";
+		const lines = read.value.replaceAll(MACHINE_TOKEN, "<token>").split(/\r?\n/).map((line) => line.trim()).filter((line) => line !== "");
+		return lines.length === 0 ? "; agentrun-dial wrote nothing" : `; agentrun-dial said: ${lines.slice(-DIAL_LOG_LINES).join(" | ").slice(-DIAL_LOG_CHARS)}`;
 	}
 
 	/**
@@ -1267,23 +1347,46 @@ export class HostedProvider implements ComputerProvider {
 	 * Create waits until the listing shows the new computer on two consecutive polls at least listedStableMs apart (and on
 	 * every poll between), so list() shows it once create returns: a listing that showed it once and then not starts over.
 	 * The polls are 150 ms apart at first, the pause doubling up to pollMs, so a vendor slow to list costs a few calls.
+	 * A listing that has not settled by listedMs is no failure alone (#unlisted): the computer is read by its id.
 	 */
-	async #waitListed(ref: ComputerRef, signal?: AbortSignal): Promise<Result<void>> {
+	async #waitListed(ref: ComputerRef, signal?: AbortSignal): Promise<Result<string[]>> {
 		const { listedMs, listMs, pollMs, listedStableMs } = this.#timeouts;
-		const until = Date.now() + listedMs;
+		const began = Date.now();
+		const until = began + listedMs;
 		let since: number | undefined;
+		const seen = { polls: 0, shown: 0 };
 		for (let hits = 0, delay = Math.min(LISTED_POLL_MS, pollMs); ; delay = Math.min(delay * 2, pollMs)) {
 			const listed = await listedBy(this.host, "the listing by name", byName(ref.name), listMs, signal);
 			if (!listed.ok) return listed;
+			seen.polls += 1;
 			if (listed.value.some((machine) => machine.id === ref.id)) {
 				hits += 1;
+				seen.shown += 1;
 				since ??= Date.now();
 			} else [hits, since] = [0, undefined];
-			if (hits >= LISTED_ROUNDS && since !== undefined && Date.now() - since >= listedStableMs) return ok(undefined);
-			if (Date.now() >= until) return this.#fail("timeout", `the computer was not listed within ${seconds(listedMs)} of its creation`);
+			if (hits >= LISTED_ROUNDS && since !== undefined && Date.now() - since >= listedStableMs) return ok([]);
+			if (Date.now() >= until) return this.#unlisted(ref, { ...seen, ms: Date.now() - began }, signal);
 			await pause(Math.min(delay, until - Date.now()), signal);
 			if (signal?.aborted) return this.#fail("aborted", "create was aborted while it waited for the listing");
 		}
+	}
+
+	/**
+	 * A new computer the listing did not show twice in a row within listedMs, read by its id: one that reads running and
+	 * carries its labels is kept, the note saying so (create already reached its daemon and checked it from inside, so only
+	 * the vendor's listing lags; list() leaves it out until that listing shows it). Any other answer, or a read that fails,
+	 * is a timeout naming the labels asked for, the machine, the polls and the time waited.
+	 */
+	async #unlisted(ref: ComputerRef, seen: { polls: number; shown: number; ms: number }, signal?: AbortSignal): Promise<Result<string[]>> {
+		const asked = Object.entries(byName(ref.name)).map(([key, value]) => `${key}=${value}`).join(", ");
+		const what = `the listing by the labels ${asked} did not show ${ref.name} (machine ${ref.id}) on ${LISTED_ROUNDS} polls in a row within ${seconds(this.#timeouts.listedMs)} (${seen.polls} polls in ${seconds(seen.ms)}, ${seen.shown} of them showed it)`;
+		const read = await this.#own(ref, signal);
+		if (signal?.aborted) return this.#fail("aborted", "create was aborted while it waited for the listing");
+		if (read.ok && read.value.state === "running") {
+			this.#keptUnlisted.set(ref.name, ref.id);
+			return ok([`${what}; a read by its id finds it running with its labels, so it is kept: the vendor's listing trails its create, and list() leaves the computer out until it shows it`]);
+		}
+		return this.#fail("timeout", `${what}; ${read.ok ? `a read by its id finds it ${read.value.state}` : `a read by its id: ${read.error.message}`}`);
 	}
 
 	/** This provider's machine for ref, as the vendor reads it, or why not. */
@@ -1563,6 +1666,7 @@ export class HostedProvider implements ComputerProvider {
 		if (how === "detach") return this.#fail("unsupported", `the ${this.#label} provider keeps no computer for an agent (it declares no persistence), so release detach is refused: release it with delete`);
 		if (how === "stop") return this.#fail("unsupported", `${a(this.#label)} computer is deleted, never stopped and kept: release it with delete`);
 		if (how !== "delete") return this.#fail("invalid", `release is "delete", not ${String(how)}`);
+		if (this.#keptUnlisted.get(ref.name) === ref.id) this.#keptUnlisted.delete(ref.name);
 		const found = await this.#get(ref.id);
 		if (!found.ok) return found;
 		if (found.value === undefined) {

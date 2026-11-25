@@ -60,7 +60,7 @@ test("a claim moves the run's epoch up by one and holds it running until claimed
   await queued(store);
   assert.deepEqual(await store.runs.get("run-1").then((run) => [run.state, run.epoch, run.runner]), ["queued", 0, null]);
   const claim = await store.claim("run-1", "runner-a", { leaseMs: 30_000 });
-  assert.deepEqual(claim, { runId: "run-1", runner: "runner-a", epoch: 1, until: clock.now + 30_000, from: "queued" });
+  assert.deepEqual(claim, { runId: "run-1", runner: "runner-a", epoch: 1, until: clock.now + 30_000, from: "queued", turn: 1, attempt: 1 }, "the run's first turn, its first attempt (run_attempts)");
   const run = await store.runs.get("run-1");
   assert.deepEqual([run.state, run.epoch, run.runner, run.claimedUntil], ["running", 1, "runner-a", clock.now + 30_000]);
   assert.equal(await store.claim("run-1", "runner-b", { leaseMs: 30_000 }), null, "a live claim is not taken");

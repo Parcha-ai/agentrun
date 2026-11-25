@@ -1,5 +1,6 @@
+import { cliRunOf, cliRunLabel } from "@/lib/cliLearning";
 import { Archive, ArchiveRestore, ArrowLeft, Ban, CircleDollarSign, Square } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { agentHash } from "@/components/AgentPage";
 import { LearningChips } from "@/components/LearningChips";
 import { RunKind } from "@/components/RunKind";
@@ -14,7 +15,8 @@ import { goBack } from "@/lib/back";
 import { ManageUsage } from "@/components/ChatGPTSignIn";
 import { basisNote, costOfCap, planNoDollars, planOf, runEnded, runLabel, soFar, soFarNote, tokensWords, when, runTitle } from "@/lib/format";
 import { NO_MESSAGES, runState } from "@/lib/runState";
-import type { RaiseAnswer, Run } from "@/lib/v2";
+import type { RaiseAnswer, Run, RunUsage } from "@/lib/v2";
+import { modelLabel, runModel } from "@/lib/models";
 import { runPlaceWords } from "@/lib/place";
 import { backendSdkLabel, backendSdkOf } from "@/lib/backendSdk";
 
@@ -42,12 +44,15 @@ const TOKENS_TITLE = "The run's model requests' tokens, as the provider or gatew
  *  Archive hides the run from the runs list and keeps it; the server takes it in any state, as serve's own page offers it. */
 /** `raiseBelow`: the page already shows a raise form for this run (a run paused at its cap, under its banner). The header's
  *  Raise the cap button then takes the person to that form instead of opening a second one above it. */
-export function RunHeader({ run, agentName, actions = {}, costText, raiseBelow }: { run: Run; agentName: string; actions?: RunActions; costText?: string; raiseBelow?: () => void }) {
+/** `readUsage`: reads the run's cost line by line (GET /v2/runs/{id}/usage), where the header finds the model an agentic run
+ *  ran on (runModel): read again as its requests grow, so a run on the host's default model names it too. */
+export function RunHeader({ run, agentName, actions = {}, costText, raiseBelow, readUsage }: { run: Run; agentName: string; actions?: RunActions; costText?: string; raiseBelow?: () => void; readUsage?: () => Promise<RunUsage> }) {
   // Where it ran, as its start resolved it.
   const sdk = backendSdkOf(run);
-  const ranIn = sdk ? "your backend" : runPlaceWords(run.place);
+  const cli = cliRunOf(run);
+  const ranIn = cli ? "your CLI" : sdk ? "your backend" : runPlaceWords(run.place);
   const state = runState(run.status, run.state, run.kind, NO_MESSAGES, true, run.error, run.review, run.computer);
-  const view = sdk ? { ...state, canStop: false, canCancel: false } : state;
+  const view = sdk || cli ? { ...state, canStop: false, canCancel: false } : state;
   const [confirming, setConfirming] = useState(false);
   const archived = !!run.archived_at;
   // A capped run that has not ended, agentic or workflow, takes a raise here too, so a working one is raised before it pauses.
@@ -55,7 +60,8 @@ export function RunHeader({ run, agentName, actions = {}, costText, raiseBelow }
   // A run that waits on the person for something other than its cap (its served `pending`: an approval, a question, its
   // browser or computer) is not held by its cap: a raise changes nothing it waits on, so none is offered there.
   const waitsOnOther = !!run.pending && run.pending.kind !== "budget" && run.pending.kind !== "stopped";
-  const raisable = !sdk && !!actions.onRaiseCap && !view.final && typeof cap === "number" && !waitsOnOther;
+  const model = useRunModel(run, readUsage, !sdk && !cli && run.kind !== "workflow", view.final);
+  const raisable = !sdk && !cli && !!actions.onRaiseCap && !view.final && typeof cap === "number" && !waitsOnOther;
   const [raising, setRaising] = useState(false);
   const budget = run.pending?.kind === "budget" ? run.pending : null;
   const onPlan = !!planOf(run.cost);
@@ -87,7 +93,9 @@ export function RunHeader({ run, agentName, actions = {}, costText, raiseBelow }
             {archived && <Chip tone="muted">Archived</Chip>}
             {run.approvals === "never" && <Chip tone="warning" title="This run's agent never asks: no call of it waits for you.">Unattended</Chip>}
             <span className="font-mono"><RunKind run={run} named /> · rev {run.agent_version}{ranIn && ` · ${ranIn}`}</span>
-            {sdk && <span className="font-mono">{backendSdkLabel(sdk.runtime)} · {run.sdk?.model ?? "Model not reported"}</span>}
+            {model && <span className="font-mono" data-run-model title={modelLabel(model, null).title}>{modelLabel(model, null).text}</span>}
+            {cli && <span className="font-mono">{cliRunLabel(cli.runtime)} · {cli.model ?? "Model not reported"}</span>}
+            {sdk && <span className="font-mono">{backendSdkLabel(sdk)} · {run.sdk?.model ?? "Model not reported"}</span>}
             <span className="font-mono">{when(run.created_at)}</span>
             {/* A workflow run's cost is its graph's totals (`costText`), the same the totals bar shows. Beside it, the run's
                 spend cap when it has one, as the run is read now (a raise reads the run again, so the new cap shows). */}
@@ -143,4 +151,23 @@ export function RunHeader({ run, agentName, actions = {}, costText, raiseBelow }
       </div>
     </header>
   );
+}
+
+/** The model `run` ran on (runModel), read with `read` once it has made a request, again each time its count grows and once
+ *  more when it ends (`final`); undefined before that, where `on` is false (a workflow's, a CLI's or an SDK's run, which
+ *  say theirs elsewhere), and where the read fails. */
+function useRunModel(run: Run, read: (() => Promise<RunUsage>) | undefined, on: boolean, final: boolean): string | undefined {
+  const [model, setModel] = useState<string>();
+  const requests = run.cost?.tokens?.requests ?? 0;
+  // The page makes a new `read` at each render: the latest is kept, and only a new run or request count reads again, or
+  // the run's end (`final`): a read while it works can find no lines yet, and the end brings no new request.
+  const reader = useRef(read);
+  reader.current = read;
+  useEffect(() => {
+    if (!on || !reader.current || requests === 0) return;
+    let live = true;
+    reader.current().then((usage) => { if (live) setModel(runModel(usage)); }, () => {});
+    return () => { live = false; };
+  }, [run.run_id, requests, on, final]);
+  return on ? model : undefined;
 }

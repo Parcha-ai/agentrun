@@ -24,12 +24,14 @@ import type { Rect, UiFlag, UiRole, UiRoute } from "../protocol.js";
 
 /**
  * What pressing an element does, `after` ms later: go opens a screen in its window (through a transition of
- * animateMs), open opens a new window of the app on that screen, in front, and close closes the window it is in.
+ * animateMs), open opens a new window of the app on that screen, in front, close closes the window it is in, and launch
+ * brings another installed app in front, as a phone's press that opens another package's page does.
  */
 export interface FakeEffect {
 	go?: string;
 	open?: string;
 	close?: true;
+	launch?: string;
 	after?: number;
 	animateMs?: number;
 }

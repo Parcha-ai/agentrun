@@ -14,8 +14,8 @@ import { queued, storeOn, T0 } from "./store-helpers.mjs";
 import { raw, sqliteOnly } from "./store-target.mjs";
 
 const TABLES = [
-  "agents", "channel_attempts", "channel_posts", "channel_told", "commands", "computer_ledger", "computer_viewers", "idempotency", "imported_templates", "learning", "learning_proposals", "mcp_oauth_pending",
-  "mcp_servers", "minted_tokens", "paired_computers", "pairing_codes", "review_ledger", "revisions", "run_changes", "run_launch", "run_live", "run_origins", "runners", "runs", "sealed_keys", "settings", "sign_in_tombstones", "sign_ins", "store_meta",
+  "agents", "channel_attempts", "channel_posts", "channel_told", "commands", "computer_intervals", "computer_ledger", "computer_viewers", "hand_backs", "idempotency", "imported_templates", "learning", "learning_ledger", "learning_proposals", "learning_spend", "mcp_oauth_pending",
+  "mcp_servers", "minted_tokens", "paired_computers", "pairing_codes", "review_ledger", "revisions", "run_attempts", "run_changes", "run_launch", "run_live", "run_origins", "runners", "runs", "sealed_keys", "settings", "sign_in_tombstones", "sign_ins", "store_meta",
   "trigger_conversations", "trigger_firings", "trigger_scopes", "trigger_settings", "triggers",
 ];
 
@@ -171,6 +171,75 @@ test("the computer ledger is STRICT, its labels and detail JSON and its time INT
   // A restart: a new store over the same file still lists the session.
   const again = await storeOn(t, { file });
   assert.deepEqual((await again.store.computerLedger.list("phone-harness")).map((row) => [row.sessionId, row.labels]), [["sess-a", { "agentrun.run": "run-1" }]]);
+});
+
+test("a run's computer intervals: opened once, kept, ended once and never moved, read by run in the order they were made", async (t) => {
+  const { store } = await storeOn(t);
+  const at = (minutes) => T0 + minutes * 60_000;
+  const none = { gpuType: null, gpuCount: null, cpus: null, memoryMb: null, diskGb: null };
+  await store.computerIntervals.opened({ runId: "run-1", provider: "e2b", providerId: "sbx-b", kind: "sandbox", ...none, startedAt: at(5) });
+  await store.computerIntervals.opened({ runId: "run-1", provider: "daytona", providerId: "gpu-1", kind: "sandbox", gpuType: "H100", gpuCount: 1, cpus: 4, memoryMb: 8192, diskGb: 10, startedAt: at(1) });
+  await store.computerIntervals.opened({ runId: "run-2", provider: "e2b", providerId: "sbx-c", kind: "desktop", ...none, startedAt: at(2) });
+  // A retried create answers the computer it made: its second opened changes nothing, its time and run included.
+  await store.computerIntervals.opened({ runId: "run-9", provider: "e2b", providerId: "sbx-b", kind: "phone", ...none, startedAt: at(9) });
+  await store.computerIntervals.kept("e2b", "sbx-b");
+  await store.computerIntervals.ended("e2b", "sbx-b", at(20));
+  // A second delete's ok never moves the end; an end of a computer with no row writes none.
+  await store.computerIntervals.ended("e2b", "sbx-b", at(30));
+  await store.computerIntervals.ended("e2b", "sbx-none", at(30));
+  assert.deepEqual(await store.computerIntervals.forRun("run-1"), [
+    { runId: "run-1", provider: "daytona", providerId: "gpu-1", kind: "sandbox", gpuType: "H100", gpuCount: 1, cpus: 4, memoryMb: 8192, diskGb: 10, startedAt: at(1), kept: false, endedAt: null, bookedMs: 0 },
+    { runId: "run-1", provider: "e2b", providerId: "sbx-b", kind: "sandbox", ...none, startedAt: at(5), kept: true, endedAt: at(20), bookedMs: 0 },
+  ]);
+  assert.deepEqual((await store.computerIntervals.forRun("run-2")).map((row) => [row.providerId, row.endedAt]), [["sbx-c", null]], "another run's own");
+  assert.deepEqual(await store.computerIntervals.forRun("run-9"), [], "the ignored second opened made no row of its run");
+  // Read inside a snapshot, as the usage read does.
+  assert.equal((await store.snapshot((snapshot) => snapshot.computerIntervals.forRun("run-1"))).length, 2);
+});
+
+test("a computer's booked time adds up, by whole ms above 0 alone, and a computer with no row gets none", async (t) => {
+  const { store } = await storeOn(t);
+  await store.computerIntervals.opened({ runId: "run-1", provider: "e2b", providerId: "sbx-a", kind: "sandbox", gpuType: null, gpuCount: null, cpus: 2, memoryMb: 512, diskGb: null, startedAt: T0 });
+  await store.computerIntervals.booked("e2b", "sbx-a", 300_000);
+  await store.computerIntervals.booked("e2b", "sbx-a", 45_500);
+  for (const ignored of [0, -5, 1.5, Number.NaN]) await store.computerIntervals.booked("e2b", "sbx-a", ignored);
+  await store.computerIntervals.booked("e2b", "sbx-none", 1_000);
+  assert.deepEqual((await store.computerIntervals.forRun("run-1")).map((row) => row.bookedMs), [345_500]);
+});
+
+test("a computer_intervals an earlier build made, with no disk or booked time, gets both at the server's open: its rows' disk unknown and none booked", sqliteOnly("an earlier build's store file"), async (t) => {
+  const { store, file } = await storeOn(t);
+  await store.computerIntervals.opened({ runId: "run-1", provider: "e2b", providerId: "sbx-a", kind: "sandbox", gpuType: null, gpuCount: null, cpus: 2, memoryMb: 512, diskGb: 4, startedAt: T0 });
+  await store.flush();
+  await store.close();
+  const db = await raw(file);
+  try {
+    await db.run("ALTER TABLE computer_intervals DROP COLUMN disk_gb");
+    await db.run("ALTER TABLE computer_intervals DROP COLUMN booked_ms");
+  } finally {
+    await db.close();
+  }
+  const again = await storeOn(t, { file });
+  await again.store.computerIntervals.booked("e2b", "sbx-a", 1_000);
+  assert.deepEqual((await again.store.computerIntervals.forRun("run-1")).map((row) => [row.diskGb, row.bookedMs]), [[null, 1_000]]);
+});
+
+test("computer_intervals is STRICT (SQLite), keyed by provider and its id, and outlives the store that wrote it", async (t) => {
+  const { store, file } = await storeOn(t);
+  await store.computerIntervals.opened({ runId: "run-1", provider: "e2b", providerId: "sbx-a", kind: "sandbox", gpuType: null, gpuCount: null, cpus: null, memoryMb: null, diskGb: null, startedAt: T0 });
+  await store.flush();
+  await store.close();
+  const db = await raw(file);
+  try {
+    if (db.kind === "sqlite") assert.match((await db.get("SELECT sql FROM sqlite_schema WHERE name = 'computer_intervals'")).sql, /\)\s*STRICT$/);
+    await assert.rejects(db.run("INSERT INTO computer_intervals (provider, provider_id, run_id, started_at) VALUES ('e2b', 'sbx-a', 'run-2', 1)"), /UNIQUE|duplicate key/);
+    await assert.rejects(db.run("INSERT INTO computer_intervals (provider, provider_id, run_id, started_at, kept) VALUES ('e2b', 'sbx-z', 'run-2', 1, 2)"), /CHECK|check constraint/);
+    await assert.rejects(db.run("INSERT INTO computer_intervals (provider, provider_id, run_id, started_at, booked_ms) VALUES ('e2b', 'sbx-y', 'run-2', 1, -1)"), /CHECK|check constraint/);
+  } finally {
+    await db.close();
+  }
+  const again = await storeOn(t, { file });
+  assert.deepEqual((await again.store.computerIntervals.forRun("run-1")).map((row) => [row.provider, row.providerId, row.startedAt, row.endedAt]), [["e2b", "sbx-a", T0, null]]);
 });
 
 test("a store an earlier build left with two answers to one approval opens: the earliest stands, each later one is refused (never deleted), and a refused answer holds no place in the index", sqliteOnly("an earlier build's store file"), async (t) => {
