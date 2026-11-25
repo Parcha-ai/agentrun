@@ -311,6 +311,30 @@ test("serve: steps are computer calls: one script of six calls is six steps and 
 	}
 });
 
+test("serve: the agent's steps are timed from the run's start, as the bench's own are: after setup, before the checks", async () => {
+	// Twenty polls before the hold is ready: setup starts well after the run's start, so a step timed from the agent's
+	// start instead would land before it.
+	const serve = await fakeServe({ agents: { six }, holdPolls: 20 });
+	try {
+		const s = store();
+		const backend = withTask(serveBackend({ baseUrl: serve.baseUrl, token: TOKEN, pollMs: 5 }), serve);
+		const [result] = await runBench({ tasks: fakeTasks("fake.settings.dark-theme"), arms: [arm("six", "six", "code")], seeds: [1], backend, store: s, grade: "never" });
+		const steps = recordOf(s, result.run).filter((entry) => entry.kind === ENTRY.step).map((entry) => entry.data);
+		const setup = steps.filter((step) => step.phase === "setup");
+		const agent = steps.filter((step) => step.phase === "agent" || step.phase === "tool");
+		const checks = steps.filter((step) => step.phase === "check");
+		// The search, the script's six calls, and the script's own row.
+		assert.ok(setup.length > 0 && agent.length === 8 && checks.length > 0,JSON.stringify(steps.map((step) => step.phase)));
+		const setupEnd = Math.max(...setup.map((step) => step.t_ms + step.ms));
+		for (const step of agent) {
+			assert.ok(step.t_ms >= setupEnd, `${step.phase} ${step.method} at ${step.t_ms} ms, before setup ended at ${setupEnd} ms`);
+			assert.ok(step.t_ms <= Math.min(...checks.map((check) => check.t_ms)), `${step.phase} ${step.method} at ${step.t_ms} ms, after the checks began`);
+		}
+	} finally {
+		await serve.close();
+	}
+});
+
 test("serve: a code-mode agent's computer calls, each on its own row under its script as serve writes them, are its steps, and the report's median says so", async () => {
 	const fixture = JSON.parse(readFileSync(join(import.meta.dirname, "fixtures", "serve-codemode-timeline.json"), "utf8"));
 	const serve = await fakeServe({ replay: fixture.rows });
