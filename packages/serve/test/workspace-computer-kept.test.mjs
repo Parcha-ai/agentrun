@@ -482,7 +482,8 @@ test("Mode 2, a resume that took the parked desktop and its mount credential par
   for (let turn = 0; turn < 10; turn += 1) await new Promise((done) => setImmediate(done));
   assert.deepEqual(deletes(one.account), ["c1"], "the timer deleted it");
   const row = await readKept(one.store.settings, "run-1");
-  assert.deepEqual([row?.epoch, row?.ending, row?.ended], [5, true, undefined], "left ending: the janitor's to finish");
+  // The epoch its labels carry: the claim that made it, so the janitor's remove reaches the credential taken on.
+  assert.deepEqual([row?.epoch, row?.ending, row?.ended], [3, true, undefined], "left ending: the janitor's to finish");
   refuse = false;
   one.clock.now = T0 + 1 + KEEP_MS;
   const swept = await one.janitor();
