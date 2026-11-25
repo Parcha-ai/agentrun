@@ -274,8 +274,12 @@ test('a call announced with no input, named by nothing, never wakes a waiting MC
   calls.announceCall(ids, { toolCallId: 'native', title: 'Thinking', kind: 'think' }, undefined, TOOLS);
   calls.announceCall(ids, { toolCallId: 'own', title: 'Lookup', kind: 'other', rawInput: { q: 'acme' } }, undefined, TOOLS);
   assert.equal(await waiting, 'own');
-  // Nothing else came: the bare one is taken when the wait is over.
+  // Already there: a later MCP call that nothing else matches takes the bare one at once.
   assert.equal(await ids.take('look_up', { q: 'other' }, signal, 1), 'native');
+  // Announced during a wait that nothing else ends: taken when the wait is over (loose), not before.
+  const late = ids.take('look_up', { q: 'late' }, signal, 1);
+  calls.announceCall(ids, { toolCallId: 'native_2', title: 'Thinking', kind: 'think' }, undefined, TOOLS);
+  assert.equal(await late, 'native_2');
 });
 
 test('a bare announcement whose call ended is dropped: a later MCP call never takes the id of an agent call that is over', async () => {
