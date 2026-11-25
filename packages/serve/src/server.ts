@@ -3693,8 +3693,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
 
   /** POST /agents' body made into its agent, as that route makes one, with what this host still lacks for it. A new agent
    *  that names no place is given this server's box (place.ts defaultPlaceOf), stamped on its revision, when it names no
-   *  tools (it gets bash) or a tool that needs a shell, and refused where Docker's box is not here (saveable); one whose
-   *  tools need none, or that names a tool the box refuses (browser), keeps the runner. */
+   *  tools (it gets bash) or a tool that needs a shell, and refused where Docker's box is not here and the runner has no
+   *  shell (saveable); one whose tools need none, or that names a tool the box refuses (browser), keeps the runner. */
   async function createAgentOf(body: Json, template?: TemplatePackage): Promise<{ entry: AgentEntry; warnings: InputIssue[] }> {
     let warnings: InputIssue[] = [];
     const definition = checkDefinitionBody(body, { harnesses });
@@ -3702,7 +3702,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const place = fallbackPlace("agentic", definition.definition.tools === undefined ? NEW_AGENT_TOOLS : named);
     const tools = defaultToolsAt(place);
     const entry = await agents.create(definition, async (revision) => {
-      const saved = await saveable(revision, null, { toolsUnnamed: definition.definition.tools === undefined });
+      // A template's apply has compiled its tools where it runs already (applyWith's defaultTools: a box's shell tools only
+      // where Docker's box is here), so its definition is checked by the tools it names.
+      const saved = await saveable(revision, null, { toolsUnnamed: !template && definition.definition.tools === undefined });
       warnings = saved.warnings;
       return saved.stamp;
     }, place.mode === "sandbox" && tools ? { place, tools } : undefined, template);
