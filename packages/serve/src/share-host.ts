@@ -314,7 +314,8 @@ export async function screenShare(text: string, held: readonly string[], cutPass
   for (const place of places) {
     if (!place.value) continue;
     const path = pathOf(place.at);
-    const read = path === undefined ? place.value : JSON.stringify([path, place.value]);
+    // Every read is keyed by its path (or null) and its text, so no text spells another read's key.
+    const read = JSON.stringify([path ?? null, place.value]);
     let cuts = byValue.get(read);
     if (!cuts) byValue.set(read, (cuts = await pass(place.value, path)));
     for (const cut of cuts) {
