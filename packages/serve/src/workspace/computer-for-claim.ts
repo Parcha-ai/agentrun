@@ -57,7 +57,7 @@ import { type AgentComputerHold, agentComputerOf, forgetAgentComputer, holdAgent
 import type { MountCheck } from "./attach.js";
 import { type AttachedComputers, pairedProvider, withPaired } from "./attached-computers.js";
 import { computerHold, type HeldComputer, heldHands } from "./computer-hold.js";
-import { endingDeletes, figuresOf, type IntervalWrites, intervalWrites } from "./computer-intervals.js";
+import { endingDeletes, figuresOf, type IntervalWrites, intervalWrites, stderrLog } from "./computer-intervals.js";
 import { type ComputeLedger, type ComputeMeter, computeMeter, type ComputeMeterOptions } from "../compute-cost.js";
 import { bounded, deleteKept, endKept, KEEP_MS, KEPT_DELETE_MS, type Kept, keptBy, type KeptHolder, type ParkCause, type ParkedEnd, pinnedOf, readKept, takeKept, writeKept } from "./computer-kept.js";
 import { type ProviderLedger, storeLedger } from "./computer-ledger.js";
@@ -1370,12 +1370,13 @@ export async function computerForClaim(
       })();
       await released;
       // Its end at its time, by this process; the janitor's (computer-kept.ts sweepKept) whatever becomes of it. Either
-      // deletes it, a synced folder with no read-back.
+      // deletes it, a synced folder with no read-back. A delete or a mount revoke that fails leaves the row ending, said
+      // here: the janitor's next pass ends it again, the credential's remove with it.
       const timer = setTimeout(() => {
         void endKept(settings, launch.runId, row, async () => {
           if (await deleteKept(keeps.provider, ref)) await writes.ended(keeps.entry, ref.id);
-          await revoke().catch(() => undefined);
-        }).catch(() => undefined);
+          await revoke();
+        }).catch((error: unknown) => (deps.log ?? stderrLog)(`the ${keeps.kind} kept for run ${launch.runId} was left for the janitor's next pass: ${error instanceof Error ? error.message : String(error)}`));
       }, Math.max(0, row.until - now()));
       timer.unref?.();
       return true;
