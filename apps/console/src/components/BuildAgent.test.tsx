@@ -389,6 +389,16 @@ describe("Build agent page, the Tools step", () => {
     expect(host.querySelector<HTMLInputElement>('[data-tool-card="web_fetch"] input[type="checkbox"]')!.disabled, "an allowed tool still can").toBe(false);
   });
 
+  it("on a server with no default place, starts on neither the server nor a box and says so in its summary, until a place is picked", async () => {
+    await mountTools({ ...caps, places: { ...caps.places!, boxes: [{ id: "e2b", available: true }], defaultPlace: null } });
+    expect(toolsStep()?.textContent).toContain("None picked: it starts with no tools · No place yet: choose a box, or On the server");
+    await openTools();
+    const radio = (value: string) => host.querySelector<HTMLInputElement>(`input[name="place"][value="${value}"]`)!;
+    expect([radio("runner").checked, radio("sandbox").checked]).toEqual([false, false]);
+    await act(async () => radio("sandbox").click());
+    expect(toolsStep()?.textContent).toContain("In a e2b box");
+  });
+
   it("skipping the step keeps today's request: no tools picked, no place, the same prompt", async () => {
     await mountTools();
     typeBrief("Summarise the news.");

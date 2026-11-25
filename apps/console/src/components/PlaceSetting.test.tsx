@@ -95,3 +95,49 @@ describe("PlaceSetting, a server with no box it can run", () => {
     expect(host.textContent).toContain("fixture: docker isn't set up");
   });
 });
+
+// A server with no default place (capabilities' default_place null: no Docker box, and a runner with no shell): a new
+// agent starts on neither, and the person chooses a box or the server. The server refuses a create that names no place
+// and would get a box, so nothing is picked for it.
+describe("PlaceSetting, a server with no default place", () => {
+  const NONE: Places = { ...PLACES, boxes: [{ id: "modal", available: false, reason: "fixture: no modal" }, { id: "e2b", available: true }], defaultPlace: null };
+  const open = (props: { creating?: boolean; picked?: string[]; places?: Places }) => {
+    const changes: { place: Place; tools?: string[] }[] = [];
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    const render = (value?: Place) => act(() => root!.render(createElement(PlaceSetting, { value, saved: undefined, places: props.places ?? NONE, tools: TOOLS, picked: props.picked ?? ["read"], creating: props.creating, onChange: (p) => { changes.push(p); render(p.place); } })));
+    render(undefined);
+    const radio = (name: string, value: string) => host.querySelector(`input[name="${name}"][value="${value}"]`) as HTMLInputElement | null;
+    return { host, changes, radio };
+  };
+
+  it("a new agent starts on neither the server nor a box, and says to choose; a pick is what is sent", () => {
+    const { host, changes, radio } = open({ creating: true });
+    expect(radio("place", "runner")!.checked).toBe(false);
+    expect(radio("place", "sandbox")!.checked).toBe(false);
+    expect(radio("box", "e2b")).toBeNull();
+    expect(host.querySelector('[role="status"]')?.textContent).toBe("Choose where it runs: this server gives a new agent no place of its own.");
+    expect(host.textContent).not.toContain("runs on the server");
+    act(() => radio("place", "sandbox")!.click());
+    expect(changes.at(-1)).toEqual({ place: { mode: "sandbox", box: "e2b" } });
+    act(() => radio("place", "runner")!.click());
+    expect(changes.at(-1)).toEqual({ place: { mode: "runner" } });
+  });
+
+  it("with no box at all, a new agent starts on neither and says to set one up or choose the server", () => {
+    const bare: Places = { ...NONE, boxes: [{ id: "docker", available: false, reason: "fixture: docker isn't set up" }] };
+    const { host, radio } = open({ creating: true, places: bare });
+    expect(radio("place", "runner")!.checked).toBe(false);
+    expect(radio("place", "sandbox")!.disabled).toBe(true);
+    expect(host.textContent).toContain("No box is set up on this server: set one up for this agent, or choose On the server to run it without a shell.");
+  });
+
+  it("an agent saved with no place and a shell tool has none to run in here: neither is picked; one with no shell tool runs on the server, as the server runs it", () => {
+    const shell = open({ picked: ["read", "bash"] });
+    expect(shell.radio("place", "runner")!.checked).toBe(false);
+    expect(shell.radio("place", "sandbox")!.checked).toBe(false);
+    act(() => root?.unmount()); document.body.innerHTML = "";
+    const plain = open({ picked: ["read"] });
+    expect(plain.radio("place", "runner")!.checked).toBe(true);
+  });
+});
