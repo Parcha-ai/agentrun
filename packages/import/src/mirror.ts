@@ -7,11 +7,13 @@ import type { Answer } from "./types.js";
 /** A session as the rule names it: its source and its id. */
 export const sessionKey = (source: string, id: string): string => `${source}:${id}`;
 
-/** The rule over the sessions counted (each a sessionKey): whether a request is one of theirs, so not its own session's. */
+/** The rule over the sessions counted (each a sessionKey): whether a request is one of theirs, so not its own session's.
+ *  `kept` maps a session id as the request names it to the id the counted set holds it by, where the two differ (serve
+ *  keeps an id that holds a key as a hash of it). */
 export const mirroredIn =
-  (counted: ReadonlySet<string>) =>
+  (counted: ReadonlySet<string>, kept?: ReadonlyMap<string, string>) =>
   ({ mirrors }: Pick<Answer, "mirrors">): boolean =>
-    mirrors !== undefined && counted.has(sessionKey(mirrors.source, mirrors.sessionId));
+    mirrors !== undefined && counted.has(sessionKey(mirrors.source, kept?.get(mirrors.sessionId) ?? mirrors.sessionId));
 
 /** A session's own requests, those `mirrored` takes left out, and its cost of them: the cost it wrote when it holds none
  *  of another's, else its own requests' summed, unknown when one that used tokens is not priced. */

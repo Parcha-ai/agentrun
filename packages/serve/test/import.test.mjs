@@ -2426,6 +2426,28 @@ test("an OpenCode request run through Claude Code counts once when that Claude C
   assert.deepEqual([measured.metrics.requests, measured.metrics.input, measured.metrics.output], [2, 11, 2], "the dry run counts the same");
 });
 
+test("an OpenCode request run through a Claude Code session whose id is kept as a hash (it holds a key) still counts once, in the Claude Code run", async (t) => {
+  const root = await scratch(t);
+  const h = { at: join(root, "home"), temp: join(root, "tmp") };
+  const project = join(h.at, "code", "notes");
+  mkdirSync(project, { recursive: true });
+  claudeSession(h.at, project, 1);
+  openCodeDb(h.at, [{ id: "ses_K", cwd: project, answers: [{ input: 3, output: 2, cost: 0.5, mirrors: sessionId(1) }, { input: 6, output: 1, cost: 0.0625 }] }]);
+  // The session's id is one of this server's own secrets: the import keeps it as `redacted-` and a hash.
+  const keyed = (extra = {}) => options(h, { own: [sessionId(1)], ...extra });
+  const measured = (await planImport(keyed({ measure: true }))).found.find((f) => f.source === "opencode");
+  const store = await openData(join(root, "agents"));
+  t.after(async () => await store.close());
+  await runImport(store, await planImport(keyed()), keyed());
+  const runs = await rowsOf(store);
+  assert.match(runs.find((r) => r.importedFrom.source === "claude-code").importedFrom.session, /^redacted-[0-9a-f]{16}$/);
+  const run = runs.find((r) => r.importedFrom.source === "opencode");
+  const { metrics } = await metricsOf(store, run.id);
+  assert.deepEqual([metrics.requests, metrics.input, metrics.output], [1, 6, 1], "the mirrored request is the Claude Code run's alone");
+  assert.equal((await store.runs.get(run.id)).costUsd, 0.0625);
+  assert.deepEqual([measured.metrics.requests, measured.metrics.input, measured.metrics.output], [1, 6, 1], "the dry run counts the same");
+});
+
 test("an OpenCode request run through Claude Code counts nothing when the store holds that Claude Code session from an import before", async (t) => {
   const root = await scratch(t);
   const h = { at: join(root, "home"), temp: join(root, "tmp") };

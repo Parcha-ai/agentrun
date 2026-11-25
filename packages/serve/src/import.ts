@@ -247,7 +247,9 @@ export type ProjectPlan = {
  *  session's subagents, whose usage is its run's: Claude Code's by the locator (locatorKey) of the session file beside them, Codex's by `source:thread`. `untied`, those
  *  of subagents whose file names no parent, counted in a summary's totals alone. `found`: each other planned session measured,
  *  when the plan was made to (`measure`). `stopped`: `signal` ended the listing with session files still unlisted. */
-export type Plan = { projects: ProjectPlan[]; skipped: Skipped[]; already: number; held: string[]; children: Map<string, Locator[]>; untied: { locator: Locator; source: Source }[]; found?: Found[]; secretsFound?: number; stopped?: true };
+/** `mirrorIds`: each Claude Code session id a request names (`mirrors`) that the import keeps as another (a hash: it
+ *  holds a key), by the id as named: the mirror rule looks a request's session up by the id as kept. */
+export type Plan = { projects: ProjectPlan[]; skipped: Skipped[]; already: number; held: string[]; children: Map<string, Locator[]>; untied: { locator: Locator; source: Source }[]; mirrorIds?: Map<string, string>; found?: Found[]; secretsFound?: number; stopped?: true };
 export type ImportReport = {
   agents: {
     id: string;
@@ -597,7 +599,15 @@ export async function planImport({ home, sources = SOURCES, all = false, deleted
     }
     skipped.splice(0, skipped.length, ...ofChosen);
   }
-  const plan: Plan = { projects: [...projects.values()].filter((project) => !chosen || chosen.has(project.agentId)).sort((a, b) => a.cwd.localeCompare(b.cwd)), skipped, already, held, children, untied, ...(stopped ? { stopped: true } : {}) };
+  // Each Claude Code session a request names, by the id the import keeps it as, where that is another.
+  const mirrorIds = new Map<string, string>();
+  for (const project of projects.values())
+    for (const parts of byRun(project.sessions))
+      for (const { sessionId } of targetsOf(parts)) {
+        const kept = await idOf(sessionId, scan);
+        if (kept !== sessionId) mirrorIds.set(sessionId, kept);
+      }
+  const plan: Plan = { projects: [...projects.values()].filter((project) => !chosen || chosen.has(project.agentId)).sort((a, b) => a.cwd.localeCompare(b.cwd)), skipped, already, held, children, untied, ...(mirrorIds.size ? { mirrorIds } : {}), ...(stopped ? { stopped: true } : {}) };
   if (!measure) return plan;
   const counting = secretCut(env, SECRET_NAMES);
   // Every key the import would cut, found first, as the import finds it before it writes anything: then the counts.
@@ -914,7 +924,7 @@ const subagentMarks = (children: readonly Session[]): EntryLike[] =>
  *  run's cap, `large`), and each the store holds already. A request OpenCode ran through Claude Code is that Claude Code
  *  session's when either holds it. */
 const mirrorsOf = (plan: Plan, held: ReadonlyMap<string, string> = new Map(), large: ReadonlySet<string> = new Set()) =>
-  mirroredIn(new Set([...plan.projects.flatMap((project) => project.sessions.map((session) => sessionKey(session.source, session.id))).filter((key) => !large.has(key)), ...held.keys()]));
+  mirroredIn(new Set([...plan.projects.flatMap((project) => project.sessions.map((session) => sessionKey(session.source, session.id))).filter((key) => !large.has(key)), ...held.keys()]), plan.mirrorIds);
 
 /** A session as a run counts it, read whole: a turn whose request `mirrored` gives to another session keeps its `mirrors`
  *  (shown, counted nothing: entryOf), any other loses it; its cost is its own requests' (ownRequests). */
@@ -1303,7 +1313,7 @@ export async function runImport(store: ImportStore, plan: Plan, options: ImportO
   // A request another session counts (one the store holds, or one this import has saved) counts there, not again here:
   // one whose session is not saved (unreadable, too large, stopped before it) counts in its own run.
   const saved = new Set(held.keys());
-  const mirrored = mirroredIn(saved);
+  const mirrored = mirroredIn(saved, plan.mirrorIds);
   const toTake = options.onProgress ? plan.projects.reduce((n, p) => n + byRun(p.sessions).length, 0) : 0;
   let written = 0;
   if (!options.signal?.aborted) options.onProgress?.("write", 0, toTake);
