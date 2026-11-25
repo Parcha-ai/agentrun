@@ -57,17 +57,23 @@ function piHoldersOf(entries: readonly EntryLike[], conversation: unknown): Set<
 /** On pi, whether call `callId`'s window (`from`, the answer that asked for it, to `to`) is another conversation's too:
  *  a toolCall still open at its start that does not hold its conversation (piHoldersOf: a sibling subagent, or a tool its
  *  parent runs beside the subagent), or another conversation asking a tool or taking a result inside it. The host work
- *  of such a tool lands in the window under a host label, as the call's own nodes do, so the window can't be told apart. */
+ *  of such a tool lands in the window under a host label, as the call's own nodes do, so the window can't be told apart.
+ *  A toolCall closes at its result, or at its conversation's next answer (its turn was cut before the result came: pi
+ *  takes every result of a turn before it answers again), so an aborted one holds no later window open. */
 function piShared(entries: readonly EntryLike[], from: number, to: number): boolean {
   const own = String(entries[from]!.conversationId);
   const holders = piHoldersOf(entries, own);
-  const open = new Set<string>();
-  for (let at = 0; at < from; at++) {
-    for (const id of piCallsOf(entries[at]!)) open.add(id);
-    const done = piResultOf(entries[at]!);
+  // Each open toolCall, by the conversation that asked for it.
+  const open = new Map<string, string>();
+  for (let at = 0; at <= from; at++) {
+    const entry = entries[at]!;
+    if (entry.kind === "pi.assistant") for (const [id, by] of open) if (by === String(entry.conversationId)) open.delete(id);
+    if (at === from) break;
+    for (const id of piCallsOf(entry)) open.set(id, String(entry.conversationId));
+    const done = piResultOf(entry);
     if (done !== undefined) open.delete(done);
   }
-  if ([...open].some((id) => !holders.has(id))) return true;
+  if ([...open.keys()].some((id) => !holders.has(id))) return true;
   for (let at = from + 1; at <= to; at++) {
     const entry = entries[at]!;
     if (String(entry.conversationId) !== own && (piCallsOf(entry).length > 0 || piResultOf(entry) !== undefined)) return true;
