@@ -298,7 +298,9 @@ export async function screenShare(text: string, held: readonly string[], cutPass
     for (const cut of cuts) {
       const hit: StringHit = { at: place.at, rule: cut.rule, restorable: restorable(cut.kind), start: cut.start, end: cut.end };
       hits.set(key(hit.at, hit.rule, hit.start, hit.end), hit);
-      hitsAt.set(place.at, [...(hitsAt.get(place.at) ?? []), hit]);
+      const at = hitsAt.get(place.at);
+      if (at) at.push(hit);
+      else hitsAt.set(place.at, [hit]);
     }
   }
 
@@ -318,10 +320,17 @@ export async function screenShare(text: string, held: readonly string[], cutPass
   for (const hit of hits.values()) if (!excused.has(hit)) bump(found, hit.rule);
   const wholeFound: Record<string, number> = {};
   const starts = places.map((place) => place.from);
+  // Each string's offsets once, however many of the whole body's finds fall in it.
+  const offsetsOf = new Map<Place, number[]>();
+  const offsetsIn = (place: Place) => {
+    let offsets = offsetsOf.get(place);
+    if (!offsets) offsetsOf.set(place, (offsets = encodedOffsets(place.value)));
+    return offsets;
+  };
   for (const cut of whole) {
     const place = rebuilt === text ? places[upperBound(starts, cut.start) - 1] : undefined;
     const inside = place !== undefined && cut.start >= place.from && cut.end <= place.to;
-    const offsets = inside && restorable(cut.kind) ? encodedOffsets(place.value) : undefined;
+    const offsets = inside && restorable(cut.kind) ? offsetsIn(place) : undefined;
     const covered = offsets !== undefined && (hitsAt.get(place!.at) ?? []).some((hit) => excused.has(hit) && hit.rule === cut.rule && place!.from + offsets[hit.start]! < cut.end && cut.start < place!.from + offsets[hit.end]!);
     if (!covered) bump(wholeFound, cut.rule);
   }
