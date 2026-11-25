@@ -266,9 +266,12 @@ own (under `agentrun-serve runner`) sends its trace to its runner, which exports
 sends as untrusted: every string is cut as a name the model wrote, a provider or host that loses its shape is dropped,
 and a request's or turn's end takes only a value the runner knows. Every OTLP header value of 8 characters or more is a
 secret the server and the runner hold, under any name, an unknown one too, but the value of a `Content-Type`, `Accept`,
-`Content-Encoding` or `User-Agent` header. A value is held as written, decoded, and without its auth scheme (the
-credential of `Bearer`, `Basic`, `Api-Key` or `sentry`), and so are an OTLP endpoint's user, password and any query
-parameter named like a key, token, secret, password, auth or signature. Commas split the header variables, so write a
+`Content-Encoding` or `User-Agent` header, and of a dataset or tenant header (`x-honeycomb-dataset`, `x-axiom-dataset`,
+`x-scope-orgid`), which is only cut from the `[otel]` lines below. A value is held as written and decoded. What follows
+its first word is held too when that word is a known auth scheme (`Bearer`, `Basic`, `Api-Key`, `Api-Token`, `Token`,
+`sentry`, `Splunk`, `GenieKey`) or the header is named like a credential (`authorization`, `x-sentry-auth`,
+`x-api-key`); any other header's value is held whole, never its tail alone. So are an OTLP endpoint's user, password
+and any query parameter named like a key, token, secret, password, auth or signature. Commas split the header variables, so write a
 comma inside a value as `%2C`. The tracer's own `[otel]` lines, where an exporter's error may quote a header it sent or
 the URL it posted to, are cut of every such value at any length, a short one too. A run's process can hold at most 512
 model requests and 512 tool calls open in its runner's trace at once; one started past that has no span. No OpenTelemetry diag logger is set, since the
