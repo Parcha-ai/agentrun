@@ -2,4 +2,4 @@
 packages: @parcha/agentrun-import
 kind: feature
 ---
-`parseHome` reads files on worker threads (`threads`, default the cores less one, at most 16, and what free memory holds; `1` reads on the calling thread as before), with the same totals at any count. `readAhead` caps finished reads waiting and `workerOldMb` each worker's heap, and the CLI takes `--threads` and `--read-ahead`.
+`parseHome` reads files on worker threads (`threads`, default the cores less one, at most 16, and what free memory holds; `1` reads on the calling thread as before), with the same totals at any count. `readAhead` caps finished reads waiting and `workerOldMb` each worker's heap (at least 8 MB, a RangeError under it), and the CLI takes `--threads` and `--read-ahead`.
