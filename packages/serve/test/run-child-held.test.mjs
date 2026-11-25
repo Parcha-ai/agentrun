@@ -623,7 +623,7 @@ test("the runner's answer to held claudeLogin is the claim's one decision whethe
     assert.equal(error.name, "ClaimRefused", `refused for good: ${error.stack}`);
     assert.equal(error.message, loginToken.LOGIN_NOT_HANDED);
     return true;
-  });
+  }, "a claim on this machine's own login is refused in LOGIN_NOT_HANDED's words, never answered none and left to a model key");
 });
 
 test("the install a run's process asks for is readable by every user and writable by none, an install from before installs were shared too", { skip: process.getuid?.() === 0 && "root reads every folder" }, async (t) => {
