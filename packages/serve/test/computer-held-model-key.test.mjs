@@ -43,7 +43,13 @@ const { routeOf } = await import("../dist/runner/model-route.js");
 const { heldRefusedRoute } = await import("../dist/runner/adapter-run-spec.js");
 const { cliRunSpecFromLaunch } = await import("../dist/runner/cli-run-spec.js");
 const { claimSecrets, MODEL_KEY_NAMES } = await import("../dist/runner/claim-secrets.js");
-const { childLoops, heldFor } = await import("../dist/runner/run-child-host.js");
+const { childLoops, heldFor, staysInRunner } = await import("../dist/runner/run-child-host.js");
+const { cursorOptions } = await import("../dist/harness-table.js");
+const { cursorFacts } = await import("@parcha/agentrun-harness-acp");
+const { DATA_ENV } = await import("../dist/files.js");
+const { setHeld } = await import("../dist/runner/held.js");
+const { heldRedactor, keepText } = await import("../dist/runner/redact.js");
+const { settingFor } = await import("../dist/claude-login.js");
 const { launchBody, readLaunchBody } = await import("../dist/run-launch.js");
 const { heldRoute } = await import("../dist/computer-held-routes.js");
 const { saveGateway } = await import("../dist/model-gateway.js");
@@ -198,7 +204,12 @@ async function cliClaim(t, hold, extra = {}, host = {}) {
   let models = createModels();
   harness = await Harness.open(store.journal(claim), { models: () => models, registry, onReport: () => {} }, ctx);
   const env = { ...host.env, [OPENCODE_STANDIN_ENV]: JSON.stringify({ command: process.execPath, args: [] }), PATH: process.env.PATH };
-  const deps = { env, data: dir, journal: (c) => store.journal(c), store, sealKey: SEAL_KEY, routeOf: host.routeOf ?? (async () => assert.fail("a CLI run takes no pi route")), computerForClaim: async () => ({ release: async () => {} }) };
+  // A run's own process (`host.runner`: its runner's answers, held.ts) holds no seal key and asks its runner instead.
+  if (host.runner) {
+    setHeld(host.runner);
+    t.after(() => setHeld(undefined));
+  }
+  const deps = { env, data: dir, journal: (c) => store.journal(c), store, sealKey: host.runner ? undefined : SEAL_KEY, routeOf: host.routeOf ?? (async () => assert.fail("a CLI run takes no pi route")), computerForClaim: async () => ({ release: async () => {} }) };
   host.watch?.(store);
   built = await cliRunSpecFromLaunch(launch, { harness, registry, setModels: (given) => (models = given) }, deps, claim);
   return built;
@@ -587,8 +598,8 @@ pipe.on("end", () => {
 /** The names of the keys a runner that starts each claim in a process of its own (run-child-host.ts childLoops) hands a
  *  pi run of MODEL on its process's key pipe, read by the stand-in above, which exits once it wrote them (so the claim
  *  ends failed: its process ended before its loop did). `env`: the runner's; `hold`: the launch's; `before`: what the
- *  server saved first (a model gateway). */
-async function handedNames(t, { env = {}, hold, before } = {}) {
+ *  server saved first (a model gateway); `harness` and `body`: the run's harness and more of its revision (its model). */
+async function handedNames(t, { env = {}, hold, before, harness = "pi", body = {} } = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "held-model-key-child-"));
   const store = await openSqliteStore({ dataDir: dir, role: "server" });
   t.after(async () => {
@@ -596,8 +607,8 @@ async function handedNames(t, { env = {}, hold, before } = {}) {
     rmSync(dir, { recursive: true, force: true });
   });
   await before?.(store);
-  await store.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", model: MODEL, tools: [] } });
-  await store.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: launchBody({ input: { content: "Do the task." }, title: "t", place: { mode: "runner" }, harness: "pi", ...(hold ? { hold } : {}) }) });
+  await store.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", model: MODEL, tools: [], ...body } });
+  await store.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: launchBody({ input: { content: "Do the task." }, title: "t", place: { mode: "runner" }, harness, ...(hold ? { hold } : {}) }) });
   const script = join(dir, "names-of-keys.mjs");
   const out = join(dir, "names.json");
   await writeFile(script, NAMES_OF_KEYS);
@@ -632,6 +643,112 @@ test("per-run process (run-child-host), a host with a model key and a saved gate
   const held = await handedNames(t, { env, hold: { minutes: 5, refused: REFUSAL }, before: saveAGateway });
   assert.ok(!held.includes(GATEWAY_KEY_ENV), `a held run its model kept from running is handed no saved gateway key: ${JSON.stringify(held)}`);
   assert.deepEqual(held.filter((name) => MODEL_KEY_NAMES.includes(name)), [], "and no model key of the host's: its model runs nowhere");
+});
+
+/** Cursor's own key (harness-table.ts BUILTIN_OWN_KEYS), a test's: never a real one. */
+const CURSOR_KEY_VALUE = "not-a-secret-held-cursor-key";
+/** A Cursor run's revision: Cursor's own default model, on its owner's Cursor key. */
+const CURSOR_BODY = { harness: "cursor", model: "cursor/default" };
+
+test("claim secrets (claimSecrets): a held Cursor run its model kept from running opens no saved CURSOR_API_KEY and is laid none; the same run not held opens it and is laid it", async () => {
+  // The store's saved keys, as a runner holding the seal key reads them: each read counted by name, nothing saved.
+  const reads = [];
+  const sealed = { store: { sealedKeys: { get: async (name) => (reads.push(name), undefined) }, settings: { get: async () => undefined } }, sealKey: SEAL_KEY, env: {} };
+  const revision = { kind: "agentic", body: { ...CURSOR_BODY, tools: [] } };
+  const held = { hold: { minutes: 5, refused: REFUSAL } };
+  await claimSecrets(sealed, revision, {});
+  assert.ok(reads.includes("CURSOR_API_KEY"), `a Cursor claim not held reads Cursor's saved key: ${JSON.stringify(reads)}`);
+  reads.length = 0;
+  await claimSecrets(sealed, revision, held);
+  assert.ok(!reads.includes("CURSOR_API_KEY"), `a held Cursor claim its model kept from running reads no saved CURSOR_API_KEY, so none is decrypted: ${JSON.stringify(reads)}`);
+  // The key set where AgentRun starts: laid on a claim not held, never on a held one.
+  const started = { store: { sealedKeys: { get: async () => undefined }, settings: { get: async () => undefined } }, env: { CURSOR_API_KEY: CURSOR_KEY_VALUE } };
+  assert.equal((await claimSecrets(started, revision, {})).CURSOR_API_KEY, CURSOR_KEY_VALUE, "a Cursor claim not held is laid its owner's Cursor key, as before");
+  const laid = await claimSecrets(started, revision, held);
+  assert.ok(!Object.getOwnPropertyNames(laid).includes("CURSOR_API_KEY"), "a held Cursor claim its model kept from running is laid no CURSOR_API_KEY: its agent never starts");
+});
+
+test("per-run process (run-child-host), a host with Cursor's key: a held Cursor run its model kept from running is handed no CURSOR_API_KEY on its process's key pipe; the same run not held is handed it", async (t) => {
+  withEnv(t, {}, KEYLESS);
+  const env = { CURSOR_API_KEY: CURSOR_KEY_VALUE };
+  const unheld = await handedNames(t, { env, harness: "cursor", body: CURSOR_BODY });
+  assert.ok(unheld.includes("CURSOR_API_KEY"), `the Cursor run not held is handed its owner's Cursor key, as before: ${JSON.stringify(unheld)}`);
+  const held = await handedNames(t, { env, harness: "cursor", body: CURSOR_BODY, hold: { minutes: 5, refused: REFUSAL } });
+  assert.ok(!held.includes("CURSOR_API_KEY"), `a held Cursor run its model kept from running is handed no CURSOR_API_KEY: ${JSON.stringify(held)}`);
+});
+
+test("Cursor (harness-table cursorOptions), no CURSOR_API_KEY here: a held run its model kept from running is never refused for the key, so its claim holds its computer; the same run not held is refused for it", async (t) => {
+  const options = cursorOptions(cursorFacts);
+  // A data folder with no Cursor release in it: a held recipe gets past the key and stops at the install, which no key fixes.
+  const env = { [DATA_ENV]: await scratch(t) };
+  const launch = { model: "default", env, log: () => {} };
+  await assert.rejects(options.recipe(launch), (error) => (assert.match(error.message, /CURSOR_API_KEY is not set/, error.message), true), "a Cursor run not held is refused for want of its key, as before");
+  const held = await options.recipe({ ...launch, held: true }).then(() => undefined, (error) => error);
+  assert.ok(held === undefined || !held.message.includes("CURSOR_API_KEY"), `a held Cursor run is not refused for the key it never uses: ${held?.message}`);
+  assert.ok(held === undefined || held.name === "HarnessUnavailable", `with no release installed here, it is refused for the install alone: ${held?.stack}`);
+});
+
+test("per-run process (run-child-host heldFor), Claude login: the runner hands a held run its model kept from running no login and reads none for it, whatever its process asks; the same run not held is handed the login's reader", async (t) => {
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "held-model-key-login-"));
+  const data = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "held-model-key-login-data-"));
+  const store = await openSqliteStore({ dataDir: dir, role: "server" });
+  t.after(async () => {
+    await store.close().catch(() => {});
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(data, { recursive: true, force: true });
+  });
+  // AgentRun's own login folder, turned on for this machine; each run a user of its own, so a claim goes on the login's token.
+  await store.settings.put("claude_login", settingFor("agentrun", data));
+  const launch = { input: { content: "Do the task." }, title: "t", place: { mode: "runner" }, harness: "claude-agent" };
+  const deps = { store, sealKey: SEAL_KEY, env: {}, data };
+  const { login } = await staysInRunner(deps, "claude-agent", launch, "run-1", { kind: "uid", helper: "/nonexistent/agentrun-runas", first: 0, slots: 1 });
+  assert.ok(login, "the claim read AgentRun's own login");
+  // The claim's read of the login, as the runner hands it down (ClaimReads.login), counted at each read.
+  const seam = (hold) => {
+    const asked = { login: 0 };
+    const reads = { claim: { runId: "run-1", epoch: 1 }, run: { agentId: "agent-1", revisionId: "rev-1", signInHanded: null }, launch: { ...launch, ...hold }, revision: { kind: "agentic", body: { harness: "claude-agent" } }, claimed: {}, get login() { asked.login += 1; return login; } };
+    return { asked, held: heldFor(deps, reads, heldRedactor(keepText), () => {}).held };
+  };
+  const unheld = seam({});
+  assert.equal(typeof (await unheld.held.claudeLogin())?.token, "function", "a run not held is handed the login's reader, as before");
+  assert.ok(unheld.asked.login > 0, "its claim's login was read for it");
+  const held = seam({ hold: { minutes: 5, refused: REFUSAL } });
+  assert.equal(await held.held.claudeLogin(), undefined, "a held run its model kept from running is handed no login, though its process asks: its agent never starts");
+  assert.equal(held.asked.login, 0, "and the runner reads no login for it");
+});
+
+test("CLI (cli-run-spec), Claude login: a held run its model kept from running, in a run's own process, never asks its runner for the login; the same run not held asks", async (t) => {
+  withEnv(t, {}, KEYLESS);
+  // The runner's answers (held.ts), each ask counted by name: none answers anything.
+  const runner = (asked) => new Proxy({}, { get: (_target, name) => (name === "then" || typeof name !== "string" ? undefined : async () => void asked.push(name)) });
+  const unheldAsked = [];
+  await cliClaim(t, undefined, {}, { env: { OPENAI_API_KEY: HOST_MODEL_KEY }, runner: runner(unheldAsked) });
+  assert.ok(unheldAsked.includes("claudeLogin"), `a run not held asks its runner whether it goes on the login, as before: ${JSON.stringify(unheldAsked)}`);
+  const heldAsked = [];
+  await cliClaim(t, { minutes: 5, refused: REFUSAL }, {}, { runner: runner(heldAsked) }).catch((error) => assert.fail(`a held run its model kept from running opens its claim in a run's own process: ${error.message}`));
+  assert.ok(!heldAsked.includes("claudeLogin"), `a held run its model kept from running never asks for the login: ${JSON.stringify(heldAsked)}`);
+});
+
+test("a launch row whose hold is not an object (corrupt, or written by another version) is still held, its model refused: its start and messages are refused, and its claim is laid no model key", async () => {
+  // Read as not held, the run would start and its claim open its model's keys. Its words name the field, never what it holds.
+  const RAW = "not-a-secret-raw-hold";
+  for (const holdRow of [true, RAW, 5, null, [RAW]]) {
+    const body = { input: { content: "Do the task." }, title: "t", place: { mode: "runner" }, hold: holdRow };
+    const what = JSON.stringify(holdRow);
+    const read = readLaunchBody(body);
+    assert.ok(read?.hold?.refused, `a hold that can't be read is a hold whose model was refused, never none: ${what}`);
+    assert.equal(read.hold.minutes, HOLD_MINUTES, `it waits the default minutes: ${what}`);
+    assert.match(read.hold.refused.message, /\bhold\b/, `its words name the field that can't be read: ${what}`);
+    assert.ok(!JSON.stringify(read.hold).includes(RAW), `and never what it holds: ${what}`);
+    const store = { runners: { live: async () => [] }, runs: { launch: async () => ({ body }) } };
+    const notRunnable = (error) => error instanceof ApiError && error.code === "agent_not_runnable" && !error.message.includes(RAW);
+    await assert.rejects(heldRoute("startRun", "run-1", {}, store), notRunnable, `its start is refused: ${what}`);
+    const moment = { id: "run-1", agentId: "agent-1", kind: "agentic", harness: "pi", cancelled: false, terminal: false, working: false, awaitingAnswer: false, steers: true, paused: false };
+    await assert.rejects(message(store, moment, "Go on."), notRunnable, `and a message is: ${what}`);
+    const deps = { store: { sealedKeys: { get: async () => undefined }, settings: { get: async () => undefined } }, env: { OPENROUTER_API_KEY: HOST_MODEL_KEY } };
+    const claimed = await claimSecrets(deps, { kind: "agentic", body: { model: MODEL, tools: [] } }, read);
+    assert.equal(claimed.OPENROUTER_API_KEY, undefined, `its claim is laid no model key: ${what}`);
+  }
 });
 
 /** The words the runner refuses a held run's process's ask for a learning step in (run-child-host.ts heldFor). */
