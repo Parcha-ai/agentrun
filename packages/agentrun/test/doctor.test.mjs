@@ -443,6 +443,18 @@ test("Docker: no box warns with the reason and the fix", async () => {
   assert.match(missing.check("docker").summary, /Docker is not installed/);
 });
 
+test("Docker: no box, by mode, read from places.default_place: null (Mode 1) says a new agent names its place, in the server's words; the runner (Mode 2) says new agents run on the runner", async () => {
+  const { home, data } = homeOf();
+  const NAME_A_BOX = "name a box: this server has no Docker box for a new agent. Set place to {mode: sandbox, box: <none is set up>}, or to {mode: runner} to run without a shell.";
+  const docker = { id: "docker", available: false, reason: "Docker does not answer here" };
+  const mode1 = await doctor({ home, data, server: serverOf({ caps: { status: 200, body: { ...HEALTHY_CAPS, places: { default_place: null, default_reason: NAME_A_BOX, boxes: [docker] } } } }) });
+  assert.equal(mode1.check("docker").status, "warn");
+  assert.equal(mode1.check("docker").summary, `No Docker box: Docker does not answer here. An agent that needs a computer (bash, files) fails to start, and a new agent must name its place: a box, or the runner (${NAME_A_BOX.slice(0, -1)}).`);
+  const mode2 = await doctor({ home, data, server: serverOf({ caps: { status: 200, body: { ...HEALTHY_CAPS, places: { default_place: { mode: "runner" }, boxes: [docker] } } } }) });
+  assert.equal(mode2.check("docker").status, "warn");
+  assert.equal(mode2.check("docker").summary, "No Docker box: Docker does not answer here. An agent that needs a computer (bash, files) fails to start, and new agents run on the runner.");
+});
+
 /** Whether a request to the CLI test's server is the CLI's, an API request under /v2/. Another process on the machine
  *  may send `GET /` to any new loopback listener: the server neither records nor reads it. */
 const ours = (req) => req.url.startsWith("/v2/");

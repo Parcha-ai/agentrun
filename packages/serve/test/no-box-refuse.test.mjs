@@ -8,6 +8,7 @@
 // default_reason exactly when null. Tests run with AGENTRUN_BOXES=none (support.mjs): no box is set up here.
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { DESCRIPTORS } from "@parcha/agentrun-computer";
 import { boxesLine, defaultPlaceOf, newAgentPlace, noBoxRefusal, placesOf } from "../dist/place.js";
 import { agent, flowAgent, serve } from "./support.mjs";
 
@@ -24,7 +25,13 @@ function refusedForPlace(said, words = NONE_WORDS) {
   assert.deepEqual(said.body.error.fields.map((one) => [one.field, one.reason, one.message, one.fix]), [["definition.place", "missing", words, words.slice(words.indexOf("Set place"))]]);
 }
 
-test("the default box is Docker's by its id: with Docker down and another box available, a new agent is given no box, and the words list the available boxes without picking one", () => {
+test("the default box is the one box whose provider descriptor says so (defaultBox), Docker's, read from the descriptor, never named in serve", () => {
+  assert.deepEqual(DESCRIPTORS.filter((descriptor) => descriptor.defaultBox === true).map((descriptor) => descriptor.id), ["docker"]);
+  const registry = [{ id: "daytona", available: true }, { id: "docker", available: true }];
+  assert.deepEqual(newAgentPlace(registry), { place: { mode: "sandbox", box: "docker" } });
+});
+
+test("the default box is the descriptor's default box (Docker's): with Docker down and another box available, a new agent is given no box, and the words list the available boxes without picking one", () => {
   const registry = [
     { id: "e2b", available: true },
     { id: "docker", available: false, reason: "Docker isn't running on this machine" },
