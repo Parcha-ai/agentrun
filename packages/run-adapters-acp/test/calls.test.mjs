@@ -17,6 +17,17 @@ test("ourTool ties each agent's title for our tool: `agentrun__<tool>`, `agentru
   assert.equal(ourTool({ title: 'agentrun: check echo · a · b' }, TOOLS), 'check_echo', 'cut at the first');
 });
 
+test("ourTool ties agy 1.5.14's name for our tool, `mcp_agentrun_<tool>`, and its title `Run mcp_agentrun_<tool>`, and nothing like them", () => {
+  assert.equal(ourTool({ name: 'mcp_agentrun_look_up', title: 'Run mcp_agentrun_look_up', kind: 'other' }, TOOLS), 'look_up');
+  assert.equal(ourTool({ title: 'Run mcp_agentrun_check_echo', kind: 'other' }, TOOLS), 'check_echo');
+  assert.equal(ourTool({ name: 'mcp_agentrun_lookup' }, TOOLS), 'lookup');
+  for (const title of ['Run mcp_github_look_up', 'mcp_agentrunx_look_up', 'Run mcp_agentrun_look_up now', 'run mcp_agentrun_look_up', 'Run  mcp_agentrun_look_up', 'Run mcp_agentrun_drop_tables', 'xmcp_agentrun_look_up', 'Run mcp_agentrun_', 'Run mcp_agentrun_look_up · x']) {
+    assert.equal(ourTool({ title, kind: 'other' }, TOOLS), undefined, title);
+    assert.equal(ourTool({ name: title, kind: 'other' }, TOOLS), undefined, `name ${title}`);
+  }
+  assert.equal(ourTool({ name: 'mcp_agentrun_look_up', title: 'Run mcp_agentrun_look_up', kind: 'execute' }, TOOLS), undefined, 'a kind with effects of its own');
+});
+
 test("ourTool leaves another server's tool named like ours, and a call with effects of its own, as the agent's own", () => {
   for (const title of ['github: look up', 'agentrun-github: look up', 'agentrun github: look up', 'Agentrun: look up', 'agentrun: Look Up', 'agentrun: look  up', 'agentrun: look up now', 'xagentrun: look up', 'agentrun: look_up_', 'agentrun:look up', 'agentrun: look up now · x', 'agentrun: look up·x', ' · agentrun: look up', 'github: look up · proof.txt']) {
     assert.equal(ourTool({ title, kind: 'other' }, TOOLS), undefined, title);
