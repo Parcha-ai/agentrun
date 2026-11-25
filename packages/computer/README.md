@@ -807,10 +807,11 @@ was deleted.
   reported as a policy. `network(ref, policy)` returns the policy when it is the computer's (an allowlist with the same
   entries, normalized, in any order); any change is refused: a Docker computer's network is fixed at create, since
   Docker cannot move a container with no network onto one, and an allowlist needs its volume mounted at create.
-- `release(ref, "stop" | "delete")` runs `docker stop`, or `docker rm --force --volumes`, then stops or removes the
-  computer's egress proxy and, on delete, its volume, each found by its label (below); `capabilities().release`
-  declares both, and `stopDeletes` is false: a stopped container is kept until it is deleted. A computer already gone is
-  ok.
+- `release(ref, "stop" | "delete")` finds the computer's egress proxy by its label (below), then runs `docker stop` on
+  the computer and then the proxy, or one `docker rm --force --volumes` of the computer and the proxy together, then on
+  delete removes its volume, found by its label too. A computer whose own stop or removal fails still has its proxy and
+  volume stopped or removed, and the computer's failure is the answer. `capabilities().release` declares both, and
+  `stopDeletes` is false: a stopped container is kept until it is deleted. A computer already gone is ok.
 - Only containers with the label `agentrun.computer=1` and a computer's name count for `attach`, `list` and `network`;
   any other container is `not_found`.
 
@@ -890,13 +891,18 @@ key.
   then `docker pull` for one that is not; a failed pull fails create in words, with nothing made). It then makes the
   volume, starts the proxy and waits for its ready line (`egress.readyMs`, 10 s), then runs the computer; both runs
   take `--pull never`, so no pull happens between the volume and the computer. A proxy that ends first, or is not ready in time, fails create in its own words; the proxy and the
-  volume are removed, and the computer is never run. `release` removes the proxy and the volume after the computer, each
-  found by the label `agentrun.computer.egress=<computer>`, never by name alone, so the janitor's sweep and
-  `releaseOlder` remove them too. Parts left with no computer (one removed by hand, or a provider that died between its
+  volume are removed, and the computer is never run. `release` removes the proxy with the computer, in the same
+  `docker rm`, and then the volume, each found by the label `agentrun.computer.egress=<computer>`, never by name alone,
+  so the janitor's sweep and `releaseOlder` remove them too. A release cut off once that call is made leaves no proxy
+  running without its computer. Parts left with no computer (one removed by hand, or a provider that died between its
   proxy and its computer) the sweep removes too (`sweepLeftovers`): a proxy or volume with the egress label, and the
-  sweep's labels, whose deadline label has passed, or whose computer is gone and that is older than a create could
-  take (its ready wait and two minutes), removed by what the label found. The volume carries the computer's deadline
-  and the spec's labels for this. Until then the proxy stops forwarding at its deadline.
+  sweep's labels, past its deadline label or older than a create could take (its ready wait and two minutes), and
+  whose computer is not there, read by name right before that part's removal (a read that fails keeps it). A sweep
+  given `mine` removes only the ones whose labels it answers true for, asked before the computer is read, so callers
+  sharing a Docker host each remove their own (serve: a run of its store that no claim holds). A part with an owner
+  label is never removed: Docker makes no agent's computer. Each is removed by what the label found, never by a name.
+  The volume carries the computer's deadline and the spec's labels for this. Until then the proxy stops forwarding at
+  its deadline.
 - **Read-back.** `network`, `list` and `attach` read open or the allowlist from Docker: network mode none, the egress volume
   read-only at its path, init's relay in its command, and a proxy container that carries the computer's label and
   deadline, runs while the computer runs, is hardened and bounded as above (its memory and swap, pids limit, private
