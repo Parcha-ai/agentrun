@@ -9,7 +9,9 @@
 //     node ran is `refused`, and counts on no side;
 //   - a call's $ is what its window booked (its start to its end) of host work, and the requests named under it: exact,
 //     or null when another call ran beside it (on pi, a sibling subagent's too); never a guessed $0;
-//   - a replay or a shadow run keeps no calls: they serve no one.
+//   - a replay or a shadow run keeps no calls: they serve no one;
+//   - a run whose record keeps no calls (one that ended before calls were kept) is charged as its path says: the
+//     workflow and digest it names when its path is `workflow` or `handed_back`, so a stop made before stays made.
 // The tool's own record is checked on a stand-in model registry: no network, no key.
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -129,6 +131,24 @@ test("a call refused before any node ran is `refused`: it ran nothing, and the m
   assert.deepEqual(workflowCostsOf(past).map(({ workflow, state, served }) => ({ workflow, state, served })), [{ workflow: "a", state: "serving", served: { runs: 10, mean_usd: 0.1 } }]);
   // Refused calls alone name no workflow on the cost page.
   assert.deepEqual(workflowCostsOf({ ...past, runs: past.runs.filter((run) => run.startedAt >= 100) }), []);
+});
+
+test("a run whose record keeps no calls is charged as its path says: a workflow stopped on runs from before calls were kept stays stopped", () => {
+  const by_hand = { runs: 10, mean_usd: 1 };
+  // Its served runs as the record of a run that ended before calls were kept reads: path, workflow and digest, no calls.
+  const old = (i, path = "workflow", over = {}) => ({ metrics: { path, workflow: "a", workflow_digest: D, ...over }, allInUsd: 2, startedAt: i });
+  const stopped = { runs: Array.from({ length: 10 }, (_, i) => old(i, i % 2 ? "workflow" : "handed_back")), by_hand, by_hand_unknown: 0 };
+  assert.deepEqual(costLineOf(stopped, "a", D).served, { runs: 10, mean_usd: 2 });
+  assert.deepEqual(workflowCostsOf(stopped).map(({ workflow, digest, state }) => [workflow, digest, state]), [["a", D, "needs_revision"]]);
+  // Mixed: five old runs and five whose record keeps the platform's call: ten served runs, still over the line.
+  const kept = (i) => ({ metrics: { path: "workflow", workflow: "a", workflow_digest: D, workflow_calls: [{ workflow: "a", digest: D, caller: "platform", outcome: "answered", usd: 0.5 }] }, allInUsd: 2, startedAt: 100 + i });
+  const mixed = { runs: [...Array.from({ length: 5 }, (_, i) => old(i)), ...Array.from({ length: 5 }, (_, i) => kept(i))], by_hand, by_hand_unknown: 0 };
+  assert.deepEqual(costLineOf(mixed, "a", D).served, { runs: 10, mean_usd: 2 });
+  assert.deepEqual(workflowCostsOf(mixed).map(({ state }) => state), ["needs_revision"]);
+  // The path alone never charges more than it did: the agent's path, another digest, or no digest charges nothing; and a
+  // record that keeps calls (refused ones included) is charged by its calls, never its path.
+  const none = [old(0, "agent"), old(1, "workflow", { workflow_digest: "e".repeat(16) }), old(2, "handed_back", { workflow_digest: undefined }), old(3, "handed_back", { workflow_calls: [{ workflow: "a", digest: D, caller: "agent", outcome: "refused", usd: 0 }] })];
+  assert.deepEqual(costLineOf({ runs: none, by_hand, by_hand_unknown: 0 }, "a", D).served, { runs: 0, mean_usd: null });
 });
 
 test("whose run it is: one the platform served first counts for that workflow alone; one only the agent called counts for each workflow that ran", () => {
