@@ -10,16 +10,17 @@ import { missesOf, type Pages, type Readers, type WebLog, type WebRead, webFetch
 import { type Fee, type Pay, unmetered } from "./fees.js";
 import type { Guard, GuardOptions } from "./guard.js";
 import { askedUrl, type Page, type Part, partProblem } from "./page.js";
-import { holdingWords, type NativeSearch, type ProviderRun, readerOf } from "./provider.js";
+import { holdingWords, type NativeSearch, type ProviderRun, readerOf, type WebClient } from "./provider.js";
 import type { Words } from "./providers/mcp.js";
 import { type FetchProvider, type KeyedProvider, type ProviderId, providerOf, type ProviderSettings, type SearchProvider, settingsProblemsOf } from "./providers/registry.js";
 import { type Breaker, breakers, fitSearch, type Holding, type Limit, withKeyBreaker, type Search, type SearchBounds, searchArgs, searchInTurn, searchText, type Try } from "./search.js";
 
-/** What an answer took and cost. `out` is the answer as the model reads it; `cache` is "hit" when a fetch came from the
- *  run's pages. */
+/** What an answer took and cost. `asked`: a search's objective, a fetch's URL; `queries`, a search's keyword queries.
+ *  `out` is the answer as the model reads it; `cache` is "hit" when a fetch came from the run's pages. */
 export type Receipt = {
   op: "search" | "fetch";
   asked: string;
+  queries?: string[];
   provider: ProviderId | null;
   tries: Try[];
   classifier: "off" | DecisionRecord;
@@ -30,7 +31,7 @@ export type Receipt = {
   cost: { usd: number; lines: Fee[] };
   cache?: "hit";
   /** With a classifier in the run: the text a web with none would have given the model for this call (a fetch's part
-   *  as asked, without looking_for), set beside what it read to see what the step saved. */
+   *  as asked, without its objective), set beside what it read to see what the step saved. */
   unsifted?: string;
 };
 
@@ -66,18 +67,23 @@ export type WebConfig = {
   /** The page guard: with a decider, each page a fetch reads is asked once a run whether it is a wall or holds
    *  instructions addressed to an AI reader. Off unless true; true without a decider throws. */
   pageGuard?: boolean;
+  /** The agent calling the web tools, as far as the run knows it: told to a provider that takes it (Parallel's search). */
+  client?: WebClient;
 };
-/** `breakers`: the search breakers this call reads and trips (default the Web's own). `keyLimits`: where a quota of a
- *  provider's whole key goes (search.ts Failure.covers): the Web's key breakers, shared with web_fetch ("web", the
- *  default without `breakers`), or the call's own breakers ("call", the default with them). `task`: what the caller
- *  needs, which a decider judges against (a search without one is judged on its query). `bounds`: this call's
- *  deadlines, each in place of the Web's (WebConfig.bounds) where given. */
-export type SearchOptions = { n?: number; signal?: AbortSignal; breakers?: (name: string) => Breaker; keyLimits?: "web" | "call"; task?: string; bounds?: SearchBounds };
-/** `lookup` and `fetchImpl`: the resolver and transport this call's guard dials through. `lookingFor`: what the caller
- *  is looking for on the page (the tool's looking_for). With a decider, the answer is the chunks of the whole page most
- *  likely to hold it (findInPage), `offset` and `maxChars` aside; without one, or when the step fails, the part asked
- *  for, saying looking_for was not applied. Blank: none. */
-export type FetchOptions = Part & GuardOptions & { task?: string; lookingFor?: string };
+/** `n`: how many results, where the search asked names none. `breakers`: the search breakers this call reads and trips
+ *  (default the Web's own). `keyLimits`: where a quota of a provider's whole key goes (search.ts Failure.covers): the
+ *  Web's key breakers, shared with web_fetch ("web", the default without `breakers`), or the call's own breakers
+ *  ("call", the default with them). `task`: what the caller needs, which a decider judges against (a search without
+ *  one is judged on its objective). `bounds`: this call's deadlines, each in place of the Web's (WebConfig.bounds)
+ *  where given. `session`: this call's session, told to a provider that takes one in place of WebConfig.client's. */
+export type SearchOptions = { n?: number; signal?: AbortSignal; breakers?: (name: string) => Breaker; keyLimits?: "web" | "call"; task?: string; bounds?: SearchBounds; session?: string };
+/** `lookup` and `fetchImpl`: the resolver and transport this call's guard dials through. `objective`: what the caller
+ *  wants from the page (the tool's objective); `lookingFor`, the same under its older name, read where no objective is
+ *  given. With a decider, the answer is the chunks of the whole page most likely to hold it (findInPage), `offset` and
+ *  `maxChars` aside; when the step fails, the part asked for, saying the objective was not applied; with no decider, the
+ *  part asked for, as with none. Blank: none. `session`: this call's session, told to a provider that takes one in place
+ *  of WebConfig.client's, as SearchOptions.session (a page the run already read is not read again). */
+export type FetchOptions = Part & GuardOptions & { task?: string; objective?: string; lookingFor?: string; session?: string };
 /** `sift`, only when a decider is given: what it did, for the model to read. */
 /** A provider a Web's tool asks: its id, how it is reached (`keyed`, on the run's key; `unkeyed`, a keyed provider the
  *  run holds no key for, so never sent; `keyless`, a service's free use; `none`, neither: the model provider's own search
@@ -88,9 +94,12 @@ export type Destination = { id: ProviderId; access: "keyed" | "unkeyed" | "keyle
 export type Hold = { provider: ProviderId; tool: "search" | "fetch" | "key"; kind: Limit["kind"]; until: number };
 /** Each tool's providers, in the order it asks them. */
 export type Destinations = { search: Destination[]; fetch: Destination[] };
+/** What a search asks: `{objective, queries?, n?}`, or a query alone (a string, or the deprecated `{query}`), which is
+ *  searched as the objective and the one query (searchArgs). */
+export type SearchInput = string | { objective?: string; queries?: readonly string[]; query?: string; n?: number };
 /** `destinations`: where each tool goes now (Destinations), for a run's start line; never a key. */
 export type Web = {
-  search(query: string, options?: SearchOptions): Promise<{ answer: Search & Sift; receipt: Receipt }>;
+  search(input: SearchInput, options?: SearchOptions): Promise<{ answer: Search & Sift; receipt: Receipt }>;
   fetch(url: unknown, options?: FetchOptions): Promise<{ answer: FetchAnswer; receipt: Receipt }>;
   destinations(): Destinations;
 };
@@ -205,6 +214,7 @@ export function createWeb(config: WebConfig): Web {
         ...(config.words ? { words: config.words } : {}),
         ...(config.native ? { native: config.native } : {}),
         ...(config.bounds ? { bounds: config.bounds } : {}),
+        ...(config.client ? { client: config.client } : {}),
         pay,
         now,
       });
@@ -226,28 +236,31 @@ export function createWeb(config: WebConfig): Web {
 
   return {
     destinations: () => ({ search: config.order.search.map((id) => destinationOf(id, "search", runBreakers)), fetch: config.order.fetch.map((id) => destinationOf(id, "fetch", fetchBreakers)) }),
-    async search(query, { n, signal, breakers: given, keyLimits = given ? "call" : "web", task, bounds } = {}) {
+    async search(input, { n, signal, breakers: given, keyLimits = given ? "call" : "web", task, bounds, session } = {}) {
       const ownOf = given ?? runBreakers;
       const breakerOf = (name: string) => toolBreaker("search", name as ProviderId, ownOf(name), keyLimits === "web" ? keyBreakers(name) : ownOf(`${name} key`));
       const lines: Fee[] = [];
       const tries: Try[] = [];
-      const ask = searchArgs({ query, ...(n === undefined ? {} : { n }) });
+      const asked: Record<string, unknown> = typeof input === "string" ? { query: input } : { ...input };
+      const ask = searchArgs({ ...asked, n: asked.n ?? n });
       const order = config.order.search;
       const searchMs = bounds?.searchMs ?? config.bounds?.searchMs;
-      // No provider is asked an empty query.
-      const found: Search = !ask.query ? { error: "web_search needs a query" }
+      // No provider is asked an empty objective.
+      const found: Search = !ask.objective ? { error: "web_search needs an objective" }
         : !order.length ? { error: "web_search has no provider to ask" }
-        : await feesOfCall.run(lines, () => searchInTurn(order.map((id) => ({ name: id, ask: (deadline: AbortSignal) => runOf(id).search!(ask, deadline, signal, bounds) })), breakerOf, signal, searchMs, tries));
+        : await feesOfCall.run(lines, () => searchInTurn(order.map((id) => ({ name: id, ask: (deadline: AbortSignal) => runOf(id).search!(ask, deadline, signal, bounds, session ? { session } : undefined) })), breakerOf, signal, searchMs, tries));
       // Sifted before it is fitted, so the fit sees only the kept results; fitSearch keeps every other field.
       const sifted = config.decider ? await siftSearch(config.decider, found, { task, signal, ms: config.bounds?.decideMs, pay: decisionPay(config.pay ?? unmetered, lines), policy }) : { answer: found, classifier: "off" as const };
       const answer: Search & Sift = fitSearch(sifted.answer);
       const { classifier } = sifted;
-      const receipt: Receipt = { op: "search", asked: query, provider: "error" in answer ? null : answer.provider, tries, classifier, ...unjudged, out: outOf(searchText(answer)), cost: { usd: usd(lines), lines }, ...unsifted(() => searchText(fitSearch(found))) };
+      const said = [asked.objective, asked.query].find((one): one is string => typeof one === "string") ?? "";
+      // An empty search's receipt keeps the words it was given.
+      const receipt: Receipt = { op: "search", asked: ask.objective || said, queries: ask.queries, provider: "error" in answer ? null : answer.provider, tries, classifier, ...unjudged, out: outOf(searchText(answer)), cost: { usd: usd(lines), lines }, ...unsifted(() => searchText(fitSearch(found))) };
       return { answer, receipt };
     },
-    // Only the call's part, resolver, transport, signal, task and looking_for are read: the guard, its bound, the order
+    // Only the call's part, resolver, transport, signal, task, objective and session are read: the guard, its bound, the order
     // and the readers stay the Web's.
-    async fetch(url, { offset, maxChars, task, lookingFor, lookup, fetchImpl, signal } = {}) {
+    async fetch(url, { offset, maxChars, task, objective, lookingFor, lookup, fetchImpl, signal, session } = {}) {
       const asked = typeof url === "string" ? url : "";
       const lines: Fee[] = [];
       const tries: Try[] = [];
@@ -264,6 +277,7 @@ export function createWeb(config: WebConfig): Web {
           ...(lookup ? { lookup } : {}),
           ...(fetchImpl ? { fetchImpl } : {}),
           ...(signal ? { signal } : {}),
+          ...(session ? { client: { session } } : {}),
           readers: readersOf(),
           pages,
           order: config.order.fetch,
@@ -277,8 +291,8 @@ export function createWeb(config: WebConfig): Web {
       const provider = part.ok && part.via !== "stopped" && part.via !== "none" ? part.via : null;
       const { decider } = config;
       const guard = config.pageGuard && decider && whole.ok ? (options: StepOptions) => guardOf(decider, asked, whole, options) : undefined;
-      const decided = await decideFetch(decider, asked, whole, part, { task, lookingFor, signal, ms: config.bounds?.decideMs, pay: config.pay ?? unmetered, lines, guard });
-      // What looking_for found names each provider asked ahead that gave no page, as the part does.
+      const decided = await decideFetch(decider, asked, whole, part, { task, objective: typeof objective === "string" && objective.trim() ? objective : lookingFor, signal, ms: config.bounds?.decideMs, pay: config.pay ?? unmetered, lines, guard });
+      // What the objective found names each provider asked ahead that gave no page, as the part does.
       const answer: FetchAnswer = "found" in decided.answer ? { ...decided.answer, ...missesOf(whole) } : decided.answer;
       const { classifier, guard: verdicts } = decided;
       // Copies: a read this call stopped waiting for goes on, and its later turns and fees are not on this receipt.
