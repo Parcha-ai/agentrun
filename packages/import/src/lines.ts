@@ -71,6 +71,9 @@ export type LineSource<S extends string, O> = Pick<Reader<S>, "source" | "name" 
    *  text a totals read drops may be left out); the read itself takes the record's `timestamp`. Without it, or in any
    *  other read, each line is parsed whole. */
   fields?: Shape;
+  /** The shape of the state (`own`) its cursors hold, set when it changes from one a release saved: a cursor saved at
+   *  another (none for a source that never set one) is no place to go on from, and the file is read from its start. */
+  stateVersion?: number;
 };
 
 /** The bytes a read takes from its file at once. */
@@ -106,6 +109,8 @@ export type FileCursor = {
   /** Whether the read kept turns, and whether it was a totals read: a cursor of another kind is no place to go on from. */
   keep: boolean;
   totals?: boolean;
+  /** Its reader's state shape when saved (LineSource.stateVersion). */
+  stateVersion?: number;
   state: ReadState;
 };
 
@@ -139,7 +144,7 @@ async function readLines<S extends string, O>(spec: LineSource<S, O>, shape: Fie
   const handle = await open(file, "r");
   try {
     const stats = await handle.stat();
-    const resumed = cursor !== undefined && cursor.source === source && cursor.keep === keep && (cursor.totals ?? false) === totals && cursor.dev === stats.dev && cursor.ino === stats.ino && stats.size >= cursor.offset && (await markOf(handle, cursor.offset)) === cursor.mark;
+    const resumed = cursor !== undefined && cursor.source === source && cursor.keep === keep && (cursor.totals ?? false) === totals && cursor.stateVersion === spec.stateVersion && cursor.dev === stats.dev && cursor.ino === stats.ino && stats.size >= cursor.offset && (await markOf(handle, cursor.offset)) === cursor.mark;
     const state = (
       resumed
         ? structuredClone(cursor.state)
@@ -256,7 +261,7 @@ async function readLines<S extends string, O>(spec: LineSource<S, O>, shape: Fie
       if (!dropsCursor) kept = { ...kept, session: withoutText(kept.session), own: spec.forget ? spec.forget(kept.own) : kept.own, ...(kept.counts ? { counts: trimmed(kept.counts) } : {}) };
       if (resumed) session = withoutText(session);
     }
-    return { sessions: [{ locator: { file }, session, requests: state.answers, ...(state.counts ? { counts: state.counts } : {}) }], cursor: { source, dev: stats.dev, ino: stats.ino, offset, mark, keep, ...(totals ? { totals } : {}), state: kept as ReadState }, read, resumed };
+    return { sessions: [{ locator: { file }, session, requests: state.answers, ...(state.counts ? { counts: state.counts } : {}) }], cursor: { source, dev: stats.dev, ino: stats.ino, offset, mark, keep, ...(totals ? { totals } : {}), ...(spec.stateVersion !== undefined ? { stateVersion: spec.stateVersion } : {}), state: kept as ReadState }, read, resumed };
   } finally {
     await handle.close();
   }

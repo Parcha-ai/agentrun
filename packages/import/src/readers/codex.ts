@@ -245,6 +245,9 @@ const spec: LineSource<"codex", Own> = {
   record,
   totals: true,
   fields: FIELDS,
+  // 1: the open and unpaid requests by their index (openAt, unpaidAt). 0.1.0-beta.58 and before held them as Answers
+  // (open, unpaid), which this record never reads: such a cursor goes on from nothing.
+  stateVersion: 1,
   // Older Codex writes each of the person's turns twice, as a user_message event and as a user message; current Codex
   // writes the user message alone. One source per file, so no turn counts twice.
   finish(out, turns, { state: { own }, keep }) {

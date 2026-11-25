@@ -1,0 +1,535 @@
+[
+ {
+  "name": "codex-open",
+  "mode": {
+   "turns": true
+  },
+  "cursor": "/w9vIgZzb3VyY2UiBWNvZGV4IgNkZXZOAAAAAAAAPEAiA2lub04AAADQWCBwQSIGb2Zmc2V0SZQJIgRtYXJrIlhaU0k2SW1GemMybHpkR0Z1ZENJc0ltTnZiblJsYm5RaU9sdDdJblI1Y0dVaU9pSnZkWFJ3ZFhSZmRHVjRkQ0lzSW5SbGVIUWlPaUpCTGlKOVhYMTlDZz09IgRrZWVwVCIFc3RhdGVvIgdzZXNzaW9ubyIGc291cmNlIgVjb2RleCICaWQiCHRocmVhZC0xIgRmaWxlInsvZGV2L3NobS9vbGQtY3Vyc29ycy1maXh0dXJlL29sZC1jdXJzb3JzLURKZElTSC9jb2RleC1vcGVuLTAvLmNvZGV4L3Nlc3Npb25zLzIwMjYvMDEvMDEvcm9sbG91dC0yMDI2LTAxLTAxVDAwLTAwLTAwLWEuanNvbmwiBXN0YXRlIgljb21wbGV0ZWQiBWNoaWxkRiIFdHVybnNBACQAACIFdXNlcnNJACIIYWN0aXZlTXNJACIGY29waWVzSQAiA2N3ZCINL3dvcmsvZml4dHVyZSIFbW9kZWwiEm9wZW5haS9ncHQtZml4dHVyZXsLIgV0dXJuc0EBbyIEcm9sZSIJYXNzaXN0YW50IgR0ZXh0IgJBLiIFY2FsbHNBACQAACICYXROAIA7q223eUIiBW1vZGVsIhJvcGVuYWkvZ3B0LWZpeHR1cmUiBmVmZm9ydCIEaGlnaHsGJAABIgdhbnN3ZXJzQQFeBSQAASIFbmFtZXM7OgAiBnByaWNlZG8iA3N1bUkAIgd1bmtub3duRnsCIghhY3RpdmVNc04AAAAAAHCnQCIDb3dubyIGZXZlbnRzRiIEaGVsZEEBbyIFaW5kZXhJACIEdHVybm8iBHJvbGUiBHVzZXIiBHRleHQiAlEuIgJhdE4AAP2qbbd5QnsDewIkAAEiB3JlY29yZHNGIglyZXNwb25zZXMnLAAiBWl0ZW1zOzoAIgdyZXN1bHRzOzoAIghwcm92aWRlciIGb3BlbmFpIgZ1bnBhaWReBSIEb3Blbl4FIgh1bnBhaWRBdF8iBm9wZW5BdF97CyIEc2VlbicsACIFZmlyc3ROAACAqm23eUIiBGxhc3ROAIA7q223eUIiBmVmZm9ydCIEaGlnaHsLewc=",
+  "resumed": {
+   "resumed": true,
+   "requests": [
+    {
+     "usage": {
+      "input": 40,
+      "output": 7,
+      "cacheRead": 60,
+      "cacheWrite": 0,
+      "reasoning": 0
+     },
+     "model": "openai/gpt-fixture",
+     "text": "A.",
+     "calls": 0
+    },
+    {
+     "usage": {
+      "input": 10,
+      "output": 2,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "reasoning": 0
+     },
+     "model": "openai/gpt-fixture",
+     "text": "B.",
+     "calls": 0
+    }
+   ]
+  }
+ },
+ {
+  "name": "codex-open",
+  "mode": {
+   "turns": false
+  },
+  "cursor": "/w9vIgZzb3VyY2UiBWNvZGV4IgNkZXZOAAAAAAAAPEAiA2lub04AAABAWSBwQSIGb2Zmc2V0SZQJIgRtYXJrIlhaU0k2SW1GemMybHpkR0Z1ZENJc0ltTnZiblJsYm5RaU9sdDdJblI1Y0dVaU9pSnZkWFJ3ZFhSZmRHVjRkQ0lzSW5SbGVIUWlPaUpCTGlKOVhYMTlDZz09IgRrZWVwRiIFc3RhdGVvIgdzZXNzaW9ubyIGc291cmNlIgVjb2RleCICaWQiCHRocmVhZC0xIgRmaWxlInsvZGV2L3NobS9vbGQtY3Vyc29ycy1maXh0dXJlL29sZC1jdXJzb3JzLURKZElTSC9jb2RleC1vcGVuLTEvLmNvZGV4L3Nlc3Npb25zLzIwMjYvMDEvMDEvcm9sbG91dC0yMDI2LTAxLTAxVDAwLTAwLTAwLWEuanNvbmwiBXN0YXRlIgljb21wbGV0ZWQiBWNoaWxkRiIFdHVybnNBACQAACIFdXNlcnNJACIIYWN0aXZlTXNJACIGY29waWVzSQAiBW1vZGVsIhJvcGVuYWkvZ3B0LWZpeHR1cmV7CiIFdHVybnNBACQAACIHYW5zd2Vyc0EBbyIEcm9sZSIJYXNzaXN0YW50IgR0ZXh0IgAiBWNhbGxzQQAkAAAiAmF0TgCAO6ttt3lCIgVtb2RlbCISb3BlbmFpL2dwdC1maXh0dXJlIgZlZmZvcnQiBGhpZ2h7BiQAASIFbmFtZXM7OgAiBnByaWNlZG8iA3N1bUkAIgd1bmtub3duRnsCIghhY3RpdmVNc04AAAAAAHCnQCIDb3dubyIGZXZlbnRzRiIEaGVsZEEBbyIFaW5kZXhJACIEdHVybm8iBHJvbGUiBHVzZXIiBHRleHQiACICYXROAAD9qm23eUJ7A3sCJAABIgdyZWNvcmRzRiIJcmVzcG9uc2VzJywAIgVpdGVtczs6ACIHcmVzdWx0czs6ACIIcHJvdmlkZXIiBm9wZW5haSIGdW5wYWlkXgYiBG9wZW5eBiIIdW5wYWlkQXRfIgZvcGVuQXRfewsiBHNlZW4nLAAiBWZpcnN0TgAAgKptt3lCIgRsYXN0TgCAO6ttt3lCIgZlZmZvcnQiBGhpZ2h7C3sH",
+  "resumed": {
+   "resumed": true,
+   "requests": [
+    {
+     "usage": {
+      "input": 40,
+      "output": 7,
+      "cacheRead": 60,
+      "cacheWrite": 0,
+      "reasoning": 0
+     },
+     "model": "openai/gpt-fixture",
+     "text": "",
+     "calls": 0
+    },
+    {
+     "usage": {
+      "input": 10,
+      "output": 2,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "reasoning": 0
+     },
+     "model": "openai/gpt-fixture",
+     "text": "",
+     "calls": 0
+    }
+   ]
+  }
+ },
+ {
+  "name": "codex-open",
+  "mode": {
+   "turns": false,
+   "totals": true
+  },
+  "cursor": "/w9vIgZzb3VyY2UiBWNvZGV4IgNkZXZOAAAAAAAAPEAiA2lub04AAACwWSBwQSIGb2Zmc2V0SZQJIgRtYXJrIlhaU0k2SW1GemMybHpkR0Z1ZENJc0ltTnZiblJsYm5RaU9sdDdJblI1Y0dVaU9pSnZkWFJ3ZFhSZmRHVjRkQ0lzSW5SbGVIUWlPaUpCTGlKOVhYMTlDZz09IgRrZWVwRiIGdG90YWxzVCIFc3RhdGVvIgdzZXNzaW9ubyIGc291cmNlIgVjb2RleCICaWQiCHRocmVhZC0xIgRmaWxlInsvZGV2L3NobS9vbGQtY3Vyc29ycy1maXh0dXJlL29sZC1jdXJzb3JzLURKZElTSC9jb2RleC1vcGVuLTIvLmNvZGV4L3Nlc3Npb25zLzIwMjYvMDEvMDEvcm9sbG91dC0yMDI2LTAxLTAxVDAwLTAwLTAwLWEuanNvbmwiBXN0YXRlIgljb21wbGV0ZWQiBWNoaWxkRiIFdHVybnNBACQAACIFdXNlcnNJACIIYWN0aXZlTXNJACIGY29waWVzSQAiBW1vZGVsIhJvcGVuYWkvZ3B0LWZpeHR1cmV7CiIFdHVybnNBACQAACIHYW5zd2Vyc0EAJAAAIgVuYW1lczs6ACIGcHJpY2VkbyIDc3VtSQAiB3Vua25vd25GewIiCGFjdGl2ZU1zTgAAAAAAcKdAIgNvd25vIgZldmVudHNGIgRoZWxkQQFvIgVpbmRleEkAIgR0dXJubyIEcm9sZSIEdXNlciIEdGV4dCIAIgJhdE4AAP2qbbd5QnsDewIkAAEiB3JlY29yZHNGIglyZXNwb25zZXMnLAAiBWl0ZW1zOzoAIgdyZXN1bHRzOzoAIghwcm92aWRlciIGb3BlbmFpIgZ1bnBhaWRfIgRvcGVuXyIIdW5wYWlkQXRJACIGb3BlbkF0SQAiCW9wZW5DYWxsc0EAJAAAewwiBmNvdW50c28iAW5JAiIGbW9kZWxzQQEiEm9wZW5haS9ncHQtZml4dHVyZSQAASIFbW9kZWxcBQQAAAAAIgZ2YWx1ZXNcCDgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgDurbbd5QiIDaGFzXAEBAHsFIgRzZWVuJywAIgVmaXJzdE4AAICqbbd5QiIEbGFzdE4AgDurbbd5QiIGZWZmb3J0IgRoaWdoewx7CA==",
+  "resumed": {
+   "resumed": true,
+   "requests": [],
+   "counts": {
+    "n": 2,
+    "models": [
+     "openai/gpt-fixture"
+    ],
+    "model": [
+     0,
+     0
+    ],
+    "values": [
+     40,
+     7,
+     60,
+     0,
+     0,
+     0,
+     1767225603000,
+     10,
+     2,
+     0,
+     0,
+     0,
+     0,
+     1767225605000
+    ],
+    "has": [
+     5,
+     5
+    ]
+   }
+  }
+ },
+ {
+  "name": "codex-unpaid",
+  "mode": {
+   "turns": true
+  },
+  "cursor": "/w9vIgZzb3VyY2UiBWNvZGV4IgNkZXZOAAAAAAAAPEAiA2lub04AAAAgWiBwQSIGb2Zmc2V0SYgLIgRtYXJrIlhJanA3SW5SNWNHVWlPaUptZFc1amRHbHZibDlqWVd4c1gyOTFkSEIxZENJc0ltTmhiR3hmYVdRaU9pSmpNU0lzSW05MWRIQjFkQ0k2SW05ckluMTlDZz09IgRrZWVwVCIFc3RhdGVvIgdzZXNzaW9ubyIGc291cmNlIgVjb2RleCICaWQiCHRocmVhZC0xIgRmaWxlIn0vZGV2L3NobS9vbGQtY3Vyc29ycy1maXh0dXJlL29sZC1jdXJzb3JzLURKZElTSC9jb2RleC11bnBhaWQtMy8uY29kZXgvc2Vzc2lvbnMvMjAyNi8wMS8wMS9yb2xsb3V0LTIwMjYtMDEtMDFUMDAtMDAtMDAtYi5qc29ubCIFc3RhdGUiCWNvbXBsZXRlZCIFY2hpbGRGIgV0dXJuc0EAJAAAIgV1c2Vyc0kAIghhY3RpdmVNc0kAIgZjb3BpZXNJACIDY3dkIg0vd29yay9maXh0dXJlIgVtb2RlbCISb3BlbmFpL2dwdC1maXh0dXJlewsiBXR1cm5zQQJvIgRyb2xlIglhc3Npc3RhbnQiBHRleHQiACIFY2FsbHNBAW8iBHR5cGUiCHRvb2xDYWxsIgJpZCICYzEiBG5hbWUiBXNoZWxsIglhcmd1bWVudHNvewB7BCQAASICYXROAIA7q223eUIiBW1vZGVsIhJvcGVuYWkvZ3B0LWZpeHR1cmUiBmVmZm9ydCIEaGlnaHsGbyIEcm9sZSIKdG9vbFJlc3VsdCIGY2FsbElkIgJjMSIEbmFtZSIFc2hlbGwiBHRleHQiAm9rIgdpc0Vycm9yRiICYXROAAB6q223eUJ7BiQAAiIHYW5zd2Vyc0EBXgUkAAEiBW5hbWVzOyICYzEiBXNoZWxsOgIiBnByaWNlZG8iA3N1bUkAIgd1bmtub3duRnsCIghhY3RpdmVNc04AAAAAAECvQCIDb3dubyIGZXZlbnRzRiIEaGVsZEEBbyIFaW5kZXhJACIEdHVybm8iBHJvbGUiBHVzZXIiBHRleHQiAlEuIgJhdE4AAP2qbbd5QnsDewIkAAEiB3JlY29yZHNGIglyZXNwb25zZXMnLAAiBWl0ZW1zOzoAIgdyZXN1bHRzOyICYzFvIgR0dXJuXgkiBnN0YXRlZEZ7AjoCIghwcm92aWRlciIGb3BlbmFpIgZ1bnBhaWReBSIEb3Blbl8iCHVucGFpZEF0XyIGb3BlbkF0X3sLIgRzZWVuJywAIgVmaXJzdE4AAICqbbd5QiIEbGFzdE4AAHqrbbd5QiIGZWZmb3J0IgRoaWdoewt7Bw==",
+  "resumed": {
+   "resumed": true,
+   "requests": [
+    {
+     "usage": {
+      "input": 50,
+      "output": 5,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "reasoning": 0
+     },
+     "model": "openai/gpt-fixture",
+     "text": "",
+     "calls": 1
+    },
+    {
+     "usage": {
+      "input": 10,
+      "output": 3,
+      "cacheRead": 10,
+      "cacheWrite": 0,
+      "reasoning": 0
+     },
+     "model": "openai/gpt-fixture",
+     "text": "Done.",
+     "calls": 0
+    }
+   ]
+  }
+ },
+ {
+  "name": "codex-unpaid",
+  "mode": {
+   "turns": false
+  },
+  "cursor": "/w9vIgZzb3VyY2UiBWNvZGV4IgNkZXZOAAAAAAAAPEAiA2lub04AAACQWiBwQSIGb2Zmc2V0SYgLIgRtYXJrIlhJanA3SW5SNWNHVWlPaUptZFc1amRHbHZibDlqWVd4c1gyOTFkSEIxZENJc0ltTmhiR3hmYVdRaU9pSmpNU0lzSW05MWRIQjFkQ0k2SW05ckluMTlDZz09IgRrZWVwRiIFc3RhdGVvIgdzZXNzaW9ubyIGc291cmNlIgVjb2RleCICaWQiCHRocmVhZC0xIgRmaWxlIn0vZGV2L3NobS9vbGQtY3Vyc29ycy1maXh0dXJlL29sZC1jdXJzb3JzLURKZElTSC9jb2RleC11bnBhaWQtNC8uY29kZXgvc2Vzc2lvbnMvMjAyNi8wMS8wMS9yb2xsb3V0LTIwMjYtMDEtMDFUMDAtMDAtMDAtYi5qc29ubCIFc3RhdGUiCWNvbXBsZXRlZCIFY2hpbGRGIgV0dXJuc0EAJAAAIgV1c2Vyc0kAIghhY3RpdmVNc0kAIgZjb3BpZXNJACIFbW9kZWwiEm9wZW5haS9ncHQtZml4dHVyZXsKIgV0dXJuc0EAJAAAIgdhbnN3ZXJzQQFvIgRyb2xlIglhc3Npc3RhbnQiBHRleHQiACIFY2FsbHNBAW8iBHR5cGUiCHRvb2xDYWxsIgJpZCICYzEiBG5hbWUiBXNoZWxsIglhcmd1bWVudHNvewB7BCQAASICYXROAIA7q223eUIiBW1vZGVsIhJvcGVuYWkvZ3B0LWZpeHR1cmUiBmVmZm9ydCIEaGlnaHsGJAABIgVuYW1lczs6ACIGcHJpY2VkbyIDc3VtSQAiB3Vua25vd25GewIiCGFjdGl2ZU1zTgAAAAAAQK9AIgNvd25vIgZldmVudHNGIgRoZWxkQQFvIgVpbmRleEkAIgR0dXJubyIEcm9sZSIEdXNlciIEdGV4dCIAIgJhdE4AAP2qbbd5QnsDewIkAAEiB3JlY29yZHNGIglyZXNwb25zZXMnLAAiBWl0ZW1zOzoAIgdyZXN1bHRzOzoAIghwcm92aWRlciIGb3BlbmFpIgZ1bnBhaWReBiIEb3Blbl8iCHVucGFpZEF0XyIGb3BlbkF0X3sLIgRzZWVuJywAIgVmaXJzdE4AAICqbbd5QiIEbGFzdE4AAHqrbbd5QiIGZWZmb3J0IgRoaWdoewt7Bw==",
+  "resumed": {
+   "resumed": true,
+   "requests": [
+    {
+     "usage": {
+      "input": 50,
+      "output": 5,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "reasoning": 0
+     },
+     "model": "openai/gpt-fixture",
+     "text": "",
+     "calls": 1
+    },
+    {
+     "usage": {
+      "input": 10,
+      "output": 3,
+      "cacheRead": 10,
+      "cacheWrite": 0,
+      "reasoning": 0
+     },
+     "model": "openai/gpt-fixture",
+     "text": "",
+     "calls": 0
+    }
+   ]
+  }
+ },
+ {
+  "name": "codex-unpaid",
+  "mode": {
+   "turns": false,
+   "totals": true
+  },
+  "cursor": "/w9vIgZzb3VyY2UiBWNvZGV4IgNkZXZOAAAAAAAAPEAiA2lub04AAAAAWyBwQSIGb2Zmc2V0SYgLIgRtYXJrIlhJanA3SW5SNWNHVWlPaUptZFc1amRHbHZibDlqWVd4c1gyOTFkSEIxZENJc0ltTmhiR3hmYVdRaU9pSmpNU0lzSW05MWRIQjFkQ0k2SW05ckluMTlDZz09IgRrZWVwRiIGdG90YWxzVCIFc3RhdGVvIgdzZXNzaW9ubyIGc291cmNlIgVjb2RleCICaWQiCHRocmVhZC0xIgRmaWxlIn0vZGV2L3NobS9vbGQtY3Vyc29ycy1maXh0dXJlL29sZC1jdXJzb3JzLURKZElTSC9jb2RleC11bnBhaWQtNS8uY29kZXgvc2Vzc2lvbnMvMjAyNi8wMS8wMS9yb2xsb3V0LTIwMjYtMDEtMDFUMDAtMDAtMDAtYi5qc29ubCIFc3RhdGUiCWNvbXBsZXRlZCIFY2hpbGRGIgV0dXJuc0EAJAAAIgV1c2Vyc0kAIghhY3RpdmVNc0kAIgZjb3BpZXNJACIFbW9kZWwiEm9wZW5haS9ncHQtZml4dHVyZXsKIgV0dXJuc0EAJAAAIgdhbnN3ZXJzQQAkAAAiBW5hbWVzOzoAIgZwcmljZWRvIgNzdW1JACIHdW5rbm93bkZ7AiIIYWN0aXZlTXNOAAAAAABAr0AiA293bm8iBmV2ZW50c0YiBGhlbGRBAW8iBWluZGV4SQAiBHR1cm5vIgRyb2xlIgR1c2VyIgR0ZXh0IgAiAmF0TgAA/aptt3lCewN7AiQAASIHcmVjb3Jkc0YiCXJlc3BvbnNlcycsACIFaXRlbXM7OgAiB3Jlc3VsdHM7OgAiCHByb3ZpZGVyIgZvcGVuYWkiBnVucGFpZF8iBG9wZW5fIgh1bnBhaWRBdEkAIgZvcGVuQXRfIglvcGVuQ2FsbHNBASICYzEkAAF7DCIGY291bnRzbyIBbkkCIgZtb2RlbHNBASISb3BlbmFpL2dwdC1maXh0dXJlJAABIgVtb2RlbFwFBAAAAAAiBnZhbHVlc1wIOAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACAO6ttt3lCIgNoYXNcAQEAewUiBHNlZW4nLAAiBWZpcnN0TgAAgKptt3lCIgRsYXN0TgAAeqttt3lCIgZlZmZvcnQiBGhpZ2h7DHsI",
+  "resumed": {
+   "resumed": true,
+   "requests": [],
+   "counts": {
+    "n": 2,
+    "models": [
+     "openai/gpt-fixture"
+    ],
+    "model": [
+     0,
+     0
+    ],
+    "values": [
+     50,
+     5,
+     0,
+     0,
+     0,
+     0,
+     1767225603000,
+     10,
+     3,
+     10,
+     0,
+     0,
+     0,
+     1767225606000
+    ],
+    "has": [
+     5,
+     5
+    ]
+   }
+  }
+ },
+ {
+  "name": "codex-open-call",
+  "mode": {
+   "turns": true
+  },
+  "cursor": "/w9vIgZzb3VyY2UiBWNvZGV4IgNkZXZOAAAAAAAAPEAiA2lub04AAABwWyBwQSIGb2Zmc2V0SfoIIgRtYXJrIlhablZ1WTNScGIyNWZZMkZzYkNJc0ltNWhiV1VpT2lKemFHVnNiQ0lzSW1GeVozVnRaVzUwY3lJNkludDlJaXdpWTJGc2JGOXBaQ0k2SW1NeEluMTlDZz09IgRrZWVwVCIFc3RhdGVvIgdzZXNzaW9ubyIGc291cmNlIgVjb2RleCICaWQiCHRocmVhZC0xIgRmaWxlIoABL2Rldi9zaG0vb2xkLWN1cnNvcnMtZml4dHVyZS9vbGQtY3Vyc29ycy1ESmRJU0gvY29kZXgtb3Blbi1jYWxsLTYvLmNvZGV4L3Nlc3Npb25zLzIwMjYvMDEvMDEvcm9sbG91dC0yMDI2LTAxLTAxVDAwLTAwLTAwLWMuanNvbmwiBXN0YXRlIgljb21wbGV0ZWQiBWNoaWxkRiIFdHVybnNBACQAACIFdXNlcnNJACIIYWN0aXZlTXNJACIGY29waWVzSQAiA2N3ZCINL3dvcmsvZml4dHVyZSIFbW9kZWwiEm9wZW5haS9ncHQtZml4dHVyZXsLIgV0dXJuc0EBbyIEcm9sZSIJYXNzaXN0YW50IgR0ZXh0IgAiBWNhbGxzQQFvIgR0eXBlIgh0b29sQ2FsbCICaWQiAmMxIgRuYW1lIgVzaGVsbCIJYXJndW1lbnRzb3sAewQkAAEiAmF0TgCAO6ttt3lCIgVtb2RlbCISb3BlbmFpL2dwdC1maXh0dXJlIgZlZmZvcnQiBGhpZ2h7BiQAASIHYW5zd2Vyc0EBXgUkAAEiBW5hbWVzOyICYzEiBXNoZWxsOgIiBnByaWNlZG8iA3N1bUkAIgd1bmtub3duRnsCIghhY3RpdmVNc04AAAAAAHCnQCIDb3dubyIGZXZlbnRzRiIEaGVsZEEBbyIFaW5kZXhJACIEdHVybm8iBHJvbGUiBHVzZXIiBHRleHQiAlEuIgJhdE4AAP2qbbd5QnsDewIkAAEiB3JlY29yZHNGIglyZXNwb25zZXMnLAAiBWl0ZW1zOzoAIgdyZXN1bHRzOzoAIghwcm92aWRlciIGb3BlbmFpIgZ1bnBhaWReBSIEb3Blbl4FIgh1bnBhaWRBdF8iBm9wZW5BdF97CyIEc2VlbicsACIFZmlyc3ROAACAqm23eUIiBGxhc3ROAIA7q223eUIiBmVmZm9ydCIEaGlnaHsLewc=",
+  "resumed": {
+   "resumed": true,
+   "requests": [
+    {
+     "usage": {
+      "input": 40,
+      "output": 4,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "reasoning": 0
+     },
+     "model": "openai/gpt-fixture",
+     "text": "And text.",
+     "calls": 1
+    }
+   ]
+  }
+ },
+ {
+  "name": "codex-open-call",
+  "mode": {
+   "turns": false
+  },
+  "cursor": "/w9vIgZzb3VyY2UiBWNvZGV4IgNkZXZOAAAAAAAAPEAiA2lub04AAADgWyBwQSIGb2Zmc2V0SfoIIgRtYXJrIlhablZ1WTNScGIyNWZZMkZzYkNJc0ltNWhiV1VpT2lKemFHVnNiQ0lzSW1GeVozVnRaVzUwY3lJNkludDlJaXdpWTJGc2JGOXBaQ0k2SW1NeEluMTlDZz09IgRrZWVwRiIFc3RhdGVvIgdzZXNzaW9ubyIGc291cmNlIgVjb2RleCICaWQiCHRocmVhZC0xIgRmaWxlIoABL2Rldi9zaG0vb2xkLWN1cnNvcnMtZml4dHVyZS9vbGQtY3Vyc29ycy1ESmRJU0gvY29kZXgtb3Blbi1jYWxsLTcvLmNvZGV4L3Nlc3Npb25zLzIwMjYvMDEvMDEvcm9sbG91dC0yMDI2LTAxLTAxVDAwLTAwLTAwLWMuanNvbmwiBXN0YXRlIgljb21wbGV0ZWQiBWNoaWxkRiIFdHVybnNBACQAACIFdXNlcnNJACIIYWN0aXZlTXNJACIGY29waWVzSQAiBW1vZGVsIhJvcGVuYWkvZ3B0LWZpeHR1cmV7CiIFdHVybnNBACQAACIHYW5zd2Vyc0EBbyIEcm9sZSIJYXNzaXN0YW50IgR0ZXh0IgAiBWNhbGxzQQFvIgR0eXBlIgh0b29sQ2FsbCICaWQiAmMxIgRuYW1lIgVzaGVsbCIJYXJndW1lbnRzb3sAewQkAAEiAmF0TgCAO6ttt3lCIgVtb2RlbCISb3BlbmFpL2dwdC1maXh0dXJlIgZlZmZvcnQiBGhpZ2h7BiQAASIFbmFtZXM7OgAiBnByaWNlZG8iA3N1bUkAIgd1bmtub3duRnsCIghhY3RpdmVNc04AAAAAAHCnQCIDb3dubyIGZXZlbnRzRiIEaGVsZEEBbyIFaW5kZXhJACIEdHVybm8iBHJvbGUiBHVzZXIiBHRleHQiACICYXROAAD9qm23eUJ7A3sCJAABIgdyZWNvcmRzRiIJcmVzcG9uc2VzJywAIgVpdGVtczs6ACIHcmVzdWx0czs6ACIIcHJvdmlkZXIiBm9wZW5haSIGdW5wYWlkXgYiBG9wZW5eBiIIdW5wYWlkQXRfIgZvcGVuQXRfewsiBHNlZW4nLAAiBWZpcnN0TgAAgKptt3lCIgRsYXN0TgCAO6ttt3lCIgZlZmZvcnQiBGhpZ2h7C3sH",
+  "resumed": {
+   "resumed": true,
+   "requests": [
+    {
+     "usage": {
+      "input": 40,
+      "output": 4,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "reasoning": 0
+     },
+     "model": "openai/gpt-fixture",
+     "text": "",
+     "calls": 1
+    }
+   ]
+  }
+ },
+ {
+  "name": "codex-open-call",
+  "mode": {
+   "turns": false,
+   "totals": true
+  },
+  "cursor": "/w9vIgZzb3VyY2UiBWNvZGV4IgNkZXZOAAAAAAAAPEAiA2lub04AAABQXCBwQSIGb2Zmc2V0SfoIIgRtYXJrIlhablZ1WTNScGIyNWZZMkZzYkNJc0ltNWhiV1VpT2lKemFHVnNiQ0lzSW1GeVozVnRaVzUwY3lJNkludDlJaXdpWTJGc2JGOXBaQ0k2SW1NeEluMTlDZz09IgRrZWVwRiIGdG90YWxzVCIFc3RhdGVvIgdzZXNzaW9ubyIGc291cmNlIgVjb2RleCICaWQiCHRocmVhZC0xIgRmaWxlIoABL2Rldi9zaG0vb2xkLWN1cnNvcnMtZml4dHVyZS9vbGQtY3Vyc29ycy1ESmRJU0gvY29kZXgtb3Blbi1jYWxsLTgvLmNvZGV4L3Nlc3Npb25zLzIwMjYvMDEvMDEvcm9sbG91dC0yMDI2LTAxLTAxVDAwLTAwLTAwLWMuanNvbmwiBXN0YXRlIgljb21wbGV0ZWQiBWNoaWxkRiIFdHVybnNBACQAACIFdXNlcnNJACIIYWN0aXZlTXNJACIGY29waWVzSQAiBW1vZGVsIhJvcGVuYWkvZ3B0LWZpeHR1cmV7CiIFdHVybnNBACQAACIHYW5zd2Vyc0EAJAAAIgVuYW1lczs6ACIGcHJpY2VkbyIDc3VtSQAiB3Vua25vd25GewIiCGFjdGl2ZU1zTgAAAAAAcKdAIgNvd25vIgZldmVudHNGIgRoZWxkQQFvIgVpbmRleEkAIgR0dXJubyIEcm9sZSIEdXNlciIEdGV4dCIAIgJhdE4AAP2qbbd5QnsDewIkAAEiB3JlY29yZHNGIglyZXNwb25zZXMnLAAiBWl0ZW1zOzoAIgdyZXN1bHRzOzoAIghwcm92aWRlciIGb3BlbmFpIgZ1bnBhaWRfIgRvcGVuXyIIdW5wYWlkQXRJACIGb3BlbkF0SQAiCW9wZW5DYWxsc0EBIgJjMSQAAXsMIgZjb3VudHNvIgFuSQIiBm1vZGVsc0EBIhJvcGVuYWkvZ3B0LWZpeHR1cmUkAAEiBW1vZGVsXAUEAAAAACIGdmFsdWVzXAg4AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAIA7q223eUIiA2hhc1wBAQB7BSIEc2VlbicsACIFZmlyc3ROAACAqm23eUIiBGxhc3ROAIA7q223eUIiBmVmZm9ydCIEaGlnaHsMewg=",
+  "resumed": {
+   "resumed": true,
+   "requests": [],
+   "counts": {
+    "n": 1,
+    "models": [
+     "openai/gpt-fixture"
+    ],
+    "model": [
+     0
+    ],
+    "values": [
+     40,
+     4,
+     0,
+     0,
+     0,
+     0,
+     1767225603000
+    ],
+    "has": [
+     5
+    ]
+   }
+  }
+ },
+ {
+  "name": "claude-split",
+  "mode": {
+   "turns": true
+  },
+  "cursor": "/w9vIgZzb3VyY2UiC2NsYXVkZS1jb2RlIgNkZXZOAAAAAAAAPEAiA2lub04AAACgXCBwQSIGb2Zmc2V0SYgKIgRtYXJrIlhMQ0pqWVdOb1pWOXlaV0ZrWDJsdWNIVjBYM1J2YTJWdWN5STZNQ3dpWTJGamFHVmZZM0psWVhScGIyNWZhVzV3ZFhSZmRHOXJaVzV6SWpvd2ZYMTlDZz09IgRrZWVwVCIFc3RhdGVvIgdzZXNzaW9ubyIGc291cmNlIgtjbGF1ZGUtY29kZSICaWQiJDAwMDAwMDAwLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDAwMSIEZmlsZSKIAS9kZXYvc2htL29sZC1jdXJzb3JzLWZpeHR1cmUvb2xkLWN1cnNvcnMtREpkSVNIL2NsYXVkZS1zcGxpdC05Ly5jbGF1ZGUvcHJvamVjdHMvLXdvcmstZml4dHVyZS8wMDAwMDAwMC0wMDAwLTQwMDAtODAwMC0wMDAwMDAwMDAwMDEuanNvbmwiBXN0YXRlIgljb21wbGV0ZWQiBWNoaWxkRiIFdHVybnNBACQAACIFdXNlcnNJAiIIYWN0aXZlTXNJACIGY29waWVzSQAiA2N3ZCINL3dvcmsvZml4dHVyZSILZmlyc3RQcm9tcHQiAlEuIgl0aXRsZVRleHQiAlEuIgVtb2RlbCIaYW50aHJvcGljL2NsYXVkZS1maXh0dXJlLTF7DSIFdHVybnNBAm8iBHJvbGUiBHVzZXIiBHRleHQiAlEuIgJhdE4AAICqbbd5QiIFdXVpZHNBASICdTEkAAF7BG8iBHJvbGUiCWFzc2lzdGFudCIEdGV4dCIAIgVjYWxsc0EAJAAAIgJhdE4AgL6qbbd5QiIDa2V5Igttc2dfMTpyZXFfMSIFbW9kZWwiGmFudGhyb3BpYy9jbGF1ZGUtZml4dHVyZS0xIgV1c2FnZW8iBWlucHV0SQIiBm91dHB1dEkCIgljYWNoZVJlYWRJACIKY2FjaGVXcml0ZUkAewQiBXV1aWRzQQEiAmExJAABewgkAAIiB2Fuc3dlcnNBAV4HJAABIgVuYW1lczs6ACIGcHJpY2VkbyIDc3VtSQAiB3Vua25vd25GewIiCGFjdGl2ZU1zTgAAAAAAQI9AIgNvd25vIgVrZXllZDsiC21zZ18xOnJlcV8xXgc6AiIGY29waWVkJywAIgZ0aXRsZXNvIglzdW1tYXJpZXNBACQAACIFdXVpZHMnIgJ1MSICYTEsAnsCewMiBHNlZW4nIgR1OnUxIgR1OmExIg1tOm1zZ18xOnJlcV8xLAMiBWZpcnN0TgAAgKptt3lCIgRsYXN0TgCAvqptt3lCewp7Bw==",
+  "resumed": {
+   "resumed": true,
+   "requests": [
+    {
+     "key": "msg_1:req_1",
+     "usage": {
+      "input": 5,
+      "output": 9,
+      "cacheRead": 0,
+      "cacheWrite": 0
+     },
+     "model": "anthropic/claude-fixture-1",
+     "text": "Done.",
+     "calls": 0
+    },
+    {
+     "key": "msg_2:req_2",
+     "usage": {
+      "input": 2,
+      "output": 3,
+      "cacheRead": 0,
+      "cacheWrite": 0
+     },
+     "model": "anthropic/claude-fixture-1",
+     "text": "Done.",
+     "calls": 0
+    }
+   ]
+  }
+ },
+ {
+  "name": "claude-split",
+  "mode": {
+   "turns": false
+  },
+  "cursor": "/w9vIgZzb3VyY2UiC2NsYXVkZS1jb2RlIgNkZXZOAAAAAAAAPEAiA2lub04AAADwXCBwQSIGb2Zmc2V0SYgKIgRtYXJrIlhMQ0pqWVdOb1pWOXlaV0ZrWDJsdWNIVjBYM1J2YTJWdWN5STZNQ3dpWTJGamFHVmZZM0psWVhScGIyNWZhVzV3ZFhSZmRHOXJaVzV6SWpvd2ZYMTlDZz09IgRrZWVwRiIFc3RhdGVvIgdzZXNzaW9ubyIGc291cmNlIgtjbGF1ZGUtY29kZSICaWQiJDAwMDAwMDAwLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDAwMSIEZmlsZSKJAS9kZXYvc2htL29sZC1jdXJzb3JzLWZpeHR1cmUvb2xkLWN1cnNvcnMtREpkSVNIL2NsYXVkZS1zcGxpdC0xMC8uY2xhdWRlL3Byb2plY3RzLy13b3JrLWZpeHR1cmUvMDAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDAxLmpzb25sIgVzdGF0ZSIJY29tcGxldGVkIgVjaGlsZEYiBXR1cm5zQQAkAAAiBXVzZXJzSQIiCGFjdGl2ZU1zSQAiBmNvcGllc0kAIgVtb2RlbCIaYW50aHJvcGljL2NsYXVkZS1maXh0dXJlLTF7CiIFdHVybnNBACQAACIHYW5zd2Vyc0EBbyIEcm9sZSIJYXNzaXN0YW50IgR0ZXh0IgAiBWNhbGxzQQAkAAAiAmF0TgCAvqptt3lCIgNrZXkiC21zZ18xOnJlcV8xIgVtb2RlbCIaYW50aHJvcGljL2NsYXVkZS1maXh0dXJlLTEiBXVzYWdlbyIFaW5wdXRJAiIGb3V0cHV0SQIiCWNhY2hlUmVhZEkAIgpjYWNoZVdyaXRlSQB7BCIFdXVpZHNBASICYTEkAAF7CCQAASIFbmFtZXM7OgAiBnByaWNlZG8iA3N1bUkAIgd1bmtub3duRnsCIghhY3RpdmVNc04AAAAAAECPQCIDb3dubyIFa2V5ZWQ7Igttc2dfMTpyZXFfMV4GOgIiBmNvcGllZCcsACIGdGl0bGVzbyIJc3VtbWFyaWVzQQAkAAAiBXV1aWRzJywAewJ7AyIEc2VlbiciBHU6dTEiBHU6YTEiDW06bXNnXzE6cmVxXzEsAyIFZmlyc3ROAACAqm23eUIiBGxhc3ROAIC+qm23eUJ7CnsH",
+  "resumed": {
+   "resumed": true,
+   "requests": [
+    {
+     "key": "msg_1:req_1",
+     "usage": {
+      "input": 5,
+      "output": 9,
+      "cacheRead": 0,
+      "cacheWrite": 0
+     },
+     "model": "anthropic/claude-fixture-1",
+     "text": "",
+     "calls": 0
+    },
+    {
+     "key": "msg_2:req_2",
+     "usage": {
+      "input": 2,
+      "output": 3,
+      "cacheRead": 0,
+      "cacheWrite": 0
+     },
+     "model": "anthropic/claude-fixture-1",
+     "text": "",
+     "calls": 0
+    }
+   ]
+  }
+ },
+ {
+  "name": "claude-split",
+  "mode": {
+   "turns": false,
+   "totals": true
+  },
+  "cursor": "/w9vIgZzb3VyY2UiC2NsYXVkZS1jb2RlIgNkZXZOAAAAAAAAPEAiA2lub04AAABAXSBwQSIGb2Zmc2V0SYgKIgRtYXJrIlhMQ0pqWVdOb1pWOXlaV0ZrWDJsdWNIVjBYM1J2YTJWdWN5STZNQ3dpWTJGamFHVmZZM0psWVhScGIyNWZhVzV3ZFhSZmRHOXJaVzV6SWpvd2ZYMTlDZz09IgRrZWVwRiIGdG90YWxzVCIFc3RhdGVvIgdzZXNzaW9ubyIGc291cmNlIgtjbGF1ZGUtY29kZSICaWQiJDAwMDAwMDAwLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDAwMSIEZmlsZSKJAS9kZXYvc2htL29sZC1jdXJzb3JzLWZpeHR1cmUvb2xkLWN1cnNvcnMtREpkSVNIL2NsYXVkZS1zcGxpdC0xMS8uY2xhdWRlL3Byb2plY3RzLy13b3JrLWZpeHR1cmUvMDAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDAxLmpzb25sIgVzdGF0ZSIJY29tcGxldGVkIgVjaGlsZEYiBXR1cm5zQQAkAAAiBXVzZXJzSQIiCGFjdGl2ZU1zSQAiBmNvcGllc0kAIgVtb2RlbCIaYW50aHJvcGljL2NsYXVkZS1maXh0dXJlLTF7CiIFdHVybnNBACQAACIHYW5zd2Vyc0EAJAAAIgVuYW1lczs6ACIGcHJpY2VkbyIDc3VtSQAiB3Vua25vd25GewIiCGFjdGl2ZU1zTgAAAAAAQI9AIgNvd25vIgVrZXllZDs6ACIGY29waWVkJywAIgZ0aXRsZXNvIglzdW1tYXJpZXNBACQAACIFdXVpZHMnLAB7AiIHaW5kZXhlc28iBXV1aWRzbyIFY291bnRJACIFc2xvdHNcBQgAAAAAAAAAACIGb3duZXJzXAUEAAAAACIFd29yZHNcBRAAAAAAAAAAAAAAAAAAAAAAewQiBm90aGVyc28iBWNvdW50SQIiBXNsb3RzXAUIAAAAAAEAAAAiBm93bmVyc1wFBAAAAAAiBGVuZHNcCAgAAAAAAAAkQCIFYnl0ZXNcARAFw2q+B/1o0+BAAAAAAAAAIgR1c2VkSRR7BiIIbG9jYXRvcnNBACQAACIHbnVtYmVyczs6AHsEewQiBmNvdW50c28iAW5JAiIGbW9kZWxzQQEiGmFudGhyb3BpYy9jbGF1ZGUtZml4dHVyZS0xJAABIgVtb2RlbFwFBAAAAAAiBnZhbHVlc1wIOAAAAAAAAPA/AAAAAAAA8D8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACAvqptt3lCIgNoYXNcAQEBewUiBHNlZW4nIgR1OnUxIgR1OmExIg1tOm1zZ18xOnJlcV8xLAMiBWZpcnN0TgAAgKptt3lCIgRsYXN0TgCAvqptt3lCewt7CA==",
+  "resumed": {
+   "resumed": true,
+   "requests": [],
+   "counts": {
+    "n": 2,
+    "models": [
+     "anthropic/claude-fixture-1"
+    ],
+    "model": [
+     0,
+     0
+    ],
+    "values": [
+     5,
+     9,
+     0,
+     0,
+     0,
+     0,
+     1767225601000,
+     2,
+     3,
+     0,
+     0,
+     0,
+     0,
+     1767225604000
+    ],
+    "has": [
+     1,
+     1
+    ]
+   }
+  }
+ },
+ {
+  "name": "pi-split",
+  "mode": {
+   "turns": true
+  },
+  "cursor": "/w9vIgZzb3VyY2UiAnBpIgNkZXZOAAAAAAAAPEAiA2lub04AAACgXSBwQSIGb2Zmc2V0SdAHIgRtYXJrIlhJam93TENKallXTm9aVmR5YVhSbElqb3dMQ0owYjNSaGJGUnZhMlZ1Y3lJNk4zMHNJblJwYldWemRHRnRjQ0k2TVRjMk56SXlOVFl3TWpBd01IMTlDZz09IgRrZWVwVCIFc3RhdGVvIgdzZXNzaW9ubyIGc291cmNlIgJwaSICaWQiBHBpLTEiBGZpbGUifi9kZXYvc2htL29sZC1jdXJzb3JzLWZpeHR1cmUvb2xkLWN1cnNvcnMtREpkSVNIL3BpLXNwbGl0LTEyLy5waS9hZ2VudC9zZXNzaW9ucy8tLXdvcmstZml4dHVyZS0tLzIwMjYtMDEtMDFUMDAtMDAtMDBfcGktMS5qc29ubCIFc3RhdGUiCWNvbXBsZXRlZCIFY2hpbGRGIgV0dXJuc0EAJAAAIgV1c2Vyc0kCIghhY3RpdmVNc0kAIgZjb3BpZXNJACIDY3dkIg0vd29yay9maXh0dXJlIgtmaXJzdFByb21wdCICUS4iCXRpdGxlVGV4dCICUS4iBW1vZGVsIhBvcGVuYWkvZml4dHVyZS0xIgdjb3N0VXNkX3sOIgV0dXJuc0ECbyIEcm9sZSIEdXNlciIEdGV4dCICUS4iAmF0TgCAvqptt3lCewNvIgRyb2xlIglhc3Npc3RhbnQiBHRleHQiAm9rIgVjYWxsc0EAJAAAIgJhdE4AAP2qbbd5QiIFbW9kZWwiEG9wZW5haS9maXh0dXJlLTEiBXVzYWdlbyIFaW5wdXRJBiIGb3V0cHV0SQgiCWNhY2hlUmVhZEkAIgpjYWNoZVdyaXRlSQB7BHsGJAACIgdhbnN3ZXJzQQFeBiQAASIFbmFtZXM7OgAiBnByaWNlZG8iA3N1bUkAIgd1bmtub3duVHsCIghhY3RpdmVNc04AAAAAAECfQCIDb3duXyIEc2VlbicsACIFZmlyc3ROAACAqm23eUIiBGxhc3ROAAD9qm23eUJ7CnsH",
+  "resumed": {
+   "resumed": true,
+   "requests": [
+    {
+     "usage": {
+      "input": 3,
+      "output": 4,
+      "cacheRead": 0,
+      "cacheWrite": 0
+     },
+     "model": "openai/fixture-1",
+     "text": "ok",
+     "calls": 0
+    },
+    {
+     "usage": {
+      "input": 5,
+      "output": 6,
+      "cacheRead": 0,
+      "cacheWrite": 0
+     },
+     "model": "openai/fixture-1",
+     "text": "ok",
+     "calls": 0
+    }
+   ]
+  }
+ },
+ {
+  "name": "pi-split",
+  "mode": {
+   "turns": false
+  },
+  "cursor": "/w9vIgZzb3VyY2UiAnBpIgNkZXZOAAAAAAAAPEAiA2lub04AAAAAXiBwQSIGb2Zmc2V0SdAHIgRtYXJrIlhJam93TENKallXTm9aVmR5YVhSbElqb3dMQ0owYjNSaGJGUnZhMlZ1Y3lJNk4zMHNJblJwYldWemRHRnRjQ0k2TVRjMk56SXlOVFl3TWpBd01IMTlDZz09IgRrZWVwRiIFc3RhdGVvIgdzZXNzaW9ubyIGc291cmNlIgJwaSICaWQiBHBpLTEiBGZpbGUifi9kZXYvc2htL29sZC1jdXJzb3JzLWZpeHR1cmUvb2xkLWN1cnNvcnMtREpkSVNIL3BpLXNwbGl0LTEzLy5waS9hZ2VudC9zZXNzaW9ucy8tLXdvcmstZml4dHVyZS0tLzIwMjYtMDEtMDFUMDAtMDAtMDBfcGktMS5qc29ubCIFc3RhdGUiCWNvbXBsZXRlZCIFY2hpbGRGIgV0dXJuc0EAJAAAIgV1c2Vyc0kCIghhY3RpdmVNc0kAIgZjb3BpZXNJACIFbW9kZWwiEG9wZW5haS9maXh0dXJlLTEiB2Nvc3RVc2RfewsiBXR1cm5zQQAkAAAiB2Fuc3dlcnNBAW8iBHJvbGUiCWFzc2lzdGFudCIEdGV4dCIAIgVjYWxsc0EAJAAAIgJhdE4AAP2qbbd5QiIFbW9kZWwiEG9wZW5haS9maXh0dXJlLTEiBXVzYWdlbyIFaW5wdXRJBiIGb3V0cHV0SQgiCWNhY2hlUmVhZEkAIgpjYWNoZVdyaXRlSQB7BHsGJAABIgVuYW1lczs6ACIGcHJpY2VkbyIDc3VtSQAiB3Vua25vd25UewIiCGFjdGl2ZU1zTgAAAAAAQJ9AIgNvd25fIgRzZWVuJywAIgVmaXJzdE4AAICqbbd5QiIEbGFzdE4AAP2qbbd5QnsKewc=",
+  "resumed": {
+   "resumed": true,
+   "requests": [
+    {
+     "usage": {
+      "input": 3,
+      "output": 4,
+      "cacheRead": 0,
+      "cacheWrite": 0
+     },
+     "model": "openai/fixture-1",
+     "text": "",
+     "calls": 0
+    },
+    {
+     "usage": {
+      "input": 5,
+      "output": 6,
+      "cacheRead": 0,
+      "cacheWrite": 0
+     },
+     "model": "openai/fixture-1",
+     "text": "",
+     "calls": 0
+    }
+   ]
+  }
+ },
+ {
+  "name": "pi-split",
+  "mode": {
+   "turns": false,
+   "totals": true
+  },
+  "cursor": "/w9vIgZzb3VyY2UiAnBpIgNkZXZOAAAAAAAAPEAiA2lub04AAABgXiBwQSIGb2Zmc2V0SdAHIgRtYXJrIlhJam93TENKallXTm9aVmR5YVhSbElqb3dMQ0owYjNSaGJGUnZhMlZ1Y3lJNk4zMHNJblJwYldWemRHRnRjQ0k2TVRjMk56SXlOVFl3TWpBd01IMTlDZz09IgRrZWVwRiIGdG90YWxzVCIFc3RhdGVvIgdzZXNzaW9ubyIGc291cmNlIgJwaSICaWQiBHBpLTEiBGZpbGUifi9kZXYvc2htL29sZC1jdXJzb3JzLWZpeHR1cmUvb2xkLWN1cnNvcnMtREpkSVNIL3BpLXNwbGl0LTE0Ly5waS9hZ2VudC9zZXNzaW9ucy8tLXdvcmstZml4dHVyZS0tLzIwMjYtMDEtMDFUMDAtMDAtMDBfcGktMS5qc29ubCIFc3RhdGUiCWNvbXBsZXRlZCIFY2hpbGRGIgV0dXJuc0EAJAAAIgV1c2Vyc0kCIghhY3RpdmVNc0kAIgZjb3BpZXNJACIFbW9kZWwiEG9wZW5haS9maXh0dXJlLTEiB2Nvc3RVc2RfewsiBXR1cm5zQQAkAAAiB2Fuc3dlcnNBACQAACIFbmFtZXM7OgAiBnByaWNlZG8iA3N1bUkAIgd1bmtub3duVHsCIghhY3RpdmVNc04AAAAAAECfQCIDb3duXyIGY291bnRzbyIBbkkCIgZtb2RlbHNBASIQb3BlbmFpL2ZpeHR1cmUtMSQAASIFbW9kZWxcBQQAAAAAIgZ2YWx1ZXNcCDgAAAAAAAAIQAAAAAAAABBAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAP2qbbd5QiIDaGFzXAEBAXsFIgRzZWVuJywAIgVmaXJzdE4AAICqbbd5QiIEbGFzdE4AAP2qbbd5QnsLewg=",
+  "resumed": {
+   "resumed": true,
+   "requests": [],
+   "counts": {
+    "n": 2,
+    "models": [
+     "openai/fixture-1"
+    ],
+    "model": [
+     0,
+     0
+    ],
+    "values": [
+     3,
+     4,
+     0,
+     0,
+     0,
+     0,
+     1767225602000,
+     5,
+     6,
+     0,
+     0,
+     0,
+     0,
+     1767225604000
+    ],
+    "has": [
+     1,
+     1
+    ]
+   }
+  }
+ }
+]
