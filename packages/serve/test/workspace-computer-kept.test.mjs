@@ -21,7 +21,8 @@ import { fauxComputers } from "../dist/faux-computers.js";
 import { computerKeptWords, computerReadyWords, computerReplacedNote } from "../dist/workspace/computer-deps.js";
 import { computerLapsedWords, endKept, KEEP_MS, KEPT_DELETE_MS, keptKeyOf, readKept, sweepKept, writeKept } from "../dist/workspace/computer-kept.js";
 import { startJanitor, sweepKeptComputers } from "../dist/workspace/computer-janitor.js";
-import { ARCHIL_API_KEY_ROW, agentDiskKey, saveArchilSettings } from "../dist/archil-settings.js";
+import { ARCHIL_API_KEY_ROW, agentDiskKey, clearArchilSettings, saveArchilSettings } from "../dist/archil-settings.js";
+import { MOUNT_TTL_MS } from "../dist/workspace/archil-claim.js";
 import { StoreLaunchMissing } from "../dist/store/index.js";
 import { computerStillOffWords } from "../dist/refusal-words.js";
 import { archilControlFetch } from "./archil-control-fake.mjs";
@@ -389,6 +390,52 @@ test("Mode 2, the janitor's pass whose mount remove Archil refuses: the kept des
   assert.deepEqual([second.ended, second.failed], [["c1"], []]);
   assert.equal(await readKept(one.store.settings, "run-1"), undefined, "its row removed");
   assert.deepEqual(nicknames(archil), []);
+});
+
+test("Mode 2, a stopped run's kept desktop whose mount remove Archil refuses for good: the row stays ending until the credential's ttl is past its keep, then the janitor's next pass ends it and removes the row with no call to Archil", async () => {
+  const archil = archilControlFetch({
+    existing: [{ type: "token", identifier: "tok-3", nickname: "agentrun:run-1:3", disk: DISK }],
+    answer: ({ method }) => (method === "DELETE" ? { status: 403, body: { error: "not allowed" } } : undefined),
+  });
+  const one = await server({ mode: 2, archil });
+  await (await one.claim(3)).park();
+  const { until } = await readKept(one.store.settings, "run-1");
+  one.store.runs.set("run-1", "stopped");
+  const first = await one.janitor();
+  assert.deepEqual(first.ended, []);
+  assert.match(first.failed.join("\n"), /not allowed/);
+  one.clock.now = until + MOUNT_TTL_MS - 1;
+  const before = await one.janitor();
+  assert.deepEqual(before.ended, [], "a credential minted before the park may still be live: its remove is still asked");
+  assert.match(before.failed.join("\n"), /not allowed/);
+  assert.equal((await readKept(one.store.settings, "run-1"))?.ending, true, "left ending");
+  one.clock.now = until + MOUNT_TTL_MS;
+  const asked = archil.requests.length;
+  const past = await one.janitor();
+  assert.deepEqual([past.ended, past.failed], [["c1"], []]);
+  assert.deepEqual(archil.requests.slice(asked), [], "no remove asked: the credential has ended at its ttl");
+  assert.equal(await readKept(one.store.settings, "run-1"), undefined, "its row removed");
+});
+
+test("Mode 2, a kept desktop's row left ending with this server's Archil settings gone: the janitor says why until the credential's ttl is past its keep, then ends the row with no call to Archil", async () => {
+  const archil = mountUsers();
+  const one = await server({ mode: 2, archil });
+  await (await one.claim(3)).park();
+  const { until } = await readKept(one.store.settings, "run-1");
+  await clearArchilSettings(one.store);
+  one.clock.now = until;
+  const first = await one.janitor();
+  assert.deepEqual(first.ended, []);
+  assert.match(first.failed.join("\n"), /Archil settings are gone/);
+  assert.equal((await readKept(one.store.settings, "run-1"))?.ending, true, "left ending");
+  one.clock.now = until + MOUNT_TTL_MS - 1;
+  assert.match((await one.janitor()).failed.join("\n"), /Archil settings are gone/);
+  assert.equal((await readKept(one.store.settings, "run-1"))?.ending, true, "still ending");
+  one.clock.now = until + MOUNT_TTL_MS;
+  const past = await one.janitor();
+  assert.deepEqual([past.ended, past.failed], [["c1"], []]);
+  assert.equal((await readKept(one.store.settings, "run-1"))?.ended, true, "marked ended");
+  assert.deepEqual(archil.requests, []);
 });
 
 test("a kept desktop whose folder is not on Archil: the janitor ends it with no call to Archil", async () => {
