@@ -556,7 +556,7 @@ export async function runUsageOverStore(store: Store, runId: string): Promise<Ru
 /** Run `runId`'s usage lines as served: each name taken from its record (a model, its provider, a tool's charger) through
  *  the run's cut, as its trace serves a model's name, since a decision provider or a tool names itself in what it
  *  returns. A run withheld (its sign-in can't be read back here) is refused (403), as its trace is. */
-export async function servedRunUsage(deps: { serverSecrets: () => string[]; signIns?: SignInReader }, store: Store, runId: string): Promise<RunUsage | undefined> {
+export async function servedRunUsage(deps: { serverSecrets: () => string[]; signIns?: SignInReader; sealKey: Buffer | undefined }, store: Store, runId: string): Promise<RunUsage | undefined> {
   if ((await runCutValues(deps, store, runId)) === "unreadable") throw new ApiError("forbidden", WITHHELD_SIGN_IN);
   const usage = await runUsageOverStore(store, runId);
   // The cut after the read: it only grows, so it holds every value the read could have seen.

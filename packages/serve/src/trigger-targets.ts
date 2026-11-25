@@ -7,6 +7,7 @@
 import { ApiError, type InputIssue, unsupported } from "./errors.js";
 import { message, type RunMoment, type RunsStore, startRun, type StartDeps, type StartOptions, WAITS_ON_A_PERSON } from "./runs-over-store.js";
 import { runOfOrigin } from "./store-reads/runs.js";
+import { WITHHELD_MESSAGE } from "./handed-values.js";
 import type { Store } from "./store/index.js";
 import type { AgentEntry } from "./agents-store.js";
 import { NATIVE_CAP_UNSUPPORTED, NATIVE_RUN_OVERRIDES_UNSUPPORTED, nativeOf, nativeRunOverrides } from "./native/binding.js";
@@ -44,6 +45,10 @@ export interface TriggerTargetDeps {
   /** `work`, a write that may open run `runId` of agent `agentId` again, done in the agent's delete turn (server.ts
    *  runWrite): never under a purge of the run, and 410 purged after one. */
   runWrite<T>(agentId: string, runId: string, work: () => Promise<T>): Promise<T>;
+  /** `text` as a message to run `runId` is written: cut of what the run holds now (server.ts cutHeld), read inside the
+   *  turn that writes it (runWrite), as a person's message is. A run whose seal doesn't open here refuses it (ApiError
+   *  WITHHELD_MESSAGE): the firing skips with those words, never writes it uncut. */
+  cutHeld(runId: string, text: string): Promise<string>;
   /** A run's v2 status, or null for an unknown run (the run view): the trigger engine's overlap and active-run checks. */
   runStatus(runId: string): Promise<string | null>;
   /** A completed run's result.output as GET /runs/{id} serves it (cut of the secrets it holds; null when it has none), and
@@ -282,7 +287,9 @@ export function triggerTargets(store: Store & RunsStore, deps: TriggerTargetDeps
         // (store.triggers.message): a server that goes down after it never sends it again, and past the bound the firing
         // is skipped in words. A firing no longer due there (already sent) writes nothing.
         const triggerId = (from as { trigger_id: string }).trigger_id;
-        const queued = await deps.runWrite(run.agentId, run.id, () => message(store, run, String((input as { content?: unknown }).content), {
+        // Its text is cut of what the run holds, read in the turn that writes it: a firing hands no key, but its text (its
+        // content, the payload it carries) may say one the run was handed, which the run's end erases.
+        const queued = await deps.runWrite(run.agentId, run.id, async () => message(store, run, await deps.cutHeld(run.id, String((input as { content?: unknown }).content)), {
           answers: false,
           origin: from,
           requestId: key,
@@ -295,6 +302,7 @@ export function triggerTargets(store: Store & RunsStore, deps: TriggerTargetDeps
         if (queued.skipped !== undefined) return { skipped: queued.skipped };
       } catch (error) {
         if (error instanceof ApiError && error.message === WAITS_ON_A_PERSON) return { skipped: WAITS_ON_A_PERSON };
+        if (error instanceof ApiError && error.message === WITHHELD_MESSAGE) return { skipped: WITHHELD_MESSAGE };
         throw error;
       }
     },

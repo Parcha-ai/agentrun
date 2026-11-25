@@ -66,11 +66,18 @@ const scanAndCreate = {
     const pull = dialog.getByRole("link", { name: /Open pull request #1/ });
     check((await pull.getAttribute("href")) === "https://github.com/faux-org/demo/pull/1", "the pull request's link is the fake GitHub's");
     await dialog.getByText("AGENTRUN_AGENT_TICKET_TRIAGE").waitFor();
+    check(await dialog.getByText("AGENTRUN_BASE_URL", { exact: true }).count() === 1, "the created dialog does not name the address as AgentRun's clients read it");
+    check(await dialog.getByText(`${origin}/v2`, { exact: true }).count() === 1, "the created dialog does not give this server's API address");
     await shot(page, "5-created");
     await page.keyboard.press("Escape");
-    // The list shows it created, with its pull request.
-    await page.getByRole("link", { name: /#1/ }).waitFor();
+    // The list shows it created: its card, its pull request open, its first call still to come.
+    const made = page.locator('[data-created="ticket-triage"]');
+    await made.getByRole("link", { name: "Review #1" }).waitFor();
+    check(await made.locator('[data-step="Pull request"][data-tone="done"]').count() === 1, "the created card does not show its pull request open");
+    check(await made.locator('[data-step="First call"][data-tone="waiting"]').count() === 1, "the created card does not wait for its first call");
+    await made.scrollIntoViewIfNeeded();
     await shot(page, "6-created-row");
+    await darkShot(page, "6-created-row-dark");
     check(errors.length === 0, `the page reported errors: ${errors.join(" | ")}`);
   },
 };

@@ -22,6 +22,7 @@ import { FAUX_VENDOR_API_ENV } from "../dist/tools.js";
 import { resolve } from "node:path";
 import { openSqliteStore, openStore } from "../dist/store/index.js";
 import { startRunner } from "../dist/runner/runner.js";
+import { runCensus } from "../dist/run-census.js";
 import { maxRunsOf } from "../dist/host.js";
 import { claimInstallsStopped } from "../dist/harness-install.js";
 import { runnerMemory } from "../dist/runner/memory-claim.js";
@@ -41,6 +42,14 @@ import { stranger } from "./fixtures/stranger.mjs";
   process.env.XDG_CONFIG_HOME = config;
   process.on("exit", () => rmSync(config, { recursive: true, force: true }));
 }
+
+// HOME is an empty home of the test process's own, as the config home above, never the runner's: a server reads session
+// files under it (GET /v2/wrapped and setup's import, through homedir(), unless a test passes its own `sessionsHome`), and
+// so does a CLI a test starts with the test's environment ({ ...process.env }). A long history there would make a sweep of
+// every GET route read it all.
+const EMPTY_HOME = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-home-"));
+process.on("exit", () => rmSync(EMPTY_HOME, { recursive: true, force: true }));
+process.env.HOME = EMPTY_HOME;
 
 // No test asks an Ollama this machine may run (ollama-provider.ts lists its models, and with no key one is the default),
 // whatever env it passes: the process's own switch (OLLAMA_OFF_ENV) turns every Ollama off. A test of Ollama clears it
@@ -430,12 +439,14 @@ export async function startInProcessRunner(data, { faux, githubApi, githubWeb, g
     const deps = { env, data: ownData ?? data, journal: (claim) => store.journal(claim), store, sealKey, routeOf, computerForClaim: computerForClaim ?? computers.computerForClaim, computerDeps: computers.computerDeps, mcpLoopback: true, ...(mcpOwn ? { mcpOwn } : {}), ...(githubApi ? { githubApi } : {}), ...(githubWeb ? { githubWeb } : {}), ...(githubMcpOrigin ? { githubMcpOrigin } : {}), ...(composioMcpOrigin ? { composioMcpOrigin } : {}), ...(harnessLocks ? { harnessLocks } : {}), ...(evalFakes ? { evalFakes } : {}), ...(archil ? { makeArchilDisk: archil.makeDisk, mountControl: archil.control } : {}), modelRetry, ...(gradeTimeoutMs ? { gradeBound: () => AbortSignal.timeout(gradeTimeoutMs) } : {}) };
     // `childRuns` (a test's): each run a process of its own (run-child-host.ts childLoops), as the CLI's start runs them,
     // its keys and calls the runner's across the channel; the same user unless `childRuns.isolation` says otherwise (a
-    // stand-in helper's), its lines on `childRuns.log`.
+    // stand-in helper's), its lines on `childRuns.log`, its runs' traces on `childRuns.tracing` (a test's exporter).
     const childLog = childRuns?.log ?? (() => {});
-    const createLoop = childRuns ? childLoops({ deps: { ...deps, log: childLog }, isolation: childRuns.isolation ?? { kind: "process", why: "a test's runner" }, log: childLog }) : dispatchRunner(deps);
+    const createLoop = childRuns ? childLoops({ deps: { ...deps, log: childLog }, isolation: childRuns.isolation ?? { kind: "process", why: "a test's runner" }, log: childLog, ...(childRuns.tracing ? { tracing: childRuns.tracing } : {}) }) : dispatchRunner(deps);
     runner = startRunner({
       ...(runnerTiming ?? {}),
       store,
+      // Each end's census of what its caller handed the run, as the CLI's runner beside it makes it (runner/beside.ts).
+      census: runCensus(store, { data: deps.data, sealKey, env }),
       loops: maxRunsOf(process.env, switches.maxRuns),
       // And by memory, as the CLI's runners claim (memory-claim.ts): each waiting run weighed by its harness against this
       // host's memory, read now (a test's process.constrainedMemory stand-in, set before serve(), is its container limit).
@@ -490,7 +501,11 @@ export async function serve(t, { harnesses: asked, runner: wantRunner = true, co
   if (harnesses) await linkHarnesses(data, harnesses === true ? {} : harnesses);
   // mcpLoopback: a test's server is a local install, as its operator would say (its fake MCP servers are on loopback);
   // a case that wants the hosted rule passes mcpLoopback: false.
-  const server = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s", mcpLoopback: true, ...options });
+  // probeContainer: Docker's start probe takes a test's server to be on a host, so a suite run in a container reads the
+  // host's words; a case about a container passes its own facts, or undefined for the server's own marks.
+  // timelinePollMs: a waiting timeline page (follow's long poll) reads the store every 100 ms, not every second, so a
+  // run's end is served within a tenth of a second of it.
+  const server = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s", mcpLoopback: true, probeContainer: { where: "host" }, timelinePollMs: 100, ...options });
   // A runner beside the server on the same data (the CLI start's server-and-runner): it claims and runs what the server
   // starts, so a test reads a run that runs, not one that queues forever. `runner: false` leaves it off for a test that
   // wants the server alone. Its loop is the switch's dispatch (learning wired; pi/workflow the server's own, E2r).
@@ -554,44 +569,56 @@ export const asOwner = (server) => client(server.baseUrl, server.token, { owner:
  *  sends itself as the console does (an approval's answer): one owner per server, never a second password. */
 export const clientOwnerSession = (server) => ownerSessionOf(server.baseUrl, server.token);
 
-export function client(baseUrl, token, { owner = false } = {}) {
-  /** A request on a connection of its own, which nothing reuses: a pooled socket the server closes is not its failure. */
-  const fresh = (method, path) =>
-    new Promise((resolve, reject) => {
-      const req = request(`${baseUrl}${path}`, { method, agent: false, headers: token ? { authorization: `Bearer ${token}` } : {} }, (res) => {
-        let text = "";
-        res.setEncoding("utf8").on("data", (chunk) => (text += chunk)).on("end", () => {
-          let json;
-          try {
-            json = JSON.parse(text);
-          } catch {}
-          resolve({ status: res.statusCode, headers: new Headers(Object.entries(res.headers).map(([name, value]) => [name, String(value)])), body: json ?? text });
-        });
+/** A request on a connection of its own, which nothing reuses, answered whole: its status, its headers and its body's
+ *  text. Every request of the test client goes so, none through fetch's pool. A server closes a connection it has kept
+ *  idle for five seconds, and on a loaded machine that close can cross a request the pool sends on the same socket: the
+ *  request then fails on the client ("fetch failed", read ECONNRESET) with nothing the server said. A redirect is
+ *  answered as it is, never followed. */
+function alone(url, { method = "GET", headers = {}, body } = {}) {
+  return new Promise((resolve, reject) => {
+    // Its length said: without it Node sends a DELETE's body unframed, and the server reads the request as broken.
+    const sent = body === undefined ? undefined : Buffer.from(body);
+    const req = request(url, { method, agent: false, headers: { ...(sent ? { "content-length": sent.length } : {}), ...headers } }, (res) => {
+      let text = "";
+      res.setEncoding("utf8").on("data", (chunk) => (text += chunk)).once("error", reject).on("end", () => {
+        // Each header line of its own, so every Set-Cookie reads apart (getSetCookie).
+        const answered = new Headers();
+        for (let at = 0; at < res.rawHeaders.length; at += 2) answered.append(res.rawHeaders[at], res.rawHeaders[at + 1]);
+        resolve({ status: res.statusCode, headers: answered, text });
       });
-      req.once("error", reject).end();
     });
+    req.once("error", reject).end(sent);
+  });
+}
+
+/** An answer of alone as the client gives it: its body read as JSON where it is JSON, else its text. */
+function read({ status, headers, text }) {
+  let json;
+  try {
+    json = JSON.parse(text);
+  } catch {}
+  return { status, headers, body: json ?? text };
+}
+
+export function client(baseUrl, token, { owner = false } = {}) {
+  /** A plain read with the token: no owner's session and no guard of api's. */
+  const fresh = async (method, path) => read(await alone(`${baseUrl}${path}`, { method, headers: token ? { authorization: `Bearer ${token}` } : {} }));
   return Object.assign(api, { fresh });
   /** `raiseCheck: false`: no raise guard read after this request (raisedReadsQueued), for a test whose server goes away
    *  once the raise is answered. */
   async function api(method, path, body, headers = {}, { raiseCheck = true } = {}) {
     // A secret write goes from the owner's session, as the console's does (secret-writes.ts): the token is refused one.
     const session = (owner || secretWrite(method, path)) && !headers.authorization ? await ownerSessionOf(baseUrl, token) : undefined;
-    const sent = { body };
-    const res = await fetch(`${baseUrl}${path}`, {
+    const answer = read(await alone(`${baseUrl}${path}`, {
       method,
       headers: session
         ? { "content-type": "application/json", cookie: session.cookie, origin: session.origin, ...headers }
         : { ...(token ? { authorization: `Bearer ${token}` } : {}), ...(body === undefined ? {} : { "content-type": "application/json" }), ...headers },
-      body: sent.body === undefined ? undefined : JSON.stringify(sent.body),
-    });
-    const text = await res.text();
-    let json;
-    try {
-      json = JSON.parse(text);
-    } catch {}
-    budgetSaysItsLeast(json, `${method} ${path}`);
-    if (raiseCheck && method === "PATCH" && res.status === 200 && json?.resumed === true) await raisedReadsQueued(baseUrl, token, path);
-    return { status: res.status, headers: res.headers, body: json ?? text };
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    }));
+    budgetSaysItsLeast(answer.body, `${method} ${path}`);
+    if (raiseCheck && method === "PATCH" && answer.status === 200 && answer.body?.resumed === true) await raisedReadsQueued(baseUrl, token, path);
+    return answer;
   };
 }
 
@@ -607,13 +634,13 @@ async function ownerSessionOf(baseUrl, token) {
   const known = `${baseUrl} ${token ?? ""}`;
   if (ownerCookies.has(known)) return ownerCookies.get(known);
   const origin = new URL(baseUrl).origin;
-  const post = (path, headers = {}) => fetch(`${baseUrl}${path}`, { method: "POST", redirect: "manual", headers: { "content-type": "application/json", origin, ...headers }, body: JSON.stringify({ password: CLIENT_OWNER_PHRASE }) });
+  const post = (path, headers = {}) => alone(`${baseUrl}${path}`, { method: "POST", headers: { "content-type": "application/json", origin, ...headers }, body: JSON.stringify({ password: CLIENT_OWNER_PHRASE }) });
   const tried = [];
   const answer = async (what, res) => (tried.push(`${what}: ${res.status}`), res);
   let res = await answer("setup", await post("/setup", token ? { authorization: `Bearer ${token}` } : {}));
   if (res.status !== 201) res = await answer("sign-in", await post("/auth/sign-in"));
   const code = launchCodes.get(baseUrl);
-  if (res.status !== 200 && res.status !== 201 && code) res = await answer("launch link", await fetch(`${origin}/?launch=${code}`, { redirect: "manual" }));
+  if (res.status !== 200 && res.status !== 201 && code) res = await answer("launch link", await alone(`${origin}/?launch=${code}`));
   const cookie = [200, 201, 303].includes(res.status) ? res.headers.getSetCookie().map((line) => line.split(";")[0]).join("; ") : "";
   if (!cookie) throw new Error(`the test client has no owner's session on ${baseUrl} for a secret write (${tried.join(", ")}): the token never writes a secret, so a test whose owner has its own password signs in itself`);
   const session = { cookie, origin };
@@ -638,7 +665,7 @@ function budgetSaysItsLeast(body, where) {
  *  client's runs.wait take as a run that needs someone; its follow-up turn is still to go (runs.ts statusOf). */
 async function raisedReadsQueued(baseUrl, token, path) {
   if (!/^(?:\/v2)?\/runs\/[^/?]+$/.test(path)) return;
-  const run = await (await fetch(`${baseUrl}${path}`, { headers: token ? { authorization: `Bearer ${token}` } : {} })).json();
+  const run = read(await alone(`${baseUrl}${path}`, { headers: token ? { authorization: `Bearer ${token}` } : {} })).body;
   assert.ok(!(run?.status === "input_required" && run?.pending === null), `PATCH ${path} resumed the run, which then reads input_required with no pending: ${JSON.stringify(run)}`);
 }
 

@@ -634,7 +634,10 @@ async function runnerFor(w, runId, launch, { script, feedback, wrap = (step) => 
   const spec = piAdapterSpec({ script, tools: {}, hooks: HOOKS }, { requests: [] });
   const step = learningEndOfRun(launch, { store, data: w.dir, env: {}, learningFolder: (agentId) => learningFolderOf(folderData, agentId) });
   assert.ok(step, "the run learns at its end");
-  const createLoop = (deps) => createAdapterLoop(async (claim, run) => ({ ...(await spec(claim, run)), agentId: "agent-1" }))({ ...deps, endOfRun: wrap(step) });
+  const createLoop = (deps) => {
+    const endOfRun = wrap(step);
+    return createAdapterLoop(async (claim, run) => ({ ...(await spec(claim, run)), agentId: "agent-1", endOfRun }))(deps);
+  };
   const runner = startRunner({ store, createLoop, name: `runner-${runId}`, ...TIMING });
   w.closing.push(() => store.close(), () => runner.close());
   /** This runner stopped, so a later run is claimed by a runner of its own launch. */
@@ -869,7 +872,7 @@ test("the watermark's readers: a run before the reset, or one whose seed was rea
   assert.deepEqual(await w.server.runs.seededBefore("agent-1", at), ["late-seed"], "the runs started after it, seeded before it");
   assert.deepEqual((await lastOwnRuns(w.server, "agent-1", 10)).map((row) => row.id), ["post-0"], "compile_after's count and a check's inputs");
   assert.equal(await notAuditableOf(w.server, "agent-1", "answer", FLOW_DIGEST, { stop_window: 10 }), 1, "the audit's served runs");
-  assert.deepEqual((await pastRunsOverStore(w.server, "agent-1")).length, 2, "the money rule's past runs: post-0 and post-served-0");
+  assert.deepEqual((await pastRunsOverStore(w.server, "agent-1")).runs.length, 2, "the money rule's past runs: post-0 and post-served-0");
   assert.equal((await agentLoopOverStore(w.server, "agent-1")).completed_runs, 1, "the loop view's count");
   // An owner's replay of a workflow learned after the reset: the runs before it would fit its input, and none is picked.
   await landWorkflows(w.dir, "agent-1", [{ name: "answer", description: "Answers a question as a number", workflow: answerFlow }]);

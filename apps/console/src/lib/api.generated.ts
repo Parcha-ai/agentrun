@@ -193,6 +193,7 @@ export interface components {
         billing: "proxy" | "plan";
       };
       available: boolean;
+      ready_models: string[];
       free_models: {
         id: string;
         context_window: number;
@@ -216,6 +217,7 @@ export interface components {
       call_only?: boolean;
       meta?: boolean;
       sandbox_only?: boolean;
+      runner_only?: boolean;
       available: boolean;
       reason?: string;
       missing?: string[];
@@ -304,6 +306,10 @@ export interface components {
     learning_usd?: number | null;
     tools_usd?: number | null;
     all_in_usd?: number | null;
+    compile_usd?: number | null;
+    followup_usd?: number | null;
+    shadow_usd?: number | null;
+    share_usd?: number | null;
     degraded?: true;
     plan?: {
       requests: number;
@@ -538,7 +544,7 @@ export interface components {
       detail: string;
     }[];
   };
-  ErrorCode: "bad_request" | "invalid_file_path" | "unauthenticated" | "insufficient_credits" | "spend_cap_reached" | "forbidden" | "system_file_forbidden" | "not_found" | "method_not_allowed" | "agent_exists" | "agent_not_runnable" | "home_busy" | "idempotency_mismatch" | "idempotency_in_progress" | "not_continuable" | "quote_invalid" | "precondition_failed" | "payload_too_large" | "unsupported_media_type" | "range_not_satisfiable" | "input_invalid" | "home_check_failed" | "rate_limited" | "internal" | "unsupported_here" | "unavailable" | "name_taken" | "agent_archived" | "request_timeout" | "key_set_by_server" | "budget_reached" | "webhook_off" | "slack_off" | "precondition_required" | "auth_required" | "not_mcp" | "upstream_failed" | "wrong_origin" | "sign_in_held" | "handoff_answered" | "computer_not_live" | "scope_taken" | "github_not_connected" | "github_already_connected" | "github_no_public_url" | "github_wrong_origin" | "github_failed" | "github_not_installed" | "github_permission_missing" | "github_file_exists" | "suggestion_decided" | "composio_no_public_url" | "composio_subscription_elsewhere" | "composio_not_connected" | "composio_account_ambiguous" | "composio_in_use" | "external_body_conflict" | "replay_conflict" | "runs_in_flight" | "learning_busy" | "agent_not_archived" | "run_not_final" | "run_learning" | "not_exportable" | "purged" | "model_key_required" | "runner_refused";
+  ErrorCode: "bad_request" | "invalid_file_path" | "unauthenticated" | "insufficient_credits" | "spend_cap_reached" | "forbidden" | "system_file_forbidden" | "not_found" | "method_not_allowed" | "agent_exists" | "agent_not_runnable" | "home_busy" | "idempotency_mismatch" | "idempotency_in_progress" | "not_continuable" | "quote_invalid" | "precondition_failed" | "payload_too_large" | "unsupported_media_type" | "range_not_satisfiable" | "input_invalid" | "home_check_failed" | "rate_limited" | "internal" | "unsupported_here" | "unavailable" | "name_taken" | "agent_archived" | "request_timeout" | "key_set_by_server" | "budget_reached" | "webhook_off" | "slack_off" | "precondition_required" | "auth_required" | "not_mcp" | "upstream_failed" | "wrong_origin" | "sign_in_held" | "handoff_answered" | "computer_not_live" | "scope_taken" | "github_not_connected" | "github_already_connected" | "github_no_public_url" | "github_wrong_origin" | "github_failed" | "github_not_installed" | "github_permission_missing" | "github_file_exists" | "suggestion_decided" | "composio_no_public_url" | "composio_subscription_elsewhere" | "composio_not_connected" | "composio_account_ambiguous" | "composio_in_use" | "external_body_conflict" | "replay_conflict" | "runs_in_flight" | "learning_busy" | "agent_not_archived" | "run_not_final" | "run_learning" | "not_exportable" | "export_too_large" | "purged" | "model_key_required" | "runner_refused" | "api_keys_full";
   ExternalRef: {
     source: string;
     kind: string;
@@ -619,12 +625,14 @@ export interface components {
       routes: boolean;
       at_rest: "sealed";
       harnesses: string[];
+      kept: string[];
     };
     mcp_client?: {
       transports: "streamable-http"[];
       auth: ("none" | "bearer" | "headers" | "oauth" | "github_app" | "per_run")[];
       at_rest: "sealed";
       harnesses: string[];
+      composio_per_run: boolean;
     };
     tool_permissions?: boolean;
     webhooks?: {
@@ -632,6 +640,11 @@ export interface components {
       events: ("run.needs_input" | "run.ended" | "trigger.failed")[];
       signing: "standard-webhooks/v1";
       at_rest: "sealed";
+    };
+    api_keys?: {
+      routes: boolean;
+      limit: number;
+      at_rest: "hashed";
     };
     slack?: {
       routes: boolean;
@@ -961,7 +974,7 @@ export interface components {
     computer?: {
       kind: "sandbox" | "desktop" | "phone" | "browser";
       provider: string;
-      state: "starting" | "ready" | "taken_over" | "ended" | "failed";
+      state: "starting" | "ready" | "taken_over" | "released" | "ended" | "failed";
       why?: string;
       held?: {
         state: "starting" | "waiting" | "started" | "ended" | "released";
@@ -1030,7 +1043,7 @@ export interface components {
       kind: "stopped";
     } | null;
     imported_from?: {
-      source: "claude-code" | "codex" | "pi";
+      source: "claude-code" | "codex" | "pi" | "opencode" | "copilot";
       session: string;
     } | null;
     trigger?: {
@@ -1282,7 +1295,7 @@ export interface components {
       kind: "stopped";
     } | null;
     imported_from?: {
-      source: "claude-code" | "codex" | "pi";
+      source: "claude-code" | "codex" | "pi" | "opencode" | "copilot";
       session: string;
     } | null;
     trigger?: {
@@ -1343,6 +1356,14 @@ export interface components {
     final: boolean;
     cost: components["Cost"];
     poll_after_ms?: number;
+    in_flight?: {
+      kind: "model" | "tool";
+      name: string;
+      started_at: string | null;
+      tool_use_id?: string;
+      for_tool?: string;
+      input_tokens_max?: number;
+    }[];
   };
   TimelineRow: {
     id: string;
@@ -1803,6 +1824,19 @@ export interface operations {
   createAgent: {
     body: components["AgentCreate"];
     answer: components["Agent"];
+  };
+  createApiKey: {
+    body: {
+      name: string;
+    };
+    answer: {
+      id: string;
+      name: string;
+      created_at: string;
+      last_used_at: string | null;
+      secret: components["SecretMeta"];
+      api_key: string;
+    };
   };
   createFile: {
     body: components["FileCreate"];
@@ -2537,6 +2571,7 @@ export interface operations {
       expires_at?: string;
       models?: string[];
       problem?: string;
+      hint?: string;
     };
   };
   fireTrigger: {
@@ -2676,12 +2711,12 @@ export interface operations {
       sha256: string;
       report: {
         blocked: {
-          kind: "mcp_server" | "trigger" | "pin" | "tool_setting" | "tool_policy" | "computer" | "paired_computer" | "sign_in" | "learning" | "input_schema" | "budget" | "package";
+          kind: "mcp_server" | "trigger" | "pin" | "tool_setting" | "tool_policy" | "computer" | "paired_computer" | "sign_in" | "learning" | "secrets" | "input_schema" | "budget" | "package";
           name: string;
           reason: string;
         }[];
         remade: {
-          kind: "mcp_server" | "trigger" | "pin" | "tool_setting" | "tool_policy" | "computer" | "paired_computer" | "sign_in" | "learning" | "input_schema" | "budget" | "package";
+          kind: "mcp_server" | "trigger" | "pin" | "tool_setting" | "tool_policy" | "computer" | "paired_computer" | "sign_in" | "learning" | "secrets" | "input_schema" | "budget" | "package";
           name: string;
           reason: string;
         }[];
@@ -2746,12 +2781,13 @@ export interface operations {
       expires_at?: string;
       models?: string[];
       problem?: string;
+      hint?: string;
     };
   };
   getClaudeLogin: {
     body: never;
     answer: {
-      state: "off" | "other_machine" | "signed_in" | "signed_out" | "no_cli" | "unknown";
+      state: "off" | "other_machine" | "refused" | "signed_in" | "signed_out" | "no_cli" | "unknown";
       place: "agentrun" | "machine";
       command: string;
       can_start: boolean;
@@ -2766,6 +2802,7 @@ export interface operations {
       machine: {
         folder: string;
         source: "CLAUDE_CONFIG_DIR" | "default";
+        credentials?: string;
       };
       sign_in?: {
         state: "waiting" | "signed_in" | "timed_out" | "failed" | "not_started";
@@ -2891,6 +2928,11 @@ export interface operations {
         cost_upper_bound: boolean;
         learning_usd: number | null;
         total_usd: number | null;
+        compile_usd?: number | null;
+        followup_usd?: number | null;
+        shadow_usd?: number | null;
+        share_usd?: number | null;
+        not_served?: "cost_stop" | "cut" | null;
       }[];
       total_runs: number;
       unknown_cost_runs: number;
@@ -2927,6 +2969,7 @@ export interface operations {
         hand_backs: {
           ran: number;
           back: number;
+          cut: number;
         } | null;
         withheld: {
           unknown: number;
@@ -3052,6 +3095,11 @@ export interface operations {
       listed_at: string;
       updated_at: string;
       secret?: components["SecretMeta"];
+      composio_account?: {
+        state: "connected" | "pending" | "expired" | "none" | "unknown";
+        labels?: string[];
+        checked_at: string;
+      };
     };
   };
   getModelGateway: {
@@ -3239,6 +3287,57 @@ export interface operations {
       hold: "agent" | "pending" | "person";
     };
   };
+  getRunExport: {
+    body: never;
+    answer: {
+      format: "agentrun.share/1";
+      sha256: string;
+      source: {
+        agentrun: string;
+        scrubber: {
+          version: number;
+          rules: string;
+        };
+      };
+      agent: {
+        name: string;
+        kind: "agentic" | "workflow";
+      };
+      run: Record<string, unknown>;
+      rows: Record<string, unknown>[];
+      graph: Record<string, unknown> | null;
+      files: {
+        path: string;
+        bytes: number;
+        sha256: string;
+        encoding: "utf8";
+        content: string;
+      }[];
+      omitted: {
+        what: "file" | "files" | "recordings";
+        path?: string;
+        why: "binary" | "too_large" | "over_total" | "over_count" | "unreadable" | "list_truncated" | "uncounted" | "never";
+      }[];
+      cuts: {
+        id: string;
+        at: string;
+        start: number;
+        end: number;
+        rule: string;
+        kind: "format" | "held" | "dump" | "label" | "personal" | "jev";
+        restorable: boolean;
+        shape: string;
+      }[];
+      restored: {
+        id: string;
+        at: string;
+        start: number;
+        end: number;
+        rule: string;
+        kind: "label" | "personal" | "jev";
+      }[];
+    };
+  };
   getRunGraph: {
     body: never;
     answer: {
@@ -3251,9 +3350,14 @@ export interface operations {
         paused: boolean;
         startedAt: string;
         endedAt: string | null;
+        withheld?: true;
       };
       workflow: Record<string, unknown>;
-      graph: Record<string, unknown>;
+      graph: {
+        nodes: Record<string, unknown>[];
+        edges: Record<string, unknown>[];
+        withheld?: true;
+      };
       nodes: Record<string, {
         status: "pending" | "working" | "done" | "failed" | "stopped" | "escalated" | "not_run" | "needs_review";
         startedAt?: string;
@@ -3675,7 +3779,7 @@ export interface operations {
           unknown_cost_runs: number;
         }[];
         by_source: {
-          source: "live" | "claude-code" | "codex" | "pi";
+          source: "live" | "claude-code" | "codex" | "pi" | "opencode" | "copilot";
           runs: number;
           completed: number;
           needs_review: number;
@@ -4158,12 +4262,14 @@ export interface operations {
         sessions: number;
         requests: number;
         tokens: number;
+        sources: string[];
       }[];
       models: {
         model: string;
         requests: number;
         tokens: number;
         cost_usd: number;
+        unpriced_requests: number;
       }[];
       sources: {
         source: string;
@@ -4434,6 +4540,21 @@ export interface operations {
     body: never;
     answer: components["RunList"];
   };
+  listApiKeys: {
+    body: never;
+    answer: {
+      keys: {
+        id: string;
+        name: string;
+        created_at: string;
+        last_used_at: string | null;
+        secret: components["SecretMeta"];
+      }[];
+      limit: number;
+      refused?: string;
+      unreadable?: string[];
+    };
+  };
   listCliLearning: {
     body: never;
     answer: {
@@ -4461,6 +4582,17 @@ export interface operations {
         polled: boolean;
         sealed: string[];
         instructions?: string;
+      }[];
+    };
+  };
+  listComposioToolkits: {
+    body: {
+      api_key: string;
+    };
+    answer: {
+      toolkits: {
+        slug: string;
+        name: string;
       }[];
     };
   };
@@ -4543,6 +4675,8 @@ export interface operations {
         online: boolean;
         held_by_run: string | null;
         held_until: string | null;
+        held_on: string | null;
+        hold_note: string | null;
         pairing: string;
         created_at: string;
         seen_at: string | null;
@@ -4638,8 +4772,14 @@ export interface operations {
       harnesses: {
         id: string;
         label: string;
+        named: boolean;
         keys: components["SecretMeta"][];
+        kept: components["SecretMeta"][];
         ready: boolean;
+        reenter: {
+          name: string;
+          why: "recipe_changed" | "not_bound" | "seal_key_changed" | "file_unreadable";
+        }[];
       }[];
     };
   };
@@ -4742,6 +4882,29 @@ export interface operations {
           n?: number;
           agreed?: number;
           alone?: number;
+          agent_agreed?: number;
+          joint?: boolean;
+          fields?: Record<string, {
+            n: number;
+            workflow_right: number;
+            agent_right: number;
+            known: "grade" | "agent";
+            pass: boolean;
+            reason: string;
+            by: {
+              grade?: {
+                n: number;
+                workflow_right: number;
+                agent_right: number;
+              };
+              agent?: {
+                n: number;
+                workflow_right: number;
+                agent_right: number;
+              };
+            };
+            unjudged?: number;
+          }>;
           of?: string[];
           cost_usd?: number | null;
           outcomes?: {
@@ -4764,6 +4927,12 @@ export interface operations {
             escalated?: string;
             failed?: true;
             differs_on?: string;
+            fields?: string[];
+            expected?: {
+              field: string;
+              known: "grade" | "unknown" | "contradicts";
+              value?: string;
+            }[];
           }[];
           stopped?: true;
           released?: number;
@@ -4772,6 +4941,20 @@ export interface operations {
             n: number;
             agreed: number;
             alone: number;
+            agent_agreed: number;
+            fields: Record<string, {
+              grade?: {
+                n: number;
+                workflow_right: number;
+                agent_right: number;
+              };
+              agent?: {
+                n: number;
+                workflow_right: number;
+                agent_right: number;
+              };
+              unjudged?: number;
+            }>;
             of: string[];
             outcomes: {
               answered: number;
@@ -4787,6 +4970,12 @@ export interface operations {
               escalated?: string;
               failed?: true;
               differs_on?: string;
+              fields?: string[];
+              expected?: {
+                field: string;
+                known: "grade" | "unknown" | "contradicts";
+                value?: string;
+              }[];
             }[];
             fresh_reads?: number;
           };
@@ -4807,6 +4996,7 @@ export interface operations {
             agent: string | null;
             draft: string | null;
             graded?: true;
+            expected?: string;
           }[];
           stopped?: true;
         };
@@ -4853,6 +5043,29 @@ export interface operations {
             n?: number;
             agreed?: number;
             alone?: number;
+            agent_agreed?: number;
+            joint?: boolean;
+            fields?: Record<string, {
+              n: number;
+              workflow_right: number;
+              agent_right: number;
+              known: "grade" | "agent";
+              pass: boolean;
+              reason: string;
+              by: {
+                grade?: {
+                  n: number;
+                  workflow_right: number;
+                  agent_right: number;
+                };
+                agent?: {
+                  n: number;
+                  workflow_right: number;
+                  agent_right: number;
+                };
+              };
+              unjudged?: number;
+            }>;
             of?: string[];
             cost_usd?: number | null;
             outcomes?: {
@@ -4875,6 +5088,12 @@ export interface operations {
               escalated?: string;
               failed?: true;
               differs_on?: string;
+              fields?: string[];
+              expected?: {
+                field: string;
+                known: "grade" | "unknown" | "contradicts";
+                value?: string;
+              }[];
             }[];
             stopped?: true;
             released?: number;
@@ -4883,6 +5102,20 @@ export interface operations {
               n: number;
               agreed: number;
               alone: number;
+              agent_agreed: number;
+              fields: Record<string, {
+                grade?: {
+                  n: number;
+                  workflow_right: number;
+                  agent_right: number;
+                };
+                agent?: {
+                  n: number;
+                  workflow_right: number;
+                  agent_right: number;
+                };
+                unjudged?: number;
+              }>;
               of: string[];
               outcomes: {
                 answered: number;
@@ -4898,12 +5131,40 @@ export interface operations {
                 escalated?: string;
                 failed?: true;
                 differs_on?: string;
+                fields?: string[];
+                expected?: {
+                  field: string;
+                  known: "grade" | "unknown" | "contradicts";
+                  value?: string;
+                }[];
               }[];
               fresh_reads?: number;
             };
           } | null;
         } | null;
       }[];
+    };
+  };
+  listMarketplaceTemplates: {
+    body: never;
+    answer: {
+      url: string | null;
+      state: "read" | "stale" | "unreachable" | "off";
+      read_at: string | null;
+      templates: {
+        name: string;
+        title: string;
+        tags: string[];
+        needs: string[];
+        page_url: string;
+        summary?: string;
+        description?: string;
+        category?: "engineering" | "security" | "sales" | "marketing" | "research" | "finance" | "operations" | "compliance" | "personal";
+        harness?: string[];
+        source?: string;
+        here?: string;
+      }[];
+      problem?: string;
     };
   };
   listMcpServerNames: {
@@ -4958,6 +5219,11 @@ export interface operations {
         listed_at: string;
         updated_at: string;
         secret?: components["SecretMeta"];
+        composio_account?: {
+          state: "connected" | "pending" | "expired" | "none" | "unknown";
+          labels?: string[];
+          checked_at: string;
+        };
       }[];
     };
   };
@@ -6029,6 +6295,11 @@ export interface operations {
         listed_at: string;
         updated_at: string;
         secret?: components["SecretMeta"];
+        composio_account?: {
+          state: "connected" | "pending" | "expired" | "none" | "unknown";
+          labels?: string[];
+          checked_at: string;
+        };
       };
     };
   };
@@ -6287,6 +6558,10 @@ export interface operations {
       }[];
     };
   };
+  revokeApiKey: {
+    body: never;
+    answer: never;
+  };
   revokeCliLearning: {
     body: never;
     answer: {
@@ -6412,6 +6687,11 @@ export interface operations {
         listed_at: string;
         updated_at: string;
         secret?: components["SecretMeta"];
+        composio_account?: {
+          state: "connected" | "pending" | "expired" | "none" | "unknown";
+          labels?: string[];
+          checked_at: string;
+        };
       };
       connect_url?: string;
       not_served?: string[];
@@ -6556,6 +6836,11 @@ export interface operations {
       listed_at: string;
       updated_at: string;
       secret?: components["SecretMeta"];
+      composio_account?: {
+        state: "connected" | "pending" | "expired" | "none" | "unknown";
+        labels?: string[];
+        checked_at: string;
+      };
       composio?: {
         removed: boolean;
         note: string;
@@ -6790,7 +7075,7 @@ export interface operations {
   startClaudeLogin: {
     body: never;
     answer: {
-      state: "off" | "other_machine" | "signed_in" | "signed_out" | "no_cli" | "unknown";
+      state: "off" | "other_machine" | "refused" | "signed_in" | "signed_out" | "no_cli" | "unknown";
       place: "agentrun" | "machine";
       command: string;
       can_start: boolean;
@@ -6805,6 +7090,7 @@ export interface operations {
       machine: {
         folder: string;
         source: "CLAUDE_CONFIG_DIR" | "default";
+        credentials?: string;
       };
       sign_in?: {
         state: "waiting" | "signed_in" | "timed_out" | "failed" | "not_started";
@@ -7046,7 +7332,7 @@ export interface operations {
   turnOffClaudeLogin: {
     body: never;
     answer: {
-      state: "off" | "other_machine" | "signed_in" | "signed_out" | "no_cli" | "unknown";
+      state: "off" | "other_machine" | "refused" | "signed_in" | "signed_out" | "no_cli" | "unknown";
       place: "agentrun" | "machine";
       command: string;
       can_start: boolean;
@@ -7061,6 +7347,7 @@ export interface operations {
       machine: {
         folder: string;
         source: "CLAUDE_CONFIG_DIR" | "default";
+        credentials?: string;
       };
       sign_in?: {
         state: "waiting" | "signed_in" | "timed_out" | "failed" | "not_started";
@@ -7079,7 +7366,7 @@ export interface operations {
       only_me: true;
     };
     answer: {
-      state: "off" | "other_machine" | "signed_in" | "signed_out" | "no_cli" | "unknown";
+      state: "off" | "other_machine" | "refused" | "signed_in" | "signed_out" | "no_cli" | "unknown";
       place: "agentrun" | "machine";
       command: string;
       can_start: boolean;
@@ -7094,6 +7381,7 @@ export interface operations {
       machine: {
         folder: string;
         source: "CLAUDE_CONFIG_DIR" | "default";
+        credentials?: string;
       };
       sign_in?: {
         state: "waiting" | "signed_in" | "timed_out" | "failed" | "not_started";

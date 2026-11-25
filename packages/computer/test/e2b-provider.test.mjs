@@ -796,3 +796,81 @@ test("the conformance module's run image on dial is the box template, the one th
 	assert.equal(conformanceImage({ env: {} }), "desktop");
 });
 
+/** A dial whose token store is down: no public address, and a revoke that throws, which release says through onNote. */
+const downDial = () => ({
+	tokens: {
+		revoke: async () => {
+			throw new Error("the token store is down");
+		},
+	},
+	hub: { revoke() {}, connection: () => undefined, online: () => false },
+});
+
+test("the conformance module hands onNote and dial to the drifted twin as to the run's provider: the same refusal on create, the same note on release", async () => {
+	const conformance = await e2b.conformance();
+	for (const make of [conformance.createProvider, conformance.createDriftedProvider]) {
+		const rec = recorder();
+		rec.Sandbox.getInfo = async () => {
+			throw Object.assign(new Error("sandbox not found"), { name: "SandboxNotFoundError" });
+		};
+		const notes = [];
+		const provider = await make({
+			env: { [ENV.key]: KEY, [ENV.live]: "1", [ENV.connect]: "dial" },
+			Sandbox: rec.Sandbox,
+			daemonPath: DAEMON_PATH,
+			buildDaemon: async () => DAEMON_PATH,
+			timeouts: TIMEOUTS,
+			onNote: (note) => notes.push(note),
+			dial: downDial(),
+		});
+		const made = await provider.create(SPEC, { requestId: `r-untangle-dial-${make.name}` });
+		assert.equal(made.ok, false, make.name);
+		assert.match(made.error.message, /has no public https address/, make.name);
+		const released = await provider.release({ id: "i0000000000000000001", name: "computer-0123456789ab" }, "delete");
+		assert.equal(released.ok, true, `${make.name}: ${JSON.stringify(released)}`);
+		assert.equal(notes.length, 1, `${make.name}: ${JSON.stringify(notes)}`);
+		assert.match(notes[0].note, /could not be revoked \(the token store is down\)/, make.name);
+	}
+});
+
+test("the conformance module keeps a COMPUTER_E2B_MAX_LIFETIME_MS under 30 minutes, and cuts a longer one to 30, on the run's provider and its drifted twin", async () => {
+	const conformance = await e2b.conformance();
+	for (const make of [conformance.createProvider, conformance.createDriftedProvider]) {
+		const env = { [ENV.key]: KEY, [ENV.live]: "1" };
+		const options = { Sandbox: recorder().Sandbox, daemonPath: DAEMON_PATH, buildDaemon: async () => DAEMON_PATH };
+		assert.equal((await make({ ...options, env: { ...env, [ENV.maxLifetimeMs]: "600000" } })).capabilities().maxLifetimeMs, 600_000, `${make.name}: a shorter cap is kept`);
+		assert.equal((await make({ ...options, env: { ...env, [ENV.maxLifetimeMs]: "3600000" } })).capabilities().maxLifetimeMs, 30 * 60_000, `${make.name}: a longer one is cut to 30 minutes`);
+		assert.equal((await make({ ...options, env })).capabilities().maxLifetimeMs, 30 * 60_000, `${make.name}: none is 30 minutes`);
+	}
+});
+
+test("the conformance module refuses COMPUTER_E2B_MAX_LIFETIME_MS=0 in words, on the run's provider and its drifted twin, before any E2B call", async () => {
+	const conformance = await e2b.conformance();
+	for (const make of [conformance.createProvider, conformance.createDriftedProvider]) {
+		const rec = recorder();
+		const env = { [ENV.key]: KEY, [ENV.live]: "1", [ENV.maxLifetimeMs]: "0" };
+		await assert.rejects(
+			make({ Sandbox: rec.Sandbox, daemonPath: DAEMON_PATH, buildDaemon: async () => DAEMON_PATH, env }),
+			/maxLifetimeMs must be a whole number of ms above 0 and at most \d+ ms, the longest E2B keeps a computer/,
+			`${make.name}: 0 is refused, never taken as 30 minutes`,
+		);
+		assert.deepEqual(rec.calls, [], `${make.name}: no E2B call`);
+	}
+});
+
+test("the conformance module's daemon: an option's path over COMPUTER_E2B_DAEMON, and the drifted twin uploads the one it built", async () => {
+	const conformance = await e2b.conformance();
+	const empty = () => {
+		const rec = recorder();
+		rec.Sandbox.list = () => ({ hasNext: false, nextItems: async () => [] });
+		return rec.Sandbox;
+	};
+	const env = { [ENV.key]: KEY, [ENV.live]: "1", [ENV.daemon]: "/nonexistent/untangle-env/computerd" };
+	const options = { env, timeouts: TIMEOUTS, daemonPath: "/nonexistent/untangle-option/computerd", buildDaemon: async () => "/nonexistent/untangle-drift/computerd" };
+	const made = await (await conformance.createProvider({ ...options, Sandbox: empty() })).create(SPEC, { requestId: "r-untangle-e2b-1" });
+	assert.equal(made.ok, false);
+	assert.match(made.error.message, /no daemon binary at \/nonexistent\/untangle-option\/computerd/);
+	const drifted = await (await conformance.createDriftedProvider({ ...options, Sandbox: empty() })).create(SPEC, { requestId: "r-untangle-e2b-2" });
+	assert.equal(drifted.ok, false);
+	assert.match(drifted.error.message, /no daemon binary at \/nonexistent\/untangle-drift\/computerd/);
+});

@@ -147,7 +147,13 @@ type Kind = RunMachine["kind"];
  *  phone here, with Take over and Hand back (`onTake`, `onHand`: each resolves with the refusal to say, or null). A
  *  metered provider's line shows for every kind but the browser. The panel sets its own width on the run page: the
  *  reading column's while its screen is alone, wider by about the list's width with the run's steps beside the screen. */
-export function ScreenPanel({ runId, screen, machine, opens, followUp, metered, waitsFor, keptUntil, onTake, onHand, recordings = [], fileUrl, rows = NO_ROWS, working = false }: {
+export function ScreenPanel({ runId, screen, machine, opens, followUp, metered, waitsFor, keptUntil, onTake, onHand, recordings = [], fileUrl, rows = NO_ROWS, working = false, onOpenCall, seek }: {
+  /** Opens a tool call in the Dev tools tab, by its call row's id on the timeline: offered under a recording's steps where
+   *  the run's trace can be read. */
+  onOpenCall?: (rowId: string) => void;
+  /** A place on a recording to show, asked for from the Dev tools tab: the file and the seconds into it. `n` tells one
+   *  ask from the next, so the same place asked for twice is shown twice. */
+  seek?: { path: string; at: number; n: number };
   /** The run whose screen this is: only a viewer under its own path is framed. */
   runId: string;
   screen: ScreenView | null;
@@ -219,6 +225,19 @@ export function ScreenPanel({ runId, screen, machine, opens, followUp, metered, 
   const [video, setVideo] = useState<HTMLVideoElement | null>(null);
   const playerRef = useCallback((el: HTMLVideoElement | null) => { player.current = el; setVideo(el); }, []);
   const told = useMemo(() => (reel ? videoSteps(rows, reel) : []), [rows, reel?.path, reel?.seconds]); // eslint-disable-line react-hooks/exhaustive-deps
+  // A place asked for: its file is the one played, and once the player knows the video's length it moves there. (Before
+  // that a player takes no time; where `preload` reads nothing, it moves when the video is first played.)
+  useEffect(() => {
+    const i = seek ? done.findIndex((r) => r.path === seek.path) : -1;
+    if (i >= 0) setPicked(i);
+  }, [seek?.n]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (!seek || !video || reel?.path !== seek.path) return;
+    const go = () => { video.currentTime = seek.at; };
+    if (video.readyState >= 1) { go(); return; }
+    video.addEventListener("loadedmetadata", go, { once: true });
+    return () => video.removeEventListener("loadedmetadata", go);
+  }, [seek?.n, video, reel?.path]); // eslint-disable-line react-hooks/exhaustive-deps
   // A phone is tall: its frame takes the height the run page shows below it (phoneHeight), so the whole phone is on
   // screen at once, its bottom (the keyboard, the nav bar) never under the composer. Its recording's player is sized so too.
   const [phoneH, setPhoneH] = useState<number | undefined>(undefined);
@@ -339,7 +358,7 @@ export function ScreenPanel({ runId, screen, machine, opens, followUp, metered, 
           // player stays the same element (its place in the video kept) when its steps come.
           ? <div className={told.length ? SCREEN_WITH_STEPS : undefined}>
               <video ref={playerRef} src={fileUrl(reel.path)} controls muted playsInline preload="metadata" aria-label={`The run's recording, ${reel.path}`} className={screenBox} style={screenHeight} />
-              {told.length > 0 && <RunVideoSteps key={reel.path} video={video} steps={told} />}
+              {told.length > 0 && <RunVideoSteps key={reel.path} video={video} steps={told} onOpenCall={onOpenCall} />}
             </div>
           : <p className="px-4 py-12 text-center font-mono text-body text-muted-foreground">{words(kind, screen, machine, opens, followUp, waitsFor, keptUntil)}</p>}
     </section>

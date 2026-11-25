@@ -14,7 +14,9 @@ import { ROOT_CONVERSATION_ID, UserEntry } from "@earendil-works/pi-durable";
 import { commitWrites } from "@earendil-works/pi-durable/testing";
 
 const { openSqliteStore } = await import("../dist/store/index.js");
-const { countCuts, countTable, couldNotCount, shareTexts, stringsOf } = await import("../dist/scrub-command.js");
+const scrubCommand = await import("../dist/scrub-command.js");
+const { countCuts, countTable, couldNotCount, shareTexts, stringsOf } = scrubCommand;
+const { sealRunLaunch } = await import("../dist/store/seal.js");
 const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
 
 /** Fresh synthetic secrets: an sk- key (a known format), a PGPASSWORD= value (a label), an email (personal) and a value
@@ -310,4 +312,55 @@ test("LXXVII: a shell call naming a credential file through quotes, $PGPASSFILE 
   // A path that only holds pgpass in a longer name: no cut.
   await oneCallRun(store, "pgpass-notes", "Bash", { command: "cat docs/pgpass-setup.md" }, pgpass);
   assert.equal((await counted("pgpass-notes")).cuts, 0);
+});
+
+test("LVI: the count gives an approval outcome's text and a workflow call's output their call's context, as the export does: each is one dump", async () => {
+  // The gathered reads (shareTexts) as plain data: what the count reads of them is shareTextsOf's.
+  assert.equal(typeof scrubCommand.shareTextsOf, "function", "the count's texts are made from its reads by shareTextsOf");
+  const { shareTextsOf } = scrubCommand;
+  const pw = `Cu${randomBytes(9).toString("hex")}`;
+  const pgpass = `db:5432:app:svc:${pw}`;
+  const counted = (read) => countCuts("r", String(read.view.kind), shareTextsOf(read), []);
+  // A .pgpass read a person allowed: its result's preview is out of the served rows here, so only its outcome row's text
+  // (run-view.ts withApprovalRows, the call's output shown again under the outcome's head line) holds the output.
+  for (const outcome of ["approval:toolu_01:after:outcome", "approval:toolu_01:outcome"]) {
+    const call = { id: "toolu_01:call", kind: "tool_use", tool_name: "Read", tool_use_id: "toolu_01", summary: "Read ~/.pgpass", text: "", tool_input_preview: "{\"file_path\":\"~/.pgpass\"}", tool_result_preview: null };
+    const told = { id: outcome, kind: "phase", tool_name: null, tool_use_id: null, summary: "AgentRun: Read ran once you allowed it; its result went to the agent", text: `Read ran once you allowed it. Its result:\n${pgpass}`, tool_input_preview: null, tool_result_preview: null };
+    const count = await counted({ view: { kind: "agentic", status: "completed", title: "Look" }, agentName: "Synthetic agent", rows: [call, told], calls: [{ ...call, tool_input: { file_path: "~/.pgpass" } }], graph: null });
+    assert.equal(count.by_kind.dump, 1, `${outcome}: ${JSON.stringify(count.rules)}`);
+    assert.equal(count.rules.find((line) => line.kind === "dump")?.rule, "credential-file", outcome);
+  }
+  // A workflow's calls: each output with its own tool's and input's context; an unrelated read's prose is no cut.
+  const effect = (tool, input, output) => ({ node: "n1", executionPath: "0", item: null, tool, status: "done", input, output, error: null, startedAt: "2026-11-23T10:00:00.000Z", endedAt: "2026-11-23T10:00:01.000Z" });
+  const graph = {
+    run: { status: "completed", paused: false },
+    nodes: [{ id: "n1", label: "Look" }],
+    effects: [effect("read", { file_path: "~/.pgpass" }, pgpass), effect("shell", { command: "env" }, `APP_REGION=north\nAPP_SEED=${pw}`), effect("read", { file_path: "notes.txt" }, "The notes say: meet at noon.")],
+  };
+  const count = await counted({ view: { kind: "workflow", status: "completed", title: "Look" }, agentName: "Synthetic agent", rows: [], calls: [], graph });
+  assert.equal(count.by_kind.dump, 2, JSON.stringify(count.rules));
+  assert.deepEqual(count.rules.filter((line) => line.kind === "dump").map((line) => [line.rule, line.count]), [["credential-file", 1], ["env-dump", 1]]);
+  assert.equal(count.cuts, 2, JSON.stringify(count.rules));
+  assertNoValue(countTable(count) + JSON.stringify(count), { pw }, "count");
+});
+
+test("a run whose launch holds keys sealed is counted under the store's seal key, its keys held; without that key it is withheld", async (t) => {
+  const s = planted();
+  const { dir, store } = await dataDir(t);
+  const key = randomBytes(32);
+  const handed = `hk${randomBytes(16).toString("hex")}`;
+  const id = "sealed-1";
+  await store.runs.create({ id, agentId: "a1", revisionId: "r1" }, { body: { input: { content: `Use ${handed} for the call.` }, title: "Call the API", place: { mode: "runner" } }, sealed: sealRunLaunch(key, id, { keys: { CALL_API_KEY: handed } }) });
+  const base = { serverSecrets: () => [], keyEnv: () => ({}) };
+  const gathered = await shareTexts(store, id, { ...base, sealKey: key });
+  assert.ok(typeof gathered === "object", String(gathered));
+  assert.ok(gathered.held.includes(handed), "the key sealed with its launch is a held value");
+  assert.equal(await shareTexts(store, id, { ...base, sealKey: undefined }), "withheld", "no seal key: what it was handed can't be read");
+  await store.close();
+  // The command reads the store's seal key as the import boots it (handed here) and counts the run: without the key it would be withheld (exit 1).
+  const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !["AGENTRUN_STORE_URL", "AGENTRUN_SEAL_KEY"].includes(name)));
+  const ran = spawnSync(process.execPath, [CLI, "scrub", "--data", dir, id, "--json"], { env: { ...env, SCRUBTEST_SECRET: s.held, AGENTRUN_SEAL_KEY: key.toString("base64"), AGENTRUN_TELEMETRY: "0" }, encoding: "utf8", timeout: 120_000 });
+  assert.equal(ran.status, 0, ran.stderr);
+  assert.equal(JSON.parse(ran.stdout).run_id, id, "counted, not withheld: its sealed launch opened under the key");
+  assertNoValue(ran.stdout + ran.stderr, { ...s, handed }, "sealed");
 });

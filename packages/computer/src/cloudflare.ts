@@ -9,7 +9,7 @@ import { DEFAULT_CPUS, DEFAULT_MEMORY_MB, show } from "./drift.js";
 import { type HostCall, HostError, type HostFacts, type Machine, type MachineHost, type MachineRequest } from "./host.js";
 import { orThrow } from "./hosted/process.js";
 import { HostedProvider, type HostedOptions, type HostedTimeouts } from "./hosted/provider.js";
-import { jsonOf, type Rest, type RestInit, rest } from "./hosted/rest.js";
+import { httpsBase, jsonOf, type Rest, type RestInit, rest } from "./hosted/rest.js";
 import { dateOf } from "./hosted/values.js";
 import type { CallContext, ComputerSpec, Refusal } from "./provider.js";
 import { fail, ok, type Result } from "./result.js";
@@ -33,6 +33,8 @@ export interface CloudflareProviderOptions extends Omit<HostedOptions, "desktop"
 	relayToken: string;
 	/** The fetch every call goes through; default the global one. */
 	fetch?: typeof fetch;
+	/** For tests: the pause before a request is tried again, given its ms and the call's signal. Default a timer. */
+	pause?: (ms: number, signal?: AbortSignal) => Promise<void>;
 	/** The longest lifetime check takes, in ms: at most 24 h, the janitor's cap, which is the default. */
 	maxLifetimeMs?: number;
 	timeouts?: Partial<HostedTimeouts>;
@@ -98,7 +100,7 @@ class CloudflareHost implements MachineHost {
 	readonly relayUrl: string;
 	readonly #client: Rest;
 
-	constructor(options: { relayUrl: string; relayToken: string; fetch: typeof fetch }) {
+	constructor(options: { relayUrl: string; relayToken: string; fetch: typeof fetch; pause?: (ms: number, signal?: AbortSignal) => Promise<void> }) {
 		this.relayUrl = options.relayUrl;
 		this.#client = rest({
 			base: options.relayUrl,
@@ -106,7 +108,7 @@ class CloudflareHost implements MachineHost {
 			vendor: CLOUDFLARE.id,
 			fetch: options.fetch,
 			timeoutMs: 30_000,
-			retry: { attempts: 4, baseMs: 1_000 },
+			retry: { attempts: 4, baseMs: 1_000, ...(options.pause ? { pause: options.pause } : {}) },
 			// The relay's refusals are { error } in words.
 			explain: ({ status, bytes, what }) => {
 				const said = (jsonOf(bytes) as { error?: unknown } | null)?.error;
@@ -196,11 +198,13 @@ export class CloudflareProvider extends HostedProvider {
 	readonly #relay: CloudflareHost;
 
 	constructor(options: CloudflareProviderOptions) {
-		const { relayUrl, relayToken, fetch: fetcher = globalThis.fetch, timeouts = {}, ...rest } = options ?? ({} as CloudflareProviderOptions);
+		const { relayUrl, relayToken, fetch: fetcher = globalThis.fetch, pause, timeouts = {}, ...rest } = options ?? ({} as CloudflareProviderOptions);
 		if (typeof relayToken !== "string" || relayToken === "") throw new Error("options.relayToken, the relay's RELAY_TOKEN, is required: the provider reads no environment, so the caller passes it");
-		if (typeof relayUrl !== "string" || !URL.canParse(relayUrl) || new URL(relayUrl).protocol !== "https:") throw new Error(`options.relayUrl is the relay Worker's https address, as wrangler deploy printed it, not ${JSON.stringify(relayUrl)}`);
+		if (typeof relayUrl !== "string" || relayUrl === "") throw new Error("options.relayUrl, the relay Worker's https address as wrangler deploy printed it, is required");
+		const base = httpsBase(relayUrl, "the Cloudflare relay URL");
 		if (typeof fetcher !== "function") throw new Error("options.fetch must be a function, as the global fetch is");
-		const host = new CloudflareHost({ relayUrl, relayToken, fetch: fetcher });
+		if (pause !== undefined && typeof pause !== "function") throw new Error("options.pause must be a function");
+		const host = new CloudflareHost({ relayUrl: base, relayToken, fetch: fetcher, ...(pause ? { pause } : {}) });
 		super(host, { ...rest, timeouts: { ...CLOUDFLARE_TIMEOUTS, ...timeouts } });
 		this.#relay = host;
 	}

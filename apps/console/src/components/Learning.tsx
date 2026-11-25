@@ -9,8 +9,8 @@ import { NativeLearningSwitch } from "@/components/NativeAgent";
 import { CostPerRun } from "@/components/CostPerRun";
 import { LearningBill, useAudits } from "@/components/LearningBill";
 import { CostAgreement } from "@/components/CostAgreement";
-import { LearningGlance } from "@/components/LearningGlance";
-import { agreementOf, revisionsOf } from "@/lib/learningGlance";
+import { Figure, LearningGlance } from "@/components/LearningGlance";
+import { agreementOf, glanceOf, revisionsOf } from "@/lib/learningGlance";
 import { WorkflowReplay } from "@/components/WorkflowReplay";
 import { LoopFeed } from "@/components/LoopFeed";
 import { LoopStory } from "@/components/LoopStory";
@@ -24,9 +24,10 @@ import { type Client, ClientError } from "@/lib/client";
 import { markdown, runLabel, when, runTitle as shownTitle } from "@/lib/format";
 import {
   type AgentLearning, APPROVE_SIGN_IN, type Approval, approval, bytesOf, CHANGED, changeWords, correctionLines, corrections, counted, dropKind, dropWords,
-  givenToRuns, impactBase, impactWords, type LastChange, type LearnedItem, type LearningProblem, learningWords, RESTORE_SIGN_IN, restores, type Retired, runsWord, shownImpact, took, tookChange, UNREADABLE_RETIRED,
+  givenToRuns, impactBase, impactWords, type LastChange, type LearnedItem, type LearningProblem, RESTORE_SIGN_IN, restores, type Retired, runsWord, shownImpact, took, tookChange, UNREADABLE_RETIRED,
 } from "@/lib/learning";
 import { learningPerRun } from "@/lib/learningBill";
+import { usd } from "@/lib/costPerRun";
 import { backendSdkOf } from "@/lib/backendSdk";
 import { LearningModelSetup } from "./LearningModelSetup";
 import { metaOf } from "@/lib/runGraph";
@@ -193,20 +194,13 @@ function LearningView({ agent, v2, server, onAgent, onChanged }: LearningProps) 
     <div className="space-y-6">
       {/* What learning did, in one sentence and four figures, once a learned workflow has taken a run over. */}
       <LearningGlance cost={cost} revisions={revisions} />
-      {/* The loop at a glance. */}
-      <LoopStory stages={story} />
+      {/* The loop at a glance: under the figures, each stage its value alone, since the figures say its numbers. */}
+      <LoopStory stages={story} compact={!!cost && glanceOf(cost, revisions) !== null} />
       {shownImpact(view.impact) && <ImpactCard impact={view.impact} cost={cost} />}
-      {/* The learned workflow stands beside the cost of a run where the tab has room for both, and under it otherwise:
-          the tab's own width decides, since the agent's page keeps a column of its own beside the tab. A CLI agent's
-          tab has no replay, so its cost chart keeps the row. */}
-      {!cli && workflows.some((w) => givenToRuns(w.status)) ? (
-        <div className="[container-type:inline-size]" data-testid="cost-and-workflow">
-          <div className="grid grid-cols-1 gap-6 [@container(min-width:760px)_and_(max-width:1099.98px)]:grid-cols-[minmax(0,1fr)_17.5rem] [@container(min-width:1100px)]:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
-            {costChart}
-            <WorkflowReplay v2={v2} agentId={agent.agent_id} workflows={workflows} promotions={promotions} serving={serving} cost={cost} onReplayed={() => { void read(); }} className="min-w-0" />
-          </div>
-        </div>
-      ) : costChart}
+      {costChart}
+      {/* The learned workflow takes a row of its own under the cost of a run: beside it, a column narrow enough to cut its
+          name and its graph. A CLI agent's tab has no replay. */}
+      {!cli && <WorkflowReplay v2={v2} agentId={agent.agent_id} workflows={workflows} promotions={promotions} serving={serving} cost={cost} onReplayed={() => { void read(); }} className="min-w-0" />}
       <LearningBill v2={v2} agentId={agent.agent_id} cost={cost} serving={serving} audits={audits}
         beside={revisions.some((p) => p.served && agreementOf(p)) ? <CostAgreement cost={cost} revisions={revisions} /> : undefined} />
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
@@ -296,33 +290,26 @@ function ImpactCard({ impact, cost }: { impact: NonNullable<AgentLearning["impac
   const learning = cost?.bill ? learningPerRun(cost.bill) : null;
   const basis = `Medians of ${runsWord(b.runs)} before it first learned and ${runsWord(a.runs)} that started from what it learned (a correction or a workflow).`;
   return (
-    <section className="border" aria-label={impactWords(impact, learning)}>
-      <div className="flex flex-wrap items-center gap-x-8 gap-y-4 px-4 py-3">
-        <div className="flex items-baseline gap-2.5">
-          <span className="caps text-small font-semibold">Since it learned</span>
-          <span className="font-mono text-label text-muted-foreground" title={basis}>{impactBase(impact)}</span>
-        </div>
-        <dl className="flex flex-1 flex-wrap items-baseline gap-x-10 gap-y-3" aria-hidden>
-          {stats.map((s) => (
-            <div key={s.label} className="flex items-baseline gap-3">
-              <dt className="caps text-micro text-muted-foreground">{s.label}</dt>
-              <dd className="flex items-baseline gap-2 font-mono">
-                <span className="text-figure font-semibold leading-none">{s.now}</span>
-                <span className="text-small text-muted-foreground">instead of {s.was}</span>
-                {s.delta !== null && s.delta !== 0 && <span className={cn("text-small", s.delta < 0 ? "text-primary-text" : "text-warning-text")}>{s.delta > 0 ? "+" : "−"}{Math.abs(s.delta)}%</span>}
-              </dd>
-            </div>
-          ))}
-          {learning !== null && (
-            <div className="flex items-baseline gap-3">
-              <dt className="caps text-micro text-muted-foreground">Learning itself</dt>
-              <dd className="font-mono text-body text-muted-foreground" title="The bill's learning spend (compile turns, audits' shadow runs, replays) over the runs that did a job.">{learningWords(learning)}</dd>
-            </div>
-          )}
-        </dl>
+    <section className="border bg-card" aria-label={impactWords(impact, learning)}>
+      <div className="flex flex-wrap items-baseline gap-x-2.5 gap-y-1 px-4 pb-1 pt-3">
+        <span className="caps text-label text-muted-foreground">Since it learned</span>
+        <span className="text-small text-muted-foreground" title={basis}>{impactBase(impact)}</span>
       </div>
+      {/* The tab's figure cells, in its columns: they line up with the four figures at the top. */}
+      <dl className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4" aria-hidden>
+        {stats.map((s) => (
+          <Figure key={s.label} label={s.label} value={s.now} className="sm:border-r" band={false} basis={`instead of ${s.was}`}
+            aside={s.delta !== null && s.delta !== 0 ? <Change delta={s.delta} /> : undefined} />
+        ))}
+        {learning !== null && <Figure label="Learning itself" value={usd(learning)} band={false} basis="a run, booked: compile turns, audits' shadow runs and replays" short="a run, booked" />}
+      </dl>
     </section>
   );
+}
+
+/** A change in a time, beside its figure: down in the primary colour, up in the warning colour. */
+function Change({ delta }: { delta: number }) {
+  return <span className={cn("font-mono text-small", delta < 0 ? "text-primary-text" : "text-warning-text")}>{delta > 0 ? "+" : "−"}{Math.abs(delta)}%</span>;
 }
 
 /** The learning switch on the tab: a new revision with `learning` on or off, made on the agent as the server has it

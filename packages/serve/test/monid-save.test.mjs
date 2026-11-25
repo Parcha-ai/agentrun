@@ -127,6 +127,23 @@ test("an endpoint already pinned under a kept grant is not read again when a wil
   assert.deepEqual((await reads()).slice(wild), [], "a named grant of an endpoint its kept wildcard pinned reads nothing");
 });
 
+test("a burst of saves on one key that monid limits by rate pins every grant: the listing and each inspect are read once for the burst, each 429 waited out", async (t) => {
+  const log = join(await scratch(t), "monid-calls.ndjson");
+  // monid answers six calls a second on the key and refuses the rest of that second with a 429, Retry-After 1.
+  withEnv(t, { MONID_API_KEY: KEY, AGENTRUN_TEST_FAUX_MONID_CALLS: log, AGENTRUN_TEST_FAUX_MONID_RATE: "6" });
+  const { api, store } = await serve(t, { fauxMonid: FAUX_MONID });
+  const tools = ["monid:apollo/*", "monid:faux/person/enrich"];
+  const ids = Array.from({ length: 8 }, (_, at) => `burst${at}`);
+  const saved = await Promise.all(ids.map((id) => api("POST", "/agents", agent(id, { tools }))));
+  assert.deepEqual(saved.map(({ status }) => status), ids.map(() => 201), JSON.stringify(saved.filter(({ status }) => status !== 201).map(({ body }) => body)));
+  for (const id of ids) assert.deepEqual(Object.keys(await pinOf(store, id)).sort(), ["monid:apollo/news_articles/search", "monid:apollo/organizations/enrich", "monid:apollo/people/match", "monid:faux/person/enrich"], id);
+  const calls = (await readFile(log, "utf8")).split("\n").filter(Boolean).map((line) => JSON.parse(line));
+  assert.ok(calls.some((call) => call.limited), "monid refused some of the burst for its rate");
+  const answered = calls.filter((call) => !call.limited);
+  assert.equal(answered.filter((call) => call.path === "/v1/endpoints").length, 8, "the listing's eight pages, read once for all eight saves");
+  assert.deepEqual(answered.filter((call) => call.path === "/v1/inspect").map((call) => call.endpoint).sort(), ["/news_articles/search", "/organizations/enrich", "/people/match", "/person/enrich"], "each endpoint inspected once for all eight saves");
+});
+
 test("a monid grant saved with no monid key is refused: it cannot be pinned", async (t) => {
   withEnv(t, {}, ["MONID_API_KEY"]);
   const { api } = await serve(t, { fauxMonid: FAUX_MONID });

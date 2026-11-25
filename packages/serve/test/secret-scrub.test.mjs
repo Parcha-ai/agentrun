@@ -6,11 +6,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readFileSync } from "node:fs";
+import v8 from "node:v8";
+import vm from "node:vm";
 import * as secretCut from "../dist/secret-cut.js";
 import { SECRET_SHAPES, shapeSpans } from "../dist/redact/match.js";
 
 const { RULE_PATTERNS = {}, SCRUB_RULES, scrub, scrubWith } = secretCut;
-import { AKIA, BLOB, GHP, HELD, HEX64, JWT, macHome, NPM, PEM, SK, unixHome, windowsHome } from "./scrub-positives.mjs";
+import { AKIA, AR_KEY, BLOB, GHP, HELD, HEX64, JWT, macHome, NPM, PEM, SK, unixHome, windowsHome } from "./scrub-positives.mjs";
 
 /** Restorable, by kind: the contract's fixed map. */
 const RESTORABLE = { format: false, held: false, dump: false, label: true, personal: true, jev: true };
@@ -53,7 +55,7 @@ test("SCRUB_RULES: unique ids, a known kind each, restorable fixed by kind", () 
 });
 
 test("format: a known key is cut whole, not restorable, its shape a public prefix and a length", async () => {
-  for (const [secret, rule, prefix] of [[SK, "sk-key", "sk-"], [GHP, "github-token", "ghp_"], [AKIA, "aws-access-key", "AKIA"], [JWT, "jwt", "eyJ"]]) {
+  for (const [secret, rule, prefix] of [[SK, "sk-key", "sk-"], [GHP, "github-token", "ghp_"], [AKIA, "aws-access-key", "AKIA"], [JWT, "jwt", "eyJ"], [AR_KEY, "agentrun-api-key", "ar_key_"]]) {
     const { text, cut } = await oneCut(`the tool printed ${secret} and went on`);
     assert.equal(text, `the tool printed [redacted:${rule}] and went on`);
     assert.equal(cut.rule, rule);
@@ -341,6 +343,7 @@ test("SCRUB_RULES: each rule's kind is what anchors its match (a format names it
     "private-key-block": "format",
     "github-token": "format",
     "sk-key": "format",
+    "agentrun-api-key": "format",
     "slack-token": "format",
     jwt: "format",
     "webhook-secret": "format",
@@ -602,6 +605,16 @@ test("P0 4 (ruling B): every rule regex is bounded: no *, + or {n,} outside the 
   // No regex literal inside a function body: each is a named module-level constant the walk reads.
   const inline = source.split("\n").filter((line) => /^\s+/.test(line) && /(?:\.(?:test|exec|replace|match|matchAll|split|search)\(\s*\/(?![/*]))|(?:=\s*\/[^/*\s])/.test(line));
   assert.deepEqual(inline, [], "inline regex literals");
+});
+
+test("the lexer's regexes are bounded too: each is a module-level literal with no *, + or {n,}", () => {
+  const source = readFileSync(new URL("../src/shell-lex.ts", import.meta.url), "utf8");
+  const declared = [...source.matchAll(/^const ([A-Z][A-Z0-9_]*) = \/(.{1,200})\/[a-z]{0,4};$/gm)];
+  assert.ok(declared.length >= 4, `found ${declared.length} module-level regexes in shell-lex.ts`);
+  const problems = declared.flatMap((m) => (unboundedIn(m[2]).length ? [`${m[1]}: ${unboundedIn(m[2]).join(", ")} in /${m[2]}/`] : []));
+  assert.equal(problems.length, 0, problems.join("\n"));
+  const inline = source.split("\n").filter((line) => /new RegExp\(/.test(line) || (/^\s+/.test(line) && /(?:\.(?:test|exec|replace|match|matchAll|split|search)\(\s*\/(?![/*]))|(?:=\s*\/[^/*\s])/.test(line)));
+  assert.deepEqual(inline, [], "inline or built regexes in shell-lex.ts");
 });
 
 test("P0 4 (ruling B): adversarial repeats of every rule's start finish in count mode (no timing asserted)", async () => {
@@ -2483,7 +2496,7 @@ test("XCI: pemBlocks reads a BEGIN line's end itself: a private-key span that is
   assert.deepEqual(pemBlocks(long, [[0, long.indexOf("\n")]], lineBounds(long)).map(({ start, end }) => [start, end]), [[0, long.length]]);
 });
 
-test("XCII: a command's quoted part holds its shell operators (Greptile P1 on 683391d4fd): a quoted `&`, `;` or `|` no longer ends redis-cli, docker login, mysql, npm set or curl before its password", async () => {
+test("XCII: a command's quoted part holds its shell operators (Greptile P1 on 683391d4fd): a quoted `&`, `;` or `|` no longer ends redis-cli, docker login, mysql, npm set or curl before its password", async (t) => {
   for (const [text, after] of [
     ["redis-cli -a 'Copper&lumen9' ping", " ping"],
     ['redis-cli -h cache -a "Copper;lumen9" ping', " ping"],
@@ -2507,10 +2520,60 @@ test("XCII: a command's quoted part holds its shell operators (Greptile P1 on 68
   }
   // A quote left open on its line is a character, as before: the command still ends at the next operator.
   assert.ok((await gone("mysql -u root -pTq7Wm2Rk9 'app; grep -pattern file", ["Tq7Wm2Rk9"])).text.endsWith("; grep -pattern file"));
-  // Each rule alone reads 2 MB of commands, quotes closed, open and escaped, in CPU time linear in it (LXXXVIII's 2 MB bound).
+  // Each rule alone reads commands, quotes closed, open and escaped, linear by count: shell-lex.ts reads each character
+  // at most 8 times (its counted measure, read past the 4096 window a command is read in, so 512 KB shows it).
   for (const unit of [`mysql -u r -p'${"a&".repeat(300)}' db `, `redis-cli -a "${'\\"'.repeat(400)} `, `curl -u "u:${"p;".repeat(300)}" -H 'a`, "redis-cli '\"".repeat(40), `docker login -p "${"\\".repeat(500)}`]) {
-    for (const [id, ms] of Object.entries(await rulesAlone(["mysql-password", "password-flag", "curl-user"], repeatTo(unit, 2_000_000)))) {
-      assert.ok(ms < 2_000, `${id} on ${unit.slice(0, 20)}: ${Math.round(ms)} ms`);
+    for (const [id, perChar] of Object.entries(await rulesRead(["mysql-password", "password-flag", "curl-user"], repeatTo(unit, 512 * 1024)))) {
+      assert.ok(perChar <= 8, `${id} on ${unit.slice(0, 20)}: ${perChar.toFixed(2)} reads a character`);
+    }
+  }
+  // And their time grows with the text no faster than the text: each rule's whole work (its name scan, word values, the
+  // text scan) on 2 MB against the same rule on 500 KB, timed in the same call, at most GROWTH times (four times the
+  // text: a linear rule takes about 4, a quadratic one 16). A ratio of two runs in one call needs no absolute ceiling,
+  // which the clock's spread across runs of the same code crosses. FLOOR_MS keeps a rule that does next to nothing at
+  // 500 KB from dividing by noise. XCV's units (curl-user) and a path's options (`npm -x config -x`, pathEnd) are read
+  // here too. Each size is timed 3 times, the sizes alternating (500 KB, 2 MB, 500 KB, …) so both see the same machine,
+  // and each keeps its lowest time: noise only adds time, so the lowest is the estimate. One verdict a unit, never a
+  // second timing after a fail: a retime that passes after a fail hides a real ratio. The time is wall time
+  // (rulesWall), after a full gc(): process CPU time counts the JIT's and the collector's threads too, measured at
+  // 1.5 to 2.3 times the wall time of the same call, and a call timed on a heap other calls left full pays their
+  // garbage. With gc() first, a call pays only for what it allocates itself.
+  const [GROWTH, FLOOR_MS] = [8, 20];
+  /** The growth comparator: `big` (ms at 2 MB) at most GROWTH times the larger of `small` (ms at 500 KB) and FLOOR_MS. */
+  const growthHolds = (label, small, big) => {
+    const ratio = big / Math.max(small, FLOOR_MS);
+    assert.ok(ratio <= GROWTH, `${label}: ${Math.round(small)} ms at 500 KB, ${Math.round(big)} ms at 2 MB, ${ratio.toFixed(2)} x (at most ${GROWTH})`);
+  };
+  // A control on the comparator, fixed timings: four times passes, sixteen times (a quadratic's) fails on its words.
+  growthHolds("control 20/80", 20, 80);
+  assert.throws(() => growthHolds("control 20/320", 20, 320), /control 20\/320: 20 ms at 500 KB, 320 ms at 2 MB, 16\.00 x \(at most/, "the growth check let 16 x through");
+  const grows = async (ids, unit) => {
+    const [smallText, bigText] = [repeatTo(unit, 500_000), repeatTo(unit, 2_000_000)];
+    const runs = Object.fromEntries(ids.map((id) => [id, { small: [], big: [] }]));
+    for (let i = 0; i < 3; i++) {
+      for (const [size, text] of [["small", smallText], ["big", bigText]]) {
+        const ms = await rulesWall(ids, text);
+        for (const id of ids) runs[id][size].push(ms[id]);
+      }
+    }
+    return Object.fromEntries(ids.map((id) => {
+      const [small, big] = [Math.min(...runs[id].small), Math.min(...runs[id].big)];
+      return [id, { small, big, ratio: big / Math.max(small, FLOOR_MS), runs: runs[id] }];
+    }));
+  };
+  const every = ["mysql-password", "password-flag", "curl-user", "secret-assign"];
+  const units = [
+    ...[`mysql -u r -p'${"a&".repeat(300)}' db `, `redis-cli -a "${'\\"'.repeat(400)} `, `curl -u "u:${"p;".repeat(300)}" -H 'a`, "redis-cli '\"".repeat(40), `docker login -p "${"\\".repeat(500)}`, "npm set x ", "mysql ${a ${b ${c ", "redis-cli -h o'neil -a x 'y' "].map((unit) => [unit, every]),
+    ...['curl -H "$(curl $(curl $(date)))" -u a:b ', 'curl "$(', "curl $(((((( -u a:b ", "curl \x60 -u a:b ", 'curl "\x60$(" -u a:b '].map((unit) => [unit, ["curl-user"]]),
+    ["npm -x config -x ", ["secret-assign"]],
+  ];
+  for (const [unit, ids] of units) {
+    const grew = await grows(ids, unit);
+    for (const id of ids) {
+      const { small, big, ratio, runs } = grew[id];
+      const all = `\truns ${runs.small.map((ms) => ms.toFixed(1)).join("/")} | ${runs.big.map((ms) => ms.toFixed(1)).join("/")} ms`;
+      t.diagnostic(`XCII\tgrowth\t${id}\t${small.toFixed(1)} ms at 500 KB\t${big.toFixed(1)} ms at 2 MB\t${ratio.toFixed(2)} x\t${JSON.stringify(unit.slice(0, 28))}${all}`);
+      growthHolds(`${id} on ${unit.slice(0, 20)}`, small, big);
     }
   }
 });
@@ -2536,13 +2599,343 @@ test("XCV: curl reads on past a substitution, its contents left out (Greptile P1
       if (wrap === FOUR_WRAPS[0]) assert.ok(out.text.includes("$(") || out.text.includes("\x60"), out.text);
     }
   }
-  // A substitution as the whole password is a reference, as before XCII: no cut. One left open still ends curl.
+  // A substitution as the whole password is a reference, as before XCII: no cut. One left open is a character (XCVI):
+  // its line is read on, and the next line is another command.
   await kept('curl -u "admin:$(cat ~/.pw)" https://x.io');
-  await kept("curl -H \"X: $(date -u +%H:%M https://x.io\n-u a:b");
-  // curl-user alone reads 2 MB of nested, unclosed and repeated substitutions in CPU time linear in it (LXXXVIII's 2 MB bound).
+  await kept("curl -H \"X: $(date https://x.io\n-u a:b");
+  // curl-user alone reads nested, unclosed and repeated substitutions linear by count: at most 8 reads a character.
+  // Their CPU is bounded relatively: in XCIX against main's span scan, and in XCII at 2 MB against 500 KB, each timed in
+  // the same call. An absolute ceiling here sat inside the clock's spread across runs of the same code, so it bounded
+  // nothing.
   for (const unit of ['curl -H "$(curl $(curl $(date)))" -u a:b ', 'curl "$(', "curl $(((((( -u a:b ", "curl \x60 -u a:b ", 'curl "\x60$(" -u a:b ']) {
-    const { "curl-user": ms } = await rulesAlone(["curl-user"], repeatTo(unit, 2_000_000));
-    assert.ok(ms < 2_000, `${unit.slice(0, 20)}: ${Math.round(ms)} ms`);
+    const { "curl-user": perChar } = await rulesRead(["curl-user"], repeatTo(unit, 512 * 1024));
+    assert.ok(perChar <= 8, `${unit.slice(0, 20)}: ${perChar.toFixed(2)} reads a character`);
+  }
+});
+
+test("XCVI: commands are read by one shell lexer (shell-lex.ts): an operator inside a substitution, a substitution of any length or left open, ANSI-C quoting and a continuation line no longer end a command before its password", async () => {
+  for (const text of [
+    "redis-cli -h $(hostname; true) -a Copper9lumen9 ping",
+    "mysql -h \x60hostname;true\x60 -pCopper9lumen9 app",
+    `curl -H "X: $(printf '%s' ${"a".repeat(300)})" -u admin:Copper9lumen9 https://x.io`,
+    "curl $'-u' admin:Copper9lumen9 https://x.io",
+    "docker login -u bot -p $'Copper9lumen9' registry.example.io",
+    'curl -H "X: $(date https://x.io -u admin:Copper9lumen9',
+    "redis-cli -h db \\\n  -a Copper9lumen9 ping",
+    "redis-cli -h db -a \\\n  Copper9lumen9 ping",
+  ]) {
+    for (const wrap of FOUR_WRAPS) await gone(wrap(text), ["Copper9lumen9"]);
+  }
+  // As before the lexer, redis-cli (not curl, XCIV) reads a substitution's words as its own: an over-cut kept for parity.
+  await gone("redis-cli -h $(vault read -field=x -a Copper9lumen9) ping", ["Copper9lumen9"]);
+  // As before (XXIV), a lone `&` does not end curl: it is a URL's query far more often than a background job.
+  await gone("curl https://x.io/?a=1&b=2 -u admin:Copper9lumen9", ["Copper9lumen9"]);
+  // A line break still ends a command.
+  await kept("redis-cli -h db\n-a Copper9lumen9");
+  // A command's name ends at a blank, as before the lexer: `curl-user:label` is one word, not curl and `-user:label`.
+  // And a substitution that closed inside one left open, or that the open one read inside its quotes (a curl named in
+  // them), is still a substitution to the next curl that reaches it.
+  for (const text of ["auth-header:label curl-user:label home-path:personal", '  "curl-user": "label",', '{ id: "curl-user", text: "curl https://x.io" }', "curl -s $(cat f; curl -s x $(date -u +%H:%MZ)", "curl -s $(cat f|'curl -s ''$(date -u +%H:%M:%S)'"]) {
+    for (const wrap of FOUR_WRAPS) await kept(wrap(text));
+  }
+});
+
+test("XCVII: the command readers cut every password the text scan before the lexer cut: a quote or `${` after the name, a name not followed by a blank, a password glued to `&` `(` `)` `<` `>`, a substitution inside `${…}` or `$\"…\"`, a same-name command inside an earlier one's read", async () => {
+  const pw = "Copper9lumen9";
+  for (const text of [
+    // A quote or `${` after the name pairs with a later one on the line: the flag inside is read still.
+    `redis-cli -h o'neil -a ${pw} ping 'x'`,
+    `redis-cli -h db's -a ${pw} ping  # Bob's box`,
+    `mysql -h o'neil -p${pw} app 'x'`,
+    `docker login -u o'neil -p ${pw} r.io 'x'`,
+    `npm config set o'x //r/:_authToken ${pw} 'y'`,
+    `curl -H 'it's' -u admin:${pw} https://x 'y'`,
+    `curl -d o'neil -u admin:${pw} https://x 'y'`,
+    `redis-cli -h \${HOST -a ${pw} }`,
+    `mysql -h \${HOST -p${pw} }`,
+    `docker login -u \${HOST -p ${pw} }`,
+    `curl -H \${HOST -u admin:${pw} }`,
+    `{"type":"text","text":"redis-cli -h \${HOST -a ${pw}"}`,
+    `{"cmd":"redis-cli -h 'db -a ${pw}","note":"it's"}`,
+    `redis-cli -h 'db -a ${pw} x'`,
+    `mysql -e "select 1 -p${pw}"`,
+    `curl -H "X: a -u admin:${pw}" https://x`,
+    // A command of the same name inside an earlier one's read is read on its own.
+    `redis-cli -h o'neil ping; redis-cli -a ${pw} ping 'x'`,
+    // A name the shell reads as the command, with no blank after it as written.
+    `curl.exe -u admin:${pw} https://x`,
+    `C:\\tools\\curl.exe --user admin:${pw} https://x`,
+    `redis-cli.exe -a ${pw} ping`,
+    `'curl' -u admin:${pw} https://x`,
+    `"curl" -u alice:${pw} https://example.com`,
+    `'redis-cli' -a ${pw}`,
+    `$'curl' -u admin:${pw} https://x`,
+    `curl\u00a0-u admin:${pw}`,
+    `curl\u3000-u admin:${pw}`,
+    // A password glued to an operator character, cut whole.
+    `curl -u admin:Copper&9lumen9 https://x`,
+    `curl --user admin:Copper&9lumen9 https://x`,
+    `curl -u admin:Copper(9lumen9 https://x`,
+    `curl -u admin:Copper)9lumen9 https://x`,
+    `curl -u admin:Copper<9lumen9 https://x`,
+    `curl -u admin:Copper>9lumen9 https://x`,
+    `curl -u admin:${pw}<in`,
+    // A command inside a substitution inside `${…}` or `$"…"`, and a non-curl reader's flag inside `"$(…)"`.
+    `curl -H \${x:-$(curl -u admin:${pw} https://x.io)} https://x.io`,
+    `curl -H $"$(curl -u admin:${pw} https://x.io)" https://x.io`,
+    `curl -H "\${x:-$(curl -u admin:${pw} https://x.io)}" https://x.io`,
+    `redis-cli -h \${h:-$(redis-cli -a ${pw} get h)} ping`,
+    `redis-cli -h "$(vault read -a ${pw})" ping`,
+  ]) {
+    for (const wrap of FOUR_WRAPS) await gone(wrap(text), ["Copper", "lumen9"]);
+  }
+  // A redirection's target is no argument: `>-a` names a file. A glued descriptor is no argument either.
+  for (const text of ["redis-cli >-a report.txt ping", "redis-cli 2>-a report.txt ping", "docker login >-p out.txt r.io", "curl-user:label -u x"]) {
+    for (const wrap of FOUR_WRAPS) await kept(wrap(text));
+  }
+  for (const text of [`redis-cli -h db 2>/dev/null -a ${pw} ping`, `redis-cli >log 2>&1 -a ${pw} ping`, `redis-cli ping >"$(redis-cli -a ${pw} get f)"`]) {
+    for (const wrap of FOUR_WRAPS) await gone(wrap(text), [pw]);
+  }
+});
+
+test("XCVIII: the lexer read cuts where the span scan beside it does not: a name quoted (a path with blanks inside the quotes too), with .exe, .cmd or a Windows path, continued or followed by a wide blank; a wide blank before a flag or its value; anything between a program and its subcommand; a descriptor redirection before the flag", async () => {
+  const pw = "Copper9lumen9";
+  for (const text of [
+    `"mysql" -h db -p${pw} app`,
+    `'docker' login -u bot -p ${pw} r.io`,
+    `$'npm' config set //r/:_authToken ${pw}`,
+    `mysql.exe -h db -p${pw} app`,
+    `C:\\tools\\docker.exe login -u bot -p ${pw} r.io`,
+    `npm.exe config set //r/:_authToken ${pw}`,
+    `npm.cmd config set //r/:_authToken ${pw}`,
+    `"C:\\Program Files\\Docker\\docker.exe" login -u bot -p ${pw} r.io`,
+    `"C:\\Program Files\\MySQL\\MySQL Server 8.0\\mysql.exe" -u root -p${pw} -e "SHOW DATABASES"`,
+    `"C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe" login -u bot -p ${pw} r.io`,
+    `"C:\\Program Files\\MySQL\\MySQL Server 8.0\\bin\\mysql.exe" -u root -p${pw} -e "SHOW DATABASES"`,
+    `redis-cli \\\n  -h db -a ${pw} ping`,
+    `mysql \\\n  -h db -p${pw} app`,
+    `docker \\\n  login -u bot -p ${pw} r.io`,
+    `npm \\\n  config set //r/:_authToken ${pw}`,
+    `mysql\u3000-h db -p${pw} app`,
+    // A wide blank glued to the flag, the value or the subcommand: bash would read one word, the text still holds it.
+    `redis-cli\u00a0-a ${pw} ping`,
+    `redis-cli -h db -a\u00a0${pw} ping`,
+    `mysql\u00a0-p${pw} app`,
+    `mysql -h db\u00a0-p${pw} app`,
+    `docker\u00a0login -u bot -p ${pw} r.io`,
+    `docker\u3000login -u bot -p ${pw} r.io`,
+    `docker login -u bot\u00a0-p ${pw} r.io`,
+    `npm\u00a0config set //r/:_authToken ${pw}`,
+    `npm config\u3000set //r/:_authToken ${pw}`,
+    `npm set //r/:_authToken\u00a0${pw}`,
+    // Between a program and its subcommand: a redirection, an option and its value, an escaped blank.
+    `docker >out.txt login -u bot -p ${pw} r.io`,
+    `npm 2>&1 config set //r/:_authToken ${pw}`,
+    `npm --userconfig ~/.npmrc-ci config set //r/:_authToken ${pw}`,
+    `docker -D login -u bot -p ${pw} r.io`,
+    `npm -g set //r/:_authToken ${pw}`,
+    `docker\\ login -u bot -p ${pw} r.io`,
+    `redis-cli &>all -h db -a ${pw} ping`,
+    `mysql >&2 -h db -p${pw} app`,
+    `redis-cli 2>&1 -h db -a ${pw} ping`,
+  ]) {
+    for (const wrap of FOUR_WRAPS) await gone(wrap(text), [pw]);
+  }
+  // A registry tool running another subcommand is no login: its `-p` is a port.
+  for (const text of ["docker run -p 8080:80 img", "docker run img login -p 8080", "podman --remote run -p 5432 db"]) {
+    for (const wrap of FOUR_WRAPS) await kept(wrap(text));
+  }
+});
+
+test("C: rows only the lexer read cuts, one for each lexer behaviour the span scan would hide: a double-quoted name, curl past a lone `&`, the glued run and its tail past 1024 characters, a command re-read inside an earlier one's quotes", async () => {
+  const pw = "Copper9lumen9";
+  for (const [text, secrets] of [
+    // The double-quoted name (the scan needs a blank after `mysql`, and LOGIN_SCAN one after `docker`).
+    [`"mysql" -h db -p${pw} -e "select 1"`, [pw]],
+    [`"docker" login -u bot -p ${pw} r.io`, [pw]],
+    // curl reads on over a lone `&` (ruling XXIV); `$'-u'` is no `-u` to the scan.
+    [`curl https://x.io/?a=1&b=2 $'-u' admin:${pw}`, [pw]],
+    // The glued run: the shell ends the word at `&`, the password does not.
+    [`curl $'-u' admin:Copper&9lumen9 https://x.io`, ["Copper", "&9lumen9"]],
+    [`curl $'-u' admin:Copper&${"x".repeat(1100)}TAILMARK9 https://x.io`, ["Copper", "TAILMARK9"]],
+    // A command named inside the quotes an earlier one paired (`o'neil … 'x'`) is read again; the scan names no `mysql.exe`.
+    [`mysql.exe -h o'neil app; mysql.exe -p${pw} app 'x'`, [pw]],
+  ]) {
+    for (const wrap of FOUR_WRAPS) await gone(wrap(text), secrets);
+  }
+});
+
+test("CI: the re-read budget: a command named inside an earlier command's read is read again only within half a read a character, so a run of one command reads each character about twice, not once for every command in reach", async () => {
+  // Every command here is named inside the read before it (no operator ends one): past the budget the next is looked
+  // for past the earlier read's end. Without the budget each would read to the shared limit again, hundreds of reads
+  // a character. 64 KB keeps that case quick, so a lost budget fails here on its count and not on a clock.
+  for (const [id, unit] of [["curl-user", "curl -u a:b "], ["password-flag", "redis-cli -a x "], ["password-flag", "docker login -p x "], ["mysql-password", "mysql -p x "], ["secret-assign", "npm set x "]]) {
+    const { [id]: perChar } = await rulesRead([id], repeatTo(unit, 64 * 1024));
+    assert.ok(perChar <= 3, `${id} on ${JSON.stringify(unit)}: ${perChar.toFixed(2)} reads a character, past the re-read budget`);
+  }
+});
+
+test("CII: the lexer read takes options between `config` and `set`, a login's glued `-p<pw>`, a Windows extension in any case (the name too, with one) and `.bat`/`.ps1`", async () => {
+  const pw = ["Copper9", "lumen9"].join("");
+  for (const text of [
+    // Options between a path's words (`config … set`), with a value too.
+    `npm config --global set //r/:_authToken ${pw}`,
+    `npm config --location=user set //r/:_authToken ${pw}`,
+    `npm config --userconfig ~/.npmrc-ci set //r/:_authToken ${pw}`,
+    // A registry login reads a short flag's value glued on.
+    `docker login -u bot -p${pw} r.io`,
+    `podman login -p${pw} r.io`,
+    // Windows names files without case.
+    `"C:\\Program Files\\Docker\\docker.EXE" login -u bot -p ${pw} r.io`,
+    `Docker.exe login -u bot -p ${pw} r.io`,
+    `MYSQL.EXE -h db -p${pw} app`,
+    `REDIS-CLI.EXE -a ${pw} ping`,
+    `npm.bat config set //r/:_authToken ${pw}`,
+    `npm.ps1 config set //r/:_authToken ${pw}`,
+  ]) {
+    for (const wrap of FOUR_WRAPS) await gone(wrap(text), [pw]);
+  }
+  // A glued `-p` outside a login is a port; a bare name keeps its case (`Docker` in prose names no command).
+  for (const text of ["docker run -p8080:80 img", "Docker login -p 8080"]) {
+    for (const wrap of FOUR_WRAPS) await kept(wrap(text));
+  }
+});
+
+test("CIII: a Windows path read never leaves what the escape read cuts, and a quoted drive path ends at its closing quote", async () => {
+  const pw = ["Copper9", "lumen9"].join("");
+  // A JSON string that starts like a drive and holds escapes, closed or left open: the path read keeps `\t` and `\n` as
+  // written, so `--password` meets a backslash. The escape read beside it (every escape blanked, as main reads it) meets
+  // blanks and cuts.
+  for (const text of [`{"t":"Q:\\tmysql --password\\n${pw}"}`, `"Q:\\tmysql --password\\n${pw}`]) {
+    for (const wrap of FOUR_WRAPS) await gone(wrap(text), [pw]);
+  }
+  // A quote left open is no quoted path: the `\n` after the password stays an escape, so the value ends at it and the
+  // next line's word stays.
+  const out = await gone(`echo 'C:\\x; redis-cli -a ${pw}\\nINFO done`, [pw]);
+  assert.ok(out.text.endsWith("\\nINFO done"), `the value ran on: ${JSON.stringify(out.text)}`);
+});
+
+test("CIV: the command readers hold one command's words at a time, however long the text: at 2 MB at most SHELL_LINE_MAX words held at once", async () => {
+  // Words kept for every command until the last is read are a live set that grows with the text, and the collector's
+  // work on it grows faster than the text (mysql-password on `mysql ${a`: 616K words held at 2 MB). Handed out one
+  // command at a time, the most held at once is one read's words (at most 920 on these units, the same at 500 KB): a
+  // count, so it holds on any box. The units name a command every few characters, each read reaching the next ones.
+  const { SHELL_LINE_MAX } = await import("../dist/secret-rules.js");
+  const { lexCount } = await import("../dist/shell-lex.js");
+  for (const [id, unit] of [["mysql-password", "mysql ${a ${b ${c "], ["password-flag", "redis-cli -h o'neil -a x 'y' "], ["password-flag", "docker login -p x "], ["curl-user", 'curl "$('], ["secret-assign", "npm set x "]]) {
+    lexCount.held = 0;
+    await rulesRead([id], repeatTo(unit, 2_000_000));
+    assert.ok(lexCount.held <= SHELL_LINE_MAX, `${id} on ${JSON.stringify(unit)}: commandWords held ${lexCount.held} words at once at 2 MB, past ${SHELL_LINE_MAX}`);
+  }
+});
+
+test("CVI: a subcommand read looks a path's next word up through one index per command read: on `npm -x config -x ` at 512 KB, at most 4 words looked at a character", async () => {
+  // Every `config` here is an option's value, so each one is tried as the start of `config set` and looks `set` up.
+  // The index is built once a read: 0.33 words a character (measured, lexCount.passed). Built afresh for each
+  // `config`, it costs a read's words for each one: a constant factor (the read is capped) far past 4, so a time bound
+  // catches it only sometimes and this count always.
+  const { lexCount } = await import("../dist/shell-lex.js");
+  const text = repeatTo("npm -x config -x ", 512 * 1024);
+  lexCount.passed = 0;
+  await rulesRead(["secret-assign"], text);
+  const perChar = lexCount.passed / text.length;
+  assert.ok(perChar <= 4, `secret-assign on "npm -x config -x " at 512 KB: ${perChar.toFixed(2)} words passed over a character, past 4`);
+});
+
+test("CVII: a password after `npm config set` is cut whatever option words stand between `config` and `set` within the command's read (1024 to 3072 characters past `npm`): 8 to 64 options of three forms, raw and in a JSON string; a `set` past the read is a documented miss", async () => {
+  // `set` is looked up past any options: the value after its key is cut, the command never skipped.
+  const pw = ["Copper9", "lumen9"].join("");
+  const FORMS = { "-a 1": () => ["-a", "1"], "--x=y": () => ["--x=y"], quoted: (i) => (i % 2 ? ["--x='y z'"] : ["-a", '"v w"']) };
+  const left = [];
+  let rows = 0;
+  for (const [form, words] of Object.entries(FORMS)) {
+    for (const n of [8, 9, 16, 64]) {
+      const command = ["npm", "config", ...Array.from({ length: n }, (_, i) => words(i)).flat(), "set", "//r/:_authToken", pw].join(" ");
+      for (const [wrap, text] of [["raw", `$ ${command}\n`], ["json", `${JSON.stringify({ command })}\n`]]) {
+        rows++;
+        const out = await scrub(text, { mode: "cut" });
+        assert.equal(out.ok, true, `failed closed on ${JSON.stringify(text.slice(0, 120))}`);
+        if (out.text.includes(pw)) left.push(`${form} x${n} ${wrap}`);
+      }
+    }
+  }
+  assert.deepEqual(left, [], `npm config set behind option words: password left on ${left.length} of ${rows} rows: ${left.join(", ")}`);
+  // The read ends 1024 to 3072 characters past the end of `npm` (shell-lex.ts commandLimit, from where the name's
+  // match ends). With `npm` ending at offset 2047 the read ends at 3072, 1025 on, short of a `set` about 1330
+  // characters on: a documented miss, the password left. At the text's start the same command's read reaches 3072
+  // and the password is cut.
+  const long = ["npm", "config", ...Array.from({ length: 220 }, () => "--x=y"), "set", "//r/:_authToken", pw].join(" ");
+  for (const [where, pad, cut] of [["at 0", "", true], ["ending at 2047", `${"#".repeat(2043)}\n`, false]]) {
+    const out = await scrub(`${pad}${long}\n`, { mode: "cut" });
+    assert.equal(out.ok, true, `failed closed on npm named ${where}`);
+    assert.equal(!out.text.includes(pw), cut, `npm config set with 220 options, npm named ${where}: password ${cut ? "left, expected cut" : "cut, expected left (documented miss past the read)"}`);
+  }
+});
+
+test("CVIII: `c`, npm's and pnpm's alias of `config`, reads as `config` (`npm c set //r/:_authToken <pw>`), raw and in a JSON string; `npm config get set <key> <pw>` stays cut, an over-cut kept", async () => {
+  // Main's scan reads only `set` or `config set` right after the name, and the lexer read took `c` for another
+  // subcommand: the password was left on both. `set` is looked up after `c` as after `config` (subcommandAt).
+  const pw = ["Copper9", "lumen9"].join("");
+  const left = [];
+  let rows = 0;
+  for (const command of ["npm c set //r/:_authToken", "pnpm c set //r/:_authToken", "npm c --global set //r/:_authToken", "npm --userconfig x c set //r/:_password"]) {
+    for (const [wrap, text] of [["raw", `$ ${command} ${pw}\n`], ["json", `${JSON.stringify({ command: `${command} ${pw}` })}\n`]]) {
+      rows++;
+      const out = await scrub(text, { mode: "cut" });
+      assert.equal(out.ok, true, `failed closed on ${JSON.stringify(text)}`);
+      if (out.text.includes(pw)) left.push(`${command} (${wrap})`);
+    }
+  }
+  assert.deepEqual(left, [], `npm c set: password left on ${left.length} of ${rows} rows: ${left.join(", ")}`);
+  // `set` is looked up past any word after `config`, so this nonsense command's value is cut: the side a leak is not.
+  const over = await scrub(`$ npm config get set //r/:_authToken ${pw}\n`, { mode: "cut" });
+  assert.equal(over.ok, true, "failed closed on npm config get set");
+  assert.ok(!over.text.includes(pw), "npm config get set //r/:_authToken <pw>: the over-cut the look-up makes is gone (subcommandAt's doc names it)");
+});
+
+test("XCIX: the shipped readers at 512 KB: at most 8 counted reads a character over the lexer test's units, 12 where a command is named inside the quotes of an unclosed construct, and each unit's rule CPU bounded against main's span scan for that rule, timed in the same call", async (t) => {
+  const ruleOf = (unit) => (unit.startsWith("curl") ? "curl-user" : unit.startsWith("mysql") ? "mysql-password" : unit.startsWith("npm") ? "secret-assign" : "password-flag");
+  const units = [
+    'curl -H "$(curl $(curl $(date)))" -u a:b ', 'curl "$(', "curl $(((((( -u a:b ", "curl \x60 -u a:b ", 'curl "\x60$(" -u a:b ',
+    `mysql -u r -p'${"a&".repeat(300)}' db `, `redis-cli -a "${'\\"'.repeat(400)} `, `curl -u "u:${"p;".repeat(300)}" -H 'a`, "redis-cli '\"".repeat(40), `docker login -p "${"\\".repeat(500)}`,
+    'curl "', "curl '", "curl $(", "curl \x60", "curl $'", "curl ${", "curl <(", "curl $((", "curl $( $( ", 'curl "$(\x60',
+    "curl $( $(a) ", 'curl "$(echo "b") ', "curl ${a:-${b} ", "curl -s $(cat f; curl -s x $(date -u +%H:%MZ) ", "curl $(a; ", 'curl "$(a; ', "curl $(a $(b); ",
+    "npm set x ", "mysql ${a ${b ${c ", "redis-cli -h o'neil -a x 'y' ", "npm -x config -x ",
+  ];
+  // CPU beside the count: the count sees the lexer only, the time sees the rule's whole work. The yardstick is main's
+  // span scan, timed in the same call on the same text: a unit's rule may take at most SCAN_TIMES the larger of its
+  // own rule's scan and REF, the scan of one heavy unit (`curl $(` at 512 KB, the slowest scan of these units) timed
+  // here, so a unit whose scan takes a millisecond is not held to a ratio of noise. CEILING_MS catches a blow-up on any
+  // box. Measured at 512 KB (rule / max(scan, REF), the largest unit's): main's scrubber up to 1.96; this one 3.4 to 6.1
+  // across runs at one head, the clock's spread.
+  // A unit over its bound is timed once more and the faster run kept (the count is exact; the clock is not).
+  const [SCAN_TIMES, CEILING_MS] = [12, 5_000];
+  const { SPAN_SCANS } = await import("../dist/secret-rules.js");
+  const scanMs = (text) => {
+    const before = process.cpuUsage();
+    SPAN_SCANS["curl-user"](text);
+    const used = process.cpuUsage(before);
+    return (used.user + used.system) / 1000;
+  };
+  const heavy = repeatTo("curl $(", 512 * 1024);
+  const REF = Math.min(scanMs(heavy), scanMs(heavy));
+  t.diagnostic(`XCIX\tREF\t${REF.toFixed(1)} ms\t(main's curl-user scan of "curl $(" at 512 KB)`);
+  const bounded = async (id, unit, most) => {
+    const text = repeatTo(unit, 512 * 1024);
+    let cost = await ruleCost(id, text);
+    const label = `${id} on ${JSON.stringify(unit.slice(0, 24))}`;
+    assert.ok(cost.perChar <= most, `${label}: ${cost.perChar.toFixed(2)} reads a character`);
+    const limit = (c) => Math.min(CEILING_MS, SCAN_TIMES * Math.max(c.scan, REF));
+    if (cost.ms > limit(cost)) {
+      const again = await ruleCost(id, text);
+      if (again.ms < cost.ms) cost = again;
+    }
+    t.diagnostic(`XCIX\t${id}\t${cost.ms.toFixed(1)} ms\tscan ${cost.scan.toFixed(1)} ms\t${(cost.ms / Math.max(cost.scan, REF)).toFixed(2)} x\t${cost.perChar.toFixed(2)} reads\t${JSON.stringify(unit.slice(0, 28))}`);
+    assert.ok(cost.ms <= limit(cost), `${label}: ${Math.round(cost.ms)} ms; main's scan ${cost.scan.toFixed(1)} ms, REF ${REF.toFixed(1)} ms (at most ${SCAN_TIMES} x the larger, and ${CEILING_MS} ms)`);
+  };
+  for (const unit of units) await bounded(ruleOf(unit), unit, 8);
+  for (const unit of ["curl $(x|'curl ''$(a ", "curl -s $(cat f|'curl -s ''$(date -u +%H:%M:%S)' ", "curl $(x|'curl ${a:-$(a ", "curl $(x|'curl ${a:-$(a; ", `curl "$(x|'curl "$(a; `]) {
+    await bounded("curl-user", unit, 12);
   }
 });
 
@@ -2617,19 +3010,66 @@ const ruleAlone = async (id, text, extra = {}) => {
   return { hits, ms: (used.user + used.system) / 1000 };
 };
 const repeatTo = (piece, size) => piece.repeat(Math.ceil(size / piece.length));
-/** ruleAlone for several rules on one text, its views read once: each rule's CPU time, by id. */
-const rulesAlone = async (ids, text) => {
+/** Several rules on one text, its views read once: the characters shell-lex.ts read for each rule, per character of
+ *  the text, by id (its counted measure). */
+const rulesRead = async (ids, text) => {
+  const { lineBounds } = await import("../dist/secret-rules.js");
+  const { lexCount } = await import("../dist/shell-lex.js");
+  const [view] = secretCut.viewsOf(text);
+  const ctx = { held: [], source: view.source, homes: [], lint: async () => [], lines: lineBounds(view.text, ...view.decodedStrings, view.strings) };
+  const out = {};
+  for (const id of ids) {
+    lexCount.read = 0;
+    await SCRUB_RULES.find((each) => each.id === id).find(view.text, ctx);
+    out[id] = lexCount.read / text.length;
+  }
+  return out;
+};
+/** A full garbage collection, for a timing that should not pay for other calls' garbage (node:test runs without
+ *  --expose-gc: the flag is set here and gc taken from a fresh context). */
+const collect = (() => {
+  let gc;
+  return () => {
+    if (!gc) {
+      v8.setFlagsFromString("--expose-gc");
+      gc = vm.runInNewContext("gc");
+    }
+    gc();
+  };
+})();
+/** Several rules on one text, its views read once: each rule's wall time in ms, by id, each after a full gc() (XCII). */
+const rulesWall = async (ids, text) => {
   const { lineBounds } = await import("../dist/secret-rules.js");
   const [view] = secretCut.viewsOf(text);
   const ctx = { held: [], source: view.source, homes: [], lint: async () => [], lines: lineBounds(view.text, ...view.decodedStrings, view.strings) };
   const out = {};
   for (const id of ids) {
-    const before = process.cpuUsage();
-    await SCRUB_RULES.find((each) => each.id === id).find(view.text, ctx);
-    const used = process.cpuUsage(before);
-    out[id] = (used.user + used.system) / 1000;
+    const rule = SCRUB_RULES.find((each) => each.id === id);
+    collect();
+    const start = performance.now();
+    await rule.find(view.text, ctx);
+    out[id] = performance.now() - start;
   }
   return out;
+};
+/** One rule on one text, its views read once: the characters shell-lex.ts read per character of the text (the count),
+ *  the rule's CPU ms, and main's span scan for that rule alone (secret-rules.ts SPAN_SCANS) on the same view text, timed
+ *  in the same call: the yardstick XCIX bounds the rule's time against. */
+const ruleCost = async (id, text) => {
+  const { lineBounds, SPAN_SCANS } = await import("../dist/secret-rules.js");
+  const { lexCount } = await import("../dist/shell-lex.js");
+  const [view] = secretCut.viewsOf(text);
+  const ctx = { held: [], source: view.source, homes: [], lint: async () => [], lines: lineBounds(view.text, ...view.decodedStrings, view.strings) };
+  const rule = SCRUB_RULES.find((each) => each.id === id);
+  lexCount.read = 0;
+  let before = process.cpuUsage();
+  await rule.find(view.text, ctx);
+  let used = process.cpuUsage(before);
+  const [perChar, ms] = [lexCount.read / text.length, (used.user + used.system) / 1000];
+  before = process.cpuUsage();
+  SPAN_SCANS[id](view.text);
+  used = process.cpuUsage(before);
+  return { perChar, ms, scan: (used.user + used.system) / 1000 };
 };
 
 test("LXXIII a: docker-auth reads many \"auth\" keys in linear time: \"auths\" and the call's paths are found once a text, never once a match", async () => {
@@ -2811,4 +3251,28 @@ test("LXXVII: a credential file named through shell quotes, a $...FILE variable 
     const out = await scrub(pgpass, { mode: "count", command });
     assert.deepEqual(out.cuts, [], `${command}: ${JSON.stringify(out.cuts)}`);
   }
+});
+
+test("LVI: an env command's output under one line of its caller's own (an approval outcome's head line) is still its dump; the line is kept", async () => {
+  const token = "Lumen4copper9Dusk2";
+  const head = "Bash ran once you allowed it. Its result:";
+  for (const command of ["env", "env | sort", "printenv"]) {
+    const out = await gone(`${head}\nA=1\nTOKEN=${token}`, [token], { command });
+    assert.deepEqual(out.cuts.map((cut) => [cut.rule, cut.kind, cut.restorable]), [["env-dump", "dump", false]], `${command}: ${JSON.stringify(out.cuts)}`);
+    assert.equal(out.text, `${head}\n[redacted:env-dump 2 lines]`, command);
+  }
+  // As before: with no command the lines are no dump (the label rule cuts the token alone); `ls` is no env command, so
+  // its NAME=value lines are no dump either.
+  const bare = await gone(`${head}\nA=1\nTOKEN=${token}`, [token]);
+  assert.deepEqual(bare.cuts.map((cut) => [cut.rule, cut.kind]), [["secret-assign", "label"]]);
+  assert.equal(bare.text, `${head}\nA=1\nTOKEN=[redacted:secret-assign]`);
+  const listed = await scrub(`${head}\nA=1\nB=2`, { mode: "cut", command: "ls" });
+  assert.deepEqual(listed.cuts, []);
+  assert.equal(listed.text, `${head}\nA=1\nB=2`);
+  const listedToken = await gone(`${head}\nA=1\nTOKEN=${token}`, [token], { command: "ls" });
+  assert.deepEqual(listedToken.cuts.map((cut) => [cut.rule, cut.kind]), [["secret-assign", "label"]]);
+  // A text whose first line is its only env line: that line is the dump, as before, and the prose below it is kept.
+  const first = await gone(`TOKEN=${token}\nthe rest is prose`, [token], { command: "env" });
+  assert.deepEqual(first.cuts.map((cut) => [cut.rule, cut.kind, cut.start, cut.end]), [["env-dump", "dump", 0, 24]]);
+  assert.equal(first.text, "[redacted:env-dump 1 lines]\nthe rest is prose");
 });

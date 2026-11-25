@@ -1,9 +1,8 @@
 // Docker for the conformance CLI (`--provider docker`): the provider as create() builds it from the settings this module
 // reads (COMPUTER_DOCKER_DAEMON, COMPUTER_DOCKER_DAEMON_CACHE, COMPUTER_DOCKER_USER), and its drifted twin, the same
-// provider with a daemon of another version, built with Go for Docker's architecture when the drift case first asks. The
-// provider reads no environment: this module reads these names and passes them in as options. With desktop, both are
-// desktops (kind desktop) on an image with an X server, such as test/fixtures/desktop/Dockerfile's. For the mount cases,
-// mountFor("bind") makes a run folder on this host, owned by the computer's user.
+// provider with a daemon of another version, built with Go for Docker's architecture when the drift case first asks.
+// With desktop, both are desktops (kind desktop) on an image with an X server, such as test/fixtures/desktop/Dockerfile's.
+// For the mount cases, mountFor("bind") makes a run folder on this host, owned by the computer's user.
 import { chownSync, mkdtempSync, realpathSync } from "node:fs";
 import { readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -11,9 +10,9 @@ import { join } from "node:path";
 import { create, type DockerCreateOptions, dockerArch, type DockerProvider } from "../docker.js";
 import type { MountKind } from "../mount.js";
 import { buildDriftDaemon } from "./drift-daemon.js";
+import { type Env, setOptions } from "./module-kit.js";
 import type { RunFolder } from "./types.js";
 
-/** The environment this module reads, by name. */
 export const DOCKER_ENV = {
 	/** The daemon binary for Docker's architecture; default this package's dist/computerd-linux-<arch>. */
 	daemon: "COMPUTER_DOCKER_DAEMON",
@@ -23,32 +22,27 @@ export const DOCKER_ENV = {
 	user: "COMPUTER_DOCKER_USER",
 } as const;
 
-/** The names this module reads, under the conformance modules' common name (ConformanceModule.ENV). */
 export const ENV = DOCKER_ENV;
 
 /** The provider's options this module reads from env, each only when its name is set. */
-export function settingsFromEnv(env: Record<string, string | undefined> = process.env): DockerCreateOptions {
-	return {
-		...(env[DOCKER_ENV.daemon] ? { daemonPath: env[DOCKER_ENV.daemon] } : {}),
-		...(env[DOCKER_ENV.daemonCache] ? { daemonCache: env[DOCKER_ENV.daemonCache] } : {}),
-		...(env[DOCKER_ENV.user] ? { user: env[DOCKER_ENV.user] } : {}),
-	};
+export function settingsFromEnv(env: Env = process.env): DockerCreateOptions {
+	return setOptions(env, { daemonPath: DOCKER_ENV.daemon, daemonCache: DOCKER_ENV.daemonCache, user: DOCKER_ENV.user });
 }
 
 export interface DockerModuleOptions extends Pick<DockerCreateOptions, "docker" | "timeoutMs" | "desktop"> {
-	/** Where the settings are read; default process.env. */
-	env?: Record<string, string | undefined>;
+	/** Where the settings are read, and what each docker call holds the names docker reads of; default process.env. */
+	env?: Env;
 }
 
 /** The provider the CLI runs; throws in words when Docker cannot be asked its architecture, or its daemon is not built. */
 export function createProvider({ env = process.env, ...options }: DockerModuleOptions = {}): Promise<DockerProvider> {
-	return create({ ...settingsFromEnv(env), ...options });
+	return create({ ...settingsFromEnv(env), env, ...options });
 }
 
 /** The same provider with a daemon that reports another version, for the drift.version case. */
 export async function createDriftedProvider({ env = process.env, ...options }: DockerModuleOptions = {}): Promise<DockerProvider> {
-	const daemonPath = await buildDriftDaemon(await dockerArch(options));
-	return create({ ...settingsFromEnv(env), ...options, daemonPath });
+	const daemonPath = await buildDriftDaemon(await dockerArch({ ...options, env }));
+	return create({ ...settingsFromEnv(env), env, ...options, daemonPath });
 }
 
 /**

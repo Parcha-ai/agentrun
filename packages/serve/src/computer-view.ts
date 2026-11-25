@@ -3,13 +3,13 @@
 // run holds the keys it started with). With none open, the run's computer says `none` with its kind and where its session
 // is (never opened, opening, closed), or `off` with why there is no computer here. `hold` is who drives now. A parked
 // run's desktop or phone kept at its park is `closed` (the run's timeline says until when), then `ended` in the timeout's
-// words once its time passed.
+// words once its time passed, or `ended` as not kept, with no reason, once its end began before that time.
 
 import type { JournalEntry } from "./computer-commands.js";
 import { KINDS } from "./runner/journal-kinds.js";
 import type { ViewerKind } from "./store/store.js";
 import { BROWSER_STEPS } from "./timeline/labels.js";
-import { type Kept, lapsedWords } from "./workspace/computer-kept.js";
+import { type Kept, lapsedWords, unkeptWords } from "./workspace/computer-kept.js";
 
 export type { JournalEntry };
 
@@ -29,12 +29,15 @@ export type ComputerAnswer =
   | { state: "live"; kind: ComputerKind; viewer: string; hold: ComputerHold };
 
 /** Why a parked run's kept computer of `kind` is not kept any more, from its keep's row (computer-kept.ts): its time
- *  passed or its end began, in the timeout's words, at that time; nothing while it is kept, with no row, or with one of
- *  another kind (a sandbox's: it has no screen). Only for a run still parked: a resumed run's row, taken or left ended,
- *  says nothing. */
+ *  passed, in the timeout's words, at that time; its end begun before its time (a claim that could not reach it gave its
+ *  row back for its runner to end, or a later park kept nothing beside that runner's row), not kept with no reason, at
+ *  `now` (its `until` is no time of this run's, and is still to come); nothing while it is kept, with no row, or with one
+ *  of another kind (a sandbox's: it has no screen). Only for a run still parked: a resumed run's row, taken or left
+ *  ended, says nothing. `now` is on the store's clock, the one the row's `until` was stamped on. */
 export function lapsedOf(kind: ComputerKind, kept: Kept | undefined, now: number): { at: string; why: string } | undefined {
   if (!kept || kept.kind !== kind) return undefined;
-  if (kept.ended || kept.ending || now >= kept.until) return { at: new Date(kept.until).toISOString(), why: lapsedWords(kind) };
+  if (now >= kept.until) return { at: new Date(kept.until).toISOString(), why: lapsedWords(kind) };
+  if (kept.ended || kept.ending) return { at: new Date(now).toISOString(), why: unkeptWords(kind) };
   return undefined;
 }
 

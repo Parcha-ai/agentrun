@@ -15,7 +15,7 @@ afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 const KINDS = [
-  { kind: "none", offered: true, groups: [], tools: ["read", "write", "edit", "bash"], settings: [], record: { available: false, why: "with no computer, there is no screen to record" }, providers: [] },
+  { kind: "none", offered: true, groups: [], tools: ["read", "write", "edit", "bash"], settings: [], record: { available: false, why: "fixture: no computer" }, providers: [] },
   { kind: "sandbox", offered: true, groups: ["exec", "files", "processes"], tools: ["read", "write", "edit", "bash", "bash_background"], settings: ["image", "persistent", "gpu"], record: { available: false, why: "fixture: a sandbox has no screen to record" }, providers: [{ id: "faux-sandbox", name: "Faux sandbox", secrets: [], required: [], ready: true }] },
 ];
 const CAPS = {

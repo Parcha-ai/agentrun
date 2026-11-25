@@ -84,6 +84,30 @@ function recordingExtension(extension: Extension, keep: NonNullable<PiSessionIO[
   };
 }
 
+/** A pi-native tool (options.tools, an extension's: ask_person, subagent, the browser's) whose calls the session reports
+ *  as piTool reports a host tool's: its start before it runs, its end (an error when it says so or throws) after, with no
+ *  result text. A host tool is never one of these (piTool reports its own), so no call is reported twice. */
+function announcing<T extends ToolRegistration>(tool: T, io: PiSessionIO): T {
+  return {
+    ...tool,
+    execute: async (args: never, api: { readonly callId: string }, context: never) => {
+      io.onEvent({ type: "tool_start", callId: api.callId, name: tool.name, args });
+      let failed = true;
+      try {
+        const result = await tool.execute(args, api as never, context);
+        failed = Boolean((result as { isError?: boolean } | undefined)?.isError);
+        return result;
+      } finally {
+        io.onEvent({ type: "tool_end", callId: api.callId, name: tool.name, isError: failed });
+      }
+    },
+  } as T;
+}
+
+/** `extension` with each of its tools announcing (announcing). */
+const announcingExtension = (extension: Extension, io: PiSessionIO): Extension =>
+  extension.tools?.length ? { ...extension, tools: extension.tools.map((tool) => announcing(tool, io)) as typeof extension.tools } : extension;
+
 export interface PiAdapterOptions {
   readonly run: PiRun;
   /** The provider the session's proxy forwards to: the API it speaks (a wire main's pi speaks, provider.ts: Anthropic's
@@ -376,7 +400,7 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
   const touched = new Set<string>();
   // A refused nested call's words, by its id (pi's nested result keeps none of a refused call's output).
   const nestedRefusals = new Map<string, string>();
-  const tools = [...spec.tools.filter((tool) => !owned.has(tool.name)).map((tool) => piTool(tool, io, (callId) => (io.gate ? (passed.has(callId) ? 0 : 1) : undefined), touched, nestedRefusals)), ...(options.tools ?? [])];
+  const tools = [...spec.tools.filter((tool) => !owned.has(tool.name)).map((tool) => piTool(tool, io, (callId) => (io.gate ? (passed.has(callId) ? 0 : 1) : undefined), touched, nestedRefusals)), ...(options.tools ?? []).map((tool) => announcing(tool, io))];
   // A refused call's words (the gate's deny, main's), by call: its result is those words alone, as main gives them.
   const refusals = refusalWords();
   const extension = defineExtension({
@@ -428,8 +452,8 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
   });
   run.registry.install(extension);
   // The run's pi-native extensions (options.extensions), in the claim's registry beside the session's: each tool's computer
-  // calls recorded on its row (io.keepCalls), as the loop records its host tools'.
-  const native = (options.extensions ?? []).map((each) => (io.keepCalls ? recordingExtension(each, io.keepCalls) : each));
+  // calls recorded on its row (io.keepCalls), as the loop records its host tools', and each call's start and end reported.
+  const native = (options.extensions ?? []).map((each) => announcingExtension(io.keepCalls ? recordingExtension(each, io.keepCalls) : each, io));
   for (const each of native) run.registry.install(each);
   // The root conversation may exist already (the loop's session records live beside it, under it): its agent is set here,
   // the session's model, the run's system text (pi's instructions, its parts as the CLI adapters join them), this
@@ -640,8 +664,10 @@ function piTool(tool: HostTool, io: PiSessionIO, attemptOf: (callId: string) => 
       const images = (answer.images ?? []).map((image) => ({ type: "image" as const, data: image.data, mimeType: image.mimeType }));
       // A nested call's (its id `<callId>/<key>`) value in the result's details (which the model never reads), recorded
       // with it: what tools_call or a script reads (piNested). A call the model made itself keeps its result as it was.
-      const value = answer.structured !== undefined && api.callId.includes("/") ? { details: { [HOST_VALUE]: answer.structured } } : {};
-      return { output: [{ type: "text" as const, text: answer.text }, ...images], ...(answer.isError ? { isError: true } : {}), ...value } as never;
+      // A nesting tool that ended at a refused nested call (a script stopped there) carries the refusal mark, as the
+      // nested call's result does (refusalWords): its rows read refused, never as a call that ran and failed.
+      const details = { ...(answer.structured !== undefined && api.callId.includes("/") ? { [HOST_VALUE]: answer.structured } : {}), ...(answer.refused && answer.isError ? { [CALL_REFUSED]: true } : {}) };
+      return { output: [{ type: "text" as const, text: answer.text }, ...images], ...(answer.isError ? { isError: true } : {}), ...(Object.keys(details).length ? { details } : {}) } as never;
     },
   });
 }

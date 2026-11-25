@@ -1,7 +1,8 @@
 // `owed` (kernel/cap port.ts) is a refusal bypass by design: a paid step marked owed is booked and held without the cap's
-// rule. So it is set in exactly four places in browser-cost.ts and two in compute-cost.ts, all for money its provider is
-// already owed outside any call: the charge under no call (a release, its top-up), the reserve held from a reopen, a
-// delayed release, a person's carried time; a computer's booked time, and a made computer's first stretch. Everywhere else it is only passed on as given (`...(x.owed ? { owed: true as const } : {})`)
+// rule. So it is set in exactly five places in browser-cost.ts and two in compute-cost.ts, all for money its provider is
+// already owed outside any call: the charge under no call (a release, its top-up), the reserve held from a reopen and
+// that reserve held again at one stretch once a charge booked its down time, a delayed release, a person's carried time;
+// a computer's booked time, and a made computer's first stretch. Everywhere else it is only passed on as given (`...(x.owed ? { owed: true as const } : {})`)
 // or read. A new setter anywhere in the repo's sources fails here, until it is reviewed and named in this pin.
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
@@ -31,10 +32,11 @@ function sources() {
   return files;
 }
 
-/** The four sites, each by the words of the step it marks. */
+/** The five sites, each by the words of the step it marks. */
 const SITES = [
   ["the charge under no call", /name: "this browser session's time"/],
   ["the reserve held from a reopen", /held from the reopen/],
+  ["that reserve at one stretch again", /held again once its charge booked the time before it/],
   ["a delayed release", /this browser session's delayed release/],
   ["a person's carried time", /a person's time in the browser/],
 ];
@@ -46,7 +48,7 @@ const COMPUTE_SITES = [
   ["a made computer's first stretch", /holdOf\(provider, stretchUsd\(priced\), basisOf\(provider, priced\), \{ owed: true \}\)/],
 ];
 
-test("owed is set in exactly four places in browser-cost.ts and two in compute-cost.ts, for money already owed outside a call; elsewhere only passed on", () => {
+test("owed is set in exactly five places in browser-cost.ts and two in compute-cost.ts, for money already owed outside a call; elsewhere only passed on", () => {
   const setters = [];
   const passes = [];
   for (const file of sources()) {
@@ -63,7 +65,7 @@ test("owed is set in exactly four places in browser-cost.ts and two in compute-c
   const browser = setters.filter(({ where }) => where.startsWith("serve/src/browser-cost.ts:"));
   const compute = setters.filter(({ where }) => where.startsWith("serve/src/compute-cost.ts:"));
   assert.equal(browser.length + compute.length, setters.length, `owed is set only in browser-cost.ts and compute-cost.ts: ${JSON.stringify(setters.map(({ where }) => where))}`);
-  assert.equal(browser.length, SITES.length, `exactly four setters in browser-cost.ts: ${JSON.stringify(browser.map(({ where }) => where))}`);
+  assert.equal(browser.length, SITES.length, `exactly five setters in browser-cost.ts: ${JSON.stringify(browser.map(({ where }) => where))}`);
   for (const [what, words] of SITES) assert.equal(browser.filter(({ line }) => words.test(line)).length, 1, `one setter for ${what}`);
   assert.equal(compute.length, COMPUTE_SITES.length, `exactly two setters in compute-cost.ts: ${JSON.stringify(compute.map(({ where }) => where))}`);
   for (const [what, words] of COMPUTE_SITES) assert.equal(compute.filter(({ line }) => words.test(line)).length, 1, `one setter for ${what}`);

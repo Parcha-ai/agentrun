@@ -1,5 +1,5 @@
 import { posix } from "node:path";
-import { cutSpans, holds, MONEY_SHAPES, type Needles, planCut, SECRET_SHAPES, type Shape, shapeKinds, type Span } from "../redact/match.js";
+import { CREDENTIAL_NAMES, cutSpans, holds, MONEY_SHAPES, type Needles, planCut, SECRET_SHAPES, type Shape, shapeKinds, type Span, squeeze } from "../redact/match.js";
 
 /** Whether `text` ends in a `Bearer` scheme and the blanks after it: the one place a shape is read across whitespace
  *  (the scheme, then its token), so a reader that cuts a text at whitespace must not cut there (key-refusal.ts
@@ -31,9 +31,20 @@ export const PRINT_MAX = 4096;
  *  form not found as it stands (percent encoded, split by whitespace, an NFKC variant), read in `text` as given, is
  *  redacted whole, never in part, unless every character of it is inside what the finds cut: a cut can hide part of a
  *  value, so the rest is looked for before the cut (redact/match.ts planCut). So is a text over `max` bytes (PRINT_MAX
- *  unless the caller names more), and one whose cut leaves a value or a shape. */
-export function redactSecrets(text: string, values: readonly string[], max = PRINT_MAX): string {
-  return redactWith(text, values, max, SECRET_SHAPES);
+ *  unless the caller names more), and one whose cut leaves a value or a shape. `held`: spans of `text` cut in place
+ *  beside the finds (heldSpans, of values no longer at hand). */
+export function redactSecrets(text: string, values: readonly string[], max = PRINT_MAX, held: readonly (readonly [number, number])[] = []): string {
+  return redactWith(text, values, max, SECRET_SHAPES, held);
+}
+
+/** Where redactSecrets cuts `values` in `text`, shapes left out: each span it cuts in place (UTF-16 offsets, overlapping
+ *  ones merged, in order), or "whole" when its checks over them cut the text whole (a value split by a line break,
+ *  percent encoded, an NFKC variant, read in the text as it came: redact/match.ts planCut). What a run's census keeps of
+ *  a file, never the values (run-census.ts): redactSecrets given these spans as `held` cuts the text as it would have
+ *  with the values among its own. */
+export function heldSpans(text: string, values: readonly string[]): Span[] | "whole" {
+  const cut = planCut(text, derivedOf(values), []);
+  return cut === "whole" ? "whole" : cut.spans;
 }
 
 /** `text` as redactSecrets cuts it, and of a bank's numbers beside their words too (MONEY_SHAPES): what learning prints
@@ -60,10 +71,17 @@ export function valueLeft(text: string, values: readonly string[], cuts?: readon
   return holds(text, needles, { cuts: cuts ?? cutSpans(text, needles, SECRET_SHAPES) });
 }
 
-/** redactSecrets over `shapes`, each found in place (redact/match.ts planCut). */
-function redactWith(text: string, values: readonly string[], max: number, shapes: readonly Shape[]): string {
+/** Whether any of `values` holds a hex identifier the matcher finds folded (its separators "-", "_", ":" and "."
+ *  dropped, however many stand in a row): a reader that counts what the views keep of a text counts each separator as
+ *  nothing then (key-refusal.ts peek). */
+export function foldsHeld(values: readonly string[]): boolean {
+  return derivedOf(values).folds.length > 0;
+}
+
+/** redactSecrets over `shapes`, each found in place, and `held` spans cut beside them (redact/match.ts planCut). */
+function redactWith(text: string, values: readonly string[], max: number, shapes: readonly Shape[], held: readonly (readonly [number, number])[] = []): string {
   if (Buffer.byteLength(text) > max) return "[redacted]";
-  const cut = planCut(text, derivedOf(values), shapes);
+  const cut = planCut(text, derivedOf(values), shapes, held);
   return cut === "whole" ? "[redacted]" : cut.out;
 }
 
@@ -73,22 +91,32 @@ function redactWith(text: string, values: readonly string[], max: number, shapes
  *  An array whose values changed since is derived again, never served a stale set: what a caller adds is always cut. */
 const DERIVED = new WeakMap<readonly string[], { readonly values: readonly string[]; readonly derived: Needles }>();
 
-/** What the matcher looks for of a set of values, whatever the text: each value and its path spellings, its forms found
- *  as they stand (as written, as JSON writes it, its plain needles and percent forms), its hex and folded needles, and
- *  the needles the whole-text check reads (redact/match.ts Needles). */
+/** What the matcher looks for of a set of values, whatever the text: each value, each string of a held JSON value
+ *  that may be printed alone (heldFields) and their path spellings, their forms found as they stand (as written, as
+ *  JSON writes it, their plain needles and percent forms), their hex and folded needles, the needles the whole-text
+ *  check reads (redact/match.ts Needles), and the parts of each of many lines (partsOf), as written and squeezed: of
+ *  each value but a JSON object or array, and of each string heldFields holds. */
 function derivedOf(values: readonly string[]): Needles {
   const kept = DERIVED.get(values);
   if (kept && kept.values.length === values.length && kept.values.every((value, at) => value === values[at])) return kept.derived;
-  const given = withPathSpellings(values.filter((v) => v.length > 0));
+  const held = values.filter((v) => v.length > 0);
+  const fields = held.map(heldFields);
+  const strings = fields.flatMap((of) => of ?? []);
+  const whole = [...held, ...strings];
+  const given = withPathSpellings(whole);
   const needles = new Map(given.filter(longEnough).map((v) => [v, needlesOf(v)]));
+  // A held JSON value's own lines are no parts of it (a pretty-printed one has its public strings on lines of their
+  // own); the strings heldFields holds of it have theirs.
+  const parts = [...new Set([...held.filter((_, at) => fields[at] === undefined), ...strings].flatMap(partsOf))];
   const derived: Needles = {
-    forms: [...new Set(given.flatMap((v) => {
+    forms: [...new Set([...given.flatMap((v) => {
       const of = needles.get(v);
       return [v, asJson(v), ...(of ? [...of.plain, ...percentForms(v)] : [])];
-    }).filter((form) => form.length > 0))],
+    }), ...parts].filter((form) => form.length > 0))],
     hexes: [...needles.values()].map((of) => of.hex),
     folds: [...needles.values()].flatMap((of) => of.folded),
-    plain: [...new Set([...needles.values()].flatMap((of) => of.plain))],
+    plain: [...new Set([...[...needles.values()].flatMap((of) => of.plain), ...parts.map(squeeze)])],
+    joined: [...new Set([...needles.keys()].filter((v) => JOIN_DROPS.test(v)).map((v) => squeeze(v).replace(JOIN_DROPPED, "")).filter(longEnough))],
   };
   DERIVED.set(values, { values: [...values], derived });
   return derived;
@@ -112,8 +140,6 @@ export function excerptShown(text: string, shown: { readonly text: (text: string
   const end = /[\uD800-\uDBFF]/.test(clean.charAt(max - 1)) ? max - 1 : max;
   return `${clean.slice(0, end)}…`;
 }
-
-const squeeze = (text: string) => text.normalize("NFKC").replace(/\s+/gu, "");
 
 /** The base64 of `secret` as it can sit inside a longer blob: the characters that depend on the secret's bytes alone,
  *  at each of the three alignments, in both alphabets. */
@@ -209,6 +235,87 @@ function needlesOf(value: string): { plain: string[]; hex: string; folded: strin
 }
 
 const longEnough = (value: string) => [...value].length >= MIN_SECRET;
+
+/** The punctuation between JSON's strings that a held value can hold: a value holding one, JSON can split there (a
+ *  login's ":" as a name and its value, a "," between an array's strings), and the join view reads it without them
+ *  (redact/match.ts Needles `joined`). Gone from that needle only, so it never reads past a value's own length. */
+const JOIN_DROPS = /[,:]/;
+const JOIN_DROPPED = /[,:]/g;
+
+/** The fewest characters a line of a held value must have to be held as a part of it: a key's base64 line (64) is, a
+ *  short line any text may hold ("-----END …-----", "}", a JSON field's name and a word) is not. */
+const LINE_MIN = 40;
+const ARMOR_BEGIN = /^-----BEGIN [^-]*-----$/;
+const ARMOR_END = /^-----END [^-]*-----$/;
+
+/** The parts of a held value of many lines that a reader may print without the rest (`head -n 11 key.pem`, a body
+ *  with its armor stripped), each held as itself, found as it stands and cut in place, and found in each view: each
+ *  line of its body of LINE_MIN characters or more, and its body with its line breaks gone. Its body is its lines but
+ *  a first "-----BEGIN …-----" and a last "-----END …-----", its armor. A key's last body line is mostly shorter than
+ *  LINE_MIN: one of MIN_SECRET characters or more is held with the END line after it, as written (`tail -n 2 key.pem`).
+ *  A value of one line has none: it is matched whole. */
+function partsOf(value: string): string[] {
+  const lines = value.split(/\r\n|\r|\n/).map((line) => line.trim()).filter((line) => line.length > 0);
+  if (lines.length < 2) return [];
+  const armored = ARMOR_END.test(lines.at(-1)!);
+  const body = lines.slice(ARMOR_BEGIN.test(lines[0]!) ? 1 : 0, armored ? -1 : lines.length);
+  const parts = [...body.filter((line) => line.length >= LINE_MIN), body.join("")];
+  const last = body.at(-1);
+  if (armored && last !== undefined && last.length >= MIN_SECRET && last.length < LINE_MIN) {
+    const end = lines.at(-1)!;
+    const endAt = value.lastIndexOf(end);
+    parts.push(value.slice(value.lastIndexOf(last, endAt), endAt + end.length));
+  }
+  return parts.filter(longEnough);
+}
+
+/** Whether a held JSON value's string under the key `name` is a secret by its name (heldFields): its name with its
+ *  separators dropped and lowered names a secret, a password, a token, a private value, a credential or an API key, or
+ *  ends in "key" ("aws_secret_access_key", "SessionToken", "signing_secret", "private_key", "secret_key"); or, lowered,
+ *  it is a credential parameter's whole name (redact/match.ts CREDENTIAL_NAMES: "signature"). Never one that names a
+ *  public thing by its end (an id, a URI or URL, a type, an email, an endpoint, an expiry: "client_id", "token_uri",
+ *  "access_key_id", "token_type"), a public key, or a token that is none (a page's, the next page's). */
+function secretName(name: string): boolean {
+  const flat = name.toLowerCase().replace(/[-_.\s]/g, "");
+  if (/(?:uri|url|id|type|email|endpoint|expiry|expires|pagetoken|nexttoken)$/.test(flat) || flat.includes("public")) return false;
+  return /secret|password|passwd|token|private|credential|apikey/.test(flat) || flat.endsWith("key") || CREDENTIAL_NAMES.has(name.toLowerCase());
+}
+/** A JWK's private members (RFC 7518: an EC or OKP key's "d", an RSA key's "d", "p", "q", "dp", "dq" and "qi", a
+ *  symmetric key's "k"), held in an object with a "kty" only: elsewhere a one-letter name says nothing. */
+const JWK_PRIVATE: ReadonlySet<string> = new Set(["d", "p", "q", "dp", "dq", "qi", "k"]);
+
+/** The strings of a held JSON value (an object or an array, as it parses, at any depth) that may be printed alone, each
+ *  held as itself (trimmed), as any held value: one that holds a line break (a service account's private key, `jq -r
+ *  .private_key`), one whose key names a secret (secretName: an OAuth client's "client_secret", an AWS secret access
+ *  key; never "page_token"), and a JWK's private member beside its "kty" (JWK_PRIVATE). An array's items have no key,
+ *  so only the line-break rule holds them. Its other strings are not held: an id, a project, an email and public URLs
+ *  ("client_id", "token_uri") are no secret, and would be cut wherever a text names them. Undefined where `value` is no
+ *  JSON object or array. */
+function heldFields(value: string): string[] | undefined {
+  const head = value.trimStart()[0];
+  if (head !== "{" && head !== "[") return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    return undefined;
+  }
+  const out: string[] = [];
+  // Walked with a stack of its own, not a call per level: a value nested thousands deep is read as any other.
+  // Each node with its key and whether its object is a JWK (holds a "kty").
+  const stack: [node: unknown, key: string | undefined, jwk: boolean][] = [[parsed, undefined, false]];
+  for (let next = stack.pop(); next !== undefined; next = stack.pop()) {
+    const [node, key, jwk] = next;
+    if (typeof node === "string") {
+      if (/[\r\n]/.test(node) || (key !== undefined && (secretName(key) || (jwk && JWK_PRIVATE.has(key))))) out.push(node.trim());
+    } else if (Array.isArray(node)) for (const item of node) stack.push([item, undefined, false]);
+    else if (node !== null && typeof node === "object") {
+      const kty = typeof (node as Record<string, unknown>).kty === "string";
+      for (const [name, item] of Object.entries(node)) stack.push([item, name, kty]);
+    }
+  }
+  return out.filter(longEnough);
+}
 
 /** A matcher for `values` in a text: plain, split by whitespace, as JSON writes it, percent or form encoded, base64 or
  *  hex, and each hex identifier in a value folded: in any case, its separators dropped or moved (foldedOf). Values

@@ -2,11 +2,12 @@
 // alone (runner/audit.ts, and the server for an owner's grade). A `started` line is a shadow audit begun (written before
 // its shadow run is created); a row is one finished audit of a run a promoted learned workflow served first: its shadow
 // run's answer (the same agent on the same input, learning off) against the served one (source `shadow`, the started
-// line's result), or an owner's grade of the served run (source `grade`, agreed = the grade). The open audits are the
-// started lines with no result row: settlement reads their two runs by id, so none is ever lost to a window of runs.
-// Each line keeps the promotion it counts for (`promoted_at`), and the hold rule reads the newest rows of the serving
-// revision's current promotion (holdOf). The engine never reads a row's domain: only whether two answers say the same
-// (learn/promote.ts sameAnswer) and what each run cost.
+// line's result), or an owner's grade of the served run (source `grade`: the served answer against the grade's known
+// answer, which outranks the shadow's). The open audits are the started lines with no result row: settlement reads their
+// two runs by id, so none is ever lost to a window of runs. Each line keeps the promotion it counts for (`promoted_at`),
+// and the hold rule reads the newest rows of the serving revision's current promotion (holdOf). The engine never reads a
+// row's domain: only whether an answer is right against the known one (runner/promotion.ts answerJudged) and what each
+// run cost.
 import { createHash } from "node:crypto";
 import { COMPUTER_TOOLS } from "@parcha/agentrun-kernel/kernel";
 import type { Workspace } from "../workspace/index.js";
@@ -27,9 +28,10 @@ export const SHADOW_PREFIX = "audit.";
 
 /** One finished audit. `run`: the served run; `shadow_run`: its shadow (null for a grade's row, or one never started);
  *  `workflow` at `digest` served it, under the promotion begun at `promoted_at` (learn/promote.ts promotionStartOf: the
- *  one serving when its shadow started, or at the grade; null: none); `agreed`: whether the two answers say the same (a
- *  grade's: the grade), null when either answer is missing (a shadow that failed, parked or never ran: no evidence either
- *  way, never counted by the hold rule); the two runs' costs (null unknown). `turn`: the served run's answer the audit is
+ *  one serving when its shadow started, or at the grade; null: none); `agreed`: whether the served answer is right
+ *  against the known one (the shadow's, or a grade's: its `correct`, else its expected answer's verdict), null when
+ *  either answer is missing (a shadow that failed, parked or never ran) or a grade contradicts itself: no evidence either
+ *  way, never counted by the hold rule; the two runs' costs (null unknown). `turn`: the served run's answer the audit is
  *  of, the id of its answer row (its newest final answer when the audit began, or at the grade): a follow-up's later
  *  answer is never the one compared; absent when it had none. `skipped`: a drawn run whose cap left its shadow no
  *  allowance (less than a run's smallest cap): no shadow was started. `parked`: its shadow came to wait on a person (an
@@ -191,9 +193,14 @@ export function auditChange(before: readonly LedgerLine[], lines: readonly Ledge
 }
 
 /** The rows the hold rule counts for `workflow` at `digest` under the promotion begun at `promotedAt` (learn/promote.ts
- *  promotionStartOf; none counted for null): those with a verdict, the newest `hold_window` of them. */
-export const windowOf = (rows: readonly AuditRow[], workflow: string, digest: string, promotedAt: string | null, loop: Pick<AuditLoop, "hold_window">): AuditRow[] =>
-  promotedAt === null ? [] : rows.filter((row) => row.workflow === workflow && row.digest === digest && row.promoted_at === promotedAt && row.agreed !== null).slice(-loop.hold_window);
+ *  promotionStartOf; none counted for null): those with a verdict, the newest `hold_window` of them. A served run an
+ *  owner graded is counted by its grade's row alone: the grade is its known answer, as it is the check's, so its
+ *  shadow (the agent's answer again) never says otherwise, and a grade that contradicts itself leaves it unjudged. */
+export function windowOf(rows: readonly AuditRow[], workflow: string, digest: string, promotedAt: string | null, loop: Pick<AuditLoop, "hold_window">): AuditRow[] {
+  if (promotedAt === null) return [];
+  const graded = new Set(rows.filter((row) => row.source === "grade").map((row) => row.run));
+  return rows.filter((row) => row.workflow === workflow && row.digest === digest && row.promoted_at === promotedAt && row.agreed !== null && (row.source === "grade" || !graded.has(row.run))).slice(-loop.hold_window);
+}
 
 /** The hold rule: the counted rows (windowOf) when at least `hold_disagree` of them disagree, else undefined. */
 export function holdOf(rows: readonly AuditRow[], workflow: string, digest: string, promotedAt: string | null, loop: Pick<AuditLoop, "hold_window" | "hold_disagree">): { rows: AuditRow[]; disagreed: AuditRow[] } | undefined {

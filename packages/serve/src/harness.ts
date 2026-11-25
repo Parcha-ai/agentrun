@@ -42,7 +42,7 @@ export const PLAN_HARNESSES: readonly string[] = Object.freeze(["pi", "codex"] s
 export type HarnessOffer = { id: string; label: string; promises: HarnessPromises; available: boolean; steer: boolean; reason?: string; default_model?: string | null; keys?: readonly string[]; installs?: "on_first_use"; card?: string };
 /** A harness as capabilities list it: an offer with its `default_model` resolved (harnessOffers), never left out, and
  *  the memory a run of it reserves (`run_memory_mib`). */
-export type HarnessCapability = HarnessOffer & { default_model: string | null; models: string[]; free_models: { id: string; context_window: number }[]; run_memory_mib: number; needs?: HarnessNeed[]; noModelRuns?: true };
+export type HarnessCapability = HarnessOffer & { default_model: string | null; models: string[]; ready_models: string[]; free_models: { id: string; context_window: number }[]; run_memory_mib: number; needs?: HarnessNeed[]; noModelRuns?: true };
 /** `noModelRuns` (never served): a harness this server runs, its default model lacking a key (`needs`), and no model it
  *  offers runs here now either, so capabilities serve it `available: false` (server.ts capabilitiesWith). Absent where
  *  any model it offers runs, though its default does not: a revision that names that model runs. */
@@ -112,6 +112,9 @@ export function harnessOffers(env: NodeJS.ProcessEnv): Promise<HarnessCapability
         // so the picker never offers one a save would refuse. None for a harness that does not run here.
         const entry = harnessOf(env, offer.id)!;
         const models: string[] = [];
+        // Those of them a run takes now: its provider connected here (its key, or the ChatGPT sign-in where that is how
+        // it runs), not one that lacks only a key. The console's Model picker lists these first (GRE: filter by provider).
+        const ready: string[] = [];
         // Whether any model it offers runs here now, not only lacks a key: its default lacking one leaves it available
         // where another runs (noModelRuns).
         let runsOne = false;
@@ -128,6 +131,7 @@ export function harnessOffers(env: NodeJS.ProcessEnv): Promise<HarnessCapability
           const { factsOf } = await import("./harness-table.js");
           const facts = factsOf(env, offer.id);
           const { OLLAMA_PROVIDER, ollamaToolsModels } = await import("./ollama-provider.js");
+          const { serverKeyMissing } = await import("./run-model-key.js");
           const toolsModels = ollamaToolsModels(env);
           for (const id of new Set([...pickerCandidates(env, offer.id), ...free.map((m) => m.id)])) {
             if (!MODEL_REF.test(id)) continue;
@@ -142,7 +146,11 @@ export function harnessOffers(env: NodeJS.ProcessEnv): Promise<HarnessCapability
                 lacksKey = true;
               }
             }
+            // A model whose route goes to the gateway runs only on a gateway key: the server's, or each run's own
+            // (model_key). Without the server's, a run that brings none is 422 model_key_required, so it is not ready.
+            if (!lacksKey && "model" in chosen && serverKeyMissing(env, { kind: "agentic", model: chosen.model })) lacksKey = true;
             models.push(id);
+            if (!lacksKey) ready.push(id);
             // A model of the Ollama here that takes no tools stays pickable, and a run on it gets its tools as text, but
             // text tools are unreliable on small models: it is no model a run of this harness has now, as the host's
             // default never is one (model.ts localDefault).
@@ -155,7 +163,7 @@ export function harnessOffers(env: NodeJS.ProcessEnv): Promise<HarnessCapability
         const wantsKey = offer.available ? resolved !== undefined && "why" in resolved && resolved.needs === "key" : Boolean(offer.keys?.length);
         const sayWhy = !wantsKey ? {} : offer.available ? { reason: (resolved as { why: string }).why } : offer.reason ? { reason: withPlanWords(env, offer.id, offer.reason) } : {};
         const needs: HarnessNeed[] = wantsKey ? ["key", ...(planWouldRun(env, offer.id) ? (["chatgpt"] as const) : [])] : [];
-        return { ...offer, ...sayWhy, default_model: resolved && "model" in resolved ? `${resolved.model.provider}/${resolved.model.modelId}` : null, models, free_models: free.filter((m) => models.includes(m.id)), run_memory_mib: entry.runMib, ...(needs.length ? { needs } : {}), ...(offer.available && needs.length && !runsOne ? { noModelRuns: true as const } : {}) };
+        return { ...offer, ...sayWhy, default_model: resolved && "model" in resolved ? `${resolved.model.provider}/${resolved.model.modelId}` : null, models, ready_models: ready, free_models: free.filter((m) => models.includes(m.id)), run_memory_mib: entry.runMib, ...(needs.length ? { needs } : {}), ...(offer.available && needs.length && !runsOne ? { noModelRuns: true as const } : {}) };
       }));
     }));
     offered.set(env, offers);
