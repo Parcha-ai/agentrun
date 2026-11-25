@@ -365,7 +365,7 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
         // Its status is the agent's word only: what it changes is the mirror of the agent's session store.
         if (update.status !== "completed" && update.status !== "failed") return;
         // What the agent wrote before the call ended is set aside: what it writes after is the answer.
-        if (cur.turn?.final) [cur.turn.kept, cur.turn.final] = [cur.turn.final, ""];
+        if (cur.turn?.final.trim()) [cur.turn.kept, cur.turn.final] = [cur.turn.final, ""];
         // An ended call takes no MCP call's id (CallIds.settle).
         rt.calls.settle(update.toolCallId);
         mirrorInto(rt, cur.journal);
@@ -911,7 +911,8 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
         else if (reason === "max_turn_requests") outcome = { status: "failed", error: `${ACP_CODES.agentTurnRequests}: the agent stopped the turn at its own limit of requests` };
         else outcome = { status: "failed", error: `acp: the agent ended the turn with an unknown stop reason ${JSON.stringify(reason)}` };
       }
-      const lastText = turn.final || turn.kept;
+      // Only whitespace after the call (a trailing newline) is no answer of its own: the text before it is.
+      const lastText = turn.final.trim() ? turn.final : turn.kept;
       if (lastText) journal.message({ type: "message", role: "assistant", text: lastText });
       journal.message({ type: "turn", ...outcome } as TranscriptEntry);
       await journal.flush();

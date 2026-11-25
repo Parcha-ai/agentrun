@@ -25,3 +25,11 @@ test('narration with nothing after the call is the answer, not an empty one', as
   assert.equal((await session.turnEnd()).status, 'completed');
   assert.deepEqual(await answers(store), ['Listed the folder; fib.py is not there.']);
 });
+
+test('only whitespace after the call (a trailing newline) leaves the narration the answer', async (t) => {
+  const recipe = fakeRecipe(scratch(), { script: [{ native: 'execute', title: 'ls', input: { command: 'ls' }, narrate: 'Listed the folder; fib.py is not there.' }, { say: '\n' }], style: 'cursor' });
+  const { session, store } = await openSession(t, recipe, { gate: async () => 'allow' });
+  await session.send('go');
+  assert.equal((await session.turnEnd()).status, 'completed');
+  assert.deepEqual(await answers(store), ['Listed the folder; fib.py is not there.']);
+});
