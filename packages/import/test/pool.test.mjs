@@ -10,6 +10,8 @@ import { parseHome, READERS } from "../dist/index.js";
 import * as poolModule from "../dist/pool.js";
 
 const { memoryLimit, ReadPool, readAheadBytes, stringBytes } = poolModule;
+import { ownerOf } from "../dist/record-index.js";
+import { packed, packInto } from "../dist/record-key.js";
 import { anthropicUsage, claudeAnswer, claudeFile, claudeUser, codexAnswer, codexContext, codexFile, codexMeta, codexTokens, codexUser, openaiUsage, subagentFile, tempHome, writeJsonl } from "./fixtures.mjs";
 
 const THREADS = [2, 3, 4];
@@ -367,6 +369,26 @@ test("a source read again whole lets go of its reads in the pool: once the pool 
     assert.equal(pools[0].held, 0, "no read of the source read again waits in the pool");
   } finally {
     pools[0].close();
+  }
+});
+
+test("a worker's missed holds the records it asked for and never added: none it added after asking", async (t) => {
+  const home = await tempHome(t);
+  // Claude Code asks for a request's m: key, then its bare l: key, then adds the m: key; each line's u: key is asked for
+  // and added at once.
+  const file = await writeJsonl(claudeFile(home), [claudeUser({ uuid: "g-u", text: "Asked.", i: 0 }), claudeAnswer({ uuid: "g-a", msg: "msg_g", req: "req_g", usage: anthropicUsage(1, 2), i: 1 })]);
+  const pool = new ReadPool(1, Number.POSITIVE_INFINITY);
+  try {
+    pool.readAll([{ source: "claude-code", locator: { file }, size: 1 }]);
+    const read = await pool.take(0);
+    assert.equal(read.ok, true);
+    const holds = (index, key) => ownerOf(index, packInto(key, packed())) !== -1;
+    const added = ["u:g-u", "u:g-a", "m:msg_g:req_g"];
+    assert.deepEqual(added.map((key) => holds(read.mine, key)), [true, true, true], "mine: what it added");
+    assert.deepEqual(added.map((key) => holds(read.missed, key)), [false, false, false], "missed: none of what it added");
+    assert.deepEqual([read.missed.uuids.count, read.missed.others.count, holds(read.missed, "l:msg_g")], [0, 1, true], "missed: the bare id alone, asked for and never added");
+  } finally {
+    pool.close();
   }
 });
 

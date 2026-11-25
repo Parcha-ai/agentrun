@@ -229,6 +229,26 @@ export function anyIn(into: RecordIndex, from: RecordIndex): boolean {
   return false;
 }
 
+/** The records of `from` that `held` does not hold, with their owners, in an index of their own. */
+export function notIn(from: RecordIndex, held: RecordIndex): RecordIndex {
+  const out = recordIndex(64);
+  const u = from.uuids;
+  for (let i = 0; i < u.count; i += 1) {
+    const w0 = u.words[i * 4]!;
+    const w1 = u.words[i * 4 + 1]!;
+    const w2 = u.words[i * 4 + 2]!;
+    const w3 = u.words[i * 4 + 3]!;
+    if (findUuid(held.uuids, w0, w1, w2, w3, uuidHash(w0, w1, w2, w3)) === -1) addUuid(out.uuids, w0, w1, w2, w3, u.owners[i]!);
+  }
+  const o = from.others;
+  for (let i = 0; i < o.count; i += 1) {
+    const start = i === 0 ? 0 : o.ends[i - 1]!;
+    const end = o.ends[i]!;
+    if (findOther(held.others, o.bytes, start, end, bytesHash(o.bytes, start, end)) === -1) addOther(out.others, o.bytes, start, end, o.owners[i]!);
+  }
+  return out;
+}
+
 /** Every record of `from` added to `into`, where the two hold no record in common: per kind of key, the table with more
  *  entries keeps its arrays and the other's entries are added to it, so a big read's records are not copied (and held
  *  twice) to join a smaller index. `from` is used up: it holds what `into` held. */
