@@ -503,7 +503,13 @@ async function command(entry, argv, env, io) {
   const req = { method: entry.method, path: `${path}${search}`, headers, body, type, raw: entry.raw };
   if (values.follow) return followTimeline(client, req.path, headers);
   if (values.all) return listAll(client, req, entry);
-  if (!values.wait) return send(client, req);
+  if (!values.wait) {
+    const code = await send(client, req);
+    // Whoever reads the answer (a person, or a coding agent running this) is told whose text it holds, on a pipe too.
+    const notice = FLAGS[entry.operationId]?.notice;
+    if (code === 0 && notice) io.stderr.write(`${notice}\n`);
+    return code;
+  }
   // The start is bounded as the wait is: by --timeout, which the wait then has what is left of, else as one of the
   // wait's requests is.
   const began = Date.now();
