@@ -1899,14 +1899,15 @@ test("a login kept at the start while its folder is refused runs once the folder
 // the login, then makes env, what a revision needs and the offers again from it, and the offers are a probe of the
 // harnesses that can take seconds. A request asked meanwhile must wait for that: one that saw the new login and checked
 // the offers made before it would refuse a run for a key it does not need. The probe is held at claude-agent's check by
-// the held table (fixtures/held-offers.cjs), with no timers; the server logs claude_login_wait when a turn on the
-// sign-ins' queue is asked while a refresh makes the offers again, so a test knows a request waits before it lets the
-// probe go.
+// the held table (fixtures/held-offers.cjs), with no timers; the server logs claude_login_wait when a refresh waits for
+// a making of the offers it did not start itself (why=refresh, or why=turn for a turn on's or off's), or asks for its
+// turn on the sign-ins' queue while another turn holds it (why=queue), so a test knows a request waits before it lets
+// the probe go.
 
 /** A server for test `t` with the held table, on a data folder whose login was turned on and signed in at a
  *  CLAUDE_CONFIG_DIR folder, with an agent `planned` on claude-agent and no key; the folder was opened to its group before
  *  the start, so the login is kept and refused. `start()`: a run of `planned`; `waits(n)`: resolves once the server has
- *  logged claude_login_wait `n` times. */
+ *  logged claude_login_wait `n` times; `whys`: each of those lines' `why`, in order; `fake`: the stand-in CLI. */
 async function mendedLater(t) {
   const folder = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-config-dir-"));
   t.after(() => rmSync(folder, { recursive: true, force: true }));
@@ -1920,27 +1921,27 @@ async function mendedLater(t) {
 
   chmodSync(folder, 0o775);
   t.after(() => held.answer(undefined));
-  let count = 0;
+  const whys = [];
   const waiting = [];
   const log = (line) => {
     if (!line.includes(" event=claude_login_wait ")) return;
-    count += 1;
-    for (const wait of waiting.filter((one) => one.times <= count)) wait.resolve();
+    whys.push(/ why=(\S+)/.exec(line)?.[1]);
+    for (const wait of waiting.filter((one) => one.times <= whys.length)) wait.resolve();
   };
   const server = await serve(t, { faux: undefined, harnesses: false, runner: false, data: first.data, harnessTable: HELD_TABLE, log });
-  const waits = (times) => new Promise((resolve) => (count >= times ? resolve() : waiting.push({ times, resolve })));
+  const waits = (times) => new Promise((resolve) => (whys.length >= times ? resolve() : waiting.push({ times, resolve })));
   const start = () => server.api("POST", "/agents/planned/runs", { input: { content: "Say hi." } });
   const kept = (await server.api("GET", "/settings/claude-login")).body;
   assert.equal(kept.state, "refused", JSON.stringify(kept));
   const refused = await start();
   assert.equal(refused.status, 409, `refused at the start: ${JSON.stringify(refused.body)}`);
   assert.match(refused.body.error.message, /claude-agent needs ANTHROPIC_API_KEY/);
-  return { ...server, folder, start, waits };
+  return { ...server, folder, start, waits, whys, fake: first.fake };
 }
 
 const REFRESH_WHY = "a run asked while a refresh that found the folder mended was making the offers again checked the offers made before it";
 test("a run asked while a refresh that found the login's folder mended is still making the offers again waits for them: it is not refused for a key, and the capabilities that refresh answers offer claude-agent", { skip: process.platform === "win32" ? "no modes" : process.geteuid() === 0 ? "root may write anywhere" : false, timeout: 120_000 }, async (t) => {
-  const { api, folder, start, waits } = await mendedLater(t);
+  const { api, folder, start, waits, whys } = await mendedLater(t);
   chmodSync(folder, 0o700);
   const probe = held.hold((env) => claudeLoginOf(env) !== undefined);
   t.after(() => probe.release());
@@ -1956,38 +1957,70 @@ test("a run asked while a refresh that found the login's folder mended is still 
   const offer = claudeAgentIn(capabilities.body.harnesses);
   assert.equal(offer.available, true, `the capabilities whose refresh found the folder mended answered with the offers made before it: ${JSON.stringify(offer)}`);
   assert.equal(first, "the run waited", "the run, or the capabilities, answered before the probe of the offers made from the mended login was let go");
+  assert.deepEqual(whys, ["refresh"], "the run's wait was logged as one for a refresh's making of the offers");
   chmodSync(folder, 0o700);
 });
 
-// A turn-off asked while that refresh makes the offers again waits for it, and lands after it: a run asked after the
-// turn-off is refused for a key, as the login is off. A refresh that looked at the folders before the turn-off and handed
-// over after it would put back the login the turn-off removed. The log says when the turn-off, then the run's refresh,
-// waits on the sign-ins' queue (claude_login_wait), so both are queued, in that order, before the probe is let go.
-const OFF_WHY = "a run asked after a turn-off that waited for a refresh went on the login the turn-off removed";
-test("a turn-off asked while a refresh that found the login's folder mended is still making the offers again lands after it and wins: a run asked after it is refused for a key, claude-agent is not offered and the view reads off", { skip: process.platform === "win32" ? "no modes" : process.geteuid() === 0 ? "root may write anywhere" : false, timeout: 120_000 }, async (t) => {
+// The refresh swaps the login inside its turn on the sign-ins' queue, and makes the offers again after it: a sign-in or a
+// turn-off asked meanwhile takes its turn at once and never waits on that probe, as a turn on's or off's own making of
+// the offers never holds the queue either. A turn-off asked then still wins: its own making of the offers overtakes the
+// refresh's, and a run asked after it, while the refresh's probe is still held, is refused for a key at once. Under a
+// refresh that held the queue through its probe, each would wait on the sign-ins' queue, and the log says so
+// (claude_login_wait) before either could answer.
+const AT_ONCE_WHY = "waited for the probe of the offers a refresh that found the folder mended started";
+const OFF_WHY = "a run asked after a turn-off that landed during a refresh's making of the offers went on the login the turn-off removed";
+test("a sign-in or a turn-off asked while a refresh that found the login's folder mended is still making the offers again answers without waiting for that probe, and the turn-off wins: a run asked after it is refused for a key, claude-agent is not offered and the view reads off", { skip: process.platform === "win32" ? "no modes" : process.geteuid() === 0 ? "root may write anywhere" : false, timeout: 120_000 }, async (t) => {
   const { api, folder, start, waits, store } = await mendedLater(t);
   chmodSync(folder, 0o700);
   const probe = held.hold((env) => claudeLoginOf(env) !== undefined);
   t.after(() => probe.release());
   const asking = api("GET", "/capabilities");
   await probe.reached;
-  const turningOff = api("DELETE", "/settings/claude-login");
-  const offQueued = await Promise.race([waits(1).then(() => true), turningOff.then(() => false)]);
-  const running = start();
-  const runQueued = await Promise.race([waits(2).then(() => true), running.then(() => false)]);
-  probe.release();
-  const [off, run] = await Promise.all([turningOff, running, asking]);
+  // Each answers while the refresh's probe is held, or the log says it waits (then the probe is let go, so the test ends
+  // on these words, not on its timeout).
+  const atOnce = async (what, asked) => {
+    const first = await Promise.race([waits(1).then(() => "waited"), asked.then(() => "answered")]);
+    if (first === "waited") probe.release();
+    assert.equal(first, "answered", `${what} asked while a refresh made the offers again ${AT_ONCE_WHY}`);
+    return asked;
+  };
+  const signIn = await atOnce("a sign-in", api("POST", "/settings/claude-login/login"));
+  assert.equal(signIn.status, 200, JSON.stringify(signIn.body));
+  const off = await atOnce("a turn-off", api("DELETE", "/settings/claude-login"));
   assert.equal(off.status, 200, JSON.stringify(off.body));
   assert.equal(off.body.state, "off", JSON.stringify(off.body));
+  const run = await start();
   assert.equal(run.status, 409, `${OFF_WHY}: ${JSON.stringify(run.body)}`);
   assert.match(run.body.error.message, /claude-agent needs ANTHROPIC_API_KEY/);
-  assert.deepEqual([offQueued, runQueued], [true, true], "the turn-off, then the run's refresh, waited behind the refresh in flight");
+  probe.release();
+  assert.equal((await asking).status, 200);
   const offer = await offerOf(api);
   assert.equal(offer.available, false, `claude-agent is offered after the turn-off: ${JSON.stringify(offer)}`);
   assert.equal((await api("GET", "/settings/claude-login")).body.state, "off");
   assert.equal(await store.settings.get(CLAUDE_LOGIN_SETTING), undefined, "the turn-off removed the setting");
   const again = await start();
   assert.equal(again.status, 409, `a run after both is refused for a key: ${JSON.stringify(again.body)}`);
+});
+
+// A refresh whose making of the offers fails after it swapped the login (its probe throws) answers that failure to the
+// request that asked it, and leaves the login marked as not yet made again: the next request's refresh finds it so and
+// makes the offers again, rather than finding the login unchanged and checking the offers made before it for good.
+const FAILED_WHY = "a run asked after a refresh whose making of the offers failed checked the offers made before it";
+test("a refresh whose making of the offers again fails is redone by the next request's: a run asked after it is not refused for a key, and claude-agent is offered", { skip: process.platform === "win32" ? "no modes" : process.geteuid() === 0 ? "root may write anywhere" : false, timeout: 120_000 }, async (t) => {
+  const { api, folder, start } = await mendedLater(t);
+  chmodSync(folder, 0o700);
+  const probe = held.hold((env) => claudeLoginOf(env) !== undefined, new Error("the probe of the offers failed"));
+  t.after(() => probe.release());
+  const asking = api("GET", "/capabilities");
+  await probe.reached;
+  probe.release();
+  const failed = await asking;
+  assert.notEqual(failed.status, 200, `the capabilities whose refresh's making of the offers failed answered it: ${JSON.stringify(failed.body)}`);
+  const run = await start();
+  assert.equal(run.status, 202, `${FAILED_WHY}: ${JSON.stringify(run.body)}`);
+  assert.equal((await api("POST", `/runs/${run.body.run_id}/cancel`)).status < 300, true);
+  const offer = await offerOf(api);
+  assert.equal(offer.available, true, `claude-agent is offered once the failed making of the offers is redone: ${JSON.stringify(offer)}`);
 });
 
 // A folder its group may write in (a home or a folder on a volume whose group is set for a pod, 2775, or one made under
