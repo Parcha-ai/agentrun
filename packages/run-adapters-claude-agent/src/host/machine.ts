@@ -60,6 +60,8 @@ export interface LocalMachineOptions {
     webSearchAllowance?: number;
     /** The CLI's own tool search is on: its beta, its tools and its tool references pass (anthropicPolicy). */
     toolSearch?: boolean;
+    /** The day of the run's clock, when the host set it: the CLI's date lines say it (anthropicPolicy `day`). */
+    day?: () => string;
     /** The tokens' price; each web search a response reports is added to it (`withWebSearches`). */
     price?: ModelProxyOptions["price"];
     maxOutputTokens?: number;
@@ -194,6 +196,7 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
         ...(po.webSearch ? { webSearch: true, ...(po.webSearchAllowance !== undefined ? { webSearchAllowance: po.webSearchAllowance } : {}) } : {}),
         ...(po.auth ? { auth: po.auth } : {}),
         ...(po.toolSearch ? { toolSearch: true } : {}),
+        ...(po.day ? { day: po.day } : {}),
         onThinkingDisabled: ({ model: main }) => po.log?.("claude-agent: thinking.disabled", { model: main }),
       }),
       hooks: po.hooks,

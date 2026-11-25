@@ -8,6 +8,8 @@ import { buttonVariants } from "./ui/button";
 import { createClient } from "@/lib/client";
 import { servedKey } from "@/test/keys";
 import type { ChatGPTView, ToolKeys } from "@/lib/v2";
+// serve's model.ts as text, by this file's place (Vite's ?raw), for the one sentence the card shares with it.
+import serveModel from "../../../../packages/serve/src/model.ts?raw";
 
 // The first screen of a server with no key: "Continue with ChatGPT" first, beside "Add a key", and plainly what the plan
 // runs and what still needs a key; then what runs here, harness by harness. A server with no ChatGPT sign-in offers
@@ -15,6 +17,8 @@ import type { ChatGPTView, ToolKeys } from "@/lib/v2";
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const LINE = "Codex and pi agents run on your ChatGPT plan. Claude Agent, OpenCode, Jev decisions and paid tools need their own keys.";
+const GATEWAY_NAMES_NONE = "Name the gateway's model in AGENT_MODEL where AgentRun starts, or pick its models in Settings → Model keys → Use a model gateway.";
+const REFUSED = "AGENT_MODEL_BASE_URL must be an https URL of a gateway, with a path if it serves the API under one; it is http, not https.";
 const KEYS: ToolKeys = {
   keys: [
     servedKey({ id: "anthropic", kind: "model", label: "Anthropic", fields: [{ name: "ANTHROPIC_API_KEY", set: false, source: null }], unlocks: [], harnesses: ["pi"], check: null }),
@@ -31,11 +35,16 @@ const HARNESSES = [
   { id: "claude-agent", available: false, reason: "Claude Agent needs an Anthropic or OpenRouter key.", needs: ["key"] },
 ];
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
-function server() {
+// GET /v2/settings/model-gateway as serve answers it: `problem` is why serve refuses the gateway's address, else null;
+// `source` env (set where AgentRun starts) or console (saved in Settings). `fail`: the read fails.
+type GatewayAnswer = { problem?: string | null; source?: "env" | "console"; fail?: boolean };
+const gatewayView = ({ problem = null, source = "env" }: GatewayAnswer) => ({ source, base_url: "http://gw.example/v1", ids: "as_named", models: { default: null, fast: null, strong: null }, set_at_start: source === "env" ? ["AGENT_MODEL_BASE_URL"] : [], secret: { set: true, source }, problem });
+function server(gateway: GatewayAnswer = {}) {
   const calls: string[] = [];
   const fetch = (async (url: string, init?: RequestInit) => {
     calls.push(`${init?.method ?? "GET"} ${url}`);
     if (String(url) === "/v2/settings/tool-keys") return json(200, KEYS);
+    if (String(url) === "/v2/settings/model-gateway") return gateway.fail ? json(500, { error: { code: "internal", message: "boom", retryable: true } }) : json(200, gatewayView(gateway));
     if (String(url) === "/v2/settings/chatgpt/sign-in") return json(200, { authorize_url: "https://auth.openai.com/api/accounts/authorize?state=fake", expires_at: new Date(Date.now() + 600_000).toISOString() });
     return json(200, { state: "pending" });
   }) as typeof globalThis.fetch;
@@ -45,8 +54,8 @@ function server() {
 let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; vi.unstubAllGlobals(); });
 
-async function open(props: Partial<Parameters<typeof ModelKeyCard>[0]>) {
-  const { v2, calls } = server();
+async function open(props: Partial<Parameters<typeof ModelKeyCard>[0]>, gateway: GatewayAnswer = {}) {
+  const { v2, calls } = server(gateway);
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
   act(() => root!.render(createElement(ModelKeyCard, { v2, writable: true, needs: "key", ...props })));
@@ -54,7 +63,8 @@ async function open(props: Partial<Parameters<typeof ModelKeyCard>[0]>) {
   await settle();
   const buttons = () => [...host.querySelectorAll("button")].map((b) => (b.textContent ?? "").trim());
   const click = async (label: RegExp) => { await act(async () => { [...host.querySelectorAll("button")].find((b) => label.test((b.textContent ?? "").trim()))!.click(); }); await settle(); };
-  return { host, buttons, click, calls };
+  const rerender = async (more: Partial<Parameters<typeof ModelKeyCard>[0]>) => { act(() => root!.render(createElement(ModelKeyCard, { v2, writable: true, needs: "key", ...props, ...more }))); await settle(); };
+  return { host, buttons, click, calls, rerender };
 }
 
 describe("ModelKeyCard, a server with no key that offers the ChatGPT sign-in", () => {
@@ -75,6 +85,82 @@ describe("ModelKeyCard, a server with no key that offers the ChatGPT sign-in", (
       expect.stringMatching(/^Codexruns after Continue with ChatGPTcodex needs OPENAI_API_KEY.*to run it on your ChatGPT plan\.$/),
       expect.stringMatching(/^Claude.*needs a key.*Claude Agent needs an Anthropic or OpenRouter key\.$/),
     ]);
+  });
+
+  // Behind a gateway, signing in gives no default (serve's settingsModel takes the plan only without AGENT_MODEL_BASE_URL)
+  // and the provider keys are not used (GATEWAY_RUNS): what runs an agent that names no model is the gateway's model.
+  it("on a gateway server that names no model, says to name the gateway's model, and offers neither the sign-in nor a key", async () => {
+    const card = await open({ plan: { state: "signed_out" }, harnesses: HARNESSES, source: "gateway", model: null, routePrefix: "agent-model" });
+    expect(card.host.querySelector("h2")?.textContent).toBe("Name the gateway's model to run agents");
+    expect(card.host.textContent).toContain(GATEWAY_NAMES_NONE);
+    expect(card.buttons()).not.toContain("Continue with ChatGPT");
+    expect(card.host.querySelector('[role="group"][aria-label="Provider"]')).toBeNull();
+    expect(card.host.textContent).not.toContain("No model provider's key is set");
+  });
+
+  // A gateway address serve refuses (modelGatewayBase) runs no model, whatever AGENT_MODEL names, and no key or sign-in
+  // fixes it: the card says so in the server's words (GET /v2/settings/model-gateway's `problem`).
+  it.each([["names a default", "agent-model/gpt-6-luna"], ["names no model", null]])("on a gateway server whose address is refused (and that %s), says why in the server's words, with no sign-in or key", async (_, model) => {
+    const card = await open({ plan: { state: "signed_out" }, harnesses: HARNESSES, source: "gateway", model, routePrefix: "agent-model" }, { problem: REFUSED });
+    expect(card.calls).toContain("GET /v2/settings/model-gateway");
+    expect(card.host.querySelector("h2")?.textContent).toBe("This server's model gateway is refused");
+    expect(card.host.textContent).toContain(REFUSED);
+    expect(card.host.textContent).not.toContain(GATEWAY_NAMES_NONE);
+    expect(card.buttons()).not.toContain("Continue with ChatGPT");
+    expect(card.host.querySelector('[role="group"][aria-label="Provider"]')).toBeNull();
+    expect(card.host.textContent).not.toContain("No model provider's key is set");
+    expect(card.host.textContent).toContain("It is set where AgentRun starts (AGENT_MODEL_BASE_URL): change it there.");
+  });
+
+  it("on a gateway server whose saved address (Settings) is refused, says to change it in Settings", async () => {
+    const card = await open({ plan: { state: "signed_out" }, source: "gateway", model: null, routePrefix: "agent-model" }, { problem: REFUSED, source: "console" });
+    expect(card.host.textContent).toContain(REFUSED);
+    expect(card.host.textContent).toContain("Change it in Settings → Model keys → Use a model gateway.");
+    expect(card.host.textContent).not.toContain("where AgentRun starts (AGENT_MODEL_BASE_URL)");
+  });
+
+  // An operator fixes a refused address where AgentRun starts and restarts it, naming no model: the page reads the
+  // capabilities again (a new `capsRead`) with the same props as before, and the card reads the gateway's view again.
+  it("reads the gateway's view again with each new read of the capabilities: a fixed address no longer shows refused", async () => {
+    const gateway: GatewayAnswer = { problem: REFUSED };
+    const card = await open({ source: "gateway", model: null, routePrefix: "agent-model", capsRead: {} }, gateway);
+    expect(card.host.textContent).toContain(REFUSED);
+    gateway.problem = null;
+    await card.rerender({ capsRead: {} });
+    expect(card.calls.filter((c) => c === "GET /v2/settings/model-gateway")).toHaveLength(2);
+    expect(card.host.textContent).not.toContain(REFUSED);
+    expect(card.host.textContent).toContain(GATEWAY_NAMES_NONE);
+  });
+
+  // Until the gateway's view is read (or when the read fails), the card can't tell a refused address from no model named:
+  // it says no agent runs yet and where the reason is, never one fix that may not be the one.
+  it.each([["names a default", "agent-model/gpt-6-luna"], ["names no model", null]])("on a gateway server whose view can't be read (and that %s), says where the reason is, offering no fix", async (_, model) => {
+    const card = await open({ plan: { state: "signed_out" }, source: "gateway", model, routePrefix: "agent-model" }, { fail: true });
+    expect(card.host.querySelector("h2")?.textContent).toBe("This server's model gateway runs no model yet");
+    expect(card.host.textContent).toContain("Settings → Model keys → Use a model gateway says why.");
+    expect(card.host.textContent).not.toContain(GATEWAY_NAMES_NONE);
+    expect(card.buttons()).not.toContain("Continue with ChatGPT");
+  });
+
+  // The card's fix for no model named is serve's own sentence (chooseModel's), so the two never drift apart.
+  it("says serve's own words for a gateway that names no model", () => {
+    expect(serveModel).toContain(GATEWAY_NAMES_NONE.replace(/^N/, "n"));
+  });
+
+  // A gateway server whose AGENT_MODEL is a plan model (chatgpt/<id>) runs an agent with no model on the plan, so signed
+  // out it can't run one until someone signs in (serve's planChoice), and the sign-in is the card's way on. Capabilities
+  // send that default under the gateway's route_prefix: agent-model/chatgpt/<id>.
+  it("on a gateway server whose default is a plan model, offers the sign-in and says what the plan runs", async () => {
+    const card = await open({ plan: { state: "signed_out" }, harnesses: HARNESSES, source: "gateway", model: "agent-model/chatgpt/gpt-6.1-sol", routePrefix: "agent-model" });
+    expect(card.buttons().slice(0, 2)).toEqual(["Continue with ChatGPT", "Add a key"]);
+    expect(card.host.textContent).toContain(LINE);
+  });
+
+  // A gateway's own default (agent-model/anthropic/claude-x) runs on the gateway: the provider under the prefix is the
+  // gateway's to route, so its key isn't the one to ask for.
+  it("on a gateway server whose default is the gateway's own model, doesn't ask for that model's provider key", async () => {
+    const card = await open({ plan: { state: "signed_out" }, harnesses: HARNESSES, source: "gateway", model: "agent-model/anthropic/claude-x", routePrefix: "agent-model" });
+    expect(card.host.textContent).not.toContain("Save the Anthropic key");
   });
 
   it("Continue with ChatGPT starts the sign-in and keeps the card while it waits (onPlan)", async () => {

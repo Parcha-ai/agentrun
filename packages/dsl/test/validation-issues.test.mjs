@@ -207,3 +207,8 @@ test('agentrun-dsl dry-run keeps its exit codes; --strict exits 3 when a check d
   assert.equal(code, 1);
   assert.match(stderr, /--strict/);
 });
+
+test('an input given as a list is refused: a list is not a JSON object', () => {
+  const result = validateWorkflow(flow([agent('a')]), { input: [] });
+  assert.deepEqual(result.issues?.map(({ path, code }) => [path, code]), [['', 'INPUT_INVALID']], `a list input is refused: ${JSON.stringify(result)}`);
+});

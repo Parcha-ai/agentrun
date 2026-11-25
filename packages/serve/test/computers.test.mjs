@@ -127,6 +127,18 @@ test("Mode 2: a provider that takes the Archil mount and prepares no image holds
   for (const kind of ["sandbox", "desktop"]) assert.equal(modeRefusal(kind, e2b, "disk"), undefined, `e2b's ${kind}: it prepares its image`);
 });
 
+test("Mode 1: a sandbox provider that could hold the run's folder on an Archil disk (Mode 2) says to turn Archil on, beside Docker or none; one that couldn't keeps to Docker or none", () => {
+  const entry = (id) => PROVIDERS.find((one) => one.id === id);
+  // No route in the words (a view's why ends at the setting): the console's own place for it, Settings → Workspace.
+  const archil = (label) => `${label} can't mount this server's run folders (they are on its own disk): keep run folders on an Archil disk instead (turn on Archil in Settings → Workspace), or set this agent's computer to sandbox on Docker, or none (Settings → Computers)`;
+  // E2B, Modal and Agent37 mount the Archil disk; Daytona and boxd hold a synced folder on it.
+  for (const id of ["e2b", "modal", "agent37", "daytona", "boxd"]) assert.equal(modeRefusal("sandbox", entry(id), "local"), archil(entry(id).label), id);
+  // smol cloud takes neither (its own disk sits at /workspace): Archil on would not seat its sandbox either.
+  assert.equal(modeRefusal("sandbox", entry("smolcloud"), "local"), "smol cloud can't mount this server's run folders (they are on its own disk): set this agent's computer to sandbox on Docker, or none (Settings → Computers)");
+  assert.equal(modeRefusal("sandbox", entry("docker"), "local"), undefined, "Docker binds the folder");
+  assert.equal(modeRefusal("desktop", entry("e2b"), "local"), undefined, "a desktop holds no folder");
+});
+
 test("Mode 2: Docker's sandbox can't mount the owner's disk; Daytona's holds a synced folder, so it needs only its key; Modal's sandbox and E2B's and Agent37's sandbox and desktop are ready with their keys (their prepareImage answers the box image); a desktop, phone or browser is offered", async (t) => {
   const env = { MODAL_TOKEN_ID: "good-id", MODAL_TOKEN_SECRET: "good-secret", E2B_API_KEY: "fake-test-key", AGENT37_API_KEY: "not-a-secret", AGENT37_SSH_KEY: "not-a-secret-either" };
   const { routes } = await setup(t, { mode: "disk", env });
