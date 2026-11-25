@@ -152,6 +152,11 @@ const SIGN_IN_VENDORS = ["browserbase", "kernel"] as const;
  *  than what a note may hold. */
 export const WITHHELD_LEARNING = "This server can't read the agent's browser sign-in (its seal key changed or is missing, or the sign-in is damaged), so what it learned is not shown.";
 
+/** Why a message to a run whose launch's sealed part doesn't open here is refused (409 not_continuable, reason withheld;
+ *  a trigger's firing skips with these words): it can't be cut of what the run was handed, and once the run's end
+ *  erases those values, written uncut it would show them. */
+export const WITHHELD_MESSAGE = "This server can't read back what this run was handed (its seal key changed or is missing, or what was sealed is damaged), so a message to it can't be cut of those values and was not written. Start a new run of the agent.";
+
 /** Every sign-in pointer agent `agentId` ever held, live and forgotten (the store keeps every forgotten one, never only
  *  the newest), at each vendor that keeps one (each at least MIN_SECRET long, as every cut takes them): what the learning
  *  routes cut beside the server's secrets, so a note, a skill or a run's learning that wrote one never shows it. `unreadable` when one does not open under this server's key, or a read

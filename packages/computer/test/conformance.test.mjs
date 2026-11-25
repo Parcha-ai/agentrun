@@ -153,6 +153,9 @@ test("every computer the run made is deleted, even when a case throws or hangs; 
 	assert.equal(label[0], "agentrun.conformance");
 	assert.match(label[1], /^[0-9a-f]{12}$/);
 	for (const { labels } of fake.made) assert.equal(labels["agentrun.conformance"], label[1]);
+	const runner = fake.made[0].labels["agentrun.conformance.runner"];
+	assert.match(String(runner), /^[0-9a-f]{12}$/, "the runner's own id, beside the run's");
+	for (const { labels } of fake.made) assert.equal(labels["agentrun.conformance.runner"], runner);
 	assert.deepEqual(fake.alive(), []);
 	assert.equal(fake.open(), 0, "every connection was closed");
 	assert.deepEqual(report.cleanup.left, []);
@@ -160,9 +163,41 @@ test("every computer the run made is deleted, even when a case throws or hangs; 
 	assert.equal(report.cleanup.deleted.length, 5);
 	assert.deepEqual(
 		fake.calls.filter(([kind]) => kind === "list").at(-1),
-		["list", { "agentrun.conformance": label[1] }],
-		"the run checks, by its label, that nothing is left",
+		["list", { "agentrun.conformance": label[1], "agentrun.conformance.runner": runner }],
+		"the run checks, by its labels, that nothing of its own is left",
 	);
+});
+
+test("two runners given one --run (two processes on one before file's id): the first to end sweeps only its own computers, and the second's runs on", async () => {
+	const fake = fakeComputers();
+	const run = "0123456789ab";
+	const up = Promise.withResolvers();
+	const firstEnded = Promise.withResolvers();
+	const second = runConformance(fake.provider, {
+		image: IMAGE,
+		run,
+		cases: [
+			pass("provider.outlives", {
+				computer: "fresh",
+				run: async (t) => {
+					up.resolve(t.ref.name);
+					await firstEnded.promise;
+					t.assert(fake.alive().includes(t.ref.name), "the second runner's computer is still there after the first runner's end");
+				},
+			}),
+		],
+	});
+	const name = await up.promise;
+	// The first runner's end: its janitor sweep, past every deadline, and its list of what is left, both by its labels.
+	const first = await runConformance(fake.provider, { image: IMAGE, run, cases: [pass("health.quick", { computer: "none" })] });
+	firstEnded.resolve();
+	const report = await second;
+	assert.deepEqual(statuses(report), { "provider.outlives": "pass" }, JSON.stringify(reasons(report)));
+	assert.ok(!first.cleanup.deleted.includes(name), `the first runner deleted the second's computer ${name}: ${JSON.stringify(first.cleanup)}`);
+	assert.deepEqual(first.cleanup.left, [], "the first runner lists only its own computers at its end");
+	assert.deepEqual(first.cleanup.errors, []);
+	assert.equal(fake.made.find((one) => one.name === name)?.labels["agentrun.conformance"], run, "both runners' computers carry the run's id");
+	assert.deepEqual(fake.alive(), [], "the second runner's own end removed its computer");
 });
 
 test("the janitor's sweep, scoped to the run's label, ends a computer a case made behind the runner's back", async () => {
@@ -278,6 +313,23 @@ test("the CLI loads a provider module by path, prints the report, and exits 0 wh
 	assert.match(out.text(), /core PASS 1\/1/);
 });
 
+test("a run takes the id the live sweep's --before minted (options.run, the CLI's --run): every computer it makes carries it", async () => {
+	const seen = [];
+	const label = pass("health.label", { run: async (t) => seen.push(t.spec().labels["agentrun.conformance"]) });
+	const fake = fakeComputers();
+	const report = await runConformance(fake.provider, { image: IMAGE, run: "0123456789ab", cases: [label] });
+	assert.equal(report.core, "pass");
+	assert.ok(fake.made.length > 0);
+	for (const { labels } of fake.made) assert.equal(labels["agentrun.conformance"], "0123456789ab");
+	assert.deepEqual(seen, ["0123456789ab"]);
+	await assert.rejects(runConformance(fakeComputers().provider, { image: IMAGE, run: "not-an-id", cases: [label] }), /options\.run is a run id the live sweep's --before mints, 12 hex characters; got "not-an-id"/);
+	assert.equal(await main(["--provider", "./fixtures/fake-provider.mjs", "--run", "ba9876543210"], { stdout: sink(), cwd: HERE, cases: [label] }), 0);
+	assert.equal(seen.at(-1), "ba9876543210", "the CLI's --run is the run's id");
+	await main(["--provider", "./fixtures/fake-provider.mjs"], { stdout: sink(), cwd: HERE, cases: [label] });
+	assert.match(seen.at(-1), /^[0-9a-f]{12}$/, "without it, a fresh id");
+	assert.notEqual(seen.at(-1), "ba9876543210");
+});
+
 test("--long runs the long cases; without it they skip in words that name the flag, and --exec-stream refuses it", async () => {
 	const long = pass("lifetime.waits", { level: "full", group: "lifetime", run: async (t) => t.long("it waits on a vendor's timer") });
 	const json = async (argv) => {
@@ -361,6 +413,9 @@ test("the CLI exits 2 on a usage error, and says what is wrong", async () => {
 		[["--provider", "./fixtures/fake-provider.mjs", "--only", "exec,network"], /--only: network is neither a group .* nor a case id/],
 		[["--provider", "./fixtures/fake-provider.mjs", "--concurrency", "0"], /--concurrency: "0" is not a whole number of computers, 1 or more/],
 		[["--provider", "./fixtures/fake-provider.mjs", "--concurrency", "two"], /--concurrency: "two" is not a whole number of computers, 1 or more/],
+		[["--provider", "./fixtures/fake-provider.mjs", "--run"], /--run needs a value/],
+		[["--provider", "./fixtures/fake-provider.mjs", "--run", "ABC"], /--run: "ABC" is not a run id the live sweep's --before mints \(12 hex characters\)/],
+		[["--provider", "e2b", "--exec-stream", "--machine", "m", "--run", "0123456789ab"], /--exec-stream runs alone: drop --run/],
 	]) {
 		const err = sink();
 		const code = await main(argv, { stdout: sink(), stderr: err, cwd: HERE, cases: [pass("exec.argv")] });

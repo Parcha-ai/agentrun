@@ -217,7 +217,7 @@ test("a host that won't let the runner start its helper (spawn EPERM, thrown at 
 // ---------------------------------------------------------------------------------------------------------------------
 // The store, as a run's process reaches it: bound to its claim.
 
-test("the store a run's process reaches is bound to its claim: another run's journal, run or claim, another agent's revision, and a call off the list are refused unread", async () => {
+test("the store a run's process reaches is bound to its claim: another run's journal, run or claim, another agent's revision, a row not its own run's browser rows, and a call off the list are refused unread; its own browser rows are written", async () => {
   const called = [];
   const store = {
     readJournal: (runId) => void called.push(`readJournal ${runId}`),
@@ -226,7 +226,12 @@ test("the store a run's process reaches is bound to its claim: another run's jou
       update: async (claim) => void called.push(`runs.update ${claim.runId}`),
     },
     agents: { revision: async (id) => (called.push(`agents.revision ${id}`), { id, agentId: id === "rev-own" ? "agent-own" : "agent-other" }) },
-    settings: { set: async () => void called.push("settings.set") },
+    settings: {
+      set: async () => void called.push("settings.set"),
+      put: async (key) => void called.push(`settings.put ${key}`),
+      remove: async (key) => void called.push(`settings.remove ${key}`),
+      get: async (key) => (called.push(`settings.get ${key}`), undefined),
+    },
   };
   const bound = { claim: { runId: "run-own", epoch: 3 }, agentId: "agent-own", revisionId: "rev-own" };
   const lines = [];
@@ -235,12 +240,70 @@ test("the store a run's process reaches is bound to its claim: another run's jou
   await assert.rejects(call("runs.get", ["run-other"]), /of another run or agent/);
   await assert.rejects(call("runs.update", [{ runId: "run-own", epoch: 2 }, {}]), /of another run or agent/);
   await assert.rejects(call("settings.set", ["k", "v"]), /may not call the store's settings\.set/);
+  // The only rows it writes: its own run's browser wait and browser take; another run's, or any other row, never.
+  await assert.rejects(call("settings.put", ["browser_hold:run-other", {}]), /of another run or agent/);
+  await assert.rejects(call("settings.remove", ["browser_wait_ended:run-other"]), /of another run or agent/);
+  await assert.rejects(call("settings.put", ["tool-settings", {}]), /of another run or agent/);
+  await assert.rejects(call("settings.get", ["browser_hold:run-other"]), /of another run or agent/);
   assert.deepEqual(called, [], "a refused call reached the store");
   await assert.rejects(call("agents.revision", ["rev-other"]), /only its own agent's revisions/);
   assert.deepEqual(await call("runs.get", ["run-own"]), { id: "run-own" });
   assert.deepEqual(await call("agents.revision", ["rev-own"]), { id: "rev-own", agentId: "agent-own" });
+  // Its own browser's rows, which the server reads for the run's Screen tab and computer state: written, read, removed.
+  const rows = { "browser_hold:run-own": { session: "s1", at: "x", epoch: 3 }, "browser_wait_ended:run-own": { at: "x", why: "y", epoch: 3 } };
+  for (const [key, row] of Object.entries(rows)) {
+    await call("settings.put", [key, row]);
+    await call("settings.get", [key]);
+    await call("settings.remove", [key]);
+  }
+  assert.deepEqual(called.slice(-6), ["settings.put browser_hold:run-own", "settings.get browser_hold:run-own", "settings.remove browser_hold:run-own", "settings.put browser_wait_ended:run-own", "settings.get browser_wait_ended:run-own", "settings.remove browser_wait_ended:run-own"]);
   assert.ok(lines.some((line) => /asked the store for readJournal, which a run's process may not/.test(line)), lines.join("\n"));
   assert.ok(lines.some((line) => /asked for another agent's revision/.test(line)), lines.join("\n"));
+});
+
+test("a run's process writes its own browser rows only as its claim's: the claim's epoch, the row's shape and a bounded size", async () => {
+  const written = [];
+  const store = { settings: { put: async (key, value) => void written.push([key, value]), remove: async (key) => void written.push([key]) } };
+  const bound = { claim: { runId: "run-own", epoch: 3 }, agentId: "agent-own", revisionId: "rev-own" };
+  const call = (method, args) => storeCall(store, method, args, bound, () => {});
+  const at = "2026-11-25T00:00:00.000Z";
+  const HOLD = "browser_hold:run-own";
+  const ENDED = "browser_wait_ended:run-own";
+  const refused = [
+    // A later claim's epoch: the claim's own clear keeps it (browser-hold.ts), so every later claim would read "You drive".
+    [HOLD, { session: "s1", at, epoch: 4 }],
+    [ENDED, { at, why: "gone", epoch: 4 }],
+    // An earlier claim's, none, or one that is no number.
+    [HOLD, { session: "s1", at, epoch: 2 }],
+    [HOLD, { session: "s1", at }],
+    [ENDED, { at, why: "gone", epoch: "3" }],
+    // Not the row's shape: a field missing, of another type or one too many, the other row's fields, or no object.
+    [HOLD, { at, epoch: 3 }],
+    [HOLD, { session: 1, at, epoch: 3 }],
+    [HOLD, { session: "s1", at, epoch: 3, more: "x" }],
+    [HOLD, { at, why: "gone", epoch: 3 }],
+    [ENDED, { session: "s1", at, epoch: 3 }],
+    [ENDED, null],
+    [ENDED, "gone"],
+    [ENDED, [at, "gone", 3]],
+    // Past the bound: a row the server parses on every read of the run.
+    [ENDED, { at, why: "x".repeat(64 * 1024), epoch: 3 }],
+    [HOLD, { session: "s".repeat(64 * 1024), at, epoch: 3 }],
+  ];
+  // Each one tried, so a failure names every row let through, not the first.
+  const accepted = [];
+  for (const [key, row] of refused) {
+    const error = await call("settings.put", [key, row]).then(() => undefined, (thrown) => thrown);
+    if (!/may not call the store's settings\.put/.test(String(error?.message))) accepted.push(`${key} ${JSON.stringify(row)?.slice(0, 80)}`);
+  }
+  assert.deepEqual(accepted, [], "rows a run's process may not write were accepted");
+  assert.deepEqual(written, [], "a refused row reached the store");
+  const hold = { session: "s1", at, epoch: 3 };
+  const ended = { at, why: "The browser was released while the run waited for you: the cap has no room.", epoch: 3 };
+  await call("settings.put", [HOLD, hold]);
+  await call("settings.put", [ENDED, ended]);
+  await call("settings.remove", [HOLD]);
+  assert.deepEqual(written, [[HOLD, hold], [ENDED, ended], [HOLD]], "the claim's own rows, of their shape, are written and removed");
 });
 
 test("a capped run's process reads what was spent beside it, its own learning grades and its own audit's shadow run, and no other run's", async () => {

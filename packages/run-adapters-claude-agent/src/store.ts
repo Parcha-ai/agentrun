@@ -58,9 +58,22 @@ export function toolResultIds(entry: TranscriptLine | undefined): string[] {
   return content.filter((c) => c?.type === 'tool_result' && typeof c.tool_use_id === 'string').map((c) => c.tool_use_id as string);
 }
 
+/** The timers a barrier's wait runs on (the system's by default; a test passes a fake clock). */
+export interface BarrierTimers {
+  setTimeout(fn: () => void, ms: number): unknown;
+  clearTimeout(timer: unknown): void;
+}
+
+const SYSTEM_TIMERS: BarrierTimers = {
+  setTimeout: (fn, ms) => setTimeout(fn, ms),
+  clearTimeout: (timer) => clearTimeout(timer as ReturnType<typeof setTimeout>),
+};
+
 export interface JournalSessionStoreOptions {
   /** The journal's records as of the drive's start, blobs resolved (`journal.read()`). */
   records: JournalRecord[];
+  /** The timers `barrier` and `resultBarrier` wait on. Default the system's. */
+  timers?: BarrierTimers;
   /**
    * Hold appended entries this long before they go to the journal, so the
    * SDK's frames (one `append` per line with eager flushing) ride in fewer
@@ -82,7 +95,11 @@ export interface JournalSessionStoreOptions {
  *   from machine to machine) is ignored.
  * - `barrier(toolUseId)` resolves once the assistant entry that made that
  *   call is committed: before a `replay: 'never'` tool runs, the call that
- *   asked for it is in the log.
+ *   asked for it is in the log. The SDK mirrors a message's lines only once
+ *   the message ends, while the CLI runs each call as its block ends, so the
+ *   wait's clock restarts on each stream event of the message that made the
+ *   call, up to its `message_stop` (`heard`): it runs out `timeoutMs` after
+ *   that message's last event.
  */
 export class JournalSessionStore {
   private readonly loaded = new Map<string, TranscriptLine[]>();
@@ -92,9 +109,15 @@ export class JournalSessionStore {
   private readonly waiters = new Map<string, (() => void)[]>();
   private readonly results = new Set<string>();
   private readonly resultWaiters = new Map<string, (() => void)[]>();
+  /** The message stream each call was made in (its `parent_tool_use_id`, `''` for the main thread), from the SDK's live
+   *  blocks, until its message's `message_stop`. */
+  private readonly callScopes = new Map<string, string>();
+  /** The clocks of the waits on each call, by its id: each one restarts its wait. */
+  private readonly clocks = new Map<string, Set<() => void>>();
   private held: ({ stream: string; entry: TranscriptLine } | { message: TranscriptEntry })[] = [];
   private timer: ReturnType<typeof setTimeout> | undefined;
   private readonly coalesceMs: number;
+  private readonly timers: BarrierTimers;
   /** Entries this drive appended (for tests and diagnostics). */
   appended = 0;
 
@@ -103,6 +126,7 @@ export class JournalSessionStore {
     options: JournalSessionStoreOptions
   ) {
     this.coalesceMs = options.coalesceMs ?? 0;
+    this.timers = options.timers ?? SYSTEM_TIMERS;
     for (const r of options.records) {
       if (r.stream !== CLAUDE_STREAM && !r.stream.startsWith(`${CLAUDE_STREAM}/`)) continue;
       const entry = r.data as TranscriptLine | undefined;
@@ -210,27 +234,63 @@ export class JournalSessionStore {
 
   /**
    * Resolve once the assistant entry that made `toolUseId` is committed. The
-   * SDK delivers an entry about 100 ms after the CLI wrote it, and the tool
-   * runs right after the CLI wrote it, so this usually waits for the mirror
-   * first. Rejects after `timeoutMs` (the caller does not run the tool).
+   * SDK delivers a message's entries once the CLI has written the whole
+   * message, and the tool runs once the CLI wrote its block, so this usually
+   * waits for the mirror first. Rejects after `timeoutMs` (the caller does
+   * not run the tool), counted from the last stream event of the message that
+   * made the call (`heard`), or from now if none is heard.
    */
   async barrier(toolUseId: string, timeoutMs: number): Promise<void> {
-    if (!this.calls.has(toolUseId)) {
-      await new Promise<void>((resolve, reject) => {
-        const timer = setTimeout(() => {
-          const list = this.waiters.get(toolUseId)?.filter((w) => w !== done) ?? [];
-          if (list.length) this.waiters.set(toolUseId, list);
-          else this.waiters.delete(toolUseId);
-          reject(new Error(`the transcript entry for tool call ${toolUseId} did not reach the log within ${timeoutMs} ms`));
-        }, timeoutMs);
-        const done = () => {
-          clearTimeout(timer);
-          resolve();
-        };
-        this.waiters.set(toolUseId, [...(this.waiters.get(toolUseId) ?? []), done]);
-      });
-    }
+    if (!this.calls.has(toolUseId)) await this.wait(toolUseId, timeoutMs, this.waiters, () => new Error(`the transcript entry for tool call ${toolUseId} did not reach the log within ${timeoutMs} ms`));
     await this.flush();
+  }
+
+  /**
+   * One message `query()` yielded. An `assistant` message names the calls its block made, in its stream (the main
+   * thread's, or a subagent's by its `parent_tool_use_id`); it and each `stream_event` of that stream restart the clock
+   * of every wait on a call made in it. A message's last event is its `message_stop`: it restarts those clocks one last
+   * time and unties the message's calls from the stream, whose next message reuses its `parent_tool_use_id`. So a call
+   * whose line never lands is refused `timeoutMs` after its message ended, whatever streams after it, and a stream that
+   * stalls, `timeoutMs` after its last event.
+   */
+  heard(m: { type: string; parent_tool_use_id?: string | null; message?: unknown; event?: unknown }): void {
+    const scope = m.parent_tool_use_id ?? '';
+    if (m.type === 'assistant') for (const id of toolUseIds(m as TranscriptLine)) this.callScopes.set(id, scope);
+    else if (m.type !== 'stream_event') return;
+    for (const [id, restarts] of this.clocks) if (this.callScopes.get(id) === scope) for (const restart of [...restarts]) restart();
+    if ((m.event as { type?: unknown } | undefined)?.type === 'message_stop') for (const [id, of] of this.callScopes) if (of === scope) this.callScopes.delete(id);
+  }
+
+  /** Wait for `note` to wake a waiter on `id` in `waiters`; reject with `error()` once the clock runs out (`heard` restarts it). */
+  private wait(id: string, timeoutMs: number, waiters: Map<string, (() => void)[]>, error: () => Error): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      const clock = this.timers;
+      let timer: unknown;
+      const restart = () => {
+        clock.clearTimeout(timer);
+        timer = clock.setTimeout(expire, timeoutMs);
+      };
+      const stop = () => {
+        clock.clearTimeout(timer);
+        const restarts = this.clocks.get(id);
+        restarts?.delete(restart);
+        if (!restarts?.size) this.clocks.delete(id);
+      };
+      const done = () => {
+        stop();
+        resolve();
+      };
+      const expire = () => {
+        stop();
+        const list = waiters.get(id)?.filter((w) => w !== done) ?? [];
+        if (list.length) waiters.set(id, list);
+        else waiters.delete(id);
+        reject(error());
+      };
+      waiters.set(id, [...(waiters.get(id) ?? []), done]);
+      this.clocks.set(id, (this.clocks.get(id) ?? new Set()).add(restart));
+      restart();
+    });
   }
 
   private note(entry: TranscriptLine): void {
@@ -257,24 +317,11 @@ export class JournalSessionStore {
 
   /**
    * Resolve once the user entry that answers `toolUseId` (its `tool_result`) is committed: a call the CLI answered
-   * itself (a refusal) is told to the host only once the log holds the answer. Rejects after `timeoutMs`.
+   * itself (a refusal) is told to the host only once the log holds the answer. Rejects after `timeoutMs`, on the same
+   * clock as `barrier`: the answer is mirrored with the rest of its message, once that message ends.
    */
   async resultBarrier(toolUseId: string, timeoutMs: number): Promise<void> {
-    if (!this.results.has(toolUseId)) {
-      await new Promise<void>((resolve, reject) => {
-        const timer = setTimeout(() => {
-          const list = this.resultWaiters.get(toolUseId)?.filter((w) => w !== done) ?? [];
-          if (list.length) this.resultWaiters.set(toolUseId, list);
-          else this.resultWaiters.delete(toolUseId);
-          reject(new Error(`the transcript entry answering tool call ${toolUseId} did not reach the log within ${timeoutMs} ms`));
-        }, timeoutMs);
-        const done = () => {
-          clearTimeout(timer);
-          resolve();
-        };
-        this.resultWaiters.set(toolUseId, [...(this.resultWaiters.get(toolUseId) ?? []), done]);
-      });
-    }
+    if (!this.results.has(toolUseId)) await this.wait(toolUseId, timeoutMs, this.resultWaiters, () => new Error(`the transcript entry answering tool call ${toolUseId} did not reach the log within ${timeoutMs} ms`));
     await this.flush();
   }
 }

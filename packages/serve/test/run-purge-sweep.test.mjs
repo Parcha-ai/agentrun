@@ -168,8 +168,13 @@ test(`a purged run leaves no copy of what it was given or did (${STORE}): one se
   const draft = `Draft of ${word}`;
   const agentAnswer = `Kept ${word}.`;
   const bar = { compile_after: 2, agree_min: 0.9, alone_min: 0.5, attempt: 1 };
+  // Its grade's expected answer, the sentinel a key of it and in its value, written over the agent's answer (a JSON
+  // object here): the check judges the draft against that corrected answer whole.
+  const expected = { [word]: `It is ${word}.` };
+  const agentJson = JSON.stringify({ note: agentAnswer });
+  const corrected = JSON.stringify({ note: agentAnswer, ...expected });
   const rows = [
-    { of: gone, input: `Keep ${word} everywhere.`, agent: agentAnswer, outcome: "answered", answer: draft, compared: { same: false, grader: "faux-fast", differs_on: `whether it says ${word}`, pair: answersPair(draft, agentAnswer) } },
+    { of: gone, input: `Keep ${word} everywhere.`, agent: agentJson, outcome: "answered", answer: draft, correct: false, expected, compared: { same: false, grader: "faux-fast", differs_on: `whether it says ${word}`, pair: answersPair(draft, corrected) } },
     { of: kept.body.run_id, input: "What is six times seven?", agent: "The answer is 42.", outcome: "answered", answer: "The answer is 42." },
   ];
   const decided = await decideCheck({ store, agentId: "calc", log: () => {}, shown: async () => ({ text: (text) => text }) }, "flow", "d-check", bar, { rows, cost: 0.02, outcomes: { answered: 2, handed_back: 0, failed: 0, skipped_write: 0 }, unstarted: 0 }, (was) => was === undefined, {});
@@ -183,7 +188,7 @@ test(`a purged run leaves no copy of what it was given or did (${STORE}): one se
   // A connected agent's check still collecting native turns, which disagreed on it (runner/promotion.ts sdkCheckTurn).
   const collecting = {
     workflow: "turns", digest: "d-turns", at: new Date().toISOString(), decided: "replaying", via: "sdk", replay_id: "turns-check", reason: "Waiting for the next native turn of the connected agent that it takes.",
-    check: { ...bar, turns: { n: 1, agreed: 0, alone: 1, of: [gone], outcomes: { answered: 1, handed_back: 0, failed: 0, skipped_write: 0 }, disagreements: [{ run: gone, input: `Keep ${word} everywhere.`, agent: agentAnswer, draft }] } },
+    check: { ...bar, turns: { n: 1, agreed: 0, alone: 1, agent_agreed: 1, fields: { answer: { agent: { n: 1, workflow_right: 0, agent_right: 1 } } }, of: [gone], outcomes: { answered: 1, handed_back: 0, failed: 0, skipped_write: 0 }, disagreements: [{ run: gone, input: `Keep ${word} everywhere.`, agent: agentAnswer, draft }] } },
   };
   await recordPromotion(store.settings, "calc", collecting, () => true);
   // Its kept learning: what its learning turn asked and what it proposed.
@@ -223,8 +228,9 @@ test(`a purged run leaves no copy of what it was given or did (${STORE}): one se
   const { promotions } = (await api("GET", "/agents/calc/learning/promotions")).body;
   const [check, audit] = ["d-check", "d-audit"].map((digest) => promotions.find((one) => one.digest === digest));
   assert.deepEqual([check?.decided, check?.check.n, check?.check.agreed, check?.check.alone, check?.check.of], ["hold", 2, 1, 2, [gone, kept.body.run_id]], `the check's decision and numbers are kept: ${JSON.stringify(check)}`);
-  assert.deepEqual(check.check.disagreements, [{ run: gone, input: "", agent: null, draft: "" }], "its disagreement names the run still, its content blanked");
-  assert.match(check.reason, /reached a different decision from the agent's on 1 of 2;/, "its reason keeps its numbers, the grader's words gone");
+  assert.deepEqual(check.check.disagreements, [{ run: gone, input: "", agent: null, draft: "", fields: ["answer"], expected: [{ field: "answer", known: "grade", value: "" }] }], "its disagreement names the run, the field it had wrong and where its known answer came from still, its content and that answer blanked");
+  assert.deepEqual(Object.keys(check.check.fields), ["answer"], "no field is named from its grade's keys");
+  assert.match(check.reason, /answer: 0 of 1 right against the grades' expected answers \(0\.0%, the bar 90\.0%\).*; 1 of 1 said what the agent said/, "its reason keeps its numbers, the grade's answer and the grader's words gone");
   assert.deepEqual([audit?.decided, audit?.audit.rows, audit?.audit.disagreements], ["hold", 1, [{ run: shadowRunId(gone), served: gone, input: "", agent: null, draft: null }]], `the audit's hold keeps its numbers and run ids: ${JSON.stringify(audit)}`);
   const turns = promotions.find((one) => one.digest === "d-turns")?.check.turns;
   assert.deepEqual([turns?.n, turns?.agreed, turns?.alone, turns?.of, turns?.disagreements], [1, 0, 1, [gone], [{ run: gone, input: "", agent: null, draft: "" }]], `the turns collected keep their numbers and run ids: ${JSON.stringify(turns)}`);

@@ -139,9 +139,9 @@ Each `evals/<case>/` is one test of the package's agent. No eval runs on the ser
   (rewritten at the session's model proxy, so a claude-agent case on a person's Claude login keeps the real date: run it
   on the provider route), and each `llm` grader is told it, so a rubric can say "the run's date". A tool that reads the
   machine's clock (a shell's `date`, a browser's page) and another harness CLI's own date (Codex adds its own to each
-  turn) still read the real one. A fixture case whose prompt or
-  pages carry dates sets `now:`, else it drifts a day each day it is run. Only the eval's own server honours it: a case with `now` refuses
-  `--server`. Without it, the real clock.
+  turn) still read the real one. A fixture case whose prompt or pages carry dates sets `now:`, else it drifts a day each
+  day it is run. Only the eval's own server honours it: a case with `now` refuses `--server`. Without it, the real
+  clock.
 - `email: fixtures/mailbox.json`, a fixture file in the case: each run gets a fake mail account of its own, seeded from
   it and saved as the server's email account (plaintext, on this machine's loopback), closed after the run, so no run
   reads real mail or shares another's mailbox. The fixture:
@@ -266,8 +266,11 @@ Each `evals/<case>/` is one test of the package's agent. No eval runs on the ser
   - `llm`: the body is the rubric a blind grader applies to the answer (or to `target`, one field of the answer's JSON), with the run's tool calls (each with its arguments and the head of its result) and the fake MCP servers' calls beside it, so a rubric can check what the run did, not only what it said.
   - `regex`: `pattern` over the answer (or `target`), with `flags` and `expect: match` (the default) or `no_match`.
   - `tool_used`: `tool` (or `tools`, a list), `expect: called` (the default) or `not_called`, and optionally `args` (the
-    arguments a call must carry) and one of `count` (exactly that many matching calls) or `at_least` (that many or more,
-    so a run that searches once more than the case needs still passes).
+    arguments a call must carry) and either `count` (exactly that many matching calls) or bounds: `at_least` (that many
+    or more, so a run that searches once more than the case needs still passes), `at_most` (that many or fewer, and at
+    least one), or both (`at_least: 3` with `at_most: 4` passes on 3 or 4 calls). `at_least` and `at_most` are 1 or more and mean
+    `expect: called`; a grader that gives either beside `count` or `expect: not_called`, or an `at_least` above its
+    `at_most`, is refused.
   - `file_exists`: `path` in the run's work folder.
   - `mailbox`, on an `email` case: `message_id` is `in` a mailbox (or, on gmail, under a label) after the run, and in
     none of `not_in` (a list); `INBOX`, `Drafts` and `Sent` name the account's own on either layout. `in: INBOX` is

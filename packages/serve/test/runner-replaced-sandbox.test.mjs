@@ -98,7 +98,10 @@ function sandboxes() {
 
 async function opened(t, body = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-replaced-sandbox-"));
-  const server = await openSqliteStore({ dataDir: dir, role: "server" });
+  // The keep's end is stamped and judged on the store's clock, so the test moves the stores' clock and the runner's together.
+  const clock = { offset: 0 };
+  const now = () => Date.now() + clock.offset;
+  const server = await openSqliteStore({ dataDir: dir, role: "server", now });
   const stores = [server];
   const runners = [];
   t.after(async () => {
@@ -113,11 +116,10 @@ async function opened(t, body = {}) {
   await server.settings.put("approvers", { approvers: true });
   await server.flush?.();
   const docker = sandboxes();
-  const clock = { offset: 0 };
-  const computerDeps = { kinds: KINDS, providers: { docker: () => docker.provider }, spec: () => ({ image: "agentrun/computer:test", lifetimeMs: 60_000, network: "none" }), check: { readBackOf }, now: () => Date.now() + clock.offset };
+  const computerDeps = { kinds: KINDS, providers: { docker: () => docker.provider }, spec: () => ({ image: "agentrun/computer:test", lifetimeMs: 60_000, network: "none" }), check: { readBackOf }, now };
   /** A runner named `name` on its own store connection, its model `fetch`. */
   const start = async (name, fetch) => {
-    const store = await openSqliteStore({ dataDir: dir, role: "runner" });
+    const store = await openSqliteStore({ dataDir: dir, role: "runner", now });
     stores.push(store);
     const route = { model: "claude-sonnet-5.5", provider: { api: "anthropic-messages", origin: "https://route.invalid", credential: () => "not-a-secret" }, fetch };
     const deps = { env: {}, data: dir, journal: (claim) => store.journal(claim), store, sealKey: SEAL_KEY, routeOf: async () => route, computerForClaim, computerDeps };

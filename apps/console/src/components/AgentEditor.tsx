@@ -28,7 +28,7 @@ import { CAP_NOTE, isPlanModel } from "@/lib/chatgpt";
 import type { McpServer } from "@/lib/mcp";
 import { isMonidName, monidFieldsOf, splitMonidWarnings } from "@/lib/monid";
 import { computerOfPlace, newAgentPlace, placeOf } from "@/lib/place";
-import { placeOfComputer } from "@/lib/computers";
+import { computerFields } from "@/lib/computers";
 import type { ComputerKindView } from "@/lib/v2";
 import type { Places } from "@/lib/place";
 import type { ToolSettings } from "@/lib/v2";
@@ -155,6 +155,8 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
   const [held, setHeld] = useState<string[]>([]);
   // On a new agent, picking another harness re-ticks that harness's tools, until a tool is changed by hand.
   const [toolsTouched, setToolsTouched] = useState(false);
+  // Whether the last computer picked was refused because no tools are listed yet (computerFields answered null).
+  const [toolsUnread, setToolsUnread] = useState(false);
   // The Tools step's filter box: it hides cards (built-in and MCP), never unticks one.
   const [toolQuery, setToolQuery] = useState("");
   // The server's tools can arrive after the form opens (capabilities answer late): a new agent's untouched tools follow.
@@ -408,14 +410,17 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
           {step === "computer" && !workflow && !starting && caps.computers && (
             <div className="space-y-8">
               {/* The computer picked, else the one saved, else the place the form starts on as a computer (the server's
-                  default for a new agent). A pick sets the place it is too, so a tool a box opens (bash) follows it. */}
+                  default for a new agent). A pick sets the place it is too, so a tool a box opens (bash) follows it. With no
+                tools listed yet (the capabilities not read, or their read failed), a pick for the runner can't tell which
+                tools to drop: it changes nothing and says so. */}
               <ComputerSetting kinds={caps.computers} value={f.computer ?? (d?.computer as AgentFields["computer"]) ?? computerOfPlace(f.place ?? { mode: "runner" })}
                 onChange={(computer) => {
-                  const place = placeOfComputer(computer);
-                  const sandboxOnly = new Set(caps.tools.filter((t) => t.sandbox_only).map((t) => t.name));
-                  set({ computer, place, ...(place.mode === "runner" ? { tools: (f.tools ?? []).filter((t) => !sandboxOnly.has(t)) } : {}) });
-                  leavePlace(place);
-                }} error={fieldError("computer") ?? fieldError("place")} warning={fieldWarning("computer") ?? fieldWarning("place")} />
+                  const fields = computerFields(computer, f.tools ?? [], caps.tools);
+                  setToolsUnread(!fields);
+                  if (!fields) return;
+                  set(fields);
+                  leavePlace(fields.place);
+                }} error={(toolsUnread ? "The server's tools haven't been read, so which of this agent's tools run only in a box is unknown: the computer was not changed. Try again, or reload the page if this stays." : undefined) ?? fieldError("computer") ?? fieldError("place")} warning={fieldWarning("computer") ?? fieldWarning("place")} />
             </div>
           )}
           {step === "computer" && !workflow && !starting && !caps.computers && caps.places && (

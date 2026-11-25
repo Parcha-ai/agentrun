@@ -273,13 +273,15 @@ export async function settled(api, runId, learns, deadline) {
  *  would run without that step's lesson, and read as learning that did not help. */
 export const unsettledStop = (result) => (result.learning_unsettled ? `the learning of step ${result.id} had not settled by its deadline (--run-timeout-s): no later step runs without its lesson` : null);
 
-/** Run `runId`'s whole timeline, page by page (next_after while has_more), as the template eval reads one: its rows by
- *  id (a page may reset the view or drop rows), in seq order. */
+/** Run `runId`'s whole timeline, page by page (next_after while has_more), as the template eval reads one: each page
+ *  with calls=whole (each call's arguments and output, tool_input and tool_result_text, which its graders read; a preview
+ *  page shows a call's input as one picked field, or nothing), its rows by id (a page may reset the view or drop rows),
+ *  in seq order. */
 export async function timelineRows(api, runId) {
   const view = new Map();
   let after = 0;
   for (;;) {
-    const page = ok("reading the timeline", await api("GET", `/runs/${runId}/timeline?after=${after}`)) ?? {};
+    const page = ok("reading the timeline", await api("GET", `/runs/${runId}/timeline?after=${after}&calls=whole&limit=${TE.CALLS_PAGE_ROWS}`)) ?? {};
     if (page.reset) view.clear();
     for (const id of page.drop ?? []) view.delete(id);
     for (const row of page.rows ?? []) view.set(String(row.id), row);
@@ -304,6 +306,15 @@ export async function gradeOne(ctx, grader, kase, record, servers, graded) {
   }
 }
 
+/** What one step's run left, for its graders, as the template eval's run record (TE.callRecordOf): its answer, its calls,
+ *  its calls on the fakes' tools that ran, and the fakes' own log whole, read only by a tool_used grader on a faked tool.
+ *  The fakes are saved under their toolkits' own names, so no call is renamed onto another server (callsOf's map is
+ *  empty; `servers` is the list of faked names, never a map). */
+export function recordOf({ view, rows, harness, servers, fakes, files }) {
+  const answer = typeof view.result?.final_answer === "string" ? view.result.final_answer : "";
+  return { answer, ...TE.callRecordOf(TE.callsOf(rows, harness, {}), servers, fakes), files };
+}
+
 /** One step's run graded by its case's graders, as the template eval grades one. */
 async function step(ctx, job, one, kase, agentId, harness, learns) {
   const { api, options } = ctx;
@@ -312,7 +323,7 @@ async function step(ctx, job, one, kase, agentId, harness, learns) {
   const { view, timedOut, learningUnsettled } = await settled(api, runId, learns, waitUntil(options));
   const rows = await timelineRows(api, runId);
   const servers = Object.keys(kase.mcp);
-  const record = { answer: typeof view.result?.final_answer === "string" ? view.result.final_answer : "", calls: TE.callsOf(rows, harness, servers), mcpCalls: ctx.fakes.flatMap((f) => f.calls.map((c) => ({ ...c }))), files: await filesOf(api, runId, kase) };
+  const record = recordOf({ view, rows, harness, servers, fakes: ctx.fakes, files: await filesOf(api, runId, kase) });
   for (const fake of ctx.fakes) fake.calls.length = 0;
   const graded = view.status === "completed";
   // The package's output schema, held as the template eval holds it: the server's own verdict on the run.

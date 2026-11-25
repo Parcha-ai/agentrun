@@ -217,6 +217,7 @@ export interface components {
       call_only?: boolean;
       meta?: boolean;
       sandbox_only?: boolean;
+      runner_only?: boolean;
       available: boolean;
       reason?: string;
       missing?: string[];
@@ -312,6 +313,10 @@ export interface components {
     learning_usd?: number | null;
     tools_usd?: number | null;
     all_in_usd?: number | null;
+    compile_usd?: number | null;
+    followup_usd?: number | null;
+    shadow_usd?: number | null;
+    share_usd?: number | null;
     degraded?: true;
     plan?: {
       requests: number;
@@ -634,6 +639,7 @@ export interface components {
       auth: ("none" | "bearer" | "headers" | "oauth" | "github_app" | "per_run")[];
       at_rest: "sealed";
       harnesses: string[];
+      composio_per_run: boolean;
     };
     tool_permissions?: boolean;
     webhooks?: {
@@ -1044,7 +1050,7 @@ export interface components {
       kind: "stopped";
     } | null;
     imported_from?: {
-      source: "claude-code" | "codex" | "pi";
+      source: "claude-code" | "codex" | "pi" | "opencode" | "copilot";
       session: string;
     } | null;
     trigger?: {
@@ -1296,7 +1302,7 @@ export interface components {
       kind: "stopped";
     } | null;
     imported_from?: {
-      source: "claude-code" | "codex" | "pi";
+      source: "claude-code" | "codex" | "pi" | "opencode" | "copilot";
       session: string;
     } | null;
     trigger?: {
@@ -2803,6 +2809,7 @@ export interface operations {
       machine: {
         folder: string;
         source: "CLAUDE_CONFIG_DIR" | "default";
+        credentials?: string;
       };
       sign_in?: {
         state: "waiting" | "signed_in" | "timed_out" | "failed" | "not_started";
@@ -2928,6 +2935,11 @@ export interface operations {
         cost_upper_bound: boolean;
         learning_usd: number | null;
         total_usd: number | null;
+        compile_usd?: number | null;
+        followup_usd?: number | null;
+        shadow_usd?: number | null;
+        share_usd?: number | null;
+        not_served?: "cost_stop" | "cut" | null;
       }[];
       total_runs: number;
       unknown_cost_runs: number;
@@ -3090,6 +3102,11 @@ export interface operations {
       listed_at: string;
       updated_at: string;
       secret?: components["SecretMeta"];
+      composio_account?: {
+        state: "connected" | "pending" | "expired" | "none" | "unknown";
+        labels?: string[];
+        checked_at: string;
+      };
     };
   };
   getModelGateway: {
@@ -3713,7 +3730,7 @@ export interface operations {
           unknown_cost_runs: number;
         }[];
         by_source: {
-          source: "live" | "claude-code" | "codex" | "pi";
+          source: "live" | "claude-code" | "codex" | "pi" | "opencode" | "copilot";
           runs: number;
           completed: number;
           needs_review: number;
@@ -4196,12 +4213,14 @@ export interface operations {
         sessions: number;
         requests: number;
         tokens: number;
+        sources: string[];
       }[];
       models: {
         model: string;
         requests: number;
         tokens: number;
         cost_usd: number;
+        unpriced_requests: number;
       }[];
       sources: {
         source: string;
@@ -4517,6 +4536,17 @@ export interface operations {
       }[];
     };
   };
+  listComposioToolkits: {
+    body: {
+      api_key: string;
+    };
+    answer: {
+      toolkits: {
+        slug: string;
+        name: string;
+      }[];
+    };
+  };
   listComposioTools: {
     body: {
       api_key: string;
@@ -4596,6 +4626,8 @@ export interface operations {
         online: boolean;
         held_by_run: string | null;
         held_until: string | null;
+        held_on: string | null;
+        hold_note: string | null;
         pairing: string;
         created_at: string;
         seen_at: string | null;
@@ -4697,7 +4729,7 @@ export interface operations {
         ready: boolean;
         reenter: {
           name: string;
-          why: "recipe_changed" | "seal_key_changed" | "file_unreadable";
+          why: "recipe_changed" | "not_bound" | "seal_key_changed" | "file_unreadable";
         }[];
       }[];
     };
@@ -4801,6 +4833,29 @@ export interface operations {
           n?: number;
           agreed?: number;
           alone?: number;
+          agent_agreed?: number;
+          joint?: boolean;
+          fields?: Record<string, {
+            n: number;
+            workflow_right: number;
+            agent_right: number;
+            known: "grade" | "agent";
+            pass: boolean;
+            reason: string;
+            by: {
+              grade?: {
+                n: number;
+                workflow_right: number;
+                agent_right: number;
+              };
+              agent?: {
+                n: number;
+                workflow_right: number;
+                agent_right: number;
+              };
+            };
+            unjudged?: number;
+          }>;
           of?: string[];
           cost_usd?: number | null;
           outcomes?: {
@@ -4823,6 +4878,12 @@ export interface operations {
             escalated?: string;
             failed?: true;
             differs_on?: string;
+            fields?: string[];
+            expected?: {
+              field: string;
+              known: "grade" | "unknown" | "contradicts";
+              value?: string;
+            }[];
           }[];
           stopped?: true;
           released?: number;
@@ -4831,6 +4892,20 @@ export interface operations {
             n: number;
             agreed: number;
             alone: number;
+            agent_agreed: number;
+            fields: Record<string, {
+              grade?: {
+                n: number;
+                workflow_right: number;
+                agent_right: number;
+              };
+              agent?: {
+                n: number;
+                workflow_right: number;
+                agent_right: number;
+              };
+              unjudged?: number;
+            }>;
             of: string[];
             outcomes: {
               answered: number;
@@ -4846,6 +4921,12 @@ export interface operations {
               escalated?: string;
               failed?: true;
               differs_on?: string;
+              fields?: string[];
+              expected?: {
+                field: string;
+                known: "grade" | "unknown" | "contradicts";
+                value?: string;
+              }[];
             }[];
             fresh_reads?: number;
           };
@@ -4866,6 +4947,7 @@ export interface operations {
             agent: string | null;
             draft: string | null;
             graded?: true;
+            expected?: string;
           }[];
           stopped?: true;
         };
@@ -4912,6 +4994,29 @@ export interface operations {
             n?: number;
             agreed?: number;
             alone?: number;
+            agent_agreed?: number;
+            joint?: boolean;
+            fields?: Record<string, {
+              n: number;
+              workflow_right: number;
+              agent_right: number;
+              known: "grade" | "agent";
+              pass: boolean;
+              reason: string;
+              by: {
+                grade?: {
+                  n: number;
+                  workflow_right: number;
+                  agent_right: number;
+                };
+                agent?: {
+                  n: number;
+                  workflow_right: number;
+                  agent_right: number;
+                };
+              };
+              unjudged?: number;
+            }>;
             of?: string[];
             cost_usd?: number | null;
             outcomes?: {
@@ -4934,6 +5039,12 @@ export interface operations {
               escalated?: string;
               failed?: true;
               differs_on?: string;
+              fields?: string[];
+              expected?: {
+                field: string;
+                known: "grade" | "unknown" | "contradicts";
+                value?: string;
+              }[];
             }[];
             stopped?: true;
             released?: number;
@@ -4942,6 +5053,20 @@ export interface operations {
               n: number;
               agreed: number;
               alone: number;
+              agent_agreed: number;
+              fields: Record<string, {
+                grade?: {
+                  n: number;
+                  workflow_right: number;
+                  agent_right: number;
+                };
+                agent?: {
+                  n: number;
+                  workflow_right: number;
+                  agent_right: number;
+                };
+                unjudged?: number;
+              }>;
               of: string[];
               outcomes: {
                 answered: number;
@@ -4957,6 +5082,12 @@ export interface operations {
                 escalated?: string;
                 failed?: true;
                 differs_on?: string;
+                fields?: string[];
+                expected?: {
+                  field: string;
+                  known: "grade" | "unknown" | "contradicts";
+                  value?: string;
+                }[];
               }[];
               fresh_reads?: number;
             };
@@ -5039,6 +5170,11 @@ export interface operations {
         listed_at: string;
         updated_at: string;
         secret?: components["SecretMeta"];
+        composio_account?: {
+          state: "connected" | "pending" | "expired" | "none" | "unknown";
+          labels?: string[];
+          checked_at: string;
+        };
       }[];
     };
   };
@@ -6110,6 +6246,11 @@ export interface operations {
         listed_at: string;
         updated_at: string;
         secret?: components["SecretMeta"];
+        composio_account?: {
+          state: "connected" | "pending" | "expired" | "none" | "unknown";
+          labels?: string[];
+          checked_at: string;
+        };
       };
     };
   };
@@ -6497,6 +6638,11 @@ export interface operations {
         listed_at: string;
         updated_at: string;
         secret?: components["SecretMeta"];
+        composio_account?: {
+          state: "connected" | "pending" | "expired" | "none" | "unknown";
+          labels?: string[];
+          checked_at: string;
+        };
       };
       connect_url?: string;
       not_served?: string[];
@@ -6641,6 +6787,11 @@ export interface operations {
       listed_at: string;
       updated_at: string;
       secret?: components["SecretMeta"];
+      composio_account?: {
+        state: "connected" | "pending" | "expired" | "none" | "unknown";
+        labels?: string[];
+        checked_at: string;
+      };
       composio?: {
         removed: boolean;
         note: string;
@@ -6890,6 +7041,7 @@ export interface operations {
       machine: {
         folder: string;
         source: "CLAUDE_CONFIG_DIR" | "default";
+        credentials?: string;
       };
       sign_in?: {
         state: "waiting" | "signed_in" | "timed_out" | "failed" | "not_started";
@@ -7146,6 +7298,7 @@ export interface operations {
       machine: {
         folder: string;
         source: "CLAUDE_CONFIG_DIR" | "default";
+        credentials?: string;
       };
       sign_in?: {
         state: "waiting" | "signed_in" | "timed_out" | "failed" | "not_started";
@@ -7179,6 +7332,7 @@ export interface operations {
       machine: {
         folder: string;
         source: "CLAUDE_CONFIG_DIR" | "default";
+        credentials?: string;
       };
       sign_in?: {
         state: "waiting" | "signed_in" | "timed_out" | "failed" | "not_started";

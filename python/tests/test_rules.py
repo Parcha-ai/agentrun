@@ -208,7 +208,7 @@ class Rules(unittest.TestCase):
             assert isinstance(missing, AgentRunAuthError)
             self.assertEqual(missing.reason, "no_token", "an empty AGENTRUN_TOKEN is no key")
 
-    def test_agentrun_token_goes_only_to_a_server_on_this_machine_and_any_other_base_a_lookalike_host_or_a_loopback_name_behind_a_user_part_among_them_takes_agentrun_api_key_or_api_key_and_with_neither_is_refused_before_any_request(self) -> None:
+    def test_agentrun_token_goes_only_to_a_loopback_host(self) -> None:
         server = Listener(self)
         with mock.patch.dict(os.environ, {"AGENTRUN_TOKEN": KEY}):
             os.environ.pop("AGENTRUN_API_KEY", None)
