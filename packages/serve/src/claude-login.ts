@@ -15,7 +15,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { accessSync, chmodSync, closeSync, constants, existsSync, fstatSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync, readSync, realpathSync, renameSync, type RmOptions, rmSync, writeFileSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
-import { delimiter, dirname, isAbsolute, join } from "node:path";
+import { basename, delimiter, dirname, isAbsolute, join } from "node:path";
 import type { ClaudeAgentLogin, ClaudeLoginStatus, ClaudeLoginToken } from "@parcha/agentrun-harness-claude";
 import { facts as claudeFacts, loginRefresh } from "@parcha/agentrun-harness-claude/facts";
 import { registerSecretPage, registerSecretWrite } from "./secret-writes.js";
@@ -864,9 +864,11 @@ export async function signOutClaudeLogin(deps: ClaudeLoginDeps): Promise<ClaudeL
           signedOut = false;
           cliFailed = error instanceof Error ? error.message : String(error);
         }
+        // The older lock sits beside the folder in the data folder's real path. The folder's own real path is never
+        // followed: a link swapped in during the CLI's await would lead the lock's removal outside the data folder.
         let beside = dir;
         try {
-          beside = realpathSync(dir);
+          beside = join(realpathSync(dirname(dir)), basename(dir));
         } catch {
           // The folder as named.
         }
