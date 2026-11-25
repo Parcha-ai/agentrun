@@ -248,13 +248,14 @@ function inPieces(text: string, secrets: readonly string[], enough = Number.POSI
 /** text from `from` on, as far as `count` characters the matcher sees (all of it, if it holds fewer), each run of
  *  whitespace in it one space. The matcher reads "+" as a space and decodes percent-encoded bytes, JSON's escapes (one
  *  level and two, as the JSON view reads them) and HTML's character references (named and numeric), so a "+", an
- *  encoded byte, an escape and a reference that decode to whitespace count no more than whitespace does, and any other escape counts as what the view keeps of the character it decodes
- *  to. A character that renders as nothing (a zero-width space, a soft hyphen) or a combining mark counts as nothing
- *  too: the views drop it. So does a quote or JSON's punctuation ("{", "}", "[", "]", ",", ":"), which the join view
- *  drops between a text's strings, and, with `fold` (a held value folds: learn/secrets.ts foldsHeld), a separator ("-",
- *  "_", ":", "."), which the fold view drops. Padding of any of them never hides the rest of a value split before it.
- *  Undefined, so the caller withholds the text, when that takes more than a piece of text (a run of whitespace counted
- *  as one): no redaction pass reads more than a piece. */
+ *  encoded byte, an escape and a reference that decode to whitespace count no more than whitespace does, and any other
+ *  escape counts as what the view keeps of the character it decodes to. A character that renders as nothing (a
+ *  zero-width space, a soft hyphen) or a combining mark counts as nothing too: the views drop it. So does a quote, an
+ *  apostrophe or JSON's punctuation ("{", "}", "[", "]", ",", ":"), which the join views drop between a text's strings,
+ *  and, with `fold` (a held value folds: learn/secrets.ts foldsHeld), a separator ("-", "_", ":", "."), which the fold
+ *  view drops. Padding of any of them never hides the rest of a value split before it. Undefined, so the caller
+ *  withholds the text, when that takes more than a piece of text (a run of whitespace counted as one): no redaction
+ *  pass reads more than a piece. */
 function peek(text: string, from: number, count: number, fold: boolean): string | undefined {
   const read = visible(text, from, count, text.length, fold);
   return read.span > ANSWER_PIECE ? undefined : read.parts.join("");
@@ -327,8 +328,9 @@ const HIGH = (char: string): boolean => char.length === 1 && char.charCodeAt(0) 
 const LOW = (char: string): boolean => char.length === 1 && char.charCodeAt(0) >= 0xdc00 && char.charCodeAt(0) <= 0xdfff;
 const SPACES = /\s+/y;
 const HEX_PAIR = /^[0-9A-Fa-f]{2}$/;
-/** What every view drops between a text's strings: a quote and JSON's punctuation (the join view). */
-const JOIN_DROPS = new Set(['"', "{", "}", "[", "]", ",", ":"]);
+/** What every view drops between a text's strings: a quote, an apostrophe (the join of single-quoted strings) and JSON's
+ *  punctuation (the join view). */
+const JOIN_DROPS = new Set(['"', "'", "{", "}", "[", "]", ",", ":"]);
 /** What the fold view drops: the separators of a hex identifier. */
 const FOLD_DROPS = new Set(["-", "_", ":", "."]);
 /** How many characters the views keep of `chars` at the least (peek): squeezed, less each the join view drops, and,

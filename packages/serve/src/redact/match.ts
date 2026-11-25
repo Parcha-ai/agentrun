@@ -911,23 +911,25 @@ const ENTITY: Decoder = {
 
 /** What a text holds that a view decodes or joins, each found by one read of the text (familiesOf): a percent-encoded
  *  byte, one of JSON's escapes, an escaped quote (at either level, or as its "\u" escape), an HTML character reference's
- *  start (a numeric one's "&#", or a named one of NAMED whole), a "+", a quote, an escaped backslash (or its "\u"
- *  escape: where a second level of JSON's escapes can start). */
-type Families = { percent: boolean; escape: boolean; quoteEscape: boolean; entity: boolean; plus: boolean; quote: boolean; deep: boolean };
+ *  start (a numeric one's "&#", or a named one of NAMED whole), a "+", a quote, an apostrophe, an escaped backslash (or
+ *  its "\u" escape: where a second level of JSON's escapes can start). */
+type Families = { percent: boolean; escape: boolean; quoteEscape: boolean; entity: boolean; plus: boolean; quote: boolean; apostrophe: boolean; deep: boolean };
 const PERCENT_BYTE = /%[0-9a-fA-F]{2}/;
 const JSON_ESCAPED = /\\(?:u[0-9a-fA-F]{4}|["\\/bfnrt])/;
 const QUOTE_ESCAPED = /\\"|\\u00[2]2/;
 const BACKSLASH_ESCAPED = /\\\\|\\u005[cC]/;
 const ENTITY_START = /&(?:#|(?:amp|lt|gt|quot|apos|nbsp|AMP|LT|GT|QUOT);)/;
 function familiesOf(text: string): Families {
-  // Seven reads of the text, each to its first find at most.
-  scanned.chars += 7 * text.length;
-  return { percent: PERCENT_BYTE.test(text), escape: JSON_ESCAPED.test(text), quoteEscape: QUOTE_ESCAPED.test(text), entity: ENTITY_START.test(text), plus: text.includes("+"), quote: text.includes('"'), deep: BACKSLASH_ESCAPED.test(text) };
+  // Eight reads of the text, each to its first find at most.
+  scanned.chars += 8 * text.length;
+  return { percent: PERCENT_BYTE.test(text), escape: JSON_ESCAPED.test(text), quoteEscape: QUOTE_ESCAPED.test(text), entity: ENTITY_START.test(text), plus: text.includes("+"), quote: text.includes('"'), apostrophe: text.includes("'"), deep: BACKSLASH_ESCAPED.test(text) };
 }
 
 /** Which join of a JSON text's strings a view reads (joinOf): `nested`, each string's contents, a value's read again for
- *  the strings written in it (JSON in a string); `strings`, each string's contents whole, as JSON.parse gives them. */
-type JoinKind = "nested" | "strings";
+ *  the strings written in it (JSON in a string); `strings`, each string's contents whole, as JSON.parse gives them;
+ *  `quoted`, as `strings`, with a string opened by an apostrophe too and closed by the next one (a Python repr's
+ *  {'alice': 'secretpw'}). */
+type JoinKind = "nested" | "strings" | "quoted";
 /** A view the whole-text check reads: the text decoded by `decoders`, then squeezed (viewOf), read only where `when`
  *  says the text holds what a decoder decodes (familiesOf). `special`: where viewOf stops to do more than copy. `join`:
  *  the view reads that join of the text's JSON strings (joinOf) in place of the text. */
@@ -958,7 +960,10 @@ const viewSpec = (when: (has: Families) => boolean, decoders: readonly Decoder[]
  *    escaped quote a quote, so a held value with a quote of its own reads whole across two strings; the same
  *    percent-decoded, and with "+" as a space (a "+" after a held value's head in one string and its rest in the next);
  *    and JSON's escapes decoded twice, an escaped quote a quote (only where the text has an escaped backslash: otherwise
- *    it reads as the first). Each is read only where the text holds what it decodes.
+ *    it reads as the first). Each is read only where the text holds what it decodes;
+ *  - for a text with an apostrophe in it, its strings joined whole with an apostrophe opening one too (a Python repr's
+ *    single-quoted dict), one level of JSON's escapes decoded. A view of its own, so the views before it read an
+ *    apostrophe outside a "..." string as they did.
  *  The decoders of a view decode in one pass: each reads at its own trigger character, so a view costs one read of the
  *  text whatever it decodes. Each view is lowered for hexes and flattened for folded identifiers in holds. */
 const VIEWS: readonly ViewSpec[] = [
@@ -975,6 +980,7 @@ const VIEWS: readonly ViewSpec[] = [
   viewSpec((has) => has.quote && has.percent, [PERCENT, JSON_ESCAPE_ONCE], "strings"),
   viewSpec((has) => has.quote && has.plus, [PERCENT, PLUS, JSON_ESCAPE_ONCE], "strings"),
   viewSpec((has) => has.quote && has.deep, [JSON_ESCAPE_QUOTED], "strings"),
+  viewSpec((has) => has.apostrophe, [JSON_ESCAPE_ONCE], "quoted"),
 ];
 
 // ---- The join view: a JSON text's strings read joined, so a held value split across two of them reads whole.
@@ -1009,10 +1015,11 @@ function unitAt(text: string, at: number, to: number, level: 0 | 1): { char: str
  *  (a string the next character after whitespace of which is ":") whole; a value's, at level 0 with `nested`, read again
  *  at level 1 for the strings written in it (JSON in a string), each of its parts added in its place, and else whole; and
  *  each run of characters outside a string that are neither whitespace nor JSON's punctuation. A string with no closing
- *  quote runs to `to`. Any text is read so, JSON or not: a quote in prose opens a string as one in JSON does. Each
- *  character is read at most three times (at level 0, at level 1, and in the whitespace after a string looking for a
- *  ":"). */
-function partsOf(text: string, from: number, to: number, level: 0 | 1, out: Part[], nested = true): void {
+ *  quote runs to `to`. Any text is read so, JSON or not: a quote in prose opens a string as one in JSON does. With
+ *  `quoted`, an apostrophe opens a string too, closed by the next apostrophe (a quote inside it is text, as an
+ *  apostrophe inside a "..." string is). Each character is read at most three times (at level 0, at level 1, and in the
+ *  whitespace after a string looking for a ":"). */
+function partsOf(text: string, from: number, to: number, level: 0 | 1, out: Part[], kind: JoinKind = "nested"): void {
   let bare = -1;
   const endBare = (end: number) => {
     if (bare >= 0) out.push({ from: bare, to: end, name: false });
@@ -1021,7 +1028,7 @@ function partsOf(text: string, from: number, to: number, level: 0 | 1, out: Part
   for (let at = from; at < to; ) {
     const { char, end } = unitAt(text, at, to, level);
     const code = char.charCodeAt(0);
-    if (char !== '"') {
+    if (char !== '"' && !(kind === "quoted" && char === "'")) {
       if (isSpace(code) || STRUCTURE(code)) endBare(at);
       else if (bare < 0) bare = at;
       at = end;
@@ -1032,7 +1039,7 @@ function partsOf(text: string, from: number, to: number, level: 0 | 1, out: Part
     let close = end;
     while (close < to) {
       const inner = unitAt(text, close, to, level);
-      if (inner.char === '"') break;
+      if (inner.char === char) break;
       close = inner.char === "\\" && inner.end < to ? unitAt(text, inner.end, to, level).end : inner.end;
     }
     const after = close < to ? unitAt(text, close, to, level).end : to;
@@ -1048,7 +1055,7 @@ function partsOf(text: string, from: number, to: number, level: 0 | 1, out: Part
       ahead = unit.end;
     }
     if (next === ":") out.push({ from: end, to: close, name: true });
-    else if (level === 0 && nested) partsOf(text, end, close, 1, out);
+    else if (level === 0 && kind === "nested") partsOf(text, end, close, 1, out);
     else out.push({ from: end, to: close, name: false });
     at = after;
   }
@@ -1067,7 +1074,7 @@ function partsOf(text: string, from: number, to: number, level: 0 | 1, out: Part
  *  join is the same for every view that reads it: holds builds each kind once per text. */
 function joinOf(text: string, kind: JoinKind, cuts?: readonly Span[]): { text: string; cuts?: Span[] } {
   const parts: Part[] = [];
-  partsOf(text, 0, text.length, 0, parts, kind === "nested");
+  partsOf(text, 0, text.length, 0, parts, kind);
   const pieces: string[] = [];
   const moved: Span[] = [];
   let length = 0;
