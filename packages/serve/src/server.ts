@@ -1835,8 +1835,29 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     };
   };
   // The refresh asked and not yet started: a request that asks for one meanwhile shares it, since its look at the
-  // folders comes after that request asked.
-  let asked: Promise<void> | undefined;
+  // folders comes after that request asked. It answers the hand-over it waited for (handed.n).
+  let asked: Promise<number> | undefined;
+  // How many times a request looks at the login's folders (loginNow) before it gives up on a login that keeps changing.
+  const LOGIN_ROUNDS = 3;
+  /** One look at the login's folders (loginNow), and the wait for the latest hand-over's reading after it: answers which
+   *  hand-over that was, once its reading has ended. */
+  const refreshOnce = (): Promise<number> => {
+    if (asked) return asked;
+    if (claudeSignIns.busy) log?.(logLine("claude_login_wait", { why: "queue" }));
+    asked = claudeSignIns
+      .serial(async () => {
+        asked = undefined;
+        const login = loginOf(await claudeLoginSetting(store.settings), data, base);
+        if (!isDeepStrictEqual(login, claudeLogin) || handed.failed) return { made: handOver(login, "refresh"), n: handed.n };
+        if (handed.out) log?.(logLine("claude_login_wait", { why: handed.why }));
+        return { made: handing, n: handed.n };
+      })
+      .then(async ({ made, n }) => {
+        await made;
+        return n;
+      });
+    return asked;
+  };
   /** The login runs here go on, as its folders are now (loginOf, one look at them), handed over where it differs from
    *  the one held. The held one is the start's or the last turn's, and a folder mended with a chmod since (or refused
    *  since) changes it with no turn: a run's check, a save's, a template's plan or apply (prepareApply) and capabilities
@@ -1849,21 +1870,20 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  reading overtakes it (keysChanged's latest probe stands). Every refresh then waits for the latest hand-over's
    *  reading, its own or another's (a turn's, or another refresh's). A refresh that finds the login as held, where the
    *  latest reading failed, hands it over again, so a failed reading is made again by the next request, never left. The
-   *  log says when a refresh waits: for its turn (why=queue), or for another's reading (why=refresh or why=turn). */
-  const loginNow = (): Promise<void> => {
-    if (loginOff !== undefined) return Promise.resolve();
-    if (asked) return asked;
-    if (claudeSignIns.busy) log?.(logLine("claude_login_wait", { why: "queue" }));
-    asked = claudeSignIns
-      .serial(async () => {
-        asked = undefined;
-        const login = loginOf(await claudeLoginSetting(store.settings), data, base);
-        if (!isDeepStrictEqual(login, claudeLogin) || handed.failed) return { made: handOver(login, "refresh") };
-        if (handed.out) log?.(logLine("claude_login_wait", { why: handed.why }));
-        return { made: handing };
-      })
-      .then(({ made }) => made);
-    return asked;
+   *  log says when a refresh waits: for its turn (why=queue), or for another's reading (why=refresh or why=turn).
+   *  A reading that ends is not always one the offers were made by: a later hand-over (a turn on or off asked meanwhile)
+   *  may have started a probe that dropped its own, or another's reading it waited for failed. So once its wait ends, a
+   *  request goes on only where the hand-over it waited for is still the latest and did not fail; else it looks again
+   *  (refreshOnce), which waits for the later one or hands a failed one over again. A reading its own hand-over started
+   *  that fails is answered to it. It looks at most LOGIN_ROUNDS times, then is refused (unavailable, retryable), so
+   *  turns that keep coming never hold it for ever. */
+  const loginNow = async (): Promise<void> => {
+    if (loginOff !== undefined) return;
+    for (let round = 1; ; round++) {
+      const n = await refreshOnce();
+      if (handed.n === n && !handed.failed) return;
+      if (round >= LOGIN_ROUNDS) throw new ApiError("unavailable", `Claude Code's login on this machine was handed over again, or the offers made from it failed, each time this request waited for them, ${LOGIN_ROUNDS} times: ask again.`);
+    }
   };
   // The boxes a place may name, read once from the computers runs execute on (place-offers.ts): AGENTRUN_BOXES lists
   // them, docker alone when it is not set; docker by its probe, daytona and modal by their providers' keys, read as a

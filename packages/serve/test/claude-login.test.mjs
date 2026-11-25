@@ -2218,6 +2218,111 @@ test("a refresh whose making of the offers again fails is redone by the next req
   assert.equal(offer.available, true, `claude-agent is offered once the failed making of the offers is redone: ${JSON.stringify(offer)}`);
 });
 
+// A refresh that finds the login unchanged waits for the latest hand-over's making of the offers, another refresh's
+// here. When that one fails, its failure is answered to its own request, and the waiting refresh must not take its end
+// for offers made from the login held: it hands the login over again, as the next request after a failed one does. The
+// first refresh's probe is held and throws once let go; the run's refresh is let go only after the log says it waits.
+const WAITED_FAILED_WHY = "a run whose refresh waited for another refresh's making of the offers, which failed, checked the offers made before it";
+test("a run asked while another refresh's making of the offers is still out, which then fails, makes them again itself: it is not refused for a key, and the log says it waited for a refresh's", { skip: process.platform === "win32" ? "no modes" : process.geteuid() === 0 ? "root may write anywhere" : false, timeout: 120_000 }, async (t) => {
+  const { api, folder, start, waits, whys } = await mendedLater(t);
+  chmodSync(folder, 0o700);
+  const probe = held.hold((env) => claudeLoginOf(env) !== undefined, new Error("the probe of the offers failed"));
+  t.after(() => probe.release());
+  const asking = api("GET", "/capabilities");
+  await probe.reached;
+  const running = start();
+  const first = await Promise.race([waits(1).then(() => "the run waited"), running.then(() => "the run answered")]);
+  probe.release();
+  const [failed, run] = await Promise.all([asking, running]);
+  assert.notEqual(failed.status, 200, `the capabilities whose refresh's making of the offers failed answered it: ${JSON.stringify(failed.body)}`);
+  assert.equal(run.status, 202, `${WAITED_FAILED_WHY}: ${JSON.stringify(run.body)}`);
+  assert.equal((await api("POST", `/runs/${run.body.run_id}/cancel`)).status < 300, true);
+  assert.equal(first, "the run waited", "the run answered before the probe of the offers the first refresh started was let go");
+  assert.deepEqual(whys, ["refresh"], "the run's wait was logged as one for a refresh's making of the offers");
+  assert.equal((await offerOf(api)).available, true, "claude-agent is offered once the run's refresh made the offers again");
+});
+
+/** Which login `env` carries, by its folder: `real` is the machine login's folder (its real path), else AgentRun's own. */
+const loginIn = (real) => ({
+  machine: (env) => claudeLoginOf(env)?.dir === real,
+  agentrun: (env) => claudeLoginOf(env) !== undefined && claudeLoginOf(env)?.dir !== real,
+});
+
+// A refresh's own making of the offers can end with no offers landed: a turn on asked meanwhile, at another place, starts
+// a probe of its own before the refresh's lands, and the refresh's is dropped. The request that asked the refresh must
+// then wait for that later hand-over's making of the offers too, not go on by the offers made before both. Here a
+// template's apply asks the refresh that finds the machine login's folder mended, and a turn on of AgentRun's own login
+// comes while its probe is held; each probe is held by the login its env names, and the refresh's is let go first. The
+// apply's harness is claude-agent only by offers made from a login. Once it waits again the log says so (why=turn), and
+// the test lets the turn on's probe go.
+const OVERTAKEN_WHY = "a template's apply whose refresh's making of the offers was overtaken by a turn-on's picked its harness by the offers made before both";
+test("a template's apply whose refresh's making of the offers is overtaken by a turn-on's waits for the turn-on's, and picks claude-agent by the offers made from the login held now", { skip: process.platform === "win32" ? "no modes" : process.geteuid() === 0 ? "root may write anywhere" : false, timeout: 120_000 }, async (t) => {
+  const templates = join(await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-login-templates-")), "templates");
+  t.after(() => rmSync(dirname(templates), { recursive: true, force: true }));
+  mkdirSync(join(templates, "on-plan"), { recursive: true });
+  writeFileSync(join(templates, "on-plan", "agent.md"), PICK_PACKAGE);
+  const { api, folder, waits, whys } = await mendedLater(t, { templates }, { OPENAI_API_KEY: "fake-test-key" });
+  chmodSync(folder, 0o700);
+  const at = loginIn(realpathSync(folder));
+  const refreshing = held.hold(at.machine);
+  t.after(() => refreshing.release());
+  const applying = api("POST", "/templates/on-plan/apply", {});
+  await refreshing.reached;
+  const turning = held.hold(at.agentrun);
+  t.after(() => turning.release());
+  const turningOn = api("PUT", "/settings/claude-login", { only_me: true, place: "agentrun" });
+  await turning.reached;
+  refreshing.release();
+  const first = await Promise.race([waits(1).then(() => "the apply waited"), applying.then(() => "the apply answered")]);
+  turning.release();
+  const [applied, on] = await Promise.all([applying, turningOn]);
+  assert.equal(on.status, 200, JSON.stringify(on.body));
+  assert.equal(applied.status, 201, `${OVERTAKEN_WHY}: ${JSON.stringify(applied.body)}`);
+  assert.equal((await api("GET", `/agents/${applied.body.agent_id}`)).body.definition?.harness, "claude-agent", OVERTAKEN_WHY);
+  assert.equal(first, "the apply waited", "the apply answered before the probe of the offers the turn-on started was let go");
+  assert.deepEqual(whys, ["turn"], "the apply's second wait was logged as one for a turn's making of the offers");
+});
+
+// Each time a refresh has waited, a later hand-over may have started meanwhile, and it waits again. A request does that
+// for at most LOGIN_ROUNDS looks at the folders (server.ts), then gives up in words, rather than wait for as long as
+// turns keep coming. Here a turn on, alternately at the machine's folder and at AgentRun's own, comes each time the run's
+// refresh says it waits, with its probe held, and then the probe before it is let go and dropped. Past the bound the
+// test stops turning, so a request with no bound ends on the next hand-over and is not refused.
+const LOGIN_ROUNDS = 3;
+const ROUNDS_WHY = "a run whose refresh found a later hand-over each time it had waited was not refused once it had looked at the folders LOGIN_ROUNDS times";
+test("a run whose refresh finds a later hand-over each time it has waited for one is refused in words after LOGIN_ROUNDS looks, not held for as long as turns keep coming", { skip: process.platform === "win32" ? "no modes" : process.geteuid() === 0 ? "root may write anywhere" : false, timeout: 120_000 }, async (t) => {
+  const { api, folder, start, waits, whys } = await mendedLater(t);
+  chmodSync(folder, 0o700);
+  assert.equal((await offerOf(api)).available, true, "claude-agent is offered on the mended login");
+  const at = loginIn(realpathSync(folder));
+  const turns = [];
+  const turnOn = async (place) => {
+    const hold = held.hold(at[place]);
+    t.after(() => hold.release());
+    turns.push(api("PUT", "/settings/claude-login", { only_me: true, place }));
+    await hold.reached;
+    return hold;
+  };
+  let hold = await turnOn("agentrun");
+  const running = start();
+  let waited = 0;
+  for (let i = 1; i <= LOGIN_ROUNDS + 2; i++) {
+    const first = await Promise.race([waits(i).then(() => "waited"), running.then(() => "answered")]);
+    if (first === "answered") break;
+    waited = i;
+    const next = await turnOn(i % 2 === 1 ? "machine" : "agentrun");
+    hold.release();
+    hold = next;
+  }
+  hold.release();
+  const run = await running;
+  for (const turn of await Promise.all(turns)) assert.equal(turn.status, 200, JSON.stringify(turn.body));
+  assert.equal(run.status, 503, `${ROUNDS_WHY}: ${JSON.stringify(run.body)}`);
+  assert.match(run.body.error.message, /Claude Code's login on this machine was handed over again, or the offers made from it failed, each time this request waited for them, 3 times: ask again/);
+  assert.equal(waited, LOGIN_ROUNDS, `the run waited once per look: ${JSON.stringify(whys)}`);
+  assert.deepEqual(whys, ["turn", "turn", "turn"], "each wait was logged as one for a turn's making of the offers");
+});
+
 // A template's plan and its apply pick the package's harness by the offers (the first of its list offered here, as a
 // model choice's is checked against them), as a run's check reads them. Right after a chmod mends the login's folder,
 // or refuses it again, they must look at the folders first, as a run, a save and capabilities do, not pick by the
