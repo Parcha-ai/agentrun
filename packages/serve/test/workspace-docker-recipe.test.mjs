@@ -36,7 +36,8 @@ async function dockerSandbox(t, env = {}, waits = []) {
   const sealKey = randomBytes(32);
   // The production builder, told only where the fake's daemon file and cache are; docker is the one first on PATH.
   const load = (id, options) => providerFor(id, { ...options, daemonPath: host.fake.daemonPath, daemonCache: host.fake.cache });
-  const { computerForClaim, computerDeps } = computerDepsFrom({ env, store, sealKey, load });
+  // The server's environment holds the PATH the fake is first on: the provider hands docker that PATH, never this process's.
+  const { computerForClaim, computerDeps } = computerDepsFrom({ env: { ...env, PATH: process.env.PATH }, store, sealKey, load });
   const claim = () => computerForClaim({ runId: "run-1", epoch: 1, computer: { kind: "sandbox", provider: "docker" } }, store, { ...computerDeps, mode: 1, workspace: localWorkspace(root), sealKey, onImageWait: (making, tag) => void waits.push([making, tag]) });
   return { host, claim };
 }

@@ -9,6 +9,9 @@ import test from "node:test";
 import * as computer from "../dist/index.js";
 import { container, fakeDocker, idOf, removal, report, valuesOf } from "./fake-docker.mjs";
 
+/** Each proxy variable `docker run` sets empty, so the docker CLI fills none in from config.json's proxies. */
+const NO_PROXY_ENV = ["HTTP_PROXY=", "http_proxy=", "HTTPS_PROXY=", "https_proxy=", "FTP_PROXY=", "ftp_proxy=", "NO_PROXY=", "no_proxy=", "ALL_PROXY=", "all_proxy="];
+
 const SPEC = { image: "debian:bookworm-slim", lifetimeMs: 600_000, network: "none" };
 let requests = 0;
 /** A create's context: a new request each time. */
@@ -87,7 +90,7 @@ test("create() binds the run folder read-write at /workspace after the daemon's 
 	assert.equal(result.ok, true, JSON.stringify(result));
 	const run = runOf(calls());
 	assert.deepEqual(valuesOf(run, "--mount"), [`type=bind,src=${bound},dst=/opt/agentrun/computerd,readonly`, `type=bind,src=${dir},dst=/workspace`]);
-	assert.deepEqual(valuesOf(run, "--env"), ["HOME=/work"]);
+	assert.deepEqual(valuesOf(run, "--env"), ["HOME=/work", ...NO_PROXY_ENV]);
 	assert.deepEqual(valuesOf(run, "--workdir"), ["/work"]);
 	assert.ok(!valuesOf(run, "--tmpfs").some((tmpfs) => tmpfs.startsWith("/workspace")), "no tmpfs over the run folder");
 	const plain = fakeDocker();
