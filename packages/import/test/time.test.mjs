@@ -125,3 +125,17 @@ test("a time with no offset is local to Date.parse, and is read so in a zone tha
   assert.notEqual(parsed("2025-06-15T12:00:00.000"), parsed("2025-06-15T12:00:00.000Z"), "the zone took");
   sameAsDateParse(["2025-06-15T12:00:00.000", "2025-06-15T12:00:00.0000", "2025-06-15T12:00:00", "2025-06-15T12:00", "2025-06-15T12:00:00.000Z"]);
 });
+
+test("a numeric time past what a Date holds (±8.64e15 ms) is no time, and a read that meets one still ends", async (t) => {
+  assert.equal(timeOf(8.64e15), 8.64e15);
+  assert.equal(timeOf(-8.64e15), -8.64e15);
+  for (const value of [8.64e15 + 1, -8.64e15 - 1, 1e17, 12345678901234567890, Number.MAX_VALUE]) assert.equal(timeOf(value), undefined, String(value));
+  const { READERS } = await import("../dist/index.js");
+  const { claudeAnswer, claudeFile, claudeUser, anthropicUsage, tempHome, writeJsonl } = await import("./fixtures.mjs");
+  const home = await tempHome(t);
+  const file = await writeJsonl(claudeFile(home), [{ ...claudeUser({ uuid: "u1", text: "Fixture prompt.", i: 0 }), timestamp: 1e17 }, claudeAnswer({ uuid: "a1", msg: "msg_1", req: "req_1", usage: anthropicUsage(10, 2), i: 1 })]);
+  for (const options of [{ turns: true }, { turns: false, totals: true }]) {
+    const { sessions } = await READERS["claude-code"].read({ file }, undefined, options);
+    assert.equal(sessions[0].session.startedAt, "2026-01-01T00:00:01.000Z", JSON.stringify(options));
+  }
+});
