@@ -1834,6 +1834,56 @@ test("a login saved on folders its server's user may not use reads `refused` in 
   assert.equal(own.body.refused, undefined, JSON.stringify(own.body));
 });
 
+// The server holds the login it found at its start (and at each turn on or off), and its runs' checks and claude-agent's
+// offer are made from it. A login kept while its folder is refused, then mended with a chmod, reads signed in in the
+// view, and must run too, with no restart and no turn off and on; one that is refused again must stop. Each change is
+// asked first of a different read (a run, then capabilities), so each read finds the login as its folder is now.
+test("a login kept at the start while its folder is refused runs once the folder is mended, with no restart: a run of an agent with no key is not refused, claude-agent is offered and the view reads signed in; refused again, the run is refused, the offer gone and the view refused", { skip: process.platform === "win32" ? "no modes" : process.geteuid() === 0 ? "root may write anywhere" : false, timeout: 120_000 }, async (t) => {
+  const folder = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-config-dir-"));
+  t.after(() => rmSync(folder, { recursive: true, force: true }));
+  const first = await signInServer(t, "sign", {}, { CLAUDE_CONFIG_DIR: folder });
+  assert.equal((await first.api("PUT", "/settings/claude-login", { only_me: true, place: "machine" })).status, 200);
+  assert.equal((await first.api("POST", "/settings/claude-login/login")).status, 200);
+  await until(() => existsSync(first.fake.ended), "the CLI's sign-in ended");
+  assert.equal((await signInSettled(first.api)).state, "signed_in");
+  assert.equal((await first.api("POST", "/agents", agent("planned", { harness: "claude-agent" }))).status, 201);
+  await first.stop();
+
+  chmodSync(folder, 0o775);
+  const { api } = await serve(t, { faux: undefined, harnesses: false, runner: false, data: first.data });
+  const open = /is open to writes by others than its owner/;
+  const kept = (await api("GET", "/settings/claude-login")).body;
+  assert.equal(kept.state, "refused", JSON.stringify(kept));
+  assert.match(kept.refused ?? "", open);
+  const start = () => api("POST", "/agents/planned/runs", { input: { content: "Say hi." } });
+  const refusedRun = await start();
+  assert.equal(refusedRun.status, 409, `refused at the start: ${JSON.stringify(refusedRun.body)}`);
+  assert.match(refusedRun.body.error.message, /claude-agent needs ANTHROPIC_API_KEY/);
+
+  // Mended: a run asked first, then capabilities, then the view.
+  chmodSync(folder, 0o700);
+  const run = await start();
+  assert.equal(run.status, 202, `a run of an agent with no key is not refused for want of the login once its folder is mended: ${JSON.stringify(run.body)}`);
+  assert.equal((await api("POST", `/runs/${run.body.run_id}/cancel`)).status < 300, true);
+  const offer = await offerOf(api);
+  assert.equal(offer.available, true, `claude-agent is offered on the mended login: ${JSON.stringify(offer)}`);
+  const mended = (await api("GET", "/settings/claude-login")).body;
+  assert.equal(mended.state, "signed_in", JSON.stringify(mended));
+  assert.equal(mended.refused, undefined, JSON.stringify(mended));
+
+  // Refused again: capabilities asked first, then a run, then the view.
+  chmodSync(folder, 0o775);
+  const gone = await offerOf(api);
+  assert.equal(gone.available, false, `claude-agent is no longer offered on a login refused since: ${JSON.stringify(gone)}`);
+  const again = await start();
+  assert.equal(again.status, 409, `a run on a login refused since is refused: ${JSON.stringify(again.body)}`);
+  assert.match(again.body.error.message, /claude-agent needs ANTHROPIC_API_KEY/);
+  const refused = (await api("GET", "/settings/claude-login")).body;
+  assert.equal(refused.state, "refused", JSON.stringify(refused));
+  assert.match(refused.refused ?? "", open);
+  chmodSync(folder, 0o700);
+});
+
 // A folder its group may write in (a home or a folder on a volume whose group is set for a pod, 2775, or one made under
 // a umask of 002, 0775) is refused, and a chmod mends it: a start keeps the setting, logs why, and turns nothing off.
 // One refused for the switch or for more than one owner is still turned off, as before.
