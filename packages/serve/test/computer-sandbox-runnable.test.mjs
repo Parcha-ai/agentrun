@@ -563,6 +563,40 @@ test("Mode 2: the same applies keep the runner, as before: no place, no tools, o
   assert.deepEqual(await madeOf(mode2, await mode2("POST", "/templates/two-tools/apply", { grants: ["mcp:fake/add"] })), [undefined, undefined, ["mcp:fake/add"]]);
 });
 
+// The apply's dry_run (its plan, which `agentrun deploy` prints and asks to confirm) makes the same check as the apply:
+// where the apply would be refused for want of a place, its plan is refused alike, so a preview never plans a create
+// that the apply then refuses.
+test("Mode 1 with no Docker: the dry_run of that apply is refused as the apply is, in the same field, reason and words, and plans no create; a package that names its tools plans its create", async (t) => {
+  const templates = await templatesOf(t, { "plain-reader": PLAIN, "no-tools": PLAIN.replace("name: plain-reader", "name: no-tools").replace("---\nAnswer", "tools: []\n---\nAnswer") });
+  twoToolPackage(templates, "two-tools", undefined, undefined, { bare: true });
+  const mode1 = await server(t, { archil: false, templates });
+  await fakeSaved(t, mode1);
+  for (const [name, body] of [["plain-reader", {}], ["two-tools", { grants: ["mcp:fake/add"] }]]) {
+    const planned = await mode1("POST", `/templates/${name}/apply`, { ...body, dry_run: true });
+    await refusedForPlace(mode1, planned);
+    assert.equal(planned.body.plan, undefined, `${name}: no plan`);
+    const applied = await mode1("POST", `/templates/${name}/apply`, body);
+    await refusedForPlace(mode1, applied);
+    const said = (answer) => [answer.body.error.code, answer.body.error.message, answer.body.error.fields];
+    assert.deepEqual(said(planned), said(applied), `${name}: the plan's refusal is the apply's`);
+  }
+  const named = await mode1("POST", "/templates/no-tools/apply", { dry_run: true });
+  assert.equal(named.status, 200, JSON.stringify(named.body));
+  assert.deepEqual([named.body.plan.action, named.body.plan.agent_id], ["create", null]);
+});
+
+test("the dry_run of that apply plans its create where Docker's box is here, and in Mode 2, as before: the apply then puts it in the box, or on the runner", async (t) => {
+  const templates = await templatesOf(t, { "plain-reader": PLAIN });
+  for (const [label, options, place] of [["docker", { archil: false, docker: true }, { mode: "sandbox", box: "docker" }], ["mode 2", { archil: true }, undefined]]) {
+    const api = await server(t, { ...options, templates });
+    const planned = await api("POST", "/templates/plain-reader/apply", { dry_run: true });
+    assert.equal(planned.status, 200, `${label}: ${JSON.stringify(planned.body)}`);
+    assert.deepEqual([planned.body.plan.action, planned.body.plan.agent_id], ["create", null], label);
+    const [made] = await madeOf(api, await api("POST", "/templates/plain-reader/apply", {}));
+    assert.deepEqual(made, place, label);
+  }
+});
+
 test("Mode 1 with no Docker: a package that names its tools ([] included) or its computer list applies as before, on the runner", async (t) => {
   const templates = await templatesOf(t, {
     "no-tools": PLAIN.replace("name: plain-reader", "name: no-tools").replace("---\nAnswer", "tools: []\n---\nAnswer"),

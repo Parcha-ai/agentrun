@@ -785,6 +785,24 @@ test("agentrun deploy of a package that names no tools and no computer, to a ser
   assert.equal(deployed.json().agent_change, "made");
 });
 
+test("agentrun deploy of that package stops at its preview: the target's dry_run refuses it in the words that name a box, so no plan is printed, no confirmation is asked and no apply is sent", { timeout: 120_000 }, async (t) => {
+  const { dir, env } = scratch();
+  const target = await serve(t, { runner: false });
+  const proxy = await recorder(t, target.baseUrl);
+  const key = { AGENTRUN_API_KEY: target.token };
+  const bare = folder(dir, { name: "bare", bare: true });
+  for (const yes of [[], ["--yes"]]) {
+    proxy.seen.length = 0;
+    const refused = await cli(env, ["deploy", bare, "--to", proxy.base, ...yes], key);
+    assert.equal(refused.code, 2, refused.err);
+    assert.match(refused.err, /name a box: this server has no Docker box for a new agent\. Set place to /, refused.err);
+    assert.doesNotMatch(refused.err, /\+ +agent|Apply this plan|off a terminal/, `${yes.join("") || "no --yes"}: no plan printed and no confirmation asked: ${refused.err}`);
+    assert.equal(proxy.seen.filter((line) => /^POST \/v2\/templates\/[^/]+\/apply$/.test(line)).length, 1, `the dry_run alone, no apply: ${proxy.seen.join("\n")}`);
+  }
+  assert.deepEqual((await target.api("GET", "/agents")).body.agents, [], "nothing made");
+  assert.equal(existsSync(join(bare, ".agentrun", "deploy.json")), false, "no lock written");
+});
+
 test("packageFiles reads a folder holding hidden files and leaves them out", async () => {
   const { dir } = scratch();
   const pkg = folder(dir);
