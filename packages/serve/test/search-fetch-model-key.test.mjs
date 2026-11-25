@@ -24,7 +24,6 @@ beforeEach(() => forgetHolds());
 
 const fixture = (name) => new URL(`./fixtures/${name}`, import.meta.url).pathname;
 const FAUX = { harnessTable: fauxTable(fixture("faux-harness.mjs")), fauxWeb: fixture("faux-web.mjs"), fauxParallel: fixture("faux-parallel.mjs"), fauxExa: fixture("faux-exa.mjs") };
-const PAGE = "http://public.example/";
 // OpenCode has no native search: picked, it is unavailable there; on auto it takes the server's Parallel key.
 const NATIVE = { pi: "native", "claude-agent": "native", codex: "native", opencode: "unavailable: no native search for opencode, whose model requests carry no provider-hosted tool" };
 /** On auto: the server's Parallel key on every harness; a native search is an explicit pick. */
@@ -65,7 +64,7 @@ const HARNESS_RESEARCH = "Research widgets on the web, read http://public.exampl
 
 // pi's native search is left to native-search-runner.test.mjs and runner-pi-native-search.test.mjs: on the runner it
 // goes through the session's model route, which under --faux is the faux model, with no hosted search to answer it.
-test("with only model keys: native search on claude-agent and codex, and the kernel's fetch, each run's report citing the page; then Parallel picked, the next runs go through Parallel", { timeout: 180_000 }, async (t) => {
+test("with only model keys: native search on claude-agent and codex, and auto's fetch through Parallel on the server's key, each run's report citing the page; then Parallel picked, the next runs go through Parallel", { timeout: 180_000 }, async (t) => {
   const { seen } = await setting(t, { PARALLEL_API_KEY: PARALLEL_CANARY });
   const { api } = await serve(t, FAUX);
   assert.deepEqual(await resolves(api), { web_search: AUTO_KEYED, web_fetch: each("parallel") }, "Parallel on every harness for both (a native search an explicit pick)");
@@ -81,13 +80,13 @@ test("with only model keys: native search on claude-agent and codex, and the ker
     assert.deepEqual(opened.filter((line) => line.harness), [{ harness, options: option }], `${harness}: the options its adapter was opened with`);
     assert.deepEqual(opened.filter((line) => line.tools).map((line) => line.tools), [tools], `${harness}: its host tools`);
     assert.deepEqual(Object.keys(run.results).sort(), ["web_fetch", "write"], `${harness}: its fetch and its write ran as host tools, its search inside the harness`);
-    assert.match(run.results.web_fetch, /"via":"direct"/);
+    assert.match(run.results.web_fetch, /"via":"parallel"/, `${harness}: web_fetch on auto, through Parallel on the server's key`);
     assert.match(run.report, /Public page, http:\/\/public\.example\//);
   }
   assert.deepEqual((await seen()).exa, [], "no keyless Exa: every harness here searches natively");
   let calls = await seen();
-  assert.deepEqual(calls.dialled, [PAGE, PAGE], "every fetch reached the page through the kernel's guarded fetch");
-  assert.deepEqual(calls.parallel, [], "nothing reached Parallel, though the server holds its key: native was picked");
+  assert.deepEqual(calls.dialled, [], "no fetch reached the page directly: Parallel read it");
+  assert.deepEqual(calls.parallel.map((call) => [call.path, call.authorized]), [["/v1/extract", true], ["/v1/extract", true]], "only the fetches reached Parallel, on its key: the searches were native");
 
   // Parallel picked on the server: capabilities say so at once, and the next runs search and fetch through it.
   const put = await api("PUT", "/settings/tools", { web_search: { provider: "parallel" }, web_fetch: { provider: "parallel" } });
@@ -105,8 +104,8 @@ test("with only model keys: native search on claude-agent and codex, and the ker
     assert.match(run.results.web_fetch, /"via":"parallel"/);
   }
   calls = await seen();
-  assert.deepEqual(calls.parallel.map((call) => [call.path, call.authorized]), [["/v1/search", true], ["/v1/extract", true], ["/v1/search", true], ["/v1/extract", true], ["/v1/search", true], ["/v1/extract", true]], "each run on the key the server handed it");
-  assert.equal(calls.dialled.length, 2, "no direct fetch after the pick");
+  assert.deepEqual(calls.parallel.map((call) => [call.path, call.authorized]), [["/v1/extract", true], ["/v1/extract", true], ["/v1/search", true], ["/v1/extract", true], ["/v1/search", true], ["/v1/extract", true], ["/v1/search", true], ["/v1/extract", true]], "each run on the key the server handed it");
+  assert.equal(calls.dialled.length, 0, "no direct fetch in any run");
 });
 
 test("a pi run on keyless Exa past its free limit: Exa is asked once more and its results answer; past it again, the model and the timeline read our words, never Exa's fix", { timeout: 90_000 }, async (t) => {
