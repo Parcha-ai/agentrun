@@ -66,6 +66,9 @@ export interface RunReadsDeps {
   /** How long a cut read waits for its file's cut, made in the cut worker (cut-pool.ts), before it is refused 503: CUT_MS
    *  unless a test names less. */
   readonly cutMs?: number;
+  /** What makes a cut read's cut: the server's cut worker (cutInWorker) unless a test names another, to see that the read
+   *  answers the worker's text and refuses what the worker refuses. */
+  readonly cut?: typeof cutInWorker;
 }
 
 /** A run's files, through its Workspace (listRunFiles): every file, path-sorted, cut at the cap. A run with no folder lists
@@ -160,7 +163,7 @@ async function cutRunFile(store: RunReadsStore, runId: string, workspace: Worksp
     // Asked for past the deadline (the read has already been refused): no worker is started for it.
     const left = until - Date.now();
     if (left <= 0) return Promise.reject(unmade(lateRead));
-    return cutInWorker(text, values, Buffer.byteLength(text), held, left).catch((error: unknown) => {
+    return (deps.cut ?? cutInWorker)(text, values, Buffer.byteLength(text), held, left).catch((error: unknown) => {
       if (error instanceof CutUnserved) throw unmade(error.message);
       throw error;
     });

@@ -84,6 +84,51 @@ test("the deadline is the whole read's: a cut read whose re-read of the run's cu
   assert.ok(ms < 2_000, `refused at the read's deadline, not after the slow re-read (${Math.round(ms)} ms)`);
 });
 
+/** A cut read of one file holding `key` through readRunFile, its cut made by `cut` under a 5 s deadline: how it ended. */
+async function readCut(key, cut) {
+  const bytes = Buffer.from(`key=${key} and the rest\n`);
+  const deps = {
+    withheld: async () => false,
+    runWorkspace: async () => ({ list: async () => [{ name: "notes.txt", kind: "file", size: bytes.length }], read: async () => new Uint8Array(bytes) }),
+    cutValues: async () => ({ values: [key] }),
+    cutMs: 5_000,
+    cut,
+  };
+  const res = { status: undefined, body: undefined, writeHead(status) { this.status = status; }, end(body) { this.body = body; } };
+  const url = new URL("http://server.test/runs/r1/files/notes.txt?cut=run");
+  const at = performance.now();
+  const refused = await readRunFile({}, "r1", "notes.txt", { method: "GET" }, res, url, deps).then(() => undefined, (error) => error);
+  return { res, refused, ms: performance.now() - at, text: bytes.toString() };
+}
+
+test("a cut read answers the text its cut worker made, asked once with the run's cut and the time left of the read's deadline", { timeout: 30_000 }, async () => {
+  const key = plantedValue();
+  const asked = [];
+  const { res, refused, text } = await readCut(key, async (...args) => {
+    asked.push(args);
+    return "the worker's cut";
+  });
+  assert.equal(refused, undefined, String(refused));
+  assert.equal(res.status, 200);
+  assert.equal(Buffer.from(res.body).toString(), "the worker's cut", "the worker's answer, not a cut made on the server's own thread");
+  assert.equal(asked.length, 1);
+  const [cutOf, values, max, held, timeMs] = asked[0];
+  assert.deepEqual([cutOf, values, max, held], [text, [key], Buffer.byteLength(text), []]);
+  assert.ok(timeMs > 0 && timeMs <= 5_000, `the time left of the read's 5 s (${timeMs})`);
+});
+
+test("a cut read whose cut worker fails is 503 unavailable at once, naming why, never the text uncut", { timeout: 30_000 }, async () => {
+  const key = plantedValue();
+  const { res, refused, ms } = await readCut(key, async () => {
+    throw new CutUnserved("the cut failed (TypeError)");
+  });
+  assert.equal(res.status, undefined, `nothing answered: ${res.status} ${res.body}`);
+  assert.equal(refused?.code, "unavailable", String(refused));
+  assert.match(refused.message, /the cut failed \(TypeError\)/);
+  assert.ok(!refused.message.includes(key));
+  assert.ok(ms < 2_000, `refused when the worker failed, not at the read's 5 s deadline (${Math.round(ms)} ms)`);
+});
+
 test("the cut worker cuts as redactSecrets does: values in place, census spans, a byte order mark, compact JSON past 8 KB, a value split by a line break", async () => {
   const key = plantedValue();
   const other = plantedValue("whsec");
