@@ -1,7 +1,7 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Chip, type ChipTone } from "@/components/ui/chip";
-import { canSignOut, checksFolder, claudeLoginView, KEPT_REFUSED,LOGIN_ROW, LOGIN_RUNS, type LoginView, loginSignedInAs, MACHINE_DEFAULT_FOLDER, machineCredentials, NO_CLI, ONLY_ME, ONLY_ME_FIRST, ONLY_ME_WHY, OTHER_MACHINE, placeWords, SIGN_OUT_ASK, SIGNED_OUT, SIGNED_OUT_HERE, signInWords, UNKNOWN } from "@/lib/claudeLogin";
+import { canSignOut, checksFolder, claudeLoginView, KEPT_REFUSED, LOGIN_ROW, LOGIN_RUNS, type LoginView, loginSignedInAs, MACHINE_DEFAULT_FOLDER, machineCredentials, NO_CLI, ONLY_ME, ONLY_ME_FIRST, ONLY_ME_WHY, OTHER_MACHINE, placeWords, SIGN_OUT_ASK, SIGNED_OUT, SIGNED_OUT_HERE, signInWords, UNKNOWN } from "@/lib/claudeLogin";
 import { type Client, ClientError } from "@/lib/client";
 import { type SecretsWhyNot, WHY_NOT_WORDS } from "@/lib/secrets";
 import type { ClaudeLoginView } from "@/lib/v2";
@@ -182,7 +182,7 @@ export function ClaudeLoginRow({ v2, writable, whyNot = "sign_in", onChange, ava
                 </label>
               ))}
             </fieldset>
-            {place === "machine" && view.machine?.source === "default" &&<p className="text-small text-muted-foreground">{MACHINE_DEFAULT_FOLDER}</p>}
+            {place === "machine" && view.machine?.source === "default" && <p className="text-small text-muted-foreground">{MACHINE_DEFAULT_FOLDER}</p>}
             <label className="flex items-center gap-2 text-body">
               <input type="checkbox" name="only_me" className="accent-primary" checked={onlyMe} onChange={(e) => setOnlyMe(e.target.checked)} />
               {ONLY_ME}
