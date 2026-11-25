@@ -484,11 +484,10 @@ export interface Learning {
    *  row keeps the grade's spend as its cost. One still waiting for its grade is none of them. */
   spend(window: { from: number; to: number }): Promise<LearningSpend[]>;
   /** Agent `agentId`'s ledger (learn/ledger.ts), in one read (one snapshot of both tables): every run's row its end
-   *  recorded, oldest first, each with the end it was recorded for (`epoch`, its run's epoch then), and every spend row.
-   *  With `runIds`, those runs' rows alone and the spend rows they booked or that audit them (none for none). Written
-   *  only beside a run's end and a heal of its cost (run-patch.ts recordLedger); a purge or a delete of the run takes its
-   *  row and its spend. */
-  ledger(agentId: string, runIds?: readonly string[]): Promise<{ rows: (LedgerRow & { readonly epoch: number })[]; spend: SpendRow[] }>;
+   *  recorded, oldest first, and every spend row. With `runIds`, those runs' rows alone and the spend rows they booked or
+   *  that audit them (none for none). Written only beside a run's end and a heal of its cost (run-patch.ts recordLedger);
+   *  a purge or a delete of the run takes its row and its spend. */
+  ledger(agentId: string, runIds?: readonly string[]): Promise<{ rows: LedgerRow[]; spend: SpendRow[] }>;
   /** Agent `agentId`'s newest `limit` ledger rows on the `agent` path at a known cost, of runs before run `before` in
    *  runs.list's order (started_at, then id), on no named disk, neither imported nor archived, newest first: the money
    *  rule's by-hand side read past its window (store-reads/learning.ts pastRunsRead). One read. */

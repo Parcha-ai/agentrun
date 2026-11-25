@@ -1,16 +1,13 @@
 // The learning ledger on the store itself (SQLite here, Postgres under `npm run test:pg`): what a run's end writes
 // (learning_ledger, learning_spend: store/sqlite/run-patch.ts recordLedger) and how the readers read it
 // (store-reads/learning.ts):
-//   - an end records its row at the end it was written for (`epoch`, its run's epoch after it), with why it was not served alone
-//     (`cost_stop`, `cut`); the ledger reads both tables as one read, scoped to the runs asked for;
+//   - an end records its row with why it was not served alone (`cost_stop`, `cut`); the ledger reads both tables as one
+//     read, scoped to the runs asked for;
 //   - a run's end again (after a reopen) writes its spend rows anew, none left from the end before; healCost records the
 //     row again with the healed cost; a purge takes the run's row and every spend row it booked or that audits it;
-//   - a row an earlier build left behind (it ended the run again, or healed its cost, and wrote no ledger) is recorded
-//     again where it is read, never shown stale; a run it ended with no row is recorded where it is read, at the figures
-//     its end would have written;
-//   - a grade's correction round ends its run again at the end it kept (keepsEnd): a runner of an earlier build that ends
-//     it so writes no ledger, and the row its first end wrote is recorded again where it is read, the round's spend on
-//     it; a cancel that wins such an end moves its ended_at after its row is written, and that row still stands;
+//   - a run that ended with no row is recorded where it is read, at the figures its end would have written;
+//   - a cancel that wins an end keeping its job's end (keepsEnd) moves its ended_at after its row is written: the row
+//     is read as written, no round read again;
 //   - the money rule's read at a claim (pastRunsOverStore) is bounded: the agent's newest PAST_RUNS runs on no named disk,
 //     the ledger of those runs alone, no agent-wide read, the runs with no standing row read at most 16 at a time; its
 //     by-hand side is the job's own cost of the `agent` runs among the same runs as its served side (since the reset, no
@@ -20,7 +17,7 @@ import { test } from "node:test";
 import { agentWithRevision, storeOn, T0 } from "./store-helpers.mjs";
 import { raw } from "./store-target.mjs";
 
-const { agentCostOverStore, ledgerRowStands, pastRunsOverStore, runAllInOverStore } = await import("../dist/store-reads/learning.js");
+const { agentCostOverStore, pastRunsOverStore, runAllInOverStore } = await import("../dist/store-reads/learning.js");
 const { PAST_RUNS, workflowCostsOf } = await import("../dist/runner/workflow-first.js");
 const { keepResetAt } = await import("../dist/learn/promote.js");
 
@@ -48,7 +45,7 @@ async function ledgerStore(t) {
   return { store, file, clock, end };
 }
 
-test("an end records its ledger row at its run's end (its epoch after that end), with why it was not served alone (cost_stop, cut); the ledger reads the rows and spend of the runs it is asked for", async (t) => {
+test("an end records its ledger row with why it was not served alone (cost_stop, cut); the ledger reads the rows and spend of the runs it is asked for", async (t) => {
   const { store, end } = await ledgerStore(t);
   await end("r-stop", 0.4, { path: "agent", not_served: "cost_stop" });
   await end("r-cut", 0.2, { path: "handed_back", workflow: "answer", workflow_digest: C, workflow_cut: true });
@@ -56,7 +53,7 @@ test("an end records its ledger row at its run's end (its epoch after that end),
   const all = await store.learning.ledger("agent-1");
   const byId = new Map(all.rows.map((row) => [row.runId, row]));
   assert.deepEqual([byId.get("r-stop").notServed, byId.get("r-cut").notServed, byId.get("r-compile").notServed], ["cost_stop", "cut", null]);
-  for (const id of ["r-stop", "r-cut", "r-compile"]) assert.equal(byId.get(id).epoch, (await store.runs.get(id)).epoch, `${id}: its row is for the end it was written at`);
+  assert.equal(Object.hasOwn(byId.get("r-stop"), "epoch"), false, "a row says no epoch");
   const scoped = await store.learning.ledger("agent-1", ["r-cut", "r-compile"]);
   assert.deepEqual(scoped.rows.map((row) => row.runId).sort(), ["r-compile", "r-cut"], "the rows of the runs asked for alone");
   assert.deepEqual(scoped.spend.map((one) => [one.runId, one.kind, one.round, one.digest, one.usd]), [["r-compile", "compile", 1, C, 0.3]]);
@@ -68,7 +65,6 @@ test("a run's end again writes its spend rows anew, none left from the end befor
   await end("r1", 1.3, { path: "agent" }, { also: [kept(1, 1, 0.3, { compiled: { workflow: "answer", digest: C } })] });
   assert.deepEqual((await store.learning.ledger("agent-1", ["r1"])).spend.map((one) => [one.round, one.digest, one.usd]), [[1, C, 0.3]]);
   // A follow-up opens it again; its second end drafted D in its second round.
-  const first = await store.runs.get("r1");
   const steer = await store.runs.reopen("r1", { kind: "steer", body: { text: "again" } });
   const claim = await store.claim("r1", "runner-a", { leaseMs: 60_000 });
   await store.take(claim, steer.id);
@@ -76,9 +72,7 @@ test("a run's end again writes its spend rows anew, none left from the end befor
   await store.runs.update(claim, { state: "ended", costUsd: 2, metrics: { path: "agent" } }, { also: [kept(2, 1.5, 0.2, { compiled: { workflow: "answer", digest: D } })] });
   const again = await store.learning.ledger("agent-1", ["r1"]);
   assert.deepEqual(again.spend.map((one) => [one.round, one.digest, one.usd]), [[1, C, 0.3], [2, D, 0.2]], "each round's compile once: the rows of the end before are replaced, not added to");
-  const second = await store.runs.get("r1");
-  assert.ok(second.epoch > first.epoch, `a second end: epoch ${first.epoch} then ${second.epoch}`);
-  assert.equal(again.rows[0].epoch, second.epoch, "its row is for its second end");
+  assert.equal(again.rows[0].jobUsd, 1.5, "its row is its second end's");
 
   await end("r2", null);
   assert.equal((await store.learning.ledger("agent-1", ["r2"])).rows[0].cost, "unknown");
@@ -91,23 +85,6 @@ test("a run's end again writes its spend rows anew, none left from the end befor
   const left = await store.learning.ledger("agent-1");
   assert.deepEqual(left.rows.map((row) => row.runId).sort(), ["audit.r1", "r2"], "the purged run's row is gone");
   assert.deepEqual(left.spend.filter((one) => one.runId === "r1" || one.ofRun === "r1"), [], "and every spend row it booked or that audits it");
-});
-
-test("a ledger row an earlier build left behind is recorded again where it is read: a run it ended again, and a cost it healed, read as they are now", async (t) => {
-  const { store, file, end } = await ledgerStore(t);
-  await end("r-again", 1);
-  await end("r-healed", null);
-  // A runner of the build before ends r-again again (a follow-up's end, at a later time and a new cost: its claim and its
-  // end each move the epoch), and a server of that build heals r-healed's cost (at the same epoch): neither writes the
-  // ledger.
-  const db = await raw(file);
-  await db.run("UPDATE runs SET ended_at = ended_at + 5000, epoch = epoch + 2, cost_usd = ? WHERE id = ?", 2, "r-again");
-  await db.run("UPDATE runs SET cost_usd = ? WHERE id = ?", 0.7, "r-healed");
-  await db.close();
-  assert.equal((await runAllInOverStore(store, "r-again")).usd, 2, "the run read: its cost now, never its row's from the end before");
-  assert.equal((await runAllInOverStore(store, "r-healed")).usd, 0.7, "the healed cost");
-  const page = await agentCostOverStore(store, "agent-1");
-  assert.deepEqual(page.runs.map((run) => [run.run_id, run.cost_usd]), [["r-again", 2], ["r-healed", 0.7]], "the cost page reads the same");
 });
 
 test("a run that ended with no ledger row (a runner of the build before ended it) is recorded where it is read, among runs that have one, at the figures its end would have written", async (t) => {
@@ -130,69 +107,7 @@ test("a run that ended with no ledger row (a runner of the build before ended it
   assert.deepEqual(before.page.find(([id]) => id === "r2"), ["r2", 1, 0.3, 0.3, 1.3]);
 });
 
-/** Run `id`'s ledger rows (learning_ledger, learning_spend), as a raw read gives them: what `restore` writes back. */
-async function ledgerRowsOf(file, id) {
-  const db = await raw(file);
-  const rows = { ledger: await db.all("SELECT * FROM learning_ledger WHERE run_id = ?", id), spend: await db.all("SELECT * FROM learning_spend WHERE run_id = ?", id) };
-  await db.close();
-  return rows;
-}
-
-/** Run `id`'s ledger rows back as `saved` had them, whatever an end wrote since: a runner of the build before the ledger
- *  ends it and writes none. */
-async function restore(file, id, saved) {
-  const db = await raw(file);
-  await db.run("DELETE FROM learning_ledger WHERE run_id = ?", id);
-  await db.run("DELETE FROM learning_spend WHERE run_id = ?", id);
-  for (const [table, rows] of [["learning_ledger", saved.ledger], ["learning_spend", saved.spend]]) {
-    for (const row of rows) await db.run(`INSERT INTO ${table} (${Object.keys(row).join(", ")}) VALUES (${Object.keys(row).map(() => "?").join(", ")})`, ...Object.values(row));
-  }
-  await db.close();
-}
-
-/** The figures a reader shows of run `id`: its run read's, its cost page row's and the bill's compile spend by revision. */
-async function shown(store, id) {
-  const run = await runAllInOverStore(store, id);
-  const page = await agentCostOverStore(store, "agent-1");
-  const row = page.runs.find((one) => one.run_id === id);
-  return {
-    run: [run.usd, run.compile_usd, run.followup_usd, run.learning_usd],
-    page: [row.cost_usd, row.learning_usd, row.compile_usd, row.followup_usd, row.total_usd],
-    bill: page.bill.revisions.map((one) => [one.digest, one.compile_usd]).sort(),
-  };
-}
-
-test("a grade's correction round that a runner of the build before ends at the end it kept (keepsEnd) leaves no row standing: its round's compile and follow-up are read on the run", async (t) => {
-  const { store, file, clock, end } = await ledgerStore(t);
-  // A new build ends R at T1: its job $1, its compile turn $0.10 drafting C.
-  await end("R", 1.1, { path: "agent" }, { also: [kept(1, 1, 0.1, { compiled: { workflow: "answer", digest: C } })] });
-  const first = await store.runs.get("R");
-  const saved = await ledgerRowsOf(file, "R");
-  // The owner grades R with words: its correction round opens it again at the end it has (learn/feedback-round.ts
-  // openFeedbackRound: a steer naming the kept end, reopened only at that end).
-  const steer = await store.runs.reopen("R", { kind: "steer", body: { text: "the answer is B", feedback: { round: 2, correct: false, kept: { endedAt: first.endedAt } } } }, { endedAt: first.endedAt });
-  // A runner of the build before runs the round: the corrections line and a compile turn drafting D ($0.30), and ends R
-  // at T1 again (runner/adapter-loop.ts: the round keeps its job's end), writing no ledger.
-  const claim = await store.claim("R", "runner-old", { leaseMs: 60_000 });
-  await store.take(claim, steer.id);
-  clock.now += 5_000;
-  await store.runs.update(claim, { state: "ended", costUsd: 1.4, metrics: { path: "agent" }, endedAt: first.endedAt, keepsEnd: true }, { also: [kept(2, 1, 0.3, { compiled: { workflow: "answer", digest: D } })] });
-  const after = await store.runs.get("R");
-  assert.equal(after.endedAt, first.endedAt, "the round's end is the end it kept");
-  assert.ok(after.epoch > first.epoch, `its end moved the run's epoch: ${first.epoch} then ${after.epoch}`);
-  // What the round's end recorded, read from the run's row and its rounds (as for a run with no row): the truth.
-  const truth = await shown(store, "R");
-  assert.deepEqual(truth.bill, [[C, 0.1], [D, 0.3]], "each revision its compile turn");
-  assert.deepEqual(truth.page.slice(0, 3), [1, 0.4, 0.4], "its job $1, both rounds' look-back $0.40, both compile turns");
-  await restore(file, "R", saved);
-  assert.deepEqual(await shown(store, "R"), truth, "read as the round left it: never the first end's figures");
-  const past = await pastRunsOverStore(store, "agent-1");
-  assert.deepEqual(past.runs.map((one) => one.allInUsd), [1.4], "the money rule's all-in with the round's spend");
-  const left = (await store.learning.ledger("agent-1", ["R"])).rows[0];
-  assert.equal(ledgerRowStands(left, after), false, "the row its first end wrote no longer stands for it");
-});
-
-test("a cancel that wins an end keeping its job's end (keepsEnd) moves its ended_at after its row is written: the row stands, and no read records it again", async (t) => {
+test("a cancel that wins an end keeping its job's end (keepsEnd) moves its ended_at after its row is written: the row is read as written, and no read records it again", async (t) => {
   const { store, clock, end } = await ledgerStore(t);
   await end("R", 1.1, { path: "agent" }, { also: [kept(1, 1, 0.1, { compiled: { workflow: "answer", digest: C } })] });
   const first = await store.runs.get("R");
@@ -209,8 +124,7 @@ test("a cancel that wins an end keeping its job's end (keepsEnd) moves its ended
   assert.deepEqual([after.state, after.outcome], ["stopped", "cancelled"]);
   assert.ok(after.endedAt > first.endedAt, `the cancel's commit moved its ended_at: ${first.endedAt} then ${after.endedAt}`);
   const row = (await store.learning.ledger("agent-1", ["R"])).rows[0];
-  assert.equal(ledgerRowStands(row, after), true, "the row its end wrote stands for it");
-  assert.equal(row.jobUsd, 1);
+  assert.deepEqual([row.cost, row.jobUsd], ["known", 1], "the row its end wrote");
   // No read records it again: its rounds are never read.
   const rounds = [];
   const counted = new Proxy(store, {
