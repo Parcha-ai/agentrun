@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import fsSync, { mkdirSync, readFileSync, writeFileSync, utimesSync, truncateSync, statSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync, utimesSync, truncateSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import fs from 'node:fs/promises';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { syncBuiltinESMExports } from 'node:module';
+import { READERS } from '@parcha/agentrun-import';
 import { scratch } from './support.mjs';
 import { claudeSession, codexSession, copilotSession } from './fixtures/import-sessions.mjs';
 import { exportRemoteHistory } from '../dist/import.js';
@@ -70,26 +72,29 @@ for (const [runtime, makeSession] of [['claude-code', claudeSession], ['codex', 
   truncateSync(oversized,8_000_001);
   const old=new Date(Date.now()-3600_000);utimesSync(oversized,old,old);
   const before=statSync(oversized);
-  let transcriptReads=0,metadataBytes=0;
-  const createReadStream=fsSync.createReadStream,open=fs.open;
-  const streamMock=t.mock.method(fsSync,'createReadStream',(...args)=>{
-   if(args[0]===oversized)transcriptReads++;
-   return createReadStream(...args);
+  // Bodies counted where the importer reads them (READERS[source].read), however it reads the bytes; opens made inside
+  // a body read are the body's, so metadataBytes is serve's own probe.
+  let transcriptReads=0,bodyReads=0,metadataBytes=0;
+  const body=new AsyncLocalStorage(),reader=READERS[runtime],readBody=reader.read,open=fs.open;
+  const readMock=t.mock.method(reader,'read',function(at,...rest){
+   bodyReads++;if(at.file===oversized)transcriptReads++;
+   return body.run(true,()=>readBody.call(this,at,...rest));
   });
   const openMock=t.mock.method(fs,'open',async (...args)=>{
    const handle=await open(...args);
-   if(args[0]===oversized){
+   if(args[0]===oversized && !body.getStore()){
     const read=handle.read.bind(handle);
     t.mock.method(handle,'read',async (...args)=>{const result=await read(...args);metadataBytes+=result.bytesRead;return result;});
    }
    return handle;
   });
-  syncBuiltinESMExports();t.after(()=>{streamMock.mock.restore();openMock.mock.restore();syncBuiltinESMExports();});
+  syncBuiltinESMExports();t.after(()=>{readMock.mock.restore();openMock.mock.restore();syncBuiltinESMExports();});
   const preview=await exportRemoteHistory(target,{...f.options,preview:true});
   assert.equal(transcriptReads,0,'preview must reject the oversized transcript before parsing it');
   assert.equal(preview.total,21);
   assert.deepEqual(preview.skipped,[{reason:'Source session file exceeds the remote import size limit.',count:1}]);
   const first=await exportRemoteHistory(target,{...f.options,inventory:preview.inventory});
+  assert.equal(bodyReads,20,'the body-read counter sees the first page read its 20 bodies');
   assert.equal(transcriptReads,0,'the first page must not parse a transcript it cannot export');
   assert.equal(first.sessions.length,20);assert.equal(first.next_cursor,20);
   const last=await exportRemoteHistory(target,{...f.options,inventory:preview.inventory,cursor:first.next_cursor});

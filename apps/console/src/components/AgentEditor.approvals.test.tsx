@@ -25,7 +25,7 @@ function mount(agent: Agent | null) {
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
   act(() => root!.render(createElement(AgentEditor, { agent, caps, permissionGates: gates, step: "tools", onSave: async (f: Record<string, unknown>) => { saved = f; return null; } } as never)));
-  const radio = (label: RegExp) => [...host.querySelectorAll<HTMLInputElement>('fieldset[aria-label="Approvals"] input[type="radio"]')].find((r) => label.test(r.closest("label")?.textContent ?? ""));
+  const radio = (label: RegExp) => [...host.querySelectorAll<HTMLInputElement>('fieldset[aria-label="Tool approvals"] input[type="radio"]')].find((r) => label.test(r.closest("label")?.textContent ?? ""));
   const click = (el: Element | null | undefined) => act(() => { (el as HTMLElement).click(); });
   const save = async () => { await act(async () => { [...host.querySelectorAll("button")].find((b) => /^(Create|Save revision)$/.test(b.textContent?.trim() ?? ""))!.click(); }); return saved; };
   const set = (sel: string, value: string) => act(() => {
@@ -81,7 +81,7 @@ describe("AgentEditor, the agent's approvals while a save is under way and with 
     const host = document.body.appendChild(document.createElement("div"));
     root = createRoot(host);
     act(() => root!.render(createElement(AgentEditor, { agent: agentWith("ask"), caps, permissionGates: gates, step: "tools", onSave: () => new Promise((r) => { answer = r; }) } as never)));
-    const radios = () => [...host.querySelectorAll<HTMLInputElement>('fieldset[aria-label="Approvals"] input[type="radio"]')];
+    const radios = () => [...host.querySelectorAll<HTMLInputElement>('fieldset[aria-label="Tool approvals"] input[type="radio"]')];
     act(() => { radios().find((r) => /^Never ask/.test(r.closest("label")?.textContent ?? ""))!.click(); });
     await act(async () => { [...host.querySelectorAll("button")].find((b) => /^Save revision$/.test(b.textContent?.trim() ?? ""))!.click(); });
     for (const r of radios()) expect(r.disabled).toBe(true);
@@ -112,7 +112,7 @@ describe("AgentEditor, the Tool settings words under Never ask", () => {
     const host = document.body.appendChild(document.createElement("div"));
     root = createRoot(host);
     act(() => root!.render(createElement(AgentEditor, { agent: searcher(approvals), caps: searchCaps, providerChoices: toolChoices([SEARCH]), permissionGates: toolGates([{ name: "web_search", permission: "ask", default_permission: "ask", permissions: ["allow", "ask", "deny"] }]), step: "tools", onSave: async () => null } as never)));
-    const radio = (label: RegExp) => [...host.querySelectorAll<HTMLInputElement>('fieldset[aria-label="Approvals"] input[type="radio"]')].find((r) => label.test(r.closest("label")?.textContent ?? ""));
+    const radio = (label: RegExp) => [...host.querySelectorAll<HTMLInputElement>('fieldset[aria-label="Tool approvals"] input[type="radio"]')].find((r) => label.test(r.closest("label")?.textContent ?? ""));
     return { host, radio };
   };
 
@@ -131,5 +131,16 @@ describe("AgentEditor, the Tool settings words under Never ask", () => {
     expect(resolves()).toContain("pi: Exa keyless");
     act(() => { t.radio(/^Never ask/)!.click(); });
     expect(resolves()).toContain("once saved");
+  });
+});
+
+describe("Tool approvals, apart from ask_person", () => {
+  it("names itself for tools and says it is not about questions", async () => {
+    const t = mount(null);
+    const set = t.host.querySelector('fieldset[aria-label="Tool approvals"]')!;
+    expect(set.querySelector("legend")!.textContent).toBe("Tool approvals");
+    expect(set.textContent).toContain("A tool set to ask waits for your OK before it runs.");
+    expect(set.querySelector("[data-approvals-not-questions]")!.textContent).toContain("ask_person");
+    // ask_person's place, first among the tools, is AgentEditor.test.tsx's (a fixture that offers it).
   });
 });

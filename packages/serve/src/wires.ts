@@ -18,3 +18,20 @@ export const modelWire = (wire: HarnessWire): wire is Wire => wire !== "plan";
 
 /** A harness's wire's settings, or undefined for one billed to its own plan (modelWire). */
 export const wireOf = (wire: HarnessWire): (typeof WIRES)[Wire] | undefined => (modelWire(wire) ? WIRES[wire] : undefined);
+
+/** The providers whose models the runner's model route translates onto a wire, each with the wires it translates them
+ *  onto (runner/model-route.ts TRANSLATORS: messagesFetch, and responsesFetch over it): an Ollama model of this machine
+ *  (ollama-provider.ts) onto Anthropic's Messages and OpenAI's Responses. Every harness on such a wire is offered those
+ *  models and runs them through the route, at their price, whatever harness it is: the wire decides, never a harness's
+ *  id. A leaf's data: provider ids by name. */
+export const TRANSLATED: Readonly<Record<string, readonly Wire[]>> = Object.freeze({ ollama: Object.freeze(["anthropic-messages", "openai-responses"] as const) });
+
+/** Whether `model`'s requests on a harness of `wire` go through the route's translation (TRANSLATED). */
+export const routed = (wire: HarnessWire, model: { readonly provider: string }): boolean =>
+  Object.hasOwn(TRANSLATED, model.provider) && (TRANSLATED[model.provider] as readonly HarnessWire[]).includes(wire);
+
+/** routed, for a model named `provider/model-id`. */
+export const routedId = (wire: HarnessWire, id: string): boolean => id.indexOf("/") > 0 && routed(wire, { provider: id.slice(0, id.indexOf("/")) });
+
+/** Whether the route translates any provider's models onto `wire` (TRANSLATED): a harness on it may run on one with no key. */
+export const translatesOnto = (wire: HarnessWire): boolean => Object.values(TRANSLATED).some((wires) => (wires as readonly HarnessWire[]).includes(wire));

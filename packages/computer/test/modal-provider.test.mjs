@@ -16,6 +16,7 @@ import test from "node:test";
 import { AttachHub, checkLifetime, kindRefusals, MemoryMachineTokens, mountsOf, recordedMount, sweep } from "../dist/index.js";
 import { fakeObjects } from "./fake-archil.mjs";
 import { bootDial, desktopOverDial, dialServer } from "./fake-dial-host.mjs";
+import { refusesHttp } from "./https-refusal.mjs";
 
 const modal = await import("../dist/modal.js");
 const { MODAL } = await import("../dist/descriptors/modal.js");
@@ -567,8 +568,8 @@ test("the conformance module pins the client's server: an ambient MODAL_PROFILE 
 		await withProcessEnv({ MODAL_PROFILE: "prod", MODAL_CONFIG_PATH: toml }, async () => {
 			for (const make of [createProvider, createDriftedProvider]) {
 				for (const [chosen, server] of [
-					[{}, "https://api.modal.com:443"],
-					[{ COMPUTER_MODAL_SERVER_URL: "https://dev.example.invalid:443" }, "https://dev.example.invalid:443"],
+					[{}, "https://api.modal.com"],
+					[{ COMPUTER_MODAL_SERVER_URL: "https://dev.example.invalid:8443" }, "https://dev.example.invalid:8443"],
 				]) {
 					const { ModalClient, made, servers } = fakeClient();
 					await make({ env: { ...MODAL_SETTINGS, ...DEV_TOKEN, MODAL_PROFILE: "prod", MODAL_CONFIG_PATH: toml, ...chosen }, ModalClient, ...MODULE_TEST });
@@ -610,11 +611,27 @@ test("the provider's create() reads no environment: the token, the app and the s
 		assert.equal(provider.id, "modal");
 		assert.equal(provider.capabilities().maxLifetimeMs, DAY_MS);
 		assert.deepEqual(made, [TOKEN_OPTIONS], "the token passed in, never one of the environment");
-		assert.deepEqual(servers, ["https://api.modal.com:443"], "the SDK's default server, not COMPUTER_MODAL_SERVER_URL");
+		assert.deepEqual(servers, ["https://api.modal.com"], "the SDK's default server (its default port, 443, is inferred from https), not COMPUTER_MODAL_SERVER_URL");
 		const chosen = fakeClient();
-		await modal.create({ ...TOKEN_OPTIONS, app: APP, serverUrl: "https://dev.example.invalid:443", ModalClient: chosen.ModalClient, daemonPath: DAEMON_PATH });
-		assert.deepEqual(chosen.servers, ["https://dev.example.invalid:443"], "options.serverUrl is the server");
+		await modal.create({ ...TOKEN_OPTIONS, app: APP, serverUrl: "https://dev.example.invalid:8443", ModalClient: chosen.ModalClient, daemonPath: DAEMON_PATH });
+		assert.deepEqual(chosen.servers, ["https://dev.example.invalid:8443"], "options.serverUrl is the server");
+		// An upper-case scheme reaches the client in lower case: nice-grpc reads the scheme case-sensitively (its
+		// includes('https')), and would dial an upper-case one in the clear.
+		const upper = fakeClient();
+		await modal.create({ ...TOKEN_OPTIONS, app: APP, serverUrl: "HTTPS://API.MODAL.COM", ModalClient: upper.ModalClient, daemonPath: DAEMON_PATH });
+		assert.deepEqual(upper.servers, ["https://api.modal.com"], "the scheme and host are lower-case");
 	});
+});
+
+test("the server URL is https alone, loopback included, so the token never crosses in the clear: another is refused before any client is made", async () => {
+	for (const serverUrl of ["http://api.modal.com:443", "http://127.0.0.1:8080", "http://[::1]:8080", "http://localhost:8080", "grpc://api.modal.com:443"]) {
+		const { ModalClient, made } = fakeClient();
+		await assert.rejects(modal.create({ ...TOKEN_OPTIONS, app: APP, serverUrl, ModalClient, daemonPath: DAEMON_PATH }), refusesHttp("the Modal server URL (options.serverUrl)", serverUrl, TOKEN_OPTIONS.tokenId));
+		assert.deepEqual(made, [], serverUrl);
+	}
+	const { ModalClient, made } = fakeClient();
+	await assert.rejects(modal.create({ ...TOKEN_OPTIONS, app: APP, serverUrl: "//api.modal.com:443", ModalClient, daemonPath: DAEMON_PATH }), /the Modal server URL \(options\.serverUrl\) is not a URL/);
+	assert.deepEqual(made, []);
 });
 
 test("the conformance module reads COMPUTER_MODAL_APP and passes it as options.app, and refuses without it in words naming it", async () => {
@@ -660,7 +677,8 @@ test("the provider refuses an ambient MODAL_SERVER_URL in process.env, the one v
 		const { ModalClient, made } = fakeClient();
 		await assert.rejects(modal.create({ ...TOKEN_OPTIONS, app: APP, ModalClient, daemonPath: DAEMON_PATH }), (error) => {
 			assert.match(error.message, /MODAL_SERVER_URL is set/);
-			assert.match(error.message, /options\.serverUrl/);
+			// The default named as the client gets it, with no :443 (https's own port).
+			assert.match(error.message, /pass the server as options\.serverUrl if it is not https:\/\/api\.modal\.com$/);
 			return true;
 		});
 		assert.deepEqual(made, []);
@@ -670,7 +688,7 @@ test("the provider refuses an ambient MODAL_SERVER_URL in process.env, the one v
 
 test("client constructions run one at a time: each sees only its own MODAL_SERVER_URL, and process.env is put back after each, a failed one too", async () => {
 	const { modalClient } = modal;
-	const servers = ["https://one.example.invalid:443", "https://two.example.invalid:443", "https://three.example.invalid:443"];
+	const servers = ["https://one.example.invalid:8443", "https://two.example.invalid:8443", "https://three.example.invalid:8443"];
 	const seen = [];
 	let inside = 0;
 	function ModalClient(params) {
@@ -693,7 +711,7 @@ test("client constructions run one at a time: each sees only its own MODAL_SERVE
 	});
 	assert.equal(process.env.MODAL_SERVER_URL, before);
 	assert.ok(await modalClient({ ...TOKEN_OPTIONS, ModalClient }), "a failed construction leaves the turn free for the next");
-	assert.equal(seen.at(-1).server, "https://api.modal.com:443");
+	assert.equal(seen.at(-1).server, "https://api.modal.com");
 	assert.equal(process.env.MODAL_SERVER_URL, before, "and unset again after it");
 });
 

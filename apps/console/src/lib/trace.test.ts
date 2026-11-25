@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { TRACE, TRACE_CLI, TRACE_END, TRACE_LIVE, TRACE_LIVE_NOW, TRACE_START, TRACE_USD } from "@/components/RunTrace.sample";
-import { between, byModel, byTool, costSplit, duration, findings, keeps, lane, offset, ordered, panned, percent, percentile, place, spanMs, ticks, timing, traceTotals, traceWindow, usd, vitals, WHOLE, zoomed } from "@/lib/trace";
+import { TRACE, TRACE_CLI, TRACE_END, TRACE_LIVE, TRACE_LIVE_NOW, TRACE_START, TRACE_USD, USAGE_CLI, USAGE_MACHINES, USAGE_REDO } from "@/components/RunTrace.sample";
+import { attemptWords, between, budgetStop, byModel, callSpanIds, byTool, costSplit, duration, findings, keeps, lane, offset, ordered, panned, percent, percentile, place, redoOf, redoWords, since, spanMs, stretches, stretchLane, ticks, timing, traceTotals, traceWindow, usd, vitals, WHOLE, zoomed } from "@/lib/trace";
 import type { TraceSpan } from "@/lib/v2";
 
 // The Dev tools tab's figures over the sample trace (RunTrace.sample.ts): each expected value here is worked out by hand
@@ -320,5 +320,141 @@ describe("the table's filter and order", () => {
     const byCost = ordered(TRACE.spans, "cost", TRACE_END);
     expect(byCost.slice(-11).every((s) => s.usd === null)).toBe(true);
     expect(byCost.at(-11)!.id).toBe("t:0:call_01");
+  });
+});
+
+describe("requests a run sent twice", () => {
+  it("says the attempt a cost line was made in only where the run's lines differ by it", () => {
+    expect(USAGE_CLI.lines!.map((line) => attemptWords(line, USAGE_CLI.lines!))).toEqual([null, null, null]);
+    expect(USAGE_REDO.lines!.map((line) => attemptWords(line, USAGE_REDO.lines!))).toEqual(["Attempt 1: requests cut before they answered, sent again", "Attempt 2", "Attempt 2"]);
+    // A run made before attempts were kept reads each line's attempt as null: said as that, never as a first attempt.
+    expect(attemptWords({ attempt: null, billable: true }, [{ attempt: null, billable: true }, { attempt: 2, billable: true }])).toBe("An attempt with no number kept");
+  });
+  it("sums what the repeated requests cost as the server did, with its share of the run's cost; none where no request was repeated", () => {
+    expect(redoOf(USAGE_CLI)).toBeNull();
+    expect(redoOf(null)).toBeNull();
+    const redo = redoOf(USAGE_REDO)!;
+    // $0.0312 of $0.4587.
+    expect([redo.usd, redo.bound, redo.lines, redo.of]).toEqual([0.0312, false, 1, 3]);
+    expect(redo.share).toBeCloseTo(0.068, 3);
+    expect(redoWords(redo)).toBe("$0.0312");
+    // One cut line's cost not known: the sum is not known either, never what is left of it; nor is its share.
+    expect(redoOf({ ...USAGE_REDO, infra_usd: null })).toEqual({ usd: null, bound: false, lines: 1, of: 3, share: null });
+    expect(redoWords({ usd: null, bound: false })).toBe("Unknown");
+    // The run's own cost not one figure: no share of it.
+    expect(redoOf({ ...USAGE_REDO, total: { usd: null, so_far_usd: 0.4 } })!.share).toBeNull();
+  });
+  it("says a ceiling as at most, with no share: a request cut before its usage was known counts at what was held for it", () => {
+    // The cut line's $0.0312 is the hold, not what was spent: so is the sum of such lines.
+    const held = { ...USAGE_REDO, lines: [{ ...USAGE_REDO.lines![0]!, upper_bound: true as const }, ...USAGE_REDO.lines!.slice(1)] };
+    const redo = redoOf(held)!;
+    expect([redo.usd, redo.bound, redo.share, redoWords(redo)]).toEqual([0.0312, true, null, "at most $0.0312"]);
+    expect(findings(TRACE, TRACE_END, { usage: held })[1]).toEqual({ id: "redo", title: "At most $0.0312 went on requests sent twice", detail: "1 of the run's 3 cost lines is of requests an attempt sent and was cut before they answered, which the next attempt sent again." });
+    // An exact sum against a run's cost that is itself a ceiling: no share either.
+    expect(redoOf({ ...USAGE_REDO, total: { usd: 0.4587, upper_bound: true } })!.share).toBeNull();
+  });
+  it("is one of the things that stand out, after what failed, where the run's cost by line was read", () => {
+    expect(findings(TRACE, TRACE_END).map((f) => f.id)).not.toContain("redo");
+    expect(findings(TRACE, TRACE_END, { usage: USAGE_CLI }).map((f) => f.id)).not.toContain("redo");
+    const found = findings(TRACE, TRACE_END, { usage: USAGE_REDO });
+    expect(found.map((f) => f.id).slice(0, 2)).toEqual(["failed", "redo"]);
+    expect(found[1]).toEqual({ id: "redo", title: "$0.0312 went on requests sent twice", detail: "1 of the run's 3 cost lines is of requests an attempt sent and was cut before they answered, which the next attempt sent again: 7% of the run's cost." });
+    expect(findings(TRACE, TRACE_END, { usage: { ...USAGE_REDO, infra_usd: null } })[1]!.title).toBe("Requests were sent twice, at a cost not known");
+  });
+});
+
+describe("a run that wound down for its spend cap", () => {
+  it("says it stopped short under the cap as it was set where calls were refused, and only that it was told to wrap up where none was", () => {
+    expect(budgetStop({ stopped_for: null, budget_refused_calls: 0, cost: { cap_usd: 0.75 } })).toBeNull();
+    expect(budgetStop({})).toBeNull();
+    expect(budgetStop({ stopped_for: "budget", budget_refused_calls: 3, cost: { cap_usd: 0.75 } })).toEqual({ title: "The run stopped short for its budget", detail: "Its model was told to answer soon, to stay under its $0.75 cap, and it answered from what it had. 3 tool calls were refused, unrun, for its budget.", bad: true });
+    // Told to wrap up with no call refused: nothing says the run did less than it was asked, or that it came near its cap
+    // (a small cap has its model told from the first request). On a run whose view names no cap.
+    expect(budgetStop({ stopped_for: "budget", budget_refused_calls: 0, cost: null })).toEqual({ title: "The run was told to wrap up for its budget", detail: "Its model was told to answer soon, to stay under its spend cap. No tool call was refused.", bad: false });
+    expect(budgetStop({ stopped_for: "budget", budget_refused_calls: 0, cost: { cap_usd: 0.07 } })!.detail).toBe("Its model was told to answer soon, to stay under its $0.07 cap. No tool call was refused.");
+  });
+  it("names no amount for refused calls: the count is of every one since the run began, and a cap raised since is not the one they met", () => {
+    // Refused under a $1 cap since raised to $2: the run did not wind down under $2, and its view says only $2.
+    const said = budgetStop({ stopped_for: null, budget_refused_calls: 1, cost: { cap_usd: 2 } })!;
+    expect(said).toEqual({ title: "1 call refused for the run's budget", detail: "1 tool call was refused, unrun, for its budget, under the cap it had then.", bad: true });
+    expect(`${said.title} ${said.detail}`).not.toContain("$");
+    // A run that stopped short under its cap now names that cap for the stop, never for the refusals.
+    expect(budgetStop({ stopped_for: "budget", budget_refused_calls: 2, cost: { cap_usd: 2 } })!.detail).toBe("Its model was told to answer soon, to stay under its $2.00 cap, and it answered from what it had. 2 tool calls were refused, unrun, for its budget.");
+  });
+  it("stands out first, and as bad only where a call was refused: a run only told to wrap up may have done all it was asked", () => {
+    expect(findings(TRACE, TRACE_END, { run: { stopped_for: null, budget_refused_calls: 0 } }).map((f) => f.id)).not.toContain("budget");
+    const found = findings(TRACE, TRACE_END, { run: { stopped_for: "budget", budget_refused_calls: 3, cost: { cap_usd: 0.75 } } });
+    expect(found.map((f) => f.id).slice(0, 2)).toEqual(["budget", "failed"]);
+    expect([found[0]!.bad, found[0]!.span]).toEqual([true, undefined]);
+    const told = findings(TRACE, TRACE_END, { run: { stopped_for: "budget", budget_refused_calls: 0, cost: { cap_usd: 0.07 } } });
+    expect([told[0]!.id, told[0]!.title, told[0]!.bad]).toEqual(["budget", "The run was told to wrap up for its budget", undefined]);
+  });
+});
+
+describe("what was up beside the run's calls: its computers and browser sessions", () => {
+  const window = traceWindow(TRACE.spans, TRACE_END);
+  it("reads each as a stretch: what it is, its size or its provider's id, when it was up, and how much of that is in the run's cost", () => {
+    expect(stretches(null)).toEqual({ computers: [], browsers: [] });
+    expect(stretches(USAGE_CLI)).toEqual({ computers: [], browsers: [] });
+    const { computers, browsers } = stretches(USAGE_MACHINES);
+    expect(computers).toEqual([{ key: "c:0:sbx_41f0a2", kind: "computer", name: "daytona sandbox", about: "2 vCPU · 4 GB · 10 GB disk", from: TRACE_START + 1000, to: TRACE_START + 240_000, counted: 226, notes: [] }]);
+    expect(browsers).toEqual([{ key: "b:0:browser-1", kind: "browser", name: "browserbase browser", about: "bb_9d2c41", from: TRACE_START + 60_000, to: TRACE_START + 120_000, counted: 60, notes: ["Closed by the agent"] }]);
+  });
+  it("says what a record says beside its times: a GPU, a computer kept for a person, an attempt that was cut, a session with no end", () => {
+    const computer = { ...USAGE_MACHINES.computer_intervals![0]!, gpu: { type: "H100", count: 2 }, disk_gb: null, ended_at: null, kept: true, attempt: 1, billable: false };
+    const session = { ...USAGE_MACHINES.browser_sessions![0]!, ended_at: null, release_reason: null, charged_seconds: null };
+    const { computers, browsers } = stretches({ computer_intervals: [computer], browser_sessions: [session, { ...session, tag: "browser-2", started_at: null }] });
+    expect([computers[0]!.about, computers[0]!.to, computers[0]!.notes]).toEqual(["2 vCPU · 4 GB · 2 H100 GPU", null, ["Kept while the run waited for a person", "Attempt 1: cut and worked again"]]);
+    // A session whose start is not recorded (its runner died before its release was written) is still one of the run's,
+    // with what was charged for it: kept, after the ones with a start, and with no place on the axis.
+    const lost = { ...session, tag: "browser-2", started_at: null, ended_at: new Date(TRACE_START + 90_000).toISOString(), charged_seconds: 42 };
+    const both = stretches({ computer_intervals: [], browser_sessions: [lost, session] }).browsers;
+    expect(both.map((b) => [b.key, b.from, b.to, b.counted])).toEqual([["b:1:browser-1", TRACE_START + 60_000, null, null], ["b:0:browser-2", null, null, 42]]);
+    expect(stretchLane(both, window, TRACE_END).bars.map((bar) => bar.stretch.key)).toEqual(["b:1:browser-1"]);
+    expect(browsers.map((b) => [b.key, b.to, b.counted, b.notes])).toEqual([["b:0:browser-1", null, null, []], ["b:1:browser-2", null, null, []]]);
+  });
+  it("places each on the trace's window: the part before the first request or after the last call is not drawn, and is said", () => {
+    const { computers, browsers } = stretches(USAGE_MACHINES);
+    // The sandbox was made 2.4 s before the window and deleted 12.1 s after it: the whole lane, open at both ends.
+    expect(stretchLane(computers, window, TRACE_END)).toEqual({ rows: 1, bars: [{ stretch: computers[0], left: 0, width: 100, row: 0, before: true, after: true }] });
+    // The session: from 56.6 s into the window's 224.5 s, for 60 s.
+    const [bar] = stretchLane(browsers, window, TRACE_END).bars;
+    expect([bar!.left, bar!.width].map((n) => Number(n.toFixed(2)))).toEqual([25.21, 26.73]);
+    expect([bar!.before, bar!.after]).toEqual([false, false]);
+    // One with no end is drawn to now.
+    const open = stretchLane([{ ...browsers[0]!, to: null }], window, TRACE_START + 3400 + 112_250).bars[0]!;
+    expect(Number((open.left + open.width).toFixed(2))).toBe(50);
+  });
+  it("draws none that lies wholly outside the window: one opened after the last span a long run's trace holds would read as up at its edge", () => {
+    const { browsers } = stretches(USAGE_MACHINES);
+    // The window ends 227.9 s in. A session opened at 300 s, and one over before the first request, are on no part of it.
+    const later = { ...browsers[0]!, key: "later", from: TRACE_START + 300_000, to: TRACE_START + 330_000 };
+    const earlier = { ...browsers[0]!, key: "earlier", from: TRACE_START + 1000, to: TRACE_START + 2000 };
+    expect(stretchLane([earlier, browsers[0]!, later], window, TRACE_END).bars.map((bar) => bar.stretch.key)).toEqual(["b:0:browser-1"]);
+    // One that only reaches into the window is drawn from its edge.
+    const reaching = { ...browsers[0]!, key: "reaching", from: TRACE_START + 1000, to: TRACE_START + 3400 + 22_450 };
+    expect(stretchLane([reaching], window, TRACE_END).bars.map((bar) => [bar.left, Number(bar.width.toFixed(2)), bar.before])).toEqual([[0, 10, true]]);
+  });
+  it("says when one started against the first request", () => {
+    expect([since(-2400), since(0), since(56_600)]).toEqual(["2.4 s before the first request", "+0:00.0", "+0:56.6"]);
+    // A run with no request measures from its own start.
+    expect(since(-500, "the run's start")).toBe("500 ms before the run's start");
+  });
+});
+
+describe("the span a tool call's timeline row is", () => {
+  it("is named by its conversation and its call id, and by its turn among calls of that id in the conversation", () => {
+    const use = (id: string, tool_use_id: string | null, conversation_id?: number, kind = "tool_use") => ({ id, kind, tool_use_id, ...(conversation_id === undefined ? {} : { conversation_id }) }) as Parameters<typeof callSpanIds>[0][number];
+    const ids = callSpanIds([
+      use("r1", "call_a"),
+      use("r2", "call_a", 0, "tool_result"),
+      // A subagent's conversation makes a call of the same id: a span of its own.
+      use("r3", "call_a", 1),
+      // The run's own conversation makes a call of that id again: its second, a span of its own too.
+      use("r4", "call_a", 0),
+      use("r5", "call_b"),
+      use("r6", null),
+    ]);
+    expect([...ids]).toEqual([["r1", "t:0:call_a"], ["r3", "t:1:call_a"], ["r4", "t:0:call_a#2"], ["r5", "t:0:call_b"]]);
   });
 });

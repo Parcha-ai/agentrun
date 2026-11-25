@@ -31,6 +31,8 @@
 // as the runner was handed it at its start (secrets.ts secret, never its environment), for an address on Composio's origin
 // alone (composioEnvKey), and only for a server the run is granted: the run's process never holds it. Unset, or a row at
 // another address, the claim is refused before the loop starts (pinOf), in words naming it, and nothing is sent.
+// A per_run server the API token saved at an origin off the API-only list (mcp-api-only-origins.ts) is refused at the
+// claim (pinOf) and at each call after it (check): its entry holds only those words, so nothing goes to that origin.
 //
 // fresh(). After the pin check and before the loop, and again on a command-row resume: an OAuth access token past its
 // expiry is refreshed, bounded (the call within MCP_REFRESH_CALL_MS; a request not yet dialled within 4 s, and tried again
@@ -53,6 +55,7 @@
 // the next call sends the new one (or is refused for the move); and an OAuth access token within REFRESH_MARGIN_MS of its
 // end is refreshed through open's lease path: behind the call while the token is still valid (the call goes at once on
 // it), waited on only when it has run out. Concurrent calls to one server share one such open.
+import { heldApiOnlyMcpOrigins, offApiOnlyMcpOrigins } from "../mcp-api-only-origins.js";
 import { randomUUID } from "node:crypto";
 import { EndpointRefused, REFRESH_REQUEST_MS, refreshed, refused, RequestUnsent, type Seen, systemNetwork, type OAuthNetwork, type TokenSet } from "../mcp-oauth.js";
 import { type McpCredentials, type McpPin } from "../mcp-gateway.js";
@@ -176,6 +179,9 @@ export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> 
   const stamps = new Map<string, { url: string; auth: string; changedAt: number | null; end?: number; until?: number | null }>();
   /** The servers check() found removed: nothing (a github_app token's refresh among it) puts their entry back. */
   const gone = new Set<string>();
+  /** The per_run servers the API-only origin list refused when last opened (offApiOnlyMcpOrigins): check() opens one
+   *  again when the list says otherwise now. */
+  const offList = new Set<string>();
   /** The opens check() started, by server: concurrent calls share one. */
   const reopening = new Map<string, Promise<unknown>>();
   // Servers whose refresh behind a still-valid token is going: one at a time per server from this claim.
@@ -283,7 +289,13 @@ export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> 
     if (row.auth === "github_app") return await github.open(name, entry), { awaited: true };
     // A per_run server keeps none either: its credential is the one the run's caller handed it (mcp_auth), sealed in the
     // run's launch, read again at every fresh() so a message's new one reaches the run's next request.
-    if (row.auth === "per_run") return entry(await perRun(name, row.url)), { awaited: false };
+    // One the API token saved at an origin no longer on the API-only list gets no entry but those words.
+    if (row.auth === "per_run") {
+      const off = await offApiOnlyMcpOrigins(store, name, row);
+      if (off) offList.add(name);
+      else offList.delete(name);
+      return entry(off ? { unopened: off } : await perRun(name, row.url)), { awaited: false };
+    }
     // A per-run Composio server: the run's account, or its calls refused unsent; its key is opened below as any server's.
     const account = row.auth === "headers" ? await composioAccount(name, row) : undefined;
     if (account && "unopened" in account) return entry({ unopened: account.unopened }), { awaited: false };
@@ -460,8 +472,18 @@ export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> 
       delete credentials[name];
       return;
     }
+    // A per_run server: the API-only origin list read at every call, not only at the claim, since a runner of its own
+    // holds its runs past a server's restart with the list changed. Refused or let in since its last open: opened again.
+    // The list is read first: with none held (a full server's store) the row is not read, and nothing is refused.
+    let listMoved = false;
+    if (stamp.auth === "per_run") {
+      const held = await heldApiOnlyMcpOrigins(store);
+      const row = held ? await getMcpServer(store, name) : undefined;
+      listMoved = (row !== undefined && (await offApiOnlyMcpOrigins(store, name, row, held)) !== undefined) !== offList.has(name);
+      if (released) return;
+    }
     const was = stamps.get(name);
-    const changed = !was || gone.has(name) || was.url !== stamp.url || was.auth !== stamp.auth || was.changedAt !== stamp.credentialChangedAt;
+    const changed = !was || gone.has(name) || listMoved || was.url !== stamp.url || was.auth !== stamp.auth || was.changedAt !== stamp.credentialChangedAt;
     // The token's end by the store's clock (tokenLeftMs), else as this claim opened it.
     const left = stamp.tokenLeftMs ?? (was?.end !== undefined ? was.end - now() : null);
     // And whether the row still holds the token this claim opened: another claim's refresh moves the row's token end (not
@@ -548,6 +570,9 @@ async function pinOf({ store, claim, grants, githubMcpOrigin = GITHUB_MCP_ORIGIN
     const keyEnv = row ? await keyEnvOf(store, server, row) : undefined;
     const got = row && keyEnv ? composioEnvKey(server, row.url, keyEnv, composioMcpOrigin) : undefined;
     if (got && "refused" in got) throw new McpClaimRefused(`${got.refused} Nothing was sent.`);
+    // A per_run server the API token saved at an origin no longer on the API-only list: the run never starts, nothing sent.
+    const off = row ? await offApiOnlyMcpOrigins(store, server, row) : undefined;
+    if (off) throw new McpClaimRefused(off);
   }
   // As plain JSON, as the stored pin reads (the harnesses and the run's directory take it as such).
   return JSON.parse(JSON.stringify(pinned)) as McpPin;

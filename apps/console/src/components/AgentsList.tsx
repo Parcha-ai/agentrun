@@ -9,8 +9,9 @@ import { Button } from "@/components/ui/button";
 import { Banner } from "@/components/ui/banner";
 import { Chip } from "@/components/ui/chip";
 import { fieldBoxClass, Input } from "@/components/ui/field";
-import { type Agent, learningOn } from "@/lib/agentForm";
+import { type Agent, harnessLabel, learningOn } from "@/lib/agentForm";
 import { AgentCardFrame, AgentCardLearning } from "@/components/AgentCard";
+import { agentHarness } from "@/components/HarnessIcon";
 import { agentHash } from "@/components/AgentPage";
 import { nativeReadinessOf, nativeRuntimeLabel, nativeStateLabel } from "@/lib/native";
 import { backendSdkLabel, backendSdkOf } from "@/lib/backendSdk";
@@ -87,9 +88,9 @@ function AgentCard({ agent: a, actions, learning }: { agent: Agent; actions: Age
     : learning === null ? "This server does not support learning." : learning === undefined ? "The server's learning status has not been read yet."
       : learning === "off" ? "Learning is disabled on this server. Its owner must enable it before this agent can learn." : undefined;
   return (
-    <AgentCardFrame name={a.definition.name} icon={Icon} harness={a.kind === "workflow" ? "workflow" : cli?.runtime ?? sdk?.runtime ?? native?.runtime ?? a.definition.harness ?? "pi"} archived={archived} onOpen={() => actions.onOpen?.(a.agent_id)}
+    <AgentCardFrame name={a.definition.name} icon={Icon} harness={agentHarness(a)} archived={archived} onOpen={() => actions.onOpen?.(a.agent_id)}
+      harnessName={a.kind === "agentic" ? (cli ? cliLearningLabel(cli.runtime) : sdk ? backendSdkLabel(sdk) : native ? nativeRuntimeLabel(native.runtime) : harnessLabel(a.definition.harness ?? "pi")) : undefined}
       badges={<><Chip>{a.kind}</Chip>
-        {a.kind === "agentic" && <Chip>{cli ? cliLearningLabel(cli.runtime) : sdk ? backendSdkLabel(sdk) : native ? nativeRuntimeLabel(native.runtime) : a.definition.harness ?? "pi"}</Chip>}
         {native && <Chip tone={native.connected && native.state === "ready" ? "success" : "warning"}>{nativeStateLabel(native)}</Chip>}
         {archived && <Chip tone="muted">Archived</Chip>}</>}
       description={a.definition.description || (a.kind === "workflow" ? workflowShape(a.definition.workflow) : "No description.")}

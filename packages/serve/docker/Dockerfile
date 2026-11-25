@@ -198,7 +198,8 @@ COPY --from=ffmpeg /opt/ffmpeg/ /usr/local/
 RUN [ "$(command -v ffmpeg)" = /usr/local/bin/ffmpeg ] && node /opt/agentrun/packages/serve/docker/ffmpeg-check.mjs
 WORKDIR /opt/agentrun
 USER node
-ENV NODE_ENV=production
+# AGENTRUN_IN_IMAGE: this image says it is itself (place-offers.ts containerOf), where Kubernetes and containerd mark nothing.
+ENV NODE_ENV=production AGENTRUN_IN_IMAGE=1
 EXPOSE 7340
 VOLUME ["/data"]
 # The launcher hands the secrets over its pipe; tini is PID 1; docker/start.sh runs the command. `server-and-runner` and

@@ -129,7 +129,7 @@ a small link in a row gets there with padding the layout does not see (`-my-1 py
   action uses the same radius on its single outer edge; its main action and chooser stay square inside that edge.
   Its tinted main action and chooser share the foreground, hover, open and focus treatment across the whole group,
   with no internal divider. Compact row actions keep the neutral secondary treatment.
-- The integrated build composer uses `!rounded-composer` (`--radius-composer: 1rem`). Keep this softer shape scoped
+- The integrated build composer uses `!rounded-composer` (`--radius-composer: 0.875rem`, 14px). Keep this softer shape scoped
   to the build composer.
 - `shadow-float` goes under a menu, a picker's list, a tip, a toast and a dialog. Nothing in the page's flow has a
   shadow.
@@ -180,6 +180,7 @@ Import from `@/components/ui`.
 | A text field | `Field` around `Input` or `Textarea`. `note` goes before the control, `hint` after it | A bare `<input>` with its own classes. |
 | A field with an icon or buttons inside its edge | A box with `fieldBoxClass` around `<Input bare>` or `<Textarea bare>` | A field with `outline-none` and no focus of its own. |
 | A choice from a list | `Picker` (opens under its field), for every list; inside a `Field` the label, hint and error are wired to it. `steady` where the field is sized by its words: it keeps the width of its longest option whatever is picked, and no option wraps in its list | A bare `<select>`. |
+| A choice from a long list (a toolkit's events, its actions) | `SearchPicker`: a `Picker` whose field is a search box. Typing filters its open list by every word typed, in an option's words or its `keywords` (a slug, a description); the chevron opens the whole list; Enter never submits the form; `nothing(query)` says when nothing matches | A filter box of its own beside a `Picker`. |
 | One value out of a run of whole steps (a revision) | `Slider`: a native range, quiet (a thin `border-strong` track, a small `foreground` dot), with a `label` and a `valueText` in words | A bare `<input type="range">`. |
 | One choice of a few, all in view | `Segmented`; `Radio`s in a `<Field group>` when each needs a sentence | Buttons that look like tabs. |
 | Any of several | `Checkbox`; a native input with `accent-primary` where a row has its own layout | |
