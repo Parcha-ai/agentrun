@@ -364,6 +364,25 @@ test("a moved session's copy of an old compaction is no evidence for its boundar
   }
 });
 
+test("a 1h cache write in a session's earlier file holds in its later files until one writes the cache again", async (t) => {
+  // The session moved twice. Its first folder's file writes the cache for an hour; the files after it copy what came
+  // before (the same uuids) and write nothing. Ten minutes is no idle gap under the hour: inside the second file (turn 3)
+  // and at the boundary into the third (turn 5).
+  const home = await tempHome(t);
+  const first = linear([{ read: 1000, write: 500, long: 500, i: 10 }]);
+  const second = linear([{ read: 1500, i: 20 }, { read: 100, i: 620 }, { read: 1400, i: 630 }], 1, "a0");
+  const third = linear([{ read: 100, i: 1240 }], 4, "a3");
+  const a = await writeJsonl(claudeFile(home, SESSION, "-work-a"), first);
+  const b = await writeJsonl(claudeFile(home, SESSION, "-work-b"), [...first, ...second]);
+  await writeJsonl(claudeFile(home, SESSION, "-work-c"), [...first, ...second, ...third]);
+  await utimes(a, new Date(at(0)), new Date(at(0)));
+  await utimes(b, new Date(at(1)), new Date(at(1)));
+  const result = run(home, "--cache", "--sources", "claude-code");
+  assert.equal(result.status, 0, result.stderr);
+  const [line] = result.stdout.trim().split("\n").map((text) => JSON.parse(text));
+  assert.deepEqual(line.breaks.map(({ turn, cause }) => [turn, cause]), [[3, "unknown"], [5, "unknown"]]);
+});
+
 test("a compaction after the first file's last turn is evidence for the boundary break, though the next file holds only its copy", async (t) => {
   // The session in its first folder: two turns, then a compaction. Moved, its file in the second folder copies all of it
   // (the compaction too, the same uuids) and goes on from the summary with a turn that reads little.

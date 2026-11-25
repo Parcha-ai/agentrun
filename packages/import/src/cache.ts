@@ -52,7 +52,13 @@ const promptOf = ({ input, cacheRead, cacheWrite }: Usage): number => input + ca
  *  without its chain names a model change or an idle gap; its other breaks are unknown. A turn compared is a request with
  *  usage that sent a prompt (a request that failed before it sent any, or whose usage is unknown, is passed over); a
  *  break compares it with the one before it. */
-export async function analyzeCache(session: Pick<SessionOf, "turns" | "chain" | "model">, { catalog, calculateCost, before: carried }: CacheOptions = {}): Promise<CacheReport> {
+export async function analyzeCache(session: Pick<SessionOf, "turns" | "chain" | "model">, options: CacheOptions = {}): Promise<CacheReport> {
+  return analyzed(session, options, options.before?.long ?? false);
+}
+
+/** analyzeCache, with `long`: whether the latest cache write before the file was a 1h one. A file analyzed alone (no
+ *  `before`) takes it from the session's earlier files once they are joined: cacheHome analyzes each file both ways. */
+async function analyzed(session: Pick<SessionOf, "turns" | "chain" | "model">, { catalog, calculateCost, before: carried }: CacheOptions, written: boolean): Promise<CacheReport> {
   const answers = session.turns.filter((turn): turn is Answer => turn.role === "assistant");
   const chain = session.chain ?? [];
   // The record that opens each request, by its index among the answers, and each record by id (the first of a repeat).
@@ -69,7 +75,7 @@ export async function analyzeCache(session: Pick<SessionOf, "turns" | "chain" | 
   // The turn before, at index -1 when it is the session's previous file's.
   let before: { index: number; answer: Pick<Answer, "model" | "at">; usage: Usage } | undefined = carried ? { index: -1, answer: { at: carried.at, ...(carried.model ? { model: carried.model } : {}) }, usage: carried.usage } : undefined;
   // Whether the latest request that wrote the cache wrote it for an hour.
-  let long = carried?.long ?? false;
+  let long = written;
   for (const [index, answer] of answers.entries()) {
     const usage = answer.usage;
     if (!usage || promptOf(usage) === 0) continue;
@@ -193,9 +199,11 @@ export async function cacheHome(home: string, { sources = CACHE_SOURCES, readers
     // Each file analyzed as it is read, on its own; and its first turn compared, with the chain before it, kept to compare
     // with the last turn of the session's file before it once the files are joined (a Codex thread goes on in a new
     // rollout).
-    const reports = new Map<string, { alone: CacheReport; head?: Pick<SessionOf, "turns" | "chain" | "model">; skipped: number }>();
+    // Each file alone two ways, the cache before it written for 5 minutes or for an hour (`long`): which holds is known
+    // once the session's files before it are joined, and holds until the file writes the cache itself.
+    const reports = new Map<string, { alone: CacheReport; long: CacheReport; head?: Pick<SessionOf, "turns" | "chain" | "model">; skipped: number }>();
     const { tops, children, unread } = await readSource(home, source, readers, env, undefined, UNPRICED, true, undefined, async (read): Promise<SessionRead> => {
-      reports.set(locatorKey(read.locator), { alone: await analyzeCache(read.session, priced), ...headOf(read.session) });
+      reports.set(locatorKey(read.locator), { alone: await analyzed(read.session, priced, false), long: await analyzed(read.session, priced, true), ...headOf(read.session) });
       const { turns: _turns, chain: _chain, firstPrompt: _prompt, titleText: _title, sourceTitle: _source, cwd: _cwd, ...session } = read.session;
       return { locator: read.locator, session: { ...session, turns: [] }, requests: read.requests.map(({ at, usage }): Answer => ({ role: "assistant", text: "", calls: [], at, ...(usage ? { usage } : {}) })) };
     });
@@ -220,9 +228,11 @@ export async function cacheHome(home: string, { sources = CACHE_SOURCES, readers
           const { breaks: [edge] } = await analyzeCache(report.head, { ...priced, before: carry });
           if (edge) breaks.push({ ...edge, turn: edge.turn + report.skipped + counted });
         }
-        for (const found of report.alone.breaks) breaks.push({ ...found, turn: found.turn + counted });
+        // The file as the cache before it was written: a 1h write in an earlier file holds until this one writes.
+        const mine = carry?.long ? report.long : report.alone;
+        for (const found of mine.breaks) breaks.push({ ...found, turn: found.turn + counted });
         // A file with no turn compared passes the carry on, with any compaction of its own.
-        carry = report.alone.last ?? (carry && { ...carry, compacted: carry.compacted === true || report.alone.compacted });
+        carry = mine.last ?? (carry && { ...carry, compacted: carry.compacted === true || mine.compacted });
         counted += requestsOf(part.read);
       }
       subagents.forEach((part, n) => {
