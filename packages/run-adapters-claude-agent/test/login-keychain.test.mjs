@@ -43,6 +43,10 @@ if (command === 'find-generic-password') {
 } else if (command === 'add-generic-password') {
   items[key] = Buffer.from(flag('-X'), 'hex').toString('utf8');
   fs.writeFileSync(file, JSON.stringify(items));
+} else if (command === 'delete-generic-password') {
+  if (!(key in items)) process.exit(44);
+  delete items[key];
+  fs.writeFileSync(file, JSON.stringify(items));
 } else process.exit(2);
 `;
 
@@ -74,6 +78,13 @@ if (group === 'auth' && verb === 'status') {
   try { email = JSON.parse(fs.readFileSync(accountFile, 'utf8')).oauthAccount?.emailAddress; } catch {}
   console.log(JSON.stringify(signedIn ? { loggedIn: true, authMethod: 'claude.ai', ...(email ? { email } : {}) } : { loggedIn: false, authMethod: 'none' }));
   process.exit(signedIn ? 0 : 1);
+}
+if (group === 'auth' && verb === 'logout') {
+  // The item the sign-in kept goes, and the account with it; an item already gone is no failure.
+  const removed = spawnSync('security', ['delete-generic-password', '-a', user, '-s', item]).status;
+  if (removed !== 0 && removed !== 44) process.exit(1);
+  fs.rmSync(accountFile, { force: true });
+  process.exit(0);
 }
 process.exit(2);
 `;
@@ -234,6 +245,42 @@ test("on macOS the badge and a plain `claude auth status` in the person's home w
     if (place === "AgentRun's own folder") assert.deepEqual([shown.CLAUDE_CONFIG_DIR, shown.CLAUDE_SECURESTORAGE_CONFIG_DIR], [login.dir, login.dir], "on AgentRun's own folder the line names the folder in both variables");
     if (login.home !== undefined) assert.equal(plainStatus(m, { CLAUDE_CONFIG_DIR: login.dir, CLAUDE_SECURESTORAGE_CONFIG_DIR: login.dir }), false, `${place}: both variables set to the default folder name another Keychain item`);
   }
+});
+
+// The CLI's own sign-out (claudeLogout) runs with the sign-in's variables in the person's home, so it reaches the one
+// Keychain item the sign-in kept: after it no item is left and the status check reads signed out. Serve runs it on
+// AgentRun's own folder alone; the harness names the item the same way at every place.
+test("on macOS the CLI's own sign-out removes the Keychain item the sign-in kept, at every place: none is left, and the status check reads signed out", { skip }, async () => {
+  assert.equal(typeof claude.claudeLogout, 'function', "the harness has the CLI's own sign-out");
+  for (const [place, at] of Object.entries(PLACES)) {
+    const m = mac();
+    const login = at(m);
+    await asServerOf(m, async () => {
+      await WAYS['the sign-in this host starts'](m, login);
+      assert.equal(m.items(), 1, `${place}: signed in, one item`);
+      assert.equal(await claude.claudeLogout(m.cli, login, { path: m.path, platform: 'darwin' }), true, `${place}: the CLI confirmed its sign-out`);
+      assert.equal(m.items(), 0, `${place}: no Keychain item is left after the sign-out`);
+      assert.deepEqual(await status(m, login), { signedIn: false, method: 'none' }, `${place}: the status check after the sign-out`);
+      assert.equal(runSays(m, login), false, `${place}: a run after the sign-out`);
+    });
+  }
+});
+
+test("the CLI's own sign-out says false, never throws, when the CLI fails it, is no program, or outlasts its limit", { skip }, async () => {
+  assert.equal(typeof claude.claudeLogout, 'function', "the harness has the CLI's own sign-out");
+  const m = mac();
+  const login = PLACES["AgentRun's own folder"](m);
+  const failing = join(m.bin, 'claude-fails');
+  writeFileSync(failing, '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+  const hangs = join(m.bin, 'claude-hangs');
+  writeFileSync(hangs, '#!/bin/sh\nexec sleep 30\n', { mode: 0o755 });
+  await asServerOf(m, async () => {
+    assert.equal(await claude.claudeLogout(failing, login, { path: m.path }), false, 'a CLI that exits 1');
+    assert.equal(await claude.claudeLogout(join(m.bin, 'no-such-claude'), login, { path: m.path }), false, 'no program at the path');
+    const started = Date.now();
+    assert.equal(await claude.claudeLogout(hangs, login, { path: m.path, timeoutMs: 200 }), false, 'a CLI past its limit');
+    assert.ok(Date.now() - started < 5_000, 'ended at its limit, not left running');
+  });
 });
 
 // The finding this holds: a sign-in from the console saved its item under the account "unknown" (the CLI was started

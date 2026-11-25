@@ -2,7 +2,7 @@ import { PaidRefused } from "../fees.js";
 import type { Cost } from "./decider.js";
 
 // A request refused before it was billed, or never sent: nothing to book. Any other failure may have been billed.
-const UNBILLED = new Set(["configuration", "auth", "rate_limited", "invalid_request", "connection", "pay_refused"]);
+const UNBILLED = new Set(["configuration", "auth", "payment_required", "rate_limited", "invalid_request", "connection", "pay_refused"]);
 
 const fields = (thrown: unknown): Record<string, unknown> => (thrown !== null && typeof thrown === "object" ? (thrown as Record<string, unknown>) : {});
 export const codeOf = (thrown: unknown): string => (thrown instanceof PaidRefused ? "pay_refused" : typeof fields(thrown).code === "string" ? (fields(thrown).code as string) : "error");

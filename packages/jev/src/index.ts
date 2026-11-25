@@ -645,6 +645,7 @@ function jevErrorCode(error: JevError, timedOut: boolean, cancelled: boolean): D
   if (error.code !== "http") return error.code;
   if (error.status === 408 || (error.status !== undefined && error.status >= 500)) return "outcome_unknown";
   if (error.status === 401 || error.status === 403) return "auth";
+  if (error.status === 402) return "payment_required";
   if (error.status === 429) return "rate_limited";
   if (error.status === 400 || error.status === 422) return "invalid_request";
   return "http";

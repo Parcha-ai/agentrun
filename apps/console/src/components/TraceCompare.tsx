@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { ProblemCard } from "@/components/Problem";
 import { RunSkeleton } from "@/components/Skeleton";
 import { StatusBadge } from "@/components/StatusBadge";
-import { pageTitleClass, pageToolbarClass } from "@/components/ui/toolbar";
+import { pageBodyClass, pageClass, pageTitleClass, pageToolbarClass } from "@/components/ui/toolbar";
 import type { Client } from "@/lib/client";
 import { runTitle } from "@/lib/format";
 import { problem } from "@/lib/problem";
@@ -43,9 +43,9 @@ export function TraceCompare({ v2, ids, now: fixed }: { v2: Pick<Client, "getRun
     </div>
   );
   if (ids.length < MIN_COMPARED) {
-    return <div className="flex flex-col">{bar}<p role="status" className="px-5 py-8 text-body text-muted-foreground md:px-8">This address names {ids.length === 1 ? "one run" : "no run"}. A comparison takes two to four: open a run's Dev tools tab and choose Compare, or open a race.</p></div>;
+    return <div className={pageClass}>{bar}<p role="status" data-page-body className={cn(pageBodyClass, "px-5 py-8 text-body text-muted-foreground md:px-8")}>This address names {ids.length === 1 ? "one run" : "no run"}. A comparison takes two to four: open a run's Dev tools tab and choose Compare, or open a race.</p></div>;
   }
-  if (error) return <div className="flex flex-col">{bar}<ProblemCard className="m-5 md:m-8" problem={problem(error, "the runs to compare")} onRetry={() => setReads((n) => n + 1)} /></div>;
+  if (error) return <div className={pageClass}>{bar}<div data-page-body className={pageBodyClass}><ProblemCard className="m-5 md:m-8" problem={problem(error, "the runs to compare")} onRetry={() => setReads((n) => n + 1)} /></div></div>;
   if (!sides) return <RunSkeleton />;
 
   const pair = sides.length === 2;
@@ -63,9 +63,9 @@ export function TraceCompare({ v2, ids, now: fixed }: { v2: Pick<Client, "getRun
   ));
   const scroll = (label: string) => ({ className: "overflow-x-auto border bg-card", tabIndex: 0, role: "region", "aria-label": label }) as const;
   return (
-    <div className="flex flex-col">
+    <div className={pageClass}>
       {bar}
-      <div className="space-y-6 p-5 md:p-8">
+      <div data-page-body className={cn(pageBodyClass, "space-y-6 p-5 md:p-8")}>
         {/* A trace is a run's first 2,000 requests and calls: a longer run's figures are of that part, and are said so. */}
         {sides.map((side, i) => partial(side) && (
           <p key={side.run.run_id} role="status" data-partial className="text-body text-muted-foreground">{nameOf(i)}'s trace holds its first {side.trace.spans.length.toLocaleString("en-US")} requests and calls; {side.trace.dropped.toLocaleString("en-US")} later ones are not counted. Its figures from the trace are at least what is shown, and no difference is said of them. Its cost is the run's own, not summed from the trace.</p>
