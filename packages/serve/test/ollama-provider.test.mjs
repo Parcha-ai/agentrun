@@ -16,7 +16,7 @@ import { agent, follow, journalOf, scratch, serve, withEnv } from "./support.mjs
 const { chooseModel, hostModel, providerModels, runModels } = await import("../dist/model.js");
 const { routeOf } = await import("../dist/runner/model-route.js");
 const { factsOf, HARNESS_MODULES_ENV } = await import("../dist/harness-table.js");
-const { listOllama, ollamaAsking, ollamaBase, ollamaClock, ollamaModels, OLLAMA_NUM_CTX, OLLAMA_TTL_MS } = await import("../dist/ollama-provider.js");
+const { listOllama, ollamaAsking, ollamaBase, ollamaClock, ollamaKept, ollamaModels, ollamaShown, OLLAMA_NUM_CTX, OLLAMA_TTL_MS } = await import("../dist/ollama-provider.js");
 
 // The suites turn every Ollama off (support.mjs, OLLAMA_OFF_ENV); this file asks its own fakes alone.
 delete process.env.AGENTRUN_SERVE_FAUX_NO_OLLAMA;
@@ -170,14 +170,115 @@ test("an Ollama cloud model (remote_model and remote_host, run on ollama.com) is
   assert.ok(!ollama.got.show.includes(cloud.name), "its tag alone says it is a cloud model: no /api/show for it");
 });
 
-test("an Ollama that takes the request and never answers lists nothing once its timeout passes, and that answer is kept for its address", async (t) => {
+test("an Ollama that takes the request and never answers lists nothing once its timeout passes; that answer is never kept fresh, and no caller waits on it again", async (t) => {
   const ollama = await fakeOllama(t, { hang: true });
   const env = { OLLAMA_HOST: ollama.host };
   assert.deepEqual(await listOllama(env, { timeoutMs: 50 }), [], "no models, no throw");
   assert.equal(ollama.got.tags, 1, "it was asked");
   const models = await providerModels(env);
-  assert.deepEqual(models.getModels("ollama"), [], "providerModels takes the kept answer");
-  assert.equal(ollama.got.tags, 1, "and asks the stuck Ollama no more");
+  assert.deepEqual(models.getModels("ollama"), [], "providerModels takes the kept answer at once");
+  assert.ok(ollamaAsking(env), "and asks the stuck Ollama again behind it, never waiting on it");
+});
+
+/** A test Ollama, as the process's own fetch (ollamaModels asks with it), for an address no socket is opened to: `mode`
+ *  "up" answers /api/tags and /api/show with SYNTH_MODELS, "throws" throws as a missed deadline does, "wrong" answers
+ *  /api/tags 200 with no models list (an Ollama mid-load, or something else on its port). Counts each path it is asked. */
+function testOllama(t) {
+  const real = globalThis.fetch;
+  const ollama = { mode: "up", tags: 0, show: 0 };
+  globalThis.fetch = async (url, init) => {
+    const path = new URL(url).pathname;
+    if (path === "/api/tags") ollama.tags += 1;
+    if (path === "/api/show") ollama.show += 1;
+    if (ollama.mode === "throws") throw new DOMException("The operation was aborted due to timeout", "TimeoutError");
+    if (ollama.mode === "wrong" && path === "/api/tags") return Response.json({ error: "loading" });
+    return synthAnswer(url, init);
+  };
+  t.after(() => void (globalThis.fetch = real));
+  return ollama;
+}
+
+/** SYNTH_MODELS as a test fetch answers them: /api/tags, and /api/show for the model a request names. */
+async function synthAnswer(url, init) {
+  if (new URL(url).pathname === "/api/tags") return Response.json({ models: SYNTH_MODELS.map(({ name }) => ({ name })) });
+  const model = SYNTH_MODELS.find((m) => m.name === JSON.parse(init.body).model);
+  return Response.json({ capabilities: model.capabilities, model_info: { [`${model.family}.context_length`]: model.context_length } });
+}
+
+const NAMES = SYNTH_MODELS.map((model) => model.name);
+const names = (models) => models.map((model) => model.name);
+
+test("a listing that fails is never kept as fresh: the call after the one that asks again behind it gets the models, not none for OLLAMA_TTL_MS", async (t) => {
+  let clock = 1_000_000;
+  ollamaClock(() => clock);
+  t.after(() => ollamaClock());
+  const ollama = testOllama(t);
+  const env = { OLLAMA_HOST: "127.0.0.1:59101" };
+  ollama.mode = "throws";
+  assert.deepEqual(await ollamaModels(env), [], "the first ask fails: none, nothing thrown");
+  ollama.mode = "up";
+  await ollamaModels(env);
+  await ollamaAsking(env);
+  assert.equal(ollama.tags, 2, "asked again at once, with no clock moved");
+  assert.deepEqual(names(await ollamaModels(env)), NAMES, "the next call has the models");
+});
+
+test("a good listing, then a failed ask: callers keep the good models, and each failed ask is asked again", async (t) => {
+  let clock = 1_000_000;
+  ollamaClock(() => clock);
+  t.after(() => ollamaClock());
+  const ollama = testOllama(t);
+  const env = { OLLAMA_HOST: "127.0.0.1:59102" };
+  assert.deepEqual(names(await ollamaModels(env)), NAMES, "listed");
+  clock += OLLAMA_TTL_MS + 1;
+  for (const mode of ["throws", "wrong"]) {
+    ollama.mode = mode;
+    const tags = ollama.tags;
+    assert.deepEqual(names(await ollamaModels(env)), NAMES, `${mode}: the kept models at once`);
+    await ollamaAsking(env);
+    assert.equal(ollama.tags, tags + 1, `${mode}: asked again behind the caller`);
+    assert.deepEqual(names(await ollamaModels(env)), NAMES, `${mode}: the good models kept, never none`);
+    await ollamaAsking(env);
+    assert.equal(ollama.tags, tags + 2, `${mode}: and the failed ask is not fresh: asked again`);
+  }
+  // A run naming one model reads no failed listing as fresh: its own /api/show is asked.
+  ollama.mode = "up";
+  const shown = ollama.show;
+  assert.equal((await ollamaShown(env, TOOLS))?.name, TOOLS);
+  assert.equal(ollama.show, shown + 1, "its own /api/show");
+});
+
+test("a refused ask after a good listing keeps no models: a stopped Ollama's models leave the offers, and it is asked again at the next call", async (t) => {
+  let clock = 1_000_000;
+  ollamaClock(() => clock);
+  t.after(() => ollamaClock());
+  // An address nothing listens on, listed once by a test fetch, then asked with the real fetch: refused, as a stopped
+  // Ollama's address is.
+  const env = { OLLAMA_HOST: `127.0.0.1:${await freePort()}` };
+  assert.deepEqual(names(await listOllama(env, { fetch: synthAnswer })), NAMES, "listed while it ran");
+  assert.deepEqual(await listOllama(env), [], "refused: none, nothing thrown");
+  assert.deepEqual(ollamaKept(env), [], "the earlier models are not kept for a refused address");
+  assert.deepEqual(await ollamaModels(env), [], "the kept answer, none");
+  assert.ok(ollamaAsking(env), "and it is not fresh: asked again behind the caller");
+  await ollamaAsking(env);
+});
+
+test("a listing whose deadline passes during /api/show is not fresh: the models it missed come with the next ask", async (t) => {
+  let clock = 1_000_000;
+  ollamaClock(() => clock);
+  t.after(() => ollamaClock());
+  const ollama = testOllama(t);
+  const env = { OLLAMA_HOST: "127.0.0.1:59103" };
+  const loading = async (url, init) => {
+    if (new URL(url).pathname === "/api/tags") return Response.json({ models: [{ name: TOOLS }] });
+    // /api/show held until the listing's own deadline aborts it, as an Ollama loading a model holds it.
+    return new Promise((_, reject) => init.signal.addEventListener("abort", () => reject(init.signal.reason), { once: true }));
+  };
+  assert.deepEqual(await listOllama(env, { fetch: loading, timeoutMs: 1 }), [], "no /api/show answered: none");
+  assert.deepEqual(await ollamaModels(env), [], "the kept answer at once");
+  await ollamaAsking(env);
+  assert.equal(ollama.tags, 1, "asked again behind the caller");
+  assert.deepEqual(names(await ollamaModels(env)), NAMES, "the next call has the models");
 });
 
 test("a model trained on more than 64k runs at 64k: every /api/chat request carries options.num_ctx 65536, and its window is 65536", async (t) => {
@@ -401,9 +502,10 @@ test("an Ollama whose models take no tools gives no default: they stay pickable,
   assert.ok(pi.models.includes(`ollama/${PLAIN}`), String(pi.models));
 });
 
-test("an Ollama started after the server, with a model pulled, shows in capabilities once the kept listing goes stale: refreshed behind one answer, in the next, with no restart and no key saved", { timeout: 120_000 }, async (t) => {
+test("an Ollama started after the server, with a model pulled, shows in capabilities with no wait for a TTL: the down answer is never kept fresh, so it is asked again behind the next answer and shows in the one after, with no restart and no key saved", { timeout: 120_000 }, async (t) => {
   withEnv(t, {}, KEYS);
-  let clock = 1_000_000;
+  // Held still: nothing here waits for the kept listing to age.
+  const clock = 1_000_000;
   ollamaClock(() => clock);
   t.after(() => ollamaClock());
   const port = await freePort();
@@ -411,13 +513,11 @@ test("an Ollama started after the server, with a model pulled, shows in capabili
   withEnv(t, env);
   const { api } = await serve(t, { faux: undefined });
   assert.equal((await api("GET", "/capabilities")).body.models.default, null, "Ollama down: nothing listed");
+  await ollamaAsking(env);
   const ollama = await fakeOllama(t, { port, models: [SYNTH_MODELS.find((model) => model.name === TOOLS)] });
-  assert.equal((await api("GET", "/capabilities")).body.models.default, null, "the down answer is still fresh");
-  assert.equal(ollama.got.tags, 0, "nothing asked while it is fresh");
-  clock += OLLAMA_TTL_MS;
   await api("GET", "/capabilities");
   await ollamaAsking(env);
-  assert.equal(ollama.got.tags, 1, "the stale answer asked again, behind the answer");
+  assert.equal(ollama.got.tags, 1, "the down answer asked again, behind the answer, with no clock moved");
   const caps = (await api("GET", "/capabilities")).body;
   assert.equal(caps.models.default, `ollama/${TOOLS}`, JSON.stringify(caps.models));
   assert.equal(caps.models.ready, true);

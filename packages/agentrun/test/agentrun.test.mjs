@@ -5,7 +5,7 @@
 // exec of the packed package runs this bin.
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough, Writable } from "node:stream";
@@ -161,22 +161,42 @@ test("the server is this package's one dependency, at the exact version of the s
   assert.equal(start.OWN_SPEC, `@parcha/agentrun@${VERSION}`, "what the server is told started it, so its hints name this command");
 });
 
+// The server's refusals name the command that started it (AGENTRUN_INSTALLED_COMMAND): the installer's, which the person's
+// login shell has, when that command runs this very copy; npx's otherwise. Only the launcher knows which, from where it
+// runs: an inherited value (a server's run that starts npx @parcha/agentrun) never stands.
+test("started by the installer's command, the server is told that command's path; started any other way, it is told none", { timeout: 30_000 }, async (t) => {
+  const installed = await throughStub(t, [], {}, { installed: true });
+  assert.equal(installed.installed, realpathSync(join(installed.dir, "root", "bin", "agentrun")), installed.err);
+  const npx = await throughStub(t, [], { AGENTRUN_INSTALLED_COMMAND: "/opt/agentrun/bin/agentrun" });
+  assert.equal(npx.installed, null, "an inherited value is dropped");
+  const replaced = await throughStub(t, [], {}, { installed: true, shim: "#!/bin/sh\nexec '/opt/node/bin/node' '/opt/agentrun/lib/0.0.1/node_modules/@parcha/agentrun/bin/agentrun.mjs' \"$@\"\n" });
+  assert.equal(replaced.installed, null, "a command that runs another copy (an upgrade's) is not this copy's");
+});
+
 // The command passes its arguments through: the server's CLI picks the port and opens the browser.
 // A stand-in server installed beside a copy of this package records what it was started with.
 // `mode` is the stub launcher's (0o644: a launcher that can't be run). The command runs in the stub's own folder, so a
 // relative --data lands there. `fileBlocks` caps the size of any file the command writes (`ulimit -f`, 512-byte blocks), as
 // a full disk or a quota does. `running(child)`, when given, runs once the command has printed its line, before the test
-// sends it the SIGTERM.
-async function throughStub(t, args, env = {}, { mode = 0o755, fileBlocks, running } = {}) {
+// sends it the SIGTERM. `installed` lays the copy out as install.sh does (<root>/lib/<version>/node_modules, its command at
+// <root>/bin/agentrun running this copy's bin), with `shim` as that command's text when given.
+async function throughStub(t, args, env = {}, { mode = 0o755, fileBlocks, running, installed = false, shim } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "agentrun-stub-"));
   removeAtEnd(dir);
-  for (const part of ["bin", "lib", "package.json"]) cpSync(join(PACKAGE, part), join(dir, "pkg", part), { recursive: true });
-  const serve = join(dir, "pkg", "node_modules", "@parcha", "agentrun-serve");
+  const root = join(dir, "root");
+  const pkg = installed ? join(root, "lib", VERSION, "node_modules", "@parcha", "agentrun") : join(dir, "pkg");
+  for (const part of ["bin", "lib", "package.json"]) cpSync(join(PACKAGE, part), join(pkg, part), { recursive: true });
+  const serve = installed ? join(pkg, "..", "agentrun-serve") : join(pkg, "node_modules", "@parcha", "agentrun-serve");
   mkdirSync(join(serve, "launcher"), { recursive: true });
   writeFileSync(join(serve, "package.json"), JSON.stringify({ name: "@parcha/agentrun-serve", version: SERVE_VERSION }));
+  if (installed) {
+    mkdirSync(join(root, "bin"), { recursive: true });
+    const text = shim ?? `#!/bin/sh\n# AgentRun ${VERSION} on its own Node.js, written by the AgentRun installer (https://agentrun.ai/install).\nexec '${process.execPath}' '${join(pkg, "bin", "agentrun.mjs")}' "$@"\n`;
+    writeFileSync(join(root, "bin", "agentrun"), text, { mode: 0o755 });
+  }
   const served = join(dir, "served.json");
   writeFileSync(join(serve, "launcher", "agentrun-serve"), `#!${process.execPath}
-require("node:fs").writeFileSync(${JSON.stringify(served)}, JSON.stringify({ args: process.argv.slice(2), npx: process.env.AGENTRUN_NPX_PACKAGE, model: process.env.AGENT_MODEL ?? null, public: process.env.AGENTRUN_PUBLIC_URL ?? null, proxies: process.env.AGENTRUN_TRUSTED_PROXIES ?? null, pid: process.pid }));
+require("node:fs").writeFileSync(${JSON.stringify(served)}, JSON.stringify({ args: process.argv.slice(2), npx: process.env.AGENTRUN_NPX_PACKAGE, installed: process.env.AGENTRUN_INSTALLED_COMMAND ?? null, model: process.env.AGENT_MODEL ?? null, public: process.env.AGENTRUN_PUBLIC_URL ?? null, proxies: process.env.AGENTRUN_TRUSTED_PROXIES ?? null, pid: process.pid }));
 if (process.argv[2] === "import") process.exit(0);
 // STUB_FAIL: print why and exit before any "Open " line; STUB_OPEN: the URL its "Open " line names; STUB_SIGTERM=die: no
 // handler, so a SIGTERM ends it by the signal, as a real server's can.
@@ -235,7 +255,7 @@ else if (process.env.STUB_HANG) {
   const launcher = join(serve, "launcher", "agentrun-serve");
   chmodSync(launcher, mode);
   const { home, env: base } = bare(t);
-  const bin = join(dir, "pkg", "bin", "agentrun.mjs");
+  const bin = join(pkg, "bin", "agentrun.mjs");
   const command = fileBlocks === undefined ? [process.execPath, [bin, ...args]] : ["/bin/sh", ["-c", `ulimit -f ${fileBlocks} && exec "$0" "$@"`, process.execPath, bin, ...args]];
   const child = spawn(...command, { cwd: dir, env: { ...base, ...env }, stdio: ["ignore", "pipe", "pipe"] });
   const exited = new Promise((resolve) => child.on("exit", resolve));

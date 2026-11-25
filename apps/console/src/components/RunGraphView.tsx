@@ -75,6 +75,16 @@ export function RunGraphView({ data, actions = {}, fileUrl, initial = null, last
       <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
         <div className="min-h-[320px] min-w-0 flex-1 overflow-auto bg-[radial-gradient(hsl(var(--border))_1px,transparent_1px)] [background-size:22px_22px]">
           <div className="px-5 py-6 md:px-8">
+            {data.run.withheld && (
+              <p className="mb-4 border p-4 font-mono text-body text-muted-foreground" role="status">
+                This run's agent and revision are withheld: a saved secret is split across them, so neither is shown.
+              </p>
+            )}
+            {data.graph.withheld && (
+              <p className="mb-4 border p-4 font-mono text-body text-muted-foreground" role="status">
+                This run's workflow graph is withheld: a saved secret is split across two of its words, so none of them is shown.
+              </p>
+            )}
             <WorkflowGraph graph={data.graph} marks={marks} onSelect={(hit) => setSelected((s) => (s && s.path === hit.path && (s.item ?? null) === hit.item ? null : hit))} label="The run's workflow graph" />
           </div>
         </div>

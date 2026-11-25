@@ -94,14 +94,15 @@ function tracked(adapter) {
  *  session's proxy to the script, on the stand-in app-server. One sessions folder per loop: a resume on another runner
  *  opens the session from the run's journal. */
 export function codexSpec(setup, options = {}) {
-  strictOptions("codexSpec's setup", setup, ["script", "tools", "hooks", "agentId"]);
+  strictOptions("codexSpec's setup", setup, ["script", "tools", "hooks", "agentId", "endOfRun"]);
   strictOptions("codexSpec", options, ["fetch", "requests", "price"]);
-  const { script, tools, hooks, agentId } = setup;
+  const { script, tools, hooks, agentId, endOfRun } = setup;
   const sessionsDir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-codex-conformance-"));
   dirs.push(sessionsDir);
   const harness = resolveHarness("codex");
   return async (_claim, run) => ({
     ...(agentId ? { agentId } : {}),
+    ...(endOfRun ? { endOfRun } : {}),
     adapter: tracked(await harness.adapter(
       {
         run,
