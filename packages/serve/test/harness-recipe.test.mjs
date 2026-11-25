@@ -981,7 +981,10 @@ test("the Antigravity example recipe loads under the five rules: agy CLI 1.5.14,
   assert.deepEqual(recipe.keys, ["ANTIGRAVITY_GEMINI_API_KEY"]);
   assert.deepEqual(Object.entries(recipe.keyEnv), [["ANTIGRAVITY_GEMINI_API_KEY", "GEMINI_API_KEY"]]);
   assert.equal(recipe.keyMethod, "gemini-api-key");
-  assert.deepEqual(recipe.declares, { load: true, mcp: "http" });
+  // As harness-check found agy 1.5.14 (its initialize advertises loadSession and no MCP over http; its conversations are
+  // SQLite files in .gemini/antigravity-cli/conversations, which a new process loads from there).
+  assert.deepEqual(recipe.declares, { load: true, mcp: "stdio" });
+  assert.deepEqual(recipe.state, [".gemini/antigravity-cli/conversations"]);
 });
 
 test("AgentRun never reads, refreshes or sends an agent's sign-in, and has no usage reader: no harness source or ACP adapter source names a credential file or Google's account and quota APIs", () => {

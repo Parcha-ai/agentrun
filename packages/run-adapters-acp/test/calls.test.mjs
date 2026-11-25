@@ -2,7 +2,7 @@
 // the tool and the arguments, never to another call's announcement. And which titles name our tool (ourTool).
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { CallIds, ourTool } from '../dist/calls.js';
+import { announcedInput, CallIds, ourTool } from '../dist/calls.js';
 
 const TOOLS = new Set(['look_up', 'check_echo', 'lookup']);
 
@@ -26,6 +26,17 @@ test("ourTool ties agy 1.5.14's name for our tool, `mcp_agentrun_<tool>`, and it
     assert.equal(ourTool({ name: title, kind: 'other' }, TOOLS), undefined, `name ${title}`);
   }
   assert.equal(ourTool({ name: 'mcp_agentrun_look_up', title: 'Run mcp_agentrun_look_up', kind: 'execute' }, TOOLS), undefined, 'a kind with effects of its own');
+});
+
+test("an agy call's input is matched without agy's own toolSummary; any other agent's input is as reported", () => {
+  const agy = { name: 'mcp_agentrun_look_up', title: 'Run mcp_agentrun_look_up' };
+  assert.deepEqual(announcedInput(agy, { q: 'x', toolSummary: 'Look x up' }), { q: 'x' });
+  assert.deepEqual(announcedInput({ title: 'Run mcp_agentrun_look_up' }, { q: 'x', toolSummary: 'Look x up' }), { q: 'x' });
+  assert.deepEqual(announcedInput(agy, { q: 'x' }), { q: 'x' });
+  assert.deepEqual(announcedInput(agy, { q: 'x', toolSummary: 3 }), { q: 'x', toolSummary: 3 }, 'not agy summary-shaped');
+  assert.deepEqual(announcedInput({ title: 'agentrun: look up' }, { q: 'x', toolSummary: 'kept' }), { q: 'x', toolSummary: 'kept' });
+  assert.deepEqual(announcedInput({ title: 'agentrun__look_up' }, { q: 'x', toolSummary: 'kept' }), { q: 'x', toolSummary: 'kept' });
+  assert.equal(announcedInput(agy, null), null);
 });
 
 test("ourTool leaves another server's tool named like ours, and a call with effects of its own, as the agent's own", () => {
