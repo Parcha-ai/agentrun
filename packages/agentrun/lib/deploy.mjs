@@ -389,6 +389,9 @@ function setUpBy(answer) {
 
 const textOf = (value) => (typeof value === "string" && value.trim() ? value.trim() : undefined);
 
+/** Why the target says it did not make `trigger` (setUpBy): its message, else its reason in a sentence of the CLI's. */
+const unmadeWhy = (base, trigger, said) => textOf(said.message) ?? `${base} did not set up the trigger ${trigger.name} (${trigger.kind})${textOf(said.reason) ? `: ${textOf(said.reason)}` : ""}.`;
+
 /** The plan's lines, as the deploy prints them before it applies anything. A trigger the target says it sets up
  *  (setUpBy) is planned made where the install's plan skips it; one it says it does not is skipped in its words. */
 function planLines(base, template, sha, plan, grants, setUp = new Map()) {
@@ -399,7 +402,7 @@ function planLines(base, template, sha, plan, grants, setUp = new Map()) {
   for (const tool of grants) rows.push(["+", "grant", tool, "allowed"]);
   for (const trigger of plan.triggers) {
     const said = trigger.action === "remove" ? undefined : setUp.get(trigger.name);
-    if (said?.made === false) rows.push(["!", "trigger", trigger.name, `${trigger.kind} skipped: ${textOf(said.message) ?? trigger.reason ?? ""}`]);
+    if (said?.made === false) rows.push(["!", "trigger", trigger.name, `${trigger.kind} skipped: ${unmadeWhy(base, trigger, said)}`]);
     else if (said?.made && trigger.action === "skip") rows.push(["+", "trigger", trigger.name, `${trigger.kind} (the target sets it up)`]);
     else {
       const mark = { create: "+", update: "~", remove: "-", skip: "!" }[trigger.action] ?? "?";
@@ -597,12 +600,12 @@ async function deploy(ctx) {
   from.lock.write(written);
   // The install's warning on a trigger (triggers.<i>, the package's i-th: the plan's triggers in order, its removals
   // after them) gives way to the target's word on it: none for one the target made that the install did not, the
-  // target's message for one it did not make.
+  // target's own warning for one it did not make.
   const order = plan.triggers.filter((one) => one.action !== "remove");
   const kindOf = new Map(order.map((one) => [one.name, one.kind]));
   const replaced = (name) => {
     const said = name === undefined ? undefined : setUp.get(name);
-    return said !== undefined && (said.made ? !there.has(name) : textOf(said.message) !== undefined);
+    return said !== undefined && (!said.made || !there.has(name));
   };
   const warnings = (applied.warnings ?? []).filter((warning) => {
     const index = /^triggers\.(\d+)(?:\.|$)/.exec(String(warning.field))?.[1];
@@ -610,7 +613,7 @@ async function deploy(ctx) {
   });
   for (const [i, one] of order.entries()) {
     const said = setUp.get(one.name);
-    if (said?.made === false && textOf(said.message)) warnings.push({ field: `triggers.${i}`, ...(textOf(said.reason) ? { reason: said.reason } : {}), message: textOf(said.message) });
+    if (said?.made === false) warnings.push({ field: `triggers.${i}`, ...(textOf(said.reason) ? { reason: textOf(said.reason) } : {}), message: unmadeWhy(to.base, one, said) });
   }
   for (const warning of warnings) say(io, `Warning (${warning.field}): ${warning.message}`);
   for (const [name, said] of setUp) if (said.made && !there.has(name) && kindOf.has(name)) say(io, `Trigger ${name} (${kindOf.get(name)}) set up by ${to.base}${said.enabled === false ? ", off" : ""}.`);

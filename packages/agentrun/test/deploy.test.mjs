@@ -680,13 +680,14 @@ test("agentrun deploy DIR to an API-only install of a package whose one trigger 
   assert.doesNotMatch(again.err, /Not made on/);
 });
 
-/** pr-alert with a Composio trigger beside its daily schedule: an API-only install makes neither, and says the Composio
- *  one is not an option there. */
-const MAILED = AGENT({ extra: ["mcp:", "  - { source: composio, toolkit: gmail, tools: [add], required: true }"] }).replace("---\nYou check", `  - name: new-mail
+/** pr-alert whose one trigger is a Composio one, which an API-only install says is not an option there. */
+const MAILED = AGENT({ extra: ["mcp:", "  - { source: composio, toolkit: gmail, tools: [add], required: true }"] }).replace(`  - name: daily
+    source: { kind: schedule, cron: "0 8 * * *" }
+    target: { kind: start_run, input: { content: "Run the daily check." } }
+`, `  - name: new-mail
     source: { kind: composio, server: gmail, event: GMAIL_NEW_GMAIL_MESSAGE, config: {} }
     target: { kind: start_run, input: { content: "A mail arrived." } }
----
-You check`);
+`);
 
 const COMPOSIO_KEY = `not-a-secret-${"composio-env-key-0202"}`;
 const ADD = { slug: "add", name: "Add", description: "Add two numbers." };
@@ -750,34 +751,44 @@ test("agentrun deploy to a target that sets up a Composio trigger itself in fron
   const mailLines = done.err.split("\n").filter((line) => line.includes("new-mail"));
   assert.ok(mailLines.length > 0);
   for (const line of mailLines) assert.doesNotMatch(line, /skipped|was not made|through the API instead/, line);
-  // The schedule the target says nothing of keeps the install's word.
-  assert.match(done.err, /! trigger\s+daily\s+schedule skipped: .*has no launch hook/);
+  assert.doesNotMatch(done.err, /Not made on/);
   const answer = done.json();
-  assert.deepEqual(answer.warnings.filter((one) => one.field.startsWith("triggers.")).map((one) => one.field), ["triggers.0"], "the install's warning on new-mail (triggers.1) gives way to the target's word");
+  assert.deepEqual(answer.warnings.filter((one) => one.field.startsWith("triggers.")), [], "the install's warning on new-mail gives way to the target's word");
   assert.deepEqual(answer.triggers_set_up, [{ name: "new-mail", kind: "composio", made: true, enabled: true }]);
+  assert.match(answer.package_sha256 ?? "", /^[0-9a-f]{64}$/, "made, so the lock names the package");
   // The install behind the target skips new-mail all the same: the words given way to are its own.
   const planned = await hosted.api("POST", "/templates/upload%3Apr-alert/apply", { dry_run: true });
-  assert.deepEqual(planned.body.plan.triggers.map((one) => [one.name, one.action, one.code]), [["daily", "skip", "not_set_up_here"], ["new-mail", "skip", "not_an_option"]]);
-  assert.match(planned.body.plan.triggers[1].reason, /Start its runs through the API instead/);
+  assert.deepEqual(planned.body.plan.triggers.map((one) => [one.name, one.action, one.code]), [["new-mail", "skip", "not_an_option"]]);
+  assert.match(planned.body.plan.triggers[0].reason, /Start its runs through the API instead/);
 });
 
 test("agentrun deploy to a target that sets up Composio triggers itself but did not make this one: still said skipped in the target's words, a warning after the apply, and not made yet, so the next deploy applies again", { timeout: 180_000 }, async (t) => {
   const { dir, env } = scratch();
   const hosted = await mailInstall(t);
   const why = "Connect a Gmail account, then deploy again.";
-  const base = await settingUp(t, hosted.baseUrl, () => [{ name: "new-mail", kind: "composio", made: false, reason: "account_not_connected", message: why }]);
+  let said = { name: "new-mail", kind: "composio", made: false, reason: "account_not_connected", message: why };
+  const base = await settingUp(t, hosted.baseUrl, () => [said]);
   const pkg = folder(dir);
   writeFileSync(join(pkg, "agent.md"), MAILED);
 
   const done = await cli(env, ["deploy", pkg, "--to", base, "--yes"], { AGENTRUN_API_KEY: hosted.token });
   assert.equal(done.code, 0, done.err);
   assert.match(done.err, /! trigger\s+new-mail\s+composio skipped: Connect a Gmail account/);
-  assert.match(done.err, /Warning \(triggers\.1\): Connect a Gmail account, then deploy again\./);
-  assert.match(done.err, /Not made on .* yet: .*new-mail/);
-  assert.doesNotMatch(done.err, /set up by /);
+  assert.match(done.err, /Warning \(triggers\.0\): Connect a Gmail account, then deploy again\./);
+  assert.match(done.err, /Not made on .* yet: new-mail\./);
+  assert.doesNotMatch(done.err, /set up by |through the API instead/);
   const answer = done.json();
-  assert.deepEqual(answer.warnings.find((one) => one.field === "triggers.1"), { field: "triggers.1", reason: "account_not_connected", message: why });
+  assert.deepEqual(answer.warnings.filter((one) => one.field.startsWith("triggers.")), [{ field: "triggers.0", reason: "account_not_connected", message: why }]);
   assert.equal(answer.package_sha256, null, "the lock names no package, so the next deploy applies again");
+
+  // A target that gives its reason alone: the install's skip still gives way, to the target's reason.
+  said = { name: "new-mail", kind: "composio", made: false, reason: "account_not_connected" };
+  const again = await cli(env, ["deploy", pkg, "--yes"], { AGENTRUN_API_KEY: hosted.token });
+  assert.equal(again.code, 0, again.err);
+  assert.equal(again.json().status, "deployed", "applied again, never up to date");
+  assert.match(again.err, /! trigger\s+new-mail\s+composio skipped: \S+ did not set up the trigger new-mail \(composio\): account_not_connected\./);
+  assert.match(again.err, /Warning \(triggers\.0\): \S+ did not set up the trigger new-mail \(composio\): account_not_connected\./);
+  assert.doesNotMatch(again.err, /through the API instead/);
 });
 
 test("agentrun deploy with no lock for a target that has an agent made from the package with these parameters: exit 2, nothing applied, naming it; --agent ID deploys onto it, --agent new makes another; with a lock, --agent naming another agent is refused", { timeout: 300_000 }, async (t) => {
