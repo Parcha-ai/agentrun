@@ -11,8 +11,12 @@
 // an alias (`npm:<name>@<version>` in a manifest). The key of the snapshot a reference names is `<name>@<reference>`, or
 // the alias's own text.
 import { readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { join, posix } from 'node:path';
-import { parseAllDocuments } from 'yaml';
+
+// yaml (a root devDependency) is loaded at the first read, not at import: build-console.mjs --stamp imports this module in
+// CI's console job, where only the console's dependencies are installed, and reads no lockfile.
+const yaml = () => createRequire(import.meta.url)('yaml');
 
 /** The project's lockfile document of pnpm-lock.yaml in `dir` (the repository's, or apps/console's). */
 export const readLock = (dir) => readLockFile(join(dir, 'pnpm-lock.yaml'));
@@ -20,7 +24,7 @@ export const readLock = (dir) => readLockFile(join(dir, 'pnpm-lock.yaml'));
 /** The project's document of the pnpm lockfile at `file`: pnpm-lock.yaml, or the record of what pnpm installed
  *  (node_modules/.pnpm/lock.yaml). */
 export function readLockFile(file) {
-  const documents = parseAllDocuments(readFileSync(file, 'utf8'));
+  const documents = yaml().parseAllDocuments(readFileSync(file, 'utf8'));
   const broken = documents.find((document) => document.errors?.length);
   if (broken) throw new Error(`${file} does not parse: ${broken.errors[0].message}`);
   const lock = documents.at(-1)?.toJS();
