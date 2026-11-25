@@ -338,7 +338,8 @@ const asParsed = (part: string): string => {
  *  userinfo (before its first `:` and after it), each as written, decoded and as a parser writes it back, the RFC's
  *  reading at any length and each shorter reading's only at MIN_SECRET or more (so a short piece of a password, `pa` of
  *  `pa@ss...`, cuts no ordinary word), and the value of each query parameter whose name says it is one
- *  (credentialNamed), the query split at `&` and `;`, as written and decoded; none when no URL starts at `start`. A
+ *  (credentialNamed), the query split at `&` alone and again at `&` and `;`, as written and decoded; none when no URL
+ *  starts at `start`. A
  *  query already in `queriesRead` (several URLs nested in one share it) is not read again. */
 const urlCredentials = (text: string, start = 0, end = text.length, queriesRead = new Set<string>()): string[] => {
   const url = urlParts(text, start, end);
@@ -351,8 +352,11 @@ const urlCredentials = (text: string, start = 0, end = text.length, queriesRead 
   const [from, to] = url.query;
   if (from === to || queriesRead.has(`${from} ${to}`)) return userinfo;
   queriesRead.add(`${from} ${to}`);
-  // A query writes a space as `+`; a user and password do not.
-  const query = text.slice(from, to).split(/[&;]/).flatMap((pair) => {
+  // Read split at `&` alone (a WHATWG parser's reading, a value's raw `;` kept), and each `&` piece holding a `;` split
+  // at it too (a path parameter's or a cookie's reading): both, so a key with a `;` in it is held whole and a pair after
+  // a `;` alone. A query writes a space as `+`; a user and password do not.
+  const pieces = text.slice(from, to).split("&");
+  const query = [...pieces, ...pieces.filter((piece) => piece.includes(";")).flatMap((piece) => piece.split(";"))].flatMap((pair) => {
     const at = pair.indexOf("=");
     const name = pair.slice(0, Math.max(at, 0)).replace(/\+/g, " ");
     const value = pair.slice(at + 1);
@@ -403,9 +407,11 @@ const urlSpans = (value: string): { start: number; end: number }[] => {
 
 /** The breaks between a header value's `name=value` pairs: `;`, `&`, a comma (or its `%2C`) and spaces; and, for a
  *  second, finer read, also `?`, `#` and `/`, so a pair inside a URL that is itself a pair's value
- *  (`upstream=https://relay/v1#access_token=<token>`) or a path's segment stands alone. */
+ *  (`upstream=https://relay/v1#access_token=<token>`) or a path's segment stands alone; and, for a third, all but `;`,
+ *  so a credential with a raw `;` in it (`api_key=<key;rest>&region=us`) is held whole too. */
 const PAIR_BREAK = /[;&,\s]+|%2C/i;
 const PIECE_BREAK = /[;&,\s?#/]+|%2C/i;
+const WHOLE_BREAK = /[&,\s]+|%2C/i;
 
 /** The value of each `name=value` pair of `text` split at `breaks` whose name says it is a credential (credentialNamed),
  *  out of any quotes around it, as written and decoded. A name is what follows the last `/`, `?`, `#` or `:` before its
@@ -421,7 +427,8 @@ const pairValues = (text: string, breaks: RegExp): string[] =>
   });
 
 /** The credentials a header value carries inside it, the union of two reads over the whole value as written: the value
- *  of each `name=value` pair whose name says it is a credential (pairValues: a cookie's `session=<token>`, sentry's
+ *  of each `name=value` pair whose name says it is a credential (pairValues, at each of PAIR_BREAK, PIECE_BREAK and
+ *  WHOLE_BREAK: a cookie's `session=<token>`, sentry's
  *  `sentry_key=<key>`, a path's `;jsessionid=<id>`, a URL query's or fragment's `session=` or `access_token=`), and the
  *  user, password and key parameters of each URL in it (urlSpans, urlCredentials: a DSN's `https://<key>@host/1`, a
  *  relay's whole `user:pa;ss`). A URL only adds readings: the pair read covers its text too. A value that escapes its
@@ -433,6 +440,7 @@ const innerCredentials = (value: string): string[] => {
     return [
       ...pairValues(text, PAIR_BREAK),
       ...pairValues(text, PIECE_BREAK),
+      ...pairValues(text, WHOLE_BREAK),
       ...urlSpans(text).flatMap(({ start, end }) => urlCredentials(text, start, end, queriesRead)),
     ];
   };
