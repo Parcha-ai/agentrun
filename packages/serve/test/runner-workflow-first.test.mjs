@@ -959,7 +959,8 @@ test("held on give-backs: a revise whose draft failed at the held attempt is ask
   // Completed runs by hand, as the store lists them (outcome null: compile_after counts them, learn/compile.ts agentRun).
   const byHand = (n) => pastRuns({ served: 0, byHand: n }).map((row) => ({ ...row, outcome: null }));
   const past = byHand(19);
-  const compiledBy = (runId, createdAt) => ({ runId, agentId: "agent-1", turn: null, createdAt, proposal: { state: "dropped", reason: "checker", detail: "d", compiled: { workflow: "answer", attempts: [{ ok: false, errors: ["workflow: no root"] }] }, draft_errors: ["workflow: no root"] } });
+  // Each a revise of the hold (`held`: its digest).
+  const compiledBy = (runId, createdAt) => ({ runId, agentId: "agent-1", turn: null, createdAt, proposal: { state: "dropped", reason: "checker", detail: "d", compiled: { workflow: "answer", attempts: [{ ok: false, errors: ["workflow: no root"] }], held: DIGEST }, draft_errors: ["workflow: no root"] } });
   const asksRevision = (gateway) => gateway.requests.some((request) => /One more turn: revise your learned workflow `answer`/.test(textOf(request.body)));
   const early = await piRun(t, { promotions: [held, failed], past: byHand(18), keptBefore: [compiledBy("past-5", at + 2_000)] });
   assert.ok(!asksRevision(early.gateway), "19 runs since the hold, the ending one counted: not yet");
