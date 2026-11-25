@@ -16,6 +16,7 @@ import { agent, asOwner, follow, secretWritePath, serve, startInProcessRunner, w
 import { fakeClock, firings, hookServer, made, schedule } from "./trigger-support.mjs";
 
 const { COMPOSIO_USER } = await import("../dist/composio-preset.js");
+const { composioMadeKey } = await import("../dist/composio-made.js");
 const { openRunLaunch, sealRunLaunch } = await import("../dist/store/index.js");
 const { uuidv7 } = await import("../dist/ids.js");
 const { mintSecret } = await import("../dist/standard-webhooks.js");
@@ -207,6 +208,38 @@ test("R8 unmarked seal: a run whose seal holds a binding in the shape before the
   assert.ok(answer.includes(REFUSED_AT_CLAIM), `refused at the claim, naming the server: ${answer}`);
   assert.match(answer, /owner connects/, "the words say the owner connects that user");
   assert.match(answer, /hand mcp_auth again on a message, or start a new run/, "the words say how to clear it");
+});
+
+/** The owner's preset server `inbox` for `user`, as one saved before what a save made was recorded: its row and its
+ *  saved address naming the user, and no made-record. */
+async function legacyPreset(s, user) {
+  await s.connects(user);
+  await s.store.settings.remove(composioMadeKey("inbox"));
+  assert.equal(await s.store.settings.get(composioMadeKey("inbox")), undefined, "the row has no made-record");
+  assert.equal(new URL((await s.store.mcp.server("inbox")).url).searchParams.get("user_id"), user, "its saved address names the user");
+}
+
+test("R9 legacy preset, request: the owner's preset saved before the made-record names a custom user in its address; a token's start binding that user is 422, and no run is written", async (t) => {
+  const s = await setup(t);
+  await legacyPreset(s, OWNER);
+  const before = await s.runCount();
+  refusedAsOwners(await s.token("POST", "/agents/reader/runs", { input: { content: CALL }, mcp_auth: bind(OWNER, ACCOUNT_OWNER) }), "a token's start binding a legacy preset's user");
+  assert.equal(await s.runCount(), before, "no run written");
+});
+
+test("R10 legacy preset, claim: a token run sealed a binding for U, then the owner's preset for U is there with no made-record, and at the claim its call is refused unsent", { timeout: 120_000 }, async (t) => {
+  sealKey(t);
+  const s = await setup(t, { runner: false });
+  const started = await s.token("POST", "/agents/reader/runs", { input: { content: CALL }, mcp_auth: bind(OWNER, ACCOUNT_OWNER) });
+  assert.equal(started.status, 202, `before the owner connects U, a token binds it: ${JSON.stringify(started.body)}`);
+  await legacyPreset(s, OWNER);
+  const from = s.composio.mcpLog.length;
+  const halt = await s.runner();
+  const answer = await ended(s, started.body.run_id);
+  await halt();
+  assert.deepEqual(toolCalls(s.composio.mcpLog.slice(from)).map(asWho), [], `nothing sent to Composio: ${answer}`);
+  assert.ok(answer.includes(REFUSED_AT_CLAIM), `refused at the claim, naming the server: ${answer}`);
+  assert.match(answer, /owner connects/, "the words say the owner connects that user");
 });
 
 test("a token binding a user the owner hasn't connected passes on a start, an inline start and a message, and its call reaches Composio as that user", { timeout: 120_000 }, async (t) => {
