@@ -82,7 +82,7 @@ describe("a refused start on the agent page", () => {
     await page.run();
     await settle();
     expect(page.host.querySelector("[role='alert']")?.textContent).toContain(`The run did not start: ${ASKS}`);
-    expect(page.links()).toEqual([["Set web_fetch for this agent", "#/agents/fetch-flow/edit?tool=web_fetch"], ["Settings → Tools", "#/settings/tools"]]);
+    expect(page.links()).toEqual([["Set web_fetch for this agent", "#/agents/fetch-flow/settings?tool=web_fetch"], ["Settings → Tools", "#/settings/tools"]]);
   });
 
   it("denied: the same, the server's words unchanged", async () => {
@@ -90,14 +90,14 @@ describe("a refused start on the agent page", () => {
     await page.run();
     await settle();
     expect(page.host.querySelector("[role='alert']")?.textContent).toContain(`The run did not start: ${DENIED}`);
-    expect(page.links()).toEqual([["Set web_search for this agent", "#/agents/fetch-flow/edit?tool=web_search"], ["Settings → Tools", "#/settings/tools"]]);
+    expect(page.links()).toEqual([["Set web_search for this agent", "#/agents/fetch-flow/settings?tool=web_search"], ["Settings → Tools", "#/settings/tools"]]);
   });
 
   it("several: a link for each tool, the Settings link once; none at all when the 409 names no tool", async () => {
     const page = runBar(refused(`${DENIED} ${ASKS}`, { denied: ["llm", "web_search"], asks: ["web_fetch"] }));
     await page.run();
     await settle();
-    expect(page.links().map(([, href]) => href)).toEqual(["#/agents/fetch-flow/edit?tool=llm", "#/agents/fetch-flow/edit?tool=web_search", "#/agents/fetch-flow/edit?tool=web_fetch", "#/settings/tools"]);
+    expect(page.links().map(([, href]) => href)).toEqual(["#/agents/fetch-flow/settings?tool=llm", "#/agents/fetch-flow/settings?tool=web_search", "#/agents/fetch-flow/settings?tool=web_fetch", "#/settings/tools"]);
     act(() => root?.unmount());
     const box = runBar(refused("This server has no docker box.", { unbound: [], missing: {}, box: "docker" }));
     await box.run();
@@ -157,7 +157,7 @@ describe("a workflow agent's tool permissions in its editor", () => {
   it("an address naming a tool with no row here opens the Tools step, focuses nothing, and doesn't fail", async () => {
     const page = await open(workflowAgent(), "bash");
     expect(page.scope()).toBeTruthy();
-    expect(page.host.querySelector("[aria-current='step']")?.textContent).toMatch(/Tools/);
+    expect(page.host.querySelector("nav[aria-label='Agent settings sections'] [aria-current='page']")?.textContent).toMatch(/Tools/);
     expect(document.activeElement === document.body || !page.host.contains(document.activeElement)).toBe(true);
   });
 

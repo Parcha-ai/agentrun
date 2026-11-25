@@ -221,7 +221,7 @@ import { hereOf, Marketplace, marketplaceUrlOf } from "./marketplace.js";
 import { templateInstallLink, templateLink, templatesLink } from "./console-links.js";
 import { GITHUB_HOSTS, IMPORT_LIMITS } from "./template-source.js";
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, type DefinitionBody, definitionBodyIssues, EXTERNAL_NAME, ID, IDEMPOTENCY_TTL_S, inputIssues, inputSchemaOf, isObject, type Json, stable, unknownFields } from "./validate.js";
-import { agentTools, BROWSER_VENDOR_IDS, browserKeyRow, isUnavailable, keptVendor, loadToolSettings, type Plane, recheckPlane, settingsIssues, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
+import { agentTools, BROWSER_VENDOR_IDS, browserKeyRow, DEFAULT_BROWSER_VENDOR, isUnavailable, keptVendor, loadToolSettings, type Plane, recheckPlane, settingsIssues, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
 import { wakeAnsweredBySetting } from "./settings-wake.js";
 import { toolSettingsOverStore } from "./tool-settings-store.js";
 import { readApprovers, writeApprovers } from "./server-approvers.js";
@@ -730,6 +730,7 @@ export const ROUTES: readonly Route[] = [
   { method: "PUT", pattern: /^\/agents\/([^/]+)\/definition$/, name: "updateDefinition" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/revisions$/, name: "listRevisions" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/package$/, name: "getAgentPackage" },
+  { method: "GET", pattern: /^\/agents\/([^/]+)\/revisions\/([^/]+)\/skills$/, name: "getRevisionSkills" },
   { method: "POST", pattern: /^\/agents\/([^/]+)\/current$/, name: "setCurrent" },
   { method: "POST", pattern: /^\/agents\/([^/]+)\/archive$/, name: "archiveAgent" },
   { method: "POST", pattern: /^\/agents\/([^/]+)\/unarchive$/, name: "unarchiveAgent" },
@@ -981,7 +982,7 @@ async function keptBrowserOf(store: Store, runId: string): Promise<KeptBrowser> 
   const plane = row ? readLaunchBody(row.body)?.plane : undefined;
   const kept = plane ? keptVendor(plane).browser : undefined;
   if (kept !== undefined) return kept;
-  return granted ? "browserbase" : undefined;
+  return granted ? DEFAULT_BROWSER_VENDOR : undefined;
 }
 
 /** keptBrowserOf's answer for a run whose browser is its agent's browser computer. */
@@ -1167,7 +1168,7 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
       thinking: [...THINKING_LEVELS],
       /** The browser a run's `browser` tool drives: the vendor it resolves to under the server's settings when the tool is
        *  available here (tools[]), a browser provider's id (tool-plane.ts BROWSER_VENDOR_IDS), else none. */
-      browser: browser?.available ? ((resolved) => (BROWSER_VENDOR_IDS.includes(resolved ?? "") ? resolved! : "browserbase"))((browser as { resolves?: Record<string, string> }).resolves?.[DEFAULT_HARNESS]) : "none",
+      browser: browser?.available ? ((resolved) => (BROWSER_VENDOR_IDS.includes(resolved ?? "") ? resolved! : DEFAULT_BROWSER_VENDOR))((browser as { resolves?: Record<string, string> }).resolves?.[DEFAULT_HARNESS]) : "none",
       /** A tool setting's `permission` (definition.tool_settings, /v2/settings/tools): allow, ask or deny, which the tool
        *  gate holds every tool call to (tool-gate.ts); an ask is answered at POST /runs/{id}/approvals/{approval_id}. */
       tool_permissions: true,
@@ -4307,7 +4308,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       if (handed.model !== undefined) {
         const why = modelKeyMisfit(env, target);
         if (why) throw misfit(why);
-      } else if (serverKeyMissing(env, target)) throw modelKeyRequired(false);
+      } else if (serverKeyMissing(env, target)) throw modelKeyRequired(false, env);
       const origin = runModelOrigin(env);
       return sealRunLaunch(sealKey, runId, { ...(handed.mcp ? { mcp: handed.mcp } : {}), ...(handed.model !== undefined && origin ? { model: { key: handed.model, origin } } : {}), ...(handed.keys ? { keys: handed.keys } : {}) });
     };
@@ -4350,7 +4351,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       const mcp = handed.mcp ?? held.mcp;
       const model = handed.model !== undefined && origin ? { key: handed.model, origin } : held.model;
       const keys = handed.keys ?? held.keys;
-      if (!model && needsKey) throw modelKeyRequired(true);
+      if (!model && needsKey) throw modelKeyRequired(true, env);
       const unpaid = owed.length && revision ? keysOwed(revision, env, Object.keys(keys ?? {})) : [];
       if (unpaid.length) throw keysOwedRefusal(unpaid);
       const next = { ...(mcp ? { mcp } : {}), ...(model ? { model } : {}), ...(keys ? { keys } : {}) };
@@ -5524,6 +5525,15 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // agentRevisions already carries each row's version and current flag; revisionView builds the v2 shape from it.
         const page = all.slice(offset, offset + limit).map((row) => revisionView(entry.agent, row));
         return send(res, 200, { revisions: page, next_cursor: nextCursor(offset + limit, all.length) });
+      }
+      case "getRevisionSkills": {
+        // Only the named revision is needed: the full agent view and numbered history load every skill bundle.
+        if (!ID.test(id) || !await store.agents.get(id)) throw new ApiError("not_found", `no agent ${id}`);
+        const selected = await store.agents.revision(decodeURIComponent(second!));
+        if (!selected || selected.agentId !== id) throw new ApiError("not_found", "no such revision for this agent");
+        // The complete immutable file map is needed before replacing skills in a definition edit. Native discovery
+        // metadata is separate: this read never follows a connection to its source machine or filesystem.
+        return send(res, 200, { revision: selected.id, skills: selected.skills ?? {} });
       }
       case "getAgentPackage": {
         const entry = await needAgent(id);

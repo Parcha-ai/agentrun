@@ -66,7 +66,7 @@ function FieldsDemo() {
       <Field label="Effort"><Picker value="medium" onChange={() => {}} label="Effort" options={[{ value: "low", label: "low" }, { value: "medium", label: "medium" }, { value: "high", label: "high" }]} /></Field>
       <div>
         <p id="model-label" className="caps mb-2 text-small font-semibold">Model (Picker)</p>
-        <Picker label="Model" value={model} onChange={setModel} className="w-full" options={[{ value: "sonnet", label: "Claude Sonnet" }, { value: "opus", label: "Claude Opus" }, { value: "haiku", label: "Claude Haiku" }]} />
+        <Picker label="Model" value={model} onChange={setModel} className="w-full" options={[{ value: "sonnet", label: "Claude Sonnet" }, { value: "opus", label: "Claude Opus" }, { value: "haiku", label: "Claude Haiku" }, { value: "unavailable", label: "Unconfigured model", disabled: true, description: "Add a model key in Settings to use this model." }]} />
       </div>
       <Field label="Event" note="Type to search the list by name, slug or description.">
         <SearchPicker label="Event" value={event} onChange={setEvent} placeholder="Search or pick an event" nothing={(q) => `No event matches “${q}”`}

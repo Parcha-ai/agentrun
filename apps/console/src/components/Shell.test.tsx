@@ -30,38 +30,33 @@ describe("Shell's hosted navigation", () => {
     expect(onNavigate).toHaveBeenCalledWith("dojo");
   });
 
-  it("groups working local agent destinations and leaves Settings at the foot", () => {
+  it("offers flat Agents, Templates and Runs destinations and leaves Settings at the foot", () => {
     const onNavigate = vi.fn();
-    const onBuild = vi.fn();
-    const { host } = mount({ settings: true, onNavigate, onBuild });
+    const { host } = mount({ settings: true, onNavigate });
     const navigation = host.querySelector('nav[aria-label="Navigation"]')!;
-    const button = (name: string) => [...navigation.querySelectorAll("button")].find((b) => b.textContent?.trim() === name)!;
-    expect(button("API playground")).toBeTruthy();
-    const toggle = button("Agents");
-    expect(toggle.getAttribute("aria-expanded")).toBe("true");
-    act(() => button("Build").click());
-    expect(onBuild).toHaveBeenCalledOnce();
-    act(() => button("Connected agents").click());
-    expect(onNavigate).toHaveBeenLastCalledWith("agents");
-    act(() => button("Runs").click());
-    expect(onNavigate).toHaveBeenLastCalledWith("runs");
-    act(() => toggle.click());
-    expect(toggle.getAttribute("aria-expanded")).toBe("false");
-    expect(host.querySelector('#agent-navigation')?.hasAttribute("hidden")).toBe(true);
+    const button = (name: string) => [...navigation.querySelectorAll("button")].find(control => control.textContent?.trim() === name)!;
+    expect(button("Build")).toBeUndefined();
+    expect(button("Connected agents")).toBeUndefined();
+    expect(button("Agents").getAttribute("aria-expanded")).toBeNull();
+    expect(host.querySelector("#agent-navigation")).toBeNull();
+    for (const [label, destination] of [["Agents", "agents"], ["Templates", "templates"], ["Runs", "runs"]]) {
+      expect(button(label).parentElement).toBe(button("API playground").parentElement);
+      act(() => button(label).click());
+      expect(onNavigate).toHaveBeenLastCalledWith(destination);
+    }
     act(() => button("Settings").click());
     expect(onNavigate).toHaveBeenLastCalledWith("settings");
     expect(button("Settings").closest('[data-sidebar-account]')).not.toBeNull();
     expect(navigation.textContent).not.toMatch(/Billing|Teams|Deployments|Managed agents/);
   });
 
-  it("highlights Build separately from Connected agents and opens the section on navigation", () => {
-    const { host } = mount({ active: "agents", building: true });
+  it("highlights each flat agent destination as its page becomes active", () => {
+    const { host } = mount({ active: "agents" });
     const current = () => host.querySelector('[aria-current="page"]')?.textContent?.trim();
-    expect(current()).toBe("Build");
-    const toggle = host.querySelector<HTMLButtonElement>('[aria-controls="agent-navigation"]')!;
-    act(() => toggle.click());
+    expect(current()).toBe("Agents");
+    act(() => root!.render(createElement(Shell, { active: "templates", children: "page" })));
+    expect(current()).toBe("Templates");
     act(() => root!.render(createElement(Shell, { active: "runs", children: "page" })));
-    expect(toggle.getAttribute("aria-expanded")).toBe("true");
     expect(current()).toBe("Runs");
   });
 
@@ -71,7 +66,7 @@ describe("Shell's hosted navigation", () => {
     const menu = host.querySelector<HTMLButtonElement>('button[aria-label="Navigation"]')!;
     act(() => menu.click());
     expect(menu.getAttribute("aria-expanded")).toBe("true");
-    const destination = [...host.querySelectorAll<HTMLButtonElement>('nav button')].find((b) => b.textContent?.trim() === "Connected agents")!;
+    const destination = [...host.querySelectorAll<HTMLButtonElement>('nav button')].find((b) => b.textContent?.trim() === "Agents")!;
     act(() => destination.click());
     expect(menu.getAttribute("aria-expanded")).toBe("false");
     expect(onNavigate).toHaveBeenCalledWith("agents");
@@ -136,9 +131,9 @@ describe("Shell's navigation", () => {
     return [...host.querySelectorAll('nav[aria-label="Navigation"] button')].map((b) => b.textContent?.trim());
   };
   it("offers Triggers where the server has them, after Runs, and not where it does not", () => {
-    expect(items(true)).toEqual(["Mission Control", "API playground", "Free", "Agents", "Build", "Suggested", "Connected agents", "Templates", "Runs", "Triggers", "Learning Dojo"]);
+    expect(items(true)).toEqual(["Mission Control", "API playground", "Free", "Agents", "Suggested", "Templates", "Runs", "Triggers", "Learning Dojo"]);
     act(() => root?.unmount());
-    expect(items(false)).toEqual(["Mission Control", "API playground", "Free", "Agents", "Build", "Suggested", "Connected agents", "Templates", "Runs", "Learning Dojo"]);
+    expect(items(false)).toEqual(["Mission Control", "API playground", "Free", "Agents", "Suggested", "Templates", "Runs", "Learning Dojo"]);
   });
 });
 

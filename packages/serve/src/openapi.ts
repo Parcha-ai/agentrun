@@ -2510,6 +2510,24 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       "x-agentrun-serve": "export/1",
     },
   },
+  "/agents/{agent_id}/revisions/{revision}/skills": {
+    get: {
+      operationId: "getRevisionSkills", tags: ["agents"], summary: "Read all skill files saved with one agent revision",
+      description: "Returns the exact revision's complete skill file map, including SKILL.md and supporting text files, without changing the agent. Use these files when preparing a replacement skills map for PUT /agents/{agent_id}/definition, with the ETag of the revision being edited. An unknown revision or a revision belonging to another agent is 404; there is no fallback to the current revision. Only files stored in the revision are returned: detected skills on a connected native agent's source machine are not read. Revisions with no stored skill files return an empty map.",
+      parameters: [ref("parameters/AgentId"), { name: "revision", in: "path", required: true, description: "The immutable revision ID from the agent or its revisions list.", schema: { type: "string" } }],
+      responses: {
+        "200": json({
+          type: "object", additionalProperties: false, required: ["revision", "skills"],
+          properties: {
+            revision: { type: "string" },
+            skills: { type: "object", additionalProperties: { type: "string" }, description: "Paths relative to .agents/skills/ mapped to their complete text." },
+          },
+        }, "The requested revision's saved skill files."),
+        ...errors(401, 404, 429, 500),
+      },
+      "x-agentrun-serve": "skills/1",
+    },
+  },
   "/agents/{agent_id}/current": {
     post: {
       operationId: "setCurrent", tags: ["agents"], summary: "Make one of the agent's revisions current again",
@@ -3474,7 +3492,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
   "/settings/tools": {
     get: {
       operationId: "getToolSettings", tags: ["capabilities"], summary: "The server's tool settings",
-      description: "Each capability that has a choice, and its provider, and each tool's permission that is set (an MCP server's wildcard mcp:<server>/* among them): web_search auto (Parallel where the server holds its key, which bills it, else Firecrawl's keyless search with Exa's behind it, on every harness), native (the harness's own search, claude-agent's or codex's, or on pi the model provider's hosted one: that alone), firecrawl-keyless (Firecrawl's, Exa's behind it), exa-keyless (that alone) or parallel; web_fetch auto (the guarded direct fetch where the server holds a Parallel key, else Firecrawl's keyless fetch, which is sent each URL read, never a private or local one, with the guarded direct fetch behind it), firecrawl-keyless (that, whatever the key), kernel (the guarded direct fetch alone) or parallel; browser auto (Browserbase where the server holds its keys, else Kernel where it holds Kernel's), browserbase, kernel (each that alone) or chrome (a Chrome on the server's host, not set up on any server yet: unavailable). An agent's definition.tool_settings is over these, except a permission set to deny here: a server deny is absolute and refuses the tool on this server whatever the agent sets. capabilities.tools say what each resolves to on each harness, and GET /agents/{agent_id} for that agent. An MCP tool's own key may carry its pin, the arguments its calls must carry.",
+      description: "Each capability that has a choice, and its provider, and each tool's permission that is set (an MCP server's wildcard mcp:<server>/* among them): web_search auto (Parallel where the server holds its key, which bills it, else Firecrawl's keyless search with Exa's behind it, on every harness), native (the harness's own search, claude-agent's or codex's, or on pi the model provider's hosted one: that alone), firecrawl-keyless (Firecrawl's, Exa's behind it), exa-keyless (that alone) or parallel; web_fetch auto (Parallel's extract where the server holds a Parallel key, which bills it, with the guarded direct fetch behind it, else Firecrawl's keyless fetch, which is sent each URL read, never a private or local one, with the guarded direct fetch behind it), firecrawl-keyless (that, whatever the key), kernel (the guarded direct fetch alone) or parallel; browser auto (Browserbase where the server holds its keys, else Kernel where it holds Kernel's), browserbase, kernel (each that alone) or chrome (a Chrome on the server's host, not set up on any server yet: unavailable). An agent's definition.tool_settings is over these, except a permission set to deny here: a server deny is absolute and refuses the tool on this server whatever the agent sets. capabilities.tools say what each resolves to on each harness, and GET /agents/{agent_id} for that agent. An MCP tool's own key may carry its pin, the arguments its calls must carry.",
       responses: { "200": json(TOOL_SETTINGS_ANSWER, "Each capability's provider."), ...errors(401, 429, 500) },
       "x-agentrun-serve": "providers/1",
     },
