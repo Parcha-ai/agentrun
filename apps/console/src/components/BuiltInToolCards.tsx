@@ -4,12 +4,8 @@ import type { Place, Places } from "@/lib/place";
 import { SERVER_DENY, serverDenies, type ToolChoice, type ToolGate } from "@/lib/toolSettings";
 import type { AgentTool, ToolSettings } from "@/lib/v2";
 
-/** A Tools step's built-in tools, a ToolCard each, as the agent editor and Build's Tools step both draw them: the `<li>`s
- *  of the step's grid, for the `shown` offers (the step's filter keeps them). `offers`: every tool the server offers, which
- *  says which harnesses run each. `place`: the agent's own place, else none; with none, ticking a shell tool is what moves
- *  the agent to the box (defaultPlaceOf). `choices`, `gates`, `granted` (the agent's read tools) and `settings` (its tool
- *  settings): what says a tool is denied here or runs once the agent picks a provider of its own. `onChange`: the tools
- *  with the toggled one ticked or unticked. */
+/** The `<li>`s of a Tools step's grid: a ToolCard for each of the `shown` built-in tools. `place` is the agent's own, else none:
+ *  with none, ticking a shell tool is what moves the agent to the box (defaultPlaceOf). */
 export function BuiltInToolCards({ shown, offers, tools, harness, place, places, workflow = false, mcpHarnesses, choices = [], gates = [], granted, settings = {}, onChange }: {
   shown: ToolOffer[]; offers: ToolOffer[]; tools: readonly string[]; harness: string; place: Place | undefined; places: Places | null | undefined;
   workflow?: boolean; mcpHarnesses?: readonly string[]; choices?: readonly ToolChoice[]; gates?: readonly ToolGate[]; granted?: readonly AgentTool[];

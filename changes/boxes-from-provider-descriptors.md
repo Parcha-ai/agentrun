@@ -1,0 +1,5 @@
+---
+packages: @parcha/agentrun-serve
+kind: fix
+---
+An agent's box can now be any computer provider whose sandbox can hold the run's folder, not only Docker, Daytona and Modal: `e2b`, `agent37`, `morph`, `cloudflare`, `fly`, `boxd` and `groundbox` are boxes too, and a place may name any of them (`"place": {"mode": "sandbox", "box": "e2b"}`). To enable one, list it in `AGENTRUN_BOXES` (`AGENTRUN_BOXES=docker,e2b`) and set the keys its provider requires, in the server's environment or in Settings → Computers (`E2B_API_KEY` for E2B); the box is offered once they are set, and nothing asks the vendor at the start. A vendor's box holds the run's folder on Archil or as a synced folder, so its runs need Archil turned on in Settings → Workspace, as a Daytona or Modal box's did. Which providers are boxes is read from their descriptors, so Orgo (desktops alone), the phone, the hosted browsers and smol cloud are not. A boxd box has no network: capabilities say so in its `places.boxes` entry. With no box ready, the start's banner and `bash`'s reason now name each box `AGENTRUN_BOXES` lists with its reason, and the rest at once.

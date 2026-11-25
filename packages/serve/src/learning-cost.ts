@@ -69,14 +69,6 @@ export type CostRun = {
 export const NOT_SERVED = ["cost_stop", "cut"] as const;
 export type NotServed = (typeof NOT_SERVED)[number];
 
-/** The by-hand side, the one baseline both the cost page's `before` and the money rule read (costSummary,
- *  runner/workflow-first.ts costLineOf): of `runs` (oldest first), the `agent` runs before the first run a learned
- *  workflow served (SERVED_PATHS), every one when none has been served. */
-export function byHandSide<T extends { readonly path: unknown }>(runs: readonly T[]): T[] {
-  const first = runs.findIndex((run) => SERVED_PATHS.includes(run.path as RunPath));
-  return (first < 0 ? runs : runs.slice(0, first)).filter((run) => run.path === "agent");
-}
-
 /** The fewest runs after the takeover a "times cheaper" figure needs: fewer say too little. */
 export const CHEAPER_AFTER_RUNS = 20;
 
@@ -145,7 +137,8 @@ export function costSummary(runs: readonly CostRun[], replay: CostReplay | null 
   const first = runs.findIndex((run) => SERVED_PATHS.includes(run.path));
   // Each side's figures: the job's own $ before, all-in after; `bound`, known only as at most.
   type Figure = { value: number | null; bound: boolean };
-  const beforeSide: Figure[] = byHandSide(runs).map((run) => ({ value: run.cost_usd, bound: run.cost_upper_bound }));
+  // The by-hand side: the `agent` runs before the first one served, every one when none has been.
+  const beforeSide: Figure[] = (first < 0 ? runs : runs.slice(0, first)).filter((run) => run.path === "agent").map((run) => ({ value: run.cost_usd, bound: run.cost_upper_bound }));
   // Served runs alone: a replay (a check of a new revision, at workflow cost) and a run by hand are never the after side.
   const served = first < 0 ? [] : runs.slice(first).filter((run) => SERVED_PATHS.includes(run.path));
   const afterSide: Figure[] = served.map((run) => ({ value: run.total_usd, bound: run.cost_upper_bound }));

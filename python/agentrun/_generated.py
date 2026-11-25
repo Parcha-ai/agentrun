@@ -80,6 +80,7 @@ __all__ = [
     "CapabilitiesStoreSchema",
     "CapabilitiesSwitchesValue",
     "CapabilitiesToolsItem",
+    "CapabilitiesToolsItemHeldItem",
     "CapabilitiesToolsItemResolves",
     "CapabilitiesToolsItemWhy",
     "CapabilitiesWorkflows",
@@ -489,6 +490,7 @@ __all__ = [
     "GetRunGraphResponseDecisionsItem",
     "GetRunGraphResponseDecisionsItemImagesItem",
     "GetRunGraphResponseEffectsItem",
+    "GetRunGraphResponseGraph",
     "GetRunGraphResponseNodesValue",
     "GetRunGraphResponseNodesValueItemsItem",
     "GetRunGraphResponseRun",
@@ -1587,7 +1589,7 @@ class DefinitionPlace1(TypedDict):
 
 class DefinitionPlace2(TypedDict):
     mode: Literal["sandbox"]
-    box: Literal["docker", "modal", "daytona"]
+    box: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "boxd", "groundbox"]
 
 
 class _DefinitionComputerRequired(TypedDict):
@@ -2093,7 +2095,7 @@ class DefinitionInputPlace1(TypedDict):
 
 class DefinitionInputPlace2(TypedDict):
     mode: Literal["sandbox"]
-    box: Literal["docker", "modal", "daytona"]
+    box: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "boxd", "groundbox"]
 
 
 class _DefinitionInputComputerRequired(TypedDict):
@@ -4590,6 +4592,7 @@ class GetLearningCostResponseWorkflowsItem(TypedDict):
     workflow: str
     digest: str
     state: Literal["serving", "needs_revision"]
+    reason: Literal["over_line", "no_by_hand_cost"] | None
     served: GetLearningCostResponseWorkflowsItemServed | None
     by_hand: GetLearningCostResponseWorkflowsItemByHand | None
     unknown_cost_runs: int
@@ -5192,7 +5195,7 @@ class GetChatGPTSignInResponse(_GetChatGPTSignInResponseRequired, total=False):
 
 
 class _GetClaudeLoginResponseRequired(TypedDict):
-    state: Literal["off", "other_machine", "signed_in", "signed_out", "no_cli", "unknown"]
+    state: Literal["off", "other_machine", "refused", "signed_in", "signed_out", "no_cli", "unknown"]
     place: Literal["agentrun", "machine"]
     command: str
     can_start: bool
@@ -5872,7 +5875,7 @@ class RunPlace1(TypedDict):
 
 class RunPlace2(TypedDict):
     mode: Literal["sandbox"]
-    box: Literal["docker", "modal", "daytona"]
+    box: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "boxd", "groundbox"]
 
 
 class _RunComputerRequired(TypedDict):
@@ -6603,7 +6606,7 @@ class StartChatGPTSignInResponse(TypedDict):
 
 
 class _StartClaudeLoginResponseRequired(TypedDict):
-    state: Literal["off", "other_machine", "signed_in", "signed_out", "no_cli", "unknown"]
+    state: Literal["off", "other_machine", "refused", "signed_in", "signed_out", "no_cli", "unknown"]
     place: Literal["agentrun", "machine"]
     command: str
     can_start: bool
@@ -6750,7 +6753,7 @@ class TestWorkspaceArchilResponseObject2(TypedDict):
 
 
 class _TurnOffClaudeLoginResponseRequired(TypedDict):
-    state: Literal["off", "other_machine", "signed_in", "signed_out", "no_cli", "unknown"]
+    state: Literal["off", "other_machine", "refused", "signed_in", "signed_out", "no_cli", "unknown"]
     place: Literal["agentrun", "machine"]
     command: str
     can_start: bool
@@ -6802,7 +6805,7 @@ class TurnOnClaudeLoginBody(_TurnOnClaudeLoginBodyRequired, total=False):
 
 
 class _TurnOnClaudeLoginResponseRequired(TypedDict):
-    state: Literal["off", "other_machine", "signed_in", "signed_out", "no_cli", "unknown"]
+    state: Literal["off", "other_machine", "refused", "signed_in", "signed_out", "no_cli", "unknown"]
     place: Literal["agentrun", "machine"]
     command: str
     can_start: bool
@@ -7630,14 +7633,14 @@ class GetRunGraphResponse(TypedDict):
     read_at: str
     run: GetRunGraphResponseRun
     workflow: dict[str, Any]
-    graph: dict[str, Any]
+    graph: GetRunGraphResponseGraph
     nodes: dict[str, GetRunGraphResponseNodesValue]
     decisions: list[GetRunGraphResponseDecisionsItem]
     effects: list[GetRunGraphResponseEffectsItem]
     totals: GetRunGraphResponseTotals
 
 
-class GetRunGraphResponseRun(TypedDict):
+class _GetRunGraphResponseRunRequired(TypedDict):
     id: str
     agent: str
     revision: str
@@ -7645,6 +7648,19 @@ class GetRunGraphResponseRun(TypedDict):
     paused: bool
     startedAt: str
     endedAt: str | None
+
+
+class GetRunGraphResponseRun(_GetRunGraphResponseRunRequired, total=False):
+    withheld: Literal[True]
+
+
+class _GetRunGraphResponseGraphRequired(TypedDict):
+    nodes: list[dict[str, Any]]
+    edges: list[dict[str, Any]]
+
+
+class GetRunGraphResponseGraph(_GetRunGraphResponseGraphRequired, total=False):
+    withheld: Literal[True]
 
 
 class _GetRunGraphResponseNodesValueRequired(TypedDict):
@@ -8705,7 +8721,7 @@ class CapabilitiesPlaces(_CapabilitiesPlacesRequired, total=False):
 
 
 class _CapabilitiesPlacesBoxesItemRequired(TypedDict):
-    id: Literal["docker", "modal", "daytona"]
+    id: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "boxd", "groundbox"]
     available: bool
     state: Literal["ready", "unavailable"]
 
@@ -8723,7 +8739,7 @@ class CapabilitiesPlacesDefaultPlace1(TypedDict):
 
 class CapabilitiesPlacesDefaultPlace2(TypedDict):
     mode: Literal["sandbox"]
-    box: Literal["docker", "modal", "daytona"]
+    box: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "boxd", "groundbox"]
 
 
 class _CapabilitiesHarnessesItemRequired(TypedDict):
@@ -8783,6 +8799,7 @@ class CapabilitiesToolsItem(_CapabilitiesToolsItemRequired, total=False):
     default_provider: str
     resolves: CapabilitiesToolsItemResolves
     why: CapabilitiesToolsItemWhy
+    held: list[CapabilitiesToolsItemHeldItem]
     ask_needs: Literal["password"]
     key: Literal["parallel", "monid", "browserbase", "kernel", "typesafe", "anthropic", "openai", "particle", "openrouter"]
 
@@ -8791,6 +8808,14 @@ CapabilitiesToolsItemResolves = TypedDict("CapabilitiesToolsItemResolves", {"pi"
 
 
 CapabilitiesToolsItemWhy = TypedDict("CapabilitiesToolsItemWhy", {"pi": "str", "claude-agent": "str", "codex": "str", "opencode": "str"})
+
+
+class CapabilitiesToolsItemHeldItem(TypedDict):
+    provider: str
+    tool: Literal["search", "fetch", "key"]
+    kind: Literal["quota", "rate"]
+    until: str
+    words: str
 
 
 class CapabilitiesWorkflows(TypedDict):

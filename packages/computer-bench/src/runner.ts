@@ -61,7 +61,8 @@ export interface AgentRequest {
 	exec: "allow" | "deny";
 	/** The agent's wire: route every one of the agent's computer calls through it (it records, budgets and grants, and
 	 *  is the arm's surface: on "code" calls go through its script). A backend whose steps are recorded elsewhere
-	 *  (serve's journal) reports them with onStep instead. */
+	 *  (serve's journal) reports them with onStep instead, each step's t_ms from the agent's start: the run moves it to
+	 *  the run's own clock. */
 	tap(wire: Wire): AgentWire;
 	onStep(step: Omit<Step, "n">): void;
 }
@@ -535,7 +536,7 @@ async function onComputer(options: RunOptions, bench: string, resolved: Resolved
 								stop.abort(new Error("the task's step budget is spent"));
 							},
 						}),
-					onStep: (step) => onStep({ ...step, n: ++counter }),
+					onStep: (step) => onStep({ ...step, t_ms: step.t_ms + (agentStart - t0), n: ++counter }),
 				});
 			} else if (mode === "oracle") {
 				const failed = await runCalls(tapped("oracle"), resolved.oracle, agentSignal);
