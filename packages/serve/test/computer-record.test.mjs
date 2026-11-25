@@ -126,7 +126,7 @@ test("each frame is acked as it comes; an encoder that falls behind costs frames
 test("ffmpeg starts with a helper program's environment alone: no secret of the server's reaches it, whatever the secret's name", async (t) => {
   // One value under a key-shaped name and one under a plain name the server holds as a secret (its store's URL), both in
   // the server's environment. The record is read by value, so the plain name is caught as surely as the key-shaped one.
-  const PLANTED = { FOO_API_KEY: "not-a-secret-ffmpeg-key", AGENTRUN_STORE_URL: "not-a-secret-ffmpeg-store" };
+  const PLANTED = { FOO_API_KEY: "fake-test-key", AGENTRUN_STORE_URL: "not-a-secret-ffmpeg-store" };
   const was = Object.fromEntries(Object.keys(PLANTED).map((name) => [name, process.env[name]]));
   Object.assign(process.env, PLANTED);
   t.after(() => {

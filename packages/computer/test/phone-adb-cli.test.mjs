@@ -241,7 +241,7 @@ test("the phone harness provider's adb starts with the names every child reads o
 	// One value under a key-shaped name and one under a plain name (a store's URL, which a server holds as a secret by
 	// name). Both are in this process's environment, so an adb that inherits it is caught, and in the host's, so an adb
 	// handed it whole is caught. The record is read by value: the plain name is caught as surely as the key-shaped one.
-	const PLANTED = { FOO_API_KEY: "not-a-secret-adb-key", AGENTRUN_STORE_URL: "not-a-secret-adb-store" };
+	const PLANTED = { FOO_API_KEY: "fake-test-key", AGENTRUN_STORE_URL: "not-a-secret-adb-store" };
 	const was = Object.fromEntries(Object.keys(PLANTED).map((name) => [name, process.env[name]]));
 	Object.assign(process.env, PLANTED);
 	t.after(() => {
