@@ -312,3 +312,35 @@ test("web_search's description says a result may carry relevance and a sift line
   assert.match(description, /Each result may carry relevance \(0 to 1\), how likely it holds what the search asks for, and a sift line says how the results were ranked, or why not\./);
   assert.doesNotMatch(description, /Jev|TypeSafe/);
 });
+
+// A Jev that refuses the run's key (401) or its account (402) books nothing and is held for the rest of the run: the
+// run's later searches and fetches send it nothing, their sift saying it is held. An outage (5xx) is booked at the hold
+// and asked again (the failing-Jev test above).
+for (const [status, code] of [["401", "auth"], ["402", "payment_required"]]) {
+  test(`a Jev that answers ${status} books $0 (${code}) and is held for the rest of the run: a later search or fetch sends it nothing`, async (t) => {
+    const calls = jevCalls(t);
+    processEnv(t, "AGENTRUN_TEST_FAUX_JEV_STATUS", status);
+    const env = claimEnv({ TYPESAFE_API_KEY: JEV_KEY });
+    const first = await onLedger(() => webOf(env).search("widgets delaware", { n: 4 }));
+    const asked = calls().length;
+    assert.ok(asked >= 1, "Jev was asked, and refused");
+    assert.equal(first.got.answer.sift, `not run (${code}); these results are unsifted`);
+    const lines = first.got.receipt.cost.lines.filter((line) => line.by === "jev");
+    const charges = first.rows.filter((row) => row.charged_by === "jev" && row.kind === "agentrun.tool_cost");
+    assert.equal(lines.length, asked, `a line for each Jev request: ${JSON.stringify(first.got.receipt.cost.lines)}`);
+    assert.deepEqual(lines.map(({ usd, basis }) => ({ usd, basis })), lines.map(() => ({ usd: 0, basis: `not billed (${code})` })), "each refused request is $0 on the receipt");
+    assert.deepEqual(charges.map((row) => row.usd), lines.map(() => 0), `and $0 on the ledger: ${JSON.stringify(first.rows)}`);
+
+    const second = await onLedger(() => webOf(env).search("widgets delaware", { n: 4 }));
+    assert.equal(calls().length, asked, "the run's next search sends Jev nothing");
+    assert.equal(second.got.answer.sift, "not run (held); these results are unsifted");
+    assert.deepEqual(second.got.receipt.cost.lines.filter((line) => line.by === "jev"), [], "no Jev line");
+    assert.deepEqual(second.rows.filter((row) => row.charged_by === "jev"), [], "nothing held or booked for Jev");
+    assert.equal(second.got.receipt.classifier.requests, 0, "the record says no request was sent");
+
+    const read = await onLedger(async () => (await webFetchTool(env).execute({ url: "http://public.example/notes.txt", objective: "where widgets are incorporated" }, {}, {})).details);
+    assert.equal(calls().length, asked, "nor does its next fetch with an objective");
+    assert.match(read.got.sift ?? "", /^not run \(held\)/, `the fetch's sift says Jev is held: ${JSON.stringify(read.got.sift)}`);
+    assert.deepEqual(read.rows.filter((row) => row.charged_by === "jev"), [], "nothing held or booked for Jev");
+  });
+}
