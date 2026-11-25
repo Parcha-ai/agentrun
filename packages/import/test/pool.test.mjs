@@ -134,6 +134,32 @@ test("threads, readAhead and workerOldMb out of range are refused", async (t) =>
   }
 });
 
+test("workerOldMb under 8 is refused before any worker starts, naming the floor; 8 reads every file on the workers", async (t) => {
+  const home = await copiedHome(t);
+  const one = await parseHome(home, { catalog: false, threads: 1 });
+  // 7 first: on a build without the floor it starts workers that lose their reads, where 1 or 2 would end this process.
+  for (const workerOldMb of [7, 3, 2, 1]) {
+    const { result, workers } = await workersOf(() => parseHome(home, { catalog: false, threads: 2, workerOldMb }).then(() => "read", (e) => e));
+    assert.ok(result instanceof RangeError, `workerOldMb ${workerOldMb}: ${result}`);
+    assert.match(result.message, /^workerOldMb: a whole number of MB, at least 8, not \d+$/);
+    assert.equal(workers, 0, `workerOldMb ${workerOldMb}: no worker started`);
+  }
+  // Refused on the calling thread too: the option is the same whatever the threads.
+  await assert.rejects(parseHome(home, { catalog: false, threads: 1, workerOldMb: 7 }), RangeError);
+  let made = 0;
+  let ok = 0;
+  let back = 0;
+  const watch = (worker) => {
+    made += 1;
+    worker.on("message", (read) => (read.ok ? (ok += 1) : (back += 1)));
+  };
+  process.on("worker", watch);
+  t.after(() => process.off("worker", watch));
+  assert.deepEqual(await parseHome(home, { catalog: false, threads: 2, workerOldMb: 8 }), one, "at the floor, the totals of one thread");
+  assert.deepEqual({ made, back }, { made: 2, back: 0 }, "no worker lost, no file handed back");
+  assert.ok(ok > 0, "the workers read files");
+});
+
 test("threads over 64 are refused before any worker starts", async (t) => {
   const home = await plainHome(t);
   for (const threads of [65, 100_000]) {

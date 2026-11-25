@@ -37,7 +37,8 @@ const sessions = await parseHome(homedir(), { sources: ["claude-code", "codex"] 
   process may use, its container's limit when one is set, when that is less: 512 MiB at 8 GiB). Under it, files of 64 MiB and over are read first, largest first, then
   the rest in order; at it, the threads read only the file the import waits on. It is a cap on finished reads waiting,
   plus at most one read in flight per thread (one of those can be a giant file), not on the process's memory.
-- `workerOldMb` caps each worker's old generation (default 64). A line over an eighth of it, or a file that runs a worker
+- `workerOldMb` caps each worker's old generation (default 64, at least 8, refused with a RangeError under it: at 1 or
+  2 MB V8 ends the whole process as a worker starts, and at 3 to 7 the workers run out of memory). A line over an eighth of it, or a file that runs a worker
   out of memory, is read on the calling thread instead; past two such losses a thread, the calling thread reads the rest.
 
   On a 73.7 GB home, 8 threads took 90.9 s (median of 5) at a peak of 1.83 GiB, and 1 thread 441.1 s at 1.05 GiB

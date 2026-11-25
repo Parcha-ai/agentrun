@@ -23,6 +23,14 @@ const YOUNG_MB = 16;
  *  for 0.12 GiB in use, on a 24 GB home). A worker past it ends; its file is read by parseHome. */
 export const OLD_MB = 64;
 
+/** The smallest old generation a worker may be given (parseHome's workerOldMb). On node 24.22.3, one pool worker started
+ *  at N MB to read a synthetic home of four files (one of 1.2 MB), each N in a process of its own: at 1 and 2 MB V8 ends
+ *  the whole process as the worker starts ("Fatal JavaScript out of memory: GC during deserialization"); from 3 to 6 MB
+ *  no worker read a file (5 processes each, 29 at 6); at 7, 28 of 29 processes lost a worker; at 8 to 10 (29 processes
+ *  each) and at 11 and 12 (5 each), every worker read every file. A worker under it can only end the process or lose
+ *  every read, so it is refused. */
+export const MIN_OLD_MB = 8;
+
 /** The share of a worker's old generation one line may take: a line past it is read by parseHome. A capped worker
  *  whose one native call (a line's decoding, JSON.parse) outgrows its heap does not end alone: V8 ends the process. At a
  *  64 MB heap, a 90 MB line of text, or a 15.9 MB line of empty objects (`[{},{},...]`, parsed to some 13 times its
