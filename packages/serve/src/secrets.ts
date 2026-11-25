@@ -431,13 +431,21 @@ const PIECE_BREAK = /[;&,\s?#/]+|%2C/i;
 const LIST_BREAK = /[&,\s]+|%2C/i;
 const WHOLE_BREAK = /[&\s]+/;
 
+/** What a credential's value whose part before its first `;` is empty (`;<key>`) holds after that `;`, whole and up to
+ *  its next `;`, as a reader that skips an empty part reads it; nothing for any other value. */
+const afterEmpty = (value: string): string[] => {
+  if (!value.startsWith(";")) return [];
+  const after = value.replace(/^;+/, "");
+  return [after, after.split(";")[0]];
+};
+
 /** The value of each `name=value` pair of `text` split at `breaks` whose name says it is a credential (credentialNamed),
  *  out of any quotes around it, as written and decoded. A name is what follows the last `/`, `?`, `#` or `:` before its
  *  `=` (a URL's query or fragment, `https://relay/v1?region=us`, names `region`). A value whose part before its first
- *  `;` is empty (`token=;<key>`, read whole) is taken after that `;` too, whole and up to its next `;`, as a reader that
- *  skips an empty part reads it. A value of only `=`, `;` and quotes, as written or decoded (a base64 credential's
- *  padding read as a pair, `token=;` before a space, a lone `'` or its `%27`), is not taken: otlpHeaderCut has no length
- *  floor, and it would cut that character everywhere in the tracer's lines. */
+ *  `;` is empty, as written or decoded (`token=;<key>` read whole, `token=%3B<key>`), is taken after that `;` too
+ *  (afterEmpty). A value of only `=`, `;` and quotes, as written or decoded (a base64 credential's padding read as a
+ *  pair, `token=;` before a space, a lone `'` or its `%27`), is not taken: otlpHeaderCut has no length floor, and it
+ *  would cut that character everywhere in the tracer's lines. */
 const pairValues = (text: string, breaks: RegExp): string[] =>
   text.split(breaks).flatMap((pair) => {
     const at = pair.indexOf("=");
@@ -445,8 +453,10 @@ const pairValues = (text: string, breaks: RegExp): string[] =>
     const name = pair.slice(0, at).split(/[/?#:]/).at(-1) ?? "";
     if (!credentialNamed(decoded(name) ?? name)) return [];
     const inner = pair.slice(at + 1).replace(/^(["'])(.*)\1$/, "$2");
-    const after = inner.startsWith(";") ? inner.replace(/^;+/, "") : undefined;
-    return [inner, ...(after === undefined ? [] : [after, after.split(";")[0]])].flatMap((value) => [value, decoded(value) ?? value]).filter((value) => /[^=;"']/.test(value));
+    return [inner, ...afterEmpty(inner)]
+      .flatMap((value) => [value, decoded(value) ?? value])
+      .concat(afterEmpty(decoded(inner) ?? inner))
+      .filter((value) => /[^=;"']/.test(value));
   });
 
 /** The credentials a header value carries inside it, the union of two reads over the whole value as written: the value

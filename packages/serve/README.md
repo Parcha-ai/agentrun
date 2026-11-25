@@ -277,7 +277,7 @@ named like a credential, read over the whole value as written, a URL's query and
 comma or its `%2C`, and spaces, again at `?`, `#` and `/` too, and twice keeping a `;`: at all but `;`, so
 `api_key=<key;rest>%2Cregion=us` holds the key, and at `&` and spaces alone, so `api_key=<key;rest%2Cmore>` holds the
 whole key (both are held, since a redactor matches each held value exactly and the longer reading never covers the
-key alone); a value whose part before its first `;` is empty, `token=;<key>`, is
+key alone); a value whose part before its first `;` is empty, `token=;<key>` or `token=%3B<key>`, is
 held after that `;` too; a value in quotes is held without them; `theme=dark` is not held), and the user, password and
 credential-named query parameters of every URL in it, one inside another's query or path too, scheme-relative
 (`//<key>@host`) or with its slashes escaped (`https:\/\/`). A URL's query, an endpoint's too, is read split at `&`

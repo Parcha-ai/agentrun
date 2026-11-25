@@ -837,6 +837,13 @@ const SEMI_ROWS = [
     [`401 from relay: token ${SEMI_WHOLE} refused`, "401 from relay: token [redacted] refused"],
   ],
   [
+    "a header value's credential pair whose value starts with a ; written %3B, in a value that can't be decoded",
+    { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `X-Relay=token=%3B${SEMI_WHOLE}&note=100%` },
+    [`;${SEMI_WHOLE}`, SEMI_WHOLE, SEMI_PREFIX],
+    [],
+    [`401 from relay: token ${SEMI_WHOLE} refused`, "401 from relay: token [redacted] refused"],
+  ],
+  [
     "a header value's credential pair left empty before a ;",
     { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: "X-Relay=token=; theme=dark" },
     [],
