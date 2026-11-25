@@ -1125,11 +1125,18 @@ export async function computerForClaim(
           lapsed = await storeClock().then((at) => at >= record.until, () => true);
           return undefined;
         }
-        // Its time over (on the store's clock, which stamped it), or its end took it first: a new one, said so. Marked
-        // under this claim's fence, so a claim that lost the run takes nothing.
+        // Its time over (on the store's clock, which stamped it): a new one, said lapsed. Marked under this claim's fence,
+        // so a claim that lost the run takes nothing.
         const fence = (launch.claim ?? { runId: launch.runId, epoch: launch.epoch }) as Claim;
-        if ((await storeClock()) >= record.until || !(taking = await takeKept(settings, launch.runId, record, launch.epoch, fence))) {
+        if ((await storeClock()) >= record.until) {
           lapsed = true;
+          return undefined;
+        }
+        // Its row changed since this claim read it: its end began first (its keeper's at its time, or a stop's end that
+        // marked it ending between its two reads of the run, run-end-computers.ts), or another claim marked it. Said as
+        // a row read ending is: lapsed only once its time passed, else a new one said as any replaced one is.
+        if (!(taking = await takeKept(settings, launch.runId, record, launch.epoch, fence))) {
+          lapsed = await storeClock().then((at) => at >= record.until, () => true);
           return undefined;
         }
         const provider = await vendorProvider(entry, keys, configuration);
