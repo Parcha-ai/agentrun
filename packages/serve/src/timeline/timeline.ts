@@ -54,7 +54,8 @@ export type TimelineEvent = {
   paused?: true;
   /** `true` on the `tool_result` row of a call refused before it ran (its host's mark, CALL_REFUSED: a gate's deny, a
    *  person's, a call held for an approval the run ended or stopped without): it never ran, so it never failed, though
-   *  `tool_status` stays `failed` (it did not do its work). A client shows it apart from a call that ran and failed. */
+   *  `tool_status` stays `failed` (it did not do its work). A client shows it apart from a call that ran and failed. Also
+   *  on a script's (codemode) or a tools_call's row that stopped at such a call (its host tool answered `refused`). */
   refused?: true;
   /** On the usage row, the run's cost. On a paid tool's charge row (a `phase` naming the tool), that charge alone. On a
    *  browser call's `tool_use` row, every browser charge booked under that call (BROWSER_CHARGE): its session's time

@@ -51,6 +51,8 @@ import { archilClaim, MOUNT_TTL_MS } from "../workspace/archil-claim.js";
 import { agentDirName, recordingsFolder, runFolder, scratchFolder } from "../workspace/paths.js";
 import type { Workspace } from "../workspace/workspace.js";
 import { keptKeyOf } from "../workspace/computer-kept.js";
+import { waitEndedKey } from "../browser-wait-ended.js";
+import { browserHoldKey } from "../browser-hold.js";
 import { claimModelKey, claimSecrets, claimSpendOff, hostDecisionKeys, learnedDecisionKeys, openRunModelKey, savedModelKeys, serverKeyless, tierModelKeys, withoutModelKeys } from "./claim-secrets.js";
 import { type GithubAppAccessAt, githubAppAccess } from "./github-app.js";
 import { githubPullOf, githubTargetOf } from "../github.js";
@@ -423,14 +425,22 @@ const always: Check = () => true;
  *  its Archil settings (no credential), its MCP hosts and server names, its Claude-login mode and its approvers. */
 const SHARED_SETTINGS: ReadonlySet<string> = new Set(["tool-settings", "archil", "mcp.private_oauth_hosts", "mcp.server_own", "claude_login", "approvers"]);
 
+/** The rows of the claim's own run that its process writes, and removes, itself: its browser's wait that ended
+ *  (browser-wait-ended.ts) and its browser's take (browser-hold.ts), each the run's process's report of its own browser
+ *  to the server's reads. No other row is its to write. */
+const ownWrittenSettings = (bound: Bound): ReadonlySet<string> => new Set([
+  waitEndedKey(bound.claim.runId),
+  browserHoldKey(bound.claim.runId),
+]);
+
 /** The settings of the claim's own run and agent a run's process may read: its run's Archil disk, SDK record, kept
- *  computer and browser wait, and its agent's Archil disk and promotions. Every other row (another run's or agent's) is
- *  not its to read. */
+ *  computer, browser wait and browser take, and its agent's Archil disk and promotions. Every other row (another run's
+ *  or agent's) is not its to read. */
 const ownSettings = (bound: Bound): ReadonlySet<string> => new Set([
   `archil.run.${bound.claim.runId}`,
   `sdk-run:${bound.claim.runId}`,
   keptKeyOf(bound.claim.runId),
-  `browser_wait_ended:${bound.claim.runId}`,
+  ...ownWrittenSettings(bound),
   `archil.agent.${bound.agentId}`,
   `learning.promotions.${bound.agentId}`,
 ]);
@@ -438,6 +448,8 @@ const ownSettings = (bound: Bound): ReadonlySet<string> => new Set([
 /** Whether a run's process may read setting `key`. */
 export const settingReadable = (key: unknown, bound: Bound): boolean => typeof key === "string" && (SHARED_SETTINGS.has(key) || ownSettings(bound).has(key));
 const readableSetting: Check = (args, bound) => settingReadable(args[0], bound);
+/** Whether a run's process may write or remove setting `key`: only its own run's browser rows (ownWrittenSettings). */
+const writableSetting: Check = (args, bound) => typeof args[0] === "string" && ownWrittenSettings(bound).has(args[0]);
 
 /** The store's methods a run's loop calls, each with what binds it to the claim. A method not here is refused, and the
  *  refusal is said on the runner's log. Reads of the claim's run, its launch, its commands and its agent's revisions;
@@ -461,6 +473,8 @@ const STORE_CALLS: ReadonlyMap<string, Check> = new Map<string, Check>([
   ["agents.revision", always],
   ["agents.revisions", ownAgent],
   ["settings.get", readableSetting],
+  ["settings.put", writableSetting],
+  ["settings.remove", writableSetting],
   // Its rows filtered to the readable ones (storeCall).
   ["settings.all", always],
   ["mcp.pin", ownRun],
