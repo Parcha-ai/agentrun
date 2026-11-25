@@ -25,6 +25,7 @@ import { type AnswerData, type ApprovalPrice, ASK_PERSON_WAITING, type AskData, 
 import { turnEndedOnAsk } from "../store-reads/journal.js";
 import { CAP_REFUSED, CAP_WRAPUP, COMPUTER_NOTE, endsTurn, HOST_PHASE, MESSAGE_ORIGIN, type MessageOrigin, originOf, REQUEST_ENDED, REQUEST_STARTED, RUN_RESUMED } from "../timeline/index.js";
 import { raiseFollowUpId } from "../run-view.js";
+import { connectedLaterWords } from "../mcp-probe.js";
 import { durableWait } from "../workflow/pi-versions.js";
 import { genAiTracing, type GenAiTracing, type RunTrace } from "../otel/tracer.js";
 import { tracedEvent, tracedModel, type RouteTrace } from "../otel/genai.js";
@@ -1211,6 +1212,10 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   /** The pass's MCP (spec.mcp), until the pass ends; and whether a command row came since its credentials were last made
    *  fresh (a parked token may have expired meanwhile). */
   let mcp: ClaimMcp | undefined;
+  /** The pass's phase row (AdapterRun.phase), until the pass ends; and whether it said a message waits for the servers
+   *  its claim left out (connectedLaterWords), once a pass. */
+  let phaseNow: ((summary: string) => void) | undefined;
+  let saidLater = false;
   /** The calls of this run a person was asked about (their ask in the journal, on this claim or read on a resume), set as
    *  the ask is read: one of them the gate lets through was let through by a person's answer. */
   const askedCalls = new Set<string>();
@@ -1435,6 +1440,22 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     // The session never opened, or the run is parking or stopping (its journal sealed, its session closed): left
     // untaken for the next claim, which hands it on again; never refused for good.
     if (!gate || !session || gate.sealed) return { later: "the run is parking: the steer waits for its resume" };
+    // A message that hands the credential of a server whose tools this claim left out (mcpWhereHeld, ClaimMcp.leftOut):
+    // the session's tools are fixed for the claim, so a turn it reached could not call them. Left untaken, it runs as
+    // the run's next turn, on a claim that lists them: the run's end opens it again with the message (as for a message
+    // that comes while the run ends), and a park's resume takes it. Every message after it waits the same way, so none
+    // runs before it. Said once on the timeline, since the API answered the message as steered.
+    const claimMcp = mcp;
+    const leftOut = claimMcp?.leftOut;
+    if (claimMcp && leftOut?.length) {
+      const still = new Set(await claimMcp.fresh());
+      const handed = leftOut.filter((server) => !still.has(server));
+      if (handed.length) {
+        if (!saidLater) phaseNow?.(connectedLaterWords(handed));
+        saidLater = true;
+        return { later: "the message hands the credential of a server this claim left out: it runs as the run's next turn, which lists its tools" };
+      }
+    }
     // A trigger's message into a session on its owner's sign-in (personOnly): refused for good, before it is queued or
     // placed, so no turn of it reaches the vendor on that sign-in. Known by its origin's kind as written (an origin whose
     // source originOf does not know is still a trigger's), or by answering nothing (answers: false, a trigger's message).
@@ -1860,6 +1881,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
             await phasing.commit((tx) => tx.appendEntry(ROOT_CONVERSATION_ID, { kind: HOST_PHASE, data }), context);
           })().catch((error: unknown) => console.warn(`[runner] a phase row was not written: ${said(error)}`));
         };
+        phaseNow = phase;
+        saidLater = false;
         const passGate = gate;
         const rowSummaryOn = (kind: string, test: (data: Record<string, unknown>) => boolean, summary: string | null): void => {
           if (passGate.sealed) return;
@@ -3872,6 +3895,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     // The pass's MCP credentials go with it.
     mcp?.release();
     mcp = undefined;
+    phaseNow = undefined;
     // The pass's resources go once nothing more is written through them (AdapterRunSpec.release), once each.
     // A park's keeps the run's computer (keepAtPark).
     const release = releaseNow;

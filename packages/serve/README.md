@@ -2600,8 +2600,9 @@ curl -X POST "$BASE/v2/agents/$AGENT/runs" -H "authorization: Bearer $TOKEN" -H 
 user and account, the Composio key staying the server's own. The binding is kept as a `per_run` server's headers are:
 sealed into the run's launch, erased from the store by the write that ends the run, never on the server's row, the
 run's view, its timeline, its trace or a log line, and its values are cut from whatever the run shows. A message's
-binding replaces the run's for the turn it starts. A run that names no account has its calls of the server answered, unsent, that it was
-handed none, so a per-run server never calls as a default account. A malformed user or account is `422 input_invalid` at
+binding replaces the run's for the turn it starts. A run that names no account is not offered the server's tools (on
+Codex, its calls of them are answered, unsent, that it was handed none), so a per-run server never calls as a default
+account. A malformed user or account is `422 input_invalid` at
 `mcp_auth.<server>.composio_user_id` or `.connected_account_id`, and so is a binding to the preset's default user
 `agentrun` (`not_allowed`: the user single-user preset servers call as); headers for such a server, or a binding for any
 other server, are `422` at `mcp_auth.<server>`, and no run starts. A per-run server makes no Composio trigger: a trigger
@@ -2686,7 +2687,11 @@ credential answers the first request's run), and its values are cut from whateve
 `POST /v2/runs/{run_id}/messages` takes `mcp_auth` too: it replaces the run's credentials in the message's own write, so the turn the message starts (a
 steer into a working run from its next model request, or a follow-up that opens an ended run again) calls with them. A
 name that is not a saved per_run server is `422` at `mcp_auth.<server>`, and no run starts. A run handed no credential
-for a per_run server it calls has those calls answered, unsent, that it was handed none. `POST .../{name}/refresh` lists
+for a per_run server it calls is not offered that server's tools, and its timeline says which server was left out and
+why; the next time the run picks up work after a message hands the credential, it has them. A message that hands it
+while a turn is still going is not put into that turn, whose tools can't change: it runs as the run's next turn, and
+the timeline says so. Codex keeps the tools its thread started with, so a Codex run keeps listing them, and their
+calls are answered, unsent, that it was handed none until the credential comes. `POST .../{name}/refresh` lists
 a per_run server's tools with no credential: save it again with `headers` for a server that lists only to a caller it
 knows. The tools are those it listed at its save, so a server whose tool list varies by caller shows each run the saved
 list.

@@ -83,17 +83,29 @@ export function apiOnlyTriggerSkipped(packageName: string, trigger: { name?: unk
   return { reason: NOT_SET_UP, message: `${named} and has no launch hook, so its firings have nowhere to go. Start its runs through the API, or set the launch hook (${LAUNCH_HOOK_URL_ENV} and ${LAUNCH_HOOK_SECRET_ENV}) and apply again: each firing then goes to your backend, which starts its run.` };
 }
 
-/** Why an API-only server refuses `body`, a PATCH of a trigger whose source is `kind`, each an issue (none: it goes on to
- *  the trigger's own checks). It takes `enabled` alone: a new source or target would let the token aim a trigger at an
- *  address or an agent of its own choosing (a feed's urls fetched by this server, a run of another agent), which no
- *  route here lets it make, and a name or a cap is the console's to edit. Turned off: always, it stops firings. Turned
- *  on: only where the apply would make it (API_ONLY_HOOKED_KINDS, with the launch hook `hooked`), so its firings go to
- *  the backend; any other would start runs on this server's keys, or wait on a hook or setting this profile refuses. */
-export function apiOnlyTriggerEdit(body: unknown, kind: string, hooked: boolean): InputIssue[] {
+/** Whether an API-only server turns on a trigger whose source is `kind` and whose target is `target` (its PATCH, its
+ *  agent's unarchive): only one the apply would make, a source of API_ONLY_HOOKED_KINDS aimed at an agent (start_run),
+ *  with the launch hook `hooked`, so each firing goes to the backend. A message_run firing never goes to the hook
+ *  (triggers.ts): on, it would open its run on this server's keys. */
+export function apiOnlyTurnsOn(kind: string, target: string, hooked: boolean): boolean {
+  return hooked && API_ONLY_HOOKED_KINDS.has(kind) && target === "start_run";
+}
+
+/** Why an API-only server refuses `body`, a PATCH of a trigger whose source is `kind` and whose target is `target`, each
+ *  an issue (none: it goes on to the trigger's own checks). It takes `enabled` alone: a new source or target would let
+ *  the token aim a trigger at an address or an agent of its own choosing (a feed's urls fetched by this server, a run of
+ *  another agent), which no route here lets it make, and a name or a cap is the console's to edit. Turned off: always,
+ *  it stops firings. Turned on: only where the apply would make it (apiOnlyTurnsOn), so its firings go to the backend;
+ *  any other would start or open runs on this server's keys, or wait on a hook or setting this profile refuses. */
+export function apiOnlyTriggerEdit(body: unknown, kind: string, hooked: boolean, target: string): InputIssue[] {
   if (body === null || typeof body !== "object" || Array.isArray(body)) return [];
   const issues: InputIssue[] = Object.keys(body).filter((key) => key !== "enabled").map((field) => ({ field, reason: "not_allowed", message: `This server serves the run API only (${API_ONLY_ENV}=1), where a trigger is turned on or off alone: send {"enabled": true} or {"enabled": false}, without ${field}.` }));
-  if ((body as { enabled?: unknown }).enabled !== true || (API_ONLY_HOOKED_KINDS.has(kind) && hooked)) return issues;
+  if ((body as { enabled?: unknown }).enabled !== true || apiOnlyTurnsOn(kind, target, hooked)) return issues;
   const named = `This server serves the run API only (${API_ONLY_ENV}=1)`;
+  if (target !== "start_run") {
+    issues.push({ field: "enabled", reason: "not_an_option", message: `${named}, and this trigger messages a run: its firings never go to the launch hook, so each would open that run on this server's keys. It is not turned on here. Send the run its messages through the API instead.` });
+    return issues;
+  }
   issues.push(API_ONLY_HOOKED_KINDS.has(kind)
     ? { field: "enabled", reason: NOT_SET_UP, message: `${named} and has no launch hook, so this ${kind} trigger's firings would start runs on this server's keys: set the launch hook (${LAUNCH_HOOK_URL_ENV} and ${LAUNCH_HOOK_SECRET_ENV}), then turn it on.` }
     : { field: "enabled", reason: "not_an_option", message: `${named}, which serves no route or setting a ${kind} trigger needs, so it is not turned on here. Start its runs through the API instead.` });

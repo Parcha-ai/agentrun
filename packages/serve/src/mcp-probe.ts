@@ -40,6 +40,11 @@ export const UNUSABLE = {
  *  were left out of the run's (mcp-run.ts mcpForClaim), so the model is never offered a tool every call of which is
  *  refused. */
 export const unconnectedWords = (server: string): string => `The MCP server ${server}'s tools were left out of this run: ${UNUSABLE.perRunMissing}.`;
+
+/** The run's timeline note when a message hands the credential of servers whose tools its claim left out
+ *  (unconnectedWords) while a turn is going: that turn's tools stay as they are, so the message waits for the next. */
+export const connectedLaterWords = (servers: readonly string[]): string =>
+  `The MCP server${servers.length > 1 ? "s" : ""} ${servers.join(", ")} ${servers.length > 1 ? "were" : "was"} handed ${servers.length > 1 ? "their credentials" : "its credential"} by a message while this turn was going without ${servers.length > 1 ? "their" : "its"} tools: the message runs as the run's next turn, which has them.`;
 export const REFRESH_MARGIN_MS = 5 * 60_000;
 /** How long an access token given with no expiry is taken to last: it is refreshed within the margin of then. */
 export const UNKNOWN_EXPIRY_MS = 60 * 60_000;
