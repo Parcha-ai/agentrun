@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { after, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { parse } from 'yaml';
+import { isAlias, parse, parseDocument } from 'yaml';
 import { checkCover, commandsOf, modelSeconds, plan, pools, readConfig, readSuites, testShards, timingDrift, unitsOf } from './ci-plan.mjs';
 
 const scratch = mkdtempSync(join(tmpdir(), 'ci-plan-'));
@@ -108,10 +108,11 @@ test('each suite is in one pool, and the pool without a list takes every other s
 test('a shard that runs a quarter and a minute over its model warns that ci-timings.json is stale, naming it; one within either does not', () => {
   // any-2 on 11-04: modelled 275 s, its tests ran 398 s, from a timings file a day old.
   assert.match(timingDrift('any-2', 275, 398), /^::warning title=ci-timings\.json is stale::any-2 ran 398 s, modelled 275 s: refresh scripts\/ci-timings\.json from CI's job logs \(node scripts\/ci-timings\.mjs <job log>\.\.\.\)/);
-  assert.equal(timingDrift('any-1', 275, 335), undefined, 'a minute over is noise on a hosted runner');
+  assert.equal(timingDrift('any-1', 275, 335), undefined, 'a minute over is a runner\'s noise');
   assert.equal(timingDrift('any-1', 20, 70), undefined, 'under a minute over, however many times its model');
   assert.equal(timingDrift('any-1', 400, 470), undefined, 'over by a minute but under a quarter');
-  assert.equal(timingDrift('any-1', 275, 100), undefined, 'faster than its model (a Blacksmith runner in the queue)');
+  assert.equal(timingDrift('any-1', 275, 100), undefined, 'faster than its model');
+  assert.equal(timingDrift('any-2', 275, 398, { untimedRunner: true }), undefined, 'on a runner the weights were not measured on');
 });
 
 test('a cover that drops a unit, runs one twice or adds one is refused, naming it', () => {
@@ -148,6 +149,10 @@ test("this repository's shards cover every test file of every suite once, and ci
   }
   const lean = workflow.jobs.lean.steps.find((step) => /collect\.mjs/.test(step.run ?? '')).run;
   assert.deepEqual([...lean.matchAll(/lean-sweep-([\w-]+)/g)].map((m) => m[1]), leanShards, 'the lean job reads every lean shard\'s captures');
+  // A lean shard whose files validate no workflow uploads the hook's marker alone (spec/lean/sweep/capture-register.mjs).
+  const upload = testJob.steps.find((step) => step.name === 'Keep the workflows the tests validated, for the lean job').with.path;
+  assert.match(upload, /lean-sweep\/\*\.json$/m, 'a lean shard uploads its captures');
+  assert.match(upload, /lean-sweep\/reached$/m, 'and the capture hook\'s marker');
   // The any pool's shards install poppler for serve's pdf_pages.
   assert.ok(Object.values(shards).some((s) => s.pool === 'any' && s.suites.some((x) => x.name === '@parcha/agentrun-serve')), 'serve is in the any pool');
 });
@@ -160,17 +165,24 @@ test("on a pull request this repository's any pool runs the tests its changes re
   const steps = workflow.jobs.test.steps;
   const shard = steps.find((step) => /ci-shard\.mjs/.test(step.run ?? ''));
   assert.equal(shard.env.CI_AFFECTED_BASE, "${{ github.event_name == 'pull_request' && 'HEAD^1' || '' }}", 'the base is set on a pull request only');
+  // The weights are Blacksmith's: a shard on one of GitHub's runners never warns that they are stale.
+  assert.equal(shard.env.CI_SHARD_UNTIMED_RUNNER, "${{ runner.environment == 'github-hosted' && '1' || '' }}");
   // HEAD^1 is in the checkout only with a depth of 2 or more (0 is the whole history).
   const depth = steps.find((step) => /^actions\/checkout@/.test(step.uses ?? '')).with['fetch-depth'];
   assert.match(depth, /github\.event_name == 'pull_request' && startsWith\(matrix\.shard, 'any-'\)\) && '2'/, depth);
 });
 
-test("the build and the test shards run on Blacksmith in the merge queue and on a pull request from this repository's own branch; a fork's pull request and main stay on GitHub's runners", () => {
+test("the build, the test shards and the required Postgres and console jobs run on Blacksmith in the merge queue and on a pull request from this repository's own branch; a fork's pull request and main stay on GitHub's runners", () => {
   const workflow = parse(readFileSync(join(root, '.github/workflows/ci.yml'), 'utf8'));
   const runner = workflow.jobs.build['runs-on'];
   // The expression names the pull request's head repository: a fork's is not this one, so it takes the last arm.
   assert.equal(runner, "${{ (github.event_name == 'merge_group' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-latest' }}");
-  for (const job of ['test', 'test-lean']) assert.equal(workflow.jobs[job]['runs-on'], runner, `${job} runs where the build does`);
+  // The other four write no expression of their own: each is an alias of the build's `&own-runner` anchor.
+  const jobs = parseDocument(readFileSync(join(root, '.github/workflows/ci.yml'), 'utf8')).get('jobs');
+  for (const job of ['test', 'test-lean', 'serve-postgres', 'console']) {
+    assert.ok(isAlias(jobs.getIn([job, 'runs-on'], true)), `${job} runs where the build does`);
+    assert.equal(workflow.jobs[job]['runs-on'], runner, `${job} resolves to the build's runner`);
+  }
 });
 
 test("the Postgres job's shares hold every test file that opens the store once, none empty, and ci.yml runs each of them", async () => {

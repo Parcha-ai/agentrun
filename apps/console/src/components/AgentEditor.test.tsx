@@ -121,7 +121,8 @@ describe("AgentEditor, tools a person chose by hand", () => {
     const withModule = { ...both, harnesses: [...both.harnesses, { id: "own", label: "Own", available: true }], tools: both.tools.map((t) => ({ ...t, harnesses: onModule(t.harnesses) })), mcpHarnesses: ["pi", "claude-agent", "codex", "opencode", "own"] };
     const { host, click, checked, done } = await setup({ agent: null, caps: withModule, step: "tools" });
     const picked = checked();
-    expect(picked).toEqual(["read", "write", "web_fetch", "ask_person"]);
+    // ask_person first: the tool that lets the agent stop and ask you, apart from Tool approvals.
+    expect(picked).toEqual(["ask_person", "read", "write", "web_fetch"]);
     click([...host.querySelectorAll("button")].find((b) => /Settings/.test(b.textContent ?? "")));
     click(host.querySelector('input[type=radio][value="own"]'));
     click([...host.querySelectorAll("button")].find((b) => /Tools/.test(b.textContent ?? "")));
@@ -155,7 +156,7 @@ describe("AgentEditor, tools a person chose by hand", () => {
     expect(checked()).toEqual([]);
     // A save (of another edit: with none, Save is off) sends none: it never widens what the agent can do.
     const { act } = await import("react");
-    click(host.querySelector('fieldset[aria-label="Approvals"] input[type="radio"][value="never"]'));
+    click(host.querySelector('fieldset[aria-label="Tool approvals"] input[type="radio"][value="never"]'));
     await act(async () => { [...host.querySelectorAll("button")].find((b) => /Save revision/i.test(b.textContent ?? ""))!.click(); });
     expect(saved?.tools ?? []).toEqual([]);
     done();

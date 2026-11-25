@@ -8,10 +8,10 @@ import { RunsList } from "./RunsList";
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
-const draw = (filter = {}) => {
+const draw = (filter = {}, onFilter: (f: object) => void = () => {}) => {
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
-  act(() => root!.render(createElement(RunsList, { runs: [], agentName: (id: string) => id, onOpen: () => {}, filter, onFilter: () => {} })));
+  act(() => root!.render(createElement(RunsList, { runs: [], agentName: (id: string) => id, onOpen: () => {}, filter, onFilter })));
   return host;
 };
 
@@ -29,5 +29,16 @@ describe("the Runs page with no runs", () => {
       expect(host.querySelector('a[href="#/playground"]')).toBeNull();
       act(() => root?.unmount());
     }
+  });
+  it("a window or a model no run has says so, and each one's button takes it off", () => {
+    const [from, to] = ["2026-11-01T00:00:00.000Z", "2026-11-02T00:00:00.000Z"];
+    const asked: object[] = [];
+    const host = draw({ from, to, model: "openai/gpt-5" }, (f) => asked.push(f));
+    expect(host.textContent).toContain("No run matches.");
+    expect(host.querySelector('a[href="#/playground"]')).toBeNull();
+    const button = (start: string) => [...host.querySelectorAll("button")].find((b) => b.textContent?.trim().startsWith(start))!;
+    act(() => button("Used openai/gpt-5").click());
+    act(() => button(new Date(from).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })).click());
+    expect(asked).toEqual([{ from, to, model: undefined }, { from: undefined, to: undefined, model: "openai/gpt-5" }]);
   });
 });

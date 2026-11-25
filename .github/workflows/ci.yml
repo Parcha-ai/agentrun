@@ -35,8 +35,9 @@ jobs:
     name: build (${{ matrix.node }})
     # On Blacksmith for a merge-queue candidate and for a pull request from a branch of this repository, as the test
     # shards that wait for it. A fork's pull request, and main, run on GitHub's runners: a fork's code is not the
-    # project's, and it gets neither the paid runners nor the caches they keep between runs.
-    runs-on: ${{ (github.event_name == 'merge_group' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-latest' }}
+    # project's, and it gets neither the paid runners nor the caches they keep between runs. The other four jobs on
+    # this runner alias the value (`*own-runner`), so it is written once.
+    runs-on: &own-runner ${{ (github.event_name == 'merge_group' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-latest' }}
     timeout-minutes: 15
     strategy:
       fail-fast: false
@@ -85,9 +86,8 @@ jobs:
     # and main run every test, so a test that selection misses fails there.
     name: test (${{ matrix.node }}, ${{ matrix.shard }})
     needs: [build]
-    # The build job's runner: Blacksmith for the merge queue and for this repository's own pull requests (a shard takes
-    # about half as long there as on GitHub's runners), GitHub's for a fork's pull request and for main.
-    runs-on: ${{ (github.event_name == 'merge_group' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-latest' }}
+    # The build job's runner (a shard takes about half as long on Blacksmith as on GitHub's).
+    runs-on: *own-runner
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -95,7 +95,7 @@ jobs:
         # One Node: the supported floor (engines, .nvmrc) is the current pin, 24.22.3, the November 2026 security
         # release. An older 24 is not supported, so no leg tests one.
         node: ['24.22.3']
-        shard: [checks, packages, source, any-1, any-2, any-3, any-4, any-5, any-6, any-7, any-8, any-9, any-10, any-11, any-12, any-13, any-14, any-15, any-16]
+        shard: [checks, packages, source, any-1, any-2, any-3, any-4, any-5, any-6, any-7, any-8, any-9, any-10, any-11, any-12, any-13, any-14]
     steps: &test-steps
       - uses: actions/checkout@v4
         with:
@@ -181,14 +181,20 @@ jobs:
           # A pull request's merge commit's first parent, the base as GitHub merged it: a pool ci-shards.json marks
           # affected runs only the tests the changes since it reach. Empty in the merge queue and on main: every test.
           CI_AFFECTED_BASE: ${{ github.event_name == 'pull_request' && 'HEAD^1' || '' }}
-      # The lean job reads these and fails on a missing one; a shard with none marks this step red, never the shard.
+          # scripts/ci-timings.json is measured on Blacksmith: on GitHub's runners a shard over its model does not mean the
+          # weights are stale, and ci-shard does not warn of it.
+          CI_SHARD_UNTIMED_RUNNER: ${{ runner.environment == 'github-hosted' && '1' || '' }}
+      # The lean job reads these and fails on a missing one; a shard with none marks this step red, never the shard. The capture
+      # hook's marker, reached, uploads too: a shard whose files validate no workflow has it and no capture.
       - name: Keep the workflows the tests validated, for the lean job
         if: startsWith(matrix.shard, 'lean-')
         continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: lean-sweep-${{ matrix.shard }}
-          path: ${{ runner.temp }}/lean-sweep/*.json
+          path: |
+            ${{ runner.temp }}/lean-sweep/*.json
+            ${{ runner.temp }}/lean-sweep/reached
           if-no-files-found: error
           retention-days: 7
           overwrite: true
@@ -207,7 +213,7 @@ jobs:
     # for every shard of `test`. verify needs this job as it needs `test`.
     name: test (${{ matrix.node }}, ${{ matrix.shard }})
     needs: [build]
-    runs-on: ${{ (github.event_name == 'merge_group' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-latest' }}
+    runs-on: *own-runner
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -223,7 +229,8 @@ jobs:
     # how long a job's tests take, so a fifth job would not shorten them. The count here and in the step below must
     # agree (scripts/ci-plan.test.mjs).
     name: serve store on Postgres (${{ matrix.shard }}/4)
-    runs-on: ubuntu-latest
+    # The build job's runner, so the required path is not set by a GitHub-hosted leg.
+    runs-on: *own-runner
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -287,7 +294,8 @@ jobs:
     # apps/console, the server's console: a private app with its own lockfile (React, Vite, Storybook), outside the
     # workspaces. Its typecheck, tests, build and Storybook build run here; verify needs it like the test shards.
     name: console
-    runs-on: ubuntu-latest
+    # The build job's runner, so the required path is not set by a GitHub-hosted leg.
+    runs-on: *own-runner
     timeout-minutes: 15
     defaults:
       run:

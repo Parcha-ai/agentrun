@@ -1127,7 +1127,7 @@ export class Triggers {
       });
       if (typeof claimed !== "function") {
         if (this.closed || "gone" in claimed) return;
-        if ("skipped" in claimed) return void (await this.store.triggers.settle(triggerId, key, { status: "skipped", reason: claimed.skipped }));
+        if ("skipped" in claimed) return void (await this.store.triggers.settle(triggerId, key, { status: "skipped", reason: claimed.skipped, from: "due" }));
         return void (await this.wait(triggerId, key, claimed.waitsOn, claimed.reason));
       }
       try {
@@ -1479,10 +1479,12 @@ export class Triggers {
    *  trigger's streak and a trigger.failed, as any failed firing. Its trigger's room is free from that write, so a firing
    *  waiting on it is driven on the next tick. The same call on a firing it released already answers that firing as it
    *  is. Refused in words: 422 not_allowed on a server with no launch hook, not_due for a firing whose run started, one
-   *  still due (not handed yet) or any other, with `details` { reason: RUN_STARTED, run_id } when its run started; 404
-   *  for a trigger or firing this server does not have. A host start of the firing already writing its run on this server
-   *  is waited for first: a run it writes makes the firing started, and refused. Any other start, on this server (its
-   *  room check landing after that wait) or another, is decided by the store: its run's write and this release's are each
+   *  still due once the engine's turn on it ends (not handed yet) or any other, with `details` { reason: RUN_STARTED,
+   *  run_id } when its run started; 404 for a trigger or firing this server does not have. A release during the engine's
+   *  own turn on the firing (its hook's answer read but not yet written) waits for that turn and reads the firing again,
+   *  so a 2xx it writes is released. A host start of the firing already writing its run on this server is waited for
+   *  first: a run it writes makes the firing started, and refused. Any other start, on this server (its room check
+   *  landing after that wait) or another, is decided by the store: its run's write and this release's are each
    *  conditional on the firing being sent with no run, so the one that lands second finds it moved (a start, FiringMoved;
    *  this release, the firing read again and refused). */
   async release(triggerId: string, key: string, body: Json, cut: (text: string) => string) {
@@ -1498,6 +1500,13 @@ export class Triggers {
       if (starting) {
         const run = await starting;
         if (run) throw this.ranRefusal(key, run.run_id);
+        continue;
+      }
+      // The engine's own turn on the firing may have its hook's 2xx and not have written it yet: read once that turn ends.
+      const turn = this.driving.get(key);
+      if (turn) {
+        this.deps.say({ condition: "trigger_release_waits", trigger: triggerId, firing: key });
+        await turn.catch(() => {});
         continue;
       }
       const found = await this.checked(triggerId, () => this.releasable(triggerId, key));

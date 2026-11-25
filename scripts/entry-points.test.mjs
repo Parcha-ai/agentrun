@@ -25,6 +25,7 @@ const reviewed = new Map([
   ['packages/serve/test/learn-support.mjs', childScript],
   ['packages/computer/test/phone-provider.test.mjs', childScript],
   ['packages/serve/test/launcher-worker.test.mjs', childScript],
+  ['packages/import/test/pool-oom.test.mjs', childScript],
   ['examples/eve-learning/workflow.test.mjs', childScript],
   ['spec/lean/sweep/capture-dsl.mjs', label],
   ['packages/serve/test/store-target.mjs', label],

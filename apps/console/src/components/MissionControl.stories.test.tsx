@@ -17,7 +17,7 @@ describe("the Mission Control stories", () => {
   });
   it("StartHereFirstRun: a compact introduction alongside the imported history and dashboard", () => {
     const h = html(StartHereFirstRun);
-    expect(h).toContain("Run an agent here");
+    expect(h).toContain("See templates");
     expect(h).toContain("6 imported sessions");
     expect(h).toContain("Recent runs");
   });

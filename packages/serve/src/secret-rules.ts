@@ -338,7 +338,7 @@ export function decodedTimes(text: string, times: number): string {
 // ---------- shapes
 
 /** Public prefixes a format's shape may name: each a fixed literal of a published format, never read from the value. */
-const PREFIXES = ["pypi-AgEIcHlwaS5vcmc", "github_pat_", "-----BEGIN", "AGE-SECRET-KEY-", "dop_v1_", "doo_v1_", "dor_v1_", "sk-ant-", "sk-proj-", "glpat-", "whsec_", "xoxb-", "xoxp-", "xoxa-", "xoxo-", "xoxs-", "xoxr-", "xoxe-", "xapp-", "ghp_", "gho_", "ghu_", "ghs_", "ghr_", "npm_", "hf_", "sk-", "SG.", "AKIA", "ASIA", "AIza", "eyJ"];
+const PREFIXES = ["pypi-AgEIcHlwaS5vcmc", "github_pat_", "-----BEGIN", "AGE-SECRET-KEY-", "dop_v1_", "doo_v1_", "dor_v1_", "sk-ant-", "sk-proj-", "glpat-", "whsec_", "ar_key_", "xoxb-", "xoxp-", "xoxa-", "xoxo-", "xoxs-", "xoxr-", "xoxe-", "xapp-", "ghp_", "gho_", "ghu_", "ghs_", "ghr_", "npm_", "hf_", "sk-", "SG.", "AKIA", "ASIA", "AIza", "eyJ"];
 
 const NOT_DIGIT = /[^0-9]/;
 const NOT_HEX = /[^0-9a-f]/i;
@@ -722,6 +722,7 @@ const SHAPE_IDS = new Map([
   ["private key block", "private-key-block"],
   ["GitHub token", "github-token"],
   ["sk- key", "sk-key"],
+  ["AgentRun API key", "agentrun-api-key"],
   ["Slack token", "slack-token"],
   ["JWT", "jwt"],
   ["webhook signing secret", "webhook-secret"],
@@ -970,6 +971,8 @@ const RUNS: Readonly<Record<string, { readonly before: RegExp; readonly after: R
   "webhook-secret": URL_SAFE,
   jwt: URL_SAFE,
 };
+// An AgentRun API key (ar_key_) has no entry: its shape reads its own run to the end and asks a capital or a digit of
+// it, so a match is a key wherever it stands, inside a longer run too. The server holds no value of one to find it by.
 const LETTER_OR_DIGIT = /[A-Za-z0-9]/;
 /** An environment variable's name and its separator glued before a key (`SLACK_xoxb-...`): a name, not a blob. */
 const ENV_NAME_RUN = /^[A-Z][A-Z0-9]{0,31}(?:_[A-Z0-9]{1,32}){0,8}_$/;

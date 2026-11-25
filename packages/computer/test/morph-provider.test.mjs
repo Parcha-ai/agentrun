@@ -106,10 +106,17 @@ test("the provider takes the key as an option, checks ssh2, fetch, the API URL a
 	await assert.rejects(create({ ssh2 }), /options\.apiKey/);
 	assert.throws(() => new MorphProvider({ apiKey: KEY, ssh2: {} }), /ssh2 package/);
 	assert.throws(() => new MorphProvider({ apiKey: KEY, ssh2, fetch: "no" }), /options\.fetch/);
-	for (const apiUrl of ["http://cloud.morph.so/api", "not a url", "https://cloud.morph.so/api?x=1"]) {
+	const refusals = {
+		"http://cloud.morph.so/api": /must be https/,
+		"http://127.0.0.1:8080/api": /must be https/,
+		"not a url": /is not a URL/,
+		"https://cloud.morph.so/api?x=1": /takes no query or fragment/,
+		"https://cloud.morph.so/api?key=fake-test-key": /takes no query or fragment.* has none: https:\/\/cloud\.morph\.so$/,
+	};
+	for (const [apiUrl, words] of Object.entries(refusals)) {
 		assert.throws(
 			() => new MorphProvider({ apiKey: KEY, ssh2, apiUrl }),
-			(error) => /https URL/.test(error.message) && !error.message.includes(KEY),
+			(error) => /^the Morph API URL /.test(error.message) && words.test(error.message) && !error.message.includes(KEY),
 			apiUrl,
 		);
 	}
@@ -639,4 +646,17 @@ test("the conformance module's box snapshot comes from prepareImage once live, a
 	assert.equal(built.length, 1);
 	assert.match(built[0], /-drift$/);
 	assert.equal(drifted.id, "morph");
+});
+
+test("the conformance module's daemon: an option's path over COMPUTER_MORPH_DAEMON, and the drifted twin uploads the one it built", async () => {
+	const rest = fakeRest();
+	const spec = { image: rest.snapshot({}).id, lifetimeMs: 600_000, network: "none" };
+	const env = { [ENV.key]: KEY, [ENV.live]: "1", [ENV.apiUrl]: API_URL, [ENV.daemon]: "/nonexistent/untangle-env/computerd" };
+	const options = { env, ssh2: { Client: class {} }, fetch: rest.fetch, daemonPath: "/nonexistent/untangle-option/computerd", buildDaemon: async () => "/nonexistent/untangle-drift/computerd" };
+	const made = await (await conformanceModule.createProvider(options)).create(spec, { requestId: "req-untangle-morph-1" });
+	assert.equal(made.ok, false);
+	assert.match(made.error.message, /no daemon binary at \/nonexistent\/untangle-option\/computerd/);
+	const drifted = await (await conformanceModule.createDriftedProvider(options)).create(spec, { requestId: "req-untangle-morph-2" });
+	assert.equal(drifted.ok, false);
+	assert.match(drifted.error.message, /no daemon binary at \/nonexistent\/untangle-drift\/computerd/);
 });

@@ -18,7 +18,7 @@ const template: TemplateView = {
 };
 const copied = vi.fn(async (_prompt: string) => {});
 const applyTemplate = vi.fn(async () => ({ agent_id: "review-1", triggers: [], warnings: [] }));
-const v2 = { listTemplates: async () => ({ templates: [template] }), listMcpServers: async () => ({ servers: [] }), applyTemplate };
+const v2 = { listMarketplaceTemplates: async () => ({ url: null, state: "off", read_at: null, templates: [] }), listTemplates: async () => ({ templates: [template] }), listMcpServers: async () => ({ servers: [] }), applyTemplate };
 async function mount(name?: string, playground = false, draft?: string) {
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
@@ -96,7 +96,8 @@ describe("running a served template", () => {
     expect(copied.mock.calls[0][0]).toContain('template "review/kit", version "2.4.0"');
     expect(copied.mock.calls[0][0]).toContain("/v2/templates/review%2Fkit/apply");
     expect(copied.mock.calls[0][0]).toContain("instructions, rules, skills, schemas, learning and triggers");
-    expect(copied.mock.calls[0][0]).toContain("Then read the created agent's current revision and run the template's intended task");
+    expect(copied.mock.calls[0][0]).toContain("Then run the template's intended task on the created agent");
+    expect(copied.mock.calls[0][0]).not.toContain("current revision");
     expect(host.querySelector('[aria-label="Run options"] button')?.getAttribute("title")).toBe("Copy prompt for Codex CLI");
     expect(applyTemplate).not.toHaveBeenCalled();
   });

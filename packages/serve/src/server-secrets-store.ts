@@ -5,7 +5,7 @@
 // serverSecrets): what a run shows, what learning keeps and what the server answers are cut of it.
 import { sealedSettingsOverStore, type SealedSettingsOverStore } from "./sealed-settings-store.js";
 import { besideTheStore, type ServerSecrets } from "./server-secrets.js";
-import { SEAL_KEY_ENV, sealKeyOf } from "./tool-keys.js";
+import { handedNoSealKey, SEAL_KEY_ENV, sealKeyOf } from "./tool-keys.js";
 import type { TriggerAdapter } from "./trigger-adapter.js";
 import { SLACK_CHANNEL, SLACK_URL_SPEC, slackUrlForms } from "./slack.js";
 import { WEBHOOK_CHANNEL, WEBHOOK_SECRET_SPEC } from "./webhooks.js";
@@ -27,8 +27,12 @@ export async function openServerSecretsOverStore(
   say: (fields: Record<string, string>) => void = () => {},
 ): Promise<{ secrets: ServerSecrets; settings: Map<string, SealedSettingsOverStore> }> {
   // The server always has its seal key (seal-key.ts bootSealKey, at its start): no setting is ever kept in the clear.
-  const key = sealKeyOf(env[SEAL_KEY_ENV]);
-  if (!key) throw new Error(`the server starts with its seal key (${SEAL_KEY_ENV}), made at the first start when none is handed over`);
+  const handed = env[SEAL_KEY_ENV];
+  const key = sealKeyOf(handed);
+  if (!key) {
+    const handedWhy = handedNoSealKey(handed);
+    throw new Error(`the server starts with its seal key (${SEAL_KEY_ENV}), ${handedWhy ? `and ${handedWhy}` : "made at the first start when none is handed over"}`);
+  }
   const secrets = besideTheStore(data);
   // The outbound webhook's secret, and each it held before, kept in the store (webhooks.ts). Its secret not opening under
   // this seal key is said in the webhook's own words, naming the data directory.

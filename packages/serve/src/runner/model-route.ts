@@ -19,10 +19,11 @@ import type { ThinkingLevelMap } from "../port-models.js";
 import type { Wire } from "@parcha/agentrun-kernel";
 import { onOpenRouter, openRouterAttribution, ROUTE_ORIGIN, streamErrorOf } from "@parcha/agentrun-kernel/host";
 import type { ToolsAs } from "../local-models.js";
-import { chooseModel, MODEL_PROVIDER, type PinnedModel, runModels, type Tier } from "../model.js";
-import { OLLAMA_PROVIDER } from "../ollama-provider.js";
+import { chooseModel, FAUX_PROVIDER, MODEL_PROVIDER, type PinnedModel, runModels, type Tier } from "../model.js";
+import { OLLAMA_PROVIDER, type OllamaAsks } from "../ollama-provider.js";
 import { gatewayHeadersAt, providerFor } from "../provider.js";
 import { keepText, type Redact, runnerSecrets, secretRedactor } from "./redact.js";
+import { type EdgeAsks, responsesFetch } from "./responses-fetch.js";
 import { callsOfText, type PiContext, toolsAsText } from "./text-tools.js";
 
 /** What a request on a model costs, USD per million tokens, as pi-ai's catalog lists it (tiers included). */
@@ -61,6 +62,11 @@ export interface ModelRoute {
   readonly price?: (model: string, usage: RouteUsage) => number | null;
   /** The upstream fetch: the route's own, for a model that does not speak Messages. Absent: the network. */
   readonly fetch?: typeof fetch;
+  /** Where the route's own translation (`fetch`) sends the model's requests: the origin pi-ai's catalog entry gives it
+   *  (OpenRouter's, Particle's, this machine's Ollama). A run's GenAI trace names its host, never `provider.origin`
+   *  (ROUTE_ORIGIN, a name no request leaves for). Absent on a route with no translation, and under the faux model,
+   *  whose requests go nowhere. */
+  readonly upstreamOrigin?: string;
   /** The catalog's cost of the model, tiers included: what the cap prices a request at before it leaves. */
   readonly cost?: RouteCost;
   /** True when serve has no price for the model (runModels' `unpriced`): `cost` is then a placeholder of zeros, which the
@@ -141,7 +147,9 @@ export async function routeOf(model: string | PinnedModel | undefined, env: Node
   // before Ollama would cut the prompt.
   const local = target.provider === OLLAMA_PROVIDER;
   const like = target.provider === "particle" ? { ...settings, ...LEVELS_BY_NAME, translatedChatCompletions: true } : local ? { ...settings, ...(target.reasoning ? LEVELS_BY_NAME : {}) } : target.reasoning ? { ...sees, ...LEVELS_BY_NAME } : undefined;
-  return { ...route, ...(like ? { like } : {}), ...(local ? { local: true } : {}), provider: { api: "anthropic-messages", origin: ROUTE_ORIGIN, credential: () => "model-route" }, fetch: messagesFetch(models as unknown as PiModels, target, redact ?? secretRedactor(runnerSecrets(env)), upstream, env) };
+  // Where pi-ai sends the translated requests (its model's baseUrl), for the run's trace: none under the faux model.
+  const upstreamOrigin = target.provider !== FAUX_PROVIDER && target.baseUrl ? { upstreamOrigin: target.baseUrl } : {};
+  return { ...route, ...(like ? { like } : {}), ...(local ? { local: true } : {}), ...upstreamOrigin, provider: { api: "anthropic-messages", origin: ROUTE_ORIGIN, credential: () => "model-route" }, fetch: messagesFetch(models as unknown as PiModels, target, redact ?? secretRedactor(runnerSecrets(env)), upstream, env) };
 }
 
 /** Whether pi-ai sends `target`'s requests to OpenRouter (pi-ai's own test, utils/openrouter-cost.js isOpenRouterModel). */
@@ -180,6 +188,7 @@ function tapped(upstream: typeof fetch | undefined): { fetch: typeof fetch; kept
 export function messagesFetch(models: PiModels, target: PiModel, redact: Redact = keepText, upstream?: typeof fetch, env: NodeJS.ProcessEnv = process.env): typeof fetch {
   const attribution = piOnOpenRouter(target) ? openRouterAttribution(env) : {};
   const particle = target.provider === "particle";
+  const ollama = target.provider === OLLAMA_PROVIDER;
   // Side requests without a Pi session id retain affinity for this route's lifetime.
   const cacheSession = particle ? randomUUID() : undefined;
   // A tool call's id as Messages carries it (letters, digits, _ and -), and back to the provider's own on its result.
@@ -189,7 +198,7 @@ export function messagesFetch(models: PiModels, target: PiModel, redact: Redact 
     providerIds.set(safe, id);
     return safe;
   };
-  return (async (_url: unknown, init: { body?: unknown; signal?: AbortSignal } = {}) => {
+  return (async (_url: unknown, init: { body?: unknown; signal?: AbortSignal; edgeAsks?: EdgeAsks } = {}) => {
     const body = JSON.parse(String(init.body ?? "{}")) as MessagesRequest;
     const built = contextOf(body, target, (id) => providerIds.get(id) ?? id) as PiContext;
     // A model that takes its tools as text (its catalog entry's toolsAs): its tools in its system prompt, every call and
@@ -203,7 +212,7 @@ export function messagesFetch(models: PiModels, target: PiModel, redact: Redact 
     // Particle's cache affinity: the session's id (the Messages hop's metadata.user_id), else this route's own; an
     // empty id is a caller that asked for no cache hint.
     const affinity = !particle ? {} : body.metadata?.user_id === "" ? { cacheRetention: "none" } : { sessionId: body.metadata?.user_id || cacheSession };
-    const streamOptions = { ...affinity, ...(body.max_tokens ? { maxTokens: body.max_tokens } : {}), ...(level ? { reasoning: level } : {}), ...(init.signal ? { signal: init.signal } : {}), ...(sendWith ? { fetch: sendWith } : {}), ...(Object.keys(attribution).length ? { headers: attribution } : {}) };
+    const streamOptions = { ...affinity, ...(body.max_tokens ? { maxTokens: body.max_tokens } : {}), ...(level ? { reasoning: level } : {}), ...(ollama && init.edgeAsks ? ollamaAsks(init.edgeAsks) : {}), ...(init.signal ? { signal: init.signal } : {}), ...(sendWith ? { fetch: sendWith } : {}), ...(Object.keys(attribution).length ? { headers: attribution } : {}) };
     const events = models.streamSimple(target as never, context as never, streamOptions as never);
     const encoder = new TextEncoder();
     const stream = new ReadableStream<Uint8Array>({
@@ -437,8 +446,37 @@ export function messagesFetch(models: PiModels, target: PiModel, redact: Redact 
 
 /** The bytes of a request a token count answers per token (forMessagesClients' count_tokens). */
 const COUNT_BYTES_PER_TOKEN = 4;
-/** Whether a request asks Messages' token count (its path's last segment, any query after it). */
-const countsTokens = (url: unknown): boolean => /\/count_tokens(?:\?|$)/.test(String(url));
+/** The two requests a Messages client sends the route: its turns and its token count, each a POST. */
+const MESSAGES_PATH = "/v1/messages";
+const COUNT_PATH = "/v1/messages/count_tokens";
+
+/** The method and path of a request as a fetch is handed it (a URL's string, a URL, a Request). */
+function requestLine(url: Parameters<typeof fetch>[0], init: RequestInit): { method: string; path: string } {
+  const href = typeof url === "string" ? url : url instanceof URL ? url.href : url.url;
+  let path = "";
+  try {
+    path = new URL(href).pathname;
+  } catch {
+    // Not a URL: no path, so a 404.
+  }
+  const method = init.method ?? (typeof url === "object" && !(url instanceof URL) ? url.method : "GET");
+  return { method: method.toUpperCase(), path };
+}
+
+/** The JSON schema a Messages `output_config.format` holds the answer to, Ollama's `format` (asked on the in-process
+ *  call, EdgeAsks, so the body is sent as it is); none when it asks none. Ollama holds the whole answer to it, which
+ *  leaves the model no way to call a tool, so beside tools it is refused, as is any shape but json_schema with a schema
+ *  object, in the words of the Responses edge's own refusal (responses-fetch.ts schemaOf): never dropped. */
+function outputSchema(config: unknown, tools: unknown): { schema?: Record<string, unknown>; refused?: string } {
+  const format = typeof config === "object" && config !== null ? (config as { format?: unknown }).format : undefined;
+  if (format === undefined || format === null) return {};
+  const plain = typeof format === "object" && !Array.isArray(format) ? (format as { type?: unknown; schema?: unknown }) : undefined;
+  if (plain?.type !== "json_schema") return { refused: `output_config.format ${JSON.stringify(plain ? (plain.type ?? "(no type)") : format)} is not taken on this model's route: "json_schema" only` };
+  const schema = plain.schema;
+  if (typeof schema !== "object" || schema === null || Array.isArray(schema)) return { refused: "output_config.format json_schema with no schema object is not taken on this model's route" };
+  if (Array.isArray(tools) && tools.length > 0) return { refused: "output_config.format json_schema beside tools is not taken on this model's route: Ollama holds the whole answer to the format, which leaves the model no way to call a tool, so drop the output schema, or use a model route that takes tools with a format" };
+  return { schema: schema as Record<string, unknown> };
+}
 
 /** Why a Messages `tool_choice` that forces a call is refused (its 400's words), else undefined: the model behind the
  *  route (Ollama's chat) takes no tool choice, so a call forced by "any" or by a tool's name cannot be kept. "auto",
@@ -455,36 +493,51 @@ function forcedChoice(choice: unknown): string | undefined {
 }
 
 /** `route` (a translated route's fetch, which streams every answer, as pi-ai asks) for any Messages client on the wire it
- *  translates onto, which asks two things pi-ai never does. Its token count (POST /v1/messages/count_tokens, free, asked
- *  beside its turns) is answered here and never run on the model, which has no count of its own: the body's bytes over
- *  four (COUNT_BYTES_PER_TOKEN), a bound for its context, not a price. A request with no `stream: true` (a side request)
- *  gets its answer whole, one JSON message as Messages writes it, joined from the stream (wholeOf). A tool_choice that
- *  forces a call is refused with a 400 before the model is asked (forcedChoice). */
+ *  translates onto, which asks things pi-ai never does. It takes POST /v1/messages and POST /v1/messages/count_tokens
+ *  alone; anything else is a 404, never run as a chat. Its token count (free, asked beside its turns) is answered here
+ *  and never run on the model, which has no count of its own: the body's bytes over four (COUNT_BYTES_PER_TOKEN), a
+ *  bound for its context, not a price. A request with no `stream: true` (a side request) gets its answer whole, one JSON
+ *  message as Messages writes it, joined from the stream (wholeOf). Its output schema (output_config.format) is the
+ *  model's format (outputSchema). What the model here cannot keep is refused with a 400 before it is asked: a tool_choice
+ *  that forces a call (forcedChoice), an output schema beside tools. */
 export function forMessagesClients(route: typeof fetch): typeof fetch {
   return (async (url: Parameters<typeof fetch>[0], init: Parameters<typeof fetch>[1] = {}) => {
+    const { method, path } = requestLine(url, init);
+    if (method !== "POST" || (path !== MESSAGES_PATH && path !== COUNT_PATH)) return messagesError(`${method} ${path || "(no path)"} is not on this model's route: POST ${MESSAGES_PATH} and ${COUNT_PATH} only`, 404, "not_found_error");
     const body = String(init.body ?? "");
-    if (countsTokens(url)) return Response.json({ input_tokens: Math.ceil(new TextEncoder().encode(body).length / COUNT_BYTES_PER_TOKEN) });
+    if (path === COUNT_PATH) return Response.json({ input_tokens: Math.ceil(new TextEncoder().encode(body).length / COUNT_BYTES_PER_TOKEN) });
     const read = (() => {
       try {
-        return JSON.parse(body || "{}") as { stream?: unknown; tool_choice?: unknown };
+        return JSON.parse(body || "{}") as { stream?: unknown; tool_choice?: unknown; output_config?: unknown; tools?: unknown };
       } catch {
         return undefined;
       }
     })();
-    const refused = forcedChoice(read?.tool_choice);
-    if (refused) return messagesError(refused, 400, "invalid_request_error");
+    const forced = forcedChoice(read?.tool_choice);
+    if (forced) return messagesError(forced, 400, "invalid_request_error");
+    const output = outputSchema(read?.output_config, read?.tools);
+    if (output.refused) return messagesError(output.refused, 400, "invalid_request_error");
     const streamed = read === undefined || read.stream === true;
-    const answer = await route(url, init);
+    // The schema rides the in-process call (messagesFetch reads edgeAsks on an Ollama model), never the body.
+    const asked: RequestInit & { edgeAsks?: EdgeAsks } = output.schema ? { ...init, edgeAsks: { format: output.schema } } : init;
+    const answer = await route(url, asked);
     return streamed || answer.status !== 200 ? answer : wholeOf(await answer.text());
   }) as typeof fetch;
 }
 
 /** The route's translation onto each wire it translates a model onto (wires.ts TRANSLATED), by wire: what a harness's
  *  proxy on that wire forwards with for `model` (`provider/model-id`), made on `env`. Anthropic's Messages: the route's
- *  own Messages fetch (messagesFetch), as a Messages client asks it (forMessagesClients). provider.ts routedProvider reads
- *  it; a wire with no entry has no translation, whatever TRANSLATED says. */
+ *  own Messages fetch (messagesFetch), as a Messages client asks it (forMessagesClients). OpenAI's Responses: that same
+ *  fetch under a Responses edge (responsesFetch). provider.ts routedProvider reads it; a wire with no entry has no
+ *  translation, whatever TRANSLATED says. */
 export const TRANSLATORS: Readonly<Partial<Record<Wire, (model: string, env: NodeJS.ProcessEnv) => Promise<typeof fetch>>>> = Object.freeze({
   "anthropic-messages": async (model: string, env: NodeJS.ProcessEnv) => forMessagesClients((await routeOf(model, env)).fetch!),
+  // OpenAI's Responses: the same Messages fetch under a Responses edge (responses-fetch.ts), a model that reasons asked its
+  // effort by name as on Messages.
+  "openai-responses": async (model: string, env: NodeJS.ProcessEnv) => {
+    const route = await routeOf(model, env);
+    return responsesFetch(route.fetch!, { reasons: route.like?.reasoning === true });
+  },
 });
 
 type StreamBlock = { type: string; text?: string; thinking?: string; signature?: string; input?: unknown; [key: string]: unknown };
@@ -566,6 +619,20 @@ const LEVELS_BY_NAME = { reasoning: true, adaptiveThinking: true, thinkingLevelM
 function levelOf(body: MessagesRequest): (typeof NAMED_LEVELS)[number] | undefined {
   const effort = body.output_config?.effort;
   return body.thinking?.type === "adaptive" && (NAMED_LEVELS as readonly unknown[]).includes(effort) ? (effort as (typeof NAMED_LEVELS)[number]) : undefined;
+}
+
+/** What the Responses edge asks an Ollama model past the Messages body (responses-fetch.ts EdgeAsks, on the in-process
+ *  call's init, never the body) as pi-ai's options and ollama-provider.ts chatBody read them: the format and think as
+ *  they are, temperature as pi-ai's own, top_p as its samplingParams. Read on an Ollama model alone. A Messages client's
+ *  output schema is asked the same way (forMessagesClients, the format alone); its own sampling and thinking fields are
+ *  not asked. */
+function ollamaAsks(asks: EdgeAsks): OllamaAsks & { temperature?: number; samplingParams?: { top_p: number } } {
+  return {
+    ...(asks.format ? { format: asks.format } : {}),
+    ...(asks.temperature === undefined ? {} : { temperature: asks.temperature }),
+    ...(asks.top_p === undefined ? {} : { samplingParams: { top_p: asks.top_p } }),
+    ...(asks.think === false ? { think: false as const } : {}),
+  };
 }
 
 /** A part of a pi-ai message, as the context carries it. */
