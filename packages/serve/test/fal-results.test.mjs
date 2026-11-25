@@ -203,3 +203,45 @@ test("write-once: a file already at the path is never overwritten, and a second 
   assert.deepEqual(after, before, "the same file, its bytes and its time unchanged");
   assert.equal(await readFile(join(run.work, "evidence", "fal", `${kept}.json`), "utf8"), "ALREADY HERE");
 });
+
+test("only a job fal says is completed is filed: a pending job, a failed one carrying a result, and one in the older outcome shape are not", async (t) => {
+  const done = "01a1fb30-1c2d-7e3f-8a4b-5c6d7e8f9a0b";
+  const pending = "01a1fb30-1c2d-7e3f-8a4b-5c6d7e8f9a0c";
+  const failed = "01a1fb30-1c2d-7e3f-8a4b-5c6d7e8f9a0d";
+  const older = "01a1fb30-1c2d-7e3f-8a4b-5c6d7e8f9a0e";
+  const result = voiceResult(3);
+  const run = await runOn(t, () => ({
+    all_terminal: false,
+    jobs: [
+      completed(0, done, result),
+      { ...completed(1, pending, undefined), status: "pending", queue_status: "IN_PROGRESS", terminal: false, has_result: false, result: undefined },
+      { ...completed(2, failed, { detail: "the voice could not be made" }), status: "failed" },
+      { ...completed(3, older, voiceResult(2)), status: undefined, outcome: "completed" },
+    ],
+  }));
+  await run.wait();
+  assert.deepEqual(await filed(run.work, done), result, "the completed job is filed");
+  assert.deepEqual(await tree(run.work), ["evidence", "evidence/fal", `evidence/fal/${done}.json`], "and nothing else");
+});
+
+test("fal's meter reads each tool's completed jobs: run_model's own answer, each entry of submit_jobs' and wait_for_jobs' lists, and none of another tool's", async () => {
+  const { falResults, FAL_RESULTS_DIR } = await import("../dist/fal-price.js");
+  assert.equal(FAL_RESULTS_DIR, "evidence/fal");
+  const text = (body) => ({ content: [{ type: "text", text: JSON.stringify(body) }] });
+  const a = "01a1fb31-0000-7000-8000-00000000000a";
+  const b = "01a1fb31-0000-7000-8000-00000000000b";
+  const image = { images: [{ url: "https://v3.fal.media/files/x/out.png", content_type: "image/png" }] };
+  // run_model: the answer is the job.
+  assert.deepEqual(falResults.of("run_model", text({ status: "completed", endpoint_id: "fal-ai/nano-banana", request_id: a, result: image })), [{ name: a, value: image }]);
+  assert.deepEqual(falResults.of("run_model", text({ status: "processing", endpoint_id: "fal-ai/nano-banana", request_id: a, message: "still running" })), [], "run_model's answer for a job still running files nothing");
+  // submit_jobs and wait_for_jobs: each entry of the list, a request_id twice filed once (its first entry).
+  const list = { jobs: [completed(0, a, image), completed(1, b, { other: 1 }), completed(2, a, { second: true })] };
+  for (const tool of ["submit_jobs", "wait_for_jobs"]) assert.deepEqual(falResults.of(tool, text(list)), [{ name: a, value: image }, { name: b, value: { other: 1 } }], tool);
+  // The same answer from a tool that carries no results (get_submission, submit_job, get_pricing) files nothing.
+  for (const tool of ["get_submission", "submit_job", "get_pricing"]) assert.deepEqual(falResults.of(tool, text(list)), [], tool);
+  // structuredContent is read as the body when there is one, as the meter reads a reply for its charge.
+  assert.deepEqual(falResults.of("wait_for_jobs", { content: [], structuredContent: list }).length, 2);
+  // An answer that is not JSON, or no object, files nothing.
+  assert.deepEqual(falResults.of("wait_for_jobs", { content: [{ type: "text", text: "not json" }] }), []);
+  assert.deepEqual(falResults.of("wait_for_jobs", text([completed(0, a, image)])), []);
+});
