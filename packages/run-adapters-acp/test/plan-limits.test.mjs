@@ -24,6 +24,26 @@ test('a plan-billed run stops at M tool calls with a named reason', async (t) =>
   assert.equal(events.some((e) => e.type === 'text' && e.delta === 'never'), false);
 });
 
+test("on a recipe with no announces field, a plan-billed run counts a call with no arguments once: it runs under the agent's toolCallId, and a limit of one call lets it run", async (t) => {
+  // Before: its {} announcement was dropped on every recipe, so the MCP call waited for an id, got one of the adapter's
+  // (acp-...) and was counted a second time: at maxToolCalls 1 the turn was cancelled before the call ran.
+  const recipe = fakeRecipe(scratch(), { script: [{ call: 'ping' }, { say: 'done' }] }, { announces: undefined, ...plan(10, 1) });
+  let ran = 0;
+  const asked = [];
+  const { session, events } = await openSession(t, recipe, {
+    tools: [tool('ping', () => ((ran += 1), 'pong'))],
+    gate: async (call) => (asked.push([call.tool, call.callId]), 'allow'),
+    options: { callIdWaitMs: 300 },
+  });
+  await session.send('go');
+  const end = await session.turnEnd();
+  assert.equal(end.status, 'completed', end.error);
+  assert.equal(ran, 1, 'the call ran once');
+  assert.deepEqual(asked.filter(([name]) => name === 'ping'), [['ping', 'call_0']], "the call ran under the agent's toolCallId");
+  assert.equal(fakeEvents(recipe).some((e) => e.type === 'cancel'), false, 'nothing was cut at the limit');
+  assert.equal(events.some((e) => e.type === 'text' && e.delta === 'done'), true);
+});
+
 test('a plan-billed run stops at N turns with a named reason, counted across runners', async (t) => {
   const store = memorySessionStore();
   const recipe = fakeRecipe(scratch(), { script: [{ say: 'one' }, { say: 'two' }, { say: 'three' }] }, plan(2, 10));
