@@ -15,7 +15,7 @@ import { delimiter, dirname, join, relative } from "node:path";
 import { after, test } from "node:test";
 import * as claude from "@parcha/agentrun-harness-claude";
 import { API_ONLY_ROUTES } from "../dist/api-only.js";
-import { CLAUDE_LOGIN_ENV, CLAUDE_LOGIN_ROUTES, CLAUDE_LOGIN_SETTING, claudeLoginOf, claudeLoginServed, claudeLoginSwitchedOff, claudeLoginView, dropRefusedLogin, envAtPlace, LOGIN_ANSWERS_DIR, LOGIN_REFUSES_API_KEYS, LOGIN_SIGNED_OUT, LOGIN_UNKNOWN, loginAt as checkedLoginAt, loginBeforeRun, loginForRun, loginOnRunnerOnly, loginServes, settingFor, startLoginHere, turnOffClaudeLogin, turnOnBody, turnOnClaudeLogin, whyNotOneOwner, withClaudeLogin } from "../dist/claude-login.js";
+import { CLAUDE_LOGIN_ENV, CLAUDE_LOGIN_ROUTES, CLAUDE_LOGIN_SETTING, claudeLoginOf, claudeLoginServed, claudeLoginSwitchedOff, claudeLoginView, dropRefusedLogin, envAtPlace, homeOf, LOGIN_ANSWERS_DIR, LOGIN_REFUSES_API_KEYS, LOGIN_SIGNED_OUT, LOGIN_UNKNOWN, loginAt as checkedLoginAt, loginBeforeRun, loginForRun, loginOnRunnerOnly, loginServes, settingFor, startLoginHere, turnOffClaudeLogin, turnOnBody, turnOnClaudeLogin, whyNotOneOwner, withClaudeLogin } from "../dist/claude-login.js";
 import { ClaudeSignIns } from "../dist/claude-sign-in.js";
 import { MODEL_KEYS, hostModel } from "../dist/model.js";
 import { providerFor } from "../dist/provider.js";
@@ -35,6 +35,36 @@ const SIGNED_IN = { loggedIn: true, authMethod: "claude.ai", apiProvider: "first
  *  count as the person's (claude-login.ts homeOf). Nothing is written in it. */
 const UP = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "claude-login-person-"));
 after(() => rmSync(UP, { recursive: true, force: true }));
+
+// The system's account files (/etc/passwd, /etc/group) as the server reads them, to tell whether a folder's group is its
+// user's private one (claude-login.ts privateGroup). Through this whole file they read as empty, so no group is anyone's
+// private one and a folder its group may write in is refused whatever this machine's groups are; accountsAs gives one
+// test its own. node:fs's readFileSync is a live binding in the server this process runs (syncBuiltinESMExports moves
+// it to the stub), and every other file reads as it is.
+const ACCOUNTS_NONE = Object.freeze({ "/etc/passwd": "", "/etc/group": "" });
+let accounts = ACCOUNTS_NONE;
+{
+  const fs = createRequire(import.meta.url)("node:fs");
+  const real = fs.readFileSync;
+  fs.readFileSync = function accountsRead(path, options, ...rest) {
+    if (typeof path !== "string" || !Object.hasOwn(accounts, path)) return real.call(this, path, options, ...rest);
+    const encoding = typeof options === "string" ? options : options?.encoding;
+    return encoding ? accounts[path] : Buffer.from(accounts[path]);
+  };
+  syncBuiltinESMExports();
+  after(() => {
+    fs.readFileSync = real;
+    syncBuiltinESMExports();
+  });
+}
+/** The account files read as `files` (by path; any not given, empty) for the rest of test `t`. */
+function accountsAs(t, files) {
+  accounts = { ...ACCOUNTS_NONE, ...files };
+  t.after(() => {
+    accounts = ACCOUNTS_NONE;
+  });
+}
+
 /** The login at a place as loginAt's check gives it: undefined where its folders are refused. */
 const loginAt = (...args) => checkedLoginAt(...args).login;
 
@@ -1714,8 +1744,8 @@ test("the login's folders are walked once for each decision: a link swapped betw
 // the login folder itself lets them put their files in it, and as the folder the CLI makes the login's in, make that
 // first. All are refused. The sticky bit (as /tmp has it) keeps a folder on the way, but not the login folder itself
 // nor the one it is made in. The words say which folder is open, its mode, and the chmod that closes it, not that the
-// folder is not the user's (it is): a umask of 002 (a group of the user's own, as some distributions give each user)
-// makes folders 0775, and a volume whose group is set for a pod gives 2775.
+// folder is not the user's (it is): a umask of 002 makes folders 0775, and a volume whose group is set for a pod gives
+// 2775. The group here is no user's private one (the account files read as empty: accountsAs); one that is, is below.
 test("a folder its group or anyone may write in, on the way to this machine's login folder with no sticky bit, or as that folder itself or the one it is to be made in, refuses the login in the view, the sign-in, the turn-on and a run, in words that name the open folder, its mode and the chmod that closes it; with the sticky bit, one on the way keeps it", { skip: process.platform === "win32" ? "no uid" : process.geteuid() === 0 ? "root may write anywhere" : false, timeout: 60_000 }, async (t) => {
   const who = `uid ${process.geteuid()} (${userInfo().username})`;
   const mine = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-login-open-"));
@@ -1740,6 +1770,75 @@ test("a folder its group or anyone may write in, on the way to this machine's lo
   assert.ok(await loginForRun(saved, data, { HOME: UP, CLAUDE_CONFIG_DIR: join(open, "claude") }, "claude-agent", RUNNER), "with the sticky bit, a folder on the way keeps the login");
   assert.equal(await loginForRun(saved, data, { HOME: UP, CLAUDE_CONFIG_DIR: open }, "claude-agent", RUNNER), undefined, "with the sticky bit, the login folder itself still refuses it");
   assert.equal(await loginForRun(saved, data, { HOME: UP, CLAUDE_CONFIG_DIR: join(open, "still", "to-make") }, "claude-agent", RUNNER), undefined, "with the sticky bit, the folder the login is to be made in still refuses it");
+});
+
+// The umask ruling. Where each user has a group of their own (their primary group, named for them, that no other user is
+// in, as useradd makes one under USERGROUPS_ENAB), a umask of 002 makes folders 0775, and still no one else may write in
+// them. A folder whose group is that one, and which its group (not anyone) may write in, is the user's alone: on the way
+// to the login's folder, as that folder itself, as the one it is to be made in, and as the home. A group another user is
+// in (the group file lists them, or it is their primary group), or one that is not the user's primary group, still
+// refuses it, in the same words; so does a folder anyone may write in. The account files are stand-ins (accountsAs).
+const PRIVATE_WHY = "a folder its group may write in, whose group is the user's private one, refused the login";
+test("a folder its group may write in, where that group is the user's private one (its primary group, which no other user is in), keeps this machine's login on the way to its folder, as that folder, as the one it is made in and as the home; a group another user is in, listed or as their primary group, or not the user's primary, still refuses it in the same words, as does a folder anyone may write in", { skip: process.platform === "win32" ? "no uid" : process.geteuid() === 0 ? "root may write anywhere" : false, timeout: 60_000 }, async (t) => {
+  const uid = process.geteuid();
+  const name = userInfo().username;
+  const who = `uid ${uid} (${name})`;
+  const mine = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-login-private-"));
+  t.after(() => rmSync(mine, { recursive: true, force: true }));
+  const open = join(mine, "open");
+  mkdirSync(join(open, "claude"), { recursive: true, mode: 0o700 });
+  const gid = statSync(open).gid;
+  const other = { uid: uid + 1, gid: gid + 1 };
+  const user = (login, id, group) => `${login}:x:${id}:${group}:${login}:/home/${login}:/bin/sh`;
+  const passwd = (...more) => `root:x:0:0:root:/root:/bin/sh\n${user(name, uid, gid)}\n${[user("other", other.uid, other.gid), ...more].join("\n")}\n`;
+  const groups = (members = "") => `root:x:0:\n${name}:x:${gid}:${members}\nother:x:${other.gid}:\n`;
+  const values = [join(open, "claude"), open, join(open, "still", "to-make")];
+  const data = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-login-data-"));
+  t.after(() => rmSync(data, { recursive: true, force: true }));
+  const saved = { get: async () => settingFor("machine", data) };
+  const kept = async (what) => {
+    for (const value of values) {
+      const rig = await loginRig(t);
+      const asked = [];
+      rig.rows.set(CLAUDE_LOGIN_SETTING, settingFor("machine", rig.data));
+      const view = await claudeLoginView(rig.deps({ env: { ...rig.env, CLAUDE_CONFIG_DIR: value }, claude: async () => askedClaude(asked) }));
+      assert.ok(view.refused === undefined && view.state !== "refused", `${PRIVATE_WHY}: ${what}, CLAUDE_CONFIG_DIR=${value}: the view: ${JSON.stringify(view)}`);
+      assert.ok(await loginForRun(saved, data, { HOME: UP, CLAUDE_CONFIG_DIR: value }, "claude-agent", RUNNER), `${PRIVATE_WHY}: ${what}, CLAUDE_CONFIG_DIR=${value}: a run goes on no login`);
+    }
+    assert.equal(homeOf({ HOME: open }).home, realpathSync(open), `${PRIVATE_WHY}: ${what}, as the home`);
+  };
+  const refused = async (what, mode) => {
+    for (const value of values) {
+      const rig = await loginRig(t);
+      const asked = [];
+      const deps = rig.deps({ env: { ...rig.env, CLAUDE_CONFIG_DIR: value }, claude: async () => askedClaude(asked) });
+      await refusedEverywhere(rig, deps, openFolder(who, "CLAUDE_CONFIG_DIR", value, realpathSync(open), mode), `${what}, CLAUDE_CONFIG_DIR=${value}`);
+      assert.deepEqual(asked, [], `${what}: the CLI was not asked`);
+    }
+    assert.notEqual(homeOf({ HOME: open }).home, realpathSync(open), `${what}: not the home`);
+  };
+  accountsAs(t, { "/etc/passwd": passwd(), "/etc/group": groups() });
+  for (const mode of [0o775, 0o770, 0o2775, 0o2770]) {
+    chmodSync(open, mode);
+    await kept(`the group of its own, no member listed, ${mode.toString(8)}`);
+  }
+  accountsAs(t, { "/etc/passwd": passwd(), "/etc/group": groups(name) });
+  chmodSync(open, 0o775);
+  await kept("the group of its own, which lists the user alone");
+  for (const mode of [0o777, 0o757]) {
+    chmodSync(open, mode);
+    await refused(`a folder anyone may write in, its group the user's own, ${mode.toString(8)}`, mode);
+  }
+  chmodSync(open, 0o775);
+  accountsAs(t, { "/etc/passwd": passwd(), "/etc/group": groups(`${name},other`) });
+  await refused("a group the group file lists another user in", 0o775);
+  accountsAs(t, { "/etc/passwd": passwd(user("another", other.uid + 1, gid)), "/etc/group": groups() });
+  await refused("a group that is another user's primary group", 0o775);
+  accountsAs(t, { "/etc/passwd": passwd().replace(user(name, uid, gid), user(name, uid, other.gid)), "/etc/group": groups() });
+  await refused("a group that is not the user's primary group", 0o775);
+  accountsAs(t, { "/etc/passwd": `${passwd()}+::::::\n`, "/etc/group": groups() });
+  await refused("account files that defer to a directory service (a + line)", 0o775);
+  chmodSync(open, 0o700);
 });
 
 /** Whether the test's user owns its own home as the system has it, held as the login's home must be. */
