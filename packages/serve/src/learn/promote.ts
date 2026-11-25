@@ -187,6 +187,9 @@ export type CheckRecord = CheckBar & {
    *  graded wrong is its miss): the agent's side of `agreed`. Absent on a record kept before it was counted, which was
    *  judged against the agent's own answers only (so all of them). */
   readonly agent_agreed?: number;
+  /** The joint floor's verdict, as the check decided it (learn/field-check.ts CheckVerdict.joint.pass): of `alone`, at
+   *  least `agree_min` right on every field at once. What a hold's words and the cost summary's `cleared` read. */
+  readonly joint?: boolean;
   readonly fields?: Readonly<Record<string, FieldVerdict>>;
   readonly of?: readonly string[];
   readonly cost_usd?: number | null;

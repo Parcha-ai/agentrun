@@ -4827,6 +4827,7 @@ export interface operations {
           agreed?: number;
           alone?: number;
           agent_agreed?: number;
+          joint?: boolean;
           fields?: Record<string, {
             n: number;
             workflow_right: number;
@@ -5000,6 +5001,7 @@ export interface operations {
             agreed?: number;
             alone?: number;
             agent_agreed?: number;
+            joint?: boolean;
             fields?: Record<string, {
               n: number;
               workflow_right: number;

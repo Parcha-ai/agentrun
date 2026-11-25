@@ -16,6 +16,7 @@ import { createHash } from "node:crypto";
 import { LEARNED_MAX_TURNS, WORKFLOW_NAME } from "./workflow-draft.js";
 import { type AuditDisagreement, type AuditHold, championOf, type CheckDisagreement, type CheckRecord, checkShares, type PromotionRecord, promotionOf, type Refused, resetAtOf } from "./promote.js";
 import { listed } from "../learning-words.js";
+import { jointSaid } from "./field-check.js";
 import { excerptShown, redactSecrets } from "./secrets.js";
 import { isShadowRun } from "./audit.js";
 import type { Problem } from "./check.js";
@@ -527,11 +528,10 @@ function heldLine(workflow: string, held: HeldAsk): string {
     const shares = checkShares({ n: check.n, agreed: check.agreed ?? 0, alone: check.alone ?? 0 });
     const fields = Object.entries(check.fields ?? {});
     const failing = fields.filter(([, one]) => !one.pass).map(([name]) => name);
-    // The joint floor (learn/field-check.ts): right on every field at once, at least agree_min of those answered alone.
-    // With one field it is that field's own count unless inputs with no known answer kept it short: said for two or more
-    // fields, or for one that passed while the joint fell short (the hold names it then, never nothing).
-    const together = shares.agreement + 1e-9 >= check.agree_min;
-    const said = fields.length > 1 || (fields.length === 1 && !together && !failing.length);
+    // The joint floor as the check decided it (check.joint): said as the check's reason says it (jointSaid), so a hold on
+    // it alone names it, never nothing.
+    const together = check.joint === true;
+    const said = jointSaid(fields.map(([, one]) => one.pass), together);
     const short = [...failing, ...(together || !said ? [] : ["its fields together"])];
     const judged = fields.length
       ? `; field by field: ${fields.map(([, one]) => one.reason).join("; ")}${said ? `; right on every field at once: ${check.agreed ?? 0} of ${check.alone ?? 0} (${pct(shares.agreement)}, at least ${pct(check.agree_min)} needed)` : ""}${short.length ? `. It fell short on ${listed(short)}` : ""}`

@@ -61,7 +61,7 @@ import { listed } from "../learning-words.js";
 import { isObject, type Json } from "../validate.js";
 import { agentRun, lastOwnRuns, newCompileAttempt, sinceReset } from "../learn/compile.js";
 import { answerAt, answerValue, type CheckBar, type CheckDisagreement, type CheckKnown, type CheckRecord, type CheckTurns, checkShares, CHECK_TEXT_MAX, championOf, compareAnswers, type Compared, comparedGrade, comparedOf, gradesOf, knownAnswerText, type PromotionRecord, promotionOf, promotionsOf, recordPromotion, type Refused, type ReplayLaunch, type ReplayOutcomes, type ReplayScore, replayingOf, sameAnswer, type SkippedTool, skippedToolsOf, valueAtPath } from "../learn/promote.js";
-import { check as checkFields, type CheckInput, type CheckTally, type FieldAnswers, KNOWN, tallyOf } from "../learn/field-check.js";
+import { check as checkFields, type CheckInput, type CheckTally, type FieldAnswers, jointSaid, KNOWN, tallyOf } from "../learn/field-check.js";
 import { refusedIn } from "../purged-workflow.js";
 import { sendCommand } from "./commands.js";
 import { ClaimRefused } from "./loop-contract.js";
@@ -696,10 +696,8 @@ export async function decideCheck(deps: DecideDeps, name: string, digest: string
   const { verdict, disagreements, grader } = await judgeRows(deps, bar, read.rows, before);
   const { tally, fields, failing, joint } = verdict;
   const score = { n: tally.n, agreed: tally.agreed, alone: tally.alone };
-  // The joint floor said when it can say more than one field's own count: two or more fields, or one that passed while
-  // its inputs with no known answer kept them from being right together.
   const fieldCount = Object.keys(fields).length;
-  const jointSaid = fieldCount > 1 || (fieldCount === 1 && !joint.pass && !failing.length);
+  const saysJoint = jointSaid(Object.values(fields).map((one) => one.pass), joint.pass);
   const ok = verdict.verdict === "serve";
   const stopped = !ok && bar.attempt === 2;
   const pct = (value: number) => `${(value * 100).toFixed(1)}%`;
@@ -725,7 +723,7 @@ export async function decideCheck(deps: DecideDeps, name: string, digest: string
   // and the words say none ran.
   const said = read.unstarted === score.n
     ? `none of its ${plural(score.n, "check run")} started by the check's deadline (its launch was interrupted: the server stopped after reserving it, say): nothing was checked`
-    : `checked on ${score.n} of the agent's inputs: answered ${score.alone} alone (${pct(shares.alone)}, the bar ${pct(bar.alone_min)})${Object.keys(fields).length ? `; ${Object.values(fields).map((one) => one.reason).join("; ")}` : ""}${jointSaid ? `; right on every field at once: ${joint.agreed} of ${joint.alone} (${pct(shares.agreement)}, the bar ${pct(bar.agree_min)})` : ""}${grader ? `; compared by the fast model (${grader})` : ""}${aside ? ` (${aside})` : ""}`;
+    : `checked on ${score.n} of the agent's inputs: answered ${score.alone} alone (${pct(shares.alone)}, the bar ${pct(bar.alone_min)})${Object.keys(fields).length ? `; ${Object.values(fields).map((one) => one.reason).join("; ")}` : ""}${saysJoint ? `; right on every field at once: ${joint.agreed} of ${joint.alone} (${pct(shares.agreement)}, the bar ${pct(bar.agree_min)})` : ""}${grader ? `; compared by the fast model (${grader})` : ""}${aside ? ` (${aside})` : ""}`;
   // The whole answer compared with the agent's: with the grader, how many answered alone reached another decision, with
   // one it named; never once the same and no grader: free text two runs never repeat, most likely, so the owner is told
   // what to set.
@@ -735,7 +733,7 @@ export async function decideCheck(deps: DecideDeps, name: string, digest: string
   const verbatim = ok || !whole ? "" : grader ? (differed > 0 ? `; ${differentDecisionWords(differed, whole.n, example)}` : "") : whole.workflow_right === 0 ? `; ${read.exactMismatchReason ?? NEVER_WORD_FOR_WORD}` : "";
   const heldOn = `held${failing.length ? ` on ${listed(failing)}` : !joint.pass && fieldCount ? " on its fields together" : ""}${verbatim}`;
   const reason = ok ? `${said}: promoted` : stopped ? `${said}: ${heldOn}, and this was the recompile's check, so it stops: nothing compiles again until a hold or its owner acts` : `${said}: ${heldOn}; the agent's next run recompiles it once with the inputs it did not agree on`;
-  const check: CheckRecord = { ...bar, ...score, agent_agreed: tally.agent_agreed, ...(fieldCount ? { fields } : {}), ...numbers, ...(disagreements.length ? { disagreements } : {}), ...(stopped ? { stopped: true as const } : {}), ...(grader ? { grader } : {}) };
+  const check: CheckRecord = { ...bar, ...score, agent_agreed: tally.agent_agreed, joint: joint.pass, ...(fieldCount ? { fields } : {}), ...numbers, ...(disagreements.length ? { disagreements } : {}), ...(stopped ? { stopped: true as const } : {}), ...(grader ? { grader } : {}) };
   const record: PromotionRecord = { workflow: name, digest, at: iso(now()), decided: ok ? "promote" : "hold", reason, check, ...seedOf(deps), ...extra };
   // A check that outlives its revision's run: the run's purge never stops it (it replays other runs' inputs), and the
   // purge gate refuses the revision at the commit it was checked at (purged-workflow.ts refusedOf). It is held, never

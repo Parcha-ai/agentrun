@@ -263,9 +263,12 @@ test("held by its check on a known answer: each disagreement shows the known ans
 // The joint floor with one field: inputs with no known answer are not right on it, so a field that passes alone can
 // still fall short together; the hold names that, never nothing.
 test("held on the joint floor with one field that passes: the revise ask says right on every field at once and that it fell short there", () => {
-  const check = { n: 20, compile_after: 20, alone: 20, agreed: 13, alone_min: 0.7, agree_min: 0.8, attempt: 1, of: [], fields: { answer: { n: 16, workflow_right: 13, agent_right: 0, unjudged: 4, known: "agent", pass: true, reason: "answer: 13 of 16", by: { agent: { n: 16, workflow_right: 13, agent_right: 16, pass: true } } } } };
+  const check = { n: 20, compile_after: 20, alone: 20, agreed: 13, alone_min: 0.7, agree_min: 0.8, attempt: 1, of: [], joint: false, fields: { answer: { n: 16, workflow_right: 13, agent_right: 0, unjudged: 4, known: "agent", pass: true, reason: "answer: 13 of 16", by: { agent: { n: 16, workflow_right: 13, agent_right: 16, pass: true } } } } };
   const prompt = compile.compilePrompt(ASK({ mode: "revise", workflow: "answer", current: "{\"v\":2}", held: { workflow: "answer", digest: "0123456789abcdef", reason: "held", check } }));
   assert.match(prompt, /field by field: answer: 13 of 16; right on every field at once: 13 of 20 \(65\.0%, at least 80\.0% needed\)\. It fell short on its fields together\./);
+  // The verdict is the check's own (`joint`), never worked out again from the shares: a passed one is no shortfall.
+  const passed = compile.compilePrompt(ASK({ mode: "revise", workflow: "answer", current: "{\"v\":2}", held: { workflow: "answer", digest: "0123456789abcdef", reason: "held", check: { ...check, joint: true } } }));
+  assert.doesNotMatch(passed, /fell short on its fields together|right on every field at once/);
 });
 
 // Batch 28 item 1: a connected agent's hold on give-backs checked no input (n 0). Its revise ask says why it was held and

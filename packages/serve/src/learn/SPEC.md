@@ -137,8 +137,8 @@ where the agent was wrong, is no free pass). So agent-known inputs never carry g
 agent-known right and 20 graded wrong hold, while one graded input missed among 19 the agent knows serves, and 2 of 3
 labels right where the agent had 3 serves among 97 agent-known. `check.fields.<f>.by` keeps each source's counts, with
 whether it would pass alone. It serves when at least `alone_min` of the inputs were answered alone, at least
-`agree_min` of those were right on every field at once (the joint floor: misses spread over several fields add up), and
-every field passes; a hold names the failing fields (`check.fields`, each with its counts and reason), or its fields
+`agree_min` of those were right on every field at once (the joint floor: misses spread over several fields add up; its
+verdict kept as `check.joint`, which a hold's words and the cost summary's `cleared` read), and every field passes; a hold names the failing fields (`check.fields`, each with its counts and reason), or its fields
 together when only the joint floor fell short, and each disagreement the fields it had wrong, with the known answer of
 each a label or grade gave (`expected`, its value cut and redacted, and its source), which the recompile is asked to
 say. An unjudged input is listed too, its field marked `unknown` with no value: the recompile is told the owner marked

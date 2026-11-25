@@ -2771,6 +2771,7 @@ class ListLearningPromotionsResponsePromotionsItemCheck(_ListLearningPromotionsR
     agreed: int
     alone: int
     agent_agreed: int
+    joint: bool
     fields: dict[str, ListLearningPromotionsResponsePromotionsItemCheckFieldsValue]
     of: list[str]
     cost_usd: float | None
@@ -2999,6 +3000,7 @@ class ListLearningPromotionsResponseServingItemChampionCheck(_ListLearningPromot
     agreed: int
     alone: int
     agent_agreed: int
+    joint: bool
     fields: dict[str, ListLearningPromotionsResponseServingItemChampionCheckFieldsValue]
     of: list[str]
     cost_usd: float | None

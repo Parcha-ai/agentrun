@@ -289,3 +289,8 @@ export function verdictOf(tally: CheckTally, bar: FieldBar): Omit<CheckVerdict, 
 export function check(rows: readonly CheckInput[], bar: FieldBar, before?: CheckTally): CheckVerdict {
   return { ...verdictOf(tallyOf(rows, before), bar), misses: missesOf(rows) };
 }
+
+/** Whether a verdict's words say the joint floor: when it says more than one field's own count, with two or more fields,
+ *  or with one that passed while the joint fell short (inputs with no known answer kept it from being right on all).
+ *  `fields`: each field's pass; `joint`: the joint floor's. */
+export const jointSaid = (fields: readonly boolean[], joint: boolean): boolean => fields.length > 1 || (fields.length === 1 && !joint && fields[0]!);
