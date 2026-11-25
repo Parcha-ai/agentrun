@@ -1505,6 +1505,95 @@ test("a link the server's user made to a folder of its own, above this machine's
   }
 });
 
+/** For the rest of test `t`: just before this process's `nth` lstat of `link` (the login's walk looks at each link with
+ *  lstat, one walk one look), `link` is made again leading to `to`, as another user who may write in the link's folder
+ *  could swap it between one look and the next. Gives the undo, also run after `t`. */
+function linkSwapsAt(t, link, nth, to) {
+  const fs = createRequire(import.meta.url)("node:fs");
+  const real = fs.lstatSync;
+  let seen = 0;
+  fs.lstatSync = function lstatSwapping(path, ...rest) {
+    if (path === link && ++seen === nth) {
+      fs.unlinkSync(link);
+      fs.symlinkSync(to, link);
+    }
+    return real.call(this, path, ...rest);
+  };
+  syncBuiltinESMExports();
+  let undone = false;
+  const undo = () => {
+    if (undone) return;
+    undone = true;
+    fs.lstatSync = real;
+    syncBuiltinESMExports();
+  };
+  t.after(undo);
+  return undo;
+}
+
+// The check and the login are one walk. Were they two, a link another user can swap (in a folder they may write in)
+// could lead to the server's user's own folder for the one and elsewhere for the other; a login that then fell back to
+// the path as given would hand the CLI a name that leads wherever that link leads now. Here the test user's link
+// (CLAUDE_CONFIG_DIR) leads to its own folder or to root's "/" (no folder of its own), and is swapped before the 1st, 2nd,
+// 3rd or 4th look at it, each way round. Whatever each read decides, the path as given reaches no CLI, no CLI variable
+// and no sign-in line: a run, the CLI's sign-in, the view (its line and its status check) and a turn-on (the login it
+// hands the server) each get the real folder, or nothing.
+test("the login's folders are walked once for each decision: a link swapped between one look and the next hands no run, no sign-in, no status check, no sign-in line and no turn-on the folder as given, only its real path or nothing", { skip: process.platform === "win32" ? "no uid" : process.geteuid() === 0 ? "root owns /" : false, timeout: 120_000 }, async (t) => {
+  const readers = {
+    run: async (rig, deps) => [await loginForRun(rig.settings, rig.data, deps.env, "claude-agent", RUNNER, deps.uid)],
+    "sign-in": async (rig, deps) => void (await startLoginHere(deps)),
+    view: async (rig, deps) => [(await claudeLoginView(deps)).command],
+    "turn-on": async (rig, deps) => {
+      rig.rows.clear();
+      return [(await turnOnClaudeLogin(deps, { only_me: true, place: "machine" })).command];
+    },
+  };
+  let handedReal = 0;
+  for (const [reader, read] of Object.entries(readers)) {
+    for (const [first, then] of [["own", "/"], ["/", "own"]]) {
+      for (const nth of [1, 2, 3, 4, 99]) {
+        const mine = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-login-swap-"));
+        t.after(() => rmSync(mine, { recursive: true, force: true }));
+        const real = realpathSync(mine);
+        const own = join(real, "own");
+        mkdirSync(own, { mode: 0o700 });
+        const link = join(real, "link");
+        const target = (which) => (which === "own" ? own : "/");
+        symlinkSync(target(first), link);
+        const rig = await loginRig(t);
+        rig.rows.set(CLAUDE_LOGIN_SETTING, settingFor("machine", rig.data));
+        const handed = [];
+        const stub = {
+          claudeLoginCommand: (login) => (handed.push(login), `claude auth login ${JSON.stringify(login)}`),
+          claudeLoginStatus: async (_cli, login) => (handed.push(login), { signedIn: true, method: "claude.ai" }),
+          startClaudeLogin: (_cli, login) => {
+            handed.push(login);
+            let end;
+            return { ended: new Promise((resolve) => { end = resolve; }), stop: () => end({ end: "stopped" }) };
+          },
+        };
+        const deps = rig.deps({ env: { ...rig.env, CLAUDE_CONFIG_DIR: link }, claude: async () => stub, saved: (login) => void (login && handed.push(login)) });
+        const undo = linkSwapsAt(t, link, nth, target(then));
+        const what = `${reader}, the link leading to ${first} then ${then} from look ${nth}`;
+        let lines = [];
+        try {
+          lines = (await read(rig, deps)) ?? [];
+        } catch (error) {
+          assert.equal(error.code, "forbidden", `${what}: refused, or nothing: ${error.stack}`);
+        }
+        undo();
+        for (const login of [...handed, ...lines]) {
+          if (login === undefined) continue;
+          const said = typeof login === "string" ? login : JSON.stringify([login, claude.claudeLoginEnv(login)]);
+          assert.ok(!said.includes(link), `${what}: the path as given reached the CLI, its variables or the line: ${said}`);
+          if (typeof login !== "string" && login.dir === own) handedReal++;
+        }
+      }
+    }
+  }
+  assert.ok(handedReal > 0, "a link that leads to the server's user's own folder hands on its real path");
+});
+
 // A folder on the way that its group or anyone may write in, with no sticky bit to keep each entry its maker's, lets
 // another user put a folder or a link of theirs in the place of the next one once the check has looked; one open so as
 // the login folder itself lets them put their files in it, and as the folder the CLI makes the login's in, make that
