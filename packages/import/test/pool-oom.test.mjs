@@ -54,13 +54,20 @@ async function watch(run) {
   }
 }
 
+/** The workers' old generation in the out-of-memory cases: twice the floor (MIN_OLD_MB, 8), where a worker that starts
+ *  and reads a small file never runs out, however loaded the machine; at the floor one can, and a count of workers made
+ *  then counts it. Its line limit is an eighth, 2 MB. */
+const HEAP_MB = 16;
+/** A bomb under that line limit that still runs a worker of HEAP_MB out inside JSON.parse (about 23 MB parsed). */
+const BOMB_MB = 1.8;
+
 test("a worker out of memory gives its file back, and the worker that takes its place reads on: the totals of one thread", { timeout: TIMEOUT }, async (t) => {
   const home = await tempHome(t);
   // Two bombs, the largest files: one to each of the two workers first, so both run out; the replacements read the rest.
-  for (let k = 0; k < 2; k += 1) await bomb(home, id("b", k), 0.9, 1_000 + k);
+  for (let k = 0; k < 2; k += 1) await bomb(home, id("b", k), BOMB_MB, 1_000 + k);
   for (let k = 0; k < 12; k += 1) await small(home, id("s", k), k, 2_000 + k);
   const one = await parseHome(home, { catalog: false, threads: 1 });
-  const { result, workers } = await watch(() => parseHome(home, { catalog: false, threads: 2, workerOldMb: 8 }));
+  const { result, workers } = await watch(() => parseHome(home, { catalog: false, threads: 2, workerOldMb: HEAP_MB }));
   assert.deepEqual(result, one);
   assert.equal(workers.length, 4, "two workers lost, two made in their place");
   assert.ok(workers.slice(2).some((w) => w.ok > 0), "a worker made in a lost one's place reads files");
@@ -68,11 +75,11 @@ test("a worker out of memory gives its file back, and the worker that takes its 
 
 test("every worker out of memory: the import settles, the pool stops after its losses, and parseHome reads the rest", { timeout: TIMEOUT }, async (t) => {
   const home = await tempHome(t);
-  // Six files that each run out an 8 MB heap. A worker waited on while it runs out must keep the process alive: the
+  // Six files that each run out a worker's heap. A worker waited on while it runs out must keep the process alive: the
   // import settles (an unref'd one let it exit 13, unsettled).
-  for (let k = 0; k < 6; k += 1) await bomb(home, id("b", k), 0.9, 1_000 + k);
+  for (let k = 0; k < 6; k += 1) await bomb(home, id("b", k), BOMB_MB, 1_000 + k);
   const one = await parseHome(home, { catalog: false, threads: 1 });
-  const { result, workers } = await watch(() => parseHome(home, { catalog: false, threads: 2, workerOldMb: 8 }));
+  const { result, workers } = await watch(() => parseHome(home, { catalog: false, threads: 2, workerOldMb: HEAP_MB }));
   assert.deepEqual(result, one);
   // Two threads, two losses a thread: the fifth loss stops the pool, so threads x 3 workers made.
   assert.equal(workers.length, 2 * 3, "the pool stops at its fifth loss");
