@@ -295,10 +295,13 @@ test("a purge of the champion's run leaves the version before it, and the earlie
   assert.equal((await api("DELETE", `/runs/${gone}`)).status, 204);
   assert.deepEqual((await onMain(store, "crowned")).files, v1, "the learning holds answer v1, both files as `first` wrote them");
   assert.deepEqual(await reads("What is seven times six?"), { holds: false, champion: kept, served: digestOf(v1[path]) }, "no read, run or compile ask holds v2; the champion read names v1's save, and a run that fits it is served v1");
-  // The cost read names the champion left: the serving check is v1's, and the bill names v1 alone, never the purged v2.
+  // The cost read names the champion left: the serving check is v1's, and v1 serves. The run served v2 before the purge
+  // still carries v2's spend, so v2 stays in the bill as a stopped revision at its K (the reset ledger keeps its
+  // workflow, digest and K, no text), as a reset's revisions do.
   const cost = (await api("GET", "/agents/crowned/learning/cost")).body;
   const states = Object.fromEntries(cost.bill.revisions.filter(({ workflow }) => workflow === "answer").map(({ digest, state }) => [digest, state]));
-  assert.deepEqual({ replay: cost.summary.replay?.n ?? null, states }, { replay: 10, states: { [digestOf(v1[path])]: "serving" } }, "the cost read's serving check and the bill's states name v1, never the purged v2");
+  assert.deepEqual({ replay: cost.summary.replay?.n ?? null, states }, { replay: 10, states: { [digestOf(v1[path])]: "serving", [digestOf(v2[path])]: "stopped" } }, "the cost read's serving check is v1's and v1 serves; the purged v2 is stopped, billed to the run it served");
+  assert.ok(!JSON.stringify(cost).includes(mark), "the cost read holds none of the purged text");
 
   // A revision `later` promotes after the purge is the champion over v1.
   const v3 = answerAt("in tens");
