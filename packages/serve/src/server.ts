@@ -2799,9 +2799,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // worker (said, and counted: IMPORT_STARTS). A Wrapped read also starts the import package's read threads
         // (wrappedReading), each with a heap of its own outside this one, capped at its start: a 16 MB young generation
         // and the import's workerOldMb (64 MB) old one. Their finished reads wait for this thread mostly as transferred
-        // ArrayBuffers (record indexes, request counts), memory outside this cap. So a Wrapped read holds at most
-        // IMPORT_HEAP_MB for this thread's own heap, plus threads x (workerOldMb + 16) MB, plus up to readAhead of
-        // transferred buffers.
+        // ArrayBuffers (record indexes, request counts), memory outside this cap. So a Wrapped read holds IMPORT_HEAP_MB
+        // for this thread's own heap, plus threads x (workerOldMb + 16) MB, plus readAhead for the replies waiting to be
+        // taken, with up to `threads` replies in flight on top: the pool checks readAhead before it starts a read.
         resourceLimits: { maxOldGenerationSizeMb: IMPORT_HEAP_MB },
       });
       workers.set(worker, { task, exit: once(worker, "exit").catch(() => undefined) });
