@@ -586,6 +586,7 @@ test("off by default: a whole run with no OTEL_* set loads no @opentelemetry mod
   const said = JSON.parse(child.stdout.trim().split("\n").at(-1));
   assert.equal(said.state, "ended", "the run ended");
   assert.deepEqual(said.loaded, [], "no @opentelemetry module was loaded");
+  assert.doesNotMatch(`${child.stdout}\n${child.stderr}`, /\[otel\]/, "off, the runner's start says nothing of tracing");
   // The same probe sees them once tracing is on: its silence above is no blind spot.
   assert.ok(said.loadedOn.includes("@opentelemetry/resources"), `on, the SDK's modules load: ${JSON.stringify(said.loadedOn)}`);
 });
