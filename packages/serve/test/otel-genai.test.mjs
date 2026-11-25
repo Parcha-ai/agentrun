@@ -773,6 +773,9 @@ const SEMI_PREFIX = `prefix-${"dummy"}`;
 const SEMI_WHOLE = `${SEMI_PREFIX};suffix-${"dummy"}`;
 const SEMI_COMMA = `${SEMI_PREFIX}%2Cmid-${"dummy"};suffix-${"dummy"}`;
 const SEMI_SPACED = `${SEMI_PREFIX}%2Cmid-${"dummy"}%20tail-${"dummy"};suffix-${"dummy"}`;
+// A double and a single quote, percent-encoded.
+const QUOTE_22 = "%22";
+const QUOTE_27 = "%27";
 const SEMI_ROWS = [
   [
     "an endpoint's credential parameter with a ; in its value",
@@ -867,14 +870,14 @@ const SEMI_ROWS = [
   ],
   [
     "a header value's credential pair with a ; and a %2C in its value, in quotes written %22",
-    { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `X-Relay=api_key=%22${SEMI_COMMA}%22&region=us-east-1` },
+    { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `X-Relay=api_key=${QUOTE_22}${SEMI_COMMA}${QUOTE_22}&region=us-east-1` },
     [SEMI_COMMA, decodeURIComponent(SEMI_COMMA)],
     ["us-east-1"],
     [`401 from relay: key ${SEMI_COMMA} refused`, "401 from relay: key [redacted] refused"],
   ],
   [
     "a header value's credential pair with a ; and a %2C in its value, in quotes written %27, before an & written %26",
-    { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `X-Relay=api_key=%27${SEMI_COMMA}%27%26region=us-east-1` },
+    { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `X-Relay=api_key=${QUOTE_27}${SEMI_COMMA}${QUOTE_27}%26region=us-east-1` },
     [SEMI_COMMA, decodeURIComponent(SEMI_COMMA)],
     ["us-east-1"],
     [`401 from relay: key ${SEMI_COMMA} refused`, "401 from relay: key [redacted] refused"],
